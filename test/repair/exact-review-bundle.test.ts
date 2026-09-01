@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -16,11 +17,14 @@ function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-exact-review-"));
   const report = path.join(root, "42.md");
   const ledgerRoot = path.join(root, "ledger-root");
+  const liveProofDir = path.join(root, "live-proof");
   const ledger = path.join(
     ledgerRoot,
     "ledger/v1/events/2026/07/15/openclaw/openclaw/events.jsonl",
   );
   fs.writeFileSync(report, "# Review\n\nVerified.\n");
+  fs.mkdirSync(liveProofDir);
+  fs.writeFileSync(path.join(liveProofDir, "live-verification.json"), '{"schema_version":1}\n');
   fs.mkdirSync(path.dirname(ledger), { recursive: true });
   fs.writeFileSync(ledger, '{"schema_version":1}\n');
   const context: ExactReviewBundleContext = {
@@ -50,10 +54,53 @@ function fixture() {
     liveTerminalMissing: false,
     liveGuardedOpen: false,
   };
-  return { root, report, ledgerRoot, bundleDir: path.join(root, "bundle"), context };
+  return { root, report, ledgerRoot, liveProofDir, bundleDir: path.join(root, "bundle"), context };
 }
 
-test("exact review bundle binds immutable workflow and queue context", () => {
+function addHistoricalLiveProof(bundleDir: string, itemNumber: number, sourceDir: string): void {
+  const relative = `live-proof/${itemNumber}/live-verification.json`;
+  const source = path.join(sourceDir, "live-verification.json");
+  const destination = path.join(bundleDir, relative);
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.copyFileSync(source, destination);
+  const content = fs.readFileSync(destination);
+  const manifestPath = path.join(bundleDir, "manifest.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  manifest.files.push({
+    path: relative,
+    bytes: content.length,
+    sha256: createHash("sha256").update(content).digest("hex"),
+  });
+  manifest.files.sort((left: { path: string }, right: { path: string }) =>
+    left.path.localeCompare(right.path),
+  );
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
+test("historical proof-bearing exact review bundles still validate", () => {
+  const value = fixture();
+  createExactReviewBundle({
+    bundleDir: value.bundleDir,
+    reviewPath: value.report,
+    actionLedgerRoot: value.ledgerRoot,
+    createdAt: "2026-07-15T12:00:00Z",
+    context: value.context,
+  });
+  addHistoricalLiveProof(value.bundleDir, value.context.itemNumber, value.liveProofDir);
+  const validated = validateExactReviewBundle(value.bundleDir, value.context);
+
+  assert.equal(validated.review.artifact_present, true);
+  assert.deepEqual(
+    validated.files.map((file) => file.path),
+    [
+      "action-ledger/ledger/v1/events/2026/07/15/openclaw/openclaw/events.jsonl",
+      "live-proof/42/live-verification.json",
+      "review/42.md",
+    ],
+  );
+});
+
+test("new exact review bundle creation omits live-proof directories", () => {
   const value = fixture();
   const created = createExactReviewBundle({
     bundleDir: value.bundleDir,
@@ -62,14 +109,12 @@ test("exact review bundle binds immutable workflow and queue context", () => {
     createdAt: "2026-07-15T12:00:00Z",
     context: value.context,
   });
-  const validated = validateExactReviewBundle(value.bundleDir, value.context);
 
-  assert.deepEqual(validated, created);
-  assert.equal(validated.review.artifact_present, true);
-  assert.deepEqual(
-    validated.files.map((file) => file.path),
-    ["action-ledger/ledger/v1/events/2026/07/15/openclaw/openclaw/events.jsonl", "review/42.md"],
+  assert.equal(
+    created.files.some((file) => file.path.startsWith("live-proof/")),
+    false,
   );
+  assert.equal(fs.existsSync(path.join(value.bundleDir, "live-proof")), false);
 });
 
 test("exact review bundle rejects redirected and modified publication", () => {

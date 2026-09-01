@@ -35,6 +35,8 @@ import {
   isTerminalCodexErrorMessage,
 } from "../codex-transient.js";
 import { runAgentProcess } from "../agent-runner.js";
+import { AgentInputScanError, type AgentScanSource } from "../agent-input-scan.js";
+import { withTargetReviewSnapshot } from "./target-validation.js";
 import { codexAppServerProcessOptionsFromEnv } from "../codex-process.js";
 import {
   branchHasBaseDiff,
@@ -53,7 +55,10 @@ import {
   automergeOutcomeReviewedShaFromResult,
   automergePlanningHeadBlock,
 } from "./automerge-outcome.js";
-import { isCanonicalLandingNeedsHumanText } from "./comment-router-core.js";
+import {
+  isCanonicalLandingNeedsHumanText,
+  isTrustedStatusCommentAuthor,
+} from "./comment-router-core.js";
 import { parsePullRequestUrl, pullRequestNumberFromUrl, sameRepoSlug } from "./github-ref.js";
 import {
   clawsweeperGitUserEmail,
@@ -78,6 +83,7 @@ import {
 } from "./constants.js";
 
 const AUTOMERGE_LABEL = "clawsweeper:automerge";
+const REPAIR_TRUSTED_STATUS_AUTHORS = new Set(["clawsweeper[bot]", "openclaw-clawsweeper[bot]"]);
 const AUTOFIX_LABEL = "clawsweeper:autofix";
 const AUTOFIX_LABEL_COLOR = "0A3069";
 const AUTOFIX_LABEL_DESCRIPTION =
@@ -353,7 +359,11 @@ function currentCodexTimeoutMs(preserveLateWorkerBudget = false) {
 function spawnCodexSyncWithHeartbeat(
   label: string,
   args: string[],
-  options: SpawnSyncOptionsWithStringEncoding & { stdoutPath?: string; stderrPath?: string },
+  options: SpawnSyncOptionsWithStringEncoding & {
+    stdoutPath?: string;
+    stderrPath?: string;
+    scanSource: AgentScanSource;
+  },
 ) {
   const heartbeat = startCodexHeartbeat(label);
   try {
@@ -363,6 +373,7 @@ function spawnCodexSyncWithHeartbeat(
     if (args[0] !== "exec") throw new Error(`${label} requires a Codex exec argument list.`);
     const appServer = codexAppServerProcessOptionsFromEnv(label);
     return runAgentProcess({
+      scanSource: options.scanSource,
       label,
       prompt: options.input,
       model,
@@ -2283,6 +2294,7 @@ function editValidatePrepareMerge({
           encoding: "utf8",
           env: codexEnv(),
           timeout: workerTimeoutMs,
+          scanSource: { kind: "prompt" },
           stdoutPath: path.join(workRoot, `${mode}-codex-${attempt}.jsonl`),
           stderrPath: path.join(workRoot, `${mode}-codex-${attempt}.stderr.log`),
         },
@@ -2719,6 +2731,7 @@ function runCodexBaseReconcile({
         encoding: "utf8",
         env: codexEnv(),
         timeout: reconcileTimeoutMs,
+        scanSource: { kind: "prompt" },
         stdoutPath: path.join(
           workRoot,
           `${mode}-final-base-reconcile-${attempt}-${codexAttempt}.jsonl`,
@@ -2954,6 +2967,7 @@ function validateAndReviewLoop({
     }
     try {
       lastReview = runCodexReview({
+        checkoutBinding,
         fixArtifact,
         targetDir,
         mode,
@@ -3094,6 +3108,7 @@ function validateAndReviewSynchronizedTree({
   }
   runDiffCheck({ targetDir, baseRef: targetBaseSha, checkoutBinding });
   const review = runCodexReview({
+    checkoutBinding,
     fixArtifact,
     targetDir,
     mode,
@@ -3130,6 +3145,7 @@ function isFixableValidationError(error: JsonValue) {
 }
 
 function isRetryableCodexReviewError(error: JsonValue) {
+  if (error instanceof AgentInputScanError) return false;
   return /structured output was not written|invalid structured output/i.test(
     String(error?.message ?? error),
   );
@@ -3140,6 +3156,7 @@ function runDiffCheck({ targetDir, baseRef, checkoutBinding }: LooseRecord) {
 }
 
 function runCodexReview({
+  checkoutBinding,
   fixArtifact,
   targetDir,
   mode,
@@ -3150,6 +3167,7 @@ function runCodexReview({
   validationPlan = null,
 }: LooseRecord) {
   const outputPath = path.join(workRoot, `${mode}-codex-review-${attempt}.json`);
+  fs.rmSync(outputPath, { force: true });
   const schemaPath = codexReviewSchemaPath();
   const prompt = [
     "/review",
@@ -3185,33 +3203,43 @@ function runCodexReview({
     "```",
   ].join("\n");
   const reviewTimeoutMs = currentCodexTimeoutMs();
-  const child = spawnCodexSyncWithHeartbeat(
-    `Codex /review ${mode} attempt ${attempt}`,
-    [
-      "exec",
-      "--cd",
-      targetDir,
-      ...executionModelArgs,
-      "--sandbox",
-      codexReviewSandbox,
-      ...codexReviewSandboxConfigArgs(),
-      ...codexConfigArgs(),
-      "--output-schema",
-      schemaPath,
-      "--output-last-message",
-      outputPath,
-      "--json",
-      "-",
-    ],
+  const child = withTargetReviewSnapshot(
     {
       cwd: targetDir,
-      input: prompt,
-      encoding: "utf8",
-      env: codexEnv(),
-      timeout: reviewTimeoutMs,
-      stdoutPath: path.join(workRoot, `${mode}-codex-review-${attempt}.jsonl`),
-      stderrPath: path.join(workRoot, `${mode}-codex-review-${attempt}.stderr.log`),
+      baseSha: targetBaseSha,
+      expected: checkoutBinding,
+      timeoutMs: reviewTimeoutMs,
     },
+    (scanSource, timeoutMs) =>
+      spawnCodexSyncWithHeartbeat(
+        `Codex /review ${mode} attempt ${attempt}`,
+        [
+          "exec",
+          "--cd",
+          targetDir,
+          ...executionModelArgs,
+          "--sandbox",
+          codexReviewSandbox,
+          ...codexReviewSandboxConfigArgs(),
+          ...codexConfigArgs(),
+          "--output-schema",
+          schemaPath,
+          "--output-last-message",
+          outputPath,
+          "--json",
+          "-",
+        ],
+        {
+          cwd: targetDir,
+          input: prompt,
+          encoding: "utf8",
+          env: codexEnv(),
+          timeout: timeoutMs,
+          scanSource,
+          stdoutPath: path.join(workRoot, `${mode}-codex-review-${attempt}.jsonl`),
+          stderrPath: path.join(workRoot, `${mode}-codex-review-${attempt}.stderr.log`),
+        },
+      ),
   );
   if ((child.error as JsonValue)?.code === "ETIMEDOUT")
     throw new Error(`Codex /review timed out after ${reviewTimeoutMs}ms`);
@@ -3234,6 +3262,7 @@ function runCodexReview({
   } catch (error) {
     throw new Error(
       `Codex /review failed: invalid structured output in ${path.basename(outputPath)}: ${error.message}`,
+      { cause: error },
     );
   }
 }
@@ -3329,6 +3358,7 @@ function runCodexReviewFix({
       encoding: "utf8",
       env: codexEnv(),
       timeout: reviewFixTimeoutMs,
+      scanSource: { kind: "prompt" },
       stdoutPath: path.join(workRoot, `${mode}-codex-review-fix-${attempt}.jsonl`),
       stderrPath: path.join(workRoot, `${mode}-codex-review-fix-${attempt}.stderr.log`),
     },
@@ -3409,6 +3439,7 @@ function runCodexValidationFix({
       encoding: "utf8",
       env: codexEnv(),
       timeout: validationFixTimeoutMs,
+      scanSource: { kind: "prompt" },
       stdoutPath: path.join(workRoot, `${mode}-codex-validation-fix-${attempt}.jsonl`),
       stderrPath: path.join(workRoot, `${mode}-codex-validation-fix-${attempt}.stderr.log`),
     },
@@ -4557,13 +4588,7 @@ function fetchPullRequestViewForRepo({ repo, number }: LooseRecord) {
 }
 
 function isTrustedStatusComment(comment: LooseRecord) {
-  const author = String(comment.user?.login ?? "").toLowerCase();
-  return (
-    !author ||
-    author === "clawsweeper" ||
-    author === "clawsweeper[bot]" ||
-    author === "openclaw-clawsweeper[bot]"
-  );
+  return isTrustedStatusCommentAuthor(comment, REPAIR_TRUSTED_STATUS_AUTHORS);
 }
 
 function hasAutomergeStatusMarker(body: JsonValue, number: JsonValue) {

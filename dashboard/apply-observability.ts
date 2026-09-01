@@ -299,8 +299,9 @@ function aggregate(events: readonly ApplyObservabilityEvent[]) {
     const values = events.map((event) =>
       field === "arrivals" ? event.arrivals : event.results[field],
     );
-    if (!values.length || values.some((value) => value === null)) return null;
-    return values.reduce((total, value) => total + value, 0);
+    const numericValues = values.filter((value): value is number => value !== null);
+    if (!numericValues.length || numericValues.length !== values.length) return null;
+    return numericValues.reduce((total, value) => total + value, 0);
   };
   const arrivals = sum("arrivals");
   const applied = sum("applied");

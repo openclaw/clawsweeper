@@ -1,0 +1,45 @@
+jq-linux-amd64: OK
+install=running
+install=passed
+build-all=running
+build-all=passed
+test-no-build=running
+test-no-build=passed
+lint=running
+lint=passed
+format-check=running
+format-check=passed
+check-active-surface=running
+check-active-surface=passed
+VERBATIM_CONTAINER_RESULT_BEGIN
+head=964d9d8d88b7e0a2394f7d555fa9b6d5cf0f923e
+branch=crabbox-pr-1118
+worktree_changes=1
+node=v24.19.0
+git=git version 2.39.5
+pnpm=11.10.0
+jq=jq-1.8.1
+jq_sha256=020468de7539ce70ef1bceaf7cde2e8c4f2ca6c3afb84642aabc5c97d9fc2a0d
+jq_checksum=passed
+install=passed
+build-all=passed
+test-no-build=passed
+lint=passed
+format-check=passed
+check-active-surface=passed
+✔ restricted PR review can inspect changed blobs from a genuine blobless clone offline (838.357619ms)
+✔ missing partial-clone objects are fetched in one bounded network request (293.252076ms)
+✔ review hydration enforces per-review byte limits without fetching oversized blobs (593.233113ms)
+✔ multipart uploads stream fixed-size parts and enforce immutability at completion (6.799337ms)
+✔ chunked downloads retry transient 5xx responses and reject invalid ranges (762.054403ms)
+✔ blob listing pages with cursors and validates prefixes (8.336888ms)
+✔ materialize refuses partial trees only when the whole store is empty (8.439056ms)
+ℹ tests 3318
+ℹ suites 0
+ℹ pass 3310
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 8
+ℹ todo 0
+ℹ duration_ms 362873.722424
+VERBATIM_CONTAINER_RESULT_END

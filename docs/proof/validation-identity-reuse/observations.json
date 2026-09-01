@@ -1,0 +1,103 @@
+{
+  "status": "passed",
+  "source": {
+    "head": "5ada40c98ae6dcf31703cf7c3f01e35e8d23a13e",
+    "productionDiffSha256": "6efec1c03b094d1d1898f66e2e7951f8738f458fcacadac1f27a930e8c1522dc",
+    "sha256": {
+      "src/repair/target-validation.ts": "e6cbe74265e7e0d20ca6c37aa9a40a53257ec76e5009373e4759524a43a2bb8f",
+      "test/repair/target-validation.test.ts": "979acc9edca4b77b25d453d59703914fd8f4ad82712bf484fb571a0e6ce6fa54",
+      "dist/repair/target-validation.js": "4822598d005160e9df9c0d117a7e983e0f87ae790b255535289ee346439c7370",
+      "dist/repair/command-runner.js": "4f4332dfcb43868319cc2652687355144bffe142b45c9ea64833f112da696904",
+      "dist/repair/contained-command-worker.js": "50e7a4acde15948d0892bddc32a44a4477cebfdff790635fca520f9df948e813",
+      "docs/proof/validation-identity-reuse/run-proof.mjs": "9f25c70c2d203b000171e50f5ec4cd561256b30b61832103fd070ed59344dbb6"
+    }
+  },
+  "observations": {
+    "provider": "local-node-test-harness",
+    "image": null,
+    "lease": null,
+    "platform": "darwin",
+    "arch": "arm64",
+    "node": "v24.20.0",
+    "corepack": "0.35.0",
+    "pnpm": "11.10.0",
+    "pnpmEntrypointSha256": "ff3224d46b47fbb24a7e9fe15fededef7e00892d07d4e376b6762d4899906bfd",
+    "clock": "real",
+    "injectedToolProcesses": false,
+    "observer": "transparent spawnSync observer; identical invocation and original result, recording only real verify supervisor receipts",
+    "observerRestored": true,
+    "containment": "Node test-runner process fallback; Linux namespace containment not exercised",
+    "budgets": "unchanged production defaults; no setup/install/validation overrides",
+    "fixtureHead": "eadea593a852568704c5ebafda738ef063d646ce",
+    "fixtureHashes": {
+      ".gitignore": "4d56952b0fb13bf8f9b6c13a6d4c34a075bac3af447636a1df4335d7576e2f97",
+      "package.json": "5dc970ad2f4f16d270adb5ac2a236669bf4df0d71d09ee9a7c024a064b876b88",
+      "packages/dependency/index.js": "63d56dbe1a14e25040ed63ef6a4b190e15d6598049cac913c50c74477db6bbfe",
+      "packages/dependency/package.json": "92b2be7577308ab20a2cfcda99530276dd62cdd78af0977fe792e6e1a6c1922f",
+      "pnpm-lock.yaml": "35671f4d319a3d9d641c7f09d80473cb24b488fdce2df1345bb5f26f5118a4ec",
+      "pnpm-workspace.yaml": "d115dc6c83ba283a7d17146ad456056f3f70b003edb8c312a52880b48b034001",
+      "verify.cjs": "89c5665d56d3615f269339074064c569d0320e57e50746fa4976eaea6afbb4f6"
+    },
+    "setupWallMs": 43553,
+    "installedSha256": "63d56dbe1a14e25040ed63ef6a4b190e15d6598049cac913c50c74477db6bbfe",
+    "allowed": ["pnpm verify"],
+    "dispatches": 2,
+    "receipts": [
+      {
+        "supervisorStatus": 0,
+        "supervisorSignal": null,
+        "supervisorError": false,
+        "status": 0,
+        "signal": null,
+        "error": false,
+        "backgroundProcesses": 0,
+        "stdoutMarker": true,
+        "stdoutSha256": "496f929210abd61d2e4afe97d7dc56055220a8f0ba36d43fec7fd4a6a61dc660"
+      },
+      {
+        "supervisorStatus": 0,
+        "supervisorSignal": null,
+        "supervisorError": false,
+        "status": 0,
+        "signal": null,
+        "error": false,
+        "backgroundProcesses": 0,
+        "stdoutMarker": true,
+        "stdoutSha256": "496f929210abd61d2e4afe97d7dc56055220a8f0ba36d43fec7fd4a6a61dc660"
+      }
+    ],
+    "boundaries": [
+      {
+        "name": "allowed",
+        "dispatches": 1,
+        "stdoutMarkers": 1
+      },
+      {
+        "name": "runtime-tamper-rejected",
+        "dispatches": 1,
+        "stdoutMarkers": 1
+      },
+      {
+        "name": "restored-runtime-allowed",
+        "dispatches": 2,
+        "stdoutMarkers": 2
+      },
+      {
+        "name": "source-tamper-rejected",
+        "dispatches": 2,
+        "stdoutMarkers": 2
+      }
+    ],
+    "diagnostics": [],
+    "runtimeRejection": "prepared target pnpm toolchain is stale; refresh dependencies before validation: runtimeInputsSha256",
+    "restoredRuntimeAllowed": true,
+    "sourceRejection": "prepared target pnpm toolchain is stale; refresh dependencies before validation: contentTreeSha, status, worktreeSha256"
+  },
+  "limits": [
+    "Synthetic local package; actual production owners and actual tool processes.",
+    "Transparent spawnSync observer records actual supervisor results, without replacing calls or results.",
+    "Existing macOS Node test process fallback; not Linux namespace/network/filesystem containment or Windows proof.",
+    "Not a full OpenClaw install, native application, live repair, or GitHub mutation proof.",
+    "Uncommitted source/diff binding; parent must establish committed-head evidence before landing."
+  ]
+}

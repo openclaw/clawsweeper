@@ -4,7 +4,7 @@
 - Owner: ClawSweeper maintainers and the authorized repair operator
 - Source of truth: repair workflows/source, current gates, focused tests, and
   live read-only GitHub state where needed
-- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
 - Update when: commands, trust checks, gates, tokens, runners, routing,
   publication, recovery, or promotion rules change
 
@@ -329,6 +329,14 @@ it classifies the command, so the visible reply is available as soon as the
 target dispatcher starts. Exact comment dispatches scan only the source comment
 and use per-comment receiver concurrency; the scheduled sweep remains a
 five-minute fallback.
+The scheduled sweep persists a per-repository `updated_at` watermark and the
+comment ids already inspected at that exact timestamp. It reads repository
+comments oldest-first from that watermark and advances it only after the router
+process completes successfully. A GitHub installation rate limit, abuse-limit
+403, or 429 therefore emits a structured `github_throttled` defer and exits
+successfully without moving the watermark; the next sweep repeats the
+uncompleted interval. Other failures remain fatal. Exact-comment and exact-item
+dispatches never advance the scheduled watermark.
 The status comment itself uses one compact badge: `🦞👀` for acknowledgement,
 `🦞🧹` for review, `🦞🔧` for repair/build/fix work, and `🦞✅` for completed or
 paused work.
@@ -347,6 +355,19 @@ Worker queue coalesces item revisions and leases the executor before checkout.
 The target workflow remains a compatibility fallback when the webhook service
 is down or not installed for a repository; its direct event is bridged into the
 same queue.
+
+The standalone `repair:comment-webhook` listener bounds incoming bodies to 2 MiB
+before signature verification. It accepts declared-length and chunked bodies,
+rejects oversized declarations before reading, and checks streamed bytes as they
+arrive. An oversized body receives HTTP 400 before the connection closes.
+
+The listener limits each GitHub REST request,
+including reading its response body, to 15 seconds. A stalled request returns
+HTTP 503 with `retryable: true`; successful requests keep the existing response.
+This per-request deadline does not bound the total duration of a command that
+makes several GitHub requests. GitHub does not automatically redeliver failed
+webhooks; its delivery response window is 10 seconds, so this deadline bounds
+listener resources rather than guaranteeing delivery acknowledgment.
 
 Supported triggers:
 
@@ -376,7 +397,12 @@ Supported triggers:
 @openclaw-clawsweeper fix ci
 ```
 
-`review` and `re-review` dispatch ClawSweeper review again for an open issue or PR.
+`review` and `re-review` admit the exact comment version to the durable review
+queue for an open issue or PR. The hosted webhook is the fast path; the
+five-minute router scan is the recovery producer. Both converge on the same
+comment-version receipt, so a throttled router cannot lose the command and a
+redelivery cannot start the same version twice. The queue verifies the source
+comment and current PR head before it creates the marker-backed acknowledgement.
 Issue implementation commands (`implement`, `fix`, `build`, `create pr`, `fix issue`)
 dispatch the repair worker for one open issue and ask it to create or update a
 single ClawSweeper implementation PR. The generated job uses

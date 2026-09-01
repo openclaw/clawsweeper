@@ -1,21 +1,52 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import path from "node:path";
 import test from "node:test";
 
-test("gitcrawl readers prefer portable gitcrawl-store before legacy local DB", () => {
-  const sources = [
-    readFileSync("src/clawsweeper-related-context.ts", "utf8"),
-    readFileSync("src/repair/import-gitcrawl-clusters.ts", "utf8"),
-    readFileSync("src/repair/import-gitcrawl-low-signal-prs.ts", "utf8"),
-  ];
+import {
+  gitcrawlStoreDbFileName,
+  resolveGitcrawlDbPath,
+} from "../../dist/repair/gitcrawl-store.js";
 
-  for (const source of sources) {
-    assert.match(source, /CLAWSWEEPER_GITCRAWL_DB/);
-    assert.match(source, /gitcrawl-store/);
-    assert.match(source, /\.sync\.db/);
-    assert.match(source, /replace\(/);
-    assert(source.indexOf("gitcrawl-store") < source.indexOf('.config", "gitcrawl", "gitcrawl.db'));
-  }
+test("gitcrawl store resolver normalizes repositories and preserves path priority", () => {
+  const root = path.resolve("/proof/clawsweeper");
+  const homeDir = path.resolve("/proof/home");
+  const fileName = "openclaw__openclaw.sync.db";
+  const siblingStore = path.resolve(root, "../gitcrawl-store/data", fileName);
+  const userStore = path.resolve(homeDir, ".config/gitcrawl/stores/gitcrawl-store/data", fileName);
+  const legacyStore = path.resolve(homeDir, ".config/gitcrawl/gitcrawl.db");
+
+  assert.equal(gitcrawlStoreDbFileName(" OpenClaw/OpenClaw "), fileName);
+  assert.equal(
+    resolveGitcrawlDbPath("openclaw/openclaw", " ./explicit.db ", {
+      env: { CLAWSWEEPER_GITCRAWL_DB: "/ignored.db" },
+    }),
+    path.resolve("./explicit.db"),
+  );
+  assert.equal(
+    resolveGitcrawlDbPath("openclaw/openclaw", undefined, {
+      env: { CLAWSWEEPER_GITCRAWL_DB: " ./configured.db " },
+    }),
+    path.resolve("./configured.db"),
+  );
+  assert.equal(
+    resolveGitcrawlDbPath("openclaw/openclaw", undefined, {
+      env: {},
+      root,
+      homeDir,
+      existsSync: (candidate) => candidate === siblingStore || candidate === userStore,
+    }),
+    siblingStore,
+  );
+  assert.equal(
+    resolveGitcrawlDbPath("openclaw/openclaw", undefined, {
+      env: {},
+      root,
+      homeDir,
+      existsSync: () => false,
+    }),
+    legacyStore,
+  );
 });
 
 test("gitcrawl docs describe external store freshness instead of per-run crawling", () => {

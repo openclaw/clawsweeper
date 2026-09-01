@@ -1,0 +1,43 @@
+{
+  "extends": "./tsconfig.dashboard.json",
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true
+  },
+  // Monotonic ratchet: never remove files; add each new root to the checker's baseline in the same PR.
+  "files": [
+    "dashboard/apply-observability.ts",
+    "dashboard/automerge-metrics.ts",
+    "dashboard/bay-page.ts",
+    "dashboard/dashboard-health.ts",
+    "dashboard/dashboard-pages.ts",
+    "dashboard/error-safety.ts",
+    "dashboard/exact-review-artifact-cache.ts",
+    "dashboard/exact-review-command-intake.ts",
+    "dashboard/exact-review-decision.ts",
+    "dashboard/exact-review-direct-publication.ts",
+    "dashboard/exact-review-health.ts",
+    "dashboard/exact-review-lifecycle-telemetry.ts",
+    "dashboard/exact-review-lifecycle.ts",
+    "dashboard/exact-review-publication-batches.ts",
+    "dashboard/exact-review-publication-retry.ts",
+    "dashboard/exact-review-queue-observability.ts",
+    "dashboard/exact-review-queue-shared.ts",
+    "dashboard/exact-review-read-model.ts",
+    "dashboard/github-api.ts",
+    "dashboard/github-webhook-read-model.ts",
+    "dashboard/github-etag-cache.ts",
+    "dashboard/github-egress-telemetry.ts",
+    "dashboard/live-activity.ts",
+    "dashboard/operational-health.ts",
+    "dashboard/recent-durable-publication-events.ts",
+    "dashboard/record-snapshots.ts",
+    "dashboard/review-observability.ts",
+    "dashboard/review-run-telemetry.ts",
+    "dashboard/state-blobs.ts",
+    "dashboard/state-writer-coordinator.ts",
+    "dashboard/triage-routing-groups.ts"
+  ],
+  "include": []
+}

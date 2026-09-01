@@ -7,20 +7,25 @@ import test from "node:test";
 import { capturedCanonicalRecordBaselineKeys } from "../dist/repair/canonical-record-baseline.js";
 import { reportFrontMatter, tmpPrefix, withMockGh } from "./helpers.ts";
 
-test("scoped reconciliation never changes records outside its selected batch", () => {
+test("scoped publication archives an item closed after hydration without changing unrelated records", () => {
   const root = mkdtempSync(tmpPrefix);
   const recordsDir = join(root, "records", "openclaw-openclaw");
   const itemsDir = join(recordsDir, "items");
   const closedDir = join(recordsDir, "closed");
   const plansDir = join(recordsDir, "plans");
+  const artifactDir = join(root, "artifacts");
+  const packetsDir = join(recordsDir, "decision-packets");
   const canonicalBaselineDir = join(root, "canonical-baseline");
-  for (const dir of [itemsDir, closedDir, plansDir]) {
+  for (const dir of [itemsDir, closedDir, plansDir, artifactDir, packetsDir]) {
     mkdirSync(dir, { recursive: true });
   }
   const report = (number: number, currentState: "open" | "closed") =>
     reportFrontMatter({ number, current_state: currentState });
   writeFileSync(join(itemsDir, "1.md"), report(1, "open"));
   writeFileSync(join(itemsDir, "2.md"), report(2, "open"));
+  writeFileSync(join(artifactDir, "2.md"), report(2, "open") + "new review\n");
+  writeFileSync(join(plansDir, "2.md"), "selected plan\n");
+  writeFileSync(join(packetsDir, "2.json"), "{}\n");
   writeFileSync(join(closedDir, "3.md"), report(3, "closed"));
   const unrelatedPlan = "preserve unrelated closed sidecar\n";
   writeFileSync(join(plansDir, "3.md"), unrelatedPlan);
@@ -37,6 +42,26 @@ if (args[0] === "api" && args[1]?.endsWith("/issues/2")) {
   try {
     let stdout = "";
     withMockGh(root, ghMock, () => {
+      execFileSync(process.execPath, [
+        "dist/clawsweeper.js",
+        "apply-artifacts",
+        "--target-repo",
+        "openclaw/openclaw",
+        "--artifact-dir",
+        artifactDir,
+        "--items-dir",
+        itemsDir,
+        "--closed-dir",
+        closedDir,
+        "--plans-dir",
+        plansDir,
+        "--skip-dashboard",
+        "--skip-reconcile",
+        "--canonical-record-baseline-dir",
+        canonicalBaselineDir,
+      ]);
+      assert.equal(readFileSync(join(itemsDir, "2.md"), "utf8"), report(2, "open"));
+      assert.equal(existsSync(join(closedDir, "2.md")), false);
       stdout = execFileSync(
         process.execPath,
         [
@@ -69,6 +94,8 @@ if (args[0] === "api" && args[1]?.endsWith("/issues/2")) {
     assert.equal(existsSync(join(closedDir, "1.md")), false);
     assert.equal(existsSync(join(itemsDir, "2.md")), false);
     assert.equal(existsSync(join(closedDir, "2.md")), true);
+    assert.equal(existsSync(join(plansDir, "2.md")), false);
+    assert.equal(existsSync(join(packetsDir, "2.json")), false);
     assert.equal(readFileSync(join(plansDir, "3.md"), "utf8"), unrelatedPlan);
     assert.deepEqual(
       [...capturedCanonicalRecordBaselineKeys(canonicalBaselineDir)],
@@ -325,6 +352,58 @@ if (args[0] === "api" && args[1]?.includes("/issues?state=open")) {
       "openclaw-openclaw/5",
       "openclaw-openclaw/7",
     ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("unscoped reconciliation defers without mutations when the open-state scan is rate limited", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const itemsDir = join(root, "items");
+  const closedDir = join(root, "closed");
+  const plansDir = join(root, "plans");
+  for (const dir of [itemsDir, closedDir, plansDir]) mkdirSync(dir, { recursive: true });
+  const openReport = reportFrontMatter({ number: 11, current_state: "open" });
+  const closedReport = reportFrontMatter({ number: 12, current_state: "closed" });
+  writeFileSync(join(itemsDir, "11.md"), openReport);
+  writeFileSync(join(closedDir, "12.md"), closedReport);
+  const ghMock = `
+process.stderr.write("gh: API rate limit exceeded for installation. (HTTP 403)\\n");
+process.exit(1);
+`;
+
+  try {
+    let stdout = "";
+    withMockGh(root, ghMock, () => {
+      stdout = execFileSync(
+        process.execPath,
+        [
+          "dist/clawsweeper.js",
+          "reconcile",
+          "--target-repo",
+          "openclaw/openclaw",
+          "--items-dir",
+          itemsDir,
+          "--closed-dir",
+          closedDir,
+          "--plans-dir",
+          plansDir,
+          "--skip-closed-at",
+        ],
+        { encoding: "utf8" },
+      );
+    });
+
+    const result = JSON.parse(stdout);
+    assert.equal(result.deferred?.reason, "github_rate_limited");
+    assert.match(result.deferred?.retryAt ?? "", /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(result.openItemsSeen, 0);
+    assert.equal(result.movedToClosed, 0);
+    assert.equal(result.movedToItems, 0);
+    assert.deepEqual(result.changedItemNumbers, []);
+    assert.deepEqual(result.changedRecordFiles, []);
+    assert.equal(readFileSync(join(itemsDir, "11.md"), "utf8"), openReport);
+    assert.equal(readFileSync(join(closedDir, "12.md"), "utf8"), closedReport);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

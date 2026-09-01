@@ -3,9 +3,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { JsonObject, JsonValue } from "./json-types.js";
-import { asJsonObject, isJsonObject } from "./json-types.js";
+import { asJsonObject } from "./json-types.js";
 import { parseArgs, repoRoot } from "./lib.js";
 import { readJsonFile } from "./json-file.js";
+import { errorText, postOpenClawAgentHook, resolveOpenClawHookConfig } from "./openclaw-hook.js";
 import type {
   CollectionResult,
   MergeLedgerEntry,
@@ -14,6 +15,7 @@ import type {
   MergeNotifierRuntime,
   MergeNotifierSummary,
 } from "./notify-merge-types.js";
+export { resolveHookAgentUrl } from "./openclaw-hook.js";
 
 export type {
   CollectionResult,
@@ -28,25 +30,6 @@ const MERGE_ACTIONS = new Set(["merge_candidate", "merge_canonical"]);
 const DEFAULT_LEDGER_PATH = "notifications/clawsweeper-merge-ledger.json";
 const DEFAULT_REPORT_PATH = "notifications/clawsweeper-merge-report.json";
 const DEFAULT_INPUT_PATH = "repair-apply-report.json";
-const DEFAULT_AGENT_ID = "clawsweeper";
-const DEFAULT_CHANNEL = "discord";
-const DEFAULT_THINKING = "low";
-const DEFAULT_TIMEOUT_SECONDS = 60;
-
-type NotifierConfig = {
-  hookUrl: string;
-  token: string;
-  agentId: string;
-  channel: string;
-  discordTarget: string;
-  thinking: string;
-  timeoutSeconds: number;
-};
-
-type HookPostResult = {
-  runId: string | null;
-};
-
 export function normalizeLedger(value: JsonValue): MergeNotificationLedger {
   const object = asJsonObject(value);
   const notifications = Array.isArray(object.notifications)
@@ -155,17 +138,6 @@ export function addLedgerEntry(
   };
 }
 
-export function resolveHookAgentUrl(raw: string): string {
-  const url = new URL(raw);
-  const trimmed = url.pathname.replace(/\/+$/, "");
-  if (trimmed.endsWith("/agent")) {
-    url.pathname = trimmed;
-  } else {
-    url.pathname = `${trimmed || ""}/agent`;
-  }
-  return url.toString();
-}
-
 export function renderNotificationMessage(notification: MergeNotification): string {
   return [
     "Send one concise Discord notification. Do not include a markdown table.",
@@ -208,7 +180,7 @@ export async function runMergeNotifier(
 
   const ledger = readLedger(ledgerPath);
   const collected = collectMergeNotifications(readJsonFile(inputPath), ledger, { runId });
-  const config = resolveConfig(env);
+  const config = resolveOpenClawHookConfig(env);
   if (!config) {
     const summary = summaryRow(
       "skipped",
@@ -238,7 +210,16 @@ export async function runMergeNotifier(
       continue;
     }
     try {
-      const result = await postHookNotification({ config, fetcher, notification });
+      const result = await postOpenClawAgentHook({
+        config,
+        fetcher,
+        post: {
+          name: `ClawSweeper merged ${notification.repo}${notification.target}`,
+          message: renderNotificationMessage(notification),
+          idempotencyKey: notification.idempotencyKey,
+          deliver: true,
+        },
+      });
       const notifiedAt = now().toISOString();
       nextLedger = addLedgerEntry(nextLedger, notification, {
         notifiedAt,
@@ -349,77 +330,6 @@ function normalizeLedgerEntry(row: JsonObject): MergeLedgerEntry | null {
   };
 }
 
-function resolveConfig(env: NodeJS.ProcessEnv): NotifierConfig | null {
-  const hookUrl = normalizeString(env.CLAWSWEEPER_OPENCLAW_HOOK_URL);
-  const token = normalizeString(env.CLAWSWEEPER_OPENCLAW_HOOK_TOKEN);
-  const discordTarget = normalizeString(env.CLAWSWEEPER_DISCORD_TARGET);
-  if (!hookUrl || !token || !discordTarget) return null;
-  return {
-    hookUrl: resolveHookAgentUrl(hookUrl),
-    token,
-    agentId: normalizeString(env.CLAWSWEEPER_OPENCLAW_AGENT_ID) ?? DEFAULT_AGENT_ID,
-    channel: normalizeString(env.CLAWSWEEPER_OPENCLAW_HOOK_CHANNEL) ?? DEFAULT_CHANNEL,
-    discordTarget,
-    thinking: normalizeString(env.CLAWSWEEPER_OPENCLAW_HOOK_THINKING) ?? DEFAULT_THINKING,
-    timeoutSeconds: positiveInt(
-      env.CLAWSWEEPER_OPENCLAW_HOOK_TIMEOUT_SECONDS,
-      DEFAULT_TIMEOUT_SECONDS,
-    ),
-  };
-}
-
-async function postHookNotification({
-  config,
-  fetcher,
-  notification,
-}: {
-  config: NotifierConfig;
-  fetcher: typeof fetch;
-  notification: MergeNotification;
-}): Promise<HookPostResult> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), (config.timeoutSeconds + 15) * 1000);
-  try {
-    const response = await fetcher(config.hookUrl, {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        authorization: `Bearer ${config.token}`,
-        "content-type": "application/json",
-        "idempotency-key": notification.idempotencyKey,
-      },
-      body: JSON.stringify({
-        name: `ClawSweeper merged ${notification.repo}${notification.target}`,
-        agentId: config.agentId,
-        deliver: true,
-        channel: config.channel,
-        to: config.discordTarget,
-        idempotencyKey: notification.idempotencyKey,
-        thinking: config.thinking,
-        timeoutSeconds: config.timeoutSeconds,
-        message: renderNotificationMessage(notification),
-      }),
-    });
-    const body = await response.text();
-    if (!response.ok) {
-      throw new Error(`OpenClaw hook returned ${response.status}: ${body.slice(0, 500)}`);
-    }
-    return { runId: readHookRunId(body) };
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-function readHookRunId(body: string): string | null {
-  try {
-    const parsed = JSON.parse(body);
-    if (!isJsonObject(parsed)) return null;
-    return stringOrNull(parsed.runId) ?? stringOrNull(parsed.run_id);
-  } catch {
-    return null;
-  }
-}
-
 function reportRow(
   notification: MergeNotification,
   status: "failed" | "planned" | "sent",
@@ -464,15 +374,6 @@ function stringOrNull(value: JsonValue): string | null {
 
 function normalizeString(value: string | undefined): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function positiveInt(value: string | undefined, fallback: number): number {
-  const parsed = Number.parseInt(value ?? "", 10);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

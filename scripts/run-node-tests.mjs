@@ -16,26 +16,18 @@
  */
 
 import { spawn } from "node:child_process";
-import fs, { globSync } from "node:fs";
-import os, { availableParallelism } from "node:os";
-import path from "node:path";
+import { globSync } from "node:fs";
+import { availableParallelism } from "node:os";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 
 const MAX_TEST_CONCURRENCY = 16;
-const RUN_PREFIX = "clawsweeper-test-run-";
-const STALE_AFTER_MS = 24 * 60 * 60 * 1_000;
-const HEARTBEAT_MS = 60_000;
-const SIGNAL_GRACE_MS = 5_000;
-const FORWARDED_SIGNALS = ["SIGINT", "SIGHUP", "SIGTERM"];
+const FORWARDED_SIGNALS = ["SIGINT", "SIGTERM"];
 const TARGET_PATTERNS = Object.freeze({
   unit: ["test/*.test.ts"],
   repair: ["test/repair/*.test.ts", "dist/repair/*.test.js"],
   all: ["test/*.test.ts", "test/repair/*.test.ts", "dist/repair/*.test.js"],
-  "codex-process": ["test/codex-process.test.ts"],
   "fix-prompt-builder": ["dist/repair/fix-prompt-builder.test.js"],
-  "target-validation": ["test/repair/target-validation.test.ts"],
-  "workflow-sparse-checkout": ["test/repair/workflow-sparse-checkout.smoke.ts"],
 });
 
 const HELP = `Usage:
@@ -49,10 +41,7 @@ Targets:
   unit                test/*.test.ts
   repair              test/repair/*.test.ts and dist/repair/*.test.js
   all                 all unit and repair targets
-  codex-process       test/codex-process.test.ts
   fix-prompt-builder  dist/repair/fix-prompt-builder.test.js
-  target-validation   test/repair/target-validation.test.ts
-  workflow-sparse-checkout  test/repair/workflow-sparse-checkout.smoke.ts
 
 Options:
   --test-concurrency <count>  Positive integer overriding the adaptive default
@@ -144,7 +133,6 @@ export async function runNodeTests({
   cwd = process.cwd(),
   spawnProcess = spawn,
   signalSource = process,
-  baseTempDir = os.tmpdir(),
 } = {}) {
   const files = resolveTestFiles(target, cwd);
   if (files.length === 0) {
@@ -154,59 +142,32 @@ export async function runNodeTests({
   console.error(
     `[run-node-tests] target=${target} concurrency=${concurrency} files=${files.length}`,
   );
-  removeStaleRunRoots(baseTempDir);
-  const runRoot = fs.mkdtempSync(path.join(baseTempDir, RUN_PREFIX));
-  const childEnv = { ...process.env, TMPDIR: runRoot, TEMP: runRoot, TMP: runRoot };
-  delete childEnv.NODE_TEST_CONTEXT;
-  const heartbeat = setInterval(() => touchRunRoot(runRoot), HEARTBEAT_MS);
-  heartbeat.unref();
-  let child;
-  let forceTimer;
-  let receivedSignal;
-  let settled = false;
-  const signalHandlers = new Map(
-    FORWARDED_SIGNALS.map((signal) => [
-      signal,
-      () => {
-        if (!child || settled) return;
-        receivedSignal ??= signal;
-        child.kill(signal);
-        forceTimer ??= setTimeout(() => {
-          if (!settled) child.kill("SIGKILL");
-        }, SIGNAL_GRACE_MS);
-        forceTimer.unref();
-      },
-    ]),
+  const child = spawnProcess(
+    process.execPath,
+    ["--test", `--test-concurrency=${concurrency}`, ...nodeArguments, ...files],
+    { cwd, stdio: "inherit" },
   );
 
-  try {
-    child = spawnProcess(
-      process.execPath,
-      ["--test", `--test-concurrency=${concurrency}`, ...nodeArguments, ...files],
-      {
-        cwd,
-        env: childEnv,
-        stdio: "inherit",
-      },
+  return new Promise((resolve, reject) => {
+    const signalHandlers = new Map(
+      FORWARDED_SIGNALS.map((signal) => [signal, () => child.kill(signal)]),
     );
-    for (const [signal, handler] of signalHandlers) signalSource.on(signal, handler);
+    const cleanup = () => {
+      for (const [signal, handler] of signalHandlers) {
+        signalSource.removeListener(signal, handler);
+      }
+    };
+    for (const [signal, handler] of signalHandlers) signalSource.once(signal, handler);
 
-    return await new Promise((resolve, reject) => {
-      child.once("error", (error) => {
-        settled = true;
-        reject(error);
-      });
-      child.once("exit", (code, signal) => {
-        settled = true;
-        resolve(receivedSignal ? { code: null, signal: receivedSignal } : { code, signal });
-      });
+    child.once("error", (error) => {
+      cleanup();
+      reject(error);
     });
-  } finally {
-    clearInterval(heartbeat);
-    if (forceTimer) clearTimeout(forceTimer);
-    for (const [signal, handler] of signalHandlers) signalSource.removeListener(signal, handler);
-    removeRunRoot(runRoot);
-  }
+    child.once("exit", (code, signal) => {
+      cleanup();
+      resolve({ code, signal });
+    });
+  });
 }
 
 export function applyProcessOutcome(
@@ -229,36 +190,6 @@ function parsePositiveInteger(value, option) {
     throw new Error(`${option} must be a safe positive integer; received ${value}.`);
   }
   return parsed;
-}
-
-function removeStaleRunRoots(tempDir) {
-  const cutoff = Date.now() - STALE_AFTER_MS;
-  for (const entry of fs.readdirSync(tempDir, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !entry.name.startsWith(RUN_PREFIX)) continue;
-    const candidate = path.join(tempDir, entry.name);
-    let stats;
-    try {
-      stats = fs.lstatSync(candidate);
-    } catch (error) {
-      if (error?.code === "ENOENT") continue;
-      throw error;
-    }
-    if (stats.mtimeMs < cutoff) removeRunRoot(candidate);
-  }
-}
-
-function touchRunRoot(root) {
-  try {
-    const now = new Date();
-    fs.utimesSync(root, now, now);
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-  }
-}
-
-function removeRunRoot(root) {
-  // Recursive removal unlinks FIFO, socket, and symlink fixtures without opening their contents.
-  fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
 }
 
 async function main() {

@@ -1,0 +1,7 @@
+missing src/repair/action-ledger-cli.ts
+missing src/repair/publish-main.ts
+missing src/repair/collect-codex-debug.ts
+missing scripts/exact-review-dead-letter-operator.mjs
+missing scripts/hydrate-state.ts
+missing scripts/e2e/automerge.mjs
+missing scripts/e2e/automerge-container.mjs

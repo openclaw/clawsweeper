@@ -42,6 +42,8 @@ import type {
 } from "./clawsweeper-types.js";
 import { type PrCloseCoverageProofRuntime } from "./pr-close-coverage-proof.js";
 import { type RepositoryProfile } from "./repository-profiles.js";
+import type { LiveReadGeneration, LiveReadOptions } from "./live-read-generation.js";
+import type { PrHydrationSnapshot } from "./pr-hydration-snapshot.js";
 
 export interface CreateApplyDecisionWorkflowDependencies {
   abandonedPrApplyBlockReasonSafe: (
@@ -123,6 +125,11 @@ export interface CreateApplyDecisionWorkflowDependencies {
       fullTimelineForRelations?: boolean;
       reviewCacheDigest?: boolean;
       reviewCacheGitDir?: string;
+      prHydrationSnapshot?: PrHydrationSnapshot | null;
+      prCommentActivityRevision?: string | null;
+      requireFullyValidatedPrHydrationSnapshot?: boolean;
+      liveReadGeneration?: LiveReadGeneration;
+      bypassGenerationCache?: boolean;
     },
   ) => ItemContext;
   commentBody: (comment: Record<string, unknown> | undefined) => string | undefined;
@@ -181,7 +188,10 @@ export interface CreateApplyDecisionWorkflowDependencies {
     liveRevision: string,
   ) => ExactEventReviewLeaseDisposition;
   fetchIssueReviewComments: (number: number) => Record<string, unknown>[];
-  fetchItem: (number: number) => { item: Item; state: string };
+  fetchItem: (
+    number: number,
+    options?: LiveReadOptions & { liveReadGeneration?: LiveReadGeneration },
+  ) => { item: Item; state: string };
   fetchReviewedPrActivityCursor: (
     number: number,
     prefetchedInlineComments?: unknown[],
@@ -216,6 +226,12 @@ export interface CreateApplyDecisionWorkflowDependencies {
   hasVerifiedLocalCheckoutAccess: (markdown: string) => boolean;
   impactLabelsFromReport: (markdown: string) => ImpactLabelName[];
   isApplyCloseCandidateReport: (markdown: string) => boolean;
+  implementedOnMainPullRequestProvenanceApplyBlock: (
+    markdown: string,
+    item: Item,
+    closeReason: Decision["closeReason"],
+    expectedLinkedIssueNumber?: number,
+  ) => string | null;
   isBulkFilerExemptAuthorAssociation: (value: unknown) => boolean;
   isExactEventSourceRevisionChange: (itemKind: Item["kind"], reason: string) => boolean;
   isGoodFirstIssue: (state: IssueAdvisoryLabelState, currentLabels: readonly string[]) => boolean;
@@ -241,6 +257,7 @@ export interface CreateApplyDecisionWorkflowDependencies {
   issueReviewCommentState: (
     number: number,
     fallbackBodies?: readonly string[],
+    options?: LiveReadOptions & { liveReadGeneration?: LiveReadGeneration },
   ) => {
     comments: Record<string, unknown>[];
     reviewComment: Record<string, unknown> | undefined;
@@ -251,7 +268,10 @@ export interface CreateApplyDecisionWorkflowDependencies {
   };
   isVerifiedFixedCloseReason: (reason: unknown) => boolean;
   itemSnapshotHash: (item: Item, context: ItemContext) => string;
-  liveIssueSourceRevision: (number: number) => string;
+  liveIssueSourceRevision: (
+    number: number,
+    options?: LiveReadOptions & { liveReadGeneration?: LiveReadGeneration },
+  ) => string;
   livePullRequestHasNoDiff: (context: ItemContext) => boolean;
   lockedConversationApplyReason: (item: Pick<Item, "activeLockReason" | "locked">) => string | null;
   login: (value: unknown) => string | undefined;
@@ -372,6 +392,8 @@ export interface CreateApplyDecisionWorkflowDependencies {
   reportSecurityReview: (markdown: string) => SecurityReview;
   reportTelegramVisibleProof: (markdown: string) => TelegramVisibleProof;
   resetGuardReadCache: () => void;
+  setGuardReadGeneration: (generation: LiveReadGeneration | null) => void;
+  withGuardReadOptions: <T>(options: LiveReadOptions, read: () => T) => T;
   reviewCommentBodyDigest: (body: string) => string;
   reviewCommentHasCloseVerdictForCanonical: (
     comment: Record<string, unknown> | undefined,
@@ -468,6 +490,11 @@ export interface CreateApplyDecisionWorkflowDependencies {
     number: number,
     context?: ItemContext,
   ) => string | null;
+  newerDurableReviewTupleVerified: (
+    markdown: string,
+    existingReviewComment: Record<string, unknown> | undefined,
+    number: number,
+  ) => boolean;
   staleVersionBugApplyBlockReasonSafe: (
     number: number,
     item: Pick<Item, "createdAt">,

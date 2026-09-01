@@ -6,7 +6,7 @@
 - Owner: ClawSweeper maintainers
 - Source of truth: repair source, workflows, `package.json`, and focused repair
   tests; [operations](operations.md) is canonical for live procedures
-- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
 - Update when: repair modes, command entry points, job/result shape, or linked
   canonical guides change
 
@@ -78,6 +78,15 @@ importing jobs.
 The default workflow is proposal-first. It does not comment or close unless a job is explicitly promoted and the deterministic applicator confirms live GitHub state has not changed.
 
 ## State Boundaries
+
+Before internal review, the host scans the explicit prompt/schema and complete
+introduced before/after source bytes from the actual validated dirty checkout.
+The index and raw worktree snapshots stay alive through admission, including
+staged bytes that differ from the working file. Drift, scanner failures, and findings stop the run as infrastructure
+refusals; they never enter the review-fix or JSON-repair paths. No target-bundled
+autoreview helper or second reviewer is started. See the
+[safety model](../../README.md#safety-model) for the trusted scanner prerequisite,
+staging/deadline limits, and the distinction from later tool/history scanning.
 
 `jobs/` and `results/` are durable operational state in
 `openclaw/clawsweeper-state`, not generated source in this repo. They may
@@ -386,7 +395,10 @@ The workflow needs:
   request fails in time for the executor to write a blocked report and upload
   debug artifacts. `CLAWSWEEPER_GIT_NETWORK_TIMEOUT_MS` and
   `CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS` can override the Git and GitHub CLI
-  portions separately.
+  portions separately. Shared repair GitHub CLI calls use the merged per-call
+  environment for these settings, default to two minutes, and enforce a
+  30-second minimum for environment-configured budgets. An explicit `timeoutMs`
+  call option takes precedence and may select a shorter positive deadline.
 - optional `CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS` and `CLAWSWEEPER_RESOLVE_REVIEW_THREADS` variables for agentic merge-prep review loops; the review attempt default is `4`, with the last failed internal review converted into one final Codex review-fix pass when changed-surface validation can still prove the branch safe to push for exact-head review
 - optional `CLAWSWEEPER_MAX_REPAIRS_PER_PR` and
   `CLAWSWEEPER_MAX_REPAIRS_PER_HEAD` variables for trusted

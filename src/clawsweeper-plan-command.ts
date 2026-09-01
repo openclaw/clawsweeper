@@ -11,11 +11,15 @@ import type { RepositoryProfile } from "./repository-profiles.js";
 import { coverageTrackedItemIdsFromManifest } from "./review-coverage-manifest.js";
 
 type PlanCandidates = ReturnType<typeof createReviewPlanning>["planCandidates"];
+type FetchPlannedPrActivityRevisions = ReturnType<
+  typeof createReviewPlanning
+>["fetchPlannedPrActivityRevisions"];
 
 type PlanCommandDependencies = {
   defaultBatchSize: number;
   defaultItemsDir: () => string;
   defaultShardCount: number;
+  fetchPlannedPrActivityRevisions: FetchPlannedPrActivityRevisions;
   planCandidates: PlanCandidates;
   repoFromArgs: (args: Args) => RepositoryProfile;
   reviewPolicyHash: (options: {
@@ -72,14 +76,23 @@ export function createPlanCommand(dependencies: PlanCommandDependencies): (args:
     if (hasItemNumbersInput || itemNumbers.length > 0) planOptions.itemNumbers = itemNumbers;
     if (hotIntake) planOptions.hotIntake = true;
     const plan = dependencies.planCandidates(planOptions);
+    const prCommentActivity = dependencies.fetchPlannedPrActivityRevisions(plan.candidates);
     console.log(
       JSON.stringify(
         {
           ...plan,
+          prCommentActivity,
           reviewPolicy,
           matrix: plan.shards.map((shard) => ({
             shard: shard.shard,
             item_numbers: shard.itemNumbers.join(",") || "none",
+            pr_comment_activity_revisions: JSON.stringify(
+              Object.fromEntries(
+                shard.itemNumbers
+                  .filter((number) => String(number) in prCommentActivity.revisions)
+                  .map((number) => [String(number), prCommentActivity.revisions[String(number)]]),
+              ),
+            ),
           })),
         },
         null,

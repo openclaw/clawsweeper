@@ -3,6 +3,7 @@ import { trimMiddle } from "./clawsweeper-text.js";
 import type { AcquiredReviewStartLease, Item } from "./clawsweeper-types.js";
 import { GitHubRateLimitError } from "./github-retry.js";
 import { freshExactHeadReviewStartLease } from "./repair/comment-router-core.js";
+import { generationReadKey, type LiveReadGeneration } from "./live-read-generation.js";
 
 type ActiveApplyMutationLease = { itemNumber: number; lease: AcquiredReviewStartLease } | null;
 
@@ -30,6 +31,7 @@ type ApplyLeaseGuardDependencies = Pick<
   getActiveApplyMutationLease: () => ActiveApplyMutationLease;
   initialReviewHeadSha: string;
   item: Item;
+  liveReadGeneration?: LiveReadGeneration;
   markdownBeforeApplyDecisionMutations: string;
   number: number;
   reportReviewRevision: string | null;
@@ -50,6 +52,7 @@ export function createApplyLeaseGuards({
   initialReviewHeadSha,
   issueReviewCommentState,
   item,
+  liveReadGeneration,
   liveIssueSourceRevision,
   markdownBeforeApplyDecisionMutations,
   number,
@@ -107,8 +110,22 @@ export function createApplyLeaseGuards({
   };
 
   const fetchLiveReviewHeadSha = (): string => {
-    if (item.kind !== "pull_request") return liveIssueSourceRevision(number);
-    const pull = asRecord(ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${number}`]));
+    if (item.kind !== "pull_request") {
+      return liveIssueSourceRevision(
+        number,
+        liveReadGeneration
+          ? { liveReadGeneration, bypassGenerationCache: true }
+          : { bypassGenerationCache: true },
+      );
+    }
+    const args = ["api", `repos/${targetRepo()}/pulls/${number}`];
+    const pull = asRecord(
+      liveReadGeneration
+        ? liveReadGeneration.read(generationReadKey("json", args), () => ghJson<unknown>(args), {
+            bypassGenerationCache: true,
+          })
+        : ghJson<unknown>(args),
+    );
     const sha = asRecord(pull.head).sha;
     return typeof sha === "string" ? sha.trim().toLowerCase() : "";
   };
@@ -116,7 +133,13 @@ export function createApplyLeaseGuards({
   const refreshReviewStartLeaseState = () => {
     try {
       const headBefore = fetchLiveReviewHeadSha();
-      const refreshed = issueReviewCommentState(number);
+      const refreshed = issueReviewCommentState(
+        number,
+        [],
+        liveReadGeneration
+          ? { liveReadGeneration, bypassGenerationCache: true }
+          : { bypassGenerationCache: true },
+      );
       const headAfter = fetchLiveReviewHeadSha();
       if (!headBefore || headBefore !== headAfter || headAfter !== initialReviewHeadSha) {
         return {
@@ -172,7 +195,13 @@ export function createApplyLeaseGuards({
       const reviewActivityBlock = currentReviewActivityBlock();
       if (reviewActivityBlock) return reviewActivityBlock;
       const revisionBefore = fetchLiveReviewHeadSha();
-      const refreshed = issueReviewCommentState(number);
+      const refreshed = issueReviewCommentState(
+        number,
+        [],
+        liveReadGeneration
+          ? { liveReadGeneration, bypassGenerationCache: true }
+          : { bypassGenerationCache: true },
+      );
       const revisionAfter = fetchLiveReviewHeadSha();
       if (
         !revisionBefore ||

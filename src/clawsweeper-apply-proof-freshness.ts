@@ -7,13 +7,20 @@ import type {
   PrCloseCoverageProofGateBlock,
   PrCloseCoverageProofGateResult,
 } from "./clawsweeper-types.js";
-import { isReviewedPrActivityCursor } from "./review-activity-cursor.js";
+import {
+  compareReviewedPrActivityCursors,
+  isReviewedPrActivityCursor,
+} from "./review-activity-cursor.js";
 import { stableJson } from "./stable-json.js";
 
 export interface ApplySelfMutationItemReceipt {
   updatedAt: string;
   sourceRevision: string;
   activityReceipt: string;
+  allowsPostReviewAutomationActivity?: boolean;
+  postReviewActivityStartedAtMs?: number;
+  requiresReviewedPrActivityCursor?: boolean;
+  prHeadSha: string | null;
   prHeadMatches: boolean;
   reviewActivityCursor: string | null;
 }
@@ -69,7 +76,9 @@ export function createApplyProofFreshnessGuards({
   retryCloseCoverageCommandStatusOnlyUpdate,
   selfMutationItemReceipts,
 }: ApplyProofFreshnessDependencies) {
-  const postProofFreshnessBlock = (): {
+  const postProofFreshnessBlock = (
+    options: { force?: boolean } = {},
+  ): {
     reason: string;
     currentUpdatedAt?: string;
     currentSnapshotHash?: string;
@@ -81,13 +90,18 @@ export function createApplyProofFreshnessGuards({
       storedHash,
       storedUpdatedAt,
     } = currentProofState();
+    const hasPostReviewSelfMutationReceipt = selfMutationItemReceipts.some(
+      (receipt) => receipt.allowsPostReviewAutomationActivity,
+    );
     if (
-      !prCloseCoverageProofGateChecked ||
-      cachedPrCloseCoverageProofGateResult?.status !== "allowed"
+      !options.force &&
+      (!prCloseCoverageProofGateChecked ||
+        cachedPrCloseCoverageProofGateResult?.status !== "allowed") &&
+      !hasPostReviewSelfMutationReceipt
     ) {
       return null;
     }
-    const refreshed = fetchItem(number);
+    const refreshed = fetchItem(number, { bypassGenerationCache: true });
     if (refreshed.state !== "open") {
       return {
         reason: `state changed to ${refreshed.state}`,
@@ -102,6 +116,7 @@ export function createApplyProofFreshnessGuards({
         (refreshedContext ??= collectItemContext(refreshed.item, {
           fullTimelineForRelations: true,
           reviewCacheDigest: true,
+          bypassGenerationCache: true,
         })),
       );
     const candidateItemReceipts = selfMutationItemReceipts.filter(
@@ -113,6 +128,7 @@ export function createApplyProofFreshnessGuards({
       refreshedContext ??= collectItemContext(refreshed.item, {
         fullTimelineForRelations: true,
         reviewCacheDigest: true,
+        bypassGenerationCache: true,
       });
     }
     const refreshedCompleteActivityContext = refreshedContext?.[completeActivityContextSymbol];
@@ -126,27 +142,68 @@ export function createApplyProofFreshnessGuards({
         refreshed.item.updatedAt === storedUpdatedAt)
         ? fetchReviewedPrActivityCursor(number)
         : null;
-    const refreshedItemReceiptMatches = candidateItemReceipts.some(
-      (receipt) =>
-        refreshedContext?.sourceRevision === receipt.sourceRevision &&
-        refreshedActivityReceipt === receipt.activityReceipt &&
-        receipt.prHeadMatches &&
-        refreshedContext !== null &&
-        (itemKind !== "pull_request" ||
-          (freshPullRequestReviewHead(reviewMarkdown, refreshedContext) &&
-            isReviewedPrActivityCursor(expectedReviewActivityCursor) &&
-            receipt.reviewActivityCursor === expectedReviewActivityCursor &&
-            refreshedReviewActivityCursor === expectedReviewActivityCursor)),
-    );
+    const refreshedItemReceiptMatches = candidateItemReceipts.some((receipt) => {
+      if (
+        refreshedContext?.sourceRevision !== receipt.sourceRevision ||
+        refreshedActivityReceipt !== receipt.activityReceipt ||
+        !receipt.prHeadMatches ||
+        refreshedContext === null
+      ) {
+        return false;
+      }
+      if (itemKind !== "pull_request") return true;
+      if (receipt.allowsPostReviewAutomationActivity) {
+        if (
+          receipt.requiresReviewedPrActivityCursor
+            ? !freshPullRequestReviewHead(reviewMarkdown, refreshedContext)
+            : receipt.prHeadSha === null ||
+              contextPullHeadSha(refreshedContext) !== receipt.prHeadSha
+        )
+          return false;
+        if (!receipt.requiresReviewedPrActivityCursor) return true;
+        if (
+          !isReviewedPrActivityCursor(receipt.reviewActivityCursor) ||
+          !isReviewedPrActivityCursor(refreshedReviewActivityCursor) ||
+          !isReviewedPrActivityCursor(expectedReviewActivityCursor) ||
+          compareReviewedPrActivityCursors(
+            receipt.reviewActivityCursor,
+            expectedReviewActivityCursor,
+          ) !== "equal"
+        )
+          return false;
+        return (
+          compareReviewedPrActivityCursors(
+            receipt.reviewActivityCursor,
+            refreshedReviewActivityCursor,
+          ) === "equal"
+        );
+      }
+      if (!freshPullRequestReviewHead(reviewMarkdown, refreshedContext)) return false;
+      if (!isReviewedPrActivityCursor(expectedReviewActivityCursor)) return false;
+      return (
+        compareReviewedPrActivityCursors(
+          receipt.reviewActivityCursor,
+          expectedReviewActivityCursor,
+        ) === "equal" &&
+        compareReviewedPrActivityCursors(
+          refreshedReviewActivityCursor,
+          expectedReviewActivityCursor,
+        ) === "equal"
+      );
+    });
     const refreshedCompleteReceiptMatchesReview = (): boolean => {
       refreshedContext ??= collectItemContext(refreshed.item, {
         fullTimelineForRelations: true,
         reviewCacheDigest: true,
+        bypassGenerationCache: true,
       });
       if (!completeReviewActivityReceiptMatches(refreshedContext)) return false;
       return (
         itemKind !== "pull_request" ||
-        refreshedReviewActivityCursor === expectedReviewActivityCursor
+        compareReviewedPrActivityCursors(
+          refreshedReviewActivityCursor,
+          expectedReviewActivityCursor,
+        ) === "equal"
       );
     };
     const persistedAutomationReceiptMatches =
@@ -158,14 +215,23 @@ export function createApplyProofFreshnessGuards({
       persistedAutomationReceiptMatches ||
       refreshedCommandStatusOnlyUpdate;
     const selfMutationMaskedNonAutomationActivity = (): boolean => {
-      if (prCloseCoverageProofStartedAtMs === null) return true;
+      const postReviewSelfMutationAtMs = candidateItemReceipts
+        .filter((receipt) => receipt.allowsPostReviewAutomationActivity)
+        .map((receipt) => receipt.postReviewActivityStartedAtMs ?? Date.parse(receipt.updatedAt))
+        .filter((value) => Number.isFinite(value))
+        .sort((left, right) => right - left)[0];
+      const activityStartMs = prCloseCoverageProofStartedAtMs ?? postReviewSelfMutationAtMs;
+      if (activityStartMs === undefined) return true;
       refreshedContext ??= collectItemContext(refreshed.item, {
         fullTimelineForRelations: true,
         reviewCacheDigest: true,
+        bypassGenerationCache: true,
       });
-      const proofSecondStartMs = Math.floor(prCloseCoverageProofStartedAtMs / 1000) * 1000;
-      return contextHasNonAutomationActivityAfter(refreshedContext, proofSecondStartMs - 1, {
-        truncationCountsAsActivity: false,
+      const activitySecondStartMs = Math.floor(activityStartMs / 1000) * 1000;
+      return contextHasNonAutomationActivityAfter(refreshedContext, activitySecondStartMs - 1, {
+        truncationCountsAsActivity: candidateItemReceipts.some(
+          (receipt) => receipt.allowsPostReviewAutomationActivity,
+        ),
       });
     };
     if (storedUpdatedAt && refreshed.item.updatedAt !== storedUpdatedAt) {
@@ -198,6 +264,7 @@ export function createApplyProofFreshnessGuards({
         (refreshedContext ??= collectItemContext(refreshed.item, {
           fullTimelineForRelations: true,
           reviewCacheDigest: true,
+          bypassGenerationCache: true,
         })),
       );
       if (refreshedHash !== storedHash) {
@@ -246,4 +313,13 @@ export function createApplyProofFreshnessGuards({
   };
 
   return { postProofCoveringPrFreshnessBlock, postProofFreshnessBlock };
+}
+
+function contextPullHeadSha(context: ItemContext): string | null {
+  const pullRequest = context.pullRequest;
+  if (!pullRequest || typeof pullRequest !== "object") return null;
+  const head = (pullRequest as { head?: unknown }).head;
+  if (!head || typeof head !== "object") return null;
+  const sha = (head as { sha?: unknown }).sha;
+  return typeof sha === "string" && sha ? sha : null;
 }

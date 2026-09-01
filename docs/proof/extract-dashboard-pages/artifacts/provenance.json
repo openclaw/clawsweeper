@@ -1,0 +1,24 @@
+{
+  "schema": "clawsweeper-dashboard-page-extraction-provenance/v1",
+  "generated_at": "2026-08-11T02:12:28.258Z",
+  "base_sha": "5a964dadc8131e6e6dc33e9be3536b8141d1d107",
+  "head_sha": "22d7808c136a10503fc9929fd9ba5904e005542f",
+  "runtime": {
+    "platform": "darwin 25.6.0",
+    "architecture": "arm64",
+    "node": "v24.19.0",
+    "pnpm": "11.10.0",
+    "wrangler": "4.107.0"
+  },
+  "routes": [
+    "/",
+    "/triage",
+    "/pr-proof-triage"
+  ],
+  "result": {
+    "proof_rc": 0,
+    "normalized_diff_empty": true,
+    "behavior": "satisfies_contract"
+  },
+  "limits": "Local Wrangler page-shell proof; no JSON API data, browser interaction, GitHub write, queue mutation, or production deployment."
+}

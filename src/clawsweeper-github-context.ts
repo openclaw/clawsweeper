@@ -1,9 +1,12 @@
 import { parseGhJson } from "./github-json.js";
 import { exactPublicationPublicReadToken } from "./github-public-read.js";
+import { ghRetryKind } from "./github-retry.js";
 import {
   MAX_REVIEWED_PR_ACTIVITY,
   REVIEWED_PR_ACTIVITY_THREADS_QUERY,
   createReviewedPrActivityCursor,
+  reviewedPrActivityCursorV2Query,
+  reviewedPrActivityCursorsV2FromGraphql,
   reviewedPrActivityThreadsPageFromGraphql,
 } from "./review-activity-cursor.js";
 import type {
@@ -23,6 +26,8 @@ export function createGitHubContext({
   ghWithRetry,
   targetRepo,
 }: GitHubContextDependencies) {
+  const reviewedPrActivityV2Fallbacks = new Map<number, string>();
+
   function githubPaginatedPath(path: string): string {
     const [basePart, query = ""] = path.split("?", 2);
     const base = basePart ?? path;
@@ -43,13 +48,30 @@ export function createGitHubContext({
   }
 
   function ghPaged<T>(path: string, options: { requireApp?: boolean } = {}): T[] {
-    const args = ["api", githubPaginatedPath(path), "--paginate", "--slurp"];
-    if (options.requireApp && exactPublicationPublicReadToken(args, targetRepo())) {
-      args.push("--method", "GET");
+    if (
+      process.env.EXACT_EVENT_PUBLICATION !== "true" ||
+      !process.env.EXACT_REVIEW_QUEUE_URL?.trim() ||
+      !process.env.CLAWSWEEPER_WEBHOOK_SECRET?.trim()
+    ) {
+      const args = ["api", githubPaginatedPath(path), "--paginate", "--slurp"];
+      if (options.requireApp && exactPublicationPublicReadToken(args, targetRepo())) {
+        args.push("--method", "GET");
+      }
+      const pages = ghJson<unknown[]>(args);
+      if (!Array.isArray(pages)) return [];
+      return pages.flatMap((page) => (Array.isArray(page) ? (page as T[]) : []));
     }
-    const pages = ghJson<unknown[]>(args);
-    if (!Array.isArray(pages)) return [];
-    return pages.flatMap((page) => (Array.isArray(page) ? (page as T[]) : []));
+    const entries: T[] = [];
+    for (let page = 1; ; page += 1) {
+      const args = ["api", githubPagePath(path, page)];
+      if (options.requireApp && exactPublicationPublicReadToken(args, targetRepo())) {
+        args.push("--method", "GET");
+      }
+      const current = ghJson<unknown[]>(args);
+      if (!Array.isArray(current)) return entries;
+      entries.push(...(current as T[]));
+      if (current.length < 100) return entries;
+    }
   }
 
   function ghPagedLimit<T>(path: string, limit: number): T[] {
@@ -103,7 +125,7 @@ export function createGitHubContext({
     return threads.slice(0, max);
   }
 
-  function fetchReviewedPrActivityCursor(
+  function fetchReviewedPrActivityCursorV1(
     number: number,
     prefetchedInlineComments?: unknown[],
   ): string | null {
@@ -123,6 +145,75 @@ export function createGitHubContext({
       inlineComments.length === 0 ? [] : reviewedPrActivityThreads(number, remaining + 1);
     if (reviewThreads.length > remaining) return null;
     return createReviewedPrActivityCursor({ reviews, inlineComments, reviewThreads });
+  }
+
+  function fetchReviewedPrActivityCursors(
+    numbers: readonly number[],
+    prefetchedInlineComments: ReadonlyMap<number, readonly unknown[]> = new Map(),
+  ): Record<string, string | null> {
+    const uniqueNumbers = [...new Set(numbers)].sort((left, right) => left - right);
+    const cursors: Record<string, string | null> = {};
+    const v2Numbers = uniqueNumbers.filter((number) => !reviewedPrActivityV2Fallbacks.has(number));
+    if (v2Numbers.length > 0) {
+      const [owner, name] = targetRepo().split("/");
+      if (!owner || !name) throw new Error(`invalid target repository: ${targetRepo()}`);
+      const query = reviewedPrActivityCursorV2Query(owner, name, v2Numbers);
+      try {
+        const batch = reviewedPrActivityCursorsV2FromGraphql(
+          ghJson<unknown>(["api", "graphql", "-f", `query=${query}`]),
+          v2Numbers,
+        );
+        for (const number of v2Numbers) {
+          const key = String(number);
+          const failure = batch.failures[key];
+          if (failure) {
+            activateReviewedPrActivityV1Fallback(number, failure);
+            continue;
+          }
+          cursors[key] = batch.cursors[key] ?? null;
+        }
+      } catch (error) {
+        if (ghRetryKind(error) !== "none") throw error;
+        for (const number of v2Numbers) {
+          activateReviewedPrActivityV1Fallback(number, "graphql_request_failed");
+        }
+      }
+    }
+    for (const number of uniqueNumbers) {
+      const key = String(number);
+      if (!reviewedPrActivityV2Fallbacks.has(number)) continue;
+      const prefetched = prefetchedInlineComments.get(number);
+      cursors[key] = fetchReviewedPrActivityCursorV1(
+        number,
+        prefetched ? [...prefetched] : undefined,
+      );
+    }
+    return cursors;
+  }
+
+  function activateReviewedPrActivityV1Fallback(number: number, reason: string): void {
+    if (reviewedPrActivityV2Fallbacks.has(number)) return;
+    reviewedPrActivityV2Fallbacks.set(number, reason);
+    console.error(
+      JSON.stringify({
+        event: "reviewed_pr_activity_cursor_v2_fallback",
+        repo: targetRepo(),
+        number,
+        from_version: 2,
+        to_version: 1,
+        reason,
+      }),
+    );
+  }
+
+  function fetchReviewedPrActivityCursor(
+    number: number,
+    prefetchedInlineComments?: unknown[],
+  ): string | null {
+    const prefetched = prefetchedInlineComments
+      ? new Map<number, readonly unknown[]>([[number, prefetchedInlineComments]])
+      : undefined;
+    return fetchReviewedPrActivityCursors([number], prefetched)[String(number)] ?? null;
   }
 
   function ghPage<T>(path: string, page: number): T[] {
@@ -313,6 +404,8 @@ export function createGitHubContext({
 
   return {
     fetchReviewedPrActivityCursor,
+    fetchReviewedPrActivityCursorV1,
+    fetchReviewedPrActivityCursors,
     ghPaged,
     ghPagedContextWindow,
     ghPagedLimit,

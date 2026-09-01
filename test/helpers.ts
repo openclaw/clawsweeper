@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { writeFakeScanner } from "./agent-input-scan-helpers.ts";
 
 import { renderReviewCommentFromReport } from "../dist/clawsweeper.js";
 import { createReviewedPrActivityCursor } from "../dist/review-activity-cursor.js";
@@ -46,6 +47,7 @@ export function closeDecision(overrides = {}) {
     architectureDiagram: "",
     evidence: [
       {
+        repo: "openclaw/openclaw",
         label: "implementation",
         detail: "The feature is present in source.",
         file: "src/example.ts",
@@ -54,6 +56,7 @@ export function closeDecision(overrides = {}) {
         sha: "abcdef1234567890",
       },
       {
+        repo: "openclaw/openclaw",
         label: "git history provenance",
         detail: "git blame traces the implemented line to abcdef1234567890.",
         file: "src/example.ts",
@@ -62,6 +65,7 @@ export function closeDecision(overrides = {}) {
         sha: "abcdef1234567890",
       },
       {
+        repo: "openclaw/openclaw",
         label: "release provenance",
         detail: "The fix is on current main and no containing release tag was found.",
         file: null,
@@ -162,6 +166,18 @@ export function closeDecision(overrides = {}) {
       status: "not_needed",
       summary: "This non-PR issue triage does not need Telegram visible proof.",
     },
+    liveProofPlan: {
+      status: "not_applicable",
+      surface: "none",
+      terminalCompletion: "not_applicable",
+      reason: "This non-PR issue triage does not need live proof.",
+      payoff: {
+        kind: "static_text",
+        justification: "No recording payoff exists for this non-PR issue triage.",
+      },
+      entry: "",
+      steps: [],
+    },
     mantisRecommendation: {
       status: "not_recommended",
       scenario: "none",
@@ -224,7 +240,7 @@ export function changelogReviewDecision(overrides = {}) {
 }
 
 export function reportFrontMatter(overrides = {}) {
-  const values = {
+  const values: Record<string, unknown> = {
     repository: "openclaw/openclaw",
     type: "issue",
     decision: "keep_open",
@@ -233,6 +249,12 @@ export function reportFrontMatter(overrides = {}) {
     action_taken: "kept_open",
     ...overrides,
   };
+  if (
+    values.local_checkout_access === "verified" &&
+    !Object.hasOwn(values, "local_checkout_access_source")
+  ) {
+    Object.assign(values, { local_checkout_access_source: "runner_preflight_v1" });
+  }
   if (values.type === "pull_request" && !Object.hasOwn(values, "review_activity_cursor")) {
     Object.assign(values, { review_activity_cursor: emptyReviewedPrActivityCursor });
   }
@@ -366,6 +388,7 @@ export function workPlanCandidateReport(overrides = {}) {
     reviewed_at: new Date().toISOString(),
     review_status: "complete",
     local_checkout_access: "verified",
+    local_checkout_access_source: "runner_preflight_v1",
     decision: "keep_open",
     action_taken: "kept_open",
     work_candidate: "queue_fix_pr",
@@ -418,6 +441,20 @@ export function implementedCloseReport(overrides = {}) {
     fixed_at: "2026-05-01T02:00:00Z",
     ...overrides,
   })}\n\n## Evidence\n\n- **main fix:** git show confirms current main has the replacement implementation and it is not in the latest release yet\n  - file: [src/clawsweeper.ts](https://github.com/openclaw/clawsweeper/blob/1234567890abcdef1234567890abcdef12345678/src/clawsweeper.ts)\n  - sha: [1234567890ab](https://github.com/openclaw/clawsweeper/commit/1234567890abcdef1234567890abcdef12345678)\n\n## Close Comment\n\nClosing this because the requested behavior is already on main.\n`;
+}
+
+export function verifiedImplementationPullRequestReport(overrides = {}) {
+  const repository = String(
+    (overrides as { repository?: unknown }).repository ?? "openclaw/clawsweeper",
+  );
+  return implementedCloseReport({
+    fixed_pr_url: `https://github.com/${repository}/pull/900`,
+    fixed_pr_number: "900",
+    fixed_pr_merged_at: "2026-05-01T02:00:00Z",
+    fixed_pr_confidence: "high",
+    fixed_pr_source: "GitHub linked-issue current closing PR",
+    ...overrides,
+  });
 }
 
 export function stalePullRequestReport(overrides = {}) {
@@ -759,6 +796,7 @@ export function promotionGhMock(options: {
     html_url: "https://github.com/openclaw/openclaw/pull/" + number,
     state: "open",
     created_at: itemCreatedAt,
+    updated_at: liveUpdatedAt,
     mergeable,
     mergeable_state: mergeableState,
     changed_files: changedFiles,
@@ -953,6 +991,7 @@ export function withMockCodexProof(
   const originalCodexBin = process.env.CODEX_BIN;
   const binDir = join(root, "bin");
   mkdirSync(binDir, { recursive: true });
+  writeFakeScanner(binDir);
   const codexPath = join(binDir, "codex");
   const script =
     result.type === "decision"

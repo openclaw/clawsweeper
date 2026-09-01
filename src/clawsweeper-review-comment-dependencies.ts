@@ -10,6 +10,7 @@ import type {
   ReviewStartStatusCommentResult,
   SecurityReview,
 } from "./clawsweeper-types.js";
+import type { AttachedLiveVerification } from "./live-proof/verification.js";
 import { type ReviewHistoryLedger } from "./review-history.js";
 
 export interface ReviewCommentWorkflowDependencies {
@@ -53,6 +54,7 @@ export interface ReviewCommentWorkflowDependencies {
   isIssueAdvisoryLabel: ReturnType<typeof createLabelSynchronization>["isIssueAdvisoryLabel"];
   removeIssueLabel: ReturnType<typeof createLabelSynchronization>["removeIssueLabel"];
   realBehaviorProofBlocksMerge: (markdown: string) => boolean;
+  reportAttachedLiveVerification: (markdown: string) => AttachedLiveVerification;
   normalizedLabelSet: (labels: readonly string[]) => Set<string>;
   sectionLineValue: (section: string, label: string) => string | undefined;
   linkedPullRequestRefsFromText: (text: string, currentNumber: number) => PullRequestRef[];

@@ -11,13 +11,13 @@ import type {
   PublicBeforeMergeItem,
   PublicPriority,
   RegressionAssessment,
-  RealBehaviorProof,
   ReviewFinding,
   ReviewRuntime,
   RootCauseClusterAssessment,
   PublicRegressionProvenance,
   SecurityReview,
 } from "./clawsweeper-types.js";
+import type { RealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
 import {
   isRegressionAssessment,
   isPublicRegressionProvenance,
@@ -59,6 +59,7 @@ export function createReportCommentHelpers(
     markdownRepository,
     normalizePublicReviewText,
     priorityLabel,
+    publicHistoricalVerificationBlockerLine,
     publicPriorityFromText,
     publicRealBehaviorProofLine,
     publicReviewTextDiffers,
@@ -292,8 +293,7 @@ export function createReportCommentHelpers(
 
   function publicBeforeMergeItems(options: {
     reviewFailed: boolean;
-    proof: RealBehaviorProof;
-    proofBlocked: boolean;
+    proofPolicy: RealBehaviorProofPolicy;
     findings: readonly ReviewFinding[];
     securityReview: SecurityReview;
     risks: string;
@@ -342,8 +342,16 @@ export function createReportCommentHelpers(
         "ClawSweeper must complete a fresh review before readiness is known.",
       );
     }
-    if (options.proofBlocked) {
-      add("Add real behavior proof", publicRealBehaviorProofLine(options.proof));
+    if (!options.reviewFailed && options.proofPolicy.proofBlocksMerge) {
+      add(
+        options.proofPolicy.needsContributorAction
+          ? "Add real behavior proof"
+          : "Resolve real behavior proof assessment",
+        publicRealBehaviorProofLine(options.proofPolicy),
+      );
+    }
+    if (!options.reviewFailed && options.proofPolicy.verificationBlocksMerge) {
+      add("Resolve historical verification", publicHistoricalVerificationBlockerLine());
     }
     for (const finding of options.findings) {
       add(`${finding.title.trim()} (${priorityLabel(finding.priority)})`, finding.body, {
@@ -647,6 +655,7 @@ export function createReportCommentHelpers(
     "merge readiness",
     "review scores",
     "verification",
+    "live proof",
     "how this fits together",
     "decision needed",
     "before merge",

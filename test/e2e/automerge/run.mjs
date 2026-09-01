@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeFakeScanner } from "../../agent-input-scan-helpers.ts";
 import {
   AUTOMERGE_E2E_FIXTURES,
   createCiRegressionFixture,
@@ -19,6 +20,8 @@ export const AUTOMERGE_E2E_SCENARIOS = [
   "completed-verdict-resume",
   "completed-verdict-source-drift",
   "dependency-setup-mutation",
+  "final-review-failed-race",
+  "final-review-malformed-race",
   "github-api-quota-fail-fast",
   "happy-path",
   "pending-checks",
@@ -319,8 +322,8 @@ export function runAutomergeE2E({
       behindState = JSON.parse(fs.readFileSync(statePath, "utf8"));
       assert.equal(
         behindState.pr.labels.includes("clawsweeper:human-review"),
-        false,
-        "the pause label may clear after the durable repair job dispatches",
+        true,
+        "the pause label must remain until a later exact-head merge succeeds",
       );
       const repairDispatch = behindState.workflowDispatches.at(-1);
       assert.equal(
@@ -336,6 +339,12 @@ export function runAutomergeE2E({
         behindState.pr.mergedAt,
         null,
         "a behind branch must remain open after the first exact-head approval",
+      );
+      assert.equal(
+        behindState.calls.filter((call) => call.args[0] === "pr" && call.args[1] === "merge")
+          .length,
+        0,
+        "a repairable behind approval must dispatch repair without attempting merge",
       );
       updateGitHubState(statePath, (state) => {
         state.pr.mergeStateStatus = "CLEAN";
@@ -432,6 +441,16 @@ export function runAutomergeE2E({
       addCanonicalNeedsHumanVerdict(statePath, repairedHead);
     } else if (!completedVerdictAlreadyRouted) {
       addExactHeadVerdict(statePath, repairedHead);
+      if (scenario === "final-review-failed-race" || scenario === "final-review-malformed-race") {
+        updateGitHubState(statePath, (state) => {
+          state.finalVerdictMutation = {
+            applied: false,
+            commentReads: 0,
+            triggerCommentRead: 5,
+            liveVerification: scenario === "final-review-failed-race" ? "failed" : "malformed",
+          };
+        });
+      }
     }
     if (scenario === "verdict-head-drift") {
       const driftedHead = advanceRemoteContributorHead(root, targetFixture, "verdict head drift");
@@ -486,6 +505,36 @@ export function runAutomergeE2E({
       runCommentRouter(runtimeRoot, baseEnv, artifacts, "08-comment-router");
     }
     const routerReport = readRouterReport(runtimeRoot);
+    if (scenario === "final-review-failed-race" || scenario === "final-review-malformed-race") {
+      const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      const mergeAction = routerReport.commands
+        .flatMap((command) => command.actions)
+        .find((action) => action.action === "merge");
+      assert.equal(state.finalVerdictMutation?.applied, true);
+      assert.equal(state.pr.mergedAt, null, "a newer final-guard verdict must block merge");
+      assert.equal(
+        state.calls.some((call) => call.args[0] === "pr" && call.args[1] === "merge"),
+        false,
+        "the router must reject the refreshed verdict before invoking merge",
+      );
+      assert.equal(mergeAction?.status, "blocked");
+      const liveVerification = scenario === "final-review-failed-race" ? "failed" : "malformed";
+      assert.match(
+        String(mergeAction?.reason ?? ""),
+        new RegExp(
+          `${liveVerification} live verification|live verification ${liveVerification}`,
+          "i",
+        ),
+      );
+      fs.copyFileSync(statePath, path.join(artifacts, "github-state.json"));
+      writeJson(path.join(artifacts, "summary.json"), {
+        status: "passed",
+        fixture,
+        scenario,
+        merge: "blocked by refreshed exact-head verdict",
+      });
+      return { status: "passed", fixture, scenario, artifacts };
+    }
     runCommentRouter(runtimeRoot, baseEnv, artifacts, "10-comment-router-idempotent");
     const idempotentRouterReport = readRouterReport(runtimeRoot);
     runCli(
@@ -520,11 +569,56 @@ export function runAutomergeE2E({
       mergedCommand?.actions.find((action) => action.action === "merge")?.status,
       "executed",
     );
+    if (scenario === "resume-intent-persistence") {
+      assert.equal(mergedCommand?.live_verification, "absent");
+      assert.equal(
+        mergedCommand?.validated_maintainer_human_approval,
+        true,
+        "the final exact-head gate must consume the validated maintainer approval fact",
+      );
+      assert.equal(
+        mergedCommand?.actions.find((action) => action.action === "update_description_note")
+          ?.status,
+        "executed",
+        "the missing-proof authorization must be durable before merge",
+      );
+      assert.match(state.pr.body, /Maintainer authorization: proof override/);
+      assert.match(state.pr.body, /does not bypass any current or later review finding/);
+      const descriptionCall = state.calls.findIndex(
+        (call) =>
+          call.args[0] === "api" &&
+          call.args[1] === `repos/${state.repo}/issues/${state.pr.number}` &&
+          call.args.includes("PATCH"),
+      );
+      const mergeCall = state.calls.findIndex(
+        (call) => call.args[0] === "pr" && call.args[1] === "merge",
+      );
+      assert.ok(descriptionCall >= 0);
+      assert.ok(mergeCall > descriptionCall, "the durable proof override must precede merge");
+      assert.equal(
+        state.pr.labels.includes("clawsweeper:human-review"),
+        false,
+        "the pause label must clear only after the approved merge succeeds",
+      );
+    }
+    if (scenario === "approve-intent-persistence") {
+      assert.equal(
+        mergedCommand?.intent,
+        "clawsweeper_auto_merge",
+        "the later exact-head needs-human verdict must consume the persisted approval",
+      );
+      assert.equal(mergedCommand?.validated_maintainer_human_approval, true);
+      assert.equal(
+        state.pr.labels.includes("clawsweeper:human-review"),
+        false,
+        "the preserved pause label must clear only after the approved merge succeeds",
+      );
+    }
     assert.equal(idempotentRouterReport.actionable, 0);
     assert.equal(
       state.calls.filter((call) => call.args[0] === "pr" && call.args[1] === "merge").length,
-      scenario === "approve-intent-persistence" ? 3 : 1,
-      "only the durable approval replay and final exact-head verdict may retry merge",
+      1,
+      "only the final exact-head verdict may attempt merge",
     );
     assert.ok(state.calls.some((call) => call.token === "read"));
     assert.ok(state.calls.some((call) => call.token === "write"));
@@ -675,7 +769,7 @@ function addExactHeadVerdict(statePath, headSha, sourceRevision = null) {
   const now = new Date().toISOString();
   state.comments.push({
     id: state.nextCommentId++,
-    body: `ClawSweeper review passed.\n<!-- clawsweeper-verdict:pass item=${state.pr.number} sha=${headSha}${sourceRevision ? ` source_revision=${sourceRevision}` : ""} reviewed_at=${now} -->`,
+    body: `ClawSweeper review passed.\n<!-- clawsweeper-verdict:pass live_verification=absent item=${state.pr.number} sha=${headSha}${sourceRevision ? ` source_revision=${sourceRevision}` : ""} reviewed_at=${now} -->`,
     issue_url: `https://api.github.com/repos/${state.repo}/issues/${state.pr.number}`,
     html_url: `https://github.com/${state.repo}/pull/${state.pr.number}#issuecomment-${state.nextCommentId - 1}`,
     user: { id: 1, login: "clawsweeper[bot]" },
@@ -756,7 +850,7 @@ function addCanonicalNeedsHumanVerdict(statePath, headSha) {
       "**Next step before merge**",
       "- [P2] No repair lane is needed: the PR already contains the narrow fix, but missing real behavior proof needs maintainer handling.",
       "",
-      `<!-- clawsweeper-verdict:needs-human item=${state.pr.number} sha=${headSha} reviewed_at=${now} -->`,
+      `<!-- clawsweeper-verdict:needs-human live_verification=absent item=${state.pr.number} sha=${headSha} reviewed_at=${now} -->`,
     ].join("\n"),
     timestamp: now,
   });
@@ -1161,9 +1255,15 @@ function assertFixturePostRepair(fixture, repairedHead) {
   );
 }
 
-function createCommandBin(root) {
+export function createCommandBin(root) {
   const bin = path.join(root, "bin");
   fs.mkdirSync(bin);
+  // Generate outside the target and candidate runtime: scanner trust rejects repo symlinks.
+  writeFakeScanner(
+    bin,
+    `fs.writeFileSync(path.join(__dirname, 'scanned-prompt.sha256'),
+  require('node:crypto').createHash('sha256').update(fs.readFileSync(path.join(inputDir, 'prompt'))).digest('hex'));`,
+  );
   for (const [name, source] of [
     ["gh", "fake-gh.mjs"],
     ["codex", "fake-codex.mjs"],

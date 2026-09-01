@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import MarkdownIt from "markdown-it";
+import { parse as parseYaml } from "yaml";
 
 const markdown = new MarkdownIt({ html: true });
 
@@ -15,6 +16,8 @@ const MARKDOWN_ROOTS = [
   "VISION.md",
   "docs",
   "instructions",
+  "prompts",
+  ".agents",
   ".github/pull_request_template.md",
 ];
 const REPOSITORY_PATH_PREFIXES = [
@@ -23,6 +26,8 @@ const REPOSITORY_PATH_PREFIXES = [
   "dashboard/",
   "docs/",
   "instructions/",
+  "prompts/",
+  ".agents/",
   "scripts/",
   "src/",
   "test/",
@@ -87,14 +92,536 @@ export function checkDocumentation(root = process.cwd()) {
 
   for (const relativeFile of markdownFiles) {
     const text = fs.readFileSync(path.join(root, relativeFile), "utf8");
+    checkMarkdownFences({ relativeFile, text, findings });
     checkLinks({ root, relativeFile, text, inventory, findings });
-    if (!relativeFile.startsWith("docs/proof/")) {
+    if (
+      !relativeFile.startsWith("docs/proof/") &&
+      relativeFile !== ".agents/skills/crabbox/SKILL.md"
+    ) {
       checkDocumentedCommands({ relativeFile, text, packageScripts, inventory, findings });
     }
   }
 
   checkConfiguredClaims({ root, inventory, findings });
+  checkDocumentationSiteManifest({ root, inventory, findings });
+  checkOperationalHealthDocumentation({ root, findings });
+  checkOperatorDocumentation({ root, inventory, findings });
   return findings.sort(compareFindings);
+}
+
+function checkMarkdownFences({ relativeFile, text, findings }) {
+  let openFence = null;
+  for (const [index, line] of text.split(/\r?\n/).entries()) {
+    const match = line.match(/^\s{0,3}(`{3,}|~{3,})(.*)$/);
+    if (!match) continue;
+    const marker = match[1];
+    const suffix = match[2];
+    if (marker.length !== 3) {
+      addFinding(
+        findings,
+        relativeFile,
+        index + 1,
+        "markdown-fence",
+        "use exactly three backticks or tildes for fenced code blocks",
+      );
+    }
+    if (!openFence) {
+      openFence = { marker: marker[0], line: index + 1 };
+      continue;
+    }
+    if (marker[0] === openFence.marker && suffix.trim() === "") {
+      openFence = null;
+      continue;
+    }
+    if (suffix.trim() !== "") {
+      addFinding(
+        findings,
+        relativeFile,
+        index + 1,
+        "markdown-fence",
+        `fenced code block starts before the block from line ${openFence.line} closes`,
+      );
+    }
+  }
+  if (openFence) {
+    addFinding(
+      findings,
+      relativeFile,
+      openFence.line,
+      "markdown-fence",
+      "fenced code block is not closed",
+    );
+  }
+}
+
+function checkOperatorDocumentation({ root, inventory, findings }) {
+  const manifestPath = "config/operator-documentation.json";
+  const documentPath = "docs/operator-configuration.md";
+  const apiDocumentPath = "docs/public-api.md";
+  const manifest = readJson(path.join(root, manifestPath));
+  const worker = fs.readFileSync(path.join(root, "dashboard/worker.ts"), "utf8");
+  const apiDocument = fs.readFileSync(path.join(root, apiDocumentPath), "utf8");
+  const configDocument = fs.readFileSync(path.join(root, documentPath), "utf8");
+  const documentedRouteRows = apiDocument
+    .split(/\r?\n/)
+    .map((line) =>
+      line
+        .split("|")
+        .slice(1, 3)
+        .map((cell) => cell.trim()),
+    )
+    .filter((cells) => cells.length === 2);
+  const documentedRouteMethods = new Map(documentedRouteRows);
+  for (const route of duplicateKeys(
+    documentedRouteRows
+      .filter(([route]) => /^`\/api\/[^`]+`$/.test(route))
+      .map(([route, method]) => [route.slice(1, -1), method]),
+  )) {
+    addFinding(
+      findings,
+      apiDocumentPath,
+      1,
+      "operator-route",
+      `duplicate documented route ${route}`,
+    );
+  }
+  const declaredRouteEntries = (manifest.publicObserverRoutes ?? []).map(
+    ({ path: route, method }) => [route, method],
+  );
+  for (const route of duplicateKeys(declaredRouteEntries))
+    addFinding(findings, manifestPath, 1, "operator-route", `duplicate manifest route ${route}`);
+  const sourceRoutes = observerRouteMethods(worker);
+  const declaredRoutes = new Map(declaredRouteEntries);
+  for (const route of sourceRoutes.keys()) {
+    if (!declaredRoutes.has(route))
+      addFinding(findings, manifestPath, 1, "operator-route", `missing public route ${route}`);
+  }
+  for (const documentedRoute of documentedRouteMethods.keys()) {
+    if (!/^`\/api\/[^`]+`$/.test(documentedRoute)) continue;
+    const route = documentedRoute.slice(1, -1);
+    if (!declaredRoutes.has(route))
+      addFinding(findings, apiDocumentPath, 1, "operator-route", `stale documented route ${route}`);
+  }
+  for (const [route, method] of declaredRoutes) {
+    const sourceMethod = sourceRoutes.get(route);
+    if (!sourceMethod)
+      addFinding(findings, manifestPath, 1, "operator-route", `stale public route ${route}`);
+    if (sourceMethod && method !== sourceMethod)
+      addFinding(
+        findings,
+        manifestPath,
+        1,
+        "operator-route",
+        `method drift for ${route}: expected ${sourceMethod}, found ${method}`,
+      );
+    if (documentedRouteMethods.get(`\`${route}\``) !== `\`${method}\``)
+      addFinding(findings, apiDocumentPath, 1, "operator-route", `missing route ${route}`);
+  }
+
+  const wrangler = fs.readFileSync(path.join(root, "dashboard/wrangler.toml"), "utf8");
+  const workflowSources = [...inventory.exact]
+    .filter((file) => file.startsWith(".github/workflows/") && /\.ya?ml$/.test(file))
+    .map((file) => fs.readFileSync(path.join(root, file), "utf8"));
+  const workflowSecrets = workflowSecretNames(workflowSources);
+  for (const name of manifest.auditedDashboardVariables ?? []) {
+    if (!new RegExp(`^${name}\\s*=`, "m").test(wrangler))
+      addFinding(findings, manifestPath, 1, "operator-config", `stale dashboard variable ${name}`);
+    if (!configDocument.includes(`\`${name}\``))
+      addFinding(
+        findings,
+        documentPath,
+        1,
+        "operator-config",
+        `missing dashboard variable ${name}`,
+      );
+  }
+  for (const name of manifest.auditedWorkflowSecrets ?? []) {
+    if (!workflowSecrets.has(name))
+      addFinding(findings, manifestPath, 1, "operator-config", `stale workflow secret ${name}`);
+    if (!configDocument.includes(`\`${name}\``))
+      addFinding(findings, documentPath, 1, "operator-config", `missing workflow secret ${name}`);
+  }
+}
+
+function workflowSecretNames(sources) {
+  const names = new Set();
+  for (const source of sources) visit(parseYaml(source));
+  return names;
+
+  function visit(value) {
+    if (typeof value === "string") {
+      for (const expression of value.matchAll(/\$\{\{([\s\S]*?)\}\}/g)) {
+        for (const match of expression[1].matchAll(/\bsecrets\.([A-Z][A-Z0-9_]*)\b/g))
+          names.add(match[1]);
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const entry of value) visit(entry);
+      return;
+    }
+    if (value && typeof value === "object") {
+      for (const entry of Object.values(value)) visit(entry);
+    }
+  }
+}
+
+function duplicateKeys(entries) {
+  const seen = new Set();
+  const duplicates = new Set();
+  for (const [key] of entries) {
+    if (seen.has(key)) duplicates.add(key);
+    else seen.add(key);
+  }
+  return duplicates;
+}
+
+function observerRouteMethods(source) {
+  const routes = new Map();
+  for (const condition of executableIfConditions(source)) {
+    for (const alternative of booleanAlternatives(condition)) {
+      const guardedMethods = stringEqualities(alternative, "request", "method");
+      for (const route of stringEqualities(alternative, "url", "pathname")) {
+        if (!route.startsWith("/api/") || route === "/api/events") continue;
+        const methods = routes.get(route) ?? new Set();
+        if (guardedMethods.length === 0) methods.add("ANY");
+        else for (const method of guardedMethods) methods.add(method);
+        routes.set(route, methods);
+      }
+    }
+  }
+  return new Map(
+    [...routes].map(([route, methods]) => [
+      route,
+      methods.has("ANY") ? "ANY" : [...methods].sort().join(", "),
+    ]),
+  );
+}
+
+function booleanAlternatives(source) {
+  const expression = stripWrappingParentheses(source.trim());
+  const disjunction = splitTopLevelLogical(expression, "||");
+  if (disjunction.length > 1) return disjunction.flatMap(booleanAlternatives);
+  const conjunction = splitTopLevelLogical(expression, "&&");
+  if (conjunction.length === 1) return [expression];
+  let alternatives = [""];
+  for (const part of conjunction) {
+    alternatives = alternatives.flatMap((prefix) =>
+      booleanAlternatives(part).map((alternative) =>
+        prefix ? `${prefix} && ${alternative}` : alternative,
+      ),
+    );
+  }
+  return alternatives;
+}
+
+function stripWrappingParentheses(source) {
+  let expression = source;
+  while (expression.startsWith("(") && matchingParenthesis(expression, 0) === expression.length - 1)
+    expression = expression.slice(1, -1).trim();
+  return expression;
+}
+
+function splitTopLevelLogical(source, operator) {
+  const parts = [];
+  let start = 0;
+  let depth = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    const skipped = skipNonCode(source, index);
+    if (skipped !== index) {
+      index = skipped - 1;
+      continue;
+    }
+    if (source[index] === "(") depth += 1;
+    else if (source[index] === ")") depth -= 1;
+    else if (depth === 0 && source.startsWith(operator, index)) {
+      parts.push(source.slice(start, index).trim());
+      start = index + operator.length;
+      index += operator.length - 1;
+    }
+  }
+  parts.push(source.slice(start).trim());
+  return parts;
+}
+
+function executableIfConditions(source) {
+  const branches = [];
+  for (let index = 0; index < source.length; index += 1) {
+    const skipped = skipNonCode(source, index);
+    if (skipped !== index) {
+      index = skipped - 1;
+      continue;
+    }
+    if (
+      !source.startsWith("if", index) ||
+      isIdentifierCharacter(source[index - 1]) ||
+      isIdentifierCharacter(source[index + 2])
+    ) {
+      continue;
+    }
+    let open = index + 2;
+    while (/\s/.test(source[open] ?? "")) open += 1;
+    if (source[open] !== "(") continue;
+    const conditionEnd = matchingParenthesis(source, open);
+    if (conditionEnd < 0) continue;
+    let bodyOpen = conditionEnd + 1;
+    while (bodyOpen < source.length) {
+      if (/\s/.test(source[bodyOpen])) {
+        bodyOpen += 1;
+        continue;
+      }
+      const afterTrivia = skipNonCode(source, bodyOpen);
+      if (afterTrivia !== bodyOpen && source[bodyOpen] === "/") {
+        bodyOpen = afterTrivia;
+        continue;
+      }
+      break;
+    }
+    branches.push({
+      start: index,
+      condition: source.slice(open + 1, conditionEnd),
+      bodyOpen: source[bodyOpen] === "{" ? bodyOpen : -1,
+      bodyEnd: source[bodyOpen] === "{" ? matchingBrace(source, bodyOpen) : -1,
+    });
+    index = conditionEnd;
+  }
+  return branches.map((branch) => {
+    const enclosing = branches
+      .filter(
+        (candidate) =>
+          candidate !== branch &&
+          candidate.bodyOpen >= 0 &&
+          candidate.bodyOpen < branch.start &&
+          branch.start < candidate.bodyEnd,
+      )
+      .sort((left, right) => left.start - right.start)
+      .map((candidate) => candidate.condition);
+    return [...enclosing, branch.condition].map((condition) => `(${condition})`).join(" && ");
+  });
+}
+
+function matchingParenthesis(source, open) {
+  let depth = 0;
+  for (let index = open; index < source.length; index += 1) {
+    const skipped = skipNonCode(source, index);
+    if (skipped !== index) {
+      index = skipped - 1;
+      continue;
+    }
+    if (source[index] === "(") depth += 1;
+    else if (source[index] === ")" && --depth === 0) return index;
+  }
+  return -1;
+}
+
+function matchingBrace(source, open) {
+  let depth = 0;
+  for (let index = open; index < source.length; index += 1) {
+    const skipped = skipNonCode(source, index);
+    if (skipped !== index) {
+      index = skipped - 1;
+      continue;
+    }
+    if (source[index] === "{") depth += 1;
+    else if (source[index] === "}" && --depth === 0) return index;
+  }
+  return -1;
+}
+
+function skipNonCode(source, index) {
+  const quote = source[index];
+  if (quote === '"' || quote === "'" || quote === "`") {
+    for (let cursor = index + 1; cursor < source.length; cursor += 1) {
+      if (source[cursor] === "\\") cursor += 1;
+      else if (source[cursor] === quote) return cursor + 1;
+    }
+    return source.length;
+  }
+  if (source[index] === "/" && source[index + 1] === "/") {
+    const end = source.indexOf("\n", index + 2);
+    return end < 0 ? source.length : end + 1;
+  }
+  if (source[index] === "/" && source[index + 1] === "*") {
+    const end = source.indexOf("*/", index + 2);
+    return end < 0 ? source.length : end + 2;
+  }
+  return index;
+}
+
+function isIdentifierCharacter(character) {
+  return character !== undefined && /[A-Za-z0-9_$]/.test(character);
+}
+
+function stringEqualities(condition, objectName, propertyName) {
+  const tokens = conditionTokens(condition);
+  const values = [];
+  const propertyAt = (index) =>
+    tokens[index]?.type === "identifier" &&
+    tokens[index].value === objectName &&
+    tokens[index + 1]?.value === "." &&
+    tokens[index + 2]?.type === "identifier" &&
+    tokens[index + 2].value === propertyName;
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (
+      propertyAt(index) &&
+      tokens[index + 3]?.value === "===" &&
+      tokens[index + 4]?.type === "string"
+    )
+      values.push(tokens[index + 4].value);
+    if (
+      tokens[index]?.type === "string" &&
+      tokens[index + 1]?.value === "===" &&
+      propertyAt(index + 2)
+    )
+      values.push(tokens[index].value);
+  }
+  return values;
+}
+
+function conditionTokens(source) {
+  const tokens = [];
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (/\s/.test(character)) continue;
+    if (character === "/" && (source[index + 1] === "/" || source[index + 1] === "*")) {
+      index = skipNonCode(source, index) - 1;
+      continue;
+    }
+    if (character === '"' || character === "'" || character === "`") {
+      let value = "";
+      let interpolated = false;
+      for (index += 1; index < source.length; index += 1) {
+        if (source[index] === "\\" && index + 1 < source.length) value += source[++index];
+        else if (character === "`" && source[index] === "$" && source[index + 1] === "{") {
+          interpolated = true;
+        } else if (source[index] === character) break;
+        else value += source[index];
+      }
+      if (!interpolated) tokens.push({ type: "string", value });
+      continue;
+    }
+    const identifier = source.slice(index).match(/^[A-Za-z_$][A-Za-z0-9_$]*/)?.[0];
+    if (identifier) {
+      tokens.push({ type: "identifier", value: identifier });
+      index += identifier.length - 1;
+      continue;
+    }
+    if (source.startsWith("===", index)) {
+      tokens.push({ type: "punctuation", value: "===" });
+      index += 2;
+    } else if (character === ".") {
+      tokens.push({ type: "punctuation", value: "." });
+    }
+  }
+  return tokens;
+}
+
+function checkDocumentationSiteManifest({ root, inventory, findings }) {
+  const manifestPath = "config/documentation-site.json";
+  const manifest = readJson(path.join(root, manifestPath));
+  const canonical = new Set();
+  for (const section of manifest.sections ?? []) {
+    for (const page of section.pages ?? []) {
+      if (canonical.has(page)) {
+        addFinding(
+          findings,
+          manifestPath,
+          1,
+          "docs-lifecycle",
+          `duplicates canonical page ${page}`,
+        );
+      }
+      canonical.add(page);
+      if (!inventory.exact.has(`docs/${page}`)) {
+        addFinding(
+          findings,
+          manifestPath,
+          1,
+          "docs-lifecycle",
+          `references missing page docs/${page}`,
+        );
+      }
+    }
+  }
+
+  const docsPages = [...inventory.exact]
+    .filter((file) => file.startsWith("docs/") && file.endsWith(".md"))
+    .map((file) => file.slice("docs/".length));
+  for (const page of docsPages) {
+    const matches = (manifest.noncanonical ?? []).filter(
+      (entry) => entry.path === page || (entry.prefix && page.startsWith(entry.prefix)),
+    );
+    const classifications = Number(canonical.has(page)) + matches.length;
+    if (classifications !== 1) {
+      addFinding(
+        findings,
+        manifestPath,
+        1,
+        "docs-lifecycle",
+        `${page} has ${classifications === 0 ? "no" : "multiple"} lifecycle classifications`,
+      );
+    }
+  }
+}
+
+function checkOperationalHealthDocumentation({ root, findings }) {
+  const sourcePath = "dashboard/operational-health.ts";
+  const documentPath = "docs/live-dashboard.md";
+  const source = fs.readFileSync(path.join(root, sourcePath), "utf8");
+  const document = normalizeWhitespace(fs.readFileSync(path.join(root, documentPath), "utf8"));
+  const minutes = (name) => {
+    const expression = source.match(new RegExp(`export const ${name} = ([0-9 *]+);`))?.[1];
+    if (!expression) return null;
+    return (
+      expression
+        .split("*")
+        .map(Number)
+        .reduce((total, value) => total * value, 1) / 60_000
+    );
+  };
+  const documentedFields = [
+    "zombie_queued_runs",
+    "oldest_zombie_queued_minutes",
+    "wedged_rerun_runs",
+    "oldest_wedged_rerun_minutes",
+    "approval_gated_runs",
+    "oldest_approval_gated_minutes",
+  ];
+  const operationalHealthType = source.match(
+    /export type OperationalHealth = \{([\s\S]*?)\n\};/,
+  )?.[1];
+  for (const field of documentedFields) {
+    if (
+      !operationalHealthType ||
+      !new RegExp(`^\\s*${field}\\s*:`, "m").test(operationalHealthType)
+    ) {
+      addFinding(
+        findings,
+        sourcePath,
+        1,
+        "operational-health-source",
+        `documented field is missing from OperationalHealth: ${field}`,
+      );
+    }
+  }
+  const expected = [
+    `queued runs from ${minutes("OPERATIONAL_QUEUE_DEGRADED_MS")} through ${minutes("OPERATIONAL_QUEUE_ZOMBIE_MS")} minutes old degrade operational health`,
+    `queued runs older than ${minutes("OPERATIONAL_QUEUE_ZOMBIE_MS")} minutes are reported separately as zombies`,
+    `pre-queue pending reruns older than ${minutes("OPERATIONAL_WEDGED_RERUN_MS")} minutes are reported separately as wedged`,
+    `in-progress runs become stalled after ${minutes("OPERATIONAL_RUNNING_STALLED_MS")} minutes`,
+    ...documentedFields,
+  ];
+  for (const claim of expected) {
+    if (!document.includes(claim)) {
+      addFinding(
+        findings,
+        documentPath,
+        1,
+        "operational-health-claim",
+        `missing source-derived claim: ${claim}`,
+      );
+    }
+  }
 }
 
 function buildInventory(root) {

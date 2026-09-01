@@ -8,8 +8,9 @@ import {
   REVIEW_VISION_FIT_TRIGGER_SOURCE,
 } from "./comment-router-core.js";
 import { validateRepairContractShape } from "./repair-contract.js";
-import { GITHUB_PR_TITLE_MAX_LENGTH } from "./pr-title.js";
 import { slug } from "./text-utils.js";
+
+const GITHUB_PR_TITLE_MAX_LENGTH = 256;
 
 const REPAIR_STRATEGIES = new Set([
   "repair_contributor_branch",

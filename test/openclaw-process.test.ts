@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 
 import { runAgentProcess } from "../dist/agent-runner.js";
 import { parseOpenclawJsonEnvelope, runOpenclawProcess } from "../dist/openclaw-process.js";
@@ -31,6 +32,35 @@ const record = {
   },
 };
 fs.writeFileSync(process.env.OPENCLAW_TEST_RECORD, JSON.stringify(record));
+if (process.env.OPENCLAW_TEST_READ_PATH) {
+  const sessionId = record.args[record.args.indexOf("--session-id") + 1];
+  const sessionFile = require("node:path").join(record.stateDir, "agents", "main", "sessions", sessionId + ".jsonl");
+  fs.mkdirSync(require("node:path").dirname(sessionFile), { recursive: true });
+  const toolCallId = "read-checkout";
+  const entries = [
+    {
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "toolCall", id: toolCallId, name: "read", arguments: { path: process.env.OPENCLAW_TEST_READ_PATH } }],
+      },
+    },
+    {
+      type: "message",
+      message: {
+        role: "toolResult",
+        toolCallId,
+        toolName: "read",
+        isError: process.env.OPENCLAW_TEST_READ_ERROR === "1",
+        content: [{ type: "text", text: "file contents" }],
+      },
+    },
+  ];
+  if (process.env.OPENCLAW_TEST_RECEIPT_EXTRA) {
+    entries.push(...JSON.parse(process.env.OPENCLAW_TEST_RECEIPT_EXTRA));
+  }
+  fs.writeFileSync(sessionFile, entries.map((entry) => JSON.stringify(entry)).join("\\n") + "\\n");
+}
 process.stderr.write(process.env.OPENCLAW_TEST_STDERR || "");
 process.stdout.write(process.env.OPENCLAW_TEST_STDOUT || JSON.stringify({ payloads: [{ text: "done" }], meta: { stopReason: "stop" } }));
 `,
@@ -112,6 +142,186 @@ test("OpenClaw process emits isolated config and invocation, joins payloads, and
     assert.equal(record.args.at(-1), "--json");
     assert.equal(existsSync(record.stateDir), false);
     assert.equal(existsSync(record.configPath), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("OpenClaw checkout inspection requires structured read evidence", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-openclaw-test-"));
+  const recordPath = join(root, "record.json");
+  const binary = fakeOpenclaw(root);
+  const checkoutInspection = {
+    expectedText: "tracked checkout content",
+    expectedPath: "tracked.txt",
+  };
+  try {
+    const result = runOpenclawProcess({
+      label: "checkout-inspection",
+      prompt: "Read the challenged line.",
+      model: "openai/test",
+      cwd: root,
+      env: {
+        ...process.env,
+        CLAWSWEEPER_OPENCLAW_BIN: binary,
+        OPENCLAW_TEST_RECORD: recordPath,
+        OPENCLAW_TEST_READ_PATH: "tracked.txt",
+        OPENCLAW_TEST_STDOUT: JSON.stringify({
+          payloads: [{ text: "tracked checkout content" }],
+          meta: { stopReason: "stop" },
+        }),
+      },
+      timeoutMs: 10_000,
+      checkoutInspection,
+    });
+    assert.equal(result.status, 0, result.error?.message);
+    assert.equal(result.stdout, "");
+    const record = JSON.parse(readFileSync(recordPath, "utf8"));
+    assert.deepEqual(record.config.tools, {
+      allow: ["read"],
+      fs: { workspaceOnly: true },
+      exec: { host: "gateway", mode: "deny" },
+    });
+
+    const wrongText = runOpenclawProcess({
+      label: "checkout-inspection-wrong-text",
+      prompt: "Read the challenged line.",
+      model: "openai/test",
+      cwd: root,
+      env: {
+        ...process.env,
+        CLAWSWEEPER_OPENCLAW_BIN: binary,
+        OPENCLAW_TEST_RECORD: recordPath,
+        OPENCLAW_TEST_READ_PATH: "tracked.txt",
+        OPENCLAW_TEST_STDOUT: JSON.stringify({
+          payloads: [{ text: "different checkout content" }],
+          meta: { stopReason: "stop" },
+        }),
+      },
+      timeoutMs: 10_000,
+      checkoutInspection,
+    });
+    assert.equal(wrongText.status, 1);
+    assert.match(wrongText.error?.message ?? "", /runner challenge/);
+
+    const wrongReadPath = runOpenclawProcess({
+      label: "checkout-inspection-wrong-path",
+      prompt: "Read the challenged line.",
+      model: "openai/test",
+      cwd: root,
+      env: {
+        ...process.env,
+        CLAWSWEEPER_OPENCLAW_BIN: binary,
+        OPENCLAW_TEST_RECORD: recordPath,
+        OPENCLAW_TEST_READ_PATH: "different.txt",
+        OPENCLAW_TEST_STDOUT: JSON.stringify({
+          payloads: [{ text: "tracked checkout content" }],
+          meta: { stopReason: "stop" },
+        }),
+      },
+      timeoutMs: 10_000,
+      checkoutInspection,
+    });
+    assert.equal(wrongReadPath.status, 1);
+    assert.match(wrongReadPath.error?.message ?? "", /exact challenged path/);
+
+    const failedRead = runOpenclawProcess({
+      label: "checkout-inspection-failed-read",
+      prompt: "Read the challenged line.",
+      model: "openai/test",
+      cwd: root,
+      env: {
+        ...process.env,
+        CLAWSWEEPER_OPENCLAW_BIN: binary,
+        OPENCLAW_TEST_RECORD: recordPath,
+        OPENCLAW_TEST_READ_PATH: "tracked.txt",
+        OPENCLAW_TEST_READ_ERROR: "1",
+        OPENCLAW_TEST_STDOUT: JSON.stringify({
+          payloads: [{ text: "tracked checkout content" }],
+          meta: { stopReason: "stop" },
+        }),
+      },
+      timeoutMs: 10_000,
+      checkoutInspection,
+    });
+    assert.equal(failedRead.status, 1);
+    assert.match(failedRead.error?.message ?? "", /exact challenged path/);
+
+    for (const [label, extraReceipt] of [
+      [
+        "non-read tool",
+        [
+          {
+            type: "message",
+            message: {
+              role: "assistant",
+              content: [{ type: "toolCall", id: "exec-after-read", name: "exec", arguments: {} }],
+            },
+          },
+          {
+            type: "message",
+            message: {
+              role: "toolResult",
+              toolCallId: "exec-after-read",
+              toolName: "exec",
+              isError: false,
+              content: [],
+            },
+          },
+        ],
+      ],
+      [
+        "failed later read",
+        [
+          {
+            type: "message",
+            message: {
+              role: "assistant",
+              content: [
+                {
+                  type: "toolCall",
+                  id: "failed-read-after-success",
+                  name: "read",
+                  arguments: { path: "tracked.txt" },
+                },
+              ],
+            },
+          },
+          {
+            type: "message",
+            message: {
+              role: "toolResult",
+              toolCallId: "failed-read-after-success",
+              toolName: "read",
+              isError: true,
+              content: [],
+            },
+          },
+        ],
+      ],
+    ] as const) {
+      const mixedReceipt = runOpenclawProcess({
+        label: `checkout-inspection-${label}`,
+        prompt: "Read the challenged line.",
+        model: "openai/test",
+        cwd: root,
+        env: {
+          ...process.env,
+          CLAWSWEEPER_OPENCLAW_BIN: binary,
+          OPENCLAW_TEST_RECORD: recordPath,
+          OPENCLAW_TEST_READ_PATH: "tracked.txt",
+          OPENCLAW_TEST_RECEIPT_EXTRA: JSON.stringify(extraReceipt),
+          OPENCLAW_TEST_STDOUT: JSON.stringify({
+            payloads: [{ text: "tracked checkout content" }],
+            meta: { stopReason: "stop" },
+          }),
+        },
+        timeoutMs: 10_000,
+        checkoutInspection,
+      });
+      assert.equal(mixedReceipt.status, 1, label);
+      assert.match(mixedReceipt.error?.message ?? "", /exact challenged path/);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -218,13 +428,15 @@ test("OpenClaw invalid JSON fails closed with a bounded stderr tail", () => {
   }
 });
 
-test("OpenClaw runner writes the normalized last message and notes ignored steering", () => {
+test("OpenClaw runner writes the normalized last message and notes ignored steering", (t) => {
+  useFakeScanner(t);
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-openclaw-test-"));
   const binary = fakeOpenclaw(root);
   const outputPath = join(root, "last-message.txt");
   try {
     const result = runAgentProcess({
       label: "steerable-openclaw",
+      scanSource: { kind: "prompt" },
       prompt: "prompt",
       model: "internal",
       reasoningEffort: "medium",

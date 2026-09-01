@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import MarkdownIt from "markdown-it";
 import { parse } from "yaml";
 
 const liveWorkflow = readFileSync(".github/workflows/clawsweeper-dispatch.yml", "utf8").replace(
@@ -8,10 +10,18 @@ const liveWorkflow = readFileSync(".github/workflows/clawsweeper-dispatch.yml", 
   "\n",
 );
 const documentation = readFileSync("docs/target-dispatcher.md", "utf8").replace(/\r\n/g, "\n");
-const templateMatch = documentation.match(/```yaml\n(name: ClawSweeper Dispatch[\s\S]*?)\n```/);
+const dispatcherTemplates = new MarkdownIt()
+  .parse(documentation, {})
+  .filter(
+    (token) =>
+      token.type === "fence" &&
+      token.markup === "```" &&
+      token.info.trim() === "yaml" &&
+      token.content.startsWith("name: ClawSweeper Dispatch\n"),
+  );
 
-assert.ok(templateMatch, "target dispatcher workflow template is missing");
-const documentedWorkflow = `${templateMatch[1]}\n`;
+assert.equal(dispatcherTemplates.length, 1, "expected one canonical target dispatcher template");
+const documentedWorkflow = dispatcherTemplates[0]!.content;
 
 type WorkflowStep = {
   name?: string;
@@ -29,6 +39,24 @@ function dispatchSteps(source: string): WorkflowStep[] {
   return workflow.jobs?.dispatch?.steps ?? [];
 }
 
+function workflowJobs(source: string) {
+  return (
+    parse(source) as {
+      jobs?: Record<
+        string,
+        {
+          if?: string;
+          needs?: string;
+          permissions?: Record<string, string>;
+          steps?: WorkflowStep[];
+          uses?: string;
+          with?: Record<string, string>;
+        }
+      >;
+    }
+  ).jobs;
+}
+
 function namedStep(steps: WorkflowStep[], name: string): WorkflowStep {
   const step = steps.find((candidate) => candidate.name === name);
   assert.ok(step, `missing workflow step: ${name}`);
@@ -41,6 +69,79 @@ function normalizeWhitespace(value: string | undefined): string {
 
 test("documented target dispatcher template matches the live workflow", () => {
   assert.equal(documentedWorkflow, liveWorkflow);
+});
+
+test("copied dispatchers admit the target before any token or acknowledgement", () => {
+  for (const source of [liveWorkflow, documentedWorkflow]) {
+    const jobs = workflowJobs(source);
+    assert.equal(
+      jobs?.["hosted-target-admission"]?.uses,
+      "openclaw/clawsweeper/.github/workflows/hosted-target-admission.yml@main",
+    );
+    assert.deepEqual(jobs?.["hosted-target-admission"]?.with, {
+      target_repo: "${{ github.repository }}",
+    });
+    const rejected = jobs?.["reject-hosted-target"];
+    assert.equal(
+      rejected?.if,
+      "${{ always() && needs.hosted-target-admission.outputs.outcome != 'public' }}",
+    );
+    assert.equal(rejected?.needs, "hosted-target-admission");
+    assert.deepEqual(rejected?.permissions, {});
+    assert.match(rejected?.steps?.[0]?.run ?? "", /run the review locally/);
+    assert.match(rejected?.steps?.[0]?.run ?? "", /Retry the workflow later/);
+    assert.doesNotMatch(
+      rejected?.steps?.[0]?.run ?? "",
+      /gh api|GITHUB_TOKEN|github\.token|create-github-app-token|CLAWSWEEPER_APP/,
+    );
+    assert.equal(jobs?.dispatch?.needs, "hosted-target-admission");
+    assert.match(
+      jobs?.dispatch?.if ?? "",
+      /needs\.hosted-target-admission\.outputs\.outcome == 'public'/,
+    );
+  }
+});
+
+test("copied dispatcher prefilters every canonical maintainer command form", () => {
+  const commands = [
+    "@clawsweeper",
+    "@openclaw-clawsweeper[bot]",
+    "/clawsweeper",
+    "/review",
+    "/re-review",
+    "/rerun review",
+    "/rerun-review",
+    "/status",
+    "/explain",
+    "/fix",
+    "/build",
+    "/implement",
+    "/create pr",
+    "/create-pr",
+    "/fix issue",
+    "/fix-issue",
+    "/autofix",
+    "/auto fix",
+    "/auto-fix",
+    "/automerge",
+    "/auto merge",
+    "/auto-merge",
+    "/approve",
+    "/stop",
+    "/autoclose",
+  ];
+  for (const source of [liveWorkflow, documentedWorkflow]) {
+    const run = namedStep(dispatchSteps(source), "Pre-filter ClawSweeper comment").run ?? "";
+    const pattern = run.match(/grep -Eiq '([^']+)'/)?.[1];
+    assert.ok(pattern);
+    for (const command of commands) {
+      const result = spawnSync("grep", ["-Eiq", pattern], {
+        input: `please ${command}\n`,
+        encoding: "utf8",
+      });
+      assert.equal(result.status, 0, `${command}: ${result.stderr}`);
+    }
+  }
 });
 
 test("target dispatcher acknowledges non-draft PR receipts before review dispatch", () => {

@@ -1,0 +1,360 @@
+{
+  "scope": "Constrained actual generation and production parser/setup/real-tmux execution on cold trusted targets; not a live PR review or publication.",
+  "historical": {
+    "reviewUrl": "https://github.com/openclaw/clawsweeper/pull/1259#issuecomment-5434890771",
+    "producerUrl": "https://github.com/openclaw/clawsweeper/actions/runs/33048926593",
+    "producerSha": "ff813ac2fa76d853d8a9129e6763d09624cafe72",
+    "reviewedHead": "a08acddf53cc688d4fd38206898fb35023c9c1f6",
+    "reviewedAt": "2026-08-27T07:17:28.253Z",
+    "artifactZipSha256": "d122940e3ebce15b1723af48f966b064dff10b544d3a2092db57014497ca4762",
+    "retainedPlan": {
+      "status": "recommended",
+      "surface": "terminal",
+      "reason": "The changed parser and terminal driver have a deterministic local test surface that requires no account, network service, or secret.",
+      "payoff": {
+        "kind": "static_text",
+        "justification": "The focused test emits a short, self-explanatory terminal result, so a recording would not add useful evidence."
+      },
+      "entry": "node --test --test-name-pattern='preserves every terminal command including exact entry repeats|terminal entry with expectations executes once' test/decision-parser.test.ts test/live-proof.test.ts",
+      "steps": [
+        {
+          "action": "expect_output",
+          "text": "preserves every terminal command including exact entry repeats"
+        },
+        {
+          "action": "expect_output",
+          "text": "terminal entry with expectations executes once"
+        }
+      ]
+    },
+    "overallPass": false,
+    "failure": {
+      "phase": "step",
+      "reason": "expected terminal output was not visible within 30 seconds: \"preserves every terminal command including exact entry repeats\"",
+      "step": 1,
+      "action": "expect_output"
+    },
+    "limit": "Plan extracted from retained report; original full decision and historical assembled prompt/tool-read trace unavailable."
+  },
+  "generation": {
+    "generator": "Codex",
+    "cliVersion": "codex-cli 0.150.0-alpha.13",
+    "provider": "openai",
+    "auth": "existing ChatGPT login",
+    "startedAt": "2026-08-27T08:53:10.031Z",
+    "completedAt": "2026-08-27T08:54:27.541Z",
+    "exitCode": 0,
+    "helperSha256": "2b12954b5afe14cb2d451a5457342ca1ad5f29703b2deb5426f162f80692f41e",
+    "promptSha256": "060ce9661249b33ba81d37923096cd55aa32372b64a828828b9fb03bc2525049",
+    "schemaSha256": "758dd96182b5db7b9b4cb98164b4dbb9efd30d3cb7baf7590ad2159ef7b1aad9",
+    "decisionSha256": "eef1144f93d9c0086001faf07d83025cf17d626e63ee9d740d66749e91ca4fdd",
+    "isolation": {
+      "approval": "never",
+      "permissionProfile": "terminal-proof",
+      "filesystem": {
+        ":minimal": "read",
+        ":workspace_roots": "read"
+      },
+      "effectiveReadRoots": [
+        ":minimal",
+        "<empty-workspace>",
+        "<CLI bundled shell>",
+        "<CLI executable shim>"
+      ],
+      "writablePaths": [],
+      "childNetworkEnabled": false,
+      "userConfigIgnored": true,
+      "execRulesIgnored": true,
+      "projectConfigAbsent": true,
+      "projectInstructionsDisabled": true,
+      "skillsDisabled": true,
+      "shellToolsDisabled": true,
+      "mcpDisabled": true,
+      "pluginsDisabled": true,
+      "webSearchDisabled": true,
+      "emptyWorkspaceBeforeAndAfter": true,
+      "outsideSentinelReadDenied": true,
+      "workspaceWriteDenied": true,
+      "startupSandbox": "read-only",
+      "toolInventory": [
+        "functions.apply_patch",
+        "functions.exec",
+        "functions.send_user_message_async",
+        "functions.wait"
+      ],
+      "toolCalls": 0,
+      "inferenceRequests": 1,
+      "toolInventoryEvidence": "actual local inference request trace; no raw transcript retained in bundle"
+    },
+    "recordingTested": false
+  },
+  "generationRequest": "This is a controlled no-tools generation diagnostic, not a live GitHub review. Use only the supplied source context and production execution contract. Do not invoke tools, execute commands, access a network, or change files. Return a full decision under the supplied production schema. Recommend a terminal liveProofPlan with static_text payoff for the exact selected test command and the two requested stable test-name expectations. Keep the test-name pattern and both test paths unchanged; do not broaden the exercise or substitute a synthetic fixture. The plan will be parsed and executed later. Do not claim that it has already run.",
+  "generatedPlan": {
+    "status": "recommended",
+    "surface": "terminal",
+    "reason": "After the configured installation, build the required dist modules and execute the exact selected tests once on Node 24 or newer; this verifies only the bounded test exercise.",
+    "payoff": {
+      "kind": "static_text",
+      "justification": "The two stable test names and their results are clearer as captured text than a recording."
+    },
+    "entry": "pnpm run build && node --test --test-name-pattern='preserves every terminal command including exact entry repeats|terminal entry with expectations executes once' test/decision-parser.test.ts test/live-proof.test.ts",
+    "steps": [
+      {
+        "action": "expect_output",
+        "text": "preserves every terminal command including exact entry repeats"
+      },
+      {
+        "action": "expect_output",
+        "text": "terminal entry with expectations executes once"
+      }
+    ]
+  },
+  "sourceHashes": {
+    "src/clawsweeper-review-runtime.ts": "0da8bf86bf9cf760e416865b5d2027b4f6ced2b0ae92aed8f53218c610d98136",
+    "src/live-proof/setup.ts": "c030b82c19c0aa921ae19d0bc28308052c16ba61e6ca53681ae81bed5b92022e",
+    "src/live-proof/execute.ts": "58ca4799cef7d3a2ee204ec4b2de9a36d010cbdbbba90b84c1f548cc6bee5561",
+    "src/live-proof/drivers.ts": "313ae1906133139f1b4d1038bbadf03cd9e9640a4bbb165cf17a230b3cb06a04",
+    "src/live-proof/verification.ts": "8540f8de6228cccee39be8685128f8dd0a71acf5f28859e42a69b858cc6233d0",
+    "src/clawsweeper-decision-parser.ts": "a62773925ba606969ae416ebc7d50b11fbf9c48dcefdb1d902038e4bf5041e7c",
+    "src/repository-profiles.ts": "d9cb2bb3926ec9cd4361de011464e569122406765f223efcd03319ec1476ae9d",
+    "config/target-repositories.json": "f882186108d9455160ba053cac5c676155ef9549c5159023e50c9e21e03216f0",
+    "prompts/review-item.md": "2a6f9484098c242e0bc22b172e70aa16ca563f09b9163d85f572a69860bb8d75",
+    "schema/clawsweeper-decision.schema.json": "758dd96182b5db7b9b4cb98164b4dbb9efd30d3cb7baf7590ad2159ef7b1aad9",
+    "package.json": "c3467b7f0d666b663fd19632d70191c6e626a1247ff2ebe21e6f05770c77aba7",
+    "scripts/e2e/terminal-proof-generate.mjs": "2b12954b5afe14cb2d451a5457342ca1ad5f29703b2deb5426f162f80692f41e"
+  },
+  "compiledHashes": {
+    "dist/clawsweeper-review-runtime.js": "e0e2c6b8f3729d3bf84efa0273bfec4214e79359f9609d7f56d5fa54c7801f3f",
+    "dist/live-proof/setup.js": "e075104e2165b142da38dbea1334c70b1638d11c83d6dbc50367639480159a47",
+    "dist/live-proof/execute.js": "26ae5c574e2bc1804644a7a7d60f4735e05e4f73df684e6844337271afd9cc33",
+    "dist/live-proof/drivers.js": "d0bda02f1289fdca3614656dd1f33121ac251e31dac9c53c36d14ef2b99362d4",
+    "dist/live-proof/verification.js": "c0cb5a7fac806dccc59372fea7fc8f74d60d56ad3c68fbbce5232a6b7089991f",
+    "dist/clawsweeper-decision-parser.js": "72609213e5792fa43831cc53f33c5a58ef7f2a4392f3ebf233f4baa42f9e4dda",
+    "dist/repository-profiles.js": "fead399d1f268c1419c7c7ed36e95d89bb8c2acbb05a81116160f48f17485e75"
+  },
+  "before": {
+    "provider": "local macOS real tmux",
+    "targetSha": "71df3a1ce714d737e250008597075bb5eaeb2ac4",
+    "controllerHead": "71df3a1ce714d737e250008597075bb5eaeb2ac4",
+    "node": "v24.19.0",
+    "pnpmPin": "pnpm@11.10.0",
+    "pnpmVersion": "11.10.0",
+    "tmux": "tmux 3.7c",
+    "inputSha256": "fefebf901076dcb5561076c669adaf7e3550eafb87968308d35bb739a0e2ce6e",
+    "replayHelperSha256": "b4dfc66f07145a0eb93c41cf2dcf46af5ae1daaa6d6a0fe6a20c131b1330bace",
+    "initial": {
+      "nodeModulesPresent": false,
+      "distPresent": false
+    },
+    "afterSetup": {
+      "event": "after-profile-setup",
+      "nodeModulesPresent": true,
+      "distPresent": false
+    },
+    "commands": [
+      {
+        "event": "command",
+        "command": "node --test --test-name-pattern='preserves every terminal command including exact entry repeats|terminal entry with expectations executes once' test/decision-parser.test.ts test/live-proof.test.ts",
+        "distPresent": false
+      }
+    ],
+    "distPresentAfterExecution": false,
+    "tmuxCleaned": true,
+    "executionIsolation": {
+      "environmentKeys": [
+        "CI",
+        "CLAWSWEEPER_LIVE_PROOF_ENABLED",
+        "COREPACK_HOME",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_NOSYSTEM",
+        "HOME",
+        "LANG",
+        "PATH",
+        "PNPM_HOME",
+        "TMPDIR",
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "npm_config_cache",
+        "npm_config_globalconfig",
+        "npm_config_store_dir",
+        "npm_config_userconfig"
+      ],
+      "privateHomeCacheTmp": true,
+      "tmuxSockets": [
+        "<proof>/tmp/tmux.sock"
+      ],
+      "dedicatedTmuxSocket": true,
+      "commandInvocations": 23
+    },
+    "declaredCommandCount": 1,
+    "actualCommandCount": 1,
+    "testCommandCount": 1,
+    "buildBeforeImport": false,
+    "observedAssertions": [
+      {
+        "assertion": "preserves every terminal command including exact entry repeats",
+        "satisfied": false,
+        "detail": "not run after an earlier step failed"
+      },
+      {
+        "assertion": "terminal entry with expectations executes once",
+        "satisfied": false,
+        "detail": "not run after an earlier step failed"
+      }
+    ],
+    "receiptSha256": "80536e8e0b36b6fbb31106209989b81f7197a2eb6592cff48c7dcdfa20f64055",
+    "terminalExitStates": [
+      "1:1:"
+    ],
+    "verification": {
+      "schema_version": 1,
+      "head_sha": "71df3a1ce714d737e250008597075bb5eaeb2ac4",
+      "entry": "node --test --test-name-pattern='preserves every terminal command including exact entry repeats|terminal entry with expectations executes once' test/decision-parser.test.ts test/live-proof.test.ts",
+      "drive_status": "failed",
+      "steps": [
+        {
+          "action": "expect_output",
+          "status": "not_run",
+          "detail": "not run after an earlier step failed",
+          "subject": "preserves every terminal command including exact entry repeats",
+          "assertion": "preserves every terminal command including exact entry repeats",
+          "present_at_start": false,
+          "satisfied": false
+        },
+        {
+          "action": "expect_output",
+          "status": "not_run",
+          "detail": "not run after an earlier step failed",
+          "subject": "terminal entry with expectations executes once",
+          "assertion": "terminal entry with expectations executes once",
+          "present_at_start": false,
+          "satisfied": false
+        }
+      ],
+      "overall_pass": false,
+      "verified_at": "2026-08-27T09:04:34.177Z",
+      "failure": {
+        "phase": "execution",
+        "reason": "terminal command failed with exit status 1: \"node --test --test-name-pattern='preserves every terminal command including exact entry repeats|terminal entry with expectations executes once' test/decision-parser.test.ts test/live-proof.test.ts\""
+      },
+      "outputSummary": "Both selected test modules fail ERR_MODULE_NOT_FOUND importing dist/clawsweeper.js; 0 passed, 2 failed."
+    }
+  },
+  "after": {
+    "provider": "local macOS real tmux",
+    "targetSha": "71df3a1ce714d737e250008597075bb5eaeb2ac4",
+    "controllerHead": "71df3a1ce714d737e250008597075bb5eaeb2ac4",
+    "node": "v24.19.0",
+    "pnpmPin": "pnpm@11.10.0",
+    "pnpmVersion": "11.10.0",
+    "tmux": "tmux 3.7c",
+    "inputSha256": "eef1144f93d9c0086001faf07d83025cf17d626e63ee9d740d66749e91ca4fdd",
+    "replayHelperSha256": "b4dfc66f07145a0eb93c41cf2dcf46af5ae1daaa6d6a0fe6a20c131b1330bace",
+    "initial": {
+      "nodeModulesPresent": false,
+      "distPresent": false
+    },
+    "afterSetup": {
+      "event": "after-profile-setup",
+      "nodeModulesPresent": true,
+      "distPresent": false
+    },
+    "commands": [
+      {
+        "event": "command",
+        "command": "pnpm run build && node --test --test-name-pattern='preserves every terminal command including exact entry repeats|terminal entry with expectations executes once' test/decision-parser.test.ts test/live-proof.test.ts",
+        "distPresent": false
+      }
+    ],
+    "distPresentAfterExecution": true,
+    "tmuxCleaned": true,
+    "executionIsolation": {
+      "environmentKeys": [
+        "CI",
+        "CLAWSWEEPER_LIVE_PROOF_ENABLED",
+        "COREPACK_HOME",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_NOSYSTEM",
+        "HOME",
+        "LANG",
+        "PATH",
+        "PNPM_HOME",
+        "TMPDIR",
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "npm_config_cache",
+        "npm_config_globalconfig",
+        "npm_config_store_dir",
+        "npm_config_userconfig"
+      ],
+      "privateHomeCacheTmp": true,
+      "tmuxSockets": [
+        "<proof>/tmp/tmux.sock"
+      ],
+      "dedicatedTmuxSocket": true,
+      "commandInvocations": 42
+    },
+    "declaredCommandCount": 1,
+    "actualCommandCount": 1,
+    "testCommandCount": 1,
+    "buildBeforeImport": "unmodified fail-fast chain; successful build precedes test module loading",
+    "observedAssertions": [
+      {
+        "assertion": "preserves every terminal command including exact entry repeats",
+        "satisfied": true,
+        "detail": "ok"
+      },
+      {
+        "assertion": "terminal entry with expectations executes once",
+        "satisfied": true,
+        "detail": "ok"
+      }
+    ],
+    "receiptSha256": "ffa480d73fdecfb0a7aeba7178460a64390d02c9d65bb4f4f0fb0f5414025667",
+    "terminalExitStates": [
+      "1:0:"
+    ],
+    "verification": {
+      "schema_version": 1,
+      "head_sha": "71df3a1ce714d737e250008597075bb5eaeb2ac4",
+      "entry": "pnpm run build && node --test --test-name-pattern='preserves every terminal command including exact entry repeats|terminal entry with expectations executes once' test/decision-parser.test.ts test/live-proof.test.ts",
+      "drive_status": "completed",
+      "steps": [
+        {
+          "action": "expect_output",
+          "status": "completed",
+          "detail": "ok",
+          "subject": "preserves every terminal command including exact entry repeats",
+          "assertion": "preserves every terminal command including exact entry repeats",
+          "present_at_start": false,
+          "satisfied": true
+        },
+        {
+          "action": "expect_output",
+          "status": "completed",
+          "detail": "ok",
+          "subject": "terminal entry with expectations executes once",
+          "assertion": "terminal entry with expectations executes once",
+          "present_at_start": false,
+          "satisfied": true
+        }
+      ],
+      "overall_pass": true,
+      "verified_at": "2026-08-27T09:05:03.526Z",
+      "output": "$ tsc -p tsconfig.json\n\u2714 decision parser preserves every terminal command including exact entry repeats (5.936083ms)\n\u2714 terminal entry with expectations executes once and preserves long final output publicly (117.62975ms)\n\u2139 tests 2\n\u2139 suites 0\n\u2139 pass 2\n\u2139 fail 0\n\u2139 cancelled 0\n\u2139 skipped 0\n\u2139 todo 0\n\u2139 duration_ms 580.150625"
+    }
+  },
+  "review": {
+    "engine": "Codex",
+    "priorityThreshold": "P0",
+    "result": "no accepted/actionable findings"
+  },
+  "limits": [
+    "constrained diagnostic, not general planner reliability",
+    "local --checkout bypasses live PR and outer checkout materialization",
+    "no recording/publication",
+    "target isolation is operator telemetry, not kernel attestation"
+  ]
+}

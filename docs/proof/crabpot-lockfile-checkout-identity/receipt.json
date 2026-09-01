@@ -1,0 +1,75 @@
+{
+  "proof": "crabpot-lockfile-checkout-identity",
+  "committed_head": "f1cb0dfa666584da87cdf34f80f89fff2b99cc4d",
+  "committed_head_note": "the head that was actually exercised (fix + tests); this proof directory was added in a later commit on the same branch that changes no tested file",
+  "branch": "fix/crabpot-lockfile-checkout-identity",
+  "provider": "local-container",
+  "provider_override_reason": "repo-config default provider (blacksmith-testbox) requires openclaw org runners not available outside the org; local-container is Docker-backed and requires only a local Docker daemon",
+  "crabbox_cli_version": "dev (built from github.com/openclaw/crabbox @ 74226d7, go1.26.5, not an official tagged release binary)",
+  "lease": {
+    "id": "cbx_3e31cb90a5dd",
+    "slug": "coral-krill",
+    "container_id": "237d4fcec872",
+    "type": "node_24-bookworm"
+  },
+  "image": {
+    "ref": "node:24-bookworm",
+    "digest": "sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584"
+  },
+  "docker_engine_version": "29.7.2",
+  "node_version": "v24.19.0",
+  "pnpm_version": "11.10.0",
+  "run_proof_sh_full_run": {
+    "note": "the committed run-proof.sh was executed literally, end to end, inside this same lease (not copy-pasted piecemeal); exit 0, all phases including production-real-behavior and content completed",
+    "run_id": "run_fa09a696ea8b"
+  },
+  "focused_scenarios": {
+    "command": "node --test test/repair/target-validation.test.ts",
+    "environment": "Crabbox local-container lease cbx_3e31cb90a5dd",
+    "tests": 206,
+    "pass": 203,
+    "fail": 0,
+    "skipped": 3,
+    "skip_reason": "runner does not provide delegated user namespaces and Landlock ABI 3+ (unrelated to this change)"
+  },
+  "static_gates": {
+    "environment": "Crabbox local-container lease cbx_3e31cb90a5dd",
+    "format_check": "clean, 744 files",
+    "lint": "clean, 0 warnings/0 errors across lint:src (167 files), lint:repair (166 files), lint:scripts (317 files), lint:dashboard (33-34 files)",
+    "build_all": "clean (tsconfig.json, tsconfig.repair.json, tsconfig.dashboard.json)"
+  },
+  "production_real_behavior_proof": {
+    "target_repo": "openclaw/crabpot",
+    "target_commit_observed": "0cb363fdae97a06cc91f96525529cb3907ae20ad",
+    "environment": "direct toolchain run, not inside the Crabbox lease",
+    "environment_node_version": "v26.7.0",
+    "environment_note": "reaching this bug's code path requires a real completed pnpm install through runContainedCommand's namespace containment; the Crabbox local-container lease's own namespace_setup stage fails before that point on this Docker host, confirmed symmetrically on both unfixed and fixed code (see red-green.md and run_proof_sh_full_run above, whose own production-real-behavior phase hit the identical wall when run inside the lease), so the RED/GREEN comparison for this specific bug was produced against a toolchain with working namespace/Landlock support instead",
+    "before_fix_result": "throws: target dependency setup mutated checkout identity: contentTreeSha, status, worktreeSha256 (reproduces production run 32812081965 exactly)",
+    "after_fix_result": "returns without throwing; git status --porcelain on the target checkout is empty before install and after setup, no pnpm-lock.yaml left behind"
+  },
+  "namespace_setup_wall_check": {
+    "environment": "Crabbox local-container lease cbx_3e31cb90a5dd",
+    "target_repo": "openclaw/crabpot",
+    "target_commit_observed": "0cb363fdae97a06cc91f96525529cb3907ae20ad",
+    "unfixed_result": "validation process containment failed: stage=namespace_setup exit=1",
+    "fixed_result": "validation process containment failed: stage=namespace_setup exit=1",
+    "conclusion": "identical failure on both, confirming the wall sits before this bug's code path and isn't masking or avoiding it"
+  },
+  "scope_limits": [
+    "full pnpm run check gate not run: test:coverage:no-build needs GitHub Actions-simulation secrets/tokens unavailable outside CI; unrelated to the changed surface",
+    "no Codex /review pass performed: that loop is GitHub-tooling-side and not available to run locally",
+    "production RED/GREEN comparison for this specific bug was not produced inside the Crabbox local-container lease itself, due to that lease's own namespace_setup limitation on this Docker host; it was produced against a real toolchain (same compiled dist/repair/target-validation.js, same real openclaw/crabpot commit) with working namespace/Landlock support instead"
+  ],
+  "artifacts": [
+    "README.md",
+    "behavior-contract.md",
+    "red-green.md",
+    "run-proof.sh"
+  ],
+  "content_sha256": {
+    "src/repair/target-validation.ts": "8aa50afb32096b22d78c3aaa96d5b475b23934d4a52f6bfe1c463992afa91c7a",
+    "test/repair/target-validation.test.ts": "f2129dfc229642230467a0a2b409b78740dafaf0e6fd8992c2ca2483437911b3",
+    "docs/proof/crabpot-lockfile-checkout-identity/behavior-contract.md": "a1775ad2b024183aada0059d9b4544c04cb1d7af583f09dfadbad0081cd2040b",
+    "docs/proof/crabpot-lockfile-checkout-identity/run-proof.sh": "1989d9f3e00bddcb3d5425f65dc08a64b77eea186f2dd08b0ced73990569b426"
+  }
+}

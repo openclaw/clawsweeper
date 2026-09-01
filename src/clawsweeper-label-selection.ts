@@ -6,6 +6,7 @@ import {
   IMPACT_LABEL_NAMES,
   ISSUE_ADVISORY_LABELS,
   ISSUE_ADVISORY_LABEL_NAMES,
+  LEGACY_TELEGRAM_VISIBLE_PROOF_LABEL,
   MATURITY_LABELS,
   MATURITY_LABEL_NAMES,
   MERGE_RISK_LABELS,
@@ -118,7 +119,10 @@ export function createLabelSelectionPolicy(dependencies: LabelSynchronizationDep
     labels: readonly string[],
     proof: Pick<TelegramVisibleProof, "status">,
   ): string[] {
-    const nextLabels = labels.filter((label) => label !== TELEGRAM_VISIBLE_PROOF_LABEL);
+    const nextLabels = labels.filter(
+      (label) =>
+        label !== TELEGRAM_VISIBLE_PROOF_LABEL && label !== LEGACY_TELEGRAM_VISIBLE_PROOF_LABEL,
+    );
     if (proof.status === "needed") nextLabels.push(TELEGRAM_VISIBLE_PROOF_LABEL);
     return nextLabels;
   }

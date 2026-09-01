@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { createApplyRecordOperations } from "../dist/clawsweeper-apply-records.js";
+import { repositoryProfileFor } from "../dist/repository-profiles.js";
 
 import {
   implementedCloseReport,
@@ -11,6 +13,60 @@ import {
   withMockGh,
   workPlanCandidateReport,
 } from "./helpers.ts";
+
+test("apply resolves only requested paired dependencies and preserves selected snapshots", () => {
+  const selected = {
+    number: 20,
+    name: "20.md",
+    path: "items/20.md",
+    repo: "openclaw/openclaw",
+    markdown: "selected snapshot",
+  };
+  const paired = {
+    ...selected,
+    number: 21,
+    name: "21.md",
+    path: "items/21.md",
+    markdown: "independent paired review",
+  };
+  const reads: number[][] = [];
+  const records = createApplyRecordOperations({
+    applyKind: "all",
+    applyQueueSortFields: () => ({ priority: 0, applyCheckedAt: 0 }),
+    canonicalBaselineDir: "",
+    closedDir: "closed",
+    decisionPacketsDir: "packets",
+    dryRun: true,
+    itemsDir: "items",
+    numberForMarkdownFile: (name) => Number(name.replace(".md", "")),
+    plansDir: "plans",
+    profile: repositoryProfileFor("openclaw/openclaw"),
+    recordRoot: ".",
+    requestedItemNumberSet: new Set([20]),
+    syncCommentsOnly: false,
+    targetRepo: () => "openclaw/openclaw",
+    reportEntriesForDir: (_dir, numbers) => {
+      assert.ok(numbers, "paired lookup must always be bounded");
+      reads.push([...numbers]);
+      return numbers.has(21)
+        ? [paired]
+        : numbers.has(22)
+          ? [{ ...paired, number: 22, repo: "other/repo" }]
+          : [];
+    },
+  });
+  const lookup = records.createOpenReportLookup([selected], false);
+  assert.equal(lookup(20), selected);
+  assert.equal(lookup(21), paired);
+  assert.equal(lookup(21), paired);
+  assert.equal(lookup(22), undefined);
+  assert.equal(lookup(23), undefined);
+  assert.equal(lookup(23), undefined);
+  assert.deepEqual(reads, [[21], [22], [23]]);
+  const exactLookup = records.createOpenReportLookup([selected], true);
+  assert.equal(exactLookup(21), undefined);
+  assert.deepEqual(reads, [[21], [22], [23]]);
+});
 
 test("apply-decisions preserves auto-selected order and traces only examined records", () => {
   const root = mkdtempSync(tmpPrefix);
@@ -62,27 +118,34 @@ test("apply-decisions preserves auto-selected order and traces only examined rec
   }
 });
 
-test("exact-event apply does not read unrelated canonical records", () => {
+test("apply-decisions runs the numeric comment-sync frontier before ascending urgent items", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
     const itemsDir = join(root, "items");
     const closedDir = join(root, "closed");
     const plansDir = join(root, "plans");
     const reportPath = join(root, "apply-report.json");
+    const tracePath = join(root, "apply-cursor-trace.json");
+    const wrappedReportPath = join(root, "wrapped-apply-report.json");
+    const wrappedTracePath = join(root, "wrapped-apply-cursor-trace.json");
+    const unsortedReportPath = join(root, "unsorted-apply-report.json");
+    const unsortedTracePath = join(root, "unsorted-apply-cursor-trace.json");
+    const ascending = [87267, 95788, 97566, 105342, 105870];
     mkdirSync(itemsDir, { recursive: true });
     mkdirSync(plansDir, { recursive: true });
-    writeFileSync(
-      join(itemsDir, "20.md"),
-      workPlanCandidateReport({
-        repository: "openclaw/openclaw",
-        number: 20,
-        local_checkout_access: "unverified",
-        decision: "keep_open",
-        action_taken: "kept_open",
-      }),
-      "utf8",
-    );
-    symlinkSync(join(root, "missing-record.md"), join(itemsDir, "999.md"));
+    for (const number of ascending) {
+      writeFileSync(
+        join(itemsDir, `${number}.md`),
+        workPlanCandidateReport({
+          repository: "openclaw/openclaw",
+          number,
+          local_checkout_access: "unverified",
+          decision: "keep_open",
+          action_taken: "kept_open",
+        }),
+        "utf8",
+      );
+    }
 
     runApplyDecisionsForTest({
       itemsDir,
@@ -93,19 +156,126 @@ test("exact-event apply does not read unrelated canonical records", () => {
         "--target-repo",
         "openclaw/openclaw",
         "--item-numbers",
-        "20",
-        "--exact-event-publication",
-        "--limit",
+        ascending.join(","),
+        "--processed-limit",
         "1",
+        "--cursor-trace",
+        tracePath,
+        "--comment-sync-cursor",
+        "105854",
       ],
     });
 
     const report = JSON.parse(readFileSync(reportPath, "utf8"));
-    assert.equal(report[0]?.number, 20);
+    const trace = JSON.parse(readFileSync(tracePath, "utf8"));
+    assert.equal(report[0]?.number, 105870);
+    assert.deepEqual(trace, { schema_version: 1, examined_item_numbers: [105870] });
+
+    runApplyDecisionsForTest({
+      itemsDir,
+      closedDir,
+      plansDir,
+      reportPath: wrappedReportPath,
+      extraArgs: [
+        "--target-repo",
+        "openclaw/openclaw",
+        "--item-numbers",
+        ascending.join(","),
+        "--processed-limit",
+        "1",
+        "--cursor-trace",
+        wrappedTracePath,
+        "--comment-sync-cursor",
+        "200000",
+      ],
+    });
+
+    const wrappedReport = JSON.parse(readFileSync(wrappedReportPath, "utf8"));
+    const wrappedTrace = JSON.parse(readFileSync(wrappedTracePath, "utf8"));
+    assert.equal(wrappedReport[0]?.number, 87267);
+    assert.deepEqual(wrappedTrace, { schema_version: 1, examined_item_numbers: [87267] });
+
+    runApplyDecisionsForTest({
+      itemsDir,
+      closedDir,
+      plansDir,
+      reportPath: unsortedReportPath,
+      extraArgs: [
+        "--target-repo",
+        "openclaw/openclaw",
+        "--item-numbers",
+        "105342,105870,87267,97566,95788",
+        "--processed-limit",
+        "1",
+        "--cursor-trace",
+        unsortedTracePath,
+        "--comment-sync-cursor",
+        "90000",
+      ],
+    });
+
+    const unsortedReport = JSON.parse(readFileSync(unsortedReportPath, "utf8"));
+    const unsortedTrace = JSON.parse(readFileSync(unsortedTracePath, "utf8"));
+    assert.equal(unsortedReport[0]?.number, 95788);
+    assert.deepEqual(unsortedTrace, { schema_version: 1, examined_item_numbers: [95788] });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+for (const mode of ["exact-event", "proof", "comment-sync", "broad", "empty"] as const) {
+  test(`${mode} apply does not read unrelated canonical records`, () => {
+    const root = mkdtempSync(tmpPrefix);
+    try {
+      const itemsDir = join(root, "items");
+      const closedDir = join(root, "closed");
+      const plansDir = join(root, "plans");
+      const reportPath = join(root, "apply-report.json");
+      mkdirSync(itemsDir, { recursive: true });
+      mkdirSync(closedDir, { recursive: true });
+      mkdirSync(plansDir, { recursive: true });
+      writeFileSync(
+        join(itemsDir, "20.md"),
+        workPlanCandidateReport({
+          repository: "openclaw/openclaw",
+          number: 20,
+          local_checkout_access: "unverified",
+          decision: "keep_open",
+          action_taken: "kept_open",
+        }),
+        "utf8",
+      );
+      if (mode !== "broad") {
+        symlinkSync(join(root, "missing-record.md"), join(itemsDir, "999.md"));
+      }
+      symlinkSync(join(root, "missing-record.md"), join(closedDir, "998.md"));
+
+      runApplyDecisionsForTest({
+        itemsDir,
+        closedDir,
+        plansDir,
+        reportPath,
+        extraArgs: [
+          "--target-repo",
+          "openclaw/openclaw",
+          "--skip-dashboard",
+          ...(mode === "broad" ? [] : ["--item-numbers", mode === "empty" ? "21" : "20"]),
+          ...(mode === "exact-event" ? ["--exact-event-publication"] : []),
+          ...(mode === "proof" ? ["--dry-run"] : []),
+          ...(mode === "comment-sync" ? ["--sync-comments-only"] : []),
+          "--limit",
+          "1",
+        ],
+      });
+
+      const report = JSON.parse(readFileSync(reportPath, "utf8"));
+      if (mode === "empty") assert.deepEqual(report, []);
+      else assert.equal(report[0]?.number, 20);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
 
 test("apply-decisions keeps close-limit candidates out of the cursor trace", () => {
   const root = mkdtempSync(tmpPrefix);

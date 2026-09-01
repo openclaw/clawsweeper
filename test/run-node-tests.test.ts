@@ -34,7 +34,6 @@ test("test runner expands named targets with sorted de-duplicated files", () => 
     "test/z.test.ts",
     "test/a.test.ts",
     "test/repair/b.test.ts",
-    "test/repair/target-validation.test.ts",
     "dist/repair/z.test.js",
     "dist/repair/fix-prompt-builder.test.js",
   ]);
@@ -44,21 +43,16 @@ test("test runner expands named targets with sorted de-duplicated files", () => 
       "dist/repair/fix-prompt-builder.test.js",
       "dist/repair/z.test.js",
       "test/repair/b.test.ts",
-      "test/repair/target-validation.test.ts",
     ]);
     assert.deepEqual(resolveTestFiles("all", root), [
       "dist/repair/fix-prompt-builder.test.js",
       "dist/repair/z.test.js",
       "test/a.test.ts",
       "test/repair/b.test.ts",
-      "test/repair/target-validation.test.ts",
       "test/z.test.ts",
     ]);
     assert.deepEqual(resolveTestFiles("fix-prompt-builder", root), [
       "dist/repair/fix-prompt-builder.test.js",
-    ]);
-    assert.deepEqual(resolveTestFiles("target-validation", root), [
-      "test/repair/target-validation.test.ts",
     ]);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -105,7 +99,7 @@ test("composed no-build scripts preserve standalone build contracts", () => {
   const scripts = packageJson.scripts as Record<string, string>;
 
   assert.match(scripts.test, /^pnpm run build:all && pnpm run test:no-build$/);
-  assert.match(scripts["test:repair"], /^pnpm run build:repair && pnpm run test:repair:no-build$/);
+  assert.match(scripts["test:repair"], /^pnpm run build:node && pnpm run test:repair:no-build$/);
   assert.match(scripts["test:coverage"], /^pnpm run build:all && pnpm run test:coverage:no-build$/);
   assert.match(
     scripts["test:coverage:changed"],

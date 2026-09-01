@@ -4,23 +4,42 @@
 - Owner: ClawSweeper maintainers and the designated Cloudflare operator
 - Source of truth: `dashboard/worker.ts`, `dashboard/exact-review-queue.ts`,
   `dashboard/wrangler.toml`, dashboard tests, and deployed read-only endpoints
-- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
 - Update when: routes, public fields, queue projections, capacity, alerts,
   deployment, or state-writer telemetry changes
 
 Read when changing the Cloudflare status dashboard, status ingest contract, or
 operator-facing ClawSweeper observability.
 
-The live dashboard is phase-one observability only. ClawSweeper still owns
-review, repair, apply, merge, comments, labels, and all GitHub mutations. The
-Cloudflare Worker reads public GitHub workflow state, serves a compact pipeline
-view, exposes live worker/job drill-down, and optionally accepts signed status
-events from workflows.
+The live dashboard is observer-only. ClawSweeper still owns review, repair,
+apply, merge, comments, labels, and all GitHub mutations. The Cloudflare Worker
+reads GitHub workflow state, projects it into closed status and Bay views, and
+optionally accepts signed status events from workflows. The one identity
+exception is a bounded reference sample containing canonical repository and
+issue or pull-request numbers from the explicit verified-public
+`PUBLIC_BAY_REPOS` allowlist. Bay and Overview use that same sample for cards
+and search; clicking a card opens a local blade with the closed stage/source,
+canonical repository and issue/PR links, and, when available, canonical GitHub
+run/job links plus fixed action-step categories and states. Public responses
+still exclude workflow, item, and step titles, raw or source URLs, queries, raw
+failure keys and payloads, internal opaque keys, credentials, tokens, private
+or non-allowlisted repositories, and per-job diagnostic text.
 
 For the end-to-end relationship between GitHub Actions workers, durable jobs,
 CrabFleet action sessions, Codex steering, completion reasons, and dashboard
 rows, see
 [`steerable-repair-automation.md`](steerable-repair-automation.md).
+
+Queue transport failures keep the fixed public `exact_review_queue_unavailable`
+response. Server logs for `exact_review_queue_request_failed` retain only the
+Cloudflare `remote`, `retryable`, and `overloaded` boolean flags; exception text,
+stacks, request payloads, and credentials are excluded. These flags are diagnostic
+signals and do not change retry or publication policy. Inside the Durable Object,
+`exact_review_queue_handler_failed` additionally records `initialize` or `fetch`
+and the first numeric `[line, column]` location in the deployed `worker.js` module
+(or `null` when unavailable). Match coordinates to that deployment’s bundle;
+remote transport replaces the original stack before the outer Worker sees it.
+These logs exclude error messages, SQL, private paths, and raw stacks.
 
 ## Deployment
 
@@ -69,9 +88,11 @@ gh api "repos/openclaw/clawsweeper/actions/workflows/dashboard.yml/runs?per_page
 
 ## Access Model
 
-The intended reader policy is Cloudflare Access with GitHub login restricted to
-the `openclaw` organization. The dashboard Worker does not implement GitHub
-OAuth itself. Keep auth at the Cloudflare edge.
+The intended browser reader policy is Cloudflare Access with GitHub login
+restricted to the `openclaw` organization. The dashboard Worker does not
+implement GitHub OAuth itself. Keep auth at the Cloudflare edge, but do not use
+Access as the privacy boundary: every public status and observability response
+must remain safe when treated as public.
 
 The current local Services token can identify the account, but cannot deploy the
 Worker or edit Cloudflare Access/DNS. Add the Workers deploy secret, the
@@ -79,9 +100,10 @@ Worker or edit Cloudflare Access/DNS. Add the Workers deploy secret, the
 Scripts edit, Zone DNS/route, and Zero Trust Access permissions.
 
 Workflow events are sent with a bearer secret without a browser login. Ingest
-requires the `INGEST_TOKEN` Worker secret. If the optional `STATUS_STORE` KV
-binding exists, events and CI status use KV. Without KV, the Worker falls back
-to Cloudflare edge cache so badges stay fast but less durable across colos.
+requires the `INGEST_TOKEN` Worker secret. Events and CI status persist only
+through the private `STATUS_STORE` binding. If that binding is absent, ingest
+remains available but the Worker deliberately skips persistence; raw event and
+item metadata never falls back to the shared edge cache.
 
 ```bash
 curl -X POST https://clawsweeper.openclaw.ai/api/events \
@@ -113,40 +135,40 @@ is absent or a cache event lands in another Cloudflare colo.
 
 ## What It Shows
 
-- active ClawSweeper workflow runs
-- active Codex jobs, their current GitHub Actions step, elapsed time, target,
-  lane, and complete step timeline
-- separate issue-to-PR and PR-repair worker filters, with issue or pull request
-  links chosen from the work kind
-- a Live terminals link to CrabFleet, where registered `github_actions`
-  sessions expose the current Codex thread for browser steering
-- a five-stage system overview from intake through results
-- an Automatic Builds overview grouped by source issue, showing the issue
-  title, queued/planning/building/completed/blocked phase, linked Actions run,
-  active worker, generated PR, and a chronological lifecycle drawer
-- a budget-sized capacity rail plus lane filters for issue-to-PR, PR repair,
-  review, repair, commit, assist, and other workers
-- queued/waiting run count
-- operational health derived from queue age and running age: queued runs become
-  degraded after 30 minutes, and in-progress runs become stalled after 150
-  minutes
+- bounded active-work counts and closed workflow, worker, status, stage, and
+  outcome categories; arbitrary titles, targets, source links, keys, and job
+  text are omitted
+- six aggregate Bay stages from arrival through repair, split into disjoint
+  queued and live counts only when both producer censuses are complete, plus a
+  bounded verified-public repository/item/action reference sample used by Bay
+  and Overview cards, search, overflow lists, and client-side public-reference
+  blades
+- durable lifecycle inventory and six closed lane counts plus at most 24
+  minimal cards for verified-public repository/item references
+- a budget-sized capacity rail plus aggregate counts for issue-to-PR, PR repair,
+  review, repair, commit, assist, and other worker classes
+- queued and waiting run counts
+- operational health derived from queue age and running age: queued runs from
+  30 through 1440 minutes old degrade operational health; queued runs older
+  than 1440 minutes are reported separately as zombies; pre-queue pending reruns
+  older than 60 minutes are reported separately as wedged; approval-gated runs
+  are also reported separately; in-progress runs become stalled after 150 minutes
 - 24-hour and seven-day health trends for total queue depth, over-age queue
   depth, and the oldest queued/running ages
-- job-level worker attempt error rate, recovery rate, and unresolved failures,
+- aggregate worker-attempt error, recovery, and unresolved-failure counts,
   including failures hidden by workflow `continue-on-error`
 - automerge worker reliability from the dedicated repair workflow, including
   sampled failure rate, average and longest runtime, active or stalled attempts,
-  and the latest failure per target marked as unresolved or recovered by a later
-  successful run
+  and bounded unresolved or recovered outcome counts
 - active pipeline rows grouped as automerge, repair, exact review, hot review,
   apply, or background review
 - CI state for active PR rows when available
-- recent automerge command-to-merge timing samples
+- global automerge command-to-merge timing buckets and closed terminal outcomes;
+  repository, policy, and session rows are not public
 - explicit workflow status events posted to the ingest API when KV ingest is
   enabled
-- problem-focused pruning alerts from latest sweep status files when apply runs
-  report blocked or degraded progress, with reason tooltips and maintainer
-  workflow commands for safe follow-up
+- global apply-lane queue, result, lease, and closed failure-category counts;
+  repository inventory, run links, and failure text remain private
 - lane-level apply health in status JSON so closure processing and durable
   review-comment sync are reported separately even when they share the same
   applicator
@@ -157,34 +179,83 @@ is absent or a cache event lands in another Cloudflare colo.
   apply-ready candidate count and an estimated number of cursor windows to
   revisit the close queue; scheduled cadence time is explanatory only because
   successful windows can dispatch immediate continuations
+- fleet-wide review coverage and review-lane health for normalized time ranges;
+  repository rows and identifying filters are not public
 - exact-review queue backlog, retry-ready backlog, target-admissible backlog,
-  and pressure classification from the current durable queue snapshot
+  fixed backoff and parked reason counts, handoff health, and pressure from the
+  current durable queue snapshot
+- normal direct-review journeys in the Bay Kanban and one-hour timing metric by
+  default, with a presentation-only switch to include the retired automatic
+  proof/legacy-batch path for historical comparison
 
 The Worker fetches job details only for the bounded active-run set, limits that
 GitHub fanout to 12 concurrent requests, and caches each run's jobs for 60
-seconds. It separately samples 20 recent completed worker runs with ten-way
-fanout and caches error/recovery telemetry for 120 seconds. This bounds
+seconds. It separately samples up to 40 recent completed worker runs with
+twenty-way fanout and caches error/recovery telemetry for 120 seconds. That leaves
+enough distinct completed-item evidence to drive a 20-outcome tide despite
+repeated targets or excluded runs while still bounding telemetry pressure.
+This bounds
 telemetry pressure without exceeding the 128-worker fleet budget. Worker details
-paginate up to 300 jobs per workflow run so 89-shard runs remain fully visible,
-then finish before optional pipeline CI and historical
-enrichment begin, so those secondary lookups do not compete with active worker
-telemetry. If GitHub job telemetry is unavailable, the API and UI retain the
-workflow-level fallback rather than hiding active work.
+paginate up to 300 jobs per workflow run so 89-shard runs contribute to a
+complete internal census. Titles, job names, raw URLs, opaque target keys, and
+raw errors are removed before the status snapshot is persisted or returned.
+Only the allowlisted canonical repository/item reference tuple and a validated
+action descriptor are retained for the bounded Bay sample. The action
+descriptor contains canonical repository/run/job identifiers, a canonical
+start time, and closed step kind/status/conclusion values; raw step names and
+URLs are discarded. If the census is incomplete, the public activity projection
+fails closed instead of presenting partial counts as complete.
 
-Automatic issue-build lifecycle events are retained for seven days so completed
-and blocked work remains visible after the worker leaves the active Actions
-set. Other recent activity remains bounded independently.
+Automatic issue-build lifecycle events are retained privately for seven days so
+completed and blocked work can be reconciled after the worker leaves the active
+Actions set. The public lifecycle and recent-publication routes revalidate that
+state into bounded inventory, lane, bucket, and outcome counts. Lifecycle may
+also return at most 24 minimal cards filtered to `PUBLIC_BAY_REPOS`; it never
+returns private repositories, revision identifiers, target keys, facts, titles,
+raw URLs, or failure detail.
 
 Status responses use stale-while-revalidate delivery. After the 20-second fresh
 window expires, the Worker immediately returns the last good snapshot, marks it
 with `X-ClawSweeper-Cache: stale`, and coalesces one background refresh per
-isolate. Recent automerge timing and the latest 100 runs from
-`repair-cluster-worker.yml` are cached for five minutes, as are recent
-ClawSweeper-owned closes, because those historical sections do not need
-worker-step freshness. Reliability sampling filters those workflow runs to
-`automerge repair` titles, so failures remain visible even when a worker exits
-before publishing a status event. The deployment smoke output includes cache
-state, fetch time, and current diagnostics.
+isolate. The Worker applies the public status projector before writing fresh or
+stale edge-cache bodies and the `StatusStore` snapshot, then applies it again on
+every cache/store read. Legacy cache bodies are reprojected, nested or unexpected
+fields are dropped, and stale, future-dated, or malformed store documents are
+rejected. Diagnostics retain a bounded error count and the fixed
+`telemetry_unavailable` category, never upstream exception or API error text.
+Recent automerge timing and completed-run samples may still be collected
+privately for five minutes, but only their closed aggregate projections enter
+the public response.
+
+## Public projection contract
+
+Public observer routes validate a fixed response schema rather than forwarding
+their backing store. Unsupported identifying query parameters are ignored; a
+malformed or inconsistent backing document fails closed with a fixed
+unavailable response.
+
+- `/api/review-observability` returns the four closed review lanes and global
+  health, completeness, run counts, item counts, and timestamps for a normalized
+  `6h`, `24h`, or `7d` range. It does not return repository filters or labels.
+- `/api/review-coverage` returns fleet-wide inventory status and coverage
+  totals. Per-repository rows remain in the private queue store.
+- `/api/apply-observability` returns global queue, result, retry, lease, and
+  closed failure-category counts for a normalized range. It omits repository
+  inventories, run links, and failure messages.
+- `/api/automerge-metrics` returns global summaries, time buckets, closed
+  terminal-outcome counts, and repair-efficiency counts. It omits repository
+  and policy filters and every session row; unrecognized terminal outcomes are
+  combined into `unknown`.
+- `/api/exact-review-queue/item` does not perform a public per-item lookup, and
+  `/api/exact-review-queue/reviews` returns a stable empty aggregate envelope.
+
+Rich workflow, queue, item, repository, session, revision, and failure records
+may remain in the queue and status Durable Objects when binding-authenticated
+workers need them. They must pass through the corresponding public projector
+before they reach a public response, edge cache, or ordinary status snapshot.
+The projector may retain only the narrow `PUBLIC_BAY_REPOS` reference tuple
+described above; this is not permission to expose arbitrary public-repository
+metadata or untrusted text.
 
 ## Exact Review history
 
@@ -232,16 +303,44 @@ rate appears about five minutes after deployment.
 Operational health remains a current-snapshot alert rather than a historical
 chart. `/api/status` classifies the already-fetched active workflow runs as:
 
-- `healthy`: complete telemetry and no over-age runs;
-- `degraded`: at least one queued run is 30 minutes old;
+- `healthy`: complete telemetry and no non-zombie over-age runs;
+- `degraded`: at least one queued run is from 30 through 1440 minutes old;
 - `stalled`: at least one in-progress run is 150 minutes old;
 - `unknown`: one or more actionable-status reads failed.
 
-Healthy status stays hidden. A queued run over 30 minutes, an in-progress run
-over 150 minutes, or incomplete Actions telemetry opens the expandable “Work
-execution needs attention” alert. This live diagnostic reuses the status
-snapshot's Actions reads; the history cron no longer stores queue pressure or
-oldest-run values.
+Webhook workflow snapshots retain a per-run delivery-or-poll confirmation
+time. An over-threshold queued run whose confirmation is older than the
+five-minute workflow TTL is re-read through the exact GitHub run endpoint
+before it can degrade health. One refresh checks at most the ten oldest stale
+rows, matching two waves of the five-way request fanout within the 20-second
+refresh cadence. Omitted unconfirmed rows cannot contribute to queue pressure
+and make health unknown until later refreshes reach them; batch telemetry
+records both the selected and omitted counts. Completed or missing runs are
+removed from the snapshot and emit structured eviction telemetry; a failed
+recheck makes the snapshot unknown. Until `workflow_run` subscription coverage
+has actually been observed, repair-fed rows remain unusable and this path uses
+the same bounded live status polls as before the webhook read model. Runs beyond
+the existing 24-hour zombie boundary remain separately visible and do not spend
+exact verification requests.
+
+Healthy status stays hidden. A non-zombie queued run at least 30 minutes old, an
+in-progress run at least 150 minutes old, or incomplete Actions telemetry opens the
+expandable “Work execution needs attention” alert. This live diagnostic reuses
+the status snapshot's Actions reads; the history cron no longer stores queue
+pressure or oldest-run values.
+
+Queued runs older than 1440 minutes are reported separately as zombies and do
+not contribute to `queued_over_threshold` or `oldest_queued_minutes`; they
+therefore do not make an otherwise healthy snapshot degraded. The API exposes
+them as `zombie_queued_runs` and `oldest_zombie_queued_minutes`. Runs waiting on
+deployment approval are also excluded from queue pressure and exposed as
+`approval_gated_runs` and `oldest_approval_gated_minutes`.
+
+Pre-queue pending reruns older than 60 minutes are also excluded from queue
+pressure because GitHub cannot cancel or rerun them. The API exposes aggregate
+counts and ages only, as `wedged_rerun_runs` and
+`oldest_wedged_rerun_minutes`; it does not add run identifiers to the public
+status payload.
 
 ## Boundaries
 
@@ -265,22 +364,24 @@ The singleton Durable Object stores each delivery receipt and queue item in its
 own SQLite row. Receipt insertion and item coalescing commit in one transaction,
 so a crash cannot record a duplicate-suppression receipt without its queued
 work. Receipts retain the seven-day idempotency window and expire through the
-indexed timestamp path in bounded batches; `/api/exact-review-queue` reports
-`delivery_receipts`, `storage_schema_version`, and
-`legacy_rollback_available` for operational proof. On the first upgraded
-request, the Worker transactionally imports the former `exact-review-queue`
-value. For 24 hours it maintains a generation-marked legacy shadow containing
-the queue and the complete active seven-day receipt set. Receipt timestamps are
-translated by two days so the immediately previous Worker's five-day pruner
-preserves their original seven-day expiry, and the reserved generation marker
-cannot expire. SQL state, its generation, and the synchronous KV shadow update
-in one SQLite transaction, so no committed generation can leave an older shadow
-readable. A later re-upgrade uses the generation plus deterministic timestamp
-translation to distinguish unchanged shadow receipts from receipts accepted or
-refreshed by the rolled-back Worker. It imports authoritative queue and receipt
-changes; a surviving generation is reconciled before deletion even when the
-rollback outlives the ordinary window. A divergent stale generation fails
-closed instead of discarding either side.
+indexed timestamp path in bounded batches. Delivery receipts, queue items,
+storage schema and rollback metadata, item keys, workflow/job metadata,
+dispatcher details, credential circuits, and diagnostic records are private
+binding-only state. `/api/exact-review-queue` does not serialize them.
+
+On the first upgraded request, the Worker transactionally imports the former
+`exact-review-queue` value. For 24 hours it maintains a generation-marked legacy
+shadow containing the queue and the complete active seven-day receipt set.
+Receipt timestamps are translated by two days so the immediately previous
+Worker's five-day pruner preserves their original seven-day expiry, and the
+reserved generation marker cannot expire. SQL state, its generation, and the
+synchronous KV shadow update in one SQLite transaction, so no committed
+generation can leave an older shadow readable. A later re-upgrade uses the
+generation plus deterministic timestamp translation to distinguish unchanged
+shadow receipts from receipts accepted or refreshed by the rolled-back Worker.
+It imports authoritative queue and receipt changes; a surviving generation is
+reconciled before deletion even when the rollback outlives the ordinary window.
+A divergent stale generation fails closed instead of discarding either side.
 
 The Worker publishes that compatibility shadow only when the complete active
 set stays within 20,000 receipts and 1 MiB. If it cannot publish the complete
@@ -292,10 +393,12 @@ queue's intake failure.
 Before each dispatch batch, the queue reads the `sweep.yml` workflow state once.
 If the workflow is disabled, or GitHub cannot confirm its state, due items stay
 pending and retry after `EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS` (60 seconds by
-default). `/api/exact-review-queue` exposes the bounded dispatcher state, reason,
-workflow state, check time, and retry time so an intentional pause cannot look
-like occupied executor capacity. Re-enabling the workflow does not require a
-queue mutation; the next status check resumes normal admission.
+default). The private queue state retains the dispatcher and workflow check
+needed to resume admission. The public queue projection exposes only the closed
+handoff status/reason and bounded phase counts and ages; it does not expose raw
+dispatcher state, workflow state, check timestamps, or retry detail.
+Re-enabling the workflow does not require a queue mutation; the next private
+status check resumes normal admission.
 
 Scheduled hot and normal-backfill decisions have already passed the queue's
 fleet-wide rate and burst controls, so they skip the webhook-churn debounce and
@@ -306,17 +409,17 @@ resets that recovery budget; after three unsuccessful recovery cycles the item
 stays parked for operator inspection. Publication dead-letter-capacity parks
 retain their separate operator-controlled recovery path.
 
-The same endpoint exposes `generated_at`, `ready_pending`,
-`admissible_pending`, `pressure`, `handoff_health`, and oldest timestamps and
-ages for the pending, dispatching, and leased phases. `ready_pending` excludes
-retry-delayed items. `admissible_pending` further excludes ready items blocked
-by their target's exact-review cap. `pressure` is a deterministic observation
-from that same queue snapshot: it reports `congested` or `saturated` only when
-capacity is full, the dispatcher and handoff telemetry are known, and
-target-admissible backlog remains. The snapshot adds no GitHub API fanout, and
-no workflow, planner, admission, continuation, or dispatch decision consumes
-the pressure value. New dispatch and claim transitions carry explicit phase
-timestamps. Rows written by an older deployment derive
+`/api/exact-review-queue` is an explicit, closed aggregate projection. It
+contains `generated_at`, `ready_pending`, `admissible_pending`, `pressure`,
+`handoff_health`, and bounded counts and oldest timestamps or ages for the
+pending, dispatching, and leased phases. `ready_pending` excludes retry-delayed
+items. `admissible_pending` further excludes ready items blocked by their
+target's exact-review cap. `pressure` is a deterministic observation from that
+same queue snapshot: it reports `congested` or `saturated` only when capacity is
+full, handoff telemetry is known, and target-admissible backlog remains. The
+projection adds no GitHub API fanout, and no workflow, planner, admission,
+continuation, or dispatch decision consumes the pressure value. New dispatch
+and claim transitions carry explicit phase timestamps. Rows written by an older deployment derive
 their phase start from the active dispatch or execution lease; a stale timestamp
 left by a rollback cannot override that newer lease, and a wholly unknown legacy
 age stays non-alarming. A claim is degraded after one third of the dispatch
@@ -328,9 +431,9 @@ dashboard renders the three phases, oldest age, available exact-review slots,
 and the current classification without changing queue capacity or storage
 schema. Fleet snapshots may use the longer stale fallback during a GitHub API
 outage, but `/api/status` attaches queue telemetry after selecting that snapshot
-so handoff recovery stays live. If the optional queue read fails, it reports
-`exact_review_queue: null` and `diagnostics.exact_review_queue_error` without
-making the otherwise-current fleet snapshot eligible for stale fallback.
+so handoff recovery stays live. If the optional queue read fails or is malformed,
+the public response uses an unavailable/unknown aggregate and a bounded
+`telemetry_unavailable` diagnostic; it never returns the underlying error text.
 
 For capacity displays, `/api/exact-review-queue` also exposes compatible
 `lanes.review` and `lanes.publication` objects. Each lane reports its own
@@ -340,34 +443,95 @@ count the causes represented by those lane totals, and the dashboard renders
 the same breakdown beside the lane counts. The existing top-level aggregate
 fields remain available for older consumers. Both lanes additionally report
 `enqueued_total` and `completed_total`; the review lane's existing
-`shed_since_reset` supplies overload demand. Publication also exposes
-`capacity_control` with the adaptive base, maximum, current ceiling, cooldown,
-recovery progress, and last classified GitHub pressure failure. `/api/status` retains its
-`control_plane` compatibility field, but the dashboard no longer renders that
-low-actionability section.
+`shed_since_reset` supplies overload demand. The public response omits item
+samples, ownership maps, per-target statistics, raw dispatch or failure detail,
+adaptive capacity-control internals, and all unexpected fields. A malformed
+required count or health value returns an unknown projection with HTTP 503
+instead of a plausible empty queue.
 
 Production overrides publication minimum, base, and maximum capacity to 8, 32,
 and 40, while source fallback values are 4, 24, and 48. The controller records
 failure, cooldown, recovery, and demand telemetry and scales within the
-production range. The publication lane also
-exposes `batches` and `direct`: production enables up to 8 concurrent size-8
+production range. The private publication state also tracks `batches`, `direct`,
+and adaptive capacity control: production enables up to 8 concurrent size-8
 batches, reserves two fresh-lane members per batch, and enables direct
-publication with retry/batch fallback. Document effective production values from
-`dashboard/wrangler.toml`, not only fallback constants in
-`dashboard/exact-review-queue.ts`.
+publication with retry/batch fallback. These controls affect the aggregate
+counts but are not serialized by the public projector. Document effective
+production values from `dashboard/wrangler.toml`, not only fallback constants
+in `dashboard/exact-review-queue.ts`.
+
+The binding-only publication state retains additional diagnostics:
+
+- `credential_circuits` records the pool class, optional target owner,
+  observation time, raw credential reset as `blocked_until`, latest
+  per-member reset-plus-jitter boundary as `recovery_until`, reset source,
+  authority flag, active state, and affected pending count. A circuit remains
+  active through `recovery_until`; `active: true` with free publication slots
+  means credential-blocked, not capacity-starved or healthy-idle.
+- `github_request_metrics` contains cumulative counters keyed by pool
+  class, endpoint category, operation class, outcome, and whether the item
+  revision was already retried.
+- `flow.last_15_minutes.causes` and `flow.last_60_minutes.causes` reconcile
+  publication retry, backoff, supersession, refresh, and dead-letter exhaustion
+  against durable flow counts. The surrounding flow window exposes `refreshed`
+  and `refreshed_rate_per_hour` as the independent refresh denominator. Cause
+  rows use only closed stage, completion, reason,
+  revision-relation, pool-class, recovery-cause, backoff, and attempt buckets.
+  `attribution_complete=false` or a failed per-transition `reconciliation`
+  explicitly marks a legacy or truncated denominator; the Worker never invents
+  attribution for an old aggregate.
+
+Those records are available only through the Durable Object binding and are not
+part of `/api/exact-review-queue`, `/api/status`, or Bay. The public projection
+keeps useful closed lane totals and fixed reason counts without exposing
+credential, target, revision, reset, member, or transition rows.
+
+An unattempted credential-circuit member appears as `transition: backoff` and
+does not increment `retried`. A retry-exhausted dead letter preserves the
+underlying completion reason in the cause row while the operator-facing dead
+letter retains its established `retry_exhausted` reason. A terminal coverage
+deferral is reported as `transition: deferred`, never as a publication. When a
+batch publishes its owned revision while a newer local revision is already
+queued, the ledger records both the completed publication and the follow-on
+backoff; the published row still reconciles to the durable publication total.
+Cause rows persist privately in SQLite for the same 48-hour window as
+publication flow buckets. They are not a public dimension-row surface.
+
+The durable handoff's `handoff_health.recovery_reasons` counts bounded
+`claim_timeout`, `execution_timeout`, `workflow_cancelled`, and
+`workflow_failed` recovery causes. These are observed queue and workflow facts;
+they do not infer why GitHub or a runner cancelled or failed a workflow.
+
+`GET /api/github-egress-observability?hours=6` adds the publication transport
+denominator as revision-independent closed aggregate rows. It separates durable
+members, `gh` invocations, and observed HTTP wire attempts and retains bounded
+pool, method, normalized route, page, source, stage, claim-generation, and
+first/repeat categories. Deployment/configuration revisions are withheld and
+otherwise-identical rows are combined across them. Private 403/429 observations
+become counts by status, pool class, operation, reset-authority category,
+resource category, and header presence; raw reset values and observation rows
+are not public. See
+[GitHub publication egress telemetry](github-egress-telemetry.md) for exact
+semantics, retention, privacy, and known opaque boundaries.
+
+Bay renders closed aggregate health context only. Its retired proof/batch
+switch filters the already-projected cards and selects between closed timing
+aggregates; it does not change queue admission or execution. Bay has no circuit reset,
+workflow dispatch, queue retry, replay, acknowledgement, or gate control, and it
+does not expose credential circuits or per-member recovery boundaries. Private
+circuit state continues to control automatic recovery.
 
 The standalone **State writer** panel separates the repo-wide serialization
 boundary from exact-review materialization telemetry. After the coordinator
 cutover, `state_writer.coordinator` is authoritative for the active writer,
 FIFO queue depth, completed turns, recovery counters, and coordinator wait.
-The Git lease ref is displayed only as a crash-recovery fence. Exact-review
-terminal telemetry still owns item/commit throughput and Git fence timing; an
-idle or failed publisher can make that telemetry stale without making the
-coordinator unavailable. The panel therefore shows the configured publication
-batch size independently, uses five-minute coordinator queue depth for its
-primary chart and recent sample summary, and never renders stale terminal
-zeroes as current throughput. Exact-review item, commit, and Git-fence timing
-metrics appear only while that separate terminal telemetry is fresh.
+Private state may retain Git lease and revision fences for crash recovery; the
+public panel omits them. Exact-review terminal telemetry still owns aggregate
+item/commit throughput and fence timing; an idle or failed publisher can make
+that telemetry stale without making the coordinator unavailable. The panel
+therefore shows bounded queue and throughput counts, uses five-minute
+coordinator queue depth for its primary chart, and never renders stale terminal
+zeroes as current throughput.
 
 Executors report the GitHub job outcome from their finalizer. Failure or
 cancellation clears the lease and requeues the item. Finalizer success remains

@@ -1,0 +1,79 @@
+{
+  "base_ref": "origin/main",
+  "base_sha": "765644804756d5f6b1dc1e940d62c50711e398d8",
+  "source": {
+    "baseline": {
+      "path": "src/repair/notify-merge.ts",
+      "sha256": "d9869572aca5538f5814412b95756087f768aaa3682080deb54956ec518d8574",
+      "cli_sha256": "9ab0c94991e801c5a6f3d2ef95d8bfa2d457ac41969459fc17168f281ca4d4ec"
+    },
+    "current": {
+      "path": "src/repair/notify-merge.ts",
+      "sha256": "90ab3b4a0e9df39551d6ea7f3fd49a2e2a2146954dd310d573024f28d7129065",
+      "cli_sha256": "c3471fff7ac23c60f8d6246a4cb6c4ec1f91a4167c0922cc8094246b038861b1"
+    }
+  },
+  "transport": {
+    "kind": "real loopback HTTP socket",
+    "bound_address": "127.0.0.1:50840",
+    "requests": [
+      {
+        "scenario": "old",
+        "attempt": 1,
+        "received_at": "2026-08-11T01:08:59.863Z",
+        "method": "POST",
+        "pathname": "/old/agent",
+        "idempotency_key": "merge:openclaw/openclaw#123:merge_canonical:abc123",
+        "body_idempotency_key": "merge:openclaw/openclaw#123:merge_canonical:abc123",
+        "local_address": "127.0.0.1",
+        "remote_address": "127.0.0.1",
+        "response_status": 503
+      },
+      {
+        "scenario": "new",
+        "attempt": 1,
+        "received_at": "2026-08-11T01:08:59.881Z",
+        "method": "POST",
+        "pathname": "/new/agent",
+        "idempotency_key": "merge:openclaw/openclaw#123:merge_canonical:abc123",
+        "body_idempotency_key": "merge:openclaw/openclaw#123:merge_canonical:abc123",
+        "local_address": "127.0.0.1",
+        "remote_address": "127.0.0.1",
+        "response_status": 503
+      },
+      {
+        "scenario": "new",
+        "attempt": 2,
+        "received_at": "2026-08-11T01:09:00.887Z",
+        "method": "POST",
+        "pathname": "/new/agent",
+        "idempotency_key": "merge:openclaw/openclaw#123:merge_canonical:abc123",
+        "body_idempotency_key": "merge:openclaw/openclaw#123:merge_canonical:abc123",
+        "local_address": "127.0.0.1",
+        "remote_address": "127.0.0.1",
+        "response_status": 200
+      }
+    ]
+  },
+  "old": {
+    "entrypoint": "baseline dist/repair/notify-merge.js",
+    "exit_code": 1,
+    "outcome": "failed after one HTTP 503",
+    "requests": 1,
+    "stdout": "{\n  \"status\": \"ok\",\n  \"considered\": 1,\n  \"pending\": 1,\n  \"sent\": 0,\n  \"failed\": 1,\n  \"skipped\": 0,\n  \"exitCode\": 1,\n  \"reason\": null\n}",
+    "stderr": ""
+  },
+  "new": {
+    "entrypoint": "runMergeNotifier (the function invoked by dist/repair/notify-merge.js main)",
+    "exit_code": 0,
+    "outcome": "succeeded after HTTP 503 then HTTP 200",
+    "requests": 2,
+    "stdout": "{\n  \"status\": \"ok\",\n  \"considered\": 1,\n  \"pending\": 1,\n  \"sent\": 1,\n  \"failed\": 0,\n  \"skipped\": 0,\n  \"exitCode\": 0,\n  \"reason\": null\n}",
+    "stderr": ""
+  },
+  "sibling_notifier_precedent": [
+    "src/repair/notify-events.ts",
+    "src/repair/notify-github-activity.ts",
+    "src/repair/notify-maintainer-report.ts"
+  ]
+}

@@ -100,13 +100,13 @@ test("pr repair intake supports author-wide open PR discovery", () => {
 
   const parsed = JSON.parse(output);
   assert.equal(parsed.mode, "author-wide");
-  assert.equal(parsed.searched, 4);
-  assert.equal(parsed.repos_discovered, 4);
+  assert.equal(parsed.searched, 5);
+  assert.equal(parsed.repos_discovered, 5);
   assert.equal(parsed.repos_scanned, 1);
   assert.deepEqual(parsed.skipped_repositories, {
     private: 1,
     metadata_unavailable: 1,
-    unsupported_profile: 1,
+    unsupported_profile: 2,
   });
   assert.equal(parsed.candidates, 1);
   assert.equal(parsed.jobs[0].status, "written");
@@ -120,7 +120,8 @@ test("pr repair intake supports author-wide open PR discovery", () => {
   assert.equal(fs.existsSync(jobPath), true);
   assert.equal(fs.existsSync(path.join(outDir, "steipete-private-tool")), false);
   assert.equal(fs.existsSync(path.join(outDir, "readonly-example")), false);
-  assert.equal(fs.existsSync(path.join(outDir, "openclaw-unavailable")), false);
+  assert.equal(fs.existsSync(path.join(outDir, "openclaw-example-tool")), false);
+  assert.equal(fs.existsSync(path.join(outDir, "openclaw-clawhub")), false);
 });
 
 function runIntake(root: string, extraArgs: string[]): string {
@@ -202,15 +203,16 @@ if (args[0] === "search" && args[1] === "prs") {
   process.stdout.write(JSON.stringify([
     { repository: { nameWithOwner: "openclaw/clawsweeper" } },
     { repository: { nameWithOwner: "readonly/example" } },
-    { repository: { nameWithOwner: "steipete/private-tool" } },
-    { repository: { nameWithOwner: "openclaw/unavailable" } },
+    { repository: { nameWithOwner: "steipete/camsnap" } },
+    { repository: { nameWithOwner: "openclaw/example-tool" } },
+    { repository: { nameWithOwner: "openclaw/clawhub" } },
   ]));
   process.exit(0);
 }
 if (args[0] === "repo" && args[1] === "view") {
   const repo = args[2];
-  if (repo === "openclaw/unavailable") process.exit(1);
-  process.stdout.write(JSON.stringify({ isPrivate: repo === "steipete/private-tool" }));
+  if (repo === "openclaw/clawhub") process.exit(1);
+  process.stdout.write(JSON.stringify({ isPrivate: repo === "steipete/camsnap" }));
   process.exit(0);
 }
 if (args[0] === "pr" && args[1] === "list") {

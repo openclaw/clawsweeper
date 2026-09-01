@@ -27,6 +27,23 @@ test("trailingHtmlComments rejects an unterminated adversarial suffix", () => {
   assert.deepEqual(trailingHtmlComments(value), []);
 });
 
+test("trailingHtmlComments stops at visible prose ending in a closing delimiter", () => {
+  assert.deepEqual(
+    trailingHtmlComments(
+      [
+        "<!-- earlier -->",
+        "Visible review details plan --> review -->",
+        "<!-- clawsweeper-verdict:needs-human item=321 sha=head -->",
+        "<!-- clawsweeper-review item=321 -->",
+      ].join("\n"),
+    ),
+    [
+      "<!-- clawsweeper-verdict:needs-human item=321 sha=head -->",
+      "<!-- clawsweeper-review item=321 -->",
+    ],
+  );
+});
+
 test("trailingHtmlComments recovers when prose contains an unmatched opener", () => {
   assert.deepEqual(
     trailingHtmlComments(

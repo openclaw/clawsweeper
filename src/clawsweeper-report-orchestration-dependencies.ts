@@ -1,3 +1,4 @@
+import type { RealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
 import { PR_STATUS_LABELS } from "./clawsweeper-policy.js";
 import type {
   ActionTaken,
@@ -17,6 +18,7 @@ import type {
   ItemContext,
   LabelJustification,
   LikelyOwner,
+  LiveProofPlan,
   MantisRecommendation,
   MaturityLabelName,
   MergeRiskLabelName,
@@ -38,6 +40,7 @@ import type {
   TriagePriority,
   VisionFitStatus,
 } from "./clawsweeper-types.js";
+import type { AttachedLiveVerification } from "./live-proof/verification.js";
 import { type RepositoryProfile } from "./repository-profiles.js";
 import { type ReviewStructuralPullState } from "./review-structural-cache.js";
 
@@ -61,7 +64,8 @@ export interface CreateReportOrchestrationDependencies {
   effectiveReviewStatus: (markdown: string) => string;
   ensureDir: (path: string) => void;
   eventTimestampMs: (value: unknown) => number | null;
-  fileUrl: (file: string, sha: string, line?: number) => string;
+  fileUrl: (file: string, sha: string, line?: number, repo?: string) => string;
+  normalizeEvidence: (entry: Evidence) => Evidence;
   filterReviewContextComments: (
     comments: readonly unknown[],
     number: number,
@@ -218,7 +222,7 @@ export interface CreateReportOrchestrationDependencies {
   };
   likelyOwnerLine: (owner: LikelyOwner) => string;
   linkedRelease: (tag: string) => string;
-  linkedSha: (sha: string) => string;
+  linkedSha: (sha: string, repo?: string) => string;
   lowSignalUnmergeablePrAuthorActivityBlockReason: (options: {
     author: string;
     createdAt: string;
@@ -285,11 +289,12 @@ export interface CreateReportOrchestrationDependencies {
   prStatusLabelForKind: (kind: PrStatusLabelKind) => (typeof PR_STATUS_LABELS)[number];
   prStatusLabelKindFromReportLabels: (markdown: string) => PrStatusLabelKind | null;
   publicFailedReviewReadinessBlock: (markdown: string) => string;
+  publicHistoricalVerificationBlockerLine: () => string;
   publicLikelyOwnerRole: (role: string) => string;
   publicMantisRecommendationBlock: (recommendation: MantisRecommendation) => string;
   publicMergeReadinessBlock: (
     rating: PrRating,
-    proof: RealBehaviorProof,
+    policy: RealBehaviorProofPolicy,
     priority: TriagePriority,
     bottomLine: string,
     remainingItemCount: number,
@@ -301,10 +306,10 @@ export interface CreateReportOrchestrationDependencies {
   publicPriorityBulletIfActionable: (text: string, fallback: PublicPriority) => string;
   publicPriorityFromText: (text: string, fallback: PublicPriority) => PublicPriority;
   publicRankDetailsBlock: () => string;
-  publicRealBehaviorProofLine: (proof: RealBehaviorProof) => string;
+  publicRealBehaviorProofLine: (policy: RealBehaviorProofPolicy) => string;
   publicReviewScoresBlock: (
     rating: PrRating,
-    proof: RealBehaviorProof,
+    policy: RealBehaviorProofPolicy,
     findings: readonly ReviewFinding[],
     securityReview: SecurityReview,
   ) => string;
@@ -314,7 +319,7 @@ export interface CreateReportOrchestrationDependencies {
   publicSecurityReviewLine: (review: SecurityReview) => string;
   publicTableCell: (value: string) => string;
   publicVerificationBlock: (
-    proof: RealBehaviorProof,
+    policy: RealBehaviorProofPolicy,
     evidence: readonly Evidence[],
     findings: readonly ReviewFinding[],
     securityReview: SecurityReview,
@@ -338,11 +343,15 @@ export interface CreateReportOrchestrationDependencies {
   reportFeatureShowcase: (markdown: string) => FeatureShowcase;
   reportFileName: (repo: string, number: number) => string;
   reportLikelyOwners: (markdown: string) => LikelyOwner[];
+  reportLiveProofPlan: (markdown: string) => LiveProofPlan;
+  reportLiveProofRecordingBlock: (markdown: string) => string;
   reportMantisRecommendation: (markdown: string) => MantisRecommendation;
   reportOverallConfidenceScore: (markdown: string) => number;
   reportOverallCorrectness: (markdown: string) => OverallCorrectness;
   reportPrRating: (markdown: string) => PrRating;
   reportRealBehaviorProof: (markdown: string) => RealBehaviorProof;
+  reportRealBehaviorProofPolicy: (markdown: string) => RealBehaviorProofPolicy;
+  reportAttachedLiveVerification: (markdown: string) => AttachedLiveVerification;
   reportReviewFindings: (markdown: string) => ReviewFinding[];
   reportRootCauseCluster: (markdown: string) => RootCauseClusterAssessment;
   reportSecurityReview: (markdown: string) => SecurityReview;

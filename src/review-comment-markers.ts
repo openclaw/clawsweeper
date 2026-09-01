@@ -9,6 +9,8 @@ export function trailingHtmlComments(value: string): string[] {
 
     const commentStart = value.lastIndexOf("<!--", end - 3);
     if (commentStart < 0) break;
+    // An earlier terminator means this candidate spans visible prose.
+    if (value.indexOf("-->", commentStart + 4) !== end - 3) break;
     trailing.push(value.slice(commentStart, end));
     end = commentStart;
   }

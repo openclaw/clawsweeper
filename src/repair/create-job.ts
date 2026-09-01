@@ -7,6 +7,7 @@ import { parseArgs, parseJob, repoRoot, validateJob } from "./lib.js";
 import { ghJsonBestEffort } from "./github-cli.js";
 import { escapeRegExp } from "./text-utils.js";
 import { renderJobIntentFrontmatter } from "./job-intent.js";
+import { readReportFrontMatterField } from "../report-front-matter.js";
 
 const args = parseArgs(process.argv.slice(2));
 const fromReport = args["from-report"] ?? args.from_report;
@@ -253,14 +254,8 @@ function parseClawSweeperReport(filePath: string) {
 }
 
 function frontMatterValue(markdown: string, key: string) {
-  const frontMatterMatch = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-  if (!frontMatterMatch) return "";
-  const frontMatter = frontMatterMatch[1] ?? "";
-  const remainder = markdown.slice(frontMatterMatch[0].length);
-  if (new RegExp(`^${key}:`, "m").test(remainder)) return "";
-  const matches = [...frontMatter.matchAll(new RegExp(`^${key}:\\s*(.+)$`, "gm"))];
-  if (matches.length !== 1) return "";
-  return matches[0]?.[1]?.trim().replace(/^"|"$/g, "") ?? "";
+  const field = readReportFrontMatterField(markdown, key);
+  return field.status === "value" ? field.value.trim().replace(/^"|"$/g, "") : "";
 }
 
 function frontMatterArray(markdown: string, key: string) {

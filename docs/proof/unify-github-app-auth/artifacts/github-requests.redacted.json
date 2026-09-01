@@ -1,0 +1,66 @@
+[
+  {
+    "at": "2026-08-11T01:12:25.105Z",
+    "method": "GET",
+    "path": "/repos/openclaw/clawsweeper/installation",
+    "request_body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "authorization": "Bearer <redacted-app-jwt>",
+    "response_status": 200
+  },
+  {
+    "at": "2026-08-11T01:12:25.114Z",
+    "method": "POST",
+    "path": "/app/installations/456/access_tokens",
+    "request_body_sha256": "0b74cbb0206b276baf033ece187e7608c7cfd90fe4eccbc12f0fa0e7cd441de8",
+    "authorization": "Bearer <redacted-app-jwt>",
+    "response_status": 201
+  },
+  {
+    "at": "2026-08-11T01:12:25.115Z",
+    "method": "POST",
+    "path": "/app/installations/999/access_tokens",
+    "request_body_sha256": "72426a4661188f9473dbc964adacfe7fe19190d733344d173cb10a2963ba26da",
+    "authorization": "Bearer <redacted-app-jwt>",
+    "response_status": 201
+  },
+  {
+    "at": "2026-08-11T01:12:25.115Z",
+    "method": "GET",
+    "path": "/repos/openclaw/gogcli",
+    "request_body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "authorization": "Bearer <redacted-installation-token>",
+    "response_status": 200
+  },
+  {
+    "at": "2026-08-11T01:12:25.116Z",
+    "method": "POST",
+    "path": "/app/installations/123/access_tokens",
+    "request_body_sha256": "acd29e10171bdf3e4038bbb242a50af40f9a9536c90e82cb550897a8779769fa",
+    "authorization": "Bearer <redacted-app-jwt>",
+    "response_status": 201
+  },
+  {
+    "at": "2026-08-11T01:12:25.125Z",
+    "method": "GET",
+    "path": "/repos/openclaw/gogcli/issues/597/comments",
+    "request_body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "authorization": "Bearer <redacted-installation-token>",
+    "response_status": 200
+  },
+  {
+    "at": "2026-08-11T01:12:25.126Z",
+    "method": "POST",
+    "path": "/repos/openclaw/gogcli/issues/comments/456/reactions",
+    "request_body_sha256": "4c489d9e198b786d3bad13c48fccf07ccb226ac6bfa4085b4d4132642d3c8263",
+    "authorization": "Bearer <redacted-installation-token>",
+    "response_status": 200
+  },
+  {
+    "at": "2026-08-11T01:12:25.126Z",
+    "method": "POST",
+    "path": "/repos/openclaw/clawsweeper/dispatches",
+    "request_body_sha256": "a8db560d4d816b8385c6b65b06d0c6a2203bcb35f67b59139b6ac83141e2e236",
+    "authorization": "Bearer <redacted-installation-token>",
+    "response_status": 204
+  }
+]

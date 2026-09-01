@@ -1,0 +1,13 @@
+command: node --test <split-file>
+node: v24.19.0
+
+dashboard-worker-queue-policy.test.ts: tests=54 pass=54 fail=0 skipped=0 duration_ms=767.430042
+dashboard-worker-publication-lifecycle.test.ts: tests=22 pass=22 fail=0 skipped=0 duration_ms=679.617500
+dashboard-worker-bay-records-routes.test.ts: tests=41 pass=41 fail=0 skipped=0 duration_ms=552.993375
+dashboard-worker-observability.test.ts: tests=16 pass=16 fail=0 skipped=0 duration_ms=346.254667
+dashboard-worker-queue-runtime.test.ts: tests=137 pass=137 fail=0 skipped=0 duration_ms=4397.352166
+dashboard-worker-dashboard-status.test.ts: tests=36 pass=36 fail=0 skipped=0 duration_ms=432.456458
+dashboard-worker-webhook-ingress.test.ts: tests=25 pass=25 fail=0 skipped=0 duration_ms=1075.507292
+dashboard-worker-telemetry-contracts.test.ts: tests=6 pass=6 fail=0 skipped=0 duration_ms=238.860709
+
+total: tests=337 pass=337 fail=0 skipped=0

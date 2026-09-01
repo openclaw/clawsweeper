@@ -3,14 +3,17 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { isGitHubApiHostname } from "./network-policy.mjs";
+
 const playwrightModule = process.env.PLAYWRIGHT_MODULE || "playwright";
 const { chromium } = await import(playwrightModule);
 
 const outputDir = path.resolve(process.env.BAY_PROOF_OUTPUT || ".artifacts/openclaw-bay-proof");
 const sourceSha = process.env.SOURCE_SHA || "unknown";
+const throttleProofOnly = process.env.BAY_THROTTLE_PROOF_ONLY === "1";
 const port = Number(process.env.BAY_PROOF_PORT || 8787);
 const origin = `http://bay-proof.test:${port}`;
-const proofUrl = `${origin}/bay-demo`;
+const proofUrl = `${origin}/bay`;
 const browserPath =
   process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ||
   "/ms-playwright/chromium-1223/chrome-linux64/chrome";
@@ -266,6 +269,61 @@ let healthHistory = Array.from({ length: 73 }, (_, index) => {
 let healthHistoryFailure = false;
 let stateWriterTerminalFresh = true;
 
+function githubThrottleHistory(hours) {
+  const bucketMinutes = hours === 6 ? 5 : 60;
+  const closedThrough = Date.parse("2026-07-11T18:00:00.000Z");
+  const bucketMs = bucketMinutes * 60_000;
+  const row = (bucketsAgo, poolClass, statusBucket, count) => ({
+    bucket_start: new Date(closedThrough - bucketsAgo * bucketMs).toISOString(),
+    pool_class: poolClass,
+    status_bucket: statusBucket,
+    count,
+  });
+  return {
+    version: 2,
+    generated_at: "2026-07-11T18:02:00.000Z",
+    window: { hours, bucket_minutes: bucketMinutes },
+    rows: [],
+    rate_limits:
+      hours <= 24
+        ? {
+            total: 2,
+            by_reset_authority: {
+              retry_after: 0,
+              rate_limit_reset: 1,
+              absent: 1,
+              invalid: 0,
+            },
+          }
+        : { total: 0, by_reset_authority: {} },
+    throttle_series: {
+      unit: "wire_attempt",
+      closed_through: new Date(closedThrough).toISOString(),
+      first_available_bucket_start: new Date(
+        closedThrough - hours * 60 * 60_000 - bucketMs,
+      ).toISOString(),
+      rows: [
+        row(3, "repository_actions", "403", 5),
+        row(2, "target_app", "429", 3),
+        row(1, "public_read_fallback", "403", 2),
+      ],
+      rows_truncated: false,
+      excluded_incomplete_count: 0,
+      coverage_complete: true,
+      complete: true,
+    },
+    retention: { rate_limit_detail_hours: 24 },
+    completeness: {
+      query_complete: hours <= 24,
+      rows_truncated: false,
+      rate_limit_rows_truncated: false,
+      rollup_window_complete: true,
+      rate_limit_window_complete: hours <= 24,
+    },
+    privacy: { pool_identity: "withheld", raw_identifiers: false, closed_dimensions: true },
+  };
+}
+
 function queueProjection() {
   const bayStages = [
     { stage: "arriving", queue_state: "pending" },
@@ -324,6 +382,101 @@ function queueProjection() {
         repairing: 9,
       },
       items,
+    },
+  };
+}
+
+function publicThrottleStatusFixture() {
+  const stages = {
+    arriving: 9,
+    "setting-up": 9,
+    reviewing: 0,
+    publishing: 9,
+    applying: 0,
+    repairing: 9,
+  };
+  const liveStages = {
+    arriving: 1,
+    "setting-up": 1,
+    reviewing: 2,
+    publishing: 1,
+    applying: 0,
+    repairing: 1,
+  };
+  return {
+    public_projection_complete: true,
+    diagnostics: { error_count: 0 },
+    health: { sampled_runs: 6 },
+    exact_review_queue: {
+      collection: { state: "complete" },
+      bay_projection: {
+        complete: true,
+        sample_limit: 24,
+        total: 36,
+        stages,
+        activity: {
+          complete: true,
+          queue_stages: stages,
+          live_stages: liveStages,
+          total: 42,
+        },
+      },
+      lanes: {
+        review: {
+          pending: 29,
+          capacity: 48,
+          active: 19,
+          ready: 4,
+          backoff: 25,
+          dispatching: 2,
+          leased: 19,
+          enqueued_total: 800,
+          completed_total: 780,
+        },
+        publication: {
+          pending: 2,
+          capacity: 16,
+          active: 14,
+          ready: 0,
+          backoff: 2,
+          dispatching: 1,
+          leased: 14,
+          enqueued_total: 420,
+          completed_total: 418,
+        },
+      },
+      handoff_health: {
+        status: "healthy",
+        reason: "handoff_current",
+        phases: {
+          pending: { count: 29, oldest_age_seconds: 75 },
+          dispatching: { count: 3, oldest_age_seconds: 20 },
+          leased: { count: 33, oldest_age_seconds: null },
+        },
+        recovery_reasons: {
+          claim_timeout: 0,
+          execution_timeout: 0,
+          workflow_cancelled: 0,
+          workflow_failed: 0,
+        },
+      },
+    },
+    bay: {
+      tide_generation: 3,
+      tide_threshold: 20,
+      terminal_count: 3,
+      terminal_buffer: [
+        { outcome: "success" },
+        { outcome: "failure" },
+        { outcome: "cancelled" },
+      ],
+      recently_washed: [],
+      timings: {
+        window_minutes: 60,
+        overall: { samples: 4, average_ms: 720000, median_ms: 660000 },
+      },
+      last_tide_at: null,
+      washed_at: null,
     },
   };
 }
@@ -568,8 +721,12 @@ function sanitizeUrl(value) {
   const url = new URL(value);
   return {
     host: url.host,
+    hostname: url.hostname,
     path: url.pathname,
-    search: url.pathname === "/api/health-history" ? url.search : "",
+    search:
+      url.pathname === "/api/health-history" || url.pathname === "/api/github-egress-observability"
+        ? url.search
+        : "",
   };
 }
 
@@ -637,6 +794,7 @@ context.on("request", (request) => {
   requests.push({
     method: request.method(),
     host: safe.host,
+    hostname: safe.hostname,
     path: safe.path,
     search: safe.search,
     resource_type: request.resourceType(),
@@ -647,6 +805,7 @@ context.on("response", (response) => {
   responses.push({
     status: response.status(),
     host: safe.host,
+    hostname: safe.hostname,
     path: safe.path,
     search: safe.search,
   });
@@ -661,8 +820,10 @@ await context.route("**/*", async (route) => {
   const request = route.request();
   const url = new URL(request.url());
   if (url.pathname === "/api/status") {
-    const status = structuredClone(proofSnapshots[fixtureIndex]);
-    if (!stateWriterTerminalFresh) {
+    const status = structuredClone(
+      throttleProofOnly ? publicThrottleStatusFixture() : proofSnapshots[fixtureIndex],
+    );
+    if (!throttleProofOnly && !stateWriterTerminalFresh) {
       status.exact_review_queue.state_writer.collection.status = "stale";
     }
     await route.fulfill({
@@ -693,6 +854,16 @@ await context.route("**/*", async (route) => {
         retention_days: 7,
         samples: healthHistory,
       }),
+    });
+    return;
+  }
+  if (url.pathname === "/api/github-egress-observability") {
+    const hours = Number(url.searchParams.get("hours"));
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json; charset=utf-8",
+      headers: { "cache-control": "no-store", "x-clawsweeper-cache": "synthetic-proof" },
+      body: JSON.stringify(githubThrottleHistory(hours)),
     });
     return;
   }
@@ -767,6 +938,125 @@ async function capture(id, title, detail) {
 
 let proofError = null;
 try {
+  if (throttleProofOnly) {
+    const bayResponse = await page.goto(proofUrl, { waitUntil: "networkidle" });
+    await page.locator("#loading").waitFor({ state: "hidden", timeout: 15_000 });
+    const throttleCard = page.locator(".bay-control-card", { hasText: "GitHub throttles" });
+    await throttleCard.locator(".bay-throttle-chart").waitFor({ state: "visible" });
+    await page.evaluate(() => document.fonts.ready);
+
+    assertProof("real Bay route loaded for throttle proof", (await page.title()).includes("OpenClaw Bay"), {
+      route: "/bay",
+    });
+    assertProof(
+      "Bay throttle proof retains hardened response headers",
+      Boolean(bayResponse) &&
+        (bayResponse.headers()["cache-control"] || "").includes("no-store") &&
+        (bayResponse.headers()["x-frame-options"] || "").toUpperCase() === "DENY" &&
+        (bayResponse.headers()["content-security-policy"] || "").includes(
+          "frame-ancestors 'none'",
+        ),
+      { status: bayResponse?.status() },
+    );
+
+    const initialCopy = await throttleCard.innerText();
+    // oxfmt-ignore
+    assertProof(
+      "six-hour chart reports interval totals, peak, pool split, and header authority",
+      /10 observed wire throttles/i.test(initialCopy) &&
+        /403 7/i.test(initialCopy) &&
+        /429 3/i.test(initialCopy) &&
+        /peak 5 \/ bucket/i.test(initialCopy) &&
+        /Actions 5/i.test(initialCopy) &&
+        /target App 3/i.test(initialCopy) &&
+        /public fallback 2/i.test(initialCopy) &&
+        /1\/2 .* authoritative reset headers/i.test(initialCopy),
+      { range: "6h", text: initialCopy },
+    );
+    const firstThrottleTooltip =
+      (await throttleCard.locator("circle title").first().textContent()) || "";
+    assertProof(
+      "throttle chart exposes accessible series and exact point tooltips",
+      /6 hours; orange is 403 and purple is 429/i.test(
+        (await throttleCard.locator("svg").getAttribute("aria-label")) || "",
+      ) &&
+        (await throttleCard.locator("circle title").count()) === 3 &&
+        /403.+5 observed wire throttle/i.test(firstThrottleTooltip),
+      {
+        tooltip_count: await throttleCard.locator("circle title").count(),
+        first_tooltip: firstThrottleTooltip,
+        aria_label: await throttleCard.locator("svg").getAttribute("aria-label"),
+      },
+    );
+    await capture(
+      "01-throttle-6h",
+      "GitHub throttle history · 6 hours",
+      "Closed five-minute wire-response buckets split 403/429, with interval peak, recent rate, physical-pool totals, and reset-header authority.",
+    );
+
+    for (const [range, hours] of [
+      ["24h", "24"],
+      ["7d", "168"],
+    ]) {
+      const throttleResponse = page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname === "/api/github-egress-observability" &&
+          new URL(response.url()).searchParams.get("hours") === hours &&
+          response.status() === 200,
+      );
+      await page.locator(`[data-bay-history-range="${range}"]`).click();
+      await throttleResponse;
+      await page.waitForFunction(
+        (expectedRange) =>
+          document
+            .querySelector(`[data-bay-history-range="${expectedRange}"]`)
+            ?.getAttribute("aria-pressed") === "true",
+        range,
+      );
+      const copy = await throttleCard.innerText();
+      // oxfmt-ignore
+      assertProof(
+        `${range} selector renders matching closed throttle buckets`,
+        /closed 60m buckets/i.test(copy) &&
+          (range === "7d" ? /reset-header detail retained 24h/i.test(copy) : /1\/2 .* authoritative reset headers/i.test(copy)),
+        { range, hours, text: copy },
+      );
+      await capture(
+        `02-throttle-${range}`,
+        `GitHub throttle history · ${range}`,
+        range === "7d"
+          ? "Seven-day hourly buckets remain legible and explicitly disclose that reset-header detail is retained for 24 hours."
+          : "Twenty-four-hour hourly buckets preserve 403/429, physical-pool, peak, recent-rate, and authoritative-header context.",
+      );
+    }
+
+    const throttleRequests = requests
+      .filter((request) => request.path === "/api/github-egress-observability")
+      .map((request) => request.search);
+    const mutatingRequests = requests.filter((request) => !["GET", "HEAD"].includes(request.method));
+    const directGitHubRequests = requests.filter((request) =>
+      isGitHubApiHostname(request.hostname),
+    );
+    assertProof(
+      "range switching fetches only the bounded 6h, 24h, and 7d throttle windows",
+      ["?hours=6", "?hours=24", "?hours=168"].every((query) =>
+        throttleRequests.includes(query),
+      ),
+      { requests: throttleRequests },
+    );
+    assertProof("throttle proof sends no mutation", mutatingRequests.length === 0, {
+      mutating_requests: mutatingRequests,
+    });
+    assertProof("throttle proof sends no GitHub API request", directGitHubRequests.length === 0, {
+      direct_github_requests: 0,
+    });
+    assertProof("throttle proof has no browser console errors", consoleErrors.length === 0, {
+      errors: consoleErrors,
+    });
+    assertProof("throttle proof has no uncaught page errors", pageErrors.length === 0, {
+      errors: pageErrors,
+    });
+  } else {
   const bayResponse = await page.goto(proofUrl, { waitUntil: "networkidle" });
   await page.locator("#loading").waitFor({ state: "hidden", timeout: 15_000 });
   await page.locator("#stage-grid .critter").first().waitFor({ state: "visible" });
@@ -774,7 +1064,7 @@ try {
   await page.evaluate(() => document.fonts.ready);
 
   assertProof("real Bay route loaded", (await page.title()).includes("OpenClaw Bay"), {
-    route: "/bay-demo",
+    route: "/bay",
   });
   assertProof(
     "Bay is indexable and retains hardened response headers",
@@ -791,15 +1081,17 @@ try {
       x_frame_options: bayResponse?.headers()["x-frame-options"] || null,
     },
   );
-  const bayHeaderLinks = await page.locator('nav[aria-label="Dashboard views"] a').evaluateAll((links) =>
-    links.map((link) => ({ label: link.textContent?.trim(), href: link.getAttribute("href") })),
-  );
+  const bayHeaderLinks = await page
+    .locator('nav[aria-label="Dashboard views"] a')
+    .evaluateAll((links) =>
+      links.map((link) => ({ label: link.textContent?.trim(), href: link.getAttribute("href") })),
+    );
   assertProof(
     "Bay header exposes the consistent public dashboard navigation",
     JSON.stringify(bayHeaderLinks) ===
       JSON.stringify([
         { label: "Overview", href: "/" },
-        { label: "OpenClaw Bay", href: "/bay-demo" },
+        { label: "OpenClaw Bay", href: "/bay" },
         { label: "Issue triage", href: "/triage" },
         { label: "PR proof triage", href: "/pr-proof-triage" },
       ]),
@@ -812,8 +1104,8 @@ try {
     await navigationPage.goto(`${origin}${route}`, { waitUntil: "domcontentloaded" });
     headerNavigation.push({
       route,
-      bay_links: await navigationPage.locator('a[href="/bay-demo"]').count(),
-      visible: await navigationPage.locator('a[href="/bay-demo"]').first().isVisible(),
+      bay_links: await navigationPage.locator('a[href="/bay"]').count(),
+      visible: await navigationPage.locator('a[href="/bay"]').first().isVisible(),
     });
     await navigationPage.close();
   }
@@ -841,6 +1133,14 @@ try {
       .locator("#bay-control-board .bay-control-point.rate title")
       .first()
       .evaluate((node) => node.textContent || ""),
+    throttle: await page
+      .locator("#bay-control-board .bay-control-card")
+      .filter({ hasText: "GitHub throttles" })
+      .innerText(),
+    throttle_hover_label: await page
+      .locator("#bay-control-board .bay-throttle-point title")
+      .first()
+      .evaluate((node) => node.textContent || ""),
     queue_items: await page.locator('[data-key="openclaw/openclaw#108001"]').count(),
     arriving_queue_samples: await page
       .locator('[data-stage="arriving"] [data-item^="queue:"]')
@@ -864,13 +1164,21 @@ try {
   };
   assertProof(
     "Bay mirrors cached admission, publication, state-writer, and handoff telemetry",
-    bayControl.cards === 4 &&
+    bayControl.cards === 5 &&
       /Review admission/i.test(bayControl.review) &&
       /Result publication/i.test(bayControl.review) &&
+      /GitHub throttles/i.test(bayControl.review) &&
       /State writer/i.test(bayControl.review) &&
       /Queue handoff/i.test(bayControl.review) &&
       /waiting/.test(bayControl.waiting_hover_label) &&
       /\/ hour/.test(bayControl.rate_hover_label) &&
+      /403 7/.test(bayControl.throttle) &&
+      /429 3/.test(bayControl.throttle) &&
+      /peak 5 \/ bucket/.test(bayControl.throttle) &&
+      /Actions 5/.test(bayControl.throttle) &&
+      /target App 3/.test(bayControl.throttle) &&
+      /public fallback 2/.test(bayControl.throttle) &&
+      /403.*5 observed wire throttles?/i.test(bayControl.throttle_hover_label) &&
       bayControl.queue_items === 1 &&
       bayControl.arriving_queue_samples === 6 &&
       bayControl.publishing_queue_samples === 6 &&
@@ -966,8 +1274,14 @@ try {
         new URL(response.url()).searchParams.get("range") === range &&
         response.status() === 200,
     );
+    const throttleResponse = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/api/github-egress-observability" &&
+        new URL(response.url()).searchParams.get("hours") === (range === "24h" ? "24" : "168") &&
+        response.status() === 200,
+    );
     await page.locator(`[data-bay-history-range="${range}"]`).click();
-    await rangeResponse;
+    await Promise.all([rangeResponse, throttleResponse]);
     await page.waitForFunction(
       (expectedRange) =>
         Array.from(document.querySelectorAll("[data-bay-history-range]")).some(
@@ -984,13 +1298,15 @@ try {
     "Bay switches cached telemetry ranges with matching labels and axes",
     rangeFetches.join(",") === "24h,7d" &&
       /7 days/i.test(selectedRangeCopy) &&
+      /closed 60m buckets/i.test(selectedRangeCopy) &&
+      /reset-header detail retained 24h/i.test(selectedRangeCopy) &&
       (await page.locator("#bay-control-board .bay-control-axis-label").count()) >= 12,
     { ranges: rangeFetches, text: selectedRangeCopy },
   );
   await capture(
     "01ab-range-selector",
     "Telemetry range selector",
-    "The compact 6-hour, 24-hour, and 7-day controls use the existing cached health-history endpoint and retain visible y-axis values.",
+    "The 6-hour, 24-hour, and 7-day controls fetch matching closed GitHub throttle buckets, retain visible axes, and disclose the 24-hour reset-header detail boundary.",
   );
   await page.locator('[data-bay-history-range="6h"]').click();
 
@@ -1693,15 +2009,24 @@ try {
   await page
     .locator('#beach.tide-washing[data-tide-mode="real"][data-tide-phase="crest"]')
     .waitFor({ state: "visible", timeout: 5_000 });
-  await page.waitForFunction(
-    () =>
-      Array.from(document.querySelectorAll(".pool .critter")).every(
-        (node) => Number(getComputedStyle(node).opacity) < 0.25,
-      ),
-    null,
+  const realWashObservation = await page.waitForFunction(
+    (expectedCount) => {
+      const nodes = Array.from(document.querySelectorAll(".pool .critter[data-key]"));
+      const summary = document.getElementById("tide-summary")?.textContent || "";
+      if (
+        nodes.length !== expectedCount ||
+        !nodes.every((node) => Number(getComputedStyle(node).opacity) < 0.25) ||
+        !/Last tide 17:58 UTC/.test(summary)
+      ) {
+        return false;
+      }
+      return { count: nodes.length, summary };
+    },
+    denseTerminalBuffer.length,
     { timeout: 1_800 },
   );
-  const realWashCount = await page.locator(".pool .critter[data-key]").count();
+  const realWashSnapshot = await realWashObservation.jsonValue();
+  const realWashCount = realWashSnapshot.count;
   const realUsesPreviewClass = await page
     .locator("#beach")
     .evaluate((node) => node.classList.contains("preview-tide-cleared"));
@@ -1709,6 +2034,11 @@ try {
     () => document.querySelectorAll(".pool .critter[data-key]").length === 0,
     null,
     { timeout: 2_000 },
+  );
+  const clearedPoolCouldMatchWash = await page.evaluate(
+    (expectedCount) =>
+      document.querySelectorAll(".pool .critter[data-key]").length === expectedCount,
+    denseTerminalBuffer.length,
   );
   await capture(
     "16-real-tide-cleared",
@@ -1730,13 +2060,16 @@ try {
     realWashCount === denseTerminalBuffer.length &&
       !realUsesPreviewClass &&
       (await page.locator(".pool .critter[data-key]").count()) === 0 &&
+      !clearedPoolCouldMatchWash &&
       realCountdown === "0 / 20" &&
       /Last tide 17:58 UTC/.test(realTideSummary) &&
       JSON.stringify(activeAfterRealTide) === JSON.stringify(activeBeforeRealTide),
     {
       washed_terminal_count: realWashCount,
+      displayed_last_tide_before_clearing: realWashSnapshot.summary,
       preview_class_used: realUsesPreviewClass,
       terminal_after: 0,
+      cleared_pool_could_match_wash: clearedPoolCouldMatchWash,
       countdown: realCountdown,
       displayed_last_tide: realTideSummary,
       active_keys_unchanged:
@@ -1901,7 +2234,7 @@ try {
     );
   const mutatingRequests = requests.filter((request) => !["GET", "HEAD"].includes(request.method));
   const directGitHubRequests = requests.filter((request) =>
-    request.host.toLowerCase().startsWith("api.github.com"),
+    isGitHubApiHostname(request.hostname),
   );
   assertProof(
     "preview tide preserves live outcome data",
@@ -1986,6 +2319,7 @@ try {
     "Network and state boundary",
     "Visible diagnostics confirm no GitHub API or mutation request, unchanged preview data, and a proved real clear.",
   );
+  }
 } catch (error) {
   proofError = error;
 } finally {
@@ -2001,7 +2335,7 @@ if (proofError) {
 const manifest = {
   proof: "OpenClaw Bay deterministic Playwright browser proof",
   source_sha: sourceSha,
-  route: "/bay-demo",
+  route: "/bay",
   data_classification: "fully synthetic and redacted; no live/private dashboard payloads",
   fixture_sha256: fixtureSha256,
   fixture_snapshots: fixtureSnapshotSha256,
@@ -2024,7 +2358,7 @@ const manifest = {
     requests,
     responses,
     direct_github_api_requests: requests.filter((request) =>
-      request.host.toLowerCase().startsWith("api.github.com"),
+      isGitHubApiHostname(request.hostname),
     ).length,
     mutating_requests: requests.filter((request) => !["GET", "HEAD"].includes(request.method))
       .length,
@@ -2060,7 +2394,7 @@ for (const item of evidence) {
 }
 const reportHtml = `<!doctype html><html><head><meta charset="utf-8"><title>OpenClaw Bay Playwright proof</title><style>
 *{box-sizing:border-box}body{margin:0;padding:28px;background:#edf7f5;color:#263533;font:16px/1.45 system-ui,sans-serif}header{max-width:1640px;margin:0 auto 24px;padding:24px 28px;border-radius:18px;background:#174e52;color:white;box-shadow:0 14px 35px rgba(24,67,69,.18)}header h1{margin:0 0 8px;font-size:34px}header p{margin:4px 0;color:#d9f1ed}.pass{display:inline-block;margin-top:12px;padding:7px 11px;border-radius:999px;background:#dff5dc;color:#174e52;font-weight:850}.grid{max-width:1640px;margin:auto;display:grid;grid-template-columns:1fr 1fr;gap:22px}article{overflow:hidden;border:1px solid #b8d3cf;border-radius:16px;background:white;box-shadow:0 10px 25px rgba(25,70,70,.11)}.copy{min-height:112px;padding:16px 18px;border-bottom:1px solid #d6e5e2}.copy h2{margin:0 0 6px;color:#bc4b31;font-size:21px}.copy p{margin:0;color:#536864}img{display:block;width:100%;height:auto}@media(max-width:900px){.grid{grid-template-columns:1fr}}
-</style></head><body><header><h1>OpenClaw Bay · deterministic Playwright proof</h1><p>Real <code>/bay-demo</code> page and artwork; dashboard status, history, and triage reads are replaced with fully synthetic, redacted fixtures.</p><p>Source ${escapeHtml(sourceSha)} · fixture SHA-256 ${escapeHtml(fixtureSha256)}</p><span class="pass">${assertions.length} assertions passed · 0 GitHub API requests · 0 mutation requests</span></header><main class="grid">${cards.join("")}</main></body></html>`;
+</style></head><body><header><h1>OpenClaw Bay · deterministic Playwright proof</h1><p>Real <code>/bay</code> page and artwork; dashboard status, history, and triage reads are replaced with fully synthetic, redacted fixtures.</p><p>Source ${escapeHtml(sourceSha)} · fixture SHA-256 ${escapeHtml(fixtureSha256)}</p><span class="pass">${assertions.length} assertions passed · 0 GitHub API requests · 0 mutation requests</span></header><main class="grid">${cards.join("")}</main></body></html>`;
 const reportPath = path.join(outputDir, "playwright-proof-report.html");
 await writeFile(reportPath, reportHtml);
 

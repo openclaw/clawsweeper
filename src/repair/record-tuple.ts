@@ -344,47 +344,6 @@ export function validateRecordTuple(tuple: RecordTupleContents, label = "tuple")
   inspectRecordTuple(tuple, label);
 }
 
-export function convergeRecordTupleSidecars(tuple: RecordTupleContents): {
-  tuple: RecordTupleContents;
-  deletedPaths: string[];
-} {
-  const deletedPaths: string[] = [];
-  let plan = tuple.plan;
-  let packet = tuple.packet;
-  const hasSinglePrimary = (tuple.item === null) !== (tuple.closed === null);
-
-  // Sidecars derive their authority from the primary record. A deleted primary
-  // cannot leave either sidecar behind, and closed records cannot carry a work
-  // plan. Dual primaries remain contradictory and are deliberately untouched
-  // so strict validation can quarantine them instead of choosing one.
-  if (tuple.item === null && tuple.closed === null) {
-    if (plan !== null) deletedPaths.push(tuple.paths.plan);
-    if (packet !== null) deletedPaths.push(tuple.paths.packet);
-    plan = null;
-    packet = null;
-  } else if (hasSinglePrimary) {
-    if (tuple.closed !== null && plan !== null) {
-      deletedPaths.push(tuple.paths.plan);
-      plan = null;
-    }
-    const primary = tuple.item ?? tuple.closed;
-    const frontMatter = parseFrontMatter(primary!);
-    const digest = frontMatter.get("decision_packet_sha256");
-    const pointer = frontMatter.get("decision_packet_path");
-    const packetWasCleared =
-      (digest === undefined && pointer === undefined) || (digest === "none" && pointer === "none");
-    if (packetWasCleared && packet !== null) {
-      deletedPaths.push(tuple.paths.packet);
-      packet = null;
-    }
-  }
-
-  return {
-    tuple: { ...tuple, plan, packet },
-    deletedPaths,
-  };
-}
-
 export function recordTupleContentsEqual(
   left: RecordTupleContents,
   right: RecordTupleContents,
@@ -395,24 +354,6 @@ export function recordTupleContentsEqual(
     left.plan === right.plan &&
     left.packet === right.packet
   );
-}
-
-export function recordTupleIdentityForPath(path: string): RecordTupleIdentity | undefined {
-  const markdownMatch = /^records\/([^/]+)\/(?:items|closed|plans)\/([^/]+\.md)$/.exec(path);
-  if (markdownMatch) {
-    const repository = markdownMatch[1];
-    const filename = markdownMatch[2];
-    const number = filename ? /(?:^|-)(\d+)\.md$/.exec(filename)?.[1] : undefined;
-    return repository && number ? { repository, number } : undefined;
-  }
-  const packetMatch = /^records\/([^/]+)\/decision-packets\/(\d+)\.json$/.exec(path);
-  const repository = packetMatch?.[1];
-  const number = packetMatch?.[2];
-  return repository && number ? { repository, number } : undefined;
-}
-
-export function recordTupleMarkdownFileForPath(path: string): string | undefined {
-  return /^records\/[^/]+\/(?:items|closed|plans)\/([^/]+\.md)$/.exec(path)?.[1];
 }
 
 export function recordTuplePaths(
@@ -430,10 +371,6 @@ export function recordTuplePaths(
     plan: `${root}/plans/${markdownFiles.plan ?? fallback}`,
     packet: `${root}/decision-packets/${identity.number}.json`,
   };
-}
-
-export function recordTuplePathList(paths: RecordTuplePaths): string[] {
-  return [paths.item, paths.closed, paths.plan, paths.packet];
 }
 
 function inspectRecordTuple(tuple: RecordTupleContents, label: string): RecordTupleState {
@@ -494,7 +431,7 @@ function validatePacketReference(
     }
     return;
   }
-  if (pointer !== tuple.paths.packet) {
+  if (!recordPathsEqualIgnoringRepositoryCase(pointer, tuple.paths.packet)) {
     throw tupleError(tuple.paths, `${label} points to unexpected packet path ${pointer}`);
   }
   if (!/^[a-f0-9]{64}$/.test(digest)) {
@@ -536,12 +473,12 @@ function validatePacketSemantics(
     throw tupleError(tuple.paths, `${label} decision packet has malformed subject identity`);
   }
   if (
-    subject.repo.replace("/", "-") !== tuple.paths.repository ||
+    !repositoryNamesEqual(subject.repo.replace("/", "-"), tuple.paths.repository) ||
     String(subject.number) !== tuple.paths.number
   ) {
     throw tupleError(tuple.paths, `${label} decision packet belongs to another subject`);
   }
-  if (!source || source.reportPath !== primaryPath) {
+  if (!source || !recordPathsEqualIgnoringRepositoryCase(source.reportPath, primaryPath)) {
     throw tupleError(tuple.paths, `${label} decision packet points to another primary record`);
   }
   const primaryNumber = frontMatter.get("number");
@@ -549,9 +486,23 @@ function validatePacketSemantics(
   if (primaryNumber !== undefined && primaryNumber !== tuple.paths.number) {
     throw tupleError(tuple.paths, `${label} primary record has mismatched number`);
   }
-  if (primaryRepository !== undefined && primaryRepository !== subject.repo) {
+  if (primaryRepository !== undefined && !repositoryNamesEqual(primaryRepository, subject.repo)) {
     throw tupleError(tuple.paths, `${label} primary record has mismatched repository`);
   }
+}
+
+function repositoryNamesEqual(left: string, right: string): boolean {
+  return left.toLowerCase() === right.toLowerCase();
+}
+
+function recordPathsEqualIgnoringRepositoryCase(left: unknown, right: string): boolean {
+  if (typeof left !== "string") return false;
+  const normalize = (value: string) =>
+    value.replace(
+      /^records\/([^/]+)\//,
+      (_match, repository: string) => `records/${repository.toLowerCase()}/`,
+    );
+  return normalize(left) === normalize(right);
 }
 
 function parseFrontMatter(markdown: string): Map<string, string> {

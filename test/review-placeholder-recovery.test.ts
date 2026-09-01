@@ -12,6 +12,97 @@ import {
   selectReviewPlaceholderComment,
 } from "../dist/review-placeholder-recovery.js";
 
+test("placeholder snapshot and repair poll choose the same recovery with fewer GitHub reads", async () => {
+  const now = new Date("2026-08-14T12:00:00.000Z");
+  const candidate = {
+    number: 42,
+    state: "open",
+    title: "placeholder",
+    html_url: "https://github.com/openclaw/openclaw/issues/42",
+    created_at: "2026-08-01T00:00:00.000Z",
+    updated_at: "2026-08-14T08:00:00.000Z",
+    labels: [],
+    user: { login: "octocat" },
+  };
+  const comment = {
+    id: 4201,
+    body: `${REVIEW_PLACEHOLDER_MARKER}\n\n<!-- clawsweeper-review-status:started item=42 lease=test -->`,
+    created_at: "2026-08-14T08:00:00.000Z",
+    updated_at: "2026-08-14T08:00:00.000Z",
+    user: { login: "clawsweeper[bot]", type: "Bot" },
+  };
+  const run = async (snapshotUsable: boolean) => {
+    let githubReads = 0;
+    let enqueues = 0;
+    const fetchImpl = async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ): Promise<Response> => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (url.pathname.endsWith("/internal/state/github-read-model/placeholders")) {
+        const body =
+          input instanceof Request
+            ? await input.clone().json()
+            : JSON.parse(String(init?.body || "{}"));
+        const state = String((body as Record<string, unknown>).state || "");
+        return Response.json(
+          snapshotUsable
+            ? {
+                usable: true,
+                candidates:
+                  state === "open" ? [{ number: 42, item: candidate, comments: [comment] }] : [],
+              }
+            : { usable: false, class_state: { reason: "never_observed" } },
+        );
+      }
+      if (url.pathname.endsWith("/internal/state/github-read-model/repair")) {
+        return Response.json({ accepted: true });
+      }
+      if (url.pathname === "/internal/exact-review/enqueue") {
+        enqueues += 1;
+        return Response.json({ queued: true });
+      }
+      if (url.pathname === "/search/issues") {
+        githubReads += 1;
+        const query = url.searchParams.get("q") || "";
+        return Response.json(
+          query.includes("is:open")
+            ? { total_count: 1, incomplete_results: false, items: [candidate] }
+            : { total_count: 0, incomplete_results: false, items: [] },
+        );
+      }
+      if (url.pathname === "/repos/openclaw/openclaw/issues/42/comments") {
+        githubReads += 1;
+        return Response.json([comment]);
+      }
+      throw new Error(`unexpected request ${url}`);
+    };
+    const summary = await runReviewPlaceholderRecovery({
+      now,
+      fetchImpl,
+      env: {
+        GH_TOKEN: "placeholder-token",
+        CLAWSWEEPER_WEBHOOK_SECRET: "placeholder-secret",
+        TARGET_REPO: "openclaw/openclaw",
+        TARGET_BRANCH: "main",
+        QUEUE_URL: "https://queue.example.test",
+        GITHUB_API_URL: "https://api.github.test",
+        REVIEW_PLACEHOLDER_MAX_CHECKS: "20",
+        REVIEW_PLACEHOLDER_MIN_AGE_HOURS: "2",
+      },
+    });
+    return { summary, githubReads, enqueues };
+  };
+
+  const polled = await run(false);
+  const snapshotted = await run(true);
+  assert.deepEqual(snapshotted.summary, polled.summary);
+  assert.equal(snapshotted.enqueues, 1);
+  assert.equal(polled.enqueues, 1);
+  assert.equal(snapshotted.githubReads, 0);
+  assert.equal(polled.githubReads, 3);
+});
+
 test("scheduled placeholder recovery also performs bounded recovery-label reconciliation", () => {
   const source = readFileSync("src/review-placeholder-recovery.ts", "utf8");
   const cli = source.slice(source.indexOf("if (invokedPath && invokedPath ==="));

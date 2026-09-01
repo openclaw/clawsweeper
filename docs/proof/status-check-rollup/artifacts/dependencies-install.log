@@ -1,0 +1,19 @@
+✓ Lockfile passes supply-chain policies (verified 4h ago)
+Lockfile is up to date, resolution step is skipped
+Progress: resolved 1, reused 0, downloaded 0, added 0
+Packages: +19
++++++++++++++++++++
+Progress: resolved 19, reused 19, downloaded 0, added 19, done
+
+dependencies:
++ typescript 7.0.2
++ yaml 2.9.0
+
+devDependencies:
++ @types/node 26.1.1
++ markdown-it 15.0.0
++ oxfmt 0.58.0
++ oxlint 1.73.0
++ oxlint-tsgolint 0.24.0
+
+Done in 642ms using pnpm v11.10.0

@@ -1,4 +1,4 @@
-import type { WorkerLane } from "./limits.js";
+import type { WorkerLane } from "../limits.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 
 export const REPAIR_JOB_INTENTS = [

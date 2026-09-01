@@ -3,6 +3,12 @@
 ClawSweeper is the conservative maintenance bot for OpenClaw repositories.
 Keep changes narrow, evidence-backed, and automation-safe.
 
+`AGENTS.md` is the canonical repository-wide coding-agent policy. Task-specific
+workflows under `.agents/skills/` are opt-in procedures and do not override this
+file. This repository does not currently maintain `AGENT.md`, `CLAUDE.md`, or
+Cursor aliases; agents that do not discover `AGENTS.md` automatically must be
+directed here rather than given a duplicated policy copy.
+
 ## Structure
 
 - Main code: `src/clawsweeper.ts`.
@@ -41,9 +47,9 @@ not split reports into issue/PR subtrees.
   monitoring/debugging how ClawSweeper workflows operate on that PR. Do not fix
   foreign PR branches directly; ClawSweeper repair/automerge workflows own those
   branch edits.
-- OpenClaw `CHANGELOG.md` is release-owned. Do not ask contributor PR authors,
-  repair workers, or automerge/autofix lanes to edit it during normal PR work.
-  Preserve release-note context in PR bodies and commit messages instead.
+- In `openclaw/openclaw`, `CHANGELOG.md` is release-owned. Do not ask contributor
+  PR authors, repair workers, or automerge/autofix lanes to edit it during normal
+  PR work. Preserve release-note context in PR bodies and commit messages instead.
 - When referencing GitHub issues or PRs in user-facing output, always include
   the full GitHub URL, not only `#12345`.
 
@@ -88,8 +94,11 @@ not split reports into issue/PR subtrees.
   dashboard data-contract changes, state in the PR or handoff whether
   OpenClaw Bay is affected. If it is, update Bay and its proof; otherwise
   record why no Bay change is needed. OpenClaw Bay is a public, indexable,
-  observer-only surface: it may display status but must never trigger or offer
-  queue, workflow, GitHub, DLQ, recovery, deploy, or rollback actions.
+  observer-only surface: it may display status and provide view-only navigation
+  to verified-public GitHub repository, item, workflow-run, and job pages. Those
+  canonical GET links are references, not action controls. Bay must never call
+  GitHub from the browser or trigger or offer queue, workflow, GitHub, DLQ,
+  recovery, deploy, rollback, or other mutation controls.
 - A ClawSweeper result that requires proof or identifies an accepted/actionable
   finding remains PR-owner work, not a handoff. Before a manually requested
   review or re-review, put current proof and the finding disposition or evidence

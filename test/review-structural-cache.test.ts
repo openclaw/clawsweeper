@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
+import { compactPrimaryBody } from "../dist/clawsweeper-primary-body.js";
+import { longProofBody } from "./primary-body-fixture.ts";
 
 import {
   REVIEW_STRUCTURAL_CACHE_VERSION,
@@ -288,6 +290,25 @@ function graphqlRecord(kind: "issue" | "pull_request", node = graphqlNode(kind))
 test("unchanged completed keep-open issue hits the structural cache", () => {
   assert.deepEqual(decision(), { hit: true, reason: "hit" });
 });
+
+for (const kind of ["issue", "pull_request"] as const) {
+  test(`structural ${kind} cache hashes raw body edits outside retained excerpts`, () => {
+    const body = longProofBody();
+    const edited = body.slice(0, -1) + "!";
+    assert.deepEqual(
+      compactPrimaryBody(body).bodyCoverage?.excerpts,
+      compactPrimaryBody(edited).bodyCoverage?.excerpts,
+    );
+    const priorRecord = graphqlRecord(kind, { ...graphqlNode(kind), body });
+    const currentRecord = graphqlRecord(kind, { ...graphqlNode(kind), body: edited });
+    assert.ok(priorRecord);
+    assert.ok(currentRecord);
+    assert.notEqual(priorRecord.sourceRevision, currentRecord.sourceRevision);
+    assert.notEqual(priorRecord.contextRevision, currentRecord.contextRevision);
+    assert.equal(decision({ priorRecord, currentRecord: priorRecord }).hit, true);
+    assert.equal(decision({ priorRecord, currentRecord }).hit, false);
+  });
+}
 
 test("cheap eligibility rejects ineligible reviews before structural records are needed", () => {
   const eligible = {

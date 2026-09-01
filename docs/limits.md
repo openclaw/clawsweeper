@@ -4,7 +4,7 @@
 - Owner: ClawSweeper maintainers
 - Source of truth: `config/automation-limits.json`, Worker overrides, and
   `scripts/check-limits.ts`
-- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
 - Update when: worker budgets, lane ratios, workflow literals, or production
   capacity overrides change; run `pnpm run check:limits`
 
@@ -61,17 +61,17 @@ The mental model:
 
 ## Worker Budget
 
-| Name                                       | Current | Meaning                                                                               |
-| ------------------------------------------ | ------: | ------------------------------------------------------------------------------------- |
-| `workers.max`                              |     128 | Maximum global Codex worker budget used to derive lane limits.                        |
-| `workers.reserve_for_interactive`          |      16 | Worker slots background lanes leave open for exact/manual/urgent work.                |
-| `workers.expansion_reserve`                |       8 | Extra slots background lanes leave open for independently planned matrix expansion.   |
-| `workers.minimum_background`               |      16 | Target floor for background progress when enough global capacity is available.        |
-| `lanes.exact_review.max_concurrent`        |     128 | Maximum concurrent exact-item review workflow runs admitted to Codex.                 |
-| `lanes.exact_review.target_max_concurrent` |     120 | Maximum concurrent exact-item review workflow runs one target repository may consume. |
-| `lanes.exact_review.actions_budget`        |     194 | At 128 reviews and 40 publishers, preserves the 16-slot hard reserve plus 10 slots of headroom.       |
-| `lanes.assist.max`                         |      10 | Maximum concurrent lightweight assist jobs.                                           |
-| `lanes.repair.cluster_max_live_runs`       |       2 | Default live repair workflow cap for imported gitcrawl cluster dispatches.            |
+| Name                                       | Current | Meaning                                                                                         |
+| ------------------------------------------ | ------: | ----------------------------------------------------------------------------------------------- |
+| `workers.max`                              |     128 | Maximum global Codex worker budget used to derive lane limits.                                  |
+| `workers.reserve_for_interactive`          |      16 | Worker slots background lanes leave open for exact/manual/urgent work.                          |
+| `workers.expansion_reserve`                |       8 | Extra slots background lanes leave open for independently planned matrix expansion.             |
+| `workers.minimum_background`               |      16 | Target floor for background progress when enough global capacity is available.                  |
+| `lanes.exact_review.max_concurrent`        |     128 | Maximum concurrent exact-item review workflow runs admitted to Codex.                           |
+| `lanes.exact_review.target_max_concurrent` |     120 | Maximum concurrent exact-item review workflow runs one target repository may consume.           |
+| `lanes.exact_review.actions_budget`        |     194 | At 128 reviews and 40 publishers, preserves the 16-slot hard reserve plus 10 slots of headroom. |
+| `lanes.assist.max`                         |      10 | Maximum concurrent lightweight assist jobs.                                                     |
+| `lanes.repair.cluster_max_live_runs`       |       2 | Default live repair workflow cap for imported gitcrawl cluster dispatches.                      |
 
 ## Derived Limits
 
@@ -244,6 +244,49 @@ shared Git writer constraint, so production now admits 8 preparation
 batches (up to 64 publication members) while retaining the Durable Object's
 transactional SQLite ownership boundaries.
 
+The durable control plane owns reset-aware GitHub credential circuits for both
+review authority reads and publication batching. The
+repository Actions pool is identified only as `actions:openclaw/clawsweeper`;
+target App pools are identified by the non-secret target owner. A primary or
+secondary rate-limit observation persists its reset deadline in the queue
+dispatcher and suppresses new batch dispatch for only the affected pool. Each
+matching member resumes at its reset-plus-deterministic-jitter boundary, and
+the next alarm uses the earliest pending member recovery boundary. A later
+observation may extend but cannot shorten an open circuit. When `gh` omits
+response headers, the publisher
+performs at most one same-credential `/rate_limit` lookup; the one-minute
+fallback is used only when no authoritative reset is available.
+
+Legacy exact-review payloads that do not carry `target_branch` are durably held
+before admission while the target App resolves the repository default branch;
+they never silently default to `main`. The same owner-scoped target App circuit
+protects that lookup and direct-webhook pull-request head verification. The
+first reset-aware 403/429 opens the circuit; later reservations for that owner
+defer to the shared deadline without another GitHub request or another
+reservation attempt, while other owners continue. A carried valid branch takes
+the normal enqueue path with no branch lookup.
+The status payload exposes these pre-admission records under
+`lanes.review.authority_pending`; owner-scoped circuit `affected_pending` counts
+include them, so quota pressure before normal queue admission remains visible.
+
+The first quota failure in a preparation batch stops later members before
+artifact download. The observing member records a normal retryable failure;
+members that never made a GitHub request are requeued after the shared reset
+with deterministic 1-30 second per-member recovery jitter and do not consume
+their individual publication retry or dead-letter budgets. A classifier-approved
+public `openclaw/openclaw` read may make one bounded fallback from the exhausted
+Actions token to the already-authorized target App token. That success does not
+close the Actions circuit, and mutations, private reads, and unsupported routes
+never use the repository token.
+
+`lanes.publication.github_request_metrics` measures the successful and failed
+request budget by redacted credential scope, endpoint category, public-read
+versus App-operation class, first versus repeated revision, and outcome. It
+contains counts only: no repository item number, URL, content, token, token
+hash, authorization header, or filesystem path is retained. Use these counters
+to justify later cache or metadata-read consolidation; live freshness and
+pre-mutation guards remain mandatory.
+
 Each dispatched workflow claims its opaque lease before checkout. Protocol v2
 binds claim and completion to the item key, lease revision, run attempt, claim
 generation, source head (for pull requests), and an immutable decision snapshot.
@@ -334,8 +377,7 @@ and hot intake `14`. Existing repair lanes keep their
   archives; raise this override to scan deeper per run.
 - `REVIEW_PLACEHOLDER_MAX_CHECKS` overrides the number of search candidates
   examined per open and closed state class by each 15-minute
-  orphaned-placeholder recovery pass; the default is 20 and the maximum is
-  1000. Independent durable cursors rotate both state classes so non-actionable
+  orphaned-placeholder recovery pass; the default is 20 and the maximum is 1000. Independent durable cursors rotate both state classes so non-actionable
   matches cannot permanently pin later placeholders behind the bounded pass.
 - `REVIEW_PLACEHOLDER_MIN_AGE_HOURS` overrides how old the latest ClawSweeper bot
   review-start placeholder must be before recovery; the default is 2 hours and

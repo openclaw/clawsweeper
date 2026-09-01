@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-08-14T10:42:27Z",
+  "provider": "local-container",
+  "lease_id": "cbx_c6ed44beacf2",
+  "lease_slug": "crimson-prawn-01cd",
+  "container_runtime": "docker",
+  "image": "clawsweeper-automerge-e2e-base:quota-fixture",
+  "machine_type": "clawsweeper-automerge-e2e-base_quota-fixture",
+  "lease_stopped": true,
+  "tested_head_sha": "e1b0e27e5fd8045ce65da1fdcdcfc6c145d1e8d0",
+  "tested_head_tree": "d9fc824102d7521547b062b5152d8f6cd3d193a0",
+  "base_sha": "bf762f3f6f9e8ee89fc31a260053dabe257a7103",
+  "cat_file_cross_check": {
+    "head_commit": true,
+    "head_tree": true,
+    "base_commit": true
+  },
+  "runtime": {
+    "architecture": "arm64",
+    "node": "v24.15.0",
+    "pnpm": "11.10.0",
+    "transport": "actual gh HTTP over an owned Unix socket"
+  },
+  "timing_ms": {
+    "sync": 937,
+    "command": 116171,
+    "total": 117144,
+    "install": 2471,
+    "build": 1511,
+    "quota_fixture": 716,
+    "full_gate": 107917,
+    "receipt": 351
+  },
+  "quota_fixture": {
+    "statuses": [403, 429],
+    "requests": [1, 1],
+    "publisher_exits": [1, 1],
+    "completion_kinds": ["retryable_failure", "retryable_failure"],
+    "failure_kinds": ["github_rate_limit", "github_rate_limit"],
+    "batch_kinds": ["retryable_failure", "retryable_failure"],
+    "cleanup_deletes": [0, 0],
+    "static_jq": true
+  },
+  "full_gate": {
+    "command": "pnpm run check",
+    "exit_code": 0,
+    "tests": 3463,
+    "passed": 3455,
+    "failed": 0,
+    "skipped": 8
+  },
+  "pre_commit_autoreview": {
+    "command": "autoreview --mode local --stream-engine-output --parallel-tests 'pnpm run check'",
+    "exit_code": 0,
+    "accepted_or_actionable_findings": 0,
+    "result": "autoreview clean: no accepted/actionable findings reported"
+  },
+  "limits": [
+    "The GitHub API was a deterministic Unix-socket loopback fixture with synthetic credentials.",
+    "No production GitHub, Worker, queue, deployment, or workflow state was mutated.",
+    "The receipt commit adds proof metadata only after the tested runtime tree."
+  ],
+  "cleanup": {
+    "successful_lease_absent_from_local_container_list": true,
+    "failed_owned_leases_absent_from_local_container_list": true,
+    "unrelated_preexisting_exited_lease_untouched": true
+  }
+}

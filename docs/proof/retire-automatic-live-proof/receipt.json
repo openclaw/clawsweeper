@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "tested_base_sha": "a4592a03e194228fc66b57bc4ad64deb11fb444b",
+  "tested_tracked_change_diff_sha256": "e8bda3a18cd52b38056cc0d23a07ce07714e02b1ed932f927fac1cf959583257",
+  "provider": "local-container",
+  "run_id": "run_9eebd46fa0b5",
+  "lease_id": "cbx_49823050dad7",
+  "machine_type": "node_24-bookworm",
+  "image_id": "node:24-bookworm",
+  "run_status": "succeeded",
+  "exit_code": 0,
+  "lease_stopped": true,
+  "proof_script_sha256": "b242f19f1ad882abad5808b2fada5cf971be2094e267d60aa13df71245f8dceb",
+  "stdout_sha256": "86cec4214d7dc80edee2f20a55a424f0476af691caeb9ef3736e02b95bd2b07d",
+  "stderr_sha256": "452d5f27aa41c564726aace4314f344d1bce6d1879db97b6e8248d0f2554940d",
+  "limits": [
+    "No production workflow dispatch or queue mutation was performed.",
+    "Historical proof publication was exercised through checked-in fixtures only.",
+    "Bay behavior was exercised through the local Worker harness, not a production deploy."
+  ]
+}

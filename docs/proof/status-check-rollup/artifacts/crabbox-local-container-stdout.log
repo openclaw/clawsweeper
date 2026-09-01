@@ -1,0 +1,31 @@
+gh_2.97.0_linux_amd64.tar.gz: OK
+jq-linux-amd64: OK
+gh version 2.97.0 (2026-07-31)
+jq-1.8.1
+v24.19.0
+11.10.0
+== environment ==
+node=v24.19.0
+pnpm=11.10.0
+gh=gh version 2.97.0 (2026-07-31)
+head=283be4dbd4ff0f9bb0b0d5a4d64ebbdcfc8cf983
+== dependencies and current module ==
+== acquire real GitHub payload ==
+== reconstruct historical classifier ==
+== classify identical payload before and after ==
+subject_head=1aa53a6a09e543e4a6e4906f7e3cc0bf34a4bd65
+payload_checks=26
+old_blockers=2
+new_blockers=0
+== production report-only finalizer ==
+dispatch.enabled=false
+dispatch.execute=false
+dispatch.candidates=[]
+summary.needs_checks=0
+pr=1099
+checks.total=14
+checks.counts={"SKIPPED":2,"SUCCESS":12}
+checks.blockers=[]
+needs_checks=null
+proof_result=passed
+PROOF_RC=0

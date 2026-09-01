@@ -78,10 +78,6 @@ Copy these queue-runtime values to the destination without changing them:
 
 Keep `STATUS_STORE`, dashboard cache/telemetry variables, assets, dashboard
 cron, custom domain, and `INGEST_TOKEN` on `clawsweeper-status`.
-`STATE_APPEND_DRAIN_LEASE_MS` remains in the checked-in Wrangler configuration,
-but current main no longer reads it after state-append retirement. Do not copy
-that obsolete override to the destination; remove it from the source only in a
-separately reviewed configuration cleanup.
 `CLAWSWEEPER_WEBHOOK_SECRET` can remain on the source while the source router
 authenticates queue writes. If the public queue endpoints move later, copy that
 secret in a separately reviewed route cutover; never print it while comparing

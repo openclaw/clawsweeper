@@ -29,7 +29,7 @@ cleanup() {
 trap cleanup EXIT
 
 for _ in $(seq 1 90); do
-  if curl --fail --silent "http://127.0.0.1:${port}/bay-demo" >/dev/null 2>&1; then
+  if curl --fail --silent "http://127.0.0.1:${port}/bay" >/dev/null 2>&1; then
     break
   fi
   if ! kill -0 "$wrangler_pid" >/dev/null 2>&1; then
@@ -39,10 +39,18 @@ for _ in $(seq 1 90); do
   sleep 1
 done
 
-curl --fail --silent --show-error "http://127.0.0.1:${port}/bay-demo" >/dev/null
+curl --fail --silent --show-error "http://127.0.0.1:${port}/bay" >/dev/null
 
 export PLAYWRIGHT_MODULE="file://${deps_dir}/node_modules/playwright/index.mjs"
-export PLAYWRIGHT_CHROMIUM_EXECUTABLE="/ms-playwright/chromium-1223/chrome-linux64/chrome"
+browser_executable="/ms-playwright/chromium-1223/chrome-linux64/chrome"
+if [[ ! -x "$browser_executable" ]]; then
+  browser_executable="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"
+fi
+if [[ -z "$browser_executable" || ! -x "$browser_executable" ]]; then
+  echo "No supported Chromium executable is available for Bay browser proof." >&2
+  exit 1
+fi
+export PLAYWRIGHT_CHROMIUM_EXECUTABLE="$browser_executable"
 export SOURCE_SHA="${BAY_PROOF_SOURCE_SHA:-$(git rev-parse HEAD 2>/dev/null || printf unknown)}"
 export BAY_PROOF_OUTPUT="$output_dir"
 export BAY_PROOF_PORT="$port"

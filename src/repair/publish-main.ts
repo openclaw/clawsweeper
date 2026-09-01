@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgs as parseNodeArgs } from "node:util";
 
 import { capturedCanonicalRecordBaselineKeys } from "./canonical-record-baseline.js";
 import {
@@ -828,21 +829,49 @@ function deliveryPart(value: string | undefined, fallback: string): string {
 }
 
 function parseArgs(argv: readonly string[]): Args {
-  const parsed: Args = { message: "", paths: [], restorePaths: [] };
+  const normalized: string[] = [];
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
+    if (!arg) throw new Error(`Unknown argument: ${arg}`);
     if (arg === "--") continue;
-    if (arg === "--message") parsed.message = requiredValue(argv, ++index, arg);
-    else if (arg === "--path") parsed.paths.push(requiredValue(argv, ++index, arg));
-    else if (arg === "--restore") parsed.restorePaths.push(requiredValue(argv, ++index, arg));
-    else if (arg === "--max-attempts")
-      parsed.maxAttempts = parsePositiveInt(requiredValue(argv, ++index, arg), arg);
-    else if (arg === "--push-attempts")
-      parsed.pushAttempts = parsePositiveInt(requiredValue(argv, ++index, arg), arg);
-    else if (arg === "--rebase-strategy")
-      parsed.rebaseStrategy = parseRebaseStrategy(requiredValue(argv, ++index, arg));
-    else throw new Error(`Unknown argument: ${arg}`);
+    if (
+      [
+        "--message",
+        "--path",
+        "--restore",
+        "--max-attempts",
+        "--push-attempts",
+        "--rebase-strategy",
+      ].includes(arg)
+    ) {
+      normalized.push(`${arg}=${requiredValue(argv, ++index, arg)}`);
+    } else throw new Error(`Unknown argument: ${arg}`);
   }
+  const { values } = parseNodeArgs({
+    args: normalized,
+    options: {
+      message: { type: "string" },
+      path: { type: "string", multiple: true },
+      restore: { type: "string", multiple: true },
+      "max-attempts": { type: "string" },
+      "push-attempts": { type: "string" },
+      "rebase-strategy": { type: "string" },
+    },
+  });
+  const parsed: Args = {
+    message: values.message ?? "",
+    paths: values.path ?? [],
+    restorePaths: values.restore ?? [],
+    ...(values["max-attempts"]
+      ? { maxAttempts: parsePositiveInt(values["max-attempts"], "--max-attempts") }
+      : {}),
+    ...(values["push-attempts"]
+      ? { pushAttempts: parsePositiveInt(values["push-attempts"], "--push-attempts") }
+      : {}),
+    ...(values["rebase-strategy"]
+      ? { rebaseStrategy: parseRebaseStrategy(values["rebase-strategy"]) }
+      : {}),
+  };
   if (!parsed.message) throw new Error("--message is required");
   if (parsed.paths.length === 0) throw new Error("At least one --path is required");
   return parsed;

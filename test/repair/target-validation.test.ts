@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import childProcess, { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
-import test, { afterEach } from "node:test";
-import { pathToFileURL } from "node:url";
+import test, { after } from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   assertTargetCheckoutBinding,
@@ -43,10 +44,31 @@ import {
   validationCommandForExecution,
 } from "../../dist/repair/validation-command-utils.js";
 import { mockCommandBinEnv } from "../helpers.ts";
-import { useAutoCleanupTempDirTracker } from "../temp-dir.ts";
 
 const FAKE_TOOLCHAIN_TIMEOUT_MS = 15_000;
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-validation-tests-"));
+after(() =>
+  fs.rmSync(fixtureRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 }),
+);
+
+function makeFixtureDir(prefix: string): string {
+  return fs.mkdtempSync(path.join(fixtureRoot, prefix));
+}
+
+const WRITE_NODE_MODULES_MARKER_AFTER_DELAY_SCRIPT = [
+  'const fs = require("node:fs");',
+  'const path = require("node:path");',
+  'const marker = path.join(process.cwd(), "node_modules", process.argv[1]);',
+  "setTimeout(() => {",
+  "  fs.mkdirSync(path.dirname(marker), { recursive: true });",
+  '  fs.writeFileSync(marker, "ran");',
+  "}, 750);",
+].join(" ");
+const SPAWN_DETACHED_NODE_MODULES_MARKER_SCRIPT = [
+  'const { spawn } = require("node:child_process");',
+  `const child = spawn(process.execPath, ["-e", ${JSON.stringify(WRITE_NODE_MODULES_MARKER_AFTER_DELAY_SCRIPT)}, process.argv[1]], { detached: true, stdio: "ignore" });`,
+  "child.unref();",
+].join(" ");
 
 test("OpenClaw repairs require changed-surface validation even when omitted", () => {
   const cwd = packageFixture({ "check:changed": "node check.js" });
@@ -1148,7 +1170,7 @@ test("filtered pnpm validation fails when no workspace matches", () => {
     },
   );
 
-  const binDir = tempDirs.make("clawsweeper-pnpm-filter-");
+  const binDir = makeFixtureDir("clawsweeper-pnpm-filter-");
   const pnpmPath = path.join(binDir, "pnpm.js");
   const logPath = path.join(binDir, "pnpm.log");
   fs.writeFileSync(
@@ -1576,7 +1598,7 @@ test("workspace selector values do not alias boolean false", () => {
 });
 
 test("workspace discovery enforces pattern and traversal budgets", () => {
-  const cwd = tempDirs.make("clawsweeper-workspace-budget-");
+  const cwd = makeFixtureDir("clawsweeper-workspace-budget-");
   for (const relativePath of ["packages/app", "packages/web", "packages/deep/child"]) {
     fs.mkdirSync(path.join(cwd, relativePath), { recursive: true });
     fs.writeFileSync(path.join(cwd, relativePath, "package.json"), "{}\n");
@@ -1623,7 +1645,7 @@ test("workspace discovery enforces pattern and traversal budgets", () => {
 });
 
 test("workspace discovery enforces a synchronous deadline", () => {
-  const cwd = tempDirs.make("clawsweeper-workspace-deadline-");
+  const cwd = makeFixtureDir("clawsweeper-workspace-deadline-");
   for (let index = 0; index < 500; index += 1) {
     fs.mkdirSync(path.join(cwd, "packages", `package-${index}`), { recursive: true });
   }
@@ -2076,7 +2098,15 @@ test("pinned-base validation reproduction proves the same base failure", () => {
   fs.mkdirSync(path.join(cwd, "src"));
   fs.writeFileSync(
     path.join(cwd, "check.js"),
-    "console.error('src/base.ts:1: lint failed'); process.exit(1);\n",
+    [
+      "const fs = require('node:fs');",
+      "const { execFileSync } = require('node:child_process');",
+      "const profile = Object.fromEntries(['HOME', 'XDG_CACHE_HOME', 'COREPACK_HOME'].map(key => [key, process.env[key]]));",
+      "for (const directory of Object.values(profile)) if (!fs.statSync(directory).isDirectory()) throw new Error('missing validation profile');",
+      "console.log('pinned-base-profile:' + JSON.stringify({ ...profile, cwd: process.cwd(), head: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), pnpmOffline: process.env.PNPM_CONFIG_OFFLINE, npmOffline: process.env.npm_config_offline }));",
+      "console.error('src/base.ts:1: lint failed'); process.exit(1);",
+      "",
+    ].join("\n"),
   );
   fs.writeFileSync(path.join(cwd, "src/base.ts"), "export const base = true;\n");
   fs.writeFileSync(path.join(cwd, "src/repair.ts"), "export const value = 1;\n");
@@ -2087,13 +2117,32 @@ test("pinned-base validation reproduction proves the same base failure", () => {
   git(cwd, "add", "src/repair.ts");
   git(cwd, "commit", "-m", "repair change");
 
-  const baseError = reproduceValidationFailureAtPinnedBase({
-    commands: ["pnpm check:changed"],
-    targetDir: cwd,
-    options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
-  });
+  const profiles = withPackageScriptPnpm(() =>
+    Array.from({ length: 2 }, () => {
+      const baseError = reproduceValidationFailureAtPinnedBase({
+        commands: ["pnpm check:changed"],
+        targetDir: cwd,
+        options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
+      });
 
-  assert.match(String(baseError), /src\/base\.ts:1: lint failed/);
+      assert.match(String(baseError), /src\/base\.ts:1: lint failed/);
+      const observation = /pinned-base-profile:(\{[^\r\n]*?\})/.exec(String(baseError));
+      assert.ok(observation, "check.js must report its validation environment");
+      return JSON.parse(observation[1]);
+    }),
+  );
+  for (const profile of profiles) {
+    assert.equal(profile.head, pinnedBaseRef);
+    assert.notEqual(profile.cwd, fs.realpathSync(cwd));
+    assert.equal(profile.pnpmOffline, "true");
+    assert.equal(profile.npmOffline, "true");
+    assert.equal(fs.existsSync(profile.cwd), false, "pinned checkout must be removed");
+    for (const key of ["HOME", "XDG_CACHE_HOME", "COREPACK_HOME"]) {
+      assert.notEqual(profile[key], process.env[key]);
+      assert.notEqual(profiles[0][key], profiles[1][key], "reproductions need separate profiles");
+      assert.equal(fs.existsSync(profile[key]), false, "validation profile must be removed");
+    }
+  }
 });
 
 test("pinned-base reproduction avoids fetching unrelated missing partial-clone history", () => {
@@ -2118,7 +2167,7 @@ test("pinned-base reproduction avoids fetching unrelated missing partial-clone h
   git(source, "commit", "-m", "current base");
   const pinnedBaseRef = git(source, "rev-parse", "HEAD");
 
-  const root = tempDirs.make("clawsweeper-validation-promisor-");
+  const root = makeFixtureDir("clawsweeper-validation-promisor-");
   const remote = path.join(root, "origin.git");
   const target = path.join(root, "target");
   git(root, "init", "--bare", remote);
@@ -2142,11 +2191,13 @@ test("pinned-base reproduction avoids fetching unrelated missing partial-clone h
   assert.match(missingObjects, new RegExp(`^\\?${omittedHistoricalBlob}$`, "m"));
   git(target, "remote", "set-url", "origin", "https://invalid.invalid/offline.git");
 
-  const baseError = reproduceValidationFailureAtPinnedBase({
-    commands: ["pnpm check:changed"],
-    targetDir: target,
-    options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
-  });
+  const baseError = withPackageScriptPnpm(() =>
+    reproduceValidationFailureAtPinnedBase({
+      commands: ["pnpm check:changed"],
+      targetDir: target,
+      options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
+    }),
+  );
 
   assert.match(String(baseError), /src\/base\.ts:1: lint failed/);
   assert.match(
@@ -2185,11 +2236,13 @@ test("pinned-base reproduction preserves the source comparison branch for change
   git(cwd, "update-ref", "refs/remotes/origin/main", pinnedBaseRef);
   assert.notEqual(sourceMainSha, pinnedBaseRef);
 
-  const baseError = reproduceValidationFailureAtPinnedBase({
-    commands: ["pnpm check:changed"],
-    targetDir: cwd,
-    options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
-  });
+  const baseError = withPackageScriptPnpm(() =>
+    reproduceValidationFailureAtPinnedBase({
+      commands: ["pnpm check:changed"],
+      targetDir: cwd,
+      options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
+    }),
+  );
 
   assert.match(String(baseError), /src\/base\.ts:1: lint failed/);
 });
@@ -2210,7 +2263,7 @@ test("pinned-base reproduction hydrates blobs required by the older pinned snaps
   git(source, "rm", "historical.txt");
   git(source, "commit", "-m", "current checkout");
 
-  const root = tempDirs.make("clawsweeper-validation-pinned-blob-");
+  const root = makeFixtureDir("clawsweeper-validation-pinned-blob-");
   const remote = path.join(root, "origin.git");
   const target = path.join(root, "target");
   git(root, "init", "--bare", remote);
@@ -2236,14 +2289,16 @@ test("pinned-base reproduction hydrates blobs required by the older pinned snaps
     new RegExp(`^\\?${requiredBlob}$`, "m"),
   );
 
-  const baseError = reproduceValidationFailureAtPinnedBase({
-    commands: ["pnpm check:changed"],
-    targetDir: target,
-    options: validationOptions("openclaw/openclaw", {
-      pinnedBaseRef,
-      pinnedBaseRemoteUrl: pathToFileURL(remote).href,
+  const baseError = withPackageScriptPnpm(() =>
+    reproduceValidationFailureAtPinnedBase({
+      commands: ["pnpm check:changed"],
+      targetDir: target,
+      options: validationOptions("openclaw/openclaw", {
+        pinnedBaseRef,
+        pinnedBaseRemoteUrl: pathToFileURL(remote).href,
+      }),
     }),
-  });
+  );
 
   assert.match(String(baseError), /src\/base\.ts:1: lint failed/);
 });
@@ -2265,11 +2320,13 @@ test("pinned-base reproduction preserves the source SHA-256 object format", () =
   const pinnedBaseRef = git(cwd, "rev-parse", "HEAD");
   assert.equal(pinnedBaseRef.length, 64);
 
-  const baseError = reproduceValidationFailureAtPinnedBase({
-    commands: ["pnpm check:changed"],
-    targetDir: cwd,
-    options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
-  });
+  const baseError = withPackageScriptPnpm(() =>
+    reproduceValidationFailureAtPinnedBase({
+      commands: ["pnpm check:changed"],
+      targetDir: cwd,
+      options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
+    }),
+  );
 
   assert.match(String(baseError), /src\/base\.ts:1: lint failed/);
 });
@@ -2305,7 +2362,7 @@ test("pinned-base reproduction does not inherit target-controlled checkout hooks
   git(cwd, "commit", "-m", "base");
   const pinnedBaseRef = git(cwd, "rev-parse", "HEAD");
 
-  const root = tempDirs.make("clawsweeper-validation-hooks-");
+  const root = makeFixtureDir("clawsweeper-validation-hooks-");
   const hooks = path.join(root, "hooks");
   const marker = path.join(root, "post-checkout-ran");
   fs.mkdirSync(hooks);
@@ -2314,11 +2371,13 @@ test("pinned-base reproduction does not inherit target-controlled checkout hooks
   });
   git(cwd, "config", "core.hooksPath", hooks);
 
-  const baseError = reproduceValidationFailureAtPinnedBase({
-    commands: ["pnpm check:changed"],
-    targetDir: cwd,
-    options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
-  });
+  const baseError = withPackageScriptPnpm(() =>
+    reproduceValidationFailureAtPinnedBase({
+      commands: ["pnpm check:changed"],
+      targetDir: cwd,
+      options: validationOptions("openclaw/openclaw", { pinnedBaseRef }),
+    }),
+  );
 
   assert.match(String(baseError), /src\/base\.ts:1: lint failed/);
   assert.equal(fs.existsSync(marker), false);
@@ -2652,7 +2711,7 @@ test("dependency setup permits external funding metadata in npm lockfiles", () =
     );
     git(cwd, "add", ".");
     git(cwd, "commit", "-m", "initial");
-    const binDir = tempDirs.make("clawsweeper-npm-funding-bin-");
+    const binDir = makeFixtureDir("clawsweeper-npm-funding-bin-");
     const npmPath = path.join(binDir, "npm.js");
     fs.writeFileSync(
       npmPath,
@@ -2726,6 +2785,162 @@ test("dependency setup rejects install destinations for dependencies named fundi
           funding: {
             version: "1.0.0",
             resolved: "https://github.com/example/nested-funding.tgz",
+          },
+        },
+      },
+    },
+  ]) {
+    const cwd = gitPackageFixture({ check: 'node -e ""' });
+    fs.writeFileSync(
+      path.join(cwd, "package-lock.json"),
+      `${JSON.stringify({ lockfileVersion: 2, dependencies })}\n`,
+    );
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+
+    assert.throws(
+      () =>
+        prepareTargetToolchain(cwd, {
+          ...validationOptions("steipete/example", {
+            toolchain: {
+              packageManager: "npm",
+              baseValidationCommands: [],
+              changedGate: null,
+            },
+          }),
+          installTargetDeps: true,
+          installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+          setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        }),
+      /destination is not approved: https:\/\/github\.com/,
+    );
+  }
+});
+
+test("dependency setup permits deprecated package metadata in pnpm lockfiles", () => {
+  const cwd = gitBunPackageFixture({ check: "bun x tsc --noEmit" });
+  fs.writeFileSync(
+    path.join(cwd, "pnpm-lock.yaml"),
+    [
+      "lockfileVersion: '9.0'",
+      "",
+      "packages:",
+      "",
+      "  '@aws-sdk/core@3.977.1':",
+      "    resolution: {integrity: sha512-KVtQRtc00ES/y+Sc3vYXeP6pCIcNlBJCZOwvqSy8ZpVGmbM5+IG+AfhuTKQ2oXmIVqZJewaGMMpzPkywC6xg0w==}",
+      "    engines: {node: '>=20.0.0'}",
+      "    deprecated: |-",
+      "      Deprecated due to Document number parsing bug in JSON, see",
+      "        https://github.com/aws/aws-sdk-js-v3/issues/8246. Newer version available.",
+      "",
+    ].join("\n"),
+  );
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  const { binDir } = fakeBunFixture(cwd);
+  withPathPrefix(binDir, () => {
+    assert.doesNotThrow(() =>
+      prepareTargetToolchain(cwd, {
+        ...validationOptions("openclaw/clawhub", clawhubToolchain()),
+        installTargetDeps: true,
+        installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+      }),
+    );
+  });
+});
+
+test("dependency setup still rejects a malicious resolved URL beside an exempt deprecated string", () => {
+  const cwd = gitPackageFixture({ check: 'node -e ""' });
+  fs.writeFileSync(
+    path.join(cwd, "package-lock.json"),
+    `${JSON.stringify({
+      lockfileVersion: 3,
+      packages: {
+        "": { name: "fixture", version: "1.0.0" },
+        "node_modules/example": {
+          version: "1.0.0",
+          resolved: "https://evil.example/payload.tgz",
+          deprecated: "harmless notice, see https://evil.example/payload for details",
+        },
+      },
+    })}\n`,
+  );
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+
+  assert.throws(
+    () =>
+      prepareTargetToolchain(cwd, {
+        ...validationOptions("steipete/example", {
+          toolchain: {
+            packageManager: "npm",
+            baseValidationCommands: [],
+            changedGate: null,
+          },
+        }),
+        installTargetDeps: true,
+        installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+      }),
+    /destination is not approved: https:\/\/evil\.example/,
+  );
+});
+
+test("dependency setup rejects a non-string deprecated field", () => {
+  const cwd = gitPackageFixture({ check: 'node -e ""' });
+  fs.writeFileSync(
+    path.join(cwd, "package-lock.json"),
+    `${JSON.stringify({
+      lockfileVersion: 3,
+      packages: {
+        "": { name: "fixture", version: "1.0.0" },
+        "node_modules/example": {
+          version: "1.0.0",
+          resolved: "https://registry.npmjs.org/example/-/example-1.0.0.tgz",
+          deprecated: { resolved: "https://github.com/example/payload.tgz" },
+        },
+      },
+    })}\n`,
+  );
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+
+  assert.throws(
+    () =>
+      prepareTargetToolchain(cwd, {
+        ...validationOptions("steipete/example", {
+          toolchain: {
+            packageManager: "npm",
+            baseValidationCommands: [],
+            changedGate: null,
+          },
+        }),
+        installTargetDeps: true,
+        installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+      }),
+    /destination is not approved: https:\/\/github\.com/,
+  );
+});
+
+test("dependency setup rejects install destinations for dependencies named deprecated", () => {
+  for (const dependencies of [
+    {
+      deprecated: {
+        version: "1.0.0",
+        resolved: "https://github.com/example/deprecated.tgz",
+      },
+    },
+    {
+      packages: {
+        version: "1.0.0",
+        dependencies: {
+          deprecated: {
+            version: "1.0.0",
+            resolved: "https://github.com/example/nested-deprecated.tgz",
           },
         },
       },
@@ -2986,7 +3201,7 @@ test("dependency setup rejects target-controlled network destinations", () => {
       expected: /(?:target dependency install|validation symlink escapes target checkout)/,
       prepare() {
         const cwd = gitPackageFixture({ check: 'node -e ""' });
-        const outside = tempDirs.make("clawsweeper-local-dependency-");
+        const outside = makeFixtureDir("clawsweeper-local-dependency-");
         const vendorDir = path.join(cwd, "vendor");
         fs.mkdirSync(vendorDir);
         fs.symlinkSync(outside, path.join(vendorDir, "payload"));
@@ -3184,7 +3399,7 @@ test("dependency setup accepts npm lockfile v3 tracked workspace links", () => {
   );
   git(cwd, "add", ".");
   git(cwd, "commit", "-m", "initial");
-  const binDir = tempDirs.make("clawsweeper-npm-workspace-link-");
+  const binDir = makeFixtureDir("clawsweeper-npm-workspace-link-");
   const npmPath = path.join(binDir, "npm.js");
   fs.writeFileSync(npmPath, 'require("node:fs").mkdirSync("node_modules", { recursive: true });\n');
 
@@ -3388,7 +3603,7 @@ test("dependency setup rejects untracked and symlink-external local workspaces",
         `${JSON.stringify({ name: "payload", version: "1.0.0" })}\n`,
       );
     } else {
-      const outside = tempDirs.make("clawsweeper-local-workspace-");
+      const outside = makeFixtureDir("clawsweeper-local-workspace-");
       fs.writeFileSync(
         path.join(outside, "package.json"),
         `${JSON.stringify({ name: "payload", version: "1.0.0" })}\n`,
@@ -3427,11 +3642,12 @@ test(
       return;
     }
     const cwd = gitBunPackageFixture({ check: 'node -e ""' });
-    const marker = path.join(cwd, "node_modules", "detached-bun-ran");
+    const markerName = "detached-bun-ran";
+    const marker = path.join(cwd, "node_modules", markerName);
     git(cwd, "add", ".");
     git(cwd, "commit", "-m", "initial");
     attachOrigin(cwd);
-    const binDir = tempDirs.make("clawsweeper-bun-setup-containment-");
+    const binDir = makeFixtureDir("clawsweeper-bun-setup-containment-");
     writeNodeCommandShim(
       binDir,
       "bun",
@@ -3441,8 +3657,8 @@ if (process.argv[2] === "--version") {
 } else if (process.argv[2] === "install") {
   const { spawn } = require("node:child_process");
   const child = spawn(process.execPath, ["-e", ${JSON.stringify(
-    `setTimeout(() => { require("node:fs").mkdirSync(${JSON.stringify(path.dirname(marker))}, { recursive: true }); require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran"); }, 750);`,
-  )}], { detached: true, stdio: "ignore" });
+    WRITE_NODE_MODULES_MARKER_AFTER_DELAY_SCRIPT,
+  )}, ${JSON.stringify(markerName)}], { detached: true, stdio: "ignore" });
   child.unref();
 }
 `,
@@ -3480,19 +3696,20 @@ test(
       return;
     }
     const cwd = gitPackageFixture({ check: 'node -e ""' });
-    const marker = path.join(cwd, "node_modules", "detached-npm-ran");
+    const markerName = "detached-npm-ran";
+    const marker = path.join(cwd, "node_modules", markerName);
     git(cwd, "add", ".");
     git(cwd, "commit", "-m", "initial");
     attachOrigin(cwd);
-    const binDir = tempDirs.make("clawsweeper-npm-setup-containment-");
+    const binDir = makeFixtureDir("clawsweeper-npm-setup-containment-");
     writeNodeCommandShim(
       binDir,
       "npm",
       `#!/usr/bin/env node
 const { spawn } = require("node:child_process");
 const child = spawn(process.execPath, ["-e", ${JSON.stringify(
-        `setTimeout(() => { require("node:fs").mkdirSync(${JSON.stringify(path.dirname(marker))}, { recursive: true }); require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran"); }, 750);`,
-      )}], { detached: true, stdio: "ignore" });
+        WRITE_NODE_MODULES_MARKER_AFTER_DELAY_SCRIPT,
+      )}, ${JSON.stringify(markerName)}], { detached: true, stdio: "ignore" });
 child.unref();
 `,
     );
@@ -3537,8 +3754,8 @@ test("pnpm validation reuses the prepared target version and rejects stale setup
   git(cwd, "commit", "-m", "initial");
   attachOrigin(cwd);
 
-  const hostBin = tempDirs.make("clawsweeper-host-pnpm-");
-  const preparedBin = tempDirs.make("clawsweeper-target-pnpm-bin-");
+  const hostBin = makeFixtureDir("clawsweeper-host-pnpm-");
+  const preparedBin = makeFixtureDir("clawsweeper-target-pnpm-bin-");
   const corepackLog = path.join(hostBin, "corepack.log");
   const hostLog = path.join(hostBin, "host-pnpm.log");
   const targetLog = path.join(preparedBin, "target-pnpm.log");
@@ -3648,8 +3865,8 @@ test(
     fs.writeFileSync(changedSource, "export const changed = true;\n");
     git(cwd, "add", "src/index.ts");
 
-    const hostBin = tempDirs.make("clawsweeper-knip-prefetch-");
-    const targetBin = tempDirs.make("clawsweeper-knip-pnpm-");
+    const hostBin = makeFixtureDir("clawsweeper-knip-prefetch-");
+    const targetBin = makeFixtureDir("clawsweeper-knip-pnpm-");
     const logPath = path.join(hostBin, "invocations.jsonl");
     writeNodeCommandShim(
       targetBin,
@@ -3850,55 +4067,7 @@ test(
   "pnpm validation refreshes the prepared executable before every command",
   { skip: process.platform === "win32" },
   () => {
-    const cwd = gitPackageFixture({
-      first: 'node -e ""',
-      second: 'node -e ""',
-    });
-    git(cwd, "add", ".");
-    git(cwd, "commit", "-m", "initial");
-    attachOrigin(cwd);
-
-    const hostBin = tempDirs.make("clawsweeper-pnpm-refresh-");
-    const logPath = path.join(hostBin, "pnpm.log");
-    const maliciousMarker = path.join(hostBin, "malicious-ran");
-    const maliciousSource = `#!/usr/bin/env node
-require("node:fs").writeFileSync(${JSON.stringify(maliciousMarker)}, "ran");
-`;
-    const pnpmSource = `#!/usr/bin/env node
-const fs = require("node:fs");
-const args = process.argv.slice(2);
-fs.appendFileSync(${JSON.stringify(logPath)}, args.join(" ") + "\\n");
-if (args.includes("install")) fs.mkdirSync("node_modules", { recursive: true });
-if (args.includes("first")) {
-  fs.writeFileSync(process.argv[1], ${JSON.stringify(maliciousSource)}, { mode: 0o755 });
-}
-`;
-    writeNodeCommandShim(
-      hostBin,
-      "corepack",
-      `#!/usr/bin/env node
-const fs = require("node:fs");
-const path = require("node:path");
-const args = process.argv.slice(2);
-if (args[0] === "enable") {
-  const destination = args[args.indexOf("--install-directory") + 1];
-  fs.mkdirSync(destination, { recursive: true });
-  fs.writeFileSync(path.join(destination, "pnpm"), ${JSON.stringify(pnpmSource)}, { mode: 0o755 });
-}
-`,
-    );
-    const options = {
-      ...validationOptions("steipete/example", {
-        toolchain: {
-          packageManager: "pnpm",
-          baseValidationCommands: [],
-          changedGate: null,
-        },
-      }),
-      installTargetDeps: true,
-      installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
-      setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
-    };
+    const { cwd, hostBin, logPath, maliciousMarker, options } = pnpmExecutableRefreshFixture();
 
     withCommandOverridesUnset(["corepack", "pnpm"], () =>
       withPathOnlyPrefix(hostBin, () => {
@@ -3919,9 +4088,143 @@ if (args[0] === "enable") {
   },
 );
 
+test(
+  "pnpm validation refreshes the prepared executable within the shared setup identity budget",
+  { skip: process.platform === "win32" },
+  (t) => {
+    const { cwd, hostBin, logPath, maliciousMarker, dependencyPath, options } =
+      pnpmExecutableRefreshFixture();
+    const origin = git(cwd, "remote", "get-url", "origin");
+    try {
+      withCommandOverridesUnset(["corepack", "pnpm"], () =>
+        withPathOnlyPrefix(hostBin, () => {
+          assert.equal(fs.existsSync(dependencyPath), false);
+          let elapsedSetupMs = 0;
+          let completedGitCalls = 0;
+          const realSpawnSync = childProcess.spawnSync;
+          const clock = t.mock.method(Date, "now", () => 10_000 + elapsedSetupMs);
+          const spawn = t.mock.method(childProcess, "spawnSync", (command, args, spawnOptions) => {
+            if (path.basename(command).replace(/\.exe$/i, "") !== "git") {
+              return realSpawnSync(command, args, spawnOptions);
+            }
+            assert.ok(
+              spawnOptions.timeout > 0 && spawnOptions.timeout <= FAKE_TOOLCHAIN_TIMEOUT_MS,
+            );
+            // Real Git has its own watchdog; only completed Git calls charge the setup clock.
+            const result = realSpawnSync(command, args, {
+              ...spawnOptions,
+              timeout: FAKE_TOOLCHAIN_TIMEOUT_MS,
+              killSignal: "SIGKILL",
+            });
+            completedGitCalls += 1;
+            elapsedSetupMs += 250;
+            return result;
+          });
+          try {
+            syncBuiltinESMExports();
+            prepareTargetToolchain(cwd, options);
+          } finally {
+            spawn.mock.restore();
+            syncBuiltinESMExports();
+            clock.mock.restore();
+            t.diagnostic(
+              `setup: ${completedGitCalls} completed Git calls, ${elapsedSetupMs}ms charged`,
+            );
+          }
+          assert.ok(elapsedSetupMs > 0 && elapsedSetupMs < FAKE_TOOLCHAIN_TIMEOUT_MS);
+          assert.equal(fs.readFileSync(dependencyPath, "utf8"), "installed\n");
+          assert.deepEqual(
+            runAllowedValidationCommands(["pnpm first", "pnpm second"], cwd, options),
+            ["pnpm first", "pnpm second"],
+          );
+          const invocations = fs.readFileSync(logPath, "utf8").trim().split(/\r?\n/);
+          assert.equal(invocations.filter((line) => line.startsWith("install ")).length, 1);
+          assert.deepEqual(
+            invocations.slice(1).map((line) => line.split(" ").at(-1)),
+            ["first", "second"],
+          );
+          assert.equal(fs.existsSync(maliciousMarker), false);
+
+          // The prepared identity must bind installed ignored inputs, not the pre-install tree.
+          fs.writeFileSync(dependencyPath, "poisoned\n");
+          const logBeforePoisonedValidation = fs.readFileSync(logPath, "utf8");
+          assert.throws(
+            () => runAllowedValidationCommands(["pnpm second"], cwd, options),
+            /prepared target pnpm toolchain is stale/,
+          );
+          assert.equal(fs.readFileSync(logPath, "utf8"), logBeforePoisonedValidation);
+          assert.equal(fs.existsSync(maliciousMarker), false);
+        }),
+      );
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(origin, { recursive: true, force: true });
+      fs.rmSync(hostBin, { recursive: true, force: true });
+    }
+  },
+);
+
+function pnpmExecutableRefreshFixture() {
+  const cwd = gitPackageFixture({
+    first: 'node -e ""',
+    second: 'node -e ""',
+  });
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+
+  const hostBin = makeFixtureDir("clawsweeper-pnpm-refresh-");
+  const logPath = path.join(hostBin, "pnpm.log");
+  const maliciousMarker = path.join(hostBin, "malicious-ran");
+  const dependencyPath = path.join(cwd, "node_modules", "fixture-dependency", "state.js");
+  const maliciousSource = `#!/usr/bin/env node
+require("node:fs").writeFileSync(${JSON.stringify(maliciousMarker)}, "ran");
+`;
+  const pnpmSource = `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(logPath)}, args.join(" ") + "\\n");
+if (args.includes("install")) {
+  fs.mkdirSync("node_modules/fixture-dependency", { recursive: true });
+  fs.writeFileSync("node_modules/fixture-dependency/state.js", "installed\\n");
+}
+if (args.includes("first")) {
+  fs.writeFileSync(process.argv[1], ${JSON.stringify(maliciousSource)}, { mode: 0o755 });
+}
+`;
+  writeNodeCommandShim(
+    hostBin,
+    "corepack",
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+if (args[0] === "enable") {
+  const destination = args[args.indexOf("--install-directory") + 1];
+  fs.mkdirSync(destination, { recursive: true });
+  fs.writeFileSync(path.join(destination, "pnpm"), ${JSON.stringify(pnpmSource)}, { mode: 0o755 });
+}
+`,
+  );
+  const options = {
+    ...validationOptions("steipete/example", {
+      toolchain: {
+        packageManager: "pnpm",
+        baseValidationCommands: [],
+        changedGate: null,
+      },
+    }),
+    installTargetDeps: true,
+    installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+    setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+  };
+
+  return { cwd, hostBin, logPath, maliciousMarker, dependencyPath, options };
+}
+
 test("pnpm setup disables target pnpmfile hooks", { skip: process.platform === "win32" }, () => {
   const cwd = gitPackageFixture({ verify: 'node -e ""' });
-  const hostBin = tempDirs.make("clawsweeper-pnpmfile-");
+  const hostBin = makeFixtureDir("clawsweeper-pnpmfile-");
   const maliciousMarker = path.join(hostBin, "pnpmfile-ran");
   fs.writeFileSync(
     path.join(cwd, ".pnpmfile.cjs"),
@@ -3989,7 +4292,7 @@ test(
     git(cwd, "commit", "-m", "initial");
     attachOrigin(cwd);
 
-    const binDir = tempDirs.make("clawsweeper-runtime-poison-");
+    const binDir = makeFixtureDir("clawsweeper-runtime-poison-");
     const secondCommandMarker = path.join(binDir, "second-command-ran");
     writeNodeCommandShim(
       binDir,
@@ -4039,7 +4342,7 @@ test(
     git(cwd, "commit", "-m", "initial");
     attachOrigin(cwd);
 
-    const binDir = tempDirs.make("clawsweeper-vendor-poison-");
+    const binDir = makeFixtureDir("clawsweeper-vendor-poison-");
     writeNodeCommandShim(
       binDir,
       "pnpm",
@@ -4085,7 +4388,7 @@ test(
     git(cwd, "commit", "-m", "initial");
     attachOrigin(cwd);
 
-    const binDir = tempDirs.make("clawsweeper-arbitrary-poison-");
+    const binDir = makeFixtureDir("clawsweeper-arbitrary-poison-");
     const secondCommandMarker = path.join(binDir, "second-command-ran");
     writeNodeCommandShim(
       binDir,
@@ -4129,7 +4432,7 @@ test(
     git(cwd, "commit", "-m", "initial");
     attachOrigin(cwd);
 
-    const binDir = tempDirs.make("clawsweeper-arbitrary-reset-");
+    const binDir = makeFixtureDir("clawsweeper-arbitrary-reset-");
     writeNodeCommandShim(
       binDir,
       "pnpm",
@@ -4302,7 +4605,7 @@ test("OpenClaw fresh build outputs survive aliases and intervening checks before
       fs.writeFileSync(path.join(cache, "stamp.json"), "previous trusted cache\n");
     }
 
-    const binDir = tempDirs.make("clawsweeper-fresh-runtime-build-");
+    const binDir = makeFixtureDir("clawsweeper-fresh-runtime-build-");
     writeNodeCommandShim(
       binDir,
       "pnpm",
@@ -4376,7 +4679,7 @@ test("intermediate validation cannot tamper with fresh runtime outputs before ar
   git(cwd, "commit", "-m", "initial");
   attachOrigin(cwd);
 
-  const binDir = tempDirs.make("clawsweeper-runtime-build-tamper-");
+  const binDir = makeFixtureDir("clawsweeper-runtime-build-tamper-");
   writeNodeCommandShim(
     binDir,
     "pnpm",
@@ -4438,7 +4741,7 @@ test("changed-gate fallback preserves and protects pending fresh runtime output"
     attachOrigin(cwd);
     fs.writeFileSync(path.join(cwd, "test", "example.test.ts"), "export const value = 2;\n");
 
-    const binDir = tempDirs.make("clawsweeper-runtime-fallback-");
+    const binDir = makeFixtureDir("clawsweeper-runtime-fallback-");
     writeNodeCommandShim(
       binDir,
       "pnpm",
@@ -4519,7 +4822,7 @@ test("OpenClaw changed-gate rebuilds are disposable and restore existing runtime
       fs.writeFileSync(path.join(directory, "runtime.js"), `${output}: trusted original\n`);
     }
 
-    const binDir = tempDirs.make("clawsweeper-gate-build-output-");
+    const binDir = makeFixtureDir("clawsweeper-gate-build-output-");
     writeNodeCommandShim(
       binDir,
       "pnpm",
@@ -4574,7 +4877,7 @@ test("changed-gate output restoration still rejects unrelated ignored-input pois
   fs.mkdirSync(path.dirname(dependency), { recursive: true });
   fs.writeFileSync(dependency, "safe\n");
 
-  const binDir = tempDirs.make("clawsweeper-gate-build-poison-");
+  const binDir = makeFixtureDir("clawsweeper-gate-build-poison-");
   writeNodeCommandShim(
     binDir,
     "pnpm",
@@ -4617,7 +4920,7 @@ test("changed-gate output preparation failures preserve the existing compiler ca
   const cache = path.join(cwd, ".artifacts", "tsgo-cache", "state.json");
   fs.mkdirSync(path.dirname(cache), { recursive: true });
   fs.writeFileSync(cache, "trusted compiler state\n");
-  const binDir = tempDirs.make("clawsweeper-gate-output-cache-");
+  const binDir = makeFixtureDir("clawsweeper-gate-output-cache-");
   writeNodeCommandShim(binDir, "pnpm", "");
 
   assert.throws(
@@ -4654,10 +4957,10 @@ test(
     const dist = path.join(cwd, "dist");
     fs.mkdirSync(dist, { recursive: true });
     fs.writeFileSync(path.join(dist, "runtime.js"), "trusted original\n");
-    const outside = tempDirs.make("clawsweeper-protected-output-");
+    const outside = makeFixtureDir("clawsweeper-protected-output-");
     fs.writeFileSync(path.join(outside, "runtime.js"), "outside must survive\n");
 
-    const binDir = tempDirs.make("clawsweeper-gate-build-symlink-");
+    const binDir = makeFixtureDir("clawsweeper-gate-build-symlink-");
     writeNodeCommandShim(
       binDir,
       "pnpm",
@@ -4718,7 +5021,7 @@ test("OpenClaw changed-gate compiler cache is disposable and preserves existing 
       );
     }
 
-    const binDir = tempDirs.make("clawsweeper-tsgo-cache-");
+    const binDir = makeFixtureDir("clawsweeper-tsgo-cache-");
     writeNodeCommandShim(
       binDir,
       "pnpm",
@@ -4775,7 +5078,7 @@ test("OpenClaw validation disables shard timing writes without weakening ignored
     const timings = path.join(artifacts, "vitest-shard-timings.json");
     if (existingTimingArtifact) fs.writeFileSync(timings, "trusted previous timings\n");
 
-    const binDir = tempDirs.make("clawsweeper-vitest-timings-");
+    const binDir = makeFixtureDir("clawsweeper-vitest-timings-");
     writeNodeCommandShim(
       binDir,
       "pnpm",
@@ -4827,7 +5130,7 @@ test("changed-gate compiler cache isolation still rejects unrelated ignored-inpu
   const artifacts = path.join(cwd, ".artifacts");
   fs.mkdirSync(artifacts, { recursive: true });
   fs.writeFileSync(path.join(artifacts, "stable.txt"), "existing artifact\n");
-  const binDir = tempDirs.make("clawsweeper-tsgo-poison-");
+  const binDir = makeFixtureDir("clawsweeper-tsgo-poison-");
   writeNodeCommandShim(
     binDir,
     "pnpm",
@@ -4872,7 +5175,7 @@ test("runtime root diagnostics identify same-size poisoning even when its timest
   const timestamp = new Date("2024-01-01T00:00:00.000Z");
   fs.utimesSync(runtime, timestamp, timestamp);
 
-  const binDir = tempDirs.make("clawsweeper-same-size-poison-");
+  const binDir = makeFixtureDir("clawsweeper-same-size-poison-");
   writeNodeCommandShim(
     binDir,
     "pnpm",
@@ -4913,7 +5216,7 @@ test("runtime root diagnostics identify every independently mutated ignored root
     fs.writeFileSync(input, "safe\n");
   }
 
-  const binDir = tempDirs.make("clawsweeper-multiple-root-poison-");
+  const binDir = makeFixtureDir("clawsweeper-multiple-root-poison-");
   writeNodeCommandShim(
     binDir,
     "pnpm",
@@ -4962,7 +5265,7 @@ test(
       );
     }
 
-    const binDir = tempDirs.make("clawsweeper-shared-root-poison-");
+    const binDir = makeFixtureDir("clawsweeper-shared-root-poison-");
     writeNodeCommandShim(
       binDir,
       "pnpm",
@@ -5006,7 +5309,7 @@ test(
       );
     }
 
-    const binDir = tempDirs.make("clawsweeper-cyclic-root-poison-");
+    const binDir = makeFixtureDir("clawsweeper-cyclic-root-poison-");
     writeNodeCommandShim(
       binDir,
       "pnpm",
@@ -5049,7 +5352,7 @@ test(
       fs.symlinkSync(path.relative(directory, input), path.join(directory, "shared.js"));
     }
 
-    const binDir = tempDirs.make("clawsweeper-shared-alias-removal-");
+    const binDir = makeFixtureDir("clawsweeper-shared-alias-removal-");
     writeNodeCommandShim(binDir, "pnpm", 'require("node:fs").unlinkSync("alpha/shared.js");');
 
     assert.throws(
@@ -5102,7 +5405,7 @@ test(
       );
     }
 
-    const binDir = tempDirs.make("clawsweeper-cyclic-alias-removal-");
+    const binDir = makeFixtureDir("clawsweeper-cyclic-alias-removal-");
     writeNodeCommandShim(binDir, "pnpm", 'require("node:fs").unlinkSync("alpha/shared");');
 
     assert.throws(
@@ -5278,7 +5581,7 @@ test("runtime root mutation diagnostics enforce their comparison deadline", () =
     fs.mkdirSync(directory, { recursive: true });
     fs.writeFileSync(path.join(directory, "state.js"), "safe\n");
   }
-  const binDir = tempDirs.make("clawsweeper-root-comparison-deadline-");
+  const binDir = makeFixtureDir("clawsweeper-root-comparison-deadline-");
   writeNodeCommandShim(
     binDir,
     "pnpm",
@@ -5343,7 +5646,7 @@ test("runtime root diagnostics ignore safe cache-directory timestamp changes", (
   fs.mkdirSync(path.dirname(runtime), { recursive: true });
   fs.writeFileSync(runtime, "safe\n");
 
-  const binDir = tempDirs.make("clawsweeper-cache-mtime-poison-");
+  const binDir = makeFixtureDir("clawsweeper-cache-mtime-poison-");
   writeNodeCommandShim(
     binDir,
     "pnpm",
@@ -5387,7 +5690,7 @@ test("changed-gate merge-base fallback also isolates its disposable compiler cac
   const artifacts = path.join(cwd, ".artifacts");
   fs.mkdirSync(artifacts, { recursive: true });
   fs.writeFileSync(path.join(artifacts, "stable.txt"), "existing artifact\n");
-  const binDir = tempDirs.make("clawsweeper-tsgo-fallback-");
+  const binDir = makeFixtureDir("clawsweeper-tsgo-fallback-");
   const attemptPath = path.join(binDir, "attempt");
   writeNodeCommandShim(
     binDir,
@@ -5447,7 +5750,7 @@ test("OpenClaw archive smoke cannot pass by reusing a pre-existing stale build",
   fs.mkdirSync(path.join(cwd, "dist"), { recursive: true });
   fs.writeFileSync(path.join(cwd, "dist", "runtime.js"), "stale runtime\n");
 
-  const binDir = tempDirs.make("clawsweeper-stale-runtime-build-");
+  const binDir = makeFixtureDir("clawsweeper-stale-runtime-build-");
   writeNodeCommandShim(
     binDir,
     "pnpm",
@@ -5497,7 +5800,7 @@ test("OpenClaw fresh builds still reject ignored dependency poisoning before arc
   git(cwd, "commit", "-m", "initial");
   attachOrigin(cwd);
 
-  const binDir = tempDirs.make("clawsweeper-runtime-build-poison-");
+  const binDir = makeFixtureDir("clawsweeper-runtime-build-poison-");
   writeNodeCommandShim(
     binDir,
     "pnpm",
@@ -5549,12 +5852,12 @@ test(
     const trustedCache = path.join(cwd, ".artifacts", "build-all-cache");
     fs.mkdirSync(trustedCache, { recursive: true });
     fs.writeFileSync(path.join(trustedCache, "stamp.json"), "trusted\n");
-    const external = tempDirs.make("clawsweeper-external-cache-victim-");
+    const external = makeFixtureDir("clawsweeper-external-cache-victim-");
     const victim = path.join(external, "build-all-cache", "victim");
     fs.mkdirSync(path.dirname(victim), { recursive: true });
     fs.writeFileSync(victim, "must survive\n");
 
-    const binDir = tempDirs.make("clawsweeper-runtime-cache-escape-");
+    const binDir = makeFixtureDir("clawsweeper-runtime-cache-escape-");
     writeNodeCommandShim(
       binDir,
       "pnpm",
@@ -5670,7 +5973,7 @@ test(
     git(cwd, "commit", "-m", "initial");
     attachOrigin(cwd);
 
-    const binDir = tempDirs.make("clawsweeper-build-roots-");
+    const binDir = makeFixtureDir("clawsweeper-build-roots-");
     writeNodeCommandShim(
       binDir,
       "pnpm",
@@ -5730,7 +6033,7 @@ test(
     git(cwd, "commit", "-m", "initial");
     attachOrigin(cwd);
 
-    const binDir = tempDirs.make("clawsweeper-runtime-symlink-");
+    const binDir = makeFixtureDir("clawsweeper-runtime-symlink-");
     const secondCommandMarker = path.join(binDir, "second-command-ran");
     writeNodeCommandShim(
       binDir,
@@ -5855,7 +6158,7 @@ test(
     git(cwd, "commit", "-m", "initial");
     attachOrigin(cwd);
 
-    const hostBin = tempDirs.make("clawsweeper-pnpm-symlink-");
+    const hostBin = makeFixtureDir("clawsweeper-pnpm-symlink-");
     const externalPnpm = path.join(hostBin, "external-pnpm");
     fs.writeFileSync(
       externalPnpm,
@@ -5910,7 +6213,7 @@ test(
     git(cwd, "commit", "-m", "initial");
     attachOrigin(cwd);
 
-    const hostBin = tempDirs.make("clawsweeper-corepack-shim-");
+    const hostBin = makeFixtureDir("clawsweeper-corepack-shim-");
     const distRoot = path.join(hostBin, "corepack-package", "dist");
     const corepackLib = path.join(distRoot, "lib", "corepack.cjs");
     const corepackPackageJson = path.join(path.dirname(distRoot), "package.json");
@@ -6098,7 +6401,7 @@ test("dependency setup rejects tracked source mutation", () => {
   git(cwd, "commit", "-m", "initial");
   fs.writeFileSync(path.join(cwd, "source.txt"), "candidate\n");
 
-  const binDir = tempDirs.make("clawsweeper-mutating-npm-");
+  const binDir = makeFixtureDir("clawsweeper-mutating-npm-");
   const npmPath = path.join(binDir, "npm.js");
   fs.writeFileSync(
     npmPath,
@@ -6126,6 +6429,45 @@ fs.writeFileSync("source.txt", "mutated\\n");
     /target dependency setup mutated checkout identity/,
   );
 });
+
+for (const pruneConfig of ["fetch.prune", "remote.origin.prune"]) {
+  test(`target validation preserves its base ref with ${pruneConfig}=true`, () => {
+    const cwd = gitPackageFixture({});
+    let origin: string | undefined;
+    try {
+      fs.mkdirSync(path.join(cwd, "scripts"));
+      fs.writeFileSync(
+        path.join(cwd, "scripts/verify.mjs"),
+        "console.log('validation reached');\n",
+      );
+      git(cwd, "add", ".");
+      git(cwd, "commit", "-m", "initial");
+      attachOrigin(cwd);
+      origin = git(cwd, "remote", "get-url", "origin");
+      const baseSha = git(cwd, "rev-parse", "HEAD");
+      if (pruneConfig === "remote.origin.prune") {
+        git(cwd, "config", "fetch.prune", "false");
+      }
+      git(cwd, "config", pruneConfig, "true");
+
+      assert.deepEqual(
+        runAllowedValidationCommands(
+          ["node scripts/verify.mjs", "git diff --check"],
+          cwd,
+          validationOptions("steipete/example", {
+            toolchain: { packageManager: "pnpm", baseValidationCommands: [], changedGate: null },
+          }),
+        ),
+        ["node scripts/verify.mjs", "git diff --check"],
+      );
+      assert.equal(git(cwd, "rev-parse", "refs/remotes/origin/main"), baseSha);
+      assert.equal(git(cwd, "status", "--porcelain"), "");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+      if (origin) fs.rmSync(origin, { recursive: true, force: true });
+    }
+  });
+}
 
 test("validation rejects scripts that mutate the checkout", () => {
   const cwd = gitPackageFixture({ verify: "node mutate.js" });
@@ -6232,7 +6574,7 @@ test("checkout bindings ignore unrelated sibling worktree refs", () => {
   const cwd = gitPackageFixture({ check: 'node -e ""' });
   git(cwd, "add", ".");
   git(cwd, "commit", "-m", "initial");
-  const sibling = tempDirs.make("clawsweeper-binding-sibling-");
+  const sibling = makeFixtureDir("clawsweeper-binding-sibling-");
   fs.rmSync(sibling, { recursive: true, force: true });
   git(cwd, "branch", "sibling");
   git(cwd, "worktree", "add", sibling, "sibling");
@@ -6486,7 +6828,7 @@ test("replacement branch plumbing rejects branches attached to another worktree"
   git(cwd, "commit", "-m", "initial");
   const head = git(cwd, "rev-parse", "HEAD");
   const branch = "clawsweeper/occupied";
-  const linkedWorktree = tempDirs.make("clawsweeper-linked-worktree-");
+  const linkedWorktree = makeFixtureDir("clawsweeper-linked-worktree-");
   fs.rmSync(linkedWorktree, { recursive: true, force: true });
   git(cwd, "branch", branch, head);
   git(cwd, "worktree", "add", linkedWorktree, branch);
@@ -6836,7 +7178,7 @@ test(
 );
 
 test("checkpoint plumbing rejects mismatched and dirty submodules", () => {
-  const submoduleRepo = tempDirs.make("clawsweeper-submodule-source-");
+  const submoduleRepo = makeFixtureDir("clawsweeper-submodule-source-");
   git(submoduleRepo, "init", "-b", "main");
   git(submoduleRepo, "config", "user.email", "clawsweeper@example.invalid");
   git(submoduleRepo, "config", "user.name", "ClawSweeper Test");
@@ -6887,7 +7229,7 @@ test("checkpoint plumbing rejects mismatched and dirty submodules", () => {
 });
 
 test("checkpoint plumbing rejects residual repositories at removed gitlinks", () => {
-  const submoduleRepo = tempDirs.make("clawsweeper-residual-source-");
+  const submoduleRepo = makeFixtureDir("clawsweeper-residual-source-");
   git(submoduleRepo, "init", "-b", "main");
   git(submoduleRepo, "config", "user.email", "clawsweeper@example.invalid");
   git(submoduleRepo, "config", "user.name", "ClawSweeper Test");
@@ -6916,7 +7258,7 @@ test("checkpoint plumbing rejects residual repositories at removed gitlinks", ()
 });
 
 test("checkpoint plumbing recursively rejects ignored nested submodule dirt", () => {
-  const nestedRepo = tempDirs.make("clawsweeper-nested-source-");
+  const nestedRepo = makeFixtureDir("clawsweeper-nested-source-");
   git(nestedRepo, "init", "-b", "main");
   git(nestedRepo, "config", "user.email", "clawsweeper@example.invalid");
   git(nestedRepo, "config", "user.name", "ClawSweeper Test");
@@ -6924,7 +7266,7 @@ test("checkpoint plumbing recursively rejects ignored nested submodule dirt", ()
   git(nestedRepo, "add", ".");
   git(nestedRepo, "commit", "-m", "nested");
 
-  const middleRepo = tempDirs.make("clawsweeper-middle-source-");
+  const middleRepo = makeFixtureDir("clawsweeper-middle-source-");
   git(middleRepo, "init", "-b", "main");
   git(middleRepo, "config", "user.email", "clawsweeper@example.invalid");
   git(middleRepo, "config", "user.name", "ClawSweeper Test");
@@ -6968,7 +7310,7 @@ test("checkpoint plumbing recursively rejects ignored nested submodule dirt", ()
 });
 
 test("checkpoint plumbing preserves clean uninitialized gitlinks", () => {
-  const submoduleRepo = tempDirs.make("clawsweeper-submodule-source-");
+  const submoduleRepo = makeFixtureDir("clawsweeper-submodule-source-");
   git(submoduleRepo, "init", "-b", "main");
   git(submoduleRepo, "config", "user.email", "clawsweeper@example.invalid");
   git(submoduleRepo, "config", "user.name", "ClawSweeper Test");
@@ -7019,7 +7361,7 @@ test("checkpoint plumbing preserves clean uninitialized gitlinks", () => {
 
 test("checkpoint plumbing preserves unchanged filtered blob OIDs", () => {
   const cwd = gitPackageFixture({ check: 'node -e ""' });
-  const filterRoot = tempDirs.make("clawsweeper-filter-");
+  const filterRoot = makeFixtureDir("clawsweeper-filter-");
   const cleanFilter = path.join(filterRoot, "clean.js");
   const smudgeFilter = path.join(filterRoot, "smudge.js");
   fs.writeFileSync(
@@ -7315,7 +7657,7 @@ test(
     createTargetCheckpointWithPlumbing({ cwd, messages: ["second"], identity });
     const previousHead = git(cwd, "rev-parse", "HEAD");
 
-    const binDir = tempDirs.make("clawsweeper-git-verify-failure-");
+    const binDir = makeFixtureDir("clawsweeper-git-verify-failure-");
     const marker = path.join(binDir, "commit-created");
     const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
     writeNodeCommandShim(
@@ -7461,7 +7803,7 @@ test(
     git(cwd, "add", "--force", ".");
     git(cwd, "commit", "-m", "initial");
 
-    const binDir = tempDirs.make("clawsweeper-workspace-install-");
+    const binDir = makeFixtureDir("clawsweeper-workspace-install-");
     const corepackPath = path.join(binDir, "corepack.js");
     const pnpmPath = path.join(binDir, "pnpm.js");
     const runtimeInput = path.join(dependencyDir, "node_modules", "generated", "state.js");
@@ -7528,7 +7870,7 @@ test(
     git(cwd, "commit", "-m", "initial");
     attachOrigin(cwd);
 
-    const binDir = tempDirs.make("clawsweeper-workspace-runtime-");
+    const binDir = makeFixtureDir("clawsweeper-workspace-runtime-");
     const corepackPath = path.join(binDir, "corepack.js");
     const pnpmPath = path.join(binDir, "pnpm.js");
     const workspaceLink = path.join(consumerDir, "node_modules", "openclaw");
@@ -7593,7 +7935,7 @@ test(
     git(cwd, "add", "--force", executableLink);
     git(cwd, "commit", "-m", "initial");
 
-    const binDir = tempDirs.make("clawsweeper-mode-install-");
+    const binDir = makeFixtureDir("clawsweeper-mode-install-");
     const corepackPath = path.join(binDir, "corepack.js");
     const pnpmPath = path.join(binDir, "pnpm.js");
     fs.writeFileSync(corepackPath, "");
@@ -7713,7 +8055,7 @@ test(
   { skip: process.platform === "win32" },
   () => {
     const cwd = gitPackageFixture({ check: 'node -e ""' });
-    const externalDir = tempDirs.make("clawsweeper-external-target-");
+    const externalDir = makeFixtureDir("clawsweeper-external-target-");
     const externalFile = path.join(externalDir, "outside.txt");
     fs.writeFileSync(externalFile, "outside\n");
     fs.symlinkSync(externalFile, path.join(cwd, "outside-link"));
@@ -7751,7 +8093,7 @@ test("failing fallback validation still verifies checkout identity", () => {
   attachOrigin(cwd);
   fs.writeFileSync(path.join(cwd, "test", "example.test.ts"), "export const value = 2;\n");
 
-  const binDir = tempDirs.make("clawsweeper-fallback-mutation-");
+  const binDir = makeFixtureDir("clawsweeper-fallback-mutation-");
   const pnpmPath = path.join(binDir, "pnpm.js");
   fs.writeFileSync(
     pnpmPath,
@@ -7786,7 +8128,7 @@ test("pnpm lockfile fallback requires a final frozen reinstall", () => {
   git(cwd, "add", ".");
   git(cwd, "commit", "-m", "initial");
 
-  const binDir = tempDirs.make("clawsweeper-pnpm-reinstall-");
+  const binDir = makeFixtureDir("clawsweeper-pnpm-reinstall-");
   const corepackPath = path.join(binDir, "corepack.js");
   const pnpmPath = path.join(binDir, "pnpm.js");
   const logPath = path.join(binDir, "pnpm.log");
@@ -7839,7 +8181,7 @@ test("pnpm lockfile fallback restores a pre-existing untracked lockfile exactly"
   git(cwd, "add", "package.json", ".gitignore");
   git(cwd, "commit", "-m", "initial");
 
-  const binDir = tempDirs.make("clawsweeper-pnpm-restore-");
+  const binDir = makeFixtureDir("clawsweeper-pnpm-restore-");
   const corepackPath = path.join(binDir, "corepack.js");
   const pnpmPath = path.join(binDir, "pnpm.js");
   const countPath = path.join(binDir, "count");
@@ -7887,55 +8229,188 @@ if (fs.readFileSync("pnpm-lock.yaml", "utf8") !== ${JSON.stringify(originalLockf
   assert.equal(fs.readFileSync(countPath, "utf8"), "3");
 });
 
-test("target setup shares one deadline across probes and installs", () => {
+test("dependency setup removes a lockfile pnpm materializes where none existed", () => {
+  const cwd = gitPackageFixture({ check: "node check.js" });
+  const lockfilePath = path.join(cwd, "pnpm-lock.yaml");
+  fs.rmSync(lockfilePath);
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  assert.ok(!fs.existsSync(lockfilePath), "fixture must start with no lockfile");
+
+  const binDir = makeFixtureDir("clawsweeper-pnpm-absent-lockfile-");
+  const corepackPath = path.join(binDir, "corepack.js");
+  const pnpmPath = path.join(binDir, "pnpm.js");
+  fs.writeFileSync(corepackPath, "");
+  fs.writeFileSync(
+    pnpmPath,
+    `const fs = require("node:fs");
+fs.writeFileSync("pnpm-lock.yaml", "lockfileVersion: '9.0'\\n");
+`,
+  );
+
+  withMockCommand("corepack", corepackPath, () =>
+    withMockCommand("pnpm", pnpmPath, () =>
+      prepareTargetToolchain(cwd, {
+        ...validationOptions("steipete/example", {
+          toolchain: {
+            packageManager: "pnpm",
+            baseValidationCommands: ["pnpm check"],
+            changedGate: null,
+          },
+        }),
+        installTargetDeps: true,
+        installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+      }),
+    ),
+  );
+
+  assert.ok(
+    !fs.existsSync(lockfilePath),
+    "install-owned lockfile must not survive setup when the checkout started without one",
+  );
+});
+
+test("target setup preserves post-install identity error precedence", (t) => {
+  const cwd = gitPackageFixture({ check: "node check.js" });
+  const sourcePath = path.join(cwd, "source.txt");
+  fs.writeFileSync(sourcePath, "original\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+
+  try {
+    for (const scenario of [
+      {
+        installFails: true,
+        mutate: true,
+        expire: false,
+        expected: /setup mutated checkout identity/,
+      },
+      { installFails: true, mutate: false, expire: false, expected: /^fixture install failed$/ },
+      { installFails: true, mutate: false, expire: true, expected: /^fixture install failed$/ },
+      {
+        installFails: false,
+        mutate: false,
+        expire: true,
+        expected: /validation identity deadline exhausted/,
+      },
+    ]) {
+      fs.writeFileSync(sourcePath, "original\n");
+      let now = 10_000;
+      let installed = false;
+      withVirtualDeadlineCommands(
+        t,
+        () => now,
+        ({ command, args, contained }) => {
+          if (command === "git") return;
+          if (command === "pnpm") {
+            assert.equal(contained, true);
+            assert.equal(args[0], "install");
+            installed = true;
+            if (scenario.mutate) fs.writeFileSync(sourcePath, "mutated\n");
+            if (scenario.expire) now += FAKE_TOOLCHAIN_TIMEOUT_MS;
+            if (scenario.installFails) return { status: 1, stderr: "fixture install failed" };
+          }
+          return { status: 0 };
+        },
+        () =>
+          assert.throws(
+            () =>
+              prepareTargetToolchain(cwd, {
+                ...validationOptions("steipete/example", {
+                  toolchain: {
+                    packageManager: "pnpm",
+                    baseValidationCommands: [],
+                    changedGate: null,
+                  },
+                }),
+                installTargetDeps: true,
+                installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+                setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+              }),
+            { message: scenario.expected },
+          ),
+      );
+      assert.equal(installed, true);
+    }
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("target setup shares one deadline across probes and installs", (t) => {
   const cwd = gitPackageFixture({ check: "node check.js" });
   fs.writeFileSync(path.join(cwd, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
   git(cwd, "add", ".");
   git(cwd, "commit", "-m", "initial");
 
-  const binDir = tempDirs.make("clawsweeper-setup-deadline-");
-  const corepackPath = path.join(binDir, "corepack.js");
-  const pnpmPath = path.join(binDir, "pnpm.js");
-  const corepackCountPath = path.join(binDir, "corepack-count");
-  const pnpmMarkerPath = path.join(binDir, "pnpm-ran");
-  fs.writeFileSync(
-    corepackPath,
-    `const fs = require("node:fs");
-const count = fs.existsSync(${JSON.stringify(corepackCountPath)})
-  ? Number(fs.readFileSync(${JSON.stringify(corepackCountPath)}, "utf8"))
-  : 0;
-fs.writeFileSync(${JSON.stringify(corepackCountPath)}, String(count + 1));
-const delay = process.argv[2] === "enable" ? 100 : 2000;
-Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
-`,
-  );
-  fs.writeFileSync(
-    pnpmPath,
-    `require("node:fs").writeFileSync(${JSON.stringify(pnpmMarkerPath)}, "ran");\n`,
-  );
-
-  assert.throws(
-    () =>
-      withMockCommand("corepack", corepackPath, () =>
-        withMockCommand("pnpm", pnpmPath, () =>
-          prepareTargetToolchain(cwd, {
-            ...validationOptions("steipete/example", {
-              toolchain: {
-                packageManager: "pnpm",
-                baseValidationCommands: ["pnpm check"],
-                changedGate: null,
-              },
-            }),
-            installTargetDeps: true,
-            installTimeoutMs: 1200,
-            setupTimeoutMs: 1200,
-          }),
-        ),
-      ),
-    /command timed out after \d+ms: corepack prepare/,
-  );
-  assert.equal(fs.readFileSync(corepackCountPath, "utf8"), "2");
-  assert.equal(fs.existsSync(pnpmMarkerPath), false);
+  try {
+    for (const installBudgetMs of [0, 1]) {
+      let now = 10_000;
+      let chargedIdentity = false;
+      const commands: Array<[string, number]> = [];
+      const identityBudgets: number[] = [];
+      withVirtualDeadlineCommands(
+        t,
+        () => now,
+        ({ command, args, timeoutMs, contained }) => {
+          if (command === "git") {
+            assert.equal(timeoutMs, 11_200 - now);
+            identityBudgets.push(timeoutMs);
+            if (!chargedIdentity && args.includes("ls-files")) {
+              chargedIdentity = true;
+              now += 100;
+            }
+            return;
+          }
+          const phase = command === "node" ? "node setup probe" : `${command} ${args[0]}`;
+          commands.push([phase, timeoutMs]);
+          if (phase === "node setup probe") now += 200;
+          else if (phase === "corepack enable") now += 400;
+          else if (phase === "corepack prepare") now += 500 - installBudgetMs;
+          else {
+            assert.equal(phase, "pnpm install");
+            assert.equal(contained, true);
+            assert.ok(args.includes("--frozen-lockfile"));
+            now += 1;
+            return { status: 1, stderr: "ERR_PNPM_OUTDATED_LOCKFILE" };
+          }
+          return { status: 0 };
+        },
+        () =>
+          assert.throws(
+            () =>
+              prepareTargetToolchain(cwd, {
+                ...validationOptions("steipete/example", {
+                  toolchain: {
+                    packageManager: "pnpm",
+                    baseValidationCommands: ["pnpm check"],
+                    changedGate: null,
+                  },
+                }),
+                installTargetDeps: true,
+                installTimeoutMs: 1200,
+                setupTimeoutMs: 1200,
+              }),
+            {
+              message: `target dependency setup deadline exhausted during pnpm install${installBudgetMs ? " fallback" : ""}`,
+            },
+          ),
+      );
+      assert.equal(chargedIdentity, true);
+      assert.deepEqual([...new Set(identityBudgets)], [1200, 1100]);
+      assert.deepEqual(commands, [
+        ["node setup probe", 1100],
+        ["corepack enable", 900],
+        ["corepack prepare", 500],
+        ...(installBudgetMs ? [["pnpm install", 1]] : []),
+      ]);
+      assert.equal(now, 11_200);
+      assert.equal(git(cwd, "status", "--porcelain"), "");
+    }
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
 });
 
 test("bun-based target repos still report unrelated missing scripts as blocked", () => {
@@ -7971,11 +8446,23 @@ test("resolveTargetRepoToolchain reads openclaw/clawhub from the real config wit
   }
 });
 
+test("resolveTargetRepoToolchain uses the explicit camsnap no-validation profile", () => {
+  __resetTargetRepoToolchainCache();
+  try {
+    const toolchain = resolveTargetRepoToolchain("steipete/camsnap");
+    assert.equal(toolchain.packageManager, "npm");
+    assert.deepEqual(toolchain.baseValidationCommands, []);
+    assert.equal(toolchain.changedGate, null);
+  } finally {
+    __resetTargetRepoToolchainCache();
+  }
+});
+
 test("resolveTargetRepoToolchain keeps the OpenClaw changed gate even without core_target_overrides", () => {
   // Regression guard for the earlier ordering bug: if core_target_overrides is
   // ever removed but a generic openclaw fallback is kept (changed_gate: null),
   // openclaw/openclaw must still receive the pnpm check:changed gate.
-  const tmpDir = tempDirs.make("clawsweeper-toolchain-config-");
+  const tmpDir = makeFixtureDir("clawsweeper-toolchain-config-");
   const configPath = path.join(tmpDir, "target-repositories.json");
   fs.writeFileSync(
     configPath,
@@ -8047,7 +8534,7 @@ test("resolveTargetRepoToolchain stays total when the config file is missing", (
 test("resolveTargetRepoToolchain stays total when the config file is malformed JSON", () => {
   // P1 invariant: a corrupt config file must degrade to default behavior, not
   // throw. Same fallback shape as the missing-file case above.
-  const tmpDir = tempDirs.make("clawsweeper-bad-config-");
+  const tmpDir = makeFixtureDir("clawsweeper-bad-config-");
   const configPath = path.join(tmpDir, "target-repositories.json");
   fs.writeFileSync(configPath, "{not valid json,,,");
   __resetTargetRepoToolchainCache();
@@ -8071,116 +8558,183 @@ test("resolveTargetRepoToolchain stays total when the config file is malformed J
 });
 
 test("changed validation retries one transient check:changed failure", () => {
-  const marker = path.join(
-    os.tmpdir(),
-    `clawsweeper-validation-attempt-${process.pid}-${Date.now()}.txt`,
+  const fixture = makeFixtureDir("clawsweeper-validation-retry-");
+  const marker = path.join(fixture, "attempts");
+  const cwd = gitPackageFixture({ "check:changed": "node check.js" });
+  fs.writeFileSync(
+    path.join(cwd, "check.js"),
+    `const fs = require("node:fs");
+const file = ${JSON.stringify(marker)};
+const count = fs.existsSync(file) ? Number(fs.readFileSync(file, "utf8")) : 0;
+fs.writeFileSync(file, String(count + 1));
+if (count === 0) { console.error("transient changed gate failure"); process.exit(1); }
+`,
   );
-  const cwd = gitPackageFixture({
-    "check:changed":
-      "node -e \"const fs=require('fs'); const file=process.env.CLAWSWEEPER_TEST_ATTEMPT_FILE; const count=fs.existsSync(file)?Number(fs.readFileSync(file,'utf8')):0; fs.writeFileSync(file, String(count+1)); if (count===0) { console.error('transient changed gate failure'); process.exit(1); }\"",
-  });
   git(cwd, "add", ".");
   git(cwd, "commit", "-m", "initial");
   attachOrigin(cwd);
+  const origin = git(cwd, "remote", "get-url", "origin");
 
   const previous = process.env.CLAWSWEEPER_VALIDATION_RETRIES;
-  const previousMarker = process.env.CLAWSWEEPER_TEST_ATTEMPT_FILE;
   process.env.CLAWSWEEPER_VALIDATION_RETRIES = "1";
-  process.env.CLAWSWEEPER_TEST_ATTEMPT_FILE = marker;
   try {
     assert.deepEqual(
-      runAllowedValidationCommands(
-        ["pnpm check:changed"],
-        cwd,
-        validationOptions("openclaw/openclaw"),
+      withPackageScriptPnpm(() =>
+        runAllowedValidationCommands(
+          ["pnpm check:changed"],
+          cwd,
+          validationOptions("openclaw/openclaw"),
+        ),
       ),
       ["pnpm check:changed"],
     );
+    assert.equal(fs.readFileSync(marker, "utf8"), "2");
+    assert.equal(git(cwd, "status", "--porcelain"), "");
   } finally {
     restoreEnv("CLAWSWEEPER_VALIDATION_RETRIES", previous);
-    restoreEnv("CLAWSWEEPER_TEST_ATTEMPT_FILE", previousMarker);
-    fs.rmSync(marker, { force: true });
+    fs.rmSync(fixture, { recursive: true, force: true });
+    fs.rmSync(cwd, { recursive: true, force: true });
+    fs.rmSync(origin, { recursive: true, force: true });
   }
 });
 
-test("changed validation shares one timeout with checkout identity proof", () => {
-  const marker = path.join(
-    os.tmpdir(),
-    `clawsweeper-validation-budget-${process.pid}-${Date.now()}.txt`,
-  );
+test("changed validation shares one timeout with checkout identity proof", (t) => {
   const cwd = gitPackageFixture({ "check:changed": "node check.js" });
+  fs.writeFileSync(
+    path.join(cwd, "check.js"),
+    'throw new Error("transient changed gate failure");\n',
+  );
   git(cwd, "add", ".");
   git(cwd, "commit", "-m", "initial");
   attachOrigin(cwd);
-
-  const binDir = tempDirs.make("clawsweeper-pnpm-budget-");
-  const pnpmPath = path.join(binDir, "pnpm.js");
-  fs.writeFileSync(
-    pnpmPath,
-    `const fs = require("node:fs");
-const count = fs.existsSync(${JSON.stringify(marker)})
-  ? Number(fs.readFileSync(${JSON.stringify(marker)}, "utf8"))
-  : 0;
-fs.writeFileSync(${JSON.stringify(marker)}, String(count + 1));
-setTimeout(() => {}, 5000);
-`,
-  );
+  const origin = git(cwd, "remote", "get-url", "origin");
   const previousRetries = process.env.CLAWSWEEPER_VALIDATION_RETRIES;
   process.env.CLAWSWEEPER_VALIDATION_RETRIES = "1";
   try {
-    assert.throws(
-      () =>
-        withMockCommand("pnpm", pnpmPath, () =>
-          runAllowedValidationCommands(
-            ["pnpm check:changed"],
-            cwd,
-            validationOptions("openclaw/openclaw", { validationTimeoutMs: 250 }),
+    // A retry needs 1000ms: identity proof leaves exactly that much, or one ms less.
+    for (const identityCostMs of [900, 901]) {
+      let now = 10_000;
+      const commandBudgets: number[] = [];
+      const proofBudgets: number[] = [];
+      let completedIdentities = 0;
+      withVirtualDeadlineCommands(
+        t,
+        () => now,
+        ({ command, args, timeoutMs, contained }) => {
+          if (command === "git") {
+            if (args.slice(-2).join(" ") === "rev-parse origin/main") {
+              completedIdentities += 1;
+              assert.equal(timeoutMs, 10_000);
+              if (commandBudgets.length > 0) {
+                proofBudgets.push(timeoutMs);
+                now += identityCostMs;
+              }
+            }
+            return;
+          }
+          assert.equal(command, "pnpm");
+          assert.ok(args.includes("check:changed"));
+          assert.equal(contained, true);
+          assert.equal(completedIdentities, commandBudgets.length + 1);
+          commandBudgets.push(timeoutMs);
+          now += 100;
+          return { status: 1, stderr: "transient changed gate failure" };
+        },
+        () =>
+          assert.throws(
+            () =>
+              runAllowedValidationCommands(
+                ["pnpm check:changed"],
+                cwd,
+                validationOptions("openclaw/openclaw", { validationTimeoutMs: 4_000 }),
+              ),
+            (error: Error) => {
+              assert.equal(
+                error.message,
+                `validation command failed (pnpm check:changed): ${identityCostMs === 900 ? "validation command runtime budget exhausted" : "transient changed gate failure"}`,
+              );
+              assert.equal((error.cause as Error).message, "transient changed gate failure");
+              return true;
+            },
           ),
-        ),
-      /validation command runtime budget exhausted|unsafe validation command checkout identity could not be verified/,
-    );
-    assert.equal(fs.readFileSync(marker, "utf8"), "1");
+      );
+      assert.deepEqual(commandBudgets, identityCostMs === 900 ? [2000, 1000] : [2000]);
+      assert.deepEqual(
+        proofBudgets,
+        commandBudgets.map(() => 10_000),
+      );
+      assert.equal(completedIdentities, commandBudgets.length + 1);
+      assert.equal(now, identityCostMs === 900 ? 12_000 : 11_001);
+      assert.equal(git(cwd, "status", "--porcelain"), "");
+    }
   } finally {
     restoreEnv("CLAWSWEEPER_VALIDATION_RETRIES", previousRetries);
-    fs.rmSync(marker, { force: true });
+    fs.rmSync(cwd, { recursive: true, force: true });
+    fs.rmSync(origin, { recursive: true, force: true });
   }
 });
 
-test("validation reserves deadline to prove checkout mutation after command timeout", () => {
+test("validation reserves deadline to prove checkout mutation after command timeout", (t) => {
+  const fixture = makeFixtureDir("clawsweeper-validation-timeout-");
+  const marker = path.join(fixture, "phases");
   const cwd = gitPackageFixture({ verify: "node verify.js" });
   fs.writeFileSync(path.join(cwd, "source.txt"), "original\n");
+  fs.writeFileSync(
+    path.join(cwd, "verify.js"),
+    `const fs = require("node:fs");
+process.on("SIGTERM", () => {
+  fs.appendFileSync(${JSON.stringify(marker)}, "terminated\\n");
+  process.exit(0);
+});
+fs.writeFileSync("source.txt", "mutated\\n");
+fs.appendFileSync(${JSON.stringify(marker)}, "mutated\\n");
+setInterval(() => {}, 1000);
+`,
+  );
   git(cwd, "add", ".");
   git(cwd, "commit", "-m", "initial");
   attachOrigin(cwd);
-
-  const binDir = tempDirs.make("clawsweeper-pnpm-timeout-mutation-");
-  const pnpmPath = path.join(binDir, "pnpm.js");
-  fs.writeFileSync(
-    pnpmPath,
-    `const fs = require("node:fs");
-fs.writeFileSync("source.txt", "mutated\\n");
-setTimeout(() => {}, 5000);
-`,
+  const origin = git(cwd, "remote", "get-url", "origin");
+  const validationTimeoutMs = 4_000;
+  const startedAt = Date.now();
+  // Leave command startup real, then require identity proof after the shared budget expires.
+  const clock = t.mock.method(
+    Date,
+    "now",
+    () => startedAt + (fs.existsSync(marker) ? validationTimeoutMs : 0),
   );
-
-  assert.throws(
-    () =>
-      withMockCommand("pnpm", pnpmPath, () =>
-        runAllowedValidationCommands(
-          ["pnpm verify"],
-          cwd,
-          validationOptions("steipete/example", {
-            toolchain: {
-              packageManager: "pnpm",
-              baseValidationCommands: [],
-              changedGate: null,
-            },
-            validationTimeoutMs: 800,
-          }),
+  try {
+    assert.throws(
+      () =>
+        withPackageScriptPnpm(
+          () =>
+            runAllowedValidationCommands(
+              ["pnpm verify"],
+              cwd,
+              validationOptions("steipete/example", {
+                toolchain: {
+                  packageManager: "pnpm",
+                  baseValidationCommands: [],
+                  changedGate: null,
+                },
+                validationTimeoutMs,
+              }),
+            ),
+          { name: "verify", file: "verify.js" },
         ),
-      ),
-    /unsafe validation command mutated checkout identity/,
-  );
+      /unsafe validation command mutated checkout identity/,
+    );
+    assert.equal(fs.readFileSync(path.join(cwd, "source.txt"), "utf8"), "mutated\n");
+    assert.equal(
+      fs.readFileSync(marker, "utf8"),
+      process.platform === "win32" ? "mutated\n" : "mutated\nterminated\n",
+    );
+  } finally {
+    clock.mock.restore();
+    fs.rmSync(fixture, { recursive: true, force: true });
+    fs.rmSync(cwd, { recursive: true, force: true });
+    fs.rmSync(origin, { recursive: true, force: true });
+  }
 });
 
 test(
@@ -8191,24 +8745,20 @@ test(
       context.skip("runner does not provide delegated user namespaces and Landlock ABI 3+");
       return;
     }
-    const marker = path.join(
-      os.tmpdir(),
-      `clawsweeper-detached-validation-${process.pid}-${Date.now()}`,
-    );
     const cwd = gitPackageFixture({ verify: "node verify.js" });
+    const markerName = "detached-validation-ran";
+    const marker = path.join(cwd, "node_modules", markerName);
     git(cwd, "add", ".");
     git(cwd, "commit", "-m", "initial");
     attachOrigin(cwd);
-    const binDir = tempDirs.make("clawsweeper-detached-pnpm-");
+    const binDir = makeFixtureDir("clawsweeper-detached-pnpm-");
     const pnpmPath = path.join(binDir, "pnpm.js");
-    const grandchild = `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "escaped"), 800)`;
-    const intermediate = `const { spawn } = require("node:child_process"); const child = spawn(process.execPath, ["-e", ${JSON.stringify(
-      grandchild,
-    )}], { detached: true, stdio: "ignore" }); child.unref();`;
     fs.writeFileSync(
       pnpmPath,
       `const { spawn } = require("node:child_process");
-const child = spawn(process.execPath, ["-e", ${JSON.stringify(intermediate)}], {
+const child = spawn(process.execPath, ["-e", ${JSON.stringify(
+        SPAWN_DETACHED_NODE_MODULES_MARKER_SCRIPT,
+      )}, ${JSON.stringify(markerName)}], {
   detached: true,
   stdio: "ignore"
 });
@@ -8316,7 +8866,7 @@ test("target validation strips credentials and target-controlled environment inj
 });
 
 test("target validation exposes verified rustup tools without host Rust state", () => {
-  const rustupHome = tempDirs.make("clawsweeper-rustup-home-");
+  const rustupHome = makeFixtureDir("clawsweeper-rustup-home-");
   const toolchainBin = path.join(rustupHome, "toolchains", "stable", "bin");
   const observationPath = path.join(rustupHome, "observed.jsonl");
   fs.mkdirSync(toolchainBin, { recursive: true });
@@ -8335,7 +8885,7 @@ fs.appendFileSync(${JSON.stringify(observationPath)}, JSON.stringify({
 `,
     );
   }
-  const rustupBin = tempDirs.make("clawsweeper-rustup-bin-");
+  const rustupBin = makeFixtureDir("clawsweeper-rustup-bin-");
   writeNodeCommandShim(
     rustupBin,
     "rustup",
@@ -8436,9 +8986,9 @@ test(
   "target validation retries rustup after a transient probe failure",
   { skip: process.platform === "win32" },
   () => {
-    const rustupHome = tempDirs.make("clawsweeper-rustup-retry-home-");
+    const rustupHome = makeFixtureDir("clawsweeper-rustup-retry-home-");
     const toolchainBin = path.join(rustupHome, "toolchains", "stable", "bin");
-    const rustupBin = tempDirs.make("clawsweeper-rustup-retry-bin-");
+    const rustupBin = makeFixtureDir("clawsweeper-rustup-retry-bin-");
     const countPath = path.join(rustupBin, "rustup-count");
     fs.mkdirSync(toolchainBin, { recursive: true });
     for (const directory of [rustupBin, toolchainBin]) {
@@ -8488,7 +9038,7 @@ else process.exit(1);
 );
 
 test("target validation confines user-level configuration writes to a disposable profile", () => {
-  const hostHome = tempDirs.make("clawsweeper-host-home-");
+  const hostHome = makeFixtureDir("clawsweeper-host-home-");
   const hostConfig = path.join(hostHome, "xdg");
   const observationPath = path.join(hostHome, "observed.json");
   const cwd = gitPackageFixture({ "check:env": "node write-global.mjs" });
@@ -8563,7 +9113,7 @@ test("compactText keeps both head and tail for long validation output", () => {
 });
 
 function packageFixture(scripts) {
-  const cwd = tempDirs.make("clawsweeper-validation-");
+  const cwd = makeFixtureDir("clawsweeper-validation-");
   fs.writeFileSync(
     path.join(cwd, "package.json"),
     `${JSON.stringify({ scripts, packageManager: "pnpm@10.33.0" }, null, 2)}\n`,
@@ -8587,7 +9137,7 @@ function packageFixture(scripts) {
 }
 
 function bunPackageFixture(scripts) {
-  const cwd = tempDirs.make("clawsweeper-validation-bun-");
+  const cwd = makeFixtureDir("clawsweeper-validation-bun-");
   fs.writeFileSync(
     path.join(cwd, "package.json"),
     `${JSON.stringify({ scripts, packageManager: "bun@1.1.0" }, null, 2)}\n`,
@@ -8606,7 +9156,7 @@ function gitBunPackageFixture(scripts) {
 }
 
 function fakeBunFixture(cwd, { failRun = false } = {}) {
-  const binDir = tempDirs.make("clawsweeper-fake-bun-bin-");
+  const binDir = makeFixtureDir("clawsweeper-fake-bun-bin-");
   const logPath = path.join(binDir, "fake-bun.log");
   writeNodeCommandShim(
     binDir,
@@ -8623,7 +9173,7 @@ if (${JSON.stringify(failRun)} && process.argv[2] === "run") { console.error("sr
 }
 
 function envLoggingBunFixture() {
-  const binDir = tempDirs.make("clawsweeper-fake-bun-env-bin-");
+  const binDir = makeFixtureDir("clawsweeper-fake-bun-env-bin-");
   const logPath = path.join(binDir, "fake-bun.log");
   const envLogPath = path.join(binDir, "fake-bun-env.log");
   writeNodeCommandShim(
@@ -8669,6 +9219,92 @@ function linuxValidationContainmentAvailable() {
     { stdio: "ignore" },
   );
   return probe.status === 0;
+}
+
+function withVirtualDeadlineCommands(t, now, onCommand, callback) {
+  const binDir = makeFixtureDir("clawsweeper-virtual-deadline-");
+  const scripts = new Map(
+    ["node", "corepack", "pnpm"].map((command) => [path.join(binDir, `${command}.cjs`), command]),
+  );
+  for (const script of scripts.keys()) {
+    fs.writeFileSync(script, 'throw new Error("virtual command escaped test seam");\n');
+  }
+  const realSpawnSync = childProcess.spawnSync;
+  const workerPath = fileURLToPath(
+    new URL("../../dist/repair/contained-command-worker.js", import.meta.url),
+  );
+  const clock = t.mock.method(Date, "now", now);
+  const spawn = t.mock.method(childProcess, "spawnSync", (command, args, options) => {
+    const contained = args[0] === workerPath;
+    const invocation = contained
+      ? JSON.parse(options.input)
+      : { command, args, timeoutMs: options.timeout };
+    const tool = scripts.get(invocation.args[0]);
+    const name = tool ?? path.basename(invocation.command).replace(/\.exe$/i, "");
+    const result = onCommand({
+      command: name,
+      args: tool ? invocation.args.slice(1) : invocation.args,
+      timeoutMs: invocation.timeoutMs,
+      contained,
+    });
+    if (name === "git") {
+      assert.equal(contained, false);
+      assert.equal(result, undefined);
+      // Keep real Git/source-trust checks, but let only the virtual clock charge time.
+      return realSpawnSync(command, args, { ...options, timeout: undefined });
+    }
+    assert.ok(result, `unexpected command: ${name}`);
+    const output = { stdout: "", stderr: "", signal: null, ...result };
+    return {
+      pid: 0,
+      output: [null, output.stdout, output.stderr],
+      ...output,
+      ...(contained
+        ? { status: 0, stderr: "", stdout: JSON.stringify({ ...output, backgroundProcesses: 0 }) }
+        : {}),
+    };
+  });
+  syncBuiltinESMExports();
+  try {
+    return withMockCommand("node", path.join(binDir, "node.cjs"), () =>
+      withMockCommand("corepack", path.join(binDir, "corepack.cjs"), () =>
+        withMockCommand("pnpm", path.join(binDir, "pnpm.cjs"), callback),
+      ),
+    );
+  } finally {
+    spawn.mock.restore();
+    syncBuiltinESMExports();
+    clock.mock.restore();
+    fs.rmSync(binDir, { recursive: true, force: true });
+  }
+}
+
+function withPackageScriptPnpm(callback, { name = "check:changed", file = "check.js" } = {}) {
+  // Dependency-free fixtures execute their real package script without resolving host pnpm.
+  const binDir = makeFixtureDir("clawsweeper-package-script-pnpm-");
+  const pnpmPath = path.join(binDir, "pnpm.cjs");
+  fs.writeFileSync(
+    pnpmPath,
+    `const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const { spawnSync } = require("node:child_process");
+const args = process.argv.slice(2).filter(arg => ![
+  "--config.verify-deps-before-run=false",
+  "--config.enable-pre-post-scripts=false",
+].includes(arg));
+assert.deepEqual(args, [${JSON.stringify(name)}]);
+assert.equal(JSON.parse(fs.readFileSync("package.json", "utf8")).scripts[${JSON.stringify(name)}], ${JSON.stringify(`node ${file}`)});
+const child = spawnSync(process.execPath, [${JSON.stringify(file)}], { stdio: "inherit" });
+if (child.error) throw child.error;
+if (child.signal) process.kill(process.pid, child.signal);
+else process.exit(child.status ?? 1);
+`,
+  );
+  try {
+    return withMockCommand("pnpm", pnpmPath, callback);
+  } finally {
+    fs.rmSync(binDir, { recursive: true, force: true });
+  }
 }
 
 function withMockCommand(command, scriptPath, callback) {
@@ -8772,7 +9408,7 @@ function gitPackageFixture(scripts) {
 }
 
 function attachOrigin(cwd) {
-  const origin = tempDirs.make("clawsweeper-validation-origin-");
+  const origin = makeFixtureDir("clawsweeper-validation-origin-");
   git(origin, "init", "--bare");
   git(cwd, "remote", "add", "origin", origin);
   git(cwd, "push", "-u", "origin", "main:main");

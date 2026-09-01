@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "proof": "CSW-127 Phase 0.6 production-shaped boundary",
+  "base_commit": "6494ab5eb285cc2993d4679d6723e4b2486de99c",
+  "code_commit": "92d91e812f810c5bf9f7e0f470cb017533aee43c",
+  "code_tree": "84f9205a89d0fafdd20e9796affb7b67bd534fe2",
+  "provider": "local-container",
+  "provider_id": "cbx_b188010777d1",
+  "provider_slug": "swift-krill-16ae",
+  "image": "node:24-bookworm",
+  "worker": "wrangler@4.107.0 --local",
+  "durable_object": "SQLite ExactReviewQueue",
+  "status": "succeeded",
+  "exit_code": 0,
+  "lease_stopped": true,
+  "duration_ms": 272317,
+  "phases_ms": {
+    "dependencies": 3774,
+    "build": 3042,
+    "focused_tests": 5592,
+    "worker_queue_transition": 11545,
+    "seed_production_caps": 280,
+    "worker_cap_eviction": 2594,
+    "worker_restart": 2180,
+    "broad_linux_gates": 237992
+  },
+  "focused_tests": {
+    "tests": 235,
+    "passed": 235,
+    "failed": 0
+  },
+  "results": {
+    "rollup_rows_seeded": 50000,
+    "rate_limit_rows_seeded": 10000,
+    "rollup_rows_evicted": 2,
+    "rate_limit_rows_evicted": 1,
+    "fifteen_minute_query_complete": true,
+    "one_hour_query_complete": true,
+    "overlapping_six_hour_query_complete": false,
+    "sqlite_restart_preserved_eviction_watermarks": true,
+    "sqlite_restart_preserved_retry_cause": true,
+    "sqlite_restart_preserved_refresh_cause": true,
+    "retry_cause_reconciled": true,
+    "refresh_cause_reconciled": true,
+    "fallback_target_app_scope_preserved": true,
+    "privacy_clean": true,
+    "broad_check": "passed"
+  },
+  "coverage_percent": {
+    "lines": 81.49,
+    "branches": 74.08,
+    "functions": 87.35
+  },
+  "artifact_sha256": {
+    "runtime_receipt_json": "D890DFA935CE8A8DCE76A93651DFD3AA79030E266869C4E67DA054838DFA2FDB",
+    "queue_stage_json": "6F4253CC09DDB8FE029B5579191A175E6B8808A1272C63E3121C70499A3F91DC",
+    "cap_stage_json": "B3FCBC4C12A2DD1AEFA3094A9E5DF2F1A69F85E123AC0E012380C5D40B882779",
+    "restart_stage_json": "4480B0478D780A97BCD2FC26826D3C739A886BC3305566A183133F46D9C93AF3",
+    "redacted_wrangler_log": "53A55DECCBA450985FFADBCC7D864D14C2C2ECF24C049877B458A6BCDB33149E"
+  },
+  "limits": [
+    "The proof used synthetic local fixtures and made no production, GitHub, queue, DLQ, workflow, gate, schedule, capacity, deployment, or credential mutation.",
+    "The target_app closure-proof 403 path is separate and was not changed.",
+    "Phase 1 remains default-disabled and requires separate authorization plus a stable post-merge cohort before activation can be claimed."
+  ]
+}

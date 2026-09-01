@@ -102,13 +102,13 @@ if (lstatSync(stateRoot).isSymbolicLink()) {
 }
 
 const distSource = join(repoRoot, "dist");
-const typescriptSource = realpathSync(join(repoRoot, "node_modules", "typescript"));
 const yamlSource = realpathSync(join(repoRoot, "node_modules", "yaml"));
+const playwrightSource = realpathSync(join(repoRoot, "node_modules", "playwright-core"));
 const plannedItems = readPlannedItems(planPath);
 const itemNumbers = plannedItems.map((item) => item.number);
 
-assertPackageName(typescriptSource, "typescript");
 assertPackageName(yamlSource, "yaml");
+assertPackageName(playwrightSource, "playwright-core");
 if (!existsSync(distSource)) {
   throw new Error("Built runtime not found. Run the build before preparing the review artifact.");
 }
@@ -116,14 +116,18 @@ if (!existsSync(distSource)) {
 rmSync(outputRoot, { force: true, recursive: true });
 mkdirSync(join(outputRoot, "node_modules"), { recursive: true });
 cpSync(distSource, join(outputRoot, "dist"), { dereference: true, recursive: true });
-cpSync(typescriptSource, join(outputRoot, "node_modules", "typescript"), {
-  dereference: true,
-  recursive: true,
-});
 cpSync(yamlSource, join(outputRoot, "node_modules", "yaml"), {
   dereference: true,
   recursive: true,
 });
+cpSync(playwrightSource, join(outputRoot, "node_modules", "playwright-core"), {
+  dereference: true,
+  recursive: true,
+});
+cpSync(join(repoRoot, "package.json"), join(outputRoot, "package.json"));
+for (const directory of ["config", "prompts", "schema"]) {
+  cpSync(join(repoRoot, directory), join(outputRoot, directory), { recursive: true });
+}
 copySelectedReports({
   itemNumbers,
   outputRoot,

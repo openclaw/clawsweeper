@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-08-14T06:11:30Z",
+  "provider": "local-container",
+  "lease_id": "cbx_50f3c91c43a4",
+  "slug": "golden-lobster-9b16",
+  "container_runtime": "docker",
+  "image": "node:24-bookworm",
+  "machine_type": "node_24-bookworm",
+  "tested_head": "2f5c5b98c136fc80411fde91ae5c7685eee00938",
+  "merge_base": "6a358d239c1e67cd38159d70de18eecbd9a5d844",
+  "command": "/Users/steipete/Projects/crabbox/bin/crabbox run --provider local-container --local-container-image node:24-bookworm --no-hydrate --preflight --timing-json --capture-stdout docs/proof/etag-read-broker/container-transcript.txt --capture-stderr docs/proof/etag-read-broker/container-stderr.txt --shell -- sudo apt-get update >/dev/null && sudo apt-get install -y jq >/dev/null && docs/proof/etag-read-broker/run-proof.sh 2f5c5b98c136fc80411fde91ae5c7685eee00938 6a358d239c1e67cd38159d70de18eecbd9a5d844",
+  "exit_code": 0,
+  "lease_stopped": true,
+  "sync_ms": 9050,
+  "command_ms": 96034,
+  "total_ms": 105099,
+  "node_version": "v24.19.0",
+  "pnpm_version": "11.10.0",
+  "focused_tests": {
+    "tests": 16,
+    "passed": 16,
+    "failed": 0
+  },
+  "loopback": {
+    "first_read": "200_stored",
+    "unchanged_read": "304_confirmed_body_served",
+    "changed_read": "200_replaced",
+    "byte_identical": true,
+    "digest_asserted": true,
+    "page_2_carried_page_1_etag": false,
+    "final_guard_revalidated": true,
+    "bare_cache_reads": 0,
+    "wire_calls": 5,
+    "quota_charges": 3,
+    "publisher_hmac_status": 200,
+    "operator_hmac_status": 401
+  },
+  "dashboard_strict": {
+    "command": "pnpm run check:dashboard-strict",
+    "exit_code": 0,
+    "ratchet_added": "dashboard/github-etag-cache.ts"
+  },
+  "full_gate": {
+    "command": "pnpm run check",
+    "exit_code": 0,
+    "tests": 3454,
+    "passed": 3446,
+    "failed": 0,
+    "skipped": 8,
+    "coverage": {
+      "lines": 81.45,
+      "branches": 74.06,
+      "functions": 87.32
+    }
+  },
+  "pre_commit_autoreview": {
+    "command": "autoreview --mode local --stream-engine-output",
+    "exit_code": 0,
+    "accepted_or_actionable_findings": 0,
+    "result": "autoreview clean: no accepted/actionable findings reported"
+  },
+  "behavior_report": "docs/proof/etag-read-broker/behavior-report.json",
+  "content_sha256": {
+    "dashboard/github-etag-cache.ts": "a5228582e841a506424e9ee32d5cb90151a6b7c09c2e63335fd83fdcbd6a51c6",
+    "src/github-etag-cache-contract.ts": "210780239f86bf098cce72bc366537672326b2bc89cb708b3336d4af503586a6",
+    "src/github-etag-read-broker.ts": "f848d1d84c0160a549dd7c0c24e7aebcb7de2d9dc14218b000a3f28e917a18e6",
+    "src/clawsweeper-github-runtime.ts": "a7686e946c1a5deeff62edcbc6b5d3c42173169d269ae9fa94cce1f9ae8fb4db",
+    "dashboard/worker.ts": "7b21e6c14d16ca83d25b2e6553fc6009db5c2827ba497bef592eb20b489eb15e",
+    "test/github-etag-read-broker.test.ts": "e11898b0e1626cd7d8f4acb5e7bd413d87a8defb3b171b406ad04aae9e5c8181",
+    "docs/github-egress-telemetry.md": "9ddad299fec8ecaba788d58b9fca51a6359c953dd51a80cf035ca25c5bc43953",
+    "docs/proof/etag-read-broker/run-proof.sh": "e63d39f4c2e17d4684689109f0d68eee24d8384987252f37462814309d39ff32"
+  },
+  "artifact_sha256": {
+    "behavior_report": "e62b89a84e8fb9df575cd409e436c82d4410aeabed8b43a077089807d95c4b9a",
+    "raw_container_transcript": "64dbe7ebb6477fb38c19db98ea262b10d19460117e2e546b4240df6fa379c45c",
+    "container_transcript_summary": "a98c975290df85084cac7a91c0e404e4004dab4625ebe850274d301c5e568b40",
+    "container_stderr": "dedc3e80a3811f55d5b735ba091aeb9a803b2e56f8d97a0ed924b467125fda70"
+  },
+  "secret_scan": {
+    "tool": "trufflehog 3.96.0",
+    "command": "trufflehog filesystem --no-update --results=verified,unknown --fail --fail-on-scan-errors docs/proof/etag-read-broker/container-transcript-summary.txt docs/proof/etag-read-broker/container-stderr.txt",
+    "exit_code": 0,
+    "chunks": 2,
+    "bytes": 2442,
+    "verified_secrets": 0,
+    "unknown_secrets": 0
+  },
+  "cleanup": {
+    "owned_success_lease_absent_from_local_container_list": true,
+    "owned_failed_leases_absent_from_local_container_list": true,
+    "unrelated_preexisting_exited_lease_untouched": true,
+    "failed_captures_moved_to_private_tmp": true,
+    "raw_success_transcript_moved_to_private_tmp": true
+  }
+}

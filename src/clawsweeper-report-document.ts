@@ -1,6 +1,7 @@
 import {
   configSurfaceChangeFromContext,
   dataModelChangeFromContext,
+  sqliteSchemaChangeFromContext,
 } from "./clawsweeper-change-detection.js";
 import { closeReasonText } from "./clawsweeper-close-reasons.js";
 import { REVIEW_SECTIONS } from "./clawsweeper-policy.js";
@@ -12,6 +13,7 @@ import {
   isVerifiedRegressionProvenance,
   regressionAssessmentPublicLine,
   regressionProvenancePublicLine,
+  publicLikelyOwner,
 } from "./clawsweeper-regression-provenance.js";
 import type {
   Action,
@@ -24,7 +26,6 @@ import type {
   ReviewRuntime,
   RootCauseClusterAssessment,
 } from "./clawsweeper-types.js";
-import { type ReviewSemanticRecord } from "./review-semantic-cache.js";
 import {
   reviewStructuralPullStateDigest,
   type ReviewStructuralRecord,
@@ -32,6 +33,31 @@ import {
 import type { CreateReportRenderingDependencies } from "./clawsweeper-report-rendering-dependencies.js";
 import type { createReportContextRendering } from "./clawsweeper-report-context.js";
 import type { createReportCommentHelpers } from "./clawsweeper-report-comment-helpers.js";
+import {
+  fitPrHydrationSnapshotToPublicationLimit,
+  serializePrHydrationSnapshot,
+} from "./pr-hydration-snapshot.js";
+
+export function localCheckoutAccessForDecision(
+  decision: Pick<Decision, "localCheckoutAccess">,
+): "verified" | "unverified" {
+  return decision.localCheckoutAccess === "verified" ? "verified" : "unverified";
+}
+
+export function localCheckoutAccessSourceForDecision(
+  decision: Pick<Decision, "localCheckoutAccess">,
+): "runner_preflight_v1" | "unknown" {
+  return decision.localCheckoutAccess === undefined ? "unknown" : "runner_preflight_v1";
+}
+
+export function reviewStatusForDecision(
+  decision: Pick<Decision, "localCheckoutAccess" | "summary">,
+): "complete" | "failed" {
+  return localCheckoutAccessForDecision(decision) === "verified" &&
+    !decision.summary.startsWith("Codex review failed")
+    ? "complete"
+    : "failed";
+}
 
 export function createReportDocumentRendering(
   dependencies: CreateReportRenderingDependencies &
@@ -43,6 +69,7 @@ export function createReportDocumentRendering(
     confidenceText,
     contextCountText,
     fileUrl,
+    normalizeEvidence,
     fixedInText,
     formatTimestamp,
     jsonFrontMatterValue,
@@ -63,7 +90,6 @@ export function createReportDocumentRendering(
     securityConcernLocation,
     sentence,
     sha256,
-    splitFileAndLine,
     workStatusForDecision,
   } = dependencies;
 
@@ -263,6 +289,30 @@ export function createReportDocumentRendering(
     ].join("\n");
   }
 
+  function renderLiveProofReportSection(decision: Decision): string {
+    return [
+      `Status: ${decision.liveProofPlan.status}`,
+      "",
+      `Surface: ${decision.liveProofPlan.surface}`,
+      "",
+      `Terminal completion: ${decision.liveProofPlan.terminalCompletion}`,
+      "",
+      `Reason: ${sentence(decision.liveProofPlan.reason)}`,
+      "",
+      `Payoff: ${decision.liveProofPlan.payoff.kind}`,
+      "",
+      `Payoff justification: ${sentence(decision.liveProofPlan.payoff.justification)}`,
+      "",
+      `Entry: ${decision.liveProofPlan.entry.trim()}`,
+      "",
+      "Steps:",
+      "",
+      decision.liveProofPlan.steps.length
+        ? markdownList(decision.liveProofPlan.steps.map((step) => JSON.stringify(step)))
+        : "[]",
+    ].join("\n");
+  }
+
   function renderMantisRecommendationReportSection(decision: Decision): string {
     return [
       `Status: ${decision.mantisRecommendation.status}`,
@@ -395,49 +445,6 @@ export function createReportDocumentRendering(
     );
   }
 
-  function updateReviewSemanticFrontMatter(
-    markdown: string,
-    record: ReviewSemanticRecord | null,
-    cacheHit: boolean,
-  ): string {
-    let next = replaceFrontMatterValue(
-      markdown,
-      "review_semantic_cache_version",
-      record ? String(record.version) : "unknown",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_semantic_fingerprint",
-      record?.fingerprint ?? "unknown",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_semantic_code_digest",
-      record?.codeDigest ?? "unknown",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_semantic_exact_digest",
-      record?.exactDigest ?? "unknown",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_semantic_context_digest",
-      record?.contextDigest ?? "unknown",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_semantic_eligible",
-      record ? String(record.eligible) : "false",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_semantic_eligibility_reason",
-      record?.eligibilityReason ?? "unknown",
-    );
-    return replaceFrontMatterValue(next, "review_semantic_cache_hit", cacheHit ? "true" : "false");
-  }
-
   function markdownFor(options: {
     item: Item;
     context: ItemContext;
@@ -450,7 +457,6 @@ export function createReportDocumentRendering(
     reviewPolicy: string;
     runtime: ReviewRuntime;
     structuralRecord?: ReviewStructuralRecord | null;
-    semanticRecord?: ReviewSemanticRecord | null;
     reviewLeaseOwner?: string;
     reviewLeaseCommentId?: number;
   }): string {
@@ -484,17 +490,27 @@ export function createReportDocumentRendering(
       .join("\n\n");
     const evidence = options.decision.evidence.length
       ? options.decision.evidence
-          .map((entry) => {
-            const bits = [`- **${entry.label}:** ${entry.detail}`];
+          .map((rawEntry) => {
+            const entry = normalizeEvidence(rawEntry);
+            const bits = [
+              `- **${entry.label}:** ${entry.detail}`,
+              `  - repo: ${entry.repo ?? "null"}`,
+            ];
             if (entry.file) {
-              const parsed = splitFileAndLine(entry.file, entry.line);
-              const label = `${parsed.file}${parsed.line ? `:${parsed.line}` : ""}`;
-              bits.push(
-                `  - file: ${markdownLink(label, fileUrl(parsed.file, entry.sha ?? options.git.mainSha, parsed.line))}`,
-              );
+              const label = `${entry.file}${entry.line ? `:${entry.line}` : ""}`;
+              const sha =
+                entry.sha ?? (entry.repo === options.item.repo ? options.git.mainSha : null);
+              const url =
+                entry.repo && sha
+                  ? fileUrl(entry.file, sha, entry.line ?? undefined, entry.repo)
+                  : null;
+              bits.push(`  - file: ${url ? markdownLink(label, url) : `\`${label}\``}`);
             }
             if (entry.command) bits.push(`  - command: \`${entry.command}\``);
-            if (entry.sha) bits.push(`  - sha: ${linkedSha(entry.sha)}`);
+            if (entry.sha)
+              bits.push(
+                `  - sha: ${entry.repo ? linkedSha(entry.sha, entry.repo) : `\`${entry.sha}\``}`,
+              );
             return bits.join("\n");
           })
           .join("\n")
@@ -504,8 +520,11 @@ export function createReportDocumentRendering(
       : "- none";
     const likelyOwners = options.decision.likelyOwners.length
       ? options.decision.likelyOwners
+          .map(publicLikelyOwner)
           .map((owner) => {
             const bits = [`- **${owner.person}:** ${publicLikelyOwnerRole(owner.role)}`];
+            if (owner.attributionSource)
+              bits.push(`  - attribution source: ${owner.attributionSource}`);
             bits.push(`  - reason: ${owner.reason}`);
             bits.push(`  - confidence: ${owner.confidence}`);
             if (owner.commits.length) bits.push(`  - commits: ${owner.commits.join(", ")}`);
@@ -526,6 +545,7 @@ export function createReportDocumentRendering(
     const realBehaviorProof = renderRealBehaviorProofReportSection(options.decision);
     const prRating = renderPrRatingReportSection(options.decision);
     const telegramVisibleProof = renderTelegramVisibleProofReportSection(options.decision);
+    const liveProof = renderLiveProofReportSection(options.decision);
     const mantisRecommendation = renderMantisRecommendationReportSection(options.decision);
     const featureShowcase = renderFeatureShowcaseReportSection(options.decision);
     const agentsPolicyStatus = renderAgentsPolicyStatusReportSection(options.decision);
@@ -535,9 +555,10 @@ export function createReportDocumentRendering(
     const pullFilesTruncated = Boolean(options.context.counts?.pullFilesTruncated);
     const configSurfaceChange = configSurfaceChangeFromContext(options.item.repo, options.context);
     const dataModelChange = dataModelChangeFromContext(options.item.repo, options.context);
+    const sqliteSchemaChange = sqliteSchemaChangeFromContext(options.item.repo, options.context);
     const prSurfaceFiles = prSurfaceFilesFromContext(options.context);
     const reviewedPullStateDigest = reviewStructuralPullStateFromContext(options.context);
-    return `---
+    const markdown = `---
 number: ${options.item.number}
 repository: ${options.item.repo}
 type: ${options.item.kind}
@@ -555,6 +576,7 @@ review_lease_owner: ${options.reviewLeaseOwner ?? "unknown"}
 review_lease_comment_id: ${options.reviewLeaseCommentId ?? "unknown"}
 main_sha: ${options.git.mainSha}
 pull_head_sha: ${pullHeadShaFromContext(options.context) ?? "unknown"}
+pr_hydration_snapshot: ${serializePrHydrationSnapshot(options.context.prHydrationSnapshot)}
 reviewed_pull_state_digest: ${
       reviewedPullStateDigest
         ? (reviewStructuralPullStateDigest(reviewedPullStateDigest) ?? "unknown")
@@ -581,6 +603,7 @@ regression_provenance_merge_sha: ${verifiedRegressionProvenance?.mergeCommitSha 
 regression_provenance_source_path: ${regressionProvenance?.sourcePath ?? "unknown"}
 regression_provenance_source_line: ${regressionProvenance?.sourceLine ?? "unknown"}
 regression_provenance_evidence_type: ${regressionProvenance?.evidenceType ?? "unknown"}
+regression_provenance_verification_source: ${regressionProvenance?.verificationSource ?? "unknown"}
 regression_provenance_merged_at: ${verifiedRegressionProvenance?.mergedAt ?? "unknown"}
 regression_provenance_reviewed_sha: ${regressionProvenance && "reviewedCommitSha" in regressionProvenance ? regressionProvenance.reviewedCommitSha : "unknown"}
 regression_provenance_source_commit_sha: ${regressionProvenance?.sourceCommitSha ?? "unknown"}
@@ -601,9 +624,11 @@ review_additional_prompt_chars: ${reviewTelemetryNumber(options.runtime.addition
 review_context_elapsed_ms: ${reviewTelemetryNumber(options.runtime.contextElapsedMs)}
 review_codex_elapsed_ms: ${reviewTelemetryNumber(options.runtime.codexElapsedMs)}
 review_mode: ${options.reviewMode}
-review_status: ${options.decision.summary.startsWith("Codex review failed") ? "failed" : "complete"}
+review_status: ${reviewStatusForDecision(options.decision)}
 review_terminal_failure: ${options.decision.codexTerminalFailure === true}
-local_checkout_access: verified
+review_checkout_inspection_failed: ${options.decision.checkoutInspectionFailed === true}
+local_checkout_access: ${localCheckoutAccessForDecision(options.decision)}
+local_checkout_access_source: ${localCheckoutAccessSourceForDecision(options.decision)}
 item_snapshot_hash: ${options.snapshotHash}
 review_content_digest: ${options.contentDigest}
 last_full_review_at: ${reviewedAt}
@@ -627,14 +652,6 @@ review_structural_pull_state_digest: ${
       options.structuralRecord ? (options.structuralRecord.pullStateDigest ?? "none") : "unknown"
     }
 review_structural_cache_hit: false
-review_semantic_cache_version: ${options.semanticRecord?.version ?? "unknown"}
-review_semantic_fingerprint: ${options.semanticRecord?.fingerprint ?? "unknown"}
-review_semantic_code_digest: ${options.semanticRecord?.codeDigest ?? "unknown"}
-review_semantic_exact_digest: ${options.semanticRecord?.exactDigest ?? "unknown"}
-review_semantic_context_digest: ${options.semanticRecord?.contextDigest ?? "unknown"}
-review_semantic_eligible: ${options.semanticRecord?.eligible ?? false}
-review_semantic_eligibility_reason: ${options.semanticRecord?.eligibilityReason ?? "unknown"}
-review_semantic_cache_hit: false
 item_source_revision: ${options.context.sourceRevision ?? "unknown"}
 review_timeline_revision: ${options.context.timelineRevision ?? "unknown"}
 review_activity_cursor: ${options.context.pullReviewActivityCursor ?? "unknown"}
@@ -670,8 +687,10 @@ config_surface_change: ${configSurfaceChange.change}
 config_surface_keys: ${jsonFrontMatterValue(configSurfaceChange.keys)}
 data_model_change: ${dataModelChange.change}
 data_model_surfaces: ${jsonFrontMatterValue(dataModelChange.surfaces)}
-pr_surface_files: ${jsonFrontMatterValue(prSurfaceFiles)}
-pr_surface_files_truncated: ${pullFilesTruncated}
+sqlite_schema_change: ${sqliteSchemaChange.change}
+sqlite_schema_files: ${jsonFrontMatterValue(sqliteSchemaChange.files)}
+pr_surface_files: ${jsonFrontMatterValue(prSurfaceFiles ?? [])}
+pr_surface_files_truncated: ${prSurfaceFiles === null}
 item_category: ${options.decision.itemCategory}
 reproduction_status: ${options.decision.reproductionStatus}
 reproduction_confidence: ${options.decision.reproductionConfidence}
@@ -689,6 +708,8 @@ pr_rating_overall: ${options.decision.prRating.overallTier}
 pr_rating_proof: ${options.decision.prRating.proofTier}
 pr_rating_patch: ${options.decision.prRating.patchTier}
 telegram_visible_proof_status: ${options.decision.telegramVisibleProof.status}
+live_proof_status: ${options.decision.liveProofPlan.status}
+live_proof_surface: ${options.decision.liveProofPlan.surface}
 mantis_recommendation_status: ${options.decision.mantisRecommendation.status}
 mantis_recommendation_scenario: ${options.decision.mantisRecommendation.scenario}
 feature_showcase_status: ${options.decision.featureShowcase.status}
@@ -797,6 +818,10 @@ ${prRating}
 
 ${telegramVisibleProof}
 
+## ${REVIEW_SECTIONS.liveProof}
+
+${liveProof}
+
 ## ${REVIEW_SECTIONS.mantisRecommendation}
 
 ${mantisRecommendation}
@@ -877,6 +902,7 @@ ${renderReviewContextBudget(options.context)}
 - context collection ms: ${reviewTelemetryNumber(options.runtime.contextElapsedMs)}
 - Codex review ms: ${reviewTelemetryNumber(options.runtime.codexElapsedMs)}
   `;
+    return fitPrHydrationSnapshotToPublicationLimit(markdown);
   }
 
   return {
@@ -891,6 +917,7 @@ ${renderReviewContextBudget(options.context)}
     renderPrRatingAssessmentReportSection,
     renderPrRatingReportSection,
     renderTelegramVisibleProofReportSection,
+    renderLiveProofReportSection,
     renderMantisRecommendationReportSection,
     renderFeatureShowcaseReportSection,
     renderRootCauseClusterAssessmentReportSection,
@@ -899,7 +926,6 @@ ${renderReviewContextBudget(options.context)}
     pullRequestFilePathsFromContextForTest,
     pullRequestFilePathsFromContext,
     updateReviewStructuralFrontMatter,
-    updateReviewSemanticFrontMatter,
     markdownFor,
   };
 }

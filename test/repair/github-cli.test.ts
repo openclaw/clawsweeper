@@ -1,3 +1,5 @@
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -6,6 +8,8 @@ import {
   ghJsonWithRetry,
   ghJsonWithRetryAsync,
   ghSpawn,
+  ghText,
+  ghTextAsync,
   githubLimitedPagePath,
   githubPaginatedPath,
 } from "../../dist/repair/github-cli.js";
@@ -181,5 +185,73 @@ test("public read throttles fall back once to the target App token", async () =>
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+  }
+});
+
+test("GitHub CLI deadlines stop stalled children and preserve successful output", async () => {
+  const env = {
+    GH_BIN: process.execPath,
+    GH_BIN_ARGS: JSON.stringify(["--eval", "setTimeout(() => {}, 10_000)", "--"]),
+  };
+  const options = { env, timeoutMs: 100 };
+  assert.throws(() => ghText(["api", "user"], options), { code: "ETIMEDOUT" });
+  await assert.rejects(ghTextAsync(["api", "user"], options), {
+    killed: true,
+    signal: "SIGTERM",
+  });
+  assert.equal(ghSpawn(["api", "user"], options).error?.code, "ETIMEDOUT");
+
+  env.GH_BIN_ARGS = JSON.stringify(["--eval", "process.stdout.write('ok')", "--"]);
+  assert.equal(ghText(["api", "user"], { env, timeoutMs: 2_000 }), "ok");
+  assert.equal(await ghTextAsync(["api", "user"], { env, timeoutMs: 2_000 }), "ok");
+  assert.equal(ghSpawn(["api", "user"], { env, timeoutMs: 2_000 }).stdout, "ok");
+});
+
+test("GitHub CLI deadline selection follows the child environment and explicit budget", (t) => {
+  let observedTimeout: number | undefined;
+  t.mock.method(childProcess, "spawnSync", (_file, _args, options) => {
+    observedTimeout = options.timeout;
+    return { status: 0, stdout: "", stderr: "" };
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  const previous = process.env.CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS;
+  process.env.CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS = "90000";
+  t.after(() => {
+    if (previous === undefined) delete process.env.CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS;
+    else process.env.CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS = previous;
+  });
+  const cases = [
+    { env: {}, expected: 90_000 },
+    { env: { CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS: "45000" }, expected: 45_000 },
+    { env: { CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS: "10" }, expected: 30_000 },
+    {
+      env: {
+        CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS: undefined,
+        CLAWSWEEPER_NETWORK_COMMAND_TIMEOUT_MS: "60000",
+      },
+      expected: 60_000,
+    },
+    {
+      env: {
+        CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS: undefined,
+        CLAWSWEEPER_NETWORK_COMMAND_TIMEOUT_MS: undefined,
+      },
+      expected: 120_000,
+    },
+    ...["", "invalid", "0", "-1", "Infinity"].map((value) => ({
+      env: { CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS: value },
+      expected: 120_000,
+    })),
+    { timeoutMs: 250, env: {}, expected: 250 },
+    { timeoutMs: 0.5, env: {}, expected: 1 },
+    ...[0, -1, NaN, Infinity].map((timeoutMs) => ({ timeoutMs, env: {}, expected: 90_000 })),
+  ];
+  for (const { expected, ...options } of cases) {
+    ghSpawn(["api", "user"], { ...options, env: { ...options.env, GH_BIN: process.execPath } });
+    assert.equal(observedTimeout, expected);
   }
 });

@@ -114,6 +114,24 @@ test("comment router isolates public target reads from its GitHub App mutation i
   assert.match(publicReadSource, /repos\\\/openclaw\\\/openclaw\\\/\(\?:issues\|pulls\)/);
 });
 
+test("re-review recovery signs with the Worker-accepted webhook secret", () => {
+  const source = readText("src/repair/comment-router.ts");
+  const workflow = readText(".github/workflows/repair-comment-router.yml");
+  const intake = source.slice(
+    source.indexOf("function enqueueClawSweeperReReview"),
+    source.indexOf("function dispatchCompletedReviewVerdict"),
+  );
+
+  assert.match(intake, /process\.env\.CLAWSWEEPER_WEBHOOK_SECRET/);
+  assert.doesNotMatch(intake, /CLAWSWEEPER_INTERNAL_QUEUE_SECRET/);
+  assert.doesNotMatch(workflow, /CLAWSWEEPER_INTERNAL_QUEUE_SECRET/);
+  assert.equal(
+    workflow.match(/CLAWSWEEPER_WEBHOOK_SECRET: \$\{\{ secrets\.CLAWSWEEPER_WEBHOOK_SECRET \}\}/g)
+      ?.length,
+    5,
+  );
+});
+
 test("exact comment convergence classifies a missing comment as no mutation", () => {
   const source = readText("src/repair/comment-router.ts");
   const fastPath = source.slice(source.indexOf("function convergeExactCommentVersionFastPathAck"));

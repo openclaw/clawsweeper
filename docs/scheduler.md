@@ -4,7 +4,7 @@
 - Owner: ClawSweeper maintainers
 - Source of truth: `.github/workflows/sweep.yml`, planner/runtime source,
   `config/automation-limits.json`, and focused scheduler tests
-- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
 - Update when: cadence, fanout, admission, retry, publication, apply, or
   state-writing behavior changes
 
@@ -37,6 +37,11 @@ active floor of 38 shards for scheduled runs and workflow-dispatch
 continuations: due items win first, and if fewer than 38 items are due, the
 planner fills the floor with the stalest currently-reviewed eligible items so
 review capacity stays warm around the clock.
+
+Scheduled reviews can reuse exact unchanged inputs through structural or
+content caches. Changed PR content goes to Codex, including source comments
+and formatting. See [Review Cache](review-cache.md) for admission, freshness,
+and runtime packaging rules.
 
 ## Workflow
 
@@ -74,13 +79,68 @@ Manual exact-item `workflow_dispatch` reviews use an exact-item concurrency
 group with the same single-pending policy, so newer revisions replace stale
 pending work instead of building a duplicate queue. Durable exact-review leases
 use lease-scoped workflow groups and remain owned by the Worker admission lane.
+If a successful exact-review run loses its completion callback, reconciliation
+uses the saved lease's accepted or deduplicated direct-publication receipt and
+requeue plan to preserve one owed source-drift review. The terminal `requeue`
+disposition is recorded before completion and stays on the old fenced revision.
+A superseded receipt cannot authorize a requeue; a newer command keeps its
+current decision and revision through the ordinary finishing path.
+Queue-completion failures remain visible separately from Codex or content
+failures, using the logical generation result and typed deferral rather than
+the review process exit alone. The workflow failure gate is unchanged.
+Caught Codex failures in an exact-review job also upload a separate 14-day
+diagnostic artifact while the runner remains alive. Its `error.txt`,
+`stdout.error.txt`, and `stderr.tail.txt` files are sanitized for repository
+readers and total at most 24 KiB with the readiness `manifest.json`. The
+manifest retains a bounded failure stage, reason code, and the queue's computed
+retryability even when unsafe raw detail is omitted. Raw
+reports, unstructured stdout, and non-error prompt events are omitted. It is
+never a publication input; cancellation, runner loss, or job termination can
+still prevent upload. OpenClaw Bay and queue schemas are unchanged.
+
 Recoverable parked reviews use the nominal 5/10/20-minute retry ladder, but
 each item persists a schedule-time uniform jitter of 0.75-1.5x for every rung.
+After the third automatic recovery, operator-only HMAC-signed routes provide a
+bounded parked-review inventory and guarded resolution/fresh-recovery path. The
+five-minute dead-letter reconcile workflow inspects at most 100 parked targets,
+resolves terminal or repository-gone targets with an audit note, and can queue
+at most five fresh reviews with replay-safe recovery keys. Manual runs remain
+read-only unless `execute` is enabled; scheduled runs execute. Their sanitized
+parked inventory is uploaded beside the publication dead-letter inventory.
+Parked records carrying maintainer-command context remain visible with an
+exclusion reason but cannot be resolved or fresh-recovered by this background
+reconciliation path.
+Publication dead letters whose recorded pull-request head no longer matches the
+live head are never replayed or resolved from head drift alone. The reconciler
+may resolve them as superseded only when the existing HMAC-authenticated
+canonical-record read for the same target contains a complete review at that
+live head, then rechecks the same open GitHub node and head immediately before
+the guarded resolution. Each cycle checks at most ten such targets and resolves at most 20
+rows per target; missing or mismatched evidence remains open as
+`head_mismatch_unproven`. `tuple_protocol_invalid` and `workflow_cancelled`
+rows are excluded from this path. Executed resolutions retain an audit note
+with the newer head and canonical endpoint and increment the publication
+completed and superseded totals; dry runs perform no mutation.
+This drains the existing queue state and does not add a dashboard health input
+or an OpenClaw Bay action: Bay remains observer-only.
 GitHub throttle deferrals use the same per-item jitter band when the queue turns
 the reported cooldown into its next-attempt timestamp, preventing a parked
 cohort from becoming eligible in lockstep; coordination and ordinary failure
 retries keep their existing timing.
+Exact publishers complete as superseded when apply verifies one trusted, complete,
+strictly newer durable review tuple for the same revision. The verified result
+travels as structured apply evidence; reason text is diagnostic only. Ambiguous
+or mixed results cannot terminalize the artifact, and legacy tupleless artifacts
+retain the existing fresh-review path.
+
 Review publication and apply/comment sync use separate non-dropping queues.
+Apply treats a typed GitHub installation or abuse-rate-limit response as a
+bounded yield, not a failed scan. It checkpoints completed item work, records
+the interrupted item as `skipped_runtime_budget`, returns that item to the
+cursor, and exits successfully so a later scheduled or continuation cycle can
+retry it. This applies to comment-only sync and close-mode apply. Folder
+reconciliation also defers before mutation when its open-item scan is
+rate-limited; ordinary non-rate-limit failures remain fatal.
 The source fallback publication minimum, base, and maximum are 4, 24, and 48,
 but production overrides them to 8, 32, and 40. The adaptive controller
 classifies GitHub pressure:
@@ -95,6 +155,36 @@ remains per-target serialized. See [`docs/limits.md`](limits.md) for effective v
 [`docs/live-dashboard.md`](live-dashboard.md) for the public lane telemetry.
 Tuple-aware state reconciliation prevents stale review snapshots from reviving
 closed records.
+
+Batch admission is additionally gated by persisted GitHub credential circuits.
+Every batch needs the `actions:openclaw/clawsweeper` pool for producer artifact
+download, while target App circuits are owner-scoped so one exhausted
+installation does not stop healthy owners. A blocked pool prevents workflow
+dispatch, state hydration, and artifact download for each matching member until
+its reset-plus-deterministic-jitter recovery boundary; the alarm wakes at the
+earliest pending member boundary. The current batch collapses after the first
+pool failure, and unattempted members return without advancing their retry
+budget. Recovery is staggered rather than released as one cohort.
+An owner-scoped target App circuit also defers new exact-review admission for
+that owner, because review and publication share the installation quota; other
+owners remain admissible.
+Legacy dispatches normally carry the event repository's validated default
+branch. If an older producer omits it, intake creates a durable pre-admission
+branch-authority reservation instead of spending the workflow repository's
+Actions quota or assuming `main`. Resolution and direct-webhook source-head
+verification both consult and update the same owner-scoped target App circuit:
+the first quota response preserves its reset deadline, later same-owner
+reservations defer without another read or attempt charge, and reset recovery is
+bounded by the Durable Object alarm processor.
+
+Exact publication routes only classifier-approved public reads through the
+repository Actions token. If that pool is exhausted after the current member's
+artifact is already present, the member may use the ambient target App once;
+later members still stop because they require the blocked Actions pool. The
+workflow also records a typed repository-pool observation if its final comment
+router dispatch encounters quota pressure. All typed observations and request
+counters are acknowledged with the same fenced batch completion, so a delayed
+cleanup is idempotent and cannot duplicate accounting.
 
 ## Schedules
 
@@ -138,6 +228,8 @@ Generic `openclaw/*` and `steipete/*` repositories:
   the target dispatcher and GitHub App installation are present
 - scheduled review/audit: target fanout dispatches small cursor-based batches
   from `target_inventory.owners`
+- private and internal targets: local maintainer review only, using an
+  operator-provided checkout
 - generic OpenClaw issues may auto-close only when already implemented on the
   default branch; generic OpenClaw PRs may additionally use age-gated mostly
   implemented there
@@ -145,6 +237,8 @@ Generic `openclaw/*` and `steipete/*` repositories:
 
 Manual `workflow_dispatch` can override `target_repo`, `item_number`,
 `item_numbers`, `batch_size`, `shard_count`, `hot_intake`, and apply inputs.
+For batch input, `batch_size` controls items assigned per worker and
+`shard_count` controls requested parallelism within the configured hard cap.
 Exact item dispatches use a dedicated concurrency group and exact planner
 matrix rather than the broad normal-review queue.
 
@@ -222,6 +316,26 @@ Exact event review also starts Codex before generated-state hydration. The
 single-item review only needs the target repository and live GitHub item state;
 generated state is checked out afterward, just before publishing the review
 record, safe close result, and command-router ledger.
+
+Default close-mode apply refreshes use that same queue-only intake. The merged
+apply report selects at most five distinct source-drift items in report order,
+with unverified-checkout holds filling spare slots. The producer resolves the
+repository default branch and each selected item's kind with narrow GitHub
+reads, then sends `clawsweeper_item` with `source_action: source_drift_requeue`
+and `supersedes_in_progress: false`. It does not send `clawsweeper_target_sweep`,
+run a broad planner, or hydrate canonical repository records before enqueue.
+Read or dispatch failures remain visible step failures; a dispatch notice is
+not a durable admission receipt. The existing intake signs the queue request.
+
+`source_drift_requeue` uses the queue's existing low-priority recovery contract:
+existing pending or leased work, including maintainer-command context and source
+authority, wins; delivery deduplication, pending backpressure, and lease fencing
+remain queue-owned. Exact selection requests a fresh review of current source
+without a new `force` flag, stale source pin, or producer-supplied lease. Closed
+or missing targets still stop at the queue/executor live-state checks. General
+manual and broad dispatch behavior, the independent proof cursor, and close
+policy are unchanged. OpenClaw Bay needs no change: this producer reuses existing
+queue/lifecycle fields and adds no published schema, status field, or control.
 
 ## Automerge Fast Path
 
@@ -595,12 +709,10 @@ If another publisher updates the same tuple first, its newer tuple wins and
 reconciliation defers that item instead of rebuilding stale report or sidecar
 content.
 
-Broad normal review publishes records first, then dispatches durable review
-comment sync into the separate apply/comment-sync lane. This includes scheduled
-runs and workflow-dispatch continuations, so slow GitHub comment writes do not
-hold the planner concurrency group or delay the next 89-shard backfill
-wave. Exact issue/PR reviews and repository-dispatch item runs still sync their
-selected comments inline before finishing.
+Batch review publishers hydrate only the item tuples present in their artifacts,
+publish those records, and synchronize the selected durable review comments in
+the same job. Exact issue/PR reviews likewise synchronize their selected comments
+before completing. Neither path dispatches a second broad comment scan.
 
 Automatic apply may close up to 40 items per run. Long apply runs commit
 checkpoints every 40 fresh closes and dispatch a
@@ -631,6 +743,16 @@ position. Coverage proof, live-state refresh, freshness checks, and close gates
 remain unchanged. Explicit targeted apply runs keep their requested item set and
 ordering policy.
 
+Apply keeps selected report bodies in memory and loads independently reviewed
+paired records only when a close guard requests them. Exact-event publication
+does not expand its selected set. Broad apply still sorts the complete open
+candidate set; it no longer loads a second copy for paired lookups. Finalization
+reloads only requested, result, and unfinished/in-flight item records from the
+open and closed directories, rather than retaining the archive. This includes
+partial failures and runtime-budget yields and does not change cursor ordering,
+close eligibility, canonical baselines, or ledger identities. OpenClaw Bay needs
+no change: the public status, record, and ledger contracts are unchanged.
+
 Before a close-mode apply run starts, the workflow summarizes the selected close
 candidate mix by quality bucket in the status detail. Buckets such as
 implemented-on-main, duplicate/superseded, needs PR close proof,
@@ -640,6 +762,15 @@ operator-facing telemetry only; the bucket classification does not change close
 limits, live-state checks, or policy gates. Stalled-unproven and abandoned PR
 proposals are eligible for apply selection, where the executor re-checks their
 PR-only age, activity, proof, status, and human-engagement gates before closing.
+
+After a default close-mode cursor run for `openclaw/openclaw`, the apply job
+requeues up to five exact reviews for records whose close was blocked by
+source drift (`skipped_changed_since_review`) or by a stored review without
+verified local checkout access. Both blocks have the same cure: a fresh exact
+review re-verifies the close proposal at the current snapshot and writes a
+close-capable record, so the next apply pass can execute instead of skipping
+the same stale records every sweep. The per-run cap bounds review spend, and
+the exact-item queue's supersession semantics absorb repeat dispatches.
 
 Apply and comment-sync Actions run titles include the target repository. Before
 dispatching a default cursor-based apply continuation, the workflow checks
@@ -746,8 +877,11 @@ To add a new target repository, add a repository profile, wire schedule target
 resolution and concurrency target resolution in `.github/workflows/sweep.yml`,
 then confirm the generated state paths remain flat under one repo slug.
 
-To add a new generic owner, add a `generic_fallbacks` entry and include that
-owner in `target_inventory.owners`; target fanout will dispatch explicit
-per-repository runs without adding owner-specific cron case blocks. Keep
-scheduled fanout public-only unless the generated records publish to a private
-state surface.
+Hosted owner fallback is limited to `openclaw/*` and `steipete/*`. To schedule
+another owner, add explicit repository profiles and include that owner in
+`target_inventory.owners`, then wire that owner's inventory token or explicit
+public-inventory fallback into the fanout workflow. Configuration alone does
+not activate a new owner. Fanout ignores every repository that is not admitted
+by the shared configured-profile-or-owner-fallback policy. Keep scheduled
+fanout public-only unless the generated records publish to a private state
+surface.

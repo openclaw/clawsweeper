@@ -40,39 +40,6 @@ export function issueSourceRevisionSha256(issue: LooseRecord, comments: JsonValu
   return crypto.createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
 }
 
-export function issueSourceStateBlockReason({
-  issue,
-  comments,
-  expectedRevision,
-}: {
-  issue: LooseRecord;
-  comments: JsonValue[];
-  expectedRevision: string;
-}): string {
-  if (issue.pull_request) return "source item is no longer an issue";
-  if (String(issue.state ?? "").toLowerCase() !== "open") {
-    return `source issue is ${issue.state ?? "not open"}`;
-  }
-  if (issue.locked === true) return "source issue is locked";
-  const labels = normalizedLabels(issue.labels ?? []);
-  const protectedLabel = labels.find((label) => PROTECTED_LABELS.has(label));
-  if (protectedLabel) return `source issue has protected label: ${protectedLabel}`;
-  if (
-    /\b(?:security|vulnerability|cve|ghsa|secret|credential|token|exploit|xss|csrf|ssrf|rce)\b/i.test(
-      [issue.title, issue.body, labels.join("\n")].join("\n"),
-    )
-  ) {
-    return "source issue has a security-sensitive signal";
-  }
-  if (!/^[a-f0-9]{64}$/.test(expectedRevision)) {
-    return "generated PR repair job is missing source issue revision";
-  }
-  if (issueSourceRevisionSha256(issue, comments) !== expectedRevision) {
-    return "source issue changed since ClawSweeper queued implementation";
-  }
-  return "";
-}
-
 function normalizedLabels(labels: JsonValue[]): string[] {
   return labels
     .map((label) =>
@@ -107,6 +74,7 @@ function isClawSweeperAdvisoryLabel(label: string): boolean {
     label === "feature: ✨ showcase" ||
     label === "good first issue" ||
     label === "mantis: telegram-visible-proof" ||
+    label === "proof: telegram-e2e" ||
     label === "triage: needs-real-behavior-proof"
   );
 }

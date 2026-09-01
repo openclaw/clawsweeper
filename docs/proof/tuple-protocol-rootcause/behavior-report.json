@@ -1,0 +1,80 @@
+{
+  "overall_behavior": "satisfies_contract",
+  "overall_confidence": 0.98,
+  "target": {
+    "type": "HMAC-authenticated publication API and exact-review dead-letter operator CLI",
+    "access": "Docker-backed Crabbox local-container loopback fixtures"
+  },
+  "checks": [
+    {
+      "contract_clause": "Batch-owned retry resumes from the accepted canonical receipt",
+      "status": "pass",
+      "severity": null,
+      "evidence": "A protocol-v2 command-shaped batch accepted canonical content, retried the same target/fence/revision with different tuple bytes, returned HTTP 202 with deduped=true, and retained the first canonical content.",
+      "reproduction_steps": [
+        "Claim an exact publication batch fence",
+        "POST canonical tuple content through publication-batch-results",
+        "POST refreshed bytes with the same target, fence, and revision",
+        "Read the canonical record and inspect the second response"
+      ],
+      "confidence": 0.99
+    },
+    {
+      "contract_clause": "Direct and unowned conflicts remain guarded",
+      "status": "pass",
+      "severity": null,
+      "evidence": "Conflicting bytes through the non-batch endpoint returned HTTP 400 with detail conflicting direct publication retry; a target-mismatched fence returned direct_publication_fence_not_owned.",
+      "reproduction_steps": [
+        "Repeat accepted direct content with changed bytes",
+        "Repeat a batch request with a mismatched canonical target",
+        "Inspect the two error responses"
+      ],
+      "confidence": 0.99
+    },
+    {
+      "contract_clause": "Proven newer-head tuple failure is superseded",
+      "status": "pass",
+      "severity": null,
+      "evidence": "A tuple_protocol_invalid row at stale head A plus a digest-valid completed canonical record at live head B produced one guarded superseded resolution, while the paired workflow_cancelled row remained open.",
+      "reproduction_steps": [
+        "Serve stale tuple and workflow-cancelled rows for one target",
+        "Serve live GitHub head B and a complete canonical record for B",
+        "Run reconcile with execute enabled",
+        "Inspect resolution ids and skip accounting"
+      ],
+      "confidence": 0.99
+    },
+    {
+      "contract_clause": "Current-head tuple failure stays recoverable",
+      "status": "pass",
+      "severity": null,
+      "evidence": "A tuple_protocol_invalid row whose recorded source head equaled the live head made no canonical-evidence or supersede request and entered the existing fresh-recovery mutation.",
+      "reproduction_steps": [
+        "Serve an eligible tuple row at the current live head",
+        "Serve idle queue pressure",
+        "Run reconcile",
+        "Inspect zero resolutions and one recovery"
+      ],
+      "confidence": 0.99
+    }
+  ],
+  "anti_cheat_probes": [
+    {
+      "probe": "Changed tuple bytes on the non-batch route",
+      "result": "The strict conflict guard still returned HTTP 400"
+    },
+    {
+      "probe": "Changed the canonical target under the batch fence",
+      "result": "Ownership validation returned direct_publication_fence_not_owned"
+    },
+    {
+      "probe": "Kept the dead-letter source head current",
+      "result": "No supersession evidence was queried and fresh recovery remained active"
+    },
+    {
+      "probe": "Paired a proven tuple row with workflow_cancelled",
+      "result": "Only the tuple row resolved; workflow_cancelled stayed open with explicit accounting"
+    }
+  ],
+  "blockers": []
+}

@@ -9,30 +9,9 @@ const outDir = path.join(root, "dist", "docs-site");
 const repoUrl = "https://github.com/openclaw/clawsweeper";
 const repoEditBase = `${repoUrl}/edit/main/docs`;
 const customDomain = "clawsweeper.bot";
-
-const sections = [
-  ["Start", ["README.md", "scheduler.md", "work-lane.md"]],
-  [
-    "Lanes",
-    [
-      "commit-sweeper.md",
-      "target-dispatcher.md",
-      "pr-review-comments.md",
-      "openclaw-event-hooks.md",
-    ],
-  ],
-  [
-    "Repair",
-    [
-      "repair/README.md",
-      "repair/operations.md",
-      "repair/automatic-issue-prs.md",
-      "repair/auto-update-prs.md",
-      "repair/automerge-flow.md",
-      "repair/internal-features.md",
-    ],
-  ],
-];
+const siteManifest = JSON.parse(
+  fs.readFileSync(path.join(root, "config", "documentation-site.json"), "utf8"),
+);
 
 fs.rmSync(outDir, { recursive: true, force: true });
 fs.mkdirSync(outDir, { recursive: true });
@@ -41,7 +20,15 @@ const pages = allMarkdown(docsDir).map((file) => {
   const rel = path.relative(docsDir, file).replaceAll(path.sep, "/");
   const markdown = fs.readFileSync(file, "utf8");
   const title = firstHeading(markdown) || titleize(path.basename(rel, ".md"));
-  return { file, rel, title, outRel: outPath(rel), markdown, synthetic: false };
+  return {
+    file,
+    rel,
+    title,
+    outRel: outPath(rel),
+    markdown,
+    synthetic: false,
+    lifecycle: lifecycleFor(rel),
+  };
 });
 
 const homePage = {
@@ -51,14 +38,15 @@ const homePage = {
   outRel: "index.html",
   markdown: "",
   synthetic: true,
+  lifecycle: { canonical: true, name: "active" },
 };
 pages.unshift(homePage);
 
 const pageMap = new Map(pages.map((page) => [page.rel, page]));
-const nav = sections
-  .map(([name, rels]) => ({
-    name,
-    pages: rels.map((rel) => pageMap.get(rel)).filter(Boolean),
+const nav = siteManifest.sections
+  .map((section) => ({
+    name: section.name,
+    pages: section.pages.map((rel) => pageMap.get(rel)).filter(Boolean),
   }))
   .filter((section) => section.pages.length);
 
@@ -66,6 +54,7 @@ const sectionByRel = new Map();
 for (const section of nav)
   for (const page of section.pages) sectionByRel.set(page.rel, section.name);
 const orderedPages = [homePage, ...nav.flatMap((s) => s.pages)];
+const canonicalPages = orderedPages;
 
 for (const page of pages) {
   const html = page.synthetic ? "" : markdownToHtml(page.markdown, page.rel);
@@ -89,7 +78,7 @@ fs.writeFileSync(
   `User-agent: *\nAllow: /\nSitemap: https://${customDomain}/sitemap.xml\n`,
   "utf8",
 );
-fs.writeFileSync(path.join(outDir, "sitemap.xml"), sitemap(orderedPages), "utf8");
+fs.writeFileSync(path.join(outDir, "sitemap.xml"), sitemap(canonicalPages), "utf8");
 fs.writeFileSync(path.join(outDir, "llms.txt"), llmsTxt(), "utf8");
 console.log(`built docs site: ${path.relative(root, outDir)} (${pages.length} pages)`);
 
@@ -120,11 +109,22 @@ function llmsTxt() {
 }
 
 function docsLlmsPages() {
-  const seen = new Set();
-  const ordered = typeof orderedPages !== "undefined" ? orderedPages : [];
-  return [...ordered, ...pages].filter(
-    (page) => page.outRel && !seen.has(page.outRel) && seen.add(page.outRel),
+  return canonicalPages;
+}
+
+function lifecycleFor(rel) {
+  const canonical = siteManifest.sections.some((section) => section.pages.includes(rel));
+  const matches = siteManifest.noncanonical.filter(
+    (entry) => entry.path === rel || (entry.prefix && rel.startsWith(entry.prefix)),
   );
+  if (canonical && matches.length)
+    throw new Error(`documentation page has conflicting lifecycle: ${rel}`);
+  if (canonical) return { canonical: true, name: "active" };
+  if (matches.length === 1)
+    return { canonical: false, name: matches[0].lifecycle, banner: matches[0].banner };
+  if (matches.length > 1)
+    throw new Error(`documentation page has multiple lifecycle matches: ${rel}`);
+  throw new Error(`documentation page is not classified in config/documentation-site.json: ${rel}`);
 }
 
 function docsOrigin() {
@@ -162,14 +162,17 @@ function pageUrl(origin, outRel) {
 }
 
 function allMarkdown(dir) {
-  return fs
-    .readdirSync(dir, { withFileTypes: true })
-    .flatMap((entry) => {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) return allMarkdown(full);
-      return entry.name.endsWith(".md") ? [full] : [];
-    })
-    .sort();
+  const directories = [path.resolve(dir)];
+  const files = [];
+  for (const directory of directories) {
+    fs.readdirSync(directory);
+    for (const entry of fs.globSync(["*", ".*"], { cwd: directory, withFileTypes: true })) {
+      const candidate = path.join(entry.parentPath, entry.name);
+      if (entry.isDirectory()) directories.push(candidate);
+      else if (entry.isFile() && entry.name.endsWith(".md")) files.push(candidate);
+    }
+  }
+  return files.sort();
 }
 
 function outPath(rel) {
@@ -409,6 +412,7 @@ function layout({ page, html, toc, prev, next, sectionName }) {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${escapeHtml(page.title)}${isHome ? " - Conservative maintenance bot" : " - ClawSweeper Docs"}</title>
   <meta name="description" content="${escapeAttr(description)}">
+  ${page.lifecycle.canonical ? "" : '<meta name="robots" content="noindex, follow">'}
   <meta name="theme-color" content="#f4ead7">
   <meta property="og:title" content="${escapeAttr(page.title)}${isHome ? " - ClawSweeper" : " - ClawSweeper docs"}">
   <meta property="og:description" content="${escapeAttr(description)}">
@@ -483,7 +487,11 @@ function standardHero(page, sectionName, editUrl) {
           <a class="repo" href="${repoUrl}" rel="noopener">GitHub</a>
           <a class="edit" href="${escapeAttr(editUrl)}" rel="noopener">Edit page</a>
         </div>
-      </header>`;
+      </header>${
+        page.lifecycle.canonical
+          ? ""
+          : `<aside class="lifecycle-banner" role="note"><strong>${escapeHtml(page.lifecycle.name)}</strong>: ${escapeHtml(page.lifecycle.banner)}</aside>`
+      }`;
 }
 
 function landingHero(rootPrefix) {

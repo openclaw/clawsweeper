@@ -1,6 +1,5 @@
 import { hasDataModelUpgradeProof } from "./clawsweeper-change-detection.js";
 import { createLabelSynchronization } from "./clawsweeper-label-sync.js";
-import { PROOF_OVERRIDE_LABEL } from "./clawsweeper-policy.js";
 import type {
   CloseReason,
   Evidence,
@@ -35,8 +34,6 @@ export function createReportOrchestrationFoundation(
     isBulkFilerExemptAuthorAssociation,
     isBulkFilerExemptRepositoryPermission,
     isDigitsOnly,
-    isDocsOnlyPullRequestReport,
-    isExternalPullRequestReport,
     labelPolicy,
     markdownLink,
     markdownRepository,
@@ -45,7 +42,7 @@ export function createReportOrchestrationFoundation(
     publicReviewTextDiffers,
     publicTableCell,
     repoUrlFor,
-    reportRealBehaviorProof,
+    reportRealBehaviorProofPolicy,
     reportSecurityReview,
     reviewSectionValue,
     sentence,
@@ -275,41 +272,51 @@ export function createReportOrchestrationFoundation(
     );
   }
 
-  function prSurfaceFilesFromContext(context: ItemContext): PrSurfaceFile[] {
-    if (context.counts?.pullFilesTruncated) return [];
-    return (context.pullFiles ?? [])
-      .map((entry) => {
-        const file = asRecord(entry);
-        const path = typeof file.filename === "string" ? file.filename.trim() : "";
-        if (!path) return null;
-        return {
-          path,
-          additions: nonNegativeInteger(file.additions),
-          deletions: nonNegativeInteger(file.deletions),
-        };
-      })
-      .filter((entry): entry is PrSurfaceFile => Boolean(entry));
+  function prSurfaceFilesFromContext(context: ItemContext): PrSurfaceFile[] | null {
+    const entries = context.pullFiles ?? [];
+    if (
+      context.counts?.pullFilesTruncated ||
+      [context.counts?.pullFiles, context.counts?.pullFilesHydrated].some(
+        (count) => count !== undefined && nonNegativeInteger(count) !== entries.length,
+      )
+    ) {
+      return null;
+    }
+    return prSurfaceFilesFromEntries(entries, "filename");
   }
 
-  function nonNegativeInteger(value: unknown): number {
-    const number = Number(value);
-    return Number.isInteger(number) && number > 0 ? number : 0;
+  function nonNegativeInteger(value: unknown): number | null {
+    return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
   }
 
-  function prSurfaceFilesFromReport(markdown: string): PrSurfaceFile[] {
-    if (frontMatterBoolean(markdown, "pr_surface_files_truncated")) return [];
-    return frontMatterJsonArray(markdown, "pr_surface_files")
-      .map((entry) => {
-        const file = asRecord(entry);
-        const path = typeof file.path === "string" ? file.path.trim() : "";
-        if (!path) return null;
-        return {
-          path,
-          additions: nonNegativeInteger(file.additions),
-          deletions: nonNegativeInteger(file.deletions),
-        };
-      })
-      .filter((entry): entry is PrSurfaceFile => Boolean(entry));
+  function prSurfaceFilesFromEntries(
+    entries: unknown[],
+    pathKey: "filename" | "path",
+  ): PrSurfaceFile[] | null {
+    const files: PrSurfaceFile[] = [];
+    for (const entry of entries) {
+      const file = asRecord(entry);
+      const path = file[pathKey];
+      if (typeof path !== "string" || !path || "omitted" in file) return null;
+      files.push({
+        path,
+        additions: nonNegativeInteger(file.additions),
+        deletions: nonNegativeInteger(file.deletions),
+      });
+    }
+    return files;
+  }
+
+  function prSurfaceFilesFromReport(markdown: string): PrSurfaceFile[] | null {
+    if (frontMatterBoolean(markdown, "pr_surface_files_truncated")) return null;
+    const raw = frontMatterValue(markdown, "pr_surface_files");
+    if (!raw) return [];
+    try {
+      const entries: unknown = JSON.parse(raw);
+      return Array.isArray(entries) ? prSurfaceFilesFromEntries(entries, "path") : null;
+    } catch {
+      return null;
+    }
   }
 
   function shouldRenderOpenClawPrSurface(markdown: string): boolean {
@@ -322,8 +329,12 @@ export function createReportOrchestrationFoundation(
   function renderOpenClawPrSurfaceFromReport(markdown: string): string {
     if (!shouldRenderOpenClawPrSurface(markdown)) return "";
     const files = prSurfaceFilesFromReport(markdown);
+    if (files === null) return "PR surface statistics unavailable: the file list is incomplete.";
     if (files.length === 0) return "";
     const stats = buildOpenClawPrSurfaceStats(files);
+    if (stats === null) {
+      return "PR surface statistics unavailable: complete line counts are not available for every file.";
+    }
     const summary = renderOpenClawPrSurfaceSummary(stats);
     if (!summary) return "";
     const details = collapsedDetailsBlock("View PR surface stats", [
@@ -352,6 +363,35 @@ export function createReportOrchestrationFoundation(
       ? "Migration or upgrade compatibility proof is recorded; maintainers should verify it before merge."
       : "Confirm migration or upgrade compatibility proof before merge.";
     return `Persistent data-model change detected: ${surfaceText}${overflow}. ${proofLine}`;
+  }
+
+  function renderSqliteSchemaWarningFromReport(markdown: string): string {
+    if (
+      frontMatterValue(markdown, "type") !== "pull_request" ||
+      normalizeRepo(markdownRepository(markdown)) !== "openclaw/openclaw" ||
+      (!frontMatterBoolean(markdown, "sqlite_schema_change") &&
+        frontMatterStringArray(markdown, "sqlite_schema_files").length === 0)
+    ) {
+      return "";
+    }
+
+    const files = frontMatterStringArray(markdown, "sqlite_schema_files");
+    const fileText = files.length
+      ? files
+          .slice(0, 4)
+          .map((file) => trustedCommentCodeSpan(file))
+          .join(", ")
+      : "an unidentified schema file";
+    const overflow = files.length > 4 ? `, and ${files.length - 4} more` : "";
+    const proofLine = dataModelUpgradeProofFromReport(markdown)
+      ? "Migration or upgrade compatibility proof is recorded, but maintainers should still confirm that the schema change is necessary."
+      : "If the change is necessary, verify migration and upgrade compatibility against an existing database before merge.";
+    return [
+      "> [!WARNING]",
+      "> **SQLite table change**",
+      ">",
+      `> This PR modifies persisted SQLite tables in ${fileText}${overflow}. Prefer a design that avoids changing persisted SQLite tables. ${proofLine}`,
+    ].join("\n");
   }
 
   function trustedCommentCodeSpan(value: string): string {
@@ -431,18 +471,7 @@ export function createReportOrchestrationFoundation(
   } = labelSynchronization;
 
   function realBehaviorProofBlocksMerge(markdown: string): boolean {
-    if (frontMatterValue(markdown, "review_status") === "failed") return false;
-    if (!isExternalPullRequestReport(markdown)) return false;
-    if (frontMatterStringArray(markdown, "labels").includes(PROOF_OVERRIDE_LABEL)) return false;
-    if (isDocsOnlyPullRequestReport(markdown)) return false;
-    const proof = reportRealBehaviorProof(markdown);
-    return (
-      proof.needsContributorAction ||
-      proof.status === "missing" ||
-      proof.status === "mock_only" ||
-      proof.status === "insufficient" ||
-      (proof.status !== "sufficient" && proof.status !== "override")
-    );
+    return reportRealBehaviorProofPolicy(markdown).blocksMerge;
   }
 
   function normalizedLabelSet(labels: readonly string[]): Set<string> {
@@ -524,6 +553,7 @@ export function createReportOrchestrationFoundation(
     shouldRenderOpenClawPrSurface,
     renderOpenClawPrSurfaceFromReport,
     renderDataModelWarningFromReport,
+    renderSqliteSchemaWarningFromReport,
     trustedCommentCodeSpan,
     reviewMetricsFromReport,
     renderReviewMetricsDigest,

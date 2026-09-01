@@ -8,6 +8,42 @@ import {
   reviewReportCanPromoteToCloseForTest,
 } from "../dist/clawsweeper.js";
 import { item } from "./helpers.ts";
+import { hydratePrimaryBody, longProofBody, sourceTools } from "./primary-body-fixture.ts";
+
+for (const kind of ["issue", "pull_request"] as const) {
+  test(`same-length omitted ${kind} body edit changes complete source, snapshot and content identity`, () => {
+    const body = longProofBody();
+    const before = hydratePrimaryBody(body, kind);
+    const after = hydratePrimaryBody(body.slice(0, -1) + "!", kind);
+    assert.equal(before.context.issue.body, after.context.issue.body);
+    assert.deepEqual(
+      before.context.issue.bodyCoverage.excerpts,
+      after.context.issue.bodyCoverage.excerpts,
+    );
+    assert.ok(before.context.issue.bodyCoverage.excerpts.every(({ end }) => end < body.length - 1));
+    assert.equal(
+      before.context.sourceRevision,
+      sourceTools.itemSourceRevisionSha256(before.rawIssue, []),
+    );
+    assert.equal(
+      after.context.sourceRevision,
+      sourceTools.itemSourceRevisionSha256(after.rawIssue, []),
+    );
+    assert.notEqual(before.context.sourceRevision, after.context.sourceRevision);
+    assert.notEqual(
+      before.context.structuralItemStateDigest,
+      after.context.structuralItemStateDigest,
+    );
+    assert.notEqual(
+      sourceTools.itemSnapshotHash(before.target, before.context),
+      sourceTools.itemSnapshotHash(after.target, after.context),
+    );
+    assert.notEqual(
+      itemContentDigestForTest(before.target, before.context),
+      itemContentDigestForTest(after.target, after.context),
+    );
+  });
+}
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 

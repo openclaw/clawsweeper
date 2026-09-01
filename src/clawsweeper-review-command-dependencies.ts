@@ -1,6 +1,7 @@
 import type { ActionEvent } from "./action-ledger.js";
 import type { ActionEventReasonCode, ActionEventStatus } from "./action-ledger.js";
 import type { Args } from "./clawsweeper-args.js";
+import type { AgentScanSource } from "./agent-input-scan.js";
 import type {
   AcquiredReviewStartLease,
   Action,
@@ -27,10 +28,11 @@ import type {
   ReviewStartStatusCommentResult,
 } from "./clawsweeper-types.js";
 import type { UserFacingCommandError } from "./command.js";
+import type { CodexProcessResult } from "./codex-process.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
-import type { ReviewSemanticRecord } from "./review-semantic-cache.js";
 import type { ReviewStructuralPullState } from "./review-structural-cache.js";
 import type { ReviewStructuralRecord } from "./review-structural-cache.js";
+import type { PrHydrationSnapshot } from "./pr-hydration-snapshot.js";
 
 export interface CreateReviewCommandWorkflowDependencies {
   actionLedgerFailureDisposition: (error: unknown) => {
@@ -41,7 +43,12 @@ export interface CreateReviewCommandWorkflowDependencies {
   actionLedgerItemKey: (item: Pick<Item, "repo" | "number">) => string;
   activeReviewMutationRunner: MutationRunner | null;
   asRecord: (value: unknown) => Record<string, unknown>;
-  attachFixedPullRequest: (decision: Decision, item: Item, context: ItemContext) => Decision;
+  attachFixedPullRequest: (
+    decision: Decision,
+    item: Item,
+    context: ItemContext,
+    priorReviewMarkdown?: string,
+  ) => Decision;
   verifyRegressionProvenance: (
     decision: Decision,
     item: Item,
@@ -101,6 +108,8 @@ export interface CreateReviewCommandWorkflowDependencies {
       fullTimelineForRelations?: boolean;
       reviewCacheDigest?: boolean;
       reviewCacheGitDir?: string;
+      prHydrationSnapshot?: PrHydrationSnapshot | null;
+      prCommentActivityRevision?: string | null;
     },
   ) => ItemContext;
   commentId: (comment: Record<string, unknown> | undefined) => number | null;
@@ -108,6 +117,7 @@ export interface CreateReviewCommandWorkflowDependencies {
   DEFAULT_PLAN_BATCH_SIZE: 3;
   defaultItemsDir: (profile?: RepositoryProfile) => string;
   defaultLocalRangeArtifactDir: (targetDir: string) => string;
+  defaultLocalRangeHistoryPath: (targetDir: string, repo: string, baseSha: string) => string;
   defaultReviewArtifactDir: (
     localOnly: boolean,
     itemNumber: number | undefined,
@@ -122,11 +132,17 @@ export interface CreateReviewCommandWorkflowDependencies {
   displayDurationMs: (ms: number) => string;
   displayPath: (path: string) => string;
   enforceExpectedIssueSourceRevision: (options: ExpectedIssueSourceRevisionOptions) => void;
+  ensurePullRequestReviewHead: (options: {
+    targetDir: string;
+    itemNumber: number;
+    headSha: string;
+  }) => boolean;
   ensureDir: (path: string) => void;
   exactLocalReviewNoCandidateError: (
     itemNumber: number | undefined,
     shardIndex: number,
   ) => UserFacingCommandError;
+  extractClawSweeperReviewCommentBody: (body: string) => PreviousClawSweeperReview;
   existingReview: (item: Pick<Item, "number" | "repo">, itemsDir: string) => ExistingReview | null;
   extractLatestClawSweeperReview: (
     comments: readonly unknown[],
@@ -134,6 +150,7 @@ export interface CreateReviewCommandWorkflowDependencies {
   ) => PreviousClawSweeperReview | null;
   fetchIssueReviewComments: (number: number) => Record<string, unknown>[];
   fetchReviewStructuralRecord: (options: {
+    onPullIdentity?: (identity: { baseSha: string; headSha: string }) => void;
     item: Item;
     git: GitInfo;
     reviewPolicy: string;
@@ -198,7 +215,19 @@ export interface CreateReviewCommandWorkflowDependencies {
     itemNumber: number | undefined,
     itemNumbers: number[] | undefined,
   ) => itemNumber is number;
+  localRangeHistoryApplies: (
+    targetDir: string,
+    reviewedSha: string | null,
+    headSha: string,
+  ) => boolean;
+  localExactReviewHistoryPath: (artifactDir: string, repo: string, itemNumber: number) => string;
   makeTreeReadOnly: (path: string, snapshots?: FileModeSnapshot[]) => FileModeSnapshot[];
+  materializePullRequestReviewTree: (options: {
+    targetDir: string;
+    worktreeDir: string;
+    itemNumber: number;
+    headSha: string;
+  }) => boolean;
   markdownFor: (options: {
     item: Item;
     context: ItemContext;
@@ -211,7 +240,6 @@ export interface CreateReviewCommandWorkflowDependencies {
     reviewPolicy: string;
     runtime: ReviewRuntime;
     structuralRecord?: ReviewStructuralRecord | null;
-    semanticRecord?: ReviewSemanticRecord | null;
     reviewLeaseOwner?: string;
     reviewLeaseCommentId?: number;
   }) => string;
@@ -228,7 +256,6 @@ export interface CreateReviewCommandWorkflowDependencies {
     allowSupersededLeaseCleanup?: boolean;
   }) => ReviewStartStatusCommentResult;
   previousClawSweeperReviewDigestFromReport: (markdown: string) => string | null;
-  pullChecksContext: (number: number, headSha: string) => unknown;
   pullHeadShaFromContext: (context: ItemContext) => string | null;
   pullRequestHeadSha: (number: number) => string;
   recordReviewLogPublication: (options: {
@@ -240,8 +267,13 @@ export interface CreateReviewCommandWorkflowDependencies {
     missingReasonCode?: ActionEventReasonCode;
     retryable?: boolean;
   }) => ActionEvent | null;
-  refreshRelatedItemsContext: (item: Item, context: ItemContext) => unknown[];
+  removePullRequestReviewTree: (options: { targetDir: string; worktreeDir: string }) => boolean;
   replaceFrontMatterValue: (markdown: string, key: string, value: string) => string;
+  renderReviewCommentFromReport: (
+    markdown: string,
+    reason: "none",
+    options?: { previousReviewCommentBody?: string },
+  ) => string;
   repoFromArgs: (args: Args) => RepositoryProfile;
   reportFileName: (repo: string, number: number) => string;
   reportReviewFindings: (markdown: string) => ReviewFinding[];
@@ -277,6 +309,14 @@ export interface CreateReviewCommandWorkflowDependencies {
     serviceTier?: string;
   }) => string;
   reviewStructuralPullStateFromContext: (context: ItemContext) => ReviewStructuralPullState | null;
+  runReviewCheckoutInspection: (options: {
+    scanSource: AgentScanSource;
+    initialPrompt: string;
+    itemNumber: number;
+    openclawDir: string;
+    preserveCodexAuth?: boolean;
+    timeoutMs: number;
+  }) => CodexProcessResult;
   runCodex: (options: {
     item: Item;
     context: ItemContext;
@@ -324,11 +364,6 @@ export interface CreateReviewCommandWorkflowDependencies {
   updateBulkFilerDetectedFrontMatter: (
     markdown: string,
     detection: BulkFilerDetectionResult,
-  ) => string;
-  updateReviewSemanticFrontMatter: (
-    markdown: string,
-    record: ReviewSemanticRecord | null,
-    cacheHit: boolean,
   ) => string;
   updateReviewStructuralFrontMatter: (
     markdown: string,

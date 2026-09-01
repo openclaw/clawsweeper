@@ -38,7 +38,7 @@ import type {
   WorkflowStatusSummary,
 } from "./clawsweeper-types.js";
 import { syncDecisionPacketRecord, type DecisionPacketSubjectState } from "./decision-packets.js";
-import { isGitHubNotFoundError } from "./github-retry.js";
+import { GitHubRateLimitError, isGitHubNotFoundError } from "./github-retry.js";
 import { captureCanonicalRecordBaseline } from "./repair/canonical-record-baseline.js";
 import {
   REPOSITORY_PROFILES,
@@ -403,17 +403,39 @@ export function createDashboardAudit(dependencies: CreateDashboardAuditDependenc
     if (scopedItemNumbers?.size === 0) {
       throw new Error("scoped reconciliation requires at least one item number");
     }
-    const { numbers: openNumbers, pagesScanned } = scopedItemNumbers
-      ? { numbers: new Set<number>(), pagesScanned: 0 }
-      : fetchOpenItemNumbers(maxPages);
-    for (const number of options.preserveItemNumbers ?? []) {
-      try {
-        const { state } = fetchItem(number);
-        if (state === "open") openNumbers.add(number);
-      } catch (error) {
-        if (!scopedItemNumbers || !isGitHubNotFoundError(error)) throw error;
-        ghJson<unknown>(["api", `repos/${targetRepo()}`]);
+    let openNumbers: Set<number>;
+    let pagesScanned: number;
+    try {
+      ({ numbers: openNumbers, pagesScanned } = scopedItemNumbers
+        ? { numbers: new Set<number>(), pagesScanned: 0 }
+        : fetchOpenItemNumbers(maxPages));
+      for (const number of options.preserveItemNumbers ?? []) {
+        try {
+          const { state } = fetchItem(number);
+          if (state === "open") openNumbers.add(number);
+        } catch (error) {
+          if (!scopedItemNumbers || !isGitHubNotFoundError(error)) throw error;
+          ghJson<unknown>(["api", `repos/${targetRepo()}`]);
+        }
       }
+    } catch (error) {
+      if (!(error instanceof GitHubRateLimitError)) throw error;
+      // The throttled open-state scan happens before any record mutation, so a
+      // deferral is guaranteed to leave every record untouched. Callers keep
+      // their fail-closed per-item live checks; the next scheduled pass
+      // retries folder placement after the reported reset.
+      console.error(`[reconcile] deferred: ${error.message}`);
+      return {
+        openItemsSeen: 0,
+        pagesScanned: 0,
+        movedToClosed: 0,
+        movedToItems: 0,
+        removedStaleClosedCopies: 0,
+        fetchedClosedAt: 0,
+        changedItemNumbers: [],
+        changedRecordFiles: [],
+        deferred: { reason: "github_rate_limited", retryAt: error.retryAt },
+      };
     }
     let movedToClosed = 0;
     let movedToItems = 0;

@@ -1,0 +1,104 @@
+{
+  "schema": "clawsweeper-typed-webhook-ingress-proof/v1",
+  "generated_at": "2026-08-12T05:04:23.338Z",
+  "merge_base": "408c28329c188c15e2d3dbefe98a2393cbca4989",
+  "head": "896513f31ce3279a69f34dff9425809d55f9d782",
+  "runtime": "two real wrangler dev --local Workers over loopback HTTP",
+  "fixtures": [
+    {
+      "name": "issue_comment",
+      "event": "issue_comment",
+      "merge_base": {
+        "status": 503,
+        "body": {
+          "error": "github_app_not_configured"
+        }
+      },
+      "head": {
+        "status": 503,
+        "body": {
+          "error": "github_app_not_configured"
+        }
+      },
+      "identical": true
+    },
+    {
+      "name": "issues",
+      "event": "issues",
+      "merge_base": {
+        "status": 202,
+        "body": {
+          "ok": true,
+          "queued": true,
+          "item_key": "openclaw/gogcli#1129",
+          "superseded_publications": 0
+        }
+      },
+      "head": {
+        "status": 202,
+        "body": {
+          "ok": true,
+          "queued": true,
+          "item_key": "openclaw/gogcli#1129",
+          "superseded_publications": 0
+        }
+      },
+      "identical": true
+    },
+    {
+      "name": "pull_request",
+      "event": "pull_request",
+      "merge_base": {
+        "status": 202,
+        "body": {
+          "ok": true,
+          "accepted": true,
+          "deferred": true,
+          "reason": "pull request head verification deferred"
+        }
+      },
+      "head": {
+        "status": 202,
+        "body": {
+          "ok": true,
+          "accepted": true,
+          "deferred": true,
+          "reason": "pull request head verification deferred"
+        }
+      },
+      "identical": true
+    },
+    {
+      "name": "unsupported_event",
+      "event": "future_event",
+      "merge_base": {
+        "status": 202,
+        "body": {
+          "ok": true,
+          "accepted": false,
+          "reason": "unsupported event"
+        }
+      },
+      "head": {
+        "status": 202,
+        "body": {
+          "ok": true,
+          "accepted": false,
+          "reason": "unsupported event"
+        }
+      },
+      "identical": true
+    }
+  ],
+  "result": {
+    "compared": 4,
+    "identical": 4,
+    "different": 0,
+    "status": "succeeded"
+  },
+  "limits": [
+    "Fixtures use synthetic payloads and credentials.",
+    "The proof exercises signed Worker intake and local Durable Objects but no live GitHub API or production state.",
+    "The issue_comment fixture stops at missing synthetic App configuration; the item fixtures exercise local queue admission."
+  ]
+}

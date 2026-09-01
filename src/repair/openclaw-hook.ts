@@ -101,37 +101,31 @@ async function postOpenClawAgentHookOnce({
   fetcher: typeof fetch;
   post: OpenClawHookPost;
 }): Promise<OpenClawHookPostResult> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), (config.timeoutSeconds + 15) * 1000);
-  try {
-    const response = await fetcher(config.hookUrl, {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        authorization: `Bearer ${config.token}`,
-        "content-type": "application/json",
-        "idempotency-key": post.idempotencyKey,
-      },
-      body: JSON.stringify({
-        name: post.name,
-        agentId: config.agentId,
-        deliver: post.deliver,
-        channel: config.channel,
-        to: config.discordTarget,
-        idempotencyKey: post.idempotencyKey,
-        thinking: config.thinking,
-        timeoutSeconds: config.timeoutSeconds,
-        message: post.message,
-      }),
-    });
-    const body = await response.text();
-    if (!response.ok) {
-      throw new OpenClawHookHttpError(response.status, body);
-    }
-    return { runId: readHookRunId(body) };
-  } finally {
-    clearTimeout(timeout);
+  const response = await fetcher(config.hookUrl, {
+    method: "POST",
+    signal: AbortSignal.timeout((config.timeoutSeconds + 15) * 1000),
+    headers: {
+      authorization: `Bearer ${config.token}`,
+      "content-type": "application/json",
+      "idempotency-key": post.idempotencyKey,
+    },
+    body: JSON.stringify({
+      name: post.name,
+      agentId: config.agentId,
+      deliver: post.deliver,
+      channel: config.channel,
+      to: config.discordTarget,
+      idempotencyKey: post.idempotencyKey,
+      thinking: config.thinking,
+      timeoutSeconds: config.timeoutSeconds,
+      message: post.message,
+    }),
+  });
+  const body = await response.text();
+  if (!response.ok) {
+    throw new OpenClawHookHttpError(response.status, body);
   }
+  return { runId: readHookRunId(body) };
 }
 
 export class OpenClawHookHttpError extends Error {

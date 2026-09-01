@@ -31,7 +31,7 @@ concurrency:
 jobs:
   notify:
     name: Summarize maintainer report
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.CLAWSWEEPER_REPORT_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 10
     steps:
       - name: Create maintainer repo token

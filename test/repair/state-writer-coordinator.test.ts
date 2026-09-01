@@ -211,6 +211,37 @@ test("an ambiguous acquire response rereads the same durable ticket identity", (
   assert.equal(guard.release(), true);
 });
 
+test("an unrecoverable acquire retains only a sanitized cause", () => {
+  const signature = `sha256=${"a".repeat(64)}`;
+  const raw = Object.assign(new Error(`spawn failed ${COORDINATOR_HMAC_FIXTURE} ${signature}`), {
+    spawnargs: [COORDINATOR_HMAC_FIXTURE, signature],
+  });
+  let attempts = 0;
+  assert.throws(
+    () =>
+      acquireStateWriterCoordinator(
+        "state",
+        {
+          request() {
+            attempts += 1;
+            throw raw;
+          },
+          sleep() {},
+        },
+        enabledEnv,
+      ),
+    (error: Error & { cause?: unknown }) => {
+      assert.equal(attempts, 3);
+      assert.ok(error.cause instanceof Error);
+      assert.equal("spawnargs" in error.cause, false);
+      assert.doesNotMatch(error.message, new RegExp(COORDINATOR_HMAC_FIXTURE));
+      assert.doesNotMatch(error.cause.message, new RegExp(COORDINATOR_HMAC_FIXTURE));
+      assert.doesNotMatch(error.cause.message, /sha256=[a-f0-9]{64}/i);
+      return true;
+    },
+  );
+});
+
 test("heartbeat ownership changes fence the acquired writer", () => {
   let acquiredPayload: RequestPayload | undefined;
   const guard = required(
