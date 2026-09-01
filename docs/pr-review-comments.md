@@ -31,6 +31,10 @@ Each synced comment includes the durable identity marker:
 ClawSweeper edits that comment in place instead of posting repeated comments.
 Report front matter stores the synced comment id, URL, hash, and sync time.
 
+Trailing marker recovery stops at visible prose, including prose ending in
+`-->`. An already-closed HTML comment cannot extend across that prose into the
+final marker block; valid contiguous trailing markers remain recoverable.
+
 When review starts and no ClawSweeper-owned comment exists yet, the review
 shard posts a short status placeholder with the same durable identity marker.
 The placeholder is intentionally light and crustacean-friendly, then the final
