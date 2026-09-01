@@ -642,3 +642,67 @@ test("ghPagedLinkHeaderContextWindow falls back when link headers are unavailabl
     truncated: false,
   });
 });
+
+test("bounded PR context prepares source independently of cache digest and API file completeness", async () => {
+  const { createItemContext } = await import("../dist/clawsweeper-item-context.js");
+  const { hydration, sourceTools, sha256 } = await import("./primary-body-fixture.ts");
+  const { asRecord } = await import("../dist/clawsweeper-item-policy.js");
+  const { item } = await import("./helpers.ts");
+  const target = item({ kind: "pull_request" });
+  const pullRequest = {
+    head: { sha: "b".repeat(40) },
+    base: { sha: "a".repeat(40), ref: "main" },
+    changed_files: 341,
+    commits: 113,
+    review_comments: 0,
+  };
+  const empty = { items: [], total: 0, hydrated: 0, truncated: false };
+  const prepared: unknown[] = [];
+  const { collectItemContext } = createItemContext({
+    ...hydration,
+    ...sourceTools,
+    asRecord,
+    sha256,
+    stringOrUndefined: (value) => (typeof value === "string" ? value : undefined),
+    targetRepo: () => target.repo,
+    ghJson: <T>(args: string[]) =>
+      (args[1]!.includes("/pulls/") ? pullRequest : { comments: 0 }) as T,
+    ghPaged: () => [],
+    ghPagedContextWindow: <T>(path: string) =>
+      path.endsWith("/files")
+        ? {
+            items: Array.from({ length: 80 }, (_, index) => ({
+              filename: `file-${index}.txt`,
+            })) as T[],
+            total: 341,
+            hydrated: 80,
+            truncated: true,
+          }
+        : empty,
+    ghPagedLinkHeaderContextWindow: () => empty,
+    closingPullRequestsForIssue: () => [],
+    referencingMergedPullRequestsForIssue: () => [],
+    relatedItemsContext: () => [],
+    fetchReviewedPrActivityCursor: () => null,
+    pullChecksContext: () => ({ complete: true, checkRuns: [], statuses: [] }),
+    hydratePullRequestReviewSource: (options) => prepared.push(options),
+  });
+  for (const reviewCacheDigest of [false, true]) {
+    const context = collectItemContext(target, {
+      reviewCacheDigest,
+      reviewCacheGitDir: "/synthetic/source",
+    });
+    assert.equal(context.counts?.pullFiles, 341);
+    assert.equal(context.counts?.pullFilesHydrated, 80);
+    assert.equal(context.counts?.pullFilesTruncated, true);
+    assert.equal(context.pullFiles?.length, 81, "80 files plus the explicit omission marker");
+    assert.deepEqual(prepared.at(-1), {
+      itemNumber: target.number,
+      pullRequest,
+      targetDir: "/synthetic/source",
+    });
+  }
+  assert.equal(prepared.length, 2);
+  collectItemContext(target);
+  assert.equal(prepared.length, 2, "context-only callers do not request a Git checkout");
+});

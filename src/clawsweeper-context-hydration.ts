@@ -896,7 +896,6 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
   }
 
   function hydratePullRequestReviewSource(options: {
-    files: readonly unknown[];
     itemNumber: number;
     pullRequest: unknown;
     targetDir: string;
@@ -938,7 +937,6 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
           targetDir: options.targetDir,
           baseSha: revision,
           headSha,
-          files: options.files,
           resolveBlobSizes: (objectIds) =>
             githubReviewBlobSizes({
               repository: targetRepo(),

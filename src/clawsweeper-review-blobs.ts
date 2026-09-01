@@ -1,17 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { reviewMergeBase } from "./pr-review-evidence.js";
+import { readReviewGit, reviewMergeBase } from "./pr-review-evidence.js";
+import { MAX_SCAN_BYTES } from "./agent-input-scan.js";
 
-const MAX_REVIEW_FILES = 80;
+const MAX_BLOB_SIZE_OBJECTS = 160;
 const MAX_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;
-const MAX_REVIEW_BLOB_BYTES = 4 * 1024 * 1024;
 const GIT_OBJECT_ID = /^[0-9a-f]{40,64}$/i;
-
-type ReviewBlobFile = {
-  filename?: unknown;
-  previous_filename?: unknown;
-  status?: unknown;
-};
 
 export type ReviewBlobHydration = {
   hydrated: boolean;
@@ -239,58 +233,60 @@ export function hydratePullRequestReviewBlobs({
   targetDir,
   baseSha,
   headSha,
-  files,
   resolveBlobSizes,
 }: {
   targetDir: string;
   baseSha: string;
   headSha: string;
-  files: readonly unknown[];
   resolveBlobSizes?: (objectIds: readonly string[]) => ReadonlyMap<string, number>;
 }): ReviewBlobHydration {
-  if (
-    !GIT_OBJECT_ID.test(baseSha) ||
-    !GIT_OBJECT_ID.test(headSha) ||
-    files.length > MAX_REVIEW_FILES
-  ) {
+  if (!GIT_OBJECT_ID.test(baseSha) || !GIT_OBJECT_ID.test(headSha)) {
     return { hydrated: false, blobs: 0 };
   }
-
-  const basePaths = new Set<string>();
-  const headPaths = new Set<string>();
-  for (const value of files) {
-    if (!value || typeof value !== "object") return { hydrated: false, blobs: 0 };
-    const file = value as ReviewBlobFile;
-    const filename = safeReviewPath(file.filename);
-    if (!filename) return { hydrated: false, blobs: 0 };
-    const previous =
-      file.previous_filename == null ? filename : safeReviewPath(file.previous_filename);
-    if (!previous) return { hydrated: false, blobs: 0 };
-    const status = typeof file.status === "string" ? file.status.toLowerCase() : "";
-    if (status !== "added" && status !== "a") basePaths.add(previous);
-    if (status !== "removed" && status !== "deleted" && status !== "d") {
-      headPaths.add(filename);
-    }
+  const deadlineAt = Date.now() + 30_000;
+  const readOptions = { deadlineAt, maxBytes: MAX_GIT_OUTPUT_BYTES };
+  const raw = readReviewGit(
+    targetDir,
+    [
+      "diff",
+      "--raw",
+      "--no-abbrev",
+      "-z",
+      "--no-renames",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--ignore-submodules=none",
+      baseSha,
+      headSha,
+      "--",
+    ],
+    readOptions,
+  );
+  if (!raw) return { hydrated: false, blobs: 0 };
+  let fields: string[];
+  try {
+    fields = new TextDecoder("utf-8", { fatal: true }).decode(raw).split("\0");
+  } catch {
+    return { hydrated: false, blobs: 0 };
   }
-
+  if (fields.pop() !== "" || fields.length % 2 !== 0) return { hydrated: false, blobs: 0 };
+  const paths = new Set<string>();
   const objectIds = new Set<string>();
-  for (const [sha, paths] of [
-    [baseSha, basePaths],
-    [headSha, headPaths],
-  ] as const) {
-    if (paths.size === 0) continue;
-    const tree = spawnSync("git", ["--literal-pathspecs", "ls-tree", "-z", sha, "--", ...paths], {
-      cwd: targetDir,
-      encoding: "utf8",
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-      maxBuffer: MAX_GIT_OUTPUT_BYTES,
-    });
-    if (tree.error || tree.status !== 0) return { hydrated: false, blobs: 0 };
-    for (const entry of tree.stdout.split("\0")) {
-      if (!entry) continue;
-      const match = entry.match(/^\d{6} (blob|commit) ([0-9a-f]{40,64})\t(.*)$/s);
-      if (!match || !paths.has(match[3]!)) return { hydrated: false, blobs: 0 };
-      if (match[1] === "blob") objectIds.add(match[2]!);
+  for (let index = 0; index < fields.length; index += 2) {
+    const match = /^:(\d{6}) (\d{6}) ([0-9a-f]{40,64}) ([0-9a-f]{40,64}) [AMDT]$/.exec(
+      fields[index]!,
+    );
+    const path = safeReviewPath(fields[index + 1]);
+    if (!match || !path) return { hydrated: false, blobs: 0 };
+    paths.add(path);
+    for (const [mode, oid] of [
+      [match[1]!, match[3]!],
+      [match[2]!, match[4]!],
+    ]) {
+      // Gitlinks are not blobs; the scanner still refuses changed gitlinks.
+      if (mode === "000000" || mode === "160000") continue;
+      if (!["100644", "100755", "120000"].includes(mode!)) return { hydrated: false, blobs: 0 };
+      objectIds.add(oid!);
     }
   }
 
@@ -308,13 +304,19 @@ export function hydratePullRequestReviewBlobs({
       `${baseSha}^{tree}`,
       `${headSha}^{tree}`,
       "--",
-      ...new Set([...basePaths, ...headPaths]),
+      ...paths,
     ],
     {
       cwd: targetDir,
       encoding: "utf8",
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      env: {
+        ...process.env,
+        GIT_OPTIONAL_LOCKS: "0",
+        GIT_NO_LAZY_FETCH: "1",
+        GIT_NO_REPLACE_OBJECTS: "1",
+      },
       maxBuffer: MAX_GIT_OUTPUT_BYTES,
+      timeout: Math.max(1, deadlineAt - Date.now()),
     },
   );
   if (objectAvailability.error || objectAvailability.status !== 0) {
@@ -333,19 +335,13 @@ export function hydratePullRequestReviewBlobs({
   const sizes = new Map<string, number>();
   const localObjectIds = [...objectIds].filter((objectId) => !missing.has(objectId));
   if (localObjectIds.length > 0) {
-    const localObjects = spawnSync(
-      "git",
+    const localObjects = readReviewGit(
+      targetDir,
       ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
-      {
-        cwd: targetDir,
-        encoding: "utf8",
-        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_NO_LAZY_FETCH: "1" },
-        input: `${localObjectIds.join("\n")}\n`,
-        maxBuffer: MAX_GIT_OUTPUT_BYTES,
-      },
+      { ...readOptions, input: Buffer.from(`${localObjectIds.join("\n")}\n`) },
     );
-    if (localObjects.error || localObjects.status !== 0) return { hydrated: false, blobs: 0 };
-    const found = localObjects.stdout.trim().split("\n");
+    if (!localObjects) return { hydrated: false, blobs: 0 };
+    const found = localObjects.toString().trim().split("\n");
     if (found.length !== localObjectIds.length) return { hydrated: false, blobs: 0 };
     for (const entry of found) {
       const [objectId, type, size] = entry.split(" ");
@@ -371,25 +367,21 @@ export function hydratePullRequestReviewBlobs({
   }
 
   let objectBytes = 0;
-  let skippedOversizedBlob = false;
-  const bounded = new Set<string>();
   for (const objectId of objectIds) {
     const bytes = sizes.get(objectId);
     if (
       bytes === undefined ||
       !Number.isSafeInteger(bytes) ||
       bytes < 0 ||
-      bytes > MAX_REVIEW_BLOB_BYTES - objectBytes
+      bytes > MAX_SCAN_BYTES - objectBytes
     ) {
-      skippedOversizedBlob = true;
-      continue;
+      return { hydrated: false, blobs: 0 };
     }
-    bounded.add(objectId);
     objectBytes += bytes;
   }
 
-  const boundedMissing = [...missing].filter((objectId) => bounded.has(objectId));
-  if (boundedMissing.length > 0) {
+  if (Date.now() >= deadlineAt) return { hydrated: false, blobs: 0 };
+  if (missing.size > 0) {
     const fetched = spawnSync(
       "git",
       [
@@ -407,13 +399,14 @@ export function hydratePullRequestReviewBlobs({
         cwd: targetDir,
         encoding: "utf8",
         env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-        input: `${boundedMissing.join("\n")}\n`,
+        input: `${[...missing].join("\n")}\n`,
+        timeout: Math.max(1, deadlineAt - Date.now()),
         maxBuffer: MAX_GIT_OUTPUT_BYTES,
       },
     );
     if (fetched.error || fetched.status !== 0) return { hydrated: false, blobs: 0 };
   }
-  return { hydrated: !skippedOversizedBlob, blobs: bounded.size };
+  return { hydrated: true, blobs: objectIds.size };
 }
 
 export function githubReviewBlobSizes({
@@ -426,43 +419,43 @@ export function githubReviewBlobSizes({
   request: (query: string) => unknown;
 }): ReadonlyMap<string, number> {
   const match = repository.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
-  if (
-    !match ||
-    match[1] === "." ||
-    match[1] === ".." ||
-    match[2] === "." ||
-    match[2] === ".." ||
-    objectIds.length > MAX_REVIEW_FILES * 2
-  ) {
+  if (!match || match[1] === "." || match[1] === ".." || match[2] === "." || match[2] === "..") {
     throw new Error("invalid bounded review blob metadata request");
   }
-  const objects = objectIds.map((objectId, index) => {
-    if (!GIT_OBJECT_ID.test(objectId)) throw new Error("invalid review blob object ID");
-    return `b${index}: object(oid: "${objectId}") { ... on Blob { byteSize } }`;
-  });
-  const query = `query { repository(owner: "${match[1]}", name: "${match[2]}") { ${objects.join(" ")} } }`;
-  const response = request(query);
-  if (!response || typeof response !== "object") throw new Error("invalid review blob response");
-  const data = (response as { data?: unknown }).data;
-  if (!data || typeof data !== "object") throw new Error("missing review blob response data");
-  const values = (data as { repository?: unknown }).repository;
-  if (!values || typeof values !== "object") throw new Error("missing review blob repository");
+  if (objectIds.some((objectId) => !GIT_OBJECT_ID.test(objectId))) {
+    throw new Error("invalid review blob object ID");
+  }
   const result = new Map<string, number>();
-  for (const [index, objectId] of objectIds.entries()) {
-    const object = (values as Record<string, unknown>)[`b${index}`];
-    const bytes =
-      object && typeof object === "object" ? (object as { byteSize?: unknown }).byteSize : null;
-    if (typeof bytes !== "number" || !Number.isSafeInteger(bytes) || bytes < 0) {
-      throw new Error("invalid review blob size");
+  const deadlineAt = Date.now() + 30_000;
+  for (let offset = 0; offset < objectIds.length; offset += MAX_BLOB_SIZE_OBJECTS) {
+    if (Date.now() >= deadlineAt) throw new Error("review blob metadata deadline exceeded");
+    const batch = objectIds.slice(offset, offset + MAX_BLOB_SIZE_OBJECTS);
+    const objects = batch.map(
+      (objectId, index) => `b${index}: object(oid: "${objectId}") { ... on Blob { byteSize } }`,
+    );
+    const query = `query { repository(owner: "${match[1]}", name: "${match[2]}") { ${objects.join(" ")} } }`;
+    const response = request(query);
+    if (!response || typeof response !== "object") throw new Error("invalid review blob response");
+    const data = (response as { data?: unknown }).data;
+    if (!data || typeof data !== "object") throw new Error("missing review blob response data");
+    const values = (data as { repository?: unknown }).repository;
+    if (!values || typeof values !== "object") throw new Error("missing review blob repository");
+    for (const [index, objectId] of batch.entries()) {
+      const object = (values as Record<string, unknown>)[`b${index}`];
+      const bytes =
+        object && typeof object === "object" ? (object as { byteSize?: unknown }).byteSize : null;
+      if (typeof bytes !== "number" || !Number.isSafeInteger(bytes) || bytes < 0) {
+        throw new Error("invalid review blob size");
+      }
+      result.set(objectId, bytes);
     }
-    result.set(objectId, bytes);
   }
   return result;
 }
 
 function safeReviewPath(value: unknown): string | null {
   if (typeof value !== "string" || !value || value.length > 4096) return null;
-  if (value.startsWith("/") || value.includes("\\")) {
+  if (value.startsWith("/") || /^[A-Za-z]:/.test(value) || value.includes("\\")) {
     return null;
   }
   for (let index = 0; index < value.length; index += 1) {
@@ -470,7 +463,9 @@ function safeReviewPath(value: unknown): string | null {
     if (code < 32 || code === 127) return null;
   }
   const parts = value.split("/");
-  if (parts.some((part) => !part || part === "." || part === ".." || part === ".git")) {
+  if (
+    parts.some((part) => !part || part === "." || part === ".." || part.toLowerCase() === ".git")
+  ) {
     return null;
   }
   return value;

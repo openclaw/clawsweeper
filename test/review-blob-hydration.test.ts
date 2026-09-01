@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -14,7 +23,8 @@ import {
   materializePullRequestReviewTree,
   removePullRequestReviewTree,
 } from "../dist/clawsweeper-review-blobs.js";
-import { reviewMergeBase } from "../dist/pr-review-evidence.js";
+import { MAX_SCAN_BYTES } from "../dist/agent-input-scan.js";
+import { readReviewGit, reviewMergeBase } from "../dist/pr-review-evidence.js";
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -33,7 +43,13 @@ function partialCloneFixture({
   extraFiles = 0,
   largeFiles = [],
   prefetchHead = true,
-}: { extraFiles?: number; largeFiles?: number[]; prefetchHead?: boolean } = {}) {
+  historicalBase = false,
+}: {
+  extraFiles?: number;
+  largeFiles?: number[];
+  prefetchHead?: boolean;
+  historicalBase?: boolean;
+} = {}) {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-review-promisor-"));
   const origin = join(root, "origin.git");
   const source = join(root, "source");
@@ -47,6 +63,17 @@ function partialCloneFixture({
   git(source, "config", "commit.gpgsign", "false");
   writeFileSync(join(source, "changed.txt"), "before\n");
   writeFileSync(join(source, "removed.txt"), "remove me\n");
+  if (historicalBase) {
+    writeFileSync(join(source, "mode.txt"), "mode only\n");
+    for (let index = 0; index < extraFiles; index++) {
+      writeFileSync(join(source, `additional-${index}.txt`), `before ${index}\n`);
+    }
+    for (const [index, bytes] of largeFiles.entries()) {
+      const data = Buffer.alloc(bytes, index + 10);
+      data[0] = 0;
+      writeFileSync(join(source, `large-${index}.bin`), data);
+    }
+  }
   git(source, "add", ".");
   git(source, "update-index", "--add", "--cacheinfo", `160000,${"1".repeat(40)},vendor/library`);
   git(source, "commit", "-qm", "base");
@@ -64,16 +91,36 @@ function partialCloneFixture({
     writeFileSync(join(source, `additional-${index}.txt`), `additional ${index}\n`);
   }
   for (const [index, bytes] of largeFiles.entries()) {
-    writeFileSync(join(source, `large-${index}.bin`), Buffer.alloc(bytes, index + 1));
+    const data = Buffer.alloc(bytes, index + 1);
+    data[0] = 0;
+    writeFileSync(join(source, `large-${index}.bin`), data);
   }
   git(source, "rm", "-q", "removed.txt");
   git(source, "add", ".");
   git(source, "update-index", "--add", "--cacheinfo", `160000,${"2".repeat(40)},vendor/library`);
+  if (historicalBase) {
+    chmodSync(join(source, "mode.txt"), 0o755);
+    git(source, "update-index", "--chmod=+x", "mode.txt");
+  }
   git(source, "commit", "-qm", "feature");
   const headSha = git(source, "rev-parse", "HEAD");
   const addedBlobSha = git(source, "rev-parse", "HEAD:added.txt");
   const changedBlobSha = git(source, "rev-parse", "HEAD:changed.txt");
   git(source, "push", "-q", "origin", "HEAD:refs/pull/982/head");
+  if (historicalBase) {
+    git(source, "checkout", "-q", "main");
+    writeFileSync(join(source, "changed.txt"), "current main\n");
+    git(source, "rm", "-q", "removed.txt");
+    for (let index = 0; index < extraFiles; index++) {
+      writeFileSync(join(source, `additional-${index}.txt`), `main ${index}\n`);
+    }
+    for (const [index] of largeFiles.entries()) {
+      writeFileSync(join(source, `large-${index}.bin`), "main binary replacement\n");
+    }
+    git(source, "add", ".");
+    git(source, "commit", "-qm", "advance main past pinned base");
+    git(source, "push", "-q", "origin", "main");
+  }
   git(
     root,
     "clone",
@@ -100,10 +147,22 @@ function partialCloneFixture({
 }
 
 function resolveFixtureBlobSizes(source: string) {
-  return (objectIds: readonly string[]) =>
-    new Map(
-      objectIds.map((objectId) => [objectId, Number(git(source, "cat-file", "-s", objectId))]),
+  return (objectIds: readonly string[]) => {
+    const output = execFileSync("git", ["cat-file", "--batch-check=%(objectname) %(objectsize)"], {
+      cwd: source,
+      encoding: "utf8",
+      input: `${objectIds.join("\n")}\n`,
+    });
+    return new Map(
+      output
+        .trim()
+        .split("\n")
+        .map((line) => {
+          const [oid, bytes] = line.split(" ");
+          return [oid!, Number(bytes)];
+        }),
     );
+  };
 }
 
 function objectExistsOffline(cwd: string, sha: string): boolean {
@@ -399,14 +458,6 @@ test("restricted PR review can inspect changed blobs from a genuine blobless clo
       baseSha: fixture.baseSha,
       headSha: fixture.headSha,
       resolveBlobSizes: resolveFixtureBlobSizes(fixture.source),
-      files: [
-        { filename: "added.txt", status: "added" },
-        { filename: "nested/feature[1].txt", status: "added" },
-        { filename: ":(glob)literal.txt", status: "added" },
-        { filename: "changed.txt", status: "modified" },
-        { filename: "vendor/library", status: "modified" },
-        { filename: "removed.txt", status: "removed" },
-      ],
     });
 
     assert.equal(result.hydrated, true);
@@ -429,30 +480,6 @@ test("restricted PR review can inspect changed blobs from a genuine blobless clo
       /\+after/,
     );
     assert.equal(git(fixture.target, "status", "--porcelain"), "");
-  } finally {
-    rmSync(fixture.root, { recursive: true, force: true });
-  }
-});
-
-test("persisted snapshot null previous filenames still hydrate missing blobs", () => {
-  const fixture = partialCloneFixture();
-  try {
-    assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), false);
-    assert.equal(objectExistsOffline(fixture.target, fixture.changedBlobSha), false);
-    const result = hydratePullRequestReviewBlobs({
-      targetDir: fixture.target,
-      baseSha: fixture.baseSha,
-      headSha: fixture.headSha,
-      resolveBlobSizes: resolveFixtureBlobSizes(fixture.source),
-      files: [
-        { filename: "added.txt", previous_filename: null, status: "added" },
-        { filename: "changed.txt", previous_filename: null, status: "modified" },
-        { filename: "removed.txt", previous_filename: null, status: "removed" },
-      ],
-    });
-    assert.deepEqual(result, { hydrated: true, blobs: 4 });
-    assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), true);
-    assert.equal(objectExistsOffline(fixture.target, fixture.changedBlobSha), true);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
@@ -520,30 +547,39 @@ test("restricted review binds a force-pushed pull request to the exact REST head
   }
 });
 
-test("review blob hydration rejects unsafe paths and oversized changes without fetching", () => {
+test("review hydration refuses unsafe Git paths and missing source without fetching", () => {
   const fixture = partialCloneFixture();
   try {
-    for (const filename of ["../secret", "/absolute", ".git/config", "nested/../secret", "a\\b"]) {
+    for (const filename of ["a\\b", "C:drive", "control\npath"]) {
+      writeFileSync(join(fixture.source, filename), "unsafe path\n");
+      git(fixture.source, "add", ".");
+      git(fixture.source, "commit", "-qm", "unsafe source");
+      const headSha = git(fixture.source, "rev-parse", "HEAD");
+      git(fixture.source, "push", "-q", "origin", "HEAD:refs/heads/unsafe");
+      git(fixture.target, "fetch", "-q", "--filter=blob:none", "origin", "refs/heads/unsafe");
       assert.deepEqual(
         hydratePullRequestReviewBlobs({
           targetDir: fixture.target,
           baseSha: fixture.baseSha,
-          headSha: fixture.headSha,
-          files: [{ filename, status: "added" }],
+          headSha,
+          resolveBlobSizes: () => {
+            throw new Error("unsafe paths must refuse before metadata");
+          },
         }),
         { hydrated: false, blobs: 0 },
-        filename,
+      );
+      git(fixture.source, "rm", "-q", "--", filename);
+    }
+    for (const baseSha of ["--unsafe", "f".repeat(40), fixture.baseSha]) {
+      assert.deepEqual(
+        hydratePullRequestReviewBlobs({
+          targetDir: fixture.target,
+          baseSha,
+          headSha: fixture.headSha,
+        }),
+        { hydrated: false, blobs: 0 },
       );
     }
-    assert.deepEqual(
-      hydratePullRequestReviewBlobs({
-        targetDir: fixture.target,
-        baseSha: fixture.baseSha,
-        headSha: fixture.headSha,
-        files: Array.from({ length: 81 }, () => ({ filename: "added.txt", status: "added" })),
-      }),
-      { hydrated: false, blobs: 0 },
-    );
     assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), false);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
@@ -583,7 +619,6 @@ test("missing partial-clone objects are fetched in one bounded network request",
       baseSha: fixture.baseSha,
       headSha: fixture.headSha,
       resolveBlobSizes: resolveFixtureBlobSizes(fixture.source),
-      files: paths.map((filename) => ({ filename, status: "added" })),
     });
     if (previousTrace === undefined) delete process.env.GIT_TRACE2_EVENT;
     else process.env.GIT_TRACE2_EVENT = previousTrace;
@@ -601,7 +636,7 @@ test("missing partial-clone objects are fetched in one bounded network request",
     const explicitFetches = traceEvents.filter(
       (event) => event.event === "start" && event.argv?.includes("fetch"),
     );
-    assert.deepEqual(result, { hydrated: true, blobs: 12 });
+    assert.deepEqual(result, { hydrated: true, blobs: 18 });
     assert.equal(revLists.length, 1);
     assert.ok(revLists[0]!.argv?.includes(`${fixture.baseSha}^{tree}`));
     assert.ok(revLists[0]!.argv?.includes(`${fixture.headSha}^{tree}`));
@@ -619,32 +654,34 @@ test("missing partial-clone objects are fetched in one bounded network request",
   }
 });
 
-test("review hydration enforces per-review byte limits without fetching oversized blobs", () => {
-  for (const largeFiles of [[5 * 1024 * 1024], [3 * 1024 * 1024, 2 * 1024 * 1024]]) {
-    const fixture = partialCloneFixture({ largeFiles });
-    try {
-      const oversizedBlob = git(
-        fixture.target,
-        "rev-parse",
-        `${fixture.headSha}:large-${largeFiles.length - 1}.bin`,
+test("review hydration rejects aggregate scan budget overflow and incomplete size metadata before fetching", () => {
+  const fixture = partialCloneFixture();
+  try {
+    for (const size of [MAX_SCAN_BYTES + 1, Math.ceil(MAX_SCAN_BYTES / 2), NaN, -1, undefined]) {
+      assert.deepEqual(
+        hydratePullRequestReviewBlobs({
+          targetDir: fixture.target,
+          baseSha: fixture.baseSha,
+          headSha: fixture.headSha,
+          resolveBlobSizes: (ids) => new Map(ids.map((id) => [id, size as number])),
+        }),
+        { hydrated: false, blobs: 0 },
       );
-      const result = hydratePullRequestReviewBlobs({
+      assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), false);
+    }
+    git(fixture.target, "remote", "set-url", "origin", join(fixture.root, "unavailable.git"));
+    assert.deepEqual(
+      hydratePullRequestReviewBlobs({
         targetDir: fixture.target,
         baseSha: fixture.baseSha,
         headSha: fixture.headSha,
         resolveBlobSizes: resolveFixtureBlobSizes(fixture.source),
-        files: [
-          { filename: "added.txt", status: "added" },
-          ...largeFiles.map((_, index) => ({ filename: `large-${index}.bin`, status: "added" })),
-        ],
-      });
-
-      assert.equal(result.hydrated, false);
-      assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), true);
-      assert.equal(objectExistsOffline(fixture.target, oversizedBlob), false);
-    } finally {
-      rmSync(fixture.root, { recursive: true, force: true });
-    }
+      }),
+      { hydrated: false, blobs: 0 },
+    );
+    assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), false);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
   }
 });
 
@@ -675,4 +712,96 @@ test("review blob sizes use one bounded GraphQL metadata request", () => {
     () => githubReviewBlobSizes({ repository: "../unsafe", objectIds, request: () => ({}) }),
     /invalid bounded review blob metadata request/,
   );
+});
+
+test("large pinned deltas hydrate historical blobs after head checkout and produce the full offline binary patch", (t) => {
+  const fixture = partialCloneFixture({
+    extraFiles: 170,
+    largeFiles: [3 * 1024 * 1024],
+    historicalBase: true,
+  });
+  const reviewTree = join(fixture.root, "review-tree");
+  try {
+    assert.notEqual(git(fixture.target, "rev-parse", "HEAD"), fixture.baseSha);
+    assert.equal(
+      materializePullRequestReviewTree({
+        targetDir: fixture.target,
+        worktreeDir: reviewTree,
+        itemNumber: 982,
+        headSha: fixture.headSha,
+      }),
+      true,
+    );
+    const mergeBase = reviewMergeBase(reviewTree, fixture.baseSha, fixture.headSha);
+    assert.equal(mergeBase.sha, fixture.baseSha, "the REST base must not become current main");
+    const args = [
+      "diff",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--no-renames",
+      "--ignore-submodules=none",
+      fixture.baseSha,
+      fixture.headSha,
+    ];
+    const raw = readReviewGit(reviewTree, [...args, "--raw", "--no-abbrev", "-z", "--"]);
+    assert.ok(raw);
+    assert.equal(raw.toString().split("\0").length, 2 * 178 + 1);
+    const patchArgs = [...args, "--patch", "--binary", "--full-index", "--"];
+    assert.equal(
+      readReviewGit(reviewTree, patchArgs),
+      null,
+      "head checkout leaves historical blobs missing",
+    );
+    const removedOid = git(fixture.source, "rev-parse", `${fixture.baseSha}:removed.txt`);
+    assert.equal(objectExistsOffline(reviewTree, removedOid), false);
+    const batches: number[] = [];
+    const result = hydratePullRequestReviewBlobs({
+      targetDir: reviewTree,
+      baseSha: mergeBase.sha!,
+      headSha: fixture.headSha,
+      resolveBlobSizes: (objectIds) =>
+        githubReviewBlobSizes({
+          repository: "openclaw/clawsweeper",
+          objectIds,
+          request: (query) => {
+            const ids = [...query.matchAll(/b(\d+): object\(oid: "([0-9a-f]+)"\)/g)];
+            batches.push(ids.length);
+            const sizes = resolveFixtureBlobSizes(fixture.source)(ids.map((match) => match[2]!));
+            return {
+              data: {
+                repository: Object.fromEntries(
+                  ids.map((match) => [`b${match[1]}`, { byteSize: sizes.get(match[2]!) }]),
+                ),
+              },
+            };
+          },
+        }),
+    });
+    assert.deepEqual(result, { hydrated: true, blobs: 349 });
+    assert.deepEqual(batches, [160, 13]);
+    assert.equal(objectExistsOffline(reviewTree, removedOid), true);
+    git(fixture.target, "remote", "set-url", "origin", join(fixture.root, "offline.git"));
+    const patch = readReviewGit(reviewTree, patchArgs);
+    assert.ok(patch);
+    assert.deepEqual(patch, readReviewGit(fixture.source, patchArgs));
+    assert.match(patch.toString(), /GIT binary patch/);
+    assert.match(patch.toString(), /old mode 100644\nnew mode 100755/);
+    assert.match(patch.toString(), /deleted file mode 100644/);
+    assert.match(patch.toString(), /:\(glob\)literal.txt/);
+    assert.match(patch.toString(), /feature\[1\].txt/);
+    assert.equal(git(reviewTree, "status", "--porcelain"), "");
+    t.diagnostic(
+      JSON.stringify({
+        changedFiles: 178,
+        blobs: result.blobs,
+        metadataBatches: batches,
+        patchBytes: patch.length,
+        patchSha256: createHash("sha256").update(patch).digest("hex"),
+        patchUnreadableBefore: true,
+        offlinePatchMatchesSource: true,
+      }),
+    );
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
 });

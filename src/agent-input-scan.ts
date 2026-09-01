@@ -67,7 +67,7 @@ export function agentInputScanFailureExitCode(error: unknown): number | null {
     : null;
 }
 
-const MAX_SCAN_BYTES = 256 * 1024 * 1024;
+export const MAX_SCAN_BYTES = 256 * 1024 * 1024;
 const OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const hostRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REVIEW_TOOL_BOOTSTRAP_ENV = [

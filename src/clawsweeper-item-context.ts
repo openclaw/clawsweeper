@@ -90,7 +90,6 @@ interface CreateItemContextDependencies {
   reviewCommentContentRevision: (entries: readonly unknown[]) => string;
   reviewTimelineDigestParts: (entries: unknown) => unknown;
   hydratePullRequestReviewSource: (options: {
-    files: readonly unknown[];
     itemNumber: number;
     pullRequest: unknown;
     targetDir: string;
@@ -378,14 +377,8 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
         80,
         compactPullFile,
       );
-      if (
-        options.reviewCacheDigest &&
-        options.reviewCacheGitDir &&
-        !pullFilesWindow.truncated &&
-        pullFilesWindow.total === pullFiles.length
-      ) {
+      if (options.reviewCacheGitDir) {
         hydratePullRequestReviewSource({
-          files: pullFiles,
           itemNumber: item.number,
           pullRequest,
           targetDir: options.reviewCacheGitDir,

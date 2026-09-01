@@ -71,6 +71,24 @@ Git history and blob hydration still make both sides of the PR available in
 the restricted review checkout. There is no compiler-backed cache, separate
 cache-only patch payload, or source-equivalence revalidation path.
 
+When full context collection requests a review checkout, source preparation runs
+independently of cache-digest eligibility and the API's 80-file context window.
+It reads the exact raw Git delta for the pinned merge-base/head (and pinned
+base/head endpoint evidence), including deleted and historical blobs. Current
+main never replaces the pinned REST base. Blob-size metadata uses batches of at
+most 160 objects; one explicit fetch per delta retrieves missing blobs only after
+the complete set fits the scanner's shared 256 MiB upper bound. Local metadata
+reads remain bounded to 4 MiB and source hydration has a 30-second Git-work
+deadline; metadata requests retain the existing GitHub transport timeout policy.
+The scanner separately enforces its aggregate budget, including prompts and the
+binary patch, and still refuses incomplete or unsupported source without fetching.
+
+Preparation remains in full-context collection, before restricted checkout
+inspection. Structural reuse keeps its existing pinned-source scan and refusal
+behavior; it does not gain a separate hydrator. Context-only callers that do not
+request a Git checkout do no source preparation. OpenClaw Bay is unaffected:
+no observer fields, routes, or controls change.
+
 The deployed review artifact contains compiled JavaScript, runtime libraries,
 and matching configuration, prompts, and schemas. TypeScript is a build
 dependency; review shards neither load nor install a compiler. Historical
