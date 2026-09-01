@@ -2603,10 +2603,14 @@ test("bun-based target toolchain installs deps and runs configured validation", 
   ]);
 });
 
-test("dependency setup permits inert package-manager config files", () => {
+test("dependency setup permits install-safe package-manager config files", () => {
   for (const [configName, contents] of [
     [".npmrc", ""],
     [".npmrc", "# Registry and auth settings belong in the runner environment.\n; npm comment\n"],
+    [
+      ".npmrc",
+      "min-release-age=7\nmin-release-age-exclude[]=@openai/codex\nmin-release-age-exclude[]=@openai/codex-*\n",
+    ],
     ["bunfig.toml", "# Install settings belong in the runner environment.\n"],
   ] as const) {
     const cwd = gitBunPackageFixture({ check: "bun x tsc --noEmit" });
@@ -2629,11 +2633,17 @@ test("dependency setup permits inert package-manager config files", () => {
   }
 });
 
-test("dependency setup permits pnpm integrity strings containing double slashes", () => {
+test("dependency setup permits multi-document pnpm lockfiles with integrity strings", () => {
   const cwd = gitBunPackageFixture({ check: "bun x tsc --noEmit" });
   fs.writeFileSync(
     path.join(cwd, "pnpm-lock.yaml"),
     [
+      "---",
+      "lockfileVersion: '9.0'",
+      "packages: {}",
+      "snapshots: {}",
+      "",
+      "---",
       "lockfileVersion: '9.0'",
       "",
       "packages:",
@@ -2989,6 +2999,11 @@ test("dependency setup rejects target-controlled network destinations", () => {
       "cafile=./target-controlled-ca.pem\n",
       "fetch-retries=9\n",
       "future-network-setting=value\n",
+      "min-release-age=0\n",
+      "min-release-age=seven\n",
+      "min-release-age-exclude[]=*\n",
+      "min-release-age-exclude[]=@openai/*\n",
+      "min-release-age-exclude[]=https://attacker.example/payload\n",
       "# comment\rregistry=http://attacker.example/\n",
     ].map((contents) => ({
       expected: /network config is not allowed: \.npmrc/,
@@ -3027,7 +3042,7 @@ test("dependency setup rejects target-controlled network destinations", () => {
         const cwd = gitPackageFixture({ check: 'node -e ""' });
         fs.writeFileSync(
           path.join(cwd, "pnpm-lock.yaml"),
-          "lockfileVersion: '9.0'\npackages:\n  payload:\n    resolution:\n      tarball: http://169.254.169.254/latest/meta-data/\n",
+          "---\nlockfileVersion: '9.0'\npackages: {}\n---\nlockfileVersion: '9.0'\npackages:\n  payload:\n    resolution:\n      tarball: http://169.254.169.254/latest/meta-data/\n",
         );
         return {
           cwd,
@@ -5051,6 +5066,77 @@ test("OpenClaw changed-gate compiler cache is disposable and preserves existing 
       );
     } else {
       assert.equal(fs.existsSync(compilerCache), false);
+    }
+  }
+});
+
+test("OpenClaw changed-gate caches are disposable without exempting sibling runtime inputs", () => {
+  for (const poisonedPath of [null, ".cache/stable.txt", "node_modules/dependency/runtime.js"]) {
+    const cwd = gitPackageFixture({ "check:changed": "node scripts/check-changed.mjs" });
+    fs.appendFileSync(path.join(cwd, ".gitignore"), ".cache/\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+
+    const preserved = [
+      [".cache/vitest/previous.bin", "previous Vitest cache\n"],
+      ["node_modules/.cache/jiti/previous.mjs", "previous Jiti cache\n"],
+      ["node_modules/.vite/vitest/results.json", "previous Vite cache\n"],
+      [".cache/stable.txt", "trusted cache sibling\n"],
+      ["node_modules/dependency/runtime.js", "trusted dependency\n"],
+    ] as const;
+    for (const [relativePath, contents] of preserved) {
+      const target = path.join(cwd, relativePath);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, contents);
+    }
+
+    const generated = [
+      ".cache/vitest/generated.bin",
+      "node_modules/.cache/jiti/generated.mjs",
+      "node_modules/.vite/vitest/generated.json",
+    ];
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-changed-gate-cache-"));
+    writeNodeCommandShim(
+      binDir,
+      "pnpm",
+      [
+        'const fs = require("node:fs");',
+        `for (const relativePath of ${JSON.stringify(generated)}) {`,
+        "  fs.mkdirSync(require('node:path').dirname(relativePath), { recursive: true });",
+        '  fs.writeFileSync(relativePath, "generated cache\\n");',
+        "}",
+        ...(poisonedPath
+          ? [`fs.writeFileSync(${JSON.stringify(poisonedPath)}, "poisoned\\n");`]
+          : []),
+      ].join("\n"),
+    );
+    const execute = () =>
+      withPathOnlyPrefix(binDir, () =>
+        runAllowedValidationCommands(
+          ["pnpm check:changed"],
+          cwd,
+          validationOptions("openclaw/openclaw", {
+            pinnedBaseRef: "origin/main",
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: [],
+              changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
+            },
+          }),
+        ),
+      );
+
+    if (poisonedPath) {
+      assert.throws(execute, /unsafe validation command mutated checkout identity/);
+    } else {
+      assert.deepEqual(execute(), ["pnpm check:changed"]);
+    }
+    for (const [relativePath, contents] of preserved.slice(0, 3)) {
+      assert.equal(fs.readFileSync(path.join(cwd, relativePath), "utf8"), contents);
+    }
+    for (const relativePath of generated) {
+      assert.equal(fs.existsSync(path.join(cwd, relativePath)), false);
     }
   }
 });
