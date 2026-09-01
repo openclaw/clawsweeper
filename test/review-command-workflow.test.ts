@@ -154,12 +154,16 @@ for (const scenario of [
   "structural-refusal",
   "content-refusal",
   "changed-pr-refusal",
+  "changed-pr-codex-failure",
+  "changed-pr-exact-codex-failure",
   "changed-pr-clean",
   "content-clean",
   "fresh-refusal",
 ]) {
   test(`scheduled ${scenario} preserves admission and terminal ledger classification`, (t) => {
     const refuseScan = scenario.endsWith("refusal");
+    const codexFailure = scenario.endsWith("codex-failure");
+    const exactFailure = scenario.includes("exact");
     const changedPr = scenario.startsWith("changed-pr-");
     const fresh = scenario === "fresh-refusal" || changedPr;
     const hydrated = fresh || scenario.startsWith("content-");
@@ -306,6 +310,7 @@ for (const scenario of [
       GITHUB_RUN_ATTEMPT: "1",
       GITHUB_JOB: "review",
       GITHUB_SHA: headSha,
+      EXACT_REVIEW_ITEM_KEY: exactFailure ? `${REPO}#${ITEM_NUMBER}` : "",
     };
     t.after(() => {
       process.env = oldEnv;
@@ -359,6 +364,7 @@ for (const scenario of [
         throw new Error("the workflow-supplied lease is externally owned");
       },
       detectBulkFiler: () => ({ context: null, labelPending: false, labelApplied: false }),
+      displayPath: (value: string) => value,
       ensureDir: (path: string) => mkdirSync(path, { recursive: true }),
       existingReview: () => ({
         path: join(itemsDir, `${ITEM_NUMBER}.md`),
@@ -461,12 +467,15 @@ for (const scenario of [
       prepareMediaProofArtifacts: () => ({ manifestPath: null, summaryPath: null, artifacts: [] }),
       buildReviewPrompt: () => ({ text: "Review the current item." }),
       itemSnapshotHash: () => digest("snapshot"),
+      codexFailureLogKind: () => "codex_execution",
       codexReviewFailureRetryable: () => false,
       codexFailureDecision: () => {
+        if (codexFailure) return closeDecision({ decision: "keep_open", closeReason: null });
         throw new Error("scan refusal must not become a decision");
       },
       runCodex: () => {
         generationCalls += 1;
+        if (codexFailure) throw new Error("Codex process startup failed");
         if (fresh && refuseScan)
           return runAgentProcess({
             label: "fresh-review",
@@ -529,6 +538,11 @@ for (const scenario of [
         assert.equal(cachedCompletions, 0);
         assert.equal(generationCalls, fresh ? 1 : 0);
         assert.equal(existsSync(join(artifactDir, `${ITEM_NUMBER}.md`)), false);
+        return;
+      }
+      if (codexFailure) {
+        assert.throws(execute, /Codex failed/);
+        assert.equal(existsSync(join(artifactDir, "failure-diagnostics")), exactFailure);
         return;
       }
       execute();

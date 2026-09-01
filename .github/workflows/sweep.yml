@@ -1307,6 +1307,9 @@ jobs:
           fi
           set -e
           echo "exit_code=$review_exit_code" >> "$GITHUB_OUTPUT"
+          if [ "$review_exit_code" -ne 0 ] && [ -f artifacts/event/failure-diagnostics/manifest.json ]; then
+            echo "failure_diagnostics=true" >> "$GITHUB_OUTPUT"
+          fi
           # Keep 78 aligned with INCOMPLETE_AGENT_INPUT_SOURCE_EXIT_CODE. This
           # unchanged source tuple is terminal, while the workflow stays red.
           if [ "$review_exit_code" -eq 78 ]; then
@@ -1943,6 +1946,18 @@ jobs:
           EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: pnpm run --silent repair:github-egress-telemetry submit
+
+      - name: Upload exact review failure diagnostics
+        id: upload-exact-review-failure-diagnostics
+        if: ${{ always() && !cancelled() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.review-exact-event-item.outputs.failure_diagnostics == 'true' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: exact-review-failure-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/event/failure-diagnostics/
+          include-hidden-files: false
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Fail unsuccessful exact review generation
         # A held review lease is a successful deferral only after the durable queue

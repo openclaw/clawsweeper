@@ -88,6 +88,13 @@ current decision and revision through the ordinary finishing path.
 Queue-completion failures remain visible separately from Codex or content
 failures, using the logical generation result and typed deferral rather than
 the review process exit alone. The workflow failure gate is unchanged.
+Caught Codex failures in an exact-review job also upload a separate 14-day
+diagnostic artifact while the runner remains alive. Its `error.txt`,
+`stdout.error.txt`, and `stderr.tail.txt` files are sanitized for repository
+readers and total at most 24 KiB with the readiness `manifest.json`. Raw
+reports, unstructured stdout, and non-error prompt events are omitted. It is
+never a publication input; cancellation, runner loss, or job termination can
+still prevent upload. OpenClaw Bay and queue schemas are unchanged.
 
 Recoverable parked reviews use the nominal 5/10/20-minute retry ladder, but
 each item persists a schedule-time uniform jitter of 0.75-1.5x for every rung.

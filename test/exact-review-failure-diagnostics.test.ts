@@ -1,0 +1,154 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { writeExactReviewFailureDiagnostics } from "../dist/clawsweeper-review-failure-diagnostics.js";
+
+const expectedFiles = ["error.txt", "manifest.json", "stderr.tail.txt", "stdout.error.txt"];
+
+function failure(message: string, stderr: string, stdout = ""): Error {
+  return Object.assign(new Error(message), {
+    status: 1,
+    signal: "SIGTERM",
+    errorCode: "ECONNRESET",
+    retryable: true,
+    stderr,
+    stdout,
+  });
+}
+
+function write(root: string, error: Error, env: NodeJS.ProcessEnv = {}) {
+  return writeExactReviewFailureDiagnostics({
+    artifactDir: root,
+    error,
+    prompt: "private prompt text\n  qz  \nmultiline prompt-only directive",
+    model: "private-model",
+    classification: "codex_execution",
+    repo: "openclaw/openclaw",
+    itemKind: "pull_request",
+    itemNumber: 1318,
+    sourceSha: "a".repeat(40),
+    workflowExit: 1,
+    env,
+  });
+}
+
+test("exact-review diagnostics retain distinct safe causes within the aggregate bound", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-diagnostics-"));
+  const secret = "fixture-secret-value";
+  try {
+    const stdout = [
+      JSON.stringify({
+        type: "item.completed",
+        item: { type: "agent_message", text: "private prompt text" },
+      }),
+      "private prompt text",
+      JSON.stringify({
+        type: "turn.failed",
+        error: { message: `proxy negotiation failed after CONNECT; token=${secret}` },
+      }),
+    ].join("\n");
+    const first = write(
+      join(root, "first"),
+      failure(
+        `Codex exited for private-model at /Users/example/work`,
+        [
+          "x".repeat(20_000),
+          "TLS certificate negotiation failed before transport startup",
+          `AUTH_TOKEN=${secret}`,
+          "AWS_ACCOUNT_ID=123456789012",
+          "endpoint=https://proxy.internal.example/v1",
+          "fallback [::1]:8080",
+          "multiline prompt-only directive",
+          "prompt raw:   qz  ",
+          "prompt trimmed: qz",
+        ].join("\n"),
+        stdout,
+      ),
+      { CODEX_TOKEN: secret },
+    );
+    const second = write(
+      join(root, "second"),
+      failure("Codex process failed", "child process could not load its dynamic library"),
+    );
+
+    const firstText = expectedFiles
+      .map((name) => readFileSync(join(first, name), "utf8"))
+      .join("\n");
+    const secondText = expectedFiles
+      .map((name) => readFileSync(join(second, name), "utf8"))
+      .join("\n");
+    const manifest = JSON.parse(readFileSync(join(first, "manifest.json"), "utf8"));
+    assert.deepEqual(readdirSync(first).sort(), expectedFiles);
+    assert.equal(manifest.classification, "codex_execution");
+    assert.deepEqual(manifest.process, {
+      status: 1,
+      signal: "SIGTERM",
+      error_code: "ECONNRESET",
+      workflow_exit: 1,
+    });
+    assert.deepEqual(manifest.source, {
+      repository: "openclaw/openclaw",
+      item_kind: "pull_request",
+      item_number: 1318,
+      sha: "a".repeat(40),
+    });
+    assert.match(firstText, /TLS certificate negotiation failed/);
+    assert.match(secondText, /could not load its dynamic library/);
+    assert.notEqual(firstText, secondText);
+    for (const forbidden of [
+      secret,
+      "private prompt text",
+      "multiline prompt-only directive",
+      "qz",
+      "123456789012",
+      "private-model",
+      "/Users/example",
+      "proxy.internal.example",
+      "::1",
+      "agent_message",
+    ]) {
+      assert.doesNotMatch(firstText, new RegExp(forbidden.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    }
+    assert.match(readFileSync(join(first, "stdout.error.txt"), "utf8"), /proxy negotiation failed/);
+    for (const [name, limit] of [
+      ["error.txt", 4096],
+      ["stdout.error.txt", 4096],
+      ["stderr.tail.txt", 12288],
+    ] as const) {
+      assert.ok(statSync(join(first, name)).size <= limit, name);
+    }
+    assert.ok(
+      expectedFiles.reduce((size, name) => size + statSync(join(first, name)).size, 0) <= 24 * 1024,
+    );
+    assert.throws(() => write(join(root, "first"), failure("later", "later")), /already exist/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("unsafe files are omitted whole and recorded in the readiness manifest", () => {
+  const cases = [
+    ["control byte", "startup failed\u0000after fork"],
+    ["yaml secret", "TOKEN: |\n  first\n  second"],
+    ["private key", "-----BEGIN PRIVATE KEY-----\nmaterial\n-----END PRIVATE KEY-----"],
+    ["opaque residual", "startup failed Abcd1234Efgh5678Ijkl9012Mnop+/=="],
+  ] as const;
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-diagnostics-"));
+  try {
+    for (const [name, stderr] of cases) {
+      const output = write(join(root, name.replace(" ", "-")), failure("Codex failed", stderr));
+      assert.equal(
+        readFileSync(join(output, "stderr.tail.txt"), "utf8"),
+        "[omitted: unsafe diagnostic content]\n",
+      );
+      assert.deepEqual(
+        JSON.parse(readFileSync(join(output, "manifest.json"), "utf8")).omitted_files,
+        ["stderr.tail.txt"],
+      );
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

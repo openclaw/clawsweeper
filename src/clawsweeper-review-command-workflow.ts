@@ -23,6 +23,7 @@ import { UserFacingCommandError } from "./command.js";
 import { LOCAL_REVIEW_WEB_SEARCH_CONFIG } from "./commit-sweeper.js";
 import { isReviewedPrActivityCursor } from "./review-activity-cursor.js";
 import { previousClawSweeperReviewDigest } from "./clawsweeper-review-comments.js";
+import { writeExactReviewFailureDiagnostics } from "./clawsweeper-review-failure-diagnostics.js";
 import {
   reviewStructuralCacheDecision,
   reviewStructuralCacheProbeDecision,
@@ -1243,6 +1244,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         let decision: Decision;
         let codexElapsedMs = 0;
         let codexFailed = false;
+        let codexFailureError: unknown = null;
         let codexFailureRetryable = false;
         let codexFailureDisposition: ReturnType<typeof actionLedgerFailureDisposition> | null =
           null;
@@ -1283,6 +1285,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           if (error instanceof AgentInputScanError) throw error;
           codexFailures += 1;
           codexFailed = true;
+          codexFailureError = error;
           codexFailureRetryable = codexReviewFailureRetryable(error);
           codexFailureDisposition = actionLedgerFailureDisposition(error);
           if (error instanceof CodexReviewError) {
@@ -1345,6 +1348,24 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               : {}),
         });
         writeFileSync(reportPath, reportMarkdown, "utf8");
+        if (codexFailureError && process.env.EXACT_REVIEW_ITEM_KEY) {
+          try {
+            writeExactReviewFailureDiagnostics({
+              artifactDir,
+              error: codexFailureError,
+              prompt: prompt.text,
+              model,
+              classification: codexFailureLogKind(reportMarkdown),
+              repo: item.repo,
+              itemKind: item.kind,
+              itemNumber: item.number,
+              sourceSha: context.sourceRevision ?? process.env.EXACT_REVIEW_SOURCE_HEAD_SHA,
+              workflowExit: 1,
+            });
+          } catch {
+            console.error("[review] exact-review failure diagnostics could not be written.");
+          }
+        }
         if (itemLocalReviewHistoryPath) {
           const nextLocalReviewCommentBody =
             frontMatterValue(reportMarkdown, "review_status") === "complete"
@@ -1505,7 +1526,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         }
         const message = `Codex failed for ${codexFailures} item${
           codexFailures === 1 ? "" : "s"
-        }; review artifacts were written and the workflow recovery lane can requeue the planned set.${
+        }; local failure reports were written and the workflow recovery lane can requeue the planned set.${
           codexFailureReports.length > 0
             ? ` Report${codexFailureReports.length === 1 ? "" : "s"}: ${codexFailureReports
                 .map(displayPath)

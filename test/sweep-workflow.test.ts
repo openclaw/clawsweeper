@@ -1078,6 +1078,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     "Dispatch exact high-confidence bug implementation",
   );
   const upload = step(reviewer, "Upload exact review artifact bundle");
+  const failureDiagnostics = step(reviewer, "Upload exact review failure diagnostics");
   const queuePublication = step(reviewer, "Queue durable exact review publication");
   const complete = step(reviewer, "Complete exact-review queue lease");
   const generationResult = step(reviewer, "Export exact review generation result");
@@ -1099,6 +1100,26 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
       (create.run ?? "").indexOf("exact-review-bundle create"),
   );
   assert.equal(upload.uses, "actions/upload-artifact@v7");
+  assert.equal(failureDiagnostics.uses, "actions/upload-artifact@v7");
+  assert.equal(failureDiagnostics["continue-on-error"], true);
+  assert.match(
+    failureDiagnostics.if ?? "",
+    /review-exact-event-item\.outputs\.failure_diagnostics == 'true'/,
+  );
+  assert.match(failureDiagnostics.if ?? "", /always\(\) && !cancelled\(\)/);
+  assert.equal(
+    failureDiagnostics.with?.name,
+    "exact-review-failure-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}",
+  );
+  assert.equal(failureDiagnostics.with?.path, "artifacts/event/failure-diagnostics/");
+  assert.equal(failureDiagnostics.with?.["retention-days"], 14);
+  assert.equal(failureDiagnostics.with?.["include-hidden-files"], false);
+  assert.equal(failureDiagnostics.with?.["if-no-files-found"], "error");
+  assert.ok(reviewer.steps.indexOf(failureDiagnostics) > reviewer.steps.indexOf(queuePublication));
+  assert.ok(reviewer.steps.indexOf(failureDiagnostics) > reviewer.steps.indexOf(complete));
+  assert.ok(reviewer.steps.indexOf(failureDiagnostics) < reviewer.steps.indexOf(failGeneration));
+  assert.doesNotMatch(queuePublication.if ?? "", /failure-diagnostics/);
+  assert.doesNotMatch(JSON.stringify(queuePublication), /failure-diagnostics/);
   assert.match(prepareDirect.run ?? "", /repair:publish-event-result/);
   assert.equal(prepareDirect.env?.GH_TOKEN, "${{ steps.target-write-token.outputs.token }}");
   assert.equal(prepareDirect.env?.REPO_TOKEN, "${{ github.token }}");
