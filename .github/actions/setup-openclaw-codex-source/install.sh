@@ -54,7 +54,7 @@ pin_root="$(cd "$pin_dir_input" && pwd -P)"
 review_tree_root="$review_artifact_root/review-trees"
 if [[ "$pin_root" != "$target_root" ]] &&
   { [[ "$(dirname "$pin_root")" != "$review_tree_root" ]] ||
-    [[ "$(basename "$pin_root")" != +([0-9]) ]]; }; then
+    [[ "$(basename "$pin_root")" == *[!0-9]* ]]; }; then
   echo "Codex version pin must come from the target checkout or one of its PR review trees." >&2
   exit 1
 fi
@@ -100,28 +100,48 @@ fetch_tag() {
     "refs/tags/$tag:refs/tags/$tag"
 }
 
-cache_has_complete_tag() {
-  ! git -C "$cache_dir" rev-list --objects --missing=print "$tag^{commit}" | grep -q '^?'
+clear_partial_clone_config() {
+  for key in extensions.partialclone remote.origin.promisor remote.origin.partialclonefilter; do
+    git -C "$cache_dir" config --unset-all "$key" 2>/dev/null || true
+  done
 }
 
-if [[ -d "$cache_dir" ]] && git -C "$cache_dir" rev-parse --is-bare-repository >/dev/null 2>&1; then
-  git -C "$cache_dir" remote set-url origin "$source_url"
-  git -C "$cache_dir" config --unset-all remote.origin.promisor 2>/dev/null || true
-  git -C "$cache_dir" config --unset-all remote.origin.partialclonefilter 2>/dev/null || true
+cache_tag_head() {
+  git -C "$cache_dir" rev-parse --verify "refs/tags/$tag^{commit}" 2>/dev/null
+}
+
+cache_has_complete_tag() {
+  local head
+  head="$(cache_tag_head)" || return 1
+  git -C "$cache_dir" fsck --connectivity-only --no-dangling "$head" >/dev/null 2>&1
+}
+
+cache_ready=false
+if [[ -d "$cache_dir" ]] &&
+  [[ "$(git -C "$cache_dir" rev-parse --is-bare-repository 2>/dev/null || true)" == "true" ]] &&
+  [[ "$(git -C "$cache_dir" config --get-all remote.origin.url 2>/dev/null || true)" == "$source_url" ]]; then
+  clear_partial_clone_config
+  if cache_has_complete_tag; then
+    cache_ready=true
+  elif cache_tag_head >/dev/null; then
+    echo "Cached Codex source is incomplete; rebuilding cache." >&2
+    refresh_cache
+  fi
 else
   refresh_cache
 fi
-if ! fetch_tag; then
-  echo "Cached Codex source fetch failed; rebuilding cache." >&2
-  refresh_cache
-  fetch_tag
+if [[ "$cache_ready" != "true" ]]; then
+  if ! fetch_tag; then
+    echo "Cached Codex source fetch failed." >&2
+    exit 1
+  fi
+  clear_partial_clone_config
+  if ! cache_has_complete_tag; then
+    echo "Cached Codex source is incomplete after fetch." >&2
+    exit 1
+  fi
 fi
-if ! cache_has_complete_tag; then
-  echo "Cached Codex source is incomplete; rebuilding cache." >&2
-  refresh_cache
-  fetch_tag
-fi
-expected_head="$(git -C "$cache_dir" rev-parse "$tag^{commit}")"
+expected_head="$(cache_tag_head)"
 
 source_ready=false
 if [[ -d "$source_dir" && ! -L "$source_dir" ]] &&
