@@ -190,7 +190,6 @@ function objectExistsOffline(cwd: string, sha: string): boolean {
 function reviewHistoryFixture({
   commitsBeforeBranch,
   commitsAfterBranch,
-  commitsOnBranch = 0,
   commitsAfterMerge = 0,
   commitsPastBase = 0,
   cloneDepth,
@@ -200,7 +199,6 @@ function reviewHistoryFixture({
 }: {
   commitsBeforeBranch: number;
   commitsAfterBranch: number;
-  commitsOnBranch?: number;
   commitsAfterMerge?: number;
   commitsPastBase?: number;
   cloneDepth?: number;
@@ -234,10 +232,6 @@ function reviewHistoryFixture({
   writeFileSync(join(source, "feature.txt"), "feature\n");
   git(source, "add", "-A");
   git(source, "commit", "-qm", "feature");
-  for (let index = 0; index < commitsOnBranch; index += 1) {
-    writeFileSync(join(source, "feature.txt"), `feature ${index}\n`);
-    git(source, "commit", "-qam", `feature ${index}`);
-  }
   let headSha = git(source, "rev-parse", "HEAD");
   git(source, "checkout", "-q", "main");
   for (let index = 0; index < commitsAfterBranch; index += 1) commit(`base ${index}`);
@@ -344,7 +338,7 @@ for (const withRelease of [false, true]) {
     try {
       const releaseTag = "review-fixture-release";
       if (withRelease) {
-        git(fixture.source, "tag", releaseTag, fixture.branchPoint);
+        git(fixture.source, "-c", "tag.gpgsign=false", "tag", releaseTag, fixture.branchPoint);
         git(fixture.source, "push", "-q", "origin", `refs/tags/${releaseTag}`);
       }
       const gitInfo = reviewGitInfo(withRelease ? releaseTag : undefined);
@@ -414,33 +408,32 @@ for (const withRelease of [false, true]) {
   });
 }
 
-test("pinned base acquisition preserves complete ancestry", (t) => {
-  const fixture = reviewHistoryFixture({
-    commitsBeforeBranch: 5,
-    commitsAfterBranch: 5,
-    baseRefreshDepth: null,
-  });
+test("review acquisition preserves a pinned base after main advances", () => {
+  const fixture = partialCloneFixture({ prefetchHead: false });
   try {
-    git(fixture.source, "commit", "--allow-empty", "-qm", "new pinned base");
-    const baseSha = git(fixture.source, "rev-parse", "HEAD");
+    git(fixture.source, "checkout", "-q", "main");
+    writeFileSync(join(fixture.source, "main.txt"), "pinned base\n");
+    git(fixture.source, "add", "main.txt");
+    git(fixture.source, "commit", "-qm", "pinned REST base");
+    const pinnedBase = git(fixture.source, "rev-parse", "HEAD");
+    writeFileSync(join(fixture.source, "main.txt"), "new main\n");
+    git(fixture.source, "commit", "-qam", "advance main");
     git(fixture.source, "push", "-q", "origin", "main");
-    assert.ok(
+    assert.equal(objectExistsOffline(fixture.target, pinnedBase), false);
+    assert.equal(git(fixture.target, "rev-parse", "--is-shallow-repository"), "false");
+    assert.equal(
       ensureReviewTreeCommit({
         targetDir: fixture.target,
-        sha: baseSha,
+        sha: pinnedBase,
         sourceRef: "refs/heads/main",
         destinationRef: "refs/clawsweeper/review-cache/base-982",
       }),
+      true,
     );
-    t.diagnostic(
-      JSON.stringify({
-        stage: "pinned-base",
-        expectedAncestors: reachable(fixture.source, baseSha),
-        actualAncestors: reachable(fixture.target, baseSha),
-      }),
-    );
-    assert.equal(reachable(fixture.target, baseSha), reachable(fixture.source, baseSha));
+    assert.equal(objectExistsOffline(fixture.target, pinnedBase), true);
+    assert.equal(reachable(fixture.target, pinnedBase), reachable(fixture.source, pinnedBase));
     assert.equal(git(fixture.target, "rev-parse", "--is-shallow-repository"), "false");
+    assert.equal(git(fixture.target, "rev-parse", "HEAD"), fixture.baseSha);
     assert.equal(git(fixture.target, "status", "--porcelain"), "");
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
@@ -483,6 +476,8 @@ test("optional test-merge acquisition preserves prepared head ancestry", (t) => 
       reachable(fixture.source, fixture.headSha),
     );
     assert.equal(git(fixture.target, "rev-parse", "--is-shallow-repository"), "false");
+    assert.equal(git(fixture.target, "rev-parse", "HEAD"), fixture.baseSha);
+    assert.equal(git(fixture.target, "status", "--porcelain"), "");
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
@@ -565,6 +560,7 @@ test("review source acquisition completes a genuinely shallow base and head", ()
   try {
     assert.ok(ensureShallowPullRequestReviewHead(fixture.target, fixture.headSha));
     assert.equal(reachable(fixture.target, fixture.baseSha), 1);
+    assert.equal(git(fixture.target, "rev-parse", "--is-shallow-repository"), "true");
 
     prepareFixtureCommits(fixture);
     assert.equal(

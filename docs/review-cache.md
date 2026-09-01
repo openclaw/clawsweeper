@@ -73,11 +73,13 @@ cache-only patch payload, or source-equivalence revalidation path.
 
 When full context collection requests a review checkout, source preparation runs
 independently of cache-digest eligibility and the API's 80-file context window.
-Target-branch and release metadata refreshes preserve complete Git ancestry.
-Required base/head preparation completes a shallow checkout before inspection;
-fetching an optional test-merge commit never reduces that history. A moved PR ref
-still falls back to the pinned head object, and unavailable test-merge evidence
-does not prevent review of the required base/head pair.
+Commit acquisition fetches complete blobless ancestry, including when the branch
+has advanced past the pinned REST base, and unshallows existing shallow checkouts.
+Branch, release-tag, and test-merge fetches never introduce new depth boundaries
+and have a 30-second deadline per fetch. A missing required pinned commit still
+blocks preparation; no newer revision substitutes for it. A moved PR ref can fall
+back to the pinned head object, and unavailable test-merge evidence does not
+prevent review of the required base/head pair.
 
 It prepares the exact raw Git delta for the pinned merge-base/head, including
 deleted and historical blobs. Current main never replaces the pinned REST base.
@@ -102,9 +104,9 @@ preserve their original terminal classification and exit code.
 
 Blob-size metadata uses batches of at most 160 objects; one explicit fetch per
 delta retrieves missing blobs only after the complete set fits the scanner's
-shared 256 MiB upper bound. Local metadata
-reads remain bounded to 4 MiB and source hydration has a 30-second Git-work
-deadline; metadata requests retain the existing GitHub transport timeout policy.
+shared 256 MiB upper bound. Local metadata reads remain bounded to 4 MiB, and
+each blob hydration pass has a 30-second deadline for Git work. Metadata
+requests retain the existing GitHub transport timeout policy.
 The scanner separately enforces its aggregate budget, including prompts and the
 binary patch, and still refuses incomplete or unsupported source without fetching.
 

@@ -95,7 +95,7 @@ export function ensureReviewTreeCommit({
     },
   );
   checkedReviewGit(fetched, "review_commit_fetch_failed");
-  return gitCommitExists(targetDir, sha);
+  return gitCommitExists(targetDir, sha) && !gitRepositoryIsShallow(targetDir);
 }
 
 export function ensurePullRequestReviewHead({

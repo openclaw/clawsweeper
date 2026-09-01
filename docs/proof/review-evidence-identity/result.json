@@ -1,0 +1,128 @@
+{
+  "kind": "same-input offline behavior proof summary",
+  "baseCommit": "48bd2b42f1dd0504c9afc8643c9781290604b3b2",
+  "recipeSha256": "e4969ecb40df39aa1919389a1cb76090a9149aa36ffdbb271341a38c45b411ee",
+  "fixture": {
+    "path": "test/fixtures/persistence-classifier-134934.json",
+    "sha256": "0d579e43939ba1ba127848c763442a594cf472a7cf510449376331aa3d1d5060",
+    "pullRequest": "https://github.com/openclaw/openclaw/pull/134934",
+    "headSha": "5322da7104f142eaeab14bcf2207f1a3e75c40ef",
+    "mergeCommit": "addb509571ee2e77a5ed72f0c4cae29c1711df73",
+    "provenance": "Exact patches from the captured seven-file PR diff, pinned to the reviewed PR head. Both match the local squash-merge commit diff byte-for-byte.",
+    "sourceSha256": "d841164a97a4fd8a8c31dec347d6c2787bc6ba40bb9f20a964e6bfe50ebb896f",
+    "sourceComment": "https://github.com/openclaw/openclaw/pull/134934#issuecomment-5490161955"
+  },
+  "dependencySource": {
+    "repo": "openai/codex",
+    "sha": "78c290807ce710180111df227df3b7a4fe845452",
+    "file": "codex-rs/core/config.schema.json",
+    "line": 5668,
+    "sourceUrl": "https://github.com/openai/codex/blob/78c290807ce710180111df227df3b7a4fe845452/codex-rs/core/config.schema.json#L5668",
+    "commitUrl": "https://github.com/openai/codex/commit/78c290807ce710180111df227df3b7a4fe845452",
+    "inspectedBlobSha256": "ed663d6d4c6c8b36917596882414c93858f6cf9ca5449ea8c616fc76d1aac114",
+    "provenance": "Author inspected sibling checkout origin and git-show pinned blob; no runtime sibling dependency."
+  },
+  "before": {
+    "passed": false,
+    "failures": [
+      "close/historical: identity",
+      "close/explicit-repo: identity",
+      "close/unknown: identity",
+      "close/sibling: identity",
+      "keep_open/historical: identity",
+      "keep_open/explicit-repo: identity",
+      "keep_open/unknown: identity",
+      "keep_open/sibling: identity",
+      "captured-diagnostics: classification",
+      "captured-diagnostics: warning/gates"
+    ],
+    "evidenceCases": 8,
+    "dependencyLinks": [
+      "https://github.com/openclaw/openclaw/blob/78c290807ce7/codex-rs/core/config.schema.json#L5668",
+      "https://github.com/openclaw/openclaw/commit/78c290807ce7"
+    ],
+    "storage": [
+      {
+        "name": "captured-diagnostics",
+        "detection": {
+          "change": true,
+          "surfaces": [
+            "vector/embedding metadata: scripts/docs-i18n/doc_chunk_diagnostics_test.go",
+            "vector/embedding metadata: scripts/docs-i18n/doc_chunked_raw.go"
+          ]
+        },
+        "warning": true,
+        "migrationGate": true,
+        "humanGate": true,
+        "pass": false
+      },
+      {
+        "name": "production-sql",
+        "detection": {
+          "change": true,
+          "surfaces": ["database schema: src/runtime/database.ts"]
+        },
+        "warning": true,
+        "migrationGate": true,
+        "humanGate": true,
+        "pass": false
+      },
+      {
+        "name": "production-vector",
+        "detection": {
+          "change": true,
+          "surfaces": ["vector/embedding metadata: src/memory/vector-store.ts"]
+        },
+        "warning": true,
+        "migrationGate": true,
+        "humanGate": true,
+        "pass": false
+      }
+    ]
+  },
+  "after": {
+    "passed": true,
+    "failures": [],
+    "evidenceCases": 8,
+    "dependencyLinks": [
+      "https://github.com/openai/codex/blob/78c290807ce710180111df227df3b7a4fe845452/codex-rs/core/config.schema.json#L5668",
+      "https://github.com/openai/codex/commit/78c290807ce710180111df227df3b7a4fe845452"
+    ],
+    "storage": [
+      {
+        "name": "captured-diagnostics",
+        "detection": {
+          "change": false,
+          "surfaces": []
+        },
+        "warning": false,
+        "migrationGate": false,
+        "humanGate": false,
+        "pass": true
+      },
+      {
+        "name": "production-sql",
+        "detection": {
+          "change": true,
+          "surfaces": ["database schema: src/runtime/database.ts"]
+        },
+        "warning": true,
+        "migrationGate": true,
+        "humanGate": true,
+        "pass": false
+      },
+      {
+        "name": "production-vector",
+        "detection": {
+          "change": true,
+          "surfaces": ["vector/embedding metadata: src/memory/vector-store.ts"]
+        },
+        "warning": true,
+        "migrationGate": true,
+        "humanGate": true,
+        "pass": false
+      }
+    ]
+  },
+  "limits": "The baseline was compiled from git archive of baseCommit. The candidate was rebuilt from the PR working tree with the same pinned dependencies. This summary records renderer/classifier behavior only; the script emits all cases. Synthetic complete review metadata and SQL/vector controls; no GitHub mutation, provider inference, translation, or upgrade execution."
+}

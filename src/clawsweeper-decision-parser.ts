@@ -383,7 +383,12 @@ export function createDecisionParser({
   function parseEvidence(value: unknown, path: string): Evidence {
     const record = requireRecord(value, path);
     rejectUnexpectedKeys(record, EVIDENCE_SCHEMA_KEYS, path);
+    const repo = requireNullableSingleLineString(record.repo, `${path}.repo`);
+    if (repo !== null && !/^[a-z0-9][a-z0-9_.-]*\/(?!\.{1,2}$)[a-z0-9_.-]+$/i.test(repo)) {
+      throw new Error(`${path}.repo must be owner/repo or null`);
+    }
     return {
+      repo: repo === null ? null : normalizeRepo(repo),
       label: requireReportText(record.label, `${path}.label`),
       detail: requireReportText(record.detail, `${path}.detail`),
       file: requireNullableSingleLineString(record.file, `${path}.file`),

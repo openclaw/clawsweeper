@@ -112,15 +112,15 @@ merge-risk options, full review comments, labels, evidence, optional rank-up
 moves, the rank legend, workflow notes, and review history.
 
 For OpenClaw, the PR surface table and config detector share explicit test-role
-names: test/spec code leaves, terminal dotted or hyphenated `test-support`,
-`test-helpers`, `test-utils`, `test-harness`, and `test-fixtures` code suffixes,
-and explicit test directories. Generic support/helper names remain production
+names: test/spec code leaves, Go `*_test.go` files, terminal dotted or hyphenated
+`test-support`, `test-helpers`, `test-utils`, `test-harness`, and `test-fixtures`
+code suffixes, and explicit test directories. Generic support/helper names remain production
 candidates. Generated files retain table precedence; config detection filters
 each rename side before patch uncertainty, retaining production or semantic docs
 evidence and truncated-list warnings. Reviewer production/test metrics remain
-separately assessed. Test roles grant no contributor-proof exemption and do not
-change storage detection or upgrade-proof gates. OpenClaw Bay needs no change
-because its observer API and data contract are unchanged.
+separately assessed. Test roles grant no contributor-proof exemption. Storage
+warnings retain their separate persistence-evidence and upgrade-proof rules.
+OpenClaw Bay needs no change because its observer API and data contract are unchanged.
 
 The recorded reviewer proof assessment and the host's existing proof requirement
 are separate. An applicable external PR assessed as `not_applicable` still needs
@@ -141,8 +141,13 @@ or checklist.
 
 For OpenClaw PRs, stored-data warnings flag possible persistence changes in
 production source or documented storage contracts, not setup in test, fixture,
-or example source paths. Colocated `*.test-support.*` files are test code too,
-even when their guards or setup mention metadata, serialization, or SQL.
+or example source paths. Colocated `*.test-support.*` and Go `*_test.go` files
+are test code too, even when their guards or setup mention metadata,
+serialization, or SQL. Generic words such as `metadata`, `chunkId`, `documentId`,
+`collection`, and `dimension` alone do not establish vector storage. Known
+storage paths, explicit vector/embedding contracts, and same-hunk persistence
+evidence still require review; diagnostic logging does not exempt real storage
+changes in the same patch.
 Markdown beside source is still documentation: ordinary
 prose mentioning sessions or metadata is not a stored-format change. Explicit
 storage formats, SQL DDL, and structured storage keys (including frontmatter)
@@ -160,6 +165,21 @@ do not establish persisted database columns. The warning requests review; it
 does not prove a persisted contract changed. This classification does not change
 the separate `docs/` exemption for contributor behavior proof.
 
+## Evidence Repository Identity
+
+Each new structured evidence entry records its verified `repo` (`owner/name`),
+repository-relative `file`, line, and full source commit `sha` when known. Use
+`repo: null` for unknown ownership. Dependency source and commit links retain
+that repository through report serialization and both close and keep-open
+comments; dependency files never inherit the target's main SHA or public docs
+mapping.
+
+Older reports without an explicit repository retain same-repository behavior,
+but canonical GitHub blob and commit destinations preserve their own repository
+and full SHA instead of being reconstructed from display labels. Conflicting
+identities and unresolved sibling, absolute, or traversal paths remain unlinked.
+This changes evidence rendering only, not the observer API or OpenClaw Bay.
+
 ## PR Introduction Evidence
 
 Before model execution, the host assembles bounded local Git evidence for the
@@ -171,8 +191,10 @@ automatically a PR edit. Findings in untouched files remain valid when an
 introduced hunk elsewhere causes the failure; risks, labels, scores, and fixups
 must use that same ownership boundary.
 
-The existing PR hydration path may fetch up to 256 commits of ancestry per tip
-and the pinned open-PR test merge before restricted review. The evidence reader
+PR source acquisition fetches complete blobless ancestry and the pinned open-PR
+test merge before restricted review, with a 30-second deadline per fetch. Branch
+and release refreshes preserve that ancestry; existing shallow checkouts are
+unshallowed rather than deepened to a fixed commit count. The evidence reader
 itself cannot fetch objects or run external diff drivers. It bounds each Git read
 to 1 MiB and five seconds, lists to 80 paths, and the introduced patch to 24,000
 characters. Missing blobs, incomplete shallow ancestry, multiple merge bases,

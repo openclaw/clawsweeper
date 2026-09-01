@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import MarkdownIt from "markdown-it";
 
 import {
   canPatchReviewComment,
   itemSourceRevisionSha256ForTest,
   isCodexReviewCommentBody,
   newReviewStartLeaseOwnerForTest,
+  parseDecision,
   renderReviewCommentFromReport,
   renderReviewStartStatusComment,
   reviewAutomationMarkersFromReport,
@@ -16,7 +18,311 @@ import {
   withReviewStartStatusLease,
 } from "../dist/clawsweeper.js";
 import { issueSourceRevisionSha256 } from "../dist/repair/issue-source-guard.js";
-import { detailsBody, reportFrontMatter } from "./helpers.ts";
+import { closeDecision, detailsBody, item, reportFrontMatter } from "./helpers.ts";
+import { createRepositoryLinks } from "../dist/clawsweeper-links.js";
+import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
+import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
+import { createDashboardPresentation } from "../dist/clawsweeper-dashboard.js";
+import { createReportParser } from "../dist/clawsweeper-report-parser.js";
+import { createRecordMetadata } from "../dist/clawsweeper-record-metadata.js";
+import { createReportHelpers } from "../dist/clawsweeper-report-helpers.js";
+import { normalizeRepo, repositoryProfileFor } from "../dist/repository-profiles.js";
+import type { DecisionKind, Evidence } from "../dist/clawsweeper-types.js";
+
+function markdownLinkDestinations(markdown: string): Set<string> {
+  const destinations = new Set<string>();
+  const parser = new MarkdownIt({ html: true });
+  for (const token of parser.parse(markdown, {})) {
+    if (token.type !== "inline") continue;
+    for (const child of token.children ?? []) {
+      if (child.type !== "link_open") continue;
+      const href = child.attrGet("href");
+      if (typeof href === "string") destinations.add(href);
+    }
+  }
+  return destinations;
+}
+
+test("Markdown destination assertions reject prose and lookalike links inside details", () => {
+  const expected = "https://docs.openclaw.ai/tools";
+  const lookalike = "https://docs.openclaw.ai.invalid/tools";
+  const misleading = `<details>\n<summary>Evidence</summary>\n\n${expected}\n\n[${expected}](${lookalike})\n\n</details>`;
+  const destinations = markdownLinkDestinations(misleading);
+  assert.deepEqual(destinations, new Set([lookalike]));
+  assert.equal(destinations.has(expected), false);
+  assert.equal(
+    markdownLinkDestinations(misleading.replace(lookalike, expected)).has(expected),
+    true,
+  );
+});
+
+const evidenceLinks = createRepositoryLinks({
+  reportRepo: "openclaw/clawsweeper-state",
+  normalizeRepo,
+  targetRepo: () => "openclaw/openclaw",
+  targetProfile: () => repositoryProfileFor("openclaw/openclaw"),
+});
+const evidenceParser = createReportParser({
+  ...evidenceLinks,
+  ...createRecordMetadata({} as never),
+  ...createReportHelpers({
+    OWNED_REVIEW_SECTION_HEADINGS: new Set(),
+    parseBacktickLocation: () => null,
+  }),
+  markdownRepository: () => "openclaw/openclaw",
+  evidenceEntry: (entry) => ({
+    repo: null,
+    file: null,
+    line: null,
+    command: null,
+    sha: null,
+    ...entry,
+  }),
+} as Parameters<typeof createReportParser>[0]);
+
+function evidenceReport(evidence: Evidence[], decisionKind: DecisionKind = "close") {
+  const document = createReportDocumentRendering({
+    ...evidenceLinks,
+    ...createReportContextRendering({} as never),
+    ...createDashboardPresentation({} as never),
+    prSurfaceFilesFromContext: () => [],
+    compactPullFilePaths: () => [],
+    confidenceText: String,
+    fixedInText: () => "unknown",
+    formatTimestamp: String,
+    labelJustificationsMarkdown: () => "- none",
+    publicLikelyOwnerRole: String,
+    pullHeadShaFromContext: () => "c".repeat(40),
+    reviewStructuralPullStateFromContext: () => null,
+    sentence: String,
+    sha256: () => "synthetic-digest",
+  } as Parameters<typeof createReportDocumentRendering>[0]);
+  return document.markdownFor({
+    item: item({ kind: "pull_request", url: "https://github.com/openclaw/openclaw/pull/123" }),
+    decision: {
+      ...parseDecision(
+        closeDecision({
+          evidence,
+          decision: decisionKind,
+          closeReason: decisionKind === "close" ? "implemented_on_main" : "none",
+        }),
+      ),
+      // The host stamps checkout access after parsing model output.
+      localCheckoutAccess: "verified",
+    },
+    context: { issue: {}, comments: [], timeline: [] },
+    git: { mainSha: "a".repeat(40), latestRelease: null, releaseStateComplete: true },
+    action: { actionTaken: decisionKind === "close" ? "proposed_close" : "kept_open" },
+    reviewMode: "propose",
+    snapshotHash: "synthetic-snapshot",
+    contentDigest: "synthetic-content",
+    reviewPolicy: "synthetic-policy",
+    runtime: { model: "Codex", reasoningEffort: "high" },
+  } as Parameters<typeof document.markdownFor>[0]);
+}
+
+const dependencyEvidence = {
+  repo: "openai/codex",
+  label: "dependency source",
+  detail: "`codex-rs/core/config.schema.json:5668` declares developer_instructions.",
+  file: "codex-rs/core/config.schema.json",
+  line: 5668,
+  sha: "78c290807ce710180111df227df3b7a4fe845452",
+  command: "git show 78c290807ce7:codex-rs/core/config.schema.json",
+};
+
+test("repository evidence survives structured decision, report, parse and both comment paths", () => {
+  const source = `https://github.com/openai/codex/blob/${dependencyEvidence.sha}/${dependencyEvidence.file}#L5668`;
+  const commit = `https://github.com/openai/codex/commit/${dependencyEvidence.sha}`;
+  const entries = [
+    dependencyEvidence,
+    {
+      ...dependencyEvidence,
+      file: "docs/config.md",
+      line: null,
+      detail: `See \`docs/config.md\` and [\`source.json\`](${source}).`,
+    },
+    {
+      ...dependencyEvidence,
+      repo: "openclaw/openclaw",
+      file: "src/config.ts",
+      line: 12,
+      sha: "b".repeat(40),
+      detail: "See `src/config.ts:12`.",
+    },
+    {
+      ...dependencyEvidence,
+      repo: "openclaw/openclaw",
+      file: "docs/tools/index.md",
+      line: null,
+      detail: "See `docs/tools/index.md`.",
+    },
+    {
+      ...dependencyEvidence,
+      repo: "openclaw/openclaw",
+      file: "VISION.md",
+      line: null,
+      detail: "The project vision defines the scope.",
+    },
+  ];
+  for (const kind of ["close", "keep_open"] as const) {
+    for (const detail of [
+      "The project vision is in `VISION.md`.",
+      "The project vision defines the scope.",
+    ]) {
+      const visionUrl = `https://github.com/openai/codex/blob/${"a".repeat(40)}/VISION.md`;
+      const withDependencyVision = [
+        ...entries,
+        {
+          ...dependencyEvidence,
+          label: "dependency vision",
+          file: "VISION.md",
+          line: null,
+          sha: "a".repeat(40),
+          detail,
+        },
+      ];
+      const report = evidenceReport(withDependencyVision, kind);
+      assert.deepEqual(evidenceParser.reportEvidence(report), withDependencyVision);
+      const comment = renderReviewCommentFromReport(
+        report,
+        kind === "close" ? "implemented_on_main" : "none",
+      );
+      assert.doesNotMatch(comment, /did not complete|infrastructure failure/);
+      for (const output of [report, comment]) {
+        const destinations = markdownLinkDestinations(output);
+        assert.ok(destinations.has(source), output);
+        assert.ok(destinations.has(commit), output);
+        assert.ok(
+          destinations.has(
+            `https://github.com/openclaw/openclaw/blob/${"b".repeat(40)}/src/config.ts#L12`,
+          ),
+        );
+        assert.ok(
+          destinations.has(
+            `https://github.com/openai/codex/blob/${dependencyEvidence.sha}/docs/config.md`,
+          ),
+        );
+        assert.ok(destinations.has(visionUrl), output);
+        assert.equal(destinations.has("https://docs.openclaw.ai/config"), false);
+      }
+      const commentDestinations = markdownLinkDestinations(comment);
+      assert.ok(commentDestinations.has("https://docs.openclaw.ai/tools"));
+      assert.ok(
+        commentDestinations.has("https://github.com/openclaw/openclaw/blob/main/VISION.md"),
+      );
+      assert.ok(comment.includes(`[\`source.json\`](${source})`));
+      const visionReference = `[\`VISION.md\`](${visionUrl})`;
+      const linkedDetail = detail.includes("`VISION.md`")
+        ? detail.replace("`VISION.md`", visionReference)
+        : detail.replace("The project vision", visionReference);
+      assert.ok(
+        comment.includes(`- **dependency vision:** ${linkedDetail}`),
+        `${kind}: ${detail}\n${comment}`,
+      );
+      assert.equal(
+        commentDestinations.has("https://github.com/openai/codex/blob/main/VISION.md"),
+        false,
+      );
+    }
+  }
+});
+
+test("explicit GitHub destinations preserve full identity and historical same-repo reports stay readable", () => {
+  const source = `https://github.com/openai/codex/blob/${dependencyEvidence.sha}/${dependencyEvidence.file}#L5668`;
+  const commit = `https://github.com/openai/codex/commit/${dependencyEvidence.sha}`;
+  const report = `${reportFrontMatter()}\n## Evidence\n\n- **dependency:** Verified source.\n  - file: [${dependencyEvidence.file}:5668](${source})\n  - sha: [78c290807ce7](${commit})\n`;
+  assert.deepEqual(evidenceParser.reportEvidence(report)[0], {
+    ...dependencyEvidence,
+    label: "dependency",
+    detail: "Verified source.",
+    command: null,
+  });
+  const legacy = `${reportFrontMatter()}\n## Evidence\n\n- **target:** Historical location.\n  - file: [src/config.ts:12](https://github.com/openclaw/openclaw/blob/${"a".repeat(40)}/src/config.ts#L12)\n  - sha: [aaaaaaaaaaaa](https://github.com/openclaw/openclaw/commit/${"a".repeat(40)})\n`;
+  assert.equal(evidenceParser.reportEvidence(legacy)[0].repo, "openclaw/openclaw");
+  const bareLegacy = `${reportFrontMatter()}\n## Evidence\n\n- **target:** Historical path without a destination.\n  - file: \`src/config.ts:12\`\n  - sha: \`${"a".repeat(40)}\`\n`;
+  assert.equal(evidenceParser.reportEvidence(bareLegacy)[0].repo, "openclaw/openclaw");
+  for (const kind of ["close", "keep_open"] as const) {
+    const explicit = evidenceReport(
+      [{ ...dependencyEvidence, repo: null, file: source, line: null, sha: commit }],
+      kind,
+    );
+    const comment = renderReviewCommentFromReport(
+      explicit,
+      kind === "close" ? "implemented_on_main" : "none",
+    );
+    const destinations = markdownLinkDestinations(comment);
+    assert.ok(destinations.has(source));
+    assert.ok(destinations.has(commit));
+    assert.ok(markdownLinkDestinations(renderReviewCommentFromReport(report, "none")).has(source));
+    assert.ok(
+      markdownLinkDestinations(renderReviewCommentFromReport(legacy, "none")).has(
+        `https://github.com/openclaw/openclaw/commit/${"a".repeat(40)}`,
+      ),
+    );
+  }
+});
+
+test("unresolved evidence and conflicting destinations never acquire target links", () => {
+  const source = `https://github.com/openai/codex/blob/${dependencyEvidence.sha}/${dependencyEvidence.file}#L5668`;
+  const cases = [
+    { repo: null },
+    { file: "../codex/codex-rs/core/config.schema.json" },
+    { file: "/checkout/codex-rs/core/config.schema.json" },
+    { file: "codex-rs/../core/config.schema.json" },
+    { file: "C:\\checkout\\config.schema.json" },
+    { file: `https://github.com/openai/codex/blob/${dependencyEvidence.sha}/%2e%2e/config.json` },
+    { repo: "openclaw/openclaw", file: source },
+    { file: source, sha: "f".repeat(40) },
+    { file: `[wrong/path.json](${source})` },
+    { file: source, line: 100 },
+    { file: source, sha: `https://github.com/other/repo/commit/${dependencyEvidence.sha}` },
+  ];
+  for (const entry of cases) {
+    for (const kind of ["close", "keep_open"] as const) {
+      const report = evidenceReport([{ ...dependencyEvidence, ...entry }], kind);
+      const parsed = evidenceParser.reportEvidence(report)[0];
+      assert.equal(parsed.repo, null, JSON.stringify(entry));
+      const comment = renderReviewCommentFromReport(
+        report,
+        kind === "close" ? "implemented_on_main" : "none",
+      );
+      const evidence = comment
+        .split("\n")
+        .find((line) => line.startsWith("- **dependency source:**"));
+      assert.ok(evidence, comment);
+      assert.equal(markdownLinkDestinations(evidence).size, 0, JSON.stringify(entry));
+    }
+  }
+  const missingSha = evidenceReport([
+    { ...dependencyEvidence, sha: null, file: "docs/config.md", line: null },
+  ]);
+  for (const output of [
+    missingSha,
+    renderReviewCommentFromReport(missingSha, "implemented_on_main"),
+  ]) {
+    const destinations = markdownLinkDestinations(output);
+    assert.equal(
+      destinations.has(`https://github.com/openai/codex/blob/${"a".repeat(40)}/docs/config.md`),
+      false,
+    );
+    assert.equal(destinations.has("https://docs.openclaw.ai/config"), false);
+  }
+  const target = evidenceReport([
+    {
+      ...dependencyEvidence,
+      repo: "openclaw/openclaw",
+      sha: null,
+      file: "src/config.ts",
+      line: 12,
+    },
+  ]);
+  assert.ok(
+    markdownLinkDestinations(renderReviewCommentFromReport(target, "implemented_on_main")).has(
+      `https://github.com/openclaw/openclaw/blob/${"a".repeat(40)}/src/config.ts#L12`,
+    ),
+  );
+});
 
 function implementedCloseReport(overrides = {}) {
   const frontmatter = {

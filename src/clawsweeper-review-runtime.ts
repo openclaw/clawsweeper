@@ -95,13 +95,21 @@ export function createReviewRuntime({
   function gitInfo(openclawDir: string, options: ReviewGitInfoOptions = {}): GitInfo {
     const targetBranch = options.targetBranch ?? reviewTargetBranch(openclawDir);
     requireSafeGitBranchName(targetBranch, "target branch");
-    // Depth limits affect the whole repository. Metadata refreshes must retain the
-    // complete ancestry already prepared for the reviewed base and head.
+    const shallow = run("git", ["rev-parse", "--is-shallow-repository"], { cwd: openclawDir });
     run(
       "git",
-      ["fetch", "origin", `refs/heads/${targetBranch}:refs/remotes/origin/${targetBranch}`],
+      [
+        "fetch",
+        "--filter=blob:none",
+        "--no-tags",
+        "--recurse-submodules=no",
+        ...(shallow === "true" ? ["--unshallow"] : []),
+        "origin",
+        `refs/heads/${targetBranch}:refs/remotes/origin/${targetBranch}`,
+      ],
       {
         cwd: openclawDir,
+        timeoutMs: 30_000,
       },
     );
     const mainSha = run("git", ["rev-parse", `refs/remotes/origin/${targetBranch}`], {
@@ -131,9 +139,22 @@ export function createReviewRuntime({
     }
     if (latestRelease?.tagName) {
       try {
-        run("git", ["fetch", "--force", "origin", "tag", latestRelease.tagName], {
-          cwd: openclawDir,
-        });
+        run(
+          "git",
+          [
+            "fetch",
+            "--force",
+            "--filter=blob:none",
+            "--recurse-submodules=no",
+            "origin",
+            "tag",
+            latestRelease.tagName,
+          ],
+          {
+            cwd: openclawDir,
+            timeoutMs: 30_000,
+          },
+        );
         latestRelease.sha = run("git", ["rev-list", "-n", "1", latestRelease.tagName], {
           cwd: openclawDir,
         });

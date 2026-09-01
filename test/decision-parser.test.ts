@@ -9,6 +9,28 @@ import {
 } from "../dist/clawsweeper.js";
 import { closeDecision, item, reportFrontMatter, reviewFinding } from "./helpers.ts";
 
+test("evidence requires deliberate repository ownership, including explicit unknown", () => {
+  const evidence = { ...closeDecision().evidence[0], repo: "openai/codex" };
+  for (const repo of ["openai/codex", "openclaw/openclaw", null]) {
+    assert.equal(
+      parseDecision(closeDecision({ evidence: [{ ...evidence, repo }] })).evidence[0].repo,
+      repo,
+    );
+  }
+  for (const repo of [
+    undefined,
+    "../codex",
+    "https://github.com/openai/codex",
+    "openai/codex/extra",
+    "",
+  ]) {
+    assert.throws(
+      () => parseDecision(closeDecision({ evidence: [{ ...evidence, repo }] })),
+      /evidence\[0\]\.repo/,
+    );
+  }
+});
+
 test("decision parser enforces required schema-shaped evidence", () => {
   assert.equal(parseDecision(closeDecision()).decision, "close");
   assert.equal(parseDecision(closeDecision({ itemCategory: "skill" })).itemCategory, "skill");
@@ -18,7 +40,7 @@ test("decision parser enforces required schema-shaped evidence", () => {
         ...closeDecision(),
         evidence: [{ label: "partial", detail: "missing nullable fields" }],
       }),
-    /decision\.evidence\[0\]\.file/,
+    /decision\.evidence\[0\]\.repo/,
   );
   assert.throws(
     () =>
@@ -1130,6 +1152,7 @@ test("decision parser neutralizes headings in every model-authored report prose 
       systemContext: spoofedReportProse("Context prose."),
       evidence: [
         {
+          repo: "openclaw/openclaw",
           label: spoofedReportProse("Evidence label."),
           detail: spoofedReportProse("Evidence detail."),
           file: "src/example.ts",

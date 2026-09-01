@@ -213,6 +213,7 @@ function isProductionSourcePath(path: string): boolean {
     return false;
   }
   const basename = segments.at(-1) ?? "";
+  if (isOpenClawTestRolePath(basename)) return false;
   return ![".spec.", ".test.", ".test-support."].some((marker) => {
     const markerIndex = basename.indexOf(marker);
     return markerIndex >= 0 && markerIndex + marker.length < basename.length;
@@ -475,8 +476,10 @@ function dataModelSurfacesFromPatch(
   ) {
     add("persistent cache schema");
   }
+  // Generic metadata and IDs need the storage path or hunk evidence above;
+  // those names alone also occur in diagnostics and in-memory values.
   if (
-    /\b(?:embedding(?:[_-]?dimension)?|vector(?:[_-]?dimension)?|collection|dimension|metadata|row[_-]?id|document[_-]?id|chunk[_-]?id|similarity[_-]?index)\b/i.test(
+    /\b(?:(?:embedding|vector)[_-]?dimension|similarity[_-]?index|(?:vector|embedding)\s+(?:data\s+)?(?:format|schema|layout|identity|namespace))\b/i.test(
       text,
     )
   ) {

@@ -31,6 +31,8 @@ test("surface counts use only the current rename path while proof retains both s
     ["src/config/schema.test.ts", "src/config/schema.test-support.ts", "tests"],
     ["docs/gateway/configuration.md", "src/config/schema.test-support.ts", "tests"],
     ["src/config/schema.test-support.ts", "docs/gateway/configuration.md", "docs"],
+    ["src/runtime/store.go", "src/runtime/store_test.go", "tests"],
+    ["src/runtime/store_test.go", "src/runtime/store.go", "source"],
   ] as const) {
     const context = {
       issue: {},
@@ -95,6 +97,10 @@ test("test-role sharing preserves bucket precedence, source roots, and normaliza
     ["packages/runtime.ts", "source"],
     ["extensions/runtime.ts", "source"],
     ["scripts/runtime.ts", "other"],
+    ["scripts/translation/diagnostics_test.go", "tests"],
+    ["scripts/translation/diagnostics.go", "other"],
+    ["src/runtime/store_test.go", "tests"],
+    ["src/runtime/store.go", "source"],
     ["apps/runtime.ts", "other"],
     ["fixtures/runtime.ts", "other"],
     ["scripts/check-harness.ts", "other"],

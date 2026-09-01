@@ -69,6 +69,7 @@ export function createReportDocumentRendering(
     confidenceText,
     contextCountText,
     fileUrl,
+    normalizeEvidence,
     fixedInText,
     formatTimestamp,
     jsonFrontMatterValue,
@@ -89,7 +90,6 @@ export function createReportDocumentRendering(
     securityConcernLocation,
     sentence,
     sha256,
-    splitFileAndLine,
     workStatusForDecision,
   } = dependencies;
 
@@ -490,17 +490,27 @@ export function createReportDocumentRendering(
       .join("\n\n");
     const evidence = options.decision.evidence.length
       ? options.decision.evidence
-          .map((entry) => {
-            const bits = [`- **${entry.label}:** ${entry.detail}`];
+          .map((rawEntry) => {
+            const entry = normalizeEvidence(rawEntry);
+            const bits = [
+              `- **${entry.label}:** ${entry.detail}`,
+              `  - repo: ${entry.repo ?? "null"}`,
+            ];
             if (entry.file) {
-              const parsed = splitFileAndLine(entry.file, entry.line);
-              const label = `${parsed.file}${parsed.line ? `:${parsed.line}` : ""}`;
-              bits.push(
-                `  - file: ${markdownLink(label, fileUrl(parsed.file, entry.sha ?? options.git.mainSha, parsed.line))}`,
-              );
+              const label = `${entry.file}${entry.line ? `:${entry.line}` : ""}`;
+              const sha =
+                entry.sha ?? (entry.repo === options.item.repo ? options.git.mainSha : null);
+              const url =
+                entry.repo && sha
+                  ? fileUrl(entry.file, sha, entry.line ?? undefined, entry.repo)
+                  : null;
+              bits.push(`  - file: ${url ? markdownLink(label, url) : `\`${label}\``}`);
             }
             if (entry.command) bits.push(`  - command: \`${entry.command}\``);
-            if (entry.sha) bits.push(`  - sha: ${linkedSha(entry.sha)}`);
+            if (entry.sha)
+              bits.push(
+                `  - sha: ${entry.repo ? linkedSha(entry.sha, entry.repo) : `\`${entry.sha}\``}`,
+              );
             return bits.join("\n");
           })
           .join("\n")
