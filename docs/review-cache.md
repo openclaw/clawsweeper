@@ -73,6 +73,12 @@ cache-only patch payload, or source-equivalence revalidation path.
 
 When full context collection requests a review checkout, source preparation runs
 independently of cache-digest eligibility and the API's 80-file context window.
+Target-branch and release metadata refreshes preserve complete Git ancestry.
+Required base/head preparation completes a shallow checkout before inspection;
+fetching an optional test-merge commit never reduces that history. A moved PR ref
+still falls back to the pinned head object, and unavailable test-merge evidence
+does not prevent review of the required base/head pair.
+
 It prepares the exact raw Git delta for the pinned merge-base/head, including
 deleted and historical blobs. Current main never replaces the pinned REST base.
 Unavailable commits, ancestry, blob-size metadata, or required blob fetches stop
@@ -89,12 +95,14 @@ reader still marks failed reads incomplete.
 Exact reviews retain private, bounded diagnostics for preparation failures and
 scan refusals, including failures before prompt construction or during cache
 admission. The manifest records the failure stage, reason, retryability, and
-the observed PR head; scanner output and verification details are never retained.
-Scan refusals preserve their original terminal classification and exit code.
+the observed PR head. Native Git failures also retain process exit status, signal,
+error code, and bounded redacted stderr. Public errors omit raw process output;
+scanner output and verification details are never retained. Scan refusals
+preserve their original terminal classification and exit code.
 
 Blob-size metadata uses batches of at most 160 objects; one explicit fetch per
-delta retrieves missing blobs only after
-the complete set fits the scanner's shared 256 MiB upper bound. Local metadata
+delta retrieves missing blobs only after the complete set fits the scanner's
+shared 256 MiB upper bound. Local metadata
 reads remain bounded to 4 MiB and source hydration has a 30-second Git-work
 deadline; metadata requests retain the existing GitHub transport timeout policy.
 The scanner separately enforces its aggregate budget, including prompts and the

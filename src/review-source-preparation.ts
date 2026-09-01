@@ -5,10 +5,14 @@ export type ReviewSourcePreparationFailureReason =
   | "review_history_unavailable"
   | "review_blob_metadata_unavailable"
   | "review_blobs_unavailable"
-  | "review_checkout_unavailable";
+  | "review_checkout_unavailable"
+  | "review_commit_fetch_failed"
+  | "review_checkout_failed"
+  | "review_git_inspection_failed";
 
-export class ReviewSourcePreparationError extends Error {
+export class ReviewSourcePreparationError extends UserFacingCommandError {
   readonly diagnosticStage = "source_preparation";
+  reviewedHeadSha?: string;
 
   constructor(
     readonly diagnosticReason: ReviewSourcePreparationFailureReason,
@@ -18,3 +22,4 @@ export class ReviewSourcePreparationError extends Error {
     this.name = "ReviewSourcePreparationError";
   }
 }
+import { UserFacingCommandError } from "./command.js";

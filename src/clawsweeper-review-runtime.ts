@@ -95,14 +95,11 @@ export function createReviewRuntime({
   function gitInfo(openclawDir: string, options: ReviewGitInfoOptions = {}): GitInfo {
     const targetBranch = options.targetBranch ?? reviewTargetBranch(openclawDir);
     requireSafeGitBranchName(targetBranch, "target branch");
+    // Depth limits affect the whole repository. Metadata refreshes must retain the
+    // complete ancestry already prepared for the reviewed base and head.
     run(
       "git",
-      [
-        "fetch",
-        "origin",
-        `refs/heads/${targetBranch}:refs/remotes/origin/${targetBranch}`,
-        "--depth=50",
-      ],
+      ["fetch", "origin", `refs/heads/${targetBranch}:refs/remotes/origin/${targetBranch}`],
       {
         cwd: openclawDir,
       },
@@ -134,7 +131,7 @@ export function createReviewRuntime({
     }
     if (latestRelease?.tagName) {
       try {
-        run("git", ["fetch", "--force", "origin", "tag", latestRelease.tagName, "--depth=1"], {
+        run("git", ["fetch", "--force", "origin", "tag", latestRelease.tagName], {
           cwd: openclawDir,
         });
         latestRelease.sha = run("git", ["rev-list", "-n", "1", latestRelease.tagName], {

@@ -5,7 +5,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { reviewPromptForTest } from "../dist/clawsweeper.js";
-import { hydratePullRequestReviewHistory } from "../dist/clawsweeper-review-blobs.js";
+import {
+  ensurePullRequestReviewHead,
+  ensureReviewTreeCommit,
+  hydratePullRequestReviewHistory,
+} from "../dist/clawsweeper-review-blobs.js";
 import { git as reviewGit, item } from "./helpers.ts";
 
 const upgradeFiles = [
@@ -230,7 +234,7 @@ test("test-merge parents must be consecutive LF records after the tree", () => {
   }
 });
 
-test("production history hydration recovers a shallow PR tip and fetches only the pinned test merge", () => {
+test("production source preparation recovers a shallow PR tip and fetches the pinned test merge", () => {
   const f = fixture();
   const clone = mkdtempSync(join(tmpdir(), "clawsweeper-provenance-clone-"));
   try {
@@ -256,6 +260,15 @@ test("production history hydration recovers a shallow PR tip and fetches only th
       git(clone, "-c", "protocol.allow=never", "cat-file", "-e", `${f.T}^{commit}`),
     );
     assert.equal(promptEvidence({ ...f, root: clone }).evidence.mergeBase.status, "unavailable");
+    assert.ok(
+      ensureReviewTreeCommit({
+        targetDir: clone,
+        sha: f.M,
+        sourceRef: "refs/heads/main",
+        destinationRef: "refs/clawsweeper/review-cache/base-1",
+      }),
+    );
+    assert.ok(ensurePullRequestReviewHead({ targetDir: clone, itemNumber: 1, headSha: f.H }));
     hydratePullRequestReviewHistory({
       targetDir: clone,
       baseSha: f.M,
@@ -267,6 +280,7 @@ test("production history hydration recovers a shallow PR tip and fetches only th
     assert.equal(evidence.mergeBase.sha, f.B);
     assert.equal(evidence.testMerge.status, "verified");
     assert.equal(evidence.checkoutSha, f.H);
+    assert.equal(git(clone, "rev-parse", "--is-shallow-repository"), "false");
     assert.equal(git(clone, "status", "--porcelain"), "");
   } finally {
     rmSync(f.root, { recursive: true, force: true });

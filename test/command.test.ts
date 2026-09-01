@@ -1282,8 +1282,9 @@ process.stdin.on("end", () => process.exit(1));
 
     assert.equal(missingHeadResult.status, 1);
     assert.equal(existsSync(codexMarker), false);
-    assert.match(missingHeadResult.stderr, /Could not prepare the pinned review commits\./);
+    assert.match(missingHeadResult.stderr, /Review source preparation failed\./);
     assert.doesNotMatch(missingHeadResult.stderr, /Running Codex review|Review complete/);
+    assert.doesNotMatch(missingHeadResult.stderr, /\n\s+at /);
     assert.equal(existsSync(join(missingHeadArtifactDir, "96221.md")), false);
   } finally {
     rmSync(root, { recursive: true, force: true });

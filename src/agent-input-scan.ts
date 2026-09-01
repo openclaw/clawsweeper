@@ -40,6 +40,7 @@ export type AgentScanSource =
 
 export class AgentInputScanError extends Error {
   readonly retryable = false;
+  reviewedHeadSha?: string;
   constructor(
     readonly reason:
       | "scanner_unavailable"

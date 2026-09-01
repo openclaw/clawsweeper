@@ -340,7 +340,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         let reviewOpenclawDir = openclawDir;
         let pullRequestReviewTreeDir: string | null = null;
         let pullRequestReviewTreeSha: string | null = null;
-        let pullRequestReviewTreeFailure: Error | null = null;
         let diagnosticPrompt = "";
         let diagnosticSourceSha = process.env.EXACT_REVIEW_SOURCE_HEAD_SHA;
         const recordFailureDiagnostics = (error: unknown, classification = "codex_execution") => {
@@ -355,7 +354,9 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               repo: item.repo,
               itemKind: item.kind,
               itemNumber: item.number,
-              sourceSha: diagnosticSourceSha,
+              sourceSha: error instanceof ReviewSourcePreparationError || error instanceof AgentInputScanError
+                ? error.reviewedHeadSha ?? diagnosticSourceSha
+                : diagnosticSourceSha,
               retryable: codexReviewFailureRetryable(error),
               workflowExit: agentInputScanFailureExitCode(error) ?? 1,
             });
@@ -397,7 +398,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             return false;
           }
           reviewOpenclawDir = pullRequestReviewTreeDir;
-          pullRequestReviewTreeFailure = null;
           pullRequestReviewTreeSha = headSha;
           if (readonlyOpenclaw) {
             makeTreeReadOnly(reviewOpenclawDir, itemReadonlyModeSnapshots);
@@ -897,19 +897,18 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 : null,
               prCommentActivityRevision: prCommentActivityRevisions.get(item.number) ?? null,
             });
-        if (!localRangeData && item.kind === "pull_request") {
-          const headSha = pullHeadShaFromContext(context);
-          if (!headSha || !preparePullRequestReviewTree(headSha)) {
-            pullRequestReviewTreeFailure ??= new ReviewSourcePreparationError(
-              "review_checkout_unavailable",
-              `Read-only checkout inspection failed: pull request #${item.number} head ${headSha ?? "unknown"} was unavailable in the restricted review checkout`,
-            );
-            cachePreflightState = "failed";
-          }
-        }
         diagnosticSourceSha = item.kind === "pull_request"
           ? pullHeadShaFromContext(context) ?? undefined
           : context.sourceRevision ?? diagnosticSourceSha;
+        if (!localRangeData && item.kind === "pull_request") {
+          const headSha = pullHeadShaFromContext(context);
+          if (!headSha || !preparePullRequestReviewTree(headSha)) {
+            throw new ReviewSourcePreparationError(
+              "review_checkout_unavailable",
+              "Could not prepare the pinned review checkout.",
+            );
+          }
+        }
         if (previousLocalReviewCommentBody) {
           const previousLocalReview = extractClawSweeperReviewCommentBody(
             previousLocalReviewCommentBody,
@@ -1279,7 +1278,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           null;
         const codexStartedAt = Date.now();
         try {
-          if (pullRequestReviewTreeFailure) throw pullRequestReviewTreeFailure;
           if (humanLocalReview) {
             console.error("");
             console.error("Running Codex review");
