@@ -196,11 +196,6 @@ let activeRepositoryProfile = repositoryProfileFor(
 );
 const REVIEW_ITEM_PROMPT_PATH = join(ROOT, "prompts", "review-item.md");
 const CLAWSWEEPER_DECISION_SCHEMA_PATH = join(ROOT, "schema", "clawsweeper-decision.schema.json");
-const MATURITY_STABLE_SHORTLIST_SCRIPT_PATH = join(
-  ROOT,
-  "scripts",
-  "maturity-stable-shortlist.mjs",
-);
 const PR_CLOSE_COVERAGE_PROOF_PROMPT_PATH = join(ROOT, "prompts", "pr-close-coverage-proof.md");
 const PR_CLOSE_COVERAGE_PROOF_SCHEMA_PATH = join(
   ROOT,
@@ -752,7 +747,6 @@ const { collectItemContext } = createItemContext({
 const reviewRuntime = createReviewRuntime({
   reviewItemPromptPath: REVIEW_ITEM_PROMPT_PATH,
   decisionSchemaPath: CLAWSWEEPER_DECISION_SCHEMA_PATH,
-  maturityStableShortlistScriptPath: MATURITY_STABLE_SHORTLIST_SCRIPT_PATH,
   prCloseCoverageProofPromptPath: PR_CLOSE_COVERAGE_PROOF_PROMPT_PATH,
   targetRepo,
   evidenceEntry,

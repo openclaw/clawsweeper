@@ -339,8 +339,9 @@ Set `maturityLabels` for issues only; use `[]` for PRs or unsupported matches.
 taxonomy owner is currently scored M4/M5. M4/M5 ownership is necessary but is
 not enough by itself: this label is not a general description of the feature
 area's maturity.
-First run `node "$CLAWSWEEPER_PROOF_SCRATCH_DIR/maturity-stable-shortlist.mjs"`
-from the target checkout. Identify exactly one primary owner surface from the
+Read the checked-out `qa/maturity-scores.yaml` and relevant `taxonomy.yaml`
+entries directly. If the scorecard is absent or does not establish the owner's
+current maturity, use `[]`. Identify exactly one primary owner surface from the
 broken product behavior and the source owner boundary. Shared
 Gateway/CLI transit, APIs, hosting, diagnostics, or implementation plumbing do
 not qualify an issue whose primary owner is below M4.
@@ -358,9 +359,7 @@ relabel the request as a bug merely to make it eligible. If the
 existing-behavior contract or primary owner remains ambiguous after reading
 the relevant source, use `[]`.
 
-The helper lists M4+ candidate owner surfaces and below-M4 exclusions. Read
-`taxonomy.yaml`, the full checked-out `qa/maturity-scores.yaml`, or
-`docs/maturity/` when the primary owner or category is ambiguous. Select
+Read `docs/maturity/` when the primary owner or category is ambiguous. Select
 `maturity:stable` only when the broken existing contract's primary surface is
 M4/M5. Cite both the contract evidence and the primary surface id/name/code
 with its matching category in `evidence` and `labelJustifications`.

@@ -43,6 +43,12 @@ GitHub mutation gates. Add orchestration only for a concrete boundary or
 operational contract; do not duplicate the agent's reasoning in parsers,
 heuristics, or additional agent loops.
 
+Issue maturity assessment follows this boundary: Codex reads the target's
+checked-out scorecard and taxonomy directly and cites the primary owner and
+existing behavior. ClawSweeper does not generate or prefilter a maturity
+shortlist. Missing or ambiguous maturity evidence means no maturity label;
+the existing M4/M5 and broken-existing-behavior requirements still apply.
+
 The system separates model judgment from mutation authority. Codex reviews and
 edits code. TypeScript and GitHub Actions decide whether work is allowed,
 validate the result, and perform GitHub writes with short-lived GitHub App

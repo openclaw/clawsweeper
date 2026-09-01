@@ -657,17 +657,9 @@ test("review prompt and schema describe positive-only feature showcase labels", 
   assert.deepEqual(featureShowcase.properties.status.enum, ["showcase", "none"]);
 });
 
-test("review prompt uses token-light maturity shortlist helper", () => {
+test("review prompt requires source evidence for stable maturity", () => {
   const prompt = readFileSync("prompts/review-item.md", "utf8");
-  const runtimePrompt = reviewPromptForTest(
-    item({ kind: "issue" }),
-    { issue: {}, comments: [], timeline: [] },
-    { mainSha: "abc123", latestRelease: null },
-    "",
-    { proofScratchDir: "/tmp/proof" },
-  );
 
-  assert.match(prompt, /maturity-stable-shortlist\.mjs/);
   assert.match(prompt, /Identify exactly one primary owner surface/);
   assert.match(prompt, /Shared\s+Gateway\/CLI transit/);
   assert.match(prompt, /M4\/M5 ownership is necessary but is\s+not enough by itself/);
@@ -675,14 +667,6 @@ test("review prompt uses token-light maturity shortlist helper", () => {
   assert.match(prompt, /feature proposal, new capability, UX preference/);
   assert.match(prompt, /requiresNewFeature: true/);
   assert.match(prompt, /existing-behavior\s+contract or primary owner remains ambiguous/);
-  assert.match(
-    runtimePrompt,
-    /node "\$CLAWSWEEPER_PROOF_SCRATCH_DIR\/maturity-stable-shortlist\.mjs"/,
-  );
-  assert.match(
-    runtimePrompt,
-    /read the full scorecard or taxonomy only if the shortlist is ambiguous/,
-  );
 });
 
 test("review prompt classifies Telegram visible proof candidates", () => {
