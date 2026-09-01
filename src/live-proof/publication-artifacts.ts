@@ -1,39 +1,47 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 import {
   attachReviewLiveProofArtifact,
+  LiveProofArtifactValidationError,
   type LiveProofAttachDependencies,
   type LiveProofAttachResult,
 } from "./attach.js";
-import { parseLiveVerificationResult } from "./verification.js";
+
+export type PublishReviewLiveProofArtifactsResult =
+  | { status: "published"; results: Array<{ item: number; outcome: LiveProofAttachResult }> }
+  | { status: "invalid_artifact" };
 
 export async function publishReviewLiveProofArtifacts(
   artifactDirInput: string,
   dependencies: LiveProofAttachDependencies,
-  selectTarget?: (repo: string) => void,
-): Promise<Array<{ item: number; outcome: LiveProofAttachResult }>> {
+): Promise<PublishReviewLiveProofArtifactsResult> {
   const artifactDir = resolve(artifactDirInput);
-  if (!existsSync(artifactDir)) return [];
-  const verificationPaths = regularFilesBelow(artifactDir).filter(
-    (path) =>
-      basename(path) === "live-verification.json" &&
-      relative(artifactDir, path).split(sep).includes("live-proof"),
-  );
-  const results: Array<{ item: number; outcome: LiveProofAttachResult }> = [];
-  for (const verificationPath of verificationPaths) {
-    const verification = parseLiveVerificationResult(
-      JSON.parse(readFileSync(verificationPath, "utf8")) as unknown,
+  if (!existsSync(artifactDir)) return { status: "published", results: [] };
+  try {
+    const verificationPaths = regularFilesBelow(artifactDir).filter(
+      (path) =>
+        basename(path) === "live-verification.json" &&
+        relative(artifactDir, path).split(sep).includes("live-proof"),
     );
-    selectTarget?.(verification.repo);
-    const recordPath = uniqueRecordPath(artifactDir, verification.item);
-    const outcome = await attachReviewLiveProofArtifact(
-      { bundleDir: dirname(verificationPath), recordPath },
-      dependencies,
-    );
-    results.push({ item: verification.item, outcome });
+    const results: Array<{ item: number; outcome: LiveProofAttachResult }> = [];
+    for (const verificationPath of verificationPaths) {
+      const bundleDir = dirname(verificationPath);
+      const item = Number(basename(bundleDir));
+      if (!Number.isSafeInteger(item) || item <= 0) {
+        throw new LiveProofArtifactValidationError("live proof artifact path has an invalid item");
+      }
+      const outcome = await attachReviewLiveProofArtifact(
+        { bundleDir, recordPath: uniqueRecordPath(artifactDir, item) },
+        dependencies,
+      );
+      results.push({ item, outcome });
+    }
+    return { status: "published", results };
+  } catch (error) {
+    if (error instanceof LiveProofArtifactValidationError) return { status: "invalid_artifact" };
+    throw error;
   }
-  return results;
 }
 
 function uniqueRecordPath(artifactDir: string, item: number): string {
@@ -43,7 +51,7 @@ function uniqueRecordPath(artifactDir: string, item: number): string {
       basename(path) === filename && !relative(artifactDir, path).split(sep).includes("live-proof"),
   );
   if (candidates.length !== 1) {
-    throw new Error(
+    throw new LiveProofArtifactValidationError(
       `live proof publication expected one review artifact for item ${item}, found ${candidates.length}`,
     );
   }
@@ -55,10 +63,12 @@ function regularFilesBelow(root: string): string[] {
   const visit = (directory: string) => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const absolute = join(directory, entry.name);
-      if (entry.isSymbolicLink()) throw new Error("live proof artifact must not contain symlinks");
+      if (entry.isSymbolicLink())
+        throw new LiveProofArtifactValidationError("live proof artifact must not contain symlinks");
       if (entry.isDirectory()) visit(absolute);
       else if (entry.isFile()) files.push(absolute);
-      else throw new Error("live proof artifact contains a non-file entry");
+      else
+        throw new LiveProofArtifactValidationError("live proof artifact contains a non-file entry");
     }
   };
   visit(root);

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ACTION_EVENT_REASON_CODES, ACTION_EVENT_STATUSES } from "./action-ledger.js";
+import { AgentInputScanError } from "./agent-input-scan.js";
 import type { Args } from "./clawsweeper-args.js";
 import {
   isBulkFilerExemptRepositoryPermission as isVerifiedMaintainerRepositoryPermission,
@@ -15,20 +16,13 @@ import type {
   Item,
   ItemContext,
   PreparedMediaProof,
-  PreviousClawSweeperReview,
   ReviewActionLedger,
 } from "./clawsweeper-types.js";
 import { PUBLIC_CODEX_MODEL } from "./codex-env.js";
 import { UserFacingCommandError } from "./command.js";
 import { LOCAL_REVIEW_WEB_SEARCH_CONFIG } from "./commit-sweeper.js";
 import { isReviewedPrActivityCursor } from "./review-activity-cursor.js";
-import {
-  createReviewSemanticRecord,
-  reviewSemanticCacheDecision,
-  reviewSemanticPriorReviewDigest,
-  reviewSemanticRevalidationDecision,
-  type ReviewSemanticRecord,
-} from "./review-semantic-cache.js";
+import { previousClawSweeperReviewDigest } from "./clawsweeper-review-comments.js";
 import {
   reviewStructuralCacheDecision,
   reviewStructuralCacheProbeDecision,
@@ -153,12 +147,10 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     markdownFor,
     postReviewStartStatusComment,
     previousClawSweeperReviewDigestFromReport,
-    pullChecksContext,
     pullHeadShaFromContext,
     pullRequestHeadSha,
     recordReviewLogPublication,
     removePullRequestReviewTree,
-    refreshRelatedItemsContext,
     replaceFrontMatterValue,
     renderReviewCommentFromReport,
     reportFileName,
@@ -175,7 +167,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     startReviewActionLedgerItem,
     stringOrUndefined,
     updateBulkFilerDetectedFrontMatter,
-    updateReviewSemanticFrontMatter,
     updateReviewStructuralFrontMatter,
   } = dependencies;
 
@@ -332,22 +323,12 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       let structuralCacheRevalidations = 0;
       let structuralCacheRevalidationFailures = 0;
       let structuralCacheRevalidationMs = 0;
-      let semanticCacheChecks = 0;
-      let semanticCacheHits = 0;
-      let semanticCacheIneligible = 0;
-      let semanticCacheMs = 0;
-      let semanticCacheRevalidations = 0;
-      let semanticCacheRevalidationFailures = 0;
-      let semanticCacheRevalidationMs = 0;
       let hydrationRuns = 0;
       const bulkFilerCountCache: BulkFilerCountCache = new Map();
       const bulkFilerRepositoryPermissionCache: BulkFilerRepositoryPermissionCache = new Map();
       const bulkFilerWindowNow = Date.now();
       const structuralCacheReasons = new Map<string, number>();
       const structuralCacheRevalidationReasons = new Map<string, number>();
-      const semanticCacheReasons = new Map<string, number>();
-      const semanticCacheEligibilityReasons = new Map<string, number>();
-      const semanticCacheRevalidationReasons = new Map<string, number>();
       const codexFailureReports: string[] = [];
       const leaseAcquisitionFailureDetails: string[] = [];
       const reviewTreeCleanupFailures: string[] = [];
@@ -359,6 +340,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         let pullRequestReviewTreeSha: string | null = null;
         let pullRequestReviewTreeFailure: Error | null = null;
         let cachePreflightState: "not_run" | "passed" | "failed" = "not_run";
+        let structuralScanIdentity: { baseSha: string; headSha: string } | null = null;
         const preparePullRequestReviewTree = (headSha: string): boolean => {
           if (item.kind !== "pull_request") return true;
           if (pullRequestReviewTreeDir && pullRequestReviewTreeSha === headSha) return true;
@@ -389,19 +371,29 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           ) {
             return false;
           }
-          pullRequestReviewTreeSha = headSha;
           reviewOpenclawDir = pullRequestReviewTreeDir;
+          pullRequestReviewTreeFailure = null;
+          pullRequestReviewTreeSha = headSha;
           if (readonlyOpenclaw) {
             makeTreeReadOnly(reviewOpenclawDir, itemReadonlyModeSnapshots);
           }
           return true;
         };
-        const cachePreflightPasses = (headSha: string | null): boolean => {
+        const cachePreflightPasses = (headSha: string | null, context?: ItemContext): boolean => {
           if (cachePreflightState !== "not_run") return cachePreflightState === "passed";
           if (item.kind === "pull_request" && (!headSha || !preparePullRequestReviewTree(headSha))) {
             cachePreflightState = "failed";
           } else {
+            const baseSha = context
+              ? asRecord(asRecord(context.pullRequest).base).sha
+              : structuralScanIdentity?.headSha === headSha ? structuralScanIdentity.baseSha : "";
             const inspection = runReviewCheckoutInspection({
+              // Structural reuse has no model payload. Hydrated reuse scans the
+              // current context too, including source comments.
+              initialPrompt: JSON.stringify(context ?? item),
+              scanSource: item.kind === "pull_request"
+                ? { kind: "committed", baseSha: typeof baseSha === "string" ? baseSha : "", headSha: headSha ?? "" }
+                : { kind: "prompt" },
               itemNumber: item.number,
               openclawDir: reviewOpenclawDir,
               preserveCodexAuth: localOnly,
@@ -528,7 +520,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         let structuralRecord: ReviewStructuralRecord | null = null;
         let preHydrationStructuralRecord: ReviewStructuralRecord | null = null;
         let hydratedStructuralAnchor: ReviewStructuralRecord | null = null;
-        let semanticRecord: ReviewSemanticRecord | null = null;
         if (!localRangeData) {
           structuralCacheChecks += 1;
           const structuralProbeDecision = reviewStructuralCacheProbeDecision({
@@ -681,6 +672,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               try {
                 git = loadReviewGitInfo();
                 revalidatedStructuralRecord = fetchReviewStructuralRecord({
+                  onPullIdentity: (identity) => { structuralScanIdentity = identity; },
                   item,
                   git,
                   reviewPolicy,
@@ -883,7 +875,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         if (!localRangeData && item.kind === "pull_request") {
           const headSha = pullHeadShaFromContext(context);
           if (!headSha || !preparePullRequestReviewTree(headSha)) {
-            pullRequestReviewTreeFailure = new Error(
+            pullRequestReviewTreeFailure ??= new Error(
               `Read-only checkout inspection failed: pull request #${item.number} head ${headSha ?? "unknown"} was unavailable in the restricted review checkout`,
             );
             cachePreflightState = "failed";
@@ -1145,259 +1137,14 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           }
         }
         const contentDigest = itemContentDigest(item, context, git);
-        let currentPreviousReviewDigest: string | null = null;
-        let previousReviewIdentityChanged = false;
-        let semanticDecision: ReturnType<typeof reviewSemanticCacheDecision> | null = null;
-        if (!localRangeData) {
-          const semanticCacheStartedAt = Date.now();
-          semanticCacheChecks += 1;
-          semanticRecord = createReviewSemanticRecord({
-            item,
-            context,
-            git,
-            structuralContextRevision: hydratedStructuralAnchor?.contextRevision ?? null,
-            reviewPolicy,
-            reviewModel: PUBLIC_CODEX_MODEL,
-          });
-          semanticCacheMs += Date.now() - semanticCacheStartedAt;
-          semanticCacheEligibilityReasons.set(
-            semanticRecord.eligibilityReason,
-            (semanticCacheEligibilityReasons.get(semanticRecord.eligibilityReason) ?? 0) + 1,
-          );
-          if (!semanticRecord.eligible) semanticCacheIneligible += 1;
-          currentPreviousReviewDigest = reviewSemanticPriorReviewDigest(
-            context.previousClawSweeperReview,
-          );
-          previousReviewIdentityChanged =
-            !expectedPreviousReviewDigest ||
+        const currentPreviousReviewDigest = previousClawSweeperReviewDigest(
+          context.previousClawSweeperReview,
+        );
+        const previousReviewIdentityChanged =
+          !localRangeData &&
+          (!expectedPreviousReviewDigest ||
             !currentPreviousReviewDigest ||
-            expectedPreviousReviewDigest !== currentPreviousReviewDigest;
-          semanticDecision = reviewSemanticCacheDecision({
-            review: priorReview,
-            priorRecord: priorReview?.semanticRecord ?? null,
-            currentRecord: semanticRecord,
-            expectedPreviousReviewDigest,
-            currentPreviousReviewDigest,
-            reviewPolicy,
-            reviewModel: PUBLIC_CODEX_MODEL,
-            explicitDispatch,
-            maintainerRequest,
-            coordinationEnabled: Boolean(acquiredReviewLease),
-          });
-          semanticCacheReasons.set(
-            semanticDecision.reason,
-            (semanticCacheReasons.get(semanticDecision.reason) ?? 0) + 1,
-          );
-        }
-        if (
-          semanticDecision?.hit &&
-          !cachePreflightPasses(
-            item.kind === "pull_request" ? pullHeadShaFromContext(context) : null,
-          )
-        ) {
-          semanticDecision = null;
-        }
-        if (semanticDecision?.hit) {
-          semanticCacheRevalidations += 1;
-          const initialSemanticRecord = semanticRecord;
-          const semanticRevalidationStartedAt = Date.now();
-          const revalidatedStructuralRecord = refreshStructuralRecordForVerdict();
-          const revalidatedChecks =
-            revalidatedStructuralRecord?.pullHeadSha &&
-            revalidatedStructuralRecord.pullHeadSha === pullHeadShaFromContext(context)
-              ? pullChecksContext(item.number, revalidatedStructuralRecord.pullHeadSha)
-              : {
-                  complete: false,
-                  checkRuns: [],
-                  checkRunsTruncated: true,
-                  statuses: [],
-                  statusesTruncated: true,
-                };
-          if (!completePullChecksContext(revalidatedChecks)) {
-            semanticCacheRevalidationFailures += 1;
-          }
-          const revalidatedContext: ItemContext = {
-            ...context,
-            pullChecks: revalidatedChecks,
-          };
-          let revalidatedPreviousReview: PreviousClawSweeperReview | null;
-          try {
-            revalidatedPreviousReview = extractLatestClawSweeperReview(
-              fetchIssueReviewComments(item.number),
-              item.number,
-            );
-          } catch (error) {
-            const revalidationReason = "durable_review_refresh_failed";
-            semanticCacheRevalidationFailures += 1;
-            semanticCacheRevalidationMs += Date.now() - semanticRevalidationStartedAt;
-            semanticCacheRevalidationReasons.set(
-              revalidationReason,
-              (semanticCacheRevalidationReasons.get(revalidationReason) ?? 0) + 1,
-            );
-            const leaseToRelease = acquiredReviewLease!;
-            if (!releaseOwnedReviewLease(item.number, leaseToRelease)) {
-              leaseAcquisitionFailures += 1;
-              leaseAcquisitionFailureDetails.push(
-                `#${item.number}: could not release semantic cache lease after ${revalidationReason}`,
-              );
-              continue;
-            }
-            const acquiredIndex = acquiredReviewLeases.findIndex(
-              (entry) =>
-                entry.itemNumber === item.number &&
-                entry.lease.commentId === leaseToRelease.commentId &&
-                entry.lease.owner === leaseToRelease.owner,
-            );
-            if (acquiredIndex >= 0) acquiredReviewLeases.splice(acquiredIndex, 1);
-            acquiredReviewLease = null;
-            console.error(
-              `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} semantic-cache=revalidation-failed reason=${revalidationReason} defer #${item.number}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-            );
-            continue;
-          }
-          if (revalidatedPreviousReview) {
-            revalidatedContext.previousClawSweeperReview = revalidatedPreviousReview;
-          } else {
-            delete revalidatedContext.previousClawSweeperReview;
-          }
-          const revalidatedRelatedItems = refreshRelatedItemsContext(item, context);
-          if (revalidatedRelatedItems.length > 0) {
-            revalidatedContext.relatedItems = revalidatedRelatedItems;
-          } else {
-            delete revalidatedContext.relatedItems;
-          }
-          if (
-            revalidatedContext.counts &&
-            (context.counts?.relatedItems !== undefined || revalidatedRelatedItems.length > 0)
-          ) {
-            revalidatedContext.counts = {
-              ...revalidatedContext.counts,
-              relatedItems: revalidatedRelatedItems.length,
-            };
-          }
-          const revalidatedSemanticRecord = createReviewSemanticRecord({
-            item,
-            context: revalidatedContext,
-            git,
-            structuralContextRevision: revalidatedStructuralRecord?.contextRevision ?? null,
-            reviewPolicy,
-            reviewModel: PUBLIC_CODEX_MODEL,
-          });
-          const semanticRevalidationDecision = reviewSemanticRevalidationDecision({
-            initialRecord: initialSemanticRecord,
-            currentRecord: revalidatedSemanticRecord,
-            initialPreviousReviewDigest: currentPreviousReviewDigest,
-            currentPreviousReviewDigest: reviewSemanticPriorReviewDigest(
-              revalidatedContext.previousClawSweeperReview,
-            ),
-            reviewPolicy,
-            reviewModel: PUBLIC_CODEX_MODEL,
-          });
-          semanticCacheRevalidationMs += Date.now() - semanticRevalidationStartedAt;
-          const revalidationReason = revalidatedStructuralRecord
-            ? semanticRevalidationDecision.reason
-            : "structural_verdict_input_changed";
-          semanticCacheRevalidationReasons.set(
-            revalidationReason,
-            (semanticCacheRevalidationReasons.get(revalidationReason) ?? 0) + 1,
-          );
-          if (!revalidatedStructuralRecord || !semanticRevalidationDecision.hit) {
-            const leaseToRelease = acquiredReviewLease!;
-            if (!releaseOwnedReviewLease(item.number, leaseToRelease)) {
-              leaseAcquisitionFailures += 1;
-              leaseAcquisitionFailureDetails.push(
-                `#${item.number}: could not release semantic cache lease after ${revalidationReason}`,
-              );
-              continue;
-            }
-            const acquiredIndex = acquiredReviewLeases.findIndex(
-              (entry) =>
-                entry.itemNumber === item.number &&
-                entry.lease.commentId === leaseToRelease.commentId &&
-                entry.lease.owner === leaseToRelease.owner,
-            );
-            if (acquiredIndex >= 0) acquiredReviewLeases.splice(acquiredIndex, 1);
-            acquiredReviewLease = null;
-            console.error(
-              `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} semantic-cache=revalidation-miss reason=${revalidationReason} defer #${item.number}`,
-            );
-            continue;
-          }
-          structuralRecord = revalidatedStructuralRecord;
-          semanticRecord = revalidatedSemanticRecord;
-          if (structuralRecord) item.updatedAt = structuralRecord.activityUpdatedAt;
-          const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
-          let carried = priorReview!.markdown;
-          carried = replaceFrontMatterValue(carried, "reviewed_at", new Date().toISOString());
-          carried = replaceFrontMatterValue(carried, "item_updated_at", item.updatedAt);
-          carried = replaceFrontMatterValue(
-            carried,
-            "review_lease_owner",
-            acquiredReviewLease!.owner,
-          );
-          carried = replaceFrontMatterValue(
-            carried,
-            "review_lease_comment_id",
-            String(acquiredReviewLease!.commentId),
-          );
-          carried = replaceFrontMatterValue(
-            carried,
-            "item_snapshot_hash",
-            itemSnapshotHash(item, context),
-          );
-          carried = replaceFrontMatterValue(carried, "review_content_digest", contentDigest);
-          carried = replaceFrontMatterValue(
-            carried,
-            "item_source_revision",
-            context.sourceRevision ?? "unknown",
-          );
-          carried = replaceFrontMatterValue(
-            carried,
-            "review_timeline_revision",
-            context.timelineRevision ?? "unknown",
-          );
-          carried = replaceFrontMatterValue(
-            carried,
-            "pull_head_sha",
-            pullHeadShaFromContext(context) ?? "unknown",
-          );
-          carried = replaceFrontMatterValue(carried, "main_sha", git.mainSha);
-          carried = replaceFrontMatterValue(carried, "review_cache_hit", "true");
-          carried = updateBulkFilerDetectedFrontMatter(carried, bulkFilerDetection);
-          carried = updateReviewStructuralFrontMatter(carried, structuralRecord, false);
-          carried = updateReviewSemanticFrontMatter(carried, semanticRecord, true);
-          carried = withRunnerPreflightProvenance(carried, replaceFrontMatterValue);
-          writeFileSync(reportPath, carried, "utf8");
-          finishReviewActionLedgerItem({
-            ledger: reviewLedger,
-            item,
-            status: ACTION_EVENT_STATUSES.cached,
-            reasonCode: ACTION_EVENT_REASON_CODES.contentUnchanged,
-            retryable: false,
-            cached: true,
-            startedAtMs: contextStartedAt,
-            ...(context.sourceRevision ? { sourceRevision: context.sourceRevision } : {}),
-            reportPath,
-            findingCount: reportReviewFindings(carried).length,
-            completionReason: "semantic_cache",
-          });
-          activeReviewItem = null;
-          completed += 1;
-          cacheHits += 1;
-          semanticCacheHits += 1;
-          if (humanLocalReview) {
-            console.error("");
-            console.error("Semantic review cache hit; code and review context unchanged");
-            console.error(`  report: ${displayPath(reportPath)}`);
-          } else {
-            console.error(
-              `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} cache-hit semantic-unchanged skip-model #${item.number} (${completed}/${candidates.length})`,
-            );
-          }
-          continue;
-        }
+            expectedPreviousReviewDigest !== currentPreviousReviewDigest);
         const contentCacheReview =
           explicitDispatch ||
           maintainerRequest ||
@@ -1418,6 +1165,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           contentCacheHit &&
           cachePreflightPasses(
             item.kind === "pull_request" ? pullHeadShaFromContext(context) : null,
+            context,
           )
         ) {
           structuralRecord = refreshStructuralRecordForVerdict();
@@ -1445,7 +1193,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           carried = structuralRecord
             ? updateReviewStructuralFrontMatter(carried, structuralRecord, false)
             : replaceFrontMatterValue(carried, "review_structural_cache_hit", "false");
-          carried = updateReviewSemanticFrontMatter(carried, semanticRecord, false);
           carried = withRunnerPreflightProvenance(carried, replaceFrontMatterValue);
           writeFileSync(reportPath, carried, "utf8");
           finishReviewActionLedgerItem({
@@ -1490,7 +1237,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           context,
           git,
           additionalPrompt,
-          mediaProofRuntimeHints(proofScratchDir, preparedMediaProof),
+          { ...mediaProofRuntimeHints(proofScratchDir, preparedMediaProof), targetDir: reviewOpenclawDir },
         );
         const snapshotHash = itemSnapshotHash(item, context);
         let decision: Decision;
@@ -1533,6 +1280,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             ...(localRange ? { extraCodexConfig: [LOCAL_REVIEW_WEB_SEARCH_CONFIG] } : {}),
           });
         } catch (error) {
+          if (error instanceof AgentInputScanError) throw error;
           codexFailures += 1;
           codexFailed = true;
           codexFailureRetryable = codexReviewFailureRetryable(error);
@@ -1589,7 +1337,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             reviewPolicy,
             runtime,
             structuralRecord,
-            semanticRecord,
             ...(acquiredReviewLease
               ? {
                   reviewLeaseOwner: acquiredReviewLease.owner,
@@ -1704,7 +1451,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       }
       if (!humanLocalReview) {
         console.error(
-          `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} complete reviewed=${completed} cache_hits=${cacheHits} structural_cache_checks=${structuralCacheChecks} structural_cache_hits=${structuralCacheHits} structural_cache_revalidations=${structuralCacheRevalidations} semantic_cache_checks=${semanticCacheChecks} semantic_cache_hits=${semanticCacheHits} semantic_cache_ineligible=${semanticCacheIneligible} semantic_cache_revalidations=${semanticCacheRevalidations} content_cache_hits=${contentCacheHits} hydrations=${hydrationRuns}`,
+          `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} complete reviewed=${completed} cache_hits=${cacheHits} structural_cache_checks=${structuralCacheChecks} structural_cache_hits=${structuralCacheHits} structural_cache_revalidations=${structuralCacheRevalidations} content_cache_hits=${contentCacheHits} hydrations=${hydrationRuns}`,
         );
       }
       writeFileSync(
@@ -1728,28 +1475,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             ),
             structural_cache_revalidation_reasons: Object.fromEntries(
               [...structuralCacheRevalidationReasons.entries()].sort(([left], [right]) =>
-                left.localeCompare(right),
-              ),
-            ),
-            semantic_cache_checks: semanticCacheChecks,
-            semantic_cache_hits: semanticCacheHits,
-            semantic_cache_ineligible: semanticCacheIneligible,
-            semantic_cache_ms: semanticCacheMs,
-            semantic_cache_revalidations: semanticCacheRevalidations,
-            semantic_cache_revalidation_failures: semanticCacheRevalidationFailures,
-            semantic_cache_revalidation_ms: semanticCacheRevalidationMs,
-            semantic_cache_reasons: Object.fromEntries(
-              [...semanticCacheReasons.entries()].sort(([left], [right]) =>
-                left.localeCompare(right),
-              ),
-            ),
-            semantic_cache_eligibility_reasons: Object.fromEntries(
-              [...semanticCacheEligibilityReasons.entries()].sort(([left], [right]) =>
-                left.localeCompare(right),
-              ),
-            ),
-            semantic_cache_revalidation_reasons: Object.fromEntries(
-              [...semanticCacheRevalidationReasons.entries()].sort(([left], [right]) =>
                 left.localeCompare(right),
               ),
             ),

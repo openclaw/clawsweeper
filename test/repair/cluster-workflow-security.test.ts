@@ -314,6 +314,30 @@ test("repair workflow applies the fail-closed merge gate before worker execution
   );
 });
 
+test("Telegram proof credentials reach only the OpenClaw execution worker", () => {
+  const workflow = parse(
+    fs.readFileSync(".github/workflows/repair-cluster-worker.yml", "utf8"),
+  ) as Workflow;
+  const executeFix = workflow.jobs?.execute?.steps?.find(
+    (step) => step.name === "Execute credited fix artifact",
+  );
+  assert.equal(
+    executeFix?.env?.OPENCLAW_QA_CONVEX_SITE_URL,
+    "${{ steps.target.outputs.target_slug == 'openclaw-openclaw' && secrets.OPENCLAW_QA_CONVEX_SITE_URL || '' }}",
+  );
+  assert.equal(
+    executeFix?.env?.OPENCLAW_QA_CONVEX_SECRET_CI,
+    "${{ steps.target.outputs.target_slug == 'openclaw-openclaw' && secrets.OPENCLAW_QA_CONVEX_SECRET_CI || '' }}",
+  );
+  for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
+    for (const step of job.steps ?? []) {
+      if (jobName === "execute" && step === executeFix) continue;
+      assert.equal(step.env?.OPENCLAW_QA_CONVEX_SITE_URL, undefined);
+      assert.equal(step.env?.OPENCLAW_QA_CONVEX_SECRET_CI, undefined);
+    }
+  }
+});
+
 test("missing PR repair jobs preserve only live authorized automerge", () => {
   const temporary = fs.mkdtempSync(path.join(tmpdir(), "clawsweeper-restore-mode-"));
   const relativeJobPath = "jobs/openclaw/inbox/automerge-openclaw-openclaw-123.md";

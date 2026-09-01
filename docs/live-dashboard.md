@@ -30,6 +30,17 @@ CrabFleet action sessions, Codex steering, completion reasons, and dashboard
 rows, see
 [`steerable-repair-automation.md`](steerable-repair-automation.md).
 
+Queue transport failures keep the fixed public `exact_review_queue_unavailable`
+response. Server logs for `exact_review_queue_request_failed` retain only the
+Cloudflare `remote`, `retryable`, and `overloaded` boolean flags; exception text,
+stacks, request payloads, and credentials are excluded. These flags are diagnostic
+signals and do not change retry or publication policy. Inside the Durable Object,
+`exact_review_queue_handler_failed` additionally records `initialize` or `fetch`
+and the first numeric `[line, column]` location in the deployed `worker.js` module
+(or `null` when unavailable). Match coordinates to that deployment’s bundle;
+remote transport replaces the original stack before the outer Worker sees it.
+These logs exclude error messages, SQL, private paths, and raw stacks.
+
 ## Deployment
 
 Cloudflare account:
@@ -173,6 +184,9 @@ is absent or a cache event lands in another Cloudflare colo.
 - exact-review queue backlog, retry-ready backlog, target-admissible backlog,
   fixed backoff and parked reason counts, handoff health, and pressure from the
   current durable queue snapshot
+- normal direct-review journeys in the Bay Kanban and one-hour timing metric by
+  default, with a presentation-only switch to include the retired automatic
+  proof/legacy-batch path for historical comparison
 
 The Worker fetches job details only for the bounded active-run set, limits that
 GitHub fanout to 12 concurrent requests, and caches each run's jobs for 60
@@ -500,7 +514,9 @@ are not public. See
 [GitHub publication egress telemetry](github-egress-telemetry.md) for exact
 semantics, retention, privacy, and known opaque boundaries.
 
-Bay renders closed aggregate health context only. It has no circuit reset,
+Bay renders closed aggregate health context only. Its retired proof/batch
+switch filters the already-projected cards and selects between closed timing
+aggregates; it does not change queue admission or execution. Bay has no circuit reset,
 workflow dispatch, queue retry, replay, acknowledgement, or gate control, and it
 does not expose credential circuits or per-member recovery boundaries. Private
 circuit state continues to control automatic recovery.

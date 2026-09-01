@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { reviewMergeBase } from "./pr-review-evidence.js";
 
 const MAX_REVIEW_FILES = 80;
 const MAX_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;
@@ -27,19 +28,31 @@ function gitCommitExists(targetDir: string, sha: string): boolean {
   );
 }
 
+function gitRepositoryIsShallow(targetDir: string): boolean {
+  const result = spawnSync("git", ["rev-parse", "--is-shallow-repository"], {
+    cwd: targetDir,
+    encoding: "utf8",
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+  });
+  return !result.error && result.status === 0 && result.stdout.trim() === "true";
+}
+
 export function ensureReviewTreeCommit({
   targetDir,
   sha,
   sourceRef,
   destinationRef,
+  completeHistory = false,
 }: {
   targetDir: string;
   sha: string;
   sourceRef: string;
   destinationRef: string;
+  completeHistory?: boolean;
 }): boolean {
   if (!GIT_OBJECT_ID.test(sha)) return false;
-  if (gitCommitExists(targetDir, sha)) return true;
+  const shallow = completeHistory && gitRepositoryIsShallow(targetDir);
+  if (gitCommitExists(targetDir, sha) && !shallow) return true;
   const fetched = spawnSync(
     "git",
     [
@@ -49,14 +62,15 @@ export function ensureReviewTreeCommit({
       "--no-tags",
       "--no-write-fetch-head",
       "--recurse-submodules=no",
+      ...(completeHistory ? (shallow ? ["--unshallow"] : []) : ["--depth=1"]),
       "origin",
       `${sourceRef}:${destinationRef}`,
-      "--depth=1",
     ],
     {
       cwd: targetDir,
       env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
       stdio: "ignore",
+      timeout: 30_000,
     },
   );
   return !fetched.error && fetched.status === 0 && gitCommitExists(targetDir, sha);
@@ -79,6 +93,7 @@ export function ensurePullRequestReviewHead({
       sha: headSha,
       sourceRef: `refs/pull/${itemNumber}/head`,
       destinationRef,
+      completeHistory: true,
     }) ||
     // The PR ref and REST head can briefly disagree after a force-push. Fetching the
     // exact validated object keeps the model bound to the revision under review.
@@ -87,8 +102,75 @@ export function ensurePullRequestReviewHead({
       sha: headSha,
       sourceRef: headSha,
       destinationRef,
+      completeHistory: true,
     })
   );
+}
+
+const REVIEW_HISTORY_DEPTH = 256;
+
+function deepenReviewHistory(targetDir: string, revisions: readonly string[]): void {
+  spawnSync(
+    "git",
+    [
+      "fetch",
+      "--filter=blob:none",
+      "--no-tags",
+      "--no-write-fetch-head",
+      "--recurse-submodules=no",
+      `--depth=${REVIEW_HISTORY_DEPTH}`,
+      "origin",
+      ...revisions,
+    ],
+    {
+      cwd: targetDir,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      stdio: "ignore",
+      timeout: 30_000,
+    },
+  );
+}
+
+export function hydratePullRequestReviewHistory(options: {
+  targetDir: string;
+  baseSha: string;
+  headSha: string;
+  itemNumber: number;
+  testMergeSha?: string;
+}): string | null {
+  const { targetDir, baseSha, headSha, itemNumber, testMergeSha } = options;
+  if (
+    !GIT_OBJECT_ID.test(baseSha) ||
+    !GIT_OBJECT_ID.test(headSha) ||
+    !Number.isSafeInteger(itemNumber) ||
+    itemNumber <= 0
+  )
+    return null;
+  if (reviewMergeBase(targetDir, baseSha, headSha).status === "unavailable") {
+    // Existing tree hydration may have fetched only the PR tip. Bound history, not
+    // the reviewed identity; failure remains explicit in the local evidence reader.
+    //
+    // Deepen the reviewed head on its own first. A depth-limited fetch re-bounds the
+    // ancestry of every revision it names, so naming the pinned base here as well
+    // truncates a base branch whose history the checkout already had -- the very
+    // ancestry a merge base is found in. Only deepen the base when the head alone did
+    // not establish one, which is the case where the base is itself shallow.
+    deepenReviewHistory(targetDir, [headSha]);
+    if (reviewMergeBase(targetDir, baseSha, headSha).status === "unavailable") {
+      // Unchanged fallback: the same fetch this function has always issued, for the case
+      // where the base is itself shallow and has to be deepened to reach an ancestor.
+      deepenReviewHistory(targetDir, [baseSha, headSha]);
+    }
+  }
+  if (testMergeSha && GIT_OBJECT_ID.test(testMergeSha)) {
+    ensureReviewTreeCommit({
+      targetDir,
+      sha: testMergeSha,
+      sourceRef: `refs/pull/${itemNumber}/merge`,
+      destinationRef: `refs/clawsweeper/review-cache/merge-${itemNumber}`,
+    });
+  }
+  return reviewMergeBase(targetDir, baseSha, headSha).sha;
 }
 
 function reviewTreeMatchesCommit({ targetDir, sha }: { targetDir: string; sha: string }): boolean {
@@ -182,7 +264,7 @@ export function hydratePullRequestReviewBlobs({
     const filename = safeReviewPath(file.filename);
     if (!filename) return { hydrated: false, blobs: 0 };
     const previous =
-      file.previous_filename === undefined ? filename : safeReviewPath(file.previous_filename);
+      file.previous_filename == null ? filename : safeReviewPath(file.previous_filename);
     if (!previous) return { hydrated: false, blobs: 0 };
     const status = typeof file.status === "string" ? file.status.toLowerCase() : "";
     if (status !== "added" && status !== "a") basePaths.add(previous);

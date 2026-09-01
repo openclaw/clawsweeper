@@ -18,7 +18,7 @@ import {
   previousClawSweeperReviewDigestFromReportForTest,
   renderReviewCommentFromReport,
 } from "../dist/clawsweeper.js";
-import { reviewSemanticPriorReviewDigest } from "../dist/review-semantic-cache.js";
+import { previousClawSweeperReviewDigest } from "../dist/clawsweeper-review-comments.js";
 import {
   changelogReviewDecision,
   markedReviewCommentForTest,
@@ -282,7 +282,7 @@ test("state report prior-review identity matches the marked durable comment", ()
   assert.ok(liveReview);
   assert.equal(
     previousClawSweeperReviewDigestFromReportForTest(report, 101),
-    reviewSemanticPriorReviewDigest(liveReview),
+    previousClawSweeperReviewDigest(liveReview),
   );
 });
 
@@ -844,4 +844,17 @@ test("review prompt and schema document re-review continuity", () => {
   assert.match(prompt, /`lateFinding: true`/);
   assert.match(prompt, /git diff <earlier-sha>\.\.HEAD -- <file>/);
   assert.match(schema, /"lateFinding"/);
+});
+
+test("cache identity requires the digest of the actual durable comment", () => {
+  const digest = "a".repeat(64);
+  assert.equal(previousClawSweeperReviewDigest({ verdictDigest: digest }), digest);
+  for (const value of [
+    null,
+    {},
+    { summary: "Same words without a durable identity" },
+    { verdictDigest: "invalid" },
+  ]) {
+    assert.equal(previousClawSweeperReviewDigest(value), null);
+  }
 });

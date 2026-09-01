@@ -4,10 +4,10 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
-  implementedCloseReport,
   reportWithSyncedReviewComment,
   runApplyDecisionsForTest,
   tmpPrefix,
+  verifiedImplementationPullRequestReport,
   withMockGh,
 } from "./helpers.ts";
 
@@ -22,7 +22,7 @@ test("apply-decisions retries legacy fixed close skips", () => {
       const logPath = join(root, "gh.log");
       mkdirSync(itemsDir, { recursive: true });
       mkdirSync(plansDir, { recursive: true });
-      const closeReport = implementedCloseReport({
+      const closeReport = verifiedImplementationPullRequestReport({
         type: "pull_request",
         action_taken: actionTaken,
         author_association: "MEMBER",
@@ -42,6 +42,26 @@ const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 appendFileSync(logPath, JSON.stringify(args) + "\\n");
 const path = args[1] || "";
+if (args[0] === "api" && args[1] === "graphql") {
+  console.log(JSON.stringify({ data: { repository: { issue: { state: "CLOSED", timelineItems: { nodes: [{ __typename: "ClosedEvent", createdAt: "2026-05-01T02:00:00Z", closer: { __typename: "PullRequest", number: 900, repository: { nameWithOwner: "openclaw/clawsweeper" } } }] } } } } }));
+  process.exit(0);
+}
+if (args[0] === "api" && path === "repos/openclaw/clawsweeper") {
+  console.log(JSON.stringify({ default_branch: "main" }));
+  process.exit(0);
+}
+if (args[0] === "api" && /\\/compare\\/[^/]+\\.\\.\\.main$/.test(path)) {
+  console.log(JSON.stringify({ status: "ahead" }));
+  process.exit(0);
+}
+if (args[0] === "api" && /\\/pulls\\/900$/.test(path)) {
+  console.log(JSON.stringify({ number: 900, html_url: "https://github.com/openclaw/clawsweeper/pull/900", title: "Current implementation", merged: true, merged_at: "2026-05-01T02:00:00Z", merge_commit_sha: "fix-sha", head: { sha: "fix-sha" }, base: { ref: "main" } }));
+  process.exit(0);
+}
+if (args[0] === "api" && /\\/pulls\\/321$/.test(path) && args.includes("--jq")) {
+  console.log(JSON.stringify({ body: "No linked issue." }));
+  process.exit(0);
+}
 if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(args[2] || "")) {
   console.log("HTTP/2 200\\n\\n[]");
 } else if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
@@ -117,9 +137,9 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
         },
         {
           number: 321,
-          action: "closed",
+          action: "kept_open",
           reason:
-            "dry-run: would close as already implemented on main; dry-run: would post close-applied comment",
+            "implemented-on-main close requires explicit same-repository linked issues for paired closeout",
         },
       ]);
     } finally {
@@ -137,7 +157,7 @@ test("apply-decisions retries legacy kept-open close reports", () => {
     const reportPath = join(root, "apply-report.json");
     mkdirSync(itemsDir, { recursive: true });
     mkdirSync(plansDir, { recursive: true });
-    const closeReport = implementedCloseReport({
+    const closeReport = verifiedImplementationPullRequestReport({
       type: "pull_request",
       action_taken: "kept_open",
     });
@@ -149,6 +169,26 @@ const comment = ${JSON.stringify(synced.comment)};
 const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 const path = args[1] || "";
+if (args[0] === "api" && args[1] === "graphql") {
+  console.log(JSON.stringify({ data: { repository: { issue: { state: "CLOSED", timelineItems: { nodes: [{ __typename: "ClosedEvent", createdAt: "2026-05-01T02:00:00Z", closer: { __typename: "PullRequest", number: 900, repository: { nameWithOwner: "openclaw/clawsweeper" } } }] } } } } }));
+  process.exit(0);
+}
+if (args[0] === "api" && path === "repos/openclaw/clawsweeper") {
+  console.log(JSON.stringify({ default_branch: "main" }));
+  process.exit(0);
+}
+if (args[0] === "api" && /\\/compare\\/[^/]+\\.\\.\\.main$/.test(path)) {
+  console.log(JSON.stringify({ status: "ahead" }));
+  process.exit(0);
+}
+if (args[0] === "api" && /\\/pulls\\/900$/.test(path)) {
+  console.log(JSON.stringify({ number: 900, html_url: "https://github.com/openclaw/clawsweeper/pull/900", title: "Current implementation", merged: true, merged_at: "2026-05-01T02:00:00Z", merge_commit_sha: "fix-sha", head: { sha: "fix-sha" }, base: { ref: "main" } }));
+  process.exit(0);
+}
+if (args[0] === "api" && /\\/pulls\\/321$/.test(path) && args.includes("--jq")) {
+  console.log(JSON.stringify({ body: "No linked issue." }));
+  process.exit(0);
+}
 if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(args[2] || "")) {
   console.log("HTTP/2 200\\n\\n[]");
 } else if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
@@ -220,9 +260,9 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
       },
       {
         number: 321,
-        action: "closed",
+        action: "kept_open",
         reason:
-          "dry-run: would close as already implemented on main; dry-run: would post close-applied comment",
+          "implemented-on-main close requires explicit same-repository linked issues for paired closeout",
       },
     ]);
   } finally {
@@ -240,7 +280,7 @@ test("apply-decisions pair-closes issues blocked by closeable linked PRs", () =>
     mkdirSync(itemsDir, { recursive: true });
     mkdirSync(plansDir, { recursive: true });
     const issueSynced = reportWithSyncedReviewComment(
-      implementedCloseReport({
+      verifiedImplementationPullRequestReport({
         repository: "openclaw/openclaw",
         number: 320,
         type: "issue",
@@ -251,7 +291,7 @@ test("apply-decisions pair-closes issues blocked by closeable linked PRs", () =>
       "implemented_on_main",
     );
     const pullSynced = reportWithSyncedReviewComment(
-      implementedCloseReport({
+      verifiedImplementationPullRequestReport({
         repository: "openclaw/openclaw",
         number: 321,
         type: "pull_request",
@@ -273,6 +313,34 @@ const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 const path = args[1] || "";
 const issueNumber = (path.match(/\\/issues\\/(\\d+)/) || [])[1];
+if (args[0] === "api" && args[1] === "graphql") {
+  const closingReferenceQuery = args.some((argument) => argument.includes("closingIssuesReferences"));
+  const repository = closingReferenceQuery
+    ? { pullRequest: { closingIssuesReferences: { nodes: [{ number: 320, state: "OPEN", repository: { nameWithOwner: "openclaw/openclaw" } }] } } }
+    : { issue: { state: "CLOSED", timelineItems: { nodes: [{ __typename: "ClosedEvent", createdAt: "2026-05-01T02:00:00Z", closer: { __typename: "PullRequest", number: 900, repository: { nameWithOwner: "openclaw/openclaw" } } }] } } };
+  console.log(JSON.stringify({ data: { repository } }));
+  process.exit(0);
+}
+if (args[0] === "api" && path === "repos/openclaw/openclaw") {
+  console.log(JSON.stringify({ default_branch: "main" }));
+  process.exit(0);
+}
+if (args[0] === "api" && /\\/compare\\/[^/]+\\.\\.\\.main$/.test(path)) {
+  console.log(JSON.stringify({ status: "ahead" }));
+  process.exit(0);
+}
+if (args[0] === "api" && /\\/pulls\\/900$/.test(path)) {
+  console.log(JSON.stringify({ number: 900, html_url: "https://github.com/openclaw/openclaw/pull/900", title: "Current implementation", merged: true, merged_at: "2026-05-01T02:00:00Z", merge_commit_sha: "fix-sha", head: { sha: "fix-sha" }, base: { ref: "main" } }));
+  process.exit(0);
+}
+if (args[0] === "api" && /\\/pulls\\/321$/.test(path) && args.includes("--jq")) {
+  console.log(JSON.stringify({ body: "Fixes #320." }));
+  process.exit(0);
+}
+if (args[0] === "api" && path.startsWith("search/issues?")) {
+  console.log(JSON.stringify({ items: [] }));
+  process.exit(0);
+}
 if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/(320|321)\\/timeline(?:\\?|$)/.test(args[2] || "")) {
   console.log("HTTP/2 200\\n\\n[]");
 } else if (args[0] === "api" && /\\/issues\\/(320|321)\\/comments(?:\\?|$)/.test(path)) {
@@ -331,6 +399,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/(320|321)\\/timeline(?
     title: "Obsolete linked PR",
     html_url: "https://github.com/openclaw/clawsweeper/pull/321",
     state: "open",
+    body: "Fixes #320.",
     changed_files: 0,
     commits: 0,
     review_comments: 0,

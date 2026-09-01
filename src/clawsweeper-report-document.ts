@@ -1,6 +1,7 @@
 import {
   configSurfaceChangeFromContext,
   dataModelChangeFromContext,
+  sqliteSchemaChangeFromContext,
 } from "./clawsweeper-change-detection.js";
 import { closeReasonText } from "./clawsweeper-close-reasons.js";
 import { REVIEW_SECTIONS } from "./clawsweeper-policy.js";
@@ -12,6 +13,7 @@ import {
   isVerifiedRegressionProvenance,
   regressionAssessmentPublicLine,
   regressionProvenancePublicLine,
+  publicLikelyOwner,
 } from "./clawsweeper-regression-provenance.js";
 import type {
   Action,
@@ -24,7 +26,6 @@ import type {
   ReviewRuntime,
   RootCauseClusterAssessment,
 } from "./clawsweeper-types.js";
-import { type ReviewSemanticRecord } from "./review-semantic-cache.js";
 import {
   reviewStructuralPullStateDigest,
   type ReviewStructuralRecord,
@@ -294,6 +295,8 @@ export function createReportDocumentRendering(
       "",
       `Surface: ${decision.liveProofPlan.surface}`,
       "",
+      `Terminal completion: ${decision.liveProofPlan.terminalCompletion}`,
+      "",
       `Reason: ${sentence(decision.liveProofPlan.reason)}`,
       "",
       `Payoff: ${decision.liveProofPlan.payoff.kind}`,
@@ -304,7 +307,9 @@ export function createReportDocumentRendering(
       "",
       "Steps:",
       "",
-      markdownList(decision.liveProofPlan.steps.map((step) => JSON.stringify(step))),
+      decision.liveProofPlan.steps.length
+        ? markdownList(decision.liveProofPlan.steps.map((step) => JSON.stringify(step)))
+        : "[]",
     ].join("\n");
   }
 
@@ -440,49 +445,6 @@ export function createReportDocumentRendering(
     );
   }
 
-  function updateReviewSemanticFrontMatter(
-    markdown: string,
-    record: ReviewSemanticRecord | null,
-    cacheHit: boolean,
-  ): string {
-    let next = replaceFrontMatterValue(
-      markdown,
-      "review_semantic_cache_version",
-      record ? String(record.version) : "unknown",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_semantic_fingerprint",
-      record?.fingerprint ?? "unknown",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_semantic_code_digest",
-      record?.codeDigest ?? "unknown",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_semantic_exact_digest",
-      record?.exactDigest ?? "unknown",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_semantic_context_digest",
-      record?.contextDigest ?? "unknown",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_semantic_eligible",
-      record ? String(record.eligible) : "false",
-    );
-    next = replaceFrontMatterValue(
-      next,
-      "review_semantic_eligibility_reason",
-      record?.eligibilityReason ?? "unknown",
-    );
-    return replaceFrontMatterValue(next, "review_semantic_cache_hit", cacheHit ? "true" : "false");
-  }
-
   function markdownFor(options: {
     item: Item;
     context: ItemContext;
@@ -495,7 +457,6 @@ export function createReportDocumentRendering(
     reviewPolicy: string;
     runtime: ReviewRuntime;
     structuralRecord?: ReviewStructuralRecord | null;
-    semanticRecord?: ReviewSemanticRecord | null;
     reviewLeaseOwner?: string;
     reviewLeaseCommentId?: number;
   }): string {
@@ -549,8 +510,11 @@ export function createReportDocumentRendering(
       : "- none";
     const likelyOwners = options.decision.likelyOwners.length
       ? options.decision.likelyOwners
+          .map(publicLikelyOwner)
           .map((owner) => {
             const bits = [`- **${owner.person}:** ${publicLikelyOwnerRole(owner.role)}`];
+            if (owner.attributionSource)
+              bits.push(`  - attribution source: ${owner.attributionSource}`);
             bits.push(`  - reason: ${owner.reason}`);
             bits.push(`  - confidence: ${owner.confidence}`);
             if (owner.commits.length) bits.push(`  - commits: ${owner.commits.join(", ")}`);
@@ -581,6 +545,7 @@ export function createReportDocumentRendering(
     const pullFilesTruncated = Boolean(options.context.counts?.pullFilesTruncated);
     const configSurfaceChange = configSurfaceChangeFromContext(options.item.repo, options.context);
     const dataModelChange = dataModelChangeFromContext(options.item.repo, options.context);
+    const sqliteSchemaChange = sqliteSchemaChangeFromContext(options.item.repo, options.context);
     const prSurfaceFiles = prSurfaceFilesFromContext(options.context);
     const reviewedPullStateDigest = reviewStructuralPullStateFromContext(options.context);
     const markdown = `---
@@ -628,6 +593,7 @@ regression_provenance_merge_sha: ${verifiedRegressionProvenance?.mergeCommitSha 
 regression_provenance_source_path: ${regressionProvenance?.sourcePath ?? "unknown"}
 regression_provenance_source_line: ${regressionProvenance?.sourceLine ?? "unknown"}
 regression_provenance_evidence_type: ${regressionProvenance?.evidenceType ?? "unknown"}
+regression_provenance_verification_source: ${regressionProvenance?.verificationSource ?? "unknown"}
 regression_provenance_merged_at: ${verifiedRegressionProvenance?.mergedAt ?? "unknown"}
 regression_provenance_reviewed_sha: ${regressionProvenance && "reviewedCommitSha" in regressionProvenance ? regressionProvenance.reviewedCommitSha : "unknown"}
 regression_provenance_source_commit_sha: ${regressionProvenance?.sourceCommitSha ?? "unknown"}
@@ -676,14 +642,6 @@ review_structural_pull_state_digest: ${
       options.structuralRecord ? (options.structuralRecord.pullStateDigest ?? "none") : "unknown"
     }
 review_structural_cache_hit: false
-review_semantic_cache_version: ${options.semanticRecord?.version ?? "unknown"}
-review_semantic_fingerprint: ${options.semanticRecord?.fingerprint ?? "unknown"}
-review_semantic_code_digest: ${options.semanticRecord?.codeDigest ?? "unknown"}
-review_semantic_exact_digest: ${options.semanticRecord?.exactDigest ?? "unknown"}
-review_semantic_context_digest: ${options.semanticRecord?.contextDigest ?? "unknown"}
-review_semantic_eligible: ${options.semanticRecord?.eligible ?? false}
-review_semantic_eligibility_reason: ${options.semanticRecord?.eligibilityReason ?? "unknown"}
-review_semantic_cache_hit: false
 item_source_revision: ${options.context.sourceRevision ?? "unknown"}
 review_timeline_revision: ${options.context.timelineRevision ?? "unknown"}
 review_activity_cursor: ${options.context.pullReviewActivityCursor ?? "unknown"}
@@ -719,8 +677,10 @@ config_surface_change: ${configSurfaceChange.change}
 config_surface_keys: ${jsonFrontMatterValue(configSurfaceChange.keys)}
 data_model_change: ${dataModelChange.change}
 data_model_surfaces: ${jsonFrontMatterValue(dataModelChange.surfaces)}
-pr_surface_files: ${jsonFrontMatterValue(prSurfaceFiles)}
-pr_surface_files_truncated: ${pullFilesTruncated}
+sqlite_schema_change: ${sqliteSchemaChange.change}
+sqlite_schema_files: ${jsonFrontMatterValue(sqliteSchemaChange.files)}
+pr_surface_files: ${jsonFrontMatterValue(prSurfaceFiles ?? [])}
+pr_surface_files_truncated: ${prSurfaceFiles === null}
 item_category: ${options.decision.itemCategory}
 reproduction_status: ${options.decision.reproductionStatus}
 reproduction_confidence: ${options.decision.reproductionConfidence}
@@ -956,7 +916,6 @@ ${renderReviewContextBudget(options.context)}
     pullRequestFilePathsFromContextForTest,
     pullRequestFilePathsFromContext,
     updateReviewStructuralFrontMatter,
-    updateReviewSemanticFrontMatter,
     markdownFor,
   };
 }

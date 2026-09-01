@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import worker, {
   activeBayItemKeys,
+  composePublicBayActivityForTest,
+  publicBayActiveTargetsForTest,
   publicExactReviewQueueProjection,
+  publicStatusFreshness,
   publicStatusProjection as strictPublicStatusProjection,
+  publicWorkerLegacyBatchPathForTest,
 } from "../dashboard/worker.ts";
 
 const STATUS_NOW = "2026-08-15T12:00:00.000Z";
@@ -42,6 +47,12 @@ const UNAVAILABLE_PUBLIC_STATUS = {
   diagnostics: { errors: ["telemetry_unavailable"], error_count: 1 },
   dashboard_health: { conclusion: "needs_attention", severity: "amber" },
 };
+
+test("status cache generation changes with the Bay comparison schema", () => {
+  const source = readFileSync("dashboard/worker.ts", "utf8");
+  assert.match(source, /\/api\/status-cache\/v7\//);
+  assert.doesNotMatch(source, /\/api\/status-cache\/v6\//);
+});
 
 test("public status projection is fail-closed for nested identity-bearing metadata", () => {
   const input = {
@@ -282,6 +293,179 @@ test("public status projects publisher stages and a deduplicated aggregate witho
   assert.deepEqual(publicStatusProjection(projected), projected);
 });
 
+test("public Bay classifies scheduled batches without hiding direct recovery", () => {
+  assert.equal(
+    publicWorkerLegacyBatchPathForTest({
+      name: "Review shard 0 · openclaw/openclaw#41",
+    }),
+    true,
+  );
+  assert.equal(publicWorkerLegacyBatchPathForTest({ name: "Publish review artifacts" }), true);
+  assert.equal(
+    publicWorkerLegacyBatchPathForTest({ workflow_title: "Publish exact review batch" }),
+    true,
+  );
+  assert.equal(
+    publicWorkerLegacyBatchPathForTest({
+      name: "Publish exact review artifact",
+      current_step: "Replay committed direct lifecycle handoff",
+      steps: [
+        {
+          name: "Replay committed direct lifecycle handoff",
+          status: "in_progress",
+        },
+      ],
+    }),
+    true,
+  );
+  assert.equal(
+    publicWorkerLegacyBatchPathForTest({
+      name: "Publish exact review artifact",
+      steps: [
+        {
+          name: "Replay committed direct lifecycle handoff",
+          status: "completed",
+          conclusion: "failure",
+        },
+      ],
+    }),
+    true,
+  );
+  assert.equal(
+    publicWorkerLegacyBatchPathForTest({
+      name: "Publish exact review artifact",
+      steps: [
+        {
+          name: "Replay committed direct lifecycle handoff",
+          status: "completed",
+          conclusion: "success",
+        },
+      ],
+    }),
+    false,
+  );
+  assert.equal(
+    publicWorkerLegacyBatchPathForTest({
+      name: "Publish exact review artifact",
+      current_step: "Replay committed direct lifecycle handoff",
+      steps: [
+        {
+          name: "Replay committed direct lifecycle handoff",
+          status: "queued",
+        },
+      ],
+    }),
+    true,
+  );
+  assert.equal(
+    publicWorkerLegacyBatchPathForTest({
+      name: "Publish exact review artifact",
+      current_step: "Set up job",
+    }),
+    true,
+  );
+  assert.equal(
+    publicWorkerLegacyBatchPathForTest({
+      name: "Publish exact review artifact",
+      steps: [
+        {
+          name: "Fold exact live proof into the review artifact",
+          status: "completed",
+          conclusion: "success",
+        },
+      ],
+    }),
+    true,
+  );
+});
+
+test("public Bay keeps opposite-path direct queue work beside an active legacy worker", () => {
+  const emptyStages = {
+    arriving: 0,
+    "setting-up": 0,
+    reviewing: 0,
+    publishing: 0,
+    applying: 0,
+    repairing: 0,
+  };
+  const activity = composePublicBayActivityForTest(
+    {
+      complete: true,
+      stages: { ...emptyStages, "setting-up": 1 },
+      legacy_batch_stages: emptyStages,
+      active_overlaps: emptyStages,
+      legacy_batch_active_overlaps: emptyStages,
+      items: [
+        {
+          repository: "openclaw/openclaw",
+          item_number: 41,
+          stage: "setting-up",
+          legacy_batch_path: false,
+        },
+      ],
+    },
+    {
+      complete: true,
+      keys: [],
+      legacyKeys: ["openclaw/openclaw#41"],
+      stages: { ...emptyStages, publishing: 1 },
+      legacyBatchStages: { ...emptyStages, publishing: 1 },
+      items: [
+        {
+          repository: "openclaw/openclaw",
+          item_number: 41,
+          stage: "publishing",
+          source: "live",
+          legacy_batch_path: true,
+        },
+      ],
+    },
+  );
+
+  assert.equal(activity.complete, true);
+  assert.equal(activity.queue_stages["setting-up"], 1);
+  assert.equal(activity.live_legacy_batch_stages.publishing, 1);
+  assert.deepEqual(
+    activity.items?.map((item) => [item.source, item.legacy_batch_path]),
+    [
+      ["queue", false],
+      ["live", true],
+    ],
+  );
+});
+
+test("public Bay retains simultaneous direct and legacy workers for one target", () => {
+  const active = publicBayActiveTargetsForTest([
+    {
+      name: "Review exact item openclaw/openclaw#41",
+      repository: "openclaw/openclaw",
+      item_number: 41,
+      started_at: "2026-08-15T11:58:00.000Z",
+      current_step: "Review exact event item",
+      status: "in_progress",
+    },
+    {
+      name: "Publish exact review artifact",
+      repository: "openclaw/openclaw",
+      item_number: 41,
+      started_at: "2026-08-15T11:59:00.000Z",
+      current_step: "Set up job",
+      status: "in_progress",
+    },
+  ]);
+
+  assert.equal(active.complete, true);
+  assert.deepEqual(active.keys, ["openclaw/openclaw#41"]);
+  assert.deepEqual(active.legacyKeys, ["openclaw/openclaw#41"]);
+  assert.equal(active.stages.reviewing, 1);
+  assert.equal(active.stages.publishing, 1);
+  assert.equal(active.legacyBatchStages.publishing, 1);
+  assert.deepEqual(
+    active.items.map((item) => item.legacy_batch_path),
+    [false, true],
+  );
+});
+
 test("private active-key protection stays complete while public over-cap activity fails closed", () => {
   const manyWorkers = Array.from({ length: 101 }, (_, index) => ({
     repository: "synthetic-owner/synthetic-repository",
@@ -330,6 +514,7 @@ test("public status canonicalizes the disjoint Bay activity contract", () => {
     applying: 1,
     repairing: 0,
   };
+  const emptyStages = Object.fromEntries(Object.keys(stages).map((stage) => [stage, 0]));
   const projected = publicStatusProjection({
     exact_review_queue: {
       bay_projection: {
@@ -360,6 +545,8 @@ test("public status canonicalizes the disjoint Bay activity contract", () => {
     complete: true,
     queue_stages: stages,
     live_stages: liveStages,
+    queue_legacy_batch_stages: emptyStages,
+    live_legacy_batch_stages: emptyStages,
     total: 24,
   });
   assert.equal("active_overlaps" in projected.exact_review_queue.bay_projection, false);
@@ -386,6 +573,8 @@ test("public status canonicalizes the disjoint Bay activity contract", () => {
       complete: false,
       queue_stages: null,
       live_stages: null,
+      queue_legacy_batch_stages: null,
+      live_legacy_batch_stages: null,
       total: null,
     });
   }
@@ -402,6 +591,8 @@ test("public status canonicalizes the disjoint Bay activity contract", () => {
     complete: false,
     queue_stages: null,
     live_stages: null,
+    queue_legacy_batch_stages: null,
+    live_legacy_batch_stages: null,
     total: null,
   });
 
@@ -415,7 +606,14 @@ test("public status canonicalizes the disjoint Bay activity contract", () => {
     });
     assert.deepEqual(malformed.exact_review_queue.bay_projection, {
       complete: false,
-      activity: { complete: false, queue_stages: null, live_stages: null, total: null },
+      activity: {
+        complete: false,
+        queue_stages: null,
+        live_stages: null,
+        queue_legacy_batch_stages: null,
+        live_legacy_batch_stages: null,
+        total: null,
+      },
     });
   }
 });
@@ -527,6 +725,7 @@ test("public Bay references retain only allowlisted canonical GitHub coordinates
             job_url: "https://github.com/OpenClaw/ClawSweeper/actions/runs/7002/job/8002",
             run_id: 7002,
             job_id: 8002,
+            journey_duration_ms: 1_000,
             started_at: STATUS_NOW,
             steps: [
               {
@@ -558,6 +757,7 @@ test("public Bay references retain only allowlisted canonical GitHub coordinates
       item_number: 41,
       stage: "arriving",
       source: "queue",
+      legacy_batch_path: false,
       action: {
         repository: "openclaw/clawsweeper",
         run_id: 7001,
@@ -579,6 +779,7 @@ test("public Bay references retain only allowlisted canonical GitHub coordinates
       item_number: 43,
       stage: "reviewing",
       source: "live",
+      legacy_batch_path: false,
     },
   ]);
   assert.deepEqual(projected.bay.terminal_buffer, [
@@ -586,6 +787,8 @@ test("public Bay references retain only allowlisted canonical GitHub coordinates
       repository: "openclaw/openclaw",
       item_number: 45,
       outcome: "success",
+      journey_duration_ms: 1_000,
+      legacy_batch_path: false,
       action: {
         repository: "openclaw/clawsweeper",
         run_id: 7002,
@@ -901,6 +1104,20 @@ test("public status marks invalid roots and timestamp channels incomplete", () =
   }
 });
 
+test("public status freshness rejects a future generated timestamp", () => {
+  const now = Date.parse(STATUS_NOW);
+  assert.deepEqual(
+    publicStatusFreshness({ generated_at: new Date(now + 1).toISOString() }, "fresh", 60_000, now),
+    {
+      state: "unavailable",
+      cache_state: "fresh",
+      generated_at: null,
+      age_ms: null,
+      maximum_age_ms: 60_000,
+    },
+  );
+});
+
 test("public status filters a legacy cached body before it can be served", async () => {
   const originalCaches = globalThis.caches;
   const entries = new Map<string, Response>();
@@ -920,7 +1137,7 @@ test("public status filters a legacy cached body before it can be served", async
 
   try {
     await globalThis.caches.default.put(
-      new Request("https://clawsweeper.openclaw.ai/api/status-cache/v4/fresh"),
+      new Request("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/fresh"),
       new Response(
         JSON.stringify({
           schema_version: 1,
@@ -995,9 +1212,9 @@ test("public status filters a legacy cached body before it can be served", async
       error_count: 1,
     });
 
-    entries.delete("https://clawsweeper.openclaw.ai/api/status-cache/v4/fresh");
+    entries.delete("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/fresh");
     await globalThis.caches.default.put(
-      new Request("https://clawsweeper.openclaw.ai/api/status-cache/v4/stale"),
+      new Request("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/stale"),
       new Response(
         JSON.stringify({
           schema_version: 1,
@@ -1031,9 +1248,35 @@ test("public status filters a legacy cached body before it can be served", async
     assert.equal(staleResponse.headers.get("set-cookie"), null);
     assert.equal(staleResponse.headers.get("x-private-marker"), null);
 
-    entries.delete("https://clawsweeper.openclaw.ai/api/status-cache/v4/stale");
+    entries.delete("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/stale");
     await globalThis.caches.default.put(
-      new Request("https://clawsweeper.openclaw.ai/api/status-cache/v4/fresh"),
+      new Request("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/fresh"),
+      new Response(
+        JSON.stringify({
+          schema_version: 1,
+          generated_at: new Date().toISOString(),
+          fleet: { active_codex_jobs: 1 },
+        }),
+      ),
+    );
+    const rejectedResponse = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/status"),
+      {},
+    );
+    assert.deepEqual(await rejectedResponse.json(), {
+      ...UNAVAILABLE_PUBLIC_STATUS,
+      freshness: {
+        state: "unavailable",
+        cache_state: "fresh",
+        generated_at: null,
+        age_ms: null,
+        maximum_age_ms: 60_000,
+      },
+    });
+
+    entries.delete("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/fresh");
+    await globalThis.caches.default.put(
+      new Request("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/fresh"),
       new Response('{"schema_version":1,"generated_at":', {
         headers: { "x-private-marker": "synthetic-malformed-header" },
       }),
@@ -1042,7 +1285,16 @@ test("public status filters a legacy cached body before it can be served", async
       new Request("https://clawsweeper.openclaw.ai/api/status"),
       {},
     );
-    assert.deepEqual(await malformedResponse.json(), UNAVAILABLE_PUBLIC_STATUS);
+    assert.deepEqual(await malformedResponse.json(), {
+      ...UNAVAILABLE_PUBLIC_STATUS,
+      freshness: {
+        state: "unavailable",
+        cache_state: "fresh",
+        generated_at: null,
+        age_ms: null,
+        maximum_age_ms: 60_000,
+      },
+    });
     assert.equal(malformedResponse.headers.get("x-private-marker"), null);
   } finally {
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
@@ -1065,6 +1317,14 @@ test("public queue projection retains only closed operational aggregates", () =>
     dispatcher: {
       dispatch_failure_fingerprint: sentinel,
       dispatch_failure_detail: { workflow_title: sentinel },
+    },
+    scheduled_feed: {
+      target_rate_per_hour: 300,
+      burst: 50,
+      token_balance: 42,
+      throttle_source: sentinel,
+      lanes: { normal_backfill: { target_rate_per_hour: 200 } },
+      sentinel,
     },
     lanes: {
       review: {
@@ -1165,10 +1425,13 @@ test("public queue projection retains only closed operational aggregates", () =>
   assert.equal(projected.lanes.review.parked_reasons.unknown, 1);
   assert.equal(projected.handoff_health.status, "healthy");
   assert.equal(projected.pressure.status, "congested");
+  assert.deepEqual(projected.scheduled_feed, { target_rate_per_hour: 300 });
   assert.deepEqual(projected.bay_projection.activity, {
     complete: false,
     queue_stages: null,
     live_stages: null,
+    queue_legacy_batch_stages: null,
+    live_legacy_batch_stages: null,
     total: null,
   });
   assert.deepEqual(publicExactReviewQueueProjection(projected), projected);
@@ -1198,11 +1461,18 @@ test("public queue projection retains only closed operational aggregates", () =>
   assert.equal(JSON.stringify(statusProjected).includes(sentinel), false);
   assert.deepEqual(statusProjected.recent.closed_items, []);
   assert.deepEqual(statusProjected.exact_review_queue.collection, { state: "complete" });
+  assert.deepEqual(statusProjected.exact_review_queue.scheduled_feed, {
+    target_rate_per_hour: 300,
+  });
   assert.deepEqual(statusProjected.exact_review_queue.handoff_health.phases, {
     pending: { count: 7, oldest_at: null, oldest_age_seconds: null },
     dispatching: { count: 2, oldest_at: null, oldest_age_seconds: null },
     leased: { count: 1, oldest_at: null, oldest_age_seconds: null },
   });
+  assert.deepEqual(
+    strictPublicStatusProjection(statusProjected).exact_review_queue.scheduled_feed,
+    statusProjected.exact_review_queue.scheduled_feed,
+  );
 
   const highTotals = publicExactReviewQueueProjection({
     ...projected,
@@ -1217,6 +1487,21 @@ test("public queue projection retains only closed operational aggregates", () =>
   });
   assert.equal(highTotals.lanes.review.enqueued_total, 1_120_211);
   assert.equal(highTotals.lanes.review.completed_total, 1_120_299);
+
+  for (const scheduled_feed of [
+    undefined,
+    null,
+    {},
+    { target_rate_per_hour: 0 },
+    { target_rate_per_hour: 1.5 },
+    { target_rate_per_hour: 2_001 },
+    { target_rate_per_hour: "300" },
+  ]) {
+    assert.equal(
+      publicExactReviewQueueProjection({ ...source, scheduled_feed }).scheduled_feed,
+      null,
+    );
+  }
 
   const mismatches = [
     (value) => {
@@ -1464,6 +1749,7 @@ test("public queue HTTP route applies the closed projector before serialization"
       item_number: 47,
       stage: "arriving",
       source: "queue",
+      legacy_batch_path: false,
     },
   ]);
   assert.equal(serialized.includes("private-owner"), false);

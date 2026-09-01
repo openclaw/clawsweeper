@@ -5,12 +5,177 @@ import {
   renderReviewCommentFromReport,
   reviewAutomationMarkersFromReport,
 } from "../dist/clawsweeper.js";
+import { LIVE_VERIFICATION_MARKER } from "../dist/clawsweeper-policy.js";
+import type { LiveProofPlan } from "../dist/clawsweeper-types.js";
+import {
+  encodeLiveVerificationReportPayload,
+  liveProofPlanSha256,
+} from "../dist/live-proof/verification.js";
 import {
   detailsBody,
   prRatingReportSection,
   realBehaviorProofReportSection,
   reportFrontMatter,
 } from "./helpers.ts";
+
+for (const proofStatus of ["missing", "not_applicable"] as const) {
+  test(`failed ${proofStatus} reports do not retain positive public status labels`, () => {
+    const oldStatuses = ["status: 🚀 automerge armed", "status: 👀 ready for maintainer look"];
+    for (const malformedReceipt of [false, true]) {
+      for (const extraLabels of [
+        [],
+        ["clawsweeper:automerge"],
+        ["status: 🔁 re-review loop"],
+        ["status: 🛠️ actively grinding"],
+        ["clawsweeper:human-review"],
+      ]) {
+        const report = `${reportFrontMatter({
+          type: "pull_request",
+          number: "74466",
+          review_status: "failed",
+          author: "contributor",
+          author_association: "CONTRIBUTOR",
+          labels: JSON.stringify([...oldStatuses, ...extraLabels]),
+        })}
+${realBehaviorProofReportSection({
+  status: proofStatus,
+  evidenceKind: proofStatus === "missing" ? "none" : "not_applicable",
+  needsContributorAction: proofStatus === "missing",
+  summary: "Retained proof assessment from an incomplete review.",
+})}
+## Review Findings
+
+Overall correctness: patch is correct
+
+Full review comments:
+
+- none
+
+${malformedReceipt ? `## Live Proof\n\n${LIVE_VERIFICATION_MARKER}\nResult: invalid!` : ""}
+`;
+        const comment = renderReviewCommentFromReport(report, "none");
+        assert.match(comment, /## Merge readiness\n\nNot assessed\./);
+        assert.doesNotMatch(
+          comment,
+          /\*\*Add real behavior proof\*\*|add `status: 📣 needs proof`/,
+        );
+        const details = detailsBody(comment, "Label changes");
+        for (const oldStatus of oldStatuses) {
+          assert.ok(details.includes(`remove \`${oldStatus}\``), oldStatus);
+          assert.ok(!details.includes(`add \`${oldStatus}\``), oldStatus);
+        }
+        const workflowStatus = extraLabels.find((label) => label.startsWith("status:"));
+        if (workflowStatus) assert.ok(!details.includes(`remove \`${workflowStatus}\``));
+        assert.equal(
+          details.includes("add `status: needs maintainer proof decision`"),
+          malformedReceipt && !workflowStatus && !extraLabels.includes("clawsweeper:human-review"),
+        );
+        const markers = reviewAutomationMarkersFromReport(report);
+        assert.match(
+          markers,
+          new RegExp(`live_verification=${malformedReceipt ? "malformed" : "absent"}`),
+        );
+        assert.match(markers, /clawsweeper-verdict:needs-human/);
+        assert.doesNotMatch(markers, /clawsweeper-verdict:pass|clawsweeper-action:fix-required/);
+        assert.ok(comment.includes(markers));
+      }
+    }
+  });
+}
+
+test("report proof requirements preserve workflow precedence and contributor ownership", () => {
+  for (const fixture of [
+    {
+      status: "not_applicable",
+      action: false,
+      labels: ["clawsweeper:automerge"],
+      expected: "status: 📣 needs proof",
+    },
+    {
+      status: "not_applicable",
+      action: false,
+      labels: ["status: 📣 needs proof"],
+      expected: "status: 📣 needs proof",
+    },
+    {
+      status: "not_applicable",
+      action: false,
+      labels: ["status: 🔁 re-review loop"],
+      expected: "status: 🔁 re-review loop",
+    },
+    {
+      status: "not_applicable",
+      action: false,
+      labels: ["status: 🛠️ actively grinding"],
+      expected: "status: 🛠️ actively grinding",
+    },
+    {
+      status: "not_applicable",
+      action: false,
+      labels: ["clawsweeper:human-review"],
+      expected: null,
+    },
+    {
+      status: "not_applicable",
+      action: false,
+      labels: ["clawsweeper:manual-only"],
+      expected: null,
+    },
+    {
+      status: "not_applicable",
+      action: false,
+      labels: ["clawsweeper:merge-ready"],
+      expected: null,
+    },
+    {
+      status: "missing",
+      action: false,
+      labels: [],
+      expected: "status: needs maintainer proof decision",
+    },
+    {
+      status: "mock_only",
+      action: false,
+      labels: [],
+      expected: "status: needs maintainer proof decision",
+    },
+    {
+      status: "insufficient",
+      action: false,
+      labels: [],
+      expected: "status: needs maintainer proof decision",
+    },
+  ]) {
+    const report = `${reportFrontMatter({
+      type: "pull_request",
+      review_status: "complete",
+      author_association: "CONTRIBUTOR",
+      author: "contributor",
+      labels: JSON.stringify(fixture.labels),
+      pull_files: '["src/runtime.ts"]',
+      pull_files_truncated: false,
+    })}
+${realBehaviorProofReportSection({
+  status: fixture.status,
+  evidenceKind: fixture.status === "not_applicable" ? "not_applicable" : "none",
+  needsContributorAction: fixture.action,
+  summary: "Recorded assessment for the changed path.",
+})}`;
+    const comment = renderReviewCommentFromReport(report, "none");
+    const labels = detailsBody(comment, "Label changes");
+    assert.deepEqual(
+      [...labels.matchAll(/^- `(status: [^`]+)`: /gm)].map((match) => match[1]),
+      fixture.expected ? [fixture.expected] : [],
+      JSON.stringify(fixture),
+    );
+    assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:needs-human/);
+    assert.match(comment, /Blocked until .*real behavior proof/i);
+    if (fixture.status !== "not_applicable") {
+      assert.doesNotMatch(comment, /\*\*Add real behavior proof\*\*/);
+      assert.match(comment, /\*\*Resolve real behavior proof assessment\*\*/);
+    }
+  }
+});
 
 test("sufficient real behavior proof allows automerge pass markers", () => {
   const report = `${reportFrontMatter({
@@ -132,6 +297,258 @@ Full review comments:
     /- `rating: 🧂 unranked krab`: Overall readiness is 🧂 unranked krab; proof is 🧂 unranked krab and patch quality is 🦞 diamond lobster\./,
   );
   assert.doesNotMatch(labelDetails, /PR readiness rating was derived from proof quality/);
+});
+
+test("active repair-loop statuses outrank proof fallback without preserving stale automerge", () => {
+  const cases = [
+    {
+      labels: ["clawsweeper:automerge", "status: 🔁 re-review loop"],
+      expected: "status: 🔁 re-review loop",
+    },
+    {
+      labels: ["clawsweeper:automerge", "status: 🛠️ actively grinding"],
+      expected: "status: 🛠️ actively grinding",
+    },
+    {
+      labels: ["clawsweeper:automerge"],
+      expected: "status: 📣 needs proof",
+    },
+  ];
+
+  for (const [index, fixture] of cases.entries()) {
+    const report = `${reportFrontMatter({
+      type: "pull_request",
+      number: String(74500 + index),
+      decision: "keep_open",
+      close_reason: "none",
+      review_status: "complete",
+      confidence: "high",
+      author: "contributor",
+      author_association: "CONTRIBUTOR",
+      labels: JSON.stringify(fixture.labels),
+      work_candidate: "none",
+      pull_head_sha: "abc123def456",
+    })}
+
+## Summary
+
+Keep this PR in its current repair-loop state.
+
+## What This Changes
+
+Updates the reviewed implementation.
+
+## Best Possible Solution
+
+Complete the active review workflow before merge.
+
+${realBehaviorProofReportSection({
+  status: "insufficient",
+  evidenceKind: "none",
+  needsContributorAction: true,
+  summary: "The current review has no usable real behavior proof.",
+})}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+    const comment = renderReviewCommentFromReport(report, "none", {
+      previousLabels: ["status: 🚀 automerge armed"],
+    });
+    const labelDetails = detailsBody(comment, "Label changes");
+
+    assert.match(labelDetails, new RegExp(`add \`${fixture.expected}\``));
+    assert.match(labelDetails, /remove `status: 🚀 automerge armed`/);
+  }
+});
+
+test("recorded proof reconciles public proof statuses independently of historical receipts", () => {
+  const headSha = "a".repeat(40);
+  const plan: LiveProofPlan = {
+    status: "recommended",
+    surface: "terminal",
+    terminalCompletion: "exit_zero",
+    reason: "The changed CLI output is visible.",
+    payoff: {
+      kind: "progressive_output",
+      justification: "The viewer sees the clean help output.",
+    },
+    entry: "node scripts/run-node.mjs --help",
+    steps: [{ action: "expect_output", text: "Usage: openclaw" }],
+  };
+  const attachedVerification = `${LIVE_VERIFICATION_MARKER}
+Result: ${encodeLiveVerificationReportPayload({
+    schema_version: 1,
+    repo: "openclaw/openclaw",
+    item: 74510,
+    head_sha: headSha,
+    plan_sha256: liveProofPlanSha256(plan),
+    surface: "terminal",
+    entry: "node scripts/run-node.mjs --help",
+    drive_status: "completed",
+    steps: [
+      {
+        action: "expect_output",
+        status: "completed",
+        detail: "clean help output was observed",
+        assertion: "Usage: openclaw",
+        present_at_start: false,
+        satisfied: true,
+      },
+    ],
+    output: "Usage: openclaw",
+    overall_pass: true,
+    verified_at: "2026-08-27T12:00:00.000Z",
+  })}`;
+  const cases = [
+    {
+      labels: ["clawsweeper:automerge", "status: 📣 needs proof"],
+      stale: "status: 📣 needs proof",
+      expected: "status: 📣 needs proof",
+      resolvedExpected: "status: 🚀 automerge armed",
+    },
+    {
+      labels: ["status: needs maintainer proof decision", "status: 👀 ready for maintainer look"],
+      stale: "status: needs maintainer proof decision",
+      expected: "status: 📣 needs proof",
+      resolvedExpected: "status: 👀 ready for maintainer look",
+    },
+    {
+      labels: ["status: 📣 needs proof"],
+      stale: "status: 📣 needs proof",
+      expected: "status: 📣 needs proof",
+      resolvedExpected: null,
+    },
+    {
+      labels: ["status: needs maintainer proof decision"],
+      stale: "status: needs maintainer proof decision",
+      expected: "status: 📣 needs proof",
+      resolvedExpected: null,
+    },
+    {
+      labels: ["status: 🚀 automerge armed", "status: 📣 needs proof", "status: 🔁 re-review loop"],
+      stale: "status: 📣 needs proof",
+      expected: "status: 🔁 re-review loop",
+    },
+    {
+      labels: [
+        "status: 🚀 automerge armed",
+        "status: 📣 needs proof",
+        "status: 🛠️ actively grinding",
+      ],
+      stale: "status: 📣 needs proof",
+      expected: "status: 🛠️ actively grinding",
+    },
+  ];
+
+  for (const fixture of cases) {
+    for (const sufficient of [false, true]) {
+      const report = `${reportFrontMatter({
+        type: "pull_request",
+        number: "74510",
+        decision: "keep_open",
+        close_reason: "none",
+        review_status: "complete",
+        confidence: "high",
+        author: "contributor",
+        author_association: "CONTRIBUTOR",
+        labels: JSON.stringify(fixture.labels),
+        work_candidate: "none",
+        pull_head_sha: headSha,
+      })}
+
+## Summary
+
+Keep this PR open for its current review status.
+
+## What This Changes
+
+Updates the reviewed implementation.
+
+## Best Possible Solution
+
+Honor the attached verification result and current non-proof status.
+
+${realBehaviorProofReportSection({
+  status: sufficient ? "sufficient" : "missing",
+  evidenceKind: sufficient ? "recording" : "none",
+  needsContributorAction: !sufficient,
+  summary: sufficient
+    ? "Reviewer-assessed recording exercises the changed authorization boundary."
+    : "The model did not record real behavior proof.",
+})}
+
+## Live Proof
+
+Status: recommended
+
+Surface: terminal
+
+Terminal completion: exit_zero
+
+Reason: The changed CLI output is visible.
+
+Payoff: progressive_output
+
+Payoff justification: The viewer sees the clean help output.
+
+Entry: node scripts/run-node.mjs --help
+
+Steps:
+
+- {"action":"expect_output","text":"Usage: openclaw"}
+
+${attachedVerification}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+      const expected =
+        sufficient && fixture.resolvedExpected !== undefined
+          ? fixture.resolvedExpected
+          : fixture.expected;
+      for (const attached of [true, false]) {
+        const currentReport = attached ? report : report.replace(attachedVerification, "");
+        const comment = renderReviewCommentFromReport(currentReport, "none", {
+          previousLabels: [fixture.stale],
+        });
+        const labelDetails = detailsBody(comment, "Label changes");
+        // Existing stale labels can be justified without an add line; inspect the selected status.
+        const justifiedStatuses = [...labelDetails.matchAll(/^- `(status: [^`]+)`: /gm)].map(
+          (match) => match[1],
+        );
+        const context = `${fixture.stale}: sufficient=${sufficient}, attached=${attached}`;
+        assert.deepEqual(justifiedStatuses, expected ? [expected] : [], context);
+        if (expected !== fixture.stale) {
+          assert.ok(labelDetails.includes(`remove \`${fixture.stale}\``), context);
+        }
+        assert.equal(/add `proof: sufficient`/.test(labelDetails), sufficient, context);
+        if (!sufficient) {
+          assert.doesNotMatch(
+            reviewAutomationMarkersFromReport(currentReport),
+            /clawsweeper-verdict:pass/,
+            context,
+          );
+        }
+      }
+    }
+  }
 });
 
 test("failed Codex review comments suppress PR readiness ratings", () => {
@@ -426,7 +843,7 @@ Full review comments:
       "merge-risk: 🚨 compatibility",
       "proof: sufficient",
       "proof: 🎥 video",
-      "mantis: telegram-visible-proof",
+      "proof: telegram-e2e",
       "status: 📣 needs proof",
     ],
   });
@@ -451,7 +868,7 @@ Full review comments:
   );
   assert.match(
     comment,
-    /- remove `mantis: telegram-visible-proof`: Current Telegram visible-proof status is not_needed\./,
+    /- remove `proof: telegram-e2e`: Current Telegram visible-proof status is not_needed\./,
   );
   assert.doesNotMatch(comment, /remove `status: 📣 needs proof`/);
 });
@@ -578,7 +995,7 @@ Full review comments:
       "merge-risk: 🚨 compatibility",
       "proof: sufficient",
       "proof: 🎥 video",
-      "mantis: telegram-visible-proof",
+      "proof: telegram-e2e",
       "status: 📣 needs proof",
     ],
   });
@@ -603,7 +1020,7 @@ Full review comments:
   );
   assert.match(
     comment,
-    /- remove `mantis: telegram-visible-proof`: Current Telegram visible-proof status is not_needed\./,
+    /- remove `proof: telegram-e2e`: Current Telegram visible-proof status is not_needed\./,
   );
   assert.doesNotMatch(comment, /remove `status: 📣 needs proof`/);
 });

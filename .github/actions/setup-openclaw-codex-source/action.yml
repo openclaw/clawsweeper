@@ -1,0 +1,40 @@
+name: Setup OpenClaw Codex source
+description: Materialize the OpenClaw-pinned Codex source beside review checkouts.
+inputs:
+  target-repo:
+    description: Repository being reviewed.
+    required: true
+  target-dir:
+    description: Target repository checkout path.
+    required: true
+  review-artifact-dir:
+    description: Artifact directory where PR review trees are materialized.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Normalize target repository
+      id: target
+      shell: bash
+      env:
+        TARGET_REPOSITORY: ${{ inputs.target-repo }}
+      run: echo "repository=$(printf '%s' "$TARGET_REPOSITORY" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+    - name: Restore Codex source object cache
+      if: ${{ steps.target.outputs.repository == 'openclaw/openclaw' && env.CLAWSWEEPER_RUNNER != 'openclaw' }}
+      uses: actions/cache@v6
+      with:
+        path: ${{ inputs.target-dir }}-codex-cache.git
+        key: ${{ runner.os }}-openclaw-codex-source-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |
+          ${{ runner.os }}-openclaw-codex-source-
+
+    - name: Materialize pinned Codex source
+      if: ${{ steps.target.outputs.repository == 'openclaw/openclaw' && env.CLAWSWEEPER_RUNNER != 'openclaw' }}
+      shell: bash
+      run: |
+        "$GITHUB_ACTION_PATH/install.sh" \
+          "${{ steps.target.outputs.repository }}" \
+          "${{ inputs.target-dir }}" \
+          "${{ inputs.review-artifact-dir }}" \
+          "${{ inputs.target-dir }}-codex-cache.git"

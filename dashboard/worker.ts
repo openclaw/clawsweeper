@@ -57,6 +57,11 @@ import {
   type ExactReviewIngress,
 } from "./exact-review-queue.ts";
 import {
+  EXACT_REVIEW_QUEUE_TRACE_HEADER,
+  exactReviewQueueEndpointTemplate,
+  newExactReviewQueueTraceId,
+} from "./exact-review-queue-observability.ts";
+import {
   AUTOMERGE_METRICS_EVENT_TYPE,
   AUTOMERGE_METRICS_EVENT_KEY_PREFIX,
   AUTOMERGE_METRICS_EVENT_ID_KEY_PREFIX,
@@ -494,6 +499,7 @@ const PR_PROOF_LABEL_NAMES = [
   "proof: sufficient",
   "proof: override",
   "mantis: telegram-visible-proof",
+  "proof: telegram-e2e",
 ];
 const TRIAGE_VIEWS = [
   {
@@ -586,8 +592,8 @@ const PR_PROOF_VIEWS = [
   {
     id: "telegram-proof",
     title: "Telegram proof",
-    description: "PRs where Mantis should capture Telegram visible proof.",
-    allLabels: ["mantis: telegram-visible-proof"],
+    description: "PRs that need Telegram Test Server proof with the repository E2E skill.",
+    anyLabels: ["mantis: telegram-visible-proof", "proof: telegram-e2e"],
     itemLimit: 100,
   },
   {
@@ -691,6 +697,9 @@ export class StatusStore {
         body?.closed_items,
         generatedAt,
         body?.active_item_keys,
+        body?.completed_reviews,
+        body?.completed_reviews_authoritative,
+        body?.active_item_keys_authoritative,
       );
       if (
         currentValue &&
@@ -1032,6 +1041,21 @@ export default {
       request.method === "POST"
     )
       return authenticatedExactReviewOperatorRequest(request, env, "/lifecycle-audit/inventory");
+    if (
+      url.pathname === "/internal/exact-review/telemetry-reconciliation" &&
+      request.method === "POST"
+    ) {
+      const scope = new URLSearchParams();
+      for (const repository of verifiedPublicBayRepositories(env)) {
+        scope.append("public_repo", repository);
+      }
+      const query = scope.size ? `?${scope.toString()}` : "";
+      return authenticatedExactReviewOperatorRequest(
+        request,
+        env,
+        `/telemetry-reconciliation${query}`,
+      );
+    }
     if (url.pathname === "/internal/exact-review/dead-letters/replay" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/dead-letters/replay");
     if (
@@ -1230,10 +1254,11 @@ export default {
 
 async function statusJson(request, env, ctx) {
   const cache = caches.default;
-  const cached = await cache.match(statusCacheRequest(request, "fresh"));
+  const publicBayScope = publicBayRepositoryScope(verifiedPublicBayRepositories(env));
+  const cached = await cache.match(statusCacheRequest(request, "fresh", publicBayScope));
   if (cached) return cachedStatusResponse(cached, "fresh", env);
 
-  const stale = await cache.match(statusCacheRequest(request, "stale"));
+  const stale = await cache.match(statusCacheRequest(request, "stale", publicBayScope));
   if (stale && ctx?.waitUntil) {
     ctx.waitUntil(refreshStatus(request, env).catch(() => undefined));
     return cachedStatusResponse(stale, "stale", env);
@@ -1287,14 +1312,121 @@ async function healthHistoryJson(request: Request, env: DashboardEnv) {
   const samples = [...samplesBySlot.values()]
     .sort((left, right) => Date.parse(left.at) - Date.parse(right.at))
     .slice(-sampleLimit);
+  const contract = publicHealthHistoryContract(range, samples, now);
   return cors(
     json({
       schema_version: 1,
       range,
       retention_days: HEALTH_HISTORY_RETENTION_DAYS,
+      generated_at: new Date(now).toISOString(),
+      coverage: contract.coverage,
+      freshness: contract.freshness,
       samples,
     }),
   );
+}
+
+export function publicHealthHistoryContract(range, samples, now = Date.now()) {
+  const rangeMs =
+    range === "6h"
+      ? 6 * 60 * 60 * 1000
+      : range === "7d"
+        ? 7 * 24 * 60 * 60 * 1000
+        : range === "24h"
+          ? 24 * 60 * 60 * 1000
+          : 0;
+  if (!rangeMs || !Number.isFinite(now)) {
+    return {
+      coverage: {
+        state: "unavailable",
+        expected_slots: null,
+        observed_slots: null,
+        usable_slots: null,
+        failed_slots: null,
+        missing_slots: null,
+        coverage_percent: null,
+        largest_gap_slots: null,
+        largest_gap_ms: null,
+        window_started_at: null,
+        window_ended_at: null,
+      },
+      freshness: {
+        state: "unavailable",
+        latest_sample_at: null,
+        age_ms: null,
+        maximum_age_ms: 12 * 60_000,
+      },
+    };
+  }
+  const windowStartedAt = now - rangeMs;
+  const firstExpectedSlot = Math.ceil(windowStartedAt / HEALTH_HISTORY_SAMPLE_MS);
+  const lastExpectedSlot = Math.floor(now / HEALTH_HISTORY_SAMPLE_MS);
+  const expectedSlots = Math.max(0, lastExpectedSlot - firstExpectedSlot + 1);
+  const observed = new Map<number, { at: number; usable: boolean }>();
+  for (const sample of Array.isArray(samples) ? samples : []) {
+    const at = Date.parse(String(sample?.at || ""));
+    if (!Number.isFinite(at)) continue;
+    const collectionOk = sample?.exact_review?.collection_ok;
+    if (typeof collectionOk !== "boolean") continue;
+    const slot = Math.floor(at / HEALTH_HISTORY_SAMPLE_MS);
+    if (slot < firstExpectedSlot || slot > lastExpectedSlot) continue;
+    const current = observed.get(slot);
+    if (!current || current.at < at) {
+      observed.set(slot, {
+        at,
+        usable: collectionOk,
+      });
+    }
+  }
+  const usable = new Set<number>();
+  let latestSampleAt: number | null = null;
+  for (const [slot, sample] of observed) {
+    if (!sample.usable) continue;
+    usable.add(slot);
+    latestSampleAt = Math.max(latestSampleAt ?? sample.at, sample.at);
+  }
+  let largestGapSlots = 0;
+  let currentGapSlots = 0;
+  for (let slot = firstExpectedSlot; slot <= lastExpectedSlot; slot += 1) {
+    if (usable.has(slot)) currentGapSlots = 0;
+    else {
+      currentGapSlots += 1;
+      largestGapSlots = Math.max(largestGapSlots, currentGapSlots);
+    }
+  }
+  const observedSlots = observed.size;
+  const usableSlots = usable.size;
+  const failedSlots = observedSlots - usableSlots;
+  const missingSlots = Math.max(0, expectedSlots - observedSlots);
+  const freshnessMaximumAgeMs = 12 * 60_000;
+  const ageMs = latestSampleAt === null ? null : Math.max(0, now - latestSampleAt);
+  return {
+    coverage: {
+      state:
+        latestSampleAt === null
+          ? "unavailable"
+          : usableSlots === expectedSlots
+            ? "complete"
+            : "partial",
+      expected_slots: expectedSlots,
+      observed_slots: observedSlots,
+      usable_slots: usableSlots,
+      failed_slots: failedSlots,
+      missing_slots: missingSlots,
+      coverage_percent:
+        expectedSlots === 0 ? null : Math.round((usableSlots / expectedSlots) * 10_000) / 100,
+      largest_gap_slots: largestGapSlots,
+      largest_gap_ms: largestGapSlots * HEALTH_HISTORY_SAMPLE_MS,
+      window_started_at: new Date(windowStartedAt).toISOString(),
+      window_ended_at: new Date(now).toISOString(),
+    },
+    freshness: {
+      state: ageMs === null ? "unavailable" : ageMs <= freshnessMaximumAgeMs ? "fresh" : "stale",
+      latest_sample_at: latestSampleAt === null ? null : new Date(latestSampleAt).toISOString(),
+      age_ms: ageMs,
+      maximum_age_ms: freshnessMaximumAgeMs,
+    },
+  };
 }
 
 function healthHistoryDates(fromMs: number, toMs: number) {
@@ -1451,7 +1583,10 @@ const PUBLIC_STATUS_TEXT_VALUES = new Set([
   "congested",
   "commit-review",
   "completed",
+  "completed_exact_review_lifecycles",
   "completed_review_journeys",
+  "durable_exact_review_lifecycles",
+  "verified_final_review_receipts",
   "degraded",
   "exact-review",
   "6h",
@@ -1502,6 +1637,7 @@ const PUBLIC_STATUS_TEXT_VALUES = new Set([
   "unresolved",
   "unknown",
   "waiting",
+  "warming",
   "workflow",
   "workflow-fallback",
   "malformed",
@@ -1524,6 +1660,7 @@ const PUBLIC_STATUS_TEXT_VALUES = new Set([
 
 const PUBLIC_STATUS_TEXT_FIELDS = new Set([
   "conclusion",
+  "completion_source",
   "mode",
   "outcome",
   "reason",
@@ -1533,6 +1670,7 @@ const PUBLIC_STATUS_TEXT_FIELDS = new Set([
   "stage",
   "state",
   "status",
+  "metrics_state",
   "terminal_outcome",
   "work_kind",
 ]);
@@ -1540,6 +1678,7 @@ const PUBLIC_STATUS_TEXT_FIELDS = new Set([
 const PUBLIC_STATUS_TIME_FIELDS = new Set([
   "at",
   "completed_at",
+  "ended_at",
   "generated_at",
   "observed_at",
   "oldest_at",
@@ -1551,6 +1690,7 @@ const PUBLIC_STATUS_TIME_FIELDS = new Set([
   "next_attempt_at",
   "next_wake_at",
   "last_tide_at",
+  "timing_coverage_started_at",
   "received_at",
   "since",
   "started_at",
@@ -1677,6 +1817,8 @@ const PUBLIC_STATUS_COUNT_FIELDS = new Set([
   "longest_duration_ms",
   "maximum_age_ms",
   "median_ms",
+  "journey_duration_ms",
+  "bucket_minutes",
   "oldest_age_seconds",
   "oldest_dispatching_age_seconds",
   "oldest_leased_age_seconds",
@@ -1685,6 +1827,7 @@ const PUBLIC_STATUS_COUNT_FIELDS = new Set([
   "ready_pending",
   "admissible_pending",
   "scheduled_interval_minutes",
+  "target_rate_per_hour",
   "terminal_count",
   "total_count",
   "total_duration_ms",
@@ -1755,7 +1898,10 @@ const PUBLIC_STATUS_CONTAINER_FIELDS = new Set([
   "timeline",
   "ci",
   "timings",
+  "history",
+  "points",
   "overall",
+  "including_legacy_batch",
   "terminal_buffer",
   "recently_washed",
   "cluster_repair",
@@ -1800,10 +1946,15 @@ const PUBLIC_STATUS_CONTAINER_FIELDS = new Set([
   "dispatching",
   "leased",
   "pressure",
+  "scheduled_feed",
   "bay_projection",
   "activity",
   "queue_stages",
   "live_stages",
+  "legacy_batch_stages",
+  "legacy_batch_active_overlaps",
+  "queue_legacy_batch_stages",
+  "live_legacy_batch_stages",
   "stages",
   "active_stages",
   "window",
@@ -1823,8 +1974,10 @@ const PUBLIC_STATUS_BOOLEAN_FIELDS = new Set([
   "public_projection_complete",
   "recovered",
   "telemetry_complete",
+  "timing_coverage_complete",
   "workflow_run_census_complete",
   "durable_server_observed",
+  "legacy_batch_path",
 ]);
 const PUBLIC_BAY_STAGES = [
   "arriving",
@@ -1917,6 +2070,7 @@ type PublicBayReference = {
   item_number: number;
   stage: (typeof PUBLIC_BAY_STAGES)[number];
   source: "queue" | "live";
+  legacy_batch_path: boolean;
   action?: PublicBayAction;
 };
 
@@ -2133,6 +2287,7 @@ function publicBayReference(
     typeof source.source === "string" && PUBLIC_BAY_REFERENCE_SOURCES.has(source.source)
       ? source.source
       : fallbackSource;
+  const legacyBatchPath = source.legacy_batch_path;
   if (
     !PUBLIC_BAY_REPOSITORY_PATTERN.test(repository) ||
     typeof itemNumber !== "number" ||
@@ -2140,7 +2295,8 @@ function publicBayReference(
     itemNumber <= 0 ||
     itemNumber > PUBLIC_BAY_ITEM_NUMBER_LIMIT ||
     !PUBLIC_BAY_STAGE_SET.has(stage) ||
-    !referenceSource
+    !referenceSource ||
+    (legacyBatchPath !== undefined && typeof legacyBatchPath !== "boolean")
   ) {
     return null;
   }
@@ -2152,6 +2308,7 @@ function publicBayReference(
     item_number: itemNumber,
     stage: stage as (typeof PUBLIC_BAY_STAGES)[number],
     source: referenceSource,
+    legacy_batch_path: legacyBatchPath === true,
     ...(action ? { action } : {}),
   };
 }
@@ -2169,7 +2326,7 @@ function publicBayReferences(
     const reference = publicBayReference(entry, allowedRepositories, fallbackSource);
     if (reference === null) return [];
     if (reference === undefined) continue;
-    const key = `${reference.repository}#${reference.item_number}`;
+    const key = `${reference.source}:${reference.legacy_batch_path ? "legacy" : "direct"}:${reference.repository}#${reference.item_number}`;
     if (seen.has(key)) continue;
     seen.add(key);
     references.push(reference);
@@ -2183,6 +2340,8 @@ function publicBayTerminalOutcome(value, allowedRepositories: ReadonlySet<string
   if (!PUBLIC_BAY_OUTCOMES.has(outcome)) return null;
   const explicitRepository = typeof source.repository === "string" ? source.repository.trim() : "";
   const explicitNumber = source.item_number ?? source.number;
+  const journeyDuration = source.journey_duration_ms;
+  const legacyBatchPath = source.legacy_batch_path;
   const itemKey = typeof source.item_key === "string" ? source.item_key.trim() : "";
   const keyMatch = itemKey.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)$/);
   const repository = explicitRepository || keyMatch?.[1] || "";
@@ -2196,10 +2355,18 @@ function publicBayTerminalOutcome(value, allowedRepositories: ReadonlySet<string
     typeof itemNumber === "number" &&
     Number.isSafeInteger(itemNumber) &&
     itemNumber > 0 &&
-    itemNumber <= PUBLIC_BAY_ITEM_NUMBER_LIMIT
+    itemNumber <= PUBLIC_BAY_ITEM_NUMBER_LIMIT &&
+    (legacyBatchPath === undefined || typeof legacyBatchPath === "boolean")
   ) {
     const canonicalRepository = repository.toLowerCase();
     if (allowedRepositories.has(canonicalRepository)) {
+      if (
+        !Number.isSafeInteger(journeyDuration) ||
+        journeyDuration < 0 ||
+        journeyDuration > 24 * 60 * 60 * 1000
+      ) {
+        return { outcome };
+      }
       const action = publicBayActionFromWorker(
         { ...source, status: "completed", run_url: source.run_url ?? source.job_url },
         allowedRepositories,
@@ -2208,6 +2375,8 @@ function publicBayTerminalOutcome(value, allowedRepositories: ReadonlySet<string
         repository: canonicalRepository,
         item_number: itemNumber,
         outcome,
+        journey_duration_ms: journeyDuration,
+        legacy_batch_path: legacyBatchPath === true,
         ...(action ? { action } : {}),
       };
     }
@@ -2223,19 +2392,64 @@ function publicBayTerminalOutcomes(value, limit, allowedRepositories: ReadonlySe
 function publicBayActivity(value, allowedRepositories: ReadonlySet<string>) {
   const source = objectValue(value);
   if (source.complete !== true) {
-    return { complete: false, queue_stages: null, live_stages: null, total: null };
+    return {
+      complete: false,
+      queue_stages: null,
+      live_stages: null,
+      queue_legacy_batch_stages: null,
+      live_legacy_batch_stages: null,
+      total: null,
+    };
   }
   const queueStages = publicBayStageCounts(source.queue_stages, true);
   const liveStages = publicBayStageCounts(source.live_stages, true);
+  const queueLegacyBatchStages = Object.prototype.hasOwnProperty.call(
+    source,
+    "queue_legacy_batch_stages",
+  )
+    ? publicBayStageCounts(source.queue_legacy_batch_stages, true)
+    : emptyPublicBayStageCounts();
+  const liveLegacyBatchStages = Object.prototype.hasOwnProperty.call(
+    source,
+    "live_legacy_batch_stages",
+  )
+    ? publicBayStageCounts(source.live_legacy_batch_stages, true)
+    : emptyPublicBayStageCounts();
   const total = typeof source.total === "number" ? source.total : Number.NaN;
   const expected =
     queueStages && liveStages
       ? PUBLIC_BAY_STAGES.reduce((sum, stage) => sum + queueStages[stage] + liveStages[stage], 0)
       : -1;
-  if (!queueStages || !liveStages || !Number.isSafeInteger(total) || total !== expected) {
-    return { complete: false, queue_stages: null, live_stages: null, total: null };
+  if (
+    !queueStages ||
+    !liveStages ||
+    !queueLegacyBatchStages ||
+    !liveLegacyBatchStages ||
+    !Number.isSafeInteger(total) ||
+    total !== expected ||
+    PUBLIC_BAY_STAGES.some(
+      (stage) =>
+        queueLegacyBatchStages[stage] > queueStages[stage] ||
+        liveLegacyBatchStages[stage] > liveStages[stage],
+    )
+  ) {
+    return {
+      complete: false,
+      queue_stages: null,
+      live_stages: null,
+      queue_legacy_batch_stages: null,
+      live_legacy_batch_stages: null,
+      total: null,
+    };
   }
-  const result = { complete: true, queue_stages: queueStages, live_stages: liveStages, total };
+  const result = {
+    complete: true,
+    queue_stages: queueStages,
+    live_stages: liveStages,
+    queue_legacy_batch_stages: queueLegacyBatchStages,
+    live_legacy_batch_stages: liveLegacyBatchStages,
+    total,
+  };
   const items = publicBayReferences(
     source.items,
     PUBLIC_BAY_ACTIVITY_REFERENCE_LIMIT,
@@ -2247,6 +2461,9 @@ function publicBayActivity(value, allowedRepositories: ReadonlySet<string>) {
 function publicBayProjectionValue(value, allowedRepositories: ReadonlySet<string> = new Set()) {
   const source = objectValue(value);
   const stages = publicBayStageCounts(source.stages, true);
+  const legacyBatchStages = Object.prototype.hasOwnProperty.call(source, "legacy_batch_stages")
+    ? publicBayStageCounts(source.legacy_batch_stages, true)
+    : emptyPublicBayStageCounts();
   const sampleLimit = typeof source.sample_limit === "number" ? source.sample_limit : Number.NaN;
   const total = typeof source.total === "number" ? source.total : Number.NaN;
   const expectedTotal = stages
@@ -2256,6 +2473,8 @@ function publicBayProjectionValue(value, allowedRepositories: ReadonlySet<string
     source.complete === true &&
     sampleLimit === 24 &&
     stages !== null &&
+    legacyBatchStages !== null &&
+    !PUBLIC_BAY_STAGES.some((stage) => legacyBatchStages[stage] > stages[stage]) &&
     Number.isSafeInteger(total) &&
     total >= 0 &&
     total <= 10_000 &&
@@ -2264,7 +2483,14 @@ function publicBayProjectionValue(value, allowedRepositories: ReadonlySet<string
   if (!complete) {
     return {
       complete: false,
-      activity: { complete: false, queue_stages: null, live_stages: null, total: null },
+      activity: {
+        complete: false,
+        queue_stages: null,
+        live_stages: null,
+        queue_legacy_batch_stages: null,
+        live_legacy_batch_stages: null,
+        total: null,
+      },
     };
   }
   const result = {
@@ -2272,9 +2498,17 @@ function publicBayProjectionValue(value, allowedRepositories: ReadonlySet<string
     sample_limit: sampleLimit,
     total,
     stages,
+    legacy_batch_stages: legacyBatchStages,
     activity: hasActivity
       ? publicBayActivity(source.activity, allowedRepositories)
-      : { complete: false, queue_stages: null, live_stages: null, total: null },
+      : {
+          complete: false,
+          queue_stages: null,
+          live_stages: null,
+          queue_legacy_batch_stages: null,
+          live_legacy_batch_stages: null,
+          total: null,
+        },
   };
   const items = publicBayReferences(
     source.items,
@@ -2291,41 +2525,96 @@ function composePublicBayActivity(
   allowedRepositories: ReadonlySet<string>,
 ) {
   if (objectValue(projection).complete !== true || !activeTargets.complete) {
-    return { complete: false, queue_stages: null, live_stages: null, total: null };
+    return {
+      complete: false,
+      queue_stages: null,
+      live_stages: null,
+      queue_legacy_batch_stages: null,
+      live_legacy_batch_stages: null,
+      total: null,
+    };
   }
   const stages = publicBayStageCounts(objectValue(projection).stages, true);
   const overlaps = publicBayStageCounts(objectValue(projection).active_overlaps, true);
   const liveStages = publicBayStageCounts(activeTargets.stages, true);
-  if (!stages || !overlaps || !liveStages) {
-    return { complete: false, queue_stages: null, live_stages: null, total: null };
+  const legacyBatchStages =
+    publicBayStageCounts(objectValue(projection).legacy_batch_stages, true) ??
+    emptyPublicBayStageCounts();
+  const legacyBatchOverlaps =
+    publicBayStageCounts(objectValue(projection).legacy_batch_active_overlaps, true) ??
+    emptyPublicBayStageCounts();
+  const liveLegacyBatchStages = publicBayStageCounts(activeTargets.legacyBatchStages, true);
+  if (!stages || !overlaps || !liveStages || !liveLegacyBatchStages) {
+    return {
+      complete: false,
+      queue_stages: null,
+      live_stages: null,
+      queue_legacy_batch_stages: null,
+      live_legacy_batch_stages: null,
+      total: null,
+    };
   }
   const queueStages = {} as Record<(typeof PUBLIC_BAY_STAGES)[number], number>;
+  const queueLegacyBatchStages = {} as Record<(typeof PUBLIC_BAY_STAGES)[number], number>;
   for (const stage of PUBLIC_BAY_STAGES) {
-    if (overlaps[stage] > stages[stage]) {
-      return { complete: false, queue_stages: null, live_stages: null, total: null };
+    if (
+      overlaps[stage] > stages[stage] ||
+      legacyBatchOverlaps[stage] > legacyBatchStages[stage] ||
+      legacyBatchStages[stage] > stages[stage] ||
+      liveLegacyBatchStages[stage] > liveStages[stage]
+    ) {
+      return {
+        complete: false,
+        queue_stages: null,
+        live_stages: null,
+        queue_legacy_batch_stages: null,
+        live_legacy_batch_stages: null,
+        total: null,
+      };
     }
     queueStages[stage] = stages[stage] - overlaps[stage];
+    queueLegacyBatchStages[stage] = legacyBatchStages[stage] - legacyBatchOverlaps[stage];
   }
   const total = PUBLIC_BAY_STAGES.reduce(
     (sum, stage) => sum + queueStages[stage] + liveStages[stage],
     0,
   );
   const activeKeys = new Set(activeTargets.keys);
+  const activeLegacyKeys = new Set(activeTargets.legacyKeys);
   const queueItems = publicBayReferences(
     objectValue(projection).items,
     PUBLIC_BAY_QUEUE_REFERENCE_LIMIT,
     allowedRepositories,
     "queue",
-  ).filter((item) => !activeKeys.has(`${item.repository}#${item.item_number}`));
+  ).filter((item) => {
+    const itemKey = `${item.repository}#${item.item_number}`;
+    return item.legacy_batch_path ? !activeLegacyKeys.has(itemKey) : !activeKeys.has(itemKey);
+  });
   const liveItems = publicBayReferences(activeTargets.items, 100, allowedRepositories, "live");
-  const items = [...liveItems, ...queueItems].slice(0, PUBLIC_BAY_ACTIVITY_REFERENCE_LIMIT);
+  const items = [...liveItems, ...queueItems]
+    .sort(
+      (left, right) =>
+        Number(left.legacy_batch_path) - Number(right.legacy_batch_path) ||
+        Number(left.source === "queue") - Number(right.source === "queue"),
+    )
+    .slice(0, PUBLIC_BAY_ACTIVITY_REFERENCE_LIMIT);
   return {
     complete: true,
     queue_stages: queueStages,
     live_stages: liveStages,
+    queue_legacy_batch_stages: queueLegacyBatchStages,
+    live_legacy_batch_stages: liveLegacyBatchStages,
     total,
     ...(items.length ? { items } : {}),
   };
+}
+
+export function composePublicBayActivityForTest(projection, activeTargets) {
+  return composePublicBayActivity(
+    projection,
+    activeTargets,
+    new Set(["openclaw/openclaw", "openclaw/clawsweeper"]),
+  );
 }
 
 function publicWorkerBayStage(value): (typeof PUBLIC_BAY_STAGES)[number] | undefined {
@@ -2391,6 +2680,53 @@ function publicWorkerBayStage(value): (typeof PUBLIC_BAY_STAGES)[number] | undef
   if (/apply|publish|merge|close|automerge/.test(fallback)) return "applying";
   if (/review|codex|assist/.test(fallback)) return "reviewing";
   return undefined;
+}
+
+function publicWorkerLegacyBatchPath(value): boolean {
+  const worker = objectValue(value);
+  const steps = Array.isArray(worker.steps) ? worker.steps.slice(0, 100) : [];
+  const directLifecycleRecovery = steps
+    .flatMap((value) => {
+      const step = objectValue(value);
+      const status = String(step.status || "").toLowerCase();
+      const conclusion = String(step.conclusion || "").toLowerCase();
+      return status === "completed" && conclusion === "success" ? [step.name] : [];
+    })
+    .some((name) => /replay committed direct lifecycle handoff/i.test(String(name || "")));
+  if (directLifecycleRecovery) return false;
+  const ranAutomaticProof = steps.some((value) => {
+    const step = objectValue(value);
+    const name = String(step.name || "")
+      .slice(0, 256)
+      .toLowerCase();
+    const status = String(step.status || "").toLowerCase();
+    const conclusion = String(step.conclusion || "").toLowerCase();
+    return (
+      /(?:inspect|execute|fold) (?:exact review |review |exact )?live proof|live-proof/.test(
+        name,
+      ) &&
+      (status === "in_progress" || (status === "completed" && conclusion !== "skipped"))
+    );
+  });
+  if (ranAutomaticProof) return true;
+  const jobName = String(worker.name || worker.job_name || "")
+    .slice(0, 256)
+    .trim()
+    .toLowerCase();
+  const workflowTitle = String(worker.workflow_title || "")
+    .slice(0, 256)
+    .trim()
+    .toLowerCase();
+  return (
+    /^review shard(?:\b|\s)/.test(jobName) ||
+    jobName === "publish review artifacts" ||
+    jobName === "publish exact review artifact" ||
+    /publish exact review batch/.test(`${jobName} ${workflowTitle}`)
+  );
+}
+
+export function publicWorkerLegacyBatchPathForTest(value): boolean {
+  return publicWorkerLegacyBatchPath(value);
 }
 
 function publicWorkerTargetKeys(value) {
@@ -2485,7 +2821,13 @@ function publicBayActiveTargets(
   let complete = producerComplete === true && Array.isArray(workers) && workerList.length <= 100;
   const selected = new Map<
     string,
-    { stage: (typeof PUBLIC_BAY_STAGES)[number]; startedAt: number; action: PublicBayAction | null }
+    {
+      itemKey: string;
+      stage: (typeof PUBLIC_BAY_STAGES)[number];
+      startedAt: number;
+      action: PublicBayAction | null;
+      legacyBatchPath: boolean;
+    }
   >();
   for (const worker of workerList.slice(0, 100)) {
     if (!worker || typeof worker !== "object" || Array.isArray(worker)) {
@@ -2502,9 +2844,11 @@ function publicBayActiveTargets(
     }
     const startedAt = Date.parse(String(record.started_at || ""));
     const action = publicBayActionFromWorker(record, allowedRepositories);
+    const legacyBatchPath = publicWorkerLegacyBatchPath(record);
     if (!Number.isFinite(startedAt)) complete = false;
     for (const itemKey of targets.keys) {
-      const previous = selected.get(itemKey);
+      const pathKey = `${legacyBatchPath ? "legacy" : "direct"}:${itemKey}`;
+      const previous = selected.get(pathKey);
       if (
         !previous ||
         startedAt > previous.startedAt ||
@@ -2512,10 +2856,12 @@ function publicBayActiveTargets(
           PUBLIC_BAY_STAGES.indexOf(stage as (typeof PUBLIC_BAY_STAGES)[number]) >
             PUBLIC_BAY_STAGES.indexOf(previous.stage as (typeof PUBLIC_BAY_STAGES)[number]))
       ) {
-        selected.set(itemKey, {
+        selected.set(pathKey, {
+          itemKey,
           stage,
           startedAt: Number.isFinite(startedAt) ? startedAt : 0,
           action,
+          legacyBatchPath,
         });
       }
     }
@@ -2525,23 +2871,41 @@ function publicBayActiveTargets(
     (typeof PUBLIC_BAY_STAGES)[number],
     number
   >;
-  for (const { stage } of selected.values()) counts[stage] += 1;
-  const keys = [...selected.keys()].slice(0, 100);
-  const items = keys.flatMap((key) => {
-    const match = key.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)$/);
-    const selectedItem = selected.get(key);
-    if (!match || !selectedItem) return [];
+  const legacyBatchStages = emptyPublicBayStageCounts();
+  for (const { stage, legacyBatchPath } of selected.values()) {
+    counts[stage] += 1;
+    if (legacyBatchPath) legacyBatchStages[stage] += 1;
+  }
+  const selectedItems = [...selected.values()].slice(0, 100);
+  const keys = [
+    ...new Set(selectedItems.filter((item) => !item.legacyBatchPath).map((item) => item.itemKey)),
+  ];
+  const legacyKeys = [
+    ...new Set(selectedItems.filter((item) => item.legacyBatchPath).map((item) => item.itemKey)),
+  ];
+  const items = selectedItems.flatMap((selectedItem) => {
+    const match = selectedItem.itemKey.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)$/);
+    if (!match) return [];
     return [
       {
         repository: match[1],
         item_number: Number(match[2]),
         stage: selectedItem.stage,
         source: "live" as const,
+        legacy_batch_path: selectedItem.legacyBatchPath,
         ...(selectedItem.action ? { action: selectedItem.action } : {}),
       },
     ];
   });
-  return { complete, keys, stages: counts, items };
+  return { complete, keys, legacyKeys, stages: counts, legacyBatchStages, items };
+}
+
+export function publicBayActiveTargetsForTest(workers) {
+  return publicBayActiveTargets(
+    workers,
+    true,
+    new Set(["openclaw/openclaw", "openclaw/clawsweeper"]),
+  );
 }
 
 function unavailablePublicStatusProjection() {
@@ -2579,6 +2943,10 @@ function verifiedPublicBayRepositories(env) {
     return new Set<string>();
   }
   return new Set<string>(repositories);
+}
+
+function publicBayRepositoryScope(allowedRepositories: ReadonlySet<string>) {
+  return Array.from(allowedRepositories).sort().join(",");
 }
 
 export function publicStatusProjection(
@@ -2782,15 +3150,58 @@ function statusSnapshotResponse(snapshot, cacheState, env) {
   responseHeaders.set("content-type", "application/json; charset=utf-8");
   responseHeaders.set("cache-control", "no-store");
   responseHeaders.set("x-clawsweeper-cache", cacheState);
-  return cors(
-    new Response(
-      JSON.stringify(publicStatusProjection(snapshot, verifiedPublicBayRepositories(env)), null, 2),
-      {
-        status: 200,
-        headers: responseHeaders,
-      },
-    ),
+  const projection = publicStatusProjection(snapshot, verifiedPublicBayRepositories(env));
+  const freshness = publicStatusFreshness(
+    projection.public_projection_complete === true ? snapshot : null,
+    cacheState,
+    numberFrom(env.CACHE_TTL_SECONDS, 60) * 1000,
   );
+  return cors(
+    new Response(JSON.stringify({ ...projection, freshness }, null, 2), {
+      status: 200,
+      headers: responseHeaders,
+    }),
+  );
+}
+
+export function publicStatusFreshness(
+  snapshot,
+  cacheState,
+  maximumAgeMs = 60_000,
+  now = Date.now(),
+) {
+  const generatedAt = publicTimestamp(snapshot?.generated_at);
+  const boundedMaximumAgeMs =
+    Number.isSafeInteger(maximumAgeMs) && maximumAgeMs > 0
+      ? Math.min(maximumAgeMs, STALE_CACHE_TTL_SECONDS * 1000)
+      : 60_000;
+  if (!generatedAt || !Number.isFinite(now)) {
+    return {
+      state: "unavailable",
+      cache_state: cacheState === "stale" || cacheState === "fresh" ? cacheState : "miss",
+      generated_at: null,
+      age_ms: null,
+      maximum_age_ms: boundedMaximumAgeMs,
+    };
+  }
+  const generatedAtMs = Date.parse(generatedAt);
+  if (generatedAtMs > now) {
+    return {
+      state: "unavailable",
+      cache_state: cacheState === "stale" || cacheState === "fresh" ? cacheState : "miss",
+      generated_at: null,
+      age_ms: null,
+      maximum_age_ms: boundedMaximumAgeMs,
+    };
+  }
+  const ageMs = now - generatedAtMs;
+  return {
+    state: cacheState === "stale" || ageMs > boundedMaximumAgeMs ? "stale" : "fresh",
+    cache_state: cacheState === "stale" || cacheState === "fresh" ? cacheState : "miss",
+    generated_at: generatedAt,
+    age_ms: ageMs,
+    maximum_age_ms: boundedMaximumAgeMs,
+  };
 }
 
 function refreshStatus(request, env) {
@@ -2821,13 +3232,15 @@ function refreshStatus(request, env) {
 async function refreshStatusCaches(request, env) {
   const ttl = numberFrom(env.CACHE_TTL_SECONDS, 60);
   const staleTtl = numberFrom(env.STALE_CACHE_TTL_SECONDS, STALE_CACHE_TTL_SECONDS);
+  const allowedRepositories = verifiedPublicBayRepositories(env);
+  const publicBayScope = publicBayRepositoryScope(allowedRepositories);
   const baseSnapshot = await statusSnapshot(env);
   // Queue stats and the GitHub-backed global lease are operational observations, not
   // request-specific data. Cache the composed document so a cache hit never waits on
   // those remote probes; the existing stale-while-revalidate path refreshes them safely.
   const snapshot = publicStatusProjection(
     await attachExactReviewQueueStatus(baseSnapshot, env),
-    verifiedPublicBayRepositories(env),
+    allowedRepositories,
   );
   const body = JSON.stringify(snapshot, null, 2);
   const hasErrors = Number(snapshot.diagnostics?.error_count || 0) > 0;
@@ -2837,12 +3250,12 @@ async function refreshStatusCaches(request, env) {
       Number(snapshot.fleet?.active_workflow_runs || 0) === 0 &&
       hasErrors);
   if (snapshot.public_projection_complete !== true && env.STATUS_STORE) {
-    await writeStatusStoreText(env.STATUS_STORE, "snapshot", body);
+    await writeCachedStatusSnapshot(env.STATUS_STORE, body, publicBayScope);
   }
   if (!looksEmpty) {
     const writes = [
       caches.default.put(
-        statusCacheRequest(request, "fresh"),
+        statusCacheRequest(request, "fresh", publicBayScope),
         new Response(body, {
           headers: {
             "content-type": "application/json; charset=utf-8",
@@ -2851,7 +3264,7 @@ async function refreshStatusCaches(request, env) {
         }),
       ),
       caches.default.put(
-        statusCacheRequest(request, "stale"),
+        statusCacheRequest(request, "stale", publicBayScope),
         new Response(body, {
           headers: {
             "content-type": "application/json; charset=utf-8",
@@ -2860,14 +3273,17 @@ async function refreshStatusCaches(request, env) {
         }),
       ),
     ];
-    if (env.STATUS_STORE) writes.push(writeStatusStoreText(env.STATUS_STORE, "snapshot", body));
+    if (env.STATUS_STORE) {
+      writes.push(writeCachedStatusSnapshot(env.STATUS_STORE, body, publicBayScope));
+    }
     await Promise.allSettled(writes);
   }
   return { snapshot, body, looksEmpty };
 }
 
-function statusCacheRequest(request, bucket) {
-  return new Request(new URL(`/api/status-cache/v4/${bucket}`, request.url).toString(), {
+function statusCacheRequest(request, bucket, publicBayScope) {
+  const scope = publicBayScope ? encodeURIComponent(publicBayScope) : "_";
+  return new Request(new URL(`/api/status-cache/v7/${scope}/${bucket}`, request.url).toString(), {
     method: "GET",
   });
 }
@@ -3455,7 +3871,9 @@ async function githubWebhook(request, env, ctx) {
     });
     const queue = exactReviewQueueStub(env);
     if (!queue) return json({ error: "exact_review_queue_not_configured" }, 503);
-    const intakeResponse = await queue.fetch(
+    const { response: intakeResponse } = await exactReviewQueueFetch(
+      queue,
+      "/command-intake",
       new Request("https://clawsweeper-exact-review-queue/command-intake", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -3895,6 +4313,7 @@ function lifecycleCommandAcknowledgementFromGithubWebhook({ event, payload, env 
     source_comment_id: sourceCommentId,
     completed_at: completedAt,
     completion_kind: "final_command_status",
+    completion_outcome: /^- State:\s*Failed\s*$/im.test(progress || "") ? "failure" : "success",
     completion_comment_id: Number(comment.id),
     status_marker: status?.[0] ?? null,
     ...(legacyCommand ? { require_exact_status_comment: true } : {}),
@@ -4293,7 +4712,9 @@ async function recordLifecycleCommandAcknowledgement(env, completion) {
   const queue = exactReviewQueueStub(env);
   if (!queue) return { accepted: true, sourceDeliveryId: null, bayJourneyDeliveryId: null };
   const observedAt = Date.parse(String(completion.completed_at || ""));
-  const response = await queue.fetch(
+  const { response } = await exactReviewQueueFetch(
+    queue,
+    "/lifecycle/command-ack/observed",
     new Request("https://clawsweeper-exact-review-queue/lifecycle/command-ack/observed", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -4331,7 +4752,9 @@ async function reserveExactReviewSourceAuthority(
 ): Promise<{ deduped: true } | { sourceAuthoritySeq: number } | null> {
   const queue = exactReviewQueueStub(env);
   if (!queue) return null;
-  const response = await queue.fetch(
+  const { response } = await exactReviewQueueFetch(
+    queue,
+    "/source-authority",
     new Request("https://clawsweeper-exact-review-queue/source-authority", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -4363,7 +4786,9 @@ async function completeExactReviewSourceAuthority(
 ) {
   const queue = exactReviewQueueStub(env);
   if (!queue) throw new Error("exact-review queue not configured");
-  const response = await queue.fetch(
+  const { response } = await exactReviewQueueFetch(
+    queue,
+    "/source-authority/complete",
     new Request("https://clawsweeper-exact-review-queue/source-authority/complete", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -4380,20 +4805,85 @@ async function completeExactReviewSourceAuthority(
   }
 }
 
+async function exactReviewQueueFetch(queue: DurableObjectStub, path: string, request?: Request) {
+  const body = request ? await request.text() : undefined;
+  const traceId = newExactReviewQueueTraceId();
+  const endpoint = exactReviewQueueEndpointTemplate(path);
+  try {
+    const headers = new Headers(body ? { "content-type": "application/json" } : undefined);
+    headers.set(EXACT_REVIEW_QUEUE_TRACE_HEADER, traceId);
+    const response = await queue.fetch(
+      new Request(`https://clawsweeper-exact-review-queue${path}`, {
+        method: request?.method || "GET",
+        headers,
+        ...(body ? { body } : {}),
+      }),
+    );
+    if (response.status < 500) return { response, malformedServerResponse: false };
+    const responseBody = await response.clone().text();
+    try {
+      JSON.parse(responseBody);
+      console.error("exact_review_queue_structured_server_response", {
+        trace_id: traceId,
+        endpoint,
+        phase: "request",
+        transport: "structured_5xx",
+        upstream_status: response.status,
+        failure_category: "structured_server_response",
+      });
+      return { response, malformedServerResponse: false };
+    } catch {
+      console.error("exact_review_queue_malformed_server_response", {
+        trace_id: traceId,
+        endpoint,
+        phase: "request",
+        transport: "non_json_5xx",
+        upstream_status: response.status,
+        failure_category: "malformed_server_response",
+      });
+      return { response, malformedServerResponse: true };
+    }
+  } catch (error) {
+    const failure = objectValue(error);
+    const remote = failure.remote === true;
+    const retryable = failure.retryable === true;
+    const overloaded = failure.overloaded === true;
+    console.error("exact_review_queue_request_failed", {
+      trace_id: traceId,
+      endpoint,
+      phase: "request",
+      transport: "throw",
+      upstream_status: null,
+      remote,
+      retryable,
+      overloaded,
+      failure_category: overloaded
+        ? "platform_overloaded"
+        : retryable
+          ? "platform_retryable"
+          : remote
+            ? "remote_exception"
+            : "request_exception",
+    });
+    throw error;
+  }
+}
+
 async function exactReviewQueueRequest(env, path, request?: Request) {
   const queue = exactReviewQueueStub(env);
   if (!queue) return json({ error: "exact_review_queue_not_configured" }, 503);
-  const body = request ? await request.text() : undefined;
-  return queue.fetch(
-    new Request(`https://clawsweeper-exact-review-queue${path}`, {
-      method: request?.method || "GET",
-      headers: body ? { "content-type": "application/json" } : undefined,
-      ...(body ? { body } : {}),
-    }),
-  );
+  try {
+    const { response, malformedServerResponse } = await exactReviewQueueFetch(queue, path, request);
+    return malformedServerResponse
+      ? json({ error: "exact_review_queue_unavailable" }, response.status)
+      : response;
+  } catch {
+    return json({ error: "exact_review_queue_unavailable" }, 500);
+  }
 }
 
 const PUBLIC_QUEUE_COUNT_LIMIT = 1_000_000;
+const PUBLIC_SCHEDULED_FEED_RATE_LIMIT = 2_000;
 const PUBLIC_QUEUE_TOTAL_LIMIT = 1_000_000_000_000;
 const PUBLIC_QUEUE_BACKOFF_REASONS = [
   "dispatch_debounce",
@@ -4639,6 +5129,10 @@ export function publicExactReviewQueueProjection(
   const projectedHandoff = publicExactReviewHandoff(sourceHandoff);
   const sourcePressure = objectValue(source.pressure);
   const projectedPressure = publicExactReviewPressure(sourcePressure);
+  const scheduledTargetRate = publicQueueCount(
+    objectValue(source.scheduled_feed).target_rate_per_hour,
+    PUBLIC_SCHEDULED_FEED_RATE_LIMIT,
+  );
   const requiredCounts = [
     source.pending,
     source.ready_pending,
@@ -4736,6 +5230,10 @@ export function publicExactReviewQueueProjection(
     next_wake_at: publicQueueTimestamp(source.next_wake_at),
     handoff_health: projectedHandoff,
     pressure: projectedPressure,
+    scheduled_feed:
+      scheduledTargetRate !== null && scheduledTargetRate > 0
+        ? { target_rate_per_hour: scheduledTargetRate }
+        : null,
     lanes: {
       review: projectedReviewLane.value,
       publication: projectedPublicationLane.value,
@@ -5139,7 +5637,11 @@ async function recentDurablePublicationEventsSnapshot(env, window = "24h") {
 
 export async function exactReviewQueueStatusSnapshot(
   env,
-  options: { bayPriorityKeys?: string[]; bayActiveKeys?: string[] } = {},
+  options: {
+    bayPriorityKeys?: string[];
+    bayActiveKeys?: string[];
+    bayActiveLegacyKeys?: string[];
+  } = {},
 ) {
   if (!exactReviewQueueStub(env)) return null;
   const priorityKeys = [...new Set(options.bayPriorityKeys || [])]
@@ -5148,9 +5650,13 @@ export async function exactReviewQueueStatusSnapshot(
   const activeKeys = [...new Set(options.bayActiveKeys || [])]
     .filter((itemKey) => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+$/.test(itemKey))
     .slice(0, 100);
+  const activeLegacyKeys = [...new Set(options.bayActiveLegacyKeys || [])]
+    .filter((itemKey) => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+$/.test(itemKey))
+    .slice(0, 100);
   const search = new URLSearchParams();
   for (const itemKey of priorityKeys) search.append("bay_priority_key", itemKey);
   for (const itemKey of activeKeys) search.append("bay_active_key", itemKey);
+  for (const itemKey of activeLegacyKeys) search.append("bay_active_legacy_key", itemKey);
   const response = await exactReviewQueueRequest(
     env,
     `/stats${search.size ? `?${search.toString()}` : ""}`,
@@ -5164,6 +5670,169 @@ export async function exactReviewQueueStatusSnapshot(
     throw new Error(String(body.error || "exact-review queue status unavailable"));
   }
   return body;
+}
+
+async function exactReviewBayLifecycleMetricsSnapshot(env) {
+  if (!exactReviewQueueStub(env)) return null;
+  const allowedRepositories = verifiedPublicBayRepositories(env);
+  const query = new URLSearchParams();
+  for (const repository of [...allowedRepositories].sort()) query.append("public_repo", repository);
+  if (allowedRepositories.size === 0) query.append("public_repo", "");
+  const response = await exactReviewQueueRequest(env, `/bay-lifecycle-metrics?${query.toString()}`);
+  const body = objectValue(await response.json().catch(() => null));
+  if (!response.ok) return null;
+  const source = objectValue(body.bay_lifecycle_metrics);
+  const collection = objectValue(source.collection);
+  if (source.version !== 2 || collection.state !== "complete") return null;
+  const coverage = objectValue(source.coverage);
+  const timings = objectValue(source.timings);
+  const terminal = objectValue(source.terminal);
+  const startedAt = publicQueueTimestamp(coverage.started_at);
+  const timingComplete = coverage.timing_complete;
+  const sampleKind = String(timings.sample_kind || "");
+  const windowMinutes = publicQueueCount(timings.window_minutes, 24 * 60);
+  const sampleLimit = publicQueueCount(timings.sample_limit, 100_000);
+  const overall = objectValue(timings.overall);
+  const history = bayLifecycleTimingHistory(timings.history);
+  const includingLegacyBatch = objectValue(timings.including_legacy_batch);
+  const includingLegacyBatchOverall = objectValue(includingLegacyBatch.overall);
+  const includingLegacyBatchHistory = bayLifecycleTimingHistory(includingLegacyBatch.history);
+  const samples = publicQueueCount(overall.samples, 100_000);
+  const average =
+    overall.average_ms === null ? null : publicQueueCount(overall.average_ms, 24 * 60 * 60 * 1000);
+  const median =
+    overall.median_ms === null ? null : publicQueueCount(overall.median_ms, 24 * 60 * 60 * 1000);
+  const invalidTimingAggregate =
+    samples === null ||
+    (samples === 0 ? average !== null || median !== null : average === null || median === null);
+  const allSamples = publicQueueCount(includingLegacyBatchOverall.samples, 100_000);
+  const allAverage =
+    includingLegacyBatchOverall.average_ms === null
+      ? null
+      : publicQueueCount(includingLegacyBatchOverall.average_ms, 24 * 60 * 60 * 1000);
+  const allMedian =
+    includingLegacyBatchOverall.median_ms === null
+      ? null
+      : publicQueueCount(includingLegacyBatchOverall.median_ms, 24 * 60 * 60 * 1000);
+  const invalidAllTimingAggregate =
+    allSamples === null ||
+    (allSamples === 0
+      ? allAverage !== null || allMedian !== null
+      : allAverage === null || allMedian === null) ||
+    (samples !== null && allSamples < samples);
+  const terminalCount = publicQueueCount(terminal.terminal_count, 20);
+  const tideThreshold = publicQueueCount(terminal.tide_threshold, 100);
+  const tideGeneration = publicQueueCount(terminal.tide_generation, 1_000_000);
+  const lastTideAt =
+    terminal.last_tide_at === null ? null : publicQueueTimestamp(terminal.last_tide_at);
+  const terminalBuffer = bayLifecycleTerminalRows(terminal.terminal_buffer);
+  const recentlyWashed = bayLifecycleTerminalRows(terminal.recently_washed);
+  if (
+    !startedAt ||
+    typeof timingComplete !== "boolean" ||
+    sampleKind !== "completed_final_review_journeys" ||
+    windowMinutes !== 60 ||
+    sampleLimit === null ||
+    invalidTimingAggregate ||
+    invalidAllTimingAggregate ||
+    !history ||
+    !includingLegacyBatchHistory ||
+    terminalCount === null ||
+    tideThreshold !== 20 ||
+    tideGeneration === null ||
+    (terminal.last_tide_at !== null && !lastTideAt) ||
+    !terminalBuffer ||
+    !recentlyWashed ||
+    terminalBuffer.length !== terminalCount
+  ) {
+    return null;
+  }
+  return {
+    timing_coverage_started_at: startedAt,
+    timing_coverage_complete: timingComplete,
+    metrics_state: timingComplete ? "complete" : "warming",
+    timings: {
+      window_minutes: windowMinutes,
+      // `sample_kind` is a v1 public enum. Preserve its established spelling for
+      // strict clients, and expose end-to-end final-review provenance additively.
+      sample_kind: "completed_review_journeys",
+      source: "durable_exact_review_lifecycles",
+      completion_source: "verified_final_review_receipts",
+      sample_limit: sampleLimit,
+      overall: { average_ms: average, median_ms: median, samples },
+      history,
+      including_legacy_batch: {
+        overall: { average_ms: allAverage, median_ms: allMedian, samples: allSamples },
+        history: includingLegacyBatchHistory,
+      },
+    },
+    terminal_count: terminalCount,
+    tide_threshold: tideThreshold,
+    tide_generation: tideGeneration,
+    last_tide_at: lastTideAt,
+    terminal_buffer: terminalBuffer,
+    recently_washed: recentlyWashed,
+  };
+}
+
+function bayLifecycleTerminalRows(value) {
+  if (!Array.isArray(value) || value.length > 20) return null;
+  const rows = [];
+  for (const entry of value) {
+    const row = objectValue(entry);
+    const itemKey = String(row.item_key || "").toLowerCase();
+    const outcome = String(row.outcome || "");
+    const completedAt = publicQueueTimestamp(row.completed_at);
+    const journeyDuration = publicQueueCount(row.journey_duration_ms, 24 * 60 * 60 * 1000);
+    const legacyBatchPath = row.legacy_batch_path;
+    if (
+      !/^[a-z0-9_.-]+\/[a-z0-9_.-]+#[1-9]\d*$/.test(itemKey) ||
+      !["success", "failure", "cancelled"].includes(outcome) ||
+      !completedAt ||
+      journeyDuration === null ||
+      typeof legacyBatchPath !== "boolean"
+    ) {
+      return null;
+    }
+    rows.push({
+      item_key: itemKey,
+      outcome,
+      completed_at: completedAt,
+      journey_duration_ms: journeyDuration,
+      legacy_batch_path: legacyBatchPath,
+    });
+  }
+  return rows;
+}
+
+function bayLifecycleTimingHistory(value) {
+  const source = objectValue(value);
+  const points = source && Array.isArray(source.points) ? source.points : null;
+  if (!source || source.bucket_minutes !== 5 || !points || points.length > 12) return null;
+  const result = [];
+  let previousEndedAt = 0;
+  for (const point of points) {
+    const row = objectValue(point);
+    const endedAt = row && publicQueueTimestamp(row.ended_at);
+    const average = row && publicQueueCount(row.average_ms, 24 * 60 * 60 * 1000);
+    const median = row && publicQueueCount(row.median_ms, 24 * 60 * 60 * 1000);
+    const samples = row && publicQueueCount(row.samples, 100_000);
+    const endedAtMs = endedAt ? Date.parse(endedAt) : Number.NaN;
+    if (
+      !endedAt ||
+      !Number.isFinite(endedAtMs) ||
+      endedAtMs <= previousEndedAt ||
+      average === null ||
+      median === null ||
+      samples === null ||
+      samples < 1
+    ) {
+      return null;
+    }
+    previousEndedAt = endedAtMs;
+    result.push({ ended_at: endedAt, average_ms: average, median_ms: median, samples });
+  }
+  return { bucket_minutes: 5, points: result };
 }
 
 async function authenticatedExactReviewEnqueue(request, env) {
@@ -5254,6 +5923,7 @@ async function authenticatedLifecycleCommandAcknowledgement(request, env, ctx) {
                 : {}),
               completed_at: completedAt,
               completion_kind: "final_command_status",
+              completion_outcome: receipt.completion_outcome === "failure" ? "failure" : "success",
               completion_comment_id: completionCommentId,
             },
           ],
@@ -5548,7 +6218,9 @@ async function enqueueExactReview({
 }) {
   const queue = exactReviewQueueStub(env);
   if (!queue) return null;
-  const response = await queue.fetch(
+  const { response } = await exactReviewQueueFetch(
+    queue,
+    "/enqueue",
     new Request("https://clawsweeper-exact-review-queue/enqueue", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -6002,9 +6674,29 @@ function constantTimeEqual(left, right) {
 
 async function statusSnapshot(env) {
   const ttl = numberFrom(env.CACHE_TTL_SECONDS, 20);
-  const cached = await readCachedSnapshot(env, ttl);
-  if (cached?.bay?.timings?.sample_kind === "completed_review_journeys") {
-    return publicStatusProjection(cached, verifiedPublicBayRepositories(env));
+  const allowedRepositories = verifiedPublicBayRepositories(env);
+  const publicBayScope = publicBayRepositoryScope(allowedRepositories);
+  const scopedCached = await readCachedSnapshot(env, ttl, publicBayScope);
+  // A legacy cache entry without scope provenance can still describe a
+  // malformed document. Keep that fail-closed path, but never reuse it as a
+  // complete durable lifecycle snapshot.
+  const cached = scopedCached || (await readCachedSnapshot(env, ttl));
+  const cachedTimings = objectValue(cached?.bay?.timings);
+  const cachedIncludingLegacyBatch = objectValue(cachedTimings.including_legacy_batch);
+  const cachedProjection = cached ? publicStatusProjection(cached, allowedRepositories) : null;
+  // A malformed durable document should fail closed without triggering a
+  // costly background collection. A complete legacy document, however, must
+  // be rebuilt before it can be copied into the current cache generation.
+  if (cachedProjection?.public_projection_complete === false) return cachedProjection;
+  if (
+    cachedTimings.sample_kind === "completed_review_journeys" &&
+    cachedTimings.source === "durable_exact_review_lifecycles" &&
+    cachedTimings.completion_source === "verified_final_review_receipts" &&
+    Object.prototype.hasOwnProperty.call(cachedIncludingLegacyBatch, "overall") &&
+    Object.prototype.hasOwnProperty.call(cachedIncludingLegacyBatch, "history") &&
+    scopedCached === cached
+  ) {
+    return cachedProjection;
   }
 
   const github = createGithubJsonCache(env);
@@ -6208,25 +6900,36 @@ async function statusSnapshot(env) {
   ]);
   errors.push(...activeJobs.errors);
   errors.push(...workerHealth.errors);
-  const terminalBay = await updateBayTerminalState(
-    env,
-    workerHealth.recent_attempts,
-    closed.items,
-    generatedAt,
-    activeBayItemKeys(activeJobs.workers),
+  const authoritativeBay = await withTimeout(
+    exactReviewBayLifecycleMetricsSnapshot(env),
+    OPTIONAL_SECTION_TIMEOUT_MS,
+    "Bay lifecycle metrics",
   ).catch((error) => {
-    errors.push(`OpenClaw Bay terminal state: ${error instanceof Error ? error.message : error}`);
-    return emptyBayTerminalState(generatedAt);
+    errors.push(error.message);
+    return null;
   });
-  const journeyBay = await readBayJourneyState(env).catch((error) => {
-    errors.push(`OpenClaw Bay journey state: ${error instanceof Error ? error.message : error}`);
-    return { journeys: [] };
-  });
-  const bay = {
-    ...terminalBay,
-    active_census_complete: activeJobs.complete,
-    timings: summarizeBayJourneyTimings(journeyBay.journeys, generatedAt),
-  };
+  const bay = authoritativeBay
+    ? { ...authoritativeBay, active_census_complete: activeJobs.complete }
+    : {
+        ...emptyBayTerminalState(generatedAt),
+        active_census_complete: activeJobs.complete,
+        metrics_state: "unavailable",
+        timing_coverage_complete: false,
+        timing_coverage_started_at: null,
+        timings: {
+          window_minutes: BAY_TIMING_WINDOW_MS / 60_000,
+          sample_kind: "completed_review_journeys",
+          source: "durable_exact_review_lifecycles",
+          completion_source: "verified_final_review_receipts",
+          sample_limit: 0,
+          overall: { average_ms: null, median_ms: null, samples: 0 },
+          history: { bucket_minutes: 5, points: [] },
+          including_legacy_batch: {
+            overall: { average_ms: null, median_ms: null, samples: 0 },
+            history: { bucket_minutes: 5, points: [] },
+          },
+        },
+      };
   const { recent_attempts: _recentAttempts, ...publicWorkerHealth } = workerHealth;
 
   const snapshot = {
@@ -6297,7 +7000,11 @@ async function attachExactReviewQueueStatus(snapshot, env) {
   let exactReviewQueue = null;
   let recentDurablePublicationEvents = null;
   const exactReviewQueueRequest = withTimeout(
-    exactReviewQueueStatusSnapshot(env, { bayPriorityKeys, bayActiveKeys: activeKeys }),
+    exactReviewQueueStatusSnapshot(env, {
+      bayPriorityKeys,
+      bayActiveKeys: activeKeys,
+      bayActiveLegacyKeys: activeTargets.legacyKeys,
+    }),
     OPTIONAL_SECTION_TIMEOUT_MS,
     "exact-review queue",
   );
@@ -6312,17 +7019,18 @@ async function attachExactReviewQueueStatus(snapshot, env) {
   ]);
   if (queueResult.status === "fulfilled") exactReviewQueue = queueResult.value;
   if (eventsResult.status === "fulfilled") recentDurablePublicationEvents = eventsResult.value;
+  const allowedRepositories = verifiedPublicBayRepositories(env);
   const staleStatusSnapshot =
     queueResult.status === "rejected"
       ? await readCachedSnapshot(
           env,
           numberFrom(env.STALE_CACHE_TTL_SECONDS, STALE_CACHE_TTL_SECONDS),
+          publicBayRepositoryScope(allowedRepositories),
         )
       : null;
   const priorExactReviewQueue = objectValue(
     snapshot.exact_review_queue || staleStatusSnapshot?.exact_review_queue,
   );
-  const allowedRepositories = verifiedPublicBayRepositories(env);
   const projectedPriorExactReviewQueue = publicExactReviewQueueProjection(
     priorExactReviewQueue,
     allowedRepositories,
@@ -7211,7 +7919,9 @@ function proofStateFromLabels(labels) {
   if (has("proof: sufficient")) return "Sufficient";
   if (has("triage: mock-only-proof")) return "Mock-only proof";
   if (has("triage: needs-real-behavior-proof")) return "Needs proof";
-  if (has("mantis: telegram-visible-proof")) return "Telegram proof";
+  if (has("mantis: telegram-visible-proof") || has("proof: telegram-e2e")) {
+    return "Telegram proof";
+  }
   return "";
 }
 
@@ -7605,6 +8315,7 @@ function normalizeBayJourneyCompletion(value) {
   const completedAt = bayJourneyTimestamp(completion.completed_at);
   const completionKind = nullableString(completion.completion_kind);
   const completionCommentId = Number(completion.completion_comment_id);
+  const completionOutcome = nullableString(completion.completion_outcome);
   if (
     !repository ||
     !Number.isInteger(number) ||
@@ -7631,6 +8342,12 @@ function normalizeBayJourneyCompletion(value) {
     ...(sourceDeliveryId ? { source_delivery_id: sourceDeliveryId } : {}),
     completed_at: completedAt,
     completion_kind: completionKind || "final_command_status",
+    completion_outcome:
+      completionOutcome === "success" ||
+      completionOutcome === "failure" ||
+      completionOutcome === "cancelled"
+        ? completionOutcome
+        : null,
     completion_comment_id:
       Number.isSafeInteger(completionCommentId) && completionCommentId > 0
         ? completionCommentId
@@ -7657,6 +8374,7 @@ function normalizeBayJourneyRecord(value) {
     triggered_at: trigger?.triggered_at || null,
     completed_at: completion?.completed_at || null,
     completion_kind: completion?.completion_kind || null,
+    completion_outcome: completion?.completion_outcome || null,
     completion_comment_id: completion?.completion_comment_id || null,
     ...(completion?.source_delivery_id
       ? { completion_source_delivery_id: completion.source_delivery_id }
@@ -7876,6 +8594,7 @@ export function mergeBayJourneyState(previous, triggers, completions, generatedA
       ...record,
       completed_at: completedOrphan.completed_at,
       completion_kind: completedOrphan.completion_kind,
+      completion_outcome: completedOrphan.completion_outcome,
       completion_comment_id: completedOrphan.completion_comment_id,
       ...(completedOrphan.completion_source_delivery_id
         ? { completion_source_delivery_id: completedOrphan.completion_source_delivery_id }
@@ -7941,11 +8660,6 @@ async function updateBayJourneyState(env, triggers, completions, generatedAt) {
     await writeStoredJson(env, BAY_JOURNEY_STATE_KEY, next, BAY_JOURNEY_TTL_SECONDS);
   }
   return publicBayJourneyState(next);
-}
-
-async function readBayJourneyState(env) {
-  if (!env.STATUS_STORE) return { journeys: [] };
-  return publicBayJourneyState(await readStoredJson(env, BAY_JOURNEY_STATE_KEY));
 }
 
 function workerHealthAttempt(run, job) {
@@ -8057,31 +8771,41 @@ export function activeBayItemKeys(workers, limits: { workers?: number; items?: n
   return [...keys];
 }
 
-async function updateBayTerminalState(env, attempts, closedItems, generatedAt, activeItemKeys) {
-  if (isDurableStatusStore(env.STATUS_STORE)) {
-    const response = await durableStatusStoreStub(env.STATUS_STORE).fetch(
-      statusStoreRequest(BAY_TERMINAL_STATE_KEY, "POST"),
+export function completedBayReviews(journeys) {
+  return (Array.isArray(journeys) ? journeys : []).flatMap((journey) => {
+    const record = normalizeBayJourneyRecord(journey);
+    if (
+      !record?.triggered_at ||
+      !record.completed_at ||
+      !record.repository ||
+      !Number.isInteger(record.number) ||
+      !new Set(["success", "failure", "cancelled"]).has(String(record.completion_outcome || ""))
+    )
+      return [];
+    return [
       {
-        method: "POST",
-        body: JSON.stringify({
-          attempts,
-          closed_items: closedItems,
-          generated_at: generatedAt,
-          ttl_seconds: EVENT_STORE_TTL_SECONDS,
-          active_item_keys: activeItemKeys,
-        }),
+        event_id: [
+          "review",
+          record.repository,
+          record.number,
+          "completion",
+          record.completion_source_delivery_id || "legacy",
+          record.completion_comment_id || "status",
+          record.completed_at,
+        ].join(":"),
+        target: {
+          repository: record.repository,
+          number: record.number,
+          url: `https://github.com/${record.repository}/issues/${record.number}`,
+        },
+        revision: record.source_delivery_id || record.id,
+        outcome: record.completion_outcome,
+        trigger_kind: "review_journey",
+        triggered_at: record.triggered_at,
+        completed_at: record.completed_at,
       },
-    );
-    if (!response.ok) throw new Error(`status store Bay merge failed: ${response.status}`);
-    return publicBayTerminalState(await response.json());
-  }
-  const stored = await readStoredJson(env, BAY_TERMINAL_STATE_KEY);
-  const next = mergeBayTerminalState(stored, attempts, closedItems, generatedAt, activeItemKeys);
-  if (!stored || bayTerminalStateSignature(stored) !== bayTerminalStateSignature(next)) {
-    await writeStoredJson(env, BAY_TERMINAL_STATE_KEY, next, EVENT_STORE_TTL_SECONDS);
-    return publicBayTerminalState(next);
-  }
-  return publicBayTerminalState(stored);
+    ];
+  });
 }
 
 export function mergeBayTerminalState(
@@ -8090,25 +8814,61 @@ export function mergeBayTerminalState(
   closedItems,
   generatedAt,
   activeItemKeys = [],
+  completedReviews = [],
+  completedReviewsAuthoritative = false,
+  activeItemKeysAuthoritative = true,
 ) {
   const now = Date.parse(generatedAt);
   const source = previous && previous.schema_version === 1 ? previous : {};
+  const lifecycleAvailable = completedReviewsAuthoritative === true;
+  // Journey telemetry is bounded and its writes are best-effort, so it can
+  // reconcile known fallback outcomes but cannot globally replace them.
+  const lifecycleAuthoritative = false;
   const storedWindowStartedAt = nullableString(source.terminal_window_started_at);
   const bootstrapWindowStartedAt = Number.isFinite(Date.parse(storedWindowStartedAt || ""))
     ? storedWindowStartedAt
     : bayTerminalBootstrapWindowStartedAt(now);
   const activeKeys = new Set(
-    (Array.isArray(activeItemKeys) ? activeItemKeys : []).map((value) => String(value)),
+    (activeItemKeysAuthoritative
+      ? activeItemKeys
+      : [...(source.active_item_keys || []), ...activeItemKeys]
+    )
+      .filter((value) => typeof value === "string")
+      .map((value) => String(value).toLowerCase()),
   );
-  const bootstrapBuffer = Array.isArray(source.terminal_buffer)
-    ? source.terminal_buffer.filter(
-        (item) =>
-          item?.event_id &&
-          item?.item_key &&
-          isBayTerminalAtOrAfterWindowStart(item, bootstrapWindowStartedAt) &&
-          !activeKeys.has(String(item.item_key)),
+  let pendingFallbackSuccesses = Array.isArray(source.pending_fallback_successes)
+    ? source.pending_fallback_successes.filter(
+        (item) => item?.event_id && item?.item_key && item?.source === "worker_attempt",
       )
     : [];
+  const sourceTerminalBuffer = Array.isArray(source.terminal_buffer) ? source.terminal_buffer : [];
+  for (const item of sourceTerminalBuffer) {
+    if (
+      item?.source === "worker_attempt" &&
+      item?.outcome === "success" &&
+      activeKeys.has(String(item.item_key).toLowerCase()) &&
+      !pendingFallbackSuccesses.some((pending) => pending.event_id === item.event_id)
+    ) {
+      pendingFallbackSuccesses.push(item);
+    }
+  }
+  const restoredFallbackSuccesses = pendingFallbackSuccesses.filter(
+    (item) => !activeKeys.has(String(item.item_key).toLowerCase()),
+  );
+  pendingFallbackSuccesses = pendingFallbackSuccesses.filter((item) =>
+    activeKeys.has(String(item.item_key).toLowerCase()),
+  );
+  const bufferInputs = [...sourceTerminalBuffer, ...restoredFallbackSuccesses].filter(
+    (item, index, items) =>
+      items.findIndex((candidate) => candidate.event_id === item.event_id) === index,
+  );
+  const bootstrapBuffer = bufferInputs.filter(
+    (item) =>
+      item?.event_id &&
+      item?.item_key &&
+      isBayTerminalAtOrAfterWindowStart(item, bootstrapWindowStartedAt) &&
+      (item.source === "completed_review" || !activeKeys.has(String(item.item_key).toLowerCase())),
+  );
   let terminalWindowStartedAt = bayTerminalWindowStartedAt(source, now, bootstrapBuffer);
   const buffer = bootstrapBuffer.filter((item) =>
     isBayTerminalAtOrAfterWindowStart(item, terminalWindowStartedAt),
@@ -8117,6 +8877,11 @@ export function mergeBayTerminalState(
     ? source.seen_events.filter((item) => item?.event_id)
     : [];
   const seenIds = new Set(seenEvents.map((item) => item.event_id));
+  const fallbackAttempts = bayFallbackTerminalAttempts([
+    ...sourceTerminalBuffer,
+    ...pendingFallbackSuccesses,
+    ...seenEvents,
+  ]);
   let terminalWindowEventIds = Array.isArray(source.terminal_window_event_ids)
     ? source.terminal_window_event_ids.map((eventId) => String(eventId)).filter(Boolean)
     : [];
@@ -8130,17 +8895,89 @@ export function mergeBayTerminalState(
   let washedAt = recentlyWashed.length ? source.washed_at || null : null;
   let tideGeneration = Math.max(0, Number(source.tide_generation) || 0);
   let lastTideAt = nullableString(source.last_tide_at);
+  let replacedWashedFallback = false;
 
-  for (const candidate of bayTerminalCandidates(attempts, closedItems)) {
-    if (activeKeys.has(candidate.item_key)) continue;
+  for (const candidate of bayTerminalCandidates(attempts, closedItems, completedReviews)) {
+    const itemKey = String(candidate.item_key).toLowerCase();
     if (
-      !isBayTerminalAfterWindowStart(candidate, terminalWindowStartedAt, terminalWindowEventIdSet)
+      lifecycleAuthoritative &&
+      candidate.source === "worker_attempt" &&
+      candidate.outcome === "success"
     )
       continue;
+    if (activeKeys.has(itemKey) && candidate.source === "worker_attempt") {
+      if (
+        !lifecycleAuthoritative &&
+        candidate.outcome === "success" &&
+        !pendingFallbackSuccesses.some((pending) => pending.event_id === candidate.event_id)
+      ) {
+        pendingFallbackSuccesses.push(candidate);
+      }
+      continue;
+    }
+    const withinTerminalWindow = isBayTerminalAfterWindowStart(
+      candidate,
+      terminalWindowStartedAt,
+      terminalWindowEventIdSet,
+    );
+    if (!withinTerminalWindow && candidate.source !== "completed_review") continue;
     if (seenIds.has(candidate.event_id)) continue;
+    if (candidate.source === "completed_review") {
+      const fallbackAttempt = takeMatchingBayFallbackAttempt(fallbackAttempts, candidate);
+      // A bounded lifecycle snapshot cannot introduce a completion from before
+      // the current tide window. It may still replace a known worker fallback,
+      // including one already washed, without counting it a second time.
+      if (!withinTerminalWindow && !fallbackAttempt) continue;
+      seenIds.add(candidate.event_id);
+      seenEvents.push({
+        event_id: candidate.event_id,
+        seen_at: candidate.completed_at,
+        started_at: candidate.started_at,
+      });
+      if (fallbackAttempt) {
+        const existingIndex = buffer.findIndex(
+          (item) => item.event_id === fallbackAttempt.event_id,
+        );
+        if (existingIndex !== -1) buffer[existingIndex] = candidate;
+        else if (
+          pendingFallbackSuccesses.some((pending) => pending.event_id === fallbackAttempt.event_id)
+        )
+          buffer.push(candidate);
+        else replacedWashedFallback = true;
+        pendingFallbackSuccesses = pendingFallbackSuccesses.filter(
+          (pending) => pending.event_id !== fallbackAttempt.event_id,
+        );
+        continue;
+      }
+      buffer.push(candidate);
+      continue;
+    }
     seenIds.add(candidate.event_id);
-    seenEvents.push({ event_id: candidate.event_id, seen_at: candidate.completed_at });
-    const existingIndex = buffer.findIndex((item) => item.item_key === candidate.item_key);
+    seenEvents.push({
+      event_id: candidate.event_id,
+      seen_at: candidate.completed_at,
+      started_at: candidate.started_at,
+    });
+    if (candidate.source === "worker_attempt") {
+      const lifecycleIndex = buffer.findIndex(
+        (item) =>
+          item.source === "completed_review" &&
+          isLateBayWorkerFallbackForLifecycle(candidate, item),
+      );
+      if (lifecycleIndex !== -1) {
+        seenIds.add(candidate.event_id);
+        seenEvents.push({
+          event_id: candidate.event_id,
+          seen_at: candidate.completed_at,
+          started_at: candidate.started_at,
+        });
+        continue;
+      }
+      fallbackAttempts.push(candidate);
+    }
+    const existingIndex = buffer.findIndex(
+      (item) => item.item_key === candidate.item_key && item.source !== "completed_review",
+    );
     if (existingIndex === -1) {
       buffer.push(candidate);
       continue;
@@ -8157,21 +8994,34 @@ export function mergeBayTerminalState(
   );
 
   let washed = recentlyWashed;
+  let newTides = 0;
   while (buffer.length >= BAY_TIDE_THRESHOLD) {
     washed = buffer.splice(0, BAY_TIDE_THRESHOLD);
     const tideCompletedAt = nullableString(washed.at(-1)?.completed_at) || generatedAt;
     washedAt = generatedAt;
-    lastTideAt = tideCompletedAt;
+    if (!lastTideAt || Date.parse(tideCompletedAt) >= Date.parse(String(lastTideAt || ""))) {
+      lastTideAt = tideCompletedAt;
+    }
     terminalWindowStartedAt = tideCompletedAt;
     terminalWindowEventIds = washed
       .filter((item) => item.completed_at === terminalWindowStartedAt)
       .map((item) => String(item.event_id));
     terminalWindowEventIdSet = new Set(terminalWindowEventIds);
     tideGeneration += 1;
+    newTides += 1;
+  }
+  if (replacedWashedFallback && newTides === 0) {
+    washed = [];
+    washedAt = null;
   }
 
   return {
     schema_version: 1,
+    source_kind: "completed_reviews_v1",
+    completed_reviews_authoritative: lifecycleAuthoritative,
+    completed_reviews_available: lifecycleAvailable,
+    active_item_keys: [...activeKeys],
+    pending_fallback_successes: pendingFallbackSuccesses.slice(-BAY_SEEN_EVENT_LIMIT),
     tide_threshold: BAY_TIDE_THRESHOLD,
     tide_generation: tideGeneration,
     last_tide_at: lastTideAt,
@@ -8189,6 +9039,11 @@ export function mergeBayTerminalState(
 function bayTerminalStateSignature(state) {
   return JSON.stringify({
     schema_version: state?.schema_version,
+    source_kind: state?.source_kind,
+    completed_reviews_authoritative: state?.completed_reviews_authoritative,
+    completed_reviews_available: state?.completed_reviews_available,
+    active_item_keys: state?.active_item_keys,
+    pending_fallback_successes: state?.pending_fallback_successes,
     tide_threshold: state?.tide_threshold,
     tide_generation: state?.tide_generation,
     last_tide_at: state?.last_tide_at,
@@ -8238,7 +9093,84 @@ function isBayTerminalAtOrAfterWindowStart(candidate, terminalWindowStartedAt) {
   return Number.isFinite(completedAt) && Number.isFinite(windowStart) && completedAt >= windowStart;
 }
 
-function bayTerminalCandidates(attempts, closedItems) {
+function bayFallbackTerminalAttempts(values) {
+  const attempts = [];
+  const seen = new Set<string>();
+  for (const value of Array.isArray(values) ? values : []) {
+    const eventId = String(value?.event_id || "");
+    if (!eventId || seen.has(eventId)) continue;
+    if (
+      value?.source === "worker_attempt" &&
+      new Set(["success", "failure", "cancelled"]).has(String(value?.outcome || ""))
+    ) {
+      attempts.push(value);
+      seen.add(eventId);
+      continue;
+    }
+    const match = /^worker:[^:]+:[^:]+:([^:]+#[0-9]+):(success|failure|cancelled):(.+)$/.exec(
+      eventId,
+    );
+    if (!match?.[1] || !match[2] || !match[3]) continue;
+    attempts.push({
+      event_id: eventId,
+      item_key: match[1],
+      started_at: nullableString(value?.started_at),
+      completed_at: match[3],
+      source: "worker_attempt",
+      outcome: match[2],
+    });
+    seen.add(eventId);
+  }
+  return attempts;
+}
+
+function takeMatchingBayFallbackAttempt(fallbackAttempts, review) {
+  const reviewCompletedAt = Date.parse(String(review?.completed_at || ""));
+  const reviewTriggeredAt = Date.parse(String(review?.triggered_at || ""));
+  const itemKey = String(review?.item_key || "").toLowerCase();
+  if (!Number.isFinite(reviewCompletedAt) || !itemKey) return null;
+  let matchIndex = -1;
+  let latestCompletedAt = Number.NEGATIVE_INFINITY;
+  for (let index = 0; index < fallbackAttempts.length; index += 1) {
+    const fallback = fallbackAttempts[index];
+    const fallbackCompletedAt = Date.parse(String(fallback?.completed_at || ""));
+    const fallbackStartedAt = Date.parse(String(fallback?.started_at || ""));
+    if (
+      String(fallback?.item_key || "").toLowerCase() !== itemKey ||
+      !Number.isFinite(fallbackCompletedAt) ||
+      !Number.isFinite(fallbackStartedAt) ||
+      !Number.isFinite(reviewTriggeredAt) ||
+      fallbackCompletedAt > reviewCompletedAt ||
+      fallbackStartedAt < reviewTriggeredAt ||
+      fallbackStartedAt > reviewCompletedAt ||
+      fallbackCompletedAt < latestCompletedAt
+    )
+      continue;
+    matchIndex = index;
+    latestCompletedAt = fallbackCompletedAt;
+  }
+  return matchIndex === -1 ? null : fallbackAttempts.splice(matchIndex, 1)[0];
+}
+
+function isLateBayWorkerFallbackForLifecycle(fallback, review) {
+  const itemKey = String(review?.item_key || "").toLowerCase();
+  const fallbackStartedAt = Date.parse(
+    String(fallback?.started_at || fallback?.completed_at || ""),
+  );
+  const reviewTriggeredAt = Date.parse(String(review?.triggered_at || ""));
+  const reviewCompletedAt = Date.parse(String(review?.completed_at || ""));
+  return (
+    !!itemKey &&
+    String(fallback?.item_key || "").toLowerCase() === itemKey &&
+    Number.isFinite(fallbackStartedAt) &&
+    Number.isFinite(reviewTriggeredAt) &&
+    Number.isFinite(reviewCompletedAt) &&
+    fallbackStartedAt >= reviewTriggeredAt &&
+    fallbackStartedAt <= reviewCompletedAt
+  );
+}
+
+function bayTerminalCandidates(attempts, closedItems, completedReviews = []) {
   const candidates = [];
   for (const attempt of Array.isArray(attempts) ? attempts : []) {
     const outcome = String(attempt?.terminal_outcome || "");
@@ -8298,23 +9230,36 @@ function bayTerminalCandidates(attempts, closedItems) {
       source: "closed_item",
     });
   }
+  for (const review of Array.isArray(completedReviews) ? completedReviews : []) {
+    const target = objectValue(review?.target);
+    const repository = nullableString(target.repository || review?.repository)?.toLowerCase();
+    const number = Number(target.number || review?.number);
+    const completedAt = nullableString(review?.completed_at);
+    const eventId = nullableString(review?.event_id);
+    if (!repository || !Number.isInteger(number) || number <= 0 || !completedAt || !eventId)
+      continue;
+    const outcome = String(review?.outcome || "success");
+    if (!new Set(["success", "failure", "cancelled"]).has(outcome)) continue;
+    const itemKey = `${repository}#${number}`;
+    candidates.push({
+      event_id: eventId,
+      item_key: itemKey,
+      repository,
+      number,
+      outcome,
+      title: `Completed review ${itemKey}`,
+      item_url: nullableString(target.url) || `https://github.com/${repository}/issues/${number}`,
+      job_url: null,
+      run_id: null,
+      triggered_at: nullableString(review?.triggered_at),
+      completed_at: completedAt,
+      current_step: outcome === "success" ? "Review completed" : `Review ${outcome}`,
+      source: "completed_review",
+    });
+  }
   return candidates.sort(
     (left, right) => Date.parse(left.completed_at) - Date.parse(right.completed_at),
   );
-}
-
-function publicBayTerminalState(state) {
-  return {
-    schema_version: 1,
-    tide_threshold: state.tide_threshold,
-    tide_generation: state.tide_generation,
-    last_tide_at: state.last_tide_at,
-    terminal_count: state.terminal_count,
-    terminal_buffer: state.terminal_buffer,
-    washed_at: state.washed_at,
-    recently_washed: state.recently_washed,
-    updated_at: state.updated_at,
-  };
 }
 
 function emptyBayTerminalState(generatedAt) {
@@ -10058,9 +11003,26 @@ function automergeCommentTime(comment) {
   return Number.isFinite(timestamp) ? timestamp : Number.MAX_SAFE_INTEGER;
 }
 
-export async function readCachedSnapshot(env, ttlSeconds) {
+const STATUS_SNAPSHOT_KEY = "snapshot";
+const STATUS_SNAPSHOT_BAY_SCOPE_KEY_PREFIX = "snapshot:bay-scope:v1:";
+
+function cachedStatusSnapshotKey(publicBayScope) {
+  return `${STATUS_SNAPSHOT_BAY_SCOPE_KEY_PREFIX}${
+    publicBayScope ? encodeURIComponent(publicBayScope) : "_"
+  }`;
+}
+
+async function writeCachedStatusSnapshot(store, body, publicBayScope) {
+  await writeStatusStoreText(store, cachedStatusSnapshotKey(publicBayScope), body);
+}
+
+export async function readCachedSnapshot(env, ttlSeconds, expectedBayScope?: string) {
   if (!env.STATUS_STORE) return null;
-  const text = await readStatusStoreText(env.STATUS_STORE, "snapshot");
+  const key =
+    expectedBayScope === undefined
+      ? STATUS_SNAPSHOT_KEY
+      : cachedStatusSnapshotKey(expectedBayScope);
+  const text = await readStatusStoreText(env.STATUS_STORE, key);
   if (!text) return null;
   let snapshot;
   try {

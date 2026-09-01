@@ -347,7 +347,7 @@ test("durable review identity uses complete comments outside the prompt window",
 **Summary**
 The review in the middle of an active discussion remains authoritative.
 
-<!-- clawsweeper-verdict:pass item=123 sha=abc confidence=high -->
+<!-- clawsweeper-verdict:pass item=123 sha=abc confidence=high live_verification=absent -->
 <!-- clawsweeper-review item=123 -->`,
     "clawsweeper[bot]",
     "2026-05-24T02:00:00Z",

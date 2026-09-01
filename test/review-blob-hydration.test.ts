@@ -7,14 +7,26 @@ import test from "node:test";
 
 import {
   ensurePullRequestReviewHead,
+  ensureReviewTreeCommit,
   githubReviewBlobSizes,
   hydratePullRequestReviewBlobs,
+  hydratePullRequestReviewHistory,
   materializePullRequestReviewTree,
   removePullRequestReviewTree,
 } from "../dist/clawsweeper-review-blobs.js";
+import { reviewMergeBase } from "../dist/pr-review-evidence.js";
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+}
+
+function ensureShallowPullRequestReviewHead(targetDir: string, headSha: string): boolean {
+  return ensureReviewTreeCommit({
+    targetDir,
+    sha: headSha,
+    sourceRef: "refs/pull/982/head",
+    destinationRef: "refs/clawsweeper/review-cache/head-982",
+  });
 }
 
 function partialCloneFixture({
@@ -104,6 +116,278 @@ function objectExistsOffline(cwd: string, sha: string): boolean {
   );
 }
 
+// A review target is a single-branch, blobless clone of the base branch, so the reviewed
+// head arrives shallow and history hydration has to reach a merge base. A depth-limited
+// fetch re-bounds every revision it names, so hydration must not name a base branch whose
+// ancestry the checkout already holds.
+function reviewHistoryFixture({
+  commitsBeforeBranch,
+  commitsAfterBranch,
+  commitsOnBranch = 0,
+  commitsAfterMerge = 0,
+  commitsPastBase = 0,
+  cloneDepth,
+  baseRefreshDepth = 50,
+  mergeBaseIntoFeature = false,
+  publishPullRef = true,
+}: {
+  commitsBeforeBranch: number;
+  commitsAfterBranch: number;
+  commitsOnBranch?: number;
+  commitsAfterMerge?: number;
+  commitsPastBase?: number;
+  cloneDepth?: number;
+  baseRefreshDepth?: number;
+  mergeBaseIntoFeature?: boolean;
+  publishPullRef?: boolean;
+}) {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-review-history-"));
+  const origin = join(root, "origin.git");
+  const source = join(root, "source");
+  const target = join(root, "target");
+  mkdirSync(source);
+  git(root, "init", "--bare", "-q", origin);
+  git(origin, "config", "uploadpack.allowFilter", "true");
+  git(origin, "config", "uploadpack.allowAnySHA1InWant", "true");
+  git(source, "init", "-q", "-b", "main");
+  git(source, "config", "user.name", "ClawSweeper Review Test");
+  git(source, "config", "user.email", "review-test@example.com");
+  git(source, "config", "commit.gpgsign", "false");
+  const commit = (name: string) => {
+    writeFileSync(join(source, "history.txt"), `${name}\n`);
+    git(source, "add", "-A");
+    git(source, "commit", "-qm", name);
+  };
+  commit("root");
+  for (let index = 0; index < commitsBeforeBranch; index += 1) commit(`history ${index}`);
+  const branchPoint = git(source, "rev-parse", "HEAD");
+  git(source, "checkout", "-qb", "feature");
+  writeFileSync(join(source, "feature.txt"), "feature\n");
+  git(source, "add", "-A");
+  git(source, "commit", "-qm", "feature");
+  for (let index = 0; index < commitsOnBranch; index += 1) {
+    writeFileSync(join(source, "feature.txt"), `feature ${index}\n`);
+    git(source, "commit", "-qam", `feature ${index}`);
+  }
+  let headSha = git(source, "rev-parse", "HEAD");
+  git(source, "checkout", "-q", "main");
+  for (let index = 0; index < commitsAfterBranch; index += 1) commit(`base ${index}`);
+  // A pull request pins the base branch where it stood when the request was opened, so the
+  // branch usually moves on past it. Commits past that point put the pinned base behind the
+  // depth-limited refresh boundary, exactly as it sits in a hosted review.
+  const baseSha = git(source, "rev-parse", "HEAD");
+  for (let index = 0; index < commitsPastBase; index += 1) commit(`past base ${index}`);
+  git(source, "remote", "add", "origin", origin);
+  git(source, "push", "-q", "origin", "main");
+  if (mergeBaseIntoFeature) {
+    git(source, "checkout", "-q", "feature");
+    git(source, "merge", "-q", "--no-ff", baseSha, "-m", "merge main");
+    for (let index = 0; index < commitsAfterMerge; index += 1) {
+      writeFileSync(join(source, "feature.txt"), `after merge ${index}\n`);
+      git(source, "commit", "-qam", `after merge ${index}`);
+    }
+    headSha = git(source, "rev-parse", "HEAD");
+  }
+  if (publishPullRef) git(source, "push", "-q", "origin", "feature:refs/pull/982/head");
+
+  git(
+    root,
+    "clone",
+    "-q",
+    "--filter=blob:none",
+    "--branch",
+    "main",
+    "--single-branch",
+    ...(cloneDepth ? [`--depth=${cloneDepth}`] : []),
+    `file://${origin}`,
+    target,
+  );
+  // The review runtime refreshes the base branch with a depth-limited fetch before reviewing.
+  git(
+    target,
+    "fetch",
+    "-q",
+    "origin",
+    "refs/heads/main:refs/remotes/origin/main",
+    `--depth=${baseRefreshDepth}`,
+  );
+  return { root, target, baseSha, headSha, branchPoint };
+}
+
+function reachable(target: string, sha: string): number {
+  const count = spawnSync("git", ["rev-list", "--count", sha], {
+    cwd: target,
+    encoding: "utf8",
+    env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
+  });
+  return count.status === 0 ? Number(count.stdout.trim()) : -1;
+}
+
+test("supplied checkout exact-review sequence recovers merged base history", () => {
+  // The hosted workflow supplies a complete base checkout, then review acquisition fetches
+  // the PR head. Keep the merge-from-base commit beyond bounded fallback hydration so this
+  // fixture proves acquisition itself preserved the history instead of relying on the retry.
+  const fixture = reviewHistoryFixture({
+    commitsBeforeBranch: 10,
+    commitsAfterBranch: 10,
+    commitsAfterMerge: 300,
+    mergeBaseIntoFeature: true,
+  });
+  try {
+    assert.ok(
+      ensurePullRequestReviewHead({
+        targetDir: fixture.target,
+        itemNumber: 982,
+        headSha: fixture.headSha,
+      }),
+    );
+    assert.equal(
+      hydratePullRequestReviewHistory({
+        targetDir: fixture.target,
+        baseSha: fixture.baseSha,
+        headSha: fixture.headSha,
+        itemNumber: 982,
+      }),
+      fixture.baseSha,
+    );
+    assert.equal(
+      reviewMergeBase(fixture.target, fixture.baseSha, fixture.headSha).status,
+      "verified",
+    );
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("review history hydration keeps base ancestry the checkout already had", () => {
+  // The base branch's history is present and deeper than the bounded deepening, and the
+  // merge base is two commits behind the reviewed head but further behind the pinned base
+  // than the bound reaches. Naming the base in that fetch re-bounds ancestry the checkout
+  // already had and loses the merge base with it; deepening the head alone finds it.
+  const fixture = reviewHistoryFixture({
+    commitsBeforeBranch: 300,
+    commitsAfterBranch: 300,
+    commitsPastBase: 100,
+  });
+  try {
+    assert.ok(ensureShallowPullRequestReviewHead(fixture.target, fixture.headSha));
+    const before = reachable(fixture.target, fixture.baseSha);
+    assert.ok(before > 256, `expected deep base ancestry, saw ${before}`);
+    assert.equal(
+      reviewMergeBase(fixture.target, fixture.baseSha, fixture.headSha).status,
+      "unavailable",
+    );
+
+    assert.equal(
+      hydratePullRequestReviewHistory({
+        targetDir: fixture.target,
+        baseSha: fixture.baseSha,
+        headSha: fixture.headSha,
+        itemNumber: 982,
+      }),
+      fixture.branchPoint,
+    );
+
+    assert.equal(
+      reviewMergeBase(fixture.target, fixture.baseSha, fixture.headSha).status,
+      "verified",
+    );
+    assert.ok(
+      reachable(fixture.target, fixture.baseSha) > 256,
+      "hydration must not re-bound base ancestry to the fetch depth",
+    );
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("review history hydration still deepens a base branch that is itself shallow", () => {
+  // Shallow clone: the pinned base arrives with no ancestry, so reaching a merge base needs
+  // the base deepened too. Deepening only the head must not be the whole story.
+  const fixture = reviewHistoryFixture({
+    commitsBeforeBranch: 10,
+    commitsAfterBranch: 20,
+    cloneDepth: 1,
+    baseRefreshDepth: 1,
+  });
+  try {
+    assert.ok(ensureShallowPullRequestReviewHead(fixture.target, fixture.headSha));
+    assert.equal(reachable(fixture.target, fixture.baseSha), 1);
+
+    assert.equal(
+      hydratePullRequestReviewHistory({
+        targetDir: fixture.target,
+        baseSha: fixture.baseSha,
+        headSha: fixture.headSha,
+        itemNumber: 982,
+      }),
+      fixture.branchPoint,
+    );
+    assert.equal(
+      reviewMergeBase(fixture.target, fixture.baseSha, fixture.headSha).status,
+      "verified",
+    );
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("review history hydration stays fail-closed when the bounded deepening cannot reach", () => {
+  // The merge base is further from the reviewed head than the bounded deepening reaches.
+  // That is the documented bound doing its job, not the defect above: no merge base is
+  // reported and the caller keeps refusing.
+  const fixture = reviewHistoryFixture({
+    commitsBeforeBranch: 5,
+    commitsAfterBranch: 400,
+    cloneDepth: 1,
+    baseRefreshDepth: 1,
+  });
+  try {
+    assert.ok(ensureShallowPullRequestReviewHead(fixture.target, fixture.headSha));
+    assert.equal(
+      hydratePullRequestReviewHistory({
+        targetDir: fixture.target,
+        baseSha: fixture.baseSha,
+        headSha: fixture.headSha,
+        itemNumber: 982,
+      }),
+      null,
+    );
+    assert.equal(
+      reviewMergeBase(fixture.target, fixture.baseSha, fixture.headSha).status,
+      "unavailable",
+    );
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("review history hydration reports no merge base when the pull ref is unreachable", () => {
+  const fixture = reviewHistoryFixture({
+    commitsBeforeBranch: 5,
+    commitsAfterBranch: 5,
+    publishPullRef: false,
+  });
+  try {
+    rmSync(join(fixture.root, "origin.git"), { recursive: true, force: true });
+    assert.equal(
+      hydratePullRequestReviewHistory({
+        targetDir: fixture.target,
+        baseSha: fixture.baseSha,
+        headSha: fixture.headSha,
+        itemNumber: 982,
+      }),
+      null,
+    );
+    assert.equal(
+      reviewMergeBase(fixture.target, fixture.baseSha, fixture.headSha).status,
+      "unavailable",
+    );
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("restricted PR review can inspect changed blobs from a genuine blobless clone offline", () => {
   const fixture = partialCloneFixture();
   try {
@@ -145,6 +429,30 @@ test("restricted PR review can inspect changed blobs from a genuine blobless clo
       /\+after/,
     );
     assert.equal(git(fixture.target, "status", "--porcelain"), "");
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("persisted snapshot null previous filenames still hydrate missing blobs", () => {
+  const fixture = partialCloneFixture();
+  try {
+    assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), false);
+    assert.equal(objectExistsOffline(fixture.target, fixture.changedBlobSha), false);
+    const result = hydratePullRequestReviewBlobs({
+      targetDir: fixture.target,
+      baseSha: fixture.baseSha,
+      headSha: fixture.headSha,
+      resolveBlobSizes: resolveFixtureBlobSizes(fixture.source),
+      files: [
+        { filename: "added.txt", previous_filename: null, status: "added" },
+        { filename: "changed.txt", previous_filename: null, status: "modified" },
+        { filename: "removed.txt", previous_filename: null, status: "removed" },
+      ],
+    });
+    assert.deepEqual(result, { hydrated: true, blobs: 4 });
+    assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), true);
+    assert.equal(objectExistsOffline(fixture.target, fixture.changedBlobSha), true);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }

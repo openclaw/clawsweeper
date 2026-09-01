@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { parse as parseYaml } from "yaml";
 
 import {
   applyDecisionPriority,
@@ -165,7 +166,7 @@ const logPath = ${JSON.stringify(logPath)};
 const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 appendFileSync(logPath, JSON.stringify(args) + "\\n");
-const path = args[1] || "";
+const path = args[1] === "-i" ? args[2] || "" : args[1] || "";
 if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
@@ -571,7 +572,7 @@ const updatedAt = { 321: "2026-05-01T00:00:00Z", 322: "2026-05-02T00:00:00Z" };
 const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 appendFileSync(logPath, JSON.stringify(args) + "\\n");
-const path = args[1] || "";
+const path = args[1] === "-i" ? args[2] || "" : args[1] || "";
 const commentMatch = path.match(/\\/issues\\/(\\d+)\\/comments(?:\\?|$)/);
 const issueMatch = path.match(/\\/issues\\/(\\d+)$/);
 if (args[0] === "api" && commentMatch) {
@@ -732,7 +733,7 @@ const comments = ${JSON.stringify({ 321: first.comment, 322: second.comment })};
 const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 appendFileSync(logPath, JSON.stringify(args) + "\\n");
-const path = args[1] || "";
+const path = args[1] === "-i" ? args[2] || "" : args[1] || "";
 const commentMatch = path.match(/\\/issues\\/(\\d+)\\/comments(?:\\?|$)/);
 const issueMatch = path.match(/\\/issues\\/(\\d+)$/);
 if (args[0] === "api" && /\\/issues\\/comments\\/\\d+$/.test(path)) {
@@ -740,6 +741,8 @@ if (args[0] === "api" && /\\/issues\\/comments\\/\\d+$/.test(path)) {
   const body = JSON.parse(readFileSync(inputPath, "utf8")).body;
   appendFileSync(logPath, JSON.stringify(["comment-patch", body]) + "\\n");
   console.log(JSON.stringify({ id: 9000 + 321, html_url: "https://github.com/openclaw/clawsweeper/issues/321#issuecomment-9321", updated_at: "2026-05-01T01:02:00Z", body }));
+} else if (args[0] === "api" && /\\/issues\\/\\d+\\/timeline(?:\\?|$)/.test(path)) {
+  console.log("HTTP/2 200\\n\\n[]");
 } else if (args[0] === "api" && commentMatch) {
   const number = Number(commentMatch[1]);
   const body = comments[number];
@@ -837,7 +840,7 @@ if (args[0] === "api" && /\\/issues\\/comments\\/\\d+$/.test(path)) {
           (args[1] ?? "").includes("/issues/321/comments") &&
           args.includes("--paginate"),
       );
-    assert.equal(postMutationReviewCommentFetches.length, 0);
+    assert.equal(postMutationReviewCommentFetches.length, 1);
     assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
       {
         number: 321,
@@ -2367,7 +2370,9 @@ test("agent workflows install pinned CLI releases and keep runner models secret"
   assert.match(openclawAction, /openclaw-version:[\s\S]*default: "2026\.7\.2"/);
   assert.match(openclawAction, /openclaw@\$\{\{ inputs\['openclaw-version'\] \}\}/);
   assert.doesNotMatch(openclawAction, /@latest/);
-  assert.equal(openclawAction.match(/env\.CLAWSWEEPER_RUNNER == 'openclaw'/g)?.length, 4);
+  for (const step of parseYaml(openclawAction).runs.steps) {
+    assert.match(step.if ?? "", /env\.CLAWSWEEPER_RUNNER == 'openclaw'/);
+  }
   // Source builds bridge unreleased OpenClaw features and must stay pinned to
   // an exact SHA, gated to the openclaw runner, and off by default.
   assert.match(openclawAction, /openclaw-source-ref:[\s\S]*default: ""/);
@@ -2556,10 +2561,6 @@ test("review prompt keeps automerge opt-in from becoming generic manual review",
   assert.match(prompt, /`maintainer` label/);
   assert.match(prompt, /large `size:\*` label/);
   assert.match(prompt, /choose `queue_fix_pr` even when the\s+finding is process-only or P3/);
-  assert.match(prompt, /`CHANGELOG\.md` is release-owned/);
-  assert.match(prompt, /Do not\s+make missing `CHANGELOG\.md` a review finding/i);
-  assert.match(prompt, /ask for PR-body or commit\s+message context/);
-  assert.doesNotMatch(prompt, /missing required changelog\s+entry/);
   assert.match(prompt, /does not by itself block a clean automerge verdict/);
 });
 

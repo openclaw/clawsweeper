@@ -6,7 +6,6 @@ import { querySqliteRows, querySqliteScalar } from "./sqlite-readonly.js";
 import type {
   GitcrawlClusterSource,
   Item,
-  ItemContext,
   ItemKind,
   LocalRelatedTitleEntry,
 } from "./clawsweeper-types.js";
@@ -767,36 +766,6 @@ export function createRelatedContext({
     return related.slice(0, RELATED_ITEMS_LIMIT);
   }
 
-  function refreshRelatedItemsContext(item: Item, context: ItemContext): unknown[] {
-    const seen = new Set<number>([item.number]);
-    const related: unknown[] = [];
-    const refreshedExplicit = (context.relatedItems ?? [])
-      .map((candidate) => {
-        const record = asRecord(candidate);
-        if (!record.issue && !record.pullRequest && !record.error && !record.pullRequestError) {
-          return null;
-        }
-        const number = relatedItemNumber(candidate);
-        if (number === null) return null;
-        const mentionedIn = Array.isArray(record.mentionedIn)
-          ? record.mentionedIn.filter((entry): entry is string => typeof entry === "string")
-          : [];
-        return compactRelatedItem(number, mentionedIn);
-      })
-      .filter((entry) => entry !== null);
-    appendUniqueRelatedItems(related, seen, refreshedExplicit);
-    if (related.length < RELATED_ITEMS_LIMIT) {
-      appendUniqueRelatedItems(related, seen, compactLocalRelatedTitleItems(item, seen));
-    }
-    if (related.length < RELATED_ITEMS_LIMIT) {
-      appendUniqueRelatedItems(related, seen, compactRelatedGitcrawlItems(item, seen));
-    }
-    if (related.length < RELATED_ITEMS_LIMIT) {
-      appendUniqueRelatedItems(related, seen, compactRelatedGitHubIssueSearchItems(item, seen));
-    }
-    return related.slice(0, RELATED_ITEMS_LIMIT);
-  }
-
   return {
     compactReferencingMergedPullRequestForTest,
     referencingMergedPullRequestCandidatesForTest,
@@ -806,7 +775,6 @@ export function createRelatedContext({
     isDigitsOnly,
     quoteGitHubSearchTerm,
     referencingMergedPullRequestsForIssue,
-    refreshRelatedItemsContext,
     relatedItemsContext,
     structuralExternalRelationSensitivity,
   };

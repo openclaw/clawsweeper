@@ -35,6 +35,8 @@ test("dashboard smoke requires the bounded Bay journey timing contract", () => {
   const source = readFileSync(new URL("../scripts/dashboard-smoke.mjs", import.meta.url), "utf8");
 
   assert.match(source, /sample_kind !== "completed_review_journeys"/);
+  assert.match(source, /source !== "durable_exact_review_lifecycles"/);
+  assert.match(source, /completion_source !== "verified_final_review_receipts"/);
   assert.doesNotMatch(source, /latest_completed_jobs/);
 });
 

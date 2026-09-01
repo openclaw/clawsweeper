@@ -196,6 +196,13 @@ export class CanonicalRecordTupleConflictError extends Error {
   }
 }
 
+export class RecordExportConsistencyError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "RecordExportConsistencyError";
+  }
+}
+
 export class ExactReviewDirectPublicationStore {
   private readonly storage: DurableStorage;
 
@@ -353,6 +360,11 @@ export class ExactReviewDirectPublicationStore {
       `CREATE INDEX IF NOT EXISTS exact_review_record_export_by_repo_revision
          ON ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
          (repo_slug, store_revision, section, record_id)`,
+    );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_record_export_by_repo_section_revision
+         ON ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+         (repo_slug, section, store_revision)`,
     );
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_RECORD_BACKFILL_TABLE} (
@@ -810,29 +822,65 @@ export class ExactReviewDirectPublicationStore {
     cursor: number;
     limit: number;
     maxBytes: number;
+    maxSourceBytes: number;
+    maxRecords: number;
   }): { records: RecordExportEntry[]; nextCursor: number | null; watermark: number } {
     const placeholders = options.sections.map(() => "?").join(", ");
+    // The preflight joins source metadata before reconstruction. It must not
+    // scan more candidates than the reconstruction bound can ever consume.
+    const rowLimit = Math.min(options.limit, options.maxRecords);
     const rows = Array.from(
       this.storage.sql.exec(
-        `SELECT repo_slug, section, record_id, digest, deleted, revision, store_revision,
-                source, updated_at
-           FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
-          WHERE repo_slug = ?
-            AND section IN (${placeholders})
-            AND store_revision > ?
-            AND store_revision > ?
-          ORDER BY store_revision
+        `SELECT export.repo_slug, export.section, export.record_id, export.digest,
+                export.deleted, export.revision, export.store_revision, export.source,
+                export.updated_at,
+                CASE
+                  WHEN export.deleted = 1 THEN '0'
+                  WHEN export.source = 'canonical' AND export.section <> 'commits'
+                    THEN CAST(canonical.byte_length AS TEXT)
+                  ELSE CAST(backfill.byte_length AS TEXT)
+                END AS source_byte_length
+           FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE} export
+           LEFT JOIN ${EXACT_REVIEW_CANONICAL_RECORD_TABLE} canonical
+             ON export.deleted = 0
+            AND export.source = 'canonical'
+            AND export.section <> 'commits'
+            AND canonical.repo_slug = export.repo_slug
+            AND canonical.section = export.section
+            AND canonical.item_id = CAST(export.record_id AS INTEGER)
+           LEFT JOIN ${EXACT_REVIEW_RECORD_BACKFILL_TABLE} backfill
+             ON export.deleted = 0
+            AND (export.source = 'backfill' OR export.section = 'commits')
+            AND backfill.repo_slug = export.repo_slug
+            AND backfill.section = export.section
+            AND backfill.record_id = export.record_id
+          WHERE export.repo_slug = ?
+            AND export.section IN (${placeholders})
+            AND export.store_revision > ?
+            AND export.store_revision > ?
+          ORDER BY export.store_revision
           LIMIT ?`,
         options.repoSlug,
         ...options.sections,
         options.sinceRevision,
         options.cursor,
-        options.limit,
+        rowLimit,
       ),
     );
+    const selectedRows: Record<string, unknown>[] = [];
+    let sourceBytes = 0;
+    for (const row of rows) {
+      if (selectedRows.length >= options.maxRecords) break;
+      const byteLength = recordExportSourceByteLength(row);
+      if (selectedRows.length > 0 && byteLength > options.maxSourceBytes - sourceBytes) {
+        break;
+      }
+      selectedRows.push(row);
+      sourceBytes += byteLength;
+    }
     const records: RecordExportEntry[] = [];
     let responseBytes = 0;
-    for (const row of rows) {
+    for (const row of selectedRows) {
       const entry = this.recordExportEntrySync(row);
       const entryBytes = new TextEncoder().encode(JSON.stringify(entry)).byteLength;
       if (records.length && responseBytes + entryBytes > options.maxBytes) break;
@@ -841,12 +889,28 @@ export class ExactReviewDirectPublicationStore {
     }
     const watermark = this.currentExportRevisionSync();
     const lastRevision = records.at(-1)?.storeRevision ?? null;
+    const hasMore =
+      lastRevision !== null && records.length === rows.length && rows.length === rowLimit
+        ? Array.from(
+            this.storage.sql.exec(
+              `SELECT 1
+                 FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE} export
+                WHERE export.repo_slug = ?
+                  AND export.section IN (${placeholders})
+                  AND export.store_revision > ?
+                  AND export.store_revision > ?
+                LIMIT 1`,
+              options.repoSlug,
+              ...options.sections,
+              options.sinceRevision,
+              lastRevision,
+            ),
+          ).length > 0
+        : false;
     return {
       records,
       nextCursor:
-        lastRevision !== null && (records.length < rows.length || rows.length === options.limit)
-          ? lastRevision
-          : null,
+        lastRevision !== null && (records.length < rows.length || hasMore) ? lastRevision : null,
       watermark,
     };
   }
@@ -1147,7 +1211,7 @@ export class ExactReviewDirectPublicationStore {
     )[0];
     const revision = Number(row?.current_revision);
     if (!Number.isSafeInteger(revision) || revision < 1) {
-      throw new Error("record export revision allocation failed");
+      throw new RecordExportConsistencyError("record export revision allocation failed");
     }
     return revision;
   }
@@ -1161,7 +1225,7 @@ export class ExactReviewDirectPublicationStore {
     )[0];
     const revision = Number(row?.current_revision ?? 0);
     if (!Number.isSafeInteger(revision) || revision < 0) {
-      throw new Error("invalid record export revision watermark");
+      throw new RecordExportConsistencyError("invalid record export revision watermark");
     }
     return revision;
   }
@@ -1176,11 +1240,23 @@ export class ExactReviewDirectPublicationStore {
       if (String(row.source) === "canonical" && section !== "commits") {
         const itemId = Number(id);
         if (!Number.isSafeInteger(itemId) || itemId < 1) {
-          throw new Error(`invalid canonical export identity: ${repoSlug}/${section}/${id}`);
+          throw new RecordExportConsistencyError(
+            `invalid canonical export identity: ${repoSlug}/${section}/${id}`,
+          );
         }
-        const canonical = this.readCanonical(repoSlug, section, itemId);
+        let canonical: CanonicalRecord | null;
+        try {
+          canonical = this.readCanonical(repoSlug, section, itemId);
+        } catch (error) {
+          if (error instanceof RecordExportConsistencyError) throw error;
+          throw new RecordExportConsistencyError("canonical export content is malformed", {
+            cause: error,
+          });
+        }
         if (!canonical || canonical.deleted || canonical.content === null) {
-          throw new Error(`canonical export content missing: ${repoSlug}/${section}/${id}`);
+          throw new RecordExportConsistencyError(
+            `canonical export content missing: ${repoSlug}/${section}/${id}`,
+          );
         }
         content = canonical.content;
       } else {
@@ -1245,7 +1321,11 @@ export class ExactReviewDirectPublicationStore {
         id,
       ),
     )[0];
-    if (!row) throw new Error(`backfill export content missing: ${repoSlug}/${section}/${id}`);
+    if (!row) {
+      throw new RecordExportConsistencyError(
+        `backfill export content missing: ${repoSlug}/${section}/${id}`,
+      );
+    }
     if (row.content !== null) return String(row.content);
     const chunks = Array.from(
       this.storage.sql.exec(
@@ -1259,19 +1339,30 @@ export class ExactReviewDirectPublicationStore {
       ),
     );
     if (chunks.length !== Number(row.chunk_count)) {
-      throw new Error(`backfill export chunk count mismatch: ${repoSlug}/${section}/${id}`);
+      throw new RecordExportConsistencyError(
+        `backfill export chunk count mismatch: ${repoSlug}/${section}/${id}`,
+      );
     }
-    const parts = chunks.map((chunk) => base64Bytes(String(chunk.content_base64)));
-    const bytes = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
-    let offset = 0;
-    for (const part of parts) {
-      bytes.set(part, offset);
-      offset += part.byteLength;
+    try {
+      const parts = chunks.map((chunk) => base64Bytes(String(chunk.content_base64)));
+      const bytes = new Uint8Array(parts.reduce((sum, part) => sum + part.byteLength, 0));
+      let offset = 0;
+      for (const part of parts) {
+        bytes.set(part, offset);
+        offset += part.byteLength;
+      }
+      if (bytes.byteLength !== Number(row.byte_length)) {
+        throw new RecordExportConsistencyError(
+          `backfill export byte count mismatch: ${repoSlug}/${section}/${id}`,
+        );
+      }
+      return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch (error) {
+      if (error instanceof RecordExportConsistencyError) throw error;
+      throw new RecordExportConsistencyError("backfill export content is malformed", {
+        cause: error,
+      });
     }
-    if (bytes.byteLength !== Number(row.byte_length)) {
-      throw new Error(`backfill export byte count mismatch: ${repoSlug}/${section}/${id}`);
-    }
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   }
 
   private insertSync(row: DirectPublicationRow) {
@@ -1302,6 +1393,22 @@ export class ExactReviewDirectPublicationStore {
       row.failureReason,
     );
   }
+}
+
+function recordExportSourceByteLength(row: Record<string, unknown>) {
+  const value = row.source_byte_length;
+  const byteLength =
+    typeof value === "string" && /^(0|[1-9]\d*)$/.test(value) ? Number(value) : NaN;
+  if (
+    !Number.isSafeInteger(byteLength) ||
+    byteLength < 0 ||
+    (Number(row.deleted) === 1 && byteLength !== 0)
+  ) {
+    throw new RecordExportConsistencyError(
+      `invalid record export byte metadata: ${String(row.repo_slug)}/${String(row.section)}/${String(row.record_id)}`,
+    );
+  }
+  return byteLength;
 }
 
 function canonicalTupleOperations(
@@ -1694,6 +1801,80 @@ export async function validateDirectPublicationPlan(
     totalBytes,
     ...(lifecycle ? { lifecycle } : {}),
   };
+}
+
+export function directPublicationRejectionDetail(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  switch (message) {
+    case "invalid direct publication canonical target key":
+      return "invalid direct publication canonical target key";
+    case "invalid direct publication fence key":
+      return "invalid direct publication fence key";
+    case "invalid direct publication source SHA":
+      return "invalid direct publication source SHA";
+    case "invalid direct publication revision":
+      return "invalid direct publication revision";
+    case "invalid direct publication lifecycle plan":
+      return "invalid direct publication lifecycle plan";
+    case "invalid direct publication identity":
+      return "invalid direct publication identity";
+    case "a direct publication plan must change a path":
+      return "a direct publication plan must change a path";
+    case "a direct publication plan exceeds the exact-review tuple file limit":
+      return "a direct publication plan exceeds the exact-review tuple file limit";
+    case "direct publication total does not match its operations":
+      return "direct publication total does not match its operations";
+    case "direct publication plan exceeds the per-POST byte limit":
+      return "direct publication plan exceeds the per-POST byte limit";
+    case "conflicting direct publication retry":
+      return "conflicting direct publication retry";
+    case "direct publication source run identity is unavailable":
+      return "direct publication source run identity is unavailable";
+    case "direct publication source SHA is unavailable":
+      return "direct publication source SHA is unavailable";
+  }
+  if (message.startsWith("invalid bounded state mutation path:")) {
+    return "invalid bounded state mutation path";
+  }
+  if (message.startsWith("invalid or repeated direct publication path:")) {
+    return "invalid or repeated direct publication path";
+  }
+  if (message.startsWith("direct publication path is outside ")) {
+    return "direct publication path is outside its target tuple";
+  }
+  if (message.startsWith("invalid mutation mode for ")) return "invalid mutation mode";
+  if (message.startsWith("invalid mutation byte count for ")) return "invalid mutation byte count";
+  if (message.startsWith("deleted mutation paths must not carry content:")) {
+    return "deleted mutation paths must not carry content";
+  }
+  if (message.startsWith("missing or invalid mutation content for ")) {
+    return "missing or invalid mutation content";
+  }
+  if (message.startsWith("mutation byte count does not match content for ")) {
+    return "mutation byte count does not match content";
+  }
+  if (message.startsWith("canonical record content is not UTF-8:")) {
+    return "canonical record content is not UTF-8";
+  }
+  if (message.startsWith("canonical tuple has invalid primary/sidecar structure:")) {
+    return "canonical tuple has invalid primary/sidecar structure";
+  }
+  if (message.startsWith("canonical closed tuple retains a work plan:")) {
+    return "canonical closed tuple retains a work plan";
+  }
+  if (message.startsWith("canonical tuple references a missing decision packet:")) {
+    return "canonical tuple references a missing decision packet";
+  }
+  if (message.startsWith("canonical tuple decision packet reference is inconsistent:")) {
+    return "canonical tuple decision packet reference is inconsistent";
+  }
+  if (message.startsWith("direct publication tuple writes both primary sections:")) {
+    return "direct publication tuple writes both primary sections";
+  }
+  if (message.startsWith("canonical record tuple exceeds its file limit:")) {
+    return "canonical record tuple exceeds its file limit";
+  }
+  return "direct publication request failed";
 }
 
 function storedOperationsFrom(

@@ -4,7 +4,7 @@
 - Owner: ClawSweeper dashboard and queue maintainers
 - Source of truth: `dashboard/github-webhook-read-model.ts`, `dashboard/worker.ts`, and `dashboard/exact-review-queue.ts`
 - Last verified: this document's repository revision
-- Update when: ingress coverage, App subscriptions, snapshot schema, TTLs, repair policy, or consumer safety boundaries change
+- Update when: ingress coverage, App subscriptions, snapshot schema or indexes, TTLs, repair policy, or consumer safety boundaries change
 
 The queue Durable Object materializes signed GitHub App deliveries into a bounded, freshness-labelled read model. It serves planning, discovery, hydration, and dashboard reads through publisher-HMAC endpoints. Each response says which webhook watermark it represents, whether the required event class has ever been observed, and whether the object is stale.
 
@@ -27,13 +27,23 @@ Subscription readiness is detected per event class. A class remains unavailable 
 
 ## Stored schema and bounds
 
-The Durable Object assigns one monotonic repository-wide watermark to every unique GitHub delivery GUID. Per-object rows retain the source `updated_at`, delivery GUID, object watermark, receipt time, and normalized JSON. Older or duplicate deliveries can advance the global observation watermark but cannot replace a newer object row.
+The Durable Object assigns one monotonic repository-wide watermark to every unique GitHub delivery GUID. Per-object rows retain the source `updated_at`, delivery GUID, object watermark, receipt time, and normalized JSON. Older deliveries with previously unseen GUIDs advance the global observation watermark but cannot replace a newer object row.
 
 - One item row per repository and issue/PR number.
 - Comments ordered by numeric ID, including deletion tombstones; at most 500 rows per item and 64 KiB per comment body.
 - Reviews and inline review comments stored separately with tombstones, counts, and a stable activity digest; at most 500 rows per item.
 - Workflow runs, jobs, check runs, and check suites; at most 1,000 current/recent objects.
 - Delivery GUID receipts retained for 30 days.
+
+Receipt cleanup uses a single-column `received_at` index, added idempotently by
+the store initializer for both new and existing databases. Each accepted unique
+delivery and repair still prunes at most 256 receipts strictly older than the
+30-day cutoff, ordered by receipt time; equal timestamps have no specified tie
+order. Retained GUIDs return their original watermark without pruning, and a
+GUID can be accepted again after its receipt is pruned. The index changes only
+the SQLite access path, not retention, constraints, transaction rollback, or
+the public read-model contract. Building it on existing history has a one-time
+initialization cost and adds storage and receipt-write work.
 
 Item snapshots are stale after 15 minutes, comment and review collections after 30 minutes, and workflow state after 5 minutes. Placeholder discovery additionally requires a successful repair census within 6 hours. Missing, stale, incomplete, unsubscribed, or gap-detected snapshots fall back to GitHub and repair the Durable Object before later reads reuse it.
 

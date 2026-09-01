@@ -1,3 +1,4 @@
+import type { RealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
 import type {
   ActionTaken,
   AgentsPolicyStatus,
@@ -17,7 +18,6 @@ import type {
   PrRating,
   PublicPriority,
   RegressionAssessment,
-  RealBehaviorProof,
   PublicRegressionProvenance,
   ReviewCommentRenderOptions,
   ReviewFinding,
@@ -27,6 +27,7 @@ import type {
   SecurityReview,
   TriagePriority,
 } from "./clawsweeper-types.js";
+import type { AttachedLiveVerification } from "./live-proof/verification.js";
 import { type PrSurfaceFile } from "./pr-surface-stats.js";
 import { type ReviewStructuralPullState } from "./review-structural-cache.js";
 
@@ -117,13 +118,14 @@ export interface CreateReportRenderingDependencies {
   neutralizeOwnedSectionSpoofing: (value: string) => string;
   normalizePublicReviewText: (value: string) => string;
   priorityLabel: (priority: ReviewFinding["priority"]) => string;
-  prSurfaceFilesFromContext: (context: ItemContext) => PrSurfaceFile[];
+  prSurfaceFilesFromContext: (context: ItemContext) => PrSurfaceFile[] | null;
   publicFailedReviewReadinessBlock: (markdown: string) => string;
+  publicHistoricalVerificationBlockerLine: () => string;
   publicLikelyOwnerRole: (role: string) => string;
   publicMantisRecommendationBlock: (recommendation: MantisRecommendation) => string;
   publicMergeReadinessBlock: (
     rating: PrRating,
-    proof: RealBehaviorProof,
+    policy: RealBehaviorProofPolicy,
     priority: TriagePriority,
     bottomLine: string,
     remainingItemCount: number,
@@ -135,10 +137,10 @@ export interface CreateReportRenderingDependencies {
   publicPriorityBulletIfActionable: (text: string, fallback: PublicPriority) => string;
   publicPriorityFromText: (text: string, fallback: PublicPriority) => PublicPriority;
   publicRankDetailsBlock: () => string;
-  publicRealBehaviorProofLine: (proof: RealBehaviorProof) => string;
+  publicRealBehaviorProofLine: (policy: RealBehaviorProofPolicy) => string;
   publicReviewScoresBlock: (
     rating: PrRating,
-    proof: RealBehaviorProof,
+    policy: RealBehaviorProofPolicy,
     findings: readonly ReviewFinding[],
     securityReview: SecurityReview,
   ) => string;
@@ -147,15 +149,15 @@ export interface CreateReportRenderingDependencies {
   publicRiskBulletsFromText: (text: string, fallback: PublicPriority) => string;
   publicSecurityReviewLine: (review: SecurityReview) => string;
   publicVerificationBlock: (
-    proof: RealBehaviorProof,
+    policy: RealBehaviorProofPolicy,
     evidence: readonly Evidence[],
     findings: readonly ReviewFinding[],
     securityReview: SecurityReview,
   ) => string;
   pullHeadShaFromContext: (context: ItemContext) => string | null;
   pullHeadShaFromReport: (markdown: string) => string | null;
-  realBehaviorProofBlocksMerge: (markdown: string) => boolean;
   renderDataModelWarningFromReport: (markdown: string) => string;
+  renderSqliteSchemaWarningFromReport: (markdown: string) => string;
   renderOpenClawPrSurfaceFromReport: (markdown: string) => string;
   renderReviewMetricsDigest: (metrics: readonly ReviewMetric[]) => string;
   repairLoopPassModeFromReport: (markdown: string) => "" | "autofix" | "automerge";
@@ -169,7 +171,8 @@ export interface CreateReportRenderingDependencies {
   reportOverallConfidenceScore: (markdown: string) => number;
   reportOverallCorrectness: (markdown: string) => OverallCorrectness;
   reportPrRating: (markdown: string) => PrRating;
-  reportRealBehaviorProof: (markdown: string) => RealBehaviorProof;
+  reportRealBehaviorProofPolicy: (markdown: string) => RealBehaviorProofPolicy;
+  reportAttachedLiveVerification: (markdown: string) => AttachedLiveVerification;
   reportReviewFindings: (markdown: string) => ReviewFinding[];
   reportRootCauseCluster: (markdown: string) => RootCauseClusterAssessment;
   reportSecurityReview: (markdown: string) => SecurityReview;

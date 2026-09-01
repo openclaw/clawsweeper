@@ -900,6 +900,18 @@ export function exactReviewQueueIsBatchablePublication(
   );
 }
 
+export function exactReviewQueueUsesLegacyBatchPath(item: Pick<ExactReviewQueueItem, "decision">) {
+  // Terminal-finalization items are no longer batchable, but their original
+  // publication path remains visible until command acknowledgement completes.
+  // A projection-backed direct finalizer intentionally has no publication
+  // payload, while both active and retained batch items keep theirs.
+  return (
+    exactReviewQueueIsPublication(item) &&
+    Boolean(item.decision.publication) &&
+    !item.decision.publication?.directLifecycle
+  );
+}
+
 export function exactReviewQueueHasCommandContext(item: Pick<ExactReviewQueueItem, "decision">) {
   const command = exactReviewQueueCommandStatusAddress(item.decision);
   return Boolean(command.statusMarker || command.statusCommentId);

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
@@ -87,6 +87,194 @@ test("read model dedupes GUIDs, keeps object watermarks monotonic, tombstones, a
   assert.equal(stale.usable, false);
   assert.equal((stale.freshness as Record<string, unknown>).stale, true);
 });
+
+test("receipt expiry upgrades existing databases idempotently and uses a SQLite range search", (t) => {
+  const { storage, store, now } = receiptExpiryFixture();
+  storage.sql.exec(`DROP INDEX ${receiptTimeIndex}`);
+  const before = readModelState(storage);
+  const queries: { query: string; bindings: unknown[] }[] = [];
+  const exec = storage.sql.exec.bind(storage.sql);
+  t.mock.method(storage.sql, "exec", (query: string, ...bindings: unknown[]) => {
+    queries.push({ query, bindings });
+    return exec(query, ...bindings);
+  });
+  new GithubWebhookReadModelStore(storage).ensureSchemaSync();
+  store.ensureSchemaSync();
+  assert.deepEqual(readModelState(storage), before);
+  assert.deepEqual(
+    [...exec(`SELECT name FROM pragma_index_info('${receiptTimeIndex}')`)].map((row) => row.name),
+    ["received_at"],
+  );
+  store.ingest(receiptDelivery("plan", now), now);
+  const prune = queries.find(({ query }) => query.startsWith(`DELETE FROM ${receiptTable} `));
+  assert.ok(prune);
+  const plan = [...exec(`EXPLAIN QUERY PLAN ${prune.query}`, ...prune.bindings)]
+    .map((row) => row.detail)
+    .join("\n");
+  assert.match(plan, new RegExp(`SEARCH ${receiptTable} USING INDEX ${receiptTimeIndex}`));
+  assert.doesNotMatch(plan, new RegExp(`SCAN ${receiptTable}|USE TEMP B-TREE FOR ORDER BY`));
+  assert.throws(
+    () => exec(`INSERT INTO ${receiptTable} VALUES ('retained', 'issues', 'edited', ?, 9999)`, now),
+    /UNIQUE constraint failed/,
+  );
+  assert.throws(
+    () => exec(`INSERT INTO ${receiptTable} VALUES ('other', 'issues', 'edited', ?, 1)`, now),
+    /UNIQUE constraint failed/,
+  );
+});
+
+for (const tied of [false, true]) {
+  test(`receipt expiry preserves bounded drain, cutoff and replay (tied=${tied})`, () => {
+    const controls = [false, true].map((indexed) => {
+      const fixture = receiptExpiryFixture(tied);
+      if (!indexed) fixture.storage.sql.exec(`DROP INDEX ${receiptTimeIndex}`);
+      return fixture;
+    });
+    const outcomes = controls.map(({ storage, store, now, cutoff }) => {
+      const before = readModelState(storage);
+      assert.deepEqual(store.ingest(receiptDelivery(expiredReceiptId(0), now), now), {
+        accepted: true,
+        deduped: true,
+        watermark: 2,
+      });
+      assert.deepEqual(readModelState(storage), before, "expired but retained GUID skips prune");
+      const batches = [];
+      for (let i = 0; i < 4; i += 1) {
+        const previous = receiptIds(storage);
+        assert.deepEqual(store.ingest(receiptDelivery(`drain-${i}`, now), now), {
+          accepted: true,
+          deduped: false,
+          watermark: 604 + i,
+        });
+        const remaining = new Set(receiptIds(storage));
+        const deleted = previous.filter((id) => !remaining.has(id));
+        assert.equal(deleted.length, [256, 256, 88, 0][i]);
+        if (!tied) {
+          assert.deepEqual(
+            deleted,
+            Array.from({ length: deleted.length }, (_, j) => expiredReceiptId(i * 256 + j)).sort(),
+          );
+        }
+        batches.push({ deleted, state: readModelState(storage) });
+      }
+      assert.deepEqual(
+        [
+          ...storage.sql.exec(
+            `SELECT delivery_id FROM ${receiptTable} WHERE received_at <= ? ORDER BY received_at`,
+            cutoff + 1,
+          ),
+        ].map((row) => row.delivery_id),
+        ["at-cutoff", "after-cutoff"],
+      );
+      const drained = readModelState(storage);
+      assert.deepEqual(store.ingest(receiptDelivery("drain-0", now), now), {
+        accepted: true,
+        deduped: true,
+        watermark: 604,
+      });
+      assert.deepEqual(
+        readModelState(storage),
+        drained,
+        "duplicate cannot regress global watermark",
+      );
+      assert.deepEqual(store.ingest(receiptDelivery(expiredReceiptId(0), now), now), {
+        accepted: true,
+        deduped: false,
+        watermark: 608,
+      });
+      return { batches, replayed: readModelState(storage) };
+    });
+    // A local SQLite control, not a promise of SQL tie order across engines.
+    assert.deepEqual(outcomes[1], outcomes[0]);
+  });
+}
+
+test("receipt expiry and watermark writes roll back together after a later prune failure", (t) => {
+  const { storage, store, now } = receiptExpiryFixture();
+  const before = readModelState(storage);
+  const exec = storage.sql.exec.bind(storage.sql);
+  let pruned = 0;
+  t.mock.method(storage.sql, "exec", (query: string, ...bindings: unknown[]) => {
+    const result = exec(query, ...bindings);
+    if (query.startsWith(`DELETE FROM ${receiptTable} `)) pruned = result.rowsWritten;
+    return result;
+  });
+  storage.failNextSql(/DELETE FROM github_webhook_read_model_workflows_v1/);
+  assert.throws(() => store.ingest(receiptDelivery("retry", now), now), /injected SQL failure/);
+  assert.equal(pruned, 256, "failure occurs after receipt pruning");
+  assert.deepEqual(readModelState(storage), before);
+  assert.deepEqual(store.ingest(receiptDelivery("retry", now), now), {
+    accepted: true,
+    deduped: false,
+    watermark: 604,
+  });
+  assert.equal(receiptIds(storage).length, 603 + 1 - 256);
+});
+
+const receiptTable = "github_webhook_read_model_deliveries_v1";
+const receiptTimeIndex = "github_webhook_read_model_deliveries_received_at_v1";
+
+function receiptDelivery(id: string, now: number) {
+  const receivedAt = new Date(now).toISOString();
+  return requiredDelivery("issues", id, receivedAt, {
+    action: "edited",
+    repository,
+    issue: issue(42, id, receivedAt),
+  });
+}
+
+function expiredReceiptId(i: number) {
+  return createHash("sha256").update(`expired-${i}`).digest("hex");
+}
+
+function receiptExpiryFixture(tied = false) {
+  const storage = new MemoryDurableStorage();
+  const store = new GithubWebhookReadModelStore(storage);
+  const now = Date.parse("2026-08-26T12:00:00Z");
+  const cutoff = now - 30 * 24 * 60 * 60_000;
+  store.ensureSchemaSync();
+  store.ingest(receiptDelivery("retained", now - 1_000), now - 1_000);
+  storage.transactionSync(() => {
+    for (let i = 0; i < 600; i += 1) {
+      storage.sql.exec(
+        `INSERT INTO ${receiptTable} VALUES (?, 'issues', 'edited', ?, ?)`,
+        expiredReceiptId(i),
+        tied ? cutoff - 1 : cutoff - 600 + i,
+        i + 2,
+      );
+    }
+    storage.sql.exec(
+      `INSERT INTO ${receiptTable} VALUES ('at-cutoff', 'issues', 'edited', ?, 602)`,
+      cutoff,
+    );
+    storage.sql.exec(
+      `INSERT INTO ${receiptTable} VALUES ('after-cutoff', 'issues', 'edited', ?, 603)`,
+      cutoff + 1,
+    );
+    storage.sql.exec(
+      `UPDATE github_webhook_read_model_meta_v1 SET watermark = 603, created_at = ?, updated_at = ?`,
+      now - 1_000,
+      now - 1_000,
+    );
+  });
+  return { storage, store, now, cutoff };
+}
+
+function receiptIds(storage: MemoryDurableStorage) {
+  return [...storage.sql.exec(`SELECT delivery_id FROM ${receiptTable} ORDER BY delivery_id`)].map(
+    (row) => String(row.delivery_id),
+  );
+}
+
+function readModelState(storage: MemoryDurableStorage) {
+  return Object.fromEntries(
+    [
+      ...storage.sql.exec(
+        "SELECT name FROM sqlite_schema WHERE type = 'table' AND name LIKE 'github_webhook_read_model_%' ORDER BY name",
+      ),
+    ].map(({ name }) => [name, [...storage.sql.exec(`SELECT * FROM ${name} ORDER BY rowid`)]]),
+  );
+}
 
 test("comment-count gaps force a repair poll and a complete repair heals the collection", async () => {
   const storage = new MemoryDurableStorage();
@@ -312,6 +500,30 @@ test("signed webhook loopback covers lifecycle, comments, reviews, checks, runs,
   assert.equal(duplicate.status, 202);
   const afterDuplicate = await signedRead(env, "workflows", { repository: "openclaw/openclaw" });
   assert.equal(afterDuplicate.watermark, workflows.watermark);
+});
+
+test("read-model failures expose only endpoint-owned error codes", async () => {
+  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  const cases = [
+    ["ingest", "invalid_github_webhook_read_model_delivery"],
+    ["repair", "invalid_github_webhook_read_model_repair"],
+    ["item", "invalid_github_webhook_read_model_item_request"],
+    ["comments", "invalid_github_webhook_read_model_comments_request"],
+    ["activity", "invalid_github_webhook_read_model_activity_request"],
+    ["workflows", "invalid_github_webhook_read_model_workflows_request"],
+    ["placeholders", "invalid_github_webhook_read_model_placeholders_request"],
+  ] as const;
+
+  for (const [operation, error] of cases) {
+    const response = await queue.fetch(
+      new Request(`https://queue/github-read-model/${operation}`, {
+        method: "POST",
+        body: JSON.stringify({ invalid: "private-path-marker" }),
+      }),
+    );
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error });
+  }
 });
 
 test("dashboard workflow snapshot preserves health decisions while removing run and job polls", async () => {

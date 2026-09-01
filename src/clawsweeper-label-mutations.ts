@@ -236,15 +236,7 @@ export function createLabelMutationOperations(
       };
     }
     pendingIssueLabelBatch = null;
-    // These two lists are joined into the `issue_labels_sync` mutation identity below,
-    // which the apply ledger hashes into the recorded business idempotency identity.
-    // `localeCompare` answers to the runner's ICU locale and returns 0 for strings it
-    // considers equivalent but that are not equal, so one label set could serialize two
-    // ways and the recorded key would not be canonical. Code-unit order is total and
-    // locale-independent, matching the ledger's own canonical-JSON ordering.
-    //
-    // Note this makes the recorded key canonical; it does not by itself suppress a
-    // repeat edit. Nothing consults the identity before the mutation runs.
+    // Recorded mutation identities must not depend on locale or collator ties.
     let additions = [...batch.additions.values()].sort(compareCodeUnits);
     const removals = [...batch.removals.values()].sort(compareCodeUnits);
     const definitionKeys = new Set(additions.map((label) => normalizeLabelName(label)));

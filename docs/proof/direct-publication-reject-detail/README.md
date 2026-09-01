@@ -11,8 +11,9 @@ The behavior contract is:
   `error: "invalid_direct_publication_plan"`, `fallback_required: true`, and a non-empty `detail`
   naming the invalid revision;
 - a structurally different plan whose operation targets the wrong item returns the same unchanged
-  error classification with a non-empty path-specific `detail`;
-- the two validation failures produce different detail values.
+  error classification with a bounded `detail` that names the violated tuple invariant without
+  echoing the submitted path;
+- the two validation failures produce different bounded detail values.
 
 The script boots the Worker, drives `/api/exact-review-queue`, terminates the full Wrangler process
 tree, and inspects Wrangler's persisted SQLite database for the direct-publication table. Only that
@@ -32,5 +33,5 @@ transcript, build/install logs, and a redacted Wrangler log.
 
 This proof does not change or test retry/permanence policy, does not identify or fix the underlying
 CodexBar rejection, and does not deploy or mutate production. OpenClaw Bay is unaffected: the
-change enriches an internal publication rejection and its downstream diagnostic fingerprint, with
-no Bay observer data or control surface change.
+change keeps internal publication rejection fingerprints distinct without exposing submitted
+values, with no Bay observer data or control surface change.

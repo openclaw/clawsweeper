@@ -562,6 +562,7 @@ test("apply-decisions records successful duplicate PR coverage proof for closed 
       lowSignalCloseReport({
         number: 360,
         title: "Provider route fallback",
+        pull_head_sha: "head-sha",
         close_reason: "duplicate_or_superseded",
         work_cluster_refs: JSON.stringify([
           "Superseded by https://github.com/openclaw/openclaw/pull/400",
@@ -656,6 +657,7 @@ test("apply-decisions consumes a bound precomputed proof without invoking Codex"
       lowSignalCloseReport({
         number: 361,
         title: "Provider route fallback",
+        pull_head_sha: "head-sha",
         close_reason: "duplicate_or_superseded",
         work_cluster_refs: JSON.stringify([
           "Superseded by https://github.com/openclaw/openclaw/pull/400",

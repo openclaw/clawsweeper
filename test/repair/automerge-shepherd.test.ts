@@ -69,7 +69,7 @@ test("automerge shepherd waits for an exact-head trusted pass", () => {
       [
         {
           user: { login: "clawsweeper[bot]" },
-          body: "passed\n<!-- clawsweeper-verdict:pass sha=abc123 -->",
+          body: "passed\n<!-- clawsweeper-verdict:pass live_verification=absent sha=abc123 -->",
         },
       ],
       headSha,
@@ -82,13 +82,39 @@ test("automerge shepherd waits for an exact-head trusted pass", () => {
       comments: [
         {
           user: { login: "clawsweeper[bot]" },
-          body: "passed\n<!-- clawsweeper-verdict:pass sha=abc123 -->",
+          body: "passed\n<!-- clawsweeper-verdict:pass live_verification=absent sha=abc123 -->",
         },
       ],
       headSha,
     }),
     { status: "ready", reason: "checks and exact-head review are ready" },
   );
+});
+
+test("automerge shepherd refuses failed, malformed, and legacy verification markers", () => {
+  const headSha = "abc123";
+  const view = {
+    state: "OPEN",
+    headRefOid: headSha,
+    mergeable: "MERGEABLE",
+    mergeStateStatus: "CLEAN",
+    statusCheckRollup: [{ name: "check", status: "COMPLETED", conclusion: "SUCCESS" }],
+  };
+  const comment = (liveVerification: string | null) => ({
+    user: { login: "clawsweeper[bot]" },
+    body: `<!-- clawsweeper-verdict:pass sha=${headSha}${liveVerification ? ` live_verification=${liveVerification}` : ""} -->`,
+  });
+
+  for (const state of ["failed", "malformed"]) {
+    assert.deepEqual(automergeShepherdReadiness({ view, comments: [comment(state)], headSha }), {
+      status: "human",
+      reason: `exact-head ClawSweeper review has ${state} live verification`,
+    });
+  }
+  assert.deepEqual(automergeShepherdReadiness({ view, comments: [comment(null)], headSha }), {
+    status: "waiting",
+    reason: "waiting for exact-head ClawSweeper review pass",
+  });
 });
 
 test("automerge shepherd accepts a behind head after exact-head review and checks pass", () => {
@@ -105,7 +131,7 @@ test("automerge shepherd accepts a behind head after exact-head review and check
       comments: [
         {
           user: { login: "clawsweeper[bot]" },
-          body: "passed\n<!-- clawsweeper-verdict:pass sha=abc123 -->",
+          body: "passed\n<!-- clawsweeper-verdict:pass live_verification=absent sha=abc123 -->",
         },
       ],
       headSha,
@@ -171,32 +197,68 @@ test("automerge shepherd ignores stale and untrusted repair requests", () => {
 
 test("automerge shepherd uses the latest trusted exact-head review decision", () => {
   const repair = {
+    id: 101,
     user: { login: "clawsweeper[bot]" },
+    created_at: "2026-08-27T12:00:00Z",
     body: "<!-- clawsweeper-action:fix-required item=1 sha=abc123 confidence=high -->",
   };
   const pass = {
+    id: 102,
     user: { login: "clawsweeper[bot]" },
-    body: "<!-- clawsweeper-verdict:pass item=1 sha=abc123 confidence=high -->",
+    created_at: "2026-08-27T12:01:00Z",
+    body: "<!-- clawsweeper-verdict:pass live_verification=absent item=1 sha=abc123 confidence=high -->",
   };
-  assert.equal(hasTrustedRepairRequestForHead([repair, pass], "abc123"), false);
-  assert.equal(hasTrustedPassForHead([repair, pass], "abc123"), true);
-  assert.equal(hasTrustedRepairRequestForHead([pass, repair], "abc123"), true);
-  assert.equal(hasTrustedPassForHead([pass, repair], "abc123"), false);
+  for (const comments of [
+    [repair, pass],
+    [pass, repair],
+  ]) {
+    assert.equal(hasTrustedRepairRequestForHead(comments, "abc123"), false);
+    assert.equal(hasTrustedPassForHead(comments, "abc123"), true);
+  }
+});
+
+test("automerge shepherd invalidates an older pass after an exact-head close verdict", () => {
+  const pass = {
+    id: 201,
+    user: { login: "clawsweeper[bot]" },
+    created_at: "2026-08-27T12:00:00Z",
+    body: "<!-- clawsweeper-verdict:pass live_verification=absent item=1 sha=abc123 -->",
+  };
+  const close = {
+    id: 202,
+    user: { login: "clawsweeper[bot]" },
+    created_at: "2026-08-27T12:01:00Z",
+    body: "<!-- clawsweeper-verdict:close item=1 sha=abc123 reason=duplicate_or_superseded -->",
+  };
+
+  for (const comments of [
+    [pass, close],
+    [close, pass],
+  ]) {
+    assert.equal(hasTrustedPassForHead(comments, "abc123"), false);
+  }
 });
 
 test("automerge shepherd stops when latest exact-head review requires human handling", () => {
   const pass = {
+    id: 301,
     user: { login: "clawsweeper[bot]" },
-    body: "<!-- clawsweeper-verdict:pass item=1 sha=abc123 confidence=high -->",
+    created_at: "2026-08-27T12:00:00Z",
+    body: "<!-- clawsweeper-verdict:pass live_verification=absent item=1 sha=abc123 confidence=high -->",
   };
   const human = {
+    id: 302,
     user: { login: "clawsweeper[bot]" },
+    created_at: "2026-08-27T12:01:00Z",
     body: "<!-- clawsweeper-verdict:needs-human item=1 sha=abc123 confidence=high -->",
   };
-  assert.equal(hasTrustedHumanReviewForHead([pass, human], "abc123"), true);
-  assert.equal(hasTrustedPassForHead([pass, human], "abc123"), false);
-  assert.equal(hasTrustedHumanReviewForHead([human, pass], "abc123"), false);
-  assert.equal(hasTrustedPassForHead([human, pass], "abc123"), true);
+  for (const comments of [
+    [pass, human],
+    [human, pass],
+  ]) {
+    assert.equal(hasTrustedHumanReviewForHead(comments, "abc123"), true);
+    assert.equal(hasTrustedPassForHead(comments, "abc123"), false);
+  }
   assert.deepEqual(
     automergeShepherdReadiness({
       view: { state: "OPEN", headRefOid: "abc123" },

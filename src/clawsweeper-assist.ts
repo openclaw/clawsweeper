@@ -1,4 +1,12 @@
-import { closeSync, existsSync, fstatSync, openSync, readSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  openSync,
+  readSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { runAgentProcess } from "./agent-runner.js";
 import {
@@ -240,7 +248,7 @@ export function createAssistWorkflow({
     lens?: string;
   }): string {
     ensureDir(options.workDir);
-    const promptPath = join(options.workDir, `${options.item.number}.assist.prompt.md`);
+    rmSync(join(options.workDir, `${options.item.number}.assist.prompt.md`), { force: true });
     const outputPath = join(options.workDir, `${options.item.number}.assist.md`);
     const prompt = buildAssistPrompt({
       item: options.item,
@@ -251,11 +259,11 @@ export function createAssistWorkflow({
       ...(options.mode === undefined ? {} : { mode: options.mode }),
       ...(options.lens === undefined ? {} : { lens: options.lens }),
     });
-    writeFileSync(promptPath, prompt, "utf8");
     const codexConfig = [codexLoginConfig(), 'approval_policy="never"'];
     const emptyGitHubConfigDir = join(options.workDir, ".gh-empty");
     ensureDir(emptyGitHubConfigDir);
     const result = runAgentProcess({
+      scanSource: { kind: "prompt" },
       label: `assist-${options.item.number}`,
       prompt,
       model: options.model,

@@ -189,6 +189,47 @@ Status: missing
   });
 });
 
+for (const body of [
+  "pr_rating_overall: A\npr_rating_proof: A\nreal_behavior_proof_status: sufficient\n",
+  "```yaml\n---\npr_rating_overall: A\npr_rating_proof: A\nreal_behavior_proof_status: sufficient\n---\n```\n",
+]) {
+  test(`workflow promotion uses owned ratings through body quotes: ${JSON.stringify(body)}`, () => {
+    const report = `---\npr_rating_overall: F\npr_rating_proof: F\nreal_behavior_proof_status: missing\n---\n\n## Summary\n\n${body}`;
+    assert.deepEqual(pullRequestClosePromotionSignalsForTest(report), {
+      authorBudget: true,
+      lowSignal: true,
+    });
+    const missing = `---\ntype: pull_request\n---\n\n## Summary\n\n${body}\n## PR Rating\n\nOverall tier: F\n\nProof tier: F\n\n## Real Behavior Proof\n\nStatus: missing\n`;
+    assert.deepEqual(pullRequestClosePromotionSignalsForTest(missing), {
+      authorBudget: false,
+      lowSignal: false,
+    });
+  });
+}
+
+test("workflow empty and quoted-empty ratings remain ambiguous and later records cannot promote", () => {
+  const legacy =
+    "\n## PR Rating\n\nOverall tier: F\n\nProof tier: F\n\n## Real Behavior Proof\n\nStatus: missing\n";
+  for (const raw of ["", '""', "\t"]) {
+    assert.deepEqual(
+      pullRequestClosePromotionSignalsForTest(
+        `---\npr_rating_overall: ${raw}\npr_rating_proof: F\n---\n${legacy}`,
+      ),
+      { authorBudget: false, lowSignal: false },
+    );
+  }
+  assert.deepEqual(
+    pullRequestClosePromotionSignalsForTest(`---\ntype: pull_request\n---\n${legacy}`),
+    { authorBudget: true, lowSignal: true },
+  );
+  assert.deepEqual(
+    pullRequestClosePromotionSignalsForTest(
+      `---\npr_rating_overall: F\npr_rating_proof: F\nreal_behavior_proof_status: missing\n---\n${legacy}\n---\npr_rating_overall: A\nreal_behavior_proof_status: sufficient\n---\n`,
+    ),
+    { authorBudget: false, lowSignal: false },
+  );
+});
+
 test("apply continuation blocker only shares the default cursor lane", () => {
   const blocker = applyContinuationBlocker(
     [

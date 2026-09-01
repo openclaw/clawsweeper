@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import childProcess, { execFileSync, type SpawnSyncReturns } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 
 import {
   enforceExpectedIssueSourceRevisionForTest,
   failedReviewRetryEligibilityForTest,
   itemSourceRevisionSha256ForTest,
   isInfrastructureFailedReviewForTest,
+  main,
   preserveFailedReviewRetryMetadataForTest,
   reviewRetryActionNeedsItemEventForTest,
 } from "../dist/clawsweeper.js";
@@ -105,12 +107,11 @@ if (path.endsWith("/dispatches") && args.includes("POST")) {
 `;
 }
 
-function runFailedIssueRetry(
+function failedIssueRetryArgs(
   fixture: ReturnType<typeof failedIssueRetryFixture>,
   extraArgs: string[] = [],
-): void {
-  execFileSync(process.execPath, [
-    "dist/clawsweeper.js",
+): string[] {
+  return [
     "retry-failed-reviews",
     "--target-repo",
     "openclaw/openclaw",
@@ -123,7 +124,94 @@ function runFailedIssueRetry(
     "--report-path",
     fixture.reportPath,
     ...extraArgs,
+  ];
+}
+
+function runFailedIssueRetry(
+  fixture: ReturnType<typeof failedIssueRetryFixture>,
+  extraArgs: string[] = [],
+): void {
+  execFileSync(process.execPath, [
+    "dist/clawsweeper.js",
+    ...failedIssueRetryArgs(fixture, extraArgs),
   ]);
+}
+
+async function runFailedIssueRetryAtDispatchDeadline(
+  t: TestContext,
+  fixture: ReturnType<typeof failedIssueRetryFixture>,
+  dispatchCountPath: string,
+  outcome: "timeout" | "accepted",
+  maxRuntimeMs: number,
+): Promise<void> {
+  const previousEnv = process.env;
+  let nowMs = Date.now();
+  const clock = t.mock.method(Date, "now", () => nowMs);
+  const reads = t.mock.method(childProcess, "execFileSync", (command: string, args: string[]) => {
+    assert.equal(command, "gh");
+    assert.equal(args[0], "api");
+    nowMs += 100;
+    const endpoint = args[1];
+    if (endpoint === `repos/openclaw/openclaw/issues/${fixture.number}`) {
+      return JSON.stringify(fixture.issue);
+    }
+    if (endpoint?.startsWith(`repos/openclaw/openclaw/issues/${fixture.number}/comments`)) {
+      return JSON.stringify(args.includes("--slurp") ? [[]] : []);
+    }
+    assert.equal(endpoint, "repos/openclaw/clawsweeper");
+    return "main";
+  });
+  const dispatch = t.mock.method(
+    childProcess,
+    "spawnSync",
+    (command: string, args: string[], options: { timeout?: number }): SpawnSyncReturns<string> => {
+      assert.equal(command, "gh");
+      assert.ok(args.includes("repos/openclaw/clawsweeper/dispatches"));
+      assert.ok(args.includes("POST"));
+      assert.ok(
+        args.includes(`client_payload[expected_source_revision]=${fixture.sourceRevision}`),
+      );
+      assert.ok(typeof options.timeout === "number" && options.timeout > 0);
+      const checkpoint = JSON.parse(readFileSync(fixture.statePath, "utf8"));
+      assert.equal(checkpoint.status, "dispatching");
+      assert.equal(checkpoint.attempts, 0);
+      assert.equal(checkpoint.revision, fixture.sourceRevision);
+      assert.match(
+        readFileSync(fixture.itemPath, "utf8"),
+        /^failed_review_retry_status: dispatching$/m,
+      );
+      const count = existsSync(dispatchCountPath)
+        ? Number(readFileSync(dispatchCountPath, "utf8"))
+        : 0;
+      writeFileSync(dispatchCountPath, String(count + 1));
+      nowMs += options.timeout;
+      return {
+        pid: 1,
+        output: [null, "", ""],
+        stdout: "",
+        stderr: "",
+        status: outcome === "accepted" ? 0 : null,
+        signal: outcome === "accepted" ? null : "SIGTERM",
+        ...(outcome === "timeout"
+          ? { error: Object.assign(new Error("dispatch timed out"), { code: "ETIMEDOUT" }) }
+          : {}),
+      };
+    },
+  );
+  // Charge only virtual command time: host scheduling must not choose whether
+  // this fixture reaches dispatch. The real owner still checkpoints and classifies it.
+  process.env = { ...previousEnv, GH_BIN: "gh", GH_BIN_ARGS: "[]" };
+  syncBuiltinESMExports();
+  try {
+    await main(failedIssueRetryArgs(fixture, ["--max-runtime-ms", String(maxRuntimeMs)]));
+    assert.equal(dispatch.mock.callCount(), 1);
+  } finally {
+    reads.mock.restore();
+    dispatch.mock.restore();
+    syncBuiltinESMExports();
+    clock.mock.restore();
+    process.env = previousEnv;
+  }
 }
 
 test("failed review retry aggregates large healthy scans without item receipts", () => {
@@ -636,7 +724,7 @@ test("failed issue retry bounds a hung GitHub fetch and flushes its report", () 
   }
 });
 
-test("failed issue retry leaves an ambiguous dispatch unconsumed and prevents a duplicate", () => {
+test("failed issue retry leaves an ambiguous dispatch unconsumed and prevents a duplicate", async (t) => {
   const root = mkdtempSync(tmpPrefix);
   const fixture = failedIssueRetryFixture(root, 4345);
   const originalMarkdown = readFileSync(fixture.itemPath, "utf8");
@@ -648,11 +736,7 @@ const count = fs.existsSync(counter) ? Number(fs.readFileSync(counter, "utf8")) 
 fs.writeFileSync(counter, String(count + 1));
 `;
   try {
-    withMockGh(
-      root,
-      issueRetryGhMock(fixture.issue, `${incrementDispatchCount}\nsetTimeout(() => {}, 10_000);`),
-      () => runFailedIssueRetry(fixture, ["--max-runtime-ms", "2200"]),
-    );
+    await runFailedIssueRetryAtDispatchDeadline(t, fixture, dispatchCountPath, "timeout", 2_200);
 
     const firstReport = JSON.parse(readFileSync(fixture.reportPath, "utf8")) as Array<{
       action: string;
@@ -703,7 +787,7 @@ fs.writeFileSync(counter, String(count + 1));
   }
 });
 
-test("failed issue retry records dispatch success before later eligibility checks", () => {
+test("failed issue retry records dispatch success before later eligibility checks", async (t) => {
   const root = mkdtempSync(tmpPrefix);
   const fixture = failedIssueRetryFixture(root, 4346);
   const originalMarkdown = readFileSync(fixture.itemPath, "utf8");
@@ -715,14 +799,7 @@ const count = fs.existsSync(counter) ? Number(fs.readFileSync(counter, "utf8")) 
 fs.writeFileSync(counter, String(count + 1));
 `;
   try {
-    withMockGh(
-      root,
-      issueRetryGhMock(
-        fixture.issue,
-        `${incrementDispatchCount}\nsetTimeout(() => process.exit(0), 1300);`,
-      ),
-      () => runFailedIssueRetry(fixture, ["--max-runtime-ms", "4000"]),
-    );
+    await runFailedIssueRetryAtDispatchDeadline(t, fixture, dispatchCountPath, "accepted", 4_000);
     const firstReport = JSON.parse(readFileSync(fixture.reportPath, "utf8")) as Array<{
       action: string;
       reason?: string;

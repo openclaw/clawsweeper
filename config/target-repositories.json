@@ -88,6 +88,46 @@
         "ready_timeout_seconds": 240,
         "max_recording_seconds": 90
       }
+    },
+    {
+      "target_repo": "openclaw/crabbox",
+      "display_name": "Crabbox",
+      "checkout_dir": "crabbox",
+      "prompt_note": "Use the Crabbox source tree and current default branch. Review its Go CLI, portable Node/PostgreSQL coordinator, Cloudflare coordinator, and documentation using target-native tooling and evidence. Propose auto-close for issues and pull requests that are certainly implemented on main; for pull requests only, also allow age-gated mostly implemented on main. Keep everything else open for maintainer triage.",
+      "apply_close_rules": {
+        "issue": ["implemented_on_main"],
+        "pull_request": ["implemented_on_main", "mostly_implemented_on_main"]
+      },
+      "package_manager": "npm",
+      "validation_commands": [],
+      "changed_gate": null,
+      "live_test": {
+        "enabled": true,
+        "surface_default": "terminal",
+        "setup": ["npm ci --prefix worker"],
+        "ready_timeout_seconds": 240,
+        "max_recording_seconds": 90
+      }
+    },
+    {
+      "target_repo": "steipete/camsnap",
+      "display_name": "camsnap",
+      "checkout_dir": "camsnap",
+      "prompt_note": "Use the camsnap source tree and current main branch. Review camera discovery, RTSP/ONVIF behavior, Go changes, and cross-platform build behavior conservatively. Keep issues and pull requests open for maintainer triage.",
+      "apply_close_rules": {
+        "issue": [],
+        "pull_request": []
+      },
+      "package_manager": "npm",
+      "validation_commands": [],
+      "changed_gate": null,
+      "live_test": {
+        "enabled": true,
+        "surface_default": "terminal",
+        "setup": [],
+        "ready_timeout_seconds": 240,
+        "max_recording_seconds": 90
+      }
     }
   ],
   "generic_fallbacks": [

@@ -7,7 +7,7 @@ import { flushWorkflowActionEvents } from "./action-ledger-runtime.js";
 import { boolArg, itemNumbersArg, parseArgs, stringArg, type Args } from "./clawsweeper-args.js";
 import { dispatchCommand, type CommandHandler } from "./clawsweeper-command-dispatch.js";
 import { createDecisionParser } from "./clawsweeper-decision-parser.js";
-import { runText } from "./command.js";
+import { runText, SWEEPER_COMMAND_MAX_BUFFER_BYTES } from "./command.js";
 import { AUTOMATION_LIMITS } from "./limits.js";
 import {
   DEFAULT_TARGET_REPO,
@@ -25,6 +25,7 @@ import { stableJson } from "./stable-json.js";
 
 import { createActionCommands } from "./clawsweeper-action-commands.js";
 import { createApplyDecisionWorkflow } from "./clawsweeper-apply-decision-workflow.js";
+import { implementedOnMainCloseProvenanceBlock } from "./clawsweeper-apply-close-execution.js";
 import { createApplyGuards } from "./clawsweeper-apply-guards.js";
 import { createAssistWorkflow } from "./clawsweeper-assist.js";
 import { isDocsPath } from "./clawsweeper-change-detection.js";
@@ -66,6 +67,7 @@ import {
   unsponsoredFeatureAgeSkipReason,
 } from "./clawsweeper-item-policy.js";
 import { createLabelPolicy } from "./clawsweeper-label-policy.js";
+import { createRealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
 import { createLiveProofCommands } from "./live-proof/commands.js";
 import { publishReviewLiveProofArtifacts } from "./live-proof/publication-artifacts.js";
 import { executeReviewLiveProofs, inspectReviewLiveProofs } from "./live-proof/review-artifacts.js";
@@ -98,7 +100,12 @@ import { createReviewPlanning } from "./clawsweeper-review-planning.js";
 import { createReviewPresentation } from "./clawsweeper-review-presentation.js";
 import { createReviewRuntime } from "./clawsweeper-review-runtime.js";
 import { createSourceRevisionTools } from "./clawsweeper-source-revision.js";
-import { createStatusContext } from "./clawsweeper-status-context.js";
+import {
+  currentClosingPullRequestReferenceFromIssueTimeline,
+  createStatusContext,
+  linkedIssueNumbersForImplementationProvenance,
+  linkedIssueNumbersForPullRequestBody,
+} from "./clawsweeper-status-context.js";
 import { createSweepStatus } from "./clawsweeper-sweep-status.js";
 import type {
   Decision,
@@ -138,6 +145,7 @@ export { itemNumbersArg } from "./clawsweeper-args.js";
 export {
   configSurfaceChangeFromPullFilesForTest,
   dataModelChangeFromPullFilesForTest,
+  sqliteSchemaChangeFromPullFilesForTest,
 } from "./clawsweeper-change-detection.js";
 export {
   prepareMediaProofArtifactsForTest,
@@ -304,7 +312,7 @@ function run(
   return runText(command, args, {
     cwd: options.cwd ?? ROOT,
     env: options.env,
-    maxBuffer: 128 * 1024 * 1024,
+    maxBuffer: SWEEPER_COMMAND_MAX_BUFFER_BYTES,
     stdio: ["ignore", "pipe", "pipe"],
     timeoutMs: options.timeoutMs,
     trim: "both",
@@ -317,7 +325,7 @@ const gitHubRuntime = createGitHubRuntime({
   targetRepo,
 });
 export const { untrustedCodexEnvForTest } = gitHubRuntime;
-const { GitHubRuntimeBudgetError, sleepMs, untrustedCodexEnv } = gitHubRuntime;
+const { GitHubRuntimeBudgetError, untrustedCodexEnv } = gitHubRuntime;
 
 const githubExecution = createGitHubExecution({
   ROOT,
@@ -397,6 +405,7 @@ function reviewPolicyHash(options: {
   sandboxMode?: string;
   serviceTier?: string;
 }): string {
+  const policyTargetRepo = targetRepo();
   return sha256(
     stableJson({
       version: REVIEW_POLICY_VERSION,
@@ -415,7 +424,10 @@ function reviewPolicyHash(options: {
       // hash value so tier changes cannot mark every stored review policy-stale
       // and trigger a fleet-wide re-review wave.
       serviceTier: "",
-      targetRepo: targetRepo(),
+      targetRepo: policyTargetRepo,
+      ...(policyTargetRepo.toLowerCase() === "openclaw/openclaw"
+        ? { openclawCodexSourceProvisioning: "v1" }
+        : {}),
       repositoryProfile: targetProfile(),
       prompt: reviewPromptTemplate(),
       schema: reviewDecisionSchemaText(),
@@ -488,6 +500,7 @@ export const reportLiveProofPlanForTest = reportLiveProofPlan;
 const {
   reportEvidence,
   reportOverallCorrectness,
+  reportAttachedLiveVerification,
   mergeRiskOptionsFromReport,
   reportReviewFindings,
   reportSecurityReview,
@@ -495,13 +508,21 @@ const {
   reportPrRating,
 } = reportParser;
 
+const reportRealBehaviorProofPolicy = createRealBehaviorProofPolicy({
+  ...recordMetadata,
+  isDocsOnlyPullRequestReport,
+  isExternalPullRequestReport,
+  reportAttachedLiveVerification,
+  reportRealBehaviorProof,
+});
+
 const labelPolicy = createLabelPolicy({
   asRecord,
   frontMatterValue,
   isAutomationReportAuthor,
   mergeRiskOptionsFromReport,
   reportOverallCorrectness,
-  reportRealBehaviorProof,
+  reportRealBehaviorProofPolicy,
   reportReviewFindings,
   reportSecurityReview,
   stringOrUndefined,
@@ -617,7 +638,6 @@ const {
   completePullChecksContext,
   isClawSweeperComment,
   pullChecksContext,
-  pullFileTreeIdentity,
   quoteGitHubSearchTerm,
   structuralExternalRelationSensitivity,
 } = contextHydration;
@@ -667,6 +687,7 @@ function fetchReviewStructuralRecord(options: {
   git: GitInfo;
   reviewPolicy: string;
   reviewModel: string;
+  onPullIdentity?: (identity: { baseSha: string; headSha: string }) => void;
 }): ReviewStructuralRecord | null {
   if (!options.git.releaseStateComplete) return null;
   const [owner, name] = options.item.repo.split("/");
@@ -695,6 +716,10 @@ function fetchReviewStructuralRecord(options: {
     const pullChecks = pullChecksContext(options.item.number, headSha);
     if (!completePullChecksContext(pullChecks)) return null;
     pullChecksDigest = sha256(stableJson(reviewPullChecksDigestParts(pullChecks)));
+    options.onPullIdentity?.({
+      baseSha: stringOrUndefined(asRecord(pull).baseRefOid)?.trim().toLowerCase() ?? "",
+      headSha,
+    });
   }
   return reviewStructuralRecordFromGraphql({
     response,
@@ -732,7 +757,6 @@ const reviewRuntime = createReviewRuntime({
   targetRepo,
   evidenceEntry,
   run,
-  sleepMs,
   untrustedCodexEnv,
   ghJson,
   asRecord,
@@ -742,7 +766,6 @@ const reviewRuntime = createReviewRuntime({
   stringOrUndefined,
 });
 export const {
-  combinedCodexReviewRetryableForTest,
   codexFailureDecisionForTest,
   codexFailureLogKindForTest,
   codexReviewFailureRetryableForTest,
@@ -796,6 +819,7 @@ const statusContext = createStatusContext({
   ...sweepStatus,
   markdownRepository,
   ghJson,
+  GitHubRuntimeBudgetError,
   asRecord,
   frontMatterValue,
   stringOrUndefined,
@@ -803,7 +827,18 @@ const statusContext = createStatusContext({
   recordOrUndefined,
 });
 export const { fixedPullRequestFromCommitPullsForTest } = statusContext;
-const { attachFixedPullRequest, displayTitle, readSweepStatusSummary } = statusContext;
+export {
+  currentClosingPullRequestReferenceFromIssueTimeline,
+  implementedOnMainCloseProvenanceBlock,
+  linkedIssueNumbersForPullRequestBody,
+  linkedIssueNumbersForImplementationProvenance,
+};
+const {
+  attachFixedPullRequest,
+  displayTitle,
+  implementedOnMainPullRequestProvenanceApplyBlock,
+  readSweepStatusSummary,
+} = statusContext;
 
 const regressionProvenanceVerifier = createRegressionProvenanceVerifier({
   fetchPull: (repo, number) =>
@@ -820,7 +855,6 @@ const regressionProvenanceVerifier = createRegressionProvenanceVerifier({
       "-H",
       "Accept: application/vnd.github.v3.diff",
     ]),
-  runGit: (args, options) => run("git", args, options),
 });
 
 function verifyRegressionProvenance(
@@ -876,12 +910,14 @@ const reviewPresentation = createReviewPresentation({
   markdownLink,
   publicTableCell: (...args) => publicTableCell(...args),
   reportEvidence,
+  reportRealBehaviorProofPolicy,
   securityConcernLocation,
   splitFileAndLine,
 });
 const { isSupportedMantisScenario, sentence, validMantisMaintainerComment } = reviewPresentation;
 
 const reportOrchestration = createReportOrchestration({
+  reportRealBehaviorProofPolicy,
   agentsPolicyStatusLine: (...args) => agentsPolicyStatusLine(...args),
   asRecord,
   ...reviewPresentation,
@@ -1165,7 +1201,6 @@ const planCommand = createPlanCommand({
 const buildLocalRangeReview = createLocalRangeReviewer({
   run,
   pullCommitContentRevision,
-  pullFileTreeIdentity,
   reviewCommentContentRevision,
 });
 
@@ -1320,6 +1355,7 @@ const { applyDecisionsCommandInner } = createApplyDecisionWorkflow({
   isBulkFilerExemptAuthorAssociation,
   ...sourceRevisionTools,
   isMaintainerAuthorAssociation,
+  implementedOnMainPullRequestProvenanceApplyBlock,
   isVerifiedFixedCloseReason,
   login,
   mutationErrorMessage,
@@ -1468,6 +1504,7 @@ const {
 } = actionCommands;
 
 const liveProofAttachDependencies = {
+  reportLiveProofPlan: reportParser.reportLiveProofPlan,
   frontMatterValue: recordMetadata.frontMatterValue,
   sectionValue: recordMetadata.sectionValue,
   replaceSectionValue: recordMetadata.replaceSectionValue,
@@ -1475,6 +1512,7 @@ const liveProofAttachDependencies = {
   renderReviewCommentFromReport: reportOrchestration.renderReviewCommentFromReport,
   markedReviewCommentBody: reviewCommentWorkflow.markedReviewCommentBody,
   upsertReviewComment: reviewCommentWorkflow.upsertReviewComment,
+  selectTarget: (repo: string) => setTargetRepo(repo),
 };
 
 const liveProofCommands = createLiveProofCommands({
@@ -1487,12 +1525,6 @@ const liveProofCommands = createLiveProofCommands({
 const liveProofCommand = liveProofCommands.liveProofCommand;
 
 async function liveProofAttachCommand(args: Args): Promise<void> {
-  const recordPath = stringArg(args.record, "");
-  if (recordPath) {
-    const markdown = readFileSync(resolve(recordPath), "utf8");
-    const repo = frontMatterValue(markdown, "repository");
-    if (repo) setTargetRepo(repo);
-  }
   await liveProofCommands.liveProofAttachCommand(args);
 }
 
@@ -1529,17 +1561,15 @@ function liveProofReviewCommand(args: Args): void {
 async function liveProofPublishArtifactsCommand(args: Args): Promise<void> {
   const artifactDir = stringArg(args.artifact_dir, "").trim();
   if (!artifactDir) throw new Error("live-proof-publish-artifacts requires --artifact-dir");
-  const results = await publishReviewLiveProofArtifacts(
-    artifactDir,
-    {
-      ...liveProofAttachDependencies,
-      fetchPullRequest: async () => {
-        throw new Error("merged live-proof publication must not perform a live-head lookup");
-      },
+  const result = await publishReviewLiveProofArtifacts(artifactDir, {
+    ...liveProofAttachDependencies,
+    log: () => {},
+    fetchPullRequest: async () => {
+      throw new Error("merged live-proof publication must not perform a live-head lookup");
     },
-    (repo) => setTargetRepo(repo),
-  );
-  console.log(JSON.stringify({ results }));
+  }).catch(() => ({ status: "retryable_failure" }) as const);
+  console.log(JSON.stringify(result));
+  if (result.status !== "published") process.exitCode = 1;
 }
 
 function liveProofCommentCommand(args: Args): void {

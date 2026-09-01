@@ -6,6 +6,7 @@ import {
   repositoryProfileFor,
   validateTargetRepositoryConfigForTest,
 } from "../dist/repository-profiles.js";
+import { resolveTargetRepoToolchain } from "../dist/repair/target-toolchain-config.js";
 
 function targetRepositoryConfig(liveTest: Record<string, unknown>, schemaVersion = 2) {
   return {
@@ -128,6 +129,25 @@ test("generic steipete fallback starts review-only", () => {
   assert.deepEqual(profile.applyCloseRules.issue, []);
   assert.deepEqual(profile.applyCloseRules.pull_request, []);
   assert.deepEqual(profile.liveTest, TERMINAL_LIVE_TEST);
+});
+
+test("Go-root targets use explicit npm profiles without broadening close policy", () => {
+  for (const [repo, setup, fallback] of [
+    ["Steipete/CamSnap", [], "steipete/example-tool"],
+    ["OpenClaw/Crabbox", ["npm ci --prefix worker"], "openclaw/example-tool"],
+  ] as const) {
+    const profile = repositoryProfileFor(repo);
+    assert.equal(profile.targetRepo, repo.toLowerCase());
+    assert.equal(profile.packageManager, "npm", repo);
+    assert.ok(REPOSITORY_PROFILES.includes(profile), "must not use an owner fallback");
+    assert.deepEqual(profile.applyCloseRules, repositoryProfileFor(fallback).applyCloseRules);
+    assert.deepEqual(profile.liveTest, { ...TERMINAL_LIVE_TEST, setup });
+    assert.deepEqual(resolveTargetRepoToolchain(repo), {
+      packageManager: "npm",
+      baseValidationCommands: [],
+      changedGate: null,
+    });
+  }
 });
 
 test("generic OpenClaw fallback keeps denied repositories unsupported", () => {

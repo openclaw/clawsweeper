@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import path from "node:path";
 import test from "node:test";
-import { pathToFileURL } from "node:url";
 
 import { createLabelMutationOperations } from "../dist/clawsweeper-label-mutations.js";
+import { normalizeLabelName } from "../dist/clawsweeper-item-policy.js";
 
 type ObservedMutation = {
   identity: string;
@@ -28,7 +27,7 @@ function createOperations(options?: {
       options?.mutate?.(mutation);
       mutation.onMutation?.();
     },
-    normalizeLabelName: (label: string): string => label.trim().toLowerCase(),
+    normalizeLabelName,
     prStatusLabelForKind: () => ({
       name: "status:ready",
       color: "1F883D",
@@ -461,10 +460,6 @@ test("a failed combined mutation has no same-attempt per-label fallback", () => 
 });
 
 test("the issue label sync identity does not depend on insertion order or runner locale", () => {
-  // `identity` is the idempotency key the action ledger dedupes mutations on, and it is
-  // built by joining the sorted addition and removal lists. Sorting with `localeCompare`
-  // reads the runner's ICU locale and returns 0 for strings the collator treats as
-  // equivalent but that are not equal, so the same label set could serialize two ways.
   const additions = ["P2", "impact:message-loss", "maturity:stable", "proof: sufficient"];
   const removals = ["P1", "impact:data-loss", "status:stale"];
 
@@ -493,37 +488,11 @@ test("the issue label sync identity does not depend on insertion order or runner
   const tiedIdentity = identityFor(tied, []);
   assert.equal(identityFor([...tied].reverse(), []), tiedIdentity);
 
-  // And the whole key must be reproducible on a differently configured runner. sv-SE
-  // sorts "a" after "z" while en-US sorts it right after "a".
-  const moduleUrl = pathToFileURL(
-    path.join(process.cwd(), "dist", "clawsweeper-label-mutations.js"),
-  ).href;
-  const script = `import { createLabelMutationOperations } from ${JSON.stringify(moduleUrl)};
-const mutations = [];
-const operations = createLabelMutationOperations({
-  ghJson: () => [],
-  ghObservedMutationCommand: (mutation) => { mutations.push(mutation); mutation.onMutation?.(); },
-  normalizeLabelName: (label) => label.trim().toLowerCase(),
-  prStatusLabelForKind: () => ({ name: "status:ready", color: "1F883D", description: "d" }),
-});
-operations.beginIssueLabelMutationBatch(321);
-for (const label of ["zulu", "Alpha", "\\u00e4pple", "apple"]) operations.addIssueLabel(321, label);
-operations.flushIssueLabelMutationBatch(321);
-process.stdout.write(
-  mutations.find((m) => m.identity.startsWith("issue_labels_sync:"))?.identity ?? "",
-);`;
-  const identities = ["en_US.UTF-8", "sv_SE.UTF-8"].map((locale) => {
-    const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
-      encoding: "utf8",
-      env: { ...process.env, LANG: locale, LC_ALL: locale },
-    });
-    assert.equal(child.status, 0, child.stderr);
-    return child.stdout;
-  });
-  assert.equal(
-    identities[0],
-    "issue_labels_sync:321:add=Alpha|apple|zulu|äpple:remove=",
-    "code unit order puts uppercase first and non-ASCII last",
+  const child = spawnSync(
+    process.execPath,
+    ["docs/proof/label-sync-identity-determinism/run-proof.mjs"],
+    { encoding: "utf8" },
   );
-  assert.deepEqual(identities[1], identities[0]);
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(JSON.parse(child.stdout).candidate.verified, true);
 });

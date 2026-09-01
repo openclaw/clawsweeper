@@ -43,6 +43,11 @@ export interface ReviewLiveProofDependencies {
   repositoryProfileFor: (repo: string) => RepositoryProfile;
 }
 
+export const reviewLiveProofGoEnvironment = (environment: NodeJS.ProcessEnv, profile: string) => ({
+  GOFLAGS: [environment.GOFLAGS, "-modcacherw"].filter(Boolean).join(" "),
+  GOMODCACHE: join(profile, "go-mod-cache"),
+});
+
 export function inspectReviewLiveProofs(
   options: Pick<ReviewLiveProofOptions, "itemNumbers" | "recordsDir" | "repo">,
   dependencies: ReviewLiveProofDependencies,
@@ -61,6 +66,9 @@ export function inspectReviewLiveProofs(
     const markdown = readFileSync(recordPath, "utf8");
     if (dependencies.frontMatterValue(markdown, "type") !== "pull_request") continue;
     const plan = dependencies.reportLiveProofPlan(markdown);
+    if (plan.invalid) {
+      throw new Error(`live proof plan for ${item} is invalid: ${plan.reason}`);
+    }
     if (plan.status !== "recommended" || plan.surface === "none") continue;
     candidates.push(item);
     recordMedia ||= plan.payoff.kind !== "static_text";
@@ -123,6 +131,7 @@ function executeReviewLiveProof(
       CLAWSWEEPER_SANITIZED_LIVE_PROOF: "1",
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_CONFIG_NOSYSTEM: "1",
+      ...reviewLiveProofGoEnvironment(environment, profile),
       HOME: profile,
       npm_config_cache: join(profile, "npm-cache"),
       PNPM_HOME: join(profile, "pnpm"),

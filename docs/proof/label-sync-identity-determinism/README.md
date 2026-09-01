@@ -1,150 +1,55 @@
-# Proof: the issue label sync identity is the same on every runner
+# Canonical label-sync recording proof
 
-## Claim
+The effective addition/removal values produce the same recorded `issue_labels_sync`
+identity across queue order and runner locale. Both lists use the existing
+`compareCodeUnits`; normalized-key deduplication and last-operation-wins behavior
+remain unchanged.
 
-The `issue_labels_sync:<number>:add=…:remove=…` identity recorded for a published
-label mutation depends only on the label set — not on the order the labels were
-queued, and not on the ICU locale of the machine that produced it.
+The executable connects the real batch producer to the real apply-ledger recorder,
+reads persisted attempt/outcome events, and checks their business keys. Separate
+Node children verify resolved en-US/sv-SE locales, reversed/sorted/rotated queues,
+collator ties on both lists, exact values and arguments, duplicates, changed sets,
+and distinct receipts for repeated synthetic adapter invocations. Children receive
+fresh temporary home/config/cache/state directories and no inherited credentials,
+workflow context, projection settings or runtime injection variables. Fixed
+synthetic producer metadata enables local receipts inside each child; owned
+canonical temporary roots are removed in `finally` after readback.
 
-### What this does *not* claim
+## Run
 
-This change does **not** prevent a duplicate GitHub label edit, and the proof does
-not assert that it does. `src/clawsweeper-apply-decision-workflow.ts` records the
-mutation attempt and then calls `options.operation()` unconditionally; nothing
-consults the identity beforehand to suppress an edit. What the identity feeds is
-`applyMutationBusinessIdempotencyIdentity` in `src/clawsweeper-apply-ledger.ts:274`,
-which hashes it into the recorded ledger event.
-
-So the property being fixed is that the recorded key is **canonical**: one label set
-produces one key on every runner. An idempotency identity that varies by collation
-cannot serve as a key for anything — audit correlation today, or an enforcement gate
-later. Building that gate is a separate change; see the linked issue.
-
-## Exercised surface
-
-`createLabelMutationOperations(...).flushIssueLabelMutationBatch` in
-`dist/clawsweeper-label-mutations.js`. That function sorts the batched additions and
-removals and joins them into the `identity` passed to `ghObservedMutationCommand`.
-The action ledger dedupes observed mutations on that identity, so two spellings of
-the same key are two different keys.
-
-## Scenario / fixture
-
-`run-proof.mjs` drives the real batching API — `beginIssueLabelMutationBatch`,
-`addIssueLabel`, `removeIssueLabel`, `flushIssueLabelMutationBatch` — with real
-ClawSweeper label names (`P2`, `impact:message-loss`, `maturity:stable`,
-`proof: sufficient`) plus a third-party name, and asserts:
-
-1. **Queue order** — reversed, sorted and rotated queue orders all produce the
-   baseline identity.
-2. **Collator ties** — `"status: 👀‍ ready"` and `"status: 👀 ready"` differ only by a
-   zero-width joiner. They are distinct strings that `localeCompare` ranks as equal
-   (the run prints the `0`), so a comparator that returns 0 leaves them in input
-   order and the identity follows the queue.
-3. **Byte-for-byte** — the exact key for a fixed set is asserted in full, which is
-   only possible because code unit order is specified.
-4. **Two runners** — the file re-executes itself twice with `LC_ALL` set to
-   `en_US.UTF-8` and `sv_SE.UTF-8` and compares the two keys.
-
-## Command and environment
-
-```
-bash docs/proof/label-sync-identity-determinism/stage-before.sh
-crabbox run --provider local-container --local-container-image node:24 --no-hydrate \
-  --artifact-glob '.artifacts/**' -- \
-  bash docs/proof/label-sync-identity-determinism/run-proof.sh
-```
-
-Proof contract — what a passing run must show. The **observed run for the current
-head (lease, run id, artifact, redacted output) lives in the PR body**, which is
-where AGENTS.md requires current proof to sit. No lease id is pinned here on
-purpose: editing this file changes the head, which would immediately make a pinned
-run describe a different commit than the one under review.
-
-| | |
-|---|---|
-| provider | Crabbox `local-container` (runtime `docker`) |
-| image | `node:24`; the script refuses to run below Node 24 |
-| result | **PROOF PASSED** (all fixtures); focused suite `14/14`; exit `0` |
-| head | echoed from `PROOF_HEAD`, forwarded with `--allow-env` |
-| tracked state | unchanged at every checkpoint; identical `package.json` and `pnpm-lock.yaml` digests at sync and at end of run |
-
-`stage-before.sh` exists because container images carry no `.git`: it writes the
-base version of the changed file into `before/` on the host, where rsync picks it up
-as a dirty file. When git *is* available `run-proof.sh` re-derives that file, so the
-staged copy cannot drift from the base commit.
-
-The script refuses to run below Node 24, installs the pinned pnpm into a
-user-writable prefix, builds the Node lane, and runs the fixtures twice: once
-against the module compiled from the base commit and once against this branch.
-
-### Running it without Crabbox
-
-The proof needs a Node 24 Linux environment, not Crabbox specifically. Any of these
-produce the same result, so a reviewer without the `crabbox` binary on PATH can
-still reproduce it:
+Use the repository root manifest and lockfile, their pinned package manager, Node
+24 or newer with both ICU locales, and normally installed dependencies. From the
+repository root:
 
 ```bash
-# 1. Plain Docker - closest to the recorded lease.
-docker run --rm -v "$PWD:/src:ro" -e PROOF_HEAD -w /work node:24 bash -lc '
-  mkdir -p /work
-  tar -C /src --exclude=node_modules --exclude=dist --exclude=.git -cf - . | tar -C /work -xf -
-  cd /work && bash docs/proof/label-sync-identity-determinism/run-proof.sh'
-
-# 2. Host with Node >= 24 already installed.
-bash docs/proof/label-sync-identity-determinism/stage-before.sh
-pnpm install --frozen-lockfile && pnpm run build:node
+pnpm run build
 node docs/proof/label-sync-identity-determinism/run-proof.mjs
+node --test --test-concurrency=1 test/label-mutation-batch.test.ts
 ```
 
-`run-proof.sh` refuses to run below Node 24, so option 2 fails loudly rather than
-reporting a result from the wrong runtime.
+For a contrast, separately prepare a compiled pre-fix label module with its normal
+sibling imports, then name both inputs explicitly:
 
-## Observed result
-
-Against the pre-fix module the two runners disagree:
-
-```
-en_US.UTF-8  issue_labels_sync:321:add=Alpha|apple|äpple|zulu:remove=
-sv_SE.UTF-8  issue_labels_sync:321:add=Alpha|apple|zulu|äpple:remove=
+```bash
+node docs/proof/label-sync-identity-determinism/run-proof.mjs \
+  --baseline /path/to/prepared/dist/clawsweeper-label-mutations.js \
+  --candidate dist/clawsweeper-label-mutations.js
 ```
 
-The tied emoji names also follow queue order rather than sorting deterministically.
-Against this branch both runners emit
-`issue_labels_sync:321:add=Alpha|apple|zulu|äpple:remove=` and every assertion
-passes. A batch still publishes a mutation in both runs, which is what shows the
-change only affects ordering; the script fails the proof if that ever stops holding.
-
-## Artifact / trace
-
-`.crabbox/runs/run_43d124d11e64/run_43d124d11e64-artifacts.tgz` holds
-`.artifacts/label-sync-identity-determinism-proof/` with `before-output.txt`,
-`proof-output.txt`, `focused-tests.txt`, and the install/build logs.
-
-## The run cannot alter the head it is proving
-
-The script records `package.json` and `pnpm-lock.yaml` digests plus
-`git status --porcelain` at sync, then re-checks them after dependency installation
-and at the end of the run; any drift aborts with a diff. The platform-native
-TypeScript fallback installs into a disposable prefix outside the workspace rather
-than writing tracked dependency metadata, so the recorded result does not disturb
-the head it is describing.
+Baseline success requires observed locale and collator-tie divergence; candidate
+success requires the canonical golden identity/arguments and equal recorded keys.
+A failed child, wrong resolved locale or setup error fails the probe. JSON includes
+actual owner/recorder-module and manifest hashes, runtime versions, observations,
+and receipt IDs without host paths. The focused test invokes this same executable.
+Exact source/head, build provenance, provider and current execution evidence belong
+in the PR body; these commands do not install, stage source or infer a Git base.
 
 ## Limits
 
-This proves the identity string and the ordering that feeds it. It does not call
-GitHub, and it deliberately does not claim ledger enforcement: the mutation boundary
-is stubbed because there is no pre-execution dedupe path in current source to
-exercise. Read this as evidence that the key handed to the ledger is stable, not
-that anything yet acts on it.
-
-**Compatibility.** Records written before this change carry locale-sorted
-identities, so their key differs from the one the same label set produces now. No
-behavior depends on matching them today — nothing looks the identity up — but any
-future dedupe gate has to treat pre-change identities as non-matching rather than
-assume continuity.
-
-The order of names inside the `--add-label` / `--remove-label` arguments changes as a
-side effect; GitHub treats those as sets, so the resulting label state is unchanged,
-but three existing assertions in `test/label-mutation-batch.test.ts` that pinned the
-old collation order were updated to the new one.
+As described in [Action Ledger](../../action-ledger.md#identity-and-replay), receipt
+identity and execution policy are separate. The actual apply runner records an
+attempt and then invokes the operation; this change adds no duplicate-edit gate.
+The adapter counter is synthetic, not evidence of live GitHub or full apply effects.
+Older locale-sorted records are not migrated. UTF-16 label ordering does not claim
+to equal the ledger's UTF-8 ordering of canonical object keys. This proof establishes
+canonical ordering of effective values, not collision-free encoding of all labels.

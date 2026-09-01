@@ -42,12 +42,15 @@ function trimTrailingUrlPunctuation(raw: string): string {
 
 function proofMediaUrlsFromContext(context: ItemContext): string[] {
   const {
-    semanticPullFiles: _,
     pullCommitsRevision: __,
     prHydrationSnapshot: ___,
+    pullFiles: ____,
     ...proofContext
   } = context;
-  const text = JSON.stringify(proofContext);
+  // PR patches and supplemental body excerpts are reviewer text, never host download inputs.
+  const text = JSON.stringify(proofContext, (key, value) =>
+    key === "bodyCoverage" ? undefined : value,
+  );
   const matches = text.match(/https?:\/\/[^\s<>"'\\)]+/g) ?? [];
   const urls: string[] = [];
   const seen = new Set<string>();
@@ -86,11 +89,17 @@ function mediaProofKind(url: string): "image" | "video" {
 
 export function mediaProofSpawnDetail(result: ReturnType<MediaProofCommandRunner>): string {
   if (result.status === 0) return "ok";
-  const stderr = String(result.stderr ?? "").trim();
-  const stdout = String(result.stdout ?? "").trim();
-  const error = result.error?.message ?? "";
-  const detail = stderr || stdout || error || "command failed without output";
-  return trimMiddle(detail, 1000);
+  const details = [result.stderr, result.stdout, result.error?.message]
+    .map((value) => String(value ?? "").trim())
+    .filter(Boolean);
+  if (details.length === 0) return "command failed without output";
+  // Reserve room for each stream, then flatten so one-line reasons retain both.
+  const separator = " | ";
+  const budget = Math.floor((1000 - separator.length * (details.length - 1)) / details.length);
+  return details
+    .map((detail) => trimMiddle(detail, budget))
+    .join(separator)
+    .replace(/\s+/g, " ");
 }
 
 export function ffprobeMedia(path: string, runner: MediaProofCommandRunner) {

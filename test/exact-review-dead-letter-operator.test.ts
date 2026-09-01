@@ -504,6 +504,8 @@ test("parked review reconciliation stops safely at the workflow deadline", async
     parkedRow("openclaw/repo#2", "openclaw/repo", 2, 2_000),
     parkedRow("openclaw/repo#3", "openclaw/repo", 3, 3_000),
   ];
+  const targetRequests: string[] = [];
+  const targetClosed = Promise.withResolvers<{ aborted: boolean; elapsedMs: number }>();
   let mutations = 0;
   const server = createServer(async (request, response) => {
     const chunks = [];
@@ -514,11 +516,19 @@ test("parked review reconciliation stops safely at the workflow deadline", async
       return;
     }
     if (request.url?.startsWith("/repos/openclaw/repo/issues/")) {
+      targetRequests.push(request.url);
+      const startedAt = Date.now();
       const timer = setTimeout(() => {
         response.writeHead(200, { "content-type": "application/json" });
         response.end(JSON.stringify({ node_id: "ISSUE_DELAYED", state: "open", number: 1 }));
       }, 5_000);
-      response.once("close", () => clearTimeout(timer));
+      response.once("close", () => {
+        clearTimeout(timer);
+        targetClosed.resolve({
+          aborted: !response.writableEnded,
+          elapsedMs: Date.now() - startedAt,
+        });
+      });
       return;
     }
     const body = Buffer.concat(chunks).toString("utf8");
@@ -538,7 +548,29 @@ test("parked review reconciliation stops safely at the workflow deadline", async
   assert.ok(address && typeof address === "object");
   const directory = await mkdtemp(join(tmpdir(), "clawsweeper-parked-deadline-"));
   try {
-    const startedAt = Date.now();
+    const preloadPath = join(directory, "deadline-clock.mjs");
+    const abortTracePath = join(directory, "target-abort.txt");
+    // Preparation must not consume the scenario's deadline. Advance the clock
+    // only when the real target request's native timeout fires.
+    await writeFile(
+      preloadPath,
+      `import { writeFileSync } from "node:fs";
+const deadlineAt = Number(process.env.EXACT_REVIEW_RECONCILE_DEADLINE_MS);
+let now = deadlineAt - 1_000;
+Date.now = () => now;
+const nativeFetch = globalThis.fetch;
+globalThis.fetch = (input, init) => {
+  if (new URL(input).pathname === "/repos/openclaw/repo/issues/1") {
+    init.signal.addEventListener("abort", () => {
+      now = deadlineAt;
+      writeFileSync(${JSON.stringify(abortTracePath)}, init.signal.reason.name);
+    }, { once: true });
+  }
+  return nativeFetch(input, init);
+};
+`,
+      "utf8",
+    );
     const result = await runOperator(
       [
         "--action",
@@ -551,10 +583,17 @@ test("parked review reconciliation stops safely at the workflow deadline", async
       ],
       `http://127.0.0.1:${address.port}`,
       secret,
-      { EXACT_REVIEW_RECONCILE_DEADLINE_MS: String(Date.now() + 1_000) },
+      {
+        EXACT_REVIEW_RECONCILE_DEADLINE_MS: String(Date.now() + 1_000),
+        NODE_OPTIONS: `--import=${pathToFileURL(preloadPath).href}`,
+      },
     );
     assert.equal(result.code, 0, result.stderr);
-    assert.ok(Date.now() - startedAt < 2_500);
+    assert.deepEqual(targetRequests, ["/repos/openclaw/repo/issues/1"]);
+    const closed = await targetClosed.promise;
+    assert.equal(closed.aborted, true);
+    assert.ok(closed.elapsedMs < 2_500, "hung target request exceeded the deadline bound");
+    assert.equal(await readFile(abortTracePath, "utf8"), "TimeoutError");
     assert.deepEqual(JSON.parse(result.stdout), {
       action: "reconcile-parked",
       dry_run: false,

@@ -11,6 +11,7 @@ import {
   REVIEW_SECTIONS,
 } from "./clawsweeper-policy.js";
 import { escapeRegExp } from "./clawsweeper-text.js";
+import { readReportFrontMatterField, type FrontMatterField } from "./report-front-matter.js";
 import type {
   ApplyKind,
   CloseReason,
@@ -25,11 +26,6 @@ import type {
 } from "./clawsweeper-types.js";
 import { isRetryableCodexTransportError } from "./codex-transient.js";
 import { isAutoCloseAllowed, repositoryProfileFor } from "./repository-profiles.js";
-import {
-  REVIEW_SEMANTIC_CACHE_VERSION,
-  validReviewSemanticRecord,
-  type ReviewSemanticRecord,
-} from "./review-semantic-cache.js";
 import {
   REVIEW_STRUCTURAL_CACHE_VERSION,
   validReviewStructuralRecord,
@@ -51,11 +47,6 @@ interface RecordMetadataDependencies {
   numberForMarkdownFile: (file: string) => number;
 }
 
-export type FrontMatterField =
-  | { status: "absent" }
-  | { status: "ambiguous" }
-  | { status: "value"; value: string };
-
 export function createRecordMetadata({
   reportFileName,
   markdownRepository,
@@ -69,16 +60,9 @@ export function createRecordMetadata({
   numberForMarkdownFile,
 }: RecordMetadataDependencies) {
   function frontMatterField(markdown: string, key: string): FrontMatterField {
-    const frontMatterMatch = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-    if (!frontMatterMatch) return { status: "absent" };
-    const frontMatter = frontMatterMatch[1] ?? "";
-    const remainder = markdown.slice(frontMatterMatch[0].length);
-    const escapedKey = escapeRegExp(key);
-    if (new RegExp(`^${escapedKey}:`, "m").test(remainder)) return { status: "ambiguous" };
-    const matches = [...frontMatter.matchAll(new RegExp(`^${escapedKey}:\\s*(.*)$`, "gm"))];
-    if (matches.length === 0) return { status: "absent" };
-    if (matches.length !== 1) return { status: "ambiguous" };
-    const value = matches[0]?.[1]?.trim();
+    const field = readReportFrontMatterField(markdown, key);
+    if (field.status !== "value") return field;
+    const value = field.value.trim();
     if (!value) return { status: "ambiguous" };
     return {
       status: "value",
@@ -399,26 +383,6 @@ export function createRecordMetadata({
     return validReviewStructuralRecord(record) ? record : null;
   }
 
-  function reviewSemanticRecordFromMarkdown(markdown: string): ReviewSemanticRecord | null {
-    const version = Number(frontMatterValue(markdown, "review_semantic_cache_version"));
-    if (version !== REVIEW_SEMANTIC_CACHE_VERSION) return null;
-    const eligibilityReason = frontMatterValue(markdown, "review_semantic_eligibility_reason");
-    const record: ReviewSemanticRecord = {
-      version: REVIEW_SEMANTIC_CACHE_VERSION,
-      fingerprint: frontMatterValue(markdown, "review_semantic_fingerprint") ?? "",
-      codeDigest: frontMatterValue(markdown, "review_semantic_code_digest") ?? "",
-      exactDigest: frontMatterValue(markdown, "review_semantic_exact_digest") ?? "",
-      contextDigest: frontMatterValue(markdown, "review_semantic_context_digest") ?? "",
-      eligible: frontMatterBoolean(markdown, "review_semantic_eligible"),
-      eligibilityReason:
-        (eligibilityReason as ReviewSemanticRecord["eligibilityReason"] | undefined) ??
-        "missing_structural_context",
-      reviewPolicy: frontMatterValue(markdown, "review_policy") ?? "",
-      reviewModel: frontMatterValue(markdown, "review_model") ?? "",
-    };
-    return validReviewSemanticRecord(record) ? record : null;
-  }
-
   function existingReview(
     item: Pick<Item, "number" | "repo">,
     itemsDir: string,
@@ -448,7 +412,6 @@ export function createRecordMetadata({
       lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
       lastFullReviewDecision: frontMatterValue(markdown, "last_full_review_decision"),
       structuralRecord: reviewStructuralRecordFromMarkdown(markdown),
-      semanticRecord: reviewSemanticRecordFromMarkdown(markdown),
     };
   }
 
@@ -480,7 +443,6 @@ export function createRecordMetadata({
         lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
         lastFullReviewDecision: frontMatterValue(markdown, "last_full_review_decision"),
         structuralRecord: reviewStructuralRecordFromMarkdown(markdown),
-        semanticRecord: reviewSemanticRecordFromMarkdown(markdown),
       });
     }
     return { byKey };
