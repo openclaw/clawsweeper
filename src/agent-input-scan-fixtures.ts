@@ -123,12 +123,12 @@ export function serializeReviewContext(context: object): string {
 }
 
 export function omitReviewedFixtureReferences(text: string): string {
-  // Prose quotations have no Git source binding. Match the complete URI before
-  // stripping closing punctuation; path, query, and credential changes stay visible.
+  // Apostrophes are URI characters, so only terminal quotation punctuation can
+  // be stripped; internal punctuation must not hide a changed path or query.
   return text.replace(
-    /(^|[\s<>"'\x60([{])([A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s<>"'\x60]+)/g,
+    /(^|[\s<>"'\x60([{])([A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s<>"\x60]+)/g,
     (match, boundary: string, uri: string) => {
-      for (const candidate of [uri, uri.replace(/[)\]},.;!]+$/, "")]) {
+      for (const candidate of [uri, uri.replace(/[)\]},.;!']+$/, "")]) {
         const digest = createHash("sha256").update(candidate).digest("hex");
         const fixture = REVIEWED_FIXTURES.find((entry) => entry.fixtureSha256 === digest);
         if (fixture) {

@@ -53,13 +53,15 @@ test("GitHub review context omits complete reviewed URI quotations and preserves
     uri + "/changed).",
     uri + ")?new-secret=changed",
     uri + ".)/changed",
+    uri + "'/changed",
+    uri + "'?new-secret=changed",
     uri + "\\changed",
     uri.replace("://", "://changed"),
     "https://docs.example.test/proof",
   ];
   const reference = "[reviewed synthetic URI omitted; inspect test/action-ledger-runtime.test.ts]";
   const quote = (value: string) =>
-    `Backticks \x60${value}\x60; Markdown [fixture](${value}). Sentence ${value}. Wrapped (${value}); [${value}], {${value}}!`;
+    `Backticks \x60${value}\x60; Markdown [fixture](${value}). Sentence ${value}. Wrapped (${value}); [${value}], {${value}}! Quoted '${value}'.`;
   const body = quote(uri);
   const context = {
     issue: { body },
