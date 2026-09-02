@@ -634,6 +634,184 @@ test("durable lifecycle Bay provisions only its indexed reader before ordinary q
   assert.equal(ordinaryBody.recent_durable_publication_events.collection.complete, true);
 });
 
+test("durable lifecycle Bay caches public responses by origin and repository scope for 20 seconds", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-02T12:00:00Z") });
+  const originalCaches = globalThis.caches;
+  const values = new MemoryCache();
+  const expires = new Map<string, number>();
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: {
+      default: {
+        async match(request: Request) {
+          if ((expires.get(request.url) || 0) <= Date.now()) return undefined;
+          return values.match(request);
+        },
+        async put(request: Request, response: Response) {
+          assert.equal(response.headers.get("cache-control"), "public, max-age=20");
+          expires.set(request.url, Date.now() + 20_000);
+          await values.put(request, response);
+        },
+      },
+    },
+  });
+  t.after(() => Object.defineProperty(globalThis, "caches", { value: originalCaches }));
+  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  let reads = 0;
+  let unavailable = false;
+  const namespace = new MemoryDurableNamespace({
+    async fetch(request: Request) {
+      reads += 1;
+      if (unavailable) return new Response(null, { status: 503 });
+      return queue.fetch(request);
+    },
+  });
+  const env = { EXACT_REVIEW_QUEUE: namespace, PUBLIC_BAY_REPOS: "openclaw/openclaw" };
+  const url = "https://clawsweeper.openclaw.ai/api/durable-lifecycle-bay";
+  const first = await worker.fetch(new Request(url), env);
+  const initialBody = await first.json();
+  assert.equal(first.headers.get("cache-control"), "no-store");
+  assert.equal(initialBody.durable_lifecycle_bay.collection.state, "complete");
+  assert.equal(reads, 1);
+  t.mock.timers.tick(19_000);
+  const second = await worker.fetch(new Request(`${url}?ignored=cache-bypass`), env);
+  assert.deepEqual(
+    await second.json(),
+    initialBody,
+    "cache hits keep the original observation time",
+  );
+  assert.equal(second.headers.get("cache-control"), "no-store");
+  assert.equal(reads, 1);
+
+  await worker.fetch(new Request(url), {
+    ...env,
+    PUBLIC_BAY_REPOS: "openclaw/openclaw,openclaw/clawsweeper",
+  });
+  assert.equal(reads, 2, "a different public scope needs its own snapshot");
+  await worker.fetch(new Request(url), {
+    ...env,
+    PUBLIC_BAY_REPOS: "openclaw/clawsweeper,openclaw/openclaw",
+  });
+  assert.equal(reads, 2, "repository order does not split the cache");
+  await worker.fetch(new Request("https://other.example/api/durable-lifecycle-bay"), env);
+  assert.equal(reads, 3, "origins do not share cache entries");
+
+  t.mock.timers.tick(1_001);
+  unavailable = true;
+  const expired = await worker.fetch(new Request(url), env);
+  const unknown = await expired.json();
+  assert.deepEqual(unknown.durable_lifecycle_bay.collection, {
+    state: "unknown",
+    reason: "unavailable",
+  });
+  assert.equal(reads, 4, "expiry must read the current owner, not serve old success");
+  const cachedUnknown = await worker.fetch(new Request(url), env);
+  assert.deepEqual(await cachedUnknown.json(), unknown);
+  assert.equal(reads, 4, "unknown responses also suppress repeated reads briefly");
+});
+
+test("durable lifecycle Bay rejects malformed or stale cached timestamps and caps remaining freshness", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-02T12:00:00Z") });
+  const originalCaches = globalThis.caches;
+  t.after(() => Object.defineProperty(globalThis, "caches", { value: originalCaches }));
+  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  const live = await queue.fetch(new Request("https://queue/lifecycle-bay"));
+  const source = await live.json();
+  source.durable_lifecycle_bay.generated_at = new Date(Date.now() - 55_000).toISOString();
+  let reads = 0;
+  let writes = 0;
+  const namespace = new MemoryDurableNamespace({
+    async fetch() {
+      reads += 1;
+      return jsonResponse(source);
+    },
+  });
+  for (const body of [
+    "{not-json",
+    JSON.stringify({ durable_lifecycle_bay: {} }),
+    JSON.stringify({
+      durable_lifecycle_bay: { ...source.durable_lifecycle_bay, generated_at: "invalid" },
+    }),
+    JSON.stringify({
+      durable_lifecycle_bay: {
+        ...source.durable_lifecycle_bay,
+        generated_at: new Date(Date.now() - 60_001).toISOString(),
+      },
+    }),
+  ]) {
+    Object.defineProperty(globalThis, "caches", {
+      configurable: true,
+      value: {
+        default: {
+          match: async () => new Response(body),
+          put: async (_request: Request, response: Response) => {
+            writes += 1;
+            assert.equal(response.headers.get("cache-control"), "public, max-age=5");
+          },
+        },
+      },
+    });
+    const response = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/durable-lifecycle-bay"),
+      {
+        EXACT_REVIEW_QUEUE: namespace,
+        PUBLIC_BAY_REPOS: "openclaw/openclaw",
+      },
+    );
+    const result = await response.json();
+    assert.equal(result.durable_lifecycle_bay.collection.state, "complete");
+    assert.equal(
+      result.durable_lifecycle_bay.generated_at,
+      source.durable_lifecycle_bay.generated_at,
+    );
+    assert.equal(response.headers.get("cache-control"), "no-store");
+  }
+  assert.equal(reads, 4);
+  assert.equal(writes, 4);
+});
+
+test("durable lifecycle Bay serves fresh snapshots when native cache reads or writes fail", async (t) => {
+  const originalCaches = globalThis.caches;
+  t.after(() => Object.defineProperty(globalThis, "caches", { value: originalCaches }));
+  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  let reads = 0;
+  let writes = 0;
+  const namespace = new MemoryDurableNamespace({
+    async fetch(request: Request) {
+      reads += 1;
+      return queue.fetch(request);
+    },
+  });
+  for (const failMatch of [false, true]) {
+    Object.defineProperty(globalThis, "caches", {
+      configurable: true,
+      value: {
+        default: {
+          async match() {
+            if (failMatch) throw new Error("synthetic cache read failure");
+            return undefined;
+          },
+          async put() {
+            writes += 1;
+            throw new Error("synthetic cache write failure");
+          },
+        },
+      },
+    });
+    const response = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/durable-lifecycle-bay"),
+      {
+        EXACT_REVIEW_QUEUE: namespace,
+        PUBLIC_BAY_REPOS: "openclaw/openclaw",
+      },
+    );
+    assert.equal((await response.json()).durable_lifecycle_bay.collection.state, "complete");
+    assert.equal(response.headers.get("cache-control"), "no-store");
+  }
+  assert.equal(reads, 2);
+  assert.equal(writes, 2);
+});
+
 test("durable lifecycle Bay fail-closes unknown snapshots without partial cards or counts", async () => {
   const assertUnknown = (snapshot: Record<string, unknown>, reason: string) => {
     assert.deepEqual(snapshot.collection, { state: "unknown", reason });

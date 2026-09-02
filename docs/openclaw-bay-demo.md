@@ -134,6 +134,14 @@ history; it does not retain a history-sized JavaScript array or identity set.
 An invalid historical row makes the whole projection unavailable even when it
 would not appear in the sample. Reads never prune or rewrite durable facts.
 
+The public lifecycle response is cached for up to 20 seconds in Cloudflare's
+native, per-data-center cache, scoped to the verified public repository set.
+Cache hits keep the original observation time and never extend the 60-second
+snapshot freshness limit. Cache failures fall back to a fresh read; expired
+successes are not served when that read fails. This reduces repeat scans from
+viewers, but cold reads still validate the full history and simultaneous misses
+or requests in different data centers can each require a scan.
+
 Queue completion preserves a previously committed final lifecycle outcome when
 a later callback reports a different final result. Explicit requeue transitions
 remain available, and a requeued revision can acquire its next terminal outcome.

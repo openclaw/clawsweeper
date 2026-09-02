@@ -1216,7 +1216,7 @@ export default {
     if (url.pathname === "/api/exact-review-queue" && request.method === "GET")
       return publicExactReviewQueueJson(env);
     if (url.pathname === "/api/durable-lifecycle-bay" && request.method === "GET")
-      return json({ durable_lifecycle_bay: await durableLifecycleBaySnapshot(env) });
+      return durableLifecycleBayJson(request, env);
     if (url.pathname === "/api/live-activity-bay" && request.method === "GET")
       return json({
         live_activity_bay: await liveActivityBaySnapshotForRequest(request, env, ctx),
@@ -5392,6 +5392,47 @@ async function publicExactReviewQueueJson(env) {
   } catch {
     return json({ error: "exact_review_queue_unavailable" }, 503);
   }
+}
+
+async function durableLifecycleBayJson(request: Request, env) {
+  const scope = publicBayRepositoryScope(verifiedPublicBayRepositories(env));
+  const cacheKey = new Request(
+    new URL(`/api/durable-lifecycle-bay-cache/v1/${encodeURIComponent(scope) || "_"}`, request.url),
+  );
+  try {
+    const cached = await caches.default.match(cacheKey);
+    if (cached?.ok) {
+      const body = await cached.json();
+      const snapshot = objectValue(body.durable_lifecycle_bay);
+      const generatedAt = publicQueueTimestamp(snapshot.generated_at);
+      const age = Date.now() - Date.parse(generatedAt || "");
+      // This versioned cache contains only the sanitized public response below.
+      if (
+        generatedAt &&
+        objectValue(snapshot.freshness).maximum_age_ms === 60_000 &&
+        age >= -60_000 &&
+        age <= 60_000
+      )
+        return json(body);
+    }
+  } catch {
+    // Cache availability must not prevent a fresh lifecycle read.
+  }
+
+  const snapshot = await durableLifecycleBaySnapshot(env);
+  const response = json({ durable_lifecycle_bay: snapshot });
+  const remainingAgeMs = Date.parse(snapshot.generated_at) + 60_000 - Date.now();
+  const ttl = Math.min(20, Math.floor(remainingAgeMs / 1000));
+  if (ttl > 0) {
+    try {
+      const cached = response.clone();
+      cached.headers.set("cache-control", `public, max-age=${ttl}`);
+      await caches.default.put(cacheKey, cached);
+    } catch {
+      // Serve the current public snapshot even when the cache cannot store it.
+    }
+  }
+  return response;
 }
 
 export async function durableLifecycleBaySnapshot(env, now = Date.now()) {
