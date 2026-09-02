@@ -271,7 +271,7 @@ export function scanAgentInput(options: {
       inputs.set(join(inputDir, name), {
         ...origin,
         id: name,
-        ...(origin.kind === "blob" ? { bytes } : {}),
+        ...(origin.kind === "blob" || origin.kind === "prompt" ? { bytes } : {}),
       });
     };
     stage(Buffer.from(options.prompt), { kind: "prompt" }, "prompt");

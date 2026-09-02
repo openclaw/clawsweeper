@@ -553,6 +553,8 @@ const browserMcpSource = "extensions/browser/src/browser/chrome-mcp.test.ts";
 const macDashboardSource = "apps/macos/Tests/OpenClawIPCTests/DashboardWindowSmokeTests.swift";
 const mattermostSource = "extensions/mattermost/src/mattermost/slash-http.test.ts";
 const ledgerFixtureSha256 = "a728de5dbbef23b8aa5ef2d99060835f4f2fb5a0fa2abb9fe249d08aa09bd09e";
+const browserCdpRelayLineSha256 =
+  "89bc2aa05769a4016fb19125143188f20b91807aa5c47918133a119b5a91d341";
 const nativeContractFailures = new Map([
   ["missing completion", "incomplete_scan"],
   ["detector error", "scan_error"],
@@ -579,6 +581,7 @@ for (const scenarioName of [
   "browser docs fixture",
   "browser page URL fixture",
   "browser CDP relay fixture",
+  "browser CDP relay line-bound prompt refusal",
   "browser CDP relay shifted HTML without companion",
   "browser CDP encoded fixture",
   "browser CDP encoded HTML fixture",
@@ -650,7 +653,10 @@ for (const scenarioName of [
   "other file",
   "many source references",
   "untrusted finding metadata",
-  "prompt",
+  "prompt with reviewed blob",
+  "prompt first with reviewed blob",
+  "prompt with reviewed blob query suffix",
+  "prompt only",
   "schema",
   "additional",
   "diff",
@@ -820,7 +826,14 @@ for (const scenarioName of [
       }
     }
     const findingValues = [uri, raw, ...(otherReviewedUri ? [otherReviewedUri] : [])];
-    const f = fixture(t, scenario === "prompt" ? uri : undefined);
+    const f = fixture(
+      t,
+      scenario.includes("prompt")
+        ? scenario.endsWith("query suffix")
+          ? `${uri}?unreviewed-query=1`
+          : uri
+        : undefined,
+    );
     let files =
       scenario === "many source references"
         ? Array.from({ length: 8 }, (_, index) => `unapproved-${index}.test.ts`)
@@ -900,6 +913,13 @@ for (const scenarioName of [
       : undefined;
     const reviewedFixtureLine =
       reviewedMacDashboardLine ?? reviewedBrowserLine ?? reviewedMattermostLine;
+    if (scenario === "browser CDP relay line-bound prompt refusal") {
+      assert.equal(
+        createHash("sha256").update(reviewedFixtureLine!).digest("hex"),
+        browserCdpRelayLineSha256,
+        "the corroborating blob retains its approved complete-line witness",
+      );
+    }
     const contents =
       "// context\n".repeat(literalLine - 2) +
       (reviewedFixtureLine ?? JSON.stringify(otherReviewedUri ?? value)) +
@@ -985,8 +1005,8 @@ const parsed = new URL(uri);
 const blobs = inputs.filter(({name}) => /^[a-f0-9]{40}$/.test(name));
 assert.equal(blobs.length, ${modeOnly ? 1 : 2});
 let findings = inputs.filter(({name, bytes}) =>
-  (/^[a-f0-9]{40}$/.test(name) && (scenario !== 'diff' || bytes.includes(uri))) ||
-  (scenario === 'prompt' && name === 'prompt') ||
+  (/^[a-f0-9]{40}$/.test(name) && scenario !== 'prompt only' && (scenario !== 'diff' || bytes.includes(uri))) ||
+  (scenario.includes('prompt') && name === 'prompt') ||
   (scenario === 'schema' && name === 'schema') ||
   (scenario === 'additional' && name === '0') ||
   (scenario === 'diff' && /^\d+$/.test(name) && bytes.includes(uri)) ||
@@ -1015,6 +1035,7 @@ if (scenario.includes('shifted HTML')) {
 if (scenario === 'shifted PLAIN') for (const finding of findings) finding.SourceMetadata.Data.Filesystem.line++;
 if (scenario === 'PLAIN duplicate') findings.push({...findings[0]});
 if (scenario === 'HTML duplicate') findings.push({...findings[0], DecoderName: 'HTML'});
+if (scenario === 'prompt first with reviewed blob') findings.unshift(findings.pop());
 if (scenario === 'changed raw') findings[0].Raw += 'changed';
 if (scenario === 'changed full URI') findings[0].RawV2 += '/changed';
 if (scenario === 'changed matching raw values') findings[0].Raw = findings[0].RawV2 = uri + '/changed';
@@ -1100,6 +1121,8 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
         "shifted PLAIN",
         "PLAIN duplicate",
         "HTML duplicate",
+        "prompt with reviewed blob",
+        "prompt first with reviewed blob",
         "repeated regular snapshot OID",
       ].includes(scenario)
     ) {
@@ -1216,6 +1239,10 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
                     : "literal_not_reviewed",
               );
             }
+            if (scenario === "browser CDP relay line-bound prompt refusal")
+              assert.equal(diagnostic.reason, "material_not_reviewed");
+            if (scenario === "prompt with reviewed blob query suffix")
+              assert.equal(diagnostic.reason, "literal_mismatch");
             assert.ok(diagnostic.findingCount > diagnostic.findingIndex);
             if (scenario === "untrusted finding metadata") {
               assert.equal(diagnostic.detectorType, null);
@@ -1224,7 +1251,7 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
               assert.equal(diagnostic.material, undefined);
             }
             const kind = new Map([
-              ["prompt", "prompt"],
+              ["prompt only", "prompt"],
               ["schema", "schema"],
               ["additional", "additional"],
               ["diff", "patch"],

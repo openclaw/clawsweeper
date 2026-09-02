@@ -239,6 +239,18 @@ function materialDiagnostic(input: StagedScanInput): ScanMaterialDiagnostic {
   };
 }
 
+function promptLiteralIsDelimited(line: string, index: number, length: number): boolean {
+  const before = line[index - 1];
+  const afterIndex = index + length;
+  const after = line[afterIndex];
+  const beforeIsDelimiter = before === undefined || /[\s"'`([{<,;]/.test(before);
+  const afterIsDelimiter =
+    after === undefined ||
+    /[\s"'`)\]}>;,]/.test(after) ||
+    (after === "\\" && /["'`]/.test(line[afterIndex + 1] ?? ""));
+  return beforeIsDelimiter && afterIsDelimiter;
+}
+
 /** Classify only complete native scans whose every finding matches host fixture policy. */
 export function classifyReviewedFixtureScan(
   status: number,
@@ -293,11 +305,23 @@ export function classifyReviewedFixtureScan(
     return nativeFailure("completion_mismatch");
 
   const literalLines = new Map<string, number>();
+  const approvedBlobFixtures = new Set<string>();
   const classified = new Map<
     string,
     { fixtureSha256: string; source: string; findings: Map<string, ClassifiedFinding> }
   >();
-  for (const [findingIndex, finding] of findings.entries()) {
+  const stagedKind = (finding: Record<string, unknown>): ScanInputOrigin["kind"] | undefined => {
+    const source = object(object(object(finding.SourceMetadata)?.Data)?.Filesystem);
+    return typeof source?.file === "string" ? inputs.get(source.file)?.kind : undefined;
+  };
+  // Validate blob findings first so prompt corroboration is independent of the
+  // scanner's output order. Original indexes remain attached to diagnostics.
+  const orderedFindings = [...findings.entries()].sort(
+    ([leftIndex, left], [rightIndex, right]) =>
+      Number(stagedKind(right) === "blob") - Number(stagedKind(left) === "blob") ||
+      leftIndex - rightIndex,
+  );
+  for (const [findingIndex, finding] of orderedFindings) {
     const source = object(object(object(finding.SourceMetadata)?.Data)?.Filesystem);
     const file = source?.file;
     const staged = typeof file === "string" ? inputs.get(file) : undefined;
@@ -356,14 +380,23 @@ export function classifyReviewedFixtureScan(
     if (!(fixture.decoders ?? ["PLAIN", "HTML"]).some((decoder) => decoder === finding.DecoderName))
       return refuse("finding_not_reviewed");
     if (typeof file !== "string" || scannerLine === null) return refuse("metadata_mismatch");
-    if (staged?.kind !== "blob" || !staged.bytes) return refuse("material_not_reviewed");
-    if (
-      !staged.references.length ||
-      staged.references.some(
-        ({ source, mode }) => mode !== "100644" || !fixture.sources.some((path) => path === source),
+    if (!staged?.bytes || (staged.kind !== "blob" && staged.kind !== "prompt"))
+      return refuse("material_not_reviewed");
+    if (staged.kind === "blob") {
+      if (
+        !staged.references.length ||
+        staged.references.some(
+          ({ source, mode }) =>
+            mode !== "100644" || !fixture.sources.some((path) => path === source),
+        )
       )
-    )
-      return refuse("source_not_reviewed");
+        return refuse("source_not_reviewed");
+    } else if (fixture.lineSha256s !== undefined || !approvedBlobFixtures.has(digest)) {
+      // Prompt text can quote review discussion. Admit only the exact fixture
+      // already established by an approved blob finding in this complete scan.
+      // Fixtures that require a complete source-line witness remain blob-only.
+      return refuse("material_not_reviewed");
+    }
     const uri = new URL(finding.RawV2);
     const parts = object(finding.SecretParts);
     if (
@@ -396,6 +429,11 @@ export function classifyReviewedFixtureScan(
         if (line.includes(finding.RawV2)) {
           let occurrence = line.indexOf(finding.RawV2);
           while (occurrence !== -1) {
+            if (
+              staged.kind === "prompt" &&
+              !promptLiteralIsDelimited(line, occurrence, finding.RawV2.length)
+            )
+              return refuse("literal_mismatch");
             literalOccurrences++;
             occurrence = line.indexOf(finding.RawV2, occurrence + finding.RawV2.length);
           }
@@ -417,6 +455,9 @@ export function classifyReviewedFixtureScan(
         return refuse("literal_mismatch");
       literalLines.set(valueKey, literalLine);
     }
+    if (staged.kind === "prompt") continue;
+    if (staged.kind !== "blob") return refuse("material_not_reviewed");
+    approvedBlobFixtures.add(digest);
     const blob = basename(file);
     const key = `${blob}:${scannerLine}:${finding.DecoderName}`;
     const sources = new Set(staged.references.map(({ source }) => source));
