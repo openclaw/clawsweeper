@@ -78,6 +78,14 @@ const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
     sources: ["worker/test/fleet.test.ts"],
   },
   {
+    // Approved Mac dashboard subframe rejection witness in OpenClaw 9ba01d6c7b1c.
+    fixtureSha256: "97c60d02f5114db97718cfe1c3686c0a36fb5138840611c8793c7abbd9c64f71",
+    rawSha256: "43690a8c13d4028ed731bc4dfeb37f83adaa4e5849d2e0fa13f746843adec333",
+    lineSha256s: ["87f28bc6a5b0037cfd2ecc94349d5c9bfff572776c25d5e713ae7d83144f5f98"],
+    decoders: ["PLAIN"],
+    sources: ["apps/macos/Tests/OpenClawIPCTests/DashboardWindowSmokeTests.swift"],
+  },
+  {
     // Mattermost slash-error sanitization fixtures introduced by 9c0975c1c20e.
     fixtureSha256: "f2c5cfd2b711577ed9048f9bd0e6c97ae88097b8eba8c1ff37deb33ed910f5a7",
     rawSha256: "7d765bfa6e81c336a916aaf71eab28f5c0c4ae47a359ec3adf2d4f175645456d",
@@ -119,6 +127,38 @@ const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
     sources: ["src/config/redact-snapshot.test.ts"],
   },
 ];
+
+export function serializeReviewContext(context: object): string {
+  return JSON.stringify(
+    context,
+    (_key, value) => (typeof value === "string" ? omitReviewedFixtureReferences(value) : value),
+    2,
+  );
+}
+
+export function omitReviewedFixtureReferences(text: string): string {
+  // Match whole scheme tokens once; retrying at every character is quadratic.
+  // Strip only terminal punctuation; internal punctuation may belong to a URI.
+  return text.replace(/(?<![A-Za-z0-9+.-])[A-Za-z0-9+.-]+:\/\/[^\s<>"\x60]+/g, (uri) => {
+    let end = uri.length;
+    while (end > 0 && ")]}.,;!'".includes(uri.charAt(end - 1))) {
+      end -= 1;
+    }
+    for (const candidate of [uri, uri.slice(0, end)]) {
+      const digest = createHash("sha256").update(candidate).digest("hex");
+      const fixture = REVIEWED_FIXTURES.find((entry) => entry.fixtureSha256 === digest);
+      if (fixture) {
+        return (
+          "[reviewed synthetic URI omitted; inspect " +
+          fixture.sources.join(", ") +
+          "]" +
+          uri.slice(candidate.length)
+        );
+      }
+    }
+    return uri;
+  });
+}
 
 export interface ScanSourceReference {
   source: string;

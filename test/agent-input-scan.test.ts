@@ -550,6 +550,7 @@ const browserDocsSource = "docs/tools/browser.md";
 const browserToolSource = "extensions/browser/src/browser-tool.test.ts";
 const browserCdpHelpersSource = "extensions/browser/src/browser/cdp.helpers.test.ts";
 const browserMcpSource = "extensions/browser/src/browser/chrome-mcp.test.ts";
+const macDashboardSource = "apps/macos/Tests/OpenClawIPCTests/DashboardWindowSmokeTests.swift";
 const mattermostSource = "extensions/mattermost/src/mattermost/slash-http.test.ts";
 const ledgerFixtureSha256 = "a728de5dbbef23b8aa5ef2d99060835f4f2fb5a0fa2abb9fe249d08aa09bd09e";
 const nativeContractFailures = new Map([
@@ -569,7 +570,7 @@ const nativeContractFailures = new Map([
   ["unexpected successful output", "unexpected_exit"],
 ]);
 
-for (const scenario of [
+for (const scenarioName of [
   "reviewed fixture",
   "browser local Chrome fixture",
   "browser remote Chrome fixture",
@@ -678,8 +679,32 @@ for (const scenario of [
   "malformed output",
   "unexpected successful output",
   "source drift",
+  ...[
+    "reviewed fixture",
+    "changed raw",
+    "changed full URI",
+    "changed matching raw values",
+    "other file",
+    "unapproved line",
+    "duplicate on approved line",
+    "executable source",
+    "prompt",
+    "diff",
+    "verified",
+    "mixed findings",
+    "wrong detector",
+    "wrong source type",
+    "wrong decoder",
+    "unreviewed HTML",
+    "wrong secret parts",
+    "missing verification error",
+    "wrong version",
+    "missing completion",
+  ].map((scenario) => `mac dashboard ${scenario}`),
 ]) {
-  test(`reviewed synthetic fixture admission: ${scenario}`, (t) => {
+  const macDashboardFixture = scenarioName.startsWith("mac dashboard ");
+  const scenario = macDashboardFixture ? scenarioName.slice("mac dashboard ".length) : scenarioName;
+  test(`reviewed synthetic fixture admission: ${scenarioName}`, (t) => {
     const notices: unknown[][] = [];
     t.mock.method(console, "error", (...args: unknown[]) => notices.push(args));
     // Read the existing malformed-configuration fixture without reproducing its
@@ -699,17 +724,19 @@ for (const scenario of [
     const browserExactFixture = browserCdpFixture || browserMcpFixture;
     const encodedCdpFixture = browserCdpFixture && scenario.includes("encoded");
     // Preserve the literal witnesses captured from the native OpenClaw scan.
-    const literalLine = browserCdpFixture
-      ? encodedCdpFixture
-        ? 406
-        : 293
-      : browserMcpFixture
-        ? 1339
-        : 42;
+    const literalLine = macDashboardFixture
+      ? 273
+      : browserCdpFixture
+        ? encodedCdpFixture
+          ? 406
+          : 293
+        : browserMcpFixture
+          ? 1339
+          : 42;
     const scannerLine = scenario.includes("shifted BASE64") ? literalLine - 4 : literalLine;
     const primaryDecoder = scenario.includes("BASE64")
       ? "BASE64"
-      : scenario === "browser CDP encoded HTML fixture"
+      : scenario === "browser CDP encoded HTML fixture" || scenario === "unreviewed HTML"
         ? "HTML"
         : "PLAIN";
     if (browserExactFixture) {
@@ -759,6 +786,13 @@ for (const scenario of [
       if (scenario === "mattermost changed path") url.pathname = "/changed";
       uri = url.href;
     }
+    if (macDashboardFixture) {
+      // Native 3.97.1 witness from OpenClaw 9ba01d6c7b1c, line 273.
+      const url = new URL("http://localhost:18890/embed/channel/T01/C01");
+      url.username = "user";
+      url.password = "pass";
+      uri = url.href;
+    }
     assert.ok(uri, "reviewed synthetic fixture is present");
     const authority = new URL(uri);
     authority.pathname = "";
@@ -769,7 +803,7 @@ for (const scenario of [
       authority.password = "redacted";
     }
     const raw =
-      browserPageFixture || browserExactFixture || mattermostFixture
+      macDashboardFixture || browserPageFixture || browserExactFixture || mattermostFixture
         ? authority.href.slice(0, -1)
         : uri;
     let otherReviewedUri: string | undefined;
@@ -787,7 +821,7 @@ for (const scenario of [
     }
     const findingValues = [uri, raw, ...(otherReviewedUri ? [otherReviewedUri] : [])];
     const f = fixture(t, scenario === "prompt" ? uri : undefined);
-    const files =
+    let files =
       scenario === "many source references"
         ? Array.from({ length: 8 }, (_, index) => `unapproved-${index}.test.ts`)
         : mattermostFixture
@@ -833,6 +867,8 @@ for (const scenario of [
                             ? "other.test.ts"
                             : ledgerSource,
                     ];
+    if (macDashboardFixture)
+      files = [scenario === "other file" ? "other.test.swift" : macDashboardSource];
     const value =
       scenario === "decoded only" || scenario.endsWith("encoded-only")
         ? primaryDecoder === "BASE64"
@@ -857,7 +893,13 @@ for (const scenario of [
             ? `        ${JSON.stringify(`fallback\r\nsecond-line botToken: secret-bot ${uri}?token=secret-query`)},`
             : `        ${JSON.stringify(`primary\ntoken=secret-token ${uri}?access_token=secret-access&client_secret=secret-client`)},`
         : undefined;
-    const reviewedFixtureLine = reviewedBrowserLine ?? reviewedMattermostLine;
+    const reviewedMacDashboardLine = macDashboardFixture
+      ? scenario === "unapproved line"
+        ? JSON.stringify(value)
+        : `        let credentialedFrame = try #require(URL(string: "${value}"))`
+      : undefined;
+    const reviewedFixtureLine =
+      reviewedMacDashboardLine ?? reviewedBrowserLine ?? reviewedMattermostLine;
     const contents =
       "// context\n".repeat(literalLine - 2) +
       (reviewedFixtureLine ?? JSON.stringify(otherReviewedUri ?? value)) +

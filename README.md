@@ -589,6 +589,7 @@ the [credentialed-page rejection fixtures](https://github.com/openclaw/openclaw/
 the [guarded CDP authentication fixtures](https://github.com/openclaw/openclaw/blob/1cf6ff3bdc08a6ac08facb1006b1d7aabc0eaff4/extensions/browser/src/browser/cdp.helpers.test.ts),
 the [MCP endpoint-redaction fixture](https://github.com/openclaw/openclaw/blob/ac21e89c13e42f6a7d152bf9be143e67edd44ed3/extensions/browser/src/browser/chrome-mcp.test.ts),
 the [Crabbox fleet audit sanitization fixture](https://github.com/openclaw/crabbox/blob/937523aced0f6c2d3b9242461eeab1a03bd893e8/worker/test/fleet.test.ts),
+the [Mac dashboard credentialed-subframe rejection fixture](https://github.com/openclaw/openclaw/blob/9ba01d6c7b1c308e7b41eac11ba6f43e0fd0393d/apps/macos/Tests/OpenClawIPCTests/DashboardWindowSmokeTests.swift#L273),
 the [Mattermost slash-error sanitization fixtures](https://github.com/openclaw/openclaw/blob/9c0975c1c20ed635532c7aa0f510154224adee7f/extensions/mattermost/src/mattermost/slash-http.test.ts),
 and the OpenClaw config [URL-redaction](https://github.com/openclaw/openclaw/blob/5fe22a7d88919f260e7999fc775733feff3cb1fa/src/config/redact-snapshot.test.ts)
 and [restoration fixtures](https://github.com/openclaw/openclaw/blob/5fe22a7d88919f260e7999fc775733feff3cb1fa/src/config/redact-snapshot.restore.test.ts)
@@ -596,7 +597,7 @@ after a complete scan. Static host policy associates each
 exact detector-matched URI SHA-256 with only its approved source paths and exact
 scanner `Raw` digest, including when `Raw` omits a path retained by `RawV2`. The
 matched value must be a literal in a host-staged Git blob from mode `100644`.
-The three guarded-CDP/MCP entries, the Crabbox fixture, and four Mattermost entries also bind complete
+The three guarded-CDP/MCP entries, Crabbox fixture, Mac dashboard entry, and four Mattermost entries also bind complete
 reviewed source lines, including surrounding query text that TruffleHog's URI
 detector does not match. Changes to those lines or additional literal occurrences
 refuse classification. These witnesses do not expand native query detection.
@@ -608,8 +609,9 @@ original source. Repeated literals remain eligible unless an entry is bound to
 an approved complete-line digest; those entries require exactly one occurrence
 in the staged blob. Finding order and duplicate records do not change the exact
 value, path, and mode checks.
-Findings must use `PLAIN` or `HTML`, except the two guarded-CDP fixtures also
-permit `BASE64`. The pinned Base64 decoder preserves the rest of a chunk after
+Findings must use `PLAIN` or `HTML`, except the Mac dashboard entry permits only
+its observed `PLAIN` decoder and the two guarded-CDP fixtures also permit `BASE64`.
+The pinned Base64 decoder preserves the rest of a chunk after
 decoding another token, so an unchanged literal can acquire that decoder label
 and win cross-decoder deduplication. Those entries still require the literal in
 its exact original source line; encoded-only content remains blocking.
@@ -622,6 +624,12 @@ must qualify under the same digest's exact path and mode `100644` policy before
 any source is eligible for classification or an audit notice.
 The policy does not trust checkout ignore rules, domain patterns, fixture words,
 test names, or unchanged-line inference; no nearby fixture is implicitly approved.
+When review evidence quotes an exact reviewed synthetic URI, prompt preparation
+replaces the URI with a visible reference to its source file, preserving closing
+Markdown and sentence punctuation. The original context is preserved, and changed
+paths, credentials, or additional query text remain untouched. This omission does not classify a native finding or prove
+its verification status. Source blobs, introduced patches, and scanner admission
+retain their existing checks.
 Findings attributed to prompt, schema, diff, additional-input, other-path, or
 encoded-only blobs remain blocking, as do other findings, verified findings,
 and incomplete scans. Unverified findings alone never qualify: every finding must

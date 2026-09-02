@@ -59,6 +59,18 @@ function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+const reviewedUri = readFileSync("test/action-ledger-runtime.test.ts", "utf8")
+  .match(/[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s"'`]+/g)
+  ?.find(
+    (uri) => digest(uri) === "a728de5dbbef23b8aa5ef2d99060835f4f2fb5a0fa2abb9fe249d08aa09bd09e",
+  );
+assert.ok(reviewedUri);
+const fixtureQuote = `Reference [fixture](${reviewedUri}). Changed [fixture](${reviewedUri}?unreviewed).`;
+const safeFixtureQuote = fixtureQuote.replace(
+  reviewedUri,
+  "[reviewed synthetic URI omitted; inspect test/action-ledger-runtime.test.ts]",
+);
+
 function replaceFrontMatterValue(markdown: string, key: string, value: string): string {
   const line = `${key}: ${value}`;
   const pattern = new RegExp(`^${key}:\\s*.*$`, "m");
@@ -249,7 +261,7 @@ for (const scenario of [
     const currentRecord = structuralRecord(RESERVED_AT, pull);
     const patch = "@@ -1 +1 @@\n-const value = 1;\n+const value = 2; // sensitive-comment-marker";
     const context = {
-      issue: { updatedAt: RESERVED_AT },
+      issue: { updatedAt: RESERVED_AT, body: fixtureQuote },
       sourceRevision: priorRecord.sourceRevision,
       comments: [],
       timeline: [],
@@ -314,7 +326,7 @@ for (const scenario of [
       repo: REPO,
       number: ITEM_NUMBER,
       kind: isPullRequest ? ("pull_request" as const) : ("issue" as const),
-      title: "Scheduled cache proof",
+      title: `Scheduled cache proof. ${fixtureQuote}`,
       url: `https://github.com/${REPO}/issues/${ITEM_NUMBER}`,
       createdAt: "2026-08-01T00:00:00Z",
       updatedAt: PRIOR_ACTIVITY_AT,
@@ -334,6 +346,7 @@ for (const scenario of [
     let structuralFetches = 0;
     let cachedCompletions = 0;
     let checkoutInspectionCalls = 0;
+    let inspectedPrompt = "";
     let reviewTreeAttempts = 0;
     let reviewTreeCleanupCalls = 0;
     let blobMetadataCalls = 0;
@@ -556,6 +569,7 @@ for (const scenario of [
       reviewPolicyHash: () => POLICY,
       runReviewCheckoutInspection: (options) => {
         checkoutInspectionCalls += 1;
+        inspectedPrompt = options.initialPrompt;
         if (refuseScan)
           return runAgentCheckoutInspection({
             cwd: options.openclawDir,
@@ -828,6 +842,13 @@ for (const scenario of [
       assert.ok(structuralFetches >= 2);
       assert.equal(cachedCompletions, 1);
       assert.equal(checkoutInspectionCalls, 1);
+      const inspectedContext = JSON.parse(inspectedPrompt);
+      assert.equal(
+        hydrated ? inspectedContext.issue.body : inspectedContext.title,
+        hydrated ? safeFixtureQuote : `Scheduled cache proof. ${safeFixtureQuote}`,
+      );
+      assert.equal(context.issue.body, fixtureQuote);
+      assert.equal(item.title, `Scheduled cache proof. ${fixtureQuote}`);
       const carriedReportPath = join(artifactDir, `${ITEM_NUMBER}.md`);
       assert.equal(existsSync(carriedReportPath), true);
       const carriedReport = readFileSync(carriedReportPath, "utf8");

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
@@ -34,6 +35,71 @@ import {
   longProofBody,
   scriptSentinel,
 } from "./primary-body-fixture.ts";
+
+test("GitHub review context omits complete reviewed URI quotations and preserves other evidence", () => {
+  const source = readFileSync(new URL("./action-ledger-runtime.test.ts", import.meta.url), "utf8");
+  const uri = [...source.matchAll(/"([^"\n]+)"/g)]
+    .map((match) => match[1]!)
+    .find(
+      (value) =>
+        createHash("sha256").update(value).digest("hex") ===
+        "a728de5dbbef23b8aa5ef2d99060835f4f2fb5a0fa2abb9fe249d08aa09bd09e",
+    );
+  assert.ok(uri, "existing reviewed URI fixture");
+  const controls = [
+    uri + "?new-secret=changed",
+    uri + "/changed",
+    uri + "?new-secret=changed).",
+    uri + "/changed).",
+    uri + ")?new-secret=changed",
+    uri + ".)/changed",
+    uri + "'/changed",
+    uri + "'?new-secret=changed",
+    uri + "\\changed",
+    uri.replace("://", "://changed"),
+    "changed" + uri,
+    "9" + uri,
+    "+" + uri,
+    "-" + uri,
+    "." + uri,
+    "https://docs.example.test/?next=" + uri,
+    "https://docs.example.test/proof",
+  ].flatMap((value) => [value, `url=${value}`, `source:${value}`]);
+  const reference = "[reviewed synthetic URI omitted; inspect test/action-ledger-runtime.test.ts]";
+  const quote = (value: string) =>
+    `Backticks \x60${value}\x60; Markdown [fixture](${value}). Sentence ${value}. Wrapped (${value}); [${value}], {${value}}! Quoted '${value}'. Assigned url=${value}; labelled source:${value}. Pipe|${value}.`;
+  const body = quote(uri);
+  const context = {
+    issue: { body },
+    comments: [{ id: 12, body }],
+    timeline: [],
+    pullReviewComments: controls.map((body, id) => ({ id, body })),
+  };
+  const original = JSON.stringify(context);
+  const target = item({ kind: "pull_request", title: body });
+  const additionalPrompt = "Inspect the supplied request: " + body;
+  const prompt = reviewPromptForTest(target, context, git, additionalPrompt);
+  const jsonText = prompt
+    .split("## GitHub Context\n")[1]!
+    .match(/\x60{3}json\n([\s\S]*?)\n\x60{3}/)![1]!;
+  const rendered = JSON.parse(jsonText);
+  const omitted = quote(reference);
+  assert.equal(rendered.issue.body, omitted);
+  assert.equal(rendered.comments[0].body, omitted);
+  assert.ok(prompt.includes("- Title: " + omitted));
+  assert.deepEqual(
+    rendered.pullReviewComments.map(({ body }: { body: string }) => body),
+    controls,
+  );
+  assert.equal(JSON.stringify(context), original);
+  assert.equal(prompt.split("## Maintainer Request\n\n")[1]?.trim(), additionalPrompt);
+  const introduction =
+    prompt.match(/\n\n## PR Introduction Evidence\n[\s\S]*?\n\x60{3}\n/)?.[0] ?? "";
+  assert.equal(
+    reviewPromptTelemetryForTest(target, context, git).contextChars,
+    jsonText.length + introduction.length,
+  );
+});
 
 for (const kind of ["issue", "pull_request"] as const) {
   test(`raw ${kind} body reaches real review JSON with exact bounded late proof coverage`, () => {

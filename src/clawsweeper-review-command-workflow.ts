@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ACTION_EVENT_REASON_CODES, ACTION_EVENT_STATUSES } from "./action-ledger.js";
 import { AgentInputScanError, agentInputScanFailureExitCode } from "./agent-input-scan.js";
+import { serializeReviewContext } from "./agent-input-scan-fixtures.js";
 import type { Args } from "./clawsweeper-args.js";
 import {
   isBulkFilerExemptRepositoryPermission as isVerifiedMaintainerRepositoryPermission,
@@ -415,7 +416,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             const inspection = runReviewCheckoutInspection({
               // Structural reuse has no model payload. Hydrated reuse scans the
               // current context too, including source comments.
-              initialPrompt: JSON.stringify(context ?? item),
+              initialPrompt: serializeReviewContext(context ?? item),
               scanSource: item.kind === "pull_request"
                 ? { kind: "committed", baseSha: typeof baseSha === "string" ? baseSha : "", headSha: headSha ?? "" }
                 : { kind: "prompt" },
