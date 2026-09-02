@@ -197,7 +197,7 @@ test("scan diagnostics retain refusal identity without scanner output", () => {
       assert.equal(manifest.classification, "agent_input_scan");
       assert.deepEqual(manifest.failure, { stage: "agent_input_scan", reason_code: reason });
       assert.equal(manifest.retryable, false);
-      assert.equal(manifest.process.workflow_exit, reason === "incomplete_source" ? 78 : 1);
+      assert.equal(manifest.process.workflow_exit, reason === "incomplete_source" ? 78 : 79);
       const text = expectedFiles.map((name) => readFileSync(join(output, name), "utf8")).join("\n");
       assert.doesNotMatch(text, /raw scanner/);
     }
