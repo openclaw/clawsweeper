@@ -4,6 +4,7 @@ import {
   isClawSweeperReReviewCommandText,
   reReviewContextFromClawSweeperComment,
 } from "../src/repair/comment-command-text.ts";
+import { legacyCommandCommentId } from "../src/repair/command-ack-convergence.ts";
 import { directReReviewIntake } from "../src/repair/direct-re-review-admission.ts";
 import { isExactReviewCloseGuardLabel } from "../src/repair/exact-review-guard-labels.ts";
 import {
@@ -4385,22 +4386,8 @@ function lifecycleCommandAcknowledgementFromGithubWebhook({
   const number = Number(issue.number);
   const body = String(comment.body || "");
   const acknowledgement = body.match(/<!--\s*clawsweeper-command-ack:(\d+)\s*-->/i);
-  const hasAcknowledgement = /<!--\s*clawsweeper-command-ack:[^>]*-->/i.test(body);
   const status = body.match(/<!--\s*clawsweeper-command-status:(\d+):([^:\s>]+):([^:\s>]+)\s*-->/i);
-  const legacyCommands =
-    !hasAcknowledgement && status
-      ? Array.from(
-          body.matchAll(
-            /<!--\s*clawsweeper-command:(\d+):(?:[^>]*:)?([^:\s>]+):([^:\s>]+)\s*-->/gi,
-          ),
-        )
-      : [];
-  const legacyCommand =
-    legacyCommands.length === 1 &&
-    legacyCommands[0]![2] === status?.[2] &&
-    legacyCommands[0]![3] === status?.[3]
-      ? legacyCommands[0]![1]
-      : undefined;
+  const legacyCommand = status ? legacyCommandCommentId(body, status[0]) : null;
   const sourceCommentId = Number(acknowledgement?.[1] ?? legacyCommand ?? Number.NaN);
   const completedAt = exactWebhookTimestamp(comment.updated_at || comment.created_at);
   const progress =
@@ -4435,7 +4422,7 @@ function lifecycleCommandAcknowledgementFromGithubWebhook({
     completion_outcome: /^- State:\s*Failed\s*$/im.test(progress || "") ? "failure" : "success",
     completion_comment_id: Number(comment.id),
     status_marker: status?.[0] ?? null,
-    ...(legacyCommand ? { require_exact_status_comment: true } : {}),
+    ...(legacyCommand !== null ? { require_exact_status_comment: true } : {}),
   };
 }
 

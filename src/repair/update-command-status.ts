@@ -26,6 +26,7 @@ import {
   commandStatusMarkerFromBody,
   compareCommentsByCreatedAt,
   isPrunableCommandAckDuplicate,
+  legacyCommandCommentId,
   selectCommandAckKeeper,
   statusMarkerDiffersFromRequested,
 } from "./command-ack-convergence.js";
@@ -463,7 +464,8 @@ export function verifiedTerminalStatusReceipt(
         : commandCommentIds.length === 0 &&
             !hasCommandAckMarker(comment.body) &&
             (options.statusCommentId === null || completionCommentId === options.statusCommentId)
-          ? legacyCommandCommentId(comment.body, options.marker, completionCommentId)
+          ? (legacyCommandCommentId(comment.body, options.marker) ??
+            syntheticLegacyCommandCommentId(comment.body, options.marker, completionCommentId))
           : null;
     return commandCommentId === null ? null : { commandCommentId, completionCommentId };
   }
@@ -510,7 +512,7 @@ function hasCommandAckMarker(body: JsonValue) {
   return /<!--\s*clawsweeper-command-ack:[^>]*-->/.test(String(body ?? ""));
 }
 
-function legacyCommandCommentId(
+function syntheticLegacyCommandCommentId(
   body: JsonValue,
   statusMarker: string,
   completionCommentId: number,
@@ -519,16 +521,6 @@ function legacyCommandCommentId(
     statusMarker,
   );
   if (!status) return null;
-  const commands = Array.from(
-    String(body ?? "").matchAll(
-      /<!--\s*clawsweeper-command:(\d+):(?:[^>]*:)?([^:\s>]+):([^:\s>]+)\s*-->/g,
-    ),
-  );
-  if (commands.length === 1 && commands[0]![2] === status[2] && commands[0]![3] === status[3]) {
-    const commandCommentId = Number(commands[0]![1]);
-    return Number.isSafeInteger(commandCommentId) && commandCommentId > 0 ? commandCommentId : null;
-  }
-  if (commands.length !== 0) return null;
   const commandMarkers = Array.from(
     String(body ?? "").matchAll(/<!--\s*clawsweeper-command:[^>]+-->/g),
   );

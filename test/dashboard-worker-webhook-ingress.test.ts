@@ -646,6 +646,23 @@ test("matching bot lifecycle receipts persist only after hosted admission", asyn
       finalizerRetained: false,
     },
     {
+      name: "allowed mixed-generation legacy review",
+      intent: "re_review",
+      itemNumber: 614,
+      commandCommentId: 5_290_152_372,
+      commandUpdatedAt: "2026-08-14T06:17:22Z",
+      admissions: ["public", "public"],
+      status: 202,
+      response: {
+        ok: true,
+        accepted: false,
+        reason: "recorded Bay journey completion",
+      },
+      lifecycle: "completed",
+      bayPersisted: true,
+      finalizerRetained: false,
+    },
+    {
       name: "terminal private",
       intent: "re_review",
       itemNumber: 612,
@@ -693,7 +710,12 @@ test("matching bot lifecycle receipts persist only after hosted admission", asyn
       },
     );
     const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
-    const marker = `<!-- clawsweeper-command-status:${itemNumber}:${intent}:head -->`;
+    const commandCommentId =
+      "commandCommentId" in entry ? entry.commandCommentId : itemNumber + 2_000;
+    const marker =
+      "commandUpdatedAt" in entry
+        ? `<!-- clawsweeper-command-status:${itemNumber}:${intent}:command-${commandCommentId}-${Date.parse(entry.commandUpdatedAt).toString(36)}-${"1".repeat(64)} -->`
+        : `<!-- clawsweeper-command-status:${itemNumber}:${intent}:head -->`;
     const identity = {
       canonicalTargetKey: `openclaw/openclaw#${itemNumber}`,
       fenceKey: `openclaw/openclaw#${itemNumber}@exact`,
@@ -756,8 +778,12 @@ test("matching bot lifecycle receipts persist only after hosted admission", asyn
           comment: {
             id: itemNumber + 1_000,
             body: [
-              `<!-- clawsweeper-command-ack:${itemNumber + 2_000} -->`,
               marker,
+              ...("commandUpdatedAt" in entry
+                ? [
+                    `<!-- clawsweeper-command:${commandCommentId}:${entry.commandUpdatedAt}:${intent}:${"8".repeat(40)} -->`,
+                  ]
+                : [`<!-- clawsweeper-command-ack:${commandCommentId} -->`]),
               "<!-- clawsweeper-command-progress:start -->",
               "- State: Complete",
               "<!-- clawsweeper-command-progress:end -->",

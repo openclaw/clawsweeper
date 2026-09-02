@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   commandAckMarkerFromBody,
   commandStatusMarkerFromBody,
+  legacyCommandCommentId,
   planCommandAckConvergence,
 } from "../../dist/repair/command-ack-convergence.js";
 
@@ -60,4 +61,40 @@ test("bare acknowledgement ties keep the earliest creation and lowest id", () =>
     "<!-- clawsweeper-command-status:81564:re_review:new -->",
   );
   assert.equal(plan.keep?.id, 11);
+});
+
+test("mixed-generation command receipts bind the encoded command identity", () => {
+  const commandCommentId = 5_290_152_372;
+  const updatedAt = "2026-08-14T06:17:22Z";
+  const statusMarker =
+    `<!-- clawsweeper-command-status:120900:re_review:` +
+    `command-${commandCommentId}-${Date.parse(updatedAt).toString(36)}-${"1".repeat(64)} -->`;
+  const legacyMarker = `<!-- clawsweeper-command:${commandCommentId}:${updatedAt}:re_review:${"8".repeat(40)} -->`;
+
+  assert.equal(
+    legacyCommandCommentId([statusMarker, legacyMarker].join("\n"), statusMarker),
+    commandCommentId,
+  );
+  assert.equal(
+    legacyCommandCommentId(
+      [
+        "<!-- clawsweeper-command-status:120900:re_review:legacy-revision -->",
+        `<!-- clawsweeper-command:${commandCommentId}:${updatedAt}:re_review:legacy-revision -->`,
+      ].join("\n"),
+      "<!-- clawsweeper-command-status:120900:re_review:legacy-revision -->",
+    ),
+    commandCommentId,
+  );
+
+  for (const body of [
+    `<!-- clawsweeper-command-ack:${commandCommentId} -->\n${statusMarker}\n${legacyMarker}`,
+    `${statusMarker}\n${statusMarker}\n${legacyMarker}`,
+    `${statusMarker}\n${legacyMarker}\n${legacyMarker}`,
+    `${statusMarker}\n${legacyMarker.replace(":re_review:", ":automerge:")}`,
+    `${statusMarker}\n${legacyMarker.replace(String(commandCommentId), String(commandCommentId + 1))}`,
+    `${statusMarker}\n${legacyMarker.replace(updatedAt, "2026-08-14T06:17:23Z")}`,
+    `${statusMarker.replace("1".repeat(64), "short")}\n${legacyMarker}`,
+  ]) {
+    assert.equal(legacyCommandCommentId(body, body.split("\n")[0]!), null);
+  }
 });

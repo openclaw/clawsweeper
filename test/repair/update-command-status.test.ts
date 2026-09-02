@@ -593,6 +593,65 @@ test("legacy command updates verify their receipt without creating duplicate ack
   }
 });
 
+test("mixed-generation legacy command updates finalize through the CLI", () => {
+  for (const alreadyComplete of [false, true]) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-mixed-command-status-"));
+    try {
+      const commandCommentId = 5_290_152_372;
+      const updatedAt = "2026-08-14T06:17:22Z";
+      const marker =
+        `<!-- clawsweeper-command-status:120900:re_review:` +
+        `command-${commandCommentId}-${Date.parse(updatedAt).toString(36)}-${"1".repeat(64)} -->`;
+      const comment = {
+        id: 5_290_154_476,
+        user: { login: "clawsweeper[bot]" },
+        updated_at: "2026-09-02T05:21:13Z",
+        body: [
+          marker,
+          `<!-- clawsweeper-command:${commandCommentId}:${updatedAt}:re_review:${"8".repeat(40)} -->`,
+          "<!-- clawsweeper-command-progress:start -->",
+          `- State: ${alreadyComplete ? "Complete" : "In progress"}`,
+          `- Detail: ${alreadyComplete ? "Done." : "Waiting."}`,
+          "<!-- clawsweeper-command-progress:end -->",
+        ].join("\n"),
+      };
+      const result = runUpdateCommandStatus(
+        tmp,
+        [
+          "--repo",
+          "openclaw/openclaw",
+          "--item-number",
+          "120900",
+          "--marker",
+          marker,
+          "--status-comment-id",
+          String(comment.id),
+          "--state",
+          "Complete",
+          "--detail",
+          "Done.",
+          "--require-mutation",
+          "--verify-terminal-status-receipt",
+        ],
+        comment,
+      );
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.output, /^terminal_status_verified=true$/m);
+      assert.match(result.output, new RegExp(`^command_comment_id=${commandCommentId}$`, "m"));
+      assert.match(result.output, new RegExp(`^completion_comment_id=${comment.id}$`, "m"));
+      if (alreadyComplete) {
+        assert.equal(result.patchedBody, null);
+      } else {
+        assert.doesNotMatch(result.patchedBody ?? "", /clawsweeper-command-ack:/);
+        assert.match(result.patchedBody ?? "", /- State: Complete\n- Detail: Done\./);
+      }
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+});
+
 test("missing status comment completes the terminal acknowledgement as a skip", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-update-command-status-"));
   try {

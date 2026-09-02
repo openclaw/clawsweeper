@@ -12,6 +12,47 @@ export function commandStatusMarkerFromBody(body: JsonValue): string | null {
   );
 }
 
+export function legacyCommandCommentId(body: JsonValue, statusMarker: string): number | null {
+  const text = String(body ?? "");
+  if (/<!--\s*clawsweeper-command-ack:[^>]*-->/i.test(text)) return null;
+  const statusMarkers = Array.from(
+    text.matchAll(/<!--\s*clawsweeper-command-status:[^>]+-->/gi),
+    (match) => match[0],
+  );
+  const commandMarkers = Array.from(
+    text.matchAll(/<!--\s*clawsweeper-command:[^>]+-->/gi),
+    (match) => match[0],
+  );
+  if (
+    statusMarkers.length !== 1 ||
+    statusMarkers[0] !== statusMarker ||
+    commandMarkers.length !== 1
+  ) {
+    return null;
+  }
+  const status = /^<!--\s*clawsweeper-command-status:(\d+):([^:\s>]+):([^:\s>]+)\s*-->$/i.exec(
+    statusMarker,
+  );
+  const command = /^<!--\s*clawsweeper-command:(\d+):(?:(.+):)?([^:\s>]+):([^:\s>]+)\s*-->$/i.exec(
+    commandMarkers[0]!,
+  );
+  if (!status || !command || command[3] !== status[2]) return null;
+  const commandCommentId = Number(command[1]);
+  if (!Number.isSafeInteger(commandCommentId) || commandCommentId < 1) return null;
+
+  const commandRevision = /^command-(\d+)-([0-9a-z]+)-[0-9a-f]{64}$/.exec(status[3]!);
+  if (!commandRevision) return command[4] === status[3] ? commandCommentId : null;
+
+  // Current direct re-review status revisions encode the legacy command's
+  // comment id and timestamp; its trailing digest intentionally differs.
+  const commandTimestamp = Date.parse(command[2] ?? "");
+  return commandRevision[1] === command[1] &&
+    Number.isSafeInteger(commandTimestamp) &&
+    commandTimestamp.toString(36) === commandRevision[2]
+    ? commandCommentId
+    : null;
+}
+
 export function statusMarkerDiffersFromRequested(
   body: JsonValue,
   requestedStatusMarker: string,
