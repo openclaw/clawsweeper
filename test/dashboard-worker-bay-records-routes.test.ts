@@ -6273,20 +6273,24 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   const formerlyCapped = durableRuntime.durableSnapshot({
     durable_lifecycle_bay: {
       ...lifecyclePayload.durable_lifecycle_bay,
-      inventory: { lifecycle_records: 513, target_revisions: 513, unique_targets: 513 },
+      inventory: {
+        lifecycle_records: 1_000_001,
+        target_revisions: 1_000_001,
+        unique_targets: 1_000_001,
+      },
       lanes: {
-        pending: 513,
+        pending: 1_000_001,
         acknowledgement_pending: 0,
         completed: 0,
         superseded: 0,
         requeued: 0,
         terminal_attention: 0,
       },
-      sample: { limit: 24, returned: 0, omitted: 513, cards: [] },
+      sample: { limit: 24, returned: 0, omitted: 1_000_001, cards: [] },
     },
   });
   assert.equal(formerlyCapped.collection.state, "complete");
-  assert.equal(formerlyCapped.inventory.lifecycle_records, 513);
+  assert.equal(formerlyCapped.inventory.lifecycle_records, 1_000_001);
   for (const malformed of [
     {
       ...lifecyclePayload.durable_lifecycle_bay,

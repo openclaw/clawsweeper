@@ -5058,9 +5058,9 @@ function publicQueueTimestamp(value) {
   return publicTimestamp(value);
 }
 
-function publicQueueCounts(value, keys: readonly string[]) {
+function publicQueueCounts(value, keys: readonly string[], maximum = PUBLIC_QUEUE_COUNT_LIMIT) {
   const source = objectValue(value);
-  return Object.fromEntries(keys.map((key) => [key, publicQueueCount(source[key]) ?? 0]));
+  return Object.fromEntries(keys.map((key) => [key, publicQueueCount(source[key], maximum) ?? 0]));
 }
 
 function publicQueueReasonCounts(
@@ -5491,17 +5491,19 @@ function validDurableLifecycleBaySnapshot(value, now = Date.now()) {
     "requeued",
     "terminal_attention",
   ];
-  const lifecycleRecords = publicQueueCount(inventory.lifecycle_records, 10_000);
-  const targetRevisions = publicQueueCount(inventory.target_revisions, 10_000);
-  const uniqueTargets = publicQueueCount(inventory.unique_targets, 10_000);
+  const lifecycleRecords = publicQueueCount(inventory.lifecycle_records, Number.MAX_SAFE_INTEGER);
+  const targetRevisions = publicQueueCount(inventory.target_revisions, Number.MAX_SAFE_INTEGER);
+  const uniqueTargets = publicQueueCount(inventory.unique_targets, Number.MAX_SAFE_INTEGER);
   if (
-    !inventoryKeys.every((key) => publicQueueCount(inventory[key], 10_000) !== null) ||
+    !inventoryKeys.every(
+      (key) => publicQueueCount(inventory[key], Number.MAX_SAFE_INTEGER) !== null,
+    ) ||
     lifecycleRecords === null ||
     targetRevisions === null ||
     uniqueTargets === null ||
     uniqueTargets > targetRevisions ||
     targetRevisions > lifecycleRecords ||
-    !laneKeys.every((key) => publicQueueCount(lanes[key]) !== null) ||
+    !laneKeys.every((key) => publicQueueCount(lanes[key], Number.MAX_SAFE_INTEGER) !== null) ||
     laneKeys.reduce((sum, key) => sum + Number(lanes[key]), 0) !== lifecycleRecords ||
     Number(sample.limit) !== 24 ||
     !Number.isSafeInteger(sample.returned) ||
@@ -5523,7 +5525,8 @@ function publicDurableLifecycleBaySnapshot(
   const snapshot = objectValue(value);
   const inventory = objectValue(snapshot.inventory);
   const lanes = objectValue(snapshot.lanes);
-  const lifecycleRecords = publicQueueCount(inventory.lifecycle_records) ?? 0;
+  const lifecycleRecords =
+    publicQueueCount(inventory.lifecycle_records, Number.MAX_SAFE_INTEGER) ?? 0;
   const cards = Array.isArray(objectValue(snapshot.sample).cards)
     ? objectValue(snapshot.sample).cards.flatMap((value) => {
         const card = objectValue(value);
@@ -5586,17 +5589,21 @@ function publicDurableLifecycleBaySnapshot(
     collection: { state: "complete" },
     inventory: {
       lifecycle_records: lifecycleRecords,
-      target_revisions: publicQueueCount(inventory.target_revisions) ?? 0,
-      unique_targets: publicQueueCount(inventory.unique_targets) ?? 0,
+      target_revisions: publicQueueCount(inventory.target_revisions, Number.MAX_SAFE_INTEGER) ?? 0,
+      unique_targets: publicQueueCount(inventory.unique_targets, Number.MAX_SAFE_INTEGER) ?? 0,
     },
-    lanes: publicQueueCounts(lanes, [
-      "pending",
-      "acknowledgement_pending",
-      "completed",
-      "superseded",
-      "requeued",
-      "terminal_attention",
-    ]),
+    lanes: publicQueueCounts(
+      lanes,
+      [
+        "pending",
+        "acknowledgement_pending",
+        "completed",
+        "superseded",
+        "requeued",
+        "terminal_attention",
+      ],
+      Number.MAX_SAFE_INTEGER,
+    ),
     sample: {
       limit: 24,
       returned: cards.length,

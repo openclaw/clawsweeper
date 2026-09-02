@@ -1,9 +1,5 @@
 export const EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE = "exact_review_lifecycle_projection_v1";
 export const EXACT_REVIEW_ACKNOWLEDGEMENT_ATTEMPT_LEASE_MS = 5 * 60 * 1000;
-// Keep the public reader bounded, but leave enough headroom for the durable
-// history between normal retention passes. The former 512-row ceiling turned
-// a healthy, append-only store into a permanently unknown public snapshot.
-export const EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT = 10_000;
 export const EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT = 24;
 export const EXACT_REVIEW_LIFECYCLE_BAY_TELEMETRY_RECOVERY_BATCH_LIMIT = 256;
 export const EXACT_REVIEW_LIFECYCLE_AUDIT_READ_LIMIT = 10_000;
@@ -888,134 +884,121 @@ export class ExactReviewLifecycleProjectionStore {
       return unknown("malformed");
     }
 
-    let rows: Array<Record<string, unknown>>;
     try {
-      if (repositories?.length === 0) {
-        rows = [];
-      } else if (repositories) {
-        rows = [];
-        for (const repository of repositories) {
-          const remaining = EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT + 1 - rows.length;
-          const repositoryRows = Array.from(
+      // Keep counts, validation, and sample revision lookups in one snapshot.
+      // Stream history through the existing reducer; only lane samples survive
+      // each cursor step, regardless of how many completed facts are retained.
+      return this.storage.transactionSync<DurableLifecycleBaySnapshot>(() => {
+        const inventory = { lifecycle_records: 0, target_revisions: 0, unique_targets: 0 };
+        const lanes = emptyDurableLifecycleBayLanes();
+        const cardsByLane = new Map<DurableLifecycleBayLane, DurableLifecycleBayCard[]>();
+        const laneOrder = Object.keys(lanes) as DurableLifecycleBayLane[];
+        for (const lane of laneOrder) cardsByLane.set(lane, []);
+
+        for (const repository of repositories ?? [null]) {
+          const bindings = repository === null ? [] : [repository];
+          const source = `${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+            INDEXED BY ${repository === null ? "exact_review_lifecycle_projection_bay" : "exact_review_lifecycle_projection_bay_repository_v2"}
+            ${repository === null ? "" : "WHERE LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)) = ?"}`;
+          const counts = Array.from(
             this.storage.sql.exec(
-              `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-               INDEXED BY exact_review_lifecycle_projection_bay_repository_v2
-               WHERE LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)) = ?
-               ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC
-               LIMIT ?`,
-              repository,
-              remaining,
+              `SELECT COUNT(*) AS lifecycle_records,
+                      COUNT(DISTINCT canonical_target_key || ':' || revision) AS target_revisions,
+                      COUNT(DISTINCT canonical_target_key) AS unique_targets
+                 FROM ${source}`,
+              ...bindings,
             ),
-          );
-          rows.push(...repositoryRows);
-          if (rows.length > EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT) {
-            return unknown("over_cap");
+          )[0];
+          for (const key of ["lifecycle_records", "target_revisions", "unique_targets"] as const) {
+            const count = Number(counts?.[key]);
+            if (!Number.isSafeInteger(count) || count < 0) return unknown("mixed");
+            inventory[key] += count;
+          }
+
+          for (const row of this.storage.sql.exec(
+            `SELECT projection_json, canonical_target_key, fence_key, revision
+               FROM ${source}
+              ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC`,
+            ...bindings,
+          )) {
+            let projection: ExactReviewLifecycleProjection;
+            try {
+              projection = projectionFromRow(String(row.projection_json || ""));
+            } catch {
+              return unknown("malformed");
+            }
+            try {
+              if (
+                !validDurableLifecycleBayProjection(projection) ||
+                projection.canonicalTargetKey !== row.canonical_target_key ||
+                projection.fenceKey !== row.fence_key ||
+                projection.revision !== row.revision
+              ) {
+                return unknown("mixed");
+              }
+              const lane = durableLifecycleBayLane(lifecycleState(projection));
+              lanes[lane] += 1;
+              const laneCards = cardsByLane.get(lane)!;
+              const last = laneCards.at(-1);
+              if (
+                laneCards.length === EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT &&
+                last &&
+                projection.updatedAt < Date.parse(last.updated_at)
+              ) {
+                continue;
+              }
+              laneCards.push(durableLifecycleBayCard(projection, now, projection.revision));
+              laneCards.sort(compareAuditInventoryRecords);
+              if (laneCards.length > EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT) laneCards.pop();
+            } catch {
+              return unknown("mixed");
+            }
           }
         }
-      } else {
-        rows = Array.from(
-          this.storage.sql.exec(
-            `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-             INDEXED BY exact_review_lifecycle_projection_bay
-            ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC
-            LIMIT ?`,
-            EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT + 1,
-          ),
-        );
-      }
-      // The fixed bounded public source read is deliberately fail-closed. Do
-      // not paginate, prune, or otherwise maintain storage while observing it.
-      if (rows.length > EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT) return unknown("over_cap");
+
+        const sample: DurableLifecycleBayCard[] = [];
+        for (let index = 0; sample.length < EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT; index += 1) {
+          let added = false;
+          for (const lane of laneOrder) {
+            const card = cardsByLane.get(lane)?.[index];
+            if (!card) continue;
+            sample.push(card);
+            added = true;
+            if (sample.length === EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT) break;
+          }
+          if (!added) break;
+        }
+        // Resolve only sampled targets; a newer revision can be arbitrarily
+        // old and absent from every retained lane sample.
+        const maxRevisionByTarget = new Map<string, number>();
+        for (const card of sample) {
+          const key = `${card.target.repository}#${card.target.number}`;
+          let maxRevision = maxRevisionByTarget.get(key);
+          if (maxRevision === undefined) {
+            maxRevision = this.maxRevision(key);
+            maxRevisionByTarget.set(key, maxRevision);
+          }
+          card.current_revision &&= card.revision === maxRevision;
+        }
+        return {
+          version: 1,
+          source: "exact-review-lifecycle-projection-v1",
+          generated_at: new Date(now).toISOString(),
+          freshness: { maximum_age_ms: 60_000 },
+          collection: { state: "complete" },
+          inventory,
+          lanes,
+          sample: {
+            limit: EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT,
+            returned: sample.length,
+            omitted: Math.max(0, inventory.lifecycle_records - sample.length),
+            cards: sample,
+          },
+        };
+      });
     } catch {
       return unknown("unavailable");
     }
-
-    let projections: ExactReviewLifecycleProjection[];
-    try {
-      projections = rows.map((row) => projectionFromRow(String(row.projection_json || "")));
-    } catch {
-      return unknown("malformed");
-    }
-    try {
-      if (!projections.every(validDurableLifecycleBayProjection)) return unknown("mixed");
-    } catch {
-      return unknown("mixed");
-    }
-    const maxRevisionByTarget = new Map<string, number>();
-    for (const projection of projections) {
-      maxRevisionByTarget.set(
-        projection.canonicalTargetKey,
-        Math.max(maxRevisionByTarget.get(projection.canonicalTargetKey) ?? 0, projection.revision),
-      );
-    }
-
-    let cards: DurableLifecycleBayCard[];
-    try {
-      cards = projections.map((projection) =>
-        durableLifecycleBayCard(
-          projection,
-          now,
-          maxRevisionByTarget.get(projection.canonicalTargetKey),
-        ),
-      );
-    } catch {
-      return unknown("mixed");
-    }
-
-    const lanes = emptyDurableLifecycleBayLanes();
-    const cardsByLane = new Map<DurableLifecycleBayLane, DurableLifecycleBayCard[]>();
-    for (const lane of Object.keys(lanes) as DurableLifecycleBayLane[]) cardsByLane.set(lane, []);
-    for (const card of cards) {
-      lanes[card.lane] += 1;
-      cardsByLane.get(card.lane)?.push(card);
-    }
-    for (const laneCards of cardsByLane.values()) {
-      laneCards.sort(
-        (left, right) =>
-          Date.parse(right.updated_at) - Date.parse(left.updated_at) ||
-          left.target.repository.localeCompare(right.target.repository) ||
-          left.target.number - right.target.number ||
-          right.revision - left.revision,
-      );
-    }
-
-    const sample: DurableLifecycleBayCard[] = [];
-    const laneOrder = Object.keys(lanes) as DurableLifecycleBayLane[];
-    for (let index = 0; sample.length < EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT; index += 1) {
-      let added = false;
-      for (const lane of laneOrder) {
-        const card = cardsByLane.get(lane)?.[index];
-        if (!card) continue;
-        sample.push(card);
-        added = true;
-        if (sample.length === EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT) break;
-      }
-      if (!added) break;
-    }
-
-    return {
-      version: 1,
-      source: "exact-review-lifecycle-projection-v1",
-      generated_at: new Date(now).toISOString(),
-      freshness: { maximum_age_ms: 60_000 },
-      collection: { state: "complete" },
-      inventory: {
-        lifecycle_records: cards.length,
-        target_revisions: new Set(
-          cards.map((card) => `${card.target.repository}#${card.target.number}:${card.revision}`),
-        ).size,
-        unique_targets: new Set(
-          cards.map((card) => `${card.target.repository}#${card.target.number}`),
-        ).size,
-      },
-      lanes,
-      sample: {
-        limit: EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT,
-        returned: sample.length,
-        omitted: Math.max(0, cards.length - sample.length),
-        cards: sample,
-      },
-    };
   }
 
   createAuditInventorySnapshot(

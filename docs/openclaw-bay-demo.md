@@ -4,7 +4,10 @@
 - Owner: ClawSweeper maintainers
 - Source of truth: `dashboard/bay-page.ts`, public Worker and queue projectors,
   Bay tests, and the read-only `/bay` route
-- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
+- Last verified: 2026-09-02, with baseline
+  `openclaw/clawsweeper@ff071968ca4e3fa62c364f9642e10a03c2fda025`; the lifecycle
+  inventory follow-up's exact tested revision and native/browser evidence are
+  recorded in its pull request
 - Update when: lane names, stage mapping, public projection or completeness
   rules, private-state ownership, routes, or navigation changes
 
@@ -122,9 +125,14 @@ cards drawn only from `PUBLIC_BAY_REPOS`. Each card contains the canonical
 repository and issue or pull-request number, a closed lane/state, a current
 revision boolean, and a canonical timestamp. The browser constructs the GitHub
 item link. Revision identifiers, target keys, facts, titles, raw URLs, and
-failure detail remain private. The store scan is bounded at 10,000 records and
-returns an unavailable projection rather than a partial result beyond that
-limit.
+failure detail remain private. Historical growth does not cap the inventory:
+the store counts identities in SQL and streams every selected repository row
+through the lifecycle validator and reducer in one synchronous read transaction.
+It retains at most 24 candidate cards per lane and resolves current revisions
+only for the final 24-card sample. Validation still costs a linear scan of that
+history; it does not retain a history-sized JavaScript array or identity set.
+An invalid historical row makes the whole projection unavailable even when it
+would not appear in the sample. Reads never prune or rewrite durable facts.
 
 Queue completion preserves a previously committed final lifecycle outcome when
 a later callback reports a different final result. Explicit requeue transitions
