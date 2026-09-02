@@ -98,7 +98,7 @@ export function branchHasBaseDiff({ targetDir, baseBranch }: TargetBaseBranch): 
 }
 
 export function ensureMergeBaseAvailable({ targetDir, baseBranch }: TargetBaseBranch): string {
-  gitFetch(targetDir, ["origin", `${baseBranch}:refs/remotes/origin/${baseBranch}`]);
+  gitFetch(targetDir, ["origin", `refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`]);
   const baseRef = `origin/${baseBranch}`;
   const first = runGitCommand(["merge-base", baseRef, "HEAD"], { targetDir });
   if (first.status === 0 && first.stdout.trim()) return first.stdout.trim();
@@ -229,7 +229,7 @@ function fetchDeeperHistory({ targetDir, baseBranch }: TargetBaseBranch): void {
   } else {
     gitFetch(targetDir, ["origin", "--prune"]);
   }
-  gitFetch(targetDir, ["origin", `${baseBranch}:refs/remotes/origin/${baseBranch}`]);
+  gitFetch(targetDir, ["origin", `refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`]);
 }
 
 function gitFetch(targetDir: string, args: string[]): void {

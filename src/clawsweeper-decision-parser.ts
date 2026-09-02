@@ -16,8 +16,11 @@ import {
   LIKELY_OWNER_SCHEMA_KEYS,
   LIVE_PROOF_PLAN_SCHEMA_KEYS,
   LIVE_PROOF_PLAN_STATUSES,
+  LIVE_PROOF_PAYOFF_KINDS,
+  LIVE_PROOF_PAYOFF_SCHEMA_KEYS,
   LIVE_PROOF_STEP_SCHEMA_KEYS,
   LIVE_PROOF_SURFACES,
+  LIVE_PROOF_TERMINAL_COMPLETIONS,
   MANTIS_RECOMMENDATION_SCENARIOS,
   MANTIS_RECOMMENDATION_SCHEMA_KEYS,
   MANTIS_RECOMMENDATION_STATUSES,
@@ -84,6 +87,7 @@ import type {
   TelegramVisibleProof,
 } from "./clawsweeper-types.js";
 import { derivedPrRating, normalizePrRating } from "./clawsweeper-rating.js";
+import { parseNextStep } from "./clawsweeper-next-step.js";
 import { parseMaintainerDecision } from "./decision-packets.js";
 import { DEFAULT_TARGET_REPO, normalizeRepo } from "./repository-profiles.js";
 
@@ -380,7 +384,12 @@ export function createDecisionParser({
   function parseEvidence(value: unknown, path: string): Evidence {
     const record = requireRecord(value, path);
     rejectUnexpectedKeys(record, EVIDENCE_SCHEMA_KEYS, path);
+    const repo = requireNullableSingleLineString(record.repo, `${path}.repo`);
+    if (repo !== null && !/^[a-z0-9][a-z0-9_.-]*\/(?!\.{1,2}$)[a-z0-9_.-]+$/i.test(repo)) {
+      throw new Error(`${path}.repo must be owner/repo or null`);
+    }
     return {
+      repo: repo === null ? null : normalizeRepo(repo),
       label: requireReportText(record.label, `${path}.label`),
       detail: requireReportText(record.detail, `${path}.detail`),
       file: requireNullableSingleLineString(record.file, `${path}.file`),
@@ -393,7 +402,27 @@ export function createDecisionParser({
   function parseLikelyOwner(value: unknown, path: string): LikelyOwner {
     const record = requireRecord(value, path);
     rejectUnexpectedKeys(record, LIKELY_OWNER_SCHEMA_KEYS, path);
+    let history: LikelyOwner["history"];
+    if (record.history !== undefined && record.history !== null) {
+      const source = requireRecord(record.history, `${path}.history`);
+      rejectUnexpectedKeys(
+        source,
+        new Set(["commitSha", "sourcePath", "sourceLine", "actor"]),
+        `${path}.history`,
+      );
+      history = {
+        commitSha: requireSingleLineString(source.commitSha, `${path}.history.commitSha`),
+        sourcePath: requireSingleLineString(source.sourcePath, `${path}.history.sourcePath`),
+        sourceLine: requireInteger(source.sourceLine, `${path}.history.sourceLine`),
+        actor: requireEnum(
+          source.actor,
+          new Set(["author", "committer"] as const),
+          `${path}.history.actor`,
+        ),
+      };
+    }
     return {
+      ...(record.history === undefined ? {} : { history: history ?? null }),
       person: requireReportText(record.person, `${path}.person`),
       role: requireReportText(record.role, `${path}.role`),
       reason: requireReportText(record.reason, `${path}.reason`),
@@ -467,10 +496,33 @@ export function createDecisionParser({
   const CLEAN_OPENCLAW_PR_REVIEW_NEXT_STEP =
     "Continue normal maintainer review; ClawSweeper found no patch-correctness issue.";
 
+  const STANDALONE_CHANGELOG_ENTRY_REQUEST =
+    /^(?:please\s+)?(?:add|include)\s+(?:(?:a|an|the)\s+)?(?:(?:missing|required)\s+)?(?:changelog(?:\.md)?\s+entr(?:y|ies)|release[- ]notes?)(?:\s+before\s+merge)?[.!]?\s*$/i;
+  const NEXT_STEP_CLAUSE_SEPARATOR =
+    /([.;]\s+|\n+|\s+(?:and|but)\s+(?=(?:add|include|repair|fix|verify|confirm|resolve|prove|run)\s+(?:the|a|an|this|that)\s+\S))/i;
+
   function normalizeDecisionForItem(
     decision: Decision,
     item: DecisionNormalizationItem | undefined,
   ): Decision {
+    if (decision.nextStep?.kind === "required" && isOpenClawContributorPullRequest(item)) {
+      // Unlike findings, action prose must directly request only a changelog entry;
+      // mentions in a different or ambiguous instruction retain required intent.
+      // Split conjunctions only before clear imperative clauses, not compound
+      // objects such as "a changelog entry and repair notes". Unrecognized forms
+      // stay together so an ambiguous additional action cannot be stripped.
+      const parts = decision.nextStep.text.split(NEXT_STEP_CLAUSE_SEPARATOR);
+      const retained = parts.flatMap((text, index) =>
+        index % 2 === 0 && !STANDALONE_CHANGELOG_ENTRY_REQUEST.test(text) ? [index] : [],
+      );
+      if (retained.length !== (parts.length + 1) / 2) {
+        const text = retained
+          .map((index, position) => `${position === 0 ? "" : parts[index - 1]}${parts[index]}`)
+          .join("")
+          .trim();
+        decision = { ...decision, nextStep: { kind: text ? "required" : "none", text } };
+      }
+    }
     const reviewFindings = decision.reviewFindings.filter(
       (finding) => !isContributorChangelogEntryFinding(item, finding),
     );
@@ -632,11 +684,25 @@ export function createDecisionParser({
     rejectUnexpectedKeys(record, LIVE_PROOF_PLAN_SCHEMA_KEYS, path);
     const status = requireEnum(record.status, LIVE_PROOF_PLAN_STATUSES, `${path}.status`);
     const surface = requireEnum(record.surface, LIVE_PROOF_SURFACES, `${path}.surface`);
+    const terminalCompletion = requireEnum(
+      record.terminalCompletion,
+      LIVE_PROOF_TERMINAL_COMPLETIONS,
+      `${path}.terminalCompletion`,
+    );
     const reason = neutralizeOwnedSectionSpoofing(
       requireSingleLineString(record.reason, `${path}.reason`),
     ).trim();
+    const payoffRecord = requireRecord(record.payoff, `${path}.payoff`);
+    rejectUnexpectedKeys(payoffRecord, LIVE_PROOF_PAYOFF_SCHEMA_KEYS, `${path}.payoff`);
+    const payoff = {
+      kind: requireEnum(payoffRecord.kind, LIVE_PROOF_PAYOFF_KINDS, `${path}.payoff.kind`),
+      justification: neutralizeOwnedSectionSpoofing(
+        requireSingleLineString(payoffRecord.justification, `${path}.payoff.justification`),
+      ).trim(),
+    };
     const entry = requireSingleLineString(record.entry, `${path}.entry`).trim();
     if (!reason) throw new Error(`${path}.reason must not be empty`);
+    if (!payoff.justification) throw new Error(`${path}.payoff.justification must not be empty`);
     if (!Array.isArray(record.steps)) throw new Error(`${path}.steps must be an array`);
     if (record.steps.length > 10) throw new Error(`${path}.steps must contain at most 10 items`);
     const steps = record.steps.map((step, index) =>
@@ -644,11 +710,20 @@ export function createDecisionParser({
     );
     if (status !== "recommended") {
       if (surface !== "none") throw new Error(`${path}.surface must be none unless recommended`);
+      if (terminalCompletion !== "not_applicable") {
+        throw new Error(`${path}.terminalCompletion must be not_applicable unless recommended`);
+      }
       if (entry) throw new Error(`${path}.entry must be empty unless recommended`);
       if (steps.length) throw new Error(`${path}.steps must be empty unless recommended`);
-      return { status, surface, reason, entry, steps };
+      return { status, surface, terminalCompletion, reason, payoff, entry, steps };
     }
     if (surface === "none") throw new Error(`${path}.surface must identify a recommended surface`);
+    if (surface === "terminal" && terminalCompletion === "not_applicable") {
+      throw new Error(`${path}.terminalCompletion must identify terminal completion behavior`);
+    }
+    if (surface !== "terminal" && terminalCompletion !== "not_applicable") {
+      throw new Error(`${path}.terminalCompletion is only allowed for terminal proof`);
+    }
     if (!entry) throw new Error(`${path}.entry must not be empty when recommended`);
     if (!steps.length) throw new Error(`${path}.steps must not be empty when recommended`);
     if (surface === "browser" && !entry.startsWith("/")) {
@@ -661,7 +736,18 @@ export function createDecisionParser({
     if (steps.some((step) => !allowedActions.has(step.action))) {
       throw new Error(`${path}.steps contain an action that does not match ${surface} proof`);
     }
-    return { status, surface, reason, entry, steps };
+    if (terminalCompletion === "ready_while_running") {
+      const finalRunIndex = steps.reduce(
+        (lastIndex, step, index) => (step.action === "run" ? index : lastIndex),
+        -1,
+      );
+      if (!steps.slice(finalRunIndex + 1).some((step) => step.action === "expect_output")) {
+        throw new Error(
+          `${path}.steps must expect output after the final run for ready_while_running terminal proof`,
+        );
+      }
+    }
+    return { status, surface, terminalCompletion, reason, payoff, entry, steps };
   }
 
   function parseMantisRecommendation(value: unknown, path: string): MantisRecommendation {
@@ -939,6 +1025,10 @@ export function createDecisionParser({
       record.maintainerDecision,
       "decision.maintainerDecision",
     );
+    const nextStep =
+      record.nextStep === undefined
+        ? undefined
+        : parseNextStep(record.nextStep, "decision.nextStep");
     const decision: Decision = {
       decision: requireEnum(record.decision, DECISIONS, "decision.decision"),
       closeReason: requireEnum(record.closeReason, ALL_REASONS, "decision.closeReason"),
@@ -1076,6 +1166,14 @@ export function createDecisionParser({
       workConfidence: requireEnum(record.workConfidence, CONFIDENCES, "decision.workConfidence"),
       workPriority: requireEnum(record.workPriority, CONFIDENCES, "decision.workPriority"),
       workReason: requireReportText(record.workReason, "decision.workReason"),
+      ...(nextStep === undefined
+        ? {}
+        : {
+            nextStep: {
+              ...nextStep,
+              text: requireReportText(nextStep.text, "decision.nextStep.text"),
+            },
+          }),
       workPrompt: requireReportText(record.workPrompt, "decision.workPrompt"),
       workClusterRefs: requireSingleLineStringArray(
         record.workClusterRefs,

@@ -1,4 +1,5 @@
-import { spawnSync } from "node:child_process";
+import { AgentInputScanError } from "./agent-input-scan.js";
+import { ReviewSourcePreparationError } from "./review-source-preparation.js";
 import {
   BULK_FILED_LABEL,
   BULK_FILER_SEARCH_TIMEOUT_MS,
@@ -11,14 +12,20 @@ import {
 } from "./clawsweeper-policy.js";
 import { createRelatedContext } from "./clawsweeper-related-context.js";
 import {
+  ensurePullRequestReviewHead,
+  ensureReviewTreeCommit,
   githubReviewBlobSizes,
   hydratePullRequestReviewBlobs,
+  hydratePullRequestReviewHistory,
+  materializePullRequestReviewTree,
+  removePullRequestReviewTree,
 } from "./clawsweeper-review-blobs.js";
 import {
   filterReviewComments,
   latestClawSweeperReview,
   latestClawSweeperReviewFromHydration,
   previousClawSweeperReviewFromComment,
+  previousClawSweeperReviewDigest,
   timestampValueMs,
 } from "./clawsweeper-review-comments.js";
 import { truncateText } from "./clawsweeper-text.js";
@@ -28,7 +35,6 @@ import type {
   BulkFilerRepositoryPermissionCache,
   ClosingPullRequestReference,
   ContextHydration,
-  GitTreeEntry,
   GoodFirstIssueHumanLabelState,
   Item,
   ItemKind,
@@ -36,7 +42,6 @@ import type {
 } from "./clawsweeper-types.js";
 import { isGitHubNotFoundError } from "./github-retry.js";
 import { type RepositoryProfile } from "./repository-profiles.js";
-import { reviewSemanticPriorReviewDigest } from "./review-semantic-cache.js";
 import { compareCodeUnits, stableJson } from "./stable-json.js";
 
 interface CreateContextHydrationDependencies {
@@ -95,11 +100,6 @@ interface CreateContextHydrationDependencies {
       | "closeComment",
   ) => string;
   ROOT: string;
-  run: (
-    command: string,
-    args: string[],
-    options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number | undefined },
-  ) => string;
   stringOrUndefined: (value: unknown) => string | undefined;
   targetRepo: () => string;
 }
@@ -134,7 +134,6 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     reviewCommentBodyDigest,
     reviewSectionValue,
     ROOT,
-    run,
     stringOrUndefined,
     targetRepo,
   } = dependencies;
@@ -277,7 +276,7 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
   }
 
   function liveClawSweeperReviewDigest(number: number): string | null {
-    return reviewSemanticPriorReviewDigest(
+    return previousClawSweeperReviewDigest(
       extractLatestClawSweeperReview(fetchIssueReviewComments(number), number),
     );
   }
@@ -599,7 +598,6 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     isDigitsOnly,
     quoteGitHubSearchTerm,
     referencingMergedPullRequestsForIssue,
-    refreshRelatedItemsContext,
     relatedItemsContext,
     structuralExternalRelationSensitivity,
   } = relatedContext;
@@ -899,181 +897,95 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     };
   }
 
-  function compactSemanticPullFile(value: unknown): unknown {
-    const file = asRecord(value);
-    return {
-      filename: file.filename,
-      previous_filename: file.previous_filename,
-      status: file.status,
-      additions: file.additions,
-      deletions: file.deletions,
-      changes: file.changes,
-      patch: truncateText(file.patch, 512 * 1024),
-    };
-  }
-
-  function normalizedPullFileStatus(value: unknown): string {
-    const status = typeof value === "string" ? value.trim().toLowerCase() : "";
-    if (status === "m" || status === "modified" || status === "changed") return "modified";
-    if (status === "a" || status === "added") return "added";
-    if (status === "d" || status === "deleted" || status === "removed") return "deleted";
-    if (status.startsWith("r") || status === "renamed") return "renamed";
-    if (status.startsWith("c") || status === "copied") return "copied";
-    return status;
-  }
-
-  function gitCommitExists(targetDir: string, sha: string): boolean {
-    try {
-      run("git", ["cat-file", "-e", `${sha}^{commit}`], {
-        cwd: targetDir,
-        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-      });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  function ensureReviewTreeCommit(options: {
-    targetDir: string;
-    sha: string;
-    sourceRef: string;
-    destinationRef: string;
-  }): boolean {
-    if (!/^[0-9a-f]{40}$/i.test(options.sha)) return false;
-    if (gitCommitExists(options.targetDir, options.sha)) return true;
-    try {
-      run(
-        "git",
-        [
-          "fetch",
-          "--force",
-          "--filter=blob:none",
-          "origin",
-          `${options.sourceRef}:${options.destinationRef}`,
-          "--depth=1",
-        ],
-        { cwd: options.targetDir },
-      );
-    } catch {
-      return false;
-    }
-    return gitCommitExists(options.targetDir, options.sha);
-  }
-
-  function gitTreeEntry(
-    targetDir: string,
-    sha: string,
-    path: string,
-  ): GitTreeEntry | null | undefined {
-    if (!path || path.includes("\0") || path.includes("\n") || path.includes("\r"))
-      return undefined;
-    const result = spawnSync("git", ["ls-tree", "-z", sha, "--", path], {
-      cwd: targetDir,
-      encoding: "utf8",
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-      maxBuffer: 1024 * 1024,
-    });
-    if (result.error || result.status !== 0) return undefined;
-    if (!result.stdout) return null;
-    if (!result.stdout.endsWith("\0")) return undefined;
-    const entry = result.stdout.slice(0, -1);
-    if (entry.includes("\0")) return undefined;
-    const match = entry.match(/^([0-7]{6}) (blob|tree|commit) [0-9a-f]{40,64}\t(.*)$/s);
-    if (!match || match[3] !== path) return undefined;
-    return { mode: match[1]!, type: match[2]! };
-  }
-
-  function pullFileTreeIdentity(options: {
-    file: unknown;
-    targetDir: string;
-    baseSha: string;
-    headSha: string;
-  }): Record<string, unknown> {
-    const file = asRecord(options.file);
-    const filename = stringOrUndefined(file.filename) ?? "";
-    const previousFilename = stringOrUndefined(file.previous_filename) ?? "";
-    const status = normalizedPullFileStatus(file.status);
-    if (!filename) return { treeModesComplete: false };
-    const basePath = status === "added" ? null : previousFilename || filename;
-    const headPath = status === "deleted" ? null : filename;
-    const baseEntry = basePath ? gitTreeEntry(options.targetDir, options.baseSha, basePath) : null;
-    const headEntry = headPath ? gitTreeEntry(options.targetDir, options.headSha, headPath) : null;
-    const treeModesComplete =
-      baseEntry !== undefined &&
-      headEntry !== undefined &&
-      ((status === "added" && baseEntry === null && headEntry !== null) ||
-        (status === "deleted" && baseEntry !== null && headEntry === null) ||
-        ((status === "modified" || status === "renamed" || status === "copied") &&
-          baseEntry !== null &&
-          headEntry !== null));
-    return {
-      baseMode: baseEntry?.mode ?? null,
-      baseType: baseEntry?.type ?? null,
-      headMode: headEntry?.mode ?? null,
-      headType: headEntry?.type ?? null,
-      treeModesComplete,
-    };
-  }
-
-  function semanticPullFilesWithTreeIdentity(options: {
-    files: readonly unknown[];
+  function hydratePullRequestReviewSource(options: {
     itemNumber: number;
     pullRequest: unknown;
     targetDir: string;
-  }): unknown[] {
+  }): void {
     const pull = asRecord(options.pullRequest);
     const base = asRecord(pull.base);
     const head = asRecord(pull.head);
     const baseSha = stringOrUndefined(base.sha) ?? "";
     const headSha = stringOrUndefined(head.sha) ?? "";
     const baseRef = stringOrUndefined(base.ref) ?? "";
-    const commitsAvailable =
-      isSafeGitBranchName(baseRef) &&
-      ensureReviewTreeCommit({
-        targetDir: options.targetDir,
-        sha: baseSha,
-        sourceRef: `refs/heads/${baseRef}`,
-        destinationRef: `refs/clawsweeper/review-cache/base-${options.itemNumber}`,
-      }) &&
-      ensureReviewTreeCommit({
-        targetDir: options.targetDir,
-        sha: headSha,
-        sourceRef: `refs/pull/${options.itemNumber}/head`,
-        destinationRef: `refs/clawsweeper/review-cache/head-${options.itemNumber}`,
-      });
-
-    if (commitsAvailable) {
-      const hydration = hydratePullRequestReviewBlobs({
+    try {
+      if (
+        ![baseSha, headSha].every((sha) => /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(sha)) ||
+        !isSafeGitBranchName(baseRef)
+      ) {
+        throw new AgentInputScanError("incomplete_source");
+      }
+      if (
+        !ensureReviewTreeCommit({
+          targetDir: options.targetDir,
+          sha: baseSha,
+          sourceRef: `refs/heads/${baseRef}`,
+          destinationRef: `refs/clawsweeper/review-cache/base-${options.itemNumber}`,
+        }) ||
+        !ensurePullRequestReviewHead({
+          targetDir: options.targetDir,
+          itemNumber: options.itemNumber,
+          headSha,
+        })
+      ) {
+        throw new ReviewSourcePreparationError(
+          "review_commits_unavailable",
+          "Could not prepare the pinned review commits.",
+        );
+      }
+      const testMergeSha =
+        pull.merged === false && pull.state === "open"
+          ? stringOrUndefined(pull.merge_commit_sha)
+          : undefined;
+      const mergeBaseSha = hydratePullRequestReviewHistory({
         targetDir: options.targetDir,
         baseSha,
         headSha,
-        files: options.files,
-        resolveBlobSizes: (objectIds) =>
-          githubReviewBlobSizes({
-            repository: targetRepo(),
-            objectIds,
-            request: (query) => ghJson(["api", "graphql", "-f", `query=${query}`]),
-          }),
+        itemNumber: options.itemNumber,
+        ...(testMergeSha ? { testMergeSha } : {}),
       });
-      if (!hydration.hydrated) {
-        console.warn("pull-request review blobs could not be hydrated before restricted review");
+      if (!mergeBaseSha) {
+        throw new ReviewSourcePreparationError(
+          "review_history_unavailable",
+          "Could not establish complete review ancestry.",
+        );
       }
-    }
-
-    return options.files.map((value) => {
-      const compact = asRecord(compactSemanticPullFile(value));
-      if (!commitsAvailable) return { ...compact, treeModesComplete: false };
-      return {
-        ...compact,
-        ...pullFileTreeIdentity({
-          file: value,
+      const hydrateBlobs = (revision: string) =>
+        hydratePullRequestReviewBlobs({
           targetDir: options.targetDir,
-          baseSha,
+          baseSha: revision,
           headSha,
-        }),
-      };
-    });
+          resolveBlobSizes: (objectIds) =>
+            githubReviewBlobSizes({
+              repository: targetRepo(),
+              objectIds,
+              request: (query) => ghJson(["api", "graphql", "-f", `query=${query}`]),
+            }),
+        });
+      hydrateBlobs(mergeBaseSha);
+      if (baseSha !== mergeBaseSha) {
+        try {
+          hydrateBlobs(baseSha);
+        } catch (error) {
+          if (
+            !(error instanceof AgentInputScanError) &&
+            !(error instanceof ReviewSourcePreparationError)
+          ) {
+            throw error;
+          }
+          // Admission scans the introduced delta. Optional endpoint evidence reads
+          // names only; unavailable base-only blobs must not block a clean PR.
+          console.warn("Optional pinned-base comparison blobs could not be prepared.");
+        }
+      }
+    } catch (error) {
+      if (error instanceof ReviewSourcePreparationError || error instanceof AgentInputScanError) {
+        // Hydration can fail before context reaches the caller. Keep its observed
+        // PR head without replacing the failure class or scanner refusal code.
+        error.reviewedHeadSha = headSha;
+      }
+      throw error;
+    }
   }
 
   function compactPullFilePaths(value: unknown): string[] {
@@ -1115,7 +1027,6 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     compactPullRequest,
     compactPullRequestForTest,
     compactReferencingMergedPullRequestForTest,
-    compactSemanticPullFile,
     compactTimelineEvent,
     completePullChecksContext,
     detectBulkFiler,
@@ -1138,17 +1049,18 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     previousClawSweeperReviewDigestFromReport,
     previousClawSweeperReviewDigestFromReportForTest,
     pullChecksContext,
-    pullFileTreeIdentity,
     quoteGitHubSearchTerm,
     referencingMergedPullRequestCandidatesForTest,
     referencingMergedPullRequestsForIssue,
     referencingMergedPullRequestsForIssueForTest,
-    refreshRelatedItemsContext,
     relatedGitHubIssueSearchQueryForTest,
     relatedItemsContext,
     relatedTitleSearchTerms,
     sameAuthorCounterpartApplyReason,
-    semanticPullFilesWithTreeIdentity,
+    hydratePullRequestReviewSource,
+    ensurePullRequestReviewHead,
+    materializePullRequestReviewTree,
+    removePullRequestReviewTree,
     staleVersionBugCloseEnabled,
     structuralExternalRelationSensitivity,
     unconfirmedProductDirectionCloseEnabled,

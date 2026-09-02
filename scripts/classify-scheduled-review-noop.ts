@@ -54,6 +54,7 @@ function ignorableOwnedLabel(label: string): boolean {
       "feature: ✨ showcase",
       "good first issue",
       "mantis: telegram-visible-proof",
+      "proof: telegram-e2e",
       "triage: needs-real-behavior-proof",
     ].includes(label)
   );

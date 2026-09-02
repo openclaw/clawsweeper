@@ -408,6 +408,24 @@ async function worker(itemPath, root, workspace) {
     }
   }
   writeWorkerAcquisition(acquisitionPath, acquisition);
+  const liveProofPublication = await run(
+    process.execPath,
+    [
+      join(workspace, "dist/clawsweeper.js"),
+      "live-proof-publish-artifacts",
+      "--artifact-dir",
+      bundleDir,
+    ],
+    { cwd: workspace, env: process.env, capture: true },
+  );
+  if (liveProofPublication.code !== 0) {
+    try {
+      if (JSON.parse(liveProofPublication.stdout).status === "invalid_artifact")
+        return writeFailure(outcomePath, "refresh_required", "invalid_artifact");
+    } catch {}
+    console.error(liveProofPublication.stderr);
+    return writeFailure(outcomePath, "retryable_failure", "unknown_failure");
+  }
   const report = join(bundleDir, "review", `${itemNumber}.md`);
   if (existsSync(report)) {
     cpSync(report, join(eventArtifacts, `${itemNumber}.md`));

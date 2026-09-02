@@ -8,7 +8,7 @@ const NO_FOLLOW = fs.constants.O_NOFOLLOW ?? 0;
 const DIRECTORY = fs.constants.O_DIRECTORY ?? 0;
 const NON_BLOCKING = fs.constants.O_NONBLOCK ?? 0;
 const PROCESS_IDENTITY_CACHE_MS = 100;
-const processIdentityCache = new Map<number, { expiresAt: number; identity: string | null }>();
+const processIdentityCache = new Map<number, { expiresAt: number; identity: string }>();
 const DARWIN_PROCESS_INFO_SCRIPT = String.raw`
 import ctypes
 import struct
@@ -20,10 +20,9 @@ libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
 written = libc.proc_pidinfo(int(sys.argv[1]), 3, 0, buffer, size)
 if written != size:
     raise SystemExit(1)
-status = struct.unpack_from("=I", buffer, 4)[0]
 reported_pid = struct.unpack_from("=I", buffer, 12)[0]
 started_sec, started_usec = struct.unpack_from("=QQ", buffer, 120)
-print(f"{status}:{reported_pid}:{started_sec}:{started_usec}")
+print(f"{reported_pid}:{started_sec}:{started_usec}")
 `;
 
 export type SafeWriteTarget = {
@@ -384,10 +383,11 @@ export function processIncarnationIdentitySha256(
   const cached = processIdentityCache.get(pid);
   if (!options.fresh && cached && cached.expiresAt > now) return cached.identity;
   const rawIdentity = processIncarnationIdentity(pid);
-  const identity =
-    rawIdentity === null
-      ? null
-      : createHash("sha256").update(`${process.platform}\0${rawIdentity}`).digest("hex");
+  if (rawIdentity === null) {
+    processIdentityCache.delete(pid);
+    return null;
+  }
+  const identity = createHash("sha256").update(`${process.platform}\0${rawIdentity}`).digest("hex");
   processIdentityCache.set(pid, {
     expiresAt: pid === process.pid ? Number.POSITIVE_INFINITY : now + PROCESS_IDENTITY_CACHE_MS,
     identity,
@@ -740,18 +740,30 @@ function processIncarnationIdentity(pid: number): string | null {
       DARWIN_PROCESS_INFO_SCRIPT,
       String(pid),
     ]);
-    if (processInfo && /^\d+:\d+:\d+:\d+$/.test(processInfo)) {
-      const bootTime = commandOutput("/usr/sbin/sysctl", ["-n", "kern.boottime"]);
-      return `${bootTime ?? "unknown-boot"}\0${processInfo}`;
+    if (!processInfo || !/^\d+:\d+:\d+$/.test(processInfo)) return null;
+    const [reportedPid, startedSec, startedUsec] = processInfo.split(":");
+    if (
+      Number(reportedPid) !== pid ||
+      !Number.isSafeInteger(Number(startedSec)) ||
+      Number(startedSec) < 1 ||
+      Number(startedUsec) >= 1_000_000
+    ) {
+      return null;
     }
+    // Process status is mutable, and a lower-resolution fallback is a different identity.
+    const bootTime = commandOutput("/usr/sbin/sysctl", ["-n", "kern.boottime"]);
+    const bootFields = bootTime?.match(/^\{\s*sec\s*=\s*(\d+),\s*usec\s*=\s*(\d+)\s*\}(?:\s|$)/);
+    if (!bootFields) return null;
+    const bootSeconds = Number(bootFields[1]);
+    const bootMicroseconds = Number(bootFields[2]);
+    if (!Number.isSafeInteger(bootSeconds) || bootSeconds < 1 || bootMicroseconds >= 1_000_000) {
+      return null;
+    }
+    // The trailing human-readable date depends on the observer's timezone.
+    return `${bootSeconds}:${bootMicroseconds}\0${processInfo}`;
   }
   const startTime = commandOutput("/bin/ps", ["-p", String(pid), "-o", "lstart="]);
-  if (!startTime) return null;
-  const bootTime =
-    process.platform === "darwin"
-      ? commandOutput("/usr/sbin/sysctl", ["-n", "kern.boottime"])
-      : null;
-  return `${bootTime ?? "unknown-boot"}\0${startTime}`;
+  return startTime ? `unknown-boot\0${startTime}` : null;
 }
 
 function linuxProcessStat(pid: number): { state: string; startTime: string } | null {

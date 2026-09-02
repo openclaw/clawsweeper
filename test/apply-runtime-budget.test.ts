@@ -1,9 +1,18 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
+import { createGitHubRuntime } from "../dist/clawsweeper-github-runtime.js";
 import {
   applyRuntimeBudgetForTest,
   main,
@@ -28,6 +37,8 @@ function runtimeBudgetFixture(number: number) {
   const reportPath = join(root, "apply-report.json");
   const cursorTracePath = join(root, "apply-cursor-trace.json");
   mkdirSync(itemsDir, { recursive: true });
+  mkdirSync(closedDir, { recursive: true });
+  symlinkSync(join(root, "unavailable-archive.md"), join(closedDir, "999.md"));
   mkdirSync(plansDir, { recursive: true });
   writeFileSync(join(itemsDir, `${number}.md`), implementedCloseReport({ number }), "utf8");
   return { root, itemsDir, closedDir, plansDir, reportPath, cursorTracePath };
@@ -49,6 +60,29 @@ function assertRuntimeYield(
   });
   assert.match(report[0]?.reason ?? "", new RegExp(`max runtime ${maxRuntimeMs}ms reached`));
   assert.deepEqual(cursorTrace, { schema_version: 1, examined_item_numbers: [] });
+}
+
+const applyRuntimeClockPreload = `
+const { appendFileSync, existsSync, readFileSync } = require("node:fs");
+const { join, resolve } = require("node:path");
+const state = JSON.parse(readFileSync(join(__dirname, "runtime-clock.json"), "utf8"));
+if (process.argv[2] === "apply-decisions" &&
+    resolve(process.argv[1] || "") === state.entrypoint) {
+  Date.now = () => state.afterCloseMs !== undefined && existsSync(state.closeCommandLogPath)
+    ? state.afterCloseMs
+    : state.startedAtMs;
+  Atomics.wait = (_array, _index, _value, milliseconds) => {
+    appendFileSync(state.sleepTracePath, JSON.stringify({ event: "wait", milliseconds }) + "\\n");
+    throw new Error("apply attempted an unnecessary synchronous wait");
+  };
+  appendFileSync(state.sleepTracePath, JSON.stringify({ event: "armed" }) + "\\n");
+}
+`;
+
+function writeApplyRuntimeClock(clockHookPath: string, state: Record<string, string | number>) {
+  writeFileSync(clockHookPath, applyRuntimeClockPreload, "utf8");
+  const fixture = { entrypoint: join(process.cwd(), "dist", "clawsweeper.js"), ...state };
+  writeFileSync(join(dirname(clockHookPath), "runtime-clock.json"), JSON.stringify(fixture));
 }
 
 test("apply runtime budget uses the token deadline as an absolute wall clock", () => {
@@ -85,6 +119,30 @@ test("apply runtime budget uses the token deadline as an absolute wall clock", (
       limitReason: `apply token budget reached at ${nowMs - 1}ms since epoch`,
     },
   );
+});
+
+test("GitHub command timeouts and close delays share the elapsed runtime and flush reserve", (t) => {
+  let nowMs = 1_000_000;
+  t.mock.method(Date, "now", () => nowMs);
+  const runtime = createGitHubRuntime({
+    ROOT: process.cwd(),
+    targetRepo: () => "openclaw/clawsweeper",
+    run: () => assert.fail("budget checks must not run commands"),
+  });
+  const isExpectedYield = (error: unknown): boolean =>
+    error instanceof runtime.GitHubRuntimeBudgetError &&
+    error.reason === "max runtime 15000ms reached before close";
+
+  runtime.withGitHubRuntimeBudget({ startedAtMs: nowMs, maxRuntimeMs: 15_000 }, () => {
+    assert.equal(runtime.githubCommandTimeoutMs(), 14_000);
+    nowMs += 6_000;
+    assert.equal(runtime.githubCommandTimeoutMs(20_000), 8_000);
+    assert.doesNotThrow(() => runtime.ensureRuntimeDelayFits(7_999, "before close"));
+    assert.throws(() => runtime.ensureRuntimeDelayFits(8_000, "before close"), isExpectedYield);
+    assert.throws(() => runtime.githubCommandTimeoutMs(), isExpectedYield);
+  });
+  assert.equal(runtime.githubCommandTimeoutMs(), undefined);
+  assert.doesNotThrow(() => runtime.ensureRuntimeDelayFits(30_000, "before close"));
 });
 
 test("apply-decisions exits cleanly at an expired token deadline and retries the same item", () => {
@@ -234,59 +292,72 @@ test("concurrent apply invocations do not leak a runtime budget", async () => {
   }
 });
 
-test("apply-decisions yields instead of starting a GitHub retry that cannot fit", () => {
-  const fixture = runtimeBudgetFixture(722);
-  const maxRuntimeMs = 2_500;
-  try {
-    const startedAt = Date.now();
-    withMockGh(fixture.root, 'console.error("service unavailable"); process.exit(1);', () => {
-      runApplyDecisionsForTest({
-        ...fixture,
-        extraArgs: [
-          "--max-runtime-ms",
-          String(maxRuntimeMs),
-          "--cursor-trace",
-          fixture.cursorTracePath,
-        ],
+for (const { name, number, response } of [
+  {
+    name: "apply-decisions yields instead of starting a GitHub retry that cannot fit",
+    number: 722,
+    response: 'console.error("service unavailable"); process.exit(1);',
+  },
+  {
+    name: "apply-decisions yields instead of retrying malformed GitHub JSON past the deadline",
+    number: 726,
+    response: 'process.stdout.write("{");',
+  },
+]) {
+  test(name, () => {
+    const fixture = runtimeBudgetFixture(number);
+    const maxRuntimeMs = 2_500;
+    const invocationLog = join(fixture.root, "gh-invocations.log");
+    const sleepTracePath = join(fixture.root, "sleep-trace.jsonl");
+    const clockHookPath = join(fixture.root, "runtime-clock.cjs");
+    const itemPath = join(fixture.itemsDir, `${number}.md`);
+    const originalMarkdown = readFileSync(itemPath, "utf8");
+    const originalNodeOptions = process.env.NODE_OPTIONS;
+    try {
+      // The 2s retry cannot fit after the 1s flush reserve, even before any
+      // elapsed command time. Host startup must not choose a different yield path.
+      writeApplyRuntimeClock(clockHookPath, {
+        startedAtMs: Date.now(),
+        sleepTracePath,
       });
-    });
+      process.env.NODE_OPTIONS = [originalNodeOptions, `--require=${JSON.stringify(clockHookPath)}`]
+        .filter(Boolean)
+        .join(" ");
+      withMockGh(
+        fixture.root,
+        `require("node:fs").appendFileSync(${JSON.stringify(invocationLog)}, JSON.stringify(process.argv.slice(2)) + "\\n");\n${response}`,
+        () => {
+          runApplyDecisionsForTest({
+            ...fixture,
+            extraArgs: [
+              "--max-runtime-ms",
+              String(maxRuntimeMs),
+              "--cursor-trace",
+              fixture.cursorTracePath,
+            ],
+          });
+        },
+      );
 
-    assert.ok(
-      Date.now() - startedAt < maxRuntimeMs + 500,
-      "GitHub retry sleep ignored the remaining runtime",
-    );
-    assertRuntimeYield(fixture, maxRuntimeMs);
-  } finally {
-    rmSync(fixture.root, { recursive: true, force: true });
-  }
-});
-
-test("apply-decisions yields instead of retrying malformed GitHub JSON past the deadline", () => {
-  const fixture = runtimeBudgetFixture(726);
-  const maxRuntimeMs = 2_500;
-  try {
-    const startedAt = Date.now();
-    withMockGh(fixture.root, 'process.stdout.write("{");', () => {
-      runApplyDecisionsForTest({
-        ...fixture,
-        extraArgs: [
-          "--max-runtime-ms",
-          String(maxRuntimeMs),
-          "--cursor-trace",
-          fixture.cursorTracePath,
-        ],
-      });
-    });
-
-    assert.ok(
-      Date.now() - startedAt < maxRuntimeMs + 500,
-      "malformed JSON retry ignored the runtime bound",
-    );
-    assertRuntimeYield(fixture, maxRuntimeMs);
-  } finally {
-    rmSync(fixture.root, { recursive: true, force: true });
-  }
-});
+      assert.equal(readFileSync(sleepTracePath, "utf8"), '{"event":"armed"}\n');
+      assert.equal(
+        readFileSync(invocationLog, "utf8"),
+        `${JSON.stringify(["api", `repos/openclaw/clawsweeper/issues/${number}`])}\n`,
+        "apply must attempt the item fetch exactly once, without retrying",
+      );
+      assertRuntimeYield(fixture, maxRuntimeMs);
+      const report = JSON.parse(readFileSync(fixture.reportPath, "utf8"));
+      assert.equal(report[0]?.number, number);
+      assert.equal(report[0]?.reason, "max runtime 2500ms reached before GitHub retry");
+      assert.equal(readFileSync(itemPath, "utf8"), originalMarkdown);
+      assert.equal(existsSync(join(fixture.closedDir, `${number}.md`)), false);
+    } finally {
+      if (originalNodeOptions === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = originalNodeOptions;
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+}
 
 test("apply-decisions preserves a runtime yield through post-proof freshness handling", () => {
   const fixture = runtimeBudgetFixture(723);
@@ -420,10 +491,12 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/724\\/timeline(?:\\?|$
   }
 });
 
-test("apply-decisions yields instead of starting a post-close delay that cannot fit", () => {
+test("apply-decisions yields before closing when its post-close delay cannot fit", () => {
   const fixture = runtimeBudgetFixture(725);
   const maxRuntimeMs = 15_000;
   const proofLogPath = join(fixture.root, "proof.log");
+  const closeCommandLogPath = join(fixture.root, "close-command.log");
+  const sleepTracePath = join(fixture.root, "sleep-trace.jsonl");
   const clockHookPath = join(fixture.root, "runtime-clock.cjs");
   const originalNodeOptions = process.env.NODE_OPTIONS;
   const synced = reportWithSyncedReviewComment(
@@ -442,18 +515,21 @@ test("apply-decisions yields instead of starting a post-close delay that cannot 
     "duplicate_or_superseded",
   );
   writeFileSync(join(fixture.itemsDir, "725.md"), synced.report, "utf8");
-  writeFileSync(clockHookPath, `Date.now = () => ${Date.now()};\n`, "utf8");
+  writeApplyRuntimeClock(clockHookPath, {
+    startedAtMs: Date.now(),
+    sleepTracePath,
+  });
   process.env.NODE_OPTIONS = [originalNodeOptions, `--require=${JSON.stringify(clockHookPath)}`]
     .filter(Boolean)
     .join(" ");
   try {
-    const startedAt = Date.now();
     withMockGh(
       fixture.root,
       promotionGhMock({
         number: 725,
         title: "Provider route fallback",
         comment: synced.comment,
+        closeCommandLogPath,
         itemUpdatedAtAfterProofLogPath: proofLogPath,
         linkedPulls: {
           400: {
@@ -498,13 +574,15 @@ test("apply-decisions yields instead of starting a post-close delay that cannot 
       },
     );
 
-    assert.ok(
-      Date.now() - startedAt < maxRuntimeMs + 2_000,
-      "post-close delay ignored the remaining runtime",
-    );
+    assert.equal(readFileSync(sleepTracePath, "utf8"), '{"event":"armed"}\n');
+    assert.equal(readFileSync(proofLogPath, "utf8"), "proof\n");
+    assert.equal(existsSync(closeCommandLogPath), false, "budget yield must precede closing");
     assertRuntimeYield(fixture, maxRuntimeMs);
     const report = JSON.parse(readFileSync(fixture.reportPath, "utf8"));
-    assert.match(report[0]?.reason ?? "", /before close$/);
+    assert.equal(report[0]?.number, 725);
+    assert.equal(report[0]?.reason, "max runtime 15000ms reached before close");
+    assert.equal(existsSync(join(fixture.itemsDir, "725.md")), true);
+    assert.equal(existsSync(join(fixture.closedDir, "725.md")), false);
   } finally {
     if (originalNodeOptions === undefined) delete process.env.NODE_OPTIONS;
     else process.env.NODE_OPTIONS = originalNodeOptions;
@@ -518,6 +596,7 @@ test("apply-decisions records a successful close before yielding after it", () =
   const closeDelayMs = 8_000;
   const proofLogPath = join(fixture.root, "proof.log");
   const closeCommandLogPath = join(fixture.root, "close-command.log");
+  const sleepTracePath = join(fixture.root, "sleep-trace.jsonl");
   const clockHookPath = join(fixture.root, "runtime-clock.cjs");
   const startedAtMs = Date.now();
   const originalNodeOptions = process.env.NODE_OPTIONS;
@@ -525,6 +604,7 @@ test("apply-decisions records a successful close before yielding after it", () =
     lowSignalCloseReport({
       number: 727,
       title: "Provider route fallback",
+      pull_head_sha: "head-sha",
       close_reason: "duplicate_or_superseded",
       work_cluster_refs: JSON.stringify([
         "Superseded by https://github.com/openclaw/openclaw/pull/400",
@@ -537,15 +617,12 @@ test("apply-decisions records a successful close before yielding after it", () =
     "duplicate_or_superseded",
   );
   writeFileSync(join(fixture.itemsDir, "727.md"), synced.report, "utf8");
-  writeFileSync(
-    clockHookPath,
-    `const { existsSync } = require("node:fs");
-Date.now = () => existsSync(${JSON.stringify(closeCommandLogPath)})
-  ? ${startedAtMs + maxRuntimeMs - closeDelayMs}
-  : ${startedAtMs};
-`,
-    "utf8",
-  );
+  writeApplyRuntimeClock(clockHookPath, {
+    startedAtMs,
+    afterCloseMs: startedAtMs + maxRuntimeMs - closeDelayMs,
+    closeCommandLogPath,
+    sleepTracePath,
+  });
   process.env.NODE_OPTIONS = [originalNodeOptions, `--require=${JSON.stringify(clockHookPath)}`]
     .filter(Boolean)
     .join(" ");
@@ -601,7 +678,11 @@ Date.now = () => existsSync(${JSON.stringify(closeCommandLogPath)})
       },
     );
 
-    assert.match(readFileSync(closeCommandLogPath, "utf8"), /pr close 727/);
+    assert.equal(readFileSync(sleepTracePath, "utf8"), '{"event":"armed"}\n');
+    assert.equal(readFileSync(proofLogPath, "utf8"), "proof\n");
+    const closeCommands = readFileSync(closeCommandLogPath, "utf8").trim().split("\n");
+    assert.equal(closeCommands.length, 1);
+    assert.match(closeCommands[0] ?? "", /^pr close 727(?: |$)/);
     const report = JSON.parse(readFileSync(fixture.reportPath, "utf8"));
     const cursorTrace = JSON.parse(readFileSync(fixture.cursorTracePath, "utf8"));
     assert.deepEqual(
@@ -611,8 +692,18 @@ Date.now = () => existsSync(${JSON.stringify(closeCommandLogPath)})
         [0, "skipped_runtime_budget"],
       ],
     );
+    assert.deepEqual(report[1], {
+      number: 0,
+      action: "skipped_runtime_budget",
+      reason: "max runtime 25000ms reached before close delay",
+    });
     assert.deepEqual(cursorTrace, { schema_version: 1, examined_item_numbers: [727] });
     assert.equal(existsSync(join(fixture.closedDir, "727.md")), true);
+    assert.match(
+      readFileSync(join(fixture.closedDir, "727.md"), "utf8"),
+      /^action_taken: closed$/m,
+    );
+    assert.equal(existsSync(join(fixture.itemsDir, "727.md")), false);
   } finally {
     if (originalNodeOptions === undefined) delete process.env.NODE_OPTIONS;
     else process.env.NODE_OPTIONS = originalNodeOptions;

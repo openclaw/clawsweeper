@@ -33,6 +33,8 @@ test("codexSubprocessEnv forces ClawSweeper git identity and strips tokens", () 
       CLAWSWEEPER_CRABFLEET_SERVICE_TOKEN: "service-secret",
       CLAWSWEEPER_CRABFLEET_RUNNER_PTY_URL: "wss://example.invalid/secret",
       CLAWSWEEPER_CRABFLEET_WORK_STATE_URL: "https://example.invalid/secret",
+      OPENCLAW_QA_CONVEX_SITE_URL: "https://qa.example.invalid",
+      OPENCLAW_QA_CONVEX_SECRET_CI: "qa-ci-secret",
       PNPM_CONFIG_IGNORE_SCRIPTS: "false",
       PNPM_CONFIG_IGNORE_PNPMFILE: "false",
       npm_config_ignore_scripts: "false",
@@ -57,6 +59,8 @@ test("codexSubprocessEnv forces ClawSweeper git identity and strips tokens", () 
       assert.equal(env.CLAWSWEEPER_CRABFLEET_SERVICE_TOKEN, undefined);
       assert.equal(env.CLAWSWEEPER_CRABFLEET_RUNNER_PTY_URL, undefined);
       assert.equal(env.CLAWSWEEPER_CRABFLEET_WORK_STATE_URL, undefined);
+      assert.equal(env.OPENCLAW_QA_CONVEX_SITE_URL, "https://qa.example.invalid");
+      assert.equal(env.OPENCLAW_QA_CONVEX_SECRET_CI, "qa-ci-secret");
       assert.equal(env.PNPM_CONFIG_IGNORE_SCRIPTS, "true");
       assert.equal(env.PNPM_CONFIG_IGNORE_PNPMFILE, "true");
       assert.equal(env.npm_config_ignore_scripts, "true");

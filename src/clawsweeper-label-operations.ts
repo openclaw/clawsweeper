@@ -4,6 +4,7 @@ import {
   FEATURE_SHOWCASE_LABEL,
   GOOD_FIRST_ISSUE_LABEL,
   IMPACT_LABEL_NAMES,
+  LEGACY_TELEGRAM_VISIBLE_PROOF_LABEL,
   MATURITY_LABEL_NAMES,
   MERGE_RISK_LABEL_NAMES,
   NO_STALE_LABEL,
@@ -336,12 +337,13 @@ export function createLabelSyncOperations(
   }): { labels: string[]; changed: boolean } {
     const nextLabels = nextTelegramVisibleProofLabels(options.labels, options.proof);
     const hadLabel = options.labels.includes(TELEGRAM_VISIBLE_PROOF_LABEL);
+    const hadLegacyLabel = options.labels.includes(LEGACY_TELEGRAM_VISIBLE_PROOF_LABEL);
     const wantsLabel = nextLabels.includes(TELEGRAM_VISIBLE_PROOF_LABEL);
-    const changed = hadLabel !== wantsLabel;
+    const changed = hadLegacyLabel || hadLabel !== wantsLabel;
     if (!changed) return { labels: nextLabels, changed };
     if (options.dryRun) return { labels: nextLabels, changed };
-    if (wantsLabel) ensureTelegramVisibleProofLabel(options.onMutation);
-    if (wantsLabel) {
+    if (wantsLabel && !hadLabel) {
+      ensureTelegramVisibleProofLabel(options.onMutation);
       if (
         !tryAddOptionalLabel({
           number: options.number,
@@ -352,8 +354,12 @@ export function createLabelSyncOperations(
       ) {
         return { labels: [...options.labels], changed: false };
       }
-    } else {
+    }
+    if (!wantsLabel && hadLabel) {
       removeIssueLabel(options.number, TELEGRAM_VISIBLE_PROOF_LABEL, options.onMutation);
+    }
+    if (hadLegacyLabel) {
+      removeIssueLabel(options.number, LEGACY_TELEGRAM_VISIBLE_PROOF_LABEL, options.onMutation);
     }
     return { labels: nextLabels, changed };
   }

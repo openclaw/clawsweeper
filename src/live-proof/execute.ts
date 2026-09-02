@@ -1,4 +1,15 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import {
   createVideoContactSheet,
@@ -7,8 +18,22 @@ import {
 } from "../clawsweeper-media-proof.js";
 import type { LiveProofPlan, MediaProofCommandRunner } from "../clawsweeper-types.js";
 import type { RepositoryProfile } from "../repository-profiles.js";
-import { driveBrowser, driveTerminal, liveProofStepActions } from "./drivers.js";
+import {
+  driveBrowser,
+  driveTerminal,
+  type LiveProofStepLogEntry,
+  liveProofStepActions,
+} from "./drivers.js";
 import { LIVE_PROOF_MAX_MP4_BYTES, type LiveProofManifest, probeMedia } from "./manifest.js";
+import {
+  assertLiveProofEnvironmentSanitized,
+  sanitizedLiveProofEnvironment,
+} from "./environment.js";
+import { buildLiveVerificationResult } from "./verification.js";
+import { liveProofSetupCommand } from "./setup.js";
+
+const SERVER_LOG_TAIL_LINES = 40;
+const SERVER_LOG_TAIL_MAX_BYTES = 64 * 1024;
 
 export interface LiveProofPullRequestState {
   kind: "issue" | "pull_request";
@@ -41,7 +66,7 @@ export async function executeLiveProof(
   dependencies: LiveProofExecuteDependencies,
 ): Promise<void> {
   const env = dependencies.env ?? process.env;
-  const runner = dependencies.runner ?? mediaProofCommandRunner;
+  const baseRunner = dependencies.runner ?? mediaProofCommandRunner;
   const log = dependencies.log ?? console.log;
   if (env.CLAWSWEEPER_LIVE_PROOF_ENABLED !== "1") {
     log("[live-proof] skip: CLAWSWEEPER_LIVE_PROOF_ENABLED is not 1");
@@ -56,6 +81,9 @@ export async function executeLiveProof(
   }
 
   const plan = readPlan(options, dependencies);
+  if (plan.invalid) {
+    throw new Error(plan.reason);
+  }
   if (plan.status !== "recommended") {
     log(`[live-proof] skip: liveProofPlan status is ${plan.status}`);
     return;
@@ -63,6 +91,26 @@ export async function executeLiveProof(
   if (plan.surface === "none") {
     throw new Error("recommended live proof plan is missing a browser or terminal surface");
   }
+  if (plan.surface === "browser" && (!liveTest.start || !liveTest.url)) {
+    log(
+      `[live-proof] skip: browser plan cannot run for ${profile.targetRepo} because live_test.start and live_test.url are not configured`,
+    );
+    return;
+  }
+
+  // Every command that can load target code receives the same denylist- and
+  // heuristic-sanitized environment, even for local callers that did not come
+  // through the production review child.
+  const targetEnvironment = sanitizedLiveProofEnvironment(env);
+  assertLiveProofEnvironmentSanitized(targetEnvironment);
+  const runner: MediaProofCommandRunner = (command, args, runOptions = {}) =>
+    baseRunner(command, args, {
+      ...runOptions,
+      env: sanitizedLiveProofEnvironment({
+        ...targetEnvironment,
+        ...runOptions.env,
+      }),
+    });
 
   const checkout = resolve(options.checkoutPath ?? process.cwd());
   let headSha: string;
@@ -85,94 +133,313 @@ export async function executeLiveProof(
     headSha = item.headSha.toLowerCase();
   }
 
-  if (plan.surface === "browser" && (!liveTest.start || !liveTest.url)) {
-    throw new Error("browser live proof requires live_test.start and live_test.url");
-  }
   const outputDir = resolve(options.outputDir);
   mkdirSync(outputDir, { recursive: true });
   const rawVideoPath = join(outputDir, "live-proof.raw.webm");
   const mp4Path = join(outputDir, "live-proof.mp4");
   const posterPath = join(outputDir, "poster.jpg");
   const stepsLogPath = join(outputDir, "steps-log.json");
+  const capturedOutputPath = join(outputDir, "captured-output.txt");
   const scriptPath = join(outputDir, "live-proof-playwright.mjs");
+  const serverLogPath = join(outputDir, "server.log");
   const serverPidPath = join(outputDir, "server.pid");
-
-  for (const command of liveTest.setup) {
-    requireSuccess("sh", ["-lc", command], runner("sh", ["-lc", command], { cwd: checkout }));
+  const manifestPath = join(outputDir, "live-proof-manifest.json");
+  const verificationPath = join(outputDir, "live-verification.json");
+  for (const stalePath of [
+    rawVideoPath,
+    mp4Path,
+    posterPath,
+    stepsLogPath,
+    capturedOutputPath,
+    scriptPath,
+    serverLogPath,
+    serverPidPath,
+    manifestPath,
+    verificationPath,
+  ]) {
+    rmSync(stalePath, { force: true });
   }
+  const recordMedia = plan.payoff.kind !== "static_text";
 
   let serverStarted = false;
   try {
-    if (plan.surface === "browser") {
-      const startCommand = `${liveTest.start} >${shellQuote(join(outputDir, "server.log"))} 2>&1 & echo $! >${shellQuote(serverPidPath)}`;
-      requireSuccess(
-        "sh",
-        ["-lc", startCommand],
-        runner("sh", ["-lc", startCommand], { cwd: checkout }),
+    let drive: ReturnType<typeof driveBrowser>;
+    try {
+      ensureLiveProofPackageManager(
+        profile.packageManager,
+        runner,
+        checkout,
+        targetEnvironment,
+        log,
       );
-      serverStarted = true;
-      waitUntilReady(liveTest.url!, liveTest.readyTimeoutSeconds, runner, checkout);
-    }
+      for (const configuredCommand of liveTest.setup) {
+        const command = liveProofSetupCommand(configuredCommand, liveTest.allowInstallScripts);
+        requireSuccess("sh", ["-lc", command], runner("sh", ["-lc", command], { cwd: checkout }));
+      }
+      if (plan.surface === "browser") {
+        const startCommand = `${liveTest.start} >${shellQuote(serverLogPath)} 2>&1 & echo $! >${shellQuote(serverPidPath)}`;
+        requireSuccess(
+          "sh",
+          ["-lc", startCommand],
+          runner("sh", ["-lc", startCommand], { cwd: checkout }),
+        );
+        serverStarted = true;
+        waitUntilReady(
+          liveTest.url!,
+          liveTest.readyTimeoutSeconds,
+          runner,
+          checkout,
+          serverLogPath,
+          serverPidPath,
+        );
+      }
 
-    const drive =
-      plan.surface === "browser"
-        ? driveBrowser({
-            plan,
-            checkout,
-            scriptPath,
-            rawVideoPath,
-            stepsLogPath,
-            baseUrl: liveTest.url!,
-            runner,
-          })
-        : driveTerminal({
-            plan,
-            checkout,
-            rawVideoPath,
-            maxRecordingSeconds: liveTest.maxRecordingSeconds,
-            runner,
-          });
-
-    transcodeToMp4(rawVideoPath, mp4Path, runner, checkout);
-    enforceMp4SizeCap(mp4Path, runner, checkout);
-    const media = probeMedia(mp4Path, runner);
-    if (
-      media.durationSeconds === null ||
-      media.durationSeconds > liveTest.maxRecordingSeconds + 0.05
-    ) {
-      throw new Error(
-        `live proof recording exceeds configured ${liveTest.maxRecordingSeconds}-second cap`,
-      );
+      drive =
+        plan.surface === "browser"
+          ? driveBrowser({
+              plan,
+              checkout,
+              scriptPath,
+              rawVideoPath,
+              stepsLogPath,
+              outputPath: capturedOutputPath,
+              baseUrl: liveTest.url!,
+              recordMedia,
+              runner,
+            })
+          : driveTerminal({
+              plan,
+              checkout,
+              rawVideoPath,
+              maxRecordingSeconds: liveTest.maxRecordingSeconds,
+              recordMedia,
+              runner,
+            });
+    } catch (error) {
+      const verifiedAt = (dependencies.now ?? (() => new Date()))().toISOString();
+      const failure = executionFailure(error, plan.surface);
+      writeVerificationResult({
+        path: verificationPath,
+        repo: profile.targetRepo,
+        item: options.item,
+        headSha,
+        plan,
+        driveStatus: "failed",
+        stepLog: [],
+        output: failure.output,
+        executionFailureReason: failure.reason,
+        verifiedAt,
+      });
+      log("[live-proof] execution failed; wrote verification result without media");
+      return;
     }
-    const poster = createVideoContactSheet(mp4Path, posterPath, runner);
-    requireSuccess("ffmpeg", ["contact-sheet", mp4Path], poster);
-    if (!existsSync(posterPath)) throw new Error("ffmpeg did not create poster.jpg");
 
     writeFileSync(stepsLogPath, `${JSON.stringify(drive.steps, null, 2)}\n`, "utf8");
-    const manifest: LiveProofManifest = {
-      schema_version: 1,
+    const verifiedAt = (dependencies.now ?? (() => new Date()))().toISOString();
+    writeVerificationResult({
+      path: verificationPath,
       repo: profile.targetRepo,
       item: options.item,
-      head_sha: headSha,
-      surface: plan.surface,
-      duration_seconds: Number(media.durationSeconds.toFixed(3)),
-      width: media.width,
-      height: media.height,
-      drive_status: drive.status,
-      steps_executed: liveProofStepActions(plan.steps),
-      recorded_at: (dependencies.now ?? (() => new Date()))().toISOString(),
-    };
-    writeFileSync(
-      join(outputDir, "live-proof-manifest.json"),
-      `${JSON.stringify(manifest, null, 2)}\n`,
-      "utf8",
-    );
-    log(
-      `[live-proof] wrote ${plan.surface} proof bundle for ${profile.targetRepo}#${options.item} at ${headSha}`,
-    );
+      headSha,
+      plan,
+      driveStatus: drive.status,
+      stepLog: drive.steps,
+      output: drive.output,
+      verifiedAt,
+    });
+
+    if (drive.status === "failed") {
+      log("[live-proof] verification failed; no recording will be attached");
+      return;
+    }
+    if (!recordMedia) {
+      log(
+        `[live-proof] wrote ${plan.surface} verification bundle without media for ${profile.targetRepo}#${options.item} at ${headSha}`,
+      );
+      return;
+    }
+    if (!demonstratedChange(drive.steps)) {
+      log("[live-proof] verification completed; media skipped because no expectation changed");
+      return;
+    }
+
+    try {
+      transcodeToMp4(rawVideoPath, mp4Path, runner, checkout);
+      enforceMp4SizeCap(mp4Path, runner, checkout);
+      const media = probeMedia(mp4Path, runner);
+      if (
+        media.durationSeconds === null ||
+        media.durationSeconds > liveTest.maxRecordingSeconds + 0.05
+      ) {
+        throw new Error(
+          `live proof recording exceeds configured ${liveTest.maxRecordingSeconds}-second cap`,
+        );
+      }
+      if (media.durationSeconds < 3) {
+        rmSync(mp4Path, { force: true });
+        log(
+          "[live-proof] verification completed; media skipped because recording is shorter than 3 seconds",
+        );
+        return;
+      }
+      // The contact-sheet tile needs ~100 seconds of sampled video before some
+      // ffmpeg builds emit a frame, so short recordings fall back to a single
+      // poster frame near the start of the demonstration.
+      createVideoContactSheet(mp4Path, posterPath, runner);
+      if (!existsSync(posterPath)) {
+        for (const offset of ["1", "0"]) {
+          const frame = runner(
+            "ffmpeg",
+            [
+              "-hide_banner",
+              "-y",
+              "-ss",
+              offset,
+              "-i",
+              mp4Path,
+              "-frames:v",
+              "1",
+              "-vf",
+              "scale=640:-1",
+              posterPath,
+            ],
+            { cwd: checkout },
+          );
+          if (frame.status === 0 && existsSync(posterPath)) break;
+        }
+      }
+      if (!existsSync(posterPath)) throw new Error("ffmpeg did not create poster.jpg");
+
+      const manifest: LiveProofManifest = {
+        schema_version: 1,
+        repo: profile.targetRepo,
+        item: options.item,
+        head_sha: headSha,
+        surface: plan.surface,
+        duration_seconds: Number(media.durationSeconds.toFixed(3)),
+        width: media.width,
+        height: media.height,
+        drive_status: drive.status,
+        steps_executed: liveProofStepActions(plan.steps),
+        recorded_at: verifiedAt,
+      };
+      writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+      log(
+        `[live-proof] wrote ${plan.surface} proof bundle for ${profile.targetRepo}#${options.item} at ${headSha}`,
+      );
+    } catch (error) {
+      for (const mediaPath of [mp4Path, posterPath, manifestPath]) {
+        rmSync(mediaPath, { force: true });
+      }
+      log(
+        `[live-proof] verification completed; media pipeline failed and was skipped: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   } finally {
     if (serverStarted) stopBackgroundServer(serverPidPath, runner, checkout);
   }
+}
+
+export function liveProofPackageManagerInstallCommand(packageManager: string): string {
+  switch (packageManager) {
+    case "bun":
+      return "curl -fsSL https://bun.sh/install | bash";
+    case "pnpm":
+      return "curl -fsSL https://get.pnpm.io/install.sh | sh -";
+    case "npm":
+      return "curl -fsSL https://www.npmjs.com/install.sh | sh";
+    default:
+      throw new Error(
+        `unsupported live-proof package manager ${JSON.stringify(packageManager)}; expected bun, pnpm, or npm`,
+      );
+  }
+}
+
+export function ensureLiveProofPackageManager(
+  packageManager: string,
+  runner: MediaProofCommandRunner,
+  checkout: string,
+  environment: NodeJS.ProcessEnv,
+  log: (message: string) => void = console.log,
+): void {
+  const installCommand = liveProofPackageManagerInstallCommand(packageManager);
+  addPackageManagerToPath(packageManager, environment);
+  const probe = () =>
+    runner("sh", ["-lc", `command -v ${packageManager} >/dev/null 2>&1`], { cwd: checkout });
+  if (probe().status === 0) return;
+
+  const installed = runner("sh", ["-lc", installCommand], {
+    cwd: checkout,
+    timeoutMs: 2 * 60_000,
+  });
+  if (installed.status !== 0) {
+    throw new Error(
+      `could not install live-proof package manager ${packageManager} with official installer (${installCommand}): ${mediaProofSpawnDetail(installed)}`,
+    );
+  }
+  addPackageManagerToPath(packageManager, environment);
+  const verified = probe();
+  if (verified.status !== 0) {
+    throw new Error(
+      `live-proof package manager ${packageManager} is unavailable after its official installer (${installCommand}): ${mediaProofSpawnDetail(verified)}`,
+    );
+  }
+  log(`[live-proof] installed target package manager ${packageManager}: ${installCommand}`);
+}
+
+function addPackageManagerToPath(packageManager: string, environment: NodeJS.ProcessEnv): void {
+  const home = environment.HOME?.trim();
+  if (!home) return;
+  const directory =
+    packageManager === "bun"
+      ? join(home, ".bun", "bin")
+      : packageManager === "pnpm"
+        ? environment.PNPM_HOME?.trim()
+          ? join(environment.PNPM_HOME.trim(), "bin")
+          : join(home, ".local", "share", "pnpm")
+        : undefined;
+  if (!directory) return;
+  const path = environment.PATH ?? "";
+  if (!path.split(":").includes(directory))
+    environment.PATH = path ? `${directory}:${path}` : directory;
+}
+
+function writeVerificationResult(
+  options: Parameters<typeof buildLiveVerificationResult>[0] & { path: string },
+): void {
+  const { path, ...resultOptions } = options;
+  const verification = buildLiveVerificationResult(resultOptions);
+  writeFileSync(path, `${JSON.stringify(verification, null, 2)}\n`, "utf8");
+}
+
+class StartupReadinessError extends Error {
+  constructor(
+    message: string,
+    readonly logTail: string,
+  ) {
+    super(message);
+    this.name = "StartupReadinessError";
+  }
+}
+
+function executionFailure(
+  error: unknown,
+  surface: LiveProofPlan["surface"],
+): { reason: string; output: string } {
+  const reason = error instanceof Error ? error.message : String(error);
+  if (error instanceof StartupReadinessError) {
+    return { reason, output: error.logTail || "<no start command output captured>" };
+  }
+  return { reason, output: surface === "terminal" ? reason : "" };
+}
+
+function demonstratedChange(steps: readonly LiveProofStepLogEntry[]): boolean {
+  return steps.some(
+    (step) =>
+      (step.action === "expect_text" || step.action === "expect_output") &&
+      !step.presentAtStart &&
+      step.satisfied,
+  );
 }
 
 function readPlan(
@@ -198,6 +465,8 @@ function waitUntilReady(
   timeoutSeconds: number,
   runner: MediaProofCommandRunner,
   checkout: string,
+  serverLogPath: string,
+  serverPidPath: string,
 ): void {
   const deadline = Date.now() + timeoutSeconds * 1000;
   do {
@@ -207,10 +476,55 @@ function waitUntilReady(
       { cwd: checkout },
     );
     if (result.status === 0) return;
+    if (!startCommandIsRunning(serverPidPath, runner, checkout)) {
+      throw new StartupReadinessError(
+        "start command exited before the URL became reachable",
+        readServerLogTail(serverLogPath),
+      );
+    }
     if (Date.now() >= deadline) break;
     runner("sleep", ["1"]);
   } while (Date.now() < deadline);
-  throw new Error(`live_test.url did not return HTTP 200 within ${timeoutSeconds} seconds`);
+  throw new StartupReadinessError(
+    `live_test.url did not return HTTP 200 within ${timeoutSeconds} seconds`,
+    readServerLogTail(serverLogPath),
+  );
+}
+
+function startCommandIsRunning(
+  serverPidPath: string,
+  runner: MediaProofCommandRunner,
+  checkout: string,
+): boolean {
+  const command = `if [ -s ${shellQuote(serverPidPath)} ]; then pid=$(cat ${shellQuote(serverPidPath)}); kill -0 "$pid" 2>/dev/null; else exit 1; fi`;
+  return runner("sh", ["-lc", command], { cwd: checkout }).status === 0;
+}
+
+function readServerLogTail(serverLogPath: string): string {
+  if (!existsSync(serverLogPath)) return "";
+  try {
+    const size = statSync(serverLogPath).size;
+    if (size === 0) return "";
+    const length = Math.min(size, SERVER_LOG_TAIL_MAX_BYTES);
+    const buffer = Buffer.alloc(length);
+    const descriptor = openSync(serverLogPath, "r");
+    let bytesRead: number;
+    try {
+      bytesRead = readSync(descriptor, buffer, 0, length, size - length);
+    } finally {
+      closeSync(descriptor);
+    }
+    const lines = buffer
+      .subarray(0, bytesRead)
+      .toString("utf8")
+      .replaceAll("\r\n", "\n")
+      .replace(/\r/g, "\n")
+      .split("\n");
+    if (lines.at(-1) === "") lines.pop();
+    return lines.slice(-SERVER_LOG_TAIL_LINES).join("\n");
+  } catch {
+    return "<start command output unavailable>";
+  }
 }
 
 function transcodeToMp4(

@@ -22,6 +22,7 @@ import {
   TELEGRAM_VISIBLE_PROOF_LABEL_COLOR,
   TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION,
 } from "./clawsweeper-policy.js";
+import { compareCodeUnits } from "./stable-json.js";
 import type {
   ImpactLabelName,
   MaturityLabelName,
@@ -235,8 +236,9 @@ export function createLabelMutationOperations(
       };
     }
     pendingIssueLabelBatch = null;
-    let additions = [...batch.additions.values()].sort((left, right) => left.localeCompare(right));
-    const removals = [...batch.removals.values()].sort((left, right) => left.localeCompare(right));
+    // Recorded mutation identities must not depend on locale or collator ties.
+    let additions = [...batch.additions.values()].sort(compareCodeUnits);
+    const removals = [...batch.removals.values()].sort(compareCodeUnits);
     const definitionKeys = new Set(additions.map((label) => normalizeLabelName(label)));
     for (const [key, definition] of batch.definitions) {
       if (definition.force) definitionKeys.add(key);

@@ -1,0 +1,11 @@
+{
+  "pullRequest": "https://github.com/openclaw/openclaw/pull/119762",
+  "headSha": "0d5398a9233014776b06d26252162cf5664535ca",
+  "source": "GitHub pull-files API carrier hunk fetched 2026-08-27",
+  "pullFiles": [
+    {
+      "filename": ".github/workflows/openclaw-live-and-e2e-checks-reusable.yml",
+      "patch": "@@\n+          metadata=\".artifacts/docker-e2e-package/package-candidate.json\"\n+          if [[ ! -f \"$metadata\" ]]; then\n+            jq -n \\\n+              --arg name \"$name\" \\\n+              '{ name: $name }' > \"$metadata\"\n+          fi\n+          [[ -s \"$metadata\" ]] || {\n+            echo \"Docker E2E package metadata was not created.\" >&2\n+            exit 1\n+          }"
+    }
+  ]
+}

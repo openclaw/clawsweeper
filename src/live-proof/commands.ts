@@ -1,7 +1,14 @@
 import { boolArg, stringArg, type Args } from "../clawsweeper-args.js";
 import type { LiveProofPlan, MediaProofCommandRunner } from "../clawsweeper-types.js";
 import type { RepositoryProfile } from "../repository-profiles.js";
-import { attachLiveProof, type LiveProofAttachDependencies } from "./attach.js";
+import { assertLiveProofEnvironmentSanitized } from "./environment.js";
+import {
+  attachLiveProof,
+  detachLiveProof,
+  syncDetachedLiveProofComment,
+  syncLiveProofComment,
+  type LiveProofAttachDependencies,
+} from "./attach.js";
 import {
   executeLiveProof,
   type LiveProofExecuteDependencies,
@@ -12,7 +19,7 @@ export interface LiveProofCommandDependencies {
   repositoryProfileFor: (repo: string) => RepositoryProfile;
   reportLiveProofPlan: (markdown: string) => LiveProofPlan;
   parseLiveProofPlan: (value: unknown) => LiveProofPlan;
-  attach: Omit<LiveProofAttachDependencies, "fetchPullRequest">;
+  attach: Omit<LiveProofAttachDependencies, "fetchPullRequest" | "reportLiveProofPlan">;
   fetchPullRequest?: (repo: string, item: number) => Promise<LiveProofPullRequestState>;
   runner?: MediaProofCommandRunner;
   env?: NodeJS.ProcessEnv;
@@ -29,6 +36,12 @@ export function createLiveProofCommands(dependencies: LiveProofCommandDependenci
     const repo = requiredArg(args.repo ?? args.target_repo, "--repo");
     const item = positiveIntegerArg(args.item ?? args.item_number, "--item");
     const outputDir = requiredArg(args.output, "--output");
+    if ((dependencies.env ?? process.env).CLAWSWEEPER_SANITIZED_LIVE_PROOF === "1") {
+      assertLiveProofEnvironmentSanitized(dependencies.env ?? process.env);
+      (dependencies.log ?? console.log)(
+        "[live-proof] sanitized environment assertion passed: credentials=0",
+      );
+    }
     const executeDependencies: LiveProofExecuteDependencies = {
       repositoryProfileFor: dependencies.repositoryProfileFor,
       reportLiveProofPlan: dependencies.reportLiveProofPlan,
@@ -51,10 +64,28 @@ export function createLiveProofCommands(dependencies: LiveProofCommandDependenci
     );
   }
 
-  async function liveProofAttachCommand(args: Args): Promise<void> {
-    const bundleDir = requiredArg(args.bundle, "--bundle");
+  async function liveProofAttachCommand(args: Args) {
     const recordPath = requiredArg(args.record, "--record");
-    await attachLiveProof(
+    if (boolArg(args.detach)) {
+      return detachLiveProof(
+        {
+          recordPath,
+          repositorySlug: requiredRepositorySlugArg(args.repo_slug),
+          item: positiveIntegerArg(args.item ?? args.item_number, "--item"),
+          dryRun: boolArg(args.dry_run),
+        },
+        {
+          ...dependencies.attach,
+          fetchPullRequest,
+          reportLiveProofPlan: dependencies.reportLiveProofPlan,
+          ...(dependencies.runner ? { runner: dependencies.runner } : {}),
+          ...(dependencies.env ? { env: dependencies.env } : {}),
+          ...(dependencies.log ? { log: dependencies.log } : {}),
+        },
+      );
+    }
+    const bundleDir = requiredArg(args.bundle, "--bundle");
+    return attachLiveProof(
       {
         bundleDir,
         recordPath,
@@ -63,6 +94,7 @@ export function createLiveProofCommands(dependencies: LiveProofCommandDependenci
       {
         ...dependencies.attach,
         fetchPullRequest,
+        reportLiveProofPlan: dependencies.reportLiveProofPlan,
         ...(dependencies.runner ? { runner: dependencies.runner } : {}),
         ...(dependencies.env ? { env: dependencies.env } : {}),
         ...(dependencies.log ? { log: dependencies.log } : {}),
@@ -70,7 +102,41 @@ export function createLiveProofCommands(dependencies: LiveProofCommandDependenci
     );
   }
 
-  return { liveProofCommand, liveProofAttachCommand };
+  function liveProofCommentCommand(args: Args): void {
+    const recordPath = requiredArg(args.record, "--record");
+    if (boolArg(args.detach)) {
+      syncDetachedLiveProofComment(
+        {
+          recordPath,
+          repositorySlug: requiredRepositorySlugArg(args.repo_slug),
+          item: positiveIntegerArg(args.item ?? args.item_number, "--item"),
+        },
+        {
+          ...dependencies.attach,
+          fetchPullRequest,
+          reportLiveProofPlan: dependencies.reportLiveProofPlan,
+          ...(dependencies.runner ? { runner: dependencies.runner } : {}),
+          ...(dependencies.env ? { env: dependencies.env } : {}),
+          ...(dependencies.log ? { log: dependencies.log } : {}),
+        },
+      );
+      return;
+    }
+    const bundleDir = requiredArg(args.bundle, "--bundle");
+    syncLiveProofComment(
+      { bundleDir, recordPath },
+      {
+        ...dependencies.attach,
+        fetchPullRequest,
+        reportLiveProofPlan: dependencies.reportLiveProofPlan,
+        ...(dependencies.runner ? { runner: dependencies.runner } : {}),
+        ...(dependencies.env ? { env: dependencies.env } : {}),
+        ...(dependencies.log ? { log: dependencies.log } : {}),
+      },
+    );
+  }
+
+  return { liveProofCommand, liveProofAttachCommand, liveProofCommentCommand };
 }
 
 export async function fetchGitHubPullRequest(
@@ -138,6 +204,14 @@ function positiveIntegerArg(value: ArgValue, label: string): number {
   const result = Number(requiredArg(value, label));
   if (!Number.isSafeInteger(result) || result <= 0) {
     throw new Error(`${label} must be a positive integer`);
+  }
+  return result;
+}
+
+function requiredRepositorySlugArg(value: ArgValue): string {
+  const result = requiredArg(value, "--repo-slug");
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(result)) {
+    throw new Error("--repo-slug must be a canonical repository slug");
   }
   return result;
 }

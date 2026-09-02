@@ -20,6 +20,7 @@ import {
   jsonResponse,
   buildExactReviewQueueRequest,
 } from "./dashboard-worker-harness.ts";
+import { publicHealthHistoryContract } from "../dashboard/worker.ts";
 
 const ISSUE_TRIAGE_VIEW_IDS = [
   "clawsweeper",
@@ -647,6 +648,9 @@ test("dashboard HTML preserves UTF-8 emoji labels", async () => {
   assert.match(html, /data-trend-range="6h"/);
   assert.match(html, /<details class="execution-alert">/);
   assert.match(html, /Error Rate/);
+  assert.match(html, /denominator unavailable/);
+  assert.match(html, /numerator unavailable/);
+  assert.match(html, /rate unavailable or inconsistent/);
   assert.match(html, /Recovery Rate/);
   assert.match(html, /Capacity/);
   assert.match(html, /Only jobs that execute Codex count against this budget/);
@@ -802,12 +806,30 @@ test("dashboard sanitizes stored status immediately and never renders transport 
     bay: {},
     recent: {},
     diagnostics: { errors: [marker], error_count: 0 },
+    freshness: {
+      state: "fresh",
+      cache_state: "fresh",
+      generated_at: "2026-08-15T12:00:00.000Z",
+      age_ms: 0,
+      maximum_age_ms: 60_000,
+    },
+    exact_review_queue: {
+      scheduled_feed: { target_rate_per_hour: 300, token_balance: marker },
+    },
   });
   const withCache = await run(cached);
   assert.equal(withCache.removed, false);
   assert.ok(withCache.writes.length >= 1);
   assert.equal(withCache.writes[0].includes(marker), false);
   assert.match(withCache.writes[0], /telemetry_unavailable/);
+  assert.deepEqual(JSON.parse(withCache.writes[0]).exact_review_queue.scheduled_feed, {
+    target_rate_per_hour: 300,
+  });
+  const persisted = JSON.parse(withCache.writes[0]);
+  assert.equal(persisted.freshness.state, "stale");
+  assert.ok(persisted.freshness.age_ms > persisted.freshness.maximum_age_ms);
+  assert.match(String(withCache.elements.get("updated")?.textContent), /stale snapshot/);
+  assert.equal(typeof persisted.freshness.client_checked_at, "string");
   assert.doesNotMatch(JSON.stringify([...withCache.elements.values()]), new RegExp(marker, "i"));
 
   const withoutCache = await run(null);
@@ -884,6 +906,22 @@ test("dashboard reprojects separately fetched public observability before render
   });
   new Script(script).runInContext(context);
   await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const clientNow = Date.now();
+  const clockSkewedStatus = context.dashboardStatusSnapshot({
+    schema_version: 1,
+    generated_at: new Date(clientNow + 30_000).toISOString(),
+    freshness: {
+      state: "fresh",
+      cache_state: "fresh",
+      generated_at: new Date(clientNow + 30_000).toISOString(),
+      age_ms: 0,
+      maximum_age_ms: 60_000,
+    },
+  });
+  assert.equal(clockSkewedStatus.freshness.state, "fresh");
+  assert.equal(typeof clockSkewedStatus.freshness.client_checked_at, "string");
+  assert.equal(context.dashboardStatusSnapshot(clockSkewedStatus).freshness.state, "fresh");
 
   const validApply = dashboardApplyObservabilityFixture();
   nextPayload = validApply;
@@ -998,6 +1036,40 @@ test("dashboard reprojects separately fetched public observability before render
       },
     })),
   };
+  const projectedHistoryGeneratedAt = Date.now();
+  const projectedHistory = {
+    ...validHistory,
+    generated_at: new Date(projectedHistoryGeneratedAt).toISOString(),
+    ...publicHealthHistoryContract("6h", validHistory.samples, projectedHistoryGeneratedAt),
+  };
+  const unavailableHistory = {
+    ...validHistory,
+    generated_at: null,
+    coverage: {
+      state: "unavailable",
+      expected_slots: null,
+      observed_slots: null,
+      usable_slots: null,
+      failed_slots: null,
+      missing_slots: null,
+      coverage_percent: null,
+      largest_gap_slots: null,
+      largest_gap_ms: null,
+      window_started_at: null,
+      window_ended_at: null,
+    },
+    freshness: {
+      state: "unavailable",
+      latest_sample_at: null,
+      age_ms: null,
+      maximum_age_ms: 720_000,
+    },
+    samples: [],
+  };
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.dashboardHealthHistorySnapshot(unavailableHistory, "6h"))),
+    unavailableHistory,
+  );
   for (const malformed of [
     { samples: validHistory.samples },
     { ...validHistory, range: marker },
@@ -1025,6 +1097,29 @@ test("dashboard reprojects separately fetched public observability before render
       })),
     },
     { ...validHistory, samples: [validHistory.samples[0], validHistory.samples[0]] },
+    {
+      ...projectedHistory,
+      freshness: {
+        ...projectedHistory.freshness,
+        state: projectedHistory.freshness.state === "fresh" ? "stale" : "fresh",
+      },
+    },
+    {
+      ...projectedHistory,
+      freshness: {
+        ...projectedHistory.freshness,
+        age_ms: Number(projectedHistory.freshness.age_ms) + 1,
+      },
+    },
+    { ...unavailableHistory, samples: validHistory.samples },
+    {
+      ...unavailableHistory,
+      coverage: { ...unavailableHistory.coverage, expected_slots: 0 },
+    },
+    {
+      ...unavailableHistory,
+      freshness: { ...unavailableHistory.freshness, age_ms: 0 },
+    },
   ]) {
     assert.equal(context.dashboardHealthHistorySnapshot(malformed, "6h"), null);
   }
@@ -1283,6 +1378,31 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
               title: "SYNTHETIC_OVERVIEW_PRIVATE_TITLE",
               url: "https://invalid.example/SYNTHETIC_OVERVIEW_PRIVATE_URL?token=1",
               failure_key: "SYNTHETIC_OVERVIEW_PRIVATE_FAILURE",
+              action: {
+                repository: "openclaw/clawsweeper",
+                run_id: 7001,
+                job_id: 8001,
+                status: "in_progress",
+                started_at: "2026-07-05T11:20:00.000Z",
+                steps_complete: true,
+                steps: [
+                  {
+                    sequence: 1,
+                    kind: "setup",
+                    status: "completed",
+                    conclusion: "success",
+                    name: "SYNTHETIC_OVERVIEW_PRIVATE_STEP",
+                  },
+                  {
+                    sequence: 2,
+                    kind: "review",
+                    status: "in_progress",
+                    conclusion: null,
+                    name: "SYNTHETIC_OVERVIEW_PRIVATE_CURRENT_STEP",
+                  },
+                ],
+                run_url: "https://invalid.example/SYNTHETIC_OVERVIEW_PRIVATE_ACTION?token=1",
+              },
             },
             {
               repository: "openclaw/clawhub",
@@ -1469,6 +1589,18 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
       title: "SYNTHETIC_OVERVIEW_PRIVATE_BLADE",
       item_url: "https://invalid.example/private?token=SYNTHETIC_OVERVIEW_PRIVATE_BLADE",
       failure_key: "SYNTHETIC_OVERVIEW_PRIVATE_BLADE",
+      action: {
+        repository: "openclaw/clawsweeper",
+        run_id: 7001,
+        job_id: 8001,
+        status: "in_progress",
+        started_at: "2026-07-05T11:20:00.000Z",
+        steps_complete: true,
+        steps: [
+          { sequence: 1, kind: "setup", status: "completed", conclusion: "success" },
+          { sequence: 2, kind: "review", status: "in_progress", conclusion: null },
+        ],
+      },
     },
     "openclaw/openclaw#123",
   );
@@ -1479,6 +1611,18 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   assert.match(publicReferenceBlade, /Bounded queue sample/);
   assert.match(publicReferenceBlade, /https:\/\/github\.com\/openclaw\/openclaw\/issues\/123/);
   assert.match(publicReferenceBlade, /https:\/\/github\.com\/openclaw\/openclaw/);
+  assert.match(
+    publicReferenceBlade,
+    /https:\/\/github\.com\/openclaw\/clawsweeper\/actions\/runs\/7001\/job\/8001/,
+  );
+  assert.match(
+    publicReferenceBlade,
+    /https:\/\/github\.com\/openclaw\/clawsweeper\/actions\/runs\/7001/,
+  );
+  assert.match(publicReferenceBlade, /Set up job/);
+  assert.match(publicReferenceBlade, /Run review/);
+  assert.match(publicReferenceBlade, /class="step-row in_progress"/);
+  assert.match(publicReferenceBlade, /2 steps/);
   assert.doesNotMatch(
     publicReferenceBlade,
     /SYNTHETIC_OVERVIEW_PRIVATE_BLADE|invalid\.example|token=/i,
@@ -1495,6 +1639,18 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
         item_number: 123,
         stage: "reviewing",
         source: "queue",
+        action: {
+          repository: "openclaw/clawsweeper",
+          run_id: 7001,
+          job_id: 8001,
+          status: "in_progress",
+          started_at: "2026-07-05T11:20:00.000Z",
+          steps_complete: true,
+          steps: [
+            { sequence: 1, kind: "setup", status: "completed", conclusion: "success" },
+            { sequence: 2, kind: "review", status: "in_progress", conclusion: null },
+          ],
+        },
       },
       {
         repository: "openclaw/clawhub",
@@ -2478,6 +2634,7 @@ test("dashboard exposes active worker jobs and their current steps", async () =>
       {
         CLAWSWEEPER_REPO: "openclaw/clawsweeper",
         TARGET_REPOS: "openclaw/openclaw",
+        PUBLIC_BAY_REPOS: "openclaw/openclaw,openclaw/clawsweeper",
         CACHE_TTL_SECONDS: "0",
         GITHUB_TOKEN: "test-token",
         EXACT_REVIEW_QUEUE: exactReviewQueueNamespace,
@@ -2493,16 +2650,16 @@ test("dashboard exposes active worker jobs and their current steps", async () =>
       "failure_key",
       "run_url",
       "job_url",
-      "repository",
-      "item_number",
       "item_numbers",
       "target_items",
       "name",
-      "id",
     ]) {
       assert.equal(serializedStatus.includes(`"${privateField}"`), false);
     }
     assert.equal(status.workers[0].status, "in_progress");
+    assert.equal("repository" in status.workers[0], false);
+    assert.equal("item_number" in status.workers[0], false);
+    assert.equal("id" in status.workers[0], false);
     assert.deepEqual(status.workers[0].progress, { completed: 2, total: 3 });
     assert.equal(status.fleet.active_codex_jobs, 2);
     assert.equal(status.fleet.worker_detail_runs, 3);
@@ -2517,7 +2674,9 @@ test("dashboard exposes active worker jobs and their current steps", async () =>
     assert.equal(status.workers[0].steps[2].status, "in_progress");
     assert.equal(status.workers[1].is_codex_worker, false);
     assert.equal(status.workers[3].source, "workflow-fallback");
-    assert.deepEqual(status.exact_review_queue.bay_projection.activity, {
+    const activity = status.exact_review_queue.bay_projection.activity;
+    const { items: publicItems, ...activityCounts } = activity;
+    assert.deepEqual(activityCounts, {
       complete: true,
       queue_stages: {
         arriving: 0,
@@ -2531,19 +2690,112 @@ test("dashboard exposes active worker jobs and their current steps", async () =>
         arriving: 1,
         "setting-up": 0,
         reviewing: 1,
-        publishing: 0,
+        publishing: 1,
         applying: 1,
         repairing: 0,
       },
-      total: 3,
+      queue_legacy_batch_stages: {
+        arriving: 0,
+        "setting-up": 0,
+        reviewing: 0,
+        publishing: 0,
+        applying: 0,
+        repairing: 0,
+      },
+      live_legacy_batch_stages: {
+        arriving: 0,
+        "setting-up": 0,
+        reviewing: 1,
+        publishing: 1,
+        applying: 0,
+        repairing: 0,
+      },
+      total: 4,
     });
+    assert.deepEqual(
+      publicItems.map((item) => ({
+        repository: item.repository,
+        item_number: item.item_number,
+        stage: item.stage,
+        source: item.source,
+        action_repository: item.action?.repository,
+        run_id: item.action?.run_id,
+        job_id: item.action?.job_id,
+        status: item.action?.status,
+        step_kinds: item.action?.steps.map((step) => step.kind),
+        step_statuses: item.action?.steps.map((step) => step.status),
+      })),
+      [
+        {
+          repository: "openclaw/openclaw",
+          item_number: 92521,
+          stage: "applying",
+          source: "live",
+          action_repository: "openclaw/clawsweeper",
+          run_id: 42,
+          job_id: 4203,
+          status: "in_progress",
+          step_kinds: ["lease", "finalize"],
+          step_statuses: ["completed", "in_progress"],
+        },
+        {
+          repository: "openclaw/openclaw",
+          item_number: 92523,
+          stage: "arriving",
+          source: "live",
+          action_repository: "openclaw/clawsweeper",
+          run_id: 43,
+          job_id: undefined,
+          status: "queued",
+          step_kinds: [],
+          step_statuses: [],
+        },
+        {
+          repository: "openclaw/openclaw",
+          item_number: 92521,
+          stage: "publishing",
+          source: "live",
+          action_repository: "openclaw/clawsweeper",
+          run_id: 42,
+          job_id: 4202,
+          status: "in_progress",
+          step_kinds: ["apply", "publish"],
+          step_statuses: ["completed", "in_progress"],
+        },
+        {
+          repository: "openclaw/openclaw",
+          item_number: 92522,
+          stage: "reviewing",
+          source: "live",
+          action_repository: "openclaw/clawsweeper",
+          run_id: 42,
+          job_id: 4201,
+          status: "in_progress",
+          step_kinds: ["setup", "review", "review"],
+          step_statuses: ["completed", "completed", "in_progress"],
+        },
+      ],
+    );
+    assert.equal(
+      publicItems.every((item) => typeof item.action?.started_at === "string"),
+      true,
+    );
+    assert.equal(serializedStatus.includes("Review shard"), false);
+    assert.equal(serializedStatus.includes("setup-codex"), false);
     assert.equal("active_overlaps" in status.exact_review_queue.bay_projection, false);
-    assert.equal("items" in status.exact_review_queue.bay_projection, false);
+    assert.equal(Array.isArray(status.exact_review_queue.bay_projection.items), true);
+    assert.equal(
+      JSON.stringify(status.exact_review_queue.bay_projection.items).includes(
+        "aggregate-bay-overlap",
+      ),
+      false,
+    );
     const privacyCachedResponse = await worker.fetch(
       new Request("https://clawsweeper.openclaw.ai/api/status"),
       {
         CLAWSWEEPER_REPO: "openclaw/clawsweeper",
         TARGET_REPOS: "openclaw/openclaw",
+        PUBLIC_BAY_REPOS: "openclaw/openclaw,openclaw/clawsweeper",
         CACHE_TTL_SECONDS: "0",
         GITHUB_TOKEN: "test-token",
         EXACT_REVIEW_QUEUE: exactReviewQueueNamespace,
@@ -2863,7 +3115,7 @@ test("dashboard paginates worker jobs beyond GitHub's first page", async () => {
   }
 });
 
-test("dashboard reports worker error and recovery rates from completed job steps", async () => {
+test("dashboard reports worker health without treating worker jobs as lifecycle completions", async () => {
   const originalFetch = globalThis.fetch;
   const originalCaches = globalThis.caches;
   Object.defineProperty(globalThis, "caches", {
@@ -2917,24 +3169,34 @@ test("dashboard reports worker error and recovery rates from completed job steps
             }`,
             started_at: jobStartedAt,
             completed_at: run?.updated_at,
-            steps: [
-              {
-                number: 1,
-                name: "Run ./clawsweeper/.github/actions/setup-codex",
-                status: "completed",
-                conclusion: "success",
-                started_at: jobStartedAt,
-                completed_at: reviewStartedAt,
-              },
-              {
-                number: 2,
-                name: "Review shard",
-                status: "completed",
-                conclusion: failed ? "failure" : "success",
-                started_at: reviewStartedAt,
-                completed_at: run?.updated_at,
-              },
-            ],
+            steps:
+              runId === 4
+                ? Array.from({ length: 101 }, (_, index) => ({
+                    number: index + 1,
+                    name: `Review shard ${index + 1}`,
+                    status: "completed",
+                    conclusion: "success",
+                    started_at: jobStartedAt,
+                    completed_at: run?.updated_at,
+                  }))
+                : [
+                    {
+                      number: 1,
+                      name: "Run ./clawsweeper/.github/actions/setup-codex",
+                      status: "completed",
+                      conclusion: "success",
+                      started_at: jobStartedAt,
+                      completed_at: reviewStartedAt,
+                    },
+                    {
+                      number: 2,
+                      name: "Review shard",
+                      status: "completed",
+                      conclusion: failed ? "failure" : "success",
+                      started_at: reviewStartedAt,
+                      completed_at: run?.updated_at,
+                    },
+                  ],
           },
         ],
       });
@@ -2954,6 +3216,7 @@ test("dashboard reports worker error and recovery rates from completed job steps
     const env = {
       CLAWSWEEPER_REPO: "openclaw/clawsweeper",
       TARGET_REPOS: "openclaw/openclaw",
+      PUBLIC_BAY_REPOS: "openclaw/openclaw,openclaw/clawsweeper",
       CACHE_TTL_SECONDS: "0",
       STATUS_STORE: new MemoryKv(),
     };
@@ -2972,19 +3235,85 @@ test("dashboard reports worker error and recovery rates from completed job steps
     assert.equal(status.health.recovery_rate_percent, 50);
     assert.equal(status.bay.tide_threshold, 20);
     assert.equal(status.bay.tide_generation, 0);
-    assert.equal(status.bay.terminal_count, 3);
+    assert.equal(status.bay.metrics_state, "unavailable");
+    assert.equal(status.bay.terminal_count, 0);
     assert.equal(status.bay.timings.lanes, undefined);
     assert.deepEqual(status.bay.timings.overall, {
       average_ms: null,
       median_ms: null,
       samples: 0,
     });
-    assert.equal(status.bay.terminal_buffer.length, 3);
+    assert.deepEqual(status.bay.terminal_buffer, []);
     assert.equal(status.health.recent_attempts, undefined);
     assert.equal(status.health.failures.length, 2);
     assert.equal(status.health.failures[0].recovered, false);
     assert.equal(status.health.failures[1].recovered, true);
     assert.equal(jobRequests, 4);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
+test("dashboard cold-cache status bounds a stalled forty-run worker-health refresh", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: new MemoryCache() },
+  });
+  const runs = Array.from({ length: 40 }, (_, index) =>
+    completedReviewRun(index + 1, 50_000 + index, "success", (index + 1) * 1_000),
+  );
+  let stalledJobRequests = 0;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/runs") {
+      return jsonResponse({
+        workflow_runs:
+          url.searchParams.get("status") === "completed"
+            ? runs
+            : url.searchParams.has("status")
+              ? []
+              : runs,
+      });
+    }
+    if (/^\/repos\/openclaw\/clawsweeper\/actions\/runs\/\d+\/jobs$/.test(url.pathname)) {
+      stalledJobRequests += 1;
+      return new Promise<Response>(() => undefined);
+    }
+    if (
+      url.pathname ===
+      "/repos/openclaw/clawsweeper/actions/workflows/repair-cluster-intake.yml/runs"
+    ) {
+      return jsonResponse({ workflow_runs: [] });
+    }
+    if (url.pathname === "/search/issues") return jsonResponse({ items: [] });
+    if (url.pathname === "/repos/openclaw/openclaw/issues") return jsonResponse([]);
+    throw new Error(`unexpected fetch ${url}`);
+  };
+
+  try {
+    const startedAt = Date.now();
+    const response = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/status"),
+      {
+        CLAWSWEEPER_REPO: "openclaw/clawsweeper",
+        TARGET_REPOS: "openclaw/openclaw",
+        CACHE_TTL_SECONDS: "0",
+        WORKER_HEALTH_FETCH_CONCURRENCY: "40",
+        WORKER_HEALTH_SECTION_TIMEOUT_MS: "25",
+      },
+      { waitUntil: () => undefined },
+    );
+    const elapsedMs = Date.now() - startedAt;
+    const status = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("x-clawsweeper-cache"), "miss");
+    assert.equal(status.health.sampled_runs, 0);
+    assert.equal(status.bay.tide_threshold, 20);
+    assert.equal(stalledJobRequests, 20, "only one bounded concurrency wave may start");
+    assert.ok(elapsedMs < 1_000, `cold status exceeded its bounded test budget: ${elapsedMs}ms`);
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
@@ -3415,7 +3744,7 @@ test("dashboard serves stale status while coalescing one background refresh", as
     value: { default: cache },
   });
   await cache.put(
-    new Request("https://clawsweeper.openclaw.ai/api/status-cache/v4/stale"),
+    new Request("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/stale"),
     jsonResponse({
       schema_version: 1,
       generated_at: "2026-06-13T18:00:00Z",
@@ -3507,6 +3836,9 @@ test("dashboard serves stale status while coalescing one background refresh", as
     assert.equal(firstStatus.pipeline[0].id, undefined);
     assert.equal(firstStatus.exact_review_queue.pending, 1);
     assert.equal(firstStatus.exact_review_queue.handoff_health.status, "stalled");
+    assert.equal(firstStatus.freshness.state, "stale");
+    assert.equal(firstStatus.freshness.cache_state, "stale");
+    assert.equal(firstStatus.freshness.maximum_age_ms, 20_000);
     assert.equal(secondStatus.exact_review_queue.handoff_health.status, "stalled");
     assert.equal(queueReads, 0);
     assert.equal(waitUntilPromises.length, 2);
@@ -3514,15 +3846,17 @@ test("dashboard serves stale status while coalescing one background refresh", as
     releaseFetch();
     await Promise.all(waitUntilPromises);
     assert.equal(unfilteredRunRequests, 1);
-    assert.equal(queueReads, 2);
+    assert.equal(queueReads, 3);
 
     const refreshed = await worker.fetch(request, env);
     assert.equal(refreshed.headers.get("x-clawsweeper-cache"), "fresh");
     const refreshedStatus = await refreshed.json();
     assert.deepEqual(refreshedStatus.pipeline, []);
+    assert.equal(refreshedStatus.freshness.state, "fresh");
+    assert.equal(refreshedStatus.freshness.cache_state, "fresh");
     assert.equal(refreshedStatus.exact_review_queue.pending, 7);
     assert.equal(refreshedStatus.exact_review_queue.handoff_health.status, "healthy");
-    assert.equal(queueReads, 2);
+    assert.equal(queueReads, 3);
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
@@ -5158,6 +5492,57 @@ test("triage writes and reprojects aggregate-only fresh cache bodies", async () 
     };
     const replay = await worker.fetch(request, {}, { waitUntil: () => undefined });
     assert.deepEqual(await replay.json(), firstSnapshot);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
+test("PR proof triage keeps legacy Telegram labels visible during migration", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  const queries: string[] = [];
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: new MemoryCache() },
+  });
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/labels")) {
+      return jsonResponse([
+        { name: "mantis: telegram-visible-proof", color: "57606A" },
+        { name: "proof: telegram-e2e", color: "57606A" },
+      ]);
+    }
+    if (url.pathname === "/search/issues") {
+      const query = url.searchParams.get("q") ?? "";
+      queries.push(query);
+      return jsonResponse({
+        total_count:
+          query.includes("mantis: telegram-visible-proof") && query.includes("proof: telegram-e2e")
+            ? 1
+            : 0,
+        items: [],
+      });
+    }
+    throw new Error(`unexpected synthetic request: ${url.pathname}`);
+  };
+
+  try {
+    const response = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/pr-proof-triage"),
+      { TARGET_REPOS: "synthetic/target", TRIAGE_CACHE_TTL_SECONDS: "0" },
+      { waitUntil: () => undefined },
+    );
+    const snapshot = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(snapshot.counts["telegram-proof"], 1);
+    assert.ok(
+      queries.some(
+        (query) =>
+          query.includes("mantis: telegram-visible-proof") && query.includes("proof: telegram-e2e"),
+      ),
+    );
   } finally {
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });

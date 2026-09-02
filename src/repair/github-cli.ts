@@ -15,6 +15,7 @@ export type GhRunOptions = {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   input?: string;
+  timeoutMs?: number;
 };
 
 export type GhRetryOptions = GhRunOptions & {
@@ -164,6 +165,7 @@ export function ghText(ghArgs: string[], options: GhRunOptions = {}): string {
   const command = ghCommand(ghArgs, env);
   const text = execFileSync(command.command, command.args, {
     cwd: options.cwd ?? repoRoot(),
+    timeout: ghRunTimeoutMs(options, env),
     env,
     encoding: "utf8",
     input: options.input,
@@ -256,6 +258,7 @@ export async function ghTextAsync(ghArgs: string[], options: GhRunOptions = {}):
   const command = ghCommand(ghArgs, env);
   const { stdout } = await execFileAsync(command.command, command.args, {
     cwd: options.cwd ?? repoRoot(),
+    timeout: ghRunTimeoutMs(options, env),
     env,
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
@@ -287,6 +290,7 @@ export function ghSpawn(ghArgs: string[], options: GhRunOptions = {}) {
   const command = ghCommand(ghArgs, env);
   return spawnSync(command.command, command.args, {
     cwd: options.cwd ?? repoRoot(),
+    timeout: ghRunTimeoutMs(options, env),
     encoding: "utf8",
     env,
     input: options.input,
@@ -374,6 +378,22 @@ export function ghStdoutFromError(error: unknown): string {
   return stripAnsi(
     bufferLikeToString(commandError.stdout ?? commandError.output?.[1] ?? ""),
   ).trim();
+}
+
+function ghRunTimeoutMs(options: GhRunOptions, env: NodeJS.ProcessEnv): number {
+  if (
+    options.timeoutMs !== undefined &&
+    Number.isFinite(options.timeoutMs) &&
+    options.timeoutMs > 0
+  ) {
+    return Math.max(1, Math.floor(options.timeoutMs));
+  }
+  const configured = Number(
+    env.CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS ?? env.CLAWSWEEPER_NETWORK_COMMAND_TIMEOUT_MS,
+  );
+  return Number.isFinite(configured) && configured > 0
+    ? Math.max(30_000, Math.floor(configured))
+    : 120_000;
 }
 
 function resolveRetryOptions(options: GhRetryOptions | number): GhRetryOptions {

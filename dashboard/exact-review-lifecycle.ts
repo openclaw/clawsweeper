@@ -1,7 +1,11 @@
 export const EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE = "exact_review_lifecycle_projection_v1";
 export const EXACT_REVIEW_ACKNOWLEDGEMENT_ATTEMPT_LEASE_MS = 5 * 60 * 1000;
-export const EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT = 512;
+// Keep the public reader bounded, but leave enough headroom for the durable
+// history between normal retention passes. The former 512-row ceiling turned
+// a healthy, append-only store into a permanently unknown public snapshot.
+export const EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT = 10_000;
 export const EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT = 24;
+export const EXACT_REVIEW_LIFECYCLE_BAY_TELEMETRY_RECOVERY_BATCH_LIMIT = 256;
 export const EXACT_REVIEW_LIFECYCLE_AUDIT_READ_LIMIT = 10_000;
 export const EXACT_REVIEW_LIFECYCLE_AUDIT_PAGE_MAX = 100;
 export const EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_TTL_MS = 5 * 60 * 1000;
@@ -178,6 +182,8 @@ export type ExactReviewLifecycleProjection = {
     commandOriginated: boolean;
     statusMarker: string | null;
     statusCommentId: number | null;
+    /** Webhook/source time when available; legacy rows fall back to admission time. */
+    triggeredAt?: number;
     admittedAt: number;
   };
   claims: LifecycleClaimFact[];
@@ -221,6 +227,18 @@ export type ExactReviewLifecycleProjection = {
   terminalDispositions: Array<{ kind: LifecycleTerminalDisposition; observedAt: number }>;
   /** Current terminal outcome used to derive lifecycle and acknowledgement state. */
   terminalDisposition: { kind: LifecycleTerminalDisposition; observedAt: number } | null;
+  /**
+   * A terminal fact that has not yet been durably materialized into the Bay
+   * aggregate. This lives with the source projection so a telemetry-table
+   * outage cannot make the completion undiscoverable.
+   */
+  bayTelemetryPending: boolean;
+  /**
+   * The current terminal fact already reflected in Bay's compact aggregate.
+   * It keeps repeated finalizer delivery idempotent after the short timing
+   * window has expired and its row has been pruned from Bay telemetry.
+   */
+  bayTelemetryEventId?: string;
   updatedAt: number;
 };
 
@@ -237,6 +255,7 @@ type LifecycleAdmissionInput = ProjectionIdentity & {
   commandOriginated: boolean;
   statusMarker: string | null;
   statusCommentId: number | null;
+  triggeredAt?: number;
   observedAt: number;
 };
 
@@ -258,9 +277,23 @@ export class ExactReviewLifecycleProjectionStore {
          fence_key TEXT NOT NULL,
          projection_json TEXT NOT NULL,
          updated_at INTEGER NOT NULL,
+         bay_telemetry_pending INTEGER NOT NULL DEFAULT 0 CHECK (bay_telemetry_pending IN (0, 1)),
          PRIMARY KEY (canonical_target_key, fence_key, revision)
        ) STRICT`,
     );
+    try {
+      Array.from(
+        this.storage.sql.exec(
+          `SELECT bay_telemetry_pending FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} LIMIT 1`,
+        ),
+      );
+    } catch {
+      this.storage.sql.exec(
+        `ALTER TABLE ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+           ADD COLUMN bay_telemetry_pending INTEGER NOT NULL DEFAULT 0
+           CHECK (bay_telemetry_pending IN (0, 1))`,
+      );
+    }
     this.storage.sql.exec(
       `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_projection_fence
           ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} (fence_key, revision)`,
@@ -269,6 +302,22 @@ export class ExactReviewLifecycleProjectionStore {
       `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_projection_bay
           ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
           (updated_at DESC, canonical_target_key, fence_key, revision)`,
+    );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_projection_bay_repository_v2
+          ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+          (
+            LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)),
+            updated_at DESC,
+            canonical_target_key,
+            fence_key,
+            revision DESC
+          )`,
+    );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_projection_bay_telemetry_pending
+         ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+         (bay_telemetry_pending, updated_at, canonical_target_key, fence_key, revision)`,
     );
     this.schemaReady = true;
   }
@@ -297,6 +346,9 @@ export class ExactReviewLifecycleProjectionStore {
     if (input.statusCommentId !== null && !positiveInteger(input.statusCommentId)) {
       throw new Error("invalid lifecycle status comment id");
     }
+    if (input.triggeredAt !== undefined && !finiteTimestamp(input.triggeredAt)) {
+      throw new Error("invalid lifecycle trigger time");
+    }
     this.ensureSchemaSync();
     const existing = this.readSync(input.canonicalTargetKey, input.fenceKey, input.revision);
     if (existing) {
@@ -309,7 +361,9 @@ export class ExactReviewLifecycleProjectionStore {
         admission.sourceAction !== input.sourceAction ||
         admission.commandOriginated !== input.commandOriginated ||
         admission.statusMarker !== input.statusMarker ||
-        admission.statusCommentId !== input.statusCommentId
+        admission.statusCommentId !== input.statusCommentId ||
+        (admission.triggeredAt !== undefined &&
+          admission.triggeredAt !== (input.triggeredAt ?? input.observedAt))
       ) {
         throw new Error("conflicting lifecycle admission fact");
       }
@@ -328,6 +382,7 @@ export class ExactReviewLifecycleProjectionStore {
         commandOriginated: input.commandOriginated,
         statusMarker: input.statusMarker,
         statusCommentId: input.statusCommentId,
+        ...(input.triggeredAt === undefined ? {} : { triggeredAt: input.triggeredAt }),
         admittedAt: input.observedAt,
       },
       claims: [],
@@ -339,6 +394,7 @@ export class ExactReviewLifecycleProjectionStore {
       acknowledgement: { required: input.commandOriginated, attempts: [], observed: null },
       terminalDispositions: [],
       terminalDisposition: null,
+      bayTelemetryPending: false,
       updatedAt: input.observedAt,
     };
     this.writeSync(projection);
@@ -495,7 +551,11 @@ export class ExactReviewLifecycleProjectionStore {
     },
   ) {
     this.validateIdentity(input);
-    return this.mutate(input, (projection) => applyTerminalDisposition(projection, input));
+    return this.mutate(input, (projection) => {
+      const terminal = applyTerminalDisposition(projection, input);
+      terminal.bayTelemetryPending = true;
+      return terminal;
+    });
   }
 
   recordTerminalDispositionSync(
@@ -505,7 +565,11 @@ export class ExactReviewLifecycleProjectionStore {
     },
   ) {
     this.validateIdentity(input);
-    return this.mutateSync(input, (projection) => applyTerminalDisposition(projection, input));
+    return this.mutateSync(input, (projection) => {
+      const terminal = applyTerminalDisposition(projection, input);
+      terminal.bayTelemetryPending = true;
+      return terminal;
+    });
   }
 
   authorizeCommandAcknowledgement(
@@ -748,6 +812,11 @@ export class ExactReviewLifecycleProjectionStore {
           throw new Error("conflicting lifecycle acknowledgement receipt");
         }
         projection.acknowledgement.observed ??= observed;
+        // The final receipt is the only timing boundary for command journeys.
+        // Queue its Bay materialization in this same source transaction so a
+        // Durable Object restart cannot persist the receipt without its outbox
+        // marker.
+        projection.bayTelemetryPending = true;
         projection.updatedAt = input.observedAt;
         this.writeSync(projection);
         return {
@@ -787,11 +856,14 @@ export class ExactReviewLifecycleProjectionStore {
   }
 
   /**
-   * This reader is intentionally side-effect free. In particular, it does not
-   * ensure schema, normalize legacy rows, or write an index: the public Bay
-   * route must never turn an observation into queue maintenance.
+   * This reader is intentionally side-effect free. Its caller provisions the
+   * table and indexes through the Durable Object constructor barrier; this
+   * method does not ensure schema, normalize legacy rows, or write an index.
    */
-  readBaySnapshot(now = Date.now()): DurableLifecycleBaySnapshot {
+  readBaySnapshot(
+    now = Date.now(),
+    allowedRepositories?: ReadonlySet<string>,
+  ): DurableLifecycleBaySnapshot {
     const unknown = (reason: DurableLifecycleBayUnknownReason): DurableLifecycleBaySnapshot => ({
       version: 1,
       source: "exact-review-lifecycle-projection-v1",
@@ -803,17 +875,55 @@ export class ExactReviewLifecycleProjectionStore {
       sample: null,
     });
 
+    const repositories = allowedRepositories
+      ? [
+          ...new Set([...allowedRepositories].map((repository) => repository.trim().toLowerCase())),
+        ].sort()
+      : null;
+    if (
+      repositories &&
+      (repositories.length > 32 ||
+        repositories.some((repository) => !/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(repository)))
+    ) {
+      return unknown("malformed");
+    }
+
     let rows: Array<Record<string, unknown>>;
     try {
-      rows = Array.from(
-        this.storage.sql.exec(
-          `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-           ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC
-           LIMIT ?`,
-          EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT + 1,
-        ),
-      );
-      // The fixed 512+1 public source bound is deliberately fail-closed. Do
+      if (repositories?.length === 0) {
+        rows = [];
+      } else if (repositories) {
+        rows = [];
+        for (const repository of repositories) {
+          const remaining = EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT + 1 - rows.length;
+          const repositoryRows = Array.from(
+            this.storage.sql.exec(
+              `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+               INDEXED BY exact_review_lifecycle_projection_bay_repository_v2
+               WHERE LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)) = ?
+               ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC
+               LIMIT ?`,
+              repository,
+              remaining,
+            ),
+          );
+          rows.push(...repositoryRows);
+          if (rows.length > EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT) {
+            return unknown("over_cap");
+          }
+        }
+      } else {
+        rows = Array.from(
+          this.storage.sql.exec(
+            `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+             INDEXED BY exact_review_lifecycle_projection_bay
+            ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC
+            LIMIT ?`,
+            EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT + 1,
+          ),
+        );
+      }
+      // The fixed bounded public source read is deliberately fail-closed. Do
       // not paginate, prune, or otherwise maintain storage while observing it.
       if (rows.length > EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT) return unknown("over_cap");
     } catch {
@@ -831,7 +941,6 @@ export class ExactReviewLifecycleProjectionStore {
     } catch {
       return unknown("mixed");
     }
-
     const maxRevisionByTarget = new Map<string, number>();
     for (const projection of projections) {
       maxRevisionByTarget.set(
@@ -1145,6 +1254,73 @@ export class ExactReviewLifecycleProjectionStore {
     };
   }
 
+  /**
+   * Replays terminal facts whose Bay aggregate write failed. The marker is
+   * stored on the lifecycle row itself, rather than only in the secondary
+   * telemetry tables, so it survives a temporary telemetry-schema outage.
+   * Callers must fail closed while a bounded replay has more work.
+   */
+  reconcileBayTelemetryPending(
+    materialize: (projection: ExactReviewLifecycleProjection) => boolean,
+  ) {
+    this.ensureSchemaSync();
+    const rows = Array.from(
+      this.storage.sql.exec(
+        `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+          WHERE bay_telemetry_pending = 1
+          ORDER BY updated_at, canonical_target_key, fence_key, revision
+          LIMIT ?`,
+        EXACT_REVIEW_LIFECYCLE_BAY_TELEMETRY_RECOVERY_BATCH_LIMIT + 1,
+      ),
+    );
+    const more = rows.length > EXACT_REVIEW_LIFECYCLE_BAY_TELEMETRY_RECOVERY_BATCH_LIMIT;
+    for (const row of rows.slice(0, EXACT_REVIEW_LIFECYCLE_BAY_TELEMETRY_RECOVERY_BATCH_LIMIT)) {
+      const projection = projectionFromRow(String(row.projection_json || ""));
+      // Materialization has its own Durable Object transaction. Keep this
+      // source transaction separate: a retry after its source-marker clear is
+      // interrupted is idempotent by lifecycle event id.
+      if (!projection || !projection.bayTelemetryPending || !materialize(projection)) return false;
+      this.markBayTelemetryMaterialized(projection);
+    }
+    return !more;
+  }
+
+  markBayTelemetryPending(input: ProjectionIdentity) {
+    this.validateIdentity(input);
+    return this.mutate(input, (projection) => {
+      projection.bayTelemetryPending = true;
+      return projection;
+    });
+  }
+
+  markBayTelemetryMaterialized(input: ProjectionIdentity & { bayTelemetryEventId?: string }) {
+    this.validateIdentity(input);
+    if (input.bayTelemetryEventId !== undefined && !validText(input.bayTelemetryEventId, 1, 536)) {
+      throw new Error("invalid lifecycle Bay telemetry event identity");
+    }
+    return this.mutate(input, (projection) => {
+      if (input.bayTelemetryEventId === undefined) delete projection.bayTelemetryEventId;
+      else projection.bayTelemetryEventId = input.bayTelemetryEventId;
+      projection.bayTelemetryPending = false;
+      return projection;
+    });
+  }
+
+  hasBayTelemetryPending() {
+    try {
+      return (
+        Array.from(
+          this.storage.sql.exec(
+            `SELECT 1 AS pending FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+              WHERE bay_telemetry_pending = 1 LIMIT 1`,
+          ),
+        ).length > 0
+      );
+    } catch {
+      return true;
+    }
+  }
+
   private mutate<T>(
     input: ProjectionIdentity,
     apply: (projection: ExactReviewLifecycleProjection) => T,
@@ -1186,17 +1362,19 @@ export class ExactReviewLifecycleProjectionStore {
   private writeSync(projection: ExactReviewLifecycleProjection) {
     this.storage.sql.exec(
       `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-         (canonical_target_key, revision, fence_key, projection_json, updated_at)
-       VALUES (?, ?, ?, ?, ?)
+         (canonical_target_key, revision, fence_key, projection_json, updated_at, bay_telemetry_pending)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(canonical_target_key, fence_key, revision) DO UPDATE SET
          fence_key = excluded.fence_key,
          projection_json = excluded.projection_json,
-         updated_at = excluded.updated_at`,
+         updated_at = excluded.updated_at,
+         bay_telemetry_pending = excluded.bay_telemetry_pending`,
       projection.canonicalTargetKey,
       projection.revision,
       projection.fenceKey,
       JSON.stringify(projection),
       projection.updatedAt,
+      Number(projection.bayTelemetryPending),
     );
   }
 
@@ -1564,6 +1742,10 @@ function validDurableLifecycleBayProjection(value: ExactReviewLifecycleProjectio
     !validFenceKey(value.fenceKey) ||
     !positiveInteger(value.revision) ||
     !finiteTimestamp(value.updatedAt) ||
+    typeof value.bayTelemetryPending !== "boolean" ||
+    // `bay:v2:` + a valid 512-character fence key + `:` + a safe-integer
+    // revision (up to 16 decimal digits).
+    (value.bayTelemetryEventId !== undefined && !validText(value.bayTelemetryEventId, 1, 536)) ||
     !validText(value.admission.deliveryId, 1, 300) ||
     (value.admission.sourceDeliveryId !== undefined &&
       !validText(value.admission.sourceDeliveryId, 1, 200)) ||
@@ -1573,6 +1755,7 @@ function validDurableLifecycleBayProjection(value: ExactReviewLifecycleProjectio
     (value.admission.statusMarker !== null && !validText(value.admission.statusMarker, 1, 300)) ||
     (value.admission.statusCommentId !== null &&
       !positiveInteger(value.admission.statusCommentId)) ||
+    (value.admission.triggeredAt !== undefined && !finiteTimestamp(value.admission.triggeredAt)) ||
     typeof value.admission.commandOriginated !== "boolean" ||
     !finiteTimestamp(value.admission.admittedAt) ||
     !Array.isArray(value.claims) ||
@@ -1714,6 +1897,7 @@ function projectionFromRow(value: string): ExactReviewLifecycleProjection {
   // during a rolling deployment so append-only facts are never lost.
   parsed.routerReceipts ??= parsed.routerReceipt ? [parsed.routerReceipt] : [];
   parsed.terminalDispositions ??= parsed.terminalDisposition ? [parsed.terminalDisposition] : [];
+  parsed.bayTelemetryPending ??= false;
   return parsed;
 }
 

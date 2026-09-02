@@ -11,6 +11,14 @@ type WorkflowDocument = {
 const workflowDirectory = ".github/workflows";
 const expectedRunnerByJob = new Map([
   [
+    ".github/workflows/sweep.yml:event-review-apply",
+    "${{ vars.CLAWSWEEPER_REVIEW_RUNNER || 'ubuntu-latest' }}",
+  ],
+  [
+    ".github/workflows/sweep.yml:review",
+    "${{ vars.CLAWSWEEPER_REVIEW_RUNNER || 'ubuntu-latest' }}",
+  ],
+  [
     ".github/workflows/automerge-e2e.yml:automerge-e2e",
     "${{ vars.CLAWSWEEPER_E2E_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}",
   ],

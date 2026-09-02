@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 import { createLabelMutationOperations } from "../dist/clawsweeper-label-mutations.js";
+import { normalizeLabelName } from "../dist/clawsweeper-item-policy.js";
 
 type ObservedMutation = {
   identity: string;
@@ -25,7 +27,7 @@ function createOperations(options?: {
       options?.mutate?.(mutation);
       mutation.onMutation?.();
     },
-    normalizeLabelName: (label: string): string => label.trim().toLowerCase(),
+    normalizeLabelName,
     prStatusLabelForKind: () => ({
       name: "status:ready",
       color: "1F883D",
@@ -62,9 +64,9 @@ test("an exact-publication label batch emits one combined deterministic issue ed
         "edit",
         "321",
         "--add-label",
-        "impact:message-loss,maturity:stable,P2",
+        "P2,impact:message-loss,maturity:stable",
         "--remove-label",
-        "impact:data-loss,P1,status:stale",
+        "P1,impact:data-loss,status:stale",
       ],
     ],
   );
@@ -115,7 +117,7 @@ test("label definition discovery is cached across item batches", () => {
         "--description",
         "Important but bounded work with a practical workaround or moderate scope.",
       ],
-      ["issue", "edit", "321", "--add-label", "impact:message-loss,P2"],
+      ["issue", "edit", "321", "--add-label", "P2,impact:message-loss"],
       ["issue", "edit", "322", "--add-label", "P2"],
     ],
   );
@@ -286,24 +288,26 @@ test("optional batch failures retain successful final operations and report skip
   assert.deepEqual(
     mutations.map(({ args }) => args),
     [
-      ["issue", "edit", "321", "--add-label", "impact:message-loss,P2", "--remove-label", "P1"],
+      ["issue", "edit", "321", "--add-label", "P2,impact:message-loss", "--remove-label", "P1"],
       ["issue", "edit", "321", "--remove-label", "P1"],
-      ["issue", "edit", "321", "--add-label", "impact:message-loss"],
       ["issue", "edit", "321", "--add-label", "P2"],
+      ["issue", "edit", "321", "--add-label", "impact:message-loss"],
     ],
   );
   assert.deepEqual(events, [
     "freshness",
-    "issue edit 321 --add-label impact:message-loss,P2 --remove-label P1",
+    "issue edit 321 --add-label P2,impact:message-loss --remove-label P1",
     "possible mutation",
     "freshness",
     "issue edit 321 --remove-label P1",
     "receipt",
     "freshness",
+    // The optional P2 retry is the one the fixture rejects, so it draws no receipt;
+    // code unit order simply makes it the first per-label retry instead of the second.
+    "issue edit 321 --add-label P2",
+    "freshness",
     "issue edit 321 --add-label impact:message-loss",
     "receipt",
-    "freshness",
-    "issue edit 321 --add-label P2",
   ]);
 });
 
@@ -453,4 +457,42 @@ test("a failed combined mutation has no same-attempt per-label fallback", () => 
   operations.removeIssueLabel(321, "P1");
   operations.flushIssueLabelMutationBatch(321);
   assert.deepEqual(mutations.at(-1)?.args, ["issue", "edit", "321", "--remove-label", "P1"]);
+});
+
+test("the issue label sync identity does not depend on insertion order or runner locale", () => {
+  const additions = ["P2", "impact:message-loss", "maturity:stable", "proof: sufficient"];
+  const removals = ["P1", "impact:data-loss", "status:stale"];
+
+  const identityFor = (addOrder: string[], removeOrder: string[]): string => {
+    const { mutations, operations } = createOperations();
+    operations.beginIssueLabelMutationBatch(321);
+    for (const label of addOrder) operations.addIssueLabel(321, label);
+    for (const label of removeOrder) operations.removeIssueLabel(321, label);
+    operations.flushIssueLabelMutationBatch(321);
+    const identity = mutations.find((mutation) =>
+      mutation.identity.startsWith("issue_labels_sync:"),
+    )?.identity;
+    assert.ok(identity, "the batch must publish an issue_labels_sync mutation");
+    return identity;
+  };
+
+  const baseline = identityFor(additions, removals);
+  assert.equal(identityFor([...additions].reverse(), [...removals].reverse()), baseline);
+  assert.equal(identityFor([...additions].sort(), [...removals].sort()), baseline);
+
+  // Labels a collator calls equal but that are distinct strings must still get a total
+  // order, otherwise `Array.prototype.sort` may leave them in input order.
+  const tied = ["status: \u{1F440}‍ ready", "status: \u{1F440} ready"];
+  assert.notEqual(tied[0], tied[1]);
+  assert.equal(tied[0]?.localeCompare(tied[1] ?? "") ?? 1, 0, "precondition: collator ties these");
+  const tiedIdentity = identityFor(tied, []);
+  assert.equal(identityFor([...tied].reverse(), []), tiedIdentity);
+
+  const child = spawnSync(
+    process.execPath,
+    ["docs/proof/label-sync-identity-determinism/run-proof.mjs"],
+    { encoding: "utf8" },
+  );
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(JSON.parse(child.stdout).candidate.verified, true);
 });

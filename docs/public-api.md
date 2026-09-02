@@ -3,7 +3,7 @@
 - Status: active operator reference
 - Owner: ClawSweeper dashboard maintainers
 - Source of truth: `dashboard/worker.ts` request routing and its focused tests
-- Last verified: `openclaw/clawsweeper@a1795973a9e6bb00b73cd6adc21a4ea02ca78ced`
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
 - Update when: a public observer route, method, query parameter, response source, or authentication boundary changes
 - Checked by: `pnpm run check:docs`
 
@@ -18,7 +18,7 @@ branch, not a promise that every method will remain supported.
 | ---------------------------------------- | ------ | ---------------------------------------------------------------------------------------------------- |
 | `/api/health`                            | `ANY`  | Service liveness and deployed source marker from the Worker environment.                             |
 | `/api/exact-review-queue`                | `GET`  | Closed queue aggregates plus a bounded allowlisted public repository/item reference sample.          |
-| `/api/durable-lifecycle-bay`             | `GET`  | Aggregate lifecycle inventory and six closed lane counts; no target cards.                           |
+| `/api/durable-lifecycle-bay`             | `GET`  | Lifecycle inventory, six closed lane counts, and a bounded verified-public item-card sample.         |
 | `/api/live-activity-bay`                 | `GET`  | Five closed live-activity kind counts; fails closed for an incomplete census.                        |
 | `/api/recent-durable-publication-events` | `GET`  | Closed outcome counts in a normalized `6h`, `24h`, or `7d` window.                                   |
 | `/api/exact-review-queue/item`           | `GET`  | Stable aggregate-only unavailable response; does not perform a per-item lookup.                      |
@@ -70,11 +70,17 @@ separately authenticated operator surface, which does not currently exist.
 detail, raw timing, and internal-key records. Bay activity is producer-composed
 from a complete census so queue/live overlap is counted once; incomplete or
 legacy shapes cannot claim a complete activity aggregate. Its optional bounded
-reference sample contains only canonical `repository`, positive `item_number`,
+reference sample contains canonical `repository`, positive `item_number`,
 closed `stage`, and closed `source` fields for repositories in
-`PUBLIC_BAY_REPOS`. The same sample feeds Bay and Overview. Titles, source URLs,
-queries, opaque keys, failure payloads, credentials, tokens, and non-allowlisted
-repositories are not projected.
+`PUBLIC_BAY_REPOS`. It may also carry a validated action descriptor: canonical
+public repository/run/job identifiers, a canonical start timestamp, and a
+bounded ordered list of fixed step kinds and closed states. The same sample
+feeds Bay and Overview cards, search, overflow lists, and detail blades. Titles,
+raw step names, source URLs, queries, opaque keys, failure payloads, credentials,
+tokens, and non-allowlisted repositories are not projected. The lifecycle
+route applies the same allowlist to its bounded 24-card sample and retains only
+the item reference, closed lane/state, current-revision boolean, and canonical
+timestamp.
 
 The GitHub-egress response exposes only revision-independent closed dimensions
 and sanitized retention watermarks. `query_complete` describes retained

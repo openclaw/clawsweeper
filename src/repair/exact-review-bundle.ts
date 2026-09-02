@@ -6,13 +6,15 @@ export const EXACT_REVIEW_BUNDLE_SCHEMA_VERSION = 1 as const;
 export const EXACT_REVIEW_BUNDLE_MAX_FILES = 512;
 export const EXACT_REVIEW_BUNDLE_MAX_FILE_BYTES = 2 * 1024 * 1024;
 export const EXACT_REVIEW_BUNDLE_MAX_TOTAL_BYTES = 16 * 1024 * 1024;
+export const EXACT_REVIEW_BUNDLE_MAX_ARTIFACT_BYTES = 64 * 1024 * 1024;
 
 const REPO_PATTERN = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
 const BRANCH_PATTERN = /^[A-Za-z0-9_./-]{1,255}$/;
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const ITEM_KEY_PATTERN = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}#[1-9]\d*$/;
-const FILE_PATH_PATTERN = /^(?:review\/[1-9]\d*\.md|action-ledger\/ledger\/[A-Za-z0-9_./-]+)$/;
+const FILE_PATH_PATTERN =
+  /^(?:review\/[1-9]\d*\.md|action-ledger\/ledger\/[A-Za-z0-9_./-]+|live-proof\/[1-9]\d*\/(?:live-verification\.json|live-proof-manifest\.json|live-proof\.mp4|poster\.jpg))$/;
 
 export interface ExactReviewBundleContext {
   repository: string;
@@ -109,7 +111,6 @@ export function createExactReviewBundle(
   if (options.actionLedgerRoot && fs.existsSync(options.actionLedgerRoot)) {
     copyTree(options.actionLedgerRoot, path.join(bundleDir, "action-ledger"));
   }
-
   const files = collectBundleFiles(bundleDir);
   if (context.liveProceeded && !artifactPresent) {
     throw new Error("a proceeded exact review bundle requires a review artifact");
@@ -342,7 +343,7 @@ function validateManifest(value: unknown): ExactReviewBundleManifest {
       throw new Error(`files[${index}].path is invalid`);
     }
     const bytes = numberValue(file.bytes, `files[${index}].bytes`);
-    if (!Number.isInteger(bytes) || bytes < 0 || bytes > EXACT_REVIEW_BUNDLE_MAX_FILE_BYTES) {
+    if (!Number.isInteger(bytes) || bytes < 0 || bytes > exactReviewBundleFileLimit(relativePath)) {
       throw new Error(`files[${index}].bytes is invalid`);
     }
     const digest = stringValue(file.sha256, `files[${index}].sha256`);
@@ -350,7 +351,7 @@ function validateManifest(value: unknown): ExactReviewBundleManifest {
     totalBytes += bytes;
     return { path: relativePath, bytes, sha256: digest };
   });
-  if (totalBytes > EXACT_REVIEW_BUNDLE_MAX_TOTAL_BYTES) {
+  if (totalBytes > EXACT_REVIEW_BUNDLE_MAX_ARTIFACT_BYTES) {
     throw new Error("exact review bundle exceeds its total byte limit");
   }
   const sorted = [...files].sort((left, right) => left.path.localeCompare(right.path));
@@ -413,11 +414,11 @@ function collectBundleFiles(root: string): ExactReviewBundleFile[] {
         throw new Error(`exact review bundle contains an unexpected path: ${relative}`);
       }
       const stat = fs.statSync(absolute);
-      if (stat.size > EXACT_REVIEW_BUNDLE_MAX_FILE_BYTES) {
+      if (stat.size > exactReviewBundleFileLimit(relative)) {
         throw new Error(`exact review bundle file is too large: ${relative}`);
       }
       totalBytes += stat.size;
-      if (totalBytes > EXACT_REVIEW_BUNDLE_MAX_TOTAL_BYTES) {
+      if (totalBytes > EXACT_REVIEW_BUNDLE_MAX_ARTIFACT_BYTES) {
         throw new Error("exact review bundle exceeds its total byte limit");
       }
       files.push({
@@ -449,13 +450,27 @@ function copyTree(sourceRoot: string, destinationRoot: string): void {
   }
 }
 
-function copyRegularFile(source: string, destination: string): void {
+function copyRegularFile(
+  source: string,
+  destination: string,
+  maxBytes = EXACT_REVIEW_BUNDLE_MAX_FILE_BYTES,
+): void {
   const stat = fs.lstatSync(source);
   if (!stat.isFile() || stat.isSymbolicLink())
     throw new Error("bundle source must be a regular file");
-  if (stat.size > EXACT_REVIEW_BUNDLE_MAX_FILE_BYTES) throw new Error("bundle source is too large");
+  if (stat.size > maxBytes) throw new Error("bundle source is too large");
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL);
+}
+
+function exactReviewBundleFileLimit(relativePath: string): number {
+  if (relativePath.endsWith("/live-proof.mp4") || relativePath === "live-proof.mp4") {
+    return 50 * 1024 * 1024;
+  }
+  if (relativePath.endsWith("/poster.jpg") || relativePath === "poster.jpg") {
+    return 10 * 1024 * 1024;
+  }
+  return EXACT_REVIEW_BUNDLE_MAX_FILE_BYTES;
 }
 
 function canonicalJson(value: unknown): string {

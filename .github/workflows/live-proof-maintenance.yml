@@ -1,0 +1,135 @@
+name: Maintain live proof
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "Target repository"
+        required: true
+        type: string
+      item:
+        description: "Pull request number"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  retract:
+    name: Retract published recording
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          filter: blob:none
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve target
+        id: target
+        env:
+          TARGET_REPO: ${{ inputs.repo }}
+          ITEM_NUMBER: ${{ inputs.item }}
+        run: |
+          set -euo pipefail
+          repo="$(printf '%s' "$TARGET_REPO" | tr '[:upper:]' '[:lower:]')"
+          if ! [[ "$repo" =~ ^[a-z0-9_.-]+/[a-z0-9_.-]+$ ]] || ! [[ "$ITEM_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Invalid live-proof target: $repo#$ITEM_NUMBER" >&2
+            exit 1
+          fi
+          {
+            echo "repo_owner=${repo%%/*}"
+            echo "repo_name=${repo#*/}"
+            echo "repo_slug=${repo//\//-}"
+            echo "item=$ITEM_NUMBER"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create target write token
+        id: target-write-token
+        uses: ./.github/actions/create-target-write-token
+        with:
+          client-id: ${{ vars.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.repo_owner }}
+          repository: ${{ steps.target.outputs.repo_name }}
+
+      - uses: ./.github/actions/setup-state
+        with:
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          records-repo-slugs: ${{ steps.target.outputs.repo_slug }}
+          records-item-number: ${{ steps.target.outputs.item }}
+          hydrate-git-state: "false"
+          hydrate-state-blobs: "false"
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build:all
+
+      - name: Capture canonical record baseline
+        id: baseline
+        env:
+          REPO_SLUG: ${{ steps.target.outputs.repo_slug }}
+          ITEM_NUMBER: ${{ steps.target.outputs.item }}
+        run: |
+          set -euo pipefail
+          baseline="$RUNNER_TEMP/live-proof-retraction-baseline"
+          BASELINE="$baseline" node --input-type=module <<'NODE'
+          import { captureCanonicalRecordBaseline } from "./dist/repair/canonical-record-baseline.js";
+          captureCanonicalRecordBaseline({
+            baselineRoot: process.env.BASELINE,
+            repositorySlug: process.env.REPO_SLUG,
+            itemNumber: Number(process.env.ITEM_NUMBER),
+            sources: [
+              {
+                section: "items",
+                name: `${process.env.ITEM_NUMBER}.md`,
+                path: `records/${process.env.REPO_SLUG}/items/${process.env.ITEM_NUMBER}.md`,
+              },
+            ],
+          });
+          NODE
+          echo "path=$baseline" >> "$GITHUB_OUTPUT"
+
+      - name: Retract recording from canonical report
+        env:
+          REPO_SLUG: ${{ steps.target.outputs.repo_slug }}
+          ITEM_NUMBER: ${{ steps.target.outputs.item }}
+        run: |
+          node dist/clawsweeper.js live-proof-attach \
+            --detach \
+            --record "records/$REPO_SLUG/items/$ITEM_NUMBER.md" \
+            --repo-slug "$REPO_SLUG" \
+            --item "$ITEM_NUMBER"
+
+      - name: Publish retracted report
+        env:
+          CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: ${{ steps.baseline.outputs.path }}
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          REPO_SLUG: ${{ steps.target.outputs.repo_slug }}
+          ITEM_NUMBER: ${{ steps.target.outputs.item }}
+        run: |
+          pnpm run repair:publish-main -- \
+            --message "chore: retract live proof recording" \
+            --path "records/$REPO_SLUG/items/$ITEM_NUMBER.md" \
+            --rebase-strategy normal
+
+      - name: Sync retracted review comment
+        env:
+          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          REPO_SLUG: ${{ steps.target.outputs.repo_slug }}
+          ITEM_NUMBER: ${{ steps.target.outputs.item }}
+        run: |
+          node dist/clawsweeper.js live-proof-comment \
+            --detach \
+            --record "records/$REPO_SLUG/items/$ITEM_NUMBER.md" \
+            --repo-slug "$REPO_SLUG" \
+            --item "$ITEM_NUMBER"

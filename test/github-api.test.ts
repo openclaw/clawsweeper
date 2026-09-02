@@ -69,7 +69,7 @@ test("canonical GitHub App signer converts PKCS1 private keys to PKCS8", async (
   assert.equal(imported.asymmetricKeyType, "rsa");
 });
 
-test("worker GitHub App call sites preserve plain error messages", async () => {
+test("worker admission normalizes GitHub App token mint failures", async () => {
   const originalFetch = globalThis.fetch;
   const originalAbortSignalTimeout = AbortSignal.timeout;
   const { privateKey } = generateKeyPairSync("rsa", {
@@ -77,8 +77,6 @@ test("worker GitHub App call sites preserve plain error messages", async () => {
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
     publicKeyEncoding: { type: "spki", format: "pem" },
   });
-  const fetchFailure = new TypeError("fetch failed");
-  const abortFailure = new DOMException("request aborted", "AbortError");
   const failures = [
     {
       fetch: async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -86,35 +84,23 @@ test("worker GitHub App call sites preserve plain error messages", async () => {
         throw new DOMException("request timed out", "AbortError");
       },
       abortSignalTimeout: (() => AbortSignal.abort("timeout")) as typeof AbortSignal.timeout,
-      message: "GitHub App installation timed out",
-      constructor: Error,
     },
     {
       fetch: async () => {
-        throw fetchFailure;
+        throw new TypeError("fetch failed");
       },
-      message: "fetch failed",
-      constructor: TypeError,
-      original: fetchFailure,
     },
     {
       fetch: async () => {
-        throw abortFailure;
+        throw new DOMException("request aborted", "AbortError");
       },
-      message: "request aborted",
-      constructor: DOMException,
-      original: abortFailure,
     },
     {
       fetch: async () =>
         new Response(JSON.stringify({ message: "upstream unavailable" }), { status: 503 }),
-      message: "GitHub App installation 503",
-      constructor: Error,
     },
     {
       fetch: async () => new Response("not-json", { status: 200 }),
-      message: `Unexpected token 'o', "not-json" is not valid JSON`,
-      constructor: SyntaxError,
     },
   ];
 
@@ -122,19 +108,16 @@ test("worker GitHub App call sites preserve plain error messages", async () => {
     for (const failure of failures) {
       globalThis.fetch = failure.fetch;
       AbortSignal.timeout = failure.abortSignalTimeout || originalAbortSignalTimeout;
-      await assert.rejects(
-        worker.fetch(workerGithubWebhookRequest(), {
-          CLAWSWEEPER_APP_CLIENT_ID: "Iv23worker-errors",
-          CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
-          CLAWSWEEPER_WEBHOOK_SECRET: "worker-error-test",
-        }),
-        (error: Error) => {
-          assert.equal(error.constructor, failure.constructor);
-          assert.equal(error.message, failure.message);
-          if (failure.original) assert.equal(error, failure.original);
-          return true;
-        },
-      );
+      const response = await worker.fetch(workerGithubWebhookRequest(), {
+        CLAWSWEEPER_APP_CLIENT_ID: "Iv23worker-errors",
+        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+        CLAWSWEEPER_WEBHOOK_SECRET: "worker-error-test",
+      });
+      assert.equal(response.status, 503);
+      assert.deepEqual(await response.json(), {
+        error: "target_visibility_unverified",
+        retryable: true,
+      });
     }
   } finally {
     globalThis.fetch = originalFetch;
@@ -150,8 +133,8 @@ function workerGithubWebhookRequest() {
   const payload = {
     action: "created",
     repository: {
-      full_name: "openclaw/gogcli",
-      default_branch: "trunk",
+      full_name: "openclaw/openclaw",
+      default_branch: "main",
       private: false,
       archived: false,
       fork: false,

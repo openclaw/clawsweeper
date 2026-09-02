@@ -115,10 +115,21 @@ jobs:
           hydrate-git-state: "false"
           hydrate-state-blobs: "false"
 
+      - name: Install exact live-proof media validators
+        if: ${{ steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
+
       - name: Prepare each item independently
         if: ${{ steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_AWS_SECRET_ACCESS_KEY }}
+          CLAWSWEEPER_LIVE_PROOF_S3_ENDPOINT: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_S3_ENDPOINT }}
+          CLAWSWEEPER_LIVE_PROOF_BUCKET: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_BUCKET }}
+          CLAWSWEEPER_LIVE_PROOF_BASE_URL: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_BASE_URL }}
           GH_TOKEN: ${{ steps.target-token.outputs.token }}
           REPO_TOKEN: ${{ github.token }}
         run: |
@@ -412,7 +423,7 @@ jobs:
         run: pnpm run --silent repair:github-egress-telemetry submit
 
       - name: Release unfinished batch members
-        if: ${{ always() && steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
+        if: ${{ always() && steps.batch.outputs.manifest != '' }}
         continue-on-error: true
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}

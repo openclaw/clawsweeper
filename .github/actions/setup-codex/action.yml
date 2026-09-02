@@ -22,6 +22,10 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Install trusted review scanner
+      shell: bash
+      run: bash "${{ github.action_path }}/../setup-review-tools/install.sh"
+
     - name: Cache Codex CLI and npm downloads
       uses: actions/cache@v6
       with:

@@ -81,6 +81,50 @@ test("post-proof freshness accepts a prior-run automation receipt only with a co
   assert.match(guard(false).postProofFreshnessBlock()?.reason ?? "", /updated_at changed/);
 });
 
+test("forced final freshness rechecks an item without coverage proof or a new self receipt", () => {
+  let fetchCount = 0;
+  const guards = createApplyProofFreshnessGuards({
+    action: undefined,
+    automationItemUpdatedAt: undefined,
+    collectItemContext: () => {
+      throw new Error("changed updated_at must fail before collecting context");
+    },
+    completeReviewActivityReceiptMatches: () => false,
+    contextHasNonAutomationActivityAfter: () => false,
+    coveringPrCloseCoveragePullRequestSnapshotSha256: () => "c".repeat(64),
+    currentProofState: () => ({
+      cachedPrCloseCoverageProofGateResult: undefined,
+      prCloseCoverageProofGateChecked: false,
+      prCloseCoverageProofStartedAtMs: null,
+      storedHash: undefined,
+      storedUpdatedAt: "2026-08-01T14:52:41Z",
+    }),
+    expectedReviewActivityCursor: undefined,
+    fetchItem: () => {
+      fetchCount += 1;
+      return {
+        state: "open",
+        item: { kind: "pull_request", updatedAt: "2026-08-01T14:53:29Z" },
+      };
+    },
+    fetchReviewedPrActivityCursor: () => emptyReviewedPrActivityCursor,
+    freshPullRequestReviewHead: () => true,
+    GitHubRuntimeBudgetError: class extends Error {},
+    itemKind: "pull_request",
+    itemSnapshotHash: () => "d".repeat(64),
+    number: 359,
+    reviewHasCompleteActivityIdentity: false,
+    reviewMarkdown: "---\ntype: pull_request\n---\n",
+    retryCloseCoverageCommandStatusOnlyUpdate: () => false,
+    selfMutationItemReceipts: [],
+  } as never);
+
+  assert.equal(guards.postProofFreshnessBlock(), null);
+  assert.equal(fetchCount, 0);
+  assert.equal(guards.postProofFreshnessBlock({ force: true })?.reason, "updated_at changed");
+  assert.equal(fetchCount, 1);
+});
+
 function sourceRevisionForTest(title: string): string {
   return createHash("sha256")
     .update(
@@ -547,6 +591,7 @@ test("apply-decisions retries transient duplicate PR coverage proof failures", (
       lowSignalCloseReport({
         number: 353,
         title: "Provider route fallback",
+        pull_head_sha: "head-sha",
         close_reason: "duplicate_or_superseded",
         work_cluster_refs: JSON.stringify([
           "Superseded by https://github.com/openclaw/openclaw/pull/400",

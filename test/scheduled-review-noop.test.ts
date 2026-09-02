@@ -13,7 +13,10 @@ const issue = {
   state: "open",
   locked: false,
   updated_at: "2026-08-09T21:12:38Z",
-  labels: [{ name: "status: ready for maintainer look" }],
+  labels: [
+    { name: "status: ready for maintainer look" },
+    { name: "mantis: telegram-visible-proof" },
+  ],
 };
 function fixture(overrides: Record<string, unknown> = {}) {
   const humanComments = [

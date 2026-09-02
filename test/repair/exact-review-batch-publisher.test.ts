@@ -85,6 +85,38 @@ test("direct producer includes a structured rejection detail in its fallback rea
   });
 });
 
+test("direct and batch producers accept fenced supersession without legacy fallback", async () => {
+  for (const path of [
+    "/internal/exact-review/publication-results",
+    "/internal/exact-review/publication-batch-results",
+  ] as const) {
+    let calls = 0;
+    const response = {
+      ok: true,
+      accepted: false,
+      deduped: false,
+      superseded: true,
+      superseded_revisions: [],
+      canonical_target_key: "openclaw/openclaw#1",
+      fence_key: "openclaw/openclaw#1",
+      state_commit_sha: null,
+    };
+    const result = await postDirectPublicationResult({
+      baseUrl: "https://clawsweeper.openclaw.ai",
+      webhookSecret: "test-secret",
+      payload: directPayload(),
+      path,
+      fetch: async () => {
+        calls += 1;
+        return Response.json(response, { status: 202 });
+      },
+    });
+
+    assert.equal(calls, 1);
+    assert.deepEqual(result, { kind: "accepted", attempts: 1, response });
+  }
+});
+
 test("direct publication flag defaults through workflow wiring while explicit off stays legacy", () => {
   assert.equal(exactReviewDirectPublicationEnabled("1"), true);
   assert.equal(exactReviewDirectPublicationEnabled("true"), true);

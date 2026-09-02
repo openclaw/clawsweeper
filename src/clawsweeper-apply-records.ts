@@ -43,7 +43,6 @@ export function createApplyRecordOperations({
   const applyReportEntriesForDir = (
     dir: string,
     location: "items" | "closed",
-    filterRequested = true,
   ): Array<
     ReportEntry & {
       location: "items" | "closed";
@@ -51,22 +50,35 @@ export function createApplyRecordOperations({
       applyCheckedAt: number;
     }
   > =>
-    reportEntriesForDir(
-      dir,
-      filterRequested && requestedItemNumberSet.size > 0 ? requestedItemNumberSet : undefined,
-    )
+    reportEntriesForDir(dir, requestedItemNumberSet.size > 0 ? requestedItemNumberSet : undefined)
       .filter(
         (entry) =>
           entry.repo === targetRepo() &&
-          (!filterRequested ||
-            requestedItemNumberSet.size === 0 ||
-            requestedItemNumberSet.has(entry.number)),
+          (requestedItemNumberSet.size === 0 || requestedItemNumberSet.has(entry.number)),
       )
       .map((entry) => ({
         ...entry,
         location,
         ...applyQueueSortFields(entry.markdown, syncCommentsOnly, applyKind),
       }));
+
+  const createOpenReportLookup = (entries: readonly ReportEntry[], selectedOnly: boolean) => {
+    const byNumber = new Map<number, ReportEntry | undefined>(
+      entries.map((entry) => [entry.number, entry]),
+    );
+    return (number: number): ReportEntry | undefined => {
+      if (!byNumber.has(number) && !selectedOnly) {
+        // Paired-close guards need independent evidence, not the entire open corpus.
+        byNumber.set(
+          number,
+          reportEntriesForDir(itemsDir, new Set([number])).find(
+            (entry) => entry.repo === targetRepo(),
+          ),
+        );
+      }
+      return byNumber.get(number);
+    };
+  };
 
   const captureApplyCanonicalBaseline = (reportPath: string): void => {
     if (dryRun || !canonicalBaselineDir) return;
@@ -118,6 +130,7 @@ export function createApplyRecordOperations({
 
   return {
     applyReportEntriesForDir,
+    createOpenReportLookup,
     captureApplyCanonicalBaseline,
     syncDecisionPacketMarkdown,
     writeReportMarkdown,

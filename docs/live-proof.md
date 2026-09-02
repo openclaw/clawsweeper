@@ -1,127 +1,154 @@
 # Live proof
 
-- Status: active
+- Status: retired for automatic review generation; compatibility support only
 - Owner: ClawSweeper review and publication maintainers
-- Source of truth: `src/live-proof/`, `.github/workflows/live-proof.yml`, and
-  repository `live_test` profiles
-- Update when: the plan schema, execution gates, media limits, storage path, or
-  comment rendering changes
+- Source of truth: `schema/clawsweeper-decision.schema.json`,
+  `src/live-proof/`, `.github/workflows/sweep.yml`,
+  `.github/workflows/exact-review-batch-publish.yml`, and
+  `.github/workflows/live-proof-maintenance.yml`
+- Update when: the compatibility decision shape, historical artifact validation,
+  publication folding, media storage, comment rendering, or retraction changes
 
-Live proof turns a review-time `liveProofPlan` into a short deterministic
-recording of user-visible browser or terminal behavior. Classification remains
-part of the existing read-only review. It records only a typed plan in the
-durable report; it never executes pull request code and never publishes a URL.
+ClawSweeper no longer generates live proof during exact-event or scheduled
+reviews. Review jobs do not inspect `liveProofPlan`, provision proof-specific
+tools, execute pull-request code, record proof results, or upload newly generated
+proof files. Exact review bundles contain the review and action ledger only, and
+ordinary exact reviews remain eligible for direct publication without waiting
+for proof.
 
-After the report is published, `sweep.yml` dispatches
-`live-proof.yml` only when the plan status is `recommended` and the target's
-repository profile has `live_test.enabled: true`. The command then applies four
-ordered gates: `CLAWSWEEPER_LIVE_PROOF_ENABLED=1`, repository opt-in, a
-recommended plan, and a still-open pull request. Every failed gate is a logged
-successful skip.
+There is no replacement proof lane, execution toggle, or OpenClaw Bay action.
+Future review journeys simply omit the former automatic proof delay. Bay has a
+presentation-only switch for including the retired proof/legacy-batch path in
+historical cards and timing; that switch is off by default and cannot trigger
+work.
 
-## Execute and attach
+## Decision compatibility
 
-The workflow has two jobs with different trust. `execute` has
-`permissions: {}`, receives no secret environment values, checks out the public
-PR head, and runs setup/start commands from the trusted repository profile. It
-contains no model call. Browser plans are serialized as JSON data into a
-generated plain `playwright-core` script; plan values are never inserted as
-source code. The script uses installed Chrome, a 1280x800 recorded context, and
-falls back to Playwright Chromium only when Chrome cannot launch. Terminal
-plans use tmux, `xvfb-run`, a fullscreen xterm, and ffmpeg `x11grab`; typed
-`run`, `wait`, and `expect_output` steps are replayed through the tmux pane.
+`liveProofPlan` remains a required decision and report field so older records
+continue to parse. New model output is constrained to this empty compatibility
+shape:
 
-Both drivers finalize the recording after a mid-plan failure and record the
-result as `drive_status`. The command transcodes to H.264 MP4, probes it with
-ffprobe, creates `poster.jpg`, enforces the repository's recording limit and a
-50 MB MP4 cap, and writes `steps-log.json` plus a metadata-only
-`live-proof-manifest.json`. The manifest contains no media URL. The bundle is
-retained as a GitHub Actions artifact for seven days.
-
-The trusted `attach` job checks out only ClawSweeper `main`; it never checks out
-or executes target PR code. It treats the downloaded bundle as untrusted,
-strictly validates the manifest, rejects extra URL fields, probes the MP4 and
-poster again, rechecks size/duration/dimensions, and refuses a stale PR head.
-Only then does it upload `live-proof.mp4` and `poster.jpg` with `aws s3 cp` to:
-
-```text
-live-proof/<repo-slug>/<item>/<head-sha>/live-proof.mp4
-live-proof/<repo-slug>/<item>/<head-sha>/live-proof.jpg
+```json
+{
+  "status": "not_applicable",
+  "surface": "none",
+  "terminalCompletion": "not_applicable",
+  "reason": "Automatic live proof is retired.",
+  "payoff": {
+    "kind": "static_text",
+    "justification": "No recording payoff is assessed."
+  },
+  "entry": "",
+  "steps": []
+}
 ```
 
-The attach job constructs both public URLs from its trusted
-`CLAWSWEEPER_LIVE_PROOF_BASE_URL`; bundle data cannot supply a host or URL. It
-updates the durable report's `Live Proof` section, re-renders the existing
-review presentation, upserts the marker-backed comment with a target-scoped
-write token, updates the comment-sync front matter, and publishes the changed
-canonical record. OpenClaw Bay is unaffected: this lane changes a durable
-report and its existing GitHub comment, not Bay's observer-only data contract
-or controls.
+The runtime parser deliberately continues to accept historical
+`recommended` and `declined_suspicious` plans, browser and terminal surfaces,
+visual payoff kinds, entries, and typed steps. Report generation and parsing
+also retain those values. This backward compatibility does not authorize new
+automatic execution.
 
-## ClawSweeper Bay demo
+Repository `live_test` profiles and the low-level live-proof modules remain
+only because historical tooling and records still depend on their types and
+validation behavior. Review prompts no longer receive repository proof setup,
+tooling, checkout, or browser-startup execution context.
 
-The `openclaw/clawsweeper` repository profile enables browser live proof against
-the local OpenClaw Bay at `http://127.0.0.1:8787`. Its maintained launcher and
-data seeder live in `scripts/live-proof/bay-demo/`: `start.sh` creates a
-throwaway `.dev.vars` and Wrangler state directory outside the checkout, starts
-the dashboard Worker in the foreground, and runs `seed.mjs` after the health
-endpoint becomes ready. The dependency-free Node seeder fills the local Worker
-with representative ClawSweeper lifecycle and workflow records so recordings
-show real Bay cards and stage content instead of an empty dashboard.
+Historical terminal verification remains compatible with the authoritative
+`terminalCompletion` result added before retirement. Existing `exit_zero` and
+`ready_while_running` records keep their controller-observed exit, viewport,
+and cleanup evidence; new decisions always use `not_applicable`.
 
-The profile installs the PR head with `pnpm install --frozen-lockfile`, allows
-240 seconds for the Worker and seed data to become ready, and retains the
-lane-wide 90-second recording limit. The temporary signing value is generated
-for each launcher process; the demo neither requires production credentials nor
-writes a `.dev.vars` or Wrangler state into the tracked tree.
+For historical `exit_zero` plans, finite commands wait within the remaining
+terminal budget before assertions are evaluated against sealed,
+controller-observed output. A successful exit does not waive a missing output
+assertion. Historical `ready_while_running` plans retain their bounded marker,
+stability, and liveness checks. Child standard I/O stays bound to the concrete
+PTY path so detached subprocesses can preserve their inherited descriptors.
 
-## Local simulation
+Retained terminal assertions join only tmux soft wraps, preserving hard newline
+boundaries and whitespace for literal matching. The final visual viewport keeps
+screen rows, including soft wraps.
 
-The execution lane can run without GitHub or an API key against an existing
-checkout. The target repository must still have an enabled `live_test` profile.
-Pass a JSON fixture containing either the `liveProofPlan` object itself or an
-object with a `liveProofPlan` property:
+The retained verifier also preserves the final watchdog cleanup contract for
+historical terminal records: cleanup is bound to the original pane, terminal,
+nonce, and lease, requires an exact zero-survivor receipt after the pane dies,
+and fails visibly for missing, stale, replaced, surviving-process, or timeout
+evidence. Target commands do not inherit `TMUX`, `TMUX_PANE`, or `TMUX_TMPDIR`.
+The watchdog sends TERM once with 150 ms total grace, then rediscovers and
+identity-checks survivors for KILL and requires two empty scans. It does not
+repeat the expensive macOS per-process lease checks in additional TERM sweeps.
+Up to eight independent signal workers run together, each revalidating the
+lease or original terminal immediately before signaling. Every worker is joined
+and its failure retained before the next scan. The controller's cleanup budget
+is unchanged. The watchdog removes its private scan file before publishing the
+completion receipt, so the controller cannot finish while that file remains.
+Failed removal produces a cleanup-error receipt instead of success.
 
-```bash
-CLAWSWEEPER_LIVE_PROOF_ENABLED=1 node dist/clawsweeper.js live-proof \
-  --repo owner/name \
-  --item 123 \
-  --plan ./fixtures/browser-live-proof-plan.json \
-  --checkout /absolute/path/to/checkout \
-  --output ./artifacts/live-proof
-```
+Process exit and PTY closure are separate tmux observations; cleanup waits for
+both rather than rejecting their intermediate states. If the original pane
+wrapper dies, its exit signal remains the failure reason even when watchdog
+cleanup produces a later child status. An already-dead pane is removed only
+after its identity and zero-survivor cleanup are verified, allowing tmux to
+close the capture pipe. The capture helper must still confirm clean EOF.
 
-`--plan` bypasses report-artifact lookup. `--checkout` uses that checkout's
-current Git HEAD and logs that the live PR kind/open lookup is skipped. The
-environment, profile, and plan-status gates still run in their normal order.
+## Historical artifact publication
 
-To validate an attachment without GitHub, R2, or credentials, point the attach
-command at a local media bundle and report and supply non-secret example
-origins. Dry-run mode performs strict manifest/media/report validation, uses
-the report head for the simulated freshness check, and prints the exact two
-`aws s3 cp` commands, replacement report section, and marker-backed comment
-body without making a mutation:
+Existing and already-queued proof-bearing artifacts remain supported while they
+age out:
 
-```bash
-CLAWSWEEPER_LIVE_PROOF_S3_ENDPOINT=https://example.r2.cloudflarestorage.com \
-CLAWSWEEPER_LIVE_PROOF_BUCKET=example-live-proof \
-CLAWSWEEPER_LIVE_PROOF_BASE_URL=https://media.example.test \
-node dist/clawsweeper.js live-proof-attach \
-  --bundle ./artifacts/live-proof \
-  --record ./fixtures/report.md \
-  --dry-run
-```
+- exact-review bundle validation still accepts the historical
+  `live-proof/<item>/` inventory
+- exact-event, batch, and scheduled publication jobs still validate and fold
+  `live-verification.json` into review reports
+- valid historical manifests, MP4 recordings, and posters can still be uploaded
+  to the established R2 paths
+- review comments still render the **Live Verification** section and optional
+  recording block
+- historical terminal results retain their bounded authoritative final viewport,
+  exit status, and cleanup evidence
+- the manual **Maintain live proof** workflow can still retract a published
+  recording without removing the underlying historical verification
 
-## Security invariants
+These publication paths consume trusted workflow artifacts; they do not inspect
+a new plan or execute target code.
 
-- Classification is read-only and executes no target code.
-- Execute has no GitHub permissions, secrets, credentials, or inference; the
-  disposable GitHub-hosted VM is the isolation boundary.
-- Drivers replay only schema-validated typed steps, with at most ten actions
-  and a recording cap of 90 seconds.
-- The artifact manifest is metadata-only. Unknown keys, including any injected
-  URL field, are rejected by attach.
-- R2 credentials, the public base URL, the canonical-record credential, and
-  the target write token exist only in attach.
-- Attach validates media and current PR head before upload, constructs URLs
-  from trusted configuration, and never runs code from the target checkout.
+Historical receipts are diagnostic execution evidence. A passed command or
+assertion does not establish that the changed behavior was exercised. The
+ordinary recorded `realBehaviorProof` assessment owns that judgment, including
+relevant deterministic owner evidence assessed by the reviewer. Attaching a
+receipt cannot manufacture sufficient proof, replace contributor evidence or
+its media attribution, or waive required authority-chain proof. Reviewer patch
+ratings and rank-up advice remain independent; stale receipt-era proof credit
+may only be capped against the recorded behavioral assessment.
+
+Failed or malformed receipts still block merge independently of proof
+exemptions and overrides. When independent behavioral proof is valid, the
+receipt failure belongs to the maintainer, not the contributor. Identity and
+plan validation, bounded output, historical media publication, and retraction
+remain unchanged. No new execution or assessment lane is introduced.
+
+Reviewers should connect the changed production owner and behavior from the diff
+to the exercised entrypoint, scenario, environment, and observed result or gap in
+the existing proof summary and evidence entries. Generic help, version, startup,
+or exit-zero smoke does not prove unrelated runtime or native behavior; help
+output can prove a changed help/CLI-output contract. For exec-host cancellation,
+distinguish normal write-half-close success from cancellation triggered by
+explicit caller abort, full disconnect, or server shutdown. Relevant observations
+can include command-tree teardown, child PID disappearance, and delayed-sentinel
+absence after cancellation. Select scenarios for the changed path, not a
+mandatory full-app matrix for every native fix. Terminal traces of the real path
+are valid proof; video is not required. Signing establishes provenance, not
+coverage by itself. Independently sufficient native before/after evidence keeps
+its classification alongside an unrelated passing help smoke. The PASS rendering
+reminds readers that only the declared scenario and assertions passed; the
+semantic assessment determines changed-behavior coverage.
+
+## OpenClaw Bay
+
+OpenClaw Bay remains observer-only. Its default beach and one-hour review-time
+metric show the normal direct-publication path. A presentation-only **Include
+retired proof/batch** switch can add historical automatic-proof and other legacy
+batch-path journeys for comparison. The switch is deliberately off by default,
+does not affect durable queue state, and adds no queue, workflow, GitHub,
+recovery, or other mutation control.

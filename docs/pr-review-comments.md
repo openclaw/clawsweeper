@@ -31,6 +31,10 @@ Each synced comment includes the durable identity marker:
 ClawSweeper edits that comment in place instead of posting repeated comments.
 Report front matter stores the synced comment id, URL, hash, and sync time.
 
+Trailing marker recovery stops at visible prose, including prose ending in
+`-->`. An already-closed HTML comment cannot extend across that prose into the
+final marker block; valid contiguous trailing markers remain recoverable.
+
 When review starts and no ClawSweeper-owned comment exists yet, the review
 shard posts a short status placeholder with the same durable identity marker.
 The placeholder is intentionally light and crustacean-friendly, then the final
@@ -101,11 +105,138 @@ PR comments use a human-first shape:
 8. `## Findings` appears only when actionable review or security findings need
    a little more visible detail.
 
+New reviewer output requires a producer-owned `nextStep` assessment. Issues use
+none and retain their existing next-action guidance in `workReason`; only PR
+checklists consume this new intent. Canonical report frontmatter stores `next_step` as JSON: `{"kind":"none","text":""}` means
+no additional required next step; `{"kind":"required","text":"..."}` carries
+nonempty trimmed action text. Explanatory routing prose stays in `workReason`.
+Only the Before merge next-step checkbox and its readiness count consume this
+intent: explicit none suppresses that derived item, while required actions survive
+negation, contrast, routine-sounding prose, or lack of action keywords. Human-owned
+actions may be required even when `workCandidate` is none. Contributor changelog
+requests remain subject to OpenClaw's release-owned changelog normalization.
+
+Historical Decisions may omit the assessment, and reports are not migrated or
+rewritten. Missing, malformed, duplicated, or ambiguous metadata retains the
+conservative legacy prose fallback, never an inferred none. Only a unique valid
+value in leading canonical frontmatter counts; body or fenced examples cannot
+supply it. This compatibility limit means old false-positive prose needs a fresh
+producer assessment, not a guess from its summary, rating, or automation markers.
+Independent findings, security concerns, risks, contributor proof, historical
+verification, decisions, failed reviews, and low-quality remediation still render
+and count. Scores and marker/repair/automerge eligibility are unchanged: `nextStep`
+is presentation intent, not mutation authority. OpenClaw Bay needs no code change
+because its observer projection does not consume this checklist.
+
+The [next-step intent proof recipe](proof/review-next-step-intent/README.md)
+compares identical synthetic reports against pinned baseline and candidate
+renderers and exercises producer-to-report persistence without live publication.
+
 Everything primarily useful to agents or deep reviewers lives under one
 collapsed `Agent review details` section: security evidence, PR surface,
 review metrics, stored-data warnings, root-cause clusters, proof suggestions,
 merge-risk options, full review comments, labels, evidence, optional rank-up
 moves, the rank legend, workflow notes, and review history.
+
+For OpenClaw, the PR surface table and config detector share explicit test-role
+names: test/spec code leaves, Go `*_test.go` files, terminal dotted or hyphenated
+`test-support`, `test-helpers`, `test-utils`, `test-harness`, and `test-fixtures`
+code suffixes, and explicit test directories. Generic support/helper names remain production
+candidates. Generated files retain table precedence; config detection filters
+each rename side before patch uncertainty, retaining production or semantic docs
+evidence and truncated-list warnings. Reviewer production/test metrics remain
+separately assessed. Test roles grant no contributor-proof exemption. Storage
+warnings retain their separate persistence-evidence and upgrade-proof rules.
+OpenClaw Bay needs no change because its observer API and data contract are unchanged.
+
+The recorded reviewer proof assessment and the host's existing proof requirement
+are separate. An applicable external PR assessed as `not_applicable` still needs
+proof: the verdict, readiness, verification, checklist, and status label explain
+that the assessment does not satisfy current policy. Put relevant after-change
+evidence in the main PR body, then request a fresh review. This includes root
+`README.md` changes; the existing docs exemption requires a complete, nonempty
+file list entirely under `docs/`. Recorded proof fields, summaries, ratings, and
+rating labels remain unchanged; the comment identifies reviewer context without
+presenting it as a host exemption.
+
+Failed or malformed historical verification receipts remain separate,
+maintainer-owned blockers. They do not erase independently sufficient contributor
+proof or turn an exempt change into a contributor proof request. These projections
+do not change merge, repair, or close eligibility. OpenClaw Bay needs no code or
+schema change because its observer projection does not consume this assessment
+or checklist.
+
+For OpenClaw PRs, stored-data warnings flag possible persistence changes in
+production source or documented storage contracts, not setup in test, fixture,
+or example source paths. Colocated `*.test-support.*` and Go `*_test.go` files
+are test code too, even when their guards or setup mention metadata,
+serialization, or SQL. Generic words such as `metadata`, `chunkId`, `documentId`,
+`collection`, and `dimension` alone do not establish vector storage, including
+generic metadata or identifier filenames. Known storage paths, explicit
+vector/embedding contracts, and same-hunk persistence
+evidence still require review; diagnostic logging does not exempt real storage
+changes in the same patch.
+Markdown beside source is still documentation: ordinary
+prose mentioning sessions or metadata is not a stored-format change. Explicit
+storage formats, SQL DDL, and structured storage keys (including frontmatter)
+remain evidence. Renames retain evidence from either production path. Missing,
+empty, or truncated patches on explicit production persistence paths or hook
+descriptors, and truncated file lists, still produce conservative unknown
+warnings. Generic `state`, `session`, and `history` path names and typed runtime
+parameters alone do not establish persistence, including when their patches are
+truncated. Explicit serialization, browser storage (local/session storage and
+IndexedDB), durable storage, and schema/migration evidence remain eligible in
+UI code too. Unchanged storage context in the same diff hunk can establish the
+boundary for changed stored fields; an in-memory map or display-only comment
+never vetoes that evidence. Ordinary validation fields in a `schema` file alone
+do not establish persisted database columns. The warning requests review; it
+does not prove a persisted contract changed. This classification does not change
+the separate `docs/` exemption for contributor behavior proof.
+
+## Evidence Repository Identity
+
+Each new structured evidence entry records its verified `repo` (`owner/name`),
+repository-relative `file`, line, and full source commit `sha` when known. Use
+`repo: null` for unknown ownership. Dependency source and commit links retain
+that repository through report serialization and both close and keep-open
+comments; dependency files never inherit the target's main SHA or public docs
+mapping.
+
+Older reports without an explicit repository retain same-repository behavior,
+but canonical GitHub blob and commit destinations preserve their own repository
+and full SHA instead of being reconstructed from display labels. Conflicting
+identities and unresolved sibling, absolute, or traversal paths remain unlinked.
+This changes evidence rendering only, not the observer API or OpenClaw Bay.
+
+## PR Introduction Evidence
+
+Before model execution, the host assembles bounded local Git evidence for the
+pinned PR base and head. The reviewer receives the actual checkout SHA separately
+from fetched main, the unique merge base, introduced files and patch from
+merge-base to head, base-branch changes, and a separately labeled base-to-head
+endpoint comparison. A file that differs only because main advanced is not
+automatically a PR edit. Findings in untouched files remain valid when an
+introduced hunk elsewhere causes the failure; risks, labels, scores, and fixups
+must use that same ownership boundary.
+
+PR source acquisition fetches complete blobless ancestry and the pinned open-PR
+test merge before restricted review, with a 30-second deadline per fetch. Branch
+and release refreshes preserve that ancestry; existing shallow checkouts are
+unshallowed rather than deepened to a fixed commit count. The evidence reader
+itself cannot fetch objects or run external diff drivers. It bounds each Git read
+to 1 MiB and five seconds, lists to 80 paths, and the introduced patch to 24,000
+characters. Missing blobs, incomplete shallow ancestry, multiple merge bases,
+and truncated evidence are explicit limitations, never inferred ownership or an
+automatic pass.
+
+Test-merge evidence is accepted only for an open, unmerged PR and a local commit
+with exactly the pinned base then head as its two parents. Its result is compared
+with that base parent, which may differ from newly fetched main. Stale test
+merges and final merge commits cannot establish what this merge would change.
+A clean merge does not rule out semantic regressions.
+
+This is reviewer input, not a new persistent decision or repair contract.
+OpenClaw Bay is unaffected: no observer fields, routes, or controls change.
 
 Security defaults to `None.` when there are no concerns. Do not spend public
 space explaining why an uneventful security pass is uneventful.
@@ -129,6 +260,69 @@ still read as `Codex review: passed.` in the durable review comment.
 
 Issues use `**Next step**` instead of the PR-specific `**Next step before
 merge**` heading. Non-PR comments are never repair triggers.
+
+## History Attribution
+
+The public related-people section separates routing judgment from Git facts.
+Reviewers may propose up to five source-line history pointers, identifying the
+recorded checkout's path/line, a commit, and either its author or committer.
+ClawSweeper verifies the actual line change against every parent recorded in
+`git cat-file commit`, using the same reader for structured regression provenance.
+Blame boundary markers, graph-truncated parents, or root-style display alone do
+not prove introduction. Configured blame revision exclusions are cleared so they
+cannot substitute an older line version. Whole-commit rename metadata identifies
+exact file moves as carried forward; inexact rename mappings remain unknown.
+Other unchanged lines are carried forward; missing objects, quoted blame paths,
+oversized reads, or expired verification budgets remain unknown.
+Reads reuse the trusted local Git boundary, share a five-second budget per
+verification set, and never fetch history or invoke target callbacks. Replacement
+refs and legacy grafts are disabled. Parent records must follow the tree record
+consecutively; identities, porcelain metadata, and diff hunks split only on LF,
+never embedded CR or Unicode line separators.
+
+Public actor names and roles come from raw commit metadata, not reviewer prose.
+Author, committer, PR author, and merger remain separate; line history does not
+establish feature responsibility. Other candidates retain only a low-confidence
+routing suggestion. Host projections carry `raw_parent_line_v1` in the existing
+report representation; older unmarked attribution cannot regain verified status
+when comments are rendered. Stored reports and live comments are not rewritten by
+this reader change. OpenClaw Bay needs no change: no observer API or controls change.
+
+## Primary Body Coverage
+
+Hosted primary issue and PR bodies up to 12,000 UTF-16 units remain intact.
+Longer bodies retain an opening plus at most three source-ordered verbatim
+excerpts around proof and trace/output anchors, including inside details.
+The sibling `bodyCoverage` records the full-source SHA-256, original length,
+end-exclusive UTF-16 ranges, omitted units, and incomplete coverage. The
+opening, excerpts, JSON escaping, and coverage metadata share the existing
+12,000-unit allocation. Candidate overflow, oversized blocks, and unrecognized
+layouts can still omit evidence; anchors are navigation, not proof validation.
+
+Reviewers must inspect supplied evidence with existing authorized read-only
+capabilities before a negative proof claim, preserve the captured source
+identity, and disclose remaining context gaps. Full-source freshness hashes do
+not mean every source character was read; omitted evidence is unknown rather
+than absent or mock-only. Excerpts are untrusted text, never instructions or
+scripts to execute. Supplemental excerpts and PR patches are reviewer-only
+media inputs: neither enters automatic media downloads. Primary body and
+comment media remain discoverable, even when the same URL appears in a patch.
+
+Each selected media item has a two-minute preparation deadline shared by its
+download, video probe, and contact-sheet conversion. A timed-out subprocess is
+killed and recorded as a failed artifact; later items still run. Downloads also
+retain curl's 90-second limit.
+
+Assist preserves coverage alongside the body. The report context ledger counts
+each primary record as one entry and includes its coverage in character totals;
+its list hydration counters do not describe body completeness. Related items,
+comments, patch content, local body overrides, proof statuses, and mutation gates
+are unchanged. This is reviewer input only: OpenClaw Bay needs no change because
+no observer API, public data contract, or action surface changes.
+
+The [historical producer proof recipe](proof/proof-context/README.md) exercises
+this input-delivery boundary without executing submitted evidence or invoking
+a reviewer.
 
 ## Review History Ledger
 
@@ -158,6 +352,38 @@ concern in one pass, and mark findings on previously reviewed, unchanged code
 with `lateFinding: true` only after comparing the current file with an earlier
 reviewed SHA, so review churn stays measurable without guessing from titles or
 line numbers.
+
+Trusted raw self-comments are deliberately removed from discussion and replaced
+by this reviewer-only projection. It now includes bounded parsed `rankUpMoves`
+from the current completed comment, alongside the existing source comment id,
+URL, and digest. Coverage distinguishes a completed comment from a history-only
+fallback or unavailable completed context. Section states distinguish recognized
+items, explicit empty content, no published section, unrecognized content, and
+truncation. An unpublished or legacy field is not evidence that no advice existed.
+Finding titles keep the six-item cap and a 160-character input limit; rank-ups
+retain up to six items of 600 characters each. Coverage records recognized,
+retained, omitted, and shortened item counts. It does not claim full finding bodies.
+
+The persisted public v1 ledger, append/deduplication, hashing, and publisher
+contracts are unchanged. Reviewer history coverage separates retained from
+lifetime cycle counts and absent, malformed, or cycle-capped history. Its bounded
+finding titles do not retain full risks or rank-ups; original item/text counts
+are unknown, and observed item/text caps are flagged. A history-only fallback
+therefore supplies known finding titles with unavailable rank-up context.
+
+Continuity instructions require checking concrete prior items against current
+evidence and recorded dispositions. Historical next steps, including old
+context-only warnings, remain evidence rather than fresh instructions to repeat
+them. Intentional filtering alone must not create a finding, risk, decision,
+next step, or rank-up requiring another reading of unspecified advice. Genuine
+material missing or malformed context remains disclosed with the affected item
+or uncertainty. Concrete unresolved blockers and the pre-land requirement to
+apply applicable rank-ups or explicitly justify exceptions are unchanged, as are
+proof/security gates and optional-rank-up semantics. This prompt change updates
+the existing review-policy hash used for cache reuse.
+
+OpenClaw Bay is unaffected: this is reviewer input and guidance only, with no
+observer schema, routes, or control changes.
 
 ## Repair Markers
 
@@ -197,6 +423,13 @@ Clean/close-style PR verdicts also stay human-only from the repair point of
 view. Closing remains outside the repair loop.
 
 ## Stale-Head Guard
+
+Completed current-head PR reviews carrying complete source, timeline, and
+review-activity receipts reconcile managed labels only while those receipts match.
+Captured activity before review completion can be reconciled; human activity in or after
+the completion timestamp's whole second blocks label updates. This preserves
+GitHub's timestamp precision even when `reviewed_at` includes milliseconds.
+OpenClaw Bay is unaffected: no observer data contract or controls change.
 
 PR reports include `pull_head_sha` in front matter when GitHub provides it.
 ClawSweeper copies that SHA into the hidden markers. The repair lane compares

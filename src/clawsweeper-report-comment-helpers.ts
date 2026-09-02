@@ -8,16 +8,17 @@ import type {
   ItemKind,
   LikelyOwner,
   MergeRiskOption,
+  NextStepAssessment,
   PublicBeforeMergeItem,
   PublicPriority,
   RegressionAssessment,
-  RealBehaviorProof,
   ReviewFinding,
   ReviewRuntime,
   RootCauseClusterAssessment,
   PublicRegressionProvenance,
   SecurityReview,
 } from "./clawsweeper-types.js";
+import type { RealBehaviorProofPolicy } from "./clawsweeper-proof-policy.js";
 import {
   isRegressionAssessment,
   isPublicRegressionProvenance,
@@ -59,6 +60,7 @@ export function createReportCommentHelpers(
     markdownRepository,
     normalizePublicReviewText,
     priorityLabel,
+    publicHistoricalVerificationBlockerLine,
     publicPriorityFromText,
     publicRealBehaviorProofLine,
     publicReviewTextDiffers,
@@ -292,12 +294,12 @@ export function createReportCommentHelpers(
 
   function publicBeforeMergeItems(options: {
     reviewFailed: boolean;
-    proof: RealBehaviorProof;
-    proofBlocked: boolean;
+    proofPolicy: RealBehaviorProofPolicy;
     findings: readonly ReviewFinding[];
     securityReview: SecurityReview;
     risks: string;
     nextStep: string;
+    nextStepAssessment: NextStepAssessment | undefined;
     decisionPending: boolean;
     patchQualityBlocked: boolean;
     requiredRatingSteps: readonly string[];
@@ -342,8 +344,16 @@ export function createReportCommentHelpers(
         "ClawSweeper must complete a fresh review before readiness is known.",
       );
     }
-    if (options.proofBlocked) {
-      add("Add real behavior proof", publicRealBehaviorProofLine(options.proof));
+    if (!options.reviewFailed && options.proofPolicy.proofBlocksMerge) {
+      add(
+        options.proofPolicy.needsContributorAction
+          ? "Add real behavior proof"
+          : "Resolve real behavior proof assessment",
+        publicRealBehaviorProofLine(options.proofPolicy),
+      );
+    }
+    if (!options.reviewFailed && options.proofPolicy.verificationBlocksMerge) {
+      add("Resolve historical verification", publicHistoricalVerificationBlockerLine());
     }
     for (const finding of options.findings) {
       add(`${finding.title.trim()} (${priorityLabel(finding.priority)})`, finding.body, {
@@ -362,10 +372,14 @@ export function createReportCommentHelpers(
       add("Resolve security review attention item", options.securityReview.summary);
     }
     if (!isReportNoneList(options.risks)) addPrioritized(options.risks, "P1", "Resolve merge risk");
-    // Only actionable next-step text enters the checklist: routing rationale or other
-    // explanatory prose is not remaining merge work, and decision questions are
-    // already represented by the decision packet.
-    if (
+    // Producer intent controls only this item; older reports retain prose inference.
+    if (options.nextStepAssessment?.kind === "required") {
+      add(
+        `Complete next step (${publicPriorityFromText(options.nextStepAssessment.text, "P2")})`,
+        options.nextStepAssessment.text,
+      );
+    } else if (
+      options.nextStepAssessment === undefined &&
       !isRoutineBeforeMergeStep(options.nextStep) &&
       !isRoutineCiOrReviewText(options.nextStep) &&
       isActionablePriorityText(options.nextStep) &&

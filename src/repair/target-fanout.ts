@@ -11,6 +11,13 @@ import {
   type DurableCursorSnapshot,
   type DurableCursorStoreOptions,
 } from "../durable-cursor-store.js";
+import {
+  hostedTargetPolicyFromRegistry,
+  isHostedTargetEligible,
+  probeHostedPublicTarget,
+  type HostedTargetAdmission,
+  type HostedTargetPolicy,
+} from "../hosted-target-admission.js";
 import { fetchExactReviewQueuePressure } from "../queue-pressure.js";
 import { coverageTrackedCountsFromManifest } from "../review-coverage-manifest.js";
 import { parseArgs, repoRoot } from "./lib.js";
@@ -22,6 +29,7 @@ export type FanoutMode = "hot-intake" | "normal-review" | "audit";
 export interface InventoryConfig {
   owners: readonly string[];
   denyRepositories: readonly string[];
+  hostedTargetPolicy: HostedTargetPolicy;
   includePrivate: boolean;
   includeArchived: boolean;
   includeForks: boolean;
@@ -101,6 +109,11 @@ interface FanoutOptions {
   ref: string;
   dryRun: boolean;
   owners: readonly string[] | undefined;
+}
+
+interface InventoryAccess {
+  env: NodeJS.ProcessEnv;
+  kind: "installation" | "public";
 }
 
 const PUBLIC_INVENTORY_TOKEN = "__public__";
@@ -220,6 +233,12 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
     });
   }
 
+  selection = {
+    ...selection,
+    repositories: await admitSelectedRepositories(selection.repositories, {
+      policy: config.hostedTargetPolicy,
+    }),
+  };
   const commands = selection.repositories.map((repository) =>
     workflowDispatchArgs(repository, options, candidateCapacityFor(repository)),
   );
@@ -290,6 +309,8 @@ export function readInventoryConfig(
   const parsed = JSON.parse(readFileSync(filePath, "utf8")) as unknown;
   const config = record(parsed, "target repository config");
   const inventory = record(config.target_inventory, "target_inventory");
+  const hostedTargetPolicy = hostedTargetPolicyFromRegistry(parsed);
+  if (!hostedTargetPolicy) throw new Error("target repository config has invalid hosted policy");
   return {
     owners: stringArray(inventory.owners, "target_inventory.owners").map((owner) =>
       owner.toLowerCase(),
@@ -298,6 +319,7 @@ export function readInventoryConfig(
       inventory.deny_repositories,
       "target_inventory.deny_repositories",
     ).map((repo) => repo.toLowerCase()),
+    hostedTargetPolicy,
     includePrivate: booleanValue(inventory.include_private, false),
     includeArchived: booleanValue(inventory.include_archived, false),
     includeForks: booleanValue(inventory.include_forks, false),
@@ -309,8 +331,14 @@ export async function loadEligibleRepositories(
   config: InventoryConfig,
   owners = config.owners,
 ): Promise<SelectedRepository[]> {
+  const configuredOwners = new Set(config.owners.map((owner) => owner.toLowerCase()));
+  const selectedOwners = [...new Set(owners.map((owner) => owner.trim().toLowerCase()))];
+  const unsupportedOwner = selectedOwners.find((owner) => !configuredOwners.has(owner));
+  if (unsupportedOwner) {
+    throw new Error(`target fanout owner is not configured: ${unsupportedOwner}`);
+  }
   const repositories: ListedRepository[] = [];
-  for (const owner of owners) {
+  for (const owner of selectedOwners) {
     const listed = listOwnerRepositories(owner);
     repositories.push(...listed);
   }
@@ -330,6 +358,9 @@ export function filterEligibleRepositories(
     .filter((repository) => !config.requireIssues || repository.hasIssuesEnabled)
     .filter((repository) => repository.defaultBranch !== "")
     .filter((repository) => !denied.has(repository.nameWithOwner.toLowerCase()))
+    .filter((repository) =>
+      isHostedTargetEligible(repository.nameWithOwner, config.hostedTargetPolicy),
+    )
     .sort((left, right) => left.nameWithOwner.localeCompare(right.nameWithOwner))
     .map((repository) => ({
       targetRepo: repository.nameWithOwner.toLowerCase(),
@@ -514,10 +545,13 @@ export function allocateReviewCandidateCapacity(
 }
 
 function listOwnerRepositories(owner: string): ListedRepository[] {
-  const env = inventoryEnv(owner);
-  if (!env) {
+  const access = inventoryAccess(owner);
+  if (!access) {
     console.error(`[target-fanout] skipping ${owner}: missing inventory token`);
     return [];
+  }
+  if (access.kind === "installation") {
+    return listInstallationRepositories(owner, access.env);
   }
   const output = runGh(
     [
@@ -529,11 +563,32 @@ function listOwnerRepositories(owner: string): ListedRepository[] {
       "--json",
       "nameWithOwner,isArchived,isFork,hasIssuesEnabled,visibility,defaultBranchRef",
     ],
-    env,
+    access.env,
   );
   const parsed = JSON.parse(output) as unknown;
   if (!Array.isArray(parsed)) throw new Error(`gh repo list ${owner} did not return an array`);
   return parsed.map((entry, index) => listedRepository(entry, `${owner}[${index}]`));
+}
+
+function listInstallationRepositories(owner: string, env: NodeJS.ProcessEnv): ListedRepository[] {
+  const output = runGh(
+    [
+      "api",
+      "--paginate",
+      "-H",
+      "Accept: application/vnd.github+json",
+      "--jq",
+      'if (.repositories | type) != "array" then error("repositories must be an array") else .repositories[] end',
+      "/installation/repositories?per_page=100",
+    ],
+    env,
+  );
+  const ownerPrefix = `${owner.toLowerCase()}/`;
+  return (output === "" ? [] : output.split(/\r?\n/))
+    .map((entry, index) =>
+      listedInstallationRepository(JSON.parse(entry), `${owner}.repositories[${index}]`),
+    )
+    .filter((repository) => repository.nameWithOwner.toLowerCase().startsWith(ownerPrefix));
 }
 
 function listedRepository(value: unknown, label: string): ListedRepository {
@@ -551,6 +606,52 @@ function listedRepository(value: unknown, label: string): ListedRepository {
     visibility: stringValue(repo.visibility, `${label}.visibility`).toUpperCase(),
     defaultBranch: typeof branch.name === "string" ? branch.name : "",
   };
+}
+
+function listedInstallationRepository(value: unknown, label: string): ListedRepository {
+  const repo = record(value, label);
+  return {
+    nameWithOwner: stringValue(repo.full_name, `${label}.full_name`),
+    isArchived: booleanValue(repo.archived, false),
+    isDisabled: booleanValue(repo.disabled, false),
+    isFork: booleanValue(repo.fork, false),
+    hasIssuesEnabled: booleanValue(repo.has_issues, false),
+    visibility: stringValue(repo.visibility, `${label}.visibility`).toUpperCase(),
+    defaultBranch: typeof repo.default_branch === "string" ? repo.default_branch : "",
+  };
+}
+
+export async function admitSelectedRepositories<RepositoryT extends SelectedRepository>(
+  repositories: readonly RepositoryT[],
+  options: {
+    policy: HostedTargetPolicy;
+    token?: string;
+    reader?: typeof fetch;
+  },
+): Promise<RepositoryT[]> {
+  const token = options.token ?? hostedTargetMetadataToken();
+  const reader = options.reader ?? fetch;
+  const eligible = repositories.filter((repository) =>
+    isHostedTargetEligible(repository.targetRepo, options.policy),
+  );
+  const admissions = await Promise.all(
+    eligible.map(
+      async (repository) =>
+        [repository, await probeHostedPublicTarget(repository.targetRepo, token, reader)] as const,
+    ),
+  );
+  const retryable = admissions.find(([, admission]) => admission.outcome === "retryable");
+  if (retryable) {
+    throw new Error(
+      `target fanout visibility probe is retryable for ${retryable[0].targetRepo}; no dispatches were sent and the cursor was not advanced`,
+    );
+  }
+  return admissions
+    .filter(
+      (entry): entry is readonly [RepositoryT, HostedTargetAdmission & { outcome: "public" }] =>
+        entry[1].outcome === "public",
+    )
+    .map(([repository]) => repository);
 }
 
 function workflowDispatchArgs(
@@ -645,13 +746,17 @@ function runGh(args: readonly string[], env: NodeJS.ProcessEnv): string {
   }).trimEnd();
 }
 
-function inventoryEnv(owner: string): NodeJS.ProcessEnv | null {
+function inventoryAccess(owner: string): InventoryAccess | null {
   const key = `CLAWSWEEPER_INVENTORY_TOKEN_${owner.replace(/[^A-Za-z0-9]/g, "_").toUpperCase()}`;
   const token = process.env[key] || process.env.CLAWSWEEPER_INVENTORY_TOKEN;
-  if (token === PUBLIC_INVENTORY_TOKEN) return publicInventoryEnv();
-  if (token) return { GH_TOKEN: token, GITHUB_TOKEN: token };
+  if (token === PUBLIC_INVENTORY_TOKEN) {
+    return { env: publicInventoryEnv(), kind: "public" };
+  }
+  if (token) {
+    return { env: { GH_TOKEN: token, GITHUB_TOKEN: token }, kind: "installation" };
+  }
   if (process.env.GITHUB_ACTIONS === "true") return null;
-  return publicInventoryEnv();
+  return { env: publicInventoryEnv(), kind: "public" };
 }
 
 function publicInventoryEnv(): NodeJS.ProcessEnv {
@@ -661,6 +766,17 @@ function publicInventoryEnv(): NodeJS.ProcessEnv {
     process.env.GITHUB_TOKEN ||
     process.env.GH_TOKEN;
   return token ? { GH_TOKEN: token, GITHUB_TOKEN: token } : {};
+}
+
+function hostedTargetMetadataToken(): string {
+  const explicit =
+    process.env.CLAWSWEEPER_HOSTED_TARGET_METADATA_TOKEN ||
+    process.env.CLAWSWEEPER_PUBLIC_INVENTORY_TOKEN ||
+    "";
+  if (explicit || process.env.GITHUB_ACTIONS === "true") return explicit;
+  return (
+    process.env.CLAWSWEEPER_DISPATCH_TOKEN || process.env.GITHUB_TOKEN || process.env.GH_TOKEN || ""
+  );
 }
 
 function dispatchEnv(): NodeJS.ProcessEnv {

@@ -213,27 +213,39 @@ export function createReviewCommentPublication(
   function issueCommentWithMarker(
     number: number,
     marker: string,
+    expectedBody?: string,
   ): Record<string, unknown> | undefined {
     const comments = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`).map(
       asRecord,
     );
-    return comments.find((candidate) => {
+    const marked = comments.filter((candidate) => {
       const body = candidate.body;
       return typeof body === "string" && body.includes(marker);
     });
+    // A marker and body are both predictable and therefore not ownership proof.
+    // Prefer an exact ClawSweeper receipt, then another owned marker as an
+    // update target. This avoids selecting a spoofed marker forever and posting
+    // a duplicate on every retry.
+    if (expectedBody) {
+      const matching = marked.find(
+        (candidate) => candidate.body === expectedBody && canPatchReviewComment(candidate),
+      );
+      if (matching) return matching;
+    }
+    return marked.find(canPatchReviewComment);
   }
 
   function closeAppliedEvidenceLink(markdown: string, itemUrl: string): string {
-    const reviewCommentUrl = frontMatterValue(markdown, "review_comment_url");
-    if (reviewCommentUrl && reviewCommentUrl !== "unknown") {
-      return markdownLink("durable ClawSweeper review", reviewCommentUrl);
-    }
     const fixedPrUrl = frontMatterValue(markdown, "fixed_pr_url");
     const fixedPrNumber = frontMatterValue(markdown, "fixed_pr_number");
     if (fixedPrUrl && fixedPrUrl !== "unknown") {
       const label =
         fixedPrNumber && fixedPrNumber !== "unknown" ? `fix PR #${fixedPrNumber}` : "fix PR";
       return markdownLink(label, fixedPrUrl);
+    }
+    const reviewCommentUrl = frontMatterValue(markdown, "review_comment_url");
+    if (reviewCommentUrl && reviewCommentUrl !== "unknown") {
+      return markdownLink("durable ClawSweeper review", reviewCommentUrl);
     }
     return markdownLink("closed PR", itemUrl);
   }
@@ -245,12 +257,25 @@ export function createReviewCommentPublication(
     itemUrl: string;
   }): string {
     const coverageProofLine = closeAppliedCoverageProofLine(options.markdown);
+    const implementationBasedPrClose = [
+      "implemented_on_main",
+      "mostly_implemented_on_main",
+    ].includes(options.closeReason);
+    const reviewCommentUrl = frontMatterValue(options.markdown, "review_comment_url");
+    const closeEvidence = implementationBasedPrClose
+      ? closeAppliedEvidenceLink(options.markdown, options.itemUrl)
+      : markdownLink(
+          "durable ClawSweeper review",
+          reviewCommentUrl && reviewCommentUrl !== "unknown" ? reviewCommentUrl : options.itemUrl,
+        );
     return [
-      "ClawSweeper applied the proposed close for this PR.",
+      implementationBasedPrClose
+        ? "ClawSweeper recorded implementation evidence for this proposed close."
+        : "ClawSweeper recorded closeout evidence for this proposed close.",
       "",
-      "- Action: closed this PR.",
+      "- Action: close remains subject to final live verification.",
       `- Close reason: ${closeReasonText(options.closeReason)}.`,
-      `- Evidence: ${closeAppliedEvidenceLink(options.markdown, options.itemUrl)}.`,
+      `${implementationBasedPrClose ? "Implementation" : "Review"} evidence: ${closeEvidence}.`,
       coverageProofLine,
       "",
       closeAppliedCommentMarker(options.number),
@@ -278,24 +303,38 @@ export function createReviewCommentPublication(
     dryRun: boolean;
   }): string {
     const marker = closeAppliedCommentMarker(options.number);
-    if (issueCommentWithMarker(options.number, marker)) {
+    const body = renderCloseAppliedComment(options);
+    const existing = issueCommentWithMarker(options.number, marker, body);
+    if (existing?.body === body) {
       return "matching ClawSweeper close-applied comment already exists";
     }
-    const body = renderCloseAppliedComment(options);
     if (options.dryRun) return "dry-run: would post close-applied comment";
     const payload = writeCommentPayload(options.number, body);
+    const existingId = commentId(existing);
+    const updateExisting = existingId !== null && canPatchReviewComment(existing);
     ghObservedMutationCommand({
       identity: `close_applied_comment:${options.number}:${sha256(body)}`,
-      args: [
-        "api",
-        `repos/${targetRepo()}/issues/${options.number}/comments`,
-        "--method",
-        "POST",
-        "--input",
-        payload,
-      ],
+      args: updateExisting
+        ? [
+            "api",
+            `repos/${targetRepo()}/issues/comments/${existingId}`,
+            "--method",
+            "PATCH",
+            "--input",
+            payload,
+          ]
+        : [
+            "api",
+            `repos/${targetRepo()}/issues/${options.number}/comments`,
+            "--method",
+            "POST",
+            "--input",
+            payload,
+          ],
+      knownNoMutation: (error) =>
+        isGitHubRequiresAuthenticationError(error) || isLockedConversationCommentError(error),
     });
-    return "posted close-applied comment";
+    return updateExisting ? "updated close-applied comment" : "posted close-applied comment";
   }
 
   return {

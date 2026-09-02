@@ -543,6 +543,37 @@ export function createReviewCommentState(
     return `live durable review comment is newer than the local report: comment reviewed_at=${liveReviewedAt}, report reviewed_at=${reportReviewedAt}`;
   }
 
+  function newerDurableReviewTupleVerified(
+    markdown: string,
+    existingReviewComment: Record<string, unknown> | undefined,
+    number: number,
+  ): boolean {
+    // Superseding is terminal, so require the complete durable tuple rather
+    // than a newer timestamp or comment body that could describe another review.
+    const liveVersion = durableReviewVersion(existingReviewComment, number);
+    const reportLeaseOwner = frontMatterValue(markdown, "review_lease_owner");
+    const liveLeaseCommentId = Number(liveVersion?.leaseCommentId);
+    const reportLeaseCommentId = Number(frontMatterValue(markdown, "review_lease_comment_id"));
+    const reportRevision = reviewLeaseRevisionFromReport(markdown);
+    const itemKind = frontMatterValue(markdown, "type");
+    const liveRevision =
+      itemKind === "pull_request" ? liveVersion?.headSha : liveVersion?.sourceRevision;
+    return Boolean(
+      liveVersion?.leaseOwner &&
+      liveVersion.leaseOwner !== "unknown" &&
+      reportLeaseOwner &&
+      reportLeaseOwner !== "unknown" &&
+      liveRevision &&
+      reportRevision &&
+      liveRevision === reportRevision &&
+      Number.isSafeInteger(liveLeaseCommentId) &&
+      liveLeaseCommentId > 0 &&
+      Number.isSafeInteger(reportLeaseCommentId) &&
+      reportLeaseCommentId > 0 &&
+      liveLeaseCommentId > reportLeaseCommentId,
+    );
+  }
+
   const APPLY_SYNC_EQUIVALENT_CLOSE_MARKER_ACTIONS = new Set([
     "proposed_close",
     "kept_open",
@@ -656,6 +687,7 @@ export function createReviewCommentState(
     durableReviewVersion,
     reviewCommentHasCloseVerdictForCanonical,
     staleReviewCommentSyncReason,
+    newerDurableReviewTupleVerified,
     APPLY_SYNC_EQUIVALENT_CLOSE_MARKER_ACTIONS,
     normalizeApplySyncCloseMarkerAction,
     commentBodyMatches,

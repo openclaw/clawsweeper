@@ -1,5 +1,13 @@
 # Spam Scanner
 
+- Status: active trust-boundary and operator reference
+- Owner: ClawSweeper spam-intake maintainers
+- Source of truth: `.github/workflows/spam-comment-intake.yml`,
+  `.github/workflows/spam-scanner.yml`, and `src/repair/spam-*`
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
+- Update when: event intake, candidate filtering, workflow inputs, model routing,
+  audit records, or mutation policy changes
+
 Read when changing ClawSweeper comment spam detection, audit records, or org
 blocking policy.
 
@@ -36,7 +44,6 @@ Inputs:
 - `max_comments`: cap for prioritized scanned comments
 - `comment_ids`: exact issue comment replay
 - `review_comment_ids`: exact PR review comment replay
-- `model`: public model alias, default `internal`
 - `force_reprocess`: ignore the processed-version ledger for replay
 
 The workflow checks out the live ClawSweeper repo plus hydrated generated state,
@@ -46,6 +53,14 @@ publishes the resulting files through `repair:publish-main`.
 The current scheduled workflow is active, but GitHub cron delivery can lag or
 drop a newly added workflow's first tick. Manual dispatch is the immediate
 verification path.
+
+New or edited issue and pull-request review comments also have an event-driven
+path. The GitHub activity workflow runs the deterministic spam intake filter;
+target repositories may forward the same normalized activity through
+`clawsweeper_spam_comment_intake`. Only comments with a qualifying deterministic
+signal dispatch `clawsweeper_spam_comment`, which invokes `spam-scanner.yml` for
+that exact comment with `max_comments=1`. The hourly scan remains the bounded
+catch-up path.
 
 ## Comment Sources
 
@@ -71,6 +86,7 @@ Protected authors are skipped before model spend:
 - `OWNER`
 - `MEMBER`
 - `COLLABORATOR`
+- `CONTRIBUTOR`
 - GitHub bot accounts
 - configured trusted bots
 
@@ -172,6 +188,5 @@ gh workflow run spam-scanner.yml \
   -f target_repo=openclaw/openclaw \
   -f lookback_minutes=180 \
   -f max_comments=100 \
-  -f model=internal \
   -f force_reprocess=false
 ```

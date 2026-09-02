@@ -8,6 +8,7 @@ import type {
 } from "./clawsweeper-types.js";
 import { completeActivityContextSymbol } from "./clawsweeper-types.js";
 import { stableJson } from "./stable-json.js";
+import { compactPrimaryBody } from "./clawsweeper-primary-body.js";
 import { fetchPrCommentActivityRevision } from "./pr-comment-activity-revision.js";
 import {
   hydratePrLists,
@@ -39,7 +40,6 @@ interface CreateItemContextDependencies {
   compactPullCommit: (value: unknown) => unknown;
   compactPullFile: (value: unknown) => unknown;
   compactPullRequest: (value: unknown) => unknown;
-  compactSemanticPullFile: (value: unknown) => unknown;
   compactTimelineEvent: (value: unknown) => unknown;
   extractLatestClawSweeperReviewFromHydration: (
     commentsWindow: ContextHydration<unknown>,
@@ -89,12 +89,11 @@ interface CreateItemContextDependencies {
   }) => unknown[];
   reviewCommentContentRevision: (entries: readonly unknown[]) => string;
   reviewTimelineDigestParts: (entries: unknown) => unknown;
-  semanticPullFilesWithTreeIdentity: (options: {
-    files: readonly unknown[];
+  hydratePullRequestReviewSource: (options: {
     itemNumber: number;
     pullRequest: unknown;
     targetDir: string;
-  }) => unknown[];
+  }) => void;
   sha256: (text: string) => string;
   stringOrUndefined: (value: unknown) => string | undefined;
   targetRepo: () => string;
@@ -111,7 +110,6 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
     compactPullCommit,
     compactPullFile,
     compactPullRequest,
-    compactSemanticPullFile,
     compactTimelineEvent,
     extractLatestClawSweeperReviewFromHydration,
     fetchReviewedPrActivityCursor,
@@ -129,7 +127,7 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
     relatedItemsContext,
     reviewCommentContentRevision,
     reviewTimelineDigestParts,
-    semanticPullFilesWithTreeIdentity,
+    hydratePullRequestReviewSource,
     sha256,
     stringOrUndefined,
     targetRepo,
@@ -211,7 +209,7 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
         ? readPaged<unknown>(`repos/${targetRepo()}/issues/${item.number}/timeline`)
         : null;
     const context: ItemContext = {
-      issue: compactIssue(issue),
+      issue: { ...asRecord(compactIssue(issue)), ...compactPrimaryBody(issueRecord.body) },
       sourceRevision: itemSourceRevisionSha256(issue, sourceRevisionComments),
       comments: compactMappedWindow(
         filteredComments.included,
@@ -369,28 +367,23 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
       completePullReviewCommentsHydrated =
         fullPullReviewComments.length >= pullReviewCommentsWindow.total;
       if (hydration.snapshot) context.prHydrationSnapshot = hydration.snapshot;
-      context.pullRequest = compactPullRequest(pullRequest);
+      context.pullRequest = {
+        ...asRecord(compactPullRequest(pullRequest)),
+        ...compactPrimaryBody(pullRecord.body),
+      };
       context.pullFiles = compactMappedWindow(
         pullFiles,
         pullFilesWindow.total,
         80,
         compactPullFile,
       );
-      context.semanticPullFiles =
-        options.reviewCacheDigest &&
-        options.reviewCacheGitDir &&
-        !pullFilesWindow.truncated &&
-        pullFilesWindow.total === pullFiles.length
-          ? semanticPullFilesWithTreeIdentity({
-              files: pullFiles,
-              itemNumber: item.number,
-              pullRequest,
-              targetDir: options.reviewCacheGitDir,
-            })
-          : compactMappedWindow(pullFiles, pullFilesWindow.total, 80, (file) => ({
-              ...asRecord(compactSemanticPullFile(file)),
-              treeModesComplete: false,
-            }));
+      if (options.reviewCacheGitDir) {
+        hydratePullRequestReviewSource({
+          itemNumber: item.number,
+          pullRequest,
+          targetDir: options.reviewCacheGitDir,
+        });
+      }
       context.pullCommits = compactMappedWindow(
         pullCommits,
         pullCommitsWindow.total,

@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import worker from "../dashboard/worker.ts";
+import { publishStateBlob } from "../dist/state-blob-client.js";
 import {
   WorkerBlobsUnavailableError,
   downloadStateBlob,
@@ -122,15 +123,21 @@ test("single-shot blob uploads verify digests server-side and re-put idempotentl
   const options = { baseUrl, webhookSecret: secret, fetch: viaWorker(env) };
   const content = Buffer.from('{"event":"opened"}\n');
 
-  const uploaded = await putBlob(env, ledgerPath, content);
+  const upload = {
+    baseUrl,
+    webhookSecret: secret,
+    fetchImpl: options.fetch,
+    path: ledgerPath,
+    content,
+  };
+  const uploaded = await publishStateBlob(upload);
   assert.deepEqual(uploaded, {
-    ok: true,
     path: ledgerPath,
     bytes: content.byteLength,
     digest: sha256(content),
     unchanged: false,
   });
-  const repeat = await putBlob(env, ledgerPath, content);
+  const repeat = await publishStateBlob(upload);
   assert.equal(repeat.unchanged, true);
 
   const stat = await statStateBlob({ ...options, blobPath: ledgerPath });
@@ -183,6 +190,32 @@ test("single-shot blob uploads verify digests server-side and re-put idempotentl
     env,
   );
   assert.equal(traversal.status, 400);
+});
+
+test("state blob publication retries aborted attempts without reporting success", async (t) => {
+  const signals: AbortSignal[] = [];
+  t.mock.method(AbortSignal, "timeout", () => {
+    const signal = AbortSignal.abort(new DOMException("request timed out", "TimeoutError"));
+    signals.push(signal);
+    return signal;
+  });
+  let attempts = 0;
+  await assert.rejects(
+    publishStateBlob({
+      baseUrl,
+      webhookSecret: secret,
+      path: ledgerPath,
+      content: Buffer.from("synthetic publication\n"),
+      fetchImpl: async (_input, init) => {
+        attempts += 1;
+        init?.signal?.throwIfAborted();
+        return Response.json({ unchanged: false });
+      },
+    }),
+    /request timed out/,
+  );
+  assert.equal(attempts, 4);
+  assert.equal(new Set(signals).size, 4, "each retry needs its own deadline");
 });
 
 test("ledger keys are create-only while asset keys may overwrite", async () => {

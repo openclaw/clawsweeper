@@ -100,6 +100,7 @@ async function signedBlobPost<T>(
             "x-clawsweeper-exact-review-signature": signature,
           },
           body,
+          signal: AbortSignal.timeout(15_000),
         },
       );
       const value = (await response.json().catch(() => null)) as unknown;

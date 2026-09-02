@@ -25,8 +25,10 @@ import {
   reviewLeaseStillMatchesContextForTest,
 } from "../dist/clawsweeper.js";
 import { runText, UserFacingCommandError } from "../dist/command.js";
+import { reviewMergeBase } from "../dist/pr-review-evidence.js";
 import { reviewStructuralPullStateDigest } from "../dist/review-structural-cache.js";
 import { mockGhBinEnv, workPlanCandidateReport } from "./helpers.ts";
+import { writeFakeScanner } from "./agent-input-scan-helpers.ts";
 
 const CLI = fileURLToPath(new URL("../dist/clawsweeper.js", import.meta.url));
 
@@ -883,7 +885,7 @@ process.stdout.write("200");
   }
 });
 
-test("managed local review checkout fetches the pull request ref", () => {
+test("managed local review checkout preserves base ancestry for a merged pull request", () => {
   const root = mkdtempSync(join(tmpdir(), "cmd-"));
   const origin = join(root, "origin.git");
   const source = join(root, "source");
@@ -899,10 +901,37 @@ test("managed local review checkout fetches the pull request ref", () => {
     execFileSync("git", ["branch", "-M", "main"], { cwd: source });
     execFileSync("git", ["remote", "add", "origin", origin], { cwd: source });
     execFileSync("git", ["push", "origin", "main"], { cwd: source, stdio: "ignore" });
+    execFileSync("git", ["symbolic-ref", "HEAD", "refs/heads/main"], { cwd: origin });
 
+    execFileSync("git", ["checkout", "-b", "feature"], { cwd: source, stdio: "ignore" });
     writeFileSync(join(source, "feature.txt"), "from pr\n");
     execFileSync("git", ["add", "feature.txt"], { cwd: source });
     execFileSync("git", ["commit", "-m", "feature"], { cwd: source, stdio: "ignore" });
+    for (let index = 0; index < 60; index += 1) {
+      writeFileSync(join(source, "feature.txt"), `feature ${index}\n`);
+      execFileSync("git", ["commit", "-am", `feature ${index}`], {
+        cwd: source,
+        stdio: "ignore",
+      });
+    }
+
+    execFileSync("git", ["checkout", "main"], { cwd: source, stdio: "ignore" });
+    for (let index = 0; index < 60; index += 1) {
+      writeFileSync(join(source, "history.txt"), `base ${index}\n`);
+      execFileSync("git", ["add", "history.txt"], { cwd: source });
+      execFileSync("git", ["commit", "-m", `base ${index}`], { cwd: source, stdio: "ignore" });
+    }
+    const baseSha = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: source,
+      encoding: "utf8",
+    }).trim();
+    execFileSync("git", ["push", "origin", "main"], { cwd: source, stdio: "ignore" });
+
+    execFileSync("git", ["checkout", "feature"], { cwd: source, stdio: "ignore" });
+    execFileSync("git", ["merge", "--no-ff", "main", "-m", "merge main"], {
+      cwd: source,
+      stdio: "ignore",
+    });
     const pullSha = execFileSync("git", ["rev-parse", "HEAD"], {
       cwd: source,
       encoding: "utf8",
@@ -911,6 +940,23 @@ test("managed local review checkout fetches the pull request ref", () => {
       cwd: source,
       stdio: "ignore",
     });
+
+    mkdirSync(join(root, "artifacts", "local-review-357"), { recursive: true });
+    execFileSync("git", ["clone", "--filter=blob:none", "--no-checkout", origin, targetDir], {
+      stdio: "ignore",
+    });
+    execFileSync("git", ["fetch", "origin", "refs/pull/357/head", "--depth=50"], {
+      cwd: targetDir,
+      stdio: "ignore",
+    });
+    assert.equal(
+      execFileSync("git", ["rev-parse", "--is-shallow-repository"], {
+        cwd: targetDir,
+        encoding: "utf8",
+      }).trim(),
+      "true",
+    );
+    assert.equal(reviewMergeBase(targetDir, baseSha, pullSha).status, "unavailable");
 
     prepareManagedLocalReviewCheckoutForTest({
       baseBranch: "main",
@@ -931,8 +977,25 @@ test("managed local review checkout fetches the pull request ref", () => {
       execFileSync("git", ["rev-parse", "HEAD"], { cwd: targetDir, encoding: "utf8" }).trim(),
       pullSha,
     );
+    assert.equal(
+      Number(
+        execFileSync("git", ["rev-list", "--count", baseSha], {
+          cwd: targetDir,
+          encoding: "utf8",
+        }).trim(),
+      ),
+      61,
+    );
+    assert.equal(reviewMergeBase(targetDir, baseSha, pullSha).status, "verified");
+    assert.equal(
+      execFileSync("git", ["rev-parse", "--is-shallow-repository"], {
+        cwd: targetDir,
+        encoding: "utf8",
+      }).trim(),
+      "false",
+    );
     assert.ok(existsSync(join(targetDir, "feature.txt")));
-    assert.equal(normalizeLf(readFileSync(join(targetDir, "feature.txt"), "utf8")), "from pr\n");
+    assert.equal(normalizeLf(readFileSync(join(targetDir, "feature.txt"), "utf8")), "feature 59\n");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -947,6 +1010,7 @@ test("local exact review explains when GitHub item is not open", () => {
   try {
     execFileSync("git", ["init", "--bare", origin], { stdio: "ignore" });
     execFileSync("git", ["init", targetDir], { stdio: "ignore" });
+    execFileSync("git", ["config", "--local", "fetch.prune", "true"], { cwd: targetDir });
     execFileSync("git", ["config", "user.email", "clawsweeper@example.com"], { cwd: targetDir });
     execFileSync("git", ["config", "user.name", "ClawSweeper Test"], { cwd: targetDir });
     writeFileSync(join(targetDir, "README.md"), "base\n");
@@ -955,7 +1019,6 @@ test("local exact review explains when GitHub item is not open", () => {
     execFileSync("git", ["branch", "-M", "main"], { cwd: targetDir });
     execFileSync("git", ["remote", "add", "origin", origin], { cwd: targetDir });
     execFileSync("git", ["push", "origin", "main"], { cwd: targetDir, stdio: "ignore" });
-
     mkdirSync(binDir);
     const ghPath = join(binDir, "gh.js");
     writeFileSync(
@@ -1024,6 +1087,13 @@ process.exit(1);
     assert.match(result.stderr, /GitHub reports this PR is closed/);
     assert.doesNotMatch(result.stderr, /selected=0/);
     assert.doesNotMatch(result.stderr, /\n\s+at /);
+    assert.equal(
+      execFileSync("git", ["rev-parse", "refs/remotes/origin/main"], {
+        cwd: targetDir,
+        encoding: "utf8",
+      }),
+      execFileSync("git", ["rev-parse", "HEAD"], { cwd: targetDir, encoding: "utf8" }),
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -1037,9 +1107,11 @@ test("local exact review selects PATH Codex instead of the Desktop app binary", 
   const binDir = join(root, "bin");
   const localAppData = join(root, "local-app-data");
   const codexMarker = join(root, "path-codex-ran.txt");
+  const missingHeadArtifactDir = join(root, "missing-head-artifacts");
   try {
     execFileSync("git", ["init", "--bare", origin], { stdio: "ignore" });
     execFileSync("git", ["init", targetDir], { stdio: "ignore" });
+    execFileSync("git", ["config", "--local", "fetch.prune", "false"], { cwd: targetDir });
     execFileSync("git", ["config", "user.email", "clawsweeper@example.com"], { cwd: targetDir });
     execFileSync("git", ["config", "user.name", "ClawSweeper Test"], { cwd: targetDir });
     writeFileSync(join(targetDir, "README.md"), "base\n");
@@ -1048,8 +1120,14 @@ test("local exact review selects PATH Codex instead of the Desktop app binary", 
     execFileSync("git", ["branch", "-M", "main"], { cwd: targetDir });
     execFileSync("git", ["remote", "add", "origin", origin], { cwd: targetDir });
     execFileSync("git", ["push", "origin", "main"], { cwd: targetDir, stdio: "ignore" });
+    execFileSync("git", ["config", "remote.origin.prune", "true"], { cwd: targetDir });
+    const reviewHeadSha = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: targetDir,
+      encoding: "utf8",
+    }).trim();
 
     mkdirSync(binDir);
+    writeFakeScanner(binDir);
     const ghPath = join(binDir, "gh.js");
     writeFileSync(
       ghPath,
@@ -1078,12 +1156,12 @@ const pull = {
   state: "open",
   draft: false,
   merged: false,
-  merge_commit_sha: "abc123",
+  merge_commit_sha: ${JSON.stringify(reviewHeadSha)},
   mergeable: true,
   mergeable_state: "clean",
   user: { login: "author" },
-  head: { ref: "feature", sha: "def456" },
-  base: { ref: "main", sha: "abc123" },
+  head: { ref: "feature", sha: process.env.REVIEW_HEAD_SHA || ${JSON.stringify(reviewHeadSha)} },
+  base: { ref: "main", sha: ${JSON.stringify(reviewHeadSha)} },
   additions: 1,
   deletions: 0,
   changed_files: 0,
@@ -1175,6 +1253,39 @@ process.stdin.on("end", () => process.exit(1));
     assert.doesNotMatch(result.stderr, /\n\s+at /);
     assert.match(readFileSync(join(artifactDir, "96221.md"), "utf8"), /review_status: failed/);
     assert.equal(readFileSync(codexMarker, "utf8"), "path\n");
+
+    rmSync(codexMarker);
+    const missingHeadResult = spawnSync(
+      process.execPath,
+      [
+        CLI,
+        "review",
+        "--local-only",
+        "--target-dir",
+        targetDir,
+        "--item-number",
+        "96221",
+        "--artifact-dir",
+        missingHeadArtifactDir,
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          LOCALAPPDATA: localAppData,
+          REVIEW_HEAD_SHA: "f".repeat(40),
+          ...mockGhBinEnv(ghPath),
+          PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
+        },
+      },
+    );
+
+    assert.equal(missingHeadResult.status, 1);
+    assert.equal(existsSync(codexMarker), false);
+    assert.match(missingHeadResult.stderr, /Review source preparation failed\./);
+    assert.doesNotMatch(missingHeadResult.stderr, /Running Codex review|Review complete/);
+    assert.doesNotMatch(missingHeadResult.stderr, /\n\s+at /);
+    assert.equal(existsSync(join(missingHeadArtifactDir, "96221.md")), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

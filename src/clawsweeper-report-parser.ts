@@ -3,13 +3,17 @@ import {
   normalizePrRating,
   normalizeRealBehaviorProof,
 } from "./clawsweeper-rating.js";
+import { createDecisionParser } from "./clawsweeper-decision-parser.js";
+import { publicLikelyOwner } from "./clawsweeper-regression-provenance.js";
 import {
   AGENTS_POLICY_STATUSES,
+  AUTHORITY_CHAIN_PROOF_MARKER,
   AUTO_IMPLEMENTATION_CANDIDATES,
   FEATURE_SHOWCASE_STATUSES,
   IMPLEMENTATION_COMPLEXITIES,
   IMPACT_LABEL_NAMES,
   LIVE_PROOF_RECORDING_MARKER,
+  LIVE_VERIFICATION_MARKER,
   MANTIS_RECOMMENDATION_SCENARIOS,
   MANTIS_RECOMMENDATION_STATUSES,
   MATURITY_LABEL_NAMES,
@@ -25,6 +29,11 @@ import {
   TRIAGE_PRIORITIES,
   VISION_FIT_STATUSES,
 } from "./clawsweeper-policy.js";
+import {
+  parseAttachedLiveVerification,
+  renderLiveVerificationCommentBlock,
+  type AttachedLiveVerification,
+} from "./live-proof/verification.js";
 import type {
   AgentsPolicyStatus,
   AgentsPolicyStatusKind,
@@ -64,7 +73,7 @@ import type {
   TriagePriority,
   VisionFitStatus,
 } from "./clawsweeper-types.js";
-import type { FrontMatterField } from "./clawsweeper-record-metadata.js";
+import type { FrontMatterField } from "./report-front-matter.js";
 
 interface ReportParsingDependencies {
   agentsPolicyStatusLine: (status: AgentsPolicyStatus | undefined) => string;
@@ -79,7 +88,6 @@ interface ReportParsingDependencies {
   markdownRepository: (markdown: string, file?: string) => string;
   parseBoldListHeading: (line: string) => { label: string; detail: string } | null;
   parseLabelJustification: (value: unknown, path: string) => LabelJustification;
-  parseLiveProofPlan: (value: unknown, path: string) => LiveProofPlan;
   parseMergeRiskOption: (value: unknown, path: string) => MergeRiskOption;
   parseReviewFindingHeading: (line: string) => {
     priority: ReviewFinding["priority"];
@@ -108,7 +116,131 @@ interface ReportParsingDependencies {
       "triagePriority" | "impactLabels" | "mergeRiskLabels" | "maturityLabels"
     >,
   ) => string[];
-  splitFileAndLine: (file: string) => { file: string; line?: number };
+  normalizeEvidence: (entry: Evidence, legacyReportRepo?: string) => Evidence;
+}
+
+const LIVE_PROOF_SECTION_HEADING = REVIEW_SECTIONS.liveProof;
+const LIVE_PROOF_OWNED_HEADINGS = new Set(
+  Object.values(REVIEW_SECTIONS).map((heading) => heading.toLowerCase()),
+);
+const parseRecordedLiveProofPlan = createDecisionParser({
+  isMaintainerAuthorAssociation: () => false,
+  neutralizeOwnedSectionSpoofing: neutralizeLiveProofText,
+  sanitizeArchitectureDiagram: (value) => value,
+}).parseLiveProofPlan;
+
+export function reportLiveProofPlan(markdown: string): LiveProofPlan {
+  const section = reportSectionValue(markdown, LIVE_PROOF_SECTION_HEADING);
+  const status = reportSectionLineValue(section, "Status");
+  const surface = reportSectionLineValue(section, "Surface");
+  const terminalCompletion =
+    reportSectionLineValue(section, "Terminal completion") ??
+    (status !== "recommended" || surface !== "terminal" ? "not_applicable" : undefined);
+  try {
+    return parseRecordedLiveProofPlan(
+      {
+        status,
+        surface,
+        terminalCompletion,
+        reason: reportSectionLineValue(section, "Reason"),
+        payoff: {
+          kind: reportSectionLineValue(section, "Payoff"),
+          justification: reportSectionLineValue(section, "Payoff justification"),
+        },
+        entry: reportSectionLineValue(section, "Entry") ?? "",
+        steps: reportLiveProofSteps(section),
+      },
+      "report.liveProofPlan",
+    );
+  } catch {
+    return {
+      status: "not_applicable",
+      surface: "none",
+      terminalCompletion: "not_applicable",
+      invalid: true,
+      reason:
+        "The live-proof plan is missing or invalid; regenerate the review report before execution.",
+      payoff: {
+        kind: "static_text",
+        justification: "Invalid report plans are non-runnable and fail closed.",
+      },
+      entry: "",
+      steps: [],
+    };
+  }
+}
+
+function reportSectionValue(markdown: string, heading: string): string {
+  // Preserve marker whitespace and never separate a final CRLF pair.
+  const match = markdown.match(
+    new RegExp(`(?:^|\\n)## ${heading}\\n\\n([\\s\\S]*?)(?=\\r?\\n## |$)`),
+  );
+  return match?.[1] ?? "";
+}
+
+function reportSectionLineValue(section: string, label: string): string | undefined {
+  const prefix = `${label}:`;
+  for (const line of section.trim().split("\n")) {
+    if (!line.startsWith(prefix)) continue;
+    const value = line.slice(prefix.length).trim();
+    return value || undefined;
+  }
+  return undefined;
+}
+
+function reportLiveProofSteps(section: string): unknown[] {
+  const lines = section.split(/\r?\n/);
+  // Match raw attachment lines exactly, as the verification parser does.
+  const attachmentStart = lines.findIndex(
+    (line) => line === LIVE_VERIFICATION_MARKER || line === LIVE_PROOF_RECORDING_MARKER,
+  );
+  const planLines = (attachmentStart < 0 ? lines : lines.slice(0, attachmentStart)).map((line) =>
+    line.trim(),
+  );
+  const start = planLines.indexOf("Steps:");
+  if (start < 0 || planLines.lastIndexOf("Steps:") !== start) {
+    throw new Error("live-proof report requires exactly one Steps payload");
+  }
+  const payload = planLines.slice(start + 1).filter(Boolean);
+  // legacy-empty-list-v1: already-produced reports used a solitary "- none".
+  if (payload.length === 1 && (payload[0] === "[]" || payload[0] === "- none")) return [];
+  if (!payload.length) throw new Error("live-proof report is missing its Steps payload");
+  return payload.map((line) => {
+    if (!line.startsWith("- ")) throw new Error("live-proof report step must be a JSON list item");
+    return JSON.parse(line.slice(2)) as unknown;
+  });
+}
+
+function neutralizeLiveProofText(value: string): string {
+  return value
+    .replace(/\r\n?|[\u2028\u2029]/g, "\n")
+    .split("\n")
+    .map((line) => {
+      const containerPrefix =
+        line.match(/^[ \t]*(?:(?:>|(?:[-*+]|\d+[.)])[ \t])[ \t]*)*/)?.[0] ?? "";
+      const content = line.slice(containerPrefix.length).replace(/<(?!br\s*\/?>)/gi, "&lt;");
+      const trimmed = content.trim();
+      if (/^#{1,6}\s+\S/.test(trimmed)) {
+        return `${containerPrefix}${content.replace("#", "\\#")}`;
+      }
+      if (/^\*\*[^*\n]+\*\*:?\s*$/.test(trimmed)) {
+        return `${containerPrefix}${content.replace("**", "\\*\\*")}`;
+      }
+      if (/^(?:```|~~~)/.test(trimmed)) {
+        return `${containerPrefix}${content.replace(/[`~]/, "\\$&")}`;
+      }
+      if (/^(?:=+|-+)[ \t]*$/.test(trimmed)) {
+        return `${containerPrefix}${content.replace(/[=-]/, "\\$&")}`;
+      }
+      if (
+        trimmed.endsWith(":") &&
+        LIVE_PROOF_OWNED_HEADINGS.has(trimmed.slice(0, -1).trim().toLowerCase())
+      ) {
+        return `${containerPrefix}${content.trimEnd().slice(0, -1)}&#58;`;
+      }
+      return `${containerPrefix}${content}`;
+    })
+    .join("\n");
 }
 
 export function createReportParser({
@@ -124,7 +256,6 @@ export function createReportParser({
   markdownRepository,
   parseBoldListHeading,
   parseLabelJustification,
-  parseLiveProofPlan,
   parseMergeRiskOption,
   parseReviewFindingHeading,
   parseRootCauseCluster,
@@ -133,36 +264,47 @@ export function createReportParser({
   sectionLineValue,
   sectionList,
   selectedReviewLabels,
-  splitFileAndLine,
+  normalizeEvidence,
 }: ReportParsingDependencies) {
   function reportEvidence(markdown: string): Evidence[] {
     const evidence = reviewSectionValue(markdown, "evidence");
     const entries: Evidence[] = [];
     let current: Evidence | null = null;
+    let legacy = true;
+    const finish = () => {
+      if (current)
+        entries.push(normalizeEvidence(current, legacy ? markdownRepository(markdown) : undefined));
+    };
     for (const line of evidence.split("\n")) {
       const heading = parseBoldListHeading(line);
       if (heading) {
-        if (current) entries.push(current);
+        finish();
+        legacy = true;
         current = evidenceEntry({
+          repo: null,
           label: heading.label,
           detail: heading.detail,
         });
         continue;
       }
       if (!current) continue;
-      const file = line.match(/^\s+- file: \[([^\]]+)\]/);
-      if (file?.[1]) {
-        const location = splitFileAndLine(file[1]);
-        current.file = location.file;
-        current.line = location.line ?? null;
+      const repo = line.match(/^\s+- repo: (.*)$/);
+      if (repo) {
+        legacy = false;
+        current.repo = repo[1] === "null" ? null : repo[1]!;
         continue;
       }
-      const sha = line.match(/^\s+- sha: \[([^\]]+)\]/);
+      const file = line.match(/^\s+- file: (.+)$/);
+      if (file?.[1]) {
+        current.file = file[1];
+        continue;
+      }
+      const sha = line.match(/^\s+- sha: (.+)$/);
       if (sha?.[1]) current.sha = sha[1];
       const command = line.match(/^\s+- command: `([\s\S]+)`$/);
       if (command?.[1]) current.command = command[1];
     }
-    if (current) entries.push(current);
+    finish();
     return entries;
   }
 
@@ -185,6 +327,10 @@ export function createReportParser({
         continue;
       }
       if (!current) continue;
+      if (line === "  - attribution source: raw_parent_line_v1") {
+        current.attributionSource = "raw_parent_line_v1";
+        continue;
+      }
       const reason = line.match(/^\s+- reason: (.*)$/);
       if (reason?.[1]) {
         current.reason = reason[1];
@@ -210,7 +356,7 @@ export function createReportParser({
       if (confidence?.[1]) current.confidence = confidence[1] as Confidence;
     }
     if (current) owners.push(current);
-    return owners;
+    return owners.map(publicLikelyOwner);
   }
 
   function reportOverallCorrectness(markdown: string): OverallCorrectness {
@@ -414,6 +560,7 @@ export function createReportParser({
   }
 
   function reportRealBehaviorProof(markdown: string): RealBehaviorProof {
+    // Historical execution receipts do not assess relevance to the changed behavior.
     const defaultProof = defaultRealBehaviorProof(markdown);
     if (defaultProof.status === "override" || isDocsOnlyPullRequestReport(markdown)) {
       return defaultProof;
@@ -491,9 +638,11 @@ export function createReportParser({
       evidenceKind,
       needsContributorAction: /^true$/i.test(needsContributorActionValue ?? ""),
     });
+    const authorityChainProofRequired = summary.startsWith(AUTHORITY_CHAIN_PROOF_MARKER);
     if (
       frontMatterValue(markdown, "type") !== "pull_request" ||
       isExternalPullRequestReport(markdown) ||
+      authorityChainProofRequired ||
       (!proof.needsContributorAction &&
         proof.status !== "missing" &&
         proof.status !== "mock_only" &&
@@ -526,65 +675,58 @@ export function createReportParser({
     };
   }
 
-  function defaultLiveProofPlan(): LiveProofPlan {
-    return {
-      status: "not_applicable",
-      surface: "none",
-      reason: "No live-proof plan was recorded in this report.",
-      entry: "",
-      steps: [],
-    };
-  }
-
-  function reportLiveProofPlan(markdown: string): LiveProofPlan {
-    const section = reviewSectionValue(markdown, "liveProof");
-    const rawSteps = sectionList(section, "Steps");
-    try {
-      return parseLiveProofPlan(
-        {
-          status: sectionLineValue(section, "Status"),
-          surface: sectionLineValue(section, "Surface"),
-          reason: sectionLineValue(section, "Reason"),
-          entry: sectionLineValue(section, "Entry") ?? "",
-          steps: rawSteps.map((step) => JSON.parse(step) as unknown),
-        },
-        "report.liveProofPlan",
-      );
-    } catch {
-      return defaultLiveProofPlan();
-    }
-  }
-
   function reportLiveProofRecordingBlock(markdown: string): string {
     const section = reviewSectionValue(markdown, "liveProof");
+    const verificationBlock = reportLiveVerificationBlock(markdown);
     const markerIndex = section.lastIndexOf(LIVE_PROOF_RECORDING_MARKER);
-    if (markerIndex < 0) return "";
+    if (markerIndex < 0) return verificationBlock;
     const lines = section
       .slice(markerIndex + LIVE_PROOF_RECORDING_MARKER.length)
       .trim()
       .split("\n")
       .map((line) => line.trimEnd());
-    if (lines.length !== 3 || lines[1] !== "") return "";
+    if (lines.length !== 3 || lines[1] !== "") return verificationBlock;
     if (
       !/^\[!\[Live proof recording\]\(https:\/\/[^)\s]+\)\]\(https:\/\/[^)\s]+\)$/.test(
         lines[0] ?? "",
       )
     ) {
-      return "";
+      return verificationBlock;
     }
     if (
       !/^\*Recorded live on the PR head \(`(?:[0-9a-f]{7,40})`\), (?:0|[1-9][0-9]*)(?:\.[0-9]+)?s, (?:browser|terminal) surface\.\*$/.test(
         lines[2] ?? "",
       )
     ) {
-      return "";
+      return verificationBlock;
     }
-    return lines.join("\n");
+    return [verificationBlock, lines.join("\n")].filter(Boolean).join("\n\n");
+  }
+
+  function reportAttachedLiveVerification(markdown: string): AttachedLiveVerification {
+    return parseAttachedLiveVerification(
+      reviewSectionValue(markdown, "liveProof"),
+      {
+        repository: frontMatterValue(markdown, "repository"),
+        number: frontMatterValue(markdown, "number"),
+        type: frontMatterValue(markdown, "type"),
+        pullHeadSha: frontMatterValue(markdown, "pull_head_sha"),
+      },
+      reportLiveProofPlan(markdown),
+    );
+  }
+
+  function reportLiveVerificationBlock(markdown: string): string {
+    const attached = reportAttachedLiveVerification(markdown);
+    return attached.status === "passed" || attached.status === "failed"
+      ? renderLiveVerificationCommentBlock(attached.result)
+      : "";
   }
 
   function reportPrRating(markdown: string): PrRating {
     const section = reviewSectionValue(markdown, "prRating");
     const proof = reportRealBehaviorProof(markdown);
+    const attached = reportAttachedLiveVerification(markdown);
     const proofTierField = frontMatterField(markdown, "pr_rating_proof");
     const patchTierField = frontMatterField(markdown, "pr_rating_patch");
     const overallTierField = frontMatterField(markdown, "pr_rating_overall");
@@ -630,13 +772,16 @@ export function createReportParser({
         (proofTierValue === "D" || proofTierValue === "F")
       )
     ) {
-      return normalizePrRating({
-        proofTier: proofTierValue as PrRatingTier,
-        patchTier: patchTierValue as PrRatingTier,
-        overallTier: overallTierValue as PrRatingTier,
-        summary,
-        nextSteps,
-      });
+      return normalizePrRating(
+        {
+          proofTier: proofTierValue as PrRatingTier,
+          patchTier: patchTierValue as PrRatingTier,
+          overallTier: overallTierValue as PrRatingTier,
+          summary,
+          nextSteps,
+        },
+        attached.status === "absent" ? undefined : proof,
+      );
     }
     return derivedPrRating({
       isPullRequest: frontMatterValue(markdown, "type") === "pull_request",
@@ -796,6 +941,7 @@ export function createReportParser({
     labelJustificationsFromReport,
     reportReviewFindings,
     reportSecurityReview,
+    reportAttachedLiveVerification,
     reportRealBehaviorProof,
     reportTelegramVisibleProof,
     reportLiveProofPlan,

@@ -1,8 +1,11 @@
 import type { MaintainerDecision } from "./decision-packets.js";
 import type { PrCloseCoverageProofModelResult } from "./pr-close-coverage-proof.js";
 import type { RepositoryProfile } from "./repository-profiles.js";
-import type { ReviewHistoryCycle } from "./review-history.js";
-import type { ReviewSemanticRecord } from "./review-semantic-cache.js";
+import type {
+  ReviewHistoryCycle,
+  ReviewItemCoverage,
+  reviewHistoryForReviewer,
+} from "./review-history.js";
 import type { ReviewStructuralRecord } from "./review-structural-cache.js";
 import type { PrHydrationSnapshot } from "./pr-hydration-snapshot.js";
 import type { SchedulerDueCandidate } from "./scheduler-policy.js";
@@ -14,6 +17,7 @@ export type ItemKind = "issue" | "pull_request";
 export type ApplyKind = ItemKind | "all";
 export type DecisionKind = "close" | "keep_open";
 export type WorkCandidateKind = "none" | "manual_review" | "queue_fix_pr";
+export type NextStepAssessment = { kind: "none" | "required"; text: string };
 export type FailedReviewRetryRevisionKind = "pull_head_sha" | "item_source_revision";
 export interface FailedReviewRetryRevision {
   kind: FailedReviewRetryRevisionKind;
@@ -128,6 +132,13 @@ export type FeatureShowcaseStatus = "showcase" | "none";
 export type TelegramVisibleProofStatus = "needed" | "not_needed";
 export type LiveProofPlanStatus = "recommended" | "not_applicable" | "declined_suspicious";
 export type LiveProofSurface = "browser" | "terminal" | "none";
+export type LiveProofTerminalCompletion = "exit_zero" | "ready_while_running" | "not_applicable";
+export type LiveProofPayoffKind =
+  | "progressive_output"
+  | "ui_interaction"
+  | "tui_or_color"
+  | "animation"
+  | "static_text";
 export type LiveProofBrowserStep =
   | { action: "goto"; path: string }
   | { action: "click"; target: string }
@@ -144,8 +155,6 @@ export type LiveProofStep = LiveProofBrowserStep | LiveProofTerminalStep;
 export type MantisRecommendationStatus = "recommended" | "not_recommended";
 export type MantisRecommendationScenario =
   | "none"
-  | "telegram_live"
-  | "telegram_desktop_proof"
   | "discord_status_reactions"
   | "discord_thread_attachment"
   | "web_ui_chat_proof"
@@ -322,7 +331,6 @@ export interface ExistingReview {
   lastFullReviewAt: string | undefined;
   lastFullReviewDecision: string | undefined;
   structuralRecord: ReviewStructuralRecord | null;
-  semanticRecord: ReviewSemanticRecord | null;
 }
 
 export interface LatestRelease {
@@ -342,12 +350,20 @@ export interface GitInfo {
 }
 
 export interface Evidence {
+  repo: string | null;
   label: string;
   detail: string;
   file: string | null;
   line: number | null;
   command: string | null;
   sha: string | null;
+}
+
+export interface LikelyOwnerHistory {
+  commitSha: string;
+  sourcePath: string;
+  sourceLine: number;
+  actor: "author" | "committer";
 }
 
 export interface LikelyOwner {
@@ -357,6 +373,9 @@ export interface LikelyOwner {
   commits: string[];
   files: string[];
   confidence: Confidence;
+  history?: LikelyOwnerHistory | null;
+  /** Host-owned projection; never accepted from model output. */
+  attributionSource?: "raw_parent_line_v1";
 }
 
 export interface ReviewFinding {
@@ -408,7 +427,13 @@ export interface TelegramVisibleProof {
 export interface LiveProofPlan {
   status: LiveProofPlanStatus;
   surface: LiveProofSurface;
+  terminalCompletion: LiveProofTerminalCompletion;
+  invalid?: true;
   reason: string;
+  payoff: {
+    kind: LiveProofPayoffKind;
+    justification: string;
+  };
   entry: string;
   steps: LiveProofStep[];
 }
@@ -464,6 +489,7 @@ export interface RegressionProvenanceCandidate {
 }
 
 export interface VerifiedRegressionProvenance extends RegressionProvenanceCandidate {
+  verificationSource: "raw_parent_line_v1";
   evidenceType: "blame_to_merge_commit";
   mergedAt: string;
   reviewedCommitSha: string;
@@ -472,6 +498,7 @@ export interface VerifiedRegressionProvenance extends RegressionProvenanceCandid
 }
 
 export interface SuspectedRegressionProvenance {
+  verificationSource: "raw_parent_line_v1";
   evidenceType: "source_line" | "rewrite_equivalent";
   sourceCommitSha: string;
   sourceAuthor: string;
@@ -579,6 +606,10 @@ export interface Decision {
   featureShowcase: FeatureShowcase;
   overallCorrectness: OverallCorrectness;
   overallConfidenceScore: number;
+  /** Runner-owned repository inspection result. Never populated from model output. */
+  localCheckoutAccess?: "verified" | "unverified";
+  /** Runner-owned failure classification for scheduled infrastructure retries. */
+  checkoutInspectionFailed?: boolean;
   codexTerminalFailure?: boolean;
   fixedRelease?: string | null;
   fixedSha?: string | null;
@@ -595,6 +626,7 @@ export interface Decision {
   workConfidence: Confidence;
   workPriority: Confidence;
   workReason: string;
+  nextStep?: NextStepAssessment;
   workPrompt: string;
   workClusterRefs: string[];
   workValidation: string[];
@@ -632,7 +664,6 @@ export interface ItemContext {
   relatedItems?: unknown[];
   pullRequest?: unknown;
   pullFiles?: unknown[];
-  semanticPullFiles?: unknown[];
   pullCommits?: unknown[];
   pullCommitsRevision?: string;
   pullReviewComments?: unknown[];
@@ -665,11 +696,6 @@ export interface ItemContext {
     pullReviewCommentsIncluded?: number;
     pullReviewCommentsFiltered?: number;
   };
-}
-
-export interface GitTreeEntry {
-  mode: string;
-  type: string;
 }
 
 export interface LocalRelatedTitleEntry {
@@ -746,6 +772,7 @@ export interface ReviewContextLedgerEntry {
 }
 
 export interface ReviewPromptRuntimeHints {
+  targetDir?: string;
   proofScratchDir?: string;
   mediaProofManifestPath?: string;
   mediaProofSummary?: string;
@@ -939,6 +966,7 @@ export interface ApplyResult {
   activeReviewLeaseExpiresAt?: string;
   terminalPolicyNoopVerified?: boolean;
   sourceDriftVerified?: boolean;
+  newerReviewTupleVerified?: boolean;
 }
 
 export interface FailedReviewRetryResult {
@@ -1140,6 +1168,17 @@ export interface PreviousClawSweeperReview {
   rating: string;
   nextStep: string;
   findings: Array<{ priority: string; title: string }>;
+  rankUpMoves: string[];
+  coverage: {
+    discussion: "raw_self_comment_intentionally_omitted_replaced_by_this_projection";
+    completedContext: "current_completed_comment" | "history_only" | "unavailable";
+    completedCycle: { reviewedAt: string; sha: string } | null;
+    findings: ReviewItemCoverage;
+    findingContent: "titles_only";
+    rankUpMoves: ReviewItemCoverage;
+    nextStep: "first_action_from_source_comment_not_a_new_instruction";
+    history: ReturnType<typeof reviewHistoryForReviewer>["coverage"];
+  };
   earlierReviewCycles: ReviewHistoryCycle[];
   completedReviewCycles: number;
   commentId: unknown;
@@ -1213,6 +1252,7 @@ export type MediaProofCommandRunner = (
     cwd?: string;
     env?: NodeJS.ProcessEnv;
     timeoutMs?: number;
+    killSignal?: NodeJS.Signals;
   },
 ) => {
   status: number | null;
@@ -1236,6 +1276,11 @@ export interface ConfigSurfaceChange {
 export interface DataModelChange {
   change: boolean;
   surfaces: string[];
+}
+
+export interface SqliteSchemaChange {
+  change: boolean;
+  files: string[];
 }
 
 export interface IssueAdvisoryLabelState {

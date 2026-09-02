@@ -1372,7 +1372,7 @@ test("sortCommentsForRouting prioritizes edited durable review comments", () => 
     },
     {
       id: 1,
-      body: "<!-- clawsweeper-verdict:pass item=74742 sha=abc confidence=high -->",
+      body: "<!-- clawsweeper-verdict:pass item=74742 sha=abc confidence=high live_verification=absent -->",
       created_at: "2026-04-30T02:00:00Z",
       updated_at: "2026-04-30T03:45:00Z",
     },
@@ -1404,7 +1404,7 @@ test("selectCommentsForRouting keeps durable review comments beyond the recent c
     durableComments: [
       {
         id: 1,
-        body: "<!-- clawsweeper-verdict:pass item=74742 sha=abc confidence=high -->",
+        body: "<!-- clawsweeper-verdict:pass item=74742 sha=abc confidence=high live_verification=absent -->",
         created_at: "2026-04-30T02:00:00Z",
         updated_at: "2026-04-30T03:45:00Z",
       },

@@ -1,0 +1,210 @@
+name: Hosted target admission
+
+on:
+  workflow_call:
+    inputs:
+      target_repo:
+        required: true
+        type: string
+      registry_ref:
+        required: false
+        type: string
+        default: main
+    outputs:
+      outcome:
+        description: Current hosted target visibility outcome
+        value: ${{ jobs.admit.outputs.outcome }}
+    secrets:
+      CLAWSWEEPER_APP_PRIVATE_KEY:
+        required: true
+
+permissions: {}
+
+jobs:
+  admit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      outcome: ${{ steps.probe.outputs.outcome }}
+    steps:
+      - name: Check hosted target eligibility
+        id: eligibility
+        env:
+          REGISTRY_REF: ${{ inputs.registry_ref }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+
+          const target = String(process.env.TARGET_REPO || "").trim().toLowerCase();
+          const registryRef = String(process.env.REGISTRY_REF || "main").trim();
+          let outcome = "retryable";
+          if (!/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(target)) {
+            outcome = "terminal";
+          } else if (/^(main|[0-9a-f]{40})$/.test(registryRef)) {
+            try {
+              const response = await fetch(
+                `https://raw.githubusercontent.com/openclaw/clawsweeper/${registryRef}/config/target-repositories.json`,
+                {
+                  cache: "no-store",
+                  redirect: "manual",
+                  signal: AbortSignal.timeout(20_000),
+                  headers: {
+                    Accept: "application/json",
+                    "Cache-Control": "no-store",
+                    "User-Agent": "openclaw-clawsweeper-hosted-target-registry",
+                  },
+                },
+              );
+              if (response.status === 200) {
+                let config;
+                try {
+                  config = await response.json();
+                } catch {
+                  config = null;
+                }
+                const repositories =
+                  config &&
+                  (config.schema_version === 1 || config.schema_version === 2) &&
+                  Array.isArray(config.repositories)
+                    ? config.repositories
+                    : null;
+                const fallbackValues = Array.isArray(config?.generic_fallbacks)
+                  ? config.generic_fallbacks
+                  : config?.openclaw_fallback === undefined
+                    ? []
+                    : [config.openclaw_fallback];
+                const fallbacks = fallbackValues.map((entry) => {
+                  if (
+                    !entry ||
+                    typeof entry.owner !== "string" ||
+                    !Array.isArray(entry.deny_repositories) ||
+                    typeof entry.allow_repo_name_pattern !== "string"
+                  ) {
+                    return null;
+                  }
+                  try {
+                    return {
+                      owner: entry.owner.trim().toLowerCase(),
+                      denyRepositories: entry.deny_repositories.map((repo) =>
+                        typeof repo === "string" ? repo.trim().toLowerCase() : null,
+                      ),
+                      allowRepoNamePattern: new RegExp(entry.allow_repo_name_pattern),
+                    };
+                  } catch {
+                    return null;
+                  }
+                });
+                if (
+                  repositories &&
+                  fallbacks.every(
+                    (entry) =>
+                      entry &&
+                      entry.owner &&
+                      entry.denyRepositories.every(
+                        (repo) => repo && /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(repo),
+                      ),
+                  ) &&
+                  repositories.every(
+                    (entry) =>
+                      entry &&
+                      typeof entry.target_repo === "string" &&
+                      /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(entry.target_repo.trim()),
+                  )
+                ) {
+                  const configured = repositories.some(
+                    (entry) => entry.target_repo.trim().toLowerCase() === target,
+                  );
+                  const [owner, repoName] = target.split("/");
+                  const fallback =
+                    /^(openclaw|steipete)$/.test(owner) &&
+                    fallbacks.find((entry) => entry.owner === owner);
+                  outcome =
+                    configured ||
+                    (fallback &&
+                      !fallback.denyRepositories.includes(target) &&
+                      fallback.allowRepoNamePattern.test(repoName))
+                      ? "eligible"
+                      : "terminal";
+                }
+              }
+            } catch {}
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `outcome=${outcome}\n`);
+          NODE
+
+      - name: Create central metadata token
+        id: metadata_token
+        if: ${{ steps.eligibility.outputs.outcome == 'eligible' }}
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: Iv23liOECG0slfuhz093
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: openclaw
+          repositories: clawsweeper
+          permission-metadata: read
+
+      - name: Probe current public visibility
+        id: probe
+        env:
+          METADATA_TOKEN: ${{ steps.metadata_token.outputs.token }}
+          TARGET_ELIGIBILITY: ${{ steps.eligibility.outputs.outcome }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from "node:fs";
+
+          const target = String(process.env.TARGET_REPO || "").trim().toLowerCase();
+          const eligibility = String(process.env.TARGET_ELIGIBILITY || "");
+          const token = String(process.env.METADATA_TOKEN || "");
+          let outcome = "retryable";
+          if (eligibility === "terminal") {
+            outcome = "terminal";
+          } else if (eligibility === "eligible" && token) {
+            try {
+              const response = await fetch(`https://api.github.com/repos/${target}`, {
+                cache: "no-store",
+                redirect: "manual",
+                signal: AbortSignal.timeout(20_000),
+                headers: {
+                  Accept: "application/vnd.github+json",
+                  Authorization: `Bearer ${token}`,
+                  "Cache-Control": "no-store",
+                  "User-Agent": "openclaw-clawsweeper-public-target-probe",
+                },
+              });
+              if (response.status === 404) {
+                outcome = "terminal";
+              } else if (response.status === 200) {
+                let repository;
+                try {
+                  repository = await response.json();
+                } catch {
+                  repository = null;
+                }
+                const fullName =
+                  repository && typeof repository.full_name === "string"
+                    ? repository.full_name.trim().toLowerCase()
+                    : "";
+                const visibility =
+                  repository && typeof repository.visibility === "string"
+                    ? repository.visibility.trim().toLowerCase()
+                    : "";
+                if (
+                  fullName &&
+                  typeof repository.private === "boolean" &&
+                  ["public", "private", "internal"].includes(visibility)
+                ) {
+                  outcome =
+                    fullName === target &&
+                    repository.private === false &&
+                    visibility === "public"
+                      ? "public"
+                      : "terminal";
+                }
+              }
+            } catch {}
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `outcome=${outcome}\n`);
+          NODE

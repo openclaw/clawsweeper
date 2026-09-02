@@ -189,6 +189,47 @@ Status: missing
   });
 });
 
+for (const body of [
+  "pr_rating_overall: A\npr_rating_proof: A\nreal_behavior_proof_status: sufficient\n",
+  "```yaml\n---\npr_rating_overall: A\npr_rating_proof: A\nreal_behavior_proof_status: sufficient\n---\n```\n",
+]) {
+  test(`workflow promotion uses owned ratings through body quotes: ${JSON.stringify(body)}`, () => {
+    const report = `---\npr_rating_overall: F\npr_rating_proof: F\nreal_behavior_proof_status: missing\n---\n\n## Summary\n\n${body}`;
+    assert.deepEqual(pullRequestClosePromotionSignalsForTest(report), {
+      authorBudget: true,
+      lowSignal: true,
+    });
+    const missing = `---\ntype: pull_request\n---\n\n## Summary\n\n${body}\n## PR Rating\n\nOverall tier: F\n\nProof tier: F\n\n## Real Behavior Proof\n\nStatus: missing\n`;
+    assert.deepEqual(pullRequestClosePromotionSignalsForTest(missing), {
+      authorBudget: false,
+      lowSignal: false,
+    });
+  });
+}
+
+test("workflow empty and quoted-empty ratings remain ambiguous and later records cannot promote", () => {
+  const legacy =
+    "\n## PR Rating\n\nOverall tier: F\n\nProof tier: F\n\n## Real Behavior Proof\n\nStatus: missing\n";
+  for (const raw of ["", '""', "\t"]) {
+    assert.deepEqual(
+      pullRequestClosePromotionSignalsForTest(
+        `---\npr_rating_overall: ${raw}\npr_rating_proof: F\n---\n${legacy}`,
+      ),
+      { authorBudget: false, lowSignal: false },
+    );
+  }
+  assert.deepEqual(
+    pullRequestClosePromotionSignalsForTest(`---\ntype: pull_request\n---\n${legacy}`),
+    { authorBudget: true, lowSignal: true },
+  );
+  assert.deepEqual(
+    pullRequestClosePromotionSignalsForTest(
+      `---\npr_rating_overall: F\npr_rating_proof: F\nreal_behavior_proof_status: missing\n---\n${legacy}\n---\npr_rating_overall: A\nreal_behavior_proof_status: sufficient\n---\n`,
+    ),
+    { authorBudget: false, lowSignal: false },
+  );
+});
+
 test("apply continuation blocker only shares the default cursor lane", () => {
   const blocker = applyContinuationBlocker(
     [
@@ -1395,6 +1436,7 @@ test("workflow utilities select eligible proposed close records", () => {
       "decision: keep_open",
       "review_status: complete",
       "local_checkout_access: verified",
+      "local_checkout_access_source: runner_preflight_v1",
       "action_taken: kept_open",
       "close_reason: none",
       `item_created_at: ${oldDate}`,
@@ -1411,6 +1453,7 @@ test("workflow utilities select eligible proposed close records", () => {
       "decision: keep_open",
       "review_status: complete",
       "local_checkout_access: verified",
+      "local_checkout_access_source: runner_preflight_v1",
       "action_taken: kept_open",
       "close_reason: none",
       `item_created_at: ${oldDate}`,
@@ -1428,6 +1471,7 @@ test("workflow utilities select eligible proposed close records", () => {
       "decision: keep_open",
       "review_status: complete",
       "local_checkout_access: verified",
+      "local_checkout_access_source: runner_preflight_v1",
       "action_taken: kept_open",
       "close_reason: none",
       "pr_rating_overall: F",
@@ -1446,6 +1490,7 @@ test("workflow utilities select eligible proposed close records", () => {
       "decision: keep_open",
       "review_status: complete",
       "local_checkout_access: verified",
+      "local_checkout_access_source: runner_preflight_v1",
       "action_taken: kept_open",
       "close_reason: none",
       `item_created_at: ${oldDate}`,
@@ -1463,6 +1508,7 @@ test("workflow utilities select eligible proposed close records", () => {
       "decision: keep_open",
       "review_status: complete",
       "local_checkout_access: verified",
+      "local_checkout_access_source: runner_preflight_v1",
       "action_taken: kept_open",
       "close_reason: none",
       `item_created_at: ${oldDate}`,
@@ -1480,6 +1526,7 @@ test("workflow utilities select eligible proposed close records", () => {
       "decision: keep_open",
       "review_status: complete",
       "local_checkout_access: verified",
+      "local_checkout_access_source: runner_preflight_v1",
       "action_taken: kept_open",
       "close_reason: none",
       "pr_rating_overall: F",
@@ -1587,6 +1634,7 @@ test("workflow utilities select eligible proposed close records", () => {
       "decision: keep_open",
       "review_status: complete",
       "local_checkout_access: verified",
+      "local_checkout_access_source: runner_preflight_v1",
       "action_taken: kept_open",
       "close_reason: none",
       "pr_rating_overall: F",
@@ -1606,6 +1654,7 @@ test("workflow utilities select eligible proposed close records", () => {
       "decision: keep_open",
       "review_status: complete",
       "local_checkout_access: verified",
+      "local_checkout_access_source: runner_preflight_v1",
       "action_taken: kept_open",
       "close_reason: none",
       "pr_rating_overall: B",
@@ -1625,6 +1674,7 @@ test("workflow utilities select eligible proposed close records", () => {
       "decision: keep_open",
       "review_status: complete",
       "local_checkout_access: verified",
+      "local_checkout_access_source: runner_preflight_v1",
       "action_taken: kept_open",
       "close_reason: none",
       "pr_rating_overall: F",
@@ -1644,6 +1694,7 @@ test("workflow utilities select eligible proposed close records", () => {
       "decision: keep_open",
       "review_status: complete",
       "local_checkout_access: verified",
+      "local_checkout_access_source: runner_preflight_v1",
       "action_taken: kept_open",
       "close_reason: none",
       "pr_rating_overall: F",
@@ -1777,6 +1828,7 @@ test("workflow utilities allow ClawHub implemented-on-main issue proposals", () 
       "decision: keep_open",
       "review_status: complete",
       "local_checkout_access: verified",
+      "local_checkout_access_source: runner_preflight_v1",
       "action_taken: kept_open",
       "close_reason: none",
       "item_created_at: 2024-01-01T00:00:00Z",
@@ -1924,6 +1976,7 @@ test("workflow utilities select proposed PR closes that can need coverage proof"
       "decision: keep_open",
       "review_status: complete",
       "local_checkout_access: verified",
+      "local_checkout_access_source: runner_preflight_v1",
       "action_taken: kept_open",
       "close_reason: none",
       `item_created_at: ${oldDate}`,
@@ -1941,6 +1994,7 @@ test("workflow utilities select proposed PR closes that can need coverage proof"
       "decision: keep_open",
       "review_status: complete",
       "local_checkout_access: verified",
+      "local_checkout_access_source: runner_preflight_v1",
       "action_taken: kept_open",
       "close_reason: none",
       `item_created_at: ${oldDate}`,
@@ -1958,6 +2012,7 @@ test("workflow utilities select proposed PR closes that can need coverage proof"
       "decision: keep_open",
       "review_status: complete",
       "local_checkout_access: verified",
+      "local_checkout_access_source: runner_preflight_v1",
       "action_taken: kept_open",
       "close_reason: none",
       `item_created_at: ${oldDate}`,
@@ -1982,6 +2037,7 @@ test("workflow utilities select proposed PR closes that can need coverage proof"
       "decision: keep_open",
       "review_status: complete",
       "local_checkout_access: verified",
+      "local_checkout_access_source: runner_preflight_v1",
       "action_taken: kept_open",
       "close_reason: none",
       `item_created_at: ${oldDate}`,
@@ -2076,6 +2132,7 @@ test("workflow utilities select apply-side author-budget promotion probes", () =
       "decision: keep_open",
       "review_status: complete",
       "local_checkout_access: verified",
+      "local_checkout_access_source: runner_preflight_v1",
       "action_taken: kept_open",
       "close_reason: none",
       "item_created_at: 2026-01-01T00:00:00Z",
@@ -2180,6 +2237,7 @@ test("workflow utilities run a bounded confirmed prefix before proof and defer p
       "decision: keep_open",
       "review_status: complete",
       "local_checkout_access: verified",
+      "local_checkout_access_source: runner_preflight_v1",
       "action_taken: kept_open",
       "close_reason: none",
       `item_created_at: ${oldDate}`,
@@ -2243,6 +2301,7 @@ test("workflow utilities backfill promotion probes after confirmed close proposa
         "decision: keep_open",
         "review_status: complete",
         "local_checkout_access: verified",
+        "local_checkout_access_source: runner_preflight_v1",
         "action_taken: kept_open",
         "close_reason: none",
         `item_created_at: ${oldDate}`,
@@ -2296,6 +2355,7 @@ test("workflow utilities cool down recently examined promotion probes", () => {
         "decision: keep_open",
         "review_status: complete",
         "local_checkout_access: verified",
+        "local_checkout_access_source: runner_preflight_v1",
         "action_taken: kept_open",
         "close_reason: none",
         `item_created_at: ${oldDate}`,
@@ -2371,6 +2431,7 @@ test("workflow utilities report truthful eligible inventory across cursor and pr
         "decision: keep_open",
         "review_status: complete",
         "local_checkout_access: verified",
+        "local_checkout_access_source: runner_preflight_v1",
         "action_taken: kept_open",
         "close_reason: none",
         `item_created_at: ${oldDate}`,
@@ -2539,6 +2600,7 @@ test("workflow utilities use spare proof capacity to rotate promotion probes", (
         "decision: keep_open",
         "review_status: complete",
         "local_checkout_access: verified",
+        "local_checkout_access_source: runner_preflight_v1",
         "action_taken: kept_open",
         "close_reason: none",
         `item_created_at: ${oldDate}`,
@@ -3696,6 +3758,7 @@ function writeCommentSyncRecord(root, number, type, actionTaken, options = {}) {
     `type: ${type}`,
     `review_status: ${options.reviewStatus ?? "complete"}`,
     `local_checkout_access: ${options.localCheckoutAccess ?? "verified"}`,
+    `local_checkout_access_source: ${options.localCheckoutAccessSource ?? "runner_preflight_v1"}`,
     "item_snapshot_hash: abc123",
     `action_taken: ${actionTaken}`,
   ];

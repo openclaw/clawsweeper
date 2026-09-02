@@ -1,7 +1,7 @@
 import { runAgentProcess } from "./agent-runner.js";
 import { codexLoginConfig } from "./codex-env.js";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { codexEnv } from "./codex-env.js";
 import { safeOutputTail, truncateText } from "./clawsweeper-text.js";
@@ -273,7 +273,7 @@ export function runPrCloseCoverageProofModel(options: {
   mkdirSync(options.runtime.workDir, { recursive: true });
   const prefix = `${options.source.number}-${options.covering.number}`;
   const outputPath = join(options.runtime.workDir, `${prefix}.model.json`);
-  const promptPath = join(options.runtime.workDir, `${prefix}.prompt.md`);
+  rmSync(join(options.runtime.workDir, `${prefix}.prompt.md`), { force: true });
   const prompt = buildPrCloseCoverageProofPrompt({
     source: options.source,
     covering: options.covering,
@@ -281,15 +281,12 @@ export function runPrCloseCoverageProofModel(options: {
     relationshipSignalSnippets: options.relationshipSignalSnippets,
     promptTemplate: options.runtime.promptTemplate,
   });
-  writeFileSync(promptPath, prompt, "utf8");
-  if (existsSync(outputPath)) unlinkSync(outputPath);
   // workDir doubles as the uploaded proof-artifact tree, whose downstream
   // validator only admits N-M.proof.json plus manifest.json — scratch files
   // must never survive a successful proof run.
   const readValidatedOutputAndCleanUp = (): PrCloseCoverageProofModelResult => {
     const proof = readPrCloseCoverageProofModelOutput(outputPath);
-    unlinkSync(outputPath);
-    unlinkSync(promptPath);
+    rmSync(outputPath);
     return proof;
   };
   const codexConfig = [codexLoginConfig(), 'approval_policy="never"'];
@@ -297,6 +294,7 @@ export function runPrCloseCoverageProofModel(options: {
     codexConfig.unshift(`service_tier="${options.runtime.serviceTier}"`);
   }
   const result = runAgentProcess({
+    scanSource: { kind: "prompt" },
     label: `pr-close-coverage-${options.source.number}-${options.covering.number}`,
     prompt,
     model: options.runtime.model,

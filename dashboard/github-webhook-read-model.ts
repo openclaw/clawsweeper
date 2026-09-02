@@ -272,6 +272,10 @@ export class GithubWebhookReadModelStore {
        ) STRICT`,
     );
     this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS github_webhook_read_model_deliveries_received_at_v1
+         ON github_webhook_read_model_deliveries_v1 (received_at)`,
+    );
+    this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS github_webhook_read_model_classes_v1 (
          event_class TEXT PRIMARY KEY,
          delivery_count INTEGER NOT NULL CHECK (delivery_count > 0),

@@ -3,6 +3,11 @@ import crypto from "node:crypto";
 import http from "node:http";
 
 import { repositoryProfileFor } from "../repository-profiles.js";
+import {
+  hostedTargetRetryableAdmission,
+  probeHostedPublicTarget,
+  type HostedTargetAdmission,
+} from "../hosted-target-admission.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import {
   isAssistPublicationCommentBody,
@@ -21,6 +26,8 @@ import { directReReviewIntake } from "./direct-re-review-admission.js";
 import { postExactReviewCommandIntake } from "./exact-review-command-queue.js";
 
 const DEFAULT_PORT = 8787;
+export const WEBHOOK_MAX_BODY_BYTES = 2 * 1024 * 1024;
+const GITHUB_FETCH_TIMEOUT_MS = 15_000;
 const REVIEW_REPO = "openclaw/clawsweeper";
 const COMMAND_PATTERN =
   /(^|[ \t\r\n])@(?:clawsweeper|openclaw-clawsweeper)\b(?:\[bot\])?|(^|[ \t\r\n])\/(?:clawsweeper|review|re-review|rerun[ -]?review|status|explain|fix|build|implement|create[ -]?pr|fix[ -]?issue|autofix|auto[ -]?fix|automerge|auto[ -]?merge|approve|stop|autoclose)\b/i;
@@ -117,6 +124,7 @@ async function handleRequest(request: http.IncomingMessage, response: http.Serve
     const retryable = /command intake failed \(HTTP (?:429|5\d\d)\)|aborted|timed out/i.test(
       message,
     );
+    if (!request.readableEnded) response.setHeader("connection", "close");
     response.writeHead(retryable ? 503 : 400, { "content-type": "application/json" });
     response.end(
       `${JSON.stringify(retryable ? { ok: false, retryable: true } : { ok: false, error: message })}\n`,
@@ -134,6 +142,23 @@ export async function handleGitHubWebhook({
   const decision = classifyWebhook({ event, payload });
   if (!decision.accepted) return { statusCode: 202, body: decision };
   const accepted = decision as AcceptedWebhook;
+  const appJwt = createAppJwt();
+  let reviewInstallationId = 0;
+  let admission: HostedTargetAdmission;
+  try {
+    reviewInstallationId = await reviewRepoInstallationId({ appJwt });
+    const metadataToken = await createInstallationToken({
+      appJwt,
+      installationId: reviewInstallationId,
+      label: REVIEW_REPO,
+      repositories: [repoName(REVIEW_REPO)],
+      permissions: { metadata: "read" },
+    });
+    admission = await probeHostedPublicTarget(accepted.targetRepo, metadataToken, fetch);
+  } catch (error) {
+    admission = hostedTargetRetryableAdmission(error);
+  }
+  if (admission.outcome !== "public") return standaloneAdmissionResponse(admission);
 
   if (
     accepted.type === "issue_comment" &&
@@ -168,8 +193,7 @@ export async function handleGitHubWebhook({
     return { statusCode: 202, body: { ok: true, ...result } };
   }
 
-  const appJwt = createAppJwt();
-  const dispatchToken = await createReviewRepoDispatchToken({ appJwt });
+  const dispatchToken = await createReviewRepoDispatchToken({ appJwt, reviewInstallationId });
 
   if (accepted.type === "item") {
     await dispatchItemReview({ token: dispatchToken, accepted });
@@ -532,7 +556,7 @@ async function createInstallationToken({
   return token;
 }
 
-async function createReviewRepoDispatchToken({ appJwt }: { appJwt: string }) {
+async function reviewRepoInstallationId({ appJwt }: { appJwt: string }) {
   const installation = await githubFetch({
     token: appJwt,
     path: `/repos/${REVIEW_REPO}/installation`,
@@ -543,15 +567,37 @@ async function createReviewRepoDispatchToken({ appJwt }: { appJwt: string }) {
   if (!Number.isInteger(installationId) || installationId <= 0) {
     throw new Error(`review repo installation response missing id for ${REVIEW_REPO}`);
   }
+  return installationId;
+}
+
+async function createReviewRepoDispatchToken({
+  appJwt,
+  reviewInstallationId,
+}: {
+  appJwt: string;
+  reviewInstallationId: number;
+}) {
   return createInstallationToken({
     appJwt,
-    installationId,
+    installationId: reviewInstallationId,
     label: REVIEW_REPO,
     repositories: [repoName(REVIEW_REPO)],
     permissions: {
       contents: "write",
     },
   });
+}
+
+function standaloneAdmissionResponse(admission: HostedTargetAdmission) {
+  return admission.outcome === "terminal"
+    ? {
+        statusCode: 202,
+        body: { ok: false, accepted: false, reason: "private_target_unsupported" },
+      }
+    : {
+        statusCode: 503,
+        body: { ok: false, error: "target_visibility_unverified", retryable: true },
+      };
 }
 
 function createAppJwt() {
@@ -899,6 +945,7 @@ async function githubFetch({
       "user-agent": "clawsweeper-comment-webhook",
       "x-github-api-version": "2022-11-28",
     },
+    signal: AbortSignal.timeout(GITHUB_FETCH_TIMEOUT_MS),
   };
   if (body !== undefined) init.body = JSON.stringify(body);
   const response = await fetch(`https://api.github.com${path}`, init);
@@ -908,9 +955,21 @@ async function githubFetch({
   return text ? (JSON.parse(text) as LooseRecord) : {};
 }
 
-async function readBody(request: http.IncomingMessage) {
+export async function readBody(request: http.IncomingMessage) {
+  if (Number(request.headers["content-length"]) > WEBHOOK_MAX_BODY_BYTES) {
+    throw new Error(`request body exceeds ${WEBHOOK_MAX_BODY_BYTES} bytes`);
+  }
   const chunks: Buffer[] = [];
-  for await (const chunk of request) chunks.push(Buffer.from(chunk));
+  let received = 0;
+  // Let the HTTP response finish before Node closes an oversized request's connection.
+  for await (const chunk of request.iterator({ destroyOnReturn: false })) {
+    const next = Buffer.from(chunk);
+    received += next.length;
+    if (received > WEBHOOK_MAX_BODY_BYTES) {
+      throw new Error(`request body exceeds ${WEBHOOK_MAX_BODY_BYTES} bytes`);
+    }
+    chunks.push(next);
+  }
   return Buffer.concat(chunks).toString("utf8");
 }
 

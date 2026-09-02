@@ -4,7 +4,7 @@
 - Owner: ClawSweeper maintainers
 - Source of truth: repair source/workflows, CrabFleet integration, dashboard
   telemetry, and controlled behavior proof
-- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
 - Update when: session lifecycle, steering, runner/auth boundary, capacity,
   proof, dashboard, or recovery protocol changes
 
@@ -34,6 +34,20 @@ The automation is designed around five goals:
    browser or laptop the execution host.
 5. GitHub mutations should remain deterministic, authenticated, bounded, and
    reversible when the model, runner, network, or operator disappears.
+
+Prefer the capable agent over custom reasoning machinery. Codex owns code
+judgment, investigation, implementation, and choosing appropriate validation.
+ClawSweeper supplies evidence and enforces the boundaries the agent cannot own:
+authorization, credential isolation, bounded scheduling, durable identity, and
+GitHub mutation gates. Add orchestration only for a concrete boundary or
+operational contract; do not duplicate the agent's reasoning in parsers,
+heuristics, or additional agent loops.
+
+Issue maturity assessment follows this boundary: Codex reads the target's
+checked-out scorecard and taxonomy directly and cites the primary owner and
+existing behavior. ClawSweeper does not generate or prefilter a maturity
+shortlist. Missing or ambiguous maturity evidence means no maturity label;
+the existing M4/M5 and broken-existing-behavior requirements still apply.
 
 The system separates model judgment from mutation authority. Codex reviews and
 edits code. TypeScript and GitHub Actions decide whether work is allowed,

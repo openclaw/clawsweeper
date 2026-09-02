@@ -54,7 +54,7 @@ inputs:
     required: false
     default: ""
   records-item-number:
-    description: Hydrate only this canonical issue record instead of the complete repository snapshot.
+    description: Hydrate only these comma-separated item tuples instead of the complete repository snapshot.
     required: false
     default: ""
   records-secret:

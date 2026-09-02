@@ -1,5 +1,5 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
-import { isAutomergeMergeStateReady, parseTrustedAutomation } from "./comment-router-core.js";
+import { isAutomergeMergeStateReady, latestTrustedExactHeadReview } from "./comment-router-core.js";
 
 const DEFAULT_WAIT_MS = 10 * 60 * 1000;
 const DEFAULT_POLL_MS = 15 * 1000;
@@ -50,13 +50,17 @@ export function automergeShepherdReadiness({
       reason: `head changed from ${headSha} to ${view.headRefOid}`,
     };
   }
-  if (hasTrustedHumanReviewForHead(comments, headSha)) {
+  const review = trustedReviewDecisionForHead(comments, headSha);
+  if (review?.decision === "human") {
     return {
       status: "human",
-      reason: "exact-head ClawSweeper review requires human handling",
+      reason:
+        review.liveVerification === "failed" || review.liveVerification === "malformed"
+          ? `exact-head ClawSweeper review has ${review.liveVerification} live verification`
+          : "exact-head ClawSweeper review requires human handling",
     };
   }
-  if (hasTrustedRepairRequestForHead(comments, headSha)) {
+  if (review?.decision === "repair") {
     return {
       status: "blocked",
       reason: "exact-head ClawSweeper review requires another repair",
@@ -64,7 +68,7 @@ export function automergeShepherdReadiness({
   }
   const checkBlock = checkBlockReason(view.statusCheckRollup ?? []);
   if (checkBlock.status === "blocked") return checkBlock;
-  if (!hasTrustedPassForHead(comments, headSha)) {
+  if (review?.decision !== "pass") {
     return { status: "waiting", reason: "waiting for exact-head ClawSweeper review pass" };
   }
   if (checkBlock.status === "waiting") return checkBlock;
@@ -83,29 +87,23 @@ export function automergeShepherdReadiness({
 }
 
 export function hasTrustedPassForHead(comments: JsonValue[], headSha: string) {
-  return trustedReviewDecisionForHead(comments, headSha) === "pass";
+  return trustedReviewDecisionForHead(comments, headSha)?.decision === "pass";
 }
 
 export function hasTrustedRepairRequestForHead(comments: JsonValue[], headSha: string) {
-  return trustedReviewDecisionForHead(comments, headSha) === "repair";
+  return trustedReviewDecisionForHead(comments, headSha)?.decision === "repair";
 }
 
 export function hasTrustedHumanReviewForHead(comments: JsonValue[], headSha: string) {
-  return trustedReviewDecisionForHead(comments, headSha) === "human";
+  return trustedReviewDecisionForHead(comments, headSha)?.decision === "human";
 }
 
 function trustedReviewDecisionForHead(comments: JsonValue[], headSha: string) {
-  let latest: "human" | "pass" | "repair" | null = null;
-  for (const comment of comments) {
-    const command = parseTrustedAutomation(comment, {
-      trustedAuthors: TRUSTED_REVIEW_AUTHORS,
-    });
-    if (String(command?.expected_head_sha ?? "") !== headSha) continue;
-    if (command?.intent === "clawsweeper_auto_merge") latest = "pass";
-    if (command?.intent === "clawsweeper_auto_repair") latest = "repair";
-    if (command?.intent === "clawsweeper_needs_human") latest = "human";
-  }
-  return latest;
+  return latestTrustedExactHeadReview({
+    comments,
+    headSha,
+    trustedAuthors: TRUSTED_REVIEW_AUTHORS,
+  });
 }
 
 function checkBlockReason(checks: JsonValue[]) {

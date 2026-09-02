@@ -4,7 +4,7 @@
 - Owner: ClawSweeper maintainers and the authorized repair operator
 - Source of truth: repair workflows/source, current gates, focused tests, and
   live read-only GitHub state where needed
-- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
 - Update when: commands, trust checks, gates, tokens, runners, routing,
   publication, recovery, or promotion rules change
 
@@ -355,6 +355,19 @@ Worker queue coalesces item revisions and leases the executor before checkout.
 The target workflow remains a compatibility fallback when the webhook service
 is down or not installed for a repository; its direct event is bridged into the
 same queue.
+
+The standalone `repair:comment-webhook` listener bounds incoming bodies to 2 MiB
+before signature verification. It accepts declared-length and chunked bodies,
+rejects oversized declarations before reading, and checks streamed bytes as they
+arrive. An oversized body receives HTTP 400 before the connection closes.
+
+The listener limits each GitHub REST request,
+including reading its response body, to 15 seconds. A stalled request returns
+HTTP 503 with `retryable: true`; successful requests keep the existing response.
+This per-request deadline does not bound the total duration of a command that
+makes several GitHub requests. GitHub does not automatically redeliver failed
+webhooks; its delivery response window is 10 seconds, so this deadline bounds
+listener resources rather than guaranteeing delivery acknowledgment.
 
 Supported triggers:
 

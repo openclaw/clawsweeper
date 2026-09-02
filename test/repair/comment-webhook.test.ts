@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import http from "node:http";
 import test from "node:test";
 
 import {
@@ -11,6 +12,7 @@ import {
   renderFastAckComment,
   verifyGitHubSignature,
 } from "../../dist/repair/comment-webhook.js";
+import { REPOSITORY_PROFILES } from "../../dist/repository-profiles.js";
 
 test("comment webhook accepts maintainer ClawSweeper commands", () => {
   const result = classifyIssueCommentWebhook({
@@ -109,6 +111,201 @@ test("comment webhook ignores command-bearing assist and visual publications bef
     assert.equal(requests, 0);
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test("standalone webhook terminal admission blocks delayed private and missing targets", async () => {
+  const restoreCredentials = installWebhookAppCredentials();
+  const previousFetch = globalThis.fetch;
+  let sideEffects = 0;
+
+  try {
+    globalThis.fetch = async () => {
+      sideEffects += 1;
+      throw new Error("ineligible targets must stop before GitHub access");
+    };
+    for (const payload of [
+      commandWebhookPayload("@clawsweeper re-review", "not-a-repo"),
+      {
+        ...commandWebhookPayload("@clawsweeper re-review"),
+        repository: {
+          ...commandWebhookPayload("@clawsweeper re-review").repository,
+          private: true,
+        },
+      },
+    ]) {
+      assert.deepEqual(
+        await handleGitHubWebhook({
+          event: "issue_comment",
+          payload,
+        }),
+        {
+          statusCode: 202,
+          body: { accepted: false, reason: "repository not eligible" },
+        },
+      );
+    }
+
+    for (const liveResponse of [
+      () =>
+        jsonResponse({
+          full_name: "openclaw/openclaw",
+          private: true,
+          visibility: "private",
+        }),
+      () => jsonResponse({}, { status: 404 }),
+    ]) {
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = new URL(String(input));
+        const method = String(init?.method ?? "GET").toUpperCase();
+        if (url.pathname === "/repos/openclaw/clawsweeper/installation" && method === "GET") {
+          return jsonResponse({ id: 999 });
+        }
+        if (url.pathname === "/app/installations/999/access_tokens" && method === "POST") {
+          assert.deepEqual(JSON.parse(String(init?.body ?? "{}")), {
+            repositories: ["clawsweeper"],
+            permissions: { metadata: "read" },
+          });
+          return jsonResponse({ token: "metadata-token" });
+        }
+        if (url.pathname === "/repos/openclaw/openclaw" && method === "GET") {
+          assert.equal(new Headers(init?.headers).get("authorization"), "Bearer metadata-token");
+          return liveResponse();
+        }
+        sideEffects += 1;
+        throw new Error(`unexpected side effect ${method} ${url.pathname}`);
+      }) as typeof fetch;
+
+      for (const commandBody of ["@clawsweeper re-review", "@clawsweeper automerge"]) {
+        const result = await handleGitHubWebhook({
+          event: "issue_comment",
+          payload: commandWebhookPayload(commandBody),
+        });
+        assert.deepEqual(result, {
+          statusCode: 202,
+          body: { ok: false, accepted: false, reason: "private_target_unsupported" },
+        });
+      }
+    }
+    assert.equal(sideEffects, 0);
+  } finally {
+    globalThis.fetch = previousFetch;
+    restoreCredentials();
+  }
+});
+
+test("standalone webhook retryable admission defers without intake or target effects", async () => {
+  const restoreCredentials = installWebhookAppCredentials();
+  const previousFetch = globalThis.fetch;
+  let sideEffects = 0;
+
+  try {
+    for (const liveResult of [
+      jsonResponse({}, { status: 403 }),
+      jsonResponse({}, { status: 429, headers: { "retry-after": "60" } }),
+      jsonResponse({}, { status: 503 }),
+      new Error("network unavailable"),
+    ]) {
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = new URL(String(input));
+        const method = String(init?.method ?? "GET").toUpperCase();
+        if (url.pathname === "/repos/openclaw/clawsweeper/installation" && method === "GET") {
+          return jsonResponse({ id: 999 });
+        }
+        if (url.pathname === "/app/installations/999/access_tokens" && method === "POST") {
+          assert.deepEqual(JSON.parse(String(init?.body ?? "{}")), {
+            repositories: ["clawsweeper"],
+            permissions: { metadata: "read" },
+          });
+          return jsonResponse({ token: "metadata-token" });
+        }
+        if (url.pathname === "/repos/openclaw/openclaw" && method === "GET") {
+          if (liveResult instanceof Error) throw liveResult;
+          return liveResult;
+        }
+        sideEffects += 1;
+        throw new Error(`unexpected side effect ${method} ${url.pathname}`);
+      }) as typeof fetch;
+
+      for (const commandBody of ["@clawsweeper re-review", "@clawsweeper automerge"]) {
+        const result = await handleGitHubWebhook({
+          event: "issue_comment",
+          payload: commandWebhookPayload(commandBody),
+        });
+        assert.deepEqual(result, {
+          statusCode: 503,
+          body: { ok: false, error: "target_visibility_unverified", retryable: true },
+        });
+      }
+    }
+    assert.equal(sideEffects, 0);
+  } finally {
+    globalThis.fetch = previousFetch;
+    restoreCredentials();
+  }
+});
+
+test("standalone webhook admits public targets before durable command intake", async () => {
+  const restoreCredentials = installWebhookAppCredentials();
+  const previousFetch = globalThis.fetch;
+  const previousQueueUrl = process.env.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL;
+  const previousWebhookSecret = process.env.CLAWSWEEPER_WEBHOOK_SECRET;
+  let intakeRequests = 0;
+  process.env.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL = "https://queue.example.invalid";
+  process.env.CLAWSWEEPER_WEBHOOK_SECRET = "command-intake-secret";
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    const method = String(init?.method ?? "GET").toUpperCase();
+    if (url.pathname === "/repos/openclaw/clawsweeper/installation" && method === "GET") {
+      return jsonResponse({ id: 999 });
+    }
+    if (url.pathname === "/app/installations/999/access_tokens" && method === "POST") {
+      assert.deepEqual(JSON.parse(String(init?.body ?? "{}")), {
+        repositories: ["clawsweeper"],
+        permissions: { metadata: "read" },
+      });
+      return jsonResponse({ token: "metadata-token" });
+    }
+    if (url.pathname === "/repos/openclaw/openclaw" && method === "GET") {
+      return jsonResponse({
+        full_name: "openclaw/openclaw",
+        private: false,
+        visibility: "public",
+      });
+    }
+    if (url.origin === "https://queue.example.invalid" && method === "POST") {
+      intakeRequests += 1;
+      return jsonResponse({
+        ok: true,
+        accepted: true,
+        deduped: false,
+        command_version_id: "openclaw/openclaw#71898:456:v1",
+      });
+    }
+    throw new Error(`unexpected fetch ${method} ${url.pathname}`);
+  }) as typeof fetch;
+
+  try {
+    const result = await handleGitHubWebhook({
+      event: "issue_comment",
+      payload: commandWebhookPayload("@clawsweeper re-review"),
+    });
+    assert.deepEqual(result, {
+      statusCode: 202,
+      body: {
+        ok: true,
+        kind: "accepted",
+        deduped: false,
+        commandVersionId: "openclaw/openclaw#71898:456:v1",
+      },
+    });
+    assert.equal(intakeRequests, 1);
+  } finally {
+    globalThis.fetch = previousFetch;
+    restoreEnv("CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL", previousQueueUrl);
+    restoreEnv("CLAWSWEEPER_WEBHOOK_SECRET", previousWebhookSecret);
+    restoreCredentials();
   }
 });
 
@@ -279,25 +476,67 @@ test("comment webhook still accepts post-close re-review commands for router res
   });
 });
 
-test("comment webhook rejects commands from ineligible repositories", () => {
-  const result = classifyIssueCommentWebhook({
-    event: "issue_comment",
-    payload: {
-      action: "created",
-      repository: {
-        full_name: "openclaw/clawsweeper-state",
-        private: false,
-        archived: false,
-        fork: false,
-        has_issues: true,
+test("comment webhook rejects malformed and unconfigured repository commands before probing", () => {
+  for (const targetRepo of ["not-a-repo", "other-owner/public-repo"]) {
+    const result = classifyIssueCommentWebhook({
+      event: "issue_comment",
+      payload: {
+        action: "created",
+        repository: {
+          full_name: targetRepo,
+          private: false,
+          archived: false,
+          fork: false,
+          has_issues: true,
+        },
+        issue: { number: 1 },
+        installation: { id: 123 },
+        comment: { id: 456, body: "/clawsweeper status", author_association: "MEMBER" },
       },
-      issue: { number: 1 },
-      installation: { id: 123 },
-      comment: { body: "/clawsweeper status", author_association: "MEMBER" },
-    },
-  });
+    });
 
-  assert.deepEqual(result, { accepted: false, reason: "repository not eligible" });
+    assert.deepEqual(result, { accepted: false, reason: "repository not eligible" }, targetRepo);
+  }
+});
+
+test("comment webhook accepts an explicitly configured external-owner repository", () => {
+  const profile = {
+    ...REPOSITORY_PROFILES[0]!,
+    targetRepo: "partner/configured-repo",
+    slug: "partner-configured-repo",
+    displayName: "Configured partner",
+    checkoutDir: "configured-repo",
+    promptNote: "Use the configured partner repository policy.",
+  };
+  REPOSITORY_PROFILES.push(profile);
+  try {
+    const result = classifyIssueCommentWebhook({
+      event: "issue_comment",
+      payload: {
+        action: "created",
+        repository: {
+          full_name: "partner/configured-repo",
+          default_branch: "main",
+          private: false,
+          archived: false,
+          fork: false,
+          has_issues: true,
+        },
+        issue: { number: 7, state: "open" },
+        installation: { id: 123 },
+        comment: {
+          id: 456,
+          body: "@clawsweeper re-review",
+          author_association: "MEMBER",
+        },
+      },
+    });
+
+    assert.equal(result.accepted, true);
+    assert.equal("targetRepo" in result ? result.targetRepo : "", "partner/configured-repo");
+  } finally {
+    REPOSITORY_PROFILES.splice(REPOSITORY_PROFILES.indexOf(profile), 1);
+  }
 });
 
 test("comment webhook rejects non-author read-only re-review commands", () => {
@@ -321,13 +560,13 @@ test("comment webhook rejects non-author read-only re-review commands", () => {
   assert.match(result.reason, /not allowed/);
 });
 
-test("webhook accepts eligible issue events for generic OpenClaw repositories", () => {
+test("webhook accepts eligible issue events for public OpenClaw repositories", () => {
   const result = classifyItemWebhook({
     event: "issues",
     payload: {
       action: "opened",
       repository: {
-        full_name: "openclaw/gogcli",
+        full_name: "openclaw/fs-safe",
         private: false,
         archived: false,
         fork: false,
@@ -341,7 +580,7 @@ test("webhook accepts eligible issue events for generic OpenClaw repositories", 
   assert.deepEqual(result, {
     accepted: true,
     type: "item",
-    targetRepo: "openclaw/gogcli",
+    targetRepo: "openclaw/fs-safe",
     targetBranch: "main",
     itemNumber: 597,
     itemKind: "issue",
@@ -352,13 +591,13 @@ test("webhook accepts eligible issue events for generic OpenClaw repositories", 
   });
 });
 
-test("webhook accepts eligible pull request events for generic steipete repositories", () => {
+test("webhook accepts eligible pull request events for configured steipete repositories", () => {
   const result = classifyWebhook({
     event: "pull_request",
     payload: {
       action: "synchronize",
       repository: {
-        full_name: "steipete/summarize",
+        full_name: "steipete/camsnap",
         private: false,
         archived: false,
         fork: false,
@@ -372,7 +611,7 @@ test("webhook accepts eligible pull request events for generic steipete reposito
   assert.deepEqual(result, {
     accepted: true,
     type: "item",
-    targetRepo: "steipete/summarize",
+    targetRepo: "steipete/camsnap",
     targetBranch: "main",
     itemNumber: 42,
     itemKind: "pull_request",
@@ -494,7 +733,17 @@ test("pull request webhooks dispatch adaptive Codex timeout payload", async () =
       return jsonResponse({ id: 999 });
     }
     if (path === "/app/installations/999/access_tokens" && method === "POST") {
-      return jsonResponse({ token: "dispatch-token" });
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      return jsonResponse({
+        token: body.permissions?.metadata === "read" ? "metadata-token" : "dispatch-token",
+      });
+    }
+    if (path === "/repos/openclaw/openclaw" && method === "GET") {
+      return jsonResponse({
+        full_name: "openclaw/openclaw",
+        private: false,
+        visibility: "public",
+      });
     }
     if (path === "/repos/openclaw/clawsweeper/dispatches" && method === "POST") {
       dispatchedBody = JSON.parse(String(init?.body ?? "{}"));
@@ -583,7 +832,7 @@ test("webhook preserves valid repository default branch for item dispatch", () =
     payload: {
       action: "opened",
       repository: {
-        full_name: "openclaw/gogcli",
+        full_name: "openclaw/fs-safe",
         default_branch: "trunk",
         private: false,
         archived: false,
@@ -605,7 +854,7 @@ test("webhook falls back to main for invalid repository default branch", () => {
     payload: {
       action: "opened",
       repository: {
-        full_name: "openclaw/gogcli",
+        full_name: "openclaw/fs-safe",
         default_branch: "bad branch",
         private: false,
         archived: false,
@@ -621,7 +870,7 @@ test("webhook falls back to main for invalid repository default branch", () => {
   assert.equal(result.targetBranch, "main");
 });
 
-test("webhook rejects private and denied target repositories", () => {
+test("webhook rejects private target repositories and accepts generic public repositories", () => {
   const privateResult = classifyItemWebhook({
     event: "issues",
     payload: {
@@ -639,12 +888,12 @@ test("webhook rejects private and denied target repositories", () => {
   });
   assert.deepEqual(privateResult, { accepted: false, reason: "repository not eligible" });
 
-  const deniedResult = classifyItemWebhook({
+  const publicResult = classifyItemWebhook({
     event: "issues",
     payload: {
       action: "opened",
       repository: {
-        full_name: "openclaw/clawsweeper-state",
+        full_name: "openclaw/example-tool",
         private: false,
         archived: false,
         fork: false,
@@ -654,7 +903,7 @@ test("webhook rejects private and denied target repositories", () => {
       installation: { id: 456 },
     },
   });
-  assert.deepEqual(deniedResult, { accepted: false, reason: "repository not eligible" });
+  assert.equal(publicResult.accepted, true);
 });
 
 test("webhook requeues unlocked and close-guard removal events", () => {
@@ -683,7 +932,7 @@ test("webhook requeues unlocked and close-guard removal events", () => {
       payload: {
         action,
         repository: {
-          full_name: "openclaw/gogcli",
+          full_name: "openclaw/fs-safe",
           private: false,
           archived: false,
           fork: false,
@@ -726,7 +975,7 @@ test("webhook rejects label additions and unrelated removals from exact-review i
       {
         action: "unlabeled",
         repository: {
-          full_name: "openclaw/gogcli",
+          full_name: "openclaw/fs-safe",
           private: false,
           archived: false,
           fork: false,
@@ -769,7 +1018,7 @@ test("concurrent duplicate command webhooks converge on one fast ack comment", a
   const dispatchBodies: Array<Record<string, unknown>> = [];
   process.env.CLAWSWEEPER_APP_ID = "12345";
   delete process.env.CLAWSWEEPER_APP_CLIENT_ID;
-  process.env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS = "0,0,0";
+  process.env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS = "0";
   process.env.CLAWSWEEPER_APP_PRIVATE_KEY = privateKey
     .export({ type: "pkcs1", format: "pem" })
     .toString();
@@ -782,7 +1031,17 @@ test("concurrent duplicate command webhooks converge on one fast ack comment", a
       return jsonResponse({ id: 999 });
     }
     if (path === "/app/installations/999/access_tokens" && method === "POST") {
-      return jsonResponse({ token: "dispatch-token" });
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      return jsonResponse({
+        token: body.permissions?.metadata === "read" ? "metadata-token" : "dispatch-token",
+      });
+    }
+    if (path === "/repos/openclaw/openclaw" && method === "GET") {
+      return jsonResponse({
+        full_name: "openclaw/openclaw",
+        private: false,
+        visibility: "public",
+      });
     }
     if (path === "/app/installations/123/access_tokens" && method === "POST") {
       return jsonResponse({ token: "target-token" });
@@ -884,6 +1143,7 @@ test("comment webhook settles duplicate fast ack comments after dispatch", async
   const previousAppId = process.env.CLAWSWEEPER_APP_ID;
   const previousClientId = process.env.CLAWSWEEPER_APP_CLIENT_ID;
   const previousPrivateKey = process.env.CLAWSWEEPER_APP_PRIVATE_KEY;
+  const previousSettleDelays = process.env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS;
   const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
   let commentLookups = 0;
   let deletedAck = 0;
@@ -893,6 +1153,7 @@ test("comment webhook settles duplicate fast ack comments after dispatch", async
   });
   process.env.CLAWSWEEPER_APP_ID = "12345";
   delete process.env.CLAWSWEEPER_APP_CLIENT_ID;
+  process.env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS = "0";
   process.env.CLAWSWEEPER_APP_PRIVATE_KEY = privateKey
     .export({ type: "pkcs1", format: "pem" })
     .toString();
@@ -905,14 +1166,24 @@ test("comment webhook settles duplicate fast ack comments after dispatch", async
       return jsonResponse({ id: 999 });
     }
     if (path === "/app/installations/999/access_tokens" && method === "POST") {
-      return jsonResponse({ token: "dispatch-token" });
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      return jsonResponse({
+        token: body.permissions?.metadata === "read" ? "metadata-token" : "dispatch-token",
+      });
+    }
+    if (path === "/repos/openclaw/openclaw" && method === "GET") {
+      return jsonResponse({
+        full_name: "openclaw/openclaw",
+        private: false,
+        visibility: "public",
+      });
     }
     if (path === "/app/installations/123/access_tokens" && method === "POST") {
       return jsonResponse({ token: "target-token" });
     }
     if (path.startsWith("/repos/openclaw/openclaw/issues/71898/comments?") && method === "GET") {
       commentLookups += 1;
-      if (commentLookups <= 2) {
+      if (commentLookups === 1) {
         return jsonResponse([
           {
             id: 9001,
@@ -979,12 +1250,15 @@ test("comment webhook settles duplicate fast ack comments after dispatch", async
 
     assert.deepEqual(result, { statusCode: 202, body: { ok: true, status_comment_id: 9001 } });
     await deleted;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(commentLookups, 2);
     assert.equal(deletedAck, 9001);
   } finally {
     globalThis.fetch = previousFetch;
     restoreEnv("CLAWSWEEPER_APP_ID", previousAppId);
     restoreEnv("CLAWSWEEPER_APP_CLIENT_ID", previousClientId);
     restoreEnv("CLAWSWEEPER_APP_PRIVATE_KEY", previousPrivateKey);
+    restoreEnv("CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS", previousSettleDelays);
   }
 });
 
@@ -1000,10 +1274,156 @@ test("webhook signature verification uses sha256 body hmac", () => {
   );
 });
 
-function jsonResponse(value: unknown) {
+test("webhook GitHub requests have a deadline through the response body", async (t) => {
+  const previousFetch = globalThis.fetch;
+  const previousTimeout = AbortSignal.timeout;
+  for (const name of [
+    "CLAWSWEEPER_APP_ID",
+    "CLAWSWEEPER_APP_CLIENT_ID",
+    "CLAWSWEEPER_APP_PRIVATE_KEY",
+  ]) {
+    const previous = process.env[name];
+    t.after(() => restoreEnv(name, previous));
+  }
+  process.env.CLAWSWEEPER_APP_ID = "12345";
+  delete process.env.CLAWSWEEPER_APP_CLIENT_ID;
+  process.env.CLAWSWEEPER_APP_PRIVATE_KEY = crypto
+    .generateKeyPairSync("rsa", { modulusLength: 2048 })
+    .privateKey.export({ type: "pkcs1", format: "pem" })
+    .toString();
+
+  let mode = "success";
+  let calls = 0;
+  const server = http.createServer((request, response) => {
+    calls++;
+    if (mode === "headers") return;
+    response.writeHead(200, { "content-type": "application/json" });
+    if (mode === "body") {
+      response.write('{"id":');
+      return;
+    }
+    response.end(
+      JSON.stringify(
+        request.url?.endsWith("/installation")
+          ? { id: 999 }
+          : request.url?.endsWith("/access_tokens")
+            ? { token: "synthetic-token" }
+            : request.url?.endsWith("/repos/openclaw/openclaw")
+              ? {
+                  full_name: "openclaw/openclaw",
+                  private: false,
+                  visibility: "public",
+                }
+              : {},
+      ),
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(
+    () =>
+      new Promise<void>((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
+  );
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  t.mock.method(globalThis, "fetch", (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    assert.equal(url.origin, "https://api.github.com");
+    return previousFetch(`http://127.0.0.1:${address.port}${url.pathname}`, init);
+  });
+  t.mock.method(AbortSignal, "timeout", (ms: number) => {
+    assert.ok(ms === 15_000 || ms === 20_000);
+    return previousTimeout(mode === "success" ? 2_000 : 50);
+  });
+
+  for (mode of ["success", "headers", "body"]) {
+    await t.test(mode, { timeout: 3_000 }, async () => {
+      calls = 0;
+      const result = handleGitHubWebhook({
+        event: "pull_request",
+        payload: {
+          action: "opened",
+          repository: {
+            full_name: "openclaw/openclaw",
+            default_branch: "main",
+            private: false,
+            archived: false,
+            fork: false,
+            has_issues: true,
+          },
+          pull_request: { number: 91095, head: { sha: "e".repeat(40) } },
+          installation: { id: 123 },
+        },
+      });
+      if (mode === "success") {
+        assert.deepEqual(await result, {
+          statusCode: 202,
+          body: { ok: true, dispatched: "clawsweeper_item" },
+        });
+        assert.equal(calls, 5);
+      } else {
+        assert.deepEqual(await result, {
+          statusCode: 503,
+          body: { ok: false, error: "target_visibility_unverified", retryable: true },
+        });
+        assert.equal(calls, 1);
+      }
+    });
+  }
+});
+
+function commandWebhookPayload(commandBody: string, targetRepo = "openclaw/openclaw") {
+  return {
+    action: "created",
+    repository: {
+      full_name: targetRepo,
+      default_branch: "main",
+      private: false,
+      archived: false,
+      fork: false,
+      has_issues: true,
+    },
+    issue: {
+      number: 71898,
+      state: "open",
+      pull_request: {},
+      user: { login: "contributor" },
+    },
+    installation: { id: 123 },
+    comment: {
+      id: 456,
+      body: commandBody,
+      author_association: "MEMBER",
+      updated_at: "2026-08-27T00:00:00Z",
+      user: { login: "maintainer" },
+    },
+  };
+}
+
+function installWebhookAppCredentials() {
+  const previousAppId = process.env.CLAWSWEEPER_APP_ID;
+  const previousClientId = process.env.CLAWSWEEPER_APP_CLIENT_ID;
+  const previousPrivateKey = process.env.CLAWSWEEPER_APP_PRIVATE_KEY;
+  const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  process.env.CLAWSWEEPER_APP_ID = "12345";
+  delete process.env.CLAWSWEEPER_APP_CLIENT_ID;
+  process.env.CLAWSWEEPER_APP_PRIVATE_KEY = privateKey
+    .export({ type: "pkcs1", format: "pem" })
+    .toString();
+  return () => {
+    restoreEnv("CLAWSWEEPER_APP_ID", previousAppId);
+    restoreEnv("CLAWSWEEPER_APP_CLIENT_ID", previousClientId);
+    restoreEnv("CLAWSWEEPER_APP_PRIVATE_KEY", previousPrivateKey);
+  };
+}
+
+function jsonResponse(value: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(value), {
-    status: 200,
-    headers: { "content-type": "application/json" },
+    ...init,
+    status: init.status ?? 200,
+    headers: init.headers ?? { "content-type": "application/json" },
   });
 }
 

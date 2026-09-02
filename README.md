@@ -36,8 +36,8 @@ At a high level ClawSweeper:
 - reviews open issues and pull requests on a schedule and on exact GitHub events
 - writes one durable markdown report per item in generated state
 - syncs one marker-backed public review comment per issue or PR, edited in place
-- can record and attach deterministic browser or terminal live proof for
-  user-visible changes in explicitly opted-in repositories
+- preserves validation, rendering, media publication, and retraction for
+  historical live-proof artifacts; new reviews do not generate live proof
 - closes only unchanged, high-confidence, policy-allowed proposals
 - routes maintainer commands such as `@clawsweeper review`,
   `@clawsweeper fix`, `@clawsweeper autofix`, and `@clawsweeper automerge`
@@ -195,6 +195,11 @@ Issues with an open PR that references them using GitHub closing syntax such as
 that high-confidence PR candidate earlier in the same apply run.
 Open issue/PR pairs from the same author stay open together unless the paired
 item is already resolved or a maintainer explicitly asks to close one side.
+Related PR links do not promote a completed keep-open review into a close
+proposal. Codex owns that supersession decision; comment publication preserves
+the verdict. Independent no-diff, stale-PR, and author-budget policies still
+apply.
+
 PR-to-PR duplicate/superseded closes also require a safe canonical target:
 ClawSweeper refuses to close one PR as replaced by another PR that is closed
 unmerged, missing positive real behavior proof, F-rated, already proposed for
@@ -388,7 +393,9 @@ Review is proposal-only. It never closes items.
 
 - A planner scans open issues and PRs, then assigns exact item numbers to shards.
 - Manual runs can pass `item_number` or comma-separated `item_numbers` to review
-  exact Audit Health findings without scanning for a normal batch.
+  exact Audit Health findings without scanning for a normal batch. Batch
+  dispatchers can use `shard_count` to bound parallel shards and `batch_size`
+  to set the number of items assigned to each worker.
 - Each shard checks out the selected target repository at `main`.
 - Codex reviews with the internal model, high reasoning, the default service tier, and a
   10-minute per-item timeout.
@@ -540,6 +547,122 @@ its final month). The local, GitHub-isolated review engine survives as
 
 ### Safety Model
 
+Native reviews require host-owned TruffleHog admission before any model-backed
+checkout inspection or review. The host scans the explicit initial prompt and
+schema plus complete raw before/after blobs and the full introduced diff. Scan
+coverage is independent of the 80-path/24K-character display evidence limits.
+Repair reviews scan the committed, staged, unstaged, and applicable untracked
+bytes of the validated checkout. Clean text-converted checkouts retain both
+canonical Git and raw working bytes in scan coverage. The host never starts a target-bundled autoreview helper or second reviewer.
+
+Hosted Codex and OpenClaw setup share the checksum-pinned TruffleHog 3.97.1
+installer in `.github/actions/setup-review-tools/install.sh`. For local review,
+ClawSweeper first uses a trusted host executable outside both checkouts; when it
+is absent, it bootstraps the exact checksum-pinned release asset into a
+user-owned cache outside both checkouts. The local bootstrap accepts no URL or
+version override, verifies the download and cached executable, and runs a clean
+environment version check before scanning. Missing tools, unclassified findings, scan errors, source
+drift, incomplete ancestry/objects, changed gitlinks, and LFS pointers refuse the
+review. The scan stages at most 256 MiB in private external temporary files and
+uses the remaining review deadline; it never silently truncates or bypasses.
+Diagnostics omit scanner output and source values. Restore prerequisites or
+remove sensitive input before retrying a refusal.
+Exact-review failure manifests distinguish a native output/scan-contract failure
+from an unclassified finding. The latter records the first blocking finding's
+bounded detector metadata and host-staged material identity: prompt, schema,
+additional input, raw diff, patch, raw working bytes, or Git blob. Source
+references contain Git revisions and hashed paths, with at most four references
+and their total count. No raw paths, matched values, literal digests, or
+verification messages are retained; this provenance does not authorize a finding.
+
+The host classifies the reviewed synthetic malformed-configuration URI in
+`test/action-ledger-runtime.test.ts` and the explicitly approved autoreview
+negative-test URI in the [canonical autoreview test](https://github.com/openclaw/agent-skills/blob/a8466c1d860588a083610fe41fd277c1d88b14e0/skills/autoreview/tests/test_autoreview_hardening.py)
+or its [vendored OpenClaw copy](https://github.com/openclaw/openclaw/blob/136eab023035dd5943818f791d3c3db7d92e4491/.agents/skills/autoreview/tests/test_autoreview_hardening.py)
+as non-sensitive after a complete scan. The same exact-fixture policy covers
+the reviewed OpenClaw Browser CDP authentication and credential-redaction fixtures in
+[`chrome.test.ts`](https://github.com/openclaw/openclaw/blob/8e03b0c62e76dc25c77045a84ab3098a111a7be3/extensions/browser/src/browser/chrome.test.ts),
+the [remote-CDP coverage](https://github.com/openclaw/openclaw/blob/58da2f5897feb6840937d8e50cf7ee6f26aa57d7/extensions/browser/src/browser/chrome.test.ts),
+the [server-context redaction test](https://github.com/openclaw/openclaw/blob/4b5987829d0f82ea44ae50f2f418ffe5ea445e7f/extensions/browser/src/browser/server-context.ensure-browser-available.waits-for-cdp-ready.test.ts),
+the [remote-CDP documentation example](https://github.com/openclaw/openclaw/blob/bf15c87d2b1223610b42775b8154b8eec60b541d/docs/tools/browser.md),
+the [credentialed-page rejection fixtures](https://github.com/openclaw/openclaw/blob/d5fb4903f1b13a4309d479f1011d995b1fc706ae/extensions/browser/src/browser-tool.test.ts),
+the [guarded CDP authentication fixtures](https://github.com/openclaw/openclaw/blob/1cf6ff3bdc08a6ac08facb1006b1d7aabc0eaff4/extensions/browser/src/browser/cdp.helpers.test.ts),
+the [MCP endpoint-redaction fixture](https://github.com/openclaw/openclaw/blob/ac21e89c13e42f6a7d152bf9be143e67edd44ed3/extensions/browser/src/browser/chrome-mcp.test.ts),
+the [Mac dashboard credentialed-subframe rejection fixture](https://github.com/openclaw/openclaw/blob/9ba01d6c7b1c308e7b41eac11ba6f43e0fd0393d/apps/macos/Tests/OpenClawIPCTests/DashboardWindowSmokeTests.swift#L273),
+the [Mattermost slash-error sanitization fixtures](https://github.com/openclaw/openclaw/blob/9c0975c1c20ed635532c7aa0f510154224adee7f/extensions/mattermost/src/mattermost/slash-http.test.ts),
+and the OpenClaw config [URL-redaction](https://github.com/openclaw/openclaw/blob/5fe22a7d88919f260e7999fc775733feff3cb1fa/src/config/redact-snapshot.test.ts)
+and [restoration fixtures](https://github.com/openclaw/openclaw/blob/5fe22a7d88919f260e7999fc775733feff3cb1fa/src/config/redact-snapshot.restore.test.ts)
+after a complete scan. Static host policy associates each
+exact detector-matched URI SHA-256 with only its approved source paths and exact
+scanner `Raw` digest, including when `Raw` omits a path retained by `RawV2`. The
+matched value must be a literal in a host-staged Git blob from mode `100644`.
+The three guarded-CDP/MCP entries, Mac dashboard entry, and four Mattermost entries also bind complete
+reviewed source lines, including surrounding query text that TruffleHog's URI
+detector does not match. Changes to those lines or additional literal occurrences
+refuse classification. These witnesses do not expand native query detection.
+The table binds exact values and paths across revisions, not particular commits.
+The host locates that exact literal independently in the staged blob. Decoder
+coordinates can shift, and TruffleHog can omit a companion plain-text finding,
+so admission does not depend on another finding or a reported line matching the
+original source. Repeated literals remain eligible unless an entry is bound to
+an approved complete-line digest; those entries require exactly one occurrence
+in the staged blob. Finding order and duplicate records do not change the exact
+value, path, and mode checks.
+Findings must use `PLAIN` or `HTML`, except the Mac dashboard entry permits only
+its observed `PLAIN` decoder and the two guarded-CDP fixtures also permit `BASE64`.
+The pinned Base64 decoder preserves the rest of a chunk after
+decoding another token, so an unchanged literal can acquire that decoder label
+and win cross-decoder deduplication. Those entries still require the literal in
+its exact original source line; encoded-only content remains blocking.
+One source path may contain multiple independently reviewed fixtures; each
+digest/path/mode tuple must match exactly, so source membership alone never
+qualifies a finding.
+Deduplicated blobs retain every scanned logical endpoint's path and Git mode,
+including mode-only transitions and shared-path aliases. Every captured reference
+must qualify under the same digest's exact path and mode `100644` policy before
+any source is eligible for classification or an audit notice.
+The policy does not trust checkout ignore rules, domain patterns, fixture words,
+test names, or unchanged-line inference; no nearby fixture is implicitly approved.
+Findings attributed to prompt, schema, diff, additional-input, other-path, or
+encoded-only blobs remain blocking, as do other findings, verified findings,
+and incomplete scans. Unverified findings alone never qualify: every finding must
+match the exact bytes, source association, and strict detector contract. This
+classification does not expand TruffleHog's detection coverage.
+The classification is pinned to TruffleHog 3.97.1's output contract; scanner
+upgrades require requalification. See `src/agent-input-scan-fixtures.ts`.
+After successful cleanup and final source fences, each accepted fixture/source
+pair emits a host-side structured stderr notice with `event`, `fixtureSha256`,
+`source`, `detector`, and `findings` entries containing `blob`, `decoder`, and
+`occurrences`. Each finding retains its reported `scannerLine` and a `literalLine`
+for the first exact literal in the staged blob. This bounded witness establishes
+literal presence; it does not identify which occurrence produced a decoded hit.
+Counts are per source: a shared blob can appear in both source
+notices and those counts must not be summed across sources. A refused or drifted
+scan emits no success notice. Raw values and verification diagnostics never
+appear in that audit notice.
+
+Generated review and repair prompt diagnostics retire the previous attempt's
+copy before admission and persist only successfully scanned exact prompt bytes
+with owner-only access. Commit review, assist, and close-coverage proof do not
+retain unused prompt copies. Original inputs and explicitly requested prompt
+exports (`repair:render` or worker `--dry-run`) remain operator-owned outputs.
+
+This admission boundary is not universal provider-egress scanning. Automatically
+loaded project docs, resumed/steered history, later tool results, and unchanged
+repository history are outside its scope. Planning, assist, and close-coverage
+calls scan their explicit prompt/schema; they do not attest a source review.
+No dashboard projection or observer API changes; OpenClaw Bay is unaffected.
+
+Maintainers can run the dispatch-only `Hosted native review scan smoke` job in
+`ci.yml`. It uses the existing `OPENAI_API_KEY` and `CLAWSWEEPER_MODEL` secrets
+only during host setup, with no App mutation token. The proof artifact records
+zero provider starts on refusal, one clean native structured run, exact fixture
+and runner identities, and coverage limits without exposing the configured model.
+
+- Review and repair base fetches use fully qualified branch refspecs so inherited
+  `fetch.prune` or `remote.origin.prune` settings do not delete the requested
+  tracking ref. Validation uses the same repair fetch helper; no host Git
+  configuration changes are required.
 - Maintainer-authored items are excluded from automated closes unless the close
   reason is verified `implemented_on_main`.
 - Protected labels block close proposals.

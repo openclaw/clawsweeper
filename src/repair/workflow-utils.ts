@@ -5,6 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "./lib.js";
 import { isJsonObject } from "./json-types.js";
+import { readReportFrontMatterField, type FrontMatterField } from "../report-front-matter.js";
 import { AUTOMATION_LIMITS, WORKER_CONFIG, workerLimit, type WorkerLane } from "../limits.js";
 import {
   fetchExactReviewQueuePressure,
@@ -332,6 +333,11 @@ async function runCli(): Promise<void> {
     case "merge-apply-reports":
       mergeApplyReports(requiredString("dir"), requiredString("output"));
       break;
+    case "apply-requeue-review-item-numbers":
+      process.stdout.write(
+        applyRequeueReviewItemNumbers(requiredString("report"), numberArg("limit", 0)).join(","),
+      );
+      break;
     default:
       throw new Error(`unknown workflow utility command: ${command}`);
   }
@@ -552,6 +558,35 @@ export function artifactItemNumbers(artifactDir: string): number[] {
 export function countActions(reportPath: string, action: string): number {
   if (!action) return readApplyActions(reportPath).length;
   return readApplyActions(reportPath).filter((entry) => entry.action === action).length;
+}
+
+export const APPLY_REQUEUE_UNVERIFIED_CHECKOUT_REASON =
+  "review lacks verified local checkout access";
+
+// Close-mode apply cannot close a record whose source drifted since review or
+// whose stored review never verified local checkout access. Both blocks have
+// the same cure: a fresh exact review. Source-drift skips come first because
+// their close proposals are already confirmed and only need re-verification.
+export function applyRequeueReviewItemNumbers(reportPath: string, limit: number): number[] {
+  if (!Number.isInteger(limit) || limit <= 0) return [];
+  const actions = readApplyActions(reportPath);
+  const selected: number[] = [];
+  const seen = new Set<number>();
+  const push = (entry: ApplyAction): void => {
+    const number = entry.number;
+    if (number === undefined || seen.has(number) || selected.length >= limit) return;
+    seen.add(number);
+    selected.push(number);
+  };
+  for (const entry of actions) {
+    if (entry.action === "skipped_changed_since_review") push(entry);
+  }
+  for (const entry of actions) {
+    if (entry.action === "kept_open" && entry.reason === APPLY_REQUEUE_UNVERIFIED_CHECKOUT_REASON) {
+      push(entry);
+    }
+  }
+  return selected;
 }
 
 export function applyContinuationBlocker(
@@ -1411,6 +1446,7 @@ function selectedProposedItemCandidates(
             type === "pull_request" &&
             frontMatterValue(markdown, "review_status") === "complete" &&
             frontMatterValue(markdown, "local_checkout_access") === "verified" &&
+            frontMatterValue(markdown, "local_checkout_access_source") === "runner_preflight_v1" &&
             hasPullRequestClosePromotionSignal(markdown, options.targetRepo, {
               staleMinAgeMs: options.staleMinAgeDays * 24 * 60 * 60 * 1000,
             }) &&
@@ -2325,7 +2361,8 @@ function commentSyncCandidates(
         actionTaken === "skipped_close_exempt_label" ||
         actionTaken === "skipped_invalid_decision";
       const verifiedLocalCheckout =
-        frontMatterValue(markdown, "local_checkout_access") === "verified";
+        frontMatterValue(markdown, "local_checkout_access") === "verified" &&
+        frontMatterValue(markdown, "local_checkout_access_source") === "runner_preflight_v1";
       const storedReviewCommentId = frontMatterValue(markdown, "review_comment_id");
       const storedReviewCommentUrl = frontMatterValue(markdown, "review_comment_url");
       const hasStoredReviewComment =
@@ -2594,21 +2631,10 @@ function checkpointNumber(name: string): number {
   return Number(name.match(/\d+/)?.[0] ?? 0);
 }
 
-type FrontMatterField =
-  | { status: "absent" }
-  | { status: "ambiguous" }
-  | { status: "value"; value: string };
-
 function frontMatterField(markdown: string, key: string): FrontMatterField {
-  const frontMatterMatch = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-  if (!frontMatterMatch) return { status: "absent" };
-  const frontMatter = frontMatterMatch[1] ?? "";
-  const remainder = markdown.slice(frontMatterMatch[0].length);
-  if (new RegExp(`^${key}:`, "m").test(remainder)) return { status: "ambiguous" };
-  const matches = [...frontMatter.matchAll(new RegExp(`^${key}:\\s*(.*)$`, "gm"))];
-  if (matches.length === 0) return { status: "absent" };
-  if (matches.length !== 1) return { status: "ambiguous" };
-  const value = matches[0]?.[1]?.trim().replace(/^"|"$/g, "") ?? "";
+  const field = readReportFrontMatterField(markdown, key);
+  if (field.status !== "value") return field;
+  const value = field.value.trim().replace(/^"|"$/g, "");
   return value ? { status: "value", value } : { status: "ambiguous" };
 }
 

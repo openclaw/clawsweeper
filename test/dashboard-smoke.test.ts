@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   containsDirectGitHubApiUrl,
+  isCanonicalLegacyBayRedirect,
   waitForDashboardDeployment,
 } from "../scripts/dashboard-smoke.mjs";
 
@@ -34,6 +35,8 @@ test("dashboard smoke requires the bounded Bay journey timing contract", () => {
   const source = readFileSync(new URL("../scripts/dashboard-smoke.mjs", import.meta.url), "utf8");
 
   assert.match(source, /sample_kind !== "completed_review_journeys"/);
+  assert.match(source, /source !== "durable_exact_review_lifecycles"/);
+  assert.match(source, /completion_source !== "verified_final_review_receipts"/);
   assert.doesNotMatch(source, /latest_completed_jobs/);
 });
 
@@ -46,6 +49,28 @@ test("dashboard smoke requires Bay's public indexability and overview navigation
   assert.match(source, /public: true/);
   assert.match(source, /indexable: true/);
   assert.doesNotMatch(source, /unlisted: true/);
+});
+
+test("dashboard smoke requires the legacy Bay redirect to strip query data", () => {
+  const baseUrl = "https://clawsweeper.example";
+
+  assert.equal(
+    isCanonicalLegacyBayRedirect(
+      new Response(null, { status: 308, headers: { location: `${baseUrl}/bay` } }),
+      baseUrl,
+    ),
+    true,
+  );
+  assert.equal(
+    isCanonicalLegacyBayRedirect(
+      new Response(null, {
+        status: 308,
+        headers: { location: `${baseUrl}/bay?repo=public%2Frepository&q=proof` },
+      }),
+      baseUrl,
+    ),
+    false,
+  );
 });
 
 test("dashboard smoke waits for the exact deployed revision", async () => {

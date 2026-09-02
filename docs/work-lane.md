@@ -75,7 +75,7 @@ preserve unrelated labels plus action/proof labels such as `good first issue`,
 `clawsweeper:autofix`,
 `clawsweeper:automerge`, `clawsweeper:human-review`,
 `clawsweeper:merge-ready`, `proof: sufficient`, and
-`mantis: telegram-visible-proof`.
+`proof: telegram-e2e`.
 
 `good first issue` uses GitHub's standard label name, color, and description.
 ClawSweeper keeps the bar narrower than merely "small": the bug must reproduce

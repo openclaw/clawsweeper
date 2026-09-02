@@ -10,7 +10,6 @@ import {
   applyPhaseSequenceForTest,
   applyRuntimeBudgetYieldResultsForTest,
   classifyGitHubDispatchResultForTest,
-  combinedCodexReviewRetryableForTest,
   codexReviewFailureRetryableForTest,
   heldReviewStartStatusCommentResultForTest,
   isGitHubLabelAlreadyExistsErrorForTest,
@@ -501,7 +500,6 @@ test("review candidates start lazily and deferred items cannot remain active", (
     reviewLoop,
     /activeReviewMutationRunner = reviewMutationRunner\(reviewLedger, item\)/,
   );
-  assert.match(reviewLoop, /catch \(error\) \{\s*reviewItemFailed = true;\s*throw error;/);
   assert.match(
     reviewLoop,
     /finally \{[\s\S]*!reviewItemFailed[\s\S]*finishReviewActionLedgerItem\(\{[\s\S]*completionReason: "coordination_deferred"[\s\S]*activeReviewItem = null;/,
@@ -526,6 +524,25 @@ test("review candidates start lazily and deferred items cannot remain active", (
   assert.match(reviewBatchTerminal, /mutation: options\.ledger\.mutationObserved/);
 
   const reviewCommandStart = source.indexOf("function reviewCommand(args:");
+  const materializationHelper = source.indexOf(
+    "const preparePullRequestReviewTree =",
+    reviewCommandStart,
+  );
+  const exactHeadMaterialization = source.indexOf(
+    "materializePullRequestReviewTree({",
+    materializationHelper,
+  );
+  const contextCollection = source.indexOf("const context = localRangeData", reviewCommandStart);
+  const sourceAvailabilityGate = source.indexOf(
+    "preparePullRequestReviewTree(headSha)",
+    contextCollection,
+  );
+  const modelReview = source.indexOf("decision = runCodex({", sourceAvailabilityGate);
+  assert.ok(materializationHelper >= 0);
+  assert.ok(exactHeadMaterialization > materializationHelper);
+  assert.ok(contextCollection >= 0);
+  assert.ok(sourceAvailabilityGate > contextCollection);
+  assert.ok(modelReview > sourceAvailabilityGate);
   const reviewCatchStart = source.indexOf(
     "} catch (error) {\n      if (reviewLedger) {",
     reviewCommandStart,
@@ -765,8 +782,6 @@ test("runtime yields bind the active item and terminal Codex failures preserve r
   );
   assert.equal(codexReviewFailureRetryableForTest(false), false);
   assert.equal(codexReviewFailureRetryableForTest(true), true);
-  assert.equal(combinedCodexReviewRetryableForTest(true, false), false);
-  assert.equal(combinedCodexReviewRetryableForTest(false, true), true);
 });
 
 test("blocked exact close publication discards staged labels before writing the report", () => {

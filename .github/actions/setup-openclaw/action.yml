@@ -13,6 +13,11 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Install trusted review scanner
+      if: ${{ env.CLAWSWEEPER_RUNNER == 'openclaw' }}
+      shell: bash
+      run: bash "${{ github.action_path }}/../setup-review-tools/install.sh"
+
     - name: Cache OpenClaw CLI and npm downloads
       if: ${{ env.CLAWSWEEPER_RUNNER == 'openclaw' }}
       uses: actions/cache@v6

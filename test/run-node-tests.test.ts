@@ -99,7 +99,7 @@ test("composed no-build scripts preserve standalone build contracts", () => {
   const scripts = packageJson.scripts as Record<string, string>;
 
   assert.match(scripts.test, /^pnpm run build:all && pnpm run test:no-build$/);
-  assert.match(scripts["test:repair"], /^pnpm run build:repair && pnpm run test:repair:no-build$/);
+  assert.match(scripts["test:repair"], /^pnpm run build:node && pnpm run test:repair:no-build$/);
   assert.match(scripts["test:coverage"], /^pnpm run build:all && pnpm run test:coverage:no-build$/);
   assert.match(
     scripts["test:coverage:changed"],

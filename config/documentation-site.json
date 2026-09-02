@@ -14,6 +14,7 @@
         "pr-review-comments.md",
         "pr-proof-triage-dashboard.md",
         "author-pr-budget-close-policy.md",
+        "implemented-on-main-close-policy.md",
         "obsolescence-close-policies.md",
         "product-direction-close-policy.md",
         "stalled-pr-close-policies.md",
@@ -60,6 +61,11 @@
       "path": "queue-service-split-runbook.md",
       "lifecycle": "proposed",
       "banner": "This is an unapproved proposal, not current operator guidance."
+    },
+    {
+      "path": "sqlite-change-policy-proposal.md",
+      "lifecycle": "proposed",
+      "banner": "This is an unapproved policy proposal; it grants no review, label, or merge authority."
     },
     {
       "path": "repair/containment-validation-todo.md",

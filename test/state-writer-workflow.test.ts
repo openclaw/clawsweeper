@@ -45,7 +45,7 @@ test("every state hydration uses the canonical Worker with an explicit git-state
       .map(({ site }) => site),
     [
       ".github/workflows/exact-review-batch-publish.yml:publish",
-      ".github/workflows/live-proof.yml:attach",
+      ".github/workflows/live-proof-maintenance.yml:retract",
       ".github/workflows/sweep.yml:event-review-apply",
       ".github/workflows/sweep.yml:event-review-publish",
       ".github/workflows/sweep.yml:target-fanout",
@@ -69,7 +69,7 @@ test("per-target state hydration is slug-scoped while fleet lanes retain discove
       .map(({ site }) => site),
     [
       ".github/workflows/exact-review-batch-publish.yml:publish",
-      ".github/workflows/live-proof.yml:attach",
+      ".github/workflows/live-proof-maintenance.yml:retract",
       ".github/workflows/repair-cluster-intake.yml:intake",
       ".github/workflows/repair-cluster-worker.yml:cluster",
       ".github/workflows/repair-cluster-worker.yml:execute",
@@ -248,6 +248,7 @@ test("retired migration and Git recovery surfaces stay deleted", () => {
     ".github/workflows/backfill-worker-records.yml",
     ".github/workflows/migrate-state-blobs.yml",
     ".github/workflows/commit-review.yml",
+    ".github/workflows/live-proof.yml",
     ".github/workflows/deploy-crawl-remote.yml",
     ".github/workflows/proof-nudges.yml",
     ".github/workflows/repair-commit-finding-intake.yml",
@@ -258,6 +259,8 @@ test("retired migration and Git recovery surfaces stay deleted", () => {
     "src/repair/state-materializer.ts",
     "src/repair/state-compaction.ts",
     "src/repair/recovery-advisor.ts",
+    "src/repair/live-proof-dispatch-candidates.ts",
+    "src/live-proof/publication.ts",
   ]) {
     assert.throws(() => readFileSync(retired, "utf8"));
   }

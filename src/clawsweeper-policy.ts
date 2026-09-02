@@ -14,7 +14,9 @@ import type {
   ImplementationComplexity,
   ItemCategory,
   LiveProofPlanStatus,
+  LiveProofPayoffKind,
   LiveProofSurface,
+  LiveProofTerminalCompletion,
   MantisRecommendationScenario,
   MantisRecommendationStatus,
   MaturityLabelName,
@@ -80,16 +82,17 @@ export const DEFAULT_REASONING_EFFORT = "high";
 // "gpt 5.6 sol high fast"). Latency-only; excluded from review-policy hashing.
 export const DEFAULT_SERVICE_TIER = "fast";
 export const DEFAULT_REVIEW_CODEX_TIMEOUT_MS = 1_200_000;
-export const DEFAULT_CODEX_FALLBACK_MIN_BUDGET_MS = 120_000;
-export const REVIEW_POLICY_VERSION = "2026-07-09-policy-v24";
+export const REVIEW_POLICY_VERSION = "2026-08-28-policy-v25";
 export const REVIEW_COMMENT_MARKER_PREFIX = "<!-- clawsweeper-review";
 export const REVIEW_START_STATUS_MARKER_PREFIX = "<!-- clawsweeper-review-status";
 export const MERGE_READY_LABEL = "clawsweeper:merge-ready";
 export const PR_AUTO_CLOSE_EXEMPT_LABELS = new Set<string>(PR_AUTO_CLOSE_EXEMPT_LABEL_NAMES);
 export const WAITING_ON_AUTHOR_LABEL = "status: ⏳ waiting on author";
 export const PROOF_OVERRIDE_LABEL = "proof: override";
+export const AUTHORITY_CHAIN_PROOF_MARKER = "Authority-chain proof required:";
 export const PROOF_SUFFICIENT_LABEL = "proof: sufficient";
 export const PROOF_NUDGE_MARKER_PREFIX = "<!-- clawsweeper-proof-nudge";
+export const LIVE_VERIFICATION_MARKER = "<!-- clawsweeper-live-verification -->";
 export const LIVE_PROOF_RECORDING_MARKER = "<!-- clawsweeper-live-proof-recording -->";
 export const PROOF_SUFFICIENT_LABEL_COLOR = "1A7F37";
 export const PROOF_SUFFICIENT_LABEL_DESCRIPTION = "Contributor real behavior proof is sufficient.";
@@ -223,10 +226,11 @@ export const PR_STATUS_LABELS = [
   description: string;
 }[];
 export const PR_STATUS_LABEL_NAMES = new Set<string>(PR_STATUS_LABELS.map((label) => label.name));
-export const TELEGRAM_VISIBLE_PROOF_LABEL = "mantis: telegram-visible-proof";
+export const LEGACY_TELEGRAM_VISIBLE_PROOF_LABEL = "mantis: telegram-visible-proof";
+export const TELEGRAM_VISIBLE_PROOF_LABEL = "proof: telegram-e2e";
 export const TELEGRAM_VISIBLE_PROOF_LABEL_COLOR = "57606A";
 export const TELEGRAM_VISIBLE_PROOF_LABEL_DESCRIPTION =
-  "Mantis should capture Telegram visible proof.";
+  "This PR needs Telegram Test Server proof with the repository E2E skill.";
 export const PRIORITY_LABELS = [
   {
     priority: 0,
@@ -660,14 +664,24 @@ export const LIVE_PROOF_PLAN_STATUSES = new Set<LiveProofPlanStatus>([
   "declined_suspicious",
 ]);
 export const LIVE_PROOF_SURFACES = new Set<LiveProofSurface>(["browser", "terminal", "none"]);
+export const LIVE_PROOF_TERMINAL_COMPLETIONS = new Set<LiveProofTerminalCompletion>([
+  "exit_zero",
+  "ready_while_running",
+  "not_applicable",
+]);
+export const LIVE_PROOF_PAYOFF_KINDS = new Set<LiveProofPayoffKind>([
+  "progressive_output",
+  "ui_interaction",
+  "tui_or_color",
+  "animation",
+  "static_text",
+]);
 export const MANTIS_RECOMMENDATION_STATUSES = new Set<MantisRecommendationStatus>([
   "recommended",
   "not_recommended",
 ]);
 export const MANTIS_RECOMMENDATION_SCENARIOS = new Set<MantisRecommendationScenario>([
   "none",
-  "telegram_live",
-  "telegram_desktop_proof",
   "discord_status_reactions",
   "discord_thread_attachment",
   "web_ui_chat_proof",
@@ -760,6 +774,7 @@ export const DECISION_SCHEMA_KEYS = new Set([
   "workConfidence",
   "workPriority",
   "workReason",
+  "nextStep",
   "workPrompt",
   "workClusterRefs",
   "workValidation",
@@ -781,7 +796,15 @@ export const REGRESSION_SUPPORTING_EVIDENCE = new Set([
   "failure_trace",
   "known_regression_link",
 ]);
-export const EVIDENCE_SCHEMA_KEYS = new Set(["label", "detail", "file", "line", "command", "sha"]);
+export const EVIDENCE_SCHEMA_KEYS = new Set([
+  "repo",
+  "label",
+  "detail",
+  "file",
+  "line",
+  "command",
+  "sha",
+]);
 export const SECURITY_REVIEW_SCHEMA_KEYS = new Set(["status", "summary", "concerns"]);
 export const REAL_BEHAVIOR_PROOF_SCHEMA_KEYS = new Set([
   "status",
@@ -800,10 +823,13 @@ export const TELEGRAM_VISIBLE_PROOF_SCHEMA_KEYS = new Set(["status", "summary"])
 export const LIVE_PROOF_PLAN_SCHEMA_KEYS = new Set([
   "status",
   "surface",
+  "terminalCompletion",
   "reason",
+  "payoff",
   "entry",
   "steps",
 ]);
+export const LIVE_PROOF_PAYOFF_SCHEMA_KEYS = new Set(["kind", "justification"]);
 export const LIVE_PROOF_STEP_SCHEMA_KEYS = {
   goto: new Set(["action", "path"]),
   click: new Set(["action", "target"]),
@@ -871,6 +897,7 @@ export const LIKELY_OWNER_SCHEMA_KEYS = new Set([
   "commits",
   "files",
   "confidence",
+  "history",
 ]);
 export const REVIEW_SECTIONS = {
   summary: "Summary",

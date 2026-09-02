@@ -8,6 +8,7 @@ import {
   GithubEtagResponseStore,
 } from "../dashboard/github-etag-cache.ts";
 import worker, { ExactReviewQueue, githubJsonForTest } from "../dashboard/worker.ts";
+import { createGitHubRuntime } from "../dist/clawsweeper-github-runtime.js";
 import {
   githubEtagCacheKey,
   githubEtagCacheRequestBody,
@@ -48,6 +49,58 @@ test("ETag keys fence credential pool, media type, query, and page", () => {
   assert.equal(page1.page, 1);
   assert.equal(page2.page, 2);
   assert.equal(page2.route, "/repos/openclaw/openclaw/issues/42/comments?page=2&per_page=100");
+});
+
+test("projected GitHub reads bypass the durable ETag broker", () => {
+  const keys = ["EXACT_EVENT_PUBLICATION", "EXACT_REVIEW_QUEUE_URL", "CLAWSWEEPER_WEBHOOK_SECRET"];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  Object.assign(process.env, {
+    EXACT_EVENT_PUBLICATION: "true",
+    EXACT_REVIEW_QUEUE_URL: "http://127.0.0.1:9",
+    CLAWSWEEPER_WEBHOOK_SECRET: "etag-broker-secret-placeholder",
+  });
+  const invocations: string[][] = [];
+  const runtime = createGitHubRuntime({
+    ROOT: process.cwd(),
+    targetRepo: () => "openclaw/openclaw",
+    run: (_command, args) => {
+      invocations.push(args);
+      return JSON.stringify({ projected: true });
+    },
+  });
+  const route = "/repos/openclaw/openclaw/pulls/1234";
+  const projections = [
+    ["--jq", "{body}"],
+    ["-q", "{requested_reviewers,requested_teams}"],
+    ["--template", "{{.head.sha}}"],
+    ["-t", "{{.state}}"],
+    ["--jq={body}"],
+    ["--template={{.head.sha}}"],
+    ["-q={body}"],
+    ["-q{body}"],
+    ["-t={{.state}}"],
+    ["-t{{.state}}"],
+    ["-iq", "{body}"],
+    ["-it", "{{.state}}"],
+  ];
+
+  try {
+    for (const projection of projections) {
+      assert.equal(
+        runtime.ghWithPreparedTimeout(["api", route, ...projection], 1_000),
+        JSON.stringify({ projected: true }),
+      );
+    }
+    assert.deepEqual(
+      invocations,
+      projections.map((projection) => ["api", route, ...projection]),
+    );
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 test("durable broker revalidates every read and keeps wire calls while avoiding quota charges", () => {
