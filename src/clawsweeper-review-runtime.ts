@@ -495,6 +495,7 @@ export function createReviewRuntime({
       runtimeHints.mediaProofSummary,
       runtimeHints.mediaProofManifestPath,
     );
+    // Keep raw maintainer input scanner-visible; omit fixtures only from sourced GitHub fields.
     const extra = additionalPrompt.trim()
       ? `
 
@@ -503,7 +504,7 @@ export function createReviewRuntime({
 ${additionalPrompt.trim()}
 `
       : "";
-    const text = omitReviewedFixtureReferences(`${prompt}
+    const text = `${prompt}
 
 ## Repository State
 
@@ -511,7 +512,7 @@ ${additionalPrompt.trim()}
 - Repository policy: ${profile.promptNote}
 - Item: #${item.number}
 - Type: ${item.kind}
-- Title: ${item.title}
+- Title: ${omitReviewedFixtureReferences(item.title)}
 - URL: ${item.url}
 - Author: ${item.author}
 - Author association: ${item.authorAssociation}
@@ -536,7 +537,7 @@ Primary-body \`bodyCoverage\` describes separate untrusted excerpts and omitted 
 ${contextJson}
 \`\`\`
 ${extra}
-`);
+`;
     return {
       text,
       telemetry: {

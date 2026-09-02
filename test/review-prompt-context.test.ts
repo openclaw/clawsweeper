@@ -77,7 +77,8 @@ test("GitHub review context omits complete reviewed URI quotations and preserves
   };
   const original = JSON.stringify(context);
   const target = item({ kind: "pull_request", title: body });
-  const prompt = reviewPromptForTest(target, context, git);
+  const additionalPrompt = "Inspect the supplied request: " + body;
+  const prompt = reviewPromptForTest(target, context, git, additionalPrompt);
   const jsonText = prompt
     .split("## GitHub Context\n")[1]!
     .match(/\x60{3}json\n([\s\S]*?)\n\x60{3}/)![1]!;
@@ -91,6 +92,7 @@ test("GitHub review context omits complete reviewed URI quotations and preserves
     controls,
   );
   assert.equal(JSON.stringify(context), original);
+  assert.equal(prompt.split("## Maintainer Request\n\n")[1]?.trim(), additionalPrompt);
   const introduction =
     prompt.match(/\n\n## PR Introduction Evidence\n[\s\S]*?\n\x60{3}\n/)?.[0] ?? "";
   assert.equal(
