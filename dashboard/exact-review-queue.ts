@@ -815,6 +815,9 @@ export class ExactReviewQueue {
   private readonly random: () => number;
   private readonly baselines = new WeakMap<ExactReviewQueueState, ExactReviewQueueBaseline>();
   private reviewCoverageCache: { at: number; summary: ReviewCoverageSummary } | null = null;
+  // Back off a wedged Bay row without adding durable queue state. Any durable
+  // progress clears this single-slot deadline so the one-second drain resumes.
+  private bayTelemetryNoProgressDeadline: number | null = null;
   private recentDurablePublicationEventsCache = new Map<
     string,
     { expiresAt: number; value: NonNullable<ReturnType<typeof recentDurablePublicationEvents>> }
@@ -4056,7 +4059,7 @@ export class ExactReviewQueue {
     const startedAt = Date.now();
     const hostedTargetMetadataToken = exactReviewHostedTargetMetadataTokenSource(this.env);
     await this.storage.deleteAlarm();
-    this.reconcileBayTelemetryInternalSync();
+    this.reconcileBayTelemetryInternalSync(startedAt);
     await this.processBranchAuthorityReservations(startedAt, hostedTargetMetadataToken);
     await this.processSourceAuthorityReservations(startedAt, hostedTargetMetadataToken);
     await this.processCommandIntakes(startedAt, hostedTargetMetadataToken);
@@ -7706,17 +7709,22 @@ export class ExactReviewQueue {
     );
   }
 
-  private reconcileBayTelemetryInternalSync() {
+  private reconcileBayTelemetryInternalSync(now = Date.now()) {
+    if (this.bayTelemetryNoProgressDeadline && now < this.bayTelemetryNoProgressDeadline)
+      return false;
+    let progressed = false;
     try {
-      if (
-        !this.lifecycleProjectionStore.reconcileBayTelemetryPending((projection) =>
-          this.lifecycleTelemetryStore.syncBayLifecycle(projection),
-        )
-      ) {
-        return false;
-      }
-      return this.lifecycleTelemetryStore.reconcileBayLifecyclePending();
+      const source = this.lifecycleProjectionStore.reconcileBayTelemetryPending((projection) =>
+        this.lifecycleTelemetryStore.syncBayLifecycle(projection),
+      );
+      progressed = source.progressed;
+      const outbox = this.lifecycleTelemetryStore.reconcileBayLifecyclePending();
+      const pending = source.pending || outbox.pending;
+      this.bayTelemetryNoProgressDeadline =
+        pending && !(progressed || outbox.progressed) ? now + 60_000 : null;
+      return !pending;
     } catch {
+      this.bayTelemetryNoProgressDeadline = progressed ? null : now + 60_000;
       return false;
     }
   }
@@ -11696,7 +11704,11 @@ export class ExactReviewQueue {
     const sourceAuthorityNext = await this.nextSourceAuthorityVerificationAt();
     const commandIntakeNext = this.commandIntakeStore.nextAttemptAt();
     const credentialCircuitNext = exactReviewGithubCircuitNextWakeAt(state, now);
-    const bayTelemetryRecoveryNext = this.bayTelemetryRecoveryPendingSync() ? now + 1_000 : null;
+    const bayTelemetryRecoveryPending = this.bayTelemetryRecoveryPendingSync();
+    if (!bayTelemetryRecoveryPending) this.bayTelemetryNoProgressDeadline = null;
+    const bayTelemetryRecoveryNext = bayTelemetryRecoveryPending
+      ? Math.max(now + 1_000, this.bayTelemetryNoProgressDeadline ?? 0)
+      : null;
     const next = [
       queueNext,
       batchOwnership.nextLeaseExpiresAt,

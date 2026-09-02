@@ -40,6 +40,7 @@ import {
   leasedExactReviewPublicationItem,
 } from "./dashboard-worker-harness.ts";
 import { publicHealthHistoryContract } from "../dashboard/worker.ts";
+import { EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE } from "../dashboard/exact-review-lifecycle.ts";
 import {
   EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE,
   EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE,
@@ -1796,9 +1797,9 @@ test("Bay lifecycle migration leaves a pending terminal source available for rec
       ?.bayTelemetryEventId,
     undefined,
   );
-  assert.equal(
+  assert.deepEqual(
     lifecycle.reconcileBayTelemetryPending((projection) => telemetry.syncBayLifecycle(projection)),
-    true,
+    { pending: false, progressed: true },
   );
   assert.equal(telemetry.baySnapshot(now + 1_000).terminal?.terminal_count, 1);
 });
@@ -2041,7 +2042,10 @@ test("Bay lifecycle tide compaction is retry-safe after terminal deletion fails"
       observedAt: now + 500,
     });
     assert.equal(telemetry.syncBayLifecycle(current), false);
-    assert.equal(telemetry.reconcileBayLifecyclePending(), true);
+    assert.deepEqual(telemetry.reconcileBayLifecyclePending(), {
+      pending: false,
+      progressed: true,
+    });
 
     const snapshot = telemetry.baySnapshot(now + 1_000);
     assert.equal(snapshot.terminal?.tide_generation, 1);
@@ -2156,7 +2160,10 @@ test("Bay lifecycle replays a stale telemetry outbox from its marked source", ()
     );
 
     now += 31 * 24 * 60 * 60 * 1_000;
-    assert.equal(telemetry.reconcileBayLifecyclePending(), true);
+    assert.deepEqual(telemetry.reconcileBayLifecyclePending(), {
+      pending: false,
+      progressed: true,
+    });
     const snapshot = telemetry.baySnapshot(now);
     assert.equal(snapshot.terminal?.terminal_count, 1);
     assert.equal(snapshot.terminal?.tide_generation, 0);
@@ -2241,7 +2248,15 @@ test("Bay lifecycle terminal facts queue a durable retry when metrics cannot mat
   // The queue alarm repairs the retained outbox fact; the public metrics read
   // stays observer-only while recovery is pending.
   assert.equal(telemetry.hasBayLifecyclePending(), true);
-  assert.equal(telemetry.reconcileBayLifecyclePending(), true);
+  storage.sql.failNext(new RegExp(`INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}`));
+  assert.deepEqual(telemetry.reconcileBayLifecyclePending(), {
+    pending: true,
+    progressed: false,
+  });
+  assert.deepEqual(telemetry.reconcileBayLifecyclePending(), {
+    pending: false,
+    progressed: true,
+  });
   assert.equal(telemetry.baySnapshot(now).terminal?.terminal_count, 1);
 });
 
@@ -2284,9 +2299,9 @@ test("Bay lifecycle terminal facts recover after telemetry outbox persistence fa
       ?.bayTelemetryPending,
     true,
   );
-  assert.equal(
+  assert.deepEqual(
     lifecycle.reconcileBayTelemetryPending((projection) => telemetry.syncBayLifecycle(projection)),
-    true,
+    { pending: false, progressed: true },
   );
   assert.equal(
     lifecycle.read(identity.canonicalTargetKey, identity.fenceKey, identity.revision)
@@ -2332,7 +2347,10 @@ test("Bay lifecycle retains its outbox until the source marker commits", () => {
   );
   assert.equal(telemetry.hasBayLifecyclePending(), true);
   assert.equal(telemetry.baySnapshot(now).collection.state, "unknown");
-  assert.equal(telemetry.reconcileBayLifecyclePending(), true);
+  assert.deepEqual(telemetry.reconcileBayLifecyclePending(), {
+    pending: false,
+    progressed: true,
+  });
   assert.equal(
     lifecycle.read(identity.canonicalTargetKey, identity.fenceKey, identity.revision)
       ?.bayTelemetryPending,
@@ -2370,18 +2388,129 @@ test("Bay lifecycle recovery drains source markers in bounded batches", () => {
       observedAt: now,
     });
   }
-  assert.equal(
+  assert.deepEqual(
     lifecycle.reconcileBayTelemetryPending((projection) => telemetry.syncBayLifecycle(projection)),
-    false,
+    { pending: true, progressed: true },
   );
-  assert.equal(
+  assert.deepEqual(
     lifecycle.reconcileBayTelemetryPending((projection) => telemetry.syncBayLifecycle(projection)),
-    true,
+    { pending: false, progressed: true },
   );
   const recovered = telemetry.baySnapshot(now);
   assert.equal(recovered.collection.state, "complete");
   assert.equal(recovered.terminal?.tide_generation, 12);
   assert.equal(recovered.terminal?.terminal_count, 17);
+});
+
+test("Bay lifecycle recovery reports no progress for malformed and unmaterialized sources", () => {
+  const storage = new MemoryDurableStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+  const now = Date.now();
+  const identity = {
+    canonicalTargetKey: "openclaw/openclaw#9557",
+    fenceKey: "openclaw/openclaw#9557@exact:1",
+    revision: 1,
+  };
+  lifecycle.recordAdmission({
+    ...identity,
+    deliveryId: "no-progress-source",
+    sourceAction: "opened",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    triggeredAt: now,
+    observedAt: now,
+  });
+  lifecycle.markBayTelemetryPending(identity);
+  assert.deepEqual(
+    lifecycle.reconcileBayTelemetryPending(() => false),
+    {
+      pending: true,
+      progressed: false,
+    },
+  );
+
+  storage.sql.exec(
+    `UPDATE ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+        SET projection_json = ?
+      WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
+    "{",
+    identity.canonicalTargetKey,
+    identity.fenceKey,
+    identity.revision,
+  );
+  assert.deepEqual(
+    lifecycle.reconcileBayTelemetryPending((projection) => telemetry.syncBayLifecycle(projection)),
+    { pending: true, progressed: false },
+  );
+  telemetry.ensureSchemaSync();
+  storage.sql.exec(
+    `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_PENDING_TABLE}
+       (canonical_target_key, fence_key, revision, projection_json, queued_at)
+     VALUES (?, ?, ?, ?, ?)`,
+    identity.canonicalTargetKey,
+    identity.fenceKey,
+    identity.revision,
+    "{",
+    now,
+  );
+  assert.deepEqual(telemetry.reconcileBayLifecyclePending(), {
+    pending: true,
+    progressed: false,
+  });
+});
+
+test("Bay lifecycle recovery retains progress before a later outbox read fails", () => {
+  const storage = new MemoryDurableStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const telemetry = new ExactReviewLifecycleTelemetryStore(storage);
+  const now = Date.now();
+  telemetry.ensureSchemaSync();
+  for (let index = 0; index < 2; index += 1) {
+    const identity = {
+      canonicalTargetKey: `openclaw/openclaw#${9_560 + index}`,
+      fenceKey: `openclaw/openclaw#${9_560 + index}@exact:1`,
+      revision: 1,
+    };
+    const projection = lifecycle.recordAdmission({
+      ...identity,
+      deliveryId: `partial-outbox:${index}`,
+      sourceAction: "opened",
+      commandOriginated: false,
+      statusMarker: null,
+      statusCommentId: null,
+      triggeredAt: now,
+      observedAt: now + index,
+    });
+    storage.sql.exec(
+      `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_BAY_PENDING_TABLE}
+         (canonical_target_key, fence_key, revision, projection_json, queued_at)
+       VALUES (?, ?, ?, ?, ?)`,
+      identity.canonicalTargetKey,
+      identity.fenceKey,
+      identity.revision,
+      JSON.stringify(projection),
+      now + index,
+    );
+  }
+  const exec = storage.sql.exec.bind(storage.sql);
+  let sourceReads = 0;
+  storage.sql.exec = (query: string, ...bindings: unknown[]) => {
+    if (
+      /SELECT projection_json FROM exact_review_lifecycle_projection_v1\s+WHERE canonical_target_key/.test(
+        query,
+      ) &&
+      ++sourceReads === 2
+    ) {
+      throw new Error("injected later source read failure");
+    }
+    return exec(query, ...bindings);
+  };
+  assert.deepEqual(telemetry.reconcileBayLifecyclePending(), {
+    pending: true,
+    progressed: true,
+  });
 });
 
 test("Bay lifecycle metrics retain idle terminal progress and the bounded remainder card", () => {

@@ -13,7 +13,10 @@ import {
   validateDirectPublicationPlan,
   type DirectPublicationPlan,
 } from "../dashboard/exact-review-direct-publication.ts";
-import { EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE } from "../dashboard/exact-review-lifecycle.ts";
+import {
+  EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE,
+  ExactReviewLifecycleProjectionStore,
+} from "../dashboard/exact-review-lifecycle.ts";
 import { ExactReviewQueue as RuntimeExactReviewQueue } from "../dashboard/exact-review-queue.ts";
 import worker from "../dashboard/worker.ts";
 
@@ -51,12 +54,16 @@ class TestStorage {
   private readonly database = new DatabaseSync(":memory:");
   private readonly values = new Map<string, unknown>();
   private failSqlPattern: RegExp | null = null;
+  private failSqlMatchesRemaining = 0;
   private alarmAt: number | null = null;
   readonly sql = {
     exec: (query: string, ...bindings: unknown[]) => {
       if (this.failSqlPattern?.test(query)) {
-        this.failSqlPattern = null;
-        throw new Error("injected telemetry state write failure");
+        this.failSqlMatchesRemaining -= 1;
+        if (this.failSqlMatchesRemaining === 0) {
+          this.failSqlPattern = null;
+          throw new Error("injected telemetry state write failure");
+        }
       }
       const statement = this.database.prepare(query);
       if (/^\s*(?:SELECT|WITH)\b/i.test(query) || /\bRETURNING\b/i.test(query)) {
@@ -69,6 +76,12 @@ class TestStorage {
 
   failNextSqlMatching(pattern: RegExp) {
     this.failSqlPattern = pattern;
+    this.failSqlMatchesRemaining = 1;
+  }
+
+  failSqlMatchingAfter(pattern: RegExp, successfulMatches: number) {
+    this.failSqlPattern = pattern;
+    this.failSqlMatchesRemaining = successfulMatches + 1;
   }
   readonly kv = {
     get: (key: string) => this.values.get(key),
@@ -3057,6 +3070,293 @@ test("oldest publication aging deadline drives the alarm and then its owner clai
           alarm_dispatched: dispatches.length === 1,
           terminal_preflight: checkedTargets,
           claimed_items: claim.batch.items.map((item: { item_key: string }) => item.item_key),
+        })}`,
+      );
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    Date.now = originalNow;
+  }
+});
+
+test("Bay no-progress recovery backs off without duplicating an aged publication owner", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalNow = Date.now;
+  let now = 20_000_000;
+  Date.now = () => now;
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const dispatches: Array<{ inputs: Record<string, string> }> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/installation") {
+      return new Response(JSON.stringify({ id: 999 }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname === "/repos/aged/repo/installation") {
+      return new Response(JSON.stringify({ id: 1000 }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname === "/app/installations/999/access_tokens") {
+      return new Response(JSON.stringify({ token: "dispatch-token" }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname === "/app/installations/1000/access_tokens") {
+      return new Response(JSON.stringify({ token: "aged-token" }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname === "/repos/aged/repo/issues/170") {
+      return new Response(JSON.stringify({ state: "open" }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (
+      url.pathname ===
+      "/repos/openclaw/clawsweeper/actions/workflows/exact-review-batch-publish.yml/dispatches"
+    ) {
+      dispatches.push(JSON.parse(String(init?.body)));
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  try {
+    const storage = new TestStorage();
+    const env = {
+      CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+      CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "1",
+      EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS: "60000",
+      EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "600000",
+      EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0",
+    };
+    let queue = new ExactReviewQueue({ storage }, env);
+    await queue.fetch(publicationRequest("bay-backoff-aged", 170, "1170", "aged/repo"));
+    const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+    const stalledIdentity = {
+      canonicalTargetKey: "openclaw/openclaw#9170",
+      fenceKey: "openclaw/openclaw#9170@exact:1",
+      revision: 1,
+    };
+    lifecycle.recordAdmission({
+      ...stalledIdentity,
+      deliveryId: "bay-backoff-stalled",
+      sourceAction: "opened",
+      commandOriginated: false,
+      statusMarker: null,
+      statusCommentId: null,
+      triggeredAt: now,
+      observedAt: now,
+    });
+    lifecycle.markBayTelemetryPending(stalledIdentity);
+    storage.run(
+      `UPDATE ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+          SET projection_json = ?
+        WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
+      "{",
+      stalledIdentity.canonicalTargetKey,
+      stalledIdentity.fenceKey,
+      stalledIdentity.revision,
+    );
+
+    now += 60_000;
+    await queue.alarm();
+    assert.equal(dispatches.length, 1);
+    const stalledRetryAt = now + 60_000;
+    assert.equal(storage.scheduledAlarm(), stalledRetryAt);
+    now += 2_000;
+    await storage.setAlarm(now);
+    await queue.alarm();
+    assert.equal(dispatches.length, 1);
+    assert.equal(storage.scheduledAlarm(), stalledRetryAt);
+    const trafficIdentity = {
+      canonicalTargetKey: "openclaw/openclaw#9180",
+      fenceKey: "openclaw/openclaw#9180@exact:1",
+      revision: 1,
+    };
+    lifecycle.recordAdmission({
+      ...trafficIdentity,
+      deliveryId: "bay-backoff-traffic",
+      sourceAction: "opened",
+      commandOriginated: false,
+      statusMarker: null,
+      statusCommentId: null,
+      triggeredAt: now,
+      observedAt: now,
+    });
+    const traffic = await queue.fetch(
+      batchRequest("/lifecycle/terminal-disposition", {
+        canonical_target_key: trafficIdentity.canonicalTargetKey,
+        fence_key: trafficIdentity.fenceKey,
+        revision: trafficIdentity.revision,
+        kind: "failure",
+      }),
+    );
+    assert.equal(traffic.status, 200);
+    assert.equal(storage.scheduledAlarm(), stalledRetryAt);
+    const dispatch = dispatches[0]!;
+    now += 10_000;
+    const staleClaim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-bay-backoff-stale",
+          lease_owner: "worker-stale",
+          max_items: 1,
+          dispatch_id: "publication-batch-dispatch:stale",
+          dispatched_at: new Date(now - 1_000).toISOString(),
+        }),
+      )
+    ).json();
+    assert.equal(staleClaim.claimed, false);
+    assert.equal(staleClaim.preflight_required, true);
+
+    const claim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-bay-backoff",
+          lease_owner: "worker-1",
+          max_items: 1,
+          dispatch_id: dispatch.inputs.dispatch_id,
+          dispatched_at: dispatch.inputs.dispatched_at,
+        }),
+      )
+    ).json();
+    assert.equal(claim.claimed, true, JSON.stringify(claim));
+    assert.equal(claim.batch.items.length, 1);
+    const members = claim.batch.items.map((item) => ({
+      item_key: item.item_key,
+      revision: item.revision,
+      claim_generation: item.claim_generation,
+    }));
+    const heartbeat = await queue.fetch(
+      batchRequest("/publication-batches/heartbeat", {
+        batch_id: claim.batch.batch_id,
+        lease_owner: "worker-1",
+        items: members,
+      }),
+    );
+    assert.equal(heartbeat.status, 200, JSON.stringify(await heartbeat.clone().json()));
+
+    const competingClaim = await (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: "claim-bay-backoff-competing",
+          lease_owner: "worker-2",
+          max_items: 1,
+        }),
+      )
+    ).json();
+    assert.equal(competingClaim.claimed, false);
+    assert.equal(competingClaim.batch, null);
+
+    now = stalledRetryAt;
+    await queue.alarm();
+    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(dispatches.length, 1);
+    assert.equal(stats.lanes.publication.batches.active_items, 1);
+    assert.equal(storage.scheduledAlarm(), now + 60_000);
+
+    const progressingStorage = new TestStorage();
+    const progressingQueue = new ExactReviewQueue({ storage: progressingStorage }, {});
+    await progressingQueue.fetch(new Request("https://queue/stats"));
+    const progressingLifecycle = new ExactReviewLifecycleProjectionStore(progressingStorage);
+    for (let index = 0; index < 257; index += 1) {
+      const identity = {
+        canonicalTargetKey: `openclaw/openclaw#${9_500 + index}`,
+        fenceKey: `openclaw/openclaw#${9_500 + index}@exact:1`,
+        revision: 1,
+      };
+      progressingLifecycle.recordAdmission({
+        ...identity,
+        deliveryId: `bay-backoff-progress:${index}`,
+        sourceAction: "opened",
+        commandOriginated: false,
+        statusMarker: null,
+        statusCommentId: null,
+        triggeredAt: now,
+        observedAt: now,
+      });
+      progressingLifecycle.markBayTelemetryPending(identity);
+    }
+    progressingStorage.failSqlMatchingAfter(/INSERT INTO exact_review_lifecycle_projection_v1/, 1);
+    await progressingQueue.alarm();
+    assert.equal(progressingStorage.scheduledAlarm(), now + 1_000);
+
+    const clearedStorage = new TestStorage();
+    const clearedQueue = new ExactReviewQueue({ storage: clearedStorage }, {});
+    await clearedQueue.fetch(new Request("https://queue/stats"));
+    const clearedLifecycle = new ExactReviewLifecycleProjectionStore(clearedStorage);
+    const clearedIdentity = {
+      canonicalTargetKey: "openclaw/openclaw#9800",
+      fenceKey: "openclaw/openclaw#9800@exact:1",
+      revision: 1,
+    };
+    clearedLifecycle.recordAdmission({
+      ...clearedIdentity,
+      deliveryId: "bay-backoff-cleared",
+      sourceAction: "opened",
+      commandOriginated: false,
+      statusMarker: null,
+      statusCommentId: null,
+      triggeredAt: now,
+      observedAt: now,
+    });
+    clearedLifecycle.markBayTelemetryPending(clearedIdentity);
+    clearedStorage.run(
+      `UPDATE ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+          SET projection_json = ?
+        WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
+      "{",
+      clearedIdentity.canonicalTargetKey,
+      clearedIdentity.fenceKey,
+      clearedIdentity.revision,
+    );
+    await clearedQueue.alarm();
+    assert.equal(clearedStorage.scheduledAlarm(), now + 60_000);
+    clearedStorage.run(
+      `DELETE FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+        WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
+      clearedIdentity.canonicalTargetKey,
+      clearedIdentity.fenceKey,
+      clearedIdentity.revision,
+    );
+    await clearedQueue.fetch(new Request("https://queue/stats"));
+    const laterIdentity = {
+      canonicalTargetKey: "openclaw/openclaw#9801",
+      fenceKey: "openclaw/openclaw#9801@exact:1",
+      revision: 1,
+    };
+    clearedLifecycle.recordAdmission({
+      ...laterIdentity,
+      deliveryId: "bay-backoff-later",
+      sourceAction: "opened",
+      commandOriginated: false,
+      statusMarker: null,
+      statusCommentId: null,
+      triggeredAt: now,
+      observedAt: now,
+    });
+    clearedLifecycle.markBayTelemetryPending(laterIdentity);
+    await clearedQueue.fetch(new Request("https://queue/stats"));
+    assert.equal(clearedStorage.scheduledAlarm(), now + 1_000);
+
+    if (process.env.CLAWSWEEPER_EVIDENCE_TRANSCRIPT === "1") {
+      console.log(
+        `BAY_RECOVERY_BACKOFF_PROOF=${JSON.stringify({
+          no_progress_alarm_delay_ms: 60_000,
+          dispatch_count: dispatches.length,
+          stale_claimed: staleClaim.claimed,
+          heartbeat_status: heartbeat.status,
+          active_items: stats.lanes.publication.batches.active_items,
+          progress_alarm_delay_ms: 1_000,
+          cleared_deadline_alarm_delay_ms: 1_000,
         })}`,
       );
     }

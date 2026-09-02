@@ -1553,6 +1553,7 @@ export class ExactReviewLifecycleTelemetryStore {
   }
 
   reconcileBayLifecyclePending() {
+    let progressed = false;
     const rows = Array.from(
       this.storage.sql.exec(
         `SELECT canonical_target_key, fence_key, revision, projection_json
@@ -1574,20 +1575,20 @@ export class ExactReviewLifecycleTelemetryStore {
       // stale if its clear was interrupted after compacting the aggregate;
       // replaying that older serialized object after timing retention would
       // otherwise lose its durable marker and count the completion twice.
-      const projection = this.currentLifecycleProjectionSync(identity);
-      if (
-        !pendingProjection ||
-        !projection ||
-        pendingProjection.canonicalTargetKey !== identity[0] ||
-        pendingProjection.fenceKey !== identity[1] ||
-        pendingProjection.revision !== identity[2] ||
-        projection.canonicalTargetKey !== identity[0] ||
-        projection.fenceKey !== identity[1] ||
-        projection.revision !== identity[2]
-      ) {
-        return false;
-      }
       try {
+        const projection = this.currentLifecycleProjectionSync(identity);
+        if (
+          !pendingProjection ||
+          !projection ||
+          pendingProjection.canonicalTargetKey !== identity[0] ||
+          pendingProjection.fenceKey !== identity[1] ||
+          pendingProjection.revision !== identity[2] ||
+          projection.canonicalTargetKey !== identity[0] ||
+          projection.fenceKey !== identity[1] ||
+          projection.revision !== identity[2]
+        ) {
+          return { pending: true, progressed };
+        }
         this.storage.transactionSync(() => {
           this.materializeBayLifecycleSync(projection);
           if (projection.bayTelemetryPending)
@@ -1595,10 +1596,11 @@ export class ExactReviewLifecycleTelemetryStore {
           this.clearBayLifecyclePendingSync(identity);
         });
       } catch {
-        return false;
+        return { pending: true, progressed };
       }
+      progressed = true;
     }
-    return !pendingMore;
+    return { pending: pendingMore, progressed };
   }
 
   private currentLifecycleProjectionSync(

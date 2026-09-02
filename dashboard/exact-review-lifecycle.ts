@@ -1264,6 +1264,7 @@ export class ExactReviewLifecycleProjectionStore {
     materialize: (projection: ExactReviewLifecycleProjection) => boolean,
   ) {
     this.ensureSchemaSync();
+    let progressed = false;
     const rows = Array.from(
       this.storage.sql.exec(
         `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
@@ -1275,14 +1276,21 @@ export class ExactReviewLifecycleProjectionStore {
     );
     const more = rows.length > EXACT_REVIEW_LIFECYCLE_BAY_TELEMETRY_RECOVERY_BATCH_LIMIT;
     for (const row of rows.slice(0, EXACT_REVIEW_LIFECYCLE_BAY_TELEMETRY_RECOVERY_BATCH_LIMIT)) {
-      const projection = projectionFromRow(String(row.projection_json || ""));
-      // Materialization has its own Durable Object transaction. Keep this
-      // source transaction separate: a retry after its source-marker clear is
-      // interrupted is idempotent by lifecycle event id.
-      if (!projection || !projection.bayTelemetryPending || !materialize(projection)) return false;
-      this.markBayTelemetryMaterialized(projection);
+      try {
+        const projection = projectionFromRow(String(row.projection_json || ""));
+        // Materialization has its own Durable Object transaction. Keep this
+        // source transaction separate: a retry after its source-marker clear is
+        // interrupted is idempotent by lifecycle event id.
+        if (!projection.bayTelemetryPending || !materialize(projection)) {
+          return { pending: true, progressed };
+        }
+        this.markBayTelemetryMaterialized(projection);
+      } catch {
+        return { pending: true, progressed };
+      }
+      progressed = true;
     }
-    return !more;
+    return { pending: more, progressed };
   }
 
   markBayTelemetryPending(input: ProjectionIdentity) {
