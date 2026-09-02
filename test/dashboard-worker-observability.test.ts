@@ -2608,15 +2608,21 @@ test("optional queue status failure retains the last complete public Bay queue s
   assert.equal(publicQueueResponse.status, 200);
   const priorExactReviewQueue = await publicQueueResponse.json();
   assert.equal(priorExactReviewQueue.bay_projection.complete, true);
-  assert.deepEqual(priorExactReviewQueue.bay_projection.items, [
+  assert.equal(priorExactReviewQueue.bay_projection.items.length, 1);
+  const [priorQueueItem] = priorExactReviewQueue.bay_projection.items;
+  assert.deepEqual(
+    { ...priorQueueItem, timing: undefined },
     {
       repository: "openclaw/openclaw",
       item_number: 125_204,
       stage: "arriving",
       source: "queue",
       legacy_batch_path: false,
+      timing: undefined,
     },
-  ]);
+  );
+  assert.equal(priorQueueItem.timing.kind, "queue");
+  assert.ok(Number.isFinite(Date.parse(priorQueueItem.timing.started_at)));
   const emptyActivityStages = Object.fromEntries(
     Object.keys(priorExactReviewQueue.bay_projection.stages).map((stage) => [stage, 0]),
   );
@@ -2693,15 +2699,10 @@ test("optional queue status failure retains the last complete public Bay queue s
       { waitUntil: () => undefined },
     );
     const status = await response.json();
-    assert.deepEqual(status.exact_review_queue.bay_projection.items, [
-      {
-        repository: "openclaw/openclaw",
-        item_number: 125_204,
-        stage: "arriving",
-        source: "queue",
-        legacy_batch_path: false,
-      },
-    ]);
+    assert.deepEqual(
+      status.exact_review_queue.bay_projection.items,
+      priorExactReviewQueue.bay_projection.items,
+    );
     assert.deepEqual(status.exact_review_queue.bay_projection.activity, {
       complete: false,
       queue_stages: null,

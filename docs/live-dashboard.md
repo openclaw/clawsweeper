@@ -142,7 +142,8 @@ is absent or a cache event lands in another Cloudflare colo.
   queued and live counts only when both producer censuses are complete, plus a
   bounded verified-public repository/item/action reference sample used by Bay
   and Overview cards, search, overflow lists, and client-side public-reference
-  blades
+  blades; sampled queue and live references may additionally carry one
+  validated queue-start or public action-start clock with its closed kind
 - durable lifecycle inventory and six closed lane counts plus at most 24
   minimal cards for verified-public repository/item references
 - a budget-sized capacity rail plus aggregate counts for issue-to-PR, PR repair,

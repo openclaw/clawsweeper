@@ -6212,6 +6212,10 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.doesNotMatch(body, /buildItems\(state\.data,state\.includeLegacyBatch\)/);
   assert.match(body, /Include retired proof\/batch/);
   assert.match(body, /Master Sweeper/);
+  assert.match(body, /<details class="bay-system-details" id="bay-system-details">/);
+  assert.doesNotMatch(body, /<details class="bay-system-details"[^>]*\sopen/);
+  assert.match(body, /System details/);
+  assert.match(body, /Queue, handoff and GitHub transport diagnostics/);
   assert.match(body, /id="bay-control-board"/);
   assert.match(body, /Review admission/);
   assert.match(body, /Result publication/);
@@ -6237,6 +6241,10 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.match(body, /id="durable-lifecycle-kanban"/);
   assert.match(body, /Durable lifecycle Kanban/);
   assert.match(body, /Queue and live activity/i);
+  assert.match(body, /class="active-duration"/);
+  assert.match(body, /This queue record has been waiting about/);
+  assert.match(body, /This GitHub run has been active about/);
+  assert.match(body, /I do not have a trustworthy active clock/);
   assert.match(body, /does not establish that durable lifecycle history is available or complete/i);
   assert.doesNotMatch(body, /fetch\("\/api\/live-activity-bay"/);
   assert.match(body, /function durableSnapshot/);
@@ -6748,9 +6756,11 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.match(body, /data-key=/);
   assert.match(body, /aria-pressed=/);
   assert.match(body, /function laneChatCopy/);
-  assert.match(body, /Have you been in this lane long\?/);
-  assert.match(body, /The final journey time is still being verified\./);
-  assert.match(body, /verified final receipt/);
+  assert.match(body, /How long has this record been queued\?/);
+  assert.match(body, /How long has this GitHub run been active\?/);
+  assert.doesNotMatch(body, /Have you been in this lane long\?/);
+  assert.match(body, /This queue record has been waiting about/);
+  assert.match(body, /This GitHub run has been active about/);
   assert.match(body, /<main class="beach" id="beach" aria-labelledby="queue-live-activity-title">/);
   assert.doesNotMatch(body, /<section[^>]+aria-labelledby="queue-live-activity-title"/);
   assert.match(body, /chatSequence:0/);
@@ -6763,8 +6773,12 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   const chatCopySource = chatScript.slice(chatCopyStart, chatCopyEnd);
   const chatContext = createContext({
     state: { chatSequence: 0 },
-    asking: { getAttribute: () => "openclaw/openclaw#1" },
-    replying: { getAttribute: () => "openclaw/openclaw#2" },
+    asking: {
+      getAttribute: (name: string) => (name === "data-key" ? "openclaw/openclaw#1" : ""),
+    },
+    replying: {
+      getAttribute: (name: string) => (name === "data-key" ? "openclaw/openclaw#2" : ""),
+    },
     copies: [],
   });
   new Script(
@@ -6773,7 +6787,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.ok(new Set(chatContext.copies.map((copy) => copy.question)).size > 1);
   assert.ok(new Set(chatContext.copies.map((copy) => copy.answer)).size > 1);
   assert.ok(
-    chatContext.copies.every((copy) => /final|finished|receipt|trustworthy/i.test(copy.answer)),
+    chatContext.copies.every((copy) => /clock|timing|trustworthy|verified/i.test(copy.answer)),
   );
   const terminalRowsStart = body.indexOf("function terminalRows(");
   const terminalRowsEnd = body.indexOf("function runChanged(", terminalRowsStart);
@@ -7079,6 +7093,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
     STAGES: ["arriving", "setting-up", "reviewing", "publishing", "applying", "repairing"],
     queueStageLabel: () => "aggregate queue stage",
     strictBayAction: () => null,
+    strictBayReferenceTiming: () => null,
   });
   const closedStages = {
     arriving: 0,
@@ -7463,6 +7478,35 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.equal(confirmingContext.result.length, 1);
   assert.equal(confirmingContext.result[0].stage, "completed");
   assert.equal(Object.keys(confirmingContext.state.confirmingOutcomes).length, 0);
+
+  const buildItemsStart = script.indexOf("function buildItems(");
+  const buildItemsEnd = script.indexOf("function bayRangeLabel(", buildItemsStart);
+  assert.ok(buildItemsStart > 0 && buildItemsEnd > buildItemsStart);
+  const incompleteBuildContext = createContext({
+    state: {
+      previousRuns: {},
+      items: [
+        {
+          ...activeVisual,
+          timing: { kind: "run", started_at: "2026-08-16T12:00:00.000Z" },
+        },
+      ],
+      confirmingOutcomes: {},
+    },
+    OUTCOME_CONFIRM_MS: 150_000,
+    Date,
+    Object,
+    expandActive: () => [],
+    terminalRows: () => [],
+    transitionKind: () => null,
+    result: null,
+  });
+  new Script(
+    `${confirmingSource}\n${script.slice(buildItemsStart, buildItemsEnd)}\nresult = buildItems({bay:{active_census_complete:false}}, false);`,
+  ).runInContext(incompleteBuildContext);
+  assert.equal(incompleteBuildContext.result.length, 1);
+  assert.equal(incompleteBuildContext.result[0].confirming, true);
+  assert.equal(Object.hasOwn(incompleteBuildContext.result[0], "timing"), false);
 
   const legacy = await worker.fetch(
     new Request(
@@ -7920,6 +7964,7 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
       item_number: 91,
       stage: "arriving",
       source: "queue",
+      timing: { kind: "queue", started_at: "2026-08-16T11:45:00.000Z" },
     },
   ];
   retainedQueueOnly.exact_review_queue.bay_projection.activity = {
@@ -7942,6 +7987,10 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
   assert.equal(retainedProjection.exact_review_queue.bay_projection.activity.live_stages, null);
   assert.equal(retainedProjection.exact_review_queue.bay_projection.activity.total, null);
   assert.equal(retainedProjection.bay.active_census_complete, false);
+  assert.equal(
+    retainedProjection.exact_review_queue.bay_projection.activity.items[0].timing.kind,
+    "queue",
+  );
   assert.equal(runtime.queueStageCount(retainedProjection, "arriving"), 1);
   clientState.includeLegacyBatch = true;
   assert.equal(runtime.queueStageCount(retainedProjection, "arriving"), 2);
@@ -7977,7 +8026,8 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
   const chatStartedAt = new Date(Date.now() - 37 * 60_000).toISOString();
   const chatNodes = ["asking", "replying"].map((id, index) => ({
     classList: { add: () => undefined },
-    getAttribute: () => id,
+    getAttribute: (name: string) =>
+      name === "data-age-started-at" ? chatStartedAt : name === "data-age-kind" ? "queue" : id,
     getBoundingClientRect: () => ({ left: index * 20, top: 20, width: 10, height: 10 }),
   }));
   let integratedChatAnswer = "";
@@ -8008,7 +8058,7 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
       lastChatStage: null,
     },
   });
-  assert.match(integratedChatAnswer, /final|finished|receipt|trustworthy/i);
+  assert.match(integratedChatAnswer, /queue record has been waiting about 37 minutes/i);
   const serialized = JSON.stringify(projected);
   assert.doesNotMatch(serialized, new RegExp(marker, "i"));
   assert.doesNotMatch(

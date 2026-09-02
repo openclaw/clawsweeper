@@ -649,6 +649,7 @@ test("public Bay references retain only allowlisted canonical GitHub coordinates
               repository: "OpenClaw/OpenClaw",
               item_number: 41,
               stage: "arriving",
+              created_at: STATUS_NOW,
               title: marker,
               url: `https://example.invalid/private?token=${marker}`,
               action: {
@@ -703,6 +704,7 @@ test("public Bay references retain only allowlisted canonical GitHub coordinates
                 item_number: 43,
                 stage: "reviewing",
                 source: "live",
+                timing: { kind: "run", started_at: STATUS_NOW },
                 workflow_title: marker,
               },
               {
@@ -758,6 +760,7 @@ test("public Bay references retain only allowlisted canonical GitHub coordinates
       stage: "arriving",
       source: "queue",
       legacy_batch_path: false,
+      timing: { kind: "queue", started_at: STATUS_NOW },
       action: {
         repository: "openclaw/clawsweeper",
         run_id: 7001,
@@ -780,6 +783,7 @@ test("public Bay references retain only allowlisted canonical GitHub coordinates
       stage: "reviewing",
       source: "live",
       legacy_batch_path: false,
+      timing: { kind: "run", started_at: STATUS_NOW },
     },
   ]);
   assert.deepEqual(projected.bay.terminal_buffer, [

@@ -2084,6 +2084,10 @@ type PublicBayReference = {
   stage: (typeof PUBLIC_BAY_STAGES)[number];
   source: "queue" | "live";
   legacy_batch_path: boolean;
+  timing?: {
+    kind: "queue" | "run";
+    started_at: string;
+  };
   action?: PublicBayAction;
 };
 
@@ -2316,12 +2320,29 @@ function publicBayReference(
   const canonicalRepository = repository.toLowerCase();
   if (!allowedRepositories.has(canonicalRepository)) return undefined;
   const action = publicBayProjectedAction(source.action, allowedRepositories);
+  const projectedTiming = objectValue(source.timing);
+  const explicitTimingKind = String(projectedTiming.kind || "");
+  const explicitTimingStartedAt = publicTimestamp(projectedTiming.started_at);
+  const inferredQueueStartedAt =
+    referenceSource === "queue" ? publicTimestamp(source.created_at) : null;
+  const timing = projectedTiming.kind
+    ? explicitTimingKind === (referenceSource === "queue" ? "queue" : "run") &&
+      explicitTimingStartedAt
+      ? { kind: explicitTimingKind as "queue" | "run", started_at: explicitTimingStartedAt }
+      : null
+    : inferredQueueStartedAt
+      ? { kind: "queue" as const, started_at: inferredQueueStartedAt }
+      : referenceSource === "live" && action?.started_at
+        ? { kind: "run" as const, started_at: action.started_at }
+        : undefined;
+  if (timing === null) return null;
   return {
     repository: canonicalRepository,
     item_number: itemNumber,
     stage: stage as (typeof PUBLIC_BAY_STAGES)[number],
     source: referenceSource,
     legacy_batch_path: legacyBatchPath === true,
+    ...(timing ? { timing } : {}),
     ...(action ? { action } : {}),
   };
 }
@@ -2906,6 +2927,9 @@ function publicBayActiveTargets(
         stage: selectedItem.stage,
         source: "live" as const,
         legacy_batch_path: selectedItem.legacyBatchPath,
+        ...(selectedItem.action?.started_at
+          ? { timing: { kind: "run" as const, started_at: selectedItem.action.started_at } }
+          : {}),
         ...(selectedItem.action ? { action: selectedItem.action } : {}),
       },
     ];

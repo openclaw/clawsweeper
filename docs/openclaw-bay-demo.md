@@ -112,11 +112,13 @@ projector retains only bounded tide values, closed outcome categories, and safe
 timestamps. The Preview tide button changes only the browser animation and does
 not mutate stored state.
 
-The exact-review control board above the shoreline separates review admission
-from result publication. It shows aggregate lane totals, bounded 6-hour,
-24-hour, or 7-day history, and closed observed cause counts. It does not infer
-an upstream reason for a cancellation or failure and exposes no queue,
-recovery, deploy, or rollback controls.
+The exact-review control board is secondary operator context under the closed
+`System details` disclosure. Expanding it separates review admission from
+result publication and shows aggregate lane totals, bounded 6-hour, 24-hour,
+or 7-day history, and closed observed cause counts. The crab lanes remain the
+primary pipeline visualization. The control board does not infer an upstream
+reason for a cancellation or failure and exposes no queue, recovery, deploy,
+or rollback controls.
 
 The durable lifecycle board contains three inventory counts and six closed
 lifecycle-lane counts: pending, acknowledgement pending, completed, superseded,
@@ -178,9 +180,12 @@ outcomes, and observed completion timing are derived from data already
 collected for the Overview page. Overview uses the same projected reference
 sample for its public-work cards, search, and equivalent public-reference
 blade. Private correlation fields used during collection are not part of
-either rendered surface or blade. Crab chat uses only the validated action
-start timestamp to report an elapsed wait; if that timestamp is unavailable it
-uses the generic wording.
+either rendered surface or blade. A sampled queue reference may expose only a
+validated queue-start timestamp; a sampled live reference may expose only its
+validated public GitHub action-start timestamp. Active crustaceans label these
+clocks explicitly as `Queued` or `Run`, and crab chat uses the same distinction.
+If neither source is available, Bay says that active timing is unavailable
+instead of guessing.
 
 Bay polls the Worker every 20 seconds, compared with Overview every 15 seconds:
 three rather than four browser status requests per minute after initial load.
@@ -191,8 +196,9 @@ particular, Bay's 20-second timer can align with cache expiry, so Bay does not
 claim a lower upstream GitHub refresh rate than Overview.
 
 The displayed end-to-end timing is an observed sample of the latest completed
-jobs found in the previous hour, not a complete one-hour census. Per-lane wait
-times are not shown because the current data cannot support them accurately.
+jobs found in the previous hour, not a complete one-hour census. Queue age and
+live-run age are not presented as time spent in the current visual lane;
+per-lane transition timing remains unavailable.
 
 ## Assets And Deployment
 
