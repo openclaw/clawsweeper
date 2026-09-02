@@ -338,11 +338,17 @@ export function classifyReviewedFixtureScan(
       }
       let lineStart = 0;
       let lineNumber = 1;
+      let literalOccurrences = 0;
       while (lineStart <= text.length) {
         const newline = text.indexOf("\n", lineStart);
         const lineEnd = newline === -1 ? text.length : newline;
         const line = text.slice(lineStart, lineEnd);
         if (line.includes(finding.RawV2)) {
+          let occurrence = line.indexOf(finding.RawV2);
+          while (occurrence !== -1) {
+            literalOccurrences++;
+            occurrence = line.indexOf(finding.RawV2, occurrence + finding.RawV2.length);
+          }
           if (
             fixture.lineSha256s &&
             !fixture.lineSha256s.includes(createHash("sha256").update(line).digest("hex"))
@@ -354,7 +360,11 @@ export function classifyReviewedFixtureScan(
         lineStart = newline + 1;
         lineNumber++;
       }
-      if (literalLine === undefined) return refuse("literal_mismatch");
+      if (
+        literalLine === undefined ||
+        (fixture.lineSha256s !== undefined && literalOccurrences !== 1)
+      )
+        return refuse("literal_mismatch");
       literalLines.set(valueKey, literalLine);
     }
     const blob = basename(file);

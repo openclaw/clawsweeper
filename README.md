@@ -599,8 +599,10 @@ or particular commits.
 The host locates that exact literal independently in the staged blob. Decoder
 coordinates can shift, and TruffleHog can omit a companion plain-text finding,
 so admission does not depend on another finding or a reported line matching the
-original source. Repeated literals remain eligible; finding order and duplicate
-records do not change the exact value, path, and mode checks.
+original source. Repeated literals remain eligible unless an entry is bound to
+an approved complete-line digest; those entries require exactly one occurrence
+in the staged blob. Finding order and duplicate records do not change the exact
+value, path, and mode checks.
 One source path may contain multiple independently reviewed fixtures; each
 digest/path/mode tuple must match exactly, so source membership alone never
 qualifies a finding.

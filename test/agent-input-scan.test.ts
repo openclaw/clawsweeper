@@ -783,9 +783,11 @@ for (const scenario of [
       "// context\n".repeat(40) +
       (reviewedMattermostLine ?? JSON.stringify(otherReviewedUri ?? value)) +
       "\n" +
-      (scenario.endsWith("repeated literal") || scenario.includes("duplicate on unapproved line")
-        ? JSON.stringify(value) + "\n"
-        : "");
+      (scenario.includes("duplicate on unapproved line")
+        ? reviewedMattermostLine + "\n"
+        : scenario.endsWith("repeated literal")
+          ? JSON.stringify(value) + "\n"
+          : "");
     const fixtureContent = (prefix: string) =>
       Buffer.concat([
         Buffer.from(prefix + contents),
