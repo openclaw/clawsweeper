@@ -20,6 +20,7 @@ import test from "node:test";
 import { runAgentProcess, runAgentCheckoutInspection } from "../dist/agent-runner.js";
 import {
   AgentInputScanError,
+  AGENT_INPUT_FINDINGS_EXIT_CODE,
   INCOMPLETE_AGENT_INPUT_SOURCE_EXIT_CODE,
   agentInputScanFailureExitCode,
   managedScannerCacheRoot,
@@ -33,10 +34,14 @@ import {
 import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 import { writeExactReviewFailureDiagnostics } from "../dist/clawsweeper-review-failure-diagnostics.js";
 
-test("only incomplete source scan failures receive the terminal review exit code", () => {
+test("unchanged source scan refusals receive terminal review exit codes", () => {
   assert.equal(
     agentInputScanFailureExitCode(new AgentInputScanError("incomplete_source")),
     INCOMPLETE_AGENT_INPUT_SOURCE_EXIT_CODE,
+  );
+  assert.equal(
+    agentInputScanFailureExitCode(new AgentInputScanError("findings")),
+    AGENT_INPUT_FINDINGS_EXIT_CODE,
   );
   assert.equal(agentInputScanFailureExitCode(new AgentInputScanError("scanner_failed")), null);
   assert.equal(agentInputScanFailureExitCode(new Error("review failed")), null);
@@ -574,6 +579,8 @@ for (const scenario of [
   "mattermost api redacted fixture",
   "mattermost hooks input fixture",
   "mattermost hooks redacted fixture",
+  "mattermost hooks input fixture duplicate on unapproved line",
+  "mattermost hooks redacted fixture duplicate on unapproved line",
   "mattermost changed username",
   "mattermost changed password",
   "mattermost changed host",
@@ -764,11 +771,21 @@ for (const scenario of [
       scenario === "decoded only" || scenario.endsWith("encoded-only")
         ? uri.replace(":", "&#58;")
         : uri;
+    const reviewedMattermostLine =
+      mattermostFixture && scenario.includes("fixture")
+        ? scenario.includes("redacted")
+          ? `    expect(message).toContain(${JSON.stringify(uri)});`
+          : scenario.includes("hooks")
+            ? `        ${JSON.stringify(`fallback\r\nsecond-line botToken: secret-bot ${uri}?token=secret-query`)},`
+            : `        ${JSON.stringify(`primary\ntoken=secret-token ${uri}?access_token=secret-access&client_secret=secret-client`)},`
+        : undefined;
     const contents =
       "// context\n".repeat(40) +
-      JSON.stringify(otherReviewedUri ?? value) +
+      (reviewedMattermostLine ?? JSON.stringify(otherReviewedUri ?? value)) +
       "\n" +
-      (scenario.endsWith("repeated literal") ? JSON.stringify(value) + "\n" : "");
+      (scenario.endsWith("repeated literal") || scenario.includes("duplicate on unapproved line")
+        ? JSON.stringify(value) + "\n"
+        : "");
     const fixtureContent = (prefix: string) =>
       Buffer.concat([
         Buffer.from(prefix + contents),
@@ -1050,7 +1067,8 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
             if (mattermostFixture) {
               assert.equal(
                 diagnostic.reason,
-                scenario === "mattermost different approved literal"
+                scenario.includes("duplicate on unapproved line") ||
+                  scenario === "mattermost different approved literal"
                   ? "literal_mismatch"
                   : scenario === "mattermost source mismatch"
                     ? "source_not_reviewed"

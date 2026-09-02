@@ -1335,6 +1335,10 @@ jobs:
           # unchanged source tuple is terminal, while the workflow stays red.
           if [ "$review_exit_code" -eq 78 ]; then
             echo "failure_reason=incomplete_source" >> "$GITHUB_OUTPUT"
+          # Keep 79 aligned with AGENT_INPUT_FINDINGS_EXIT_CODE. A scanner
+          # refusal is terminal for the unchanged source tuple.
+          elif [ "$review_exit_code" -eq 79 ]; then
+            echo "failure_reason=findings" >> "$GITHUB_OUTPUT"
           elif [ "$review_exit_code" -ne 0 ] && [ -f artifacts/event/failure-diagnostics/manifest.json ] &&
             jq -e '
               .classification == "source_preparation" and
@@ -1763,6 +1767,8 @@ jobs:
           detail="The exact review did not produce a publishable artifact. The durable queue will retry it."
           if [ "$REVIEW_FAILURE_REASON" = "incomplete_source" ]; then
             detail="The exact review could not verify the complete source. The durable queue will not retry this unchanged revision."
+          elif [ "$REVIEW_FAILURE_REASON" = "findings" ]; then
+            detail="The input scanner refused the reviewed source. The durable queue will not retry this unchanged revision."
           elif [ "$REVIEW_FAILURE_REASON" = "source_incompatible" ]; then
             detail="The reviewed source does not contain a valid exact Codex version pin. The durable queue will not retry this unchanged revision; update or rebase it before requesting review again."
           elif [ "$RESERVATION_STATUS" = "superseded" ] || [ "$REVIEW_SUPERSEDED" = "true" ]; then

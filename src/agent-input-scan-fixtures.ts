@@ -4,6 +4,7 @@ import { basename } from "node:path";
 interface ReviewedFixture {
   fixtureSha256: string;
   rawSha256?: string;
+  lineSha256s?: readonly string[];
   sources: readonly string[];
 }
 
@@ -50,21 +51,25 @@ const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
     // Mattermost slash-error sanitization fixtures introduced by 9c0975c1c20e.
     fixtureSha256: "f2c5cfd2b711577ed9048f9bd0e6c97ae88097b8eba8c1ff37deb33ed910f5a7",
     rawSha256: "7d765bfa6e81c336a916aaf71eab28f5c0c4ae47a359ec3adf2d4f175645456d",
+    lineSha256s: ["38c08c0f567b2d663fb72a8b41170a233f5baeb499a2205143a873df9e21a43d"],
     sources: ["extensions/mattermost/src/mattermost/slash-http.test.ts"],
   },
   {
     fixtureSha256: "fd79d243a5d942979882ca621cfa8bd240a2fce9ca400cdd6b2b1bfab4c5cf6a",
     rawSha256: "014a5653f93da5c53f9a09313e7aa32753fbdf0de02314af39a65af9a1dde664",
+    lineSha256s: ["0506dfed6fa918c830a5e0d4d1bad503960438d01d5ff9e2cc80cd6654a69033"],
     sources: ["extensions/mattermost/src/mattermost/slash-http.test.ts"],
   },
   {
     fixtureSha256: "14947662dc4356637571038e47cd3f37a8911d37d41688a2f6c6b2b54c209c41",
     rawSha256: "7d765bfa6e81c336a916aaf71eab28f5c0c4ae47a359ec3adf2d4f175645456d",
+    lineSha256s: ["d94c393a7704eab6d2e6ac822bd495a27299d353260c9edc85e852b706a54de3"],
     sources: ["extensions/mattermost/src/mattermost/slash-http.test.ts"],
   },
   {
     fixtureSha256: "0c2d147cb7b70169ceb0302b40bceaa60abc15263c4dcfb7f1746cc93e3c87d3",
     rawSha256: "014a5653f93da5c53f9a09313e7aa32753fbdf0de02314af39a65af9a1dde664",
+    lineSha256s: ["ae6d199d9d7983df3024f5615dc243efd1e6988e1afddb79da0b99183cab8552"],
     sources: ["extensions/mattermost/src/mattermost/slash-http.test.ts"],
   },
 ];
@@ -331,16 +336,25 @@ export function classifyReviewedFixtureScan(
       } catch {
         return refuse("literal_mismatch");
       }
-      const offset = text.indexOf(finding.RawV2);
-      if (offset < 0) return refuse("literal_mismatch");
-      literalLine = 1;
-      for (
-        let newline = text.indexOf("\n");
-        newline !== -1 && newline < offset;
-        newline = text.indexOf("\n", newline + 1)
-      ) {
-        literalLine++;
+      let lineStart = 0;
+      let lineNumber = 1;
+      while (lineStart <= text.length) {
+        const newline = text.indexOf("\n", lineStart);
+        const lineEnd = newline === -1 ? text.length : newline;
+        const line = text.slice(lineStart, lineEnd);
+        if (line.includes(finding.RawV2)) {
+          if (
+            fixture.lineSha256s &&
+            !fixture.lineSha256s.includes(createHash("sha256").update(line).digest("hex"))
+          )
+            return refuse("literal_mismatch");
+          literalLine ??= lineNumber;
+        }
+        if (newline === -1) break;
+        lineStart = newline + 1;
+        lineNumber++;
       }
+      if (literalLine === undefined) return refuse("literal_mismatch");
       literalLines.set(valueKey, literalLine);
     }
     const blob = basename(file);

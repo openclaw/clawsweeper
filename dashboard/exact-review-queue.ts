@@ -314,7 +314,7 @@ export type ExactReviewReviewRecoveryReason =
   | "workflow_cancelled"
   | "workflow_failed";
 type ExactReviewRetryKind = "coordination" | "throttle";
-type ExactReviewFailureReason = "incomplete_source" | "source_incompatible";
+type ExactReviewFailureReason = "findings" | "incomplete_source" | "source_incompatible";
 type ExactReviewPublicationFailureKind = "github_rate_limit" | "github_transient";
 type ExactReviewDispatchFailureClass =
   | "permanent_rejection"
@@ -2212,7 +2212,8 @@ export class ExactReviewQueue {
       const reviewFailureReason =
         body.review_failure_reason === undefined
           ? undefined
-          : body.review_failure_reason === "incomplete_source" ||
+          : body.review_failure_reason === "findings" ||
+              body.review_failure_reason === "incomplete_source" ||
               body.review_failure_reason === "source_incompatible"
             ? (body.review_failure_reason as ExactReviewFailureReason)
             : null;

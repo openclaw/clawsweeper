@@ -66,11 +66,12 @@ export class AgentInputScanError extends Error {
 }
 
 export const INCOMPLETE_AGENT_INPUT_SOURCE_EXIT_CODE = 78;
+export const AGENT_INPUT_FINDINGS_EXIT_CODE = 79;
 
 export function agentInputScanFailureExitCode(error: unknown): number | null {
-  return error instanceof AgentInputScanError && error.reason === "incomplete_source"
-    ? INCOMPLETE_AGENT_INPUT_SOURCE_EXIT_CODE
-    : null;
+  if (!(error instanceof AgentInputScanError)) return null;
+  if (error.reason === "incomplete_source") return INCOMPLETE_AGENT_INPUT_SOURCE_EXIT_CODE;
+  return error.reason === "findings" ? AGENT_INPUT_FINDINGS_EXIT_CODE : null;
 }
 
 export const MAX_SCAN_BYTES = 256 * 1024 * 1024;

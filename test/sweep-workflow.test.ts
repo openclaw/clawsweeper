@@ -1061,6 +1061,10 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   );
   assert.match(
     step(reviewer, "Review exact event item").run ?? "",
+    /review_exit_code.*-eq 79[\s\S]*failure_reason=findings/,
+  );
+  assert.match(
+    step(reviewer, "Review exact event item").run ?? "",
     /classification == "source_preparation"[\s\S]*retryable == false[\s\S]*reason_code == "source_incompatible"[\s\S]*failure_reason=source_incompatible/,
   );
   assert.match(
@@ -1346,6 +1350,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     markUnsuccessful.run ?? "",
     /incomplete_source[\s\S]*will not retry this unchanged revision/,
   );
+  assert.match(markUnsuccessful.run ?? "", /findings[\s\S]*will not retry this unchanged revision/);
   assert.match(
     markUnsuccessful.run ?? "",
     /source_incompatible[\s\S]*will not retry this unchanged revision; update or rebase/,

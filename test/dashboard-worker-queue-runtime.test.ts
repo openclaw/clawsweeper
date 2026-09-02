@@ -10577,6 +10577,7 @@ test("exact-review queue terminates deterministic refusals only for the unchange
   const terminal = leasedExactReviewQueueItem(709, "7090");
   const transient = leasedExactReviewQueueItem(710, "7100");
   const newer = leasedExactReviewQueueItem(711, "7110");
+  const findingsTerminal = leasedExactReviewQueueItem(712, "7120");
   newer.revision = 2;
   newer.decision = { ...newer.decision, sourceAction: "synchronize" };
   await storage.put("exact-review-queue", {
@@ -10585,6 +10586,7 @@ test("exact-review queue terminates deterministic refusals only for the unchange
       "openclaw/openclaw#709": terminal,
       "openclaw/openclaw#710": transient,
       "openclaw/openclaw#711": newer,
+      "openclaw/openclaw#712": findingsTerminal,
     },
   });
   const queue = new ExactReviewQueue({ storage }, {});
@@ -10617,6 +10619,10 @@ test("exact-review queue terminates deterministic refusals only for the unchange
   assert.equal(newerResponse.status, 200);
   assert.deepEqual(await newerResponse.json(), { ok: true, requeued: true });
 
+  const findingsResponse = await complete(712, "7120", "findings");
+  assert.equal(findingsResponse.status, 200);
+  assert.deepEqual(await findingsResponse.json(), { ok: true, requeued: false });
+
   const state = (await storage.get("exact-review-queue")) as {
     items: Record<string, Record<string, unknown>>;
   };
@@ -10626,6 +10632,7 @@ test("exact-review queue terminates deterministic refusals only for the unchange
   assert.equal(state.items["openclaw/openclaw#711"].state, "pending");
   assert.equal(state.items["openclaw/openclaw#711"].revision, 2);
   assert.equal(state.items["openclaw/openclaw#711"].reviewFailureAttempts, 0);
+  assert.equal(state.items["openclaw/openclaw#712"], undefined);
   const sourceStorage = new MemoryDurableStorage();
   const sourceNewer = leasedExactReviewQueueItem(714, "7140");
   sourceNewer.revision = 2;
