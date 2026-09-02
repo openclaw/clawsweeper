@@ -621,6 +621,12 @@ must qualify under the same digest's exact path and mode `100644` policy before
 any source is eligible for classification or an audit notice.
 The policy does not trust checkout ignore rules, domain patterns, fixture words,
 test names, or unchanged-line inference; no nearby fixture is implicitly approved.
+When review evidence quotes an exact reviewed synthetic URI, prompt preparation
+replaces the complete token with a visible reference to its source
+file. The original context is preserved, and changed tokens or additional query
+text remain untouched. This omission does not classify a native finding or prove
+its verification status. Source blobs, introduced patches, and scanner admission
+retain their existing checks.
 Findings attributed to prompt, schema, diff, additional-input, other-path, or
 encoded-only blobs remain blocking, as do other findings, verified findings,
 and incomplete scans. Unverified findings alone never qualify: every finding must

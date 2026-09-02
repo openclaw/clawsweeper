@@ -10,6 +10,10 @@ import {
 import { dirname, join, relative, resolve } from "node:path";
 import { runAgentCheckoutInspection, runAgentProcess } from "./agent-runner.js";
 import { AgentInputScanError, type AgentScanSource } from "./agent-input-scan.js";
+import {
+  omitReviewedFixtureReferences,
+  serializeReviewContext,
+} from "./agent-input-scan-fixtures.js";
 import { stringArg, type Args } from "./clawsweeper-args.js";
 import {
   mediaProofRuntimeHints,
@@ -462,7 +466,7 @@ export function createReviewRuntime({
 
   function contextJsonForPrompt(context: ItemContext): string {
     const { pullCommitsRevision: __, prHydrationSnapshot: ___, ...promptContext } = context;
-    return JSON.stringify(promptContext, null, 2);
+    return serializeReviewContext(promptContext);
   }
 
   function buildReviewPrompt(
@@ -476,14 +480,12 @@ export function createReviewRuntime({
     const contextJson = contextJsonForPrompt(context);
     const introductionEvidence =
       item.kind === "pull_request"
-        ? `\n\n## PR Introduction Evidence\n\n\`\`\`json\n${JSON.stringify(
+        ? `\n\n## PR Introduction Evidence\n\n\`\`\`json\n${serializeReviewContext(
             buildPullRequestReviewEvidence({
               ...(runtimeHints.targetDir ? { targetDir: runtimeHints.targetDir } : {}),
               context,
               mainSha: git.mainSha,
             }),
-            null,
-            2,
           )}\n\`\`\`\n`
         : "";
     const schema = reviewDecisionSchemaText();
@@ -501,7 +503,7 @@ export function createReviewRuntime({
 ${additionalPrompt.trim()}
 `
       : "";
-    const text = `${prompt}
+    const text = omitReviewedFixtureReferences(`${prompt}
 
 ## Repository State
 
@@ -534,7 +536,7 @@ Primary-body \`bodyCoverage\` describes separate untrusted excerpts and omitted 
 ${contextJson}
 \`\`\`
 ${extra}
-`;
+`);
     return {
       text,
       telemetry: {

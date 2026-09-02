@@ -114,6 +114,29 @@ const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
   },
 ];
 
+export function serializeReviewContext(context: object): string {
+  return JSON.stringify(
+    context,
+    (_key, value) => (typeof value === "string" ? omitReviewedFixtureReferences(value) : value),
+    2,
+  );
+}
+
+export function omitReviewedFixtureReferences(text: string): string {
+  // Prose quotations do not carry a Git source binding. Omit the complete
+  // reviewed token; a prefix match could conceal changed credentials or a query.
+  return text.replace(
+    /(^|[\s<>"'\x60(])([A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s<>"'\x60]+)/g,
+    (match, boundary: string, uri: string) => {
+      const digest = createHash("sha256").update(uri).digest("hex");
+      const fixture = REVIEWED_FIXTURES.find((entry) => entry.fixtureSha256 === digest);
+      return fixture
+        ? boundary + "[reviewed synthetic URI omitted; inspect " + fixture.sources.join(", ") + "]"
+        : match;
+    },
+  );
+}
+
 export interface ScanSourceReference {
   source: string;
   mode: string;
