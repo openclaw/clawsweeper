@@ -588,6 +588,7 @@ the [remote-CDP documentation example](https://github.com/openclaw/openclaw/blob
 the [credentialed-page rejection fixtures](https://github.com/openclaw/openclaw/blob/d5fb4903f1b13a4309d479f1011d995b1fc706ae/extensions/browser/src/browser-tool.test.ts),
 the [guarded CDP authentication fixtures](https://github.com/openclaw/openclaw/blob/1cf6ff3bdc08a6ac08facb1006b1d7aabc0eaff4/extensions/browser/src/browser/cdp.helpers.test.ts),
 the [MCP endpoint-redaction fixture](https://github.com/openclaw/openclaw/blob/ac21e89c13e42f6a7d152bf9be143e67edd44ed3/extensions/browser/src/browser/chrome-mcp.test.ts),
+the [Crabbox fleet audit sanitization fixture](https://github.com/openclaw/crabbox/blob/937523aced0f6c2d3b9242461eeab1a03bd893e8/worker/test/fleet.test.ts),
 the [Mattermost slash-error sanitization fixtures](https://github.com/openclaw/openclaw/blob/9c0975c1c20ed635532c7aa0f510154224adee7f/extensions/mattermost/src/mattermost/slash-http.test.ts),
 and the OpenClaw config [URL-redaction](https://github.com/openclaw/openclaw/blob/5fe22a7d88919f260e7999fc775733feff3cb1fa/src/config/redact-snapshot.test.ts)
 and [restoration fixtures](https://github.com/openclaw/openclaw/blob/5fe22a7d88919f260e7999fc775733feff3cb1fa/src/config/redact-snapshot.restore.test.ts)
@@ -595,7 +596,7 @@ after a complete scan. Static host policy associates each
 exact detector-matched URI SHA-256 with only its approved source paths and exact
 scanner `Raw` digest, including when `Raw` omits a path retained by `RawV2`. The
 matched value must be a literal in a host-staged Git blob from mode `100644`.
-The three guarded-CDP/MCP entries and four Mattermost entries also bind complete
+The three guarded-CDP/MCP entries, the Crabbox fixture, and four Mattermost entries also bind complete
 reviewed source lines, including surrounding query text that TruffleHog's URI
 detector does not match. Changes to those lines or additional literal occurrences
 refuse classification. These witnesses do not expand native query detection.

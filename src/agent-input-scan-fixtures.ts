@@ -72,6 +72,12 @@ const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
     sources: ["extensions/browser/src/browser/chrome-mcp.test.ts"],
   },
   {
+    // Crabbox fleet audit sanitization fixture reviewed across stacked PRs 1619-1621.
+    fixtureSha256: "feadf36b48cb372414d8668b56c965d97d8e34d206d323b3790e863ac233f675",
+    lineSha256s: ["fe8e60928483fc681c5cd7c1fd7d9cf26dea28a4e299462b2fa17d1687889e18"],
+    sources: ["worker/test/fleet.test.ts"],
+  },
+  {
     // Mattermost slash-error sanitization fixtures introduced by 9c0975c1c20e.
     fixtureSha256: "f2c5cfd2b711577ed9048f9bd0e6c97ae88097b8eba8c1ff37deb33ed910f5a7",
     rawSha256: "7d765bfa6e81c336a916aaf71eab28f5c0c4ae47a359ec3adf2d4f175645456d",
