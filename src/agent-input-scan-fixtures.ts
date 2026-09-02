@@ -96,6 +96,22 @@ const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
     lineSha256s: ["ae6d199d9d7983df3024f5615dc243efd1e6988e1afddb79da0b99183cab8552"],
     sources: ["extensions/mattermost/src/mattermost/slash-http.test.ts"],
   },
+  {
+    // OpenClaw config endpoint redaction and restoration fixtures.
+    fixtureSha256: "a2e43ebb989e154a5cfde0e9f67d0e7465adffdba2c8be60394f35e7797149a3",
+    rawSha256: "6b167ea4a777545dcca0e4d425aafccd750a6c6fca8a5b2b370f16491f3a8a4d",
+    sources: ["src/config/redact-snapshot.restore.test.ts", "src/config/redact-snapshot.test.ts"],
+  },
+  {
+    // OpenClaw media and provider request proxy redaction fixture.
+    fixtureSha256: "cee9438f4c98a2b27c3aa4bab25b071a4fa9511252ffce86ebf38f302c151e5b",
+    sources: ["src/config/redact-snapshot.test.ts"],
+  },
+  {
+    // OpenClaw browser CDP credential redaction and restoration fixture.
+    fixtureSha256: "f11c92a245b2308a02f08759cdc5952b4ebe9af5225923807769267fce35f464",
+    sources: ["src/config/redact-snapshot.test.ts"],
+  },
 ];
 
 export interface ScanSourceReference {
