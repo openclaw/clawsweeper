@@ -72,6 +72,14 @@ const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
     sources: ["extensions/browser/src/browser/chrome-mcp.test.ts"],
   },
   {
+    // Approved Mac dashboard subframe rejection witness in OpenClaw 9ba01d6c7b1c.
+    fixtureSha256: "97c60d02f5114db97718cfe1c3686c0a36fb5138840611c8793c7abbd9c64f71",
+    rawSha256: "43690a8c13d4028ed731bc4dfeb37f83adaa4e5849d2e0fa13f746843adec333",
+    lineSha256s: ["87f28bc6a5b0037cfd2ecc94349d5c9bfff572776c25d5e713ae7d83144f5f98"],
+    decoders: ["PLAIN"],
+    sources: ["apps/macos/Tests/OpenClawIPCTests/DashboardWindowSmokeTests.swift"],
+  },
+  {
     // Mattermost slash-error sanitization fixtures introduced by 9c0975c1c20e.
     fixtureSha256: "f2c5cfd2b711577ed9048f9bd0e6c97ae88097b8eba8c1ff37deb33ed910f5a7",
     rawSha256: "7d765bfa6e81c336a916aaf71eab28f5c0c4ae47a359ec3adf2d4f175645456d",

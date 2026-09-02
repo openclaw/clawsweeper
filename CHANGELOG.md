@@ -74,7 +74,6 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
-- Legacy/current mixed-generation command status comments now record verified terminal receipts instead of requeueing every five minutes.
 - Bound standalone webhook bodies to 2 MiB before signature verification, preserving chunked deliveries and flushing rejection responses before closing oversized requests. Thanks @SebTardif.
 - Preserve committed lifecycle outcomes when later queue completions disagree, preventing terminal-state conflicts from failing completion callbacks and acknowledgement drivers.
 - Retain numeric queue failure source locations inside the Durable Object before remote transport discards the original stack, without logging private error text.
