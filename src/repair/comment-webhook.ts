@@ -363,6 +363,7 @@ export function classifyItemWebhook({ event, payload }: { event: string; payload
     if (!Number.isInteger(itemNumber) || itemNumber <= 0) {
       return { accepted: false, reason: "missing issue number" };
     }
+    const sourceUpdatedAt = exactWebhookTimestamp(issue.updated_at);
     return {
       accepted: true,
       type: "item",
@@ -373,6 +374,7 @@ export function classifyItemWebhook({ event, payload }: { event: string; payload
       installationId,
       sourceEvent: "issues",
       sourceAction: action,
+      ...(sourceUpdatedAt ? { sourceUpdatedAt } : {}),
       supersedesInProgress: ["edited", "unlocked", "unlabeled"].includes(action),
     };
   }

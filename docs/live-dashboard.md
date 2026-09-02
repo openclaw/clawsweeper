@@ -409,9 +409,19 @@ resets that recovery budget; after three unsuccessful recovery cycles the item
 stays parked for operator inspection. Publication dead-letter-capacity parks
 retain their separate operator-controlled recovery path.
 
+Every failed exact-review completion first records one durable, deduplicated
+attempt keyed by its claim tuple. The record contains only closed stage/reason,
+retryability, source and failure fingerprints, immutable source identifiers,
+and workflow coordinates; raw diagnostics and scanner findings are never
+stored. The public `review_failure_health` projection groups the last hour into
+fixed stage buckets and marks a repeated target/source/failure identity
+critical. The dashboard raises recent failures to amber and repeated failures
+or exhausted review retries to red. A signed operator inventory provides the
+corresponding target and run identities for investigation.
+
 `/api/exact-review-queue` is an explicit, closed aggregate projection. It
 contains `generated_at`, `ready_pending`, `admissible_pending`, `pressure`,
-`handoff_health`, and bounded counts and oldest timestamps or ages for the
+`handoff_health`, `review_failure_health`, and bounded counts and oldest timestamps or ages for the
 pending, dispatching, and leased phases. `ready_pending` excludes retry-delayed
 items. `admissible_pending` further excludes ready items blocked by their
 target's exact-review cap. `pressure` is a deterministic observation from that

@@ -572,7 +572,7 @@ test("webhook accepts eligible issue events for public OpenClaw repositories", (
         fork: false,
         has_issues: true,
       },
-      issue: { number: 597 },
+      issue: { number: 597, updated_at: "2026-07-26T08:45:00Z" },
       installation: { id: 123 },
     },
   });
@@ -587,6 +587,7 @@ test("webhook accepts eligible issue events for public OpenClaw repositories", (
     installationId: 123,
     sourceEvent: "issues",
     sourceAction: "opened",
+    sourceUpdatedAt: "2026-07-26T08:45:00Z",
     supersedesInProgress: false,
   });
 });

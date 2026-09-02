@@ -10633,6 +10633,42 @@ test("exact-review queue terminates deterministic refusals only for the unchange
   assert.equal(state.items["openclaw/openclaw#711"].revision, 2);
   assert.equal(state.items["openclaw/openclaw#711"].reviewFailureAttempts, 0);
   assert.equal(state.items["openclaw/openclaw#712"], undefined);
+  const failureStats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.deepEqual(failureStats.review_failure_health, {
+    status: "degraded",
+    reasons: ["terminal_review_failure", "retryable_review_failure"],
+    window_minutes: 60,
+    attempts: 4,
+    affected_targets: 4,
+    retryable_attempts: 1,
+    terminal_attempts: 3,
+    repeated_identities: 0,
+    first_seen_at: failureStats.review_failure_health.first_seen_at,
+    last_seen_at: failureStats.review_failure_health.last_seen_at,
+    by_stage: {
+      agent_input_scan: 3,
+      source_preparation: 0,
+      provider_or_model: 0,
+      workflow: 1,
+    },
+  });
+  assert.ok(failureStats.review_failure_health.first_seen_at);
+  assert.ok(failureStats.review_failure_health.last_seen_at);
+  const failureInventory = await (
+    await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/review-failures/list", {
+        method: "POST",
+        body: JSON.stringify({ limit: 10 }),
+      }),
+    )
+  ).json();
+  assert.equal(failureInventory.attempts.length, 4);
+  assert.deepEqual(
+    new Set(failureInventory.attempts.map((attempt) => attempt.reason_code)),
+    new Set(["findings", "incomplete_source", "workflow_failed"]),
+  );
   const sourceStorage = new MemoryDurableStorage();
   const sourceNewer = leasedExactReviewQueueItem(714, "7140");
   sourceNewer.revision = 2;
@@ -10696,6 +10732,36 @@ test("exact-review queue validates terminal review failure reasons", async () =>
       },
       "review_failure_reason_with_retry",
     ],
+    [
+      {
+        outcome: "failure",
+        review_failure: { stage: "unsafe detail", reason_code: "findings", retryable: false },
+      },
+      "invalid_review_failure",
+    ],
+    [
+      {
+        outcome: "success",
+        review_failure: {
+          stage: "agent_input_scan",
+          reason_code: "findings",
+          retryable: false,
+        },
+      },
+      "review_failure_without_failure",
+    ],
+    [
+      {
+        outcome: "failure",
+        review_failure_reason: "findings",
+        review_failure: {
+          stage: "agent_input_scan",
+          reason_code: "findings",
+          retryable: true,
+        },
+      },
+      "review_failure_retryability_mismatch",
+    ],
   ] as const) {
     const response = await queue.fetch(
       new Request("https://clawsweeper-exact-review-queue/complete", {
@@ -10706,6 +10772,195 @@ test("exact-review queue validates terminal review failure reasons", async () =>
     assert.equal(response.status, 400);
     assert.deepEqual(await response.json(), { error });
   }
+});
+
+test("review failure telemetry binds the active lease source before a queued successor", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewQueueItem(715, "7150");
+  const leasedHead = "a".repeat(40);
+  const successorHead = "b".repeat(40);
+  item.leaseDecision = {
+    ...item.leaseDecision,
+    itemKind: "pull_request",
+    sourceEvent: "pull_request",
+    sourceHeadSha: leasedHead,
+    sourceUpdatedAt: "2026-09-02T19:00:00Z",
+  };
+  item.decision = {
+    ...item.decision,
+    itemKind: "pull_request",
+    sourceEvent: "pull_request",
+    sourceHeadSha: successorHead,
+    sourceUpdatedAt: "2026-09-02T19:05:00Z",
+  };
+  item.revision = 2;
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { [item.key]: item },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const completed = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: 1,
+        claim_generation: 1,
+        run_id: "7150",
+        run_attempt: 1,
+        outcome: "failure",
+        review_failure: {
+          stage: "transport_network",
+          reason_code: "transport_network",
+          retryable: true,
+        },
+      }),
+    }),
+  );
+  assert.deepEqual(await completed.json(), { ok: true, requeued: true });
+  const inventory = await (
+    await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/review-failures/list", {
+        method: "POST",
+        body: JSON.stringify({ limit: 10 }),
+      }),
+    )
+  ).json();
+  assert.equal(inventory.attempts.length, 1);
+  assert.equal(inventory.attempts[0].source_head_sha, leasedHead);
+  assert.notEqual(inventory.attempts[0].source_head_sha, successorHead);
+});
+
+test("review failure telemetry records failed workflows recovered by reconciliation", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewQueueItem(718, "7180");
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { [item.key]: item },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/reconcile", {
+      method: "POST",
+      body: JSON.stringify({
+        runs: [
+          {
+            run_id: "7180",
+            run_attempt: 1,
+            claimed_run_attempt: 1,
+            claim_generation: 1,
+            outcome: "failure",
+          },
+        ],
+      }),
+    }),
+  );
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    reconciled: 1,
+    requeued: 1,
+    completed: 0,
+  });
+  const inventory = await (
+    await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/review-failures/list", {
+        method: "POST",
+        body: JSON.stringify({ limit: 10 }),
+      }),
+    )
+  ).json();
+  assert.equal(inventory.attempts.length, 1);
+  assert.deepEqual(
+    {
+      target: inventory.attempts[0].target,
+      stage: inventory.attempts[0].stage,
+      reason_code: inventory.attempts[0].reason_code,
+      retryable: inventory.attempts[0].retryable,
+    },
+    {
+      target: "openclaw/openclaw#718",
+      stage: "workflow",
+      reason_code: "workflow_failed",
+      retryable: true,
+    },
+  );
+});
+
+test("review failure telemetry excludes coordination and throttle deferrals", async () => {
+  for (const [index, retryKind] of ["coordination", "throttle"].entries()) {
+    const storage = new MemoryDurableStorage();
+    const itemNumber = 719 + index;
+    const runId = String(itemNumber * 10);
+    const item = leasedExactReviewQueueItem(itemNumber, runId);
+    await storage.put("exact-review-queue", {
+      deliveries: {},
+      items: { [item.key]: item },
+    });
+    const queue = new ExactReviewQueue({ storage }, {});
+    const response = await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/complete", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: item.leaseId,
+          item_key: item.key,
+          lease_revision: 1,
+          claim_generation: 1,
+          run_id: runId,
+          run_attempt: 1,
+          outcome: "failure",
+          retry_kind: retryKind,
+          retry_at: new Date(Date.now() + 60_000).toISOString(),
+        }),
+      }),
+    );
+    assert.deepEqual(await response.json(), { ok: true, requeued: true });
+    const inventory = await (
+      await queue.fetch(
+        new Request("https://clawsweeper-exact-review-queue/review-failures/list", {
+          method: "POST",
+          body: JSON.stringify({ limit: 10 }),
+        }),
+      )
+    ).json();
+    assert.deepEqual(inventory.attempts, []);
+  }
+});
+
+test("review failure telemetry cannot block queue completion", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewQueueItem(716, "7160");
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { [item.key]: item },
+  });
+  storage.failNextSql(/exact_review_failure_attempts_v1/);
+  const queue = new ExactReviewQueue({ storage }, {});
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: 1,
+        claim_generation: 1,
+        run_id: "7160",
+        run_attempt: 1,
+        outcome: "failure",
+      }),
+    }),
+  );
+  assert.deepEqual(await response.json(), { ok: true, requeued: true });
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { state: string; reviewFailureAttempts?: number }>;
+  };
+  assert.equal(state.items[item.key].state, "pending");
+  assert.equal(state.items[item.key].reviewFailureAttempts, 1);
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.review_failure_health.status, "unknown");
+  assert.deepEqual(stats.review_failure_health.reasons, ["telemetry_unavailable"]);
 });
 
 test("exact-review queue spends review attempts for an untyped retry deadline", async () => {

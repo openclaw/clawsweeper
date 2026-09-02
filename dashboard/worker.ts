@@ -1080,6 +1080,8 @@ export default {
       return authenticatedExactReviewOperatorRequest(request, env, "/dead-letters/resolve");
     if (url.pathname === "/internal/exact-review/parked-reviews/list" && request.method === "POST")
       return authenticatedExactReviewOperatorRequest(request, env, "/parked-reviews/list");
+    if (url.pathname === "/internal/exact-review/review-failures/list" && request.method === "POST")
+      return authenticatedExactReviewOperatorRequest(request, env, "/review-failures/list");
     if (
       url.pathname === "/internal/exact-review/parked-reviews/resolve" &&
       request.method === "POST"
@@ -1594,6 +1596,7 @@ const PUBLIC_STATUS_TEXT_VALUES = new Set([
   "closing",
   "complete",
   "congested",
+  "critical",
   "commit-review",
   "completed",
   "completed_exact_review_lifecycles",
@@ -1669,6 +1672,26 @@ const PUBLIC_STATUS_TEXT_VALUES = new Set([
   "no_admissible_backlog",
   "dispatcher_inactive",
   "capacity_full_with_backlog",
+  "repeated_failure_identity",
+  "terminal_review_failure",
+  "retryable_review_failure",
+  "queue_telemetry_unavailable",
+  "queue_handoff_stalled",
+  "queue_handoff_degraded",
+  "queue_handoff_unavailable",
+  "publication_critical",
+  "publication_degraded",
+  "publication_health_unavailable",
+  "publication_dlq_open",
+  "review_failures_repeated",
+  "review_failures_recent",
+  "review_failure_telemetry_unavailable",
+  "review_retries_exhausted",
+  "workflow_execution_stalled",
+  "workflow_execution_degraded",
+  "worker_failures_unresolved",
+  "apply_health_attention",
+  "automerge_attention",
 ]);
 
 const PUBLIC_STATUS_TEXT_FIELDS = new Set([
@@ -1686,6 +1709,7 @@ const PUBLIC_STATUS_TEXT_FIELDS = new Set([
   "metrics_state",
   "terminal_outcome",
   "work_kind",
+  "reasons",
 ]);
 
 const PUBLIC_STATUS_TIME_FIELDS = new Set([
@@ -1709,6 +1733,8 @@ const PUBLIC_STATUS_TIME_FIELDS = new Set([
   "started_at",
   "updated_at",
   "washed_at",
+  "first_seen_at",
+  "last_seen_at",
 ]);
 
 const PUBLIC_TIMESTAMP_PATTERN =
@@ -1884,6 +1910,14 @@ const PUBLIC_STATUS_COUNT_FIELDS = new Set([
   "execution_timeout",
   "workflow_cancelled",
   "workflow_failed",
+  "affected_targets",
+  "retryable_attempts",
+  "terminal_attempts",
+  "repeated_identities",
+  "agent_input_scan",
+  "source_preparation",
+  "provider_or_model",
+  "workflow",
 ]);
 
 // Every public status field is admitted by name and type. These container names are
@@ -1951,6 +1985,8 @@ const PUBLIC_STATUS_CONTAINER_FIELDS = new Set([
   "review",
   "publication",
   "handoff_health",
+  "review_failure_health",
+  "by_stage",
   "phases",
   // Queue phase names are both scalar counters at the queue root and closed
   // aggregate objects under handoff_health.phases. Admit the object form so a
@@ -4610,6 +4646,7 @@ function classifyGithubItemWebhook({
     if (!Number.isInteger(installationId) || installationId <= 0) {
       return { accepted: false, reason: "missing installation id" };
     }
+    const sourceUpdatedAt = exactWebhookTimestamp(objectValue(payload.issue).updated_at);
     return {
       accepted: true,
       type: "item",
@@ -4620,6 +4657,7 @@ function classifyGithubItemWebhook({
       installationId,
       sourceEvent: "issues",
       sourceAction: action,
+      ...(sourceUpdatedAt ? { sourceUpdatedAt } : {}),
       supersedesInProgress: ["edited", "unlocked", "unlabeled"].includes(action),
     };
   }
@@ -5184,6 +5222,59 @@ function publicExactReviewQueueLaneComplete(source, projected, reasonsComplete) 
   );
 }
 
+function publicExactReviewFailureHealth(value) {
+  const source = objectValue(value);
+  const status = String(source.status || "");
+  const allowedReasons = [
+    "repeated_failure_identity",
+    "terminal_review_failure",
+    "retryable_review_failure",
+  ];
+  const reasons = Array.isArray(source.reasons)
+    ? [...new Set(source.reasons.map(String).filter((reason) => allowedReasons.includes(reason)))]
+    : [];
+  const countKeys = [
+    "attempts",
+    "affected_targets",
+    "retryable_attempts",
+    "terminal_attempts",
+    "repeated_identities",
+  ];
+  const counts = Object.fromEntries(countKeys.map((key) => [key, publicQueueCount(source[key])]));
+  const stageKeys = ["agent_input_scan", "source_preparation", "provider_or_model", "workflow"];
+  const sourceStages = objectValue(source.by_stage);
+  const byStage = Object.fromEntries(
+    stageKeys.map((key) => [key, publicQueueCount(sourceStages[key])]),
+  );
+  const windowMinutes = publicQueueCount(source.window_minutes, 24 * 60);
+  const firstSeenAt = publicQueueTimestamp(source.first_seen_at);
+  const lastSeenAt = publicQueueTimestamp(source.last_seen_at);
+  const complete =
+    ["healthy", "degraded", "critical"].includes(status) &&
+    countKeys.every((key) => counts[key] !== null) &&
+    stageKeys.every((key) => byStage[key] !== null) &&
+    windowMinutes !== null &&
+    Number(counts.retryable_attempts) + Number(counts.terminal_attempts) ===
+      Number(counts.attempts) &&
+    Object.values(byStage).reduce<number>((total, count) => total + Number(count), 0) ===
+      Number(counts.attempts) &&
+    (Number(counts.attempts) === 0
+      ? firstSeenAt === null && lastSeenAt === null && status === "healthy"
+      : firstSeenAt !== null && lastSeenAt !== null);
+  return {
+    complete,
+    value: {
+      status: complete ? status : "unknown",
+      reasons: complete ? reasons : ["telemetry_unavailable"],
+      window_minutes: windowMinutes,
+      ...counts,
+      first_seen_at: firstSeenAt,
+      last_seen_at: lastSeenAt,
+      by_stage: byStage,
+    },
+  };
+}
+
 function publicExactReviewHandoff(value) {
   const source = objectValue(value);
   const status = String(source.status || "");
@@ -5268,6 +5359,7 @@ export function publicExactReviewQueueProjection(
   const projectedHandoff = publicExactReviewHandoff(sourceHandoff);
   const sourcePressure = objectValue(source.pressure);
   const projectedPressure = publicExactReviewPressure(sourcePressure);
+  const projectedReviewFailureHealth = publicExactReviewFailureHealth(source.review_failure_health);
   const scheduledTargetRate = publicQueueCount(
     objectValue(source.scheduled_feed).target_rate_per_hour,
     PUBLIC_SCHEDULED_FEED_RATE_LIMIT,
@@ -5350,6 +5442,7 @@ export function publicExactReviewQueueProjection(
     pressurePending === topPending &&
     pressureReady === topReady &&
     pressureAdmissible === topAdmissible &&
+    projectedReviewFailureHealth.complete &&
     ["idle", "healthy", "degraded", "stalled"].includes(String(sourceHandoff.status || ""));
   const result = {
     collection: complete ? { state: "complete" } : { state: "unknown", reason: "malformed" },
@@ -5369,6 +5462,7 @@ export function publicExactReviewQueueProjection(
     next_wake_at: publicQueueTimestamp(source.next_wake_at),
     handoff_health: projectedHandoff,
     pressure: projectedPressure,
+    review_failure_health: projectedReviewFailureHealth.value,
     scheduled_feed:
       scheduledTargetRate !== null && scheduledTargetRate > 0
         ? { target_rate_per_hour: scheduledTargetRate }

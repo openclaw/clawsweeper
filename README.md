@@ -321,7 +321,8 @@ The Cloudflare dashboard is observability-only: it shows the system flow, live
 worker capacity, per-worker current steps and drill-down timelines,
 separate issue-to-PR and PR-repair worker views, automatic issue-build cards
 with lifecycle drill-down, repair/automerge pipeline rows, CI state, recent
-failures, and automerge timing without owning GitHub mutations.
+failures, exact-review failure repetition and exhaustion, and automerge timing
+without owning GitHub mutations.
 Its Live terminals link opens CrabFleet for browser steering of registered
 GitHub Actions sessions. See [`docs/live-dashboard.md`](docs/live-dashboard.md).
 The end-to-end session lifecycle is documented in

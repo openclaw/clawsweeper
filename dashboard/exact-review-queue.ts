@@ -23,6 +23,16 @@ import {
 } from "../src/state-writer-telemetry.ts";
 import { summarizeExactReviewPublicationHealth } from "./exact-review-health.ts";
 import {
+  ExactReviewFailureTelemetryStore,
+  EXACT_REVIEW_FAILURE_HEALTH_WINDOW_MS,
+  exactReviewFailureDetail,
+  exactReviewFailureSource,
+  exactReviewFailureSourceFingerprint,
+  normalizeExactReviewFailureDetail,
+  stableExactReviewFailureFingerprint,
+  type ExactReviewFailureDetail,
+} from "./exact-review-failure-telemetry.ts";
+import {
   ExactReviewPublicationBatchStore,
   type PublicationBatchCompletion,
   type PublicationBatchFence,
@@ -807,6 +817,8 @@ export class ExactReviewQueue {
   private stateWriterCoordinator;
   private lifecycleProjectionStore;
   private lifecycleTelemetryStore;
+  private reviewFailureTelemetryStore;
+  private reviewFailureTelemetryDropAt = 0;
   private githubEgressTelemetryStore;
   private commandIntakeStore;
   private artifactReceiptStore;
@@ -838,6 +850,7 @@ export class ExactReviewQueue {
     this.stateWriterCoordinator = new StateWriterCoordinator(this.storage);
     this.lifecycleProjectionStore = new ExactReviewLifecycleProjectionStore(this.storage);
     this.lifecycleTelemetryStore = new ExactReviewLifecycleTelemetryStore(this.storage);
+    this.reviewFailureTelemetryStore = new ExactReviewFailureTelemetryStore(this.storage);
     this.githubEgressTelemetryStore = new GithubEgressTelemetryStore(this.storage);
     this.commandIntakeStore = new ExactReviewCommandIntakeStore(this.storage);
     this.artifactReceiptStore = new ExactReviewArtifactReceiptStore(
@@ -2226,6 +2239,24 @@ export class ExactReviewQueue {
       if (reviewFailureReason && outcome !== "failure") {
         return json({ error: "review_failure_reason_without_failure" }, 400);
       }
+      const suppliedReviewFailure =
+        body.review_failure === undefined
+          ? undefined
+          : normalizeExactReviewFailureDetail(body.review_failure);
+      if (body.review_failure !== undefined && !suppliedReviewFailure) {
+        return json({ error: "invalid_review_failure" }, 400);
+      }
+      if (suppliedReviewFailure && outcome === "success") {
+        return json({ error: "review_failure_without_failure" }, 400);
+      }
+      if (
+        suppliedReviewFailure &&
+        reviewFailureReason !== undefined &&
+        (suppliedReviewFailure.retryable ||
+          suppliedReviewFailure.reasonCode !== reviewFailureReason)
+      ) {
+        return json({ error: "review_failure_retryability_mismatch" }, 400);
+      }
       const failureKind =
         body.failure_kind === undefined
           ? undefined
@@ -2444,6 +2475,19 @@ export class ExactReviewQueue {
         tupleCompletion || directLifecycleRequeue
           ? claimGeneration
           : exactReviewClaimGeneration(item.claimGeneration);
+      if (!publicationItem && outcome !== "success" && !retryKind && runAttempt !== null) {
+        this.recordReviewFailureAttemptSafely({
+          item: lifecycleItem,
+          revision: lifecycleRevision,
+          claimGeneration: lifecycleClaimGeneration,
+          runId,
+          runAttempt,
+          outcome,
+          ...(reviewFailureReason ? { terminalReason: reviewFailureReason } : {}),
+          ...(suppliedReviewFailure ? { supplied: suppliedReviewFailure } : {}),
+          observedAt: now,
+        });
+      }
       const publicationAttempt =
         publicationCompletionOwnedByLease && publicationCompletion
           ? publicationCompletion.attempted === false ||
@@ -3349,6 +3393,27 @@ export class ExactReviewQueue {
       return this.reviewObservability(url.searchParams);
     }
 
+    if (request.method === "POST" && url.pathname === "/review-failures/list") {
+      const body = objectValue(await request.json().catch(() => null));
+      const limit = body.limit === undefined ? 100 : Number(body.limit);
+      const cursor = body.cursor === undefined ? undefined : String(body.cursor || "");
+      if (
+        !Number.isSafeInteger(limit) ||
+        limit < 1 ||
+        limit > 100 ||
+        (cursor !== undefined && !/^\d{1,16}:[0-9a-f]{64}$/.test(cursor))
+      ) {
+        return json({ error: "invalid_review_failure_inventory_request" }, 400);
+      }
+      return json({
+        ok: true,
+        ...this.reviewFailureTelemetryStore.listSync({
+          limit,
+          ...(cursor ? { cursor } : {}),
+        }),
+      });
+    }
+
     if (request.method === "GET" && url.pathname === "/review-coverage") {
       // The dashboard polls this with the status refresh; cache the bounded
       // canonical-record scan so polling stays cheap.
@@ -3692,6 +3757,17 @@ export class ExactReviewQueue {
             now,
           );
         }
+        if (!exactReviewQueueIsPublication(item) && run.outcome !== "success") {
+          this.recordReviewFailureAttemptSafely({
+            item,
+            revision: leaseRevision,
+            claimGeneration: run.claimGeneration,
+            runId: run.runId,
+            runAttempt: run.runAttempt,
+            outcome: run.outcome,
+            observedAt: now,
+          });
+        }
         const { requeued: didRequeue, parked } = owedDirectLifecycleRequeue
           ? this.requeueDirectLifecyclePublicationSync(state, item, now)
           : finishExactReviewQueueItem(
@@ -3762,6 +3838,7 @@ export class ExactReviewQueue {
           state: current,
           metrics: this.queueMetricTotalsSync(),
           reviewFlow: this.reviewFlowSummarySync(now),
+          reviewFailureHealth: this.reviewFailureHealthSafely(now),
           publicationFlow: this.publicationFlowSummarySync(now),
           deadLetters: this.deadLetterStatsSync(),
           // Full review observability scans up to 10k durable records. Keep it on
@@ -3769,7 +3846,15 @@ export class ExactReviewQueue {
           stateWriter: this.stateWriterSummarySync(now),
         };
       });
-      const { state, metrics, reviewFlow, publicationFlow, deadLetters, stateWriter } = snapshot;
+      const {
+        state,
+        metrics,
+        reviewFlow,
+        reviewFailureHealth,
+        publicationFlow,
+        deadLetters,
+        stateWriter,
+      } = snapshot;
       // Coordinator methods own their SQLite transaction. Keep this adjacent to
       // the queue snapshot without nesting transactionSync calls.
       const stateWriterCoordinator = this.stateWriterCoordinator.stats(
@@ -3846,6 +3931,7 @@ export class ExactReviewQueue {
       return json({
         ...stats,
         bay_projection: bayProjection,
+        review_failure_health: reviewFailureHealth,
         lanes: {
           review: {
             ...stats.lanes.review,
@@ -5813,6 +5899,101 @@ export class ExactReviewQueue {
         now: Date.now(),
       }),
     );
+  }
+
+  private recordReviewFailureAttemptSafely(options: {
+    item: ExactReviewQueueItem;
+    revision: number;
+    claimGeneration: number;
+    runId: string;
+    runAttempt: number;
+    outcome: Exclude<ExactReviewCompletionOutcome, "success">;
+    terminalReason?: ExactReviewFailureReason;
+    supplied?: ExactReviewFailureDetail;
+    observedAt: number;
+  }) {
+    try {
+      const failure = exactReviewFailureDetail({
+        outcome: options.outcome,
+        ...(options.terminalReason ? { terminalReason: options.terminalReason } : {}),
+        ...(options.supplied ? { supplied: options.supplied } : {}),
+      });
+      const sourceDecision = options.item.leaseDecision ?? options.item.decision;
+      const source = exactReviewFailureSource(sourceDecision);
+      const sourceFingerprint = exactReviewFailureSourceFingerprint(sourceDecision);
+      const failureFingerprint = stableExactReviewFailureFingerprint(
+        stableJson({
+          version: 1,
+          stage: failure.stage,
+          reason_code: failure.reasonCode,
+          retryable: failure.retryable,
+        }),
+      );
+      const attemptId = stableExactReviewFailureFingerprint(
+        stableJson({
+          version: 1,
+          fence_key: options.item.key,
+          revision: options.revision,
+          claim_generation: options.claimGeneration,
+          run_id: options.runId,
+          run_attempt: options.runAttempt,
+        }),
+      );
+      this.reviewFailureTelemetryStore.recordSync({
+        attemptId,
+        canonicalTargetKey: `${sourceDecision.targetRepo}#${sourceDecision.itemNumber}`,
+        fenceKey: options.item.key,
+        revision: options.revision,
+        claimGeneration: options.claimGeneration,
+        runId: options.runId,
+        runAttempt: options.runAttempt,
+        sourceFingerprint,
+        failureFingerprint,
+        ...source,
+        ...failure,
+        observedAt: options.observedAt,
+      });
+    } catch {
+      console.warn("review_failure_telemetry_not_recorded");
+      this.reviewFailureTelemetryDropAt = Math.max(
+        this.reviewFailureTelemetryDropAt,
+        options.observedAt,
+      );
+      try {
+        this.reviewFailureTelemetryStore.recordDropSync(options.observedAt);
+      } catch {
+        // Preserve the same-instance marker when durable telemetry storage is unavailable.
+      }
+    }
+  }
+
+  private reviewFailureHealthSafely(now: number) {
+    try {
+      const summary = this.reviewFailureTelemetryStore.summarySync(now);
+      return this.reviewFailureTelemetryDropAt >= now - EXACT_REVIEW_FAILURE_HEALTH_WINDOW_MS
+        ? { ...summary, status: "unknown", reasons: ["telemetry_unavailable"] }
+        : summary;
+    } catch {
+      console.warn("review_failure_telemetry_unavailable");
+      return {
+        status: "unknown",
+        reasons: ["telemetry_unavailable"],
+        window_minutes: 60,
+        attempts: 0,
+        affected_targets: 0,
+        retryable_attempts: 0,
+        terminal_attempts: 0,
+        repeated_identities: 0,
+        first_seen_at: null,
+        last_seen_at: null,
+        by_stage: {
+          agent_input_scan: 0,
+          source_preparation: 0,
+          provider_or_model: 0,
+          workflow: 0,
+        },
+      };
+    }
   }
 
   private reviewObservabilitySync(options: {

@@ -1330,6 +1330,12 @@ jobs:
           echo "exit_code=$review_exit_code" >> "$GITHUB_OUTPUT"
           if [ "$review_exit_code" -ne 0 ] && [ -f artifacts/event/failure-diagnostics/manifest.json ]; then
             echo "failure_diagnostics=true" >> "$GITHUB_OUTPUT"
+            review_failure_stage="$(jq -r 'if .failure.stage == "unknown" then .classification else .failure.stage end' artifacts/event/failure-diagnostics/manifest.json)"
+            review_failure_reason_code="$(jq -r 'if .failure.reason_code == "unknown" then .classification else .failure.reason_code end' artifacts/event/failure-diagnostics/manifest.json)"
+            review_failure_retryable="$(jq -r '.retryable' artifacts/event/failure-diagnostics/manifest.json)"
+            echo "failure_stage=$review_failure_stage" >> "$GITHUB_OUTPUT"
+            echo "failure_reason_code=$review_failure_reason_code" >> "$GITHUB_OUTPUT"
+            echo "failure_retryable=$review_failure_retryable" >> "$GITHUB_OUTPUT"
           fi
           # Keep 78 aligned with INCOMPLETE_AGENT_INPUT_SOURCE_EXIT_CODE. This
           # unchanged source tuple is terminal, while the workflow stays red.
@@ -1859,6 +1865,9 @@ jobs:
           RETRY_KIND: ${{ steps.exact-review-generation-result.outputs.retry_kind }}
           RETRY_AT: ${{ steps.exact-review-generation-result.outputs.retry_at }}
           REVIEW_FAILURE_REASON: ${{ steps.review-exact-event-item.outputs.failure_reason || '' }}
+          REVIEW_FAILURE_STAGE: ${{ steps.review-exact-event-item.outputs.failure_stage || '' }}
+          REVIEW_FAILURE_REASON_CODE: ${{ steps.review-exact-event-item.outputs.failure_reason_code || '' }}
+          REVIEW_FAILURE_RETRYABLE: ${{ steps.review-exact-event-item.outputs.failure_retryable || '' }}
           DIRECT_PUBLICATION_ACCEPTED: ${{ steps.direct-exact-review-publication.outputs.accepted }}
           DIRECT_PUBLICATION_SUPERSEDED: ${{ steps.direct-exact-review-publication.outputs.superseded }}
           DIRECT_LIFECYCLE_OUTCOME: ${{ steps.finalize-direct-exact-review-lifecycle.outcome }}
@@ -1899,6 +1908,21 @@ jobs:
               directPublicationCompleted && process.env.DIRECT_PUBLICATION_SUPERSEDED === "true";
             const directLifecycleRequeue =
               directPublicationCompleted && process.env.DIRECT_LIFECYCLE_REQUEUE === "true";
+            const reviewFailureStage = String(process.env.REVIEW_FAILURE_STAGE || "").trim();
+            const reviewFailureReasonCode = String(
+              process.env.REVIEW_FAILURE_REASON_CODE || "",
+            ).trim();
+            const reviewFailureRetryable = String(
+              process.env.REVIEW_FAILURE_RETRYABLE || "",
+            ).trim();
+            const hasReviewFailure =
+              reviewFailureStage || reviewFailureReasonCode || reviewFailureRetryable;
+            if (
+              hasReviewFailure &&
+              (!reviewFailureStage ||
+                !reviewFailureReasonCode ||
+                !["true", "false"].includes(reviewFailureRetryable))
+            ) process.exit(1);
             if (requeueLatest && directLifecycleRequeue) process.exit(1);
             process.stdout.write(JSON.stringify({
               lease_id: process.env.QUEUE_LEASE_ID,
@@ -1923,6 +1947,15 @@ jobs:
               ...(retryAt ? { retry_at: retryAt } : {}),
               ...(process.env.REVIEW_FAILURE_REASON
                 ? { review_failure_reason: process.env.REVIEW_FAILURE_REASON }
+                : {}),
+              ...(hasReviewFailure
+                ? {
+                    review_failure: {
+                      stage: reviewFailureStage,
+                      reason_code: reviewFailureReasonCode,
+                      retryable: reviewFailureRetryable === "true",
+                    },
+                  }
                 : {}),
             }));
           ')"

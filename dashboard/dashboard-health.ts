@@ -37,6 +37,20 @@ export function summarizeDashboardHealth(snapshot: Record<string, unknown>): Das
       objectValue(objectValue(objectValue(queue.lanes).publication).dead_letters).open,
     );
     if (openDeadLetters > 0) raise("amber", "publication_dlq_open");
+
+    const reviewFailureStatus = String(objectValue(queue.review_failure_health).status || "");
+    if (reviewFailureStatus === "critical") raise("red", "review_failures_repeated");
+    else if (reviewFailureStatus === "degraded") raise("amber", "review_failures_recent");
+    else if (reviewFailureStatus !== "healthy") {
+      raise("amber", "review_failure_telemetry_unavailable");
+    }
+
+    const reviewParkedReasons = objectValue(
+      objectValue(objectValue(queue.lanes).review).parked_reasons,
+    );
+    if (nonNegativeNumber(reviewParkedReasons.review_retry_exhausted) > 0) {
+      raise("red", "review_retries_exhausted");
+    }
   }
 
   const operationalStatus = String(objectValue(snapshot.operational_health).status || "");

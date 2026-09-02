@@ -1069,6 +1069,10 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   );
   assert.match(
     step(reviewer, "Review exact event item").run ?? "",
+    /failure_stage=.*failure\.stage[\s\S]*failure_reason_code=.*failure\.reason_code[\s\S]*failure_retryable=.*retryable/,
+  );
+  assert.match(
+    step(reviewer, "Review exact event item").run ?? "",
     /kill -TERM -- "-\$review_pgid"/,
   );
   assert.match(step(reviewer, "Review exact event item").run ?? "", /sleep 60/);
@@ -1330,8 +1334,21 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     complete.env?.REVIEW_FAILURE_REASON,
     "${{ steps.review-exact-event-item.outputs.failure_reason || '' }}",
   );
+  assert.equal(
+    complete.env?.REVIEW_FAILURE_STAGE,
+    "${{ steps.review-exact-event-item.outputs.failure_stage || '' }}",
+  );
+  assert.equal(
+    complete.env?.REVIEW_FAILURE_REASON_CODE,
+    "${{ steps.review-exact-event-item.outputs.failure_reason_code || '' }}",
+  );
+  assert.equal(
+    complete.env?.REVIEW_FAILURE_RETRYABLE,
+    "${{ steps.review-exact-event-item.outputs.failure_retryable || '' }}",
+  );
   assert.match(complete.run ?? "", /retry_kind: retryKind/);
   assert.match(complete.run ?? "", /review_failure_reason: process\.env\.REVIEW_FAILURE_REASON/);
+  assert.match(complete.run ?? "", /review_failure:[\s\S]*stage: reviewFailureStage/);
   assert.match(complete.run ?? "", /requeue_latest: true/);
   assert.match(deferHeldReview.if ?? "", /reserve-exact-review-lease\.outputs\.status == 'held'/);
   assert.match(deferHeldReview.run ?? "", /retry deferred/);

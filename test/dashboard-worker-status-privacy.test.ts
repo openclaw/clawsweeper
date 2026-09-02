@@ -1387,6 +1387,26 @@ test("public queue projection retains only closed operational aggregates", () =>
       ready_pending: 5,
       admissible_pending: 4,
     },
+    review_failure_health: {
+      status: "critical",
+      reasons: ["repeated_failure_identity", "terminal_review_failure", sentinel],
+      window_minutes: 60,
+      attempts: 3,
+      affected_targets: 2,
+      retryable_attempts: 1,
+      terminal_attempts: 2,
+      repeated_identities: 1,
+      first_seen_at: "2026-08-15T11:30:00.000Z",
+      last_seen_at: "2026-08-15T11:55:00.000Z",
+      by_stage: {
+        agent_input_scan: 2,
+        source_preparation: 0,
+        provider_or_model: 0,
+        workflow: 1,
+        [sentinel]: 99,
+      },
+      private_attempts: [{ target: sentinel }],
+    },
     bay_projection: {
       complete: true,
       sample_limit: 24,
@@ -1425,6 +1445,24 @@ test("public queue projection retains only closed operational aggregates", () =>
   assert.equal(projected.lanes.review.parked_reasons.unknown, 1);
   assert.equal(projected.handoff_health.status, "healthy");
   assert.equal(projected.pressure.status, "congested");
+  assert.deepEqual(projected.review_failure_health, {
+    status: "critical",
+    reasons: ["repeated_failure_identity", "terminal_review_failure"],
+    window_minutes: 60,
+    attempts: 3,
+    affected_targets: 2,
+    retryable_attempts: 1,
+    terminal_attempts: 2,
+    repeated_identities: 1,
+    first_seen_at: "2026-08-15T11:30:00.000Z",
+    last_seen_at: "2026-08-15T11:55:00.000Z",
+    by_stage: {
+      agent_input_scan: 2,
+      source_preparation: 0,
+      provider_or_model: 0,
+      workflow: 1,
+    },
+  });
   assert.deepEqual(projected.scheduled_feed, { target_rate_per_hour: 300 });
   assert.deepEqual(projected.bay_projection.activity, {
     complete: false,
@@ -1455,12 +1493,26 @@ test("public queue projection retains only closed operational aggregates", () =>
       ],
     },
     diagnostics: { errors: [], error_count: 0 },
+    dashboard_health: {
+      conclusion: "needs_attention",
+      severity: "red",
+      reasons: ["review_failures_repeated", sentinel],
+    },
     exact_review_queue: projected,
   });
   assert.equal(statusProjected.public_projection_complete, true);
   assert.equal(JSON.stringify(statusProjected).includes(sentinel), false);
   assert.deepEqual(statusProjected.recent.closed_items, []);
   assert.deepEqual(statusProjected.exact_review_queue.collection, { state: "complete" });
+  assert.deepEqual(statusProjected.dashboard_health, {
+    conclusion: "needs_attention",
+    severity: "red",
+    reasons: ["review_failures_repeated"],
+  });
+  assert.deepEqual(
+    statusProjected.exact_review_queue.review_failure_health,
+    projected.review_failure_health,
+  );
   assert.deepEqual(statusProjected.exact_review_queue.scheduled_feed, {
     target_rate_per_hour: 300,
   });
@@ -1678,6 +1730,24 @@ test("public queue HTTP route applies the closed projector before serialization"
             pending: 3,
             ready_pending: 2,
             admissible_pending: 1,
+          },
+          review_failure_health: {
+            status: "healthy",
+            reasons: [],
+            window_minutes: 60,
+            attempts: 0,
+            affected_targets: 0,
+            retryable_attempts: 0,
+            terminal_attempts: 0,
+            repeated_identities: 0,
+            first_seen_at: null,
+            last_seen_at: null,
+            by_stage: {
+              agent_input_scan: 0,
+              source_preparation: 0,
+              provider_or_model: 0,
+              workflow: 0,
+            },
           },
           bay_projection: {
             complete: true,

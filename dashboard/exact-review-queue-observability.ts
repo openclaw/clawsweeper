@@ -63,6 +63,7 @@ const EXACT_REVIEW_QUEUE_ENDPOINTS = new Map<string, string>([
   ["/records/tuples", "records_tuples"],
   ["/review-coverage", "review_coverage"],
   ["/review-coverage/inventory", "review_coverage_inventory"],
+  ["/review-failures/list", "review_failures_list"],
   ["/review-observability", "review_observability"],
   ["/review-run-telemetry", "review_run_telemetry"],
   ["/source-authority", "source_authority"],

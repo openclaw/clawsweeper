@@ -8,6 +8,7 @@ function healthySnapshot(): Record<string, unknown> {
     diagnostics: { exact_review_queue_error: null },
     exact_review_queue: {
       handoff_health: { status: "healthy" },
+      review_failure_health: { status: "healthy" },
       lanes: {
         publication: {
           health: { status: "healthy" },
@@ -66,6 +67,29 @@ test("dashboard health maps critical and stalled signals to red", () => {
   });
 });
 
+test("dashboard health raises recent and exhausted review failures", () => {
+  const recent = healthySnapshot();
+  const recentQueue = recent.exact_review_queue as Record<string, any>;
+  recentQueue.review_failure_health = { status: "degraded" };
+  assert.deepEqual(summarizeDashboardHealth(recent), {
+    conclusion: "needs_attention",
+    severity: "amber",
+    reasons: ["review_failures_recent"],
+  });
+
+  const repeated = healthySnapshot();
+  const repeatedQueue = repeated.exact_review_queue as Record<string, any>;
+  repeatedQueue.review_failure_health = { status: "critical" };
+  repeatedQueue.lanes.review = {
+    parked_reasons: { review_retry_exhausted: 2 },
+  };
+  assert.deepEqual(summarizeDashboardHealth(repeated), {
+    conclusion: "needs_attention",
+    severity: "red",
+    reasons: ["review_failures_repeated", "review_retries_exhausted"],
+  });
+});
+
 test("dashboard health fails amber when a required signal is absent", () => {
   const snapshot = healthySnapshot();
   const queue = snapshot.exact_review_queue as Record<string, any>;
@@ -75,5 +99,16 @@ test("dashboard health fails amber when a required signal is absent", () => {
     conclusion: "needs_attention",
     severity: "amber",
     reasons: ["publication_health_unavailable", "workflow_execution_degraded"],
+  });
+});
+
+test("dashboard health reports absent review failure telemetry", () => {
+  const snapshot = healthySnapshot();
+  const queue = snapshot.exact_review_queue as Record<string, any>;
+  delete queue.review_failure_health;
+  assert.deepEqual(summarizeDashboardHealth(snapshot), {
+    conclusion: "needs_attention",
+    severity: "amber",
+    reasons: ["review_failure_telemetry_unavailable"],
   });
 });

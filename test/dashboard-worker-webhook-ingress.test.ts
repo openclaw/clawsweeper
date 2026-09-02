@@ -1176,6 +1176,61 @@ test("hosted edited webhook binds and enqueues only the live pull request head",
   }
 });
 
+test("hosted issue webhook preserves the source update discriminator", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    { hostedPublicTargetProbe: publicHostedTargetProbe },
+  );
+  const send = (updatedAt: string, deliveryId: string) =>
+    worker.fetch(
+      signedGithubWebhookRequest({
+        event: "issues",
+        secret: "test-secret",
+        deliveryId,
+        payload: {
+          action: "edited",
+          repository: {
+            full_name: "openclaw/fs-safe",
+            default_branch: "trunk",
+            private: false,
+            archived: false,
+            fork: false,
+            has_issues: true,
+          },
+          issue: {
+            number: 597,
+            updated_at: updatedAt,
+          },
+          installation: { id: 123 },
+        },
+      }),
+      {
+        CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
+        hostedPublicTargetProbe: publicHostedTargetProbe,
+        EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+      },
+    );
+
+  const first = await send("2026-09-02T19:00:00Z", "issue-edited-597-1");
+  assert.equal(first.status, 202);
+  let state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { decision: { sourceUpdatedAt?: string } }>;
+  };
+  assert.equal(
+    state.items["openclaw/fs-safe#597"].decision.sourceUpdatedAt,
+    "2026-09-02T19:00:00Z",
+  );
+
+  const second = await send("2026-09-02T19:05:00Z", "issue-edited-597-2");
+  assert.equal(second.status, 202);
+  state = (await storage.get("exact-review-queue")) as typeof state;
+  assert.equal(
+    state.items["openclaw/fs-safe#597"].decision.sourceUpdatedAt,
+    "2026-09-02T19:05:00Z",
+  );
+});
+
 test("hosted pull request verification preserves ingress through a transient failure and queue restart", async () => {
   const originalFetch = globalThis.fetch;
   const originalNow = Date.now;
