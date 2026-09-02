@@ -123,27 +123,27 @@ export function serializeReviewContext(context: object): string {
 }
 
 export function omitReviewedFixtureReferences(text: string): string {
-  // Apostrophes are URI characters, so only terminal quotation punctuation can
-  // be stripped; internal punctuation must not hide a changed path or query.
-  return text.replace(
-    /(^|[\s<>"'\x60([{])([A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s<>"\x60]+)/g,
-    (match, boundary: string, uri: string) => {
-      for (const candidate of [uri, uri.replace(/[)\]},.;!']+$/, "")]) {
-        const digest = createHash("sha256").update(candidate).digest("hex");
-        const fixture = REVIEWED_FIXTURES.find((entry) => entry.fixtureSha256 === digest);
-        if (fixture) {
-          return (
-            boundary +
-            "[reviewed synthetic URI omitted; inspect " +
-            fixture.sources.join(", ") +
-            "]" +
-            uri.slice(candidate.length)
-          );
-        }
+  // Match whole scheme tokens once; retrying at every character is quadratic.
+  // Strip only terminal punctuation; internal punctuation may belong to a URI.
+  return text.replace(/(?<![A-Za-z0-9+.-])[A-Za-z0-9+.-]+:\/\/[^\s<>"\x60]+/g, (uri) => {
+    let end = uri.length;
+    while (end > 0 && ")]}.,;!'".includes(uri.charAt(end - 1))) {
+      end -= 1;
+    }
+    for (const candidate of [uri, uri.slice(0, end)]) {
+      const digest = createHash("sha256").update(candidate).digest("hex");
+      const fixture = REVIEWED_FIXTURES.find((entry) => entry.fixtureSha256 === digest);
+      if (fixture) {
+        return (
+          "[reviewed synthetic URI omitted; inspect " +
+          fixture.sources.join(", ") +
+          "]" +
+          uri.slice(candidate.length)
+        );
       }
-      return match;
-    },
-  );
+    }
+    return uri;
+  });
 }
 
 export interface ScanSourceReference {
