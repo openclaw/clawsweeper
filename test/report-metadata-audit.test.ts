@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { parse } from "yaml";
+import { createRecordMetadata } from "../dist/clawsweeper-record-metadata.js";
 
 import {
   auditCanonicalItemRecords,
@@ -22,6 +23,19 @@ pr_rating_proof: F
 
 No real behavior proof was supplied.
 `;
+
+test("advisory audit still inventories body quotes that do not override runtime metadata", () => {
+  const report =
+    "---\nreal_behavior_proof_status: missing\n---\n\n## Summary\n\n```yaml\nreal_behavior_proof_status: sufficient\n```\n";
+  assert.deepEqual(reportMetadataSpoofingFinding(report), {
+    matched_keys: ["real_behavior_proof_status"],
+    first_match_line: 8,
+  });
+  assert.equal(
+    createRecordMetadata({} as never).frontMatterValue(report, "real_behavior_proof_status"),
+    "missing",
+  );
+});
 
 test("metadata audit flags canonical promotion keys only after the leading block", () => {
   assert.deepEqual(reportMetadataSpoofingFinding(forgedReport), {

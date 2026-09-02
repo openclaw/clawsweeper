@@ -34,11 +34,15 @@ jobs:
           startsWith(github.event.workflow_run.display_title, 'Review scheduled hot item ') ||
           startsWith(github.event.workflow_run.display_title, 'Review scheduled normal item ') ||
           startsWith(github.event.workflow_run.display_title, 'Review event item') ||
+          startsWith(github.event.workflow_run.display_title, 'Review manual item') ||
+          startsWith(github.event.workflow_run.display_title, 'Review manual batch ') ||
           startsWith(github.event.workflow_run.display_title, 'Review hot ClawSweeper items') ||
           startsWith(github.event.workflow_run.display_title, 'Review hot target repo ') ||
+          startsWith(github.event.workflow_run.display_title, 'Review manual hot target') ||
           startsWith(github.event.workflow_run.display_title, 'Retry failed Codex reviews') ||
           startsWith(github.event.workflow_run.display_title, 'Review target repo ') ||
-          startsWith(github.event.workflow_run.display_title, 'Review ClawSweeper items')
+          startsWith(github.event.workflow_run.display_title, 'Review ClawSweeper items') ||
+          startsWith(github.event.workflow_run.display_title, 'Review manual target')
         )
       }}
     runs-on: ubuntu-latest
@@ -233,6 +237,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TARGET_WRITE_TOKEN: ${{ steps.target-write-token.outputs.token }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          REVIEW_PLACEHOLDER_CURSOR_STORE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           REVIEW_PLACEHOLDER_LOOKBACK_HOURS: ${{ vars.REVIEW_PLACEHOLDER_LOOKBACK_HOURS || '48' }}
           REVIEW_PLACEHOLDER_MAX_CHECKS: ${{ vars.REVIEW_PLACEHOLDER_MAX_CHECKS || '20' }}
           REVIEW_PLACEHOLDER_MAX_RECOVERIES: ${{ vars.REVIEW_PLACEHOLDER_MAX_RECOVERIES || '5' }}

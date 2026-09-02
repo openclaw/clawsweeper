@@ -1,19 +1,15 @@
 export const EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE = "exact_review_lifecycle_projection_v1";
 export const EXACT_REVIEW_ACKNOWLEDGEMENT_ATTEMPT_LEASE_MS = 5 * 60 * 1000;
-export const EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT = 512;
+// Keep the public reader bounded, but leave enough headroom for the durable
+// history between normal retention passes. The former 512-row ceiling turned
+// a healthy, append-only store into a permanently unknown public snapshot.
+export const EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT = 10_000;
 export const EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT = 24;
+export const EXACT_REVIEW_LIFECYCLE_BAY_TELEMETRY_RECOVERY_BATCH_LIMIT = 256;
 export const EXACT_REVIEW_LIFECYCLE_AUDIT_READ_LIMIT = 10_000;
 export const EXACT_REVIEW_LIFECYCLE_AUDIT_PAGE_MAX = 100;
 export const EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_TTL_MS = 5 * 60 * 1000;
 export const EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_MAX_ACTIVE = 4;
-/**
- * Historical reconciliation is deliberately an offline reporting boundary.
- * It does not read a queue, call GitHub, or mutate lifecycle projections.
- */
-export const EXACT_REVIEW_HISTORICAL_RECONCILIATION_COHORT_MAX = 128;
-export const EXACT_REVIEW_HISTORICAL_RECONCILIATION_MAX_RETENTION_MS = 24 * 60 * 60 * 1000;
-export const EXACT_REVIEW_HISTORICAL_RECONCILIATION_FACT_HISTORY_MAX = 256;
-
 const EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_TABLE = "exact_review_lifecycle_audit_snapshots_v1";
 const EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_ROW_TABLE =
   "exact_review_lifecycle_audit_snapshot_rows_v1";
@@ -150,31 +146,6 @@ export type DurableLifecycleAuditInventory = {
   } | null;
 };
 
-export type HistoricalLifecycleReconciliationCohort = {
-  /** Immutable, externally retained snapshot identity; never a live queue cursor. */
-  cohort_id: string;
-  captured_at: string;
-  expires_at: string;
-  source: "retained-historical-lifecycle-snapshot-v1";
-  rows: readonly {
-    /** A stable source-row identifier only; it is never exposed in the report. */
-    source_row_id: string;
-    projection: ExactReviewLifecycleProjection;
-  }[];
-};
-
-export type HistoricalLifecycleReconciliationReport = {
-  version: 1;
-  mode: "dry_run";
-  source: "retained-historical-lifecycle-snapshot-v1";
-  generated_at: string;
-  cohort: { id: string; captured_at: string; expires_at: string; rows: number } | null;
-  collection:
-    | { state: "complete" }
-    | { state: "unknown"; reason: "missing_provenance" | "invalid" | "expired" | "over_cap" };
-  outcomes: { not_reconciled: number; unknown: number; completed: number } | null;
-};
-
 type LifecycleClaimFact = {
   fenceKey: string;
   claimGeneration: number;
@@ -206,10 +177,13 @@ export type ExactReviewLifecycleProjection = {
   admission: {
     deliveryId: string;
     sourceDeliveryId?: string;
+    bayJourneyDeliveryId?: string;
     sourceAction: string;
     commandOriginated: boolean;
     statusMarker: string | null;
     statusCommentId: number | null;
+    /** Webhook/source time when available; legacy rows fall back to admission time. */
+    triggeredAt?: number;
     admittedAt: number;
   };
   claims: LifecycleClaimFact[];
@@ -253,6 +227,18 @@ export type ExactReviewLifecycleProjection = {
   terminalDispositions: Array<{ kind: LifecycleTerminalDisposition; observedAt: number }>;
   /** Current terminal outcome used to derive lifecycle and acknowledgement state. */
   terminalDisposition: { kind: LifecycleTerminalDisposition; observedAt: number } | null;
+  /**
+   * A terminal fact that has not yet been durably materialized into the Bay
+   * aggregate. This lives with the source projection so a telemetry-table
+   * outage cannot make the completion undiscoverable.
+   */
+  bayTelemetryPending: boolean;
+  /**
+   * The current terminal fact already reflected in Bay's compact aggregate.
+   * It keeps repeated finalizer delivery idempotent after the short timing
+   * window has expired and its row has been pruned from Bay telemetry.
+   */
+  bayTelemetryEventId?: string;
   updatedAt: number;
 };
 
@@ -260,6 +246,17 @@ type ProjectionIdentity = {
   canonicalTargetKey: string;
   fenceKey: string;
   revision: number;
+};
+type LifecycleAdmissionInput = ProjectionIdentity & {
+  deliveryId: string;
+  sourceDeliveryId?: string;
+  bayJourneyDeliveryId?: string;
+  sourceAction: string;
+  commandOriginated: boolean;
+  statusMarker: string | null;
+  statusCommentId: number | null;
+  triggeredAt?: number;
+  observedAt: number;
 };
 
 export class ExactReviewLifecycleProjectionStore {
@@ -280,9 +277,23 @@ export class ExactReviewLifecycleProjectionStore {
          fence_key TEXT NOT NULL,
          projection_json TEXT NOT NULL,
          updated_at INTEGER NOT NULL,
+         bay_telemetry_pending INTEGER NOT NULL DEFAULT 0 CHECK (bay_telemetry_pending IN (0, 1)),
          PRIMARY KEY (canonical_target_key, fence_key, revision)
        ) STRICT`,
     );
+    try {
+      Array.from(
+        this.storage.sql.exec(
+          `SELECT bay_telemetry_pending FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} LIMIT 1`,
+        ),
+      );
+    } catch {
+      this.storage.sql.exec(
+        `ALTER TABLE ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+           ADD COLUMN bay_telemetry_pending INTEGER NOT NULL DEFAULT 0
+           CHECK (bay_telemetry_pending IN (0, 1))`,
+      );
+    }
     this.storage.sql.exec(
       `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_projection_fence
           ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} (fence_key, revision)`,
@@ -292,20 +303,30 @@ export class ExactReviewLifecycleProjectionStore {
           ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
           (updated_at DESC, canonical_target_key, fence_key, revision)`,
     );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_projection_bay_repository_v2
+          ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+          (
+            LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)),
+            updated_at DESC,
+            canonical_target_key,
+            fence_key,
+            revision DESC
+          )`,
+    );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_projection_bay_telemetry_pending
+         ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+         (bay_telemetry_pending, updated_at, canonical_target_key, fence_key, revision)`,
+    );
     this.schemaReady = true;
   }
 
-  recordAdmission(
-    input: ProjectionIdentity & {
-      deliveryId: string;
-      sourceDeliveryId?: string;
-      sourceAction: string;
-      commandOriginated: boolean;
-      statusMarker: string | null;
-      statusCommentId: number | null;
-      observedAt: number;
-    },
-  ) {
+  recordAdmission(input: LifecycleAdmissionInput) {
+    return this.storage.transactionSync(() => this.recordAdmissionSync(input));
+  }
+
+  recordAdmissionSync(input: LifecycleAdmissionInput) {
     this.validateIdentity(input);
     if (!validText(input.deliveryId, 1, 300) || !validText(input.sourceAction, 1, 200)) {
       throw new Error("invalid lifecycle admission fact");
@@ -313,58 +334,71 @@ export class ExactReviewLifecycleProjectionStore {
     if (input.sourceDeliveryId !== undefined && !validText(input.sourceDeliveryId, 1, 200)) {
       throw new Error("invalid lifecycle source delivery identity");
     }
+    if (
+      input.bayJourneyDeliveryId !== undefined &&
+      !validText(input.bayJourneyDeliveryId, 1, 200)
+    ) {
+      throw new Error("invalid lifecycle Bay journey delivery identity");
+    }
     if (input.statusMarker !== null && !validText(input.statusMarker, 1, 300)) {
       throw new Error("invalid lifecycle status marker");
     }
     if (input.statusCommentId !== null && !positiveInteger(input.statusCommentId)) {
       throw new Error("invalid lifecycle status comment id");
     }
+    if (input.triggeredAt !== undefined && !finiteTimestamp(input.triggeredAt)) {
+      throw new Error("invalid lifecycle trigger time");
+    }
     this.ensureSchemaSync();
-    return this.storage.transactionSync(() => {
-      const existing = this.readSync(input.canonicalTargetKey, input.fenceKey, input.revision);
-      if (existing) {
-        this.assertIdentity(existing, input);
-        const admission = existing.admission;
-        if (
-          admission.deliveryId !== input.deliveryId ||
-          admission.sourceDeliveryId !== input.sourceDeliveryId ||
-          admission.sourceAction !== input.sourceAction ||
-          admission.commandOriginated !== input.commandOriginated ||
-          admission.statusMarker !== input.statusMarker ||
-          admission.statusCommentId !== input.statusCommentId
-        ) {
-          throw new Error("conflicting lifecycle admission fact");
-        }
-        return existing;
+    const existing = this.readSync(input.canonicalTargetKey, input.fenceKey, input.revision);
+    if (existing) {
+      this.assertIdentity(existing, input);
+      const admission = existing.admission;
+      if (
+        admission.deliveryId !== input.deliveryId ||
+        admission.sourceDeliveryId !== input.sourceDeliveryId ||
+        admission.bayJourneyDeliveryId !== input.bayJourneyDeliveryId ||
+        admission.sourceAction !== input.sourceAction ||
+        admission.commandOriginated !== input.commandOriginated ||
+        admission.statusMarker !== input.statusMarker ||
+        admission.statusCommentId !== input.statusCommentId ||
+        (admission.triggeredAt !== undefined &&
+          admission.triggeredAt !== (input.triggeredAt ?? input.observedAt))
+      ) {
+        throw new Error("conflicting lifecycle admission fact");
       }
-      const projection: ExactReviewLifecycleProjection = {
-        version: 1,
-        canonicalTargetKey: input.canonicalTargetKey,
-        fenceKey: input.fenceKey,
-        revision: input.revision,
-        admission: {
-          deliveryId: input.deliveryId,
-          ...(input.sourceDeliveryId ? { sourceDeliveryId: input.sourceDeliveryId } : {}),
-          sourceAction: input.sourceAction,
-          commandOriginated: input.commandOriginated,
-          statusMarker: input.statusMarker,
-          statusCommentId: input.statusCommentId,
-          admittedAt: input.observedAt,
-        },
-        claims: [],
-        reviewResults: [],
-        githubEffect: null,
-        canonicalReceipts: [],
-        routerReceipts: [],
-        routerReceipt: null,
-        acknowledgement: { required: input.commandOriginated, attempts: [], observed: null },
-        terminalDispositions: [],
-        terminalDisposition: null,
-        updatedAt: input.observedAt,
-      };
-      this.writeSync(projection);
-      return projection;
-    });
+      return existing;
+    }
+    const projection: ExactReviewLifecycleProjection = {
+      version: 1,
+      canonicalTargetKey: input.canonicalTargetKey,
+      fenceKey: input.fenceKey,
+      revision: input.revision,
+      admission: {
+        deliveryId: input.deliveryId,
+        ...(input.sourceDeliveryId ? { sourceDeliveryId: input.sourceDeliveryId } : {}),
+        ...(input.bayJourneyDeliveryId ? { bayJourneyDeliveryId: input.bayJourneyDeliveryId } : {}),
+        sourceAction: input.sourceAction,
+        commandOriginated: input.commandOriginated,
+        statusMarker: input.statusMarker,
+        statusCommentId: input.statusCommentId,
+        ...(input.triggeredAt === undefined ? {} : { triggeredAt: input.triggeredAt }),
+        admittedAt: input.observedAt,
+      },
+      claims: [],
+      reviewResults: [],
+      githubEffect: null,
+      canonicalReceipts: [],
+      routerReceipts: [],
+      routerReceipt: null,
+      acknowledgement: { required: input.commandOriginated, attempts: [], observed: null },
+      terminalDispositions: [],
+      terminalDisposition: null,
+      bayTelemetryPending: false,
+      updatedAt: input.observedAt,
+    };
+    this.writeSync(projection);
+    return projection;
   }
 
   recordClaim(
@@ -518,23 +552,23 @@ export class ExactReviewLifecycleProjectionStore {
   ) {
     this.validateIdentity(input);
     return this.mutate(input, (projection) => {
-      const next = { kind: input.kind, observedAt: input.observedAt };
-      const current = projection.terminalDisposition;
-      if (!current) {
-        projection.terminalDispositions.push(next);
-        projection.terminalDisposition = next;
-        return projection;
-      }
-      if (current.kind === next.kind) return projection;
-      // A newer source can requeue a just-routed revision before its final
-      // queue completion lands. Requeue remains an immutable history fact and
-      // a later durable handoff may still complete the same admitted revision.
-      if (next.kind !== "requeue" && current.kind !== "requeue") {
-        throw new Error("conflicting lifecycle terminal disposition");
-      }
-      projection.terminalDispositions.push(next);
-      projection.terminalDisposition = next;
-      return projection;
+      const terminal = applyTerminalDisposition(projection, input);
+      terminal.bayTelemetryPending = true;
+      return terminal;
+    });
+  }
+
+  recordTerminalDispositionSync(
+    input: ProjectionIdentity & {
+      kind: LifecycleTerminalDisposition;
+      observedAt: number;
+    },
+  ) {
+    this.validateIdentity(input);
+    return this.mutateSync(input, (projection) => {
+      const terminal = applyTerminalDisposition(projection, input);
+      terminal.bayTelemetryPending = true;
+      return terminal;
     });
   }
 
@@ -778,6 +812,11 @@ export class ExactReviewLifecycleProjectionStore {
           throw new Error("conflicting lifecycle acknowledgement receipt");
         }
         projection.acknowledgement.observed ??= observed;
+        // The final receipt is the only timing boundary for command journeys.
+        // Queue its Bay materialization in this same source transaction so a
+        // Durable Object restart cannot persist the receipt without its outbox
+        // marker.
+        projection.bayTelemetryPending = true;
         projection.updatedAt = input.observedAt;
         this.writeSync(projection);
         return {
@@ -802,12 +841,29 @@ export class ExactReviewLifecycleProjectionStore {
     return this.readSync(canonicalTargetKey, fenceKey, revision);
   }
 
+  maxRevision(canonicalTargetKey: string) {
+    if (!validCanonicalTargetKey(canonicalTargetKey)) return 0;
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT MAX(revision) AS max_revision
+           FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+          WHERE canonical_target_key = ?`,
+        canonicalTargetKey,
+      ),
+    )[0] as { max_revision?: unknown } | undefined;
+    const revision = Number(row?.max_revision || 0);
+    return Number.isSafeInteger(revision) && revision >= 0 ? revision : 0;
+  }
+
   /**
-   * This reader is intentionally side-effect free. In particular, it does not
-   * ensure schema, normalize legacy rows, or write an index: the public Bay
-   * route must never turn an observation into queue maintenance.
+   * This reader is intentionally side-effect free. Its caller provisions the
+   * table and indexes through the Durable Object constructor barrier; this
+   * method does not ensure schema, normalize legacy rows, or write an index.
    */
-  readBaySnapshot(now = Date.now()): DurableLifecycleBaySnapshot {
+  readBaySnapshot(
+    now = Date.now(),
+    allowedRepositories?: ReadonlySet<string>,
+  ): DurableLifecycleBaySnapshot {
     const unknown = (reason: DurableLifecycleBayUnknownReason): DurableLifecycleBaySnapshot => ({
       version: 1,
       source: "exact-review-lifecycle-projection-v1",
@@ -819,17 +875,55 @@ export class ExactReviewLifecycleProjectionStore {
       sample: null,
     });
 
+    const repositories = allowedRepositories
+      ? [
+          ...new Set([...allowedRepositories].map((repository) => repository.trim().toLowerCase())),
+        ].sort()
+      : null;
+    if (
+      repositories &&
+      (repositories.length > 32 ||
+        repositories.some((repository) => !/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(repository)))
+    ) {
+      return unknown("malformed");
+    }
+
     let rows: Array<Record<string, unknown>>;
     try {
-      rows = Array.from(
-        this.storage.sql.exec(
-          `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-           ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC
-           LIMIT ?`,
-          EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT + 1,
-        ),
-      );
-      // The fixed 512+1 public source bound is deliberately fail-closed. Do
+      if (repositories?.length === 0) {
+        rows = [];
+      } else if (repositories) {
+        rows = [];
+        for (const repository of repositories) {
+          const remaining = EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT + 1 - rows.length;
+          const repositoryRows = Array.from(
+            this.storage.sql.exec(
+              `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+               INDEXED BY exact_review_lifecycle_projection_bay_repository_v2
+               WHERE LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)) = ?
+               ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC
+               LIMIT ?`,
+              repository,
+              remaining,
+            ),
+          );
+          rows.push(...repositoryRows);
+          if (rows.length > EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT) {
+            return unknown("over_cap");
+          }
+        }
+      } else {
+        rows = Array.from(
+          this.storage.sql.exec(
+            `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+             INDEXED BY exact_review_lifecycle_projection_bay
+            ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC
+            LIMIT ?`,
+            EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT + 1,
+          ),
+        );
+      }
+      // The fixed bounded public source read is deliberately fail-closed. Do
       // not paginate, prune, or otherwise maintain storage while observing it.
       if (rows.length > EXACT_REVIEW_LIFECYCLE_BAY_READ_LIMIT) return unknown("over_cap");
     } catch {
@@ -847,7 +941,6 @@ export class ExactReviewLifecycleProjectionStore {
     } catch {
       return unknown("mixed");
     }
-
     const maxRevisionByTarget = new Map<string, number>();
     for (const projection of projections) {
       maxRevisionByTarget.set(
@@ -1161,23 +1254,96 @@ export class ExactReviewLifecycleProjectionStore {
     };
   }
 
+  /**
+   * Replays terminal facts whose Bay aggregate write failed. The marker is
+   * stored on the lifecycle row itself, rather than only in the secondary
+   * telemetry tables, so it survives a temporary telemetry-schema outage.
+   * Callers must fail closed while a bounded replay has more work.
+   */
+  reconcileBayTelemetryPending(
+    materialize: (projection: ExactReviewLifecycleProjection) => boolean,
+  ) {
+    this.ensureSchemaSync();
+    const rows = Array.from(
+      this.storage.sql.exec(
+        `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+          WHERE bay_telemetry_pending = 1
+          ORDER BY updated_at, canonical_target_key, fence_key, revision
+          LIMIT ?`,
+        EXACT_REVIEW_LIFECYCLE_BAY_TELEMETRY_RECOVERY_BATCH_LIMIT + 1,
+      ),
+    );
+    const more = rows.length > EXACT_REVIEW_LIFECYCLE_BAY_TELEMETRY_RECOVERY_BATCH_LIMIT;
+    for (const row of rows.slice(0, EXACT_REVIEW_LIFECYCLE_BAY_TELEMETRY_RECOVERY_BATCH_LIMIT)) {
+      const projection = projectionFromRow(String(row.projection_json || ""));
+      // Materialization has its own Durable Object transaction. Keep this
+      // source transaction separate: a retry after its source-marker clear is
+      // interrupted is idempotent by lifecycle event id.
+      if (!projection || !projection.bayTelemetryPending || !materialize(projection)) return false;
+      this.markBayTelemetryMaterialized(projection);
+    }
+    return !more;
+  }
+
+  markBayTelemetryPending(input: ProjectionIdentity) {
+    this.validateIdentity(input);
+    return this.mutate(input, (projection) => {
+      projection.bayTelemetryPending = true;
+      return projection;
+    });
+  }
+
+  markBayTelemetryMaterialized(input: ProjectionIdentity & { bayTelemetryEventId?: string }) {
+    this.validateIdentity(input);
+    if (input.bayTelemetryEventId !== undefined && !validText(input.bayTelemetryEventId, 1, 536)) {
+      throw new Error("invalid lifecycle Bay telemetry event identity");
+    }
+    return this.mutate(input, (projection) => {
+      if (input.bayTelemetryEventId === undefined) delete projection.bayTelemetryEventId;
+      else projection.bayTelemetryEventId = input.bayTelemetryEventId;
+      projection.bayTelemetryPending = false;
+      return projection;
+    });
+  }
+
+  hasBayTelemetryPending() {
+    try {
+      return (
+        Array.from(
+          this.storage.sql.exec(
+            `SELECT 1 AS pending FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+              WHERE bay_telemetry_pending = 1 LIMIT 1`,
+          ),
+        ).length > 0
+      );
+    } catch {
+      return true;
+    }
+  }
+
   private mutate<T>(
     input: ProjectionIdentity,
     apply: (projection: ExactReviewLifecycleProjection) => T,
     writeResult = true,
   ): T {
+    return this.storage.transactionSync(() => this.mutateSync(input, apply, writeResult));
+  }
+
+  private mutateSync<T>(
+    input: ProjectionIdentity,
+    apply: (projection: ExactReviewLifecycleProjection) => T,
+    writeResult = true,
+  ): T {
     this.ensureSchemaSync();
-    return this.storage.transactionSync(() => {
-      const projection = this.readSync(input.canonicalTargetKey, input.fenceKey, input.revision);
-      if (!projection) throw new Error("missing lifecycle admission fact");
-      this.assertIdentity(projection, input);
-      const result = apply(projection);
-      if (writeResult) {
-        projection.updatedAt = Date.now();
-        this.writeSync(projection);
-      }
-      return result;
-    });
+    const projection = this.readSync(input.canonicalTargetKey, input.fenceKey, input.revision);
+    if (!projection) throw new Error("missing lifecycle admission fact");
+    this.assertIdentity(projection, input);
+    const result = apply(projection);
+    if (writeResult) {
+      projection.updatedAt = Date.now();
+      this.writeSync(projection);
+    }
+    return result;
   }
 
   private readSync(canonicalTargetKey: string, fenceKey: string, revision: number) {
@@ -1196,17 +1362,19 @@ export class ExactReviewLifecycleProjectionStore {
   private writeSync(projection: ExactReviewLifecycleProjection) {
     this.storage.sql.exec(
       `INSERT INTO ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-         (canonical_target_key, revision, fence_key, projection_json, updated_at)
-       VALUES (?, ?, ?, ?, ?)
+         (canonical_target_key, revision, fence_key, projection_json, updated_at, bay_telemetry_pending)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(canonical_target_key, fence_key, revision) DO UPDATE SET
          fence_key = excluded.fence_key,
          projection_json = excluded.projection_json,
-         updated_at = excluded.updated_at`,
+         updated_at = excluded.updated_at,
+         bay_telemetry_pending = excluded.bay_telemetry_pending`,
       projection.canonicalTargetKey,
       projection.revision,
       projection.fenceKey,
       JSON.stringify(projection),
       projection.updatedAt,
+      Number(projection.bayTelemetryPending),
     );
   }
 
@@ -1229,6 +1397,28 @@ export class ExactReviewLifecycleProjectionStore {
       throw new Error("conflicting lifecycle projection identity");
     }
   }
+}
+
+function applyTerminalDisposition(
+  projection: ExactReviewLifecycleProjection,
+  input: ProjectionIdentity & { kind: LifecycleTerminalDisposition; observedAt: number },
+) {
+  const next = { kind: input.kind, observedAt: input.observedAt };
+  const current = projection.terminalDisposition;
+  if (!current) {
+    projection.terminalDispositions.push(next);
+    projection.terminalDisposition = next;
+    return projection;
+  }
+  if (current.kind === next.kind) return projection;
+  // A newer source can requeue a just-routed revision before its final queue
+  // completion lands. Only a requeue may transition to another terminal fact.
+  if (next.kind !== "requeue" && current.kind !== "requeue") {
+    throw new Error("conflicting lifecycle terminal disposition");
+  }
+  projection.terminalDispositions.push(next);
+  projection.terminalDisposition = next;
+  return projection;
 }
 
 export function lifecycleState(projection: ExactReviewLifecycleProjection): LifecycleState {
@@ -1286,166 +1476,6 @@ export function commandAcknowledgementState(
   }
   if (projection.terminalDisposition?.kind === "requeue") return "unavailable";
   return projection.terminalDisposition ? "pending" : "unavailable";
-}
-
-/**
- * Classify a pre-captured historical cohort without applying it. A valid
- * historical projection is still only evidence: it cannot manufacture a
- * current acknowledgement, route, acceptance, or Completed state. Repeated
- * calls are deterministic and have no storage or network side effects.
- */
-export function historicalLifecycleReconciliationReport(
-  cohort: HistoricalLifecycleReconciliationCohort | null | undefined,
-  now = Date.now(),
-): HistoricalLifecycleReconciliationReport {
-  const generated_at = new Date(now).toISOString();
-  const unknown = (
-    reason: "missing_provenance" | "invalid" | "expired" | "over_cap",
-  ): HistoricalLifecycleReconciliationReport => ({
-    version: 1,
-    mode: "dry_run",
-    source: "retained-historical-lifecycle-snapshot-v1",
-    generated_at,
-    cohort: null,
-    collection: { state: "unknown", reason },
-    outcomes: null,
-  });
-  if (!cohort || cohort.source !== "retained-historical-lifecycle-snapshot-v1") {
-    return unknown("missing_provenance");
-  }
-  if (
-    typeof cohort.cohort_id !== "string" ||
-    typeof cohort.captured_at !== "string" ||
-    typeof cohort.expires_at !== "string"
-  ) {
-    return unknown("invalid");
-  }
-  const capturedAt = Date.parse(cohort.captured_at);
-  const expiresAt = Date.parse(cohort.expires_at);
-  if (
-    !/^[a-f0-9]{64}$/i.test(cohort.cohort_id) ||
-    !Number.isFinite(capturedAt) ||
-    !Number.isFinite(expiresAt) ||
-    expiresAt < capturedAt ||
-    expiresAt - capturedAt > EXACT_REVIEW_HISTORICAL_RECONCILIATION_MAX_RETENTION_MS
-  ) {
-    return unknown("invalid");
-  }
-  if (now < capturedAt) return unknown("invalid");
-  if (now >= expiresAt) return unknown("expired");
-  if (!Array.isArray(cohort.rows)) return unknown("invalid");
-  if (cohort.rows.length > EXACT_REVIEW_HISTORICAL_RECONCILIATION_COHORT_MAX) {
-    return unknown("over_cap");
-  }
-  const sourceRows = new Set<string>();
-  let notReconciled = 0;
-  let unknownRows = 0;
-  for (const row of cohort.rows) {
-    if (
-      !row ||
-      typeof row !== "object" ||
-      typeof row.source_row_id !== "string" ||
-      !validText(row.source_row_id, 1, 300)
-    ) {
-      unknownRows += 1;
-      continue;
-    }
-    const duplicate = sourceRows.has(row.source_row_id);
-    sourceRows.add(row.source_row_id);
-    if (duplicate || !validHistoricalLifecycleProjection(row.projection)) {
-      unknownRows += 1;
-      continue;
-    }
-    // Immutable evidence is intentionally not imported into the live reducer.
-    notReconciled += 1;
-  }
-  return {
-    version: 1,
-    mode: "dry_run",
-    source: "retained-historical-lifecycle-snapshot-v1",
-    generated_at,
-    cohort: {
-      id: cohort.cohort_id,
-      captured_at: cohort.captured_at,
-      expires_at: cohort.expires_at,
-      rows: cohort.rows.length,
-    },
-    collection: { state: "complete" },
-    outcomes: { not_reconciled: notReconciled, unknown: unknownRows, completed: 0 },
-  };
-}
-
-function validHistoricalLifecycleProjection(value: unknown) {
-  try {
-    if (!value || typeof value !== "object") return false;
-    const projection = value as Record<string, unknown>;
-    if (
-      !Object.hasOwn(projection, "githubEffect") ||
-      !Object.hasOwn(projection, "routerReceipt") ||
-      !Object.hasOwn(projection, "terminalDisposition") ||
-      !projection.acknowledgement ||
-      typeof projection.acknowledgement !== "object" ||
-      !Object.hasOwn(projection.acknowledgement, "observed")
-    ) {
-      return false;
-    }
-    const receipt = projection.routerReceipt;
-    const acknowledgement = projection.acknowledgement as Record<string, unknown>;
-    if (
-      (projection.githubEffect !== null &&
-        (!projection.githubEffect || typeof projection.githubEffect !== "object")) ||
-      (receipt !== null && (!receipt || typeof receipt !== "object")) ||
-      (projection.terminalDisposition !== null &&
-        (!projection.terminalDisposition || typeof projection.terminalDisposition !== "object")) ||
-      (acknowledgement.observed !== null &&
-        (!acknowledgement.observed || typeof acknowledgement.observed !== "object"))
-    ) {
-      return false;
-    }
-    if (
-      receipt !== null &&
-      (!receipt ||
-        typeof receipt !== "object" ||
-        !Object.hasOwn(receipt, "receiptId") ||
-        !Object.hasOwn(receipt, "outcome") ||
-        !Object.hasOwn(receipt, "observedAt") ||
-        !finiteTimestamp((receipt as { observedAt: unknown }).observedAt))
-    ) {
-      return false;
-    }
-    // Early v1 rows predate the append-only history arrays. Preserve the
-    // reader's compatibility normalization on a copy; retained evidence stays
-    // immutable and never enters the live projection store.
-    const normalized: Record<string, unknown> = {
-      ...projection,
-      routerReceipts:
-        projection.routerReceipts ??
-        (projection.routerReceipt === null ? [] : [projection.routerReceipt]),
-      terminalDispositions:
-        projection.terminalDispositions ??
-        (projection.terminalDisposition === null ? [] : [projection.terminalDisposition]),
-    };
-    const histories = [
-      normalized.claims,
-      normalized.reviewResults,
-      normalized.canonicalReceipts,
-      normalized.routerReceipts,
-      normalized.terminalDispositions,
-      (normalized.acknowledgement as { attempts?: unknown }).attempts,
-    ];
-    if (
-      histories.some(
-        (history) =>
-          !Array.isArray(history) ||
-          history.length > EXACT_REVIEW_HISTORICAL_RECONCILIATION_FACT_HISTORY_MAX,
-      )
-    ) {
-      return false;
-    }
-    return validDurableLifecycleBayProjection(normalized as ExactReviewLifecycleProjection);
-  } catch {
-    return false;
-  }
 }
 
 function emptyDurableLifecycleBayLanes(): Record<DurableLifecycleBayLane, number> {
@@ -1533,10 +1563,13 @@ function durableLifecycleBayCard(
 function canonicalTarget(value: string) {
   const match = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9]\d*)$/.exec(value);
   if (!match) return null;
+  const repository = match[1];
+  const itemNumber = match[2];
+  if (repository === undefined || itemNumber === undefined) return null;
   return {
-    repository: match[1],
-    number: Number(match[2]),
-    url: `https://github.com/${match[1]}/issues/${match[2]}`,
+    repository,
+    number: Number(itemNumber),
+    url: `https://github.com/${repository}/issues/${itemNumber}`,
   };
 }
 
@@ -1544,9 +1577,12 @@ export function parseDurableLifecycleAuditCursor(value: unknown) {
   if (typeof value !== "string") return null;
   const match = /^([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})\.(0|[1-9]\d*)$/i.exec(value);
   if (!match) return null;
-  const offset = Number(match[2]);
+  const snapshotId = match[1];
+  const offsetText = match[2];
+  if (snapshotId === undefined || offsetText === undefined) return null;
+  const offset = Number(offsetText);
   if (!Number.isSafeInteger(offset)) return null;
-  return { snapshotId: match[1].toLowerCase(), offset };
+  return { snapshotId: snapshotId.toLowerCase(), offset };
 }
 
 function encodeAuditCursor(snapshotId: string, offset: number) {
@@ -1706,13 +1742,20 @@ function validDurableLifecycleBayProjection(value: ExactReviewLifecycleProjectio
     !validFenceKey(value.fenceKey) ||
     !positiveInteger(value.revision) ||
     !finiteTimestamp(value.updatedAt) ||
+    typeof value.bayTelemetryPending !== "boolean" ||
+    // `bay:v2:` + a valid 512-character fence key + `:` + a safe-integer
+    // revision (up to 16 decimal digits).
+    (value.bayTelemetryEventId !== undefined && !validText(value.bayTelemetryEventId, 1, 536)) ||
     !validText(value.admission.deliveryId, 1, 300) ||
     (value.admission.sourceDeliveryId !== undefined &&
       !validText(value.admission.sourceDeliveryId, 1, 200)) ||
+    (value.admission.bayJourneyDeliveryId !== undefined &&
+      !validText(value.admission.bayJourneyDeliveryId, 1, 200)) ||
     !validText(value.admission.sourceAction, 1, 200) ||
     (value.admission.statusMarker !== null && !validText(value.admission.statusMarker, 1, 300)) ||
     (value.admission.statusCommentId !== null &&
       !positiveInteger(value.admission.statusCommentId)) ||
+    (value.admission.triggeredAt !== undefined && !finiteTimestamp(value.admission.triggeredAt)) ||
     typeof value.admission.commandOriginated !== "boolean" ||
     !finiteTimestamp(value.admission.admittedAt) ||
     !Array.isArray(value.claims) ||
@@ -1854,6 +1897,7 @@ function projectionFromRow(value: string): ExactReviewLifecycleProjection {
   // during a rolling deployment so append-only facts are never lost.
   parsed.routerReceipts ??= parsed.routerReceipt ? [parsed.routerReceipt] : [];
   parsed.terminalDispositions ??= parsed.terminalDisposition ? [parsed.terminalDisposition] : [];
+  parsed.bayTelemetryPending ??= false;
   return parsed;
 }
 

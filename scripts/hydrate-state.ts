@@ -2,11 +2,12 @@
 import { cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { parseArgs as parseNodeArgs } from "node:util";
 
 import { materializeStateBlobs } from "./worker-blobs.ts";
 import {
   discoverWorkerRecordRepoSlugs,
-  materializeWorkerRecord,
+  materializeWorkerItems,
   materializeWorkerRecords,
 } from "./worker-records.ts";
 
@@ -23,7 +24,7 @@ type Args = {
   worktree?: string;
   recordsUrl?: string;
   recordsRepoSlugs?: string[];
-  recordsItemNumber?: number;
+  recordsItemNumbers?: number[];
   hydrateStateBlobs?: boolean;
   hydrateGitState?: boolean;
 };
@@ -57,8 +58,8 @@ export async function hydrateState(
 
   const explicitRepoSlugs =
     args.recordsRepoSlugs ?? parseRepoSlugs(env.CLAWSWEEPER_RECORDS_REPO_SLUGS);
-  if (args.recordsItemNumber !== undefined && explicitRepoSlugs?.length !== 1) {
-    throw new Error("Single-record hydration requires exactly one explicit repository slug");
+  if (args.recordsItemNumbers !== undefined && explicitRepoSlugs?.length !== 1) {
+    throw new Error("Focused record hydration requires exactly one explicit repository slug");
   }
   const repoSlugs =
     explicitRepoSlugs ??
@@ -72,7 +73,7 @@ export async function hydrateState(
   if (!repoSlugs.length) throw new Error("canonical record store returned no repository slugs");
 
   const worker =
-    args.recordsItemNumber === undefined
+    args.recordsItemNumbers === undefined
       ? await materializeWorkerRecords({
           worktreeRoot,
           baseUrl,
@@ -81,12 +82,12 @@ export async function hydrateState(
           cacheRoot: env.CLAWSWEEPER_RECORDS_CACHE_DIR,
           fetch: fetchImpl,
         })
-      : await materializeWorkerRecord({
+      : await materializeWorkerItems({
           worktreeRoot,
           baseUrl,
           webhookSecret,
           repoSlug: repoSlugs[0]!,
-          itemNumber: args.recordsItemNumber,
+          itemNumbers: args.recordsItemNumbers,
           fetch: fetchImpl,
         });
   const blobs = hydrateStateBlobs
@@ -137,26 +138,53 @@ function copyGeneratedPath(stateRoot: string, worktreeRoot: string, relativePath
 }
 
 function parseArgs(argv: string[]): Args {
-  const parsed: Args = {};
+  const normalized: string[] = [];
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--") continue;
-    if (arg === "--state-dir") parsed.stateDir = requiredValue(argv, ++index, arg);
-    else if (arg === "--worktree") parsed.worktree = requiredValue(argv, ++index, arg);
-    else if (arg === "--records-url") parsed.recordsUrl = requiredValue(argv, ++index, arg);
-    else if (arg === "--skip-state-blobs") parsed.hydrateStateBlobs = false;
-    else if (arg === "--skip-git-state") parsed.hydrateGitState = false;
-    else if (arg === "--records-item-number") {
-      const value = requiredValue(argv, ++index, arg);
-      if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < 1) {
-        throw new Error("--records-item-number requires a positive safe integer");
-      }
-      parsed.recordsItemNumber = Number(value);
-    } else if (arg === "--records-repo-slugs") {
-      parsed.recordsRepoSlugs = parseRepoSlugs(requiredValue(argv, ++index, arg)) ?? [];
-    } else throw new Error(`Unknown argument: ${arg}`);
+    if (
+      [
+        "--state-dir",
+        "--worktree",
+        "--records-url",
+        "--records-item-number",
+        "--records-repo-slugs",
+      ].includes(arg)
+    ) {
+      normalized.push(`${arg}=${requiredValue(argv, ++index, arg)}`);
+    } else if (arg === "--skip-state-blobs" || arg === "--skip-git-state") normalized.push(arg);
+    else throw new Error(`Unknown argument: ${arg}`);
   }
-  return parsed;
+  const { values } = parseNodeArgs({
+    args: normalized,
+    options: {
+      "state-dir": { type: "string" },
+      worktree: { type: "string" },
+      "records-url": { type: "string" },
+      "skip-state-blobs": { type: "boolean" },
+      "skip-git-state": { type: "boolean" },
+      "records-item-number": { type: "string" },
+      "records-repo-slugs": { type: "string" },
+    },
+  });
+  const itemNumber = values["records-item-number"];
+  const itemNumbers = itemNumber?.split(",").map((value) => {
+    if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < 1) {
+      throw new Error("--records-item-number requires positive safe integers separated by commas");
+    }
+    return Number(value);
+  });
+  return {
+    stateDir: values["state-dir"],
+    worktree: values.worktree,
+    recordsUrl: values["records-url"],
+    hydrateStateBlobs: values["skip-state-blobs"] ? false : undefined,
+    hydrateGitState: values["skip-git-state"] ? false : undefined,
+    recordsItemNumbers: itemNumbers,
+    ...(values["records-repo-slugs"] === undefined
+      ? {}
+      : { recordsRepoSlugs: parseRepoSlugs(values["records-repo-slugs"]) ?? [] }),
+  };
 }
 
 function parseRepoSlugs(value: string | undefined) {

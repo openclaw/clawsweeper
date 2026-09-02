@@ -558,6 +558,7 @@ export function createApplyActionLedger({
     action: ActionTaken,
     commentMutationOccurred: boolean,
     dryRun: boolean,
+    guardedOpenStateVerified = false,
   ): {
     status: ActionEventStatus;
     reasonCode: ActionEventReasonCode;
@@ -565,6 +566,15 @@ export function createApplyActionLedger({
     mutation: boolean;
     completionReason: string;
   } | null {
+    if (action === "kept_open" && guardedOpenStateVerified && commentMutationOccurred && !dryRun) {
+      return {
+        status: ACTION_EVENT_STATUSES.blocked,
+        reasonCode: ACTION_EVENT_REASON_CODES.policyBlocked,
+        retryable: false,
+        mutation: true,
+        completionReason: "publication_size_limit",
+      };
+    }
     if (action === "review_comment_synced" || action === "corrected_stale_canonical_comment") {
       if (!dryRun && !commentMutationOccurred) {
         return {
@@ -656,6 +666,7 @@ export function createApplyActionLedger({
         result.action,
         commentMutationOccurred,
         options.dryRun,
+        result.guardedOpenStateVerified === true,
       );
       const actionPhaseSeq = nextApplyPhaseSeq(options.ledger);
       const actionEvent = recordWorkflowPhaseEvent(root, {

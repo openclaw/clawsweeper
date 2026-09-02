@@ -4,7 +4,7 @@ function markdownFenceDelimiter(line: string): string | null {
   return line.trimStart().match(/^(?:`{3,}|~{3,})/)?.[0] ?? null;
 }
 
-function markdownFenceStateAfterLine(fence: string | null, line: string): string | null {
+export function markdownFenceStateAfterLine(fence: string | null, line: string): string | null {
   const trimmed = line.trim();
   const delimiter = trimmed.match(/^(?:`{3,}|~{3,})/)?.[0];
   if (!delimiter) return fence;

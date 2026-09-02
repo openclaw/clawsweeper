@@ -8,6 +8,18 @@ import type {
 } from "./clawsweeper-types.js";
 import { completeActivityContextSymbol } from "./clawsweeper-types.js";
 import { stableJson } from "./stable-json.js";
+import { compactPrimaryBody } from "./clawsweeper-primary-body.js";
+import { fetchPrCommentActivityRevision } from "./pr-comment-activity-revision.js";
+import {
+  hydratePrLists,
+  type PrHydrationSnapshot,
+  type PrHydrationResult,
+} from "./pr-hydration-snapshot.js";
+import {
+  generationReadKey,
+  type LiveReadGeneration,
+  type LiveReadOptions,
+} from "./live-read-generation.js";
 
 interface CreateItemContextDependencies {
   asRecord: (value: unknown) => Record<string, unknown>;
@@ -28,7 +40,6 @@ interface CreateItemContextDependencies {
   compactPullCommit: (value: unknown) => unknown;
   compactPullFile: (value: unknown) => unknown;
   compactPullRequest: (value: unknown) => unknown;
-  compactSemanticPullFile: (value: unknown) => unknown;
   compactTimelineEvent: (value: unknown) => unknown;
   extractLatestClawSweeperReviewFromHydration: (
     commentsWindow: ContextHydration<unknown>,
@@ -78,12 +89,11 @@ interface CreateItemContextDependencies {
   }) => unknown[];
   reviewCommentContentRevision: (entries: readonly unknown[]) => string;
   reviewTimelineDigestParts: (entries: unknown) => unknown;
-  semanticPullFilesWithTreeIdentity: (options: {
-    files: readonly unknown[];
+  hydratePullRequestReviewSource: (options: {
     itemNumber: number;
     pullRequest: unknown;
     targetDir: string;
-  }) => unknown[];
+  }) => void;
   sha256: (text: string) => string;
   stringOrUndefined: (value: unknown) => string | undefined;
   targetRepo: () => string;
@@ -100,7 +110,6 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
     compactPullCommit,
     compactPullFile,
     compactPullRequest,
-    compactSemanticPullFile,
     compactTimelineEvent,
     extractLatestClawSweeperReviewFromHydration,
     fetchReviewedPrActivityCursor,
@@ -118,7 +127,7 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
     relatedItemsContext,
     reviewCommentContentRevision,
     reviewTimelineDigestParts,
-    semanticPullFilesWithTreeIdentity,
+    hydratePullRequestReviewSource,
     sha256,
     stringOrUndefined,
     targetRepo,
@@ -130,18 +139,59 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
       fullTimelineForRelations?: boolean;
       reviewCacheDigest?: boolean;
       reviewCacheGitDir?: string;
+      prHydrationSnapshot?: PrHydrationSnapshot | null;
+      prCommentActivityRevision?: string | null;
+      requireFullyValidatedPrHydrationSnapshot?: boolean;
+      liveReadGeneration?: LiveReadGeneration;
+      bypassGenerationCache?: boolean;
     } = {},
   ): ItemContext {
-    const issue = ghJson<unknown>(["api", `repos/${targetRepo()}/issues/${item.number}`]);
+    const generationOptions: LiveReadOptions = options.bypassGenerationCache
+      ? { bypassGenerationCache: true }
+      : {};
+    const readJson = <T>(args: string[], readOptions = generationOptions): T =>
+      options.liveReadGeneration
+        ? options.liveReadGeneration.read(
+            generationReadKey("json", args),
+            () => ghJson<T>(args),
+            readOptions,
+          )
+        : ghJson<T>(args);
+    const readPaged = <T>(path: string): T[] =>
+      options.liveReadGeneration
+        ? options.liveReadGeneration.read(
+            generationReadKey("paged", [path]),
+            () => ghPaged<T>(path),
+            generationOptions,
+          )
+        : ghPaged<T>(path);
+    const readContextWindow = <T>(path: string, total: unknown, limit: number) =>
+      options.liveReadGeneration
+        ? options.liveReadGeneration.read(
+            generationReadKey("context-window", [path, total, limit]),
+            () => ghPagedContextWindow<T>(path, total, limit, { paged: readPaged }),
+            generationOptions,
+          )
+        : ghPagedContextWindow<T>(path, total, limit);
+    const readLinkHeaderContextWindow = <T>(path: string, limit: number) =>
+      options.liveReadGeneration
+        ? options.liveReadGeneration.read(
+            generationReadKey("link-context-window", [path, limit]),
+            () => ghPagedLinkHeaderContextWindow<T>(path, limit, { paged: readPaged }),
+            generationOptions,
+          )
+        : ghPagedLinkHeaderContextWindow<T>(path, limit);
+
+    const issue = readJson<unknown>(["api", `repos/${targetRepo()}/issues/${item.number}`]);
     const issueRecord = asRecord(issue);
-    const commentsWindow = ghPagedContextWindow<unknown>(
+    const commentsWindow = readContextWindow<unknown>(
       `repos/${targetRepo()}/issues/${item.number}/comments`,
       issueRecord.comments,
       24,
     );
     const comments = commentsWindow.items;
     const sourceRevisionComments = commentsWindow.truncated
-      ? ghPaged<unknown>(`repos/${targetRepo()}/issues/${item.number}/comments`)
+      ? readPaged<unknown>(`repos/${targetRepo()}/issues/${item.number}/comments`)
       : comments;
     const filteredComments = filterReviewContextComments(comments, item.number);
     const previousClawSweeperReview = extractLatestClawSweeperReviewFromHydration(
@@ -149,17 +199,17 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
       sourceRevisionComments,
       item.number,
     );
-    const timelineWindow = ghPagedLinkHeaderContextWindow<unknown>(
+    const timelineWindow = readLinkHeaderContextWindow<unknown>(
       `repos/${targetRepo()}/issues/${item.number}/timeline`,
       80,
     );
     const timeline = timelineWindow.items;
     const fullTimeline =
       timelineWindow.truncated && (options.fullTimelineForRelations || options.reviewCacheDigest)
-        ? ghPaged<unknown>(`repos/${targetRepo()}/issues/${item.number}/timeline`)
+        ? readPaged<unknown>(`repos/${targetRepo()}/issues/${item.number}/timeline`)
         : null;
     const context: ItemContext = {
-      issue: compactIssue(issue),
+      issue: { ...asRecord(compactIssue(issue)), ...compactPrimaryBody(issueRecord.body) },
       sourceRevision: itemSourceRevisionSha256(issue, sourceRevisionComments),
       comments: compactMappedWindow(
         filteredComments.included,
@@ -231,31 +281,80 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
       }
     }
     if (item.kind === "pull_request") {
-      pullRequest = ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${item.number}`]);
+      pullRequest = readJson<unknown>(["api", `repos/${targetRepo()}/pulls/${item.number}`]);
       const pullRecord = asRecord(pullRequest);
-      const pullFilesWindow = ghPagedContextWindow<unknown>(
-        `repos/${targetRepo()}/pulls/${item.number}/files`,
-        pullRecord.changed_files,
-        80,
-      );
+      const pullUpdatedAt = stringOrUndefined(pullRecord.updated_at);
+      const pullHeadSha = stringOrUndefined(asRecord(pullRecord.head).sha);
+      const pullChangedFileCount = nonnegativeCount(pullRecord.changed_files);
+      const pullCommitCount = nonnegativeCount(pullRecord.commits);
+      const pullReviewCommentCount = nonnegativeCount(pullRecord.review_comments);
+      const hydration =
+        pullUpdatedAt &&
+        pullHeadSha &&
+        pullChangedFileCount !== null &&
+        pullCommitCount !== null &&
+        pullReviewCommentCount !== null
+          ? hydratePrLists({
+              repo: targetRepo(),
+              number: item.number,
+              pullUpdatedAt,
+              headSha: pullHeadSha,
+              changedFileCount: pullChangedFileCount,
+              commitCount: pullCommitCount,
+              reviewCommentCount: pullReviewCommentCount,
+              commentActivityRevision: options.prCommentActivityRevision ?? null,
+              prior: options.prHydrationSnapshot ?? null,
+              ...(options.requireFullyValidatedPrHydrationSnapshot
+                ? { requireFullyValidatedSnapshot: true }
+                : {}),
+              revalidateCommentActivityRevision: () =>
+                fetchPrCommentActivityRevision({
+                  repo: targetRepo(),
+                  number: item.number,
+                  ghJson: <T>(args: string[]) => readJson<T>(args, { bypassGenerationCache: true }),
+                }),
+              fetchFiles: () =>
+                readContextWindow<unknown>(
+                  `repos/${targetRepo()}/pulls/${item.number}/files`,
+                  pullRecord.changed_files,
+                  80,
+                ),
+              fetchCommits: () =>
+                readContextWindow<unknown>(
+                  `repos/${targetRepo()}/pulls/${item.number}/commits`,
+                  pullRecord.commits,
+                  80,
+                ),
+              fetchReviewComments: () =>
+                readContextWindow<unknown>(
+                  `repos/${targetRepo()}/pulls/${item.number}/comments`,
+                  pullRecord.review_comments,
+                  40,
+                ),
+              fetchCompleteReviewComments: () =>
+                readPaged<unknown>(`repos/${targetRepo()}/pulls/${item.number}/comments`),
+              fetchReviewCommentsSince: (since) =>
+                readPaged<unknown>(
+                  `repos/${targetRepo()}/pulls/${item.number}/comments?since=${encodeURIComponent(since)}`,
+                ),
+            })
+          : legacyPrHydration({
+              pullRecord,
+              itemNumber: item.number,
+              targetRepo: targetRepo(),
+              ghPaged: readPaged,
+              ghPagedContextWindow: readContextWindow,
+            });
+      const pullFilesWindow = hydration.files;
       const pullFiles = pullFilesWindow.items;
-      const pullCommitsWindow = ghPagedContextWindow<unknown>(
-        `repos/${targetRepo()}/pulls/${item.number}/commits`,
-        pullRecord.commits,
-        80,
-      );
+      const pullCommitsWindow = hydration.commits;
       const pullCommits = pullCommitsWindow.items;
-      const pullReviewCommentsWindow = ghPagedContextWindow<unknown>(
-        `repos/${targetRepo()}/pulls/${item.number}/comments`,
-        pullRecord.review_comments,
-        40,
-      );
+      const pullReviewCommentsWindow = hydration.reviewComments;
       pullReviewComments = pullReviewCommentsWindow.items;
       filteredPullReviewComments = filterReviewContextComments(pullReviewComments, item.number);
       const fullPullReviewComments =
-        (options.reviewCacheDigest || options.fullTimelineForRelations) &&
-        pullReviewCommentsWindow.truncated
-          ? ghPaged<unknown>(`repos/${targetRepo()}/pulls/${item.number}/comments`)
+        options.reviewCacheDigest || options.fullTimelineForRelations
+          ? hydration.completeReviewComments
           : pullReviewComments;
       digestPullReviewComments =
         !options.reviewCacheDigest || fullPullReviewComments === pullReviewComments
@@ -267,28 +366,24 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
           : filterReviewContextComments(fullPullReviewComments, item.number);
       completePullReviewCommentsHydrated =
         fullPullReviewComments.length >= pullReviewCommentsWindow.total;
-      context.pullRequest = compactPullRequest(pullRequest);
+      if (hydration.snapshot) context.prHydrationSnapshot = hydration.snapshot;
+      context.pullRequest = {
+        ...asRecord(compactPullRequest(pullRequest)),
+        ...compactPrimaryBody(pullRecord.body),
+      };
       context.pullFiles = compactMappedWindow(
         pullFiles,
         pullFilesWindow.total,
         80,
         compactPullFile,
       );
-      context.semanticPullFiles =
-        options.reviewCacheDigest &&
-        options.reviewCacheGitDir &&
-        !pullFilesWindow.truncated &&
-        pullFilesWindow.total === pullFiles.length
-          ? semanticPullFilesWithTreeIdentity({
-              files: pullFiles,
-              itemNumber: item.number,
-              pullRequest,
-              targetDir: options.reviewCacheGitDir,
-            })
-          : compactMappedWindow(pullFiles, pullFilesWindow.total, 80, (file) => ({
-              ...asRecord(compactSemanticPullFile(file)),
-              treeModesComplete: false,
-            }));
+      if (options.reviewCacheGitDir) {
+        hydratePullRequestReviewSource({
+          itemNumber: item.number,
+          pullRequest,
+          targetDir: options.reviewCacheGitDir,
+        });
+      }
       context.pullCommits = compactMappedWindow(
         pullCommits,
         pullCommitsWindow.total,
@@ -421,4 +516,52 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
   }
 
   return { collectItemContext };
+}
+
+function nonnegativeCount(value: unknown): number | null {
+  const count = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(count) && count >= 0 ? count : null;
+}
+
+function legacyPrHydration(options: {
+  pullRecord: Record<string, unknown>;
+  itemNumber: number;
+  targetRepo: string;
+  ghPaged: <T>(path: string) => T[];
+  ghPagedContextWindow: <T>(
+    path: string,
+    totalCount: unknown,
+    promptLimit: number,
+  ) => ContextHydration<T>;
+}): PrHydrationResult {
+  const files = options.ghPagedContextWindow<unknown>(
+    `repos/${options.targetRepo}/pulls/${options.itemNumber}/files`,
+    options.pullRecord.changed_files,
+    80,
+  );
+  const commits = options.ghPagedContextWindow<unknown>(
+    `repos/${options.targetRepo}/pulls/${options.itemNumber}/commits`,
+    options.pullRecord.commits,
+    80,
+  );
+  const reviewComments = options.ghPagedContextWindow<unknown>(
+    `repos/${options.targetRepo}/pulls/${options.itemNumber}/comments`,
+    options.pullRecord.review_comments,
+    40,
+  );
+  const completeReviewComments = reviewComments.truncated
+    ? options.ghPaged<unknown>(`repos/${options.targetRepo}/pulls/${options.itemNumber}/comments`)
+    : reviewComments.items;
+  return {
+    files,
+    commits,
+    reviewComments,
+    completeReviewComments,
+    snapshot: null,
+    commitsReused: false,
+    reviewCommentsReused: false,
+    reviewCommentsIncremental: false,
+    reviewCommentsFullFallback: false,
+    filesReused: false,
+  };
 }

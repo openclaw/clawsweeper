@@ -1,8 +1,21 @@
 # Operations
 
+- Status: active canonical repair operator runbook
+- Owner: ClawSweeper maintainers and the authorized repair operator
+- Source of truth: repair workflows/source, current gates, focused tests, and
+  live read-only GitHub state where needed
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
+- Update when: commands, trust checks, gates, tokens, runners, routing,
+  publication, recovery, or promotion rules change
+
+This is the canonical live-operations page. Use the
+[repair entry point](README.md) for concepts and the local CLI catalog, the
+[internal feature map](internal-features.md) for implementation structure, and
+[auto-update PRs](auto-update-prs.md) for the trusted PR state contract.
+
 For the internal feature map across job creation, PR generation, comment
 commands, finalizers, self-heal, gates, and ledgers, see
-[`docs/INTERNAL_FEATURES.md`](INTERNAL_FEATURES.md).
+[`internal-features.md`](internal-features.md).
 
 For the trusted ClawSweeper-to-ClawSweeper PR repair loop, see
 [`docs/repair/auto-update-prs.md`](auto-update-prs.md).
@@ -72,7 +85,8 @@ pnpm run status -- \
 
 ## Manual Fix PR From Issue or PR Refs
 
-Use `scripts/create-job.ts` when ClawSweeper or a maintainer has identified a
+Use `pnpm run repair:create-job` (implemented by
+`src/repair/create-job.ts`) when ClawSweeper or a maintainer has identified a
 valid issue/PR cluster that should get one implementation PR. It writes one
 idempotent job file and checks for an existing open PR or branch before creating
 another job.
@@ -118,22 +132,12 @@ Keep `CLAWSWEEPER_ALLOW_MERGE=0` unless a human explicitly opens the merge gate.
 
 ## Manual Fix PR From Commit Finding
 
-Use the `commit finding intake` workflow for a ClawSweeper commit report:
-
-```bash
-gh workflow run repair-commit-finding-intake.yml \
-  --repo openclaw/clawsweeper \
-  -f target_repo=openclaw/openclaw \
-  -f commit_sha=<sha> \
-  -f report_repo=openclaw/clawsweeper \
-  -f report_path=records/openclaw-openclaw/commits/<sha>.md
-```
-
-The workflow is idempotent for the commit SHA. It updates the same audit file,
-job file, branch, and PR path on rerun.
-
-If latest `main` no longer needs a fix, the generated artifact allows a clean
-no-PR outcome and the audit file records the skip.
+The hosted commit-review and commit-finding intake workflows were retired in
+July 2026. Do not dispatch `repair-commit-finding-intake.yml`; that workflow no
+longer exists. Existing durable jobs with `job_intent: commit_finding` remain
+executable through the ordinary cluster worker for compatibility. New work
+should start from current issue/PR references or an explicitly prepared manual
+repair job after verifying the finding still applies to current `main`.
 
 ## Security Boundary
 
@@ -302,11 +306,17 @@ This avoids failing on GitHub's "No commits between" response when the repair is
 already represented on `main` or the resumed replacement branch collapsed to an
 empty diff after rebase.
 
-Runs for the same job path and mode share a concurrency group. Different cluster jobs can still run in parallel.
+Ordinary runs for the same job path share one concurrency group across modes.
+Different job paths can still run in parallel, and explicit requeues use a
+dedicated run-specific group.
 
 Live preflight hydrates job-provided refs by default and records linked refs without expanding them. Set repo variables `CLAWSWEEPER_MAX_LINKED_REFS` above `0` only for small clusters that need first-hop context and `CLAWSWEEPER_HYDRATE_COMMENTS=1` when comment bodies are necessary evidence; normal scale runs use issue/PR metadata, body excerpts, PR files, and PR checks.
 
-Exact-review producers normally deliver GitHub effects and submit prepared state mutations directly to the dashboard Worker. The legacy exact-review batch publisher remains enabled only to drain already-enqueued and direct-publication fallback items; it is scheduled for removal after that queue stays empty through the migration window.
+Exact-review producers normally deliver GitHub effects and submit prepared state
+mutations directly to the dashboard Worker. Production also keeps batch
+publication enabled for queued and direct-publication fallback items. Treat that
+as an active recovery path: do not remove or bypass it without a separately
+approved retirement plan, an empty-queue observation window, and rollback proof.
 
 ## Maintainer Comment Routing
 
@@ -319,6 +329,14 @@ it classifies the command, so the visible reply is available as soon as the
 target dispatcher starts. Exact comment dispatches scan only the source comment
 and use per-comment receiver concurrency; the scheduled sweep remains a
 five-minute fallback.
+The scheduled sweep persists a per-repository `updated_at` watermark and the
+comment ids already inspected at that exact timestamp. It reads repository
+comments oldest-first from that watermark and advances it only after the router
+process completes successfully. A GitHub installation rate limit, abuse-limit
+403, or 429 therefore emits a structured `github_throttled` defer and exits
+successfully without moving the watermark; the next sweep repeats the
+uncompleted interval. Other failures remain fatal. Exact-comment and exact-item
+dispatches never advance the scheduled watermark.
 The status comment itself uses one compact badge: `🦞👀` for acknowledgement,
 `🦞🧹` for review, `🦞🔧` for repair/build/fix work, and `🦞✅` for completed or
 paused work.
@@ -337,6 +355,19 @@ Worker queue coalesces item revisions and leases the executor before checkout.
 The target workflow remains a compatibility fallback when the webhook service
 is down or not installed for a repository; its direct event is bridged into the
 same queue.
+
+The standalone `repair:comment-webhook` listener bounds incoming bodies to 2 MiB
+before signature verification. It accepts declared-length and chunked bodies,
+rejects oversized declarations before reading, and checks streamed bytes as they
+arrive. An oversized body receives HTTP 400 before the connection closes.
+
+The listener limits each GitHub REST request,
+including reading its response body, to 15 seconds. A stalled request returns
+HTTP 503 with `retryable: true`; successful requests keep the existing response.
+This per-request deadline does not bound the total duration of a command that
+makes several GitHub requests. GitHub does not automatically redeliver failed
+webhooks; its delivery response window is 10 seconds, so this deadline bounds
+listener resources rather than guaranteeing delivery acknowledgment.
 
 Supported triggers:
 
@@ -366,7 +397,12 @@ Supported triggers:
 @openclaw-clawsweeper fix ci
 ```
 
-`review` and `re-review` dispatch ClawSweeper review again for an open issue or PR.
+`review` and `re-review` admit the exact comment version to the durable review
+queue for an open issue or PR. The hosted webhook is the fast path; the
+five-minute router scan is the recovery producer. Both converge on the same
+comment-version receipt, so a throttled router cannot lose the command and a
+redelivery cannot start the same version twice. The queue verifies the source
+comment and current PR head before it creates the marker-backed acknowledgement.
 Issue implementation commands (`implement`, `fix`, `build`, `create pr`, `fix issue`)
 dispatch the repair worker for one open issue and ask it to create or update a
 single ClawSweeper implementation PR. The generated job uses

@@ -127,6 +127,75 @@ test("every workflow job that runs the main bundle directly obtains it", () => {
   assert.ok(audited.length > 0, `no job invoking ${MAIN_BUNDLE} was audited`);
 });
 
+test("review jobs upload completed reviews without automatic live proof", () => {
+  const workflow = parse(fs.readFileSync(".github/workflows/sweep.yml", "utf8")) as {
+    jobs?: Record<string, { steps?: { name?: unknown; run?: unknown; uses?: unknown }[] }>;
+  };
+  for (const jobName of ["event-review-apply", "review"]) {
+    const steps = workflow.jobs?.[jobName]?.steps ?? [];
+    const review = steps.findIndex((step) => String(step.name ?? "").startsWith("Review "));
+    const upload = steps.findIndex(
+      (step, index) =>
+        index > review && String(step.uses ?? "").startsWith("actions/upload-artifact@"),
+    );
+    assert.ok(review >= 0 && upload > review, jobName);
+    assert.equal(
+      steps.some((step) => String(step.run ?? "").includes("live-proof-review")),
+      false,
+      jobName,
+    );
+  }
+});
+
+test("historical publication lanes preserve live-proof folding after generation retirement", () => {
+  const publicationSites: string[] = [];
+  for (const workflowPath of fs.globSync(".github/workflows/*.yml").sort()) {
+    const workflow = parse(fs.readFileSync(workflowPath, "utf8")) as {
+      jobs?: Record<
+        string,
+        {
+          steps?: { id?: unknown; if?: unknown; name?: unknown; run?: unknown }[];
+        }
+      >;
+    };
+    for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
+      const steps = job.steps ?? [];
+      const runs = steps.map((step) => String(step.run ?? ""));
+      const directPublication = runs.some(
+        (run) =>
+          run.includes("repair:publish-event-result") ||
+          run.includes("repair:exact-review-batch commit"),
+      );
+      const artifactPublication =
+        runs.some((run) => run.includes("pnpm run apply-artifacts")) &&
+        runs.some((run) => /repair:publish-main[\s\S]*--path ["']records\//.test(run));
+      if (!directPublication && !artifactPublication) continue;
+      const site = `${workflowPath}:${jobName}`;
+      publicationSites.push(site);
+      if (site === ".github/workflows/sweep.yml:event-review-apply") {
+        const directSetup = steps.find((step) => step.id === "direct-setup-state");
+        assert.doesNotMatch(String(directSetup?.if ?? ""), /live-proof|live_proof/, site);
+        continue;
+      }
+      if (site === ".github/workflows/exact-review-batch-publish.yml:publish") {
+        assert.match(
+          fs.readFileSync("scripts/prepare-exact-review-batch.mjs", "utf8"),
+          /live-proof-publish-artifacts/,
+          site,
+        );
+        continue;
+      }
+      const fold = runs.findIndex((run) => run.includes("live-proof-publish-artifacts"));
+      const publish = runs.findIndex(
+        (run) =>
+          run.includes("repair:publish-event-result") || run.includes("pnpm run apply-artifacts"),
+      );
+      assert.ok(fold >= 0 && publish > fold, `${site} must fold live proof before publication`);
+    }
+  }
+  assert.equal(publicationSites.length, 4, JSON.stringify(publicationSites));
+});
+
 test("state-hydrating sparse repair workflows keep hydration dependencies", () => {
   for (const workflowPath of [
     ".github/workflows/repair-comment-router.yml",

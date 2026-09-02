@@ -199,7 +199,19 @@ confidential-identifier checks as every other durable machine-text field.
   disappearing during cleanup is benign. Contenders reclaim a lock as soon as
   its recorded process is dead or a Linux zombie, bypass PID-only identity
   caches before stale decisions, and use sub-second macOS process start identity.
-  A live holder is never evicted solely because of lock age.
+  macOS identity binds the numeric boot seconds/microseconds, PID, and microsecond
+  start time, excluding mutable process status and the timezone-dependent human
+  boot date. Invalid or unavailable identity data remains unknown instead of
+  falling back to a different identity, and is retried on the next query. A live
+  holder is never evicted solely because of lock age.
+- macOS producer and import locks use schema version 2 for the stable identity
+  scheme; other platforms continue writing version 1. Readers accept versions
+  1 and 2 and reject unknown versions. On macOS, a live version 1 owner remains
+  unverified and cannot be reclaimed by comparing its legacy hash to the new
+  scheme; contention retains the existing 10-second timeout. Dead version 1
+  owners remain reclaimable, and version 2 owners retain fresh PID-reuse checks.
+  Older readers reject version 2, so the serialized-lock transition fails closed
+  in both directions. Non-macOS version 1 identity checks are unchanged.
 - Partition-marker reads are capped at 64 bytes. Existing and raced shard reads
   are capped at the same 2 MiB limit as new shard writes. Direct shard readers
   also require a non-empty collection of at most 1024 unique, acyclic events in
@@ -272,7 +284,7 @@ Durable relative data paths must use portable ASCII segments beneath one of
 `.artifacts/`, `artifacts/`, `jobs/`, `ledger/`, `logs/`, `notifications/`,
 `records/`, or `results/`. Arbitrary prose, bare namespaces, hidden child
 segments, traversal, encoded octets, and absolute paths are rejected by both
-runtime validation and the checked-in schema.
+runtime validation.
 
 Durable JSON files must already be the exact canonical encoding with unique
 object keys that the writer emits, including the trailing newline. Readers
@@ -281,8 +293,7 @@ and reject other noncanonical bytes before accepting the value. Direct event
 and shard reads cap allocation at 1 MiB and 2 MiB respectively.
 
 Every event records a privacy classification, redaction version, and fields
-dropped. The checked-in JSON schema is
-[`schema/state-ledger-event.schema.json`](../schema/state-ledger-event.schema.json).
+dropped.
 
 ## Event Families
 

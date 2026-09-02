@@ -1372,7 +1372,7 @@ test("sortCommentsForRouting prioritizes edited durable review comments", () => 
     },
     {
       id: 1,
-      body: "<!-- clawsweeper-verdict:pass item=74742 sha=abc confidence=high -->",
+      body: "<!-- clawsweeper-verdict:pass item=74742 sha=abc confidence=high live_verification=absent -->",
       created_at: "2026-04-30T02:00:00Z",
       updated_at: "2026-04-30T03:45:00Z",
     },
@@ -1404,7 +1404,7 @@ test("selectCommentsForRouting keeps durable review comments beyond the recent c
     durableComments: [
       {
         id: 1,
-        body: "<!-- clawsweeper-verdict:pass item=74742 sha=abc confidence=high -->",
+        body: "<!-- clawsweeper-verdict:pass item=74742 sha=abc confidence=high live_verification=absent -->",
         created_at: "2026-04-30T02:00:00Z",
         updated_at: "2026-04-30T03:45:00Z",
       },
@@ -1548,6 +1548,45 @@ test("summarizeChecks uses the latest run for duplicate check names", () => {
   assert.equal(checks.total, 2);
   assert.deepEqual(checks.blockers, []);
   assert.equal(checks.counts.SUCCESS, 2);
+});
+
+test("router status policy keeps representative decisions across the shared rollup", () => {
+  const checks = summarizeChecks([
+    {
+      name: "auto-response",
+      workflowName: "Auto Response",
+      status: "COMPLETED",
+      conclusion: "CANCELLED",
+    },
+    {
+      name: "queued",
+      workflowName: "CI",
+      status: "IN_PROGRESS",
+      conclusion: null,
+    },
+    {
+      name: "failed",
+      workflowName: "CI",
+      status: "COMPLETED",
+      conclusion: "FAILURE",
+    },
+    {
+      name: "passed",
+      workflowName: "CI",
+      status: "COMPLETED",
+      conclusion: "SUCCESS",
+    },
+  ]);
+
+  assert.deepEqual(checks, {
+    total: 4,
+    gatingTotal: 3,
+    counts: { CANCELLED: 1, IN_PROGRESS: 1, FAILURE: 1, SUCCESS: 1 },
+    blockers: ["queued:IN_PROGRESS", "failed:FAILURE"],
+    pending: ["queued:IN_PROGRESS"],
+    terminalBlockers: ["failed:FAILURE"],
+    externalBlockers: [],
+  });
 });
 
 test("skipped automerge ledger entries stay retryable", () => {

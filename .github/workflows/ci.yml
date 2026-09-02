@@ -21,6 +21,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  hosted-review-scan:
+    name: Hosted native review scan smoke
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build
+      - uses: ./.github/actions/setup-codex
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
+      - name: Prove refusal then clean structured review
+        run: node scripts/hosted-review-scan-smoke.mjs "$RUNNER_TEMP/hosted-review-scan-proof.json"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hosted-review-scan-proof
+          path: ${{ runner.temp }}/hosted-review-scan-proof.json
+          if-no-files-found: error
+
   check:
     name: pnpm check
     runs-on: ubuntu-latest

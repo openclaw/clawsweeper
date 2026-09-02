@@ -3,6 +3,20 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export type RepositoryItemKind = "issue" | "pull_request";
+export type RepositoryLiveTestSurface = "browser" | "terminal";
+export type RepositoryPackageManager = "bun" | "pnpm" | "npm";
+
+export interface RepositoryLiveTestConfig {
+  enabled: boolean;
+  surfaceDefault: RepositoryLiveTestSurface;
+  setup: readonly string[];
+  allowInstallScripts: boolean;
+  start?: string;
+  url?: string;
+  readyTimeoutSeconds: number;
+  maxRecordingSeconds: number;
+}
+
 export type RepositoryCloseReason =
   | "implemented_on_main"
   | "mostly_implemented_on_main"
@@ -27,10 +41,12 @@ export interface RepositoryProfile {
   slug: string;
   displayName: string;
   checkoutDir: string;
+  packageManager: RepositoryPackageManager;
   docsUrl?: string;
   communityUrl?: string;
   promptNote: string;
   applyCloseRules: Partial<Record<RepositoryItemKind, readonly RepositoryCloseReason[]>>;
+  liveTest?: RepositoryLiveTestConfig;
 }
 
 interface TargetRepositoryConfig {
@@ -43,18 +59,22 @@ interface ConfiguredRepositoryProfile {
   targetRepo: string;
   displayName: string;
   checkoutDir: string;
+  packageManager: RepositoryPackageManager;
   docsUrl?: string;
   communityUrl?: string;
   promptNote: string;
   applyCloseRules: Partial<Record<RepositoryItemKind, readonly RepositoryCloseReason[]>>;
+  liveTest?: RepositoryLiveTestConfig;
 }
 
 interface GenericFallbackConfig {
   owner: string;
   denyRepositories: readonly string[];
   allowRepoNamePattern: RegExp;
+  packageManager: RepositoryPackageManager;
   promptNote: string;
   applyCloseRules: Partial<Record<RepositoryItemKind, readonly RepositoryCloseReason[]>>;
+  liveTest?: RepositoryLiveTestConfig;
 }
 
 const OPENCLAW_CLOSE_REASONS: readonly RepositoryCloseReason[] = [
@@ -87,10 +107,12 @@ const CORE_OPENCLAW_PROFILE: RepositoryProfile = {
   slug: "openclaw-openclaw",
   displayName: "OpenClaw",
   checkoutDir: "openclaw",
+  packageManager: "pnpm",
   docsUrl: "https://docs.openclaw.ai",
   communityUrl: "https://clawhub.ai/",
   promptNote:
-    "Use the OpenClaw source tree, docs, changelog, and current main branch. Close proposals may use the normal OpenClaw stale/duplicate/not-in-repo/implemented-on-main policy when evidence is strong. For OpenClaw PR reviews, ClawSweeper renders deterministic PR surface stats separately; do not repeat changed-file counts, additions/deletions, or area totals in Review metrics unless adding a new interpretation not present in the deterministic surface block. Use Review metrics for new review-relevant facts, especially user-facing configuration additions, new flags/options/env vars, new protocol/API params, default changes, migrations, persisted settings, or compatibility paths.",
+    "Use the OpenClaw source tree, docs, changelog, and current main branch. Close proposals may use the normal OpenClaw stale/duplicate/not-in-repo/implemented-on-main policy when evidence is strong. For OpenClaw PR reviews, ClawSweeper renders deterministic PR surface stats separately; do not repeat changed-file counts, additions/deletions, or area totals in Review metrics unless adding a new interpretation not present in the deterministic surface block. Use Review metrics for new review-relevant facts, especially user-facing configuration additions, new flags/options/env vars, new protocol/API params, default changes, migrations, persisted settings, or compatibility paths.\n\n" +
+    "For `openclaw/openclaw` PR release-note review, `CHANGELOG.md` is release-owned. Normal PRs, repair workers, and automerge/autofix lanes should not edit it. Do not make missing `CHANGELOG.md` a review finding, merge blocker, work item, or next-step blocker. If release-note context is needed, ask for PR-body or commit message context: user-visible behavior, affected surface, issue/PR refs, and credited human author/reporter when known. Never request `Thanks @steipete`, `Thanks @openclaw`, `Thanks @clawsweeper`, or other forbidden bot/maintainer changelog attributions.",
   applyCloseRules: {
     issue: OPENCLAW_CLOSE_REASONS.filter(
       (reason) => reason !== "author_pr_budget_exceeded" && reason !== "obsolete_fix_pr",
@@ -102,12 +124,24 @@ const CORE_OPENCLAW_PROFILE: RepositoryProfile = {
         reason !== "stale_version_bug",
     ),
   },
+  // Browser live proofs run against the repository's self-contained mock
+  // control-UI dev server, which needs no gateway, accounts, or credentials.
+  liveTest: {
+    enabled: true,
+    surfaceDefault: "browser",
+    setup: ["pnpm install --frozen-lockfile", "pnpm ui:install"],
+    allowInstallScripts: false,
+    start: "pnpm dev:ui:mock",
+    url: "http://127.0.0.1:5187",
+    readyTimeoutSeconds: 300,
+    maxRecordingSeconds: 90,
+  },
 };
 
 const TARGET_REPOSITORY_CONFIG = readTargetRepositoryConfig();
 
 export const REPOSITORY_PROFILES: RepositoryProfile[] = [
-  CORE_OPENCLAW_PROFILE,
+  repositoryProfileWithFallbackLiveTest(CORE_OPENCLAW_PROFILE),
   ...TARGET_REPOSITORY_CONFIG.repositories.map(configuredRepositoryProfile),
 ];
 
@@ -154,35 +188,55 @@ function configuredRepositoryProfile(profile: ConfiguredRepositoryProfile): Repo
     slug: slugForRepo(targetRepo),
     displayName: profile.displayName,
     checkoutDir: profile.checkoutDir,
+    packageManager: profile.packageManager,
     promptNote: profile.promptNote,
     applyCloseRules: profile.applyCloseRules,
   };
   if (profile.docsUrl) result.docsUrl = profile.docsUrl;
   if (profile.communityUrl) result.communityUrl = profile.communityUrl;
+  const liveTest = profile.liveTest ?? genericFallbackConfigFor(targetRepo)?.liveTest;
+  if (liveTest) result.liveTest = liveTest;
   return result;
+}
+
+function repositoryProfileWithFallbackLiveTest(profile: RepositoryProfile): RepositoryProfile {
+  if (profile.liveTest) return profile;
+  const liveTest = genericFallbackConfigFor(profile.targetRepo)?.liveTest;
+  return liveTest ? { ...profile, liveTest } : profile;
 }
 
 function fallbackRepositoryProfile(normalizedTargetRepo: string): RepositoryProfile | undefined {
   const [owner, repoName] = normalizedTargetRepo.split("/");
   if (!owner || !repoName) return undefined;
 
+  const fallback = genericFallbackConfigFor(normalizedTargetRepo);
+  if (!fallback) return undefined;
+
+  const result: RepositoryProfile = {
+    targetRepo: normalizedTargetRepo,
+    slug: slugForRepo(normalizedTargetRepo),
+    displayName: repoName,
+    checkoutDir: repoName,
+    packageManager: fallback.packageManager,
+    promptNote: fallback.promptNote
+      .replaceAll("{target_repo}", normalizedTargetRepo)
+      .replaceAll("{repo_name}", repoName),
+    applyCloseRules: fallback.applyCloseRules,
+  };
+  if (fallback.liveTest) result.liveTest = fallback.liveTest;
+  return result;
+}
+
+function genericFallbackConfigFor(normalizedTargetRepo: string): GenericFallbackConfig | undefined {
+  const [owner, repoName] = normalizedTargetRepo.split("/");
+  if (!owner || !repoName) return undefined;
   const fallback = TARGET_REPOSITORY_CONFIG.genericFallbacks.find(
     (candidate) => candidate.owner === owner,
   );
   if (!fallback) return undefined;
   if (fallback.denyRepositories.includes(normalizedTargetRepo)) return undefined;
   if (!fallback.allowRepoNamePattern.test(repoName)) return undefined;
-
-  return {
-    targetRepo: normalizedTargetRepo,
-    slug: slugForRepo(normalizedTargetRepo),
-    displayName: repoName,
-    checkoutDir: repoName,
-    promptNote: fallback.promptNote
-      .replaceAll("{target_repo}", normalizedTargetRepo)
-      .replaceAll("{repo_name}", repoName),
-    applyCloseRules: fallback.applyCloseRules,
-  };
+  return fallback;
 }
 
 function fallbackDescription(): string {
@@ -216,12 +270,16 @@ function validateTargetRepositoryConfig(value: unknown): TargetRepositoryConfig 
   if (schemaVersion !== 1 && schemaVersion !== 2)
     throw new Error(`Unsupported target repository config schema: ${schemaVersion}`);
   const repositories = arrayValue(config.repositories, "repositories").map((entry, index) =>
-    validateConfiguredRepositoryProfile(entry, `repositories[${index}]`),
+    validateConfiguredRepositoryProfile(entry, `repositories[${index}]`, schemaVersion as 1 | 2),
   );
   const genericFallbacks =
     config.generic_fallbacks !== undefined
       ? arrayValue(config.generic_fallbacks, "generic_fallbacks").map((entry, index) =>
-          validateGenericFallbackConfig(entry, `generic_fallbacks[${index}]`),
+          validateGenericFallbackConfig(
+            entry,
+            `generic_fallbacks[${index}]`,
+            schemaVersion as 1 | 2,
+          ),
         )
       : [];
   const result: TargetRepositoryConfig = {
@@ -232,7 +290,11 @@ function validateTargetRepositoryConfig(value: unknown): TargetRepositoryConfig 
   if (config.openclaw_fallback !== undefined) {
     result.genericFallbacks = [
       ...result.genericFallbacks,
-      validateGenericFallbackConfig(config.openclaw_fallback, "openclaw_fallback"),
+      validateGenericFallbackConfig(
+        config.openclaw_fallback,
+        "openclaw_fallback",
+        schemaVersion as 1 | 2,
+      ),
     ];
   }
   return result;
@@ -241,12 +303,14 @@ function validateTargetRepositoryConfig(value: unknown): TargetRepositoryConfig 
 function validateConfiguredRepositoryProfile(
   value: unknown,
   label: string,
+  schemaVersion: 1 | 2,
 ): ConfiguredRepositoryProfile {
   const profile = record(value, label);
   const result: ConfiguredRepositoryProfile = {
     targetRepo: repoValue(profile.target_repo, `${label}.target_repo`),
     displayName: stringValue(profile.display_name, `${label}.display_name`),
     checkoutDir: pathSegmentValue(profile.checkout_dir, `${label}.checkout_dir`),
+    packageManager: packageManagerValue(profile.package_manager, `${label}.package_manager`),
     promptNote: stringValue(profile.prompt_note, `${label}.prompt_note`),
     applyCloseRules: closeRulesValue(profile.apply_close_rules, `${label}.apply_close_rules`),
   };
@@ -256,21 +320,94 @@ function validateConfiguredRepositoryProfile(
   if (profile.community_url !== undefined) {
     result.communityUrl = stringValue(profile.community_url, `${label}.community_url`);
   }
+  if (profile.live_test !== undefined) {
+    if (schemaVersion !== 2) throw new Error(`${label}.live_test requires schema_version 2`);
+    result.liveTest = liveTestValue(profile.live_test, `${label}.live_test`);
+  }
   return result;
 }
 
-function validateGenericFallbackConfig(value: unknown, label: string): GenericFallbackConfig {
+function liveTestValue(value: unknown, label: string): RepositoryLiveTestConfig {
+  // Local so the eager module-init config read cannot hit a temporal dead zone
+  // when a checked-in profile carries a live_test block.
+  const liveTestKeys = new Set([
+    "enabled",
+    "surface_default",
+    "setup",
+    "allow_install_scripts",
+    "start",
+    "url",
+    "ready_timeout_seconds",
+    "max_recording_seconds",
+  ]);
+  const config = record(value, label);
+  const unexpected = Object.keys(config).filter((key) => !liveTestKeys.has(key));
+  if (unexpected.length) throw new Error(`${label} has unexpected keys: ${unexpected.join(", ")}`);
+  const surfaceDefault = stringValue(
+    config.surface_default,
+    `${label}.surface_default`,
+  ) as RepositoryLiveTestSurface;
+  if (surfaceDefault !== "browser" && surfaceDefault !== "terminal") {
+    throw new Error(`${label}.surface_default must be browser or terminal`);
+  }
+  const setup = arrayValue(config.setup, `${label}.setup`).map((entry, index) =>
+    commandValue(entry, `${label}.setup[${index}]`),
+  );
+  const result: RepositoryLiveTestConfig = {
+    enabled: booleanValue(config.enabled, `${label}.enabled`),
+    surfaceDefault,
+    setup,
+    allowInstallScripts:
+      config.allow_install_scripts === undefined
+        ? false
+        : booleanValue(config.allow_install_scripts, `${label}.allow_install_scripts`),
+    readyTimeoutSeconds: positiveIntegerValue(
+      config.ready_timeout_seconds,
+      `${label}.ready_timeout_seconds`,
+    ),
+    maxRecordingSeconds: positiveIntegerValue(
+      config.max_recording_seconds,
+      `${label}.max_recording_seconds`,
+    ),
+  };
+  if (result.maxRecordingSeconds > 90) {
+    throw new Error(`${label}.max_recording_seconds must be at most 90`);
+  }
+  if (config.start !== undefined) result.start = commandValue(config.start, `${label}.start`);
+  if (config.url !== undefined) result.url = urlOriginValue(config.url, `${label}.url`);
+  if (surfaceDefault === "browser") {
+    if (!result.start) throw new Error(`${label}.start is required for browser live tests`);
+    if (!result.url) throw new Error(`${label}.url is required for browser live tests`);
+  }
+  return result;
+}
+
+export function validateTargetRepositoryConfigForTest(value: unknown): TargetRepositoryConfig {
+  return validateTargetRepositoryConfig(value);
+}
+
+function validateGenericFallbackConfig(
+  value: unknown,
+  label: string,
+  schemaVersion: 1 | 2,
+): GenericFallbackConfig {
   const fallback = record(value, label);
   const pattern = stringValue(fallback.allow_repo_name_pattern, `${label}.allow_repo_name_pattern`);
-  return {
+  const result: GenericFallbackConfig = {
     owner: stringValue(fallback.owner, `${label}.owner`).toLowerCase(),
     denyRepositories: arrayValue(fallback.deny_repositories, `${label}.deny_repositories`).map(
       (entry, index) => normalizeRepo(repoValue(entry, `${label}.deny_repositories[${index}]`)),
     ),
     allowRepoNamePattern: new RegExp(pattern),
+    packageManager: packageManagerValue(fallback.package_manager, `${label}.package_manager`),
     promptNote: stringValue(fallback.prompt_note, `${label}.prompt_note`),
     applyCloseRules: closeRulesValue(fallback.apply_close_rules, `${label}.apply_close_rules`),
   };
+  if (fallback.live_test !== undefined) {
+    if (schemaVersion !== 2) throw new Error(`${label}.live_test requires schema_version 2`);
+    result.liveTest = liveTestValue(fallback.live_test, `${label}.live_test`);
+  }
+  return result;
 }
 
 function closeRulesValue(
@@ -309,9 +446,56 @@ function pathSegmentValue(value: unknown, label: string): string {
   return segment;
 }
 
+function packageManagerValue(value: unknown, label: string): RepositoryPackageManager {
+  const packageManager = value === undefined ? "pnpm" : stringValue(value, label).toLowerCase();
+  if (packageManager !== "bun" && packageManager !== "pnpm" && packageManager !== "npm") {
+    throw new Error(`${label} must be bun, pnpm, or npm`);
+  }
+  return packageManager;
+}
+
 function stringValue(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "")
     throw new Error(`${label} must be a string`);
+  return value;
+}
+
+function commandValue(value: unknown, label: string): string {
+  const command = stringValue(value, label);
+  if (/[\r\n\u2028\u2029]/.test(command)) throw new Error(`${label} must be a single line`);
+  return command;
+}
+
+function urlOriginValue(value: unknown, label: string): string {
+  const text = stringValue(value, label);
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    throw new Error(`${label} must be an HTTP URL origin`);
+  }
+  if (
+    !["http:", "https:"].includes(url.protocol) ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error(`${label} must be an HTTP URL origin`);
+  }
+  return url.origin;
+}
+
+function booleanValue(value: unknown, label: string): boolean {
+  if (typeof value !== "boolean") throw new Error(`${label} must be a boolean`);
+  return value;
+}
+
+function positiveIntegerValue(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    throw new Error(`${label} must be a positive integer`);
+  }
   return value;
 }
 

@@ -29,6 +29,7 @@ export function createReportRendering(dependencies: CreateReportRenderingDepende
     pullRequestHeadSha,
     pullRequestReviewReadinessFromReport,
     renderCloseCommentFromReport,
+    renderLiveProofReportSection,
     renderPrRatingAssessmentReportSection,
     renderReviewCommentFromReport,
     renderReviewContextBudgetForTest,
@@ -40,7 +41,6 @@ export function createReportRendering(dependencies: CreateReportRenderingDepende
     sanitizePublicSelfReferences,
     securitySensitiveRepairAllowed,
     syncWorkPlanFromReport,
-    updateReviewSemanticFrontMatter,
     updateReviewStructuralFrontMatter,
   } = { ...context, ...commentHelpers, ...commentPresentation, ...actions, ...document };
 
@@ -54,6 +54,7 @@ export function createReportRendering(dependencies: CreateReportRenderingDepende
     pullRequestHeadSha,
     pullRequestReviewReadinessFromReport,
     renderCloseCommentFromReport,
+    renderLiveProofReportSection,
     renderPrRatingAssessmentReportSection,
     renderReviewCommentFromReport,
     renderReviewContextBudgetForTest,
@@ -65,7 +66,6 @@ export function createReportRendering(dependencies: CreateReportRenderingDepende
     sanitizePublicSelfReferences,
     securitySensitiveRepairAllowed,
     syncWorkPlanFromReport,
-    updateReviewSemanticFrontMatter,
     updateReviewStructuralFrontMatter,
   };
 }

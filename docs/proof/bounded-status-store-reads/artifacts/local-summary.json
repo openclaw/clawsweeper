@@ -1,0 +1,77 @@
+{
+  "schema": "bounded-status-store-reads-proof/v1",
+  "generated_at": "2026-08-11T08:52:19.016Z",
+  "merge_base": "88fbe4aab5614a09d9cf2b2aa8ef46268c946891",
+  "candidate_head": "3d227d23ca80d03fcf9a995e47c798e237232eea",
+  "fixture": {
+    "automerge_events": 308,
+    "apply_observations": 170,
+    "utc_boundary_replays": 2,
+    "repositories": [
+      "openclaw/openclaw",
+      "openclaw/clawhub"
+    ],
+    "span_days": 7,
+    "window_spanning_sessions": [
+      "6h",
+      "24h",
+      "7d"
+    ],
+    "entirely_pre_window_session": "pre-6h"
+  },
+  "runtime": {
+    "node": "v24.19.0",
+    "wrangler": "4.107.0",
+    "transport": "real loopback HTTP",
+    "worker": "wrangler dev --local",
+    "durable_object": "SQLite-backed StatusStore"
+  },
+  "response_comparison": {
+    "queries": 12,
+    "normalized_fields": [
+      "generated_at",
+      "range_start",
+      "buckets[].start",
+      "buckets[].end"
+    ],
+    "byte_identical": true
+  },
+  "row_counts": {
+    "automerge_metrics": {
+      "6h": {
+        "before": 6600,
+        "after": 690
+      },
+      "24h": {
+        "before": 6600,
+        "after": 744
+      },
+      "7d": {
+        "before": 6600,
+        "after": 1176
+      }
+    },
+    "apply_observability": {
+      "6h": {
+        "before": 169,
+        "after": 2
+      },
+      "24h": {
+        "before": 169,
+        "after": 4
+      },
+      "7d": {
+        "before": 169,
+        "after": 16
+      }
+    }
+  },
+  "production_mutations": 0,
+  "openclaw_bay_affected": false,
+  "limits": [
+    "Synthetic local data, not production volume or timing.",
+    "Row counts include storage rows returned by list() and get(), not payload bytes or CPU time.",
+    "Legacy apply rows remain readable until their seven-day TTL expires."
+  ],
+  "run_status": "succeeded"
+}

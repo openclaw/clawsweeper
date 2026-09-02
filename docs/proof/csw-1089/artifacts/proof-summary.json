@@ -1,0 +1,223 @@
+{
+  "proof": "PR 1089 real-boundary batch publication retry proof",
+  "source_sha": "3e44d2cf1bfdb9f38805f8056bfc90903032d55b",
+  "source_tree_sha256": "61b283324bc7b30b74294a311d2cfc63aa41f15f165ae9d9b30bc6b39ca3dcfe",
+  "transport": {
+    "origin": "https://127.0.0.1:8899",
+    "scenarios": {
+      "429": {
+        "publication_requests": 3,
+        "terminal_outcome": "retryable_failure",
+        "reason_code": "state_contention",
+        "completion_artifact": "completion-429.json"
+      },
+      "503": {
+        "publication_requests": 3,
+        "terminal_outcome": "retryable_failure",
+        "reason_code": "state_contention",
+        "completion_artifact": "completion-503.json"
+      },
+      "no-status": {
+        "publication_requests": 3,
+        "terminal_outcome": "retryable_failure",
+        "reason_code": "state_contention",
+        "completion_artifact": "completion-no-status.json"
+      }
+    },
+    "signed_requests": 21,
+    "invalid_signatures": 0
+  },
+  "worker_do": {
+    "origin": "http://127.0.0.1:8799",
+    "state_contention_after": {
+      "ok": true,
+      "target_repo": "openclaw/openclaw",
+      "item_number": 108901,
+      "items": [
+        {
+          "lane": "publication",
+          "state": "pending",
+          "parked_reason": null,
+          "parked_recovery_attempts": 0,
+          "backoff_reason": "publication_retry",
+          "revision": 1,
+          "attempts": 1,
+          "dispatch_failure_status": null,
+          "dispatch_failure_class": null,
+          "dispatch_failure_at": null,
+          "dispatch_failure_fingerprint": null,
+          "dispatch_failure_detail": null,
+          "created_at": "2026-08-10T01:26:04.347Z",
+          "next_attempt_at": "2026-08-10T01:27:09.176Z",
+          "older_ready_count": 0
+        }
+      ],
+      "dead_letters": [],
+      "position_is_approximate": true
+    },
+    "unknown_failure_attempt_1_after": {
+      "ok": true,
+      "target_repo": "openclaw/openclaw",
+      "item_number": 108904,
+      "items": [
+        {
+          "lane": "publication",
+          "state": "pending",
+          "parked_reason": null,
+          "parked_recovery_attempts": 0,
+          "backoff_reason": "publication_retry",
+          "revision": 1,
+          "attempts": 1,
+          "dispatch_failure_status": null,
+          "dispatch_failure_class": null,
+          "dispatch_failure_at": null,
+          "dispatch_failure_fingerprint": null,
+          "dispatch_failure_detail": null,
+          "created_at": "2026-08-10T01:26:04.386Z",
+          "next_attempt_at": "2026-08-10T01:27:15.800Z",
+          "older_ready_count": 0
+        }
+      ],
+      "dead_letters": [],
+      "position_is_approximate": true
+    },
+    "final_dead_letters_open": 0
+  },
+  "assertions": [
+    {
+      "name": "no-status CLI completion is state contention",
+      "publication_requests": 3
+    },
+    {
+      "name": "no-status traverses the built-in three-attempt transport path"
+    },
+    {
+      "name": "429 CLI completion is state contention",
+      "publication_requests": 3
+    },
+    {
+      "name": "429 traverses the built-in three-attempt transport path"
+    },
+    {
+      "name": "503 CLI completion is state contention",
+      "publication_requests": 3
+    },
+    {
+      "name": "503 traverses the built-in three-attempt transport path"
+    },
+    {
+      "name": "real Worker accepts the state-contention publication item"
+    },
+    {
+      "name": "real Worker and DO claim the state-contention publication item",
+      "response": {
+        "status": 200,
+        "body": {
+          "ok": true,
+          "claimed": true,
+          "batch": {
+            "batch_id": "csw-1089-429",
+            "state": "leased",
+            "lease_owner": "csw-1089-proof-worker",
+            "lease_expires_at": "2026-08-10T01:56:04.364Z",
+            "configured_batch_size": 1,
+            "attempt": 1,
+            "created_at": "2026-08-10T01:26:04.364Z",
+            "completed_at": null,
+            "state_commit_sha": null,
+            "failure_fingerprint": null,
+            "items": [
+              {
+                "item_key": "openclaw/openclaw#108901@publish:1089010:1",
+                "revision": 1,
+                "claim_generation": 1,
+                "terminal_outcome": null
+              }
+            ]
+          },
+          "configured_batch_size": 1,
+          "batch_wait_ms": 17,
+          "requested_max_items": 1,
+          "effective_max_items": 1
+        }
+      }
+    },
+    {
+      "name": "claimed tuple matches openclaw/openclaw#108901@publish:1089010:1"
+    },
+    {
+      "name": "queue item status 108901 is available"
+    },
+    {
+      "name": "real Worker and DO accept the captured state-contention tuple"
+    },
+    {
+      "name": "queue item status 108901 is available"
+    },
+    {
+      "name": "state_contention is pending with one scheduled retry and no dead letter",
+      "next_attempt_at": "2026-08-10T01:27:09.176Z"
+    },
+    {
+      "name": "real Worker accepts the unknown-failure control item"
+    },
+    {
+      "name": "real Worker and DO claim the unknown-failure control item",
+      "response": {
+        "status": 200,
+        "body": {
+          "ok": true,
+          "claimed": true,
+          "batch": {
+            "batch_id": "csw-1089-unknown-attempt-1",
+            "state": "leased",
+            "lease_owner": "csw-1089-proof-worker",
+            "lease_expires_at": "2026-08-10T01:56:04.392Z",
+            "configured_batch_size": 1,
+            "attempt": 1,
+            "created_at": "2026-08-10T01:26:04.392Z",
+            "completed_at": null,
+            "state_commit_sha": null,
+            "failure_fingerprint": null,
+            "items": [
+              {
+                "item_key": "openclaw/openclaw#108904@publish:1089040:1",
+                "revision": 1,
+                "claim_generation": 1,
+                "terminal_outcome": null
+              }
+            ]
+          },
+          "configured_batch_size": 1,
+          "batch_wait_ms": 6,
+          "requested_max_items": 1,
+          "effective_max_items": 1
+        }
+      }
+    },
+    {
+      "name": "claimed tuple matches openclaw/openclaw#108904@publish:1089040:1"
+    },
+    {
+      "name": "queue item status 108904 is available"
+    },
+    {
+      "name": "real Worker and DO accept the unknown-failure control tuple"
+    },
+    {
+      "name": "queue item status 108904 is available"
+    },
+    {
+      "name": "unknown_failure is pending with one scheduled retry and no dead letter",
+      "next_attempt_at": "2026-08-10T01:27:15.800Z"
+    },
+    {
+      "name": "real queue status remains available"
+    }
+  ],
+  "limits": {
+    "attempted_old_budget_terminal": false,
+    "reason": "Authentic backoff requires roughly 51 minutes before attempt 14; no clock, retry constant, or Durable Object storage was altered."
+  },
+  "generated_at": "2026-08-10T01:26:04.414Z"
+}

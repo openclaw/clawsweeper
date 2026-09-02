@@ -16,7 +16,7 @@ import {
 } from "./lib.js";
 import { sleepMs } from "./timing.js";
 import { REPAIR_CLUSTER_WORKFLOW } from "./constants.js";
-import { AUTOMATION_LIMITS, workerLimit, type WorkerLane } from "./limits.js";
+import { AUTOMATION_LIMITS, workerLimit, type WorkerLane } from "../limits.js";
 import {
   repairJobIntentForFrontmatter,
   repairJobUsesClusterLane,

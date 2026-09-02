@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { trimMiddle } from "./clawsweeper-text.js";
 import type {
   ItemContext,
@@ -15,9 +16,21 @@ const MEDIA_PROOF_EXTENSIONS = new Set([...IMAGE_PROOF_EXTENSIONS, ...VIDEO_PROO
 const MEDIA_PROOF_MANIFEST_FILE = "media-proof-manifest.json";
 const MEDIA_PROOF_SUMMARY_FILE = "media-proof-summary.md";
 const MAX_MEDIA_PROOF_URLS = 4;
+const MEDIA_PROOF_TIMEOUT_MS = 120_000;
 
-function mediaProofCommandRunner(command: string, args: readonly string[]) {
-  return spawnSync(command, [...args], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+export function mediaProofCommandRunner(
+  command: string,
+  args: readonly string[],
+  options: Parameters<MediaProofCommandRunner>[2] = {},
+) {
+  return spawnSync(command, [...args], {
+    cwd: options.cwd,
+    env: options.env,
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+    timeout: options.timeoutMs,
+    killSignal: options.killSignal,
+  });
 }
 
 function trimTrailingUrlPunctuation(raw: string): string {
@@ -31,8 +44,16 @@ function trimTrailingUrlPunctuation(raw: string): string {
 }
 
 function proofMediaUrlsFromContext(context: ItemContext): string[] {
-  const { semanticPullFiles: _, pullCommitsRevision: __, ...proofContext } = context;
-  const text = JSON.stringify(proofContext);
+  const {
+    pullCommitsRevision: __,
+    prHydrationSnapshot: ___,
+    pullFiles: ____,
+    ...proofContext
+  } = context;
+  // PR patches and supplemental body excerpts are reviewer text, never host download inputs.
+  const text = JSON.stringify(proofContext, (key, value) =>
+    key === "bodyCoverage" ? undefined : value,
+  );
   const matches = text.match(/https?:\/\/[^\s<>"'\\)]+/g) ?? [];
   const urls: string[] = [];
   const seen = new Set<string>();
@@ -69,13 +90,49 @@ function mediaProofKind(url: string): "image" | "video" {
   return IMAGE_PROOF_EXTENSIONS.has(extension) ? "image" : "video";
 }
 
-function mediaProofSpawnDetail(result: ReturnType<MediaProofCommandRunner>): string {
+export function mediaProofSpawnDetail(result: ReturnType<MediaProofCommandRunner>): string {
   if (result.status === 0) return "ok";
-  const stderr = String(result.stderr ?? "").trim();
-  const stdout = String(result.stdout ?? "").trim();
-  const error = result.error?.message ?? "";
-  const detail = stderr || stdout || error || "command failed without output";
-  return trimMiddle(detail, 1000);
+  const details = [result.stderr, result.stdout, result.error?.message]
+    .map((value) => String(value ?? "").trim())
+    .filter(Boolean);
+  if (details.length === 0) return "command failed without output";
+  // Reserve room for each stream, then flatten so one-line reasons retain both.
+  const separator = " | ";
+  const budget = Math.floor((1000 - separator.length * (details.length - 1)) / details.length);
+  return details
+    .map((detail) => trimMiddle(detail, budget))
+    .join(separator)
+    .replace(/\s+/g, " ");
+}
+
+export function ffprobeMedia(path: string, runner: MediaProofCommandRunner) {
+  return runner("ffprobe", [
+    "-v",
+    "error",
+    "-print_format",
+    "json",
+    "-show_format",
+    "-show_streams",
+    path,
+  ]);
+}
+
+export function createVideoContactSheet(
+  inputPath: string,
+  outputPath: string,
+  runner: MediaProofCommandRunner,
+) {
+  return runner("ffmpeg", [
+    "-hide_banner",
+    "-y",
+    "-i",
+    inputPath,
+    "-vf",
+    "fps=1/5,scale=640:-1,tile=5x4",
+    "-frames:v",
+    "1",
+    outputPath,
+  ]);
 }
 
 export function prepareMediaProofArtifacts(
@@ -88,6 +145,15 @@ export function prepareMediaProofArtifacts(
   mkdirSync(proofScratchDir, { recursive: true });
   const artifacts: PreparedMediaProofArtifact[] = [];
   for (const [index, url] of urls.entries()) {
+    const deadlineAt = performance.now() + MEDIA_PROOF_TIMEOUT_MS;
+    const runBeforeDeadline: MediaProofCommandRunner = (command, args) => {
+      const timeoutMs = Math.ceil(deadlineAt - performance.now());
+      // A zero spawn timeout disables the deadline, so do not start another stage.
+      if (timeoutMs <= 0) {
+        return { status: null, error: new Error("media proof deadline exceeded") };
+      }
+      return runner(command, args, { timeoutMs, killSignal: "SIGKILL" });
+    };
     const ordinal = index + 1;
     const kind = mediaProofKind(url);
     const downloadedPath = join(
@@ -96,7 +162,7 @@ export function prepareMediaProofArtifacts(
     );
     const metadataPath = join(proofScratchDir, `proof-video-${ordinal}.ffprobe.json`);
     const contactSheetPath = join(proofScratchDir, `proof-video-${ordinal}.contact-sheet.jpg`);
-    const download = runner("curl", [
+    const download = runBeforeDeadline("curl", [
       "-L",
       "--fail",
       "--silent",
@@ -131,15 +197,7 @@ export function prepareMediaProofArtifacts(
       });
       continue;
     }
-    const metadata = runner("ffprobe", [
-      "-v",
-      "error",
-      "-print_format",
-      "json",
-      "-show_format",
-      "-show_streams",
-      downloadedPath,
-    ]);
+    const metadata = ffprobeMedia(downloadedPath, runBeforeDeadline);
     if (metadata.status !== 0) {
       artifacts.push({
         kind,
@@ -153,17 +211,11 @@ export function prepareMediaProofArtifacts(
       continue;
     }
     writeFileSync(metadataPath, String(metadata.stdout ?? "{}"), "utf8");
-    const contactSheet = runner("ffmpeg", [
-      "-hide_banner",
-      "-y",
-      "-i",
+    const contactSheet = createVideoContactSheet(
       downloadedPath,
-      "-vf",
-      "fps=1/5,scale=640:-1,tile=5x4",
-      "-frames:v",
-      "1",
       contactSheetPath,
-    ]);
+      runBeforeDeadline,
+    );
     if (contactSheet.status !== 0) {
       artifacts.push({
         kind,

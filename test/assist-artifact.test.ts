@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { createAssistWorkflow } from "../dist/clawsweeper-assist.js";
+import { repositoryProfileFor } from "../dist/repository-profiles.js";
+import { item } from "./helpers.ts";
+import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 import {
   ASSIST_ANSWER_MAX_BYTES,
   assertAssistArtifactLiveRevision,
@@ -21,6 +28,83 @@ const request: AssistRequestBinding = {
   author: "maintainer",
   reasoningEffort: "high",
 };
+
+for (const admission of ["clean", "invalid-output"]) {
+  test(`assist generation ${admission} leaves no diagnostic prompt copy`, (t) => {
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-assist-prompt-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const promptPath = join(root, "42.assist.prompt.md");
+    const providerInput = join(root, "provider-input");
+    const artifactPath = join(root, "assist-result.json");
+    writeFileSync(promptPath, "stale unscanned prompt");
+    useFakeScanner(
+      t,
+      `
+assert.equal(fs.existsSync(${JSON.stringify(promptPath)}), false);
+${admission === "invalid-output" ? "process.exit(183);" : ""}
+`,
+    );
+    const binary = join(root, "codex");
+    writeFileSync(
+      binary,
+      `#!${process.execPath}
+const fs = require('node:fs');
+fs.writeFileSync(${JSON.stringify(providerInput)}, fs.readFileSync(0));
+fs.writeFileSync(process.argv[process.argv.indexOf('--output-last-message') + 1], 'Useful assist answer.');
+`,
+      { mode: 0o755 },
+    );
+    const forbidden = () => {
+      throw new Error("Unexpected GitHub access");
+    };
+    const workflow = createAssistWorkflow({
+      root,
+      asRecord: (value) =>
+        value && typeof value === "object" ? (value as Record<string, unknown>) : {},
+      canPatchReviewComment: () => false,
+      collectItemContext: () => ({
+        issue: {},
+        comments: [],
+        timeline: [],
+        sourceRevision: "a".repeat(64),
+      }),
+      ensureDir: (dir) => {
+        mkdirSync(dir, { recursive: true });
+      },
+      fetchItem: () => ({ item: item({ number: 42 }), state: "open" }),
+      ghJson: forbidden,
+      ghPaged: forbidden,
+      ghWithRetry: forbidden,
+      repoFromArgs: () => repositoryProfileFor("openclaw/openclaw"),
+      sha256: (text) => createHash("sha256").update(text).digest("hex"),
+      targetRepo: () => "openclaw/openclaw",
+      untrustedCodexEnv: () => ({ PATH: process.env.PATH, CODEX_BIN: binary }),
+      writeCommentPayload: forbidden,
+    });
+    const run = () =>
+      workflow.assistGenerateCommand({
+        item_number: "42",
+        question: "Explain this change.",
+        run_id: "123",
+        run_attempt: "1",
+        artifact: artifactPath,
+        work_dir: root,
+      });
+    if (admission === "invalid-output") {
+      assert.throws(run, /Agent input scan refused: scanner_failed/);
+      assert.equal(existsSync(providerInput), false);
+      assert.equal(existsSync(artifactPath), false);
+    } else {
+      run();
+      assert.match(readFileSync(providerInput, "utf8"), /Explain this change\./);
+      assert.equal(
+        JSON.parse(readFileSync(artifactPath, "utf8")).output.answer,
+        "Useful assist answer.",
+      );
+    }
+    assert.equal(existsSync(promptPath), false);
+  });
+}
 
 const sourceDigest = assistSourceCommentSha256({
   id: request.sourceCommentId,
@@ -213,15 +297,6 @@ test("assist artifact validation rejects hostile shape, markers, and oversized o
       }),
     /output\.answer exceeds/,
   );
-});
-
-test("assist artifact schema is strict and versioned", () => {
-  const schema = JSON.parse(readFileSync("schema/assist-artifact.schema.json", "utf8"));
-  assert.equal(schema.additionalProperties, false);
-  assert.equal(schema.properties.schema_version.const, 1);
-  assert.match(schema.properties.target.properties.context_digest.pattern, /64/);
-  assert.equal(schema.properties.output.additionalProperties, false);
-  assert.equal(schema.properties.output.properties.answer.maxLength, ASSIST_ANSWER_MAX_BYTES);
 });
 
 test("assist workflow isolates Codex generation from the fresh write-token publisher", () => {

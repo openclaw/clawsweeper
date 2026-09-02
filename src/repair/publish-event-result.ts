@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
+import { errorFingerprint } from "./error-fingerprint.js";
 import {
   applyEventSnapshot,
   applyEventSnapshotIfCurrent,
@@ -117,6 +117,15 @@ try {
       kind: completionKind,
       reasonCode,
       errorFingerprint: fingerprint,
+      ...(error instanceof GitHubRateLimitError
+        ? {
+            retryAt: error.retryAt,
+            rateLimitScope: error.scope,
+            rateLimitProvenance: error.provenance,
+            rateLimitAuthoritative: error.authoritative,
+            attempted: true,
+          }
+        : {}),
     });
   }
   writePublicationCompletionOutputs(
@@ -220,12 +229,41 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     exactEventPublication: options.exactEventPublication,
     legacyTuplelessReviewLease,
   });
+  const rateLimitYield = exactActions.find(
+    (action) =>
+      action.action === "skipped_runtime_budget" &&
+      /GitHub(?: API)? rate limited until/i.test(action.reason),
+  );
+  if (rateLimitYield) {
+    throw new GitHubRateLimitError(new Error(rateLimitYield.reason));
+  }
   if (options.exactEventPublication && legacyTuplelessReviewLease) {
     console.log(
       `Requeueing ${options.targetRepo}#${options.itemNumber}: legacy exact artifact lacks its durable review lease tuple`,
     );
   }
   const deferredCloseCoverageExpected = applyDisposition === "close_coverage_deferred";
+  if (applyDisposition === "superseded") {
+    console.log(
+      `Skipping ${options.targetRepo}#${options.itemNumber}: a verified newer durable review tuple is already live`,
+    );
+    writeSummary({
+      targetRepo: options.targetRepo,
+      itemNumber: options.itemNumber,
+      syncedCount: 0,
+      closedCount: 0,
+      missingCount: 0,
+      closeReasons: options.closeReasons,
+    });
+    if (options.batchMutationOutput) {
+      writeBatchMutationResult(options.batchMutationOutput, {
+        kind: "superseded",
+        disposition: { requeueLatestExpected: false },
+      });
+    }
+    writePublicationCompletionOutputs("superseded", "remote_newer_tuple");
+    return;
+  }
   if (activeReviewLeaseRetryAt !== null) {
     console.log(
       `Deferring ${options.targetRepo}#${options.itemNumber}: active review lease remains active until ${activeReviewLeaseRetryAt}`,
@@ -249,10 +287,11 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     }
   }
   if (
-    syncedCount + closedCount + missingCount === 0 &&
-    guardedOpenAction === null &&
-    !requeueLatestExpected &&
-    !deferredCloseCoverageExpected
+    (applyDisposition === "unproven" && guardedOpenAction === null && !requeueLatestExpected) ||
+    (syncedCount + closedCount + missingCount === 0 &&
+      guardedOpenAction === null &&
+      !requeueLatestExpected &&
+      !deferredCloseCoverageExpected)
   ) {
     const observed =
       exactActions
@@ -787,11 +826,6 @@ function writePublicationCompletionOutputs(
     ].join("\n"),
     "utf8",
   );
-}
-
-function errorFingerprint(error: unknown): string {
-  const message = error instanceof Error ? `${error.name}:${error.message}` : String(error);
-  return `sha256:${createHash("sha256").update(message).digest("hex")}`;
 }
 
 function validateTargetRepo(targetRepo: string): void {

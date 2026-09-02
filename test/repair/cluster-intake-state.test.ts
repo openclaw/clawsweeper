@@ -11,7 +11,6 @@ import {
   acceptClusterIntakeIntent,
   clusterAcceptedIntentDigest,
   clusterDispatchAuthenticationTag,
-  clusterIntakeIntent,
   clusterIntakeLedger,
   clusterWorkflowDispatchInputs,
   markClusterIntakeDispatchClaimed,
@@ -456,16 +455,19 @@ test("oversize durable jobs are rejected before workflow dispatch", () => {
   const content = "x".repeat(32 * 1024 + 1);
   assert.throws(
     () =>
-      clusterIntakeIntent({
-        ...unsignedIntent(value),
-        jobs: [
-          {
-            ...unsignedIntent(value).jobs[0],
-            content,
-            digest: createHash("sha256").update(content).digest("hex"),
-          },
-        ],
-      }),
+      acceptClusterIntakeIntent(
+        {
+          ...unsignedIntent(value),
+          jobs: [
+            {
+              ...unsignedIntent(value).jobs[0],
+              content,
+              digest: createHash("sha256").update(content).digest("hex"),
+            },
+          ],
+        },
+        receiptSecret,
+      ),
     /invalid cluster intake job fence/,
   );
 });
@@ -512,16 +514,19 @@ test("durable intake binds embedded job semantics to its target and fail-closed 
     const content = value.jobs[0].content.replace(replacement[0], replacement[1]);
     assert.throws(
       () =>
-        clusterIntakeIntent({
-          ...unsignedIntent(value),
-          jobs: [
-            {
-              ...unsignedIntent(value).jobs[0],
-              content,
-              digest: createHash("sha256").update(content).digest("hex"),
-            },
-          ],
-        }),
+        acceptClusterIntakeIntent(
+          {
+            ...unsignedIntent(value),
+            jobs: [
+              {
+                ...unsignedIntent(value).jobs[0],
+                content,
+                digest: createHash("sha256").update(content).digest("hex"),
+              },
+            ],
+          },
+          receiptSecret,
+        ),
       /(?:semantic policy mismatch|security_sensitive jobs are out of scope)/,
     );
   }
@@ -1168,11 +1173,9 @@ test("worker rejects path and payload substitution even with a valid job digest"
 });
 
 test("accepted-intent receipts bind durable recovery authority", () => {
-  assert.throws(() => clusterIntakeIntent(receiptProposal()), /accepted-intent digest mismatch/);
   const accepted = acceptClusterIntakeIntent(receiptProposal(), receiptSecret);
-  const reparsed = clusterIntakeIntent(JSON.parse(JSON.stringify(accepted)));
   const ledger = clusterIntakeLedger(
-    JSON.parse(JSON.stringify(mergeClusterIntakeLedger(undefined, [reparsed]))),
+    JSON.parse(JSON.stringify(mergeClusterIntakeLedger(undefined, [accepted]))),
   );
   const entry = ledger.clusters["42"];
   assert.doesNotThrow(() =>

@@ -1,4 +1,9 @@
 export type ExactReviewPhase = "pending" | "dispatching" | "leased";
+export type ExactReviewReviewRecoveryReason =
+  | "claim_timeout"
+  | "execution_timeout"
+  | "workflow_cancelled"
+  | "workflow_failed";
 
 export type ExactReviewHealthItem = {
   key?: string;
@@ -8,6 +13,7 @@ export type ExactReviewHealthItem = {
   leaseExpiresAt?: number;
   dispatchedAt?: number;
   claimedAt?: number;
+  reviewRecoveryReason?: ExactReviewReviewRecoveryReason;
 };
 
 export type ExactReviewHealthDispatcher = {
@@ -39,6 +45,7 @@ export type ExactReviewHandoffHealth = {
   available_slots: number;
   pending_depth: number;
   shed_since_reset: number;
+  recovery_reasons: Record<ExactReviewReviewRecoveryReason, number>;
   phases: Record<ExactReviewPhase, ExactReviewPhaseSummary>;
 };
 
@@ -109,8 +116,18 @@ export function summarizeExactReviewHandoff({
     dispatching: { count: 0, oldestAt: null, oldestKey: null },
     leased: { count: 0, oldestAt: null, oldestKey: null },
   };
+  const recoveryReasons: Record<ExactReviewReviewRecoveryReason, number> = {
+    claim_timeout: 0,
+    execution_timeout: 0,
+    workflow_cancelled: 0,
+    workflow_failed: 0,
+  };
 
   for (const item of items) {
+    const recoveryReason = String(item.reviewRecoveryReason || "");
+    if (recoveryReason in recoveryReasons) {
+      recoveryReasons[recoveryReason as ExactReviewReviewRecoveryReason] += 1;
+    }
     const startedAt = exactReviewPhaseStartedAt(item, safeNow, safeLeaseMs, safeExecutionLeaseMs);
     const phase = phaseValues[item.state];
     if (!phase) continue;
@@ -154,6 +171,7 @@ export function summarizeExactReviewHandoff({
     available_slots: Math.max(0, safeCapacity - active),
     pending_depth: phases.pending.count,
     shed_since_reset: safeShedSinceReset,
+    recovery_reasons: recoveryReasons,
     phases,
   };
   if (items.length === 0) {

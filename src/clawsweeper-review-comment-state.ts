@@ -13,10 +13,23 @@ import type {
   ItemContext,
   ReviewStartStatusCommentOptions,
 } from "./clawsweeper-types.js";
+import {
+  generationReadKey,
+  type LiveReadGeneration,
+  type LiveReadOptions,
+} from "./live-read-generation.js";
 import { normalizeRepo } from "./repository-profiles.js";
-import { trailingHtmlComments } from "./review-comment-markers.js";
+import { trailingHtmlComments, validReviewLeaseIdentity } from "./review-comment-markers.js";
 import { neutralizeReviewControlMarkers } from "./review-history.js";
 import type { ReviewCommentWorkflowDependencies } from "./clawsweeper-review-comment-dependencies.js";
+
+export function normalizeNoopReviewMarkerMetadata(body: string): string {
+  return body.replace(
+    /<!--\s+clawsweeper-(?:review-version|verdict:[^\s>]+|action:[^\s>]+|security:[^\s>]+)\b[^>]*-->/g,
+    (marker) =>
+      marker.replace(/\s(?:reviewed_at|updated_at|lease_owner|lease_comment_id)=[^\s>]+/g, ""),
+  );
+}
 import type { createReviewCommentIdentity } from "./clawsweeper-review-comment-identity.js";
 
 export function createReviewCommentState(
@@ -319,6 +332,7 @@ export function createReviewCommentState(
   function issueReviewCommentState(
     number: number,
     fallbackBodies: readonly string[] = [],
+    options: LiveReadOptions & { liveReadGeneration?: LiveReadGeneration } = {},
   ): {
     comments: Record<string, unknown>[];
     reviewComment: Record<string, unknown> | undefined;
@@ -327,7 +341,16 @@ export function createReviewCommentState(
     dedicatedLeaseComment: Record<string, unknown> | undefined;
     dedicatedLeaseComments: Record<string, unknown>[];
   } {
-    const comments = fetchIssueReviewComments(number);
+    const commentsPath = `repos/${targetRepo()}/issues/${number}/comments`;
+    const comments = options.liveReadGeneration
+      ? options.liveReadGeneration
+          .read(
+            generationReadKey("paged", [commentsPath]),
+            () => ghPaged<unknown>(commentsPath),
+            options,
+          )
+          .map(asRecord)
+      : fetchIssueReviewComments(number);
     const reviewComment = selectIssueReviewComment(number, comments, fallbackBodies);
     const dedicatedLeaseComments = selectDedicatedReviewStartLeaseComments(number, comments);
     const dedicatedLeaseComment = selectDedicatedReviewStartLeaseComment(number, comments);
@@ -358,21 +381,33 @@ export function createReviewCommentState(
     body: string,
     expectedId?: number,
   ): Record<string, unknown> | undefined {
-    const expected = body.trim();
-    if (!expected) return undefined;
+    if (!body.trim()) return undefined;
     const comments = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`).map(
       asRecord,
     );
-    const trustedExactComments = comments.filter(
-      (candidate) =>
-        canPatchReviewComment(candidate) &&
-        commentId(candidate) !== null &&
-        commentBody(candidate)?.trim() === expected,
+    const trustedExactComments = comments.filter((candidate) =>
+      isReviewPublicationReceipt(candidate, body, expectedId),
     );
     // PATCH recovery is identity-bound; POST recovery elects the newest trusted exact comment.
     return expectedId === undefined
       ? newestReviewComment(number, trustedExactComments)
       : trustedExactComments.find((candidate) => commentId(candidate) === expectedId);
+  }
+
+  function isReviewPublicationReceipt(
+    comment: Record<string, unknown> | undefined,
+    body: string,
+    expectedId?: number,
+  ): comment is Record<string, unknown> {
+    const id = commentId(comment);
+    return (
+      id !== null &&
+      Number.isSafeInteger(id) &&
+      id > 0 &&
+      (expectedId === undefined || id === expectedId) &&
+      canPatchReviewComment(comment) &&
+      comment?.body === body
+    );
   }
 
   function commentUpdatedAt(comment: Record<string, unknown> | undefined): string | undefined {
@@ -473,11 +508,11 @@ export function createReviewCommentState(
     number: number,
   ): {
     reviewedAt: string;
-    headSha: string;
+    headSha: string | null;
     sourceRevision: string | null;
     leaseOwner: string;
     leaseCommentId: number;
-    state: "ready" | "blocked" | "needs-changes";
+    state: "ready" | "blocked" | "needs-changes" | null;
   } | null {
     const identity = reviewCommentMarker(number);
     const identityIndex = body.lastIndexOf(identity);
@@ -489,13 +524,31 @@ export function createReviewCommentState(
     const stateMarkers = markers.filter((marker) =>
       /^<!--\s+clawsweeper-review-state:/.test(marker),
     );
-    if (versionMarkers.length !== 1 || stateMarkers.length !== 1) return null;
+    if (versionMarkers.length !== 1 || stateMarkers.length > 1) return null;
 
     const version = durableReviewVersionFromBody(body, number);
+    const leaseOwner = version?.leaseOwner?.trim() ?? "";
+    const leaseCommentId = version?.leaseCommentId ?? "";
+    if (!version || !validReviewLeaseIdentity(leaseOwner, leaseCommentId)) return null;
+    const versionHead = versionMarkers[0]?.match(/\bsha=([^\s>]+)/)?.[1];
+    // Issue reviews already use a source revision and sha=na, without a PR state marker.
+    if (
+      versionHead === "na" &&
+      stateMarkers.length === 0 &&
+      /^[0-9a-f]{64}$/i.test(version.sourceRevision ?? "")
+    ) {
+      return {
+        ...version,
+        headSha: null,
+        leaseOwner,
+        leaseCommentId: Number(leaseCommentId),
+        state: null,
+      };
+    }
     const stateMatch = stateMarkers[0]?.match(
       /^<!--\s+clawsweeper-review-state:([^\s>]+)\b([^>]*)-->$/,
     );
-    if (!version || !stateMatch) return null;
+    if (!stateMatch) return null;
     const state = stateMatch[1];
     if (state !== "ready" && state !== "blocked" && state !== "needs-changes") return null;
     const stateAttributes = stateMatch[2] ?? "";
@@ -503,18 +556,12 @@ export function createReviewCommentState(
       stateAttributes.match(new RegExp(`\\b${name}=([^\\s>]+)`))?.[1] ?? null;
     const stateHeadSha = stateAttribute("sha")?.toLowerCase() ?? "";
     const versionHeadSha = version.headSha?.toLowerCase() ?? "";
-    const leaseOwner = version.leaseOwner?.trim() ?? "";
-    const leaseCommentId = version.leaseCommentId ?? "";
     if (
       Number(stateAttribute("item")) !== number ||
       stateAttribute("v") !== "1" ||
       !/^[0-9a-f]{40}$/.test(stateHeadSha) ||
       !/^[0-9a-f]{40}$/.test(versionHeadSha) ||
-      stateHeadSha !== versionHeadSha ||
-      !leaseOwner ||
-      leaseOwner === "unknown" ||
-      !/^[1-9]\d*$/.test(leaseCommentId) ||
-      !Number.isSafeInteger(Number(leaseCommentId))
+      stateHeadSha !== versionHeadSha
     ) {
       return null;
     }
@@ -680,7 +727,7 @@ export function createReviewCommentState(
         reportReviewedAtMs !== null &&
         liveCommentUpdatedAtMs !== null &&
         liveCommentUpdatedAtMs > reportReviewedAtMs &&
-        liveReviewedAt !== reportReviewedAt
+        liveReviewedAtMs !== reportReviewedAtMs
       ) {
         return `live durable review comment was published after the local report: comment updated_at=${commentUpdatedAt(existingReviewComment)}, report reviewed_at=${reportReviewedAt}`;
       }
@@ -701,6 +748,37 @@ export function createReviewCommentState(
     if (reportReviewedAtMs === null) return null;
     if (liveReviewedAtMs <= reportReviewedAtMs) return null;
     return `live durable review comment is newer than the local report: comment reviewed_at=${liveReviewedAt}, report reviewed_at=${reportReviewedAt}`;
+  }
+
+  function newerDurableReviewTupleVerified(
+    markdown: string,
+    existingReviewComment: Record<string, unknown> | undefined,
+    number: number,
+  ): boolean {
+    // Superseding is terminal, so require the complete durable tuple rather
+    // than a newer timestamp or comment body that could describe another review.
+    const liveVersion = durableReviewVersion(existingReviewComment, number);
+    const reportLeaseOwner = frontMatterValue(markdown, "review_lease_owner");
+    const liveLeaseCommentId = Number(liveVersion?.leaseCommentId);
+    const reportLeaseCommentId = Number(frontMatterValue(markdown, "review_lease_comment_id"));
+    const reportRevision = reviewLeaseRevisionFromReport(markdown);
+    const itemKind = frontMatterValue(markdown, "type");
+    const liveRevision =
+      itemKind === "pull_request" ? liveVersion?.headSha : liveVersion?.sourceRevision;
+    return Boolean(
+      liveVersion?.leaseOwner &&
+      liveVersion.leaseOwner !== "unknown" &&
+      reportLeaseOwner &&
+      reportLeaseOwner !== "unknown" &&
+      liveRevision &&
+      reportRevision &&
+      liveRevision === reportRevision &&
+      Number.isSafeInteger(liveLeaseCommentId) &&
+      liveLeaseCommentId > 0 &&
+      Number.isSafeInteger(reportLeaseCommentId) &&
+      reportLeaseCommentId > 0 &&
+      liveLeaseCommentId > reportLeaseCommentId,
+    );
   }
 
   const APPLY_SYNC_EQUIVALENT_CLOSE_MARKER_ACTIONS = new Set([
@@ -731,9 +809,14 @@ export function createReviewCommentState(
     const actual = commentBody(comment)?.trim();
     const expected = body.trim();
     if (actual === expected) return true;
-    if (!actual || !options.allowApplyCloseActionUpgrade) return false;
+    if (!actual) return false;
+    const normalizedActual = normalizeNoopReviewMarkerMetadata(actual);
+    const normalizedExpected = normalizeNoopReviewMarkerMetadata(expected);
+    if (normalizedActual === normalizedExpected) return true;
+    if (!options.allowApplyCloseActionUpgrade) return false;
     return (
-      normalizeApplySyncCloseMarkerAction(actual) === normalizeApplySyncCloseMarkerAction(expected)
+      normalizeApplySyncCloseMarkerAction(normalizedActual) ===
+      normalizeApplySyncCloseMarkerAction(normalizedExpected)
     );
   }
 
@@ -745,15 +828,16 @@ export function createReviewCommentState(
     options: { allowApplyCloseActionUpgrade?: boolean } = {},
   ): boolean {
     if (storedHash === expectedHash) return true;
-    if (!storedHash || !options.allowApplyCloseActionUpgrade) return false;
+    if (!storedHash) return false;
     const actual = commentBody(comment)?.trim();
     if (!actual) return false;
-    if (
-      normalizeApplySyncCloseMarkerAction(actual) !==
-      normalizeApplySyncCloseMarkerAction(body.trim())
-    ) {
-      return false;
-    }
+    const normalizedActual = normalizeNoopReviewMarkerMetadata(actual);
+    const normalizedExpected = normalizeNoopReviewMarkerMetadata(body.trim());
+    const equivalent = options.allowApplyCloseActionUpgrade
+      ? normalizeApplySyncCloseMarkerAction(normalizedActual) ===
+        normalizeApplySyncCloseMarkerAction(normalizedExpected)
+      : normalizedActual === normalizedExpected;
+    if (!equivalent) return false;
     return storedHash === reviewCommentBodyDigest(actual);
   }
 
@@ -804,6 +888,7 @@ export function createReviewCommentState(
     issueReviewCommentState,
     issueReviewComment,
     issueReviewCommentWithBody,
+    isReviewPublicationReceipt,
     commentUpdatedAt,
     commentId,
     commentUrl,
@@ -815,6 +900,7 @@ export function createReviewCommentState(
     identitylessPublicationFallback,
     reviewCommentHasCloseVerdictForCanonical,
     staleReviewCommentSyncReason,
+    newerDurableReviewTupleVerified,
     APPLY_SYNC_EQUIVALENT_CLOSE_MARKER_ACTIONS,
     normalizeApplySyncCloseMarkerAction,
     commentBodyMatches,

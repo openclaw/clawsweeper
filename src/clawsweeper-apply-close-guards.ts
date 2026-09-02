@@ -143,7 +143,7 @@ interface ApplyCloseGuardContext {
   minAgeDescription: string;
   minAgeMs: number;
   number: number;
-  openFileEntryByNumber: ReadonlyMap<number, ReportEntry>;
+  openReportEntry: (number: number) => ReportEntry | undefined;
   processedLimit: number;
   repo: string;
   requiredMaintainerDecision: MaintainerDecision | null;
@@ -171,7 +171,7 @@ export function createApplyCloseGuards(
     minAgeDescription,
     minAgeMs,
     number,
-    openFileEntryByNumber,
+    openReportEntry,
     processedLimit,
     repo,
     requiredMaintainerDecision,
@@ -326,7 +326,7 @@ export function createApplyCloseGuards(
       processedCount + 2 <= processedLimit &&
       currentCloseGatesPassed()
     ) {
-      const counterpartEntry = openFileEntryByNumber.get(counterpartNumber);
+      const counterpartEntry = openReportEntry(counterpartNumber);
       if (counterpartEntry) {
         const counterpartMarkdown = readFileSync(counterpartEntry.path, "utf8");
         const counterpartMaintainerDecisionBlocked =

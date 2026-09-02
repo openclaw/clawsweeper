@@ -1,0 +1,28 @@
+{
+  "schema": "clawsweeper-real-boundary-proof-provenance/v1",
+  "generated_at": "2026-08-11T06:58:15.940Z",
+  "source": {
+    "run_id": 31449984643,
+    "run_url": "https://github.com/openclaw/clawsweeper/actions/runs/31449984643",
+    "artifact_id": 9085971968,
+    "artifact_name": "exact-review-dlq-reconcile-31449984643-1",
+    "artifact_file": "parked-reviews.json",
+    "artifact_sha256": "1187c6042803b5ba98048d64157cb98a5399c1cbde76b69ce25f18dffe23b88f",
+    "rows": 20
+  },
+  "execution": {
+    "operator": "scripts/exact-review-dead-letter-operator.mjs",
+    "operator_sha256": "bb200d47fe8af643a1c0b4d622f0dcc9a4cb8410937c5a27d0e3648a6c17530e",
+    "command": "GITHUB_TOKEN=<authenticated gh token> node docs/proof/reconcile-cap-class/run-production-replay.mjs <production-parked-reviews.json>",
+    "execute": false,
+    "inventory_transport": "signed loopback list route",
+    "github_target_reads": "live api.github.com with authenticated gh token",
+    "mutation_routes": "not implemented",
+    "node": "v24.19.0"
+  },
+  "limits": [
+    "The immutable artifact supplies inventory while target state is read live.",
+    "The loopback server exposes only queue pressure and inventory list routes.",
+    "This proof does not exercise queue mutation or the stopped handoff-health half."
+  ]
+}

@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
+import { createHash, createHmac, generateKeyPairSync } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import YAML from "yaml";
 import { readFileSync } from "node:fs";
@@ -44,6 +45,12 @@ test("dead-letter workflow is manual, serialized, and bounded to safe actions", 
     operatorStep.env.CLAWSWEEPER_WEBHOOK_SECRET,
     "${{ secrets.EXACT_REVIEW_OPERATOR_SECRET }}",
   );
+  assert.equal(
+    operatorStep.env.CLAWSWEEPER_APP_PRIVATE_KEY,
+    "${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}",
+  );
+  assert.equal(operatorStep.env.EXACT_REVIEW_TARGET_TOKEN_MODE, "github-app");
+  assert.equal(operatorStep.env.GH_TOKEN, undefined);
   assert.equal(operatorStep.env.GITHUB_TOKEN, "${{ github.token }}");
   assert.match(operatorStep.run, /operator:\$\{GITHUB_RUN_ID\}/);
   assert.doesNotMatch(operatorStep.run, /GITHUB_RUN_ATTEMPT/);
@@ -55,11 +62,26 @@ test("automatic dead-letter reconciliation is scheduled, bounded, and least priv
   assert.equal(scheduled.on.schedule[0].cron, "*/5 * * * *");
   assert.equal(scheduled.concurrency.group, workflow.concurrency.group);
   assert.equal(scheduled.concurrency["cancel-in-progress"], false);
-  assert.deepEqual(scheduled.permissions, workflow.permissions);
+  assert.deepEqual(scheduled.permissions, {
+    actions: "write",
+    ...workflow.permissions,
+  });
   assert.equal(scheduled.jobs.reconcile.environment, "exact-review-operator");
   assert.equal(scheduled.on.workflow_dispatch.inputs.execute.default, false);
   assert.equal(scheduled.on.workflow_dispatch.inputs.max_targets.default, "100");
   assert.equal(scheduled.on.workflow_dispatch.inputs.max_recoveries.default, "10");
+  const deadline = scheduled.jobs.reconcile.steps.find(
+    (candidate) => candidate.name === "Establish reconciliation deadline",
+  );
+  assert.match(deadline.run, /EXACT_REVIEW_RECONCILE_DEADLINE_MS/);
+  assert.match(deadline.run, /13 \* 60 \* 1000/);
+  assert.match(deadline.run, /GITHUB_ENV/);
+  assert.ok(
+    scheduled.jobs.reconcile.steps.indexOf(deadline) <
+      scheduled.jobs.reconcile.steps.findIndex((candidate) =>
+        candidate.uses?.startsWith("actions/checkout@"),
+      ),
+  );
   const step = scheduled.jobs.reconcile.steps.find(
     (candidate) => candidate.name === "Reconcile closed, duplicate, and recoverable dead letters",
   );
@@ -67,13 +89,532 @@ test("automatic dead-letter reconciliation is scheduled, bounded, and least priv
   assert.equal(scheduled.jobs.reconcile.env.CLAWSWEEPER_WEBHOOK_SECRET, undefined);
   assert.match(step.run, /--max-targets "\$MAX_TARGETS"/);
   assert.match(step.run, /--max-recoveries "\$MAX_RECOVERIES"/);
-  assert.match(step.run, /\/api\/health/);
-  assert.match(step.run, /\.deployment_sha/);
-  assert.match(step.run, /live_deploy_sha.*expected_deploy_sha/);
-  assert.match(step.run, /git fetch --no-tags --depth=1 origin "\$live_deploy_sha"/);
-  assert.match(step.run, /dashboard\/exact-review-queue\.ts/);
-  assert.match(step.run, /live_guard_blob.*expected_guard_blob/);
+  assert.equal(step.env.CLAWSWEEPER_APP_PRIVATE_KEY, "${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}");
+  assert.equal(step.env.EXACT_REVIEW_TARGET_TOKEN_MODE, "github-app");
+  assert.equal(step.env.GH_TOKEN, undefined);
+  assert.equal(step.env.GITHUB_TOKEN, "${{ github.token }}");
+  const guard = scheduled.jobs.reconcile.steps.find(
+    (candidate) => candidate.name === "Verify live recovery guards",
+  );
+  assert.match(guard.run, /\/api\/health/);
+  assert.match(guard.run, /\.deployment_sha/);
+  assert.match(guard.run, /live_deploy_sha.*expected_deploy_sha/);
+  assert.match(guard.run, /git fetch --no-tags --depth=1 origin "\$live_deploy_sha"/);
+  assert.match(guard.run, /dashboard\/exact-review-queue\.ts/);
+  assert.match(guard.run, /live_guard_blob.*expected_guard_blob/);
+  const parked = scheduled.jobs.reconcile.steps.find(
+    (candidate) => candidate.name === "Reconcile terminal and open parked reviews",
+  );
+  assert.equal(
+    parked.env.CLAWSWEEPER_WEBHOOK_SECRET,
+    "${{ secrets.EXACT_REVIEW_OPERATOR_SECRET }}",
+  );
+  assert.equal(
+    parked.env.CLAWSWEEPER_APP_PRIVATE_KEY,
+    "${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}",
+  );
+  assert.equal(parked.env.EXACT_REVIEW_TARGET_TOKEN_MODE, "github-app");
+  assert.equal(parked.env.GH_TOKEN, undefined);
+  assert.equal(parked.env.GITHUB_TOKEN, "${{ github.token }}");
+  assert.match(parked.run, /--action reconcile-parked/);
+  assert.match(parked.run, /--max-targets "\$MAX_TARGETS"/);
+  assert.match(parked.run, /--max-recoveries 5/);
+  assert.match(parked.run, /parked-reviews\.json/);
+  const upload = scheduled.jobs.reconcile.steps.find(
+    (candidate) => candidate.name === "Upload sanitized inventory",
+  );
+  assert.match(upload.with.path, /inventory\.json/);
+  assert.match(upload.with.path, /parked-reviews\.json/);
   assert.doesNotMatch(source, /dead-letters\/replay/);
+});
+
+test("target-read App mode fails at startup for every incomplete credential pair", async () => {
+  const secret = "test-target-read-credential-validation";
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  let inventoryRequests = 0;
+  const server = createServer(async (request, response) => {
+    for await (const _chunk of request) {
+      // Drain the signed request body before replying.
+    }
+    inventoryRequests += 1;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ ok: true, dead_letters: [], next_cursor: null }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const queueUrl = `http://127.0.0.1:${address.port}`;
+  const directory = await mkdtemp(join(tmpdir(), "clawsweeper-target-read-credentials-"));
+  const commonEnv = {
+    EXACT_REVIEW_TARGET_TOKEN_MODE: "github-app",
+    CLAWSWEEPER_APP_ID: "",
+    CLAWSWEEPER_APP_CLIENT_ID: "",
+    CLAWSWEEPER_APP_PRIVATE_KEY: "",
+  };
+  try {
+    const matrix = [
+      {
+        name: "private key only",
+        env: { ...commonEnv, CLAWSWEEPER_APP_PRIVATE_KEY: privateKey },
+        missing: /missing CLAWSWEEPER_APP_CLIENT_ID or CLAWSWEEPER_APP_ID\n/,
+      },
+      {
+        name: "App id only",
+        env: { ...commonEnv, CLAWSWEEPER_APP_CLIENT_ID: "Iv23partial" },
+        missing: /missing CLAWSWEEPER_APP_PRIVATE_KEY\n/,
+      },
+      {
+        name: "neither credential",
+        env: commonEnv,
+        missing:
+          /missing CLAWSWEEPER_APP_CLIENT_ID or CLAWSWEEPER_APP_ID and CLAWSWEEPER_APP_PRIVATE_KEY\n/,
+      },
+    ];
+    const incompleteResults = [];
+    for (const scenario of matrix) {
+      incompleteResults.push({
+        scenario,
+        result: await runOperator(
+          ["--action", "inventory", "--output", join(directory, `${scenario.name}.json`)],
+          queueUrl,
+          secret,
+          scenario.env,
+        ),
+      });
+    }
+    assert.deepEqual(
+      incompleteResults.map(({ scenario, result }) => ({ name: scenario.name, code: result.code })),
+      matrix.map(({ name }) => ({ name, code: 1 })),
+    );
+    for (const { scenario, result } of incompleteResults) {
+      assert.match(result.stderr, scenario.missing, scenario.name);
+    }
+
+    const complete = await runOperator(
+      ["--action", "inventory", "--output", join(directory, "complete.json")],
+      queueUrl,
+      secret,
+      {
+        ...commonEnv,
+        CLAWSWEEPER_APP_CLIENT_ID: "Iv23complete",
+        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+      },
+    );
+    assert.equal(complete.code, 0, complete.stderr);
+
+    const actionsOptIn = await runOperator(
+      ["--action", "inventory", "--output", join(directory, "actions.json")],
+      queueUrl,
+      secret,
+      { ...commonEnv, EXACT_REVIEW_TARGET_TOKEN_MODE: "actions" },
+    );
+    assert.equal(actionsOptIn.code, 0, actionsOptIn.stderr);
+    assert.equal(inventoryRequests, 2);
+  } finally {
+    server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("parked review reconciliation plans by default and executes terminal resolve plus open recovery", async () => {
+  const secret = "test-parked-review-reconcile";
+  const mutations = [];
+  let queuePressure = "idle";
+  const parkedRows = [
+    parkedRow("openclaw/repo#1", "openclaw/repo", 1, 1_000),
+    parkedRow("openclaw/repo#2", "openclaw/repo", 2, 2_000),
+    parkedRow("gone/repo#3", "gone/repo", 3, 3_000),
+    {
+      ...parkedRow("openclaw/repo#4", "openclaw/repo", 4, 4_000),
+      excluded_reason: "command_context",
+    },
+    parkedRow("openclaw/repo#5", "openclaw/repo", 5, 5_000),
+  ];
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    if (request.url === "/api/exact-review-queue") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          pressure: {
+            status: queuePressure,
+            active: queuePressure === "idle" ? 0 : 128,
+            capacity: 128,
+          },
+        }),
+      );
+      return;
+    }
+    if (
+      request.url === "/repos/openclaw/repo/issues/1" ||
+      request.url === "/repos/openclaw/repo/issues/5"
+    ) {
+      const number = Number(request.url.split("/").at(-1));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          node_id: `ISSUE_${number}`,
+          state: "open",
+          number,
+          repository_url: "https://api.github.com/repos/openclaw/repo",
+        }),
+      );
+      return;
+    }
+    if (request.url === "/repos/openclaw/repo/issues/2") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          node_id: "ISSUE_2",
+          state: "closed",
+          number: 2,
+          repository_url: "https://api.github.com/repos/openclaw/repo",
+        }),
+      );
+      return;
+    }
+    if (request.url === "/repos/gone/repo/issues/3" || request.url === "/repos/gone/repo") {
+      response.writeHead(404, { "content-type": "application/json" });
+      response.end(JSON.stringify({ message: "Not Found" }));
+      return;
+    }
+    const body = Buffer.concat(chunks).toString("utf8");
+    const expected = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+    assert.equal(request.headers["x-clawsweeper-exact-review-signature"], expected);
+    const payload = JSON.parse(body);
+    if (request.url?.endsWith("/parked-reviews/list")) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true, parked_reviews: parkedRows, next_cursor: null }));
+      return;
+    }
+    mutations.push({ url: request.url, payload });
+    response.writeHead(200, { "content-type": "application/json" });
+    if (request.url?.endsWith("/recover-fresh")) {
+      response.end(
+        JSON.stringify({
+          ok: true,
+          recovered: payload.items.length,
+          deduped: 0,
+          skipped: 0,
+        }),
+      );
+    } else {
+      response.end(JSON.stringify({ ok: true, resolved: payload.items.length, skipped: 0 }));
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const directory = await mkdtemp(join(tmpdir(), "clawsweeper-parked-reconcile-"));
+  try {
+    const common = [
+      "--action",
+      "reconcile-parked",
+      "--max-targets",
+      "100",
+      "--max-recoveries",
+      "1",
+    ];
+    const planned = await runOperator(
+      [...common, "--output", join(directory, "planned.json")],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+    );
+    assert.equal(planned.code, 0, planned.stderr);
+    assert.deepEqual(JSON.parse(planned.stdout), {
+      action: "reconcile-parked",
+      dry_run: true,
+      inventory_complete: true,
+      queue_pressure: "idle",
+      inspected_targets: 4,
+      terminal_targets: 2,
+      repository_gone_targets: 1,
+      resolved_targets: 2,
+      open_targets: 2,
+      recovered_targets: 1,
+      skipped_targets: 2,
+      skip_reasons: { recovery_cap: 1 },
+      skip_samples: [],
+    });
+    assert.equal(mutations.length, 0);
+
+    const executed = await runOperator(
+      [...common, "--execute", "--output", join(directory, "executed.json")],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+    );
+    assert.equal(executed.code, 0, executed.stderr);
+    assert.deepEqual(JSON.parse(executed.stdout), {
+      action: "reconcile-parked",
+      dry_run: false,
+      inventory_complete: true,
+      queue_pressure: "idle",
+      inspected_targets: 4,
+      terminal_targets: 2,
+      repository_gone_targets: 1,
+      resolved_targets: 2,
+      open_targets: 2,
+      recovered_targets: 1,
+      skipped_targets: 2,
+      skip_reasons: { recovery_cap: 1 },
+      skip_samples: [],
+    });
+    assert.equal(mutations.filter((entry) => entry.url?.endsWith("/resolve")).length, 2);
+    const recovery = mutations.find((entry) => entry.url?.endsWith("/recover-fresh"));
+    assert.deepEqual(recovery.payload.items, [
+      { item_key: "openclaw/repo#1", revision: 1, updated_at_ms: 1_000 },
+    ]);
+    assert.match(recovery.payload.idempotency_key, /^parked-reconcile:[a-f0-9]{64}$/);
+
+    queuePressure = "saturated";
+    const pressureDeferred = await runOperator(
+      [
+        "--action",
+        "reconcile-parked",
+        "--max-targets",
+        "100",
+        "--max-recoveries",
+        "5",
+        "--output",
+        join(directory, "pressure-deferred.json"),
+      ],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+    );
+    assert.equal(pressureDeferred.code, 0, pressureDeferred.stderr);
+    assert.deepEqual(JSON.parse(pressureDeferred.stdout).skip_reasons, {
+      recovery_deferred_pressure: 2,
+    });
+    assert.equal(JSON.parse(pressureDeferred.stdout).skipped_targets, 3);
+
+    const artifact = JSON.parse(await readFile(join(directory, "executed.json"), "utf8"));
+    assert.deepEqual(artifact.summary, {
+      rows: 5,
+      by_reason: { review_retry_exhausted: 5 },
+    });
+    assert.equal(
+      artifact.parked_reviews.find((row) => row.item_key === "openclaw/repo#4").excluded_reason,
+      "command_context",
+    );
+    assert.equal(JSON.stringify(artifact).includes("test-parked-review-reconcile"), false);
+
+    const overCap = await runOperator(
+      ["--action", "reconcile-parked", "--max-recoveries", "6"],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+    );
+    assert.equal(overCap.code, 1);
+    assert.match(overCap.stderr, /between 0 and 5 for reconcile-parked/);
+  } finally {
+    server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("parked review reconciliation reports bounded HTTP and timeout skip diagnostics", async () => {
+  const secret = "test-parked-review-skip-reasons";
+  const parkedRows = [
+    parkedRow("openclaw/repo#1", "openclaw/repo", 1, 1_000),
+    parkedRow("openclaw/repo#2", "openclaw/repo", 2, 2_000),
+    parkedRow("openclaw/repo#3", "openclaw/repo", 3, 3_000),
+    parkedRow("openclaw/repo#4", "openclaw/repo", 4, 4_000),
+  ];
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    if (request.url === "/api/exact-review-queue") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ pressure: { status: "idle", active: 0, capacity: 128 } }));
+      return;
+    }
+    if (request.url === "/repos/openclaw/repo/issues/1") {
+      response.writeHead(403, { "content-type": "application/json" });
+      response.end(JSON.stringify({ message: "Resource not accessible by integration" }));
+      return;
+    }
+    const body = Buffer.concat(chunks).toString("utf8");
+    const expected = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+    assert.equal(request.headers["x-clawsweeper-exact-review-signature"], expected);
+    assert.ok(request.url?.endsWith("/parked-reviews/list"));
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ ok: true, parked_reviews: parkedRows, next_cursor: null }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const directory = await mkdtemp(join(tmpdir(), "clawsweeper-parked-skip-reasons-"));
+  try {
+    const preloadPath = join(directory, "timeout-fetch.mjs");
+    await writeFile(
+      preloadPath,
+      `const nativeFetch = globalThis.fetch;\n` +
+        `globalThis.fetch = (input, init) => /\\/issues\\/[2-4]$/.test(String(input))\n` +
+        `  ? Promise.reject(new DOMException("The operation was aborted due to timeout", "TimeoutError"))\n` +
+        `  : nativeFetch(input, init);\n`,
+      "utf8",
+    );
+    const result = await runOperator(
+      [
+        "--action",
+        "reconcile-parked",
+        "--max-targets",
+        "100",
+        "--output",
+        join(directory, "inventory.json"),
+      ],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+      { NODE_OPTIONS: `--import=${pathToFileURL(preloadPath).href}` },
+    );
+    assert.equal(result.code, 0, result.stderr);
+    const summary = JSON.parse(result.stdout);
+    assert.deepEqual(summary.skip_reasons, { http_403: 1, timeout: 3 });
+    assert.deepEqual(summary.skip_samples, [
+      {
+        target: "openclaw/repo#1",
+        reason:
+          "parked review target check failed for openclaw/repo#1 with 403: Resource not accessible by integration",
+      },
+      {
+        target: "openclaw/repo#2",
+        reason: "The operation was aborted due to timeout",
+      },
+      {
+        target: "openclaw/repo#3",
+        reason: "The operation was aborted due to timeout",
+      },
+    ]);
+    assert.equal(summary.inspected_targets, 4);
+    assert.equal(summary.skipped_targets, 4);
+  } finally {
+    server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("parked review reconciliation stops safely at the workflow deadline", async () => {
+  const secret = "test-parked-review-deadline";
+  const parkedRows = [
+    parkedRow("openclaw/repo#1", "openclaw/repo", 1, 1_000),
+    parkedRow("openclaw/repo#2", "openclaw/repo", 2, 2_000),
+    parkedRow("openclaw/repo#3", "openclaw/repo", 3, 3_000),
+  ];
+  const targetRequests: string[] = [];
+  const targetClosed = Promise.withResolvers<{ aborted: boolean; elapsedMs: number }>();
+  let mutations = 0;
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    if (request.url === "/api/exact-review-queue") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ pressure: { status: "idle", active: 0, capacity: 128 } }));
+      return;
+    }
+    if (request.url?.startsWith("/repos/openclaw/repo/issues/")) {
+      targetRequests.push(request.url);
+      const startedAt = Date.now();
+      const timer = setTimeout(() => {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ node_id: "ISSUE_DELAYED", state: "open", number: 1 }));
+      }, 5_000);
+      response.once("close", () => {
+        clearTimeout(timer);
+        targetClosed.resolve({
+          aborted: !response.writableEnded,
+          elapsedMs: Date.now() - startedAt,
+        });
+      });
+      return;
+    }
+    const body = Buffer.concat(chunks).toString("utf8");
+    const expected = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+    assert.equal(request.headers["x-clawsweeper-exact-review-signature"], expected);
+    if (request.url?.endsWith("/parked-reviews/list")) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true, parked_reviews: parkedRows, next_cursor: null }));
+      return;
+    }
+    mutations += 1;
+    response.writeHead(500, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: "unexpected_mutation" }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const directory = await mkdtemp(join(tmpdir(), "clawsweeper-parked-deadline-"));
+  try {
+    const preloadPath = join(directory, "deadline-clock.mjs");
+    const abortTracePath = join(directory, "target-abort.txt");
+    // Preparation must not consume the scenario's deadline. Advance the clock
+    // only when the real target request's native timeout fires.
+    await writeFile(
+      preloadPath,
+      `import { writeFileSync } from "node:fs";
+const deadlineAt = Number(process.env.EXACT_REVIEW_RECONCILE_DEADLINE_MS);
+let now = deadlineAt - 1_000;
+Date.now = () => now;
+const nativeFetch = globalThis.fetch;
+globalThis.fetch = (input, init) => {
+  if (new URL(input).pathname === "/repos/openclaw/repo/issues/1") {
+    init.signal.addEventListener("abort", () => {
+      now = deadlineAt;
+      writeFileSync(${JSON.stringify(abortTracePath)}, init.signal.reason.name);
+    }, { once: true });
+  }
+  return nativeFetch(input, init);
+};
+`,
+      "utf8",
+    );
+    const result = await runOperator(
+      [
+        "--action",
+        "reconcile-parked",
+        "--execute",
+        "--max-targets",
+        "100",
+        "--output",
+        join(directory, "deadline.json"),
+      ],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+      {
+        EXACT_REVIEW_RECONCILE_DEADLINE_MS: String(Date.now() + 1_000),
+        NODE_OPTIONS: `--import=${pathToFileURL(preloadPath).href}`,
+      },
+    );
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(targetRequests, ["/repos/openclaw/repo/issues/1"]);
+    const closed = await targetClosed.promise;
+    assert.equal(closed.aborted, true);
+    assert.ok(closed.elapsedMs < 2_500, "hung target request exceeded the deadline bound");
+    assert.equal(await readFile(abortTracePath, "utf8"), "TimeoutError");
+    assert.deepEqual(JSON.parse(result.stdout), {
+      action: "reconcile-parked",
+      dry_run: false,
+      inventory_complete: true,
+      queue_pressure: "idle",
+      inspected_targets: 1,
+      terminal_targets: 0,
+      repository_gone_targets: 0,
+      resolved_targets: 0,
+      open_targets: 0,
+      recovered_targets: 0,
+      skipped_targets: 3,
+      skip_reasons: {},
+      skip_samples: [],
+      deadline_reached: true,
+    });
+    assert.equal(mutations, 0);
+  } finally {
+    server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("automatic reconciliation resolves terminal rows and recovers one fresh review per target", async () => {
@@ -201,11 +742,21 @@ test("automatic reconciliation resolves terminal rows and recovers one fresh rev
       inspected_targets: 2,
       recovered_targets: 1,
       resolved_rows: 5,
+      supersession_checked_targets: 0,
+      superseded_targets: 0,
+      superseded_rows: 0,
       invalid_rows: 1,
       closed_rows: 2,
       duplicate_rows: 1,
       active_review_rows: 0,
       skipped_targets: 1,
+      skip_reasons: { active_work: 1 },
+      skip_samples: [
+        {
+          target: "openclaw/repo#3",
+          reason: "canonical target has active review or publication work",
+        },
+      ],
     });
     const recovery = mutations.filter((entry) => entry.url?.endsWith("/recover-fresh"));
     assert.equal(recovery.length, 1);
@@ -280,8 +831,10 @@ test("automatic reconciliation skips fresh recovery under pressure and enforces 
       secret,
     );
     assert.equal(result.code, 0, result.stderr);
-    assert.equal(JSON.parse(result.stdout).queue_pressure, "saturated");
-    assert.equal(JSON.parse(result.stdout).recovered_targets, 0);
+    const summary = JSON.parse(result.stdout);
+    assert.equal(summary.queue_pressure, "saturated");
+    assert.equal(summary.recovered_targets, 0);
+    assert.deepEqual(summary.skip_reasons, { recovery_deferred_pressure: 1 });
     assert.equal(recoveries, 0);
     for (const [flag, value] of [
       ["--max-targets", "0"],
@@ -457,6 +1010,7 @@ test("an unchanged blocked cleanup cannot starve independent fresh recovery", as
   });
 
   assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.doesNotMatch(scenario.first.stderr, /reconcile_skip_accounting_inconsistent/);
   const summary = JSON.parse(scenario.first.stdout);
   assert.equal(summary.inspected_targets, 2);
   assert.equal(summary.recovered_targets, 1);
@@ -681,6 +1235,10 @@ test("active and capped targets are counted only once across blocked inventory r
     const summary = JSON.parse(scenario.first.stdout);
     assert.equal(summary.recovered_targets, 1);
     assert.equal(summary.skipped_targets, 2);
+    assert.deepEqual(
+      summary.skip_reasons,
+      active ? { blocked_alias: 1, active_work: 1 } : { blocked_alias: 1, recovery_cap: 1 },
+    );
     assert.equal(scenario.inventoryRequests, 2);
   }
 });
@@ -1318,7 +1876,10 @@ test("incomplete bounded inventories drain invalid rows without recovering unkno
     pageSize: 20,
   });
   assert.equal(scenario.first.code, 0, scenario.first.stderr);
-  assert.equal(JSON.parse(scenario.first.stdout).inventory_complete, false);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.equal(summary.inventory_complete, false);
+  assert.deepEqual(summary.skip_reasons, { inventory_incomplete: 4_999 });
+  assertSkipAccountingComplete(summary);
   assert.equal(scenario.inventoryRequests, 250);
   assert.deepEqual(scenario.resolutions[0]?.ids, ["invalid"]);
   assert.equal(scenario.recoveries.length, 0);
@@ -1637,6 +2198,67 @@ test("100-target reconciliation batches canonical lookups within the GitHub toke
     scenario.recoveries.reduce((count, recovery) => count + recovery.ids.length, 0),
     10,
   );
+  assert.deepEqual(
+    new Set(scenario.targetReadAuthorizations),
+    new Set(["Bearer test-target-app-token"]),
+  );
+});
+
+test("batched canonical discovery skips a throttled batch and inspects later targets", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: Array.from({ length: 50 }, (_, index) =>
+      row(
+        `batch-${index + 1}`,
+        `publication:batch-${index + 1}`,
+        index + 1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        `openclaw/repo#${index + 1}`,
+      ),
+    ),
+    maxTargets: 100,
+    maxRecoveries: 10,
+    failGraphqlRequests: 1,
+    failedStatus: 403,
+    throttleFailures: true,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.deepEqual(summary.skip_reasons, { github_throttled: 40 });
+  assert.equal(summary.skipped_targets, 40);
+  assert.equal(summary.recovered_targets, 10);
+  assert.equal(scenario.graphqlRequests, 2);
+  assert.equal(scenario.restRequests, 10);
+});
+
+test("batched canonical discovery aborts on an authorization 403", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: Array.from({ length: 50 }, (_, index) =>
+      row(
+        `authorization-${index + 1}`,
+        `publication:authorization-${index + 1}`,
+        index + 1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        `openclaw/repo#${index + 1}`,
+      ),
+    ),
+    maxTargets: 100,
+    maxRecoveries: 10,
+    failGraphqlRequests: 1,
+    failedStatus: 403,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.deepEqual(summary.skip_reasons, { http_403: 40, not_inspected_abort: 10 });
+  assert.equal(summary.skipped_targets, 50);
+  assert.equal(summary.recovered_targets, 0);
+  assert.equal(scenario.graphqlRequests, 1);
+  assert.equal(scenario.restRequests, 0);
 });
 
 test("terminal target rechecks stay bounded for closed issues and pull requests", async () => {
@@ -1961,7 +2583,769 @@ test("inaccessible canonical targets cannot starve independently invalid dead le
   assert.equal(JSON.parse(scenario.first.stdout).invalid_rows, 1);
 });
 
-test("automatic recovery refuses a pull request whose current head has advanced", async () => {
+test("serial canonical discovery skips one throttle and recovers later targets", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row("first", "publication:first", 1, "retry_exhausted", true, "eligible", "openclaw/first#1"),
+      row(
+        "second",
+        "publication:second",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/second#2",
+      ),
+      row("third", "publication:third", 3, "retry_exhausted", true, "eligible", "openclaw/third#3"),
+    ],
+    failedRepository: "first",
+    failedStatus: 403,
+    throttleFailures: true,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.deepEqual(summary.skip_reasons, { github_throttled: 1 });
+  assert.deepEqual(summary.skip_samples, [
+    {
+      target: "openclaw/first#1",
+      reason:
+        "live target check failed for openclaw/first#1 (403): API rate limit exceeded for installation",
+    },
+  ]);
+  assert.equal(summary.skipped_targets, 1);
+  assert.equal(summary.recovered_targets, 2);
+  assert.equal(scenario.restRequests, 5);
+  assert.deepEqual(
+    scenario.recoveries.map((recovery) => recovery.ids),
+    [["second", "third"]],
+  );
+  assert.equal(scenario.resolutions.length, 0);
+});
+
+test("multi-owner reconciliation recovers installed targets and reports missing installations", async () => {
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "installed",
+        "publication:installed",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "installed-owner/repo#1",
+      ),
+      row(
+        "missing",
+        "publication:missing",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "missing-owner/repo#2",
+      ),
+    ],
+    targetInstallations: new Map([
+      ["installed-owner", { id: 123, token: "installed-owner-token" }],
+      ["missing-owner", null],
+    ]),
+    operatorEnv: {
+      GH_TOKEN: "",
+      EXACT_REVIEW_TARGET_TOKEN_MODE: "github-app",
+      CLAWSWEEPER_APP_CLIENT_ID: "Iv23multiowner",
+      CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+    },
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.equal(summary.recovered_targets, 1);
+  assert.equal(summary.skipped_targets, 1);
+  assert.deepEqual(summary.skip_reasons, { installation_missing: 1 });
+  assert.deepEqual(summary.skip_samples, [
+    {
+      target: "missing-owner/repo#2",
+      reason: "GitHub App installation is missing or revoked for missing-owner/repo",
+    },
+  ]);
+  assert.deepEqual(
+    scenario.recoveries.map((recovery) => recovery.ids),
+    [["installed"]],
+  );
+  assert.deepEqual(scenario.installationRequests, ["installed-owner/repo", "missing-owner/repo"]);
+  assert.deepEqual(scenario.tokenMintRequests, [123]);
+  assert.deepEqual(
+    new Set(scenario.targetReadAuthorizations),
+    new Set(["Bearer installed-owner-token"]),
+  );
+});
+
+test("a missing selected repository does not hide an accessible repository under the same owner", async () => {
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "missing",
+        "publication:missing",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "selected-owner/missing#1",
+      ),
+      row(
+        "accessible",
+        "publication:accessible",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "selected-owner/accessible#2",
+      ),
+    ],
+    targetInstallations: new Map([
+      ["selected-owner/missing", null],
+      ["selected-owner/accessible", { id: 124, token: "selected-owner-token" }],
+    ]),
+    operatorEnv: {
+      GH_TOKEN: "",
+      EXACT_REVIEW_TARGET_TOKEN_MODE: "github-app",
+      CLAWSWEEPER_APP_CLIENT_ID: "Iv23selectedrepos",
+      CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+    },
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.equal(summary.recovered_targets, 1);
+  assert.equal(summary.skipped_targets, 1);
+  assert.deepEqual(summary.skip_reasons, { installation_missing: 1 });
+  assert.deepEqual(
+    scenario.recoveries.map((recovery) => recovery.ids),
+    [["accessible"]],
+  );
+  assert.deepEqual(scenario.installationRequests, [
+    "selected-owner/missing",
+    "selected-owner/accessible",
+  ]);
+  assert.deepEqual(scenario.tokenMintRequests, [124]);
+  assert.deepEqual(
+    new Set(scenario.targetReadAuthorizations),
+    new Set(["Bearer selected-owner-token"]),
+  );
+});
+
+for (const failedStatus of [429, 403]) {
+  test(`throttled owner token mint ${failedStatus} skips that owner's targets and recovers another owner`, async () => {
+    const { privateKey } = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" },
+    });
+    const scenario = await automaticReconcileScenario({
+      rows: [
+        row(
+          "owner-a-first",
+          "publication:owner-a-first",
+          1,
+          "retry_exhausted",
+          true,
+          "eligible",
+          "owner-a/first#1",
+        ),
+        row(
+          "owner-a-second",
+          "publication:owner-a-second",
+          2,
+          "retry_exhausted",
+          true,
+          "eligible",
+          "owner-a/second#2",
+        ),
+        row(
+          "owner-a-third",
+          "publication:owner-a-third",
+          3,
+          "retry_exhausted",
+          true,
+          "eligible",
+          "owner-a/third#3",
+        ),
+        row(
+          "owner-b",
+          "publication:owner-b",
+          4,
+          "retry_exhausted",
+          true,
+          "eligible",
+          "owner-b/repo#4",
+        ),
+      ],
+      targetInstallations: new Map([
+        ["owner-a", { id: 201, token: "owner-a-token" }],
+        ["owner-b", { id: 202, token: "owner-b-token" }],
+      ]),
+      tokenMintFailures: new Map([[201, { status: failedStatus, throttle: true }]]),
+      operatorEnv: {
+        GH_TOKEN: "",
+        EXACT_REVIEW_TARGET_TOKEN_MODE: "github-app",
+        CLAWSWEEPER_APP_CLIENT_ID: "Iv23mintthrottle",
+        CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+      },
+    });
+
+    assert.equal(scenario.first.code, 0, scenario.first.stderr);
+    const summary = JSON.parse(scenario.first.stdout);
+    assert.equal(summary.recovered_targets, 1);
+    assert.equal(summary.skipped_targets, 3);
+    assert.deepEqual(summary.skip_reasons, { github_throttled: 3 });
+    assert.deepEqual(summary.skip_samples, [
+      {
+        target: "owner-a/first#1",
+        reason: `github_throttled scope=app_setup stage=token_mint owner=owner-a status=${failedStatus}`,
+      },
+      {
+        target: "owner-a/second#2",
+        reason: `github_throttled scope=app_setup stage=token_mint owner=owner-a status=${failedStatus}`,
+      },
+      {
+        target: "owner-a/third#3",
+        reason: `github_throttled scope=app_setup stage=token_mint owner=owner-a status=${failedStatus}`,
+      },
+    ]);
+    assert.deepEqual(
+      scenario.recoveries.map((recovery) => recovery.ids),
+      [["owner-b"]],
+    );
+    assert.deepEqual(scenario.installationRequests, ["owner-a/first", "owner-b/repo"]);
+    assert.deepEqual(scenario.tokenMintRequests, [201, 202]);
+    assert.deepEqual(new Set(scenario.targetReadAuthorizations), new Set(["Bearer owner-b-token"]));
+  });
+}
+
+test("throttled installation lookup skips that owner's targets and recovers another owner", async () => {
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "owner-a",
+        "publication:owner-a",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "owner-a/repo#1",
+      ),
+      row(
+        "owner-b",
+        "publication:owner-b",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "owner-b/repo#2",
+      ),
+    ],
+    targetInstallations: new Map([
+      ["owner-a", { id: 301, token: "owner-a-token" }],
+      ["owner-b", { id: 302, token: "owner-b-token" }],
+    ]),
+    installationFailures: new Map([["owner-a", { status: 403, throttle: true }]]),
+    operatorEnv: {
+      GH_TOKEN: "",
+      EXACT_REVIEW_TARGET_TOKEN_MODE: "github-app",
+      CLAWSWEEPER_APP_CLIENT_ID: "Iv23lookupthrottle",
+      CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+    },
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.equal(summary.recovered_targets, 1);
+  assert.equal(summary.skipped_targets, 1);
+  assert.deepEqual(summary.skip_reasons, { github_throttled: 1 });
+  assert.deepEqual(summary.skip_samples, [
+    {
+      target: "owner-a/repo#1",
+      reason: "github_throttled scope=app_setup stage=installation_lookup owner=owner-a status=403",
+    },
+  ]);
+  assert.deepEqual(scenario.installationRequests, ["owner-a/repo", "owner-b/repo"]);
+  assert.deepEqual(scenario.tokenMintRequests, [302]);
+  assert.deepEqual(
+    scenario.recoveries.map((recovery) => recovery.ids),
+    [["owner-b"]],
+  );
+});
+
+test("an installation removed before token mint remains a bounded missing-installation skip", async () => {
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "owner-a",
+        "publication:owner-a",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "owner-a/repo#1",
+      ),
+      row(
+        "owner-b",
+        "publication:owner-b",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "owner-b/repo#2",
+      ),
+    ],
+    targetInstallations: new Map([
+      ["owner-a", { id: 351, token: "owner-a-token" }],
+      ["owner-b", { id: 352, token: "owner-b-token" }],
+    ]),
+    tokenMintFailures: new Map([[351, { status: 404, throttle: false }]]),
+    operatorEnv: {
+      GH_TOKEN: "",
+      EXACT_REVIEW_TARGET_TOKEN_MODE: "github-app",
+      CLAWSWEEPER_APP_CLIENT_ID: "Iv23mintmissing",
+      CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+    },
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.equal(summary.recovered_targets, 1);
+  assert.equal(summary.skipped_targets, 1);
+  assert.deepEqual(summary.skip_reasons, { installation_missing: 1 });
+  assert.deepEqual(scenario.installationRequests, ["owner-a/repo", "owner-b/repo"]);
+  assert.deepEqual(scenario.tokenMintRequests, [351, 352]);
+  assert.deepEqual(
+    scenario.recoveries.map((recovery) => recovery.ids),
+    [["owner-b"]],
+  );
+});
+
+test("batched discovery skips a throttled owner setup and continues with another owner", async () => {
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "owner-a",
+        "publication:owner-a",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "owner-a/repo#1",
+      ),
+      ...Array.from({ length: 10 }, (_, index) =>
+        row(
+          `owner-b-${index + 1}`,
+          `publication:owner-b-${index + 1}`,
+          index + 2,
+          "retry_exhausted",
+          true,
+          "eligible",
+          `owner-b/repo-${index + 1}#${index + 2}`,
+        ),
+      ),
+    ],
+    maxTargets: 100,
+    maxRecoveries: 10,
+    targetInstallations: new Map([
+      ["owner-a", { id: 601, token: "owner-a-token" }],
+      ["owner-b", { id: 602, token: "owner-b-token" }],
+    ]),
+    tokenMintFailures: new Map([[601, { status: 403, throttle: true }]]),
+    operatorEnv: {
+      GH_TOKEN: "",
+      EXACT_REVIEW_TARGET_TOKEN_MODE: "github-app",
+      CLAWSWEEPER_APP_CLIENT_ID: "Iv23batchsetupthrottle",
+      CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+    },
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.equal(summary.recovered_targets, 10);
+  assert.equal(summary.skipped_targets, 1);
+  assert.deepEqual(summary.skip_reasons, { github_throttled: 1 });
+  assert.deepEqual(scenario.installationRequests, ["owner-a/repo", "owner-b/repo-1"]);
+  assert.deepEqual(scenario.tokenMintRequests, [601, 602]);
+  assert.equal(scenario.graphqlRequests, 1);
+  assert.deepEqual(new Set(scenario.targetReadAuthorizations), new Set(["Bearer owner-b-token"]));
+});
+
+test("a cached setup throttle spanning three batches counts once and later owners continue", async () => {
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      ...Array.from({ length: 81 }, (_, index) =>
+        row(
+          `owner-a-${index + 1}`,
+          `publication:owner-a-${index + 1}`,
+          index + 1,
+          "retry_exhausted",
+          true,
+          "eligible",
+          `owner-a/repo-${index + 1}#${index + 1}`,
+        ),
+      ),
+      row(
+        "owner-b",
+        "publication:owner-b",
+        82,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "owner-b/repo#82",
+      ),
+    ],
+    maxTargets: 100,
+    maxRecoveries: 10,
+    targetInstallations: new Map([
+      ["owner-a", { id: 701, token: "owner-a-token" }],
+      ["owner-b", { id: 702, token: "owner-b-token" }],
+    ]),
+    tokenMintFailures: new Map([[701, { status: 429, throttle: true }]]),
+    operatorEnv: {
+      GH_TOKEN: "",
+      EXACT_REVIEW_TARGET_TOKEN_MODE: "github-app",
+      CLAWSWEEPER_APP_CLIENT_ID: "Iv23cachedsetupthrottle",
+      CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+    },
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.equal(summary.recovered_targets, 1);
+  assert.equal(summary.skipped_targets, 81);
+  assert.deepEqual(summary.skip_reasons, { github_throttled: 81 });
+  assert.deepEqual(scenario.installationRequests, ["owner-a/repo-1", "owner-b/repo"]);
+  assert.deepEqual(scenario.tokenMintRequests, [701, 702]);
+  assert.equal(scenario.graphqlRequests, 1);
+  assert.deepEqual(
+    scenario.recoveries.map((recovery) => recovery.ids),
+    [["owner-b"]],
+  );
+});
+
+for (const stage of ["installation_lookup", "token_mint"]) {
+  for (const failedStatus of [401, 403]) {
+    test(`ordinary ${stage} ${failedStatus} remains fail-closed`, async () => {
+      const { privateKey } = generateKeyPairSync("rsa", {
+        modulusLength: 2048,
+        privateKeyEncoding: { type: "pkcs8", format: "pem" },
+        publicKeyEncoding: { type: "spki", format: "pem" },
+      });
+      const scenario = await automaticReconcileScenario({
+        rows: [
+          row(
+            "owner-a",
+            "publication:owner-a",
+            1,
+            "retry_exhausted",
+            true,
+            "eligible",
+            "owner-a/repo#1",
+          ),
+          row(
+            "owner-b",
+            "publication:owner-b",
+            2,
+            "retry_exhausted",
+            true,
+            "eligible",
+            "owner-b/repo#2",
+          ),
+        ],
+        targetInstallations: new Map([
+          ["owner-a", { id: 401, token: "owner-a-token" }],
+          ["owner-b", { id: 402, token: "owner-b-token" }],
+        ]),
+        ...(stage === "installation_lookup"
+          ? {
+              installationFailures: new Map([
+                ["owner-a", { status: failedStatus, throttle: false }],
+              ]),
+            }
+          : {
+              tokenMintFailures: new Map([[401, { status: failedStatus, throttle: false }]]),
+            }),
+        operatorEnv: {
+          GH_TOKEN: "",
+          EXACT_REVIEW_TARGET_TOKEN_MODE: "github-app",
+          CLAWSWEEPER_APP_CLIENT_ID: "Iv23setupauth",
+          CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+        },
+      });
+
+      assert.equal(scenario.first.code, 0, scenario.first.stderr);
+      const summary = JSON.parse(scenario.first.stdout);
+      assert.equal(summary.recovered_targets, 0);
+      assert.deepEqual(summary.skip_reasons, {
+        [failedStatus === 403 ? "http_403" : "http_4xx"]: 1,
+        not_inspected_abort: 1,
+      });
+      assert.deepEqual(scenario.installationRequests, ["owner-a/repo"]);
+      assert.deepEqual(scenario.tokenMintRequests, stage === "token_mint" ? [401] : []);
+    });
+  }
+}
+
+test("persistent setup throttling trips the shared fuse before another owner is attempted", async () => {
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const installations = new Map(
+    ["owner-a", "owner-b", "owner-c", "owner-d"].map((owner, index) => [
+      owner,
+      { id: 501 + index, token: `${owner}-token` },
+    ]),
+  );
+  const scenario = await automaticReconcileScenario({
+    rows: [...installations.keys()].map((owner, index) =>
+      row(
+        owner,
+        `publication:${owner}`,
+        index + 1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        `${owner}/repo#${index + 1}`,
+      ),
+    ),
+    targetInstallations: installations,
+    tokenMintFailures: new Map(
+      [...installations.values()].map(({ id }) => [id, { status: 429, throttle: true }]),
+    ),
+    operatorEnv: {
+      GH_TOKEN: "",
+      EXACT_REVIEW_TARGET_TOKEN_MODE: "github-app",
+      CLAWSWEEPER_APP_CLIENT_ID: "Iv23setupfuse",
+      CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+    },
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.equal(summary.recovered_targets, 0);
+  assert.deepEqual(summary.skip_reasons, { github_throttled: 3, not_inspected_abort: 1 });
+  assert.deepEqual(scenario.installationRequests, ["owner-a/repo", "owner-b/repo", "owner-c/repo"]);
+  assert.deepEqual(scenario.tokenMintRequests, [501, 502, 503]);
+  assert.equal(scenario.restRequests, 0);
+});
+
+test("authorization 403 with a valid owner installation remains fail-closed", async () => {
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row("first", "publication:first", 1, "retry_exhausted", true, "eligible", "owner/first#1"),
+      row("second", "publication:second", 2, "retry_exhausted", true, "eligible", "owner/second#2"),
+      row("third", "publication:third", 3, "retry_exhausted", true, "eligible", "owner/third#3"),
+    ],
+    targetInstallations: new Map([["owner", { id: 456, token: "owner-token" }]]),
+    operatorEnv: {
+      GH_TOKEN: "",
+      EXACT_REVIEW_TARGET_TOKEN_MODE: "github-app",
+      CLAWSWEEPER_APP_CLIENT_ID: "Iv23authorization",
+      CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+    },
+    failedRepository: "first",
+    failedStatus: 403,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.deepEqual(summary.skip_reasons, { http_403: 1, not_inspected_abort: 2 });
+  assert.equal(summary.recovered_targets, 0);
+  assert.deepEqual(scenario.installationRequests, ["owner/first"]);
+  assert.deepEqual(scenario.tokenMintRequests, [456]);
+  assert.deepEqual(new Set(scenario.targetReadAuthorizations), new Set(["Bearer owner-token"]));
+});
+
+test("serial canonical discovery aborts on an authorization 403", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row("first", "publication:first", 1, "retry_exhausted", true, "eligible", "openclaw/first#1"),
+      row(
+        "second",
+        "publication:second",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/second#2",
+      ),
+      row("third", "publication:third", 3, "retry_exhausted", true, "eligible", "openclaw/third#3"),
+    ],
+    failedRepository: "first",
+    failedStatus: 403,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.deepEqual(summary.skip_reasons, { http_403: 1, not_inspected_abort: 2 });
+  assert.equal(summary.skipped_targets, 3);
+  assert.equal(summary.recovered_targets, 0);
+  assert.equal(scenario.restRequests, 1);
+  assert.equal(scenario.recoveries.length, 0);
+});
+
+test("serial canonical discovery aborts after three consecutive throttles", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: Array.from({ length: 5 }, (_, index) =>
+      row(
+        `target-${index + 1}`,
+        `publication:target-${index + 1}`,
+        index + 1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        `openclaw/repo-${index + 1}#${index + 1}`,
+      ),
+    ),
+    failedRepositories: ["repo-1", "repo-2", "repo-3"],
+    failedStatus: 403,
+    throttleFailures: true,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.deepEqual(summary.skip_reasons, { github_throttled: 3, not_inspected_abort: 2 });
+  assert.equal(summary.skipped_targets, 5);
+  assert.equal(scenario.restRequests, 3);
+  assert.equal(scenario.recoveries.length, 0);
+});
+
+test("serial recovery revalidation skips one throttle and recovers later targets", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row("first", "publication:first", 1, "retry_exhausted", true, "eligible", "openclaw/repo#1"),
+      row(
+        "second",
+        "publication:second",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#2",
+      ),
+      row("third", "publication:third", 3, "retry_exhausted", true, "eligible", "openclaw/repo#3"),
+    ],
+    failTargetOnInspection: 1,
+    failedStatus: 403,
+    throttleFailures: true,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.deepEqual(summary.skip_reasons, { github_throttled: 1 });
+  assert.deepEqual(summary.skip_samples, [
+    {
+      target: "openclaw/repo#1",
+      reason:
+        "live target check failed for openclaw/repo#1 (403): API rate limit exceeded for installation",
+    },
+  ]);
+  assert.equal(summary.skipped_targets, 1);
+  assert.equal(summary.recovered_targets, 2);
+  assert.equal(scenario.restRequests, 6);
+  assert.deepEqual(
+    scenario.recoveries.map((recovery) => recovery.ids),
+    [["second", "third"]],
+  );
+  assert.equal(scenario.resolutions.length, 0);
+});
+
+test("serial recovery revalidation aborts on an authorization 403", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row("first", "publication:first", 1, "retry_exhausted", true, "eligible", "openclaw/repo#1"),
+      row(
+        "second",
+        "publication:second",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#2",
+      ),
+      row("third", "publication:third", 3, "retry_exhausted", true, "eligible", "openclaw/repo#3"),
+    ],
+    failTargetOnInspection: 1,
+    failedStatus: 403,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.deepEqual(summary.skip_reasons, { http_403: 1, not_inspected_abort: 2 });
+  assert.equal(summary.skipped_targets, 3);
+  assert.equal(summary.recovered_targets, 0);
+  assert.equal(scenario.restRequests, 4);
+  assert.equal(scenario.recoveries.length, 0);
+});
+
+test("serial recovery revalidation aborts after three consecutive throttles", async () => {
+  const scenario = await automaticReconcileScenario({
+    rows: Array.from({ length: 5 }, (_, index) =>
+      row(
+        `target-${index + 1}`,
+        `publication:target-${index + 1}`,
+        index + 1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        `openclaw/repo#${index + 1}`,
+      ),
+    ),
+    failTargetsOnInspection: [1, 2, 3],
+    failedStatus: 403,
+    throttleFailures: true,
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.deepEqual(summary.skip_reasons, { github_throttled: 3, not_inspected_abort: 2 });
+  assert.equal(summary.skipped_targets, 5);
+  assert.equal(scenario.restRequests, 8);
+  assert.equal(scenario.recoveries.length, 0);
+});
+
+test("automatic reconciliation leaves an advanced pull-request head open without canonical proof", async () => {
   const item = row(
     "stale",
     "publication:stale",
@@ -1980,6 +3364,244 @@ test("automatic recovery refuses a pull request whose current head has advanced"
   });
   assert.equal(scenario.first.code, 0, scenario.first.stderr);
   assert.equal(scenario.recoveries.length, 0);
+  assert.equal(scenario.resolutions.length, 0);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.deepEqual(summary.skip_reasons, { head_mismatch_unproven: 1 });
+  assert.deepEqual(summary.skip_samples, [
+    {
+      target: "openclaw/repo#7",
+      reason: "canonical completed review record was not found for the live pull-request head",
+    },
+  ]);
+
+  const staleCanonical = await automaticReconcileScenario({
+    rows: [item],
+    pullRequestHeads: new Map([[7, "b".repeat(40)]]),
+    canonicalRecords: new Map([[7, canonicalRecordEnvelope("openclaw/repo", 7, "c".repeat(40))]]),
+  });
+  assert.equal(staleCanonical.first.code, 0, staleCanonical.first.stderr);
+  assert.equal(staleCanonical.resolutions.length, 0);
+  assert.deepEqual(JSON.parse(staleCanonical.first.stdout).skip_reasons, {
+    head_mismatch_unproven: 1,
+  });
+  assert.equal(
+    JSON.parse(staleCanonical.first.stdout).skip_samples[0].reason,
+    "canonical completed review record does not prove the live pull-request head",
+  );
+});
+
+test("automatic reconciliation resolves a stale publication only with canonical newer-head proof", async () => {
+  const staleHead = "a".repeat(40);
+  const liveHead = "b".repeat(40);
+  const item = row(
+    "stale",
+    "publication:stale",
+    1,
+    "retry_exhausted",
+    true,
+    "eligible",
+    "openclaw/repo#7",
+  );
+  item.item = {
+    decision: { publication: { producerDecision: { sourceHeadSha: staleHead } } },
+  };
+  const scenario = await automaticReconcileScenario({
+    rows: [item],
+    pullRequestHeads: new Map([[7, liveHead]]),
+    canonicalRecords: new Map([[7, canonicalRecordEnvelope("openclaw/repo", 7, liveHead)]]),
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(scenario.recoveries.length, 0);
+  assert.equal(scenario.resolutions.length, 1);
+  assert.deepEqual(scenario.resolutions[0].ids, ["stale"]);
+  assert.equal(scenario.resolutions[0].resolution_outcome, "superseded");
+  assert.equal(
+    scenario.resolutions[0].note,
+    `automatic reconciliation: stale publication superseded by completed canonical record at newer head ${liveHead}; evidence=/internal/state/records/openclaw-repo/items/7`,
+  );
+  assert.deepEqual(scenario.canonicalRecordRequests, [
+    "/internal/state/records/openclaw-repo/items/7",
+  ]);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.equal(summary.superseded_targets, 1);
+  assert.equal(summary.superseded_rows, 1);
+  assert.equal(summary.skipped_targets, 0);
+  assert.deepEqual(summary.skip_reasons, {});
+});
+
+test("head-mismatch supersession revalidates the live head immediately before resolution", async () => {
+  const staleHead = "a".repeat(40);
+  const provenHead = "b".repeat(40);
+  const advancedHead = "c".repeat(40);
+  const item = row(
+    "stale-race",
+    "publication:stale-race",
+    1,
+    "retry_exhausted",
+    true,
+    "eligible",
+    "openclaw/repo#8",
+  );
+  item.item = {
+    decision: { publication: { producerDecision: { sourceHeadSha: staleHead } } },
+  };
+  const scenario = await automaticReconcileScenario({
+    rows: [item],
+    pullRequestHeads: new Map([[8, provenHead]]),
+    pullRequestHeadsAfterEvidence: new Map([[8, advancedHead]]),
+    canonicalRecords: new Map([[8, canonicalRecordEnvelope("openclaw/repo", 8, provenHead)]]),
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(scenario.resolutions.length, 0);
+  assert.equal(scenario.recoveries.length, 0);
+  assert.equal(scenario.restRequests, 4);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.deepEqual(summary.skip_reasons, { head_mismatch_revalidation_changed: 1 });
+  assert.deepEqual(summary.skip_samples, [
+    {
+      target: "openclaw/repo#8",
+      reason: "live pull-request identity or head changed after canonical supersession evidence",
+    },
+  ]);
+});
+
+test("head-mismatch supersession enforces target and row caps", async () => {
+  const staleHead = "a".repeat(40);
+  const liveHead = "b".repeat(40);
+  const targetRows = Array.from({ length: 11 }, (_, index) => {
+    const number = index + 1;
+    const item = row(
+      `stale-${number}`,
+      `publication:stale-${number}`,
+      number,
+      "retry_exhausted",
+      true,
+      "eligible",
+      `openclaw/repo#${number}`,
+    );
+    item.item = {
+      decision: { publication: { producerDecision: { sourceHeadSha: staleHead } } },
+    };
+    return item;
+  });
+  const targetCap = await automaticReconcileScenario({
+    rows: targetRows,
+    maxTargets: 20,
+    pullRequestHeads: new Map(targetRows.map((_, index) => [index + 1, liveHead])),
+    canonicalRecords: new Map(
+      targetRows.map((_, index) => [
+        index + 1,
+        canonicalRecordEnvelope("openclaw/repo", index + 1, liveHead),
+      ]),
+    ),
+  });
+  assert.equal(targetCap.first.code, 0, targetCap.first.stderr);
+  const targetSummary = JSON.parse(targetCap.first.stdout);
+  assert.equal(targetSummary.superseded_targets, 10);
+  assert.equal(targetSummary.superseded_rows, 10);
+  assert.equal(targetCap.resolutions.length, 10);
+  assert.equal(targetCap.canonicalRecordRequests.length, 10);
+  assert.deepEqual(targetSummary.skip_reasons, { head_mismatch_resolution_cap: 1 });
+
+  const rowCapRows = Array.from({ length: 21 }, (_, index) => {
+    const item = row(
+      `duplicate-${index + 1}`,
+      `publication:duplicate-${index + 1}`,
+      index + 1,
+      "retry_exhausted",
+      true,
+      "eligible",
+      "openclaw/repo#77",
+    );
+    item.item = {
+      decision: { publication: { producerDecision: { sourceHeadSha: staleHead } } },
+    };
+    return item;
+  });
+  const rowCap = await automaticReconcileScenario({
+    rows: rowCapRows,
+    pullRequestHeads: new Map([[77, liveHead]]),
+    canonicalRecords: new Map([[77, canonicalRecordEnvelope("openclaw/repo", 77, liveHead)]]),
+  });
+  assert.equal(rowCap.first.code, 0, rowCap.first.stderr);
+  const rowSummary = JSON.parse(rowCap.first.stdout);
+  assert.equal(rowSummary.superseded_targets, 1);
+  assert.equal(rowSummary.superseded_rows, 20);
+  assert.deepEqual(
+    rowCap.resolutions.map((resolution) => resolution.ids.length),
+    [20],
+  );
+  assert.deepEqual(rowSummary.skip_reasons, { head_mismatch_resolution_partial: 1 });
+});
+
+test("head-mismatch supersession includes proven tuple failures but excludes workflow cancellation", async () => {
+  const staleHead = "a".repeat(40);
+  const liveHead = "b".repeat(40);
+  const stale = (id, reason) => {
+    const item = row(id, `publication:${id}`, 1, reason, true, "eligible", "openclaw/repo#7");
+    item.item = {
+      decision: { publication: { producerDecision: { sourceHeadSha: staleHead } } },
+    };
+    return item;
+  };
+  const planned = await automaticReconcileScenario({
+    rows: [stale("retry", "retry_exhausted")],
+    execute: false,
+    pullRequestHeads: new Map([[7, liveHead]]),
+    canonicalRecords: new Map([[7, canonicalRecordEnvelope("openclaw/repo", 7, liveHead)]]),
+  });
+  assert.equal(planned.first.code, 0, planned.first.stderr);
+  assert.equal(planned.resolutions.length, 0);
+  assert.equal(JSON.parse(planned.first.stdout).dry_run, true);
+  assert.equal(JSON.parse(planned.first.stdout).superseded_rows, 1);
+
+  const excluded = await automaticReconcileScenario({
+    rows: [stale("cancelled", "workflow_cancelled"), stale("tuple", "tuple_protocol_invalid")],
+    pullRequestHeads: new Map([[7, liveHead]]),
+    canonicalRecords: new Map([[7, canonicalRecordEnvelope("openclaw/repo", 7, liveHead)]]),
+  });
+  assert.equal(excluded.first.code, 0, excluded.first.stderr);
+  assert.equal(excluded.resolutions.length, 1);
+  assert.deepEqual(excluded.resolutions[0].ids, ["tuple"]);
+  assert.equal(excluded.resolutions[0].resolution_outcome, "superseded");
+  assert.equal(excluded.canonicalRecordRequests.length, 1);
+  assert.deepEqual(JSON.parse(excluded.first.stdout).skip_reasons, {
+    head_mismatch_out_of_scope: 1,
+  });
+});
+
+test("automatic reconciliation recovers a current-head tuple failure instead of superseding it", async () => {
+  const liveHead = "b".repeat(40);
+  const item = row(
+    "tuple-current",
+    "publication:tuple-current",
+    1,
+    "tuple_protocol_invalid",
+    true,
+    "eligible",
+    "openclaw/repo#7",
+  );
+  item.item = {
+    decision: { publication: { producerDecision: { sourceHeadSha: liveHead } } },
+  };
+  const scenario = await automaticReconcileScenario({
+    rows: [item],
+    pullRequestHeads: new Map([[7, liveHead]]),
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  assert.equal(scenario.resolutions.length, 0);
+  assert.equal(scenario.canonicalRecordRequests.length, 0);
+  assert.deepEqual(
+    scenario.recoveries.map((recovery) => recovery.ids),
+    [["tuple-current"]],
+  );
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.equal(summary.recovered_targets, 1);
+  assert.equal(summary.superseded_targets, 0);
+  assert.deepEqual(summary.skip_reasons, {});
 });
 
 test("automatic recovery revalidates the live GitHub target after cleanup", async () => {
@@ -2009,6 +3631,272 @@ test("automatic recovery revalidates the live GitHub target after cleanup", asyn
   assert.equal(scenario.first.code, 0, scenario.first.stderr);
   assert.equal(scenario.resolutions.length, 1);
   assert.equal(scenario.recoveries.length, 0);
+  assert.deepEqual(JSON.parse(scenario.first.stdout).skip_reasons, {
+    closed_state_changed: 1,
+  });
+});
+
+test("automatic reconciliation classifies every deterministic skip path", async () => {
+  const blockedAlias = await automaticReconcileScenario({
+    rows: [
+      row(
+        "blocked",
+        "publication:blocked",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#1",
+      ),
+    ],
+    closedNumbers: [1],
+    blockedCleanupIds: ["blocked"],
+  });
+  assert.equal(blockedAlias.first.code, 0, blockedAlias.first.stderr);
+  assert.deepEqual(JSON.parse(blockedAlias.first.stdout).skip_reasons, { blocked_alias: 1 });
+
+  const terminalCap = await automaticReconcileScenario({
+    rows: Array.from({ length: 11 }, (_, index) =>
+      row(
+        `closed-${index + 1}`,
+        `publication:closed-${index + 1}`,
+        index + 1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        `openclaw/repo#${index + 1}`,
+      ),
+    ),
+    closedNumbers: Array.from({ length: 11 }, (_, index) => index + 1),
+    maxTargets: 20,
+  });
+  assert.equal(terminalCap.first.code, 0, terminalCap.first.stderr);
+  assert.deepEqual(JSON.parse(terminalCap.first.stdout).skip_reasons, {
+    terminal_recheck_cap: 1,
+  });
+
+  const inspectionCap = await automaticReconcileScenario({
+    rows: [
+      row("first", "publication:first", 1, "retry_exhausted", true, "eligible", "openclaw/repo#1"),
+      row(
+        "second",
+        "publication:second",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#2",
+      ),
+    ],
+    closedNumbers: [1, 2],
+    maxTargets: 1,
+  });
+  assert.equal(inspectionCap.first.code, 0, inspectionCap.first.stderr);
+  assert.deepEqual(JSON.parse(inspectionCap.first.stdout).skip_reasons, { inspection_cap: 1 });
+
+  const duplicatePartial = await automaticReconcileScenario({
+    rows: Array.from({ length: 22 }, (_, index) =>
+      row(
+        `duplicate-${index + 1}`,
+        `publication:duplicate-${index + 1}`,
+        index + 1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#7",
+      ),
+    ),
+  });
+  assert.equal(duplicatePartial.first.code, 0, duplicatePartial.first.stderr);
+  assert.deepEqual(JSON.parse(duplicatePartial.first.stdout).skip_reasons, {
+    duplicate_resolution_partial: 1,
+  });
+
+  const identityNotActionable = await automaticReconcileScenario({
+    rows: [
+      row(
+        "identity",
+        "publication:identity",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#1",
+      ),
+    ],
+    identityState: () => "unknown",
+  });
+  assert.equal(identityNotActionable.first.code, 0, identityNotActionable.first.stderr);
+  assert.deepEqual(JSON.parse(identityNotActionable.first.stdout).skip_reasons, {
+    identity_not_actionable: 1,
+  });
+
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const mixedIdentityFailure = await automaticReconcileScenario({
+    rows: [
+      row(
+        "missing-installation",
+        "publication:missing-installation",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "owner-a/repo#1",
+      ),
+      row(
+        "identity",
+        "publication:identity",
+        2,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "owner-b/repo#2",
+      ),
+    ],
+    targetInstallations: new Map([["owner-b", { id: 8147, token: "owner-b-token" }]]),
+    identityState: (number) => (number === 2 ? "unknown" : "open"),
+    operatorEnv: {
+      GH_TOKEN: "",
+      EXACT_REVIEW_TARGET_TOKEN_MODE: "github-app",
+      CLAWSWEEPER_APP_CLIENT_ID: "Iv23mixedidentity",
+      CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+    },
+  });
+  assert.equal(mixedIdentityFailure.first.code, 0, mixedIdentityFailure.first.stderr);
+  const mixedIdentitySummary = JSON.parse(mixedIdentityFailure.first.stdout);
+  assert.equal(mixedIdentitySummary.skipped_targets, 2);
+  assert.deepEqual(mixedIdentitySummary.skip_reasons, {
+    installation_missing: 1,
+    identity_not_actionable: 1,
+  });
+  assertSkipAccountingComplete(mixedIdentitySummary);
+
+  const discoveryFailed = await automaticReconcileScenario({
+    rows: Array.from({ length: 11 }, (_, index) =>
+      row(
+        `discovery-${index + 1}`,
+        `publication:discovery-${index + 1}`,
+        index + 1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        `openclaw/repo#${index + 1}`,
+      ),
+    ),
+    invalidGraphqlIdentity: 1,
+    maxTargets: 20,
+  });
+  assert.equal(discoveryFailed.first.code, 0, discoveryFailed.first.stderr);
+  assert.deepEqual(JSON.parse(discoveryFailed.first.stdout).skip_reasons, {
+    discovery_failed: 11,
+  });
+
+  const mutationSkipped = await automaticReconcileScenario({
+    rows: [
+      row(
+        "mutation",
+        "publication:mutation",
+        1,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#1",
+      ),
+    ],
+    skippedFirstRecovery: true,
+  });
+  assert.equal(mutationSkipped.first.code, 0, mutationSkipped.first.stderr);
+  assert.deepEqual(JSON.parse(mutationSkipped.first.stdout).skip_reasons, {
+    recovery_mutation_skipped: 1,
+  });
+});
+
+test("automatic reconciliation explains every skipped target in a mixed scenario", async () => {
+  const stale = row(
+    "stale",
+    "publication:stale",
+    3,
+    "retry_exhausted",
+    true,
+    "eligible",
+    "openclaw/repo#3",
+  );
+  stale.item = {
+    decision: { publication: { producerDecision: { sourceHeadSha: "a".repeat(40) } } },
+  };
+  const scenario = await automaticReconcileScenario({
+    rows: [
+      row(
+        "active",
+        "publication:active",
+        1,
+        "retry_exhausted",
+        false,
+        "fresh_review_already_active",
+        "openclaw/repo#1",
+      ),
+      row(
+        "ineligible",
+        "publication:ineligible",
+        2,
+        "retry_exhausted",
+        false,
+        "target_not_enabled",
+        "openclaw/repo#2",
+      ),
+      stale,
+      row(
+        "recover",
+        "publication:recover",
+        4,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#4",
+      ),
+      row(
+        "capacity",
+        "publication:capacity",
+        5,
+        "retry_exhausted",
+        true,
+        "eligible",
+        "openclaw/repo#5",
+      ),
+    ],
+    pullRequestHeads: new Map([[3, "b".repeat(40)]]),
+    pressureDetails: () => ({ active: 127, capacity: 128 }),
+  });
+
+  assert.equal(scenario.first.code, 0, scenario.first.stderr);
+  const summary = JSON.parse(scenario.first.stdout);
+  assert.deepEqual(summary.skip_reasons, {
+    active_work: 1,
+    no_eligible_rows: 1,
+    head_mismatch_unproven: 1,
+    recovery_capacity: 1,
+  });
+  assert.equal(summary.skipped_targets, 4);
+  assertSkipAccountingComplete(summary);
+  assert.ok(
+    summary.skip_samples.some(
+      (sample) =>
+        sample.target === "openclaw/repo#2" &&
+        sample.reason === "canonical target has no eligible dead-letter rows",
+    ),
+  );
+  assert.ok(
+    summary.skip_samples.some(
+      (sample) =>
+        sample.target === "openclaw/repo#3" &&
+        sample.reason ===
+          "canonical completed review record was not found for the live pull-request head",
+    ),
+  );
 });
 
 async function automaticReconcileScenario(options) {
@@ -2019,6 +3907,11 @@ async function automaticReconcileScenario(options) {
   let inventoryRequests = 0;
   let graphqlRequests = 0;
   let restRequests = 0;
+  const canonicalRecordRequests = [];
+  const targetReadAuthorizations = [];
+  const installationRequests = [];
+  const tokenMintRequests = [];
+  const restRequestsByNumber = new Map();
   let duplicateFailurePending = options.failFirstDuplicateCleanup === true;
   let duplicateSkipsRemaining =
     options.skipDuplicateCleanupCount ?? Number(options.skipFirstDuplicateCleanup === true);
@@ -2042,15 +3935,102 @@ async function automaticReconcileScenario(options) {
       );
       return;
     }
+    const canonicalRecordMatch =
+      /^\/internal\/state\/records\/openclaw-repo\/items\/([1-9]\d*)$/.exec(request.url ?? "");
+    if (canonicalRecordMatch) {
+      const expected = `sha256=${createHmac("sha256", secret).update("").digest("hex")}`;
+      assert.equal(request.method, "GET");
+      assert.equal(request.headers["x-clawsweeper-exact-review-signature"], expected);
+      canonicalRecordRequests.push(request.url);
+      const record = options.canonicalRecords?.get(Number(canonicalRecordMatch[1]));
+      response.writeHead(record ? 200 : 404, { "content-type": "application/json" });
+      response.end(JSON.stringify(record ?? { error: "record_not_found" }));
+      return;
+    }
+    const installationMatch = /^\/repos\/([^/]+)\/([^/]+)\/installation$/.exec(request.url ?? "");
+    if (installationMatch && options.targetInstallations) {
+      const [, owner, repo] = installationMatch;
+      installationRequests.push(`${owner}/${repo}`);
+      const failure = options.installationFailures?.get(owner.toLowerCase());
+      if (failure) {
+        response.writeHead(failure.status, {
+          "content-type": "application/json",
+          ...(failure.throttle ? { "x-ratelimit-remaining": "0" } : {}),
+        });
+        response.end(
+          JSON.stringify({
+            message: failure.throttle
+              ? "API rate limit exceeded for installation"
+              : "Resource not accessible by integration",
+          }),
+        );
+        return;
+      }
+      const repositoryKey = `${owner}/${repo}`.toLowerCase();
+      const installationKey = options.targetInstallations.has(repositoryKey)
+        ? repositoryKey
+        : owner.toLowerCase();
+      const installation = options.targetInstallations.get(installationKey);
+      if (!installation) {
+        response.writeHead(404, { "content-type": "application/json" });
+        response.end(JSON.stringify({ message: "Not Found" }));
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ id: installation.id }));
+      return;
+    }
+    const tokenMatch = /^\/app\/installations\/(\d+)\/access_tokens$/.exec(request.url ?? "");
+    if (tokenMatch && options.targetInstallations) {
+      const installationId = Number(tokenMatch[1]);
+      tokenMintRequests.push(installationId);
+      const failure = options.tokenMintFailures?.get(installationId);
+      if (failure) {
+        response.writeHead(failure.status, {
+          "content-type": "application/json",
+          ...(failure.throttle ? { "x-ratelimit-remaining": "0" } : {}),
+        });
+        response.end(
+          JSON.stringify({
+            message: failure.throttle
+              ? "API rate limit exceeded for installation"
+              : "Resource not accessible by integration",
+          }),
+        );
+        return;
+      }
+      const installation = [...options.targetInstallations.values()].find(
+        (candidate) => candidate?.id === installationId,
+      );
+      assert.ok(installation);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ token: installation.token }));
+      return;
+    }
     if (request.url === "/graphql") {
       graphqlRequests += 1;
+      targetReadAuthorizations.push(request.headers.authorization);
+      if (graphqlRequests <= (options.failGraphqlRequests ?? 0)) {
+        response.writeHead(options.failedStatus ?? 403, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            message: options.throttleFailures
+              ? "API rate limit exceeded for installation"
+              : "Resource not accessible by integration",
+          }),
+        );
+        return;
+      }
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       const data = {};
       for (const match of body.query.matchAll(
         /target(\d+):repository\(owner:"([^"]+)",name:"([^"]+)"\)\{item:issueOrPullRequest\(number:(\d+)\)/g,
       )) {
         const [, index, , repository, value] = match;
-        if (options.failedRepository === repository) {
+        if (
+          options.failedRepository === repository ||
+          options.failedRepositories?.includes(repository)
+        ) {
           response.writeHead(200, { "content-type": "application/json" });
           response.end(JSON.stringify({ data, errors: [{ message: "temporary" }] }));
           return;
@@ -2058,7 +4038,10 @@ async function automaticReconcileScenario(options) {
         const number = Number(value);
         data[`target${index}`] = {
           item: {
-            id: options.nodeId?.(number) ?? `ISSUE_${number}`,
+            id:
+              options.invalidGraphqlIdentity === number
+                ? null
+                : (options.nodeId?.(number) ?? `ISSUE_${number}`),
             state: options.reopenedNumbers?.includes(number)
               ? "CLOSED"
               : options.mergedNumbers?.includes(number)
@@ -2085,7 +4068,9 @@ async function automaticReconcileScenario(options) {
     }
     if (request.url?.startsWith("/repos/")) {
       restRequests += 1;
+      targetReadAuthorizations.push(request.headers.authorization);
       const number = Number(request.url.split("/").at(-1));
+      restRequestsByNumber.set(number, (restRequestsByNumber.get(number) || 0) + 1);
       if (request.url.includes("/pulls/")) {
         response.writeHead(200, { "content-type": "application/json" });
         response.end(
@@ -2096,30 +4081,51 @@ async function automaticReconcileScenario(options) {
               (options.closedNumbers?.includes(number) || options.mergedNumbers?.includes(number))
                 ? "closed"
                 : "open",
-            head: { sha: options.pullRequestHeads?.get(number) },
+            head: {
+              sha:
+                canonicalRecordRequests.length > 0 &&
+                options.pullRequestHeadsAfterEvidence?.has(number)
+                  ? options.pullRequestHeadsAfterEvidence.get(number)
+                  : options.pullRequestHeads?.get(number),
+            },
           }),
         );
         return;
       }
       if (
-        (options.failedRepository &&
-          request.url.includes(`/${options.failedRepository}/issues/`)) ||
+        ((options.failedRepository || options.failedRepositories) &&
+          [options.failedRepository, ...(options.failedRepositories ?? [])].some(
+            (repository) => repository && request.url.includes(`/${repository}/issues/`),
+          )) ||
+        ((options.failTargetOnInspection === number ||
+          options.failTargetsOnInspection?.includes(number)) &&
+          restRequestsByNumber.get(number) >= 2) ||
         (options.failTargetAfterCleanup === number && resolutions.length >= 2)
       ) {
-        response.writeHead(503, { "content-type": "application/json" });
-        response.end(JSON.stringify({ error: "temporary" }));
+        response.writeHead(options.failedStatus ?? 503, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            message: options.throttleFailures
+              ? "API rate limit exceeded for installation"
+              : options.failedStatus === 403
+                ? "Resource not accessible by integration"
+                : "temporary",
+          }),
+        );
         return;
       }
       response.writeHead(200, { "content-type": "application/json" });
       response.end(
         JSON.stringify({
-          state: options.reopenedNumbers?.includes(number)
-            ? "open"
-            : (options.closeAfterCleanup && resolutions.length) ||
-                options.mergedNumbers?.includes(number) ||
-                options.closedNumbers?.includes(number)
-              ? "closed"
-              : "open",
+          state:
+            options.identityState?.(number) ??
+            (options.reopenedNumbers?.includes(number)
+              ? "open"
+              : (options.closeAfterCleanup && resolutions.length) ||
+                  options.mergedNumbers?.includes(number) ||
+                  options.closedNumbers?.includes(number)
+                ? "closed"
+                : "open"),
           node_id: options.nodeId?.(number) ?? `ISSUE_${number}`,
           ...(options.canonicalTarget?.(number)
             ? {
@@ -2221,7 +4227,8 @@ async function automaticReconcileScenario(options) {
   const address = server.address();
   assert.ok(address && typeof address === "object");
   const directory = await mkdtemp(join(tmpdir(), "clawsweeper-dlq-scenario-"));
-  const args = ["--action", "reconcile", "--execute"];
+  const args = ["--action", "reconcile"];
+  if (options.execute !== false) args.push("--execute");
   if (!options.omitLimits) {
     args.push(
       "--max-targets",
@@ -2235,14 +4242,22 @@ async function automaticReconcileScenario(options) {
       [...args, "--output", join(directory, "first.json")],
       `http://127.0.0.1:${address.port}`,
       secret,
+      options.operatorEnv,
     );
     const second = options.repeat
       ? await runOperator(
           [...args, "--output", join(directory, "second.json")],
           `http://127.0.0.1:${address.port}`,
           secret,
+          options.operatorEnv,
         )
       : null;
+    if (first.code === 0) {
+      assert.doesNotMatch(first.stderr, /reconcile_skip_accounting_inconsistent/);
+    }
+    if (second?.code === 0) {
+      assert.doesNotMatch(second.stderr, /reconcile_skip_accounting_inconsistent/);
+    }
     return {
       first,
       second,
@@ -2251,11 +4266,35 @@ async function automaticReconcileScenario(options) {
       inventoryRequests,
       graphqlRequests,
       restRequests,
+      canonicalRecordRequests,
+      targetReadAuthorizations,
+      installationRequests,
+      tokenMintRequests,
     };
   } finally {
     server.close();
     await rm(directory, { recursive: true, force: true });
   }
+}
+
+function canonicalRecordEnvelope(repository, number, headSha, overrides = {}) {
+  const fields = {
+    number: String(number),
+    repository,
+    type: "pull_request",
+    pull_head_sha: headSha,
+    review_status: "complete",
+    ...overrides,
+  };
+  const content = `---\n${Object.entries(fields)
+    .map(([key, value]) => `${key}: ${value}`)
+    .join("\n")}\n---\n\nCanonical review.\n`;
+  return {
+    content,
+    digest: createHash("sha256").update(content).digest("hex"),
+    revision: 2,
+    updatedAt: "2026-08-12T23:00:00.000Z",
+  };
 }
 
 test("operator inventories every page, signs requests, and reports unique targets", async () => {
@@ -2352,7 +4391,7 @@ test("operator previews by default and caps mutations at two audited ids", async
     for await (const chunk of request) chunks.push(chunk);
     if (request.url?.toLowerCase().startsWith("/repos/openclaw/repo/issues/")) {
       const number = Number(request.url.split("/").at(-1));
-      assert.equal(request.headers.authorization, "Bearer test-github-token");
+      assert.equal(request.headers.authorization, "Bearer test-target-app-token");
       response.writeHead(200, { "content-type": "application/json" });
       response.end(
         JSON.stringify({
@@ -2589,7 +4628,30 @@ function row(
   };
 }
 
-function runOperator(args, queueUrl, secret) {
+function assertSkipAccountingComplete(summary) {
+  assert.equal(
+    Object.values(summary.skip_reasons).reduce((total, count) => total + count, 0),
+    summary.skipped_targets,
+  );
+}
+
+function parkedRow(itemKey, targetRepo, itemNumber, updatedAtMs) {
+  return {
+    item_key: itemKey,
+    revision: 1,
+    target_repo: targetRepo,
+    item_number: itemNumber,
+    item_kind: "issue",
+    parked_reason: "review_retry_exhausted",
+    parked_recovery_attempts: 3,
+    first_failed_at: "2026-08-09T00:00:00.000Z",
+    last_failure_reason: "review_retry_exhausted",
+    updated_at: new Date(updatedAtMs).toISOString(),
+    updated_at_ms: updatedAtMs,
+  };
+}
+
+function runOperator(args, queueUrl, secret, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(
       process.execPath,
@@ -2600,7 +4662,10 @@ function runOperator(args, queueUrl, secret) {
           EXACT_REVIEW_QUEUE_URL: queueUrl,
           CLAWSWEEPER_WEBHOOK_SECRET: secret,
           GITHUB_API_URL: queueUrl,
+          EXACT_REVIEW_TARGET_TOKEN_MODE: "actions",
+          GH_TOKEN: "test-target-app-token",
           GITHUB_TOKEN: "test-github-token",
+          ...extraEnv,
         },
         stdio: ["ignore", "pipe", "pipe"],
       },

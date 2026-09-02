@@ -1,4 +1,5 @@
 import { maintainerDecisionFromReport } from "./decision-packets.js";
+import { validReviewLeaseIdentity } from "./review-comment-markers.js";
 import { AUTOFIX_LABEL, AUTOMERGE_LABEL } from "./repair/exact-review-guard-labels.js";
 import type { ReviewCommentWorkflowDependencies } from "./clawsweeper-review-comment-dependencies.js";
 import type { createReviewCommentIdentity } from "./clawsweeper-review-comment-identity.js";
@@ -10,12 +11,12 @@ export function createReviewCommentAutomation(
   const {
     reportSecurityReview,
     reportReviewFindings,
-    reportOverallCorrectness,
     frontMatterValue,
     frontMatterStringArray,
     configSurfaceReviewRequired,
     dataModelSurfaceReviewRequired,
     realBehaviorProofBlocksMerge,
+    reportAttachedLiveVerification,
     pullHeadShaFromReport,
     pullRequestReviewReadinessFromReport,
     securitySensitiveRepairAllowed,
@@ -96,6 +97,7 @@ export function createReviewCommentAutomation(
     const reviewLeaseOwner = frontMatterValue(markdown, "review_lease_owner") ?? "unknown";
     const reviewLeaseCommentId = frontMatterValue(markdown, "review_lease_comment_id") ?? "unknown";
     const sourceRevision = frontMatterValue(markdown, "item_source_revision") ?? "unknown";
+    const liveVerification = reportAttachedLiveVerification(markdown).status;
     const baseAttrs = [
       `item=${markerAttributeValue(number)}`,
       `sha=${markerAttributeValue(headSha)}`,
@@ -105,12 +107,15 @@ export function createReviewCommentAutomation(
       `lease_owner=${markerAttributeValue(reviewLeaseOwner)}`,
       `lease_comment_id=${markerAttributeValue(reviewLeaseCommentId)}`,
       `source_revision=${markerAttributeValue(sourceRevision)}`,
+      `live_verification=${liveVerification}`,
     ].join(" ");
     const reviewReadiness =
       precomputedReadiness?.headSha === headSha.toLowerCase()
         ? precomputedReadiness
         : pullRequestReviewReadinessFromReport(markdown);
-    const hasDurableReviewIdentity = Boolean(reviewVersionMarkerFromReport(markdown));
+    const hasDurableReviewIdentity =
+      Boolean(reviewVersionMarkerFromReport(markdown)) &&
+      validReviewLeaseIdentity(reviewLeaseOwner, reviewLeaseCommentId);
     const reviewStateMarker =
       hasDurableReviewIdentity && hasExactItemNumber && /^[0-9a-f]{40}$/i.test(headSha)
         ? `<!-- clawsweeper-review-state:${reviewReadiness.state} ` +
@@ -221,14 +226,7 @@ export function createReviewCommentAutomation(
     const labels = frontMatterStringArray(markdown, "labels");
     return (
       (labels.includes(AUTOMERGE_LABEL) || labels.includes(AUTOFIX_LABEL)) &&
-      frontMatterValue(markdown, "review_status") === "complete" &&
-      frontMatterValue(markdown, "confidence") === "high" &&
-      frontMatterValue(markdown, "decision") === "keep_open" &&
-      !configSurfaceReviewRequired(markdown) &&
-      !dataModelSurfaceReviewRequired(markdown) &&
-      !realBehaviorProofBlocksMerge(markdown) &&
-      reportOverallCorrectness(markdown) === "patch is correct" &&
-      reportReviewFindings(markdown).length === 0
+      pullRequestReviewReadinessFromReport(markdown).state === "ready"
     );
   }
 

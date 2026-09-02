@@ -10,7 +10,6 @@ import {
   applyPhaseSequenceForTest,
   applyRuntimeBudgetYieldResultsForTest,
   classifyGitHubDispatchResultForTest,
-  combinedCodexReviewRetryableForTest,
   codexReviewFailureRetryableForTest,
   heldReviewStartStatusCommentResultForTest,
   isGitHubLabelAlreadyExistsErrorForTest,
@@ -501,7 +500,6 @@ test("review candidates start lazily and deferred items cannot remain active", (
     reviewLoop,
     /activeReviewMutationRunner = reviewMutationRunner\(reviewLedger, item\)/,
   );
-  assert.match(reviewLoop, /catch \(error\) \{\s*reviewItemFailed = true;\s*throw error;/);
   assert.match(
     reviewLoop,
     /finally \{[\s\S]*!reviewItemFailed[\s\S]*finishReviewActionLedgerItem\(\{[\s\S]*completionReason: "coordination_deferred"[\s\S]*activeReviewItem = null;/,
@@ -526,6 +524,25 @@ test("review candidates start lazily and deferred items cannot remain active", (
   assert.match(reviewBatchTerminal, /mutation: options\.ledger\.mutationObserved/);
 
   const reviewCommandStart = source.indexOf("function reviewCommand(args:");
+  const materializationHelper = source.indexOf(
+    "const preparePullRequestReviewTree =",
+    reviewCommandStart,
+  );
+  const exactHeadMaterialization = source.indexOf(
+    "materializePullRequestReviewTree({",
+    materializationHelper,
+  );
+  const contextCollection = source.indexOf("const context = localRangeData", reviewCommandStart);
+  const sourceAvailabilityGate = source.indexOf(
+    "preparePullRequestReviewTree(headSha)",
+    contextCollection,
+  );
+  const modelReview = source.indexOf("decision = runCodex({", sourceAvailabilityGate);
+  assert.ok(materializationHelper >= 0);
+  assert.ok(exactHeadMaterialization > materializationHelper);
+  assert.ok(contextCollection >= 0);
+  assert.ok(sourceAvailabilityGate > contextCollection);
+  assert.ok(modelReview > sourceAvailabilityGate);
   const reviewCatchStart = source.indexOf(
     "} catch (error) {\n      if (reviewLedger) {",
     reviewCommandStart,
@@ -574,7 +591,7 @@ test("apply receipts start per item and persist mutation observation before fina
     source,
     /const commentMutationOccurred = result\.commentMutationOccurred === true;[\s\S]*applyActionEventDisposition\([\s\S]*commentMutationOccurred,[\s\S]*reviewCommentPublicationEventDisposition\([\s\S]*commentMutationOccurred,/,
   );
-  assert.match(applyLoop, /executeApplyClose\(dependencies, \{/);
+  assert.match(applyLoop, /executeApplyClose\(\s*\{/);
   assert.match(
     readText("src/clawsweeper-apply-close-execution.ts"),
     /closeItem\(\{ number, kind: item\.kind/,
@@ -671,11 +688,14 @@ test("apply mutation receipts bind every GitHub request attempt and preserve no-
     readText("src/clawsweeper-label-mutations.ts"),
     readText("src/clawsweeper-label-operations.ts"),
   ].join("\n");
-  const labelCreates = labelSource.match(/identity: `label_create:/g) ?? [];
-  const labelNoMutationClassifiers =
-    labelSource.match(/knownNoMutation: labelAlreadyExistsError/g) ?? [];
-  assert.ok(labelCreates.length > 0);
-  assert.ok(labelNoMutationClassifiers.length >= labelCreates.length);
+  assert.match(
+    labelSource,
+    /identity: `\$\{force \? "label_upsert" : "label_create"\}:\$\{definition\.name\}`/,
+  );
+  assert.match(
+    labelSource,
+    /\.\.\.\(force \? \{\} : \{ knownNoMutation: labelAlreadyExistsError \}\)/,
+  );
   assert.match(source, /identity: `review_lease_post:/);
   assert.match(source, /identity: `review_lease_delete:/);
   assert.doesNotMatch(source, /identity: `apply_lease_acquire:/);
@@ -740,7 +760,7 @@ test("GitHub throttles abort apply lease checks and preserve durable lease owner
   );
   assert.match(
     applySource,
-    /if \(error instanceof GitHubRateLimitError\) \{[\s\S]*?activeApplyMutationLease = null;[\s\S]*?throw error;\s*\} finally \{\s*releaseActiveApplyMutationLease\(\);/,
+    /if \(error instanceof GitHubRateLimitError\) \{[\s\S]*?activeApplyMutationLease = null;[\s\S]*?throw error;\s*\} finally \{\s*discardIssueLabelBatch\(\);\s*releaseActiveApplyMutationLease\(\);/,
   );
 });
 
@@ -762,8 +782,41 @@ test("runtime yields bind the active item and terminal Codex failures preserve r
   );
   assert.equal(codexReviewFailureRetryableForTest(false), false);
   assert.equal(codexReviewFailureRetryableForTest(true), true);
-  assert.equal(combinedCodexReviewRetryableForTest(true, false), false);
-  assert.equal(combinedCodexReviewRetryableForTest(false, true), true);
+});
+
+test("blocked exact close publication discards staged labels before writing the report", () => {
+  const source = readText("src/clawsweeper-apply-decision-workflow.ts");
+  const blockedCloseStart = source.indexOf("if (closeBlockedForCommentSync) {");
+  const blockedCloseEnd = source.indexOf("clawSweeperLabelsChanged &&", blockedCloseStart);
+  const blockedClose = source.slice(blockedCloseStart, blockedCloseEnd);
+  const labelMutationResultStart = source.indexOf("const rememberLabelMutationResult =");
+  const labelMutationResultEnd = source.indexOf(
+    "const flushIssueLabelBatch =",
+    labelMutationResultStart,
+  );
+  const labelMutationResult = source.slice(labelMutationResultStart, labelMutationResultEnd);
+  const stagedLabelReceiptStart = source.indexOf("const rememberLabelMutationUpdatedAt =");
+  const stagedLabelReceiptEnd = source.indexOf(
+    "const previousApplyMutationRunner =",
+    stagedLabelReceiptStart,
+  );
+  const stagedLabelReceipt = source.slice(stagedLabelReceiptStart, stagedLabelReceiptEnd);
+
+  assert.ok(blockedCloseStart >= 0);
+  assert.ok(blockedCloseEnd > blockedCloseStart);
+  assert.match(
+    blockedClose,
+    /if \(!needsReviewCommentSync\) \{\s*discardIssueLabelBatch\(\);[\s\S]*?writeReportMarkdown\(path, markdown\);/,
+  );
+  assert.ok(labelMutationResultStart >= 0);
+  assert.ok(labelMutationResultEnd > labelMutationResultStart);
+  assert.match(labelMutationResult, /if \(confirmed\) rememberPublishedLabelSync\(\);/);
+  assert.match(labelMutationResult, /rememberSelfMutationUpdatedAt\(\);/);
+  assert.match(
+    stagedLabelReceipt,
+    /if \(issueLabelBatchActive\) deferredSelfMutationReceipt = true;/,
+  );
+  assert.doesNotMatch(stagedLabelReceipt, /"labels_synced_at"/);
 });
 
 test("retry dispatch outcomes distinguish definite rejection, ambiguity, and acceptance", () => {
@@ -1070,3 +1123,16 @@ function namedWorkflowStep(workflow: string, name: string): string {
   const end = workflow.indexOf("\n      - ", start + 1);
   return workflow.slice(start, end < 0 ? workflow.length : end);
 }
+
+test("the ledger distinguishes a blocked fallback from ordinary kept-open comment work", () => {
+  assert.deepEqual(reviewCommentPublicationEventDisposition("kept_open", true, false, true), {
+    status: "blocked",
+    reasonCode: "policy_blocked",
+    retryable: false,
+    mutation: true,
+    completionReason: "publication_size_limit",
+  });
+  assert.equal(reviewCommentPublicationEventDisposition("kept_open", true, false), null);
+  assert.equal(reviewCommentPublicationEventDisposition("kept_open", false, false, true), null);
+  assert.equal(reviewCommentPublicationEventDisposition("kept_open", true, true, true), null);
+});

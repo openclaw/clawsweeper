@@ -6,6 +6,7 @@ import {
   MATURITY_LABEL_NAMES,
   PROOF_OVERRIDE_LABEL,
 } from "./clawsweeper-policy.js";
+import { REVIEW_RECOVERY_STUCK_LABEL } from "./review-recovery-label-backfill.js";
 import type { GitInfo, Item, ItemContext } from "./clawsweeper-types.js";
 
 interface SourceRevisionDependencies {
@@ -141,6 +142,7 @@ export function createSourceRevisionTools({
         !["clawsweeper:human-review", "clawsweeper:manual-only", "clawsweeper:bulk-filed"].includes(
           label,
         )) ||
+      label === normalizeLabelName(REVIEW_RECOVERY_STUCK_LABEL) ||
       label === "no-stale" ||
       label === "stale"
     );
@@ -154,6 +156,7 @@ export function createSourceRevisionTools({
       label === "feature: ✨ showcase" ||
       label === GOOD_FIRST_ISSUE_LABEL ||
       label === "mantis: telegram-visible-proof" ||
+      label === "proof: telegram-e2e" ||
       label === "triage: needs-real-behavior-proof"
     );
   }

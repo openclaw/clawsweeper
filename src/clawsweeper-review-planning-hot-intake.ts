@@ -1,5 +1,6 @@
 import type { ExistingReview, Item } from "./clawsweeper-types.js";
 import {
+  compareReviewedPrActivityCursors,
   isReviewedPrActivityCursor,
   readStableReviewedPrActivityCursor,
 } from "./review-activity-cursor.js";
@@ -110,7 +111,12 @@ export function createReviewPlanningHotIntake(
       const revalidatedReviewActivityCursor = readStableReviewedPrActivityCursor(() =>
         fetchReviewedPrActivityCursor(item.number),
       );
-      if (revalidatedReviewActivityCursor !== reviewActivityCursor) return null;
+      if (
+        compareReviewedPrActivityCursors(revalidatedReviewActivityCursor, reviewActivityCursor) !==
+        "equal"
+      ) {
+        return null;
+      }
       return {
         headSha,
         sourceRevision: itemSourceRevisionSha256(pull, comments),
@@ -161,7 +167,10 @@ export function createReviewPlanningHotIntake(
       current.headSha === reviewed.headSha &&
       current.sourceRevision === reviewed.sourceRevision &&
       current.pullStateDigest === reviewed.pullStateDigest &&
-      current.reviewActivityCursor === reviewed.reviewActivityCursor
+      compareReviewedPrActivityCursors(
+        current.reviewActivityCursor,
+        reviewed.reviewActivityCursor,
+      ) === "equal"
     );
   }
   function shouldSkipScheduledHotIntakeExactReviewForTest(options: {
@@ -222,7 +231,10 @@ export function createReviewPlanningHotIntake(
       reviewed.headSha === options.currentHeadSha.trim().toLowerCase() &&
       reviewed.sourceRevision === options.currentSourceRevision.trim() &&
       reviewed.pullStateDigest === options.currentPullStateDigest.trim() &&
-      reviewed.reviewActivityCursor === options.currentReviewActivityCursor.trim()
+      compareReviewedPrActivityCursors(
+        reviewed.reviewActivityCursor,
+        options.currentReviewActivityCursor.trim(),
+      ) === "equal"
     );
   }
 

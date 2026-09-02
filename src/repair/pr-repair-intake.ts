@@ -6,7 +6,7 @@ import { ghJson } from "./github-cli.js";
 import { renderJobIntentFrontmatter } from "./job-intent.js";
 import { parseArgs, parseJob, repoRoot, validateJob } from "./lib.js";
 import { slug } from "./text-utils.js";
-import { repositoryProfileFor } from "../repository-profiles.js";
+import { configuredRepositoryProfileFor } from "../repository-profiles.js";
 
 type Signal = {
   kind: string;
@@ -202,11 +202,7 @@ function repoNameWithOwner(pr: AuthorSearchPullRequest): string {
 }
 
 function authorWideRepositoryDecision(targetRepo: string): AuthorWideRepositoryDecision {
-  try {
-    repositoryProfileFor(targetRepo);
-  } catch {
-    return { reason: "unsupported_profile" };
-  }
+  if (!configuredRepositoryProfileFor(targetRepo)) return { reason: "unsupported_profile" };
   try {
     const metadata = ghJson<LooseRecord>(["repo", "view", targetRepo, "--json", "isPrivate"]);
     if (metadata.isPrivate === true) return { reason: "private" };

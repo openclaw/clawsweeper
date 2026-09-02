@@ -12,7 +12,6 @@ import {
 import type { ReviewCommentWorkflowDependencies } from "./clawsweeper-review-comment-dependencies.js";
 import type { createReviewCommentIdentity } from "./clawsweeper-review-comment-identity.js";
 import type { createReviewCommentState } from "./clawsweeper-review-comment-state.js";
-import { trailingHtmlComments } from "./review-comment-markers.js";
 
 const DURABLE_REVIEW_COMMENT_MAX_BYTES = 60 * 1024;
 
@@ -20,6 +19,7 @@ export class DurableReviewPublicationBlockedError extends Error {
   constructor(
     message: string,
     readonly syncedComment: Record<string, unknown>,
+    readonly publishedBody: string,
   ) {
     super(message);
     this.name = "DurableReviewPublicationBlockedError";
@@ -55,9 +55,8 @@ export function createReviewCommentPublication(
     commentUpdatedAt,
     commentId,
     commentUrl,
-    commentBodyMatches,
     canPatchReviewComment,
-    durableReviewVersion,
+    isReviewPublicationReceipt,
     durableReviewCausalIdentityFromBody,
     identitylessPublicationFallback,
   } = dependencies;
@@ -167,21 +166,6 @@ export function createReviewCommentPublication(
     return commentPayloadFile;
   }
 
-  function markerForItem(
-    markers: readonly string[],
-    pattern: RegExp,
-    number: number,
-  ): string | undefined {
-    return [...markers].reverse().find((marker) => {
-      const match = marker.match(pattern);
-      return match && new RegExp(`\\bitem=${number}\\b`).test(match[1] ?? "");
-    });
-  }
-
-  function markerAttribute(attributes: string, name: string): string | undefined {
-    return attributes.match(new RegExp(`\\b${name}=([^\\s>]+)`, "i"))?.[1];
-  }
-
   function boundedReviewVersionMarker(
     number: number,
     identity: {
@@ -201,7 +185,7 @@ export function createReviewCommentPublication(
     }
     const attrs = [
       `item=${number}`,
-      `reviewed_at=${identity.reviewedAt}`,
+      `reviewed_at=${new Date(timestampMs(identity.reviewedAt)!).toISOString()}`,
       `sha=${identity.headSha?.toLowerCase() ?? "na"}`,
       ...(identity.sourceRevision &&
       /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(identity.sourceRevision)
@@ -220,138 +204,46 @@ export function createReviewCommentPublication(
     return `<!-- clawsweeper-review-version ${attrs} -->`;
   }
 
-  function oversizedReviewCommentFallback(
-    number: number,
-    body: string,
-    bodyBytes: number,
-    existing: Record<string, unknown> | undefined,
-  ): string {
-    const markers = trailingHtmlComments(body);
-    const versionMarker = markerForItem(
-      markers,
-      /^<!--\s+clawsweeper-review-version\b([^>]*)-->$/,
-      number,
-    );
-    const versionAttributes =
-      versionMarker?.match(/^<!--\s+clawsweeper-review-version\b([^>]*)-->$/)?.[1] ?? "";
-    const verdictMarker = markerForItem(
-      markers,
-      /^<!--\s+clawsweeper-verdict:[^\s>]+\b([^>]*)-->$/,
-      number,
-    );
-    const verdictAttributes =
-      verdictMarker?.match(/^<!--\s+clawsweeper-verdict:[^\s>]+\b([^>]*)-->$/)?.[1] ?? "";
-    const stateMarker = markerForItem(
-      markers,
-      /^<!--\s+clawsweeper-review-state:[^\s>]+\b([^>]*)-->$/,
-      number,
-    );
-    const stateAttributes =
-      stateMarker?.match(/^<!--\s+clawsweeper-review-state:[^\s>]+\b([^>]*)-->$/)?.[1] ?? "";
-    const exactHead =
-      stateAttributes.match(/\bsha=([0-9a-f]{40})\b/i)?.[1]?.toLowerCase() ??
-      verdictAttributes.match(/\bsha=([0-9a-f]{40})\b/i)?.[1]?.toLowerCase() ??
-      versionAttributes.match(/\bsha=([0-9a-f]{40})\b/i)?.[1]?.toLowerCase();
-    const sourceReviewedAt = markerAttribute(versionAttributes, "reviewed_at");
-    const sourceHead = markerAttribute(versionAttributes, "sha");
-    const sourceIdentity =
-      sourceReviewedAt &&
-      timestampMs(sourceReviewedAt) !== null &&
-      markerAttribute(versionAttributes, "v") === "1" &&
-      (exactHead ? sourceHead?.toLowerCase() === exactHead : sourceHead === "na")
-        ? {
-            reviewedAt: sourceReviewedAt,
-            headSha: exactHead ?? null,
-            sourceRevision: markerAttribute(versionAttributes, "source_revision") ?? null,
-            leaseOwner: markerAttribute(versionAttributes, "lease_owner") ?? null,
-            leaseCommentId: markerAttribute(versionAttributes, "lease_comment_id") ?? null,
-          }
-        : null;
-    const existingVersion = sourceIdentity ? null : durableReviewVersion(existing, number);
-    // Reuse only the same-head identity of the authoritative comment being
-    // replaced. Never invent a review timestamp for malformed report metadata.
-    const selectedReviewVersion =
-      sourceIdentity ??
-      (exactHead
-        ? existingVersion?.headSha?.toLowerCase() === exactHead
-          ? existingVersion
-          : null
-        : existingVersion?.headSha === null
-          ? existingVersion
-          : null);
-    const selectedReviewedAtMs = selectedReviewVersion
-      ? timestampMs(selectedReviewVersion.reviewedAt)
-      : null;
-    const reviewVersion =
-      selectedReviewVersion && selectedReviewedAtMs !== null
-        ? {
-            ...selectedReviewVersion,
-            reviewedAt: new Date(selectedReviewedAtMs).toISOString(),
-          }
-        : null;
-    const blockedVerdict = [
-      `item=${number}`,
-      ...(exactHead ? [`sha=${exactHead}`] : []),
-      ...(reviewVersion ? [`reviewed_at=${reviewVersion.reviewedAt}`] : []),
-    ].join(" ");
-    const blockedState =
-      exactHead && reviewVersion
-        ? `<!-- clawsweeper-review-state:blocked item=${number} sha=${exactHead} v=1 -->`
-        : "";
-    const boundedVersion = boundedReviewVersionMarker(number, reviewVersion);
-    const fallback = [
-      "Codex review: publication failed closed.",
-      "",
-      "# ClawSweeper review",
-      "",
-      "## What this changes",
-      "",
-      "The generated durable review exceeded the bounded GitHub publication size.",
-      "",
-      "## Merge readiness",
-      "",
-      "**Blocked by review publication failure - 1 item remains**",
-      "",
-      reviewVersion
-        ? "The previous same-head verdict is not authoritative. ClawSweeper replaced it with this bounded blocked state and stopped the apply path."
-        : "ClawSweeper stopped the apply path because it could not publish an authoritative same-head blocked state.",
-      "",
-      "## Before merge",
-      "",
-      "- [ ] **Retry bounded review publication (P2)** - Reduce or compact the generated review, then run a fresh exact-head review before merge.",
-      "",
-      "## Findings",
-      "",
-      `- [P2] Durable review body was ${bodyBytes} bytes; the publication limit is ${DURABLE_REVIEW_COMMENT_MAX_BYTES} bytes.`,
-      "",
-      `<!-- clawsweeper-verdict:needs-human ${blockedVerdict} -->`,
-      blockedState,
-      boundedVersion,
-    ]
-      .filter(Boolean)
-      .join("\n");
-    const markedFallback = markedReviewCommentBody(number, fallback);
-    if (Buffer.byteLength(markedFallback, "utf8") <= DURABLE_REVIEW_COMMENT_MAX_BYTES) {
-      return markedFallback;
-    }
-    const minimalFallback = markedReviewCommentBody(
+  function oversizedReviewCommentFallback(number: number, body: string, bodyBytes: number): string {
+    const identity = durableReviewCausalIdentityFromBody(body, number);
+    const version = identity
+      ? boundedReviewVersionMarker(number, {
+          ...identity,
+          leaseCommentId: String(identity.leaseCommentId),
+        })
+      : "";
+    const fallback = markedReviewCommentBody(
       number,
       [
         "Codex review: publication failed closed.",
         "",
+        "# ClawSweeper review",
+        "",
+        "## Merge readiness",
+        "",
         "**Blocked by review publication failure.**",
         "",
-        `<!-- clawsweeper-verdict:needs-human item=${number}${exactHead ? ` sha=${exactHead}` : ""} -->`,
-        blockedState,
-        boundedVersion,
+        `The generated review was ${bodyBytes} bytes; GitHub publication is bounded to ${DURABLE_REVIEW_COMMENT_MAX_BYTES} bytes. The item remains open.`,
+        "",
+        "## Before merge",
+        "",
+        "- [ ] **Retry bounded review publication (P2)** - Reduce the generated review and run a fresh review before merge.",
+        "",
+        `<!-- clawsweeper-verdict:needs-human item=${number}${identity?.headSha ? ` sha=${identity.headSha}` : ""} -->`,
+        identity?.headSha
+          ? `<!-- clawsweeper-review-state:blocked item=${number} sha=${identity.headSha} v=1 -->`
+          : "",
+        version,
       ]
         .filter(Boolean)
         .join("\n"),
     );
-    if (Buffer.byteLength(minimalFallback, "utf8") <= DURABLE_REVIEW_COMMENT_MAX_BYTES) {
-      return minimalFallback;
+    if (Buffer.byteLength(fallback, "utf8") > DURABLE_REVIEW_COMMENT_MAX_BYTES) {
+      throw new Error(
+        `bounded durable review fallback for #${number} exceeds the publication limit`,
+      );
     }
-    throw new Error(`bounded durable review fallback for #${number} exceeds the publication limit`);
+    return fallback;
   }
 
   function upsertReviewComment(
@@ -364,7 +256,7 @@ export function createReviewCommentPublication(
     const bodyBytes = Buffer.byteLength(markedBody, "utf8");
     const oversized = bodyBytes > DURABLE_REVIEW_COMMENT_MAX_BYTES;
     const publicationBody = oversized
-      ? oversizedReviewCommentFallback(number, markedBody, bodyBytes, existing)
+      ? oversizedReviewCommentFallback(number, markedBody, bodyBytes)
       : markedBody;
     const id = commentId(existing);
     if (id !== null && identitylessPublicationFallback(number, existing)) {
@@ -411,22 +303,21 @@ export function createReviewCommentPublication(
         isGitHubRequiresAuthenticationError(error) || isLockedConversationCommentError(error),
     });
     const written = reviewCommentFromMutationResponse(response, args);
-    const writtenId = commentId(written);
-    // Comment identity alone cannot authorize duplicate cleanup. The mutation
-    // response must expose the exact body requested by this write.
-    const verifiedWritten =
-      writtenId !== null &&
-      (patchTargetId === null || writtenId === patchTargetId) &&
-      commentBodyMatches(written, publicationBody)
-        ? written
-        : undefined;
+    const verifiedWritten = isReviewPublicationReceipt(
+      written,
+      publicationBody,
+      patchTargetId ?? undefined,
+    )
+      ? written
+      : undefined;
     const synced =
       verifiedWritten ??
       issueReviewCommentWithBody(number, publicationBody, patchTargetId ?? undefined);
     if (synced && oversized) {
       throw new DurableReviewPublicationBlockedError(
-        `durable review comment for #${number} exceeded ${DURABLE_REVIEW_COMMENT_MAX_BYTES} bytes; published a blocked fallback and stopped apply`,
+        `durable review comment for #${number} exceeded ${DURABLE_REVIEW_COMMENT_MAX_BYTES} bytes; published a blocked fallback and kept the item open`,
         synced,
+        publicationBody,
       );
     }
     if (synced) return synced;
@@ -459,27 +350,39 @@ export function createReviewCommentPublication(
   function issueCommentWithMarker(
     number: number,
     marker: string,
+    expectedBody?: string,
   ): Record<string, unknown> | undefined {
     const comments = ghPaged<unknown>(`repos/${targetRepo()}/issues/${number}/comments`).map(
       asRecord,
     );
-    return comments.find((candidate) => {
+    const marked = comments.filter((candidate) => {
       const body = candidate.body;
       return typeof body === "string" && body.includes(marker);
     });
+    // A marker and body are both predictable and therefore not ownership proof.
+    // Prefer an exact ClawSweeper receipt, then another owned marker as an
+    // update target. This avoids selecting a spoofed marker forever and posting
+    // a duplicate on every retry.
+    if (expectedBody) {
+      const matching = marked.find(
+        (candidate) => candidate.body === expectedBody && canPatchReviewComment(candidate),
+      );
+      if (matching) return matching;
+    }
+    return marked.find(canPatchReviewComment);
   }
 
   function closeAppliedEvidenceLink(markdown: string, itemUrl: string): string {
-    const reviewCommentUrl = frontMatterValue(markdown, "review_comment_url");
-    if (reviewCommentUrl && reviewCommentUrl !== "unknown") {
-      return markdownLink("durable ClawSweeper review", reviewCommentUrl);
-    }
     const fixedPrUrl = frontMatterValue(markdown, "fixed_pr_url");
     const fixedPrNumber = frontMatterValue(markdown, "fixed_pr_number");
     if (fixedPrUrl && fixedPrUrl !== "unknown") {
       const label =
         fixedPrNumber && fixedPrNumber !== "unknown" ? `fix PR #${fixedPrNumber}` : "fix PR";
       return markdownLink(label, fixedPrUrl);
+    }
+    const reviewCommentUrl = frontMatterValue(markdown, "review_comment_url");
+    if (reviewCommentUrl && reviewCommentUrl !== "unknown") {
+      return markdownLink("durable ClawSweeper review", reviewCommentUrl);
     }
     return markdownLink("closed PR", itemUrl);
   }
@@ -491,12 +394,25 @@ export function createReviewCommentPublication(
     itemUrl: string;
   }): string {
     const coverageProofLine = closeAppliedCoverageProofLine(options.markdown);
+    const implementationBasedPrClose = [
+      "implemented_on_main",
+      "mostly_implemented_on_main",
+    ].includes(options.closeReason);
+    const reviewCommentUrl = frontMatterValue(options.markdown, "review_comment_url");
+    const closeEvidence = implementationBasedPrClose
+      ? closeAppliedEvidenceLink(options.markdown, options.itemUrl)
+      : markdownLink(
+          "durable ClawSweeper review",
+          reviewCommentUrl && reviewCommentUrl !== "unknown" ? reviewCommentUrl : options.itemUrl,
+        );
     return [
-      "ClawSweeper applied the proposed close for this PR.",
+      implementationBasedPrClose
+        ? "ClawSweeper recorded implementation evidence for this proposed close."
+        : "ClawSweeper recorded closeout evidence for this proposed close.",
       "",
-      "- Action: closed this PR.",
+      "- Action: close remains subject to final live verification.",
       `- Close reason: ${closeReasonText(options.closeReason)}.`,
-      `- Evidence: ${closeAppliedEvidenceLink(options.markdown, options.itemUrl)}.`,
+      `${implementationBasedPrClose ? "Implementation" : "Review"} evidence: ${closeEvidence}.`,
       coverageProofLine,
       "",
       closeAppliedCommentMarker(options.number),
@@ -524,24 +440,38 @@ export function createReviewCommentPublication(
     dryRun: boolean;
   }): string {
     const marker = closeAppliedCommentMarker(options.number);
-    if (issueCommentWithMarker(options.number, marker)) {
+    const body = renderCloseAppliedComment(options);
+    const existing = issueCommentWithMarker(options.number, marker, body);
+    if (existing?.body === body) {
       return "matching ClawSweeper close-applied comment already exists";
     }
-    const body = renderCloseAppliedComment(options);
     if (options.dryRun) return "dry-run: would post close-applied comment";
     const payload = writeCommentPayload(options.number, body);
+    const existingId = commentId(existing);
+    const updateExisting = existingId !== null && canPatchReviewComment(existing);
     ghObservedMutationCommand({
       identity: `close_applied_comment:${options.number}:${sha256(body)}`,
-      args: [
-        "api",
-        `repos/${targetRepo()}/issues/${options.number}/comments`,
-        "--method",
-        "POST",
-        "--input",
-        payload,
-      ],
+      args: updateExisting
+        ? [
+            "api",
+            `repos/${targetRepo()}/issues/comments/${existingId}`,
+            "--method",
+            "PATCH",
+            "--input",
+            payload,
+          ]
+        : [
+            "api",
+            `repos/${targetRepo()}/issues/${options.number}/comments`,
+            "--method",
+            "POST",
+            "--input",
+            payload,
+          ],
+      knownNoMutation: (error) =>
+        isGitHubRequiresAuthenticationError(error) || isLockedConversationCommentError(error),
     });
-    return "posted close-applied comment";
+    return updateExisting ? "updated close-applied comment" : "posted close-applied comment";
   }
 
   return {

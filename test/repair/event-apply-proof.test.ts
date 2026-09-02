@@ -427,6 +427,7 @@ test("exact event proof requeues only the guarded legacy tuple-less artifact pat
 
   assert.equal(legacy.legacyTuplelessReviewLease, true);
   assert.equal(newerVerdict.legacyTuplelessReviewLease, false);
+  assert.equal(newerVerdict.disposition, "unproven");
   assert.equal(
     eventApplyRequeueLatestExpected({
       disposition: legacy.disposition,
@@ -443,6 +444,35 @@ test("exact event proof requeues only the guarded legacy tuple-less artifact pat
     }),
     false,
   );
+});
+
+test("exact event proof supersedes only one explicitly verified newer durable tuple", () => {
+  const verified = eventApplyAction({
+    number: 42,
+    action: "skipped_stale_review_comment_sync",
+    reason:
+      "live durable review tuple is newer than the local report: comment lease=9200, report lease=9100",
+    newerReviewTupleVerified: true,
+  });
+  assert.equal(exactEventApplyProof([verified], 42).disposition, "superseded");
+
+  for (const actions of [
+    [
+      eventApplyAction({
+        number: 42,
+        action: "skipped_stale_review_comment_sync",
+        newerReviewTupleVerified: false,
+      }),
+    ],
+    [verified, eventApplyAction({ number: 42, action: "skipped_runtime_budget" })],
+    [verified, eventApplyAction({ number: 43, action: "kept_open" })],
+    [
+      verified,
+      eventApplyAction({ number: 42, action: "review_comment_synced", durableReviewSynced: true }),
+    ],
+  ]) {
+    assert.equal(exactEventApplyProof(actions, 42).disposition, "unproven");
+  }
 });
 
 test("guarded-open proof rejects mismatches, extra results, and transient skips", () => {
@@ -541,4 +571,34 @@ test("verified source drift overrides an earlier durable sync", () => {
 
   assert.equal(verified.disposition, "source_drift");
   assert.equal(unverified.disposition, "unproven");
+});
+
+test("a verified blocked publication proves guarded open without claiming a complete review", () => {
+  const fallback = eventApplyAction({
+    number: 1059,
+    action: "kept_open",
+    commentMutationOccurred: true,
+    guardedOpenStateVerified: true,
+  });
+  const proof = exactEventApplyProof([fallback], 1059, "kept_open");
+  assert.equal(proof.guardedOpenAction, "kept_open");
+  assert.equal(proof.syncedCount, 0);
+  assert.equal(proof.terminalCount, 0);
+  assert.equal(proof.activeReviewLeaseRetryAt, null);
+  for (const unverified of [
+    { ...fallback, commentMutationOccurred: false },
+    { ...fallback, guardedOpenStateVerified: false },
+    { ...fallback, action: "review_comment_synced" },
+  ]) {
+    assert.equal(exactEventApplyProof([unverified], 1059, "kept_open").guardedOpenAction, null);
+  }
+  assert.equal(
+    exactEventApplyProof([fallback], 1059, "review_comment_synced").guardedOpenAction,
+    null,
+  );
+  assert.equal(exactEventApplyProof([fallback], 1060, "kept_open").guardedOpenAction, null);
+  assert.equal(
+    exactEventApplyProof([fallback, fallback], 1059, "kept_open").guardedOpenAction,
+    null,
+  );
 });

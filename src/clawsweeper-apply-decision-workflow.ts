@@ -69,13 +69,18 @@ import {
   isLockedConversationCommentError,
 } from "./github-retry.js";
 import { type PrCloseCoverageProofRuntime } from "./pr-close-coverage-proof.js";
-import { isReviewedPrActivityCursor } from "./review-activity-cursor.js";
+import {
+  compareReviewedPrActivityCursors,
+  isReviewedPrActivityCursor,
+} from "./review-activity-cursor.js";
 import {
   clearResolvedReviewRecoveryLabel,
   REVIEW_RECOVERY_STUCK_LABEL,
 } from "./review-recovery-label-backfill.js";
 import { isAutoCloseAllowed, repositoryProfileFor } from "./repository-profiles.js";
 import { stableJson } from "./stable-json.js";
+import { LiveReadGeneration, type GenerationBoundValue } from "./live-read-generation.js";
+import { parsePrHydrationSnapshot } from "./pr-hydration-snapshot.js";
 
 export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWorkflowDependencies) {
   const {
@@ -83,9 +88,11 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     applyBlockingProtectedLabels,
     applyKindArg,
     ApplyMutationReviewGuardError,
+    CLAWSWEEPER_BOT_AUTHORS,
     applyPrCloseCoverageProofBlockedReport,
     applyProtectedLabelReason,
     applyRuntimeBudgetYieldResults,
+    beginIssueLabelMutationBatch,
     closeReasonApplyAgeSkipReason,
     closeReasonEnabled,
     closeReasonFilterText,
@@ -93,19 +100,23 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     closingPullRequestsForIssue,
     collectItemContext,
     commentBodyMatches,
+    commentId,
     commentUpdatedAt,
     completeStaleCanonicalCommentSyncReport,
+    contextHasNonAutomationActivityAfter,
     decisionPacketsDirFromArgs,
     defaultClosedDir,
     defaultItemsDir,
     defaultPlansDir,
     deleteOwnedDedicatedReviewStartLease,
+    discardIssueLabelMutationBatch,
     duplicateCanonicalPullRequestBlockReason,
     ensureDir,
     exactEventReviewLeaseDisposition,
     fetchItem,
     fetchReviewedPrActivityCursor,
     finishApplyMutationAttempt,
+    flushIssueLabelMutationBatch,
     freshPullRequestReviewHead,
     frontMatterStringArray,
     frontMatterValue,
@@ -123,11 +134,13 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     issueReviewComment,
     isVerifiedFixedCloseReason,
     liveIssueSourceRevision,
+    login,
     lockedConversationApplyReason,
     lowSignalUnmergeablePrApplyBlockReasonSafe,
     markedReviewCommentBody,
     mutationErrorMessage,
     normalizeAuthorAssociation,
+    normalizeLabelName,
     openClosingPullRequestApplyReason,
     orderedApplyItemNumbers,
     pairCloseKey,
@@ -139,6 +152,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     recordApplyActionLedgerItemResults,
     recordApplyMutationBoundary,
     resetGuardReadCache,
+    setGuardReadGeneration,
     removeCurrentCursorTraceItem,
     removeIssueLabel,
     renderReviewCommentFromReport,
@@ -166,6 +180,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     updateReviewCommentMetadata,
     upsertReviewComment,
     validateCloseDecision,
+    withGuardReadOptions,
   } = dependencies;
 
   function applyDecisionsCommandInner(args: Args, runtimeBudget: GitHubRuntimeBudget): void {
@@ -207,6 +222,13 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     const artifactDir = resolve(stringArg(args.artifact_dir, join(ROOT, "artifacts", "apply")));
     const cursorTraceArg = stringArg(args.cursor_trace, "").trim();
     const cursorTracePath = cursorTraceArg ? resolve(cursorTraceArg) : null;
+    const commentSyncCursor = optionalNumberArg(args.comment_sync_cursor);
+    if (
+      commentSyncCursor !== undefined &&
+      (!Number.isSafeInteger(commentSyncCursor) || commentSyncCursor < 0)
+    ) {
+      throw new Error("Invalid --comment-sync-cursor");
+    }
     const prCloseCoverageProofRuntime: PrCloseCoverageProofRuntime = {
       model: stringArg(args.codex_model, DEFAULT_CODEX_MODEL),
       reasoningEffort: stringArg(args.codex_reasoning_effort, DEFAULT_REASONING_EFFORT),
@@ -236,6 +258,18 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     const requestedItemOrderIndex = new Map(
       requestedItemOrder.map((number, index) => [number, index]),
     );
+    const advancingCommentSyncNumbers =
+      commentSyncCursor === undefined
+        ? []
+        : requestedItemNumbers.filter((number) => number > commentSyncCursor);
+    const commentSyncFrontier =
+      commentSyncCursor === undefined || requestedItemNumbers.length === 0
+        ? undefined
+        : Math.min(
+            ...(advancingCommentSyncNumbers.length > 0
+              ? advancingCommentSyncNumbers
+              : requestedItemNumbers),
+          );
     const results: ApplyResult[] = [];
     const examinedItemNumbers: number[] = [];
     let closedCount = 0;
@@ -259,6 +293,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     };
     const {
       applyReportEntriesForDir,
+      createOpenReportLookup,
       captureApplyCanonicalBaseline,
       syncDecisionPacketMarkdown,
       writeReportMarkdown,
@@ -278,24 +313,27 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     });
 
     const fileEntries = applyReportEntriesForDir(itemsDir, "items").sort(
-      cursorTracePath
+      commentSyncFrontier !== undefined
         ? (left, right) =>
+            Number(right.number === commentSyncFrontier) -
+              Number(left.number === commentSyncFrontier) ||
             (requestedItemOrderIndex.get(left.number) ?? Number.MAX_SAFE_INTEGER) -
               (requestedItemOrderIndex.get(right.number) ?? Number.MAX_SAFE_INTEGER) ||
             left.number - right.number
-        : (left, right) =>
-            left.priority - right.priority ||
-            left.applyCheckedAt - right.applyCheckedAt ||
-            left.number - right.number,
+        : cursorTracePath
+          ? (left, right) =>
+              (requestedItemOrderIndex.get(left.number) ?? Number.MAX_SAFE_INTEGER) -
+                (requestedItemOrderIndex.get(right.number) ?? Number.MAX_SAFE_INTEGER) ||
+              left.number - right.number
+          : (left, right) =>
+              left.priority - right.priority ||
+              left.applyCheckedAt - right.applyCheckedAt ||
+              left.number - right.number,
     );
     const files = fileEntries.map((entry) => entry.name);
     const boundedExactSelection = exactEventPublication && requestedItemNumberSet.size > 0;
-    // Exact-event publication handles one leased item and cannot pair-close with
-    // limit=1. Keep unrelated canonical records out of this memory-bounded path.
-    const allOpenFileEntries = boundedExactSelection
-      ? fileEntries
-      : applyReportEntriesForDir(itemsDir, "items", false);
-    const openFileEntryByNumber = new Map(allOpenFileEntries.map((entry) => [entry.number, entry]));
+    const openReportEntry = createOpenReportLookup(fileEntries, boundedExactSelection);
+    const pairedIssueCloseoutReportKeys = new Set<string>();
     const closedThisRun = new Set<string>();
     const authorPrBudgetClosesThisRun = new Map<string, number>();
     // Counts every same-author PR closed this run regardless of reason: the budget
@@ -343,11 +381,14 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     const finishApply = (failed = false, failure?: unknown): void => {
       if (applyEventsFinalized) return;
       const publicResults = results.map(
-        ({
-          mutationOccurred: _mutationOccurred,
-          commentMutationOccurred: _commentMutationOccurred,
-          ...result
-        }) => result,
+        ({ mutationOccurred: _mutationOccurred, commentMutationOccurred, ...result }) => ({
+          ...result,
+          ...(emitEventApplyProof &&
+          result.action === "kept_open" &&
+          commentMutationOccurred === true
+            ? { commentMutationOccurred: true }
+            : {}),
+        }),
       );
       let publicationError: unknown = null;
       try {
@@ -357,12 +398,16 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       } catch (error) {
         publicationError = error;
       }
-      const finalEntryNumbers = boundedExactSelection
-        ? new Set([
-            ...requestedItemNumberSet,
-            ...results.flatMap((result) => (result.number > 0 ? [result.number] : [])),
-          ])
-        : undefined;
+      // Reload current run evidence, including interrupted paired mutations, without
+      // retaining unrelated open records or the full archived history.
+      const finalEntryNumbers = new Set([
+        ...requestedItemNumberSet,
+        ...results.flatMap((result) => (result.number > 0 ? [result.number] : [])),
+        ...[...applyLedger.items.values()]
+          .filter((state) => state.started && !state.terminal)
+          .map((state) => state.entry.number),
+        ...(activeApplyItem ? [activeApplyItem.number] : []),
+      ]);
       const finalEntries = new Map<number, ReportEntry>();
       for (const finalEntry of [
         ...reportEntriesForDir(itemsDir, finalEntryNumbers),
@@ -447,10 +492,11 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       return;
     }
     logProgress(
-      `starting apply: files=${files.length} dry_run=${dryRun} apply_kind=${applyKind} min_age=${minAgeDescription} apply_close_reasons=${closeReasonFilterText(applyCloseReasons)} stale_min_age_days=${staleMinAgeDays} close_delay_ms=${closeDelayMs} sync_comments_only=${syncCommentsOnly} suppress_automation_markers=${suppressAutomationMarkers} comment_sync_min_age_days=${commentSyncMinAgeDays} max_runtime_ms=${maxRuntimeMs} item_numbers=${requestedItemNumbers.join(",") || "all"} reconciliation_deferred=${[...reconciliationDeferredItemNumbers].join(",") || "none"}`,
+      `starting apply: files=${files.length} dry_run=${dryRun} apply_kind=${applyKind} min_age=${minAgeDescription} apply_close_reasons=${closeReasonFilterText(applyCloseReasons)} stale_min_age_days=${staleMinAgeDays} close_delay_ms=${closeDelayMs} sync_comments_only=${syncCommentsOnly} suppress_automation_markers=${suppressAutomationMarkers} comment_sync_min_age_days=${commentSyncMinAgeDays} comment_sync_cursor=${commentSyncCursor ?? "none"} max_runtime_ms=${maxRuntimeMs} item_numbers=${requestedItemNumbers.join(",") || "all"} reconciliation_deferred=${[...reconciliationDeferredItemNumbers].join(",") || "none"}`,
     );
     // oxfmt-ignore
     for (const entry of fileEntries) {
+      if (pairedIssueCloseoutReportKeys.has(pairCloseKey(entry.repo, entry.number))) continue;
       releaseActiveApplyMutationLease();
       resetGuardReadCache();
       const file = entry.name;
@@ -464,23 +510,138 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       let markdown = entry.markdown;
       const repo = entry.repo;
       const number = entry.number;
+      let mutationLedgerEntry: ReportEntry = entry;
+      const liveReadGeneration = new LiveReadGeneration();
+      setGuardReadGeneration(liveReadGeneration);
+      const fetchApplyItem = (
+        itemNumber: number,
+        options: { bypassGenerationCache?: boolean } = {},
+      ) => fetchItem(itemNumber, { ...options, liveReadGeneration });
+      const collectApplyItemContext = (
+        contextItem: Parameters<typeof collectItemContext>[0],
+        options: NonNullable<Parameters<typeof collectItemContext>[1]> = {},
+      ) => collectItemContext(contextItem, { ...options, liveReadGeneration });
+      const applyReadDependencies: CreateApplyDecisionWorkflowDependencies = {
+        ...dependencies,
+        fetchItem: fetchApplyItem,
+        collectItemContext: collectApplyItemContext,
+      };
       activeApplyItem = { repo, number, mutationOccurred: false };
       startApplyActionLedgerItem(applyLedger, entry);
       const applyItemResultStart = results.length;
       let applyItemFailed = false;
       let currentApplyMutationGuard: (() => string | null) | null = null;
       let recordApplyMutationGuardReason: ((reason: string) => boolean) | null = null;
-      const previousApplyMutationRunner = dependencies.activeApplyMutationRunner;
-      try {
-      const markMutationObserved = (): void => {
+      let issueLabelBatchActive = false;
+      let preserveGuardReadCacheAfterMutation = false;
+      let mutationGuardBoundaryCached = false;
+      let mutationGuardBoundaryReason: string | null = null;
+      let currentApplyMutationBoundaryBlockReason = (): string | null => null;
+      let deferredSelfMutationReceipt = false;
+      let publishedIssueLabelMutation = false;
+      let rememberSelfMutationUpdatedAt = (
+        _options: {
+          postReviewActivityStartedAtMs?: number;
+          requiresReviewedPrActivityCursor?: boolean;
+        } = {},
+      ): boolean => false;
+      let reconcileSkippedIssueLabelAdditions = (_labels: readonly string[]): void => {};
+      let refreshRenderedReviewComment = (): void => {};
+      let restoreDiscardedIssueLabelState = (): void => {};
+      let resetGenerationBoundReads = (): void => {};
+      const rememberPublishedLabelSync = (): void => {
         if (dryRun) return;
+        publishedIssueLabelMutation = true;
+        markdown = replaceFrontMatterValue(markdown, "labels_synced_at", new Date().toISOString());
+      };
+      const rememberLabelMutationUpdatedAt = (): void => {
+        if (issueLabelBatchActive) deferredSelfMutationReceipt = true;
+        else {
+          rememberPublishedLabelSync();
+          rememberSelfMutationUpdatedAt();
+        }
+      };
+      const previousApplyMutationRunner = dependencies.activeApplyMutationRunner;
+      const resetMutationGuardBoundary = (): void => {
+        mutationGuardBoundaryCached = false;
+        mutationGuardBoundaryReason = null;
         resetGuardReadCache();
-        activeApplyItem = { repo, number, mutationOccurred: true };
-        mutationByItem.set(`${repo}#${number}`, true);
+      };
+      const rememberLabelMutationResult = (confirmed: boolean): void => {
+        if (confirmed) rememberPublishedLabelSync();
+        rememberSelfMutationUpdatedAt();
+        deferredSelfMutationReceipt = false;
+        resetMutationGuardBoundary();
+      };
+      const flushIssueLabelBatch = (rememberMutation = true): boolean => {
+        if (!issueLabelBatchActive) return false;
+        try {
+          resetMutationGuardBoundary();
+          const result = flushIssueLabelMutationBatch(
+            number,
+            resetMutationGuardBoundary,
+            rememberLabelMutationResult,
+          );
+          if (result.skippedAdditions.length > 0) {
+            reconcileSkippedIssueLabelAdditions(result.skippedAdditions);
+            refreshRenderedReviewComment();
+          }
+          if (result.itemMutationPublished && rememberMutation && deferredSelfMutationReceipt) {
+            rememberSelfMutationUpdatedAt();
+            deferredSelfMutationReceipt = false;
+          }
+          return result.itemMutationPublished;
+        } catch (error) {
+          if (error instanceof ApplyMutationReviewGuardError) {
+            restoreDiscardedIssueLabelState();
+          }
+          throw error;
+        } finally {
+          issueLabelBatchActive = false;
+        }
+      };
+      const discardIssueLabelBatch = (): void => {
+        if (!issueLabelBatchActive) return;
+        try {
+          discardIssueLabelMutationBatch(number);
+          restoreDiscardedIssueLabelState();
+        } finally {
+          issueLabelBatchActive = false;
+        }
+      };
+      const writeReportAfterDiscardingIssueLabelBatch = (
+        reportPath: string,
+        nextMarkdown: string,
+      ): void => {
+        markdown = nextMarkdown;
+        discardIssueLabelBatch();
+        writeReportMarkdown(reportPath, markdown);
+      };
+      try {
+      const markMutationObserved = (mutationEntry = mutationLedgerEntry): void => {
+        if (dryRun) return;
+        liveReadGeneration.invalidate();
+        resetGenerationBoundReads();
+        if (!preserveGuardReadCacheAfterMutation) resetMutationGuardBoundary();
+        if (mutationEntry === entry) {
+          activeApplyItem = { repo, number, mutationOccurred: true };
+          mutationByItem.set(`${repo}#${number}`, true);
+        } else {
+          activeApplyItem = {
+            repo: mutationEntry.repo,
+            number: mutationEntry.number,
+            mutationOccurred: true,
+          };
+          mutationByItem.set(`${mutationEntry.repo}#${mutationEntry.number}`, true);
+        }
       };
       const recordMutation = (parentEventId?: string | null): void => {
         markMutationObserved();
-        recordApplyMutationBoundary(applyLedger, entry, parentEventId);
+        if (mutationLedgerEntry === entry) {
+          recordApplyMutationBoundary(applyLedger, entry, parentEventId);
+        } else {
+          recordApplyMutationBoundary(applyLedger, mutationLedgerEntry, parentEventId);
+        }
       };
       dependencies.activeApplyMutationRunner = <T>(options: {
         identity: string;
@@ -492,7 +653,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         if (dryRun) return options.operation();
         const attempt = startApplyMutationAttempt(
           applyLedger,
-          entry,
+          mutationLedgerEntry,
           options.identity,
           options.idempotencyIdentity,
         );
@@ -508,11 +669,22 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           const mutated = options.didMutate?.(result) ?? true;
           const outcomeEventId = finishApplyMutationAttempt({
             ledger: applyLedger,
-            entry,
+            entry: mutationLedgerEntry,
             attempt,
             outcome: mutated ? "accepted" : "rejected",
           });
-          if (mutated) recordMutation(outcomeEventId);
+          if (mutated) {
+            recordMutation(outcomeEventId);
+            if (
+              preserveGuardReadCacheAfterMutation &&
+              /^(?:label_create|label_upsert):/.test(options.identity)
+            ) {
+              // Repository label-definition writes do not change the item. Do
+              // not let their earlier item-freshness read cover the later
+              // combined issue-label publication.
+              resetMutationGuardBoundary();
+            }
+          }
           return result;
         } catch (error) {
           const rejected =
@@ -520,7 +692,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             options.knownNoMutation?.(error) === true;
           finishApplyMutationAttempt({
             ledger: applyLedger,
-            entry,
+            entry: mutationLedgerEntry,
             attempt,
             outcome: rejected ? "rejected" : "unknown",
           });
@@ -570,7 +742,87 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         });
         renameSync(path, closedPath);
       };
+      const archivePairedIssue = (issueNumber: number): void => {
+        const pairedEntry = openReportEntry(issueNumber);
+        if (!pairedEntry) {
+          throw new Error(`missing independently reviewed linked issue report #${issueNumber}`);
+        }
+        if (dryRun) {
+          pairedIssueCloseoutReportKeys.add(pairCloseKey(pairedEntry.repo, issueNumber));
+          return;
+        }
+        captureApplyCanonicalBaseline(pairedEntry.path);
+        ensureDir(closedDir);
+        let pairedMarkdown = readFileSync(pairedEntry.path, "utf8");
+        pairedMarkdown = replaceFrontMatterValue(pairedMarkdown, "action_taken", "closed");
+        pairedMarkdown = replaceFrontMatterValue(
+          pairedMarkdown,
+          "applied_at",
+          new Date().toISOString(),
+        );
+        pairedMarkdown = replaceFrontMatterValue(
+          pairedMarkdown,
+          "apply_checked_at",
+          new Date().toISOString(),
+        );
+        const pairedClosedPath = join(closedDir, pairedEntry.name);
+        const syncedMarkdown = syncDecisionPacketMarkdown(pairedClosedPath, pairedMarkdown, "closed");
+        writeFileSync(pairedEntry.path, syncedMarkdown, "utf8");
+        syncWorkPlanFromReport({
+          markdown: syncedMarkdown,
+          reportPath: pairedEntry.path,
+          plansDir,
+        });
+        renameSync(pairedEntry.path, pairedClosedPath);
+        pairedIssueCloseoutReportKeys.add(pairCloseKey(pairedEntry.repo, issueNumber));
+      };
+      const pairedIssueCanonicalProvenanceBlock = (issueNumber: number): string | null => {
+        const pairedEntry = openReportEntry(issueNumber);
+        if (!pairedEntry) return "implemented-on-main paired closeout requires an independently reviewed linked issue report";
+        const parentFixedPrNumber = frontMatterValue(markdown, "fixed_pr_number");
+        const parentFixedPrUrl = frontMatterValue(markdown, "fixed_pr_url");
+        const pairedFixedPrNumber = frontMatterValue(pairedEntry.markdown, "fixed_pr_number");
+        const pairedFixedPrUrl = frontMatterValue(pairedEntry.markdown, "fixed_pr_url");
+        const pairedFixedPrConfidence = frontMatterValue(pairedEntry.markdown, "fixed_pr_confidence");
+        const pairedFixedPrSource = frontMatterValue(pairedEntry.markdown, "fixed_pr_source");
+        const pairedFixedPrMergedAt = frontMatterValue(pairedEntry.markdown, "fixed_pr_merged_at");
+        if (
+          !parentFixedPrNumber ||
+          parentFixedPrNumber !== pairedFixedPrNumber ||
+          !parentFixedPrUrl ||
+          parentFixedPrUrl !== pairedFixedPrUrl ||
+          pairedFixedPrConfidence !== "high" ||
+          !pairedFixedPrSource?.includes("GitHub ") ||
+          !pairedFixedPrMergedAt ||
+          pairedFixedPrMergedAt === "unknown"
+        ) {
+          return "implemented-on-main paired closeout requires the linked issue's independent review to cite the same GitHub-verified fixing pull request";
+        }
+        return null;
+      };
+      const withPairedIssueMutationLedger = <T>(issueNumber: number, operation: () => T): T => {
+        const pairedEntry = openReportEntry(issueNumber);
+        if (!pairedEntry) throw new Error(`missing independently reviewed linked issue report #${issueNumber}`);
+        const previousMutationLedgerEntry = mutationLedgerEntry;
+        const previousActiveApplyItem = activeApplyItem;
+        mutationLedgerEntry = pairedEntry;
+        activeApplyItem = { repo: pairedEntry.repo, number: pairedEntry.number, mutationOccurred: false };
+        startApplyActionLedgerItem(applyLedger, pairedEntry);
+        let completed = false;
+        try {
+          const result = operation();
+          completed = true;
+          return result;
+        } catch (error) {
+          if (error instanceof ApplyMutationReviewGuardError) activeApplyItem = previousActiveApplyItem;
+          throw error;
+        } finally {
+          mutationLedgerEntry = previousMutationLedgerEntry;
+          if (completed) activeApplyItem = previousActiveApplyItem;
+        }
+      };
       const markApplyChecked = (subjectState: DecisionPacketSubjectState = "open"): void => {
+        discardIssueLabelBatch();
         markdown = replaceFrontMatterValue(markdown, "apply_checked_at", new Date().toISOString());
         if (!dryRun) writeReportMarkdown(path, markdown, subjectState);
       };
@@ -588,6 +840,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         actionTaken: ActionTaken,
         reason: string,
         liveGuardVerified = false,
+        publicationProof: Pick<ApplyResult, "commentMutationOccurred" | "guardedOpenStateVerified"> = {},
       ): boolean => {
         markApplyChecked();
         results.push({
@@ -599,6 +852,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             liveGuardVerified,
           }),
           ...eventApplyDispositionProof(actionTaken),
+          ...publicationProof,
         });
         processedCount += 1;
         maybeLogProgress(`skipped #${number}: ${reason}`);
@@ -608,9 +862,10 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         actionTaken: ActionTaken,
         reason: string,
         liveGuardVerified = false,
+        publicationProof: Pick<ApplyResult, "commentMutationOccurred" | "guardedOpenStateVerified"> = {},
       ): boolean => {
         markdown = replaceFrontMatterValue(markdown, "action_taken", actionTaken);
-        return recordApplySkipped(actionTaken, reason, liveGuardVerified);
+        return recordApplySkipped(actionTaken, reason, liveGuardVerified, publicationProof);
       };
       const skipLockedConversation = (reason: string | null): boolean | null =>
         markLockedConversationApplySkipped(reason, staleCanonicalCommentSyncPending, markApplySkipped);
@@ -677,7 +932,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       }
       let liveItem: ReturnType<typeof fetchItem>;
       try {
-        liveItem = fetchItem(number);
+        liveItem = fetchApplyItem(number);
       } catch (error) {
         if (!isGitHubNotFoundError(error)) throw error;
         // A repository lookup can return the same 404 when the repo is missing or
@@ -733,19 +988,50 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       }
       const previousLabels = [...item.labels];
       const reportLabelsBeforeApply = frontMatterStringArray(markdown, "labels");
-      let currentContext: ItemContext | undefined;
+      const markdownBeforeApplyDecisionMutations = markdown;
+      const persistedPrHydrationSnapshot = parsePrHydrationSnapshot(
+        frontMatterValue(markdownBeforeApplyDecisionMutations, "pr_hydration_snapshot"),
+      );
+      let currentContext: GenerationBoundValue<ItemContext> | undefined;
       let currentClosingPullRequests: unknown[] | undefined;
       let clawSweeperLabelsChanged = false;
       let issueAdvisoryLabelsChanged = false;
       const selfMutationItemReceipts: ApplySelfMutationItemReceipt[] = [];
-      const currentItemContext = (): ItemContext => {
-        currentContext ??= collectItemContext(item, {
-          fullTimelineForRelations: true,
-          reviewCacheDigest: true,
-        });
-        return currentContext;
+      reconcileSkippedIssueLabelAdditions = (labels): void => {
+        const skipped = new Set(labels.map((label) => normalizeLabelName(label)));
+        item.labels = item.labels.filter((label) => !skipped.has(normalizeLabelName(label)));
+        markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
+        const before = new Set(reportLabelsBeforeApply.map((label) => normalizeLabelName(label)));
+        const after = new Set(item.labels.map((label) => normalizeLabelName(label)));
+        const changedKeys = new Set(
+          [...before, ...after].filter((key) => before.has(key) !== after.has(key)),
+        );
+        clawSweeperLabelsChanged = changedKeys.size > 0;
+        if (!clawSweeperLabelsChanged) issueAdvisoryLabelsChanged = false;
       };
-      const markdownBeforeApplyDecisionMutations = markdown;
+      restoreDiscardedIssueLabelState = (): void => {
+        item.labels = [...previousLabels];
+        markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(reportLabelsBeforeApply));
+        clawSweeperLabelsChanged = false;
+        issueAdvisoryLabelsChanged = false;
+        deferredSelfMutationReceipt = false;
+      };
+      const currentItemContext = (): ItemContext => {
+        currentContext ??= liveReadGeneration.bind(
+          collectApplyItemContext(item, {
+            fullTimelineForRelations: true,
+            reviewCacheDigest: true,
+            prHydrationSnapshot: persistedPrHydrationSnapshot,
+            prCommentActivityRevision:
+              persistedPrHydrationSnapshot?.commentActivityRevision ?? null,
+            requireFullyValidatedPrHydrationSnapshot: true,
+          }),
+        );
+        return liveReadGeneration.value(currentContext);
+      };
+      resetGenerationBoundReads = (): void => {
+        currentContext = undefined;
+      };
       const expectedReviewActivityCursor = frontMatterValue(
         markdownBeforeApplyDecisionMutations,
         "review_activity_cursor",
@@ -780,7 +1066,10 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         return (
           item.kind !== "pull_request" ||
           (freshPullRequestReviewHead(markdownBeforeApplyDecisionMutations, context) &&
-            context.pullReviewActivityCursor === expectedReviewActivityCursor)
+            compareReviewedPrActivityCursors(
+              context.pullReviewActivityCursor,
+              expectedReviewActivityCursor,
+            ) === "equal")
         );
       };
       const currentReviewActivityBlock = createApplyReviewActivityGuard(dependencies, {
@@ -810,7 +1099,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       const initialReviewHeadSha =
         item.kind === "pull_request"
           ? (pullHeadShaFromContext(currentItemContext()) ?? "")
-          : liveIssueSourceRevision(number);
+          : liveIssueSourceRevision(number, { liveReadGeneration });
       if (state === "open" && exactEventPublication) {
         const exactLeaseDisposition = exactEventReviewLeaseDisposition(
           markdownBeforeApplyDecisionMutations,
@@ -849,7 +1138,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         currentApplyMutationLeaseBlockReason,
         refreshReviewStartLeaseState,
       } = createApplyLeaseGuards({
-        ...dependencies,
+        ...applyReadDependencies,
         canonicalBoundStaleReviewReason: (...args) => canonicalBoundStaleReviewReason(...args),
         closeDelayMs,
         currentReviewActivityBlock,
@@ -857,6 +1146,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         getActiveApplyMutationLease: () => activeApplyMutationLease,
         initialReviewHeadSha,
         item,
+        liveReadGeneration,
         markdownBeforeApplyDecisionMutations,
         number,
         reportReviewRevision,
@@ -865,7 +1155,18 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           activeApplyMutationLease = lease;
         },
       });
-      currentApplyMutationGuard = currentApplyMutationLeaseBlockReason;
+      currentApplyMutationBoundaryBlockReason = (): string | null => {
+        if (preserveGuardReadCacheAfterMutation && mutationGuardBoundaryCached) {
+          return mutationGuardBoundaryReason;
+        }
+        const reason = currentApplyMutationLeaseBlockReason();
+        if (preserveGuardReadCacheAfterMutation) {
+          mutationGuardBoundaryCached = true;
+          mutationGuardBoundaryReason = reason;
+        }
+        return reason;
+      };
+      currentApplyMutationGuard = currentApplyMutationBoundaryBlockReason;
       let existingReviewComment: Record<string, unknown> | undefined;
       const pendingStaleCanonicalCommentReason = staleCanonicalCommentSyncPending
         ? staleCanonicalCommentSyncPendingReason(markdown)
@@ -909,7 +1210,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           staleCanonicalCommentSyncPending = next.staleCanonicalCommentSyncPending;
         },
         shouldProbeClosedState,
-        writeReportMarkdown,
+        writeReportMarkdown: writeReportAfterDiscardingIssueLabelBatch,
       });
       const {
         applyCanonicalCommentSyncGuard,
@@ -917,6 +1218,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         recordRefreshedReviewStaleReason,
         recordReviewLeaseSkip,
         refreshedReviewStaleReason,
+        verifiedNewerReviewTuple,
         shouldCheckCanonicalCommentSync,
       } = reviewGuards;
       canonicalBoundStaleReviewReason = reviewGuards.canonicalBoundStaleReviewReason;
@@ -924,9 +1226,14 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       const initialCanonicalCommentSyncGuard = applyCanonicalCommentSyncGuard();
       if (initialCanonicalCommentSyncGuard.stopApply) break;
       if (initialCanonicalCommentSyncGuard.skipCurrentItem) continue;
-      const rememberSelfMutationUpdatedAt = (): void => {
-        if (dryRun) return;
-        const automationItem = fetchItem(number).item;
+      rememberSelfMutationUpdatedAt = (
+        options?: {
+          postReviewActivityStartedAtMs?: number;
+          requiresReviewedPrActivityCursor?: boolean;
+        },
+      ): boolean => {
+        if (dryRun) return false;
+        const automationItem = fetchApplyItem(number).item;
         const automationItemUpdatedAt = automationItem.updatedAt;
         markdown = replaceFrontMatterValue(
           markdown,
@@ -938,24 +1245,66 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         // matches the reviewed source, PR head, and review-activity cursor. The
         // final close gate repeats those checks and verifies that no target-side
         // activity landed after proof.
-        if (!reviewedSourceRevision || reviewedSourceRevision === "unknown") return;
-        const receiptContext = collectItemContext(automationItem, {
+        const receiptContext = collectApplyItemContext(automationItem, {
           fullTimelineForRelations: true,
           reviewCacheDigest: true,
+          prHydrationSnapshot: persistedPrHydrationSnapshot,
+          prCommentActivityRevision:
+            persistedPrHydrationSnapshot?.commentActivityRevision ?? null,
+          requireFullyValidatedPrHydrationSnapshot: true,
         });
-        if (!completeReviewActivityReceiptMatches(receiptContext)) return;
+        const allowsPostReviewAutomationActivity =
+          options?.postReviewActivityStartedAtMs !== undefined;
+        const requiresReviewedPrActivityCursor =
+          options?.requiresReviewedPrActivityCursor === true;
+        if (
+          requiresReviewedPrActivityCursor &&
+          (!reviewedSourceRevision || reviewedSourceRevision === "unknown")
+        )
+          return false;
+        if (
+          !allowsPostReviewAutomationActivity &&
+          !completeReviewActivityReceiptMatches(receiptContext)
+        )
+          return false;
+        if (
+          allowsPostReviewAutomationActivity &&
+          ((requiresReviewedPrActivityCursor &&
+            receiptContext.sourceRevision !== reviewedSourceRevision) ||
+            (item.kind === "pull_request" &&
+              (!freshPullRequestReviewHead(markdownBeforeApplyDecisionMutations, receiptContext) ||
+                (requiresReviewedPrActivityCursor &&
+                  (!isReviewedPrActivityCursor(expectedReviewActivityCursor) ||
+                    compareReviewedPrActivityCursors(
+                      receiptContext.pullReviewActivityCursor,
+                      expectedReviewActivityCursor,
+                    ) !== "equal")))) ||
+            contextHasNonAutomationActivityAfter(
+              receiptContext,
+              options!.postReviewActivityStartedAtMs! - 1,
+              { truncationCountsAsActivity: true, useCompleteActivityContext: true },
+            ))
+        )
+          return false;
         const completeActivityContext = receiptContext[completeActivityContextSymbol];
-        if (!completeActivityContext) return;
+        if (!completeActivityContext) return false;
         selfMutationItemReceipts.push({
           updatedAt: automationItemUpdatedAt,
-          sourceRevision: reviewedSourceRevision,
+          sourceRevision: receiptContext.sourceRevision ?? "",
           activityReceipt: stableJson(completeActivityContext),
+          allowsPostReviewAutomationActivity,
+          ...(options?.postReviewActivityStartedAtMs === undefined
+            ? {}
+            : { postReviewActivityStartedAtMs: options.postReviewActivityStartedAtMs }),
+          requiresReviewedPrActivityCursor,
+          prHeadSha: contextPullHeadSha(receiptContext),
           prHeadMatches:
             item.kind !== "pull_request" ||
             freshPullRequestReviewHead(markdownBeforeApplyDecisionMutations, receiptContext),
           reviewActivityCursor:
             item.kind === "pull_request" ? fetchReviewedPrActivityCursor(number) : null,
         });
+        return true;
       };
       const candidateGuards = createApplyCandidateGuards(dependencies, {
         authorPrBudgetClosesThisRun,
@@ -977,19 +1326,17 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         currentStaleVersionBugBlockReason,
       } = candidateGuards;
       const recordRuntimeBudgetYield = (reason: string): void => {
-        if (clawSweeperLabelsChanged && !dryRun) {
-          markdown = replaceFrontMatterValue(
-            markdown,
-            "labels_synced_at",
-            new Date().toISOString(),
-          );
+        discardIssueLabelBatch();
+        if (clawSweeperLabelsChanged && !dryRun && !issueLabelBatchActive) {
           writeReportMarkdown(path, markdown);
         }
         removeCurrentCursorTraceItem(examinedItemNumbers, number);
         results.push(...applyRuntimeBudgetYieldResults(number, reason));
         logProgress(`budget stop, resume next cycle: ${reason}`);
       };
-      const { canStartSameAuthorPairCloseInThisRun } = createApplyCloseGuards(dependencies, {
+      const { canStartSameAuthorPairCloseInThisRun } = createApplyCloseGuards(
+        applyReadDependencies,
+        {
         applyCloseReasons,
         applyKind,
         canClosePairCounterpartInThisRun,
@@ -1015,12 +1362,13 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         minAgeDescription,
         minAgeMs,
         number,
-        openFileEntryByNumber,
+        openReportEntry,
         processedLimit,
         repo,
         requiredMaintainerDecision,
         staleMinAgeDays,
-      });
+        },
+      );
       if (syncCommentsOnly && state !== "open") {
         markApplyChecked("closed");
         results.push({
@@ -1109,7 +1457,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       }
       const earlyStaleReason = refreshedReviewStaleReason(existingReviewComment);
       if (state === "open" && earlyStaleReason) {
-        if (recordRefreshedReviewStaleReason(earlyStaleReason)) break;
+        if (recordRefreshedReviewStaleReason(earlyStaleReason, existingReviewComment)) break;
         continue;
       }
       if (isUpgradedCloseCandidate && !syncCommentsOnly) {
@@ -1216,6 +1564,10 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           number,
           action: "skipped_stale_review_comment_sync",
           reason: staleReviewCommentReason,
+          ...(emitEventApplyProof &&
+          verifiedNewerReviewTuple(markdown, existingReviewComment, staleReviewCommentReason)
+            ? { newerReviewTupleVerified: true }
+            : {}),
         });
         processedCount += 1;
         maybeLogProgress(`skipped stale review comment sync #${number}`);
@@ -1256,7 +1608,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         results,
         setMarkdown: (next) => { markdown = next; },
         setProcessedCount: (next) => { processedCount = next; },
-        writeReportMarkdown,
+        writeReportMarkdown: writeReportAfterDiscardingIssueLabelBatch,
       });
       const stalePrReviewHead =
         state === "open" && item.kind === "pull_request"
@@ -1287,7 +1639,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         }
         const lateStaleReason = refreshedReviewStaleReason(lateLeaseState.comment);
         if (lateStaleReason) {
-          if (recordRefreshedReviewStaleReason(lateStaleReason)) break;
+          if (recordRefreshedReviewStaleReason(lateStaleReason, lateLeaseState.comment)) break;
           continue;
         }
         if (lateLeaseState.preserve && lateLeaseState.lease) {
@@ -1342,6 +1694,12 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           continue;
         }
       }
+      if (state === "open" && exactEventPublication && !dryRun) {
+        beginIssueLabelMutationBatch(number);
+        issueLabelBatchActive = true;
+        preserveGuardReadCacheAfterMutation = true;
+        resetMutationGuardBoundary();
+      }
       if (state === "open" && item.kind === "pull_request") {
         const pullRequestLabels = syncApplyPullRequestLabels(dependencies, {
           currentItemContext,
@@ -1361,7 +1719,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       }
       markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
       if (clawSweeperLabelsChanged && !dryRun) {
-        rememberSelfMutationUpdatedAt();
+        rememberLabelMutationUpdatedAt();
       }
       if (
         state === "open" &&
@@ -1438,7 +1796,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       let markedReviewComment = markedReviewCommentForApply(reviewComment);
       const { postProofCoveringPrFreshnessBlock, postProofFreshnessBlock } =
         createApplyProofFreshnessGuards({
-          ...dependencies,
+          ...applyReadDependencies,
           action,
           automationItemUpdatedAt: frontMatterValue(
             markdownBeforeApplyDecisionMutations,
@@ -1546,7 +1904,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         number,
         onMutation: recordMutation,
         recordReviewLeaseSkip,
-        rememberSelfMutationUpdatedAt,
+        rememberSelfMutationUpdatedAt: rememberLabelMutationUpdatedAt,
         renderOptions,
         reportLabelsBeforeApply,
         setMarkdown: (value) => { markdown = value; },
@@ -1556,10 +1914,18 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       currentClosingPullRequests = reportLabelSync.currentClosingPullRequests;
       issueAdvisoryLabelsChanged = reportLabelSync.issueAdvisoryLabelsChanged;
       markdown = reportLabelSync.markdown;
+      if (publishedIssueLabelMutation && !issueLabelBatchActive && !dryRun) {
+        markdown = replaceFrontMatterValue(markdown, "labels_synced_at", new Date().toISOString());
+      }
       if (reportLabelSync.stopApply) break;
       if (reportLabelSync.skipCurrentItem) continue;
       reviewComment = renderCurrentReviewComment();
       markedReviewComment = markedReviewCommentForApply(reviewComment);
+      refreshRenderedReviewComment = (): void => {
+        renderOptions.publishedLabels = [...item.labels];
+        reviewComment = renderCurrentReviewComment();
+        markedReviewComment = markedReviewCommentForApply(reviewComment);
+      };
       if (isCloseProposal && item.kind === "issue") {
         currentClosingPullRequests ??= closingPullRequestsForIssue(number);
         const openClosingPullRequestReason = openClosingPullRequestApplyReason(
@@ -1720,9 +2086,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           continue;
         }
       }
-      if (clawSweeperLabelsChanged && !dryRun) {
-        markdown = replaceFrontMatterValue(markdown, "labels_synced_at", new Date().toISOString());
-      }
       const labelSyncReason = issueAdvisoryLabelsChanged
         ? dryRun
           ? "dry-run: would sync advisory issue labels"
@@ -1774,6 +2137,48 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           });
         }
       }
+      if (
+        !closeBlockedForCommentSync &&
+        !needsReviewCommentBodySync &&
+        (!isCloseProposal || syncCommentsOnly)
+      ) {
+        const markedReviewCommentBeforeLabelFlush = markedReviewComment;
+        flushIssueLabelBatch();
+        if (markedReviewComment !== markedReviewCommentBeforeLabelFlush) {
+          reviewCommentHash = reviewCommentBodyDigest(markedReviewComment);
+          existingReviewCommentMatches = commentBodyMatches(
+            existingReviewComment,
+            markedReviewComment,
+            { allowApplyCloseActionUpgrade },
+          );
+          needsReviewCommentBodySync = !existingReviewComment || !existingReviewCommentMatches;
+          needsReviewCommentHashSync = !reviewCommentHashMatches(
+            existingReviewComment,
+            markedReviewComment,
+            frontMatterValue(markdown, "review_comment_sha256"),
+            reviewCommentHash,
+            { allowApplyCloseActionUpgrade },
+          );
+          needsReviewCommentReferenceSync =
+            /^(?:none|unknown)?$/.test(frontMatterValue(markdown, "review_comment_id") ?? "") ||
+            /^(?:none|unknown)?$/.test(frontMatterValue(markdown, "review_comment_url") ?? "");
+          needsReviewCommentSync = shouldSyncReviewComment({
+            syncCommentsOnly,
+            isCloseProposal,
+            commentSyncMinAgeDays,
+            reviewCommentSyncedAt: frontMatterValue(markdown, "review_comment_synced_at"),
+            reviewCommentVerifiedAt: frontMatterValue(markdown, "review_comment_checked_at"),
+            reviewedAt: frontMatterValue(markdown, "reviewed_at"),
+            lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
+            guardedReviewedAt: guarded ? frontMatterValue(markdown, "apply_checked_at") : undefined,
+            hasExistingReviewComment: Boolean(existingReviewComment),
+            needsReviewCommentBodySync,
+            needsReviewCommentHashSync,
+            needsReviewCommentReferenceSync,
+            forceReviewCommentBodySync: true,
+          });
+        }
+      }
       if (needsReviewCommentSync) {
         const staleSyncReason = needsReviewCommentBodySync ? staleReviewCommentReason : null;
         if (staleSyncReason) {
@@ -1782,11 +2187,15 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             "apply_checked_at",
             new Date().toISOString(),
           );
-          if (!dryRun) writeReportMarkdown(path, markdown);
+          if (!dryRun) writeReportAfterDiscardingIssueLabelBatch(path, markdown);
           results.push({
             number,
             action: "skipped_stale_review_comment_sync",
             reason: staleSyncReason,
+            ...(emitEventApplyProof &&
+            verifiedNewerReviewTuple(markdown, existingReviewComment, staleSyncReason)
+              ? { newerReviewTupleVerified: true }
+              : {}),
           });
           processedCount += 1;
           maybeLogProgress(`skipped stale review comment sync #${number}`);
@@ -1813,7 +2222,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             const preLeaseCanonicalGuard = applyCanonicalCommentSyncGuard(true);
             if (preLeaseCanonicalGuard.stopApply) break;
             if (preLeaseCanonicalGuard.skipCurrentItem) continue;
-            const mutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
+            const mutationLeaseBlockReason = currentApplyMutationBoundaryBlockReason();
             if (mutationLeaseBlockReason) {
               if (recordReviewLeaseSkip(mutationLeaseBlockReason, false)) break;
               continue;
@@ -1845,11 +2254,15 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
                 "apply_checked_at",
                 new Date().toISOString(),
               );
-              writeReportMarkdown(path, markdown);
+              writeReportAfterDiscardingIssueLabelBatch(path, markdown);
               results.push({
                 number,
                 action: "skipped_stale_review_comment_sync",
                 reason: latestStaleSyncReason,
+                ...(emitEventApplyProof &&
+                verifiedNewerReviewTuple(markdown, existingReviewComment, latestStaleSyncReason)
+                  ? { newerReviewTupleVerified: true }
+                  : {}),
               });
               processedCount += 1;
               maybeLogProgress(`skipped stale review comment sync #${number}`);
@@ -1858,7 +2271,9 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             }
             const lowSignalCommentSyncBlockReason =
               closeReason === "low_signal_unmergeable_pr"
-                ? lowSignalUnmergeablePrApplyBlockReasonSafe(number, staleMinAgeDays)
+                ? withGuardReadOptions({ bypassGenerationCache: true }, () =>
+                    lowSignalUnmergeablePrApplyBlockReasonSafe(number, staleMinAgeDays),
+                  )
                 : null;
             if (lowSignalCommentSyncBlockReason) {
               if (
@@ -1871,6 +2286,24 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
                 break;
               continue;
             }
+            const delayIssueLabelBatchForRecoveryCleanup = Boolean(
+              exactEventPublication &&
+              complete &&
+              item.labels.includes(REVIEW_RECOVERY_STUCK_LABEL),
+            );
+            const flushIssueLabelBatchForDurableComment = (): void => {
+              const labelMutationPublished = flushIssueLabelBatch(false);
+              preserveGuardReadCacheAfterMutation = false;
+              resetMutationGuardBoundary();
+              if (labelMutationPublished && deferredSelfMutationReceipt) {
+                rememberSelfMutationUpdatedAt();
+                deferredSelfMutationReceipt = false;
+                resetMutationGuardBoundary();
+              }
+            };
+            if (!delayIssueLabelBatchForRecoveryCleanup) {
+              flushIssueLabelBatchForDurableComment();
+            }
             try {
               syncedComment = upsertReviewComment(
                 number,
@@ -1878,6 +2311,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
                 existingReviewComment,
               );
               rememberSelfMutationUpdatedAt();
+              deferredSelfMutationReceipt = false;
               syncReasons.push("updated durable Codex review comment");
               if (complete && item.labels.includes(REVIEW_RECOVERY_STUCK_LABEL)) {
                 try {
@@ -1889,12 +2323,17 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
                     onMutation: recordMutation,
                   });
                   markdown = replaceFrontMatterValue(markdown, "labels", JSON.stringify(item.labels));
-                  markdown = replaceFrontMatterValue(
-                    markdown,
-                    "labels_synced_at",
-                    new Date().toISOString(),
-                  );
-                  rememberSelfMutationUpdatedAt();
+                  if (issueLabelBatchActive) {
+                    clawSweeperLabelsChanged = true;
+                    rememberLabelMutationUpdatedAt();
+                  } else {
+                    markdown = replaceFrontMatterValue(
+                      markdown,
+                      "labels_synced_at",
+                      new Date().toISOString(),
+                    );
+                    rememberSelfMutationUpdatedAt();
+                  }
                   syncReasons.push("cleared resolved review recovery label");
                 } catch (error) {
                   if (error instanceof GitHubRuntimeBudgetError || error instanceof GitHubRateLimitError)
@@ -1906,10 +2345,19 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
                   );
                 }
               }
+              if (delayIssueLabelBatchForRecoveryCleanup) {
+                flushIssueLabelBatchForDurableComment();
+              }
             } catch (error) {
               if (error instanceof DurableReviewPublicationBlockedError) {
                 rememberSelfMutationUpdatedAt();
-                throw error;
+                deferredSelfMutationReceipt = false;
+                markdown = updateReviewCommentMetadata(markdown, error.syncedComment, error.publishedBody);
+                if (markApplySkipped("kept_open", error.message, false, {
+                  commentMutationOccurred: true,
+                  guardedOpenStateVerified: state === "open",
+                })) break;
+                continue;
               }
               const commentAuthError = isGitHubRequiresAuthenticationError(error);
               if (!commentAuthError && !isLockedConversationCommentError(error)) throw error;
@@ -1940,7 +2388,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         if (staleCanonicalCommentSyncPending) {
           markdown = completeStaleCanonicalCommentSyncReport(markdown);
         }
-        if (!dryRun) writeReportMarkdown(path, markdown);
+        if (!isCloseProposal || syncCommentsOnly) flushIssueLabelBatch();
+        if (!dryRun && !issueLabelBatchActive) writeReportMarkdown(path, markdown);
         results.push({
           number,
           action: closeBlockedForCommentSync?.actionTaken ?? "review_comment_synced",
@@ -1956,6 +2405,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       }
       if (closeBlockedForCommentSync) {
         if (!needsReviewCommentSync) {
+          discardIssueLabelBatch();
           if (staleCanonicalCommentSyncPending) {
             markdown = completeStaleCanonicalCommentSyncReport(markdown);
           }
@@ -1997,20 +2447,240 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         if (!isCloseProposal && attemptedPullRequestClosePromotion) markApplyChecked();
         continue;
       }
+      flushIssueLabelBatch();
+      preserveGuardReadCacheAfterMutation = false;
+      resetMutationGuardBoundary();
       const appliedCloseReason = closeReason;
-      const closeFlow = executeApplyClose(dependencies, {
+      const withPairedIssueMutationLease = <T>(
+        pairedNumber: number,
+        operation: () => T,
+        options: { onOperationCompleted?: () => void } = {},
+      ): T =>
+        withPairedIssueMutationLedger(pairedNumber, () => {
+        const pairedEntry = openReportEntry(pairedNumber);
+        if (!pairedEntry) {
+          throw new ApplyMutationReviewGuardError(
+            `missing independently reviewed linked issue report #${pairedNumber}`,
+          );
+        }
+        const pairedItem = fetchApplyItem(pairedNumber, { bypassGenerationCache: true }).item;
+        if (pairedItem.kind !== "issue") {
+          throw new ApplyMutationReviewGuardError(
+            `linked item #${pairedNumber} is no longer an issue`,
+          );
+        }
+        const pairedInitialRevision = liveIssueSourceRevision(pairedNumber, {
+          liveReadGeneration,
+          bypassGenerationCache: true,
+        });
+        if (!pairedInitialRevision) {
+          throw new ApplyMutationReviewGuardError(
+            `linked issue #${pairedNumber} source revision could not be read`,
+          );
+        }
+        const pairedMarkdown = pairedEntry.markdown;
+        let pairedActiveMutationLease: {
+          itemNumber: number;
+          lease: AcquiredReviewStartLease;
+        } | null = null;
+        const createPairedLeaseGuards = (initialRevision: string, leaseMarkdown: string) =>
+          createApplyLeaseGuards({
+            ...applyReadDependencies,
+            // The paired-close path separately revalidates the linked report,
+            // immutable source snapshot, and all post-review activity. Do not
+            // reinterpret a newer trusted linked-issue review as stale here:
+            // that review is explicitly permitted by the paired activity guard.
+            canonicalBoundStaleReviewReason: () => null,
+            closeDelayMs,
+            currentReviewActivityBlock: () => null,
+            dryRun,
+            getActiveApplyMutationLease: () => pairedActiveMutationLease,
+            initialReviewHeadSha: initialRevision,
+            item: pairedItem,
+            liveReadGeneration,
+            markdownBeforeApplyDecisionMutations: leaseMarkdown,
+            number: pairedNumber,
+            reportReviewRevision: reviewLeaseRevisionFromReport(leaseMarkdown),
+            // A paired closeout is an independent mutation target. Even a legacy
+            // report must obtain its own live lease rather than borrow the parent
+            // pull request's lease.
+            requiresApplyMutationLease: true,
+            setActiveApplyMutationLease: (lease) => {
+              pairedActiveMutationLease = lease;
+            },
+          });
+        let pairedLeaseGuards = createPairedLeaseGuards(pairedInitialRevision, pairedMarkdown);
+        const previousApplyMutationGuard = currentApplyMutationGuard;
+        let pairedOperationCompleted = false;
+        const cleanupPairedLease = (operationError?: unknown): void => {
+          // The lease setter runs through a closure, so avoid stale control-flow
+          // narrowing when reading the nested lease for deterministic cleanup.
+          const pairedLease = pairedActiveMutationLease as {
+            itemNumber: number;
+            lease: AcquiredReviewStartLease;
+          } | null;
+          pairedActiveMutationLease = null;
+          if (!pairedLease) return;
+          if (pairedOperationCompleted && options.onOperationCompleted) {
+            try {
+              deleteOwnedDedicatedReviewStartLease(pairedLease.itemNumber, pairedLease.lease, {
+                throwOnError: true,
+              });
+            } catch (error) {
+              console.error(
+                `[apply] linked issue #${pairedNumber} closed and archived but could not delete owned review lease ${pairedLease.lease.commentId}: ${mutationErrorMessage(error)}`,
+              );
+            }
+            return;
+          }
+          try {
+            deleteOwnedDedicatedReviewStartLease(pairedLease.itemNumber, pairedLease.lease, {
+              throwOnError: true,
+            });
+          } catch (error) {
+            if (!operationError || !isLockedConversationCommentError(error)) throw error;
+            console.error(
+              `[apply] linked issue #${pairedNumber} became locked and owned review lease ${pairedLease.lease.commentId} could not be deleted: ${mutationErrorMessage(error)}`,
+            );
+          }
+        };
+        try {
+          let leaseBlock = pairedLeaseGuards.acquireApplyMutationLease(
+            pairedLeaseGuards.refreshReviewStartLeaseState(),
+          );
+          // Posting a dedicated lease is an owned issue-comment mutation. Rebase
+          // that new owned lease on its post-comment revision before the guarded
+          // operation. Existing report leases and any other source drift still
+          // fail closed.
+          const acquiredLease = pairedActiveMutationLease as {
+            itemNumber: number;
+            lease: AcquiredReviewStartLease;
+          } | null;
+          if (
+            leaseBlock?.includes("changed while holding the apply mutation lease") &&
+            acquiredLease
+          ) {
+            const postLeaseRevision = liveIssueSourceRevision(pairedNumber, {
+              liveReadGeneration,
+              bypassGenerationCache: true,
+            });
+            if (postLeaseRevision) {
+              const rebasedLeaseMarkdown = replaceFrontMatterValue(
+                replaceFrontMatterValue(
+                  replaceFrontMatterValue(
+                    pairedMarkdown,
+                    "review_lease_owner",
+                    acquiredLease.lease.owner,
+                  ),
+                  "review_lease_comment_id",
+                  String(acquiredLease.lease.commentId),
+                ),
+                "item_source_revision",
+                postLeaseRevision,
+              );
+              pairedLeaseGuards = createPairedLeaseGuards(postLeaseRevision, rebasedLeaseMarkdown);
+              leaseBlock = pairedLeaseGuards.acquireApplyMutationLease(
+                pairedLeaseGuards.refreshReviewStartLeaseState(),
+              );
+            }
+          }
+          if (leaseBlock) throw new ApplyMutationReviewGuardError(leaseBlock);
+          currentApplyMutationGuard = pairedLeaseGuards.currentApplyMutationLeaseBlockReason;
+          const result = operation();
+          options.onOperationCompleted?.();
+          pairedOperationCompleted = true;
+          cleanupPairedLease();
+          return result;
+        } catch (error) {
+          if (error instanceof ApplyMutationReviewGuardError) {
+            pairedIssueCloseoutReportKeys.add(pairCloseKey(repo, pairedNumber));
+          }
+          cleanupPairedLease(error);
+          throw error;
+        } finally {
+          currentApplyMutationGuard = previousApplyMutationGuard;
+          pairedActiveMutationLease = null;
+        }
+        });
+      const durableReviewCommentUpdatedAt = (
+        reviewMarkdown: string,
+        reviewNumber: number,
+        reviewCloseReason: CloseReason,
+      ): string | null => {
+        const storedHash = frontMatterValue(reviewMarkdown, "review_comment_sha256");
+        const storedId = Number(frontMatterValue(reviewMarkdown, "review_comment_id"));
+        const storedUrl = frontMatterValue(reviewMarkdown, "review_comment_url");
+        if (!storedHash || !Number.isSafeInteger(storedId) || storedId <= 0 || !storedUrl) {
+          return null;
+        }
+        const reviewComment = issueReviewComment(reviewNumber, [
+          renderReviewCommentFromReport(reviewMarkdown, reviewCloseReason),
+          reviewSectionValue(reviewMarkdown, "closeComment"),
+        ]);
+        if (
+          commentId(reviewComment) !== storedId ||
+          reviewComment?.html_url !== storedUrl ||
+          reviewCommentBodyDigest(rawCommentBody(reviewComment)) !== storedHash
+        ) {
+          return null;
+        }
+        const author = login(reviewComment?.user)?.trim().toLowerCase();
+        return author && CLAWSWEEPER_BOT_AUTHORS.has(author)
+          ? commentUpdatedAt(reviewComment) ?? null
+          : null;
+      };
+      const closeFlow = executeApplyClose(
+        {
+          ...applyReadDependencies,
+          implementedOnMainPullRequestProvenanceApplyBlock: (...args) =>
+            withGuardReadOptions({ bypassGenerationCache: true }, () =>
+              applyReadDependencies.implementedOnMainPullRequestProvenanceApplyBlock(...args),
+            ),
+          lowSignalUnmergeablePrApplyBlockReasonSafe: (...args) =>
+            withGuardReadOptions({ bypassGenerationCache: true }, () =>
+              lowSignalUnmergeablePrApplyBlockReasonSafe(...args),
+            ),
+        },
+        {
         applyCloseReasons,
         applyKind,
         archiveClosed,
+        archivePairedIssue,
+        canStartPairedIssueClose: (pairedNumber, pairedKind) =>
+          applyLedger.items.has(pairCloseKey(repo, pairedNumber)) &&
+          canStartSameAuthorPairCloseInThisRun(pairedNumber, pairedKind),
+        pairedIssueMarkdown: (pairedNumber) => openReportEntry(pairedNumber)?.markdown ?? null,
+        pairedIssueReviewUpdatedAt: (pairedNumber) => {
+          const pairedMarkdown = openReportEntry(pairedNumber)?.markdown;
+          return pairedMarkdown ? frontMatterValue(pairedMarkdown, "item_updated_at") ?? null : null;
+        },
+        pairedIssueDurableReviewCommentUpdatedAt: (pairedNumber) => {
+          const pairedMarkdown = openReportEntry(pairedNumber)?.markdown;
+          if (!pairedMarkdown) return null;
+          const pairedCloseReason = reportDecision(
+            pairedMarkdown,
+            "implemented_on_main",
+          ).closeReason;
+          return durableReviewCommentUpdatedAt(
+            pairedMarkdown,
+            pairedNumber,
+            pairedCloseReason,
+          );
+        },
         closeDelayMs,
         closeLimitReached: closedCount >= limit,
         closeReason: appliedCloseReason,
         closedDir,
-        currentApplyMutationLeaseBlockReason,
+        currentApplyMutationLeaseBlockReason: currentApplyMutationBoundaryBlockReason,
         currentAuthorPrBudgetApplyGate,
         currentObsoleteFixPrBlockReason,
         currentPrCloseCoverageProofGateBlock,
         currentStaleVersionBugBlockReason,
+        currentDurableReviewCommentUpdatedAt: () =>
+          durableReviewCommentUpdatedAt(markdown, number, appliedCloseReason),
+        deferPairedIssueForThisRun: (pairedNumber) => {
+          pairedIssueCloseoutReportKeys.add(pairCloseKey(repo, pairedNumber));
+        },
         dryRun,
         emitEventApplyProof,
         examinedItemNumbers,
@@ -2033,11 +2703,41 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           if (item.kind === "pull_request") recordAuthorPrClose(item.author, appliedCloseReason);
           return processedCount >= processedLimit;
         },
+        onPairedIssueClosed: (result, simulated) => {
+          closedCount += 1;
+          processedCount += 1;
+          results.push(result);
+          logProgress(`${simulated ? "would close" : "closed"} linked issue #${result.number}`);
+          closedThisRun.add(pairCloseKey(repo, result.number));
+          const pairedEntry = openReportEntry(result.number);
+          const pairedState = pairedEntry
+            ? startApplyActionLedgerItem(applyLedger, pairedEntry)
+            : null;
+          if (pairedEntry && pairedState) {
+            const pairedClosedPath = join(closedDir, pairedEntry.name);
+            const pairedLedgerEntry = existsSync(pairedClosedPath)
+              ? { ...pairedEntry, path: pairedClosedPath, markdown: readFileSync(pairedClosedPath, "utf8") }
+              : pairedEntry;
+            recordApplyActionLedgerItemResults({
+              ledger: applyLedger,
+              state: pairedState,
+              results: [result],
+              entry: pairedLedgerEntry,
+              mutationOccurred: mutationByItem.get(`${pairedEntry.repo}#${pairedEntry.number}`) === true,
+              dryRun,
+            });
+          }
+          return processedCount >= processedLimit;
+        },
+        pairedIssueCanonicalProvenanceBlock,
+        pairedIssueCloseCapacityAvailable:
+          closedCount + 2 <= limit && processedCount + 2 <= processedLimit,
         postProofCoveringPrFreshnessBlock,
         postProofFreshnessBlock,
         proofResult: () => coverageProofState.cachedPrCloseCoverageProofGateResult,
         recordApplySkipped,
         recordMutation,
+        rememberSelfMutationUpdatedAt,
         recordReviewLeaseSkip,
         recordRuntimeBudgetYield,
         repo,
@@ -2046,12 +2746,15 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         runtimeBudget,
         setMarkdown: (value) => { markdown = value; },
         staleMinAgeDays,
-      });
+        withPairedIssueMutationLease,
+        },
+      );
       if (closeFlow === "yield") return;
       if (closeFlow === "stop") break;
       continue;
       } catch (error) {
         if (error instanceof ApplyMutationReviewGuardError && recordApplyMutationGuardReason) {
+          discardIssueLabelBatch();
           if (recordApplyMutationGuardReason(error.message)) break;
           continue;
         }
@@ -2062,7 +2765,9 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         }
         throw error;
       } finally {
+        discardIssueLabelBatch();
         releaseActiveApplyMutationLease();
+        setGuardReadGeneration(null);
         dependencies.activeApplyMutationRunner = previousApplyMutationRunner;
         if (!applyItemFailed) {
           const state = applyLedger.items.get(actionLedgerItemKey(entry));
@@ -2107,4 +2812,13 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
   }
 
   return { applyDecisionsCommandInner };
+}
+
+function contextPullHeadSha(context: ItemContext): string | null {
+  const pullRequest = context.pullRequest;
+  if (!pullRequest || typeof pullRequest !== "object") return null;
+  const head = (pullRequest as { head?: unknown }).head;
+  if (!head || typeof head !== "object") return null;
+  const sha = (head as { sha?: unknown }).sha;
+  return typeof sha === "string" && sha ? sha : null;
 }

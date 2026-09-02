@@ -3,15 +3,19 @@ import { createApplyGuardActivity } from "./clawsweeper-apply-guard-activity.js"
 import { createApplyGuardPolicy } from "./clawsweeper-apply-guard-policy.js";
 import { createApplyGuardProof } from "./clawsweeper-apply-guard-proof.js";
 import { createApplyGuardCapacity } from "./clawsweeper-apply-guard-capacity.js";
+import { type LiveReadGeneration, type LiveReadOptions } from "./live-read-generation.js";
 export { STALLED_UNPROVEN_PROOF_STATUSES } from "./clawsweeper-apply-guard-dependencies.js";
 
 type GuardReadCacheEntry = { ok: true; value: unknown } | { ok: false; error: unknown };
 
 export function createApplyGuards(dependencies: ApplyGuardDependencies) {
   const guardReadCache = new Map<string, GuardReadCacheEntry>();
+  let liveReadGeneration: LiveReadGeneration | null = null;
+  let liveReadOptions: LiveReadOptions = {};
 
   function memoizedGuardRead<T>(kind: "json" | "paged", args: readonly string[], read: () => T): T {
     const key = JSON.stringify([kind, ...args]);
+    if (liveReadGeneration) return liveReadGeneration.read(key, read, liveReadOptions);
     const cached = guardReadCache.get(key);
     if (cached) {
       if (cached.ok) return cached.value as T;
@@ -46,6 +50,19 @@ export function createApplyGuards(dependencies: ApplyGuardDependencies) {
 
   function resetGuardReadCache(): void {
     guardReadCache.clear();
+  }
+  function setGuardReadGeneration(generation: LiveReadGeneration | null): void {
+    liveReadGeneration = generation;
+    guardReadCache.clear();
+  }
+  function withGuardReadOptions<T>(options: LiveReadOptions, read: () => T): T {
+    const previous = liveReadOptions;
+    liveReadOptions = options;
+    try {
+      return read();
+    } finally {
+      liveReadOptions = previous;
+    }
   }
   const {
     abandonedPrAgeSkipReason,
@@ -83,11 +100,13 @@ export function createApplyGuards(dependencies: ApplyGuardDependencies) {
     prAutoCloseExemptLabel,
     pullRequestHeadActivity,
     resetGuardReadCache,
+    setGuardReadGeneration,
     staleVersionBugApplyBlockReasonSafe,
     stalledUnprovenPrAgeSkipReason,
     stalledUnprovenPrApplyBlockReasonSafe,
     stalledUnprovenProofRequestBlockReason,
     unconfirmedProductDirectionApplyBlockReasonSafe,
     unsponsoredFeatureApplyBlockReasonSafe,
+    withGuardReadOptions,
   };
 }

@@ -31,9 +31,12 @@ export function createGitHubExecution(dependencies: CreateGitHubExecutionDepende
     ghOnce,
     ghWithPreparedTimeout,
     githubCommandTimeoutMs,
+    githubRateLimitError: runtimeGithubRateLimitError,
     githubRuntimeBudgetError,
     sleepBeforeGitHubRetry,
   } = gitHubRuntime;
+  const githubRateLimitError =
+    runtimeGithubRateLimitError ?? ((cause: unknown) => new GitHubRateLimitError(cause));
   function ghWithRetry(
     args: string[],
     attempts = configuredGitHubRetryAttempts(),
@@ -51,6 +54,12 @@ export function createGitHubExecution(dependencies: CreateGitHubExecutionDepende
         if (error instanceof GitHubRuntimeBudgetError) throw error;
         lastError = error;
         const retryKind = ghRetryKind(error);
+        // Preserve the exhausted credential observation even when the current
+        // public read can finish through the bounded App-token fallback. That
+        // fallback is deliberately one-shot; later batch members must collapse
+        // instead of probing the same exhausted credential again.
+        const rateLimitError =
+          retryKind === "throttle" ? githubRateLimitError(error, args, activeEnv ?? {}) : null;
         const fallback =
           retryKind === "throttle" && !options.request ? claimPublicReadFallback(args) : null;
         if (retryKind === "throttle" && fallback) {
@@ -62,7 +71,7 @@ export function createGitHubExecution(dependencies: CreateGitHubExecutionDepende
             lastError = fallbackError;
             const fallbackRetryKind = ghRetryKind(fallbackError);
             if (fallbackRetryKind === "throttle") {
-              throw new GitHubRateLimitError(fallbackError);
+              throw githubRateLimitError(fallbackError, args, fallback);
             }
             ensureGitHubRuntimeAvailable("after GitHub operation");
             if (fallbackRetryKind === "none" || attempt === attempts - 1) {
@@ -78,7 +87,7 @@ export function createGitHubExecution(dependencies: CreateGitHubExecutionDepende
             continue;
           }
         }
-        if (retryKind === "throttle") throw new GitHubRateLimitError(error);
+        if (rateLimitError) throw rateLimitError;
         ensureGitHubRuntimeAvailable("after GitHub operation");
         if (retryKind === "none" || attempt === attempts - 1) throw error;
         const waitMs = ghRetryWaitMs(retryKind, attempt);

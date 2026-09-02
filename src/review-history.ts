@@ -10,6 +10,44 @@ export interface ReviewHistoryLedger {
   totalCompletedCycles: number;
 }
 
+export interface ReviewItemCoverage {
+  status: "items" | "empty" | "not_published" | "unrecognized" | "truncated" | "unavailable";
+  recognizedItems: number;
+  retainedItems: number;
+  omittedItems: number;
+  truncatedItems: number;
+  itemLimit: number;
+  textLimit: number;
+}
+
+export function boundedReviewItems(
+  items: string[],
+  status: ReviewItemCoverage["status"],
+  itemLimit: number,
+  textLimit: number,
+): { items: string[]; coverage: ReviewItemCoverage } {
+  const retained = items.slice(0, itemLimit);
+  const truncatedItems = retained.filter((item) => item.length > textLimit).length;
+  const omittedItems = items.length - retained.length;
+  return {
+    items: retained.map((item) => truncateReviewText(item, textLimit)),
+    coverage: {
+      status:
+        status === "unrecognized" ? status : omittedItems || truncatedItems ? "truncated" : status,
+      recognizedItems: items.length,
+      retainedItems: retained.length,
+      omittedItems,
+      truncatedItems,
+      itemLimit,
+      textLimit,
+    },
+  };
+}
+
+function truncateReviewText(text: string, limit: number): string {
+  return text.length > limit ? `${text.slice(0, limit - 3)}...` : text;
+}
+
 interface ParsedReviewHistory {
   ledger: ReviewHistoryLedger;
   start: number;
@@ -176,6 +214,63 @@ export function parseReviewHistory(body: string): ReviewHistoryLedger {
   return { cycles: [], totalCompletedCycles: 0 };
 }
 
+// Reviewer-only diagnostics: the public v1 parser, writer, and digest stay unchanged.
+export function reviewHistoryForReviewer(body: string) {
+  const lines = body.split(/\r?\n/);
+  const fenced = fencedLineStates(lines);
+  const unfenced = lines.map((line, index) => (fenced[index] ? "" : line)).join("\n");
+  const parsed = latestParsedReviewHistory(unfenced);
+  const remainder = parsed
+    ? unfenced.slice(0, parsed.start) + unfenced.slice(parsed.end)
+    : unfenced;
+  const malformed = /<!--\s*clawsweeper-review-history\b|<summary>Review history\b/i.test(
+    remainder,
+  );
+  const ledger = parsed?.ledger ?? { cycles: [], totalCompletedCycles: 0 };
+  const omittedCycles =
+    parsed && !malformed ? ledger.totalCompletedCycles - ledger.cycles.length : null;
+  const cappedFindings = ledger.cycles.some((cycle) => cycle.findings.length >= MAX_CYCLE_FINDINGS);
+  const cappedText = ledger.cycles.some((cycle) =>
+    [cycle.reviewedAt, cycle.sha, cycle.verdict, ...cycle.findings].some(
+      (text) => text.length >= MAX_HISTORY_FIELD_CHARS || text.endsWith("..."),
+    ),
+  );
+  return {
+    ledger: {
+      ...ledger,
+      cycles: ledger.cycles.map((cycle) => ({
+        reviewedAt: truncateReviewText(cycle.reviewedAt, MAX_HISTORY_FIELD_CHARS),
+        sha: truncateReviewText(cycle.sha, MAX_HISTORY_FIELD_CHARS),
+        verdict: truncateReviewText(cycle.verdict, MAX_HISTORY_FIELD_CHARS),
+        findings: cycle.findings
+          .slice(0, MAX_CYCLE_FINDINGS)
+          .map((finding) => truncateReviewText(finding, MAX_HISTORY_FIELD_CHARS)),
+      })),
+    },
+    coverage: {
+      status: malformed
+        ? "malformed"
+        : !parsed
+          ? "absent"
+          : omittedCycles
+            ? "truncated"
+            : "recognized",
+      retainedCycles: ledger.cycles.length,
+      lifetimeCycles: parsed && !malformed ? ledger.totalCompletedCycles : null,
+      omittedCycles,
+      content: "bounded_finding_titles_only",
+      rankUpMoves: "not_retained",
+      risks: "not_retained",
+      findingLimit: MAX_CYCLE_FINDINGS,
+      fieldLimit: MAX_HISTORY_FIELD_CHARS,
+      // v1 never recorded original item/text counts, even when below these caps.
+      itemAndTextCompleteness: "unknown",
+      atFindingCap: cappedFindings,
+      textMayBeTruncated: cappedText,
+    },
+  };
+}
+
 export function normalizeDurableReviewVerdictBody(body: string): string {
   const normalized = body.replace(/\r\n?/g, "\n");
   const parsed = latestParsedReviewHistory(normalized);
@@ -299,7 +394,7 @@ function detailsDepthStates(
   });
 }
 
-function reviewFindingLines(lines: readonly string[]): readonly string[] {
+function reviewFindingLines(lines: readonly string[]): readonly string[] | null {
   const fenced = fencedLineStates(lines);
   const detailsDepth = detailsDepthStates(lines, fenced);
   const collect = (start: number, boundary: RegExp): string[] => {
@@ -340,14 +435,14 @@ function reviewFindingLines(lines: readonly string[]): readonly string[] {
       break;
     }
   }
-  if (summaryStart < 0) return [];
+  if (summaryStart < 0) return null;
   return collect(summaryStart + 1, /^(?:\*\*|#{1,6}\s|<details>|<\/details>|<!--)/);
 }
 
-function commentBodyFindings(body: string): string[] {
+function parsedFindingTitles(lines: readonly string[]): string[] {
   const detailed: string[] = [];
   const summary: string[] = [];
-  for (const raw of reviewFindingLines(body.split(/\r?\n/))) {
+  for (const raw of lines) {
     const line = raw.trim();
     if (line.startsWith(HISTORY_LINE_PREFIX)) continue;
     const detailedMatch = line.match(DETAILED_FINDING_PATTERN);
@@ -366,7 +461,71 @@ function commentBodyFindings(body: string): string[] {
     }
   }
   const findings = detailed.length ? detailed : summary;
-  return [...new Set(findings)].slice(0, MAX_CYCLE_FINDINGS);
+  return [...new Set(findings)];
+}
+
+export function reviewFindingsForReviewer(body: string) {
+  const lines = reviewFindingLines(body.split(/\r?\n/));
+  const findings = parsedFindingTitles(lines ?? []);
+  const empty = lines?.some((line) => /^(?:- )?none[.!]?$/i.test(line.trim()));
+  const malformed = lines?.some(
+    (line) =>
+      line.startsWith("- ") &&
+      !DETAILED_FINDING_PATTERN.test(line) &&
+      !SUMMARY_FINDING_PATTERN.test(line) &&
+      !/^- none[.!]?$/i.test(line),
+  );
+  return boundedReviewItems(
+    findings,
+    malformed
+      ? "unrecognized"
+      : findings.length
+        ? "items"
+        : empty
+          ? "empty"
+          : lines
+            ? "unrecognized"
+            : "not_published",
+    MAX_CYCLE_FINDINGS,
+    MAX_HISTORY_FIELD_CHARS,
+  );
+}
+
+export function reviewRankUpMovesForReviewer(body: string) {
+  const lines = body.split(/\r?\n/);
+  const fenced = fencedLineStates(lines);
+  const start = lines.findIndex(
+    (line, index) =>
+      !fenced[index] &&
+      /^(?:#{1,6}\s+Rank-up moves|\*\*Rank-up moves\*\*|Rank-up moves:)\s*$/i.test(line),
+  );
+  const items: string[] = [];
+  let unrecognized = false;
+  if (start >= 0) {
+    for (let index = start + 1; index < lines.length; index += 1) {
+      const line = (lines[index] ?? "").trim();
+      if (fenced[index]) {
+        unrecognized = true;
+        continue;
+      }
+      if (/^(?:#{1,6}\s|\*\*[^*]+\*\*\s*$|<\/?details>|<!--)/.test(line)) break;
+      if (
+        !line ||
+        line === "Optional improvements that raise the rating; they are not merge blockers." ||
+        /^(?:- )?none[.!]?$/i.test(line)
+      )
+        continue;
+      const item = line.match(/^-\s+(\S.*)$/)?.[1];
+      if (item) items.push(item);
+      else unrecognized = true;
+    }
+  }
+  return boundedReviewItems(
+    items,
+    start < 0 ? "not_published" : unrecognized ? "unrecognized" : items.length ? "items" : "empty",
+    6,
+    600,
+  );
 }
 
 export function reviewHistoryCycleFromCommentBody(body: string): ReviewHistoryCycle | null {
@@ -393,5 +552,10 @@ export function reviewHistoryCycleFromCommentBody(body: string): ReviewHistoryCy
   const inlineReviewedAt = body.match(/_reviewed ([^_]+?)\.?_/i)?.[1]?.trim();
   const reviewedAt = reviewMarkerAttribute(body, "reviewed_at") ?? inlineReviewedAt ?? "unknown";
   const sha = reviewMarkerAttribute(body, "sha") ?? "unknown";
-  return { reviewedAt, sha, verdict, findings: commentBodyFindings(body) };
+  return {
+    reviewedAt,
+    sha,
+    verdict,
+    findings: parsedFindingTitles(reviewFindingLines(lines) ?? []).slice(0, MAX_CYCLE_FINDINGS),
+  };
 }

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { parse as parseYaml } from "yaml";
 
 import {
   applyDecisionPriority,
@@ -165,7 +166,7 @@ const logPath = ${JSON.stringify(logPath)};
 const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 appendFileSync(logPath, JSON.stringify(args) + "\\n");
-const path = args[1] || "";
+const path = args[1] === "-i" ? args[2] || "" : args[1] || "";
 if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
@@ -571,7 +572,7 @@ const updatedAt = { 321: "2026-05-01T00:00:00Z", 322: "2026-05-02T00:00:00Z" };
 const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 appendFileSync(logPath, JSON.stringify(args) + "\\n");
-const path = args[1] || "";
+const path = args[1] === "-i" ? args[2] || "" : args[1] || "";
 const commentMatch = path.match(/\\/issues\\/(\\d+)\\/comments(?:\\?|$)/);
 const issueMatch = path.match(/\\/issues\\/(\\d+)$/);
 if (args[0] === "api" && commentMatch) {
@@ -732,14 +733,16 @@ const comments = ${JSON.stringify({ 321: first.comment, 322: second.comment })};
 const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 appendFileSync(logPath, JSON.stringify(args) + "\\n");
-const path = args[1] || "";
+const path = args[1] === "-i" ? args[2] || "" : args[1] || "";
 const commentMatch = path.match(/\\/issues\\/(\\d+)\\/comments(?:\\?|$)/);
 const issueMatch = path.match(/\\/issues\\/(\\d+)$/);
-if (args[0] === "api" && /\\/issues\\/comments\\/\\d+$/.test(path)) {
+if (args[0] === "api" && /\\/issues\\/comments\\/9321$/.test(path) && args[args.indexOf("--method") + 1] === "PATCH") {
   const inputPath = args[args.indexOf("--input") + 1];
   const body = JSON.parse(readFileSync(inputPath, "utf8")).body;
   appendFileSync(logPath, JSON.stringify(["comment-patch", body]) + "\\n");
-  console.log(JSON.stringify({ id: 9000 + 321, html_url: "https://github.com/openclaw/clawsweeper/issues/321#issuecomment-9321", updated_at: "2026-05-01T01:02:00Z", body }));
+  console.log(JSON.stringify({ id: 9321, html_url: "https://github.com/openclaw/clawsweeper/issues/321#issuecomment-9321", updated_at: "2026-05-01T01:02:00Z", user: { login: "clawsweeper[bot]" }, body }));
+} else if (args[0] === "api" && /\\/issues\\/\\d+\\/timeline(?:\\?|$)/.test(path)) {
+  console.log("HTTP/2 200\\n\\n[]");
 } else if (args[0] === "api" && commentMatch) {
   const number = Number(commentMatch[1]);
   const body = comments[number];
@@ -837,7 +840,7 @@ if (args[0] === "api" && /\\/issues\\/comments\\/\\d+$/.test(path)) {
           (args[1] ?? "").includes("/issues/321/comments") &&
           args.includes("--paginate"),
       );
-    assert.equal(postMutationReviewCommentFetches.length, 0);
+    assert.equal(postMutationReviewCommentFetches.length, 1);
     assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
       {
         number: 321,
@@ -1819,10 +1822,14 @@ if (args[0] === "api" && /\\/issues\\/comments\\/\\d+$/.test(path)) {
     const patchedBody = patchCall[1] ?? "";
     assert.match(
       patchedBody,
-      new RegExp(`clawsweeper-review-state:blocked item=321 sha=${headSha} v=1`),
+      new RegExp(`<!-- clawsweeper-verdict:needs-human item=321 sha=${headSha}\\b`),
     );
-    assert.doesNotMatch(patchedBody, /clawsweeper-review-state:ready/);
-    assert.equal((patchedBody.match(/<!-- clawsweeper-review-state:/g) ?? []).length, 1);
+    assert.doesNotMatch(patchedBody, /<!-- clawsweeper-review-state:/);
+    assert.doesNotMatch(
+      patchedBody,
+      /<!-- clawsweeper-[^>]*\b(?:sha=new-head|source_revision=forged-source)\b/,
+    );
+    assert.ok(patchedBody.trimEnd().endsWith("<!-- clawsweeper-review item=321 -->"));
     assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
       {
         number: 321,
@@ -2085,7 +2092,7 @@ test("issue implementation workflow lets job intent choose dispatch capacity", (
     workflow.indexOf("\npermissions:"),
   );
 
-  assert.equal(dispatchInputs.match(/^      [a-z_]+:/gm)?.length, 10);
+  assert.equal(dispatchInputs.match(/^      [a-z_]+:/gm)?.length, 9);
   assert.doesNotMatch(workflow, /^\s+intake_runner:/m);
   assert.match(
     workflow,
@@ -2207,10 +2214,11 @@ test("sweep workflow executes only durable queue leases without runner-side admi
   assert.match(eventReviewBlock, /github\.event\.client_payload\.queue_lease_id != ''/);
   assert.match(legacyIntakeBlock, /Queue legacy exact-review event/);
   assert.match(legacyIntakeBlock, /\/internal\/exact-review\/enqueue/);
+  assert.match(legacyIntakeBlock, /\/internal\/exact-review\/branch-authority/);
   assert.match(legacyIntakeBlock, /x-clawsweeper-exact-review-signature/);
   assert.match(legacyIntakeBlock, /CLAWSWEEPER_WEBHOOK_SECRET/);
-  assert.match(legacyIntakeBlock, /gh api "repos\/\$target_repo" --jq \.default_branch/);
-  assert.match(legacyIntakeBlock, /targetBranch: process\.env\.TARGET_BRANCH/);
+  assert.doesNotMatch(legacyIntakeBlock, /gh api "repos\/\$target_repo" --jq \.default_branch/);
+  assert.match(legacyIntakeBlock, /targetBranch \? \{ targetBranch \} : \{\}/);
   assert.doesNotMatch(legacyIntakeBlock, /targetBranch: payload\.target_branch \|\| "main"/);
   assert.match(legacyIntakeBlock, /payload\.source_event === "pull_request_target"/);
   assert.match(legacyIntakeBlock, /payload\.ingress_route === "target_dispatcher"/);
@@ -2359,6 +2367,13 @@ test("agent workflows install pinned CLI releases and keep runner models secret"
   assert.doesNotMatch(localCheck, /gpt-5\.5/);
   assert.match(action, /env -u OPENAI_API_KEY[\s\S]*-u CLAWSWEEPER_INTERNAL_MODEL/);
   assert.equal(action.match(/--ignore-scripts/g)?.length, 2);
+  assert.match(action, /runner\.os == 'Linux' && runner\.environment == 'github-hosted'/);
+  assert.match(action, /kernel\.unprivileged_userns_clone=1/);
+  assert.match(action, /kernel\.apparmor_restrict_unprivileged_userns=0/);
+  assert.match(
+    action,
+    /codex sandbox --permission-profile :read-only -C "\$GITHUB_WORKSPACE" -- \/bin\/true/,
+  );
   for (const workflow of workflows) {
     assert.match(workflow, /CLAWSWEEPER_MODEL: internal/);
     assert.match(workflow, /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ secrets\.CLAWSWEEPER_MODEL \}\}/);
@@ -2373,7 +2388,9 @@ test("agent workflows install pinned CLI releases and keep runner models secret"
   assert.match(openclawAction, /openclaw-version:[\s\S]*default: "2026\.7\.2"/);
   assert.match(openclawAction, /openclaw@\$\{\{ inputs\['openclaw-version'\] \}\}/);
   assert.doesNotMatch(openclawAction, /@latest/);
-  assert.equal(openclawAction.match(/env\.CLAWSWEEPER_RUNNER == 'openclaw'/g)?.length, 4);
+  for (const step of parseYaml(openclawAction).runs.steps) {
+    assert.match(step.if ?? "", /env\.CLAWSWEEPER_RUNNER == 'openclaw'/);
+  }
   // Source builds bridge unreleased OpenClaw features and must stay pinned to
   // an exact SHA, gated to the openclaw runner, and off by default.
   assert.match(openclawAction, /openclaw-source-ref:[\s\S]*default: ""/);
@@ -2548,12 +2565,9 @@ test("review prompt asks for concise public review fields", () => {
 
   assert.match(prompt, /Keep these fields concise because they become the public review comment/);
   assert.match(prompt, /one short sentence for `changeSummary`, `workReason`, `bestSolution`/);
-  assert.match(prompt, /`workCandidate` is the authoritative repair-routing signal/);
-  assert.match(prompt, /Use one gate-only sentence shaped like `Wait for CI\.`/);
-  assert.match(prompt, /<1-9 alphanumeric or hyphenated words>/);
-  assert.match(prompt, /Normalize punctuation in the proof name to hyphens/);
-  assert.match(prompt, /Do not add a\s+second\s+sentence or embed repair instructions/);
-  assert.match(prompt, /Any other `bestSolution` is\s+published\s+fail-closed/);
+  assert.match(prompt, /`nextStep` records required PR action intent/);
+  assert.match(prompt, /Do not rely on action keywords to\s+communicate intent/);
+  assert.match(prompt, /the automation meaning of `workCandidate` is unchanged/);
   assert.match(
     prompt,
     /merge\s+automation is reported by the command\/status comment and hidden markers/,
@@ -2568,10 +2582,6 @@ test("review prompt keeps automerge opt-in from becoming generic manual review",
   assert.match(prompt, /`maintainer` label/);
   assert.match(prompt, /large `size:\*` label/);
   assert.match(prompt, /choose `queue_fix_pr` even when the\s+finding is process-only or P3/);
-  assert.match(prompt, /`CHANGELOG\.md` is release-owned/);
-  assert.match(prompt, /Do not\s+make missing `CHANGELOG\.md` a review finding/i);
-  assert.match(prompt, /ask for PR-body or commit\s+message context/);
-  assert.doesNotMatch(prompt, /missing required changelog\s+entry/);
   assert.match(prompt, /does not by itself block a clean automerge verdict/);
 });
 
@@ -3263,6 +3273,10 @@ test("GitHub retry classifier distinguishes throttle and transient failures", ()
   assert.equal(ghRetryKind(throttled), "throttle");
   assert.equal(shouldRetryGh(throttled), true);
   assert.equal(ghRetryKind(new Error("gh: HTTP 429: Too Many Requests")), "throttle");
+  assert.equal(
+    ghRetryKind(new Error("You have triggered an abuse detection mechanism")),
+    "throttle",
+  );
   assert.equal(ghRetryWaitMs("throttle", 0), 30_000);
   assert.equal(ghRetryWaitMs("throttle", 3), 60_000);
   assert.equal(ghRetryWaitMs("transient", 0), 2_000);
@@ -3334,17 +3348,36 @@ test("GitHub rate-limit deferrals preserve available reset hints and safe defaul
     now,
   );
   assert.equal(retryAfter.retryAt, "2026-08-05T10:02:00.000Z");
+  assert.equal(retryAfter.provenance, "retry_after");
+  assert.equal(retryAfter.authoritative, true);
+
+  const secondaryWithBothHints = new GitHubRateLimitError(
+    new Error(
+      `HTTP 403: secondary rate limit\nRetry-After: 30\nx-ratelimit-reset: ${now / 1_000 + 300}`,
+    ),
+    now,
+  );
+  assert.equal(secondaryWithBothHints.retryAt, "2026-08-05T10:01:00.000Z");
+  assert.equal(secondaryWithBothHints.provenance, "retry_after");
 
   const reset = new GitHubRateLimitError(
     new Error(`HTTP 403: API rate limit exceeded\nx-ratelimit-reset: ${now / 1_000 + 300}`),
     now,
   );
   assert.equal(reset.retryAt, "2026-08-05T10:05:00.000Z");
+  assert.equal(reset.provenance, "rate_limit_reset");
   assert.equal(new GitHubRateLimitError(reset, now + 1_000).retryAt, reset.retryAt);
-  assert.equal(
-    new GitHubRateLimitError(new Error("HTTP 429: rate limit reached"), now).retryAt,
-    "2026-08-05T10:01:00.000Z",
-  );
+  const fallback = new GitHubRateLimitError(new Error("HTTP 429: rate limit reached"), now);
+  const wrappedFallback = new GitHubRateLimitError(fallback, now + 1_000);
+  assert.equal(fallback.authoritative, false);
+  assert.equal(wrappedFallback.retryAt, fallback.retryAt);
+  assert.equal(wrappedFallback.provenance, "fallback");
+  assert.equal(wrappedFallback.authoritative, false);
+  assert.equal(fallback.retryAt, "2026-08-05T10:01:00.000Z");
+  const wrappedExpiredFallback = new GitHubRateLimitError(fallback, now + 61_000);
+  assert.equal(wrappedExpiredFallback.retryAt, "2026-08-05T10:02:01.000Z");
+  assert.equal(wrappedExpiredFallback.provenance, "fallback");
+  assert.equal(wrappedExpiredFallback.authoritative, false);
 });
 
 test("closing pull request references preserve fork repository identity", () => {

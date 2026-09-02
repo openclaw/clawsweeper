@@ -1,9 +1,11 @@
+import { isOpenClawTestRolePath } from "./openclaw-file-role.js";
+
 export type PrSurfaceBucket = "source" | "tests" | "docs" | "config" | "generated" | "other";
 
 export interface PrSurfaceFile {
   path: string;
-  additions: number;
-  deletions: number;
+  additions: number | null;
+  deletions: number | null;
 }
 
 export interface PrSurfaceStatsRow {
@@ -24,7 +26,9 @@ const BUCKETS: readonly { bucket: PrSurfaceBucket; label: string }[] = [
   { bucket: "other", label: "Other" },
 ];
 
-export function buildOpenClawPrSurfaceStats(files: readonly PrSurfaceFile[]): PrSurfaceStatsRow[] {
+export function buildOpenClawPrSurfaceStats(
+  files: readonly PrSurfaceFile[],
+): PrSurfaceStatsRow[] | null {
   const rows = BUCKETS.map(({ bucket, label }) => ({
     bucket,
     label,
@@ -34,8 +38,23 @@ export function buildOpenClawPrSurfaceStats(files: readonly PrSurfaceFile[]): Pr
     net: 0,
   }));
   const byBucket = new Map(rows.map((row) => [row.bucket, row]));
+  let additions = 0;
+  let deletions = 0;
 
   for (const file of files) {
+    if (
+      typeof file.additions !== "number" ||
+      typeof file.deletions !== "number" ||
+      !Number.isSafeInteger(file.additions) ||
+      !Number.isSafeInteger(file.deletions) ||
+      file.additions < 0 ||
+      file.deletions < 0
+    ) {
+      return null;
+    }
+    additions += file.additions;
+    deletions += file.deletions;
+    if (!Number.isSafeInteger(additions) || !Number.isSafeInteger(deletions)) return null;
     const bucket = openClawPrSurfaceBucket(file.path);
     const row = byBucket.get(bucket);
     if (!row) continue;
@@ -53,7 +72,7 @@ export function openClawPrSurfaceBucket(file: string): PrSurfaceBucket {
   const basename = normalized.split("/").pop() ?? normalized;
 
   if (isOpenClawGeneratedPath(normalized, basename)) return "generated";
-  if (isOpenClawTestPath(normalized)) return "tests";
+  if (isOpenClawTestRolePath(normalized)) return "tests";
   if (isOpenClawDocsPath(normalized, basename)) return "docs";
   if (isOpenClawConfigPath(normalized, basename)) return "config";
   if (isOpenClawSourcePath(normalized)) return "source";
@@ -98,14 +117,6 @@ function totalPrSurfaceStats(
 
 function isOpenClawSourcePath(file: string): boolean {
   return /^(?:src|ui|packages|extensions)\//.test(file);
-}
-
-function isOpenClawTestPath(file: string): boolean {
-  return (
-    /(?:^|\/)__tests__\//.test(file) ||
-    /^(?:test|tests)\//.test(file) ||
-    /\.(?:test|spec|e2e\.test)\.[cm]?[jt]sx?$/.test(file)
-  );
 }
 
 function isOpenClawDocsPath(file: string, basename: string): boolean {

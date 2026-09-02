@@ -1,0 +1,15 @@
+# Stuck queued-run remediation proof
+
+The scheduled remediation lane now inspects at most eight distinct stale workflows per pass, oldest queued run first. It also has a two-minute total runtime cap. When the shared `EXACT_REVIEW_RECONCILE_DEADLINE_MS` is present, the effective remediation deadline is the earlier of that cap and the shared deadline minus eight minutes, preserving 480,000 ms for guard verification and both dead-letter stages. Every GitHub request uses the remaining total budget. A partial pass writes `deadline_reached` plus distinct, inspected, and skipped workflow counts to its artifact and step summary.
+
+The timeout regression starts the production script against a loopback history provider that takes 20 seconds per call and exposes 20 distinct stale workflows. With the shared deadline constrained, the script stops after one attempted history request in about 1.5 seconds, reports one inspected and 19 skipped workflows (12 by the eight-workflow cap and seven by deadline), and retains the full eight-minute dead-letter reserve.
+
+`loopback-proof-receipt.json` records the production script's after-fix summary from the Docker-backed Crabbox proof. The loopback GitHub API exposed one two-hour-old queued run with three later same-workflow starts and one ten-minute-old queued run. The script selected and revalidated only the stranded run, posted exactly one regular cancellation, recorded `cancel_requested` with HTTP 202, and left the young run untouched.
+
+The second scenario is recorded in the same receipt. Regular and force cancellation both returned HTTP 500, so the script persisted the run as a permanent zombie. A second production-script pass restored that state, classified the old run as `permanent_zombie`, made no cancellation request, and left the young run untouched. The receipt contains the redacted request traces and all three behavior assertions.
+
+`container-receipt.json` records the current-pushed-head Crabbox run for revision `b46b579b6d12d940cb068b32da20a23e8c39b000`: provider `local-container`, lease `cbx_821f20930574`, slug `amber-shrimp-5247`, and Docker image `node:24-bookworm`. All 71 focused tests, the loopback production-script proof, static policy and documentation checks, formatting, all TypeScript builds, and every lint lane passed. Crabbox stopped the lease automatically.
+
+The earlier live read-only inventory remains in `live-dry-run.json`. It inspected all 18 queued runs returned by GitHub at 2026-08-12T03:39:23.031Z, found one young run plus the 17 seeded permanent zombies, selected nothing, and made no mutation request.
+
+Limits: the after-fix transport is a loopback HTTP fixture rather than live GitHub mutation. It exercises the production CLI, request routing through `GITHUB_API_URL`, selection, live-status revalidation, regular and force cancellation endpoints, summary writing, and restored zombie-state behavior. The host Node 24 `pnpm run check` remains the broad repository gate: 3,345 tests, 3,336 passes, nine platform skips, and zero failures.

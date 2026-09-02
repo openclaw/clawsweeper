@@ -87,7 +87,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  hosted-target-admission:
+    uses: ./.github/workflows/hosted-target-admission.yml
+    with:
+      target_repo: ${{ github.event_name == 'workflow_dispatch' && inputs.target_repo || github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}
+    secrets:
+      CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+
   route-comments:
+    needs: hosted-target-admission
+    if: ${{ needs.hosted-target-admission.outputs.outcome == 'public' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -103,6 +112,8 @@ jobs:
             results
             schema/clawsweeper-pr-close-coverage-proof.schema.json
             scripts/hydrate-state.ts
+            scripts/comment-router-runner.mjs
+            scripts/operator-skip-reasons.mjs
             scripts/prepare-worker-record-cache.ts
             scripts/worker-blobs.ts
             scripts/worker-records.ts
@@ -133,8 +144,8 @@ jobs:
             echo "target_slug=$(printf '%s' "$target_repo" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g')"
             item_number="${ITEM_NUMBERS:-}"
             if [[ "$item_number" =~ ^[1-9][0-9]*$ ]] &&
-              [[ ${#item_number} -lt 16 ||
-              ( ${#item_number} -eq 16 && "$item_number" < "9007199254740992" ) ]]; then
+              (( ${#item_number} < 16 ||
+              ( ${#item_number} == 16 && 10#$item_number < 9007199254740992 ) )); then
               echo "records_item_number=$item_number"
             fi
           } >> "$GITHUB_OUTPUT"
@@ -148,9 +159,11 @@ jobs:
           owner: ${{ steps.target.outputs.target_repo_owner }}
           repositories: ${{ steps.target.outputs.target_repo_name }}
           permission-actions: write
+          permission-checks: read
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
+          permission-statuses: read
 
       - name: Create central dispatch token
         id: dispatch-token
@@ -201,6 +214,9 @@ jobs:
           CLAWSWEEPER_ALLOW_MERGE: ${{ vars.CLAWSWEEPER_ALLOW_MERGE || '0' }}
           CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
           CLAWSWEEPER_ACTION_LEDGER_INVOCATION: initial
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          CLAWSWEEPER_TARGET_INSTALLATION_ID: ${{ steps.app_token.outputs.installation-id }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
           target_repo="${{ github.event_name == 'workflow_dispatch' && inputs.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}"
@@ -317,10 +333,12 @@ jobs:
             exit 0
           fi
           jobs_changed=0
+          cursor_changed="$(jq -r '.routing_cursor_changed == true' results/comment-router-latest.json 2>/dev/null || true)"
           if ! git diff --no-index --quiet -- "$CLAWSWEEPER_STATE_DIR/jobs" jobs; then
             jobs_changed=1
           fi
           if [ "$jobs_changed" = "0" ] &&
+             [ "$cursor_changed" != "true" ] &&
              jq -e '((.ledger_claimed // 0) + (.ledger_changed // 0)) == 0' results/comment-router-latest.json >/dev/null 2>&1; then
             echo "No durable router state changed; skipping state publication."
             exit 0
@@ -334,6 +352,9 @@ jobs:
           # changed repair jobs need the serialized Git state writer.
           if [ "$jobs_changed" = "1" ]; then
             publish_args+=(--path jobs)
+          fi
+          if [ "$cursor_changed" = "true" ]; then
+            publish_args+=(--path "results/comment-router-cursors/${{ steps.target.outputs.target_slug }}.json")
           fi
           pnpm run repair:publish-main -- "${publish_args[@]}"
 
@@ -358,6 +379,9 @@ jobs:
           CLAWSWEEPER_ALLOW_MERGE: ${{ vars.CLAWSWEEPER_ALLOW_MERGE || '0' }}
           CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
           CLAWSWEEPER_ACTION_LEDGER_INVOCATION: retry
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          CLAWSWEEPER_TARGET_INSTALLATION_ID: ${{ steps.app_token.outputs.installation-id }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
           target_repo="${{ github.event_name == 'workflow_dispatch' && inputs.target_repo || vars.CLAWSWEEPER_TARGET_REPO || 'openclaw/openclaw' }}"
@@ -470,10 +494,12 @@ jobs:
           # The initial publish copies every published path back into the state
           # checkout, making it the baseline for retry-only job mutations.
           jobs_changed=0
+          cursor_changed="$(jq -r '.routing_cursor_changed == true' results/comment-router-latest.json 2>/dev/null || true)"
           if ! git diff --no-index --quiet -- "$CLAWSWEEPER_STATE_DIR/jobs" jobs; then
             jobs_changed=1
           fi
           if [ "$jobs_changed" = "0" ] &&
+             [ "$cursor_changed" != "true" ] &&
              jq -e '((.ledger_claimed // 0) + (.ledger_changed // 0)) == 0' results/comment-router-latest.json >/dev/null 2>&1; then
             echo "No durable router retry state changed; skipping state publication."
             exit 0
@@ -486,6 +512,9 @@ jobs:
           # Retry receipts are append-only unless the retry changed a repair job.
           if [ "$jobs_changed" = "1" ]; then
             publish_args+=(--path jobs)
+          fi
+          if [ "$cursor_changed" = "true" ]; then
+            publish_args+=(--path "results/comment-router-cursors/${{ steps.target.outputs.target_slug }}.json")
           fi
           pnpm run repair:publish-main -- "${publish_args[@]}"
 

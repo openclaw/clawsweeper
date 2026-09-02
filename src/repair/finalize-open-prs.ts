@@ -18,6 +18,7 @@ import { sleepMs } from "./timing.js";
 import { DEFAULT_TARGET_REPO, REPAIR_CLUSTER_WORKFLOW, REVIEW_BOTS } from "./constants.js";
 import { numberEnv } from "./env-utils.js";
 import { compactText, escapeRegExp } from "./text-utils.js";
+import { rollUpStatusChecks } from "./status-check-rollup.js";
 
 const DEFAULT_HEAD_PREFIX = "clawsweeper/";
 const PASSING_CHECK_CONCLUSIONS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
@@ -294,18 +295,18 @@ function summarize(prs: JsonValue) {
 }
 
 function summarizeChecks(checks: LooseRecord[]) {
-  const ignored = ignoredCheckNames();
+  const rolledUpChecks = rollUpStatusChecks(
+    checks,
+    process.env.CLAWSWEEPER_FINALIZER_IGNORE_CHECKS ?? DEFAULT_IGNORED_CHECKS.join(","),
+  );
   const counts: Record<string, number> = {};
   const blockers: LooseRecord[] = [];
-  for (const check of checks) {
-    const name = String(check.name ?? check.context ?? "unknown check");
-    const workflow = String(check.workflowName ?? "");
-    const ignoredCheck = ignored.has(name) || ignored.has(workflow);
+  for (const { check, ignored } of rolledUpChecks) {
     const status = String(check.status ?? check.state ?? "").toUpperCase();
     const conclusion = String(check.conclusion ?? "").toUpperCase();
     const key = conclusion || status || "UNKNOWN";
     counts[key] = (counts[key] ?? 0) + 1;
-    if (ignoredCheck) continue;
+    if (ignored) continue;
     if (status && !["COMPLETED", "SUCCESS"].includes(status)) {
       blockers.push(`${displayCheckName(check)}:${status}`);
       continue;
@@ -315,7 +316,7 @@ function summarizeChecks(checks: LooseRecord[]) {
     }
   }
   return {
-    total: checks.length,
+    total: rolledUpChecks.length,
     counts,
     blockers,
   };
@@ -710,18 +711,6 @@ function isSecurityRoutedAction(action: LooseRecord) {
     String(action.action ?? "") === "route_security" ||
     String(action.classification ?? "") === "security_sensitive" ||
     /security-sensitive|central .*security|security triage/i.test(String(action.reason ?? ""))
-  );
-}
-
-function ignoredCheckNames() {
-  const configured = String(
-    process.env.CLAWSWEEPER_FINALIZER_IGNORE_CHECKS ?? DEFAULT_IGNORED_CHECKS.join(","),
-  );
-  return new Set(
-    configured
-      .split(",")
-      .map((item: JsonValue) => item.trim())
-      .filter(Boolean),
   );
 }
 

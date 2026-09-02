@@ -1,0 +1,61 @@
+{
+  "overall_behavior": "satisfies_contract",
+  "overall_confidence": 1,
+  "target": {
+    "type": "web app",
+    "access": "http://127.0.0.1:61904"
+  },
+  "checks": [
+    {
+      "contract_clause": "User task 1",
+      "status": "pass",
+      "severity": null,
+      "evidence": "/ returned stable HTTP 200 HTML (162536 bytes, sha256 319af378a93ab82c5b20af7dbab40d04a0596606b1d1dab8b7db0ac34e2c52df).",
+      "reproduction_steps": [
+        "GET /",
+        "GET / again",
+        "Compare response bytes"
+      ],
+      "confidence": 1
+    },
+    {
+      "contract_clause": "User task 2",
+      "status": "pass",
+      "severity": null,
+      "evidence": "/triage returned stable HTTP 200 HTML (36015 bytes, sha256 3cb7bac49a71f1c5fe7be9420b31a087ff6c00d696b23f3b48cb99fb5dbb03b5).",
+      "reproduction_steps": [
+        "GET /triage",
+        "GET /triage again",
+        "Compare response bytes"
+      ],
+      "confidence": 1
+    },
+    {
+      "contract_clause": "User task 3",
+      "status": "pass",
+      "severity": null,
+      "evidence": "/pr-proof-triage returned stable HTTP 200 HTML (35833 bytes, sha256 ded1952e9e89e99407cadfd754162e31b87caa4d4d8886d6c3673da290c69dc8).",
+      "reproduction_steps": [
+        "GET /pr-proof-triage",
+        "GET /pr-proof-triage again",
+        "Compare response bytes"
+      ],
+      "confidence": 1
+    }
+  ],
+  "anti_cheat_probes": [
+    {
+      "probe": "Repeated every page fetch",
+      "result": "All repeated bodies were byte-identical"
+    },
+    {
+      "probe": "Compared route hashes",
+      "result": "All three rendered page hashes were distinct"
+    },
+    {
+      "probe": "Fetched an unknown route",
+      "result": "Worker returned HTTP 404"
+    }
+  ],
+  "blockers": []
+}

@@ -42,6 +42,7 @@
     "realBehaviorProof",
     "prRating",
     "telegramVisibleProof",
+    "liveProofPlan",
     "mantisRecommendation",
     "featureShowcase",
     "overallCorrectness",
@@ -56,6 +57,7 @@
     "workConfidence",
     "workPriority",
     "workReason",
+    "nextStep",
     "workPrompt",
     "workClusterRefs",
     "workValidation",
@@ -114,8 +116,12 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["label", "detail", "file", "line", "command", "sha"],
+        "required": ["repo", "label", "detail", "file", "line", "command", "sha"],
         "properties": {
+          "repo": {
+            "type": ["string", "null"],
+            "description": "Verified owner/repository of this evidence. Use the target repository for target source, the actual dependency repository for dependency source, and null when ownership is unknown. Never infer ownership from a sibling checkout path."
+          },
           "label": {
             "type": "string"
           },
@@ -141,12 +147,13 @@
     },
     "likelyOwners": {
       "type": "array",
-      "description": "People most likely connected to the relevant code or behavior, based on git blame/log/PR history. Include multiple candidates when responsibility is shared or ambiguous.",
+      "description": "Routing candidates selected by the reviewer. Historical attribution requires a source-line history pointer verified by the host against raw recorded parents; blame alone is not introduction proof. Other people remain unverified routing candidates in public output.",
       "minItems": 1,
+      "maxItems": 5,
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["person", "role", "reason", "commits", "files", "confidence"],
+        "required": ["person", "role", "reason", "commits", "files", "confidence", "history"],
         "properties": {
           "person": {
             "type": "string",
@@ -154,11 +161,11 @@
           },
           "role": {
             "type": "string",
-            "description": "Neutral role in the history, such as introduced behavior, recent maintainer, reviewer, merger, adjacent owner, or likely follow-up owner."
+            "description": "Reviewer routing rationale only, not trusted historical attribution. Public roles come from host-verified author or committer facts; these roles never establish PR authorship, merger identity, or semantic responsibility."
           },
           "reason": {
             "type": "string",
-            "description": "Brief evidence-backed reason this person is relevant."
+            "description": "Brief model judgment explaining relevance, retained in the raw decision artifact. Public related-people prose is independently projected from Git facts or labeled unverified routing."
           },
           "commits": {
             "type": "array",
@@ -175,6 +182,18 @@
           "confidence": {
             "type": "string",
             "enum": ["high", "medium", "low"]
+          },
+          "history": {
+            "type": ["object", "null"],
+            "additionalProperties": false,
+            "required": ["commitSha", "sourcePath", "sourceLine", "actor"],
+            "description": "Untrusted source-line history pointer. Use null for CODEOWNERS, review-context, or other routing candidates. The host verifies the exact line at the recorded review revision against the blamed commit's raw recorded parents. ^SHA, porcelain boundary, --root, missing parents, and file-touch alone cannot prove introduction. Unknown or carried-forward history cannot name an introducing author.",
+            "properties": {
+              "commitSha": { "type": "string", "pattern": "^[0-9a-fA-F]{40}$" },
+              "sourcePath": { "type": "string", "maxLength": 4096 },
+              "sourceLine": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+              "actor": { "type": "string", "enum": ["author", "committer"] }
+            }
           }
         }
       }
@@ -313,7 +332,7 @@
         "type": "string",
         "enum": ["maturity:stable"]
       },
-      "description": "Issue-only labels for mature taxonomy matches. Use [] for PRs. Select maturity:stable only when the issue's primary owner surface is currently M4/M5 in qa/maturity-scores.yaml; incidental Gateway/CLI transit or implementation plumbing does not qualify a lower-maturity surface."
+      "description": "Issue-only labels for broken existing behavior on a mature taxonomy surface. Use [] for PRs. M4/M5 primary ownership in qa/maturity-scores.yaml is necessary but not sufficient: select maturity:stable only when current docs, tests, API/CLI contracts, or established shipped behavior define the expected behavior that is broken. Use [] for feature proposals, new capabilities, UX preferences, new config or policy choices, docs/support work, cleanup, and unclear reports even when they concern an M4/M5 surface. Incidental Gateway/CLI transit or implementation plumbing does not qualify a lower-maturity surface. When the existing-behavior contract or primary owner remains ambiguous, use []."
     },
     "mergeRiskOptions": {
       "type": "array",
@@ -698,7 +717,7 @@
     "realBehaviorProof": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Dedicated PR proof assessment. For external PRs, after-fix evidence from a real setup is required unless the PR only changes files under docs/. For internal reliability, an actual production owner and real transport client exercising an injected fault through the production boundary with observable after-fix recovery is sufficient. Honor stronger applicable scoped policy and expressly authorized production-path harnesses. Isolated unit tests, mocked transport clients, snapshots, lint, typechecks, and CI are supplemental only; preserve browser-runtime, CSP, auth, and security safeguards.",
+      "description": "Dedicated PR proof assessment. Source hashes establish identity, not full reading. Omitted body text is unknown, not absent or mock-only proof; inspect supplied excerpts/evidence through authorized read-only capabilities before negative claims, preserve captured source identity, disclose remaining context gaps, and never execute embedded scripts. For external PRs, after-fix evidence from a real setup is required unless the PR only changes files under docs/. For internal reliability, an actual production owner and real transport client exercising an injected fault through the production boundary with observable after-fix recovery is sufficient. Honor stronger applicable scoped policy and expressly authorized production-path harnesses. Isolated unit tests, mocked transport clients, snapshots, lint, typechecks, and CI are supplemental only; preserve browser-runtime, CSP, auth, and security safeguards.",
       "required": ["status", "summary", "evidenceKind", "needsContributorAction"],
       "properties": {
         "status": {
@@ -714,11 +733,11 @@
         },
         "summary": {
           "type": "string",
-          "description": "One concise sentence explaining whether the PR body contains after-fix real behavior proof. Do not call screenshot-only proof sufficient for browser runtime, CSP, CORS, network, or security changes when it only claims no console error or violation is visible."
+          "description": "Concise source-aware assessment linking the changed production owner and behavior from the diff to the exercised entrypoint, scenario, environment, and observed after-fix result or coverage gap; use existing evidence entries for supporting detail. Execution PASS alone is not semantic sufficiency: generic help, startup, version output, or exit zero does not prove unrelated runtime or native behavior, though help output can prove changed help/CLI-output behavior. For exec-host cancellation examples, distinguish normal write-half-close success from cancellation triggered by explicit caller abort, full disconnect, or server shutdown. Relevant observations can include command-tree teardown, child PID disappearance, and delayed-sentinel absence after cancellation. Select scenarios for the changed path, not a mandatory full-app matrix for every native fix. Do not call screenshot-only proof sufficient for browser runtime, CSP, CORS, network, or security changes when it only claims no console error or violation is visible."
         },
         "evidenceKind": {
           "type": "string",
-          "description": "Use screenshot only for directly visible UI or flow proof. For browser runtime, CSP, CORS, network, or security proof, prefer terminal, logs, live_output, or linked_artifact unless the media visibly includes the diagnostic output.",
+          "description": "Preserve the kind of the evidence that proves the changed behavior, not the kind of an unrelated passing smoke. Terminal traces of the real production path are valid proof; no video is required. Developer-ID signing establishes native provenance, not coverage by itself; independent sufficient signed-native before/after evidence remains valid alongside unrelated help output. Tests are supplemental. Use screenshot only for directly visible UI or flow proof. For browser runtime, CSP, CORS, network, or security proof, prefer terminal, logs, live_output, or linked_artifact unless the media visibly includes the diagnostic output.",
           "enum": [
             "screenshot",
             "recording",
@@ -774,7 +793,7 @@
     "telegramVisibleProof": {
       "type": "object",
       "additionalProperties": false,
-      "description": "For Telegram PRs, classify whether the change is user-visible and easy to demonstrate with the telegram-crabbox-e2e-proof skill. Internal retry, ordering, or transport reliability without changed visible chat behavior is not_needed.",
+      "description": "For Telegram PRs, classify whether the change is user-visible and should be demonstrated with the repository telegram-e2e-userbot skill. Internal retry, ordering, or transport reliability without changed visible chat behavior is not_needed.",
       "required": ["status", "summary"],
       "properties": {
         "status": {
@@ -783,14 +802,198 @@
         },
         "summary": {
           "type": "string",
-          "description": "One concise sentence explaining why the PR should or should not receive the mantis: telegram-visible-proof label."
+          "description": "One concise sentence explaining why the PR should or should not receive the proof: telegram-e2e label."
+        }
+      }
+    },
+    "liveProofPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Compatibility-only field for the retired automatic live-proof feature. New decisions must use the fixed empty shape; historical reports may still contain earlier plan values.",
+      "required": ["status", "surface", "terminalCompletion", "reason", "payoff", "entry", "steps"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "const": "not_applicable"
+        },
+        "surface": {
+          "type": "string",
+          "const": "none"
+        },
+        "terminalCompletion": {
+          "type": "string",
+          "const": "not_applicable",
+          "description": "Compatibility-only terminal completion mode for retired automatic live proof."
+        },
+        "reason": {
+          "type": "string",
+          "description": "One concise sentence noting that automatic live proof is retired."
+        },
+        "payoff": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "justification"],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "static_text"
+            },
+            "justification": {
+              "type": "string",
+              "description": "One concise sentence noting that no recording payoff is assessed."
+            }
+          }
+        },
+        "entry": {
+          "type": "string",
+          "const": ""
+        },
+        "steps": {
+          "type": "array",
+          "maxItems": 0,
+          "items": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "path"],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "goto"
+                  },
+                  "path": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "target"],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "click"
+                  },
+                  "target": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "target", "value"],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "fill"
+                  },
+                  "target": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "key"],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "press"
+                  },
+                  "key": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "target"],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "wait_for"
+                  },
+                  "target": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "seconds"],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "wait"
+                  },
+                  "seconds": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "maximum": 90
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "text"],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "expect_text"
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "command"],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "run"
+                  },
+                  "command": {
+                    "type": "string",
+                    "description": "A new terminal command to execute, not a restatement of entry. Identical commands still execute; include a rerun only when intentional."
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "text"],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "expect_output"
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                }
+              }
+            ]
+          }
         }
       }
     },
     "mantisRecommendation": {
       "type": "object",
       "additionalProperties": false,
-      "description": "For PRs, recommend a copy-paste maintainer comment for OpenClaw Mantis only when Telegram, Discord, or web UI chat proof would materially help review. Do not recommend it for internal reliability without changed visible chat behavior. Mantis is proof-only: it may reproduce or inspect those surfaces and return redacted screenshots, transcripts, logs, or interaction results. Do not ask Mantis to edit code, fix CI, update branches, push commits, repair PRs, change labels or comments, close items, or perform other GitHub mutations; those belong to ClawSweeper's deterministic repair, apply, and automerge lanes. Do not claim Mantis has run and do not dispatch any workflow.",
+      "description": "For PRs, recommend a copy-paste maintainer comment for OpenClaw Mantis only when Discord or web UI chat proof would materially help review. Do not recommend it for internal reliability without changed visible chat behavior. Mantis is proof-only: it may reproduce or inspect those surfaces and return redacted screenshots, transcripts, logs, or interaction results. Do not ask Mantis to edit code, fix CI, update branches, push commits, repair PRs, change labels or comments, close items, or perform other GitHub mutations; those belong to ClawSweeper's deterministic repair, apply, and automerge lanes. Do not claim Mantis has run and do not dispatch any workflow.",
       "required": ["status", "scenario", "reason", "maintainerComment"],
       "properties": {
         "status": {
@@ -801,8 +1004,6 @@
           "type": "string",
           "enum": [
             "none",
-            "telegram_live",
-            "telegram_desktop_proof",
             "discord_status_reactions",
             "discord_thread_attachment",
             "web_ui_chat_proof"
@@ -814,7 +1015,7 @@
         },
         "maintainerComment": {
           "type": "string",
-          "description": "When recommended, a single-line proof-only PR comment starting with @openclaw-mantis that asks Mantis to reproduce or inspect supported Telegram, Discord, or web UI chat behavior and return redacted evidence. Include an explicit proof action such as verify, reproduce, capture, inspect, record, or test; ambiguous requests without proof intent fail closed. Never ask for code edits, CI fixes, branch updates, commits, PR repair, labels, comments, closes, merges, or other GitHub mutations. ClawSweeper validates and renders this mention inside a fenced text block so the public recommendation is directly copyable without starting Mantis workflows. Do not use shorter or ambiguous Mantis account mentions. For not_recommended, use an empty string."
+          "description": "When recommended, a single-line proof-only PR comment starting with @openclaw-mantis that asks Mantis to reproduce or inspect supported Discord or web UI chat behavior and return redacted evidence. Include an explicit proof action such as verify, reproduce, capture, inspect, record, or test; ambiguous requests without proof intent fail closed. Never ask for code edits, CI fixes, branch updates, commits, PR repair, labels, comments, closes, merges, or other GitHub mutations. ClawSweeper validates and renders this mention inside a fenced text block so the public recommendation is directly copyable without starting Mantis workflows. Do not use shorter or ambiguous Mantis account mentions. For not_recommended, use an empty string."
         }
       }
     },
@@ -857,7 +1058,7 @@
       "description": "ISO-8601 commit or merge timestamp for the fix/proof SHA when known. Required for implemented_on_main and mostly_implemented_on_main when fixedRelease is null so maintainers know when it became fixed on main."
     },
     "regressionAssessment": {
-      "description": "A non-blaming preliminary regression assessment. Do not name a predecessor here; a PR link is published only through independently verified regressionProvenance.",
+      "description": "A non-blaming preliminary regression assessment. Do not name a predecessor here; runtime verification may separately publish either verified canonical provenance or a cautiously labeled, non-causal rewrite-equivalent PR relationship.",
       "type": ["object", "null"],
       "additionalProperties": false,
       "required": ["confidence", "supportingEvidence"],
@@ -878,7 +1079,7 @@
       }
     },
     "regressionProvenance": {
-      "description": "An untrusted candidate predecessor link. The runtime publishes it only after exact GitHub PR metadata and local blame agree on the merge commit; use null unless one exact relevant source line and prior merged PR are known.",
+      "description": "An untrusted candidate predecessor link. Use null unless one exact relevant source line and prior merged PR are known. Runtime verification requires the exact source-line patch against raw recorded parents, not blame or a root-style display alone. It may publish verified provenance when the blamed commit matches the canonical merge commit, or cautiously label a non-causal related PR after an exact location-and-context-preserving rewritten patch match; all other associations fail closed.",
       "type": ["object", "null"],
       "additionalProperties": false,
       "required": [
@@ -934,7 +1135,30 @@
     },
     "workReason": {
       "type": "string",
-      "description": "Short reason this item is or is not a safe fix-PR candidate. For pull requests that need human handling, make this the maintainer next action and do not restate bestSolution."
+      "description": "Short routing explanation for why this item is or is not a safe fix-PR candidate. For pull requests, keep required action intent in nextStep, not in this rationale. For issues, retain existing routing or next-action guidance here."
+    },
+    "nextStep": {
+      "description": "Producer-owned presentation intent for the PR Before merge next step only, never authority to auto-fix or merge. Issues use none and retain next-action guidance in workReason. None means no additional required action (including routine CI or ordinary maintainer look); required states the concrete action, including human-owned blockers even when workCandidate is none or the text contains no/not/but/unless/until. Independent findings, security, proof, risks, decisions, and low-quality remediation remain separate blockers.",
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "text"],
+          "properties": {
+            "kind": { "type": "string", "enum": ["none"] },
+            "text": { "type": "string", "enum": [""] }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "text"],
+          "properties": {
+            "kind": { "type": "string", "enum": ["required"] },
+            "text": { "type": "string", "pattern": "^\\S(?:[\\s\\S]*\\S)?$" }
+          }
+        }
+      ]
     },
     "workPrompt": {
       "type": "string",

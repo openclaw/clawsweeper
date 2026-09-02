@@ -17,6 +17,7 @@ type ApplyReviewGuardDependencies = Pick<
   | "reviewCommentHasCloseVerdictForCanonical"
   | "staleCanonicalPullRequestNumber"
   | "staleReviewCommentSyncReason"
+  | "newerDurableReviewTupleVerified"
 >;
 
 export interface ApplyReviewGuardState {
@@ -63,6 +64,7 @@ export function createApplyReviewGuards(
     reviewCommentHasCloseVerdictForCanonical,
     staleCanonicalPullRequestNumber,
     staleReviewCommentSyncReason,
+    newerDurableReviewTupleVerified,
   } = dependencies;
   const {
     currentItemContext,
@@ -95,6 +97,7 @@ export function createApplyReviewGuards(
     reason: string,
     restoreOriginal = true,
     activeReviewLeaseExpiresAt?: string,
+    newerReviewTupleVerified = false,
   ): boolean => {
     const state = getState();
     const markdown = replaceFrontMatterValue(
@@ -110,6 +113,11 @@ export function createApplyReviewGuards(
       reason,
       ...(emitEventApplyProof && action === "kept_open" && activeReviewLeaseExpiresAt
         ? { activeReviewLeaseVerified: true, activeReviewLeaseExpiresAt }
+        : {}),
+      ...(emitEventApplyProof &&
+      action === "skipped_stale_review_comment_sync" &&
+      newerReviewTupleVerified
+        ? { newerReviewTupleVerified: true }
         : {}),
     });
     const processedCount = getProcessedCount() + 1;
@@ -241,13 +249,29 @@ export function createApplyReviewGuards(
   };
   const refreshedReviewStaleReason = (comment: Record<string, unknown> | undefined) =>
     canonicalBoundStaleReviewReason(markdownBeforeApplyDecisionMutations, comment);
-  const recordRefreshedReviewStaleReason = (reason: string): boolean =>
+  const verifiedNewerReviewTuple = (
+    sourceMarkdown: string,
+    comment: Record<string, unknown> | undefined,
+    reason: string,
+  ): boolean =>
+    reason === staleReviewCommentSyncReason(sourceMarkdown, comment, number) &&
+    newerDurableReviewTupleVerified(sourceMarkdown, comment, number);
+  const recordRefreshedReviewStaleReason = (
+    reason: string,
+    comment: Record<string, unknown> | undefined,
+  ): boolean =>
     getState().staleCanonicalCommentSyncPending
       ? markApplySkipped(
           "retry_stale_canonical_comment_sync",
           `${reason}; stale canonical comment correction remains pending`,
         )
-      : recordReviewGuardSkip("skipped_stale_review_comment_sync", reason);
+      : recordReviewGuardSkip(
+          "skipped_stale_review_comment_sync",
+          reason,
+          true,
+          undefined,
+          verifiedNewerReviewTuple(markdownBeforeApplyDecisionMutations, comment, reason),
+        );
 
   return {
     applyCanonicalCommentSyncGuard,
@@ -257,6 +281,7 @@ export function createApplyReviewGuards(
     recordReviewGuardSkip,
     recordReviewLeaseSkip,
     refreshedReviewStaleReason,
+    verifiedNewerReviewTuple,
     shouldCheckCanonicalCommentSync,
   };
 }

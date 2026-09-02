@@ -1,0 +1,343 @@
+PROOF_PHASE=environment
+provider=local-container
+image=node:24-bookworm
+head=1855dfbb0c0d0b66978a99b20756845e3d6fa131
+base=ae36d608d01701af7e06c313be96689068b5c890
+head_attestation=explicit_argument_with_content_hashes
+v24.19.0
+11.17.0
+jq-1.6
+PROOF_PHASE=corepack
+
+added 1 package in 337ms
+11.10.0
+PROOF_PHASE=install
+? Verifying lockfile against supply-chain policies (79 entries)...
+Lockfile is up to date, resolution step is skipped
+Progress: resolved 1, reused 0, downloaded 0, added 0
+Packages: +19
++++++++++++++++++++
+
+   ╭───────────────────────────────────────────────╮
+   │                                               │
+   │     Update available! 11.10.0 → 11.21.0.      │
+   │     Changelog: https://pnpm.io/v/11.21.0      │
+   │   To update, run: corepack use pnpm@11.21.0   │
+   │                                               │
+   ╰───────────────────────────────────────────────╯
+
+✓ Lockfile passes supply-chain policies (79 entries in 464ms)
+Progress: resolved 19, reused 0, downloaded 16, added 16
+Progress: resolved 19, reused 0, downloaded 19, added 19, done
+
+dependencies:
++ typescript 7.0.2
++ yaml 2.9.0
+
+devDependencies:
++ @types/node 24.13.3
++ markdown-it 15.0.0
++ oxfmt 0.58.0
++ oxlint 1.73.0
++ oxlint-tsgolint 0.24.0
+
+Done in 3.1s using pnpm v11.10.0
+PROOF_PHASE=build
+PROOF_PHASE=focused-router-test
+✔ canonical record operator auth is scoped to items (29.007503ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 174.1721
+PROOF_PHASE=real-worker
+{
+  "schema": "clawsweeper-operator-record-read-auth-proof/v1",
+  "generated_at": "2026-08-13T00:18:03.379Z",
+  "merge_base": "ae36d608d01701af7e06c313be96689068b5c890",
+  "head": "1855dfbb0c0d0b66978a99b20756845e3d6fa131",
+  "runtime": "sequential real wrangler dev --local Workers over loopback HTTP",
+  "configuration": {
+    "secrets_distinct": true,
+    "shared_secret_fixture": false,
+    "persisted_state_shared_between_boots": false,
+    "candidate_git_metadata": false,
+    "candidate_head_source": "explicit Crabbox argument",
+    "baseline_source": "exact public GitHub commit"
+  },
+  "before": {
+    "operator": {
+      "items": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
+      },
+      "closed": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
+      },
+      "plans": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
+      },
+      "decision-packets": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
+      }
+    },
+    "webhook": {
+      "items": {
+        "status": 200,
+        "body": {
+          "digest": "6471d07455ff7a89b394dae08e7e693a6f79629db0e14e8f58115b9c90be986a",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
+      },
+      "closed": {
+        "status": 200,
+        "body": {
+          "digest": "15f2f682df60c650c5f0e7f4235f410b2402460ac19e9dd6d14271013aa657c0",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
+      },
+      "plans": {
+        "status": 200,
+        "body": {
+          "digest": "b89ebbdc643dd7be0defe48e3d48ce7342c62a4cc150f9ef199dab2b7c26e129",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
+      },
+      "decision-packets": {
+        "status": 200,
+        "body": {
+          "digest": "a24f6dd883067f6048feacf7c00c1c8c2572ef1a0b09690b7945855555e8ccc0",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
+      }
+    },
+    "garbage": {
+      "items": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
+      },
+      "closed": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
+      },
+      "plans": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
+      },
+      "decision-packets": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
+      }
+    }
+  },
+  "after": {
+    "operator": {
+      "items": {
+        "status": 200,
+        "body": {
+          "digest": "6471d07455ff7a89b394dae08e7e693a6f79629db0e14e8f58115b9c90be986a",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
+      },
+      "closed": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
+      },
+      "plans": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
+      },
+      "decision-packets": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
+      }
+    },
+    "webhook": {
+      "items": {
+        "status": 200,
+        "body": {
+          "digest": "6471d07455ff7a89b394dae08e7e693a6f79629db0e14e8f58115b9c90be986a",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
+      },
+      "closed": {
+        "status": 200,
+        "body": {
+          "digest": "15f2f682df60c650c5f0e7f4235f410b2402460ac19e9dd6d14271013aa657c0",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
+      },
+      "plans": {
+        "status": 200,
+        "body": {
+          "digest": "b89ebbdc643dd7be0defe48e3d48ce7342c62a4cc150f9ef199dab2b7c26e129",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
+      },
+      "decision-packets": {
+        "status": 200,
+        "body": {
+          "digest": "a24f6dd883067f6048feacf7c00c1c8c2572ef1a0b09690b7945855555e8ccc0",
+          "revision": 1,
+          "content_matches": true,
+          "updated_at_valid": true
+        }
+      }
+    },
+    "garbage": {
+      "items": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
+      },
+      "closed": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
+      },
+      "plans": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
+      },
+      "decision-packets": {
+        "status": 401,
+        "body": {
+          "error": "invalid_signature"
+        }
+      }
+    }
+  },
+  "process_tree_shutdowns": [
+    {
+      "label": "merge-base",
+      "method": "process_group_and_descendants",
+      "targeted_processes": 8,
+      "health_down": true
+    },
+    {
+      "label": "candidate",
+      "method": "process_group_and_descendants",
+      "targeted_processes": 8,
+      "health_down": true
+    }
+  ],
+  "result": {
+    "merge_base_statuses": {
+      "operator": {
+        "items": 401,
+        "closed": 401,
+        "plans": 401,
+        "decision-packets": 401
+      },
+      "webhook": {
+        "items": 200,
+        "closed": 200,
+        "plans": 200,
+        "decision-packets": 200
+      },
+      "garbage": {
+        "items": 401,
+        "closed": 401,
+        "plans": 401,
+        "decision-packets": 401
+      }
+    },
+    "candidate_statuses": {
+      "operator": {
+        "items": 200,
+        "closed": 401,
+        "plans": 401,
+        "decision-packets": 401
+      },
+      "webhook": {
+        "items": 200,
+        "closed": 200,
+        "plans": 200,
+        "decision-packets": 200
+      },
+      "garbage": {
+        "items": 401,
+        "closed": 401,
+        "plans": 401,
+        "decision-packets": 401
+      }
+    },
+    "status": "succeeded"
+  },
+  "limits": [
+    "Credentials and canonical content are synthetic local fixtures.",
+    "The proof exercises local Worker routing and Durable Object persistence, not production state or GitHub mutation.",
+    "The operational-cursor route is outside scope because it has no operator-secret consumer."
+  ]
+}
+OPERATOR_RECORD_READ_AUTH_PROOF_RC=0
+PROOF_PHASE=dashboard-strict
+PROOF_PHASE=full-gate
+. check:dashboard-queue-boundary: dashboard queue boundary check passed
+. check:docs: Documentation checks passed.
+. format:check: All matched files use the correct format.
+ℹ tests 12
+ℹ pass 12
+ℹ fail 0
+ℹ skipped 0
+ℹ tests 3401
+ℹ pass 3393
+ℹ fail 0
+ℹ skipped 8
+PROOF_PHASE=content
+5508c1bfe6a685ba62b22d8ceada83c756b35f48c730a80b42cbd2bd10ec41bc  dashboard/worker.ts
+a950aa0ca94f2e6c396209140c055ac5994e7680cd0267f6fa5f230feb1ed786  docs/proof/operator-record-read-auth/behavior-contract.md
+7c60ddb812795928ba08d988fb351c269ca1760bf1ff75e9ad3175e955bade63  docs/proof/operator-record-read-auth/red-green.md
+f6b9f2e2261acaf105f50e55180e92dacaf3282fe2eca4df1605bd99992588a9  docs/proof/operator-record-read-auth/run-proof.mjs
+d085561567bd4ab3659d6aecb78ff419d745dfecc6c1c0ef0f8f3c2882eae2c4  docs/proof/operator-record-read-auth/run-proof.sh
+dbcce41ccc3ecb38620bea13d4c93d0eff9f317b24c8b569e9dfd1fe4bec0c93  test/dashboard-worker-publication-lifecycle.test.ts
+source_status=git_metadata_unavailable_after_linked-worktree_sync
+PROOF_RESULT=pass

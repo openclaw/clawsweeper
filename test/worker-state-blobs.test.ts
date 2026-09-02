@@ -6,19 +6,21 @@ import path from "node:path";
 import test from "node:test";
 
 import worker from "../dashboard/worker.ts";
+import { publishStateBlob } from "../dist/state-blob-client.js";
 import {
   WorkerBlobsUnavailableError,
   downloadStateBlob,
   listStateBlobs,
   materializeStateBlobs,
   statStateBlob,
-  uploadStateBlob,
 } from "../scripts/worker-blobs.ts";
 
 const secret = "state-blob-secret";
 const baseUrl = "https://worker.example";
 const ledgerPath = "ledger/v1/events/2026/07/26/openclaw/openclaw/shard-000.jsonl";
 const assetPath = "assets/social/card.svg";
+const artifactContent = Buffer.from("cached bundle bytes");
+const artifactPath = `artifacts/exact-review/v1/${sha256(artifactContent)}`;
 
 test("state blob endpoints reject unsigned requests and fail closed without a bucket", async () => {
   const env = { CLAWSWEEPER_WEBHOOK_SECRET: secret, STATE_SNAPSHOTS: new FakeR2Bucket() };
@@ -80,11 +82,40 @@ test("state blob failures return stable errors and sanitize server logs", async 
   } finally {
     console.error = originalError;
   }
+  assert.deepEqual(errors, ["state_blob_request_failed"]);
   assert.doesNotMatch(errors.join("\n"), new RegExp(sensitive));
   assert.doesNotMatch(errors.join("\n"), new RegExp(bearerCredential));
-  assert.match(errors.join("\n"), /https:\/\/\[REDACTED\]@storage\.example/);
-  assert.match(errors.join("\n"), /token=\[REDACTED\]/);
-  assert.match(errors.join("\n"), /Authorization: Bearer \[REDACTED\]/);
+});
+
+test("state blob upload rejection logs omit path, upload, URL, query, and error identity", async () => {
+  const marker =
+    "synthetic-upload-title-at-https://privacy.invalid/private-path?query=private-marker";
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...values: unknown[]) => warnings.push(values.join(" "));
+  try {
+    const response = await worker.fetch(
+      signedBlobRequest("multipart/part", {
+        path: "assets/private-repository/private-item.svg",
+        uploadId: marker,
+        partNumber: 1,
+        contentBase64: Buffer.from("synthetic upload bytes").toString("base64"),
+      }),
+      {
+        CLAWSWEEPER_WEBHOOK_SECRET: secret,
+        STATE_SNAPSHOTS: new FakeR2Bucket(),
+      },
+    );
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: "invalid_blob_upload" });
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.deepEqual(warnings, ["state_blob_upload_rejected"]);
+  assert.doesNotMatch(
+    warnings.join("\n"),
+    /synthetic-upload-title|privacy\.invalid|private-marker/,
+  );
 });
 
 test("single-shot blob uploads verify digests server-side and re-put idempotently", async () => {
@@ -92,15 +123,21 @@ test("single-shot blob uploads verify digests server-side and re-put idempotentl
   const options = { baseUrl, webhookSecret: secret, fetch: viaWorker(env) };
   const content = Buffer.from('{"event":"opened"}\n');
 
-  const uploaded = await uploadStateBlob({ ...options, blobPath: ledgerPath, content });
+  const upload = {
+    baseUrl,
+    webhookSecret: secret,
+    fetchImpl: options.fetch,
+    path: ledgerPath,
+    content,
+  };
+  const uploaded = await publishStateBlob(upload);
   assert.deepEqual(uploaded, {
     path: ledgerPath,
     bytes: content.byteLength,
     digest: sha256(content),
     unchanged: false,
-    transport: "single",
   });
-  const repeat = await uploadStateBlob({ ...options, blobPath: ledgerPath, content });
+  const repeat = await publishStateBlob(upload);
   assert.equal(repeat.unchanged, true);
 
   const stat = await statStateBlob({ ...options, blobPath: ledgerPath });
@@ -155,27 +192,108 @@ test("single-shot blob uploads verify digests server-side and re-put idempotentl
   assert.equal(traversal.status, 400);
 });
 
+test("state blob publication retries aborted attempts without reporting success", async (t) => {
+  const signals: AbortSignal[] = [];
+  t.mock.method(AbortSignal, "timeout", () => {
+    const signal = AbortSignal.abort(new DOMException("request timed out", "TimeoutError"));
+    signals.push(signal);
+    return signal;
+  });
+  let attempts = 0;
+  await assert.rejects(
+    publishStateBlob({
+      baseUrl,
+      webhookSecret: secret,
+      path: ledgerPath,
+      content: Buffer.from("synthetic publication\n"),
+      fetchImpl: async (_input, init) => {
+        attempts += 1;
+        init?.signal?.throwIfAborted();
+        return Response.json({ unchanged: false });
+      },
+    }),
+    /request timed out/,
+  );
+  assert.equal(attempts, 4);
+  assert.equal(new Set(signals).size, 4, "each retry needs its own deadline");
+});
+
 test("ledger keys are create-only while asset keys may overwrite", async () => {
   const env = { CLAWSWEEPER_WEBHOOK_SECRET: secret, STATE_SNAPSHOTS: new FakeR2Bucket() };
   const options = { baseUrl, webhookSecret: secret, fetch: viaWorker(env) };
 
-  await uploadStateBlob({ ...options, blobPath: ledgerPath, content: Buffer.from("immutable\n") });
-  await assert.rejects(
-    uploadStateBlob({ ...options, blobPath: ledgerPath, content: Buffer.from("different\n") }),
-    /ledger_blob_immutable_conflict/,
+  await putBlob(env, ledgerPath, Buffer.from("immutable\n"));
+  const conflict = await worker.fetch(
+    signedBlobRequest("put", {
+      path: ledgerPath,
+      digest: sha256(Buffer.from("different\n")),
+      contentBase64: Buffer.from("different\n").toString("base64"),
+    }),
+    env,
   );
+  assert.equal(conflict.status, 409);
+  assert.equal((await conflict.json()).error, "ledger_blob_immutable_conflict");
   const kept = await statStateBlob({ ...options, blobPath: ledgerPath });
   assert.equal(kept?.digest, sha256(Buffer.from("immutable\n")));
 
-  await uploadStateBlob({ ...options, blobPath: assetPath, content: Buffer.from("<svg one/>") });
-  const replaced = await uploadStateBlob({
-    ...options,
-    blobPath: assetPath,
-    content: Buffer.from("<svg two/>"),
-  });
+  await putBlob(env, assetPath, Buffer.from("<svg one/>"));
+  const replaced = await putBlob(env, assetPath, Buffer.from("<svg two/>"));
   assert.equal(replaced.unchanged, false);
   const stat = await statStateBlob({ ...options, blobPath: assetPath });
   assert.equal(stat?.digest, sha256(Buffer.from("<svg two/>")));
+
+  const artifact = artifactContent;
+  await putBlob(env, artifactPath, artifact);
+  const artifactConflict = await worker.fetch(
+    signedBlobRequest("put", {
+      path: artifactPath,
+      digest: sha256(Buffer.from("different cached bytes")),
+      contentBase64: Buffer.from("different cached bytes").toString("base64"),
+    }),
+    env,
+  );
+  assert.equal(artifactConflict.status, 400);
+  assert.equal((await artifactConflict.json()).error, "artifact_blob_key_digest_mismatch");
+
+  for (const malformed of [
+    "artifacts/exact-review/v1/not-a-digest",
+    `artifacts/exact-review/v1/${"b".repeat(64)}/nested`,
+    `artifacts/exact-review/v1/${"C".repeat(64)}`,
+  ]) {
+    const rejected = await worker.fetch(
+      signedBlobRequest("put", {
+        path: malformed,
+        digest: sha256(artifact),
+        contentBase64: artifact.toString("base64"),
+      }),
+      env,
+    );
+    assert.equal(rejected.status, 400, malformed);
+    assert.equal((await rejected.json()).error, "invalid_blob_path", malformed);
+  }
+
+  const mismatchedKey = `artifacts/exact-review/v1/${"b".repeat(64)}`;
+  const mismatchedDirect = await worker.fetch(
+    signedBlobRequest("put", {
+      path: mismatchedKey,
+      digest: sha256(artifact),
+      contentBase64: artifact.toString("base64"),
+    }),
+    env,
+  );
+  assert.equal(mismatchedDirect.status, 400);
+  assert.equal((await mismatchedDirect.json()).error, "artifact_blob_key_digest_mismatch");
+
+  const mismatchedStart = await worker.fetch(
+    signedBlobRequest("multipart/start", {
+      path: mismatchedKey,
+      digest: sha256(artifact),
+      bytes: artifact.byteLength,
+    }),
+    env,
+  );
+  assert.equal(mismatchedStart.status, 400);
+  assert.equal((await mismatchedStart.json()).error, "artifact_blob_key_digest_mismatch");
 });
 
 test("multipart uploads stream fixed-size parts and enforce immutability at completion", async () => {
@@ -184,15 +302,35 @@ test("multipart uploads stream fixed-size parts and enforce immutability at comp
   const options = { baseUrl, webhookSecret: secret, fetch: viaWorker(env) };
   const content = Buffer.from("0123456789abcdefghij");
 
-  const uploaded = await uploadStateBlob({
-    ...options,
-    blobPath: assetPath,
-    content,
-    singlePutMaxBytes: 8,
-    partBytes: 6,
-  });
-  assert.equal(uploaded.transport, "multipart");
-  assert.equal(uploaded.unchanged, false);
+  const started = await signedJson(
+    env,
+    "multipart/start",
+    { path: assetPath, digest: sha256(content), bytes: content.byteLength },
+    201,
+  );
+  const parts: Array<{ partNumber: number; etag: string }> = [];
+  for (let offset = 0; offset < content.byteLength; offset += 6) {
+    const uploaded = await signedJson(env, "multipart/part", {
+      path: assetPath,
+      uploadId: started.uploadId,
+      partNumber: parts.length + 1,
+      contentBase64: content.subarray(offset, offset + 6).toString("base64"),
+    });
+    parts.push(uploaded.part);
+  }
+  const completed = await signedJson(
+    env,
+    "multipart/complete",
+    {
+      path: assetPath,
+      uploadId: started.uploadId,
+      digest: sha256(content),
+      bytes: content.byteLength,
+      parts,
+    },
+    201,
+  );
+  assert.equal(completed.unchanged, false);
   assert.equal(bucket.uploads.size, 0);
 
   const root = mkdtempSync(path.join(tmpdir(), "clawsweeper-blob-multipart-"));
@@ -205,12 +343,10 @@ test("multipart uploads stream fixed-size parts and enforce immutability at comp
     rmSync(root, { recursive: true, force: true });
   }
 
-  const repeat = await uploadStateBlob({
-    ...options,
-    blobPath: assetPath,
-    content,
-    singlePutMaxBytes: 8,
-    partBytes: 6,
+  const repeat = await signedJson(env, "multipart/start", {
+    path: assetPath,
+    digest: sha256(content),
+    bytes: content.byteLength,
   });
   assert.equal(repeat.unchanged, true);
 
@@ -218,7 +354,7 @@ test("multipart uploads stream fixed-size parts and enforce immutability at comp
   // multipart/start and multipart/complete: completion must refuse and abort.
   const ledgerKey = "ledger/v1/import-bindings/events/race.json";
   const raceContent = Buffer.from("multipart-body-that-loses-the-race");
-  const started = await signedJson(
+  const raceStarted = await signedJson(
     env,
     "multipart/start",
     { path: ledgerKey, digest: sha256(raceContent), bytes: raceContent.byteLength },
@@ -226,15 +362,15 @@ test("multipart uploads stream fixed-size parts and enforce immutability at comp
   );
   const part = await signedJson(env, "multipart/part", {
     path: ledgerKey,
-    uploadId: started.uploadId,
+    uploadId: raceStarted.uploadId,
     partNumber: 1,
     contentBase64: raceContent.toString("base64"),
   });
-  await uploadStateBlob({ ...options, blobPath: ledgerKey, content: Buffer.from("winner\n") });
+  await putBlob(env, ledgerKey, Buffer.from("winner\n"));
   const conflicted = await worker.fetch(
     signedBlobRequest("multipart/complete", {
       path: ledgerKey,
-      uploadId: started.uploadId,
+      uploadId: raceStarted.uploadId,
       digest: sha256(raceContent),
       bytes: raceContent.byteLength,
       parts: [part.part],
@@ -258,14 +394,45 @@ test("multipart uploads stream fixed-size parts and enforce immutability at comp
   );
   assert.equal(staleUpload.status, 400);
   assert.equal((await staleUpload.json()).error, "invalid_blob_upload");
+
+  const artifactContent = Buffer.from("multipart artifact bytes");
+  const artifactDigest = sha256(artifactContent);
+  const artifactKey = `artifacts/exact-review/v1/${artifactDigest}`;
+  const artifactStarted = await signedJson(
+    env,
+    "multipart/start",
+    { path: artifactKey, digest: artifactDigest, bytes: artifactContent.byteLength },
+    201,
+  );
+  const artifactPart = await signedJson(env, "multipart/part", {
+    path: artifactKey,
+    uploadId: artifactStarted.uploadId,
+    partNumber: 1,
+    contentBase64: artifactContent.toString("base64"),
+  });
+  const mismatchedComplete = await worker.fetch(
+    signedBlobRequest("multipart/complete", {
+      path: artifactKey,
+      uploadId: artifactStarted.uploadId,
+      digest: "c".repeat(64),
+      bytes: artifactContent.byteLength,
+      parts: [artifactPart.part],
+    }),
+    env,
+  );
+  assert.equal(mismatchedComplete.status, 400);
+  assert.equal((await mismatchedComplete.json()).error, "artifact_blob_key_digest_mismatch");
+  await signedJson(env, "multipart/abort", {
+    path: artifactKey,
+    uploadId: artifactStarted.uploadId,
+  });
 });
 
 test("chunked downloads retry transient 5xx responses and reject invalid ranges", async () => {
   const env = { CLAWSWEEPER_WEBHOOK_SECRET: secret, STATE_SNAPSHOTS: new FakeR2Bucket() };
   const workerFetch = viaWorker(env);
-  const options = { baseUrl, webhookSecret: secret, fetch: workerFetch };
   const content = Buffer.from("retryable ledger shard\n");
-  await uploadStateBlob({ ...options, blobPath: ledgerPath, content });
+  await putBlob(env, ledgerPath, content);
 
   let failuresLeft = 2;
   const flaky: typeof globalThis.fetch = async (input, init) => {
@@ -311,9 +478,9 @@ test("blob listing pages with cursors and validates prefixes", async () => {
     "ledger/v1/import-bindings/events/c.json",
   ];
   for (const blobPath of paths) {
-    await uploadStateBlob({ ...options, blobPath, content: Buffer.from(blobPath) });
+    await putBlob(env, blobPath, Buffer.from(blobPath));
   }
-  await uploadStateBlob({ ...options, blobPath: assetPath, content: Buffer.from("asset") });
+  await putBlob(env, assetPath, Buffer.from("asset"));
 
   const listed = await listStateBlobs({ ...options, prefix: "ledger/v1/", pageLimit: 1 });
   assert.deepEqual(
@@ -338,7 +505,7 @@ test("materialize refuses partial trees only when the whole store is empty", asy
   try {
     // Assets seeded, ledger empty: the store is live, so materialize proceeds
     // and produces only the assets tree.
-    await uploadStateBlob({ ...options, blobPath: assetPath, content: Buffer.from("asset") });
+    await putBlob(env, assetPath, Buffer.from("asset"));
     const summary = await materializeStateBlobs({ ...options, worktreeRoot: root });
     assert.deepEqual(summary.trees, { "ledger/v1": 0, assets: 1 });
     assert.equal(readFileSync(path.join(root, assetPath), "utf8"), "asset");
@@ -361,6 +528,19 @@ function signedBlobRequest(operation: string, payload: unknown) {
     },
     body,
   });
+}
+
+async function putBlob(env: Record<string, unknown>, blobPath: string, content: Buffer) {
+  const response = await worker.fetch(
+    signedBlobRequest("put", {
+      path: blobPath,
+      digest: sha256(content),
+      contentBase64: content.toString("base64"),
+    }),
+    env,
+  );
+  assert.ok(response.status === 200 || response.status === 201);
+  return response.json();
 }
 
 async function signedJson(

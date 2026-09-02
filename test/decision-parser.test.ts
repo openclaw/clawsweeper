@@ -1,8 +1,197 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseDecision, rootCauseClusterFromReportForTest } from "../dist/clawsweeper.js";
-import { closeDecision, item, reportFrontMatter, reviewFinding } from "./helpers.ts";
+import {
+  parseDecision,
+  renderLiveProofReportSectionForTest,
+  reportLiveProofPlanForTest,
+  rootCauseClusterFromReportForTest,
+} from "../dist/clawsweeper.js";
+import {
+  changelogReviewDecision,
+  closeDecision,
+  item,
+  reportFrontMatter,
+  reviewFinding,
+} from "./helpers.ts";
+
+test("next-step parsing preserves absent legacy intent and validates supplied assessments", () => {
+  assert.equal(parseDecision(closeDecision()).nextStep, undefined);
+  for (const nextStep of [
+    { kind: "none", text: "" },
+    { kind: "required", text: "Owner approval." },
+  ]) {
+    assert.deepEqual(parseDecision(closeDecision({ nextStep })).nextStep, nextStep);
+  }
+  assert.deepEqual(
+    parseDecision(closeDecision({ nextStep: { kind: "required", text: "  Owner approval.  " } }))
+      .nextStep,
+    { kind: "required", text: "Owner approval." },
+  );
+  for (const nextStep of [
+    null,
+    [],
+    "none",
+    {},
+    { kind: "optional", text: "Wait." },
+    { kind: "required", text: "" },
+    { kind: "required", text: " \n " },
+    { kind: "none", text: "Repair it." },
+    { kind: "none", text: " " },
+    { kind: "none" },
+    { kind: "required", text: 12 },
+    { kind: "none", text: "", extra: true },
+  ]) {
+    assert.throws(() => parseDecision(closeDecision({ nextStep })), /decision\.nextStep/);
+  }
+  const guarded = parseDecision(
+    closeDecision({
+      nextStep: {
+        kind: "required",
+        text: "Confirm ownership.\n\n## Work Candidate\n\nCandidate: queue_fix_pr",
+      },
+    }),
+  ).nextStep!;
+  assert.doesNotMatch(guarded.text, /^## Work Candidate$/m);
+});
+
+test("next-step instructions respect contributor changelog normalization without erasing other actions", () => {
+  const contributor = item({ kind: "pull_request" });
+  for (const reviewFindings of [[], changelogReviewDecision().reviewFindings]) {
+    assert.deepEqual(
+      parseDecision(
+        changelogReviewDecision({
+          reviewFindings,
+          nextStep: { kind: "required", text: "Add the required changelog entry." },
+        }),
+        contributor,
+      ).nextStep,
+      { kind: "none", text: "" },
+    );
+  }
+  for (const text of [
+    "Repair the retry guard.",
+    "Add the required changelog entry. Repair the retry guard.",
+    "Add the required changelog entry; Repair the retry guard.",
+    "Add the required changelog entry and Repair the retry guard.",
+    "Add the required changelog entry but Repair the retry guard.",
+  ]) {
+    const parsed = parseDecision(
+      changelogReviewDecision({ nextStep: { kind: "required", text } }),
+      contributor,
+    );
+    assert.deepEqual(parsed.nextStep, { kind: "required", text: "Repair the retry guard." });
+    assert.equal(parsed.workCandidate, "none");
+  }
+  for (const target of [
+    item({ kind: "pull_request", authorAssociation: "MEMBER" }),
+    item({ kind: "pull_request", repo: "openclaw/clawsweeper" }),
+  ]) {
+    const nextStep = { kind: "required", text: "Add the required changelog entry." };
+    assert.deepEqual(
+      parseDecision(changelogReviewDecision({ nextStep }), target).nextStep,
+      nextStep,
+    );
+  }
+  const nextStep = { kind: "required", text: "Add changelog parser coverage." };
+  assert.deepEqual(
+    parseDecision(changelogReviewDecision({ nextStep }), contributor).nextStep,
+    nextStep,
+  );
+  assert.equal(parseDecision(changelogReviewDecision(), contributor).nextStep, undefined);
+  const finding = reviewFinding({ title: "Retry race", body: "Repair concurrent retry handling." });
+  const parsed = parseDecision(
+    changelogReviewDecision({
+      reviewFindings: [...changelogReviewDecision().reviewFindings, finding],
+      nextStep: { kind: "required", text: "Add the required changelog entry." },
+    }),
+    contributor,
+  );
+  assert.deepEqual(parsed.reviewFindings, [finding]);
+  assert.equal(parsed.workCandidate, "queue_fix_pr");
+});
+
+test("next-step changelog normalization preserves other or ambiguous required instructions verbatim", () => {
+  const contributor = item({ kind: "pull_request" });
+  for (const text of [
+    "Add the missing retry test, not a changelog entry.",
+    "Repair retry ownership rather than add a changelog entry.",
+    "Do not merge until retry ownership is proven.",
+    "Do not merge until retry ownership is proven, not merely a changelog entry added.",
+    "Add a changelog entry rather than repair retry ownership.",
+    "Add a changelog entry only after repairing retry ownership.",
+    "Add a changelog entry documenting the unresolved retry guard defect.",
+    "Add a changelog entry and a retry test.",
+    "Add a changelog entry and retry coverage.",
+    "Add a changelog entry and repair notes.",
+    "Add a changelog entry but ownership approval is still missing.",
+    "No changelog entry is required; repair retry ownership.",
+    "Add the missing retry test, not a changelog entry; confirm owner approval.",
+    "Add the missing retry test, not a changelog entry and confirm owner approval.",
+    "Repair retry ownership rather than add a changelog entry but confirm owner approval.",
+    "Add changelog parser coverage.",
+  ]) {
+    const nextStep = { kind: "required", text };
+    const parsed = parseDecision(
+      changelogReviewDecision({ reviewFindings: [], nextStep }),
+      contributor,
+    );
+    assert.deepEqual(parsed.nextStep, nextStep, text);
+  }
+  for (const separator of ["; ", " and ", " but "]) {
+    for (const action of [
+      "Add the missing retry test, not a changelog entry.",
+      "Repair the retry guard and confirm compatibility; add the missing retry test.",
+    ]) {
+      const parsed = parseDecision(
+        changelogReviewDecision({
+          reviewFindings: [],
+          nextStep: {
+            kind: "required",
+            text: `Add the required changelog entry${separator}${action}`,
+          },
+        }),
+        contributor,
+      );
+      assert.deepEqual(parsed.nextStep, { kind: "required", text: action });
+    }
+  }
+  for (const text of [
+    "Add the required changelog entry.",
+    "Include a release note before merge.",
+  ]) {
+    const parsed = parseDecision(
+      changelogReviewDecision({
+        reviewFindings: [],
+        nextStep: { kind: "required", text },
+      }),
+      contributor,
+    );
+    assert.deepEqual(parsed.nextStep, { kind: "none", text: "" }, text);
+  }
+});
+
+test("evidence requires deliberate repository ownership, including explicit unknown", () => {
+  const evidence = { ...closeDecision().evidence[0], repo: "openai/codex" };
+  for (const repo of ["openai/codex", "openclaw/openclaw", null]) {
+    assert.equal(
+      parseDecision(closeDecision({ evidence: [{ ...evidence, repo }] })).evidence[0].repo,
+      repo,
+    );
+  }
+  for (const repo of [
+    undefined,
+    "../codex",
+    "https://github.com/openai/codex",
+    "openai/codex/extra",
+    "",
+  ]) {
+    assert.throws(
+      () => parseDecision(closeDecision({ evidence: [{ ...evidence, repo }] })),
+      /evidence\[0\]\.repo/,
+    );
+  }
+});
 
 test("decision parser enforces required schema-shaped evidence", () => {
   assert.equal(parseDecision(closeDecision()).decision, "close");
@@ -13,7 +202,7 @@ test("decision parser enforces required schema-shaped evidence", () => {
         ...closeDecision(),
         evidence: [{ label: "partial", detail: "missing nullable fields" }],
       }),
-    /decision\.evidence\[0\]\.file/,
+    /decision\.evidence\[0\]\.repo/,
   );
   assert.throws(
     () =>
@@ -394,6 +583,380 @@ test("decision parser enforces required schema-shaped evidence", () => {
   assert.deepEqual(workCandidate.workClusterRefs, ["#123", "#456"]);
 });
 
+test("decision parser validates typed live-proof plans and report roundtrips", () => {
+  const liveProofPlan = {
+    status: "recommended",
+    surface: "browser",
+    terminalCompletion: "not_applicable",
+    reason: "The changed settings confirmation is visible in the browser.",
+    payoff: {
+      kind: "ui_interaction",
+      justification: "The viewer sees the confirmation appear after clicking Save.",
+    },
+    entry: "/settings",
+    steps: [
+      { action: "goto", path: "/settings" },
+      { action: "fill", target: "#display-name", value: "Claw" },
+      { action: "click", target: "text=Save" },
+      { action: "expect_text", text: "Saved" },
+    ],
+  };
+  const parsed = parseDecision(closeDecision({ liveProofPlan }));
+  assert.deepEqual(parsed.liveProofPlan, liveProofPlan);
+
+  const section = renderLiveProofReportSectionForTest(parsed);
+  assert.deepEqual(
+    reportLiveProofPlanForTest(`## Live Proof\n\n${section}\n\n## Mantis Recommendation\n`),
+    liveProofPlan,
+  );
+
+  const invalidPlans = [
+    { ...liveProofPlan, unexpected: true },
+    { ...liveProofPlan, payoff: { ...liveProofPlan.payoff, unexpected: true } },
+    { ...liveProofPlan, payoff: { kind: "static_image", justification: "Nothing moves." } },
+    { ...liveProofPlan, payoff: { kind: "ui_interaction", justification: "" } },
+    { ...liveProofPlan, surface: "none" },
+    { ...liveProofPlan, terminalCompletion: "exit_zero" },
+    { ...liveProofPlan, entry: "https://example.com/settings" },
+    { ...liveProofPlan, steps: [{ action: "run", command: "pnpm test" }] },
+    { ...liveProofPlan, steps: [{ action: "click", target: "text=Save", extra: true }] },
+    {
+      status: "not_applicable",
+      surface: "none",
+      terminalCompletion: "not_applicable",
+      reason: "The change is internal plumbing.",
+      payoff: {
+        kind: "static_text",
+        justification: "There is no visual recording payoff for internal plumbing.",
+      },
+      entry: "pnpm test",
+      steps: [],
+    },
+  ];
+  for (const invalidPlan of invalidPlans) {
+    assert.throws(() => parseDecision(closeDecision({ liveProofPlan: invalidPlan })), /liveProof/);
+  }
+  assert.throws(
+    () =>
+      parseDecision(
+        closeDecision({
+          liveProofPlan: {
+            ...liveProofPlan,
+            surface: "terminal",
+            terminalCompletion: "not_applicable",
+            entry: "pnpm test",
+            steps: [{ action: "expect_output", text: "passed" }],
+          },
+        }),
+      ),
+    /terminalCompletion must identify terminal completion behavior/,
+  );
+  assert.throws(
+    () =>
+      parseDecision(
+        closeDecision({
+          liveProofPlan: {
+            ...liveProofPlan,
+            surface: "terminal",
+            terminalCompletion: "ready_while_running",
+            entry: "pnpm dev",
+            steps: [{ action: "wait", seconds: 1 }],
+          },
+        }),
+      ),
+    /must expect output after the final run for ready_while_running/,
+  );
+  assert.throws(
+    () =>
+      parseDecision(
+        closeDecision({
+          liveProofPlan: {
+            ...liveProofPlan,
+            surface: "terminal",
+            terminalCompletion: "ready_while_running",
+            entry: "pnpm dev",
+            steps: [
+              { action: "expect_output", text: "Ready" },
+              { action: "run", command: "pnpm dev:secondary" },
+            ],
+          },
+        }),
+      ),
+    /must expect output after the final run for ready_while_running/,
+  );
+});
+
+test("report live-proof parsing fails closed when the plan is missing or invalid", () => {
+  for (const markdown of [
+    "## Work Candidate\n\nCandidate: none\n",
+    "## Live Proof\n\nStatus: recommended\n\nSurface: terminal\n\nEntry: pnpm test\n",
+  ]) {
+    const plan = reportLiveProofPlanForTest(markdown);
+    assert.equal(plan.status, "not_applicable");
+    assert.equal(plan.surface, "none");
+    assert.equal(plan.terminalCompletion, "not_applicable");
+    assert.equal(plan.invalid, true);
+    assert.match(plan.reason, /missing or invalid/);
+    assert.match(plan.reason, /regenerate the review report/);
+    assert.equal(plan.entry, "");
+    assert.deepEqual(plan.steps, []);
+  }
+});
+
+test("report live-proof parsing preserves safe legacy plans and rejects ambiguous terminal plans", () => {
+  const browserPlan = {
+    status: "recommended",
+    surface: "browser",
+    terminalCompletion: "not_applicable",
+    reason: "The changed page is visible.",
+    payoff: {
+      kind: "ui_interaction",
+      justification: "The viewer sees the page state after navigation.",
+    },
+    entry: "/settings",
+    steps: [{ action: "expect_text", text: "Saved" }],
+  };
+  const browserSection = renderLiveProofReportSectionForTest(
+    parseDecision(closeDecision({ liveProofPlan: browserPlan })),
+  ).replace(/\nTerminal completion: [^\n]+\n/, "\n");
+  const parsedBrowser = reportLiveProofPlanForTest(
+    `## Live Proof\n\n${browserSection}\n\n## Mantis Recommendation\n`,
+  );
+  assert.deepEqual(parsedBrowser, browserPlan);
+
+  const terminalPlan = {
+    ...browserPlan,
+    surface: "terminal",
+    terminalCompletion: "exit_zero",
+    entry: "pnpm test",
+    steps: [{ action: "expect_output", text: "passed" }],
+  };
+  const terminalSection = renderLiveProofReportSectionForTest(
+    parseDecision(closeDecision({ liveProofPlan: terminalPlan })),
+  ).replace(/\nTerminal completion: [^\n]+\n/, "\n");
+  const parsedTerminal = reportLiveProofPlanForTest(
+    `## Live Proof\n\n${terminalSection}\n\n## Mantis Recommendation\n`,
+  );
+  assert.equal(parsedTerminal.invalid, true);
+  assert.match(parsedTerminal.reason, /regenerate the review report/);
+});
+
+test("historical live-proof parser rejects command separators", () => {
+  const terminalPlan = {
+    status: "recommended",
+    surface: "terminal",
+    terminalCompletion: "exit_zero",
+    reason: "The CLI prints its result.",
+    payoff: { kind: "static_text", justification: "The final output is sufficient." },
+    entry: "node scripts/proof.mjs",
+    steps: [{ action: "expect_output", text: "ready" }],
+  };
+  for (const field of ["entry", "command"] as const) {
+    const parse = (value: unknown) =>
+      parseDecision(
+        closeDecision({
+          liveProofPlan:
+            field === "entry"
+              ? { ...terminalPlan, entry: value }
+              : { ...terminalPlan, steps: [{ action: "run", command: value }] },
+        }),
+      ).liveProofPlan;
+    for (const command of [
+      "node scripts/proof.mjs",
+      "pnpm run build && node dist/cli.js --help",
+      String.raw`node -e 'process.stdout.write("ready\n")'`,
+      " \tprintf ready\t ",
+      "printf\tready",
+    ]) {
+      const parsed = parse(command);
+      assert.equal(field === "entry" ? parsed.entry : parsed.steps[0].command, command.trim());
+    }
+    for (const separator of ["\n", "\r", "\r\n", "\u2028", "\u2029"]) {
+      // Keep trailing rejection coverage: the parser checks separators before trimming.
+      for (const command of [
+        `${separator}printf ready`,
+        `printf ready${separator}`,
+        `printf ready${separator}printf done`,
+      ]) {
+        assert.throws(() => parse(command), /must be a single-line string/);
+      }
+    }
+    const heredoc = "node <<'PROOF'\nconsole.log('ready')\nPROOF";
+    assert.throws(() => parse(heredoc), /must be a single-line string/);
+    for (const blank of ["", " ", "\t", " \t\u00a0\ufeff "]) {
+      assert.throws(() => parse(blank), /must not be empty/);
+    }
+    for (const nonString of [null, undefined, 42]) {
+      assert.throws(() => parse(nonString), /must be a string/);
+    }
+  }
+});
+
+test("historical live-proof parser preserves browser paths and nonrecommended empty entries", () => {
+  const payoff = { kind: "static_text", justification: "No recording is needed." };
+  for (const status of ["not_applicable", "declined_suspicious"]) {
+    for (const entry of ["", " \t "]) {
+      const plan = {
+        status,
+        surface: "none",
+        terminalCompletion: "not_applicable",
+        reason: "No execution.",
+        payoff,
+        entry,
+        steps: [],
+      };
+      assert.deepEqual(parseDecision(closeDecision({ liveProofPlan: plan })).liveProofPlan, {
+        ...plan,
+        entry: "",
+      });
+    }
+  }
+  const browserPlan = {
+    status: "recommended",
+    surface: "browser",
+    terminalCompletion: "not_applicable",
+    reason: "The settings page is visible.",
+    payoff,
+    entry: " /settings?tab=general ",
+    steps: [{ action: "expect_text", text: "Settings" }],
+  };
+  assert.equal(
+    parseDecision(closeDecision({ liveProofPlan: browserPlan })).liveProofPlan.entry,
+    "/settings?tab=general",
+  );
+  assert.throws(
+    () =>
+      parseDecision(
+        closeDecision({
+          liveProofPlan: { ...browserPlan, entry: "https://example.com/settings" },
+        }),
+      ),
+    /must be a URL path/,
+  );
+  for (const liveProofPlan of [null, undefined]) {
+    assert.throws(() => parseDecision(closeDecision({ liveProofPlan })), /must be an object/);
+  }
+});
+
+test("decision parser preserves every terminal command including exact entry repeats", () => {
+  const terminalPlan = {
+    status: "recommended",
+    surface: "terminal",
+    terminalCompletion: "exit_zero",
+    reason: "The changed CLI output is visible.",
+    payoff: {
+      kind: "static_text",
+      justification: "The final command result is readable as text.",
+    },
+    entry: "pnpm openclaw --help",
+    steps: [
+      { action: "run", command: "pnpm openclaw --help" },
+      { action: "expect_output", text: "Usage:" },
+    ],
+  };
+  const exact = parseDecision(closeDecision({ liveProofPlan: terminalPlan })).liveProofPlan;
+  assert.deepEqual(exact.steps, terminalPlan.steps);
+  for (const oneShot of [
+    { ...terminalPlan, steps: [terminalPlan.steps[1]] },
+    { ...terminalPlan, entry: "printf setup", steps: terminalPlan.steps },
+  ]) {
+    assert.deepEqual(
+      parseDecision(closeDecision({ liveProofPlan: oneShot })).liveProofPlan,
+      oneShot,
+    );
+  }
+  const section = renderLiveProofReportSectionForTest(
+    parseDecision(closeDecision({ liveProofPlan: exact })),
+  );
+  assert.deepEqual(
+    reportLiveProofPlanForTest(`## Live Proof\n\n${section}\n\n## Mantis Recommendation\n`),
+    exact,
+  );
+
+  const trimmed = parseDecision(
+    closeDecision({
+      liveProofPlan: {
+        ...terminalPlan,
+        entry: "  pnpm openclaw --help  ",
+        steps: [
+          { action: "run", command: " pnpm openclaw --help " },
+          { action: "expect_output", text: "Usage:" },
+        ],
+      },
+    }),
+  ).liveProofPlan;
+  assert.equal(trimmed.entry, "pnpm openclaw --help");
+  assert.deepEqual(trimmed.steps, terminalPlan.steps);
+
+  const distinct = parseDecision(
+    closeDecision({
+      liveProofPlan: {
+        ...terminalPlan,
+        steps: [
+          { action: "run", command: "pnpm openclaw --help" },
+          { action: "run", command: "printf changed > state.txt" },
+          { action: "run", command: "pnpm openclaw --help" },
+          { action: "expect_output", text: "Usage:" },
+        ],
+      },
+    }),
+  ).liveProofPlan;
+  assert.deepEqual(distinct.steps, [
+    { action: "run", command: "pnpm openclaw --help" },
+    { action: "run", command: "printf changed > state.txt" },
+    { action: "run", command: "pnpm openclaw --help" },
+    { action: "expect_output", text: "Usage:" },
+  ]);
+
+  assert.deepEqual(
+    parseDecision(
+      closeDecision({
+        liveProofPlan: { ...terminalPlan, steps: [terminalPlan.steps[0]] },
+      }),
+    ).liveProofPlan.steps,
+    [terminalPlan.steps[0]],
+  );
+  assert.throws(
+    () => parseDecision(closeDecision({ liveProofPlan: { ...terminalPlan, steps: [] } })),
+    /decision\.liveProofPlan\.steps must not be empty when recommended/,
+  );
+  assert.throws(
+    () =>
+      parseDecision(
+        closeDecision({
+          liveProofPlan: {
+            ...terminalPlan,
+            steps: [
+              { action: "run", command: "pnpm openclaw --help" },
+              ...Array.from({ length: 10 }, () => ({ action: "wait", seconds: 1 })),
+            ],
+          },
+        }),
+      ),
+    /decision\.liveProofPlan\.steps must contain at most 10 items/,
+  );
+
+  const browserPlan = {
+    status: "recommended",
+    surface: "browser",
+    terminalCompletion: "not_applicable",
+    reason: "The changed page is visible.",
+    payoff: {
+      kind: "ui_interaction",
+      justification: "The viewer sees the page state after navigation.",
+    },
+    entry: "/settings",
+    steps: [
+      { action: "goto", path: "/settings" },
+      { action: "expect_text", text: "Saved" },
+    ],
+  };
+  assert.deepEqual(
+    parseDecision(closeDecision({ liveProofPlan: browserPlan })).liveProofPlan.steps,
+    browserPlan.steps,
+  );
+});
+
 test("decision parser accepts only a complete regression-provenance candidate shape", () => {
   const provenance = {
     repo: "openclaw/clawsweeper",
@@ -751,6 +1314,7 @@ test("decision parser neutralizes headings in every model-authored report prose 
       systemContext: spoofedReportProse("Context prose."),
       evidence: [
         {
+          repo: "openclaw/openclaw",
           label: spoofedReportProse("Evidence label."),
           detail: spoofedReportProse("Evidence detail."),
           file: "src/example.ts",

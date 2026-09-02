@@ -5,6 +5,7 @@ export type EventApplyAction = {
   action: string;
   reason: string;
   durableReviewSynced: boolean;
+  commentMutationOccurred: boolean;
   terminalMissingVerified: boolean;
   terminalStateVerified: boolean;
   guardedOpenStateVerified: boolean;
@@ -12,6 +13,7 @@ export type EventApplyAction = {
   activeReviewLeaseExpiresAt: string;
   terminalPolicyNoopVerified: boolean;
   sourceDriftVerified: boolean;
+  newerReviewTupleVerified: boolean;
 };
 
 export type ExactEventPublishDisposition = {
@@ -94,6 +96,7 @@ export type ExactEventApplyDisposition =
   | "terminal_policy_noop"
   | "source_drift"
   | "close_coverage_deferred"
+  | "superseded"
   | "unproven";
 
 export function eventApplyRequeueLatestExpected({
@@ -160,6 +163,12 @@ export function exactEventApplyProof(
     soleExactAction === "kept_open" && soleExactResult?.activeReviewLeaseVerified === true
       ? normalizedReviewLeaseRetryAt(soleExactResult.activeReviewLeaseExpiresAt)
       : null;
+  const hasStaleReviewTuple = exactActions.some(
+    (entry) => entry.action === "skipped_stale_review_comment_sync",
+  );
+  const superseded =
+    soleExactAction === "skipped_stale_review_comment_sync" &&
+    soleExactResult?.newerReviewTupleVerified === true;
   return {
     exactActions,
     syncedCount,
@@ -168,7 +177,8 @@ export function exactEventApplyProof(
     guardedOpenAction:
       snapshotActionTaken === soleExactAction &&
       soleExactResult?.guardedOpenStateVerified === true &&
-      GUARDED_OPEN_ACTIONS.has(soleExactAction)
+      (GUARDED_OPEN_ACTIONS.has(soleExactAction) ||
+        (soleExactAction === "kept_open" && soleExactResult.commentMutationOccurred))
         ? soleExactAction
         : null,
     activeReviewLeaseRetryAt,
@@ -178,17 +188,21 @@ export function exactEventApplyProof(
     legacyTuplelessReviewLease:
       soleExactAction === "skipped_stale_review_comment_sync" &&
       soleExactResult?.reason.includes(LEGACY_TUPLELESS_REVIEW_LEASE_REASON) === true,
-    disposition: hasSourceDrift
-      ? sourceDrift
-        ? "source_drift"
+    disposition: hasStaleReviewTuple
+      ? superseded
+        ? "superseded"
         : "unproven"
-      : closeCoverageDeferred
-        ? "close_coverage_deferred"
-        : terminalPolicyNoop
-          ? "terminal_policy_noop"
-          : syncedCount + terminalCount > 0
-            ? "applied"
-            : "unproven",
+      : hasSourceDrift
+        ? sourceDrift
+          ? "source_drift"
+          : "unproven"
+        : closeCoverageDeferred
+          ? "close_coverage_deferred"
+          : terminalPolicyNoop
+            ? "terminal_policy_noop"
+            : syncedCount + terminalCount > 0
+              ? "applied"
+              : "unproven",
   };
 }
 
@@ -220,6 +234,7 @@ export function eventApplyAction(value: LooseRecord): EventApplyAction {
     action: typeof value.action === "string" ? value.action : "",
     reason: typeof value.reason === "string" ? value.reason : "",
     durableReviewSynced: value.durableReviewSynced === true,
+    commentMutationOccurred: value.commentMutationOccurred === true,
     terminalMissingVerified: value.terminalMissingVerified === true,
     terminalStateVerified: value.terminalStateVerified === true,
     guardedOpenStateVerified: value.guardedOpenStateVerified === true,
@@ -228,5 +243,6 @@ export function eventApplyAction(value: LooseRecord): EventApplyAction {
       typeof value.activeReviewLeaseExpiresAt === "string" ? value.activeReviewLeaseExpiresAt : "",
     terminalPolicyNoopVerified: value.terminalPolicyNoopVerified === true,
     sourceDriftVerified: value.sourceDriftVerified === true,
+    newerReviewTupleVerified: value.newerReviewTupleVerified === true,
   };
 }

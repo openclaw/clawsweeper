@@ -1,5 +1,13 @@
 # Auto-Updating ClawSweeper PRs
 
+- Status: active trusted PR repair/automerge contract
+- Owner: ClawSweeper maintainers
+- Source of truth: comment router, repair worker/executor, finalizers, labels,
+  merge gates, and focused automerge tests
+- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
+- Update when: command trust, adoption, repair budgets, labels, validation,
+  exact-head review, merge, or stop/resume behavior changes
+
 Read when: changing ClawSweeper PR repair automation, ClawSweeper review
 integration, comment routing, duplicate dispatch guards, or generated-PR
 marking.
@@ -62,6 +70,11 @@ Trusted automation:
 The trusted automation lane exists only for review bots we control. It does
 not treat random `@clawsweeper`, `@openclaw-clawsweeper`, or contributor prose as
 permission to spend workers or push commits.
+
+Status comment adoption and recovery require a readable trusted author login.
+Missing, empty, and unknown authors are rejected. Logins match case-insensitively
+without trimming: the router accepts `clawsweeper` and its configured trusted
+bots; the repair executor accepts `clawsweeper` and the two default bots above.
 
 ## Review Comment Shape
 
@@ -266,8 +279,9 @@ ten automatic ClawSweeper-triggered repair iterations. The per-PR cap is total
 across all head SHAs and stops the automatic review/repair loop even when every
 iteration produces a new commit.
 
-Runs for the same job path and mode share the `repair-cluster-worker.yml` concurrency
-group, so repeated dispatches queue instead of racing the same branch.
+Ordinary runs for the same job path share the `repair-cluster-worker.yml`
+concurrency group across modes, so repeated dispatches queue instead of racing
+the same branch. Explicit requeues use a dedicated run-specific group.
 
 For automerge activation and scheduled label sweeps, a dirty or behind merge
 state is enough to dispatch repair. That lets Codex rebase or resolve conflicts

@@ -1,0 +1,35 @@
+{
+  "batch_id": "csw-1089-503",
+  "lease_owner": "csw-1089-proof-worker",
+  "items": [
+    {
+      "item_key": "openclaw/openclaw#108903@publish:1089030:1",
+      "revision": 1,
+      "claim_generation": 1,
+      "terminal_outcome": "retryable_failure",
+      "reason_code": "state_contention",
+      "error_fingerprint": "ce9045692a3afcf608d1e9c240b5035835f8f40f1bf914fd06bbf81a9c6d7ffe"
+    }
+  ],
+  "state_writer": {
+    "schema_version": 1,
+    "operation_id": "batch:csw-1089-503",
+    "mode": "batch",
+    "started_at": "2026-08-10T01:25:49.187Z",
+    "finished_at": "2026-08-10T01:26:04.207Z",
+    "wait_ms": 0,
+    "acquire_attempts": 0,
+    "acquired": false,
+    "hold_ms": null,
+    "renewals": 0,
+    "released": null,
+    "git_duration_ms": 15020,
+    "git_processes": 0,
+    "commit_count": 0,
+    "materialized_items": 0,
+    "configured_batch_size": 1,
+    "actual_batch_size": 1,
+    "batch_wait_ms": 0,
+    "outcome": "failed"
+  }
+}

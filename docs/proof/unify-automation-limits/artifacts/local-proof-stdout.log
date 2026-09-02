@@ -1,0 +1,18 @@
+== environment ==
+node=v24.19.0
+head=9839bebb286d9a557eb64e25464f84eb89b657a9
+pnpm=11.10.0
+== select pre-change source ==
+From https://github.com/openclaw/clawsweeper
+ * branch                  main       -> FETCH_HEAD
+baseline_ref=origin/main
+baseline_sha=3a38d3622a9b9874fe40f813dc7d1235ea4a024b
+merge_base_sha=35b5f622c968cf3acb2fbe8226ffeef801422a88
+origin_main_sha=3a38d3622a9b9874fe40f813dc7d1235ea4a024b
+== compile historical and canonical modules ==
+== dump canonical value surfaces ==
+== compare pre-change union with current canonical module ==
+value_diff=empty
+== repository limit drift check ==
+$ node scripts/check-limits.ts
+PROOF_RC=0

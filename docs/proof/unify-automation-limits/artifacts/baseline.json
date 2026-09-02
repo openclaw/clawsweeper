@@ -1,0 +1,7 @@
+{
+  "selected_ref": "origin/main",
+  "selected_sha": "3a38d3622a9b9874fe40f813dc7d1235ea4a024b",
+  "reason": "origin/main matches the merge-base limit modules and config",
+  "merge_base_sha": "35b5f622c968cf3acb2fbe8226ffeef801422a88",
+  "origin_main_sha": "3a38d3622a9b9874fe40f813dc7d1235ea4a024b"
+}

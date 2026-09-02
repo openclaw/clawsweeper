@@ -5,6 +5,7 @@ import type {
   ReviewCommentRenderOptions,
 } from "./clawsweeper-types.js";
 import {
+  isVerifiedRegressionProvenance,
   regressionAssessmentPublicLine,
   regressionProvenancePublicLine,
 } from "./clawsweeper-regression-provenance.js";
@@ -62,20 +63,21 @@ export function createReportCommentPresentation(
     publicVerificationBlock,
     pullHeadShaFromReport,
     pullRequestReviewReadinessFromReport,
-    realBehaviorProofBlocksMerge,
     renderCloseCommentFromReport,
     renderDataModelWarningFromReport,
+    renderSqliteSchemaWarningFromReport,
     renderOpenClawPrSurfaceFromReport,
     renderReviewMetricsDigest,
     repairLoopPassModeFromReport,
     reportAgentsPolicyStatus,
     reportEvidence,
     reportLikelyOwners,
+    reportLiveProofRecordingBlock,
     reportMantisRecommendation,
     reportOverallConfidenceScore,
     reportOverallCorrectness,
     reportPrRating,
-    reportRealBehaviorProof,
+    reportRealBehaviorProofPolicy,
     reportReviewFindings,
     reportRootCauseCluster,
     reportSecurityReview,
@@ -114,14 +116,27 @@ export function createReportCommentPresentation(
     const likelyOwners = reportLikelyOwners(markdown).slice(0, 5).map(likelyOwnerLine);
     const reviewFindings = reportReviewFindings(markdown);
     const securityReview = reportSecurityReview(markdown);
-    const realBehaviorProof = reportRealBehaviorProof(markdown);
+    const proofPolicy = reportRealBehaviorProofPolicy(markdown);
     const prRating = reportPrRating(markdown);
+    const liveProofRecordingBlock = reportLiveProofRecordingBlock(markdown);
     const mantisRecommendation = reportMantisRecommendation(markdown);
     const agentsPolicyStatus = reportAgentsPolicyStatus(markdown);
     const rootCauseCluster = reportRootCauseCluster(markdown);
-    const regressionProvenanceLine =
-      regressionProvenancePublicLine(regressionProvenanceFromReport(markdown)) ??
-      regressionAssessmentPublicLine(regressionAssessmentFromReport(markdown));
+    const regressionProvenance = regressionProvenanceFromReport(markdown);
+    const regressionAssessment = regressionAssessmentFromReport(markdown);
+    const regressionProvenanceLine = regressionProvenancePublicLine(
+      regressionProvenance,
+      regressionAssessment,
+    );
+    const regressionAssessmentLine = regressionAssessmentPublicLine(regressionAssessment, {
+      predecessorAttributed: regressionProvenance?.evidenceType === "rewrite_equivalent",
+    });
+    const regressionPublicLine = [
+      regressionProvenanceLine,
+      !isVerifiedRegressionProvenance(regressionProvenance) ? regressionAssessmentLine : null,
+    ]
+      .filter((line): line is string => Boolean(line))
+      .join("\n\n");
     const summary = reviewSectionValue(markdown, "summary");
     const changeSummary = reviewSectionValue(markdown, "changeSummary");
     const systemContext = neutralizeOwnedSectionSpoofing(
@@ -149,9 +164,7 @@ export function createReportCommentPresentation(
       );
     const isRepairLoopPass = isPullRequest && Boolean(repairLoopPassModeFromReport(markdown));
     const hasRealBehaviorProofBlocker =
-      isPullRequest && !reviewFailed && realBehaviorProofBlocksMerge(markdown);
-    const hasRealBehaviorProofReadinessBlocker =
-      reviewReadiness?.items.some((item) => item.label === "Add real behavior proof") ?? false;
+      isPullRequest && !reviewFailed && proofPolicy.proofBlocksMerge;
     const summaryLine =
       neutralizeOwnedSectionSpoofing(sentence(summary)) || "_No summary provided._";
     const changeSummaryLine =
@@ -178,9 +191,11 @@ export function createReportCommentPresentation(
     const verdictLine = reviewFailed
       ? "ClawSweeper review: did not complete due to Codex infrastructure failure."
       : reviewReadiness?.state === "blocked"
-        ? hasRealBehaviorProofReadinessBlocker
+        ? hasRealBehaviorProofBlocker
           ? "Codex review: needs real behavior proof before merge."
-          : "Codex review: blocked before merge."
+          : proofPolicy.verificationBlocksMerge
+            ? "Codex review: needs historical verification review before merge."
+            : "Codex review: blocked before merge."
         : reviewReadiness?.state === "needs-changes"
           ? "Codex review: needs changes before merge."
           : isRepairLoopPass
@@ -191,6 +206,7 @@ export function createReportCommentPresentation(
     const lines = [`${verdictLine}${reviewFreshnessText(markdown)}`, ""];
     const prSurface = renderOpenClawPrSurfaceFromReport(markdown);
     const dataModelWarning = renderDataModelWarningFromReport(markdown);
+    const sqliteSchemaWarning = renderSqliteSchemaWarningFromReport(markdown);
     const rootCauseClusterBlock = publicRootCauseClusterBlock(rootCauseCluster);
     const mantisSuggestion = isPullRequest
       ? publicMantisRecommendationBlock(mantisRecommendation)
@@ -306,8 +322,9 @@ export function createReportCommentPresentation(
       const beforeMergeItems = reviewReadiness.items;
       lines.push("# ClawSweeper review", "");
       appendHeadingSection(lines, "What this changes", changeSummaryLine);
-      if (regressionProvenanceLine) {
-        appendHeadingSection(lines, "Regression provenance", regressionProvenanceLine);
+      if (sqliteSchemaWarning) lines.push(sqliteSchemaWarning, "");
+      if (regressionPublicLine) {
+        appendHeadingSection(lines, "Regression provenance", regressionPublicLine);
       }
       appendHeadingSection(
         lines,
@@ -327,18 +344,16 @@ export function createReportCommentPresentation(
         appendHeadingSection(
           lines,
           "Review scores",
-          publicReviewScoresBlock(prRating, realBehaviorProof, reviewFindings, securityReview),
+          publicReviewScoresBlock(prRating, proofPolicy, reviewFindings, securityReview),
         );
         appendHeadingSection(
           lines,
           "Verification",
-          publicVerificationBlock(
-            realBehaviorProof,
-            allEvidenceEntries,
-            reviewFindings,
-            securityReview,
-          ),
+          publicVerificationBlock(proofPolicy, allEvidenceEntries, reviewFindings, securityReview),
         );
+      }
+      if (liveProofRecordingBlock) {
+        lines.push("", "### Live Verification", "", liveProofRecordingBlock, "");
       }
       if (systemContext && architectureDiagram) {
         appendHeadingSection(
@@ -425,8 +440,8 @@ export function createReportCommentPresentation(
       lines.push("", collapsedDetailsBlock("<strong>Agent review details</strong>", agentDetails));
     } else {
       appendPublicSection(lines, "Summary", publicSummaryBody(summaryLine, reproductionAssessment));
-      if (regressionProvenanceLine) {
-        appendPublicSection(lines, "Regression provenance", regressionProvenanceLine);
+      if (regressionPublicLine) {
+        appendPublicSection(lines, "Regression provenance", regressionPublicLine);
       }
       if (rootCauseClusterBlock) {
         appendPublicSection(lines, "Root-cause cluster", rootCauseClusterBlock);

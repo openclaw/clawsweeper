@@ -1,0 +1,26 @@
+{
+  "oldPreChangeCommit": "e13791786799f6a51a39806938847bbc48948e5e",
+  "old": {
+    "total": 26,
+    "counts": {
+      "CANCELLED": 3,
+      "SKIPPED": 6,
+      "SUCCESS": 17
+    },
+    "blockers": [
+      "ClawSweeper Dispatch / dispatch:CANCELLED",
+      "ClawSweeper Dispatch / dispatch:CANCELLED"
+    ],
+    "needs_checks": "needs_checks:ClawSweeper Dispatch / dispatch:CANCELLED; ClawSweeper Dispatch / dispatch:CANCELLED"
+  },
+  "newHeadCommit": "10d0801364df699b697fad5cea1ba59a52b91cae",
+  "new": {
+    "total": 14,
+    "counts": {
+      "SKIPPED": 2,
+      "SUCCESS": 12
+    },
+    "blockers": [],
+    "needs_checks": null
+  }
+}

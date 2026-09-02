@@ -3,7 +3,7 @@ name: ClawSweeper
 run-name: >-
   ${{
     (github.event_name == 'schedule' &&
-      (github.event.schedule == '4/5 * * * *' ||
+      (github.event.schedule == '4/20 * * * *' ||
         github.event.schedule == '41/10 * * * *' ||
         github.event.schedule == '37 */6 * * *')) &&
       'Fan out ClawSweeper targets' ||
@@ -55,18 +55,31 @@ run-name: >-
           github.event.schedule == '48 * * * *' ||
           github.event.schedule == '8,23,38,53 * * * *'))) &&
       format('Apply default ClawSweeper closures for {0}', github.event.inputs.target_repo || ((github.event.schedule == '8,23,38,53 * * * *') && 'openclaw/clawhub' || 'openclaw/openclaw')) ||
-    (github.event_name == 'workflow_dispatch' && startsWith(github.event.inputs.item_numbers, 'router-')) &&
-      format('Review event item {0}#{1} [{2}]', github.event.inputs.target_repo || 'openclaw/openclaw', github.event.inputs.item_number || '?', github.event.inputs.item_numbers) ||
     (github.event_name == 'workflow_dispatch' &&
-      github.event.inputs.item_number != '' &&
-      github.event.inputs.item_numbers != '') &&
-      format('Review event items {0}#{1},{2} [shards={3}]', github.event.inputs.target_repo || 'openclaw/openclaw', github.event.inputs.item_number, github.event.inputs.item_numbers, (github.event.inputs.hot_intake == 'true' && '1' || github.event.inputs.shard_count || '89')) ||
+      github.event.inputs.apply_existing != 'true' &&
+      github.event.inputs.audit_dashboard != 'true' &&
+      startsWith(github.event.inputs.item_numbers, 'router-')) &&
+      format('Review manual item [{0}]', github.event.inputs.item_numbers) ||
     (github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.apply_existing != 'true' &&
+      github.event.inputs.audit_dashboard != 'true' &&
       github.event.inputs.item_number != '' &&
       github.event.inputs.item_numbers == '') &&
-      format('Review event item {0}#{1}', github.event.inputs.target_repo || 'openclaw/openclaw', github.event.inputs.item_number) ||
-    (github.event_name == 'workflow_dispatch' && github.event.inputs.item_numbers != '') &&
-      format('Review event items {0}#{1} [shards={2}]', github.event.inputs.target_repo || 'openclaw/openclaw', github.event.inputs.item_numbers, (github.event.inputs.hot_intake == 'true' && '1' || github.event.inputs.shard_count || '89')) ||
+      'Review manual item' ||
+    (github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.apply_existing != 'true' &&
+      github.event.inputs.audit_dashboard != 'true' &&
+      github.event.inputs.item_numbers != '') &&
+      format('Review manual batch [shards={0}]', (github.event.inputs.hot_intake == 'true' && '1' || github.event.inputs.shard_count || '89')) ||
+    (github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.apply_existing != 'true' &&
+      github.event.inputs.audit_dashboard != 'true' &&
+      github.event.inputs.hot_intake == 'true') &&
+      'Review manual hot target' ||
+    (github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.apply_existing != 'true' &&
+      github.event.inputs.audit_dashboard != 'true') &&
+      'Review manual target' ||
     ((github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') ||
       (github.event_name == 'schedule' &&
         (github.event.schedule == '7 */6 * * *' ||
@@ -201,11 +214,11 @@ on:
     - cron: "48 * * * *"
     - cron: "8,23,38,53 * * * *"
     - cron: "6,21,36,51 * * * *"
-    # Hot fanout every 5 minutes instead of 15: with the dynamic plan batch
-    # (#958) a cycle fills free capacity, but 48 concurrent reviews drain the
-    # queue in ~5 minutes and it then idles two thirds of every 15-minute gap
-    # (observed: 48 active immediately post-cycle, 3 active before the next).
-    - cron: "4/5 * * * *"
+    # Temporary containment: run hot fleet fanout every 20 minutes while trusted
+    # ClawSweeper-owned activity can feed unchanged items back into hot review.
+    # Restore a faster cadence only after that loop is fixed and quota telemetry
+    # confirms the higher demand is safe.
+    - cron: "4/20 * * * *"
     # Normal backfill every 10 minutes instead of hourly, for the same reason.
     - cron: "41/10 * * * *"
     - cron: "37 */6 * * *"
@@ -239,10 +252,18 @@ env:
   OPENROUTER_API_KEY: ${{ vars.CLAWSWEEPER_RUNNER == 'openclaw' && secrets.OPENROUTER_API_KEY || '' }}
 
 concurrency:
-  group: ${{ (github.event_name == 'schedule' && (github.event.schedule == '4/5 * * * *' || github.event.schedule == '41/10 * * * *' || github.event.schedule == '37 */6 * * *')) && format('clawsweeper-target-fanout-{0}', github.event.schedule || github.run_id) || github.event_name == 'repository_dispatch' && format('clawsweeper-event-{0}-{1}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.queue_lease_id || github.event.client_payload.item_number || github.run_id) || format('{0}-{1}', (github.event_name == 'schedule' && github.event.schedule == '13 * * * *') && 'clawsweeper-failed-review-retry' || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true' && github.event.inputs.apply_sync_comments_only == 'true') && (github.event.inputs.apply_item_numbers == '__cursor__' && github.event.inputs.apply_kind == 'all' && github.event.inputs.apply_comment_sync_min_age_days == '0' && github.event.inputs.apply_limit == '40' && github.event.inputs.apply_min_age_days == '0' && github.event.inputs.apply_min_age_minutes == '' && (github.event.inputs.apply_close_reasons == '' || github.event.inputs.apply_close_reasons == (vars.CLAWSWEEPER_AUTO_CLOSE_REASONS || 'all')) && github.event.inputs.apply_stale_min_age_days == '60' && github.event.inputs.apply_close_delay_ms == '2000' && github.event.inputs.apply_checkpoint_size == '40' && 'clawsweeper-comment-sync' || format('clawsweeper-comment-sync-{0}', github.run_id)) || (github.event_name == 'schedule' && github.event.schedule == '6,21,36,51 * * * *') && 'clawsweeper-comment-sync' || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') && format('clawsweeper-apply-{0}', github.run_id) || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *')) && 'clawsweeper-apply' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '')) && format('clawsweeper-intake-exact-{0}', github.event.inputs.item_number || github.event.inputs.item_numbers) || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing != 'true') && format('clawsweeper-operator-dispatch-{0}', github.run_id) || ((github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) && 'clawsweeper-intake-v2' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *'))) && 'clawsweeper-audit' || 'clawsweeper-review', github.event.inputs.target_repo || github.event.client_payload.target_repo || ((github.event.schedule == '17 */6 * * *') && 'openclaw/clawsweeper' || ((github.event.schedule == '2/5 * * * *' || github.event.schedule == '22 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '12 */6 * * *') && 'openclaw/clawhub' || 'openclaw/openclaw'))) }}
+  group: ${{ (github.event_name == 'schedule' && (github.event.schedule == '4/20 * * * *' || github.event.schedule == '41/10 * * * *' || github.event.schedule == '37 */6 * * *')) && format('clawsweeper-target-fanout-{0}', github.event.schedule || github.run_id) || github.event_name == 'repository_dispatch' && format('clawsweeper-event-{0}-{1}', github.event.client_payload.target_repo || 'openclaw/openclaw', github.event.client_payload.queue_lease_id || github.event.client_payload.item_number || github.run_id) || format('{0}-{1}', (github.event_name == 'schedule' && github.event.schedule == '13 * * * *') && 'clawsweeper-failed-review-retry' || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true' && github.event.inputs.apply_sync_comments_only == 'true') && (github.event.inputs.apply_item_numbers == '__cursor__' && github.event.inputs.apply_kind == 'all' && github.event.inputs.apply_comment_sync_min_age_days == '0' && github.event.inputs.apply_limit == '40' && github.event.inputs.apply_min_age_days == '0' && github.event.inputs.apply_min_age_minutes == '' && (github.event.inputs.apply_close_reasons == '' || github.event.inputs.apply_close_reasons == (vars.CLAWSWEEPER_AUTO_CLOSE_REASONS || 'all')) && github.event.inputs.apply_stale_min_age_days == '60' && github.event.inputs.apply_close_delay_ms == '2000' && github.event.inputs.apply_checkpoint_size == '40' && 'clawsweeper-comment-sync' || format('clawsweeper-comment-sync-{0}', github.run_id)) || (github.event_name == 'schedule' && github.event.schedule == '6,21,36,51 * * * *') && 'clawsweeper-comment-sync' || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') && format('clawsweeper-apply-{0}', github.run_id) || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *')) && 'clawsweeper-apply' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '')) && format('clawsweeper-intake-exact-{0}', github.event.inputs.item_number || github.event.inputs.item_numbers) || (github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing != 'true') && format('clawsweeper-operator-dispatch-{0}', github.run_id) || ((github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) && 'clawsweeper-intake-v2' || ((github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *'))) && 'clawsweeper-audit' || 'clawsweeper-review', github.event.inputs.target_repo || github.event.client_payload.target_repo || ((github.event.schedule == '17 */6 * * *') && 'openclaw/clawsweeper' || ((github.event.schedule == '2/5 * * * *' || github.event.schedule == '22 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '12 */6 * * *') && 'openclaw/clawhub' || 'openclaw/openclaw'))) }}
   cancel-in-progress: false
 
 jobs:
+  hosted-target-admission:
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'repository_dispatch' && github.event.action == 'clawsweeper_target_sweep') }}
+    uses: ./.github/workflows/hosted-target-admission.yml
+    with:
+      target_repo: ${{ github.event.inputs.target_repo || github.event.client_payload.target_repo || (((github.event.schedule == '17 */6 * * *') || (github.event.schedule == '4/20 * * * *') || (github.event.schedule == '41/10 * * * *') || (github.event.schedule == '37 */6 * * *')) && 'openclaw/clawsweeper' || ((github.event.schedule == '2/5 * * * *' || github.event.schedule == '22 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '12 */6 * * *') && 'openclaw/clawhub' || 'openclaw/openclaw')) }}
+    secrets:
+      CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+
   event-disabled-target:
     name: Skip disabled target event
     if: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1' }}
@@ -262,7 +283,6 @@ jobs:
       - name: Enqueue legacy event through the durable control plane
         env:
           CLIENT_PAYLOAD: ${{ toJson(github.event.client_payload) }}
-          GH_TOKEN: ${{ github.token }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: |
@@ -314,18 +334,17 @@ jobs:
             echo "Invalid legacy target repository: $target_repo" >&2
             exit 1
           fi
-          if [ -z "$target_branch" ]; then
-            target_branch="$(gh api "repos/$target_repo" --jq .default_branch)"
-          fi
-          if ! printf '%s' "$target_branch" | grep -Eq '^[A-Za-z0-9_.\/-]+$'; then
+          if [ -n "$target_branch" ] && ! printf '%s' "$target_branch" | grep -Eq '^[A-Za-z0-9_.\/-]+$'; then
             echo "Invalid legacy target branch for $target_repo: $target_branch" >&2
             exit 1
           fi
           queue_path="/internal/exact-review/enqueue"
-          if [ "$use_source_authority" = "1" ]; then
+          if [ -z "$target_branch" ]; then
+            queue_path="/internal/exact-review/branch-authority"
+          elif [ "$use_source_authority" = "1" ]; then
             queue_path="/internal/exact-review/source-authority"
           fi
-          payload="$(TARGET_REPO="$target_repo" TARGET_BRANCH="$target_branch" node <<'NODE'
+          payload="$(TARGET_REPO="$target_repo" TARGET_BRANCH="$target_branch" USE_SOURCE_AUTHORITY="$use_source_authority" node <<'NODE'
           const payload = JSON.parse(process.env.CLIENT_PAYLOAD || "{}");
           const itemKind = payload.item_kind === "pull_request" ? "pull_request" : "issue";
           const sourceEvent =
@@ -353,17 +372,22 @@ jobs:
           const sourceContentRevision = String(queueClaim.source_content_revision ?? payload.source_content_revision ?? "").trim().toLowerCase();
           const sourceUpdatedAt = String(queueClaim.source_updated_at ?? payload.source_updated_at ?? "").trim();
           const installationId = Number(queueClaim.installation_id ?? payload.installation_id);
+          const targetBranch = String(process.env.TARGET_BRANCH || "").trim();
+          const sourceAuthorityRequired = process.env.USE_SOURCE_AUTHORITY === "1";
           process.stdout.write(
             JSON.stringify({
               delivery_id: dispatchKey
                 ? `router:${dispatchKey}`
                 : `legacy:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`,
-              ...(itemKind === "pull_request" && Number.isInteger(installationId) && installationId > 0
+              ...(Number.isInteger(installationId) && installationId > 0
                 ? { installation_id: installationId }
+                : {}),
+              ...(!targetBranch && sourceAuthorityRequired
+                ? { source_authority_required: true }
                 : {}),
               decision: {
                 targetRepo: process.env.TARGET_REPO,
-                targetBranch: process.env.TARGET_BRANCH,
+                ...(targetBranch ? { targetBranch } : {}),
                 itemNumber: Number(payload.item_number),
                 itemKind,
                 sourceEvent,
@@ -436,7 +460,7 @@ jobs:
     name: Review exact event item
     if: ${{ github.event_name == 'repository_dispatch' && github.event.action != 'clawsweeper_target_sweep' && github.event.client_payload.queue_lease_id != '' && github.event.client_payload.source_action != 'exact_review_artifact_publish' && github.event.client_payload.source_action != 'exact_review_command_acknowledgement' }}
     runs-on: ${{ vars.CLAWSWEEPER_REVIEW_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 120
+    timeout-minutes: 150
     concurrency:
       group: clawsweeper-event-review-${{ github.event.client_payload.queue_claim.item_key || github.event.client_payload.item_key || github.run_id }}
       cancel-in-progress: false
@@ -574,6 +598,7 @@ jobs:
                           process.env.QUEUE_LEASE_REVISION,
                       );
                 const claimGeneration = Number(response.claim_generation);
+                const repeatRevision = response.repeat_revision;
                 if (
                   !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(targetRepo) ||
                   !Number.isInteger(itemNumber) ||
@@ -594,7 +619,8 @@ jobs:
                     response.item_key !== requestedItemKey ||
                     response.lease_revision !== requestedLeaseRevision ||
                     !Number.isInteger(claimGeneration) ||
-                    claimGeneration < 1)
+                    claimGeneration < 1 ||
+                    typeof repeatRevision !== "boolean")
                 ) {
                   process.exit(1);
                 }
@@ -604,6 +630,7 @@ jobs:
                   `item_key=${itemKey}`,
                   `lease_revision=${Number.isInteger(leaseRevision) ? leaseRevision : ""}`,
                   `claim_generation=${responseProtocol === 2 ? claimGeneration : ""}`,
+                  `repeat_revision=${responseProtocol === 2 ? repeatRevision : false}`,
                   `protocol_version=${responseProtocol}`,
                   `decision=${JSON.stringify(decision)}`,
                 ];
@@ -810,8 +837,47 @@ jobs:
           live_locked="$(jq -r '.locked == true' <<< "$live_item")"
           item_kind="$(jq -r 'if .pull_request then "pull_request" else "issue" end' <<< "$live_item")"
           echo "item_kind=$item_kind" >> "$GITHUB_OUTPUT"
+          if [ "$live_state" = "open" ] && [ "$live_locked" != "true" ]; then
+            live_head_sha=""
+            if [ "$item_kind" = "pull_request" ]; then
+              if ! live_head_sha="$(gh api "repos/$TARGET_REPO/pulls/$ITEM_NUMBER" --jq '.head.sha')"; then
+                echo "::warning::Unable to read the live pull request head; preserving normal review admission."
+                live_head_sha=""
+              fi
+            fi
+            comments_error="$(mktemp)"
+            if live_comments="$(gh api --paginate --slurp "repos/$TARGET_REPO/issues/$ITEM_NUMBER/comments?per_page=100" 2>"$comments_error" | jq 'add')"; then
+              classification_output="$(mktemp)"
+              if CLAIM_DECISION="$CLAIM_DECISION" LIVE_ITEM="$live_item" LIVE_COMMENTS="$live_comments" LIVE_HEAD_SHA="$live_head_sha" GITHUB_OUTPUT="$classification_output" \
+                node scripts/classify-scheduled-review-noop.ts; then
+                cat "$classification_output" >> "$GITHUB_OUTPUT"
+                if grep -qx 'scheduled_noop=true' "$classification_output"; then
+                  reason="$(sed -n 's/^scheduled_noop_reason=//p' "$classification_output")"
+                  rm -f "$classification_output" "$comments_error"
+                  {
+                    echo "proceed=false"
+                    echo "terminal_noop=false"
+                    echo "scheduled_semantic_noop=true"
+                    echo "terminal_missing=false"
+                    echo "guarded_open=false"
+                    echo "guarded_open_action="
+                  } >> "$GITHUB_OUTPUT"
+                  echo "::notice::Completing $TARGET_REPO#$ITEM_NUMBER as a scheduled no-op before target checkout because $reason."
+                  exit 0
+                fi
+              else
+                echo "::warning::Scheduled no-op classification failed; preserving normal review admission."
+              fi
+              rm -f "$classification_output"
+            else
+              echo "::warning::Unable to read comments for scheduled no-op classification; preserving normal review admission."
+              cat "$comments_error" >&2
+            fi
+            rm -f "$comments_error"
+          fi
           case "$live_state" in
             open)
+              echo "scheduled_semantic_noop=false" >> "$GITHUB_OUTPUT"
               echo "terminal_noop=false" >> "$GITHUB_OUTPUT"
               echo "terminal_missing=false" >> "$GITHUB_OUTPUT"
               if [ "$live_locked" = "true" ]; then
@@ -826,6 +892,7 @@ jobs:
               fi
               ;;
             closed)
+              echo "scheduled_semantic_noop=false" >> "$GITHUB_OUTPUT"
               echo "proceed=false" >> "$GITHUB_OUTPUT"
               echo "terminal_noop=true" >> "$GITHUB_OUTPUT"
               echo "terminal_missing=false" >> "$GITHUB_OUTPUT"
@@ -840,7 +907,7 @@ jobs:
           esac
 
       - name: Create target write token
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outcome == 'success' && steps.live-item.outputs.admission_retry != 'true' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outcome == 'success' && steps.live-item.outputs.scheduled_semantic_noop != 'true' && steps.live-item.outputs.admission_retry != 'true' }}
         id: target-write-token
         continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -854,12 +921,6 @@ jobs:
           permission-issues: write
           permission-pull-requests: write
           permission-statuses: read
-
-      - uses: ./.github/actions/setup-pnpm
-        id: setup-pnpm
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outcome == 'success' && steps.live-item.outputs.admission_retry != 'true' }}
-        with:
-          build-script: ${{ steps.live-item.outputs.proceed == 'true' && 'build:all' || 'build:repair' }}
 
       - name: React to target item review start
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
@@ -889,6 +950,12 @@ jobs:
             rm -f "$err"
           }
           react "eyes"
+
+      - uses: ./.github/actions/setup-pnpm
+        id: setup-pnpm
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outcome == 'success' && steps.live-item.outputs.scheduled_semantic_noop != 'true' && steps.live-item.outputs.admission_retry != 'true' }}
+        with:
+          build-script: ${{ steps.live-item.outputs.proceed == 'true' && 'build:all' || 'build:repair' }}
 
       - uses: actions/cache@v6
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
@@ -931,6 +998,13 @@ jobs:
             git clone --filter=blob:none --branch "$target_branch" --single-branch "$url" "$checkout_dir"
           fi
           git -C "$checkout_dir" rev-parse --short HEAD
+
+      - uses: ./.github/actions/setup-openclaw-codex-source
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
+        with:
+          target-repo: ${{ steps.target.outputs.target_repo }}
+          target-dir: ${{ steps.target.outputs.target_checkout_dir }}
+          review-artifact-dir: ${{ github.workspace }}/artifacts/event
 
       - name: Mark re-review command in progress
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
@@ -1254,6 +1328,25 @@ jobs:
           fi
           set -e
           echo "exit_code=$review_exit_code" >> "$GITHUB_OUTPUT"
+          if [ "$review_exit_code" -ne 0 ] && [ -f artifacts/event/failure-diagnostics/manifest.json ]; then
+            echo "failure_diagnostics=true" >> "$GITHUB_OUTPUT"
+          fi
+          # Keep 78 aligned with INCOMPLETE_AGENT_INPUT_SOURCE_EXIT_CODE. This
+          # unchanged source tuple is terminal, while the workflow stays red.
+          if [ "$review_exit_code" -eq 78 ]; then
+            echo "failure_reason=incomplete_source" >> "$GITHUB_OUTPUT"
+          # Keep 79 aligned with AGENT_INPUT_FINDINGS_EXIT_CODE. A scanner
+          # refusal is terminal for the unchanged source tuple.
+          elif [ "$review_exit_code" -eq 79 ]; then
+            echo "failure_reason=findings" >> "$GITHUB_OUTPUT"
+          elif [ "$review_exit_code" -ne 0 ] && [ -f artifacts/event/failure-diagnostics/manifest.json ] &&
+            jq -e '
+              .classification == "source_preparation" and
+              .retryable == false and
+              .failure.reason_code == "source_incompatible"
+            ' artifacts/event/failure-diagnostics/manifest.json >/dev/null; then
+            echo "failure_reason=source_incompatible" >> "$GITHUB_OUTPUT"
+          fi
           if [ "$review_exit_code" -ne 0 ]; then
             exit "$review_exit_code"
           fi
@@ -1303,7 +1396,7 @@ jobs:
 
       - name: Create exact review artifact bundle
         id: create-exact-review-bundle
-        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && !cancelled() && steps.target.outputs.target_enabled == 'true' && steps.live-item.outcome == 'success' && steps.live-item.outputs.admission_retry != 'true' && steps.setup-pnpm.outcome == 'success' && steps.review-exact-event-item.outputs.superseded != 'true' && (steps.live-item.outputs.proceed != 'true' || (steps.review-exact-event-item.outcome == 'success' && steps.review-exact-event-item.outputs.retry_at == '')) }}
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && !cancelled() && steps.target.outputs.target_enabled == 'true' && steps.live-item.outcome == 'success' && steps.live-item.outputs.scheduled_semantic_noop != 'true' && steps.live-item.outputs.admission_retry != 'true' && steps.setup-pnpm.outcome == 'success' && steps.review-exact-event-item.outputs.superseded != 'true' && (steps.live-item.outputs.proceed != 'true' || (steps.review-exact-event-item.outcome == 'success' && steps.review-exact-event-item.outputs.retry_at == '')) }}
         env:
           EXACT_REVIEW_ACTION_LEDGER_ROOT: ${{ env.CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT }}
           EXACT_REVIEW_BUNDLE_DIR: .artifacts/exact-review-bundle
@@ -1345,12 +1438,33 @@ jobs:
           hydrate-git-state: "false"
           hydrate-state-blobs: "false"
 
+      - uses: ./.github/actions/setup-github-egress-observer
+        id: direct-github-egress-observer
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.direct-setup-state.outcome == 'success' }}
+        continue-on-error: true
+        with:
+          metrics-path: .artifacts/direct-publication/github-egress-v2.jsonl
+          rate-limit-path: .artifacts/direct-publication/github-rate-limit-details-v2.jsonl
+          pool-class: target_app
+          stage: publication_apply
+          source-action: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceAction }}
+          claim-generation: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
+          repeat-revision: ${{ steps.claim-exact-review-queue.outputs.repeat_revision }}
+
+      - name: Record direct-publication member
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.direct-github-egress-observer.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+        run: node dist/github-egress-observer-cli.js record-member
+
       - name: Deliver GitHub effects and prepare direct state mutation
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.direct-setup-state.outcome == 'success' }}
         id: prepare-direct-exact-review-publication
         continue-on-error: true
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           CLAWSWEEPER_PUBLIC_GH_TOKEN: ${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && github.token || '' }}
           REPO_TOKEN: ${{ github.token }}
@@ -1372,7 +1486,6 @@ jobs:
         env:
           EXACT_REVIEW_DIRECT_PUBLICATION_ENABLED: ${{ vars.EXACT_REVIEW_DIRECT_PUBLICATION_ENABLED || '1' }}
           EXACT_REVIEW_DIRECT_MUTATION_OUTPUT: .artifacts/direct-publication-outcome.json
-          EXACT_REVIEW_DIRECT_ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
           EXACT_REVIEW_DIRECT_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
           EXACT_REVIEW_DIRECT_SOURCE_ACTION: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceAction }}
           EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
@@ -1384,6 +1497,8 @@ jobs:
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.direct-exact-review-publication.outputs.accepted == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          CLAWSWEEPER_GITHUB_POOL_CLASS: repository_actions
+          CLAWSWEEPER_GITHUB_STAGE: publication_router
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           TARGET_BRANCH: ${{ steps.target.outputs.target_branch }}
           ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
@@ -1645,11 +1760,18 @@ jobs:
           REVIEW_SUPERSEDED: ${{ steps.review-exact-event-item.outputs.superseded || 'false' }}
           RESERVATION_STATUS: ${{ steps.reserve-exact-review-lease.outputs.status }}
           RETRY_AT: ${{ steps.reserve-exact-review-lease.outputs.retry_at || steps.review-exact-event-item.outputs.retry_at }}
+          REVIEW_FAILURE_REASON: ${{ steps.review-exact-event-item.outputs.failure_reason || '' }}
           CLAWSWEEPER_ACTION_LEDGER_DISABLED: "1"
         run: |
           state="Failed"
           detail="The exact review did not produce a publishable artifact. The durable queue will retry it."
-          if [ "$RESERVATION_STATUS" = "superseded" ] || [ "$REVIEW_SUPERSEDED" = "true" ]; then
+          if [ "$REVIEW_FAILURE_REASON" = "incomplete_source" ]; then
+            detail="The exact review could not verify the complete source. The durable queue will not retry this unchanged revision."
+          elif [ "$REVIEW_FAILURE_REASON" = "findings" ]; then
+            detail="The input scanner refused the reviewed source. The durable queue will not retry this unchanged revision."
+          elif [ "$REVIEW_FAILURE_REASON" = "source_incompatible" ]; then
+            detail="The reviewed source does not contain a valid exact Codex version pin. The durable queue will not retry this unchanged revision; update or rebase it before requesting review again."
+          elif [ "$RESERVATION_STATUS" = "superseded" ] || [ "$REVIEW_SUPERSEDED" = "true" ]; then
             state="Waiting"
             detail="A newer exact-review queue owner superseded this run. This run completed as a no-op."
           elif [ "$RESERVATION_STATUS" = "held" ]; then
@@ -1679,6 +1801,7 @@ jobs:
           DIRECT_PUBLICATION_RETRY_AT: ${{ steps.prepare-direct-exact-review-publication.outputs.retry_at }}
           TARGET_ENABLED: ${{ steps.target.outputs.target_enabled }}
           LIVE_OUTCOME: ${{ steps.live-item.outcome }}
+          SCHEDULED_SEMANTIC_NOOP: ${{ steps.live-item.outputs.scheduled_semantic_noop || 'false' }}
           REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome }}
           REVIEW_SUPERSEDED: ${{ steps.review-exact-event-item.outputs.superseded || 'false' }}
           RESERVATION_STATUS: ${{ steps.reserve-exact-review-lease.outputs.status }}
@@ -1701,6 +1824,8 @@ jobs:
             outcome=success
             requeue_latest=true
           elif [ "$TARGET_ENABLED" = "false" ]; then
+            outcome=success
+          elif [ "$SCHEDULED_SEMANTIC_NOOP" = "true" ] && [ "$LIVE_OUTCOME" = "success" ]; then
             outcome=success
           elif [ "$RESERVATION_STATUS" = "superseded" ] || [ "$REVIEW_SUPERSEDED" = "true" ]; then
             outcome=success
@@ -1733,6 +1858,7 @@ jobs:
           REQUEUE_LATEST: ${{ steps.exact-review-generation-result.outputs.requeue_latest }}
           RETRY_KIND: ${{ steps.exact-review-generation-result.outputs.retry_kind }}
           RETRY_AT: ${{ steps.exact-review-generation-result.outputs.retry_at }}
+          REVIEW_FAILURE_REASON: ${{ steps.review-exact-event-item.outputs.failure_reason || '' }}
           DIRECT_PUBLICATION_ACCEPTED: ${{ steps.direct-exact-review-publication.outputs.accepted }}
           DIRECT_PUBLICATION_SUPERSEDED: ${{ steps.direct-exact-review-publication.outputs.superseded }}
           DIRECT_LIFECYCLE_OUTCOME: ${{ steps.finalize-direct-exact-review-lifecycle.outcome }}
@@ -1795,6 +1921,9 @@ jobs:
                 : {}),
               ...(directLifecycleRequeue ? { direct_lifecycle_requeue: true } : {}),
               ...(retryAt ? { retry_at: retryAt } : {}),
+              ...(process.env.REVIEW_FAILURE_REASON
+                ? { review_failure_reason: process.env.REVIEW_FAILURE_REASON }
+                : {}),
             }));
           ')"
           response_file="$(mktemp)"
@@ -1846,6 +1975,26 @@ jobs:
           done
           exit 1
 
+      - name: Submit direct GitHub egress telemetry
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.direct-github-egress-observer.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+        run: pnpm run --silent repair:github-egress-telemetry submit
+
+      - name: Upload exact review failure diagnostics
+        id: upload-exact-review-failure-diagnostics
+        if: ${{ always() && !cancelled() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.review-exact-event-item.outputs.failure_diagnostics == 'true' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: exact-review-failure-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/event/failure-diagnostics/
+          include-hidden-files: false
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Fail unsuccessful exact review generation
         # A held review lease is a successful deferral only after the durable queue
         # accepts retry ownership; queue completion failures must remain visible.
@@ -1869,11 +2018,21 @@ jobs:
             )
           }}
         env:
+          CLASSIFICATION: >-
+            ${{
+              (
+                steps.exact-review-generation-result.outputs.outcome != 'success' &&
+                steps.exact-review-generation-result.outputs.retry_kind == '' &&
+                steps.reserve-exact-review-lease.outputs.status != 'held' &&
+                steps.reserve-exact-review-lease.outputs.status != 'superseded'
+              ) && 'codex_or_content_failure' || 'queue_completion_failure'
+            }}
+          COMPLETION_OUTCOME: ${{ steps.complete-exact-review-queue.outcome || 'not_started' }}
           RESERVATION_STATUS: ${{ steps.reserve-exact-review-lease.outputs.status || 'unknown' }}
           REVIEW_EXIT_CODE: ${{ steps.review-exact-event-item.outputs.exit_code || 'unknown' }}
           REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome || 'not_started' }}
         run: |
-          echo "::error::Exact review generation failed: classification=codex_or_content_failure reservation=$RESERVATION_STATUS review_outcome=$REVIEW_OUTCOME review_exit=$REVIEW_EXIT_CODE"
+          echo "::error::Exact review run failed: classification=$CLASSIFICATION reservation=$RESERVATION_STATUS review_outcome=$REVIEW_OUTCOME review_exit=$REVIEW_EXIT_CODE queue_completion=$COMPLETION_OUTCOME"
           exit 1
 
   event-review-publish:
@@ -1960,6 +2119,7 @@ jobs:
                 const producerDecision = publication?.producerDecision;
                 const leaseRevision = Number(response.lease_revision);
                 const claimGeneration = Number(response.claim_generation);
+                const repeatRevision = response.repeat_revision;
                 const publicationLeaseRevision = Number(publication?.leaseRevision);
                 const directItemKey = `${decision?.targetRepo}#${decision?.itemNumber}`;
                 const expectedDeferredItemKey = `${directItemKey}@publish:${publication?.producerRunId}:${publication?.producerRunAttempt}`;
@@ -2000,6 +2160,7 @@ jobs:
                 if (
                   response.claimed !== true ||
                   response.protocol_version !== 2 ||
+                  typeof repeatRevision !== "boolean" ||
                   response.item_key !== process.env.ITEM_KEY ||
                   (!deferredPublication && !directLifecycleRecovery) ||
                   decision?.sourceAction !== "exact_review_artifact_publish" ||
@@ -2043,6 +2204,7 @@ jobs:
                   publisher_item_key: response.item_key,
                   publisher_lease_revision: leaseRevision,
                   publisher_claim_generation: claimGeneration,
+                  repeat_revision: repeatRevision,
                   direct_lifecycle_recovery: directLifecycleRecoveryReady,
                   direct_lifecycle_plan: directLifecycleRecoveryReady
                     ? JSON.stringify(directLifecyclePlan)
@@ -2229,6 +2391,26 @@ jobs:
         with:
           build-script: build:all
 
+      - uses: ./.github/actions/setup-github-egress-observer
+        id: artifact-github-egress-observer
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.setup-publish-pnpm.outcome == 'success' }}
+        continue-on-error: true
+        with:
+          metrics-path: .artifacts/artifact-publication/github-egress-v2.jsonl
+          rate-limit-path: .artifacts/artifact-publication/github-rate-limit-details-v2.jsonl
+          pool-class: target_app
+          stage: publication_apply
+          source-action: ${{ fromJSON(steps.publication-context.outputs.decision).sourceAction }}
+          claim-generation: ${{ steps.publication-context.outputs.publisher_claim_generation }}
+          repeat-revision: ${{ steps.publication-context.outputs.repeat_revision }}
+
+      - name: Record artifact-publication member
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.artifact-github-egress-observer.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
+        run: node dist/github-egress-observer-cli.js record-member
+
       - name: Download exact review artifact bundle
         if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' }}
         id: download-exact-review-bundle
@@ -2240,6 +2422,14 @@ jobs:
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
           path: .artifacts/exact-review-bundle
+
+      - name: Record artifact download transport boundary
+        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.artifact-github-egress-observer.outcome == 'success' && steps.download-exact-review-bundle.outcome != 'skipped' }}
+        continue-on-error: true
+        env:
+          CLAWSWEEPER_GITHUB_POOL_CLASS: repository_actions
+          CLAWSWEEPER_GITHUB_STAGE: publication_prepare
+        run: node dist/github-egress-observer-cli.js record-unobserved -- run download
 
       - name: Validate exact review artifact bundle
         if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.download-exact-review-bundle.outcome == 'success' }}
@@ -2266,9 +2456,38 @@ jobs:
           EXACT_REVIEW_TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
         run: pnpm run --silent repair:exact-review-bundle validate
 
+      - name: Install exact live-proof media validators
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.validate-exact-review-bundle.outcome == 'success' && hashFiles('.artifacts/exact-review-bundle/live-proof/*/live-proof-manifest.json') != '' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
+
+      - name: Fold exact live proof into the review artifact
+        id: fold-exact-live-proof
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.validate-exact-review-bundle.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_AWS_SECRET_ACCESS_KEY }}
+          CLAWSWEEPER_LIVE_PROOF_S3_ENDPOINT: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_S3_ENDPOINT }}
+          CLAWSWEEPER_LIVE_PROOF_BUCKET: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_BUCKET }}
+          CLAWSWEEPER_LIVE_PROOF_BASE_URL: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_BASE_URL }}
+        run: |
+          status=0
+          result_json="$(node dist/clawsweeper.js live-proof-publish-artifacts --artifact-dir .artifacts/exact-review-bundle)" || status=$?
+          printf '%s\n' "$result_json"
+          result="$(jq -r 'if type == "object" and (.status == "published" or .status == "invalid_artifact" or .status == "retryable_failure") then .status else empty end' <<<"$result_json" 2>/dev/null || true)"
+          case "$result:$status" in
+            published:0) exit_status=0 ;;
+            invalid_artifact:1|retryable_failure:1) exit_status=1 ;;
+            *) result=retryable_failure; exit_status=1 ;;
+          esac
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+          exit "$exit_status"
+
       - name: Identify legacy tuple-less exact artifact
         id: legacy-exact-artifact
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.validate-exact-review-bundle.outcome == 'success' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.fold-exact-live-proof.outcome == 'success' }}
         env:
           REPORT_PATH: .artifacts/exact-review-bundle/review/${{ steps.publication-context.outputs.item_number }}.md
         run: |
@@ -2294,7 +2513,7 @@ jobs:
           NODE
 
       - name: Stage validated exact review artifact
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.validate-exact-review-bundle.outcome == 'success' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.fold-exact-live-proof.outcome == 'success' }}
         run: |
           set -euo pipefail
           mkdir -p artifacts/event
@@ -2304,7 +2523,7 @@ jobs:
           fi
 
       - name: Create target write token
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.validate-exact-review-bundle.outcome == 'success' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.fold-exact-live-proof.outcome == 'success' }}
         id: target-write-token
         continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -2320,7 +2539,7 @@ jobs:
           permission-statuses: read
 
       - uses: ./.github/actions/setup-state
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.validate-exact-review-bundle.outcome == 'success' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.fold-exact-live-proof.outcome == 'success' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
         id: setup-state
         with:
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
@@ -2332,7 +2551,7 @@ jobs:
           hydrate-state-blobs: "false"
 
       - name: Publish event result and apply safe close
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.validate-exact-review-bundle.outcome == 'success' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.fold-exact-live-proof.outcome == 'success' && steps.legacy-exact-artifact.outputs.legacy_tupleless != 'true' }}
         id: publish-event-result
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
@@ -2513,6 +2732,8 @@ jobs:
         if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && fromJSON(steps.publication-context.outputs.decision).sourceAction != 'failed_review_shard_recovery' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' && steps.publish-event-result.outputs.routing_deferred == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          CLAWSWEEPER_GITHUB_POOL_CLASS: repository_actions
+          CLAWSWEEPER_GITHUB_STAGE: publication_router
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
           TARGET_BRANCH: ${{ steps.publication-context.outputs.target_branch }}
           ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
@@ -2774,6 +2995,7 @@ jobs:
           FAILURE_KIND: ${{ steps.publish-event-result.outputs.failure_kind }}
           DOWNLOAD_OUTCOME: ${{ steps.download-exact-review-bundle.outcome }}
           VALIDATE_OUTCOME: ${{ steps.validate-exact-review-bundle.outcome }}
+          LIVE_PROOF_RESULT: ${{ steps.fold-exact-live-proof.outputs.result }}
           PUBLISH_COMPLETION_KIND: ${{ steps.publish-event-result.outputs.completion_kind }}
           PUBLISH_REASON_CODE: ${{ steps.publish-event-result.outputs.reason_code }}
           PUBLISH_RETRY_AT: ${{ steps.publish-event-result.outputs.retry_at }}
@@ -2832,6 +3054,10 @@ jobs:
             completion_kind=retryable_failure
             reason_code=review_lease_active
             retry_at="$PUBLISH_RETRY_AT"
+          elif [ "$LIVE_PROOF_RESULT" = "invalid_artifact" ]; then
+            outcome=success
+            completion_kind=refresh_required
+            reason_code=invalid_artifact
           elif [ "$LEGACY_TUPLELESS" = "true" ] && [ "$SOURCE_DRIFT_OUTCOME" = "success" ]; then
             outcome=success
             completion_kind=superseded
@@ -2840,6 +3066,10 @@ jobs:
             outcome=cancelled
             completion_kind=retryable_failure
             reason_code=workflow_cancelled
+          elif [ "$LIVE_PROOF_RESULT" = "retryable_failure" ]; then
+            outcome=failure
+            completion_kind=retryable_failure
+            reason_code=unknown_failure
           elif [ "$PRIOR_JOB_STATUS" = "success" ]; then
             if [ "$PUBLISH_OUTCOME" = "success" ] && [ "$REQUEUE_LATEST" = "true" ] && [ "$SOURCE_DRIFT_OUTCOME" = "success" ]; then
               outcome=success
@@ -3026,6 +3256,14 @@ jobs:
             --state "Waiting" \
             --detail "Another same-revision review is active; durable publication will retry after its lease expires." \
             --run-url "$RUN_URL"
+
+      - name: Submit artifact-publication GitHub egress telemetry
+        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.artifact-github-egress-observer.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+        run: pnpm run --silent repair:github-egress-telemetry submit
 
       - name: Fail unsuccessful exact review publication
         if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && (steps.exact-review-publication-result.outputs.outcome != 'success' || steps.complete-exact-review-publication.outcome != 'success') }}
@@ -3285,6 +3523,7 @@ jobs:
           COMMAND_COMMENT_ID: ${{ steps.update-final-command-status.outputs.command_comment_id }}
           COMPLETION_COMMENT_ID: ${{ steps.update-final-command-status.outputs.completion_comment_id }}
           COMPLETION_COMPLETED_AT: ${{ steps.update-final-command-status.outputs.completion_completed_at }}
+          STATUS_STATE: ${{ steps.finalization-context.outputs.status_state }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: |
@@ -3297,6 +3536,7 @@ jobs:
             const commandCommentId = Number(process.env.COMMAND_COMMENT_ID);
             const completionCommentId = Number(process.env.COMPLETION_COMMENT_ID);
             const completedAt = process.env.COMPLETION_COMPLETED_AT || "";
+            const completionOutcome = process.env.STATUS_STATE === "Failed" ? "failure" : "success";
             if (
               !fenceKey || !Number.isSafeInteger(revision) || revision < 1 ||
               (!statusMarker && statusCommentId === null) ||
@@ -3314,6 +3554,7 @@ jobs:
               command_comment_id: commandCommentId,
               completion_comment_id: completionCommentId,
               completed_at: completedAt,
+              completion_outcome: completionOutcome,
               observed_at: Date.now(),
             }));
           ')"
@@ -3416,7 +3657,8 @@ jobs:
 
   target-fanout:
     name: Fan out target repository sweeps
-    if: ${{ github.event_name == 'schedule' && (github.event.schedule == '4/5 * * * *' || github.event.schedule == '41/10 * * * *' || github.event.schedule == '37 */6 * * *') }}
+    needs: hosted-target-admission
+    if: ${{ always() && needs.hosted-target-admission.outputs.outcome == 'public' && github.event_name == 'schedule' && (github.event.schedule == '4/20 * * * *' || github.event.schedule == '41/10 * * * *' || github.event.schedule == '37 */6 * * *') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -3440,29 +3682,44 @@ jobs:
         with:
           build-script: build:repair
 
-      - name: Create OpenClaw inventory token
-        id: openclaw-token
+      - name: Create openclaw inventory token
+        id: openclaw-inventory-token
+        continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: openclaw
+          permission-metadata: read
 
       - name: Create steipete inventory token
-        id: steipete-token
+        id: steipete-inventory-token
         continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
           owner: steipete
+          permission-metadata: read
+
+      - name: Create hosted target metadata token
+        id: hosted-target-metadata-token
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: openclaw
+          repositories: clawsweeper
+          permission-metadata: read
 
       - name: Dispatch selected targets
         env:
           GH_TOKEN: ${{ github.token }}
           CLAWSWEEPER_DISPATCH_TOKEN: ${{ github.token }}
-          CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: ${{ steps.openclaw-token.outputs.token }}
-          CLAWSWEEPER_INVENTORY_TOKEN_STEIPETE: ${{ steps.steipete-token.outputs.token || '__public__' }}
+          CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: ${{ steps.openclaw-inventory-token.outputs.token || '__public__' }}
+          CLAWSWEEPER_INVENTORY_TOKEN_STEIPETE: ${{ steps.steipete-inventory-token.outputs.token || '__public__' }}
+          CLAWSWEEPER_HOSTED_TARGET_METADATA_TOKEN: ${{ steps.hosted-target-metadata-token.outputs.token }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           FANOUT_MODE: ${{ github.event.schedule == '41/10 * * * *' && 'normal-review' || (github.event.schedule == '37 */6 * * *' && 'audit' || 'hot-intake') }}
           FANOUT_LIMIT: ${{ github.event.schedule == '41/10 * * * *' && '12' || (github.event.schedule == '37 */6 * * *' && '12' || '20') }}
@@ -3488,15 +3745,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CLAWSWEEPER_DISPATCH_TOKEN: ${{ github.token }}
-          CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: ${{ steps.openclaw-token.outputs.token }}
-          CLAWSWEEPER_INVENTORY_TOKEN_STEIPETE: ${{ steps.steipete-token.outputs.token || '__public__' }}
+          CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: ${{ steps.openclaw-inventory-token.outputs.token || '__public__' }}
+          CLAWSWEEPER_INVENTORY_TOKEN_STEIPETE: ${{ steps.steipete-inventory-token.outputs.token || '__public__' }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           REVIEW_COVERAGE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: pnpm run target-fanout -- coverage --window-days 7 --publish-url "$REVIEW_COVERAGE_URL" >> "$GITHUB_STEP_SUMMARY"
 
   plan:
     name: Plan review candidates
-    if: ${{ (github.event_name != 'repository_dispatch' || github.event.action == 'clawsweeper_target_sweep') && !((github.event_name == 'workflow_dispatch' && (github.event.inputs.apply_existing == 'true' || github.event.inputs.audit_dashboard == 'true')) || (github.event_name == 'schedule' && ((github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '6,21,36,51 * * * *') || (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *') || (github.event.schedule == '4/5 * * * *' || github.event.schedule == '41/10 * * * *' || github.event.schedule == '37 */6 * * *') || github.event.schedule == '13 * * * *'))) && !(github.event_name == 'schedule' && (github.event.schedule == '2/5 * * * *' || github.event.schedule == '22 * * * *') && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') && !(github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
+    needs: hosted-target-admission
+    if: ${{ always() && needs.hosted-target-admission.outputs.outcome == 'public' && (github.event_name != 'repository_dispatch' || github.event.action == 'clawsweeper_target_sweep') && !((github.event_name == 'workflow_dispatch' && (github.event.inputs.apply_existing == 'true' || github.event.inputs.audit_dashboard == 'true')) || (github.event_name == 'schedule' && ((github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '6,21,36,51 * * * *') || (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *') || (github.event.schedule == '4/20 * * * *' || github.event.schedule == '41/10 * * * *' || github.event.schedule == '37 */6 * * *') || github.event.schedule == '13 * * * *'))) && !(github.event_name == 'schedule' && (github.event.schedule == '2/5 * * * *' || github.event.schedule == '22 * * * *') && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') && !(github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
@@ -3507,21 +3765,12 @@ jobs:
       codex_timeout_ms: ${{ steps.mode.outputs.codex_timeout_ms }}
       hot_intake: ${{ steps.mode.outputs.hot_intake }}
       queue_feed: ${{ steps.mode.outputs.queue_feed }}
-      queue_offered: ${{ steps.enqueue-scheduled.outputs.offered || '0' }}
-      queue_attempted: ${{ steps.enqueue-scheduled.outputs.attempted || '0' }}
-      queue_enqueued: ${{ steps.enqueue-scheduled.outputs.queued || '0' }}
-      queue_deduped: ${{ steps.enqueue-scheduled.outputs.deduped || '0' }}
-      queue_shed: ${{ steps.enqueue-scheduled.outputs.shed || '0' }}
-      queue_deferred: ${{ steps.enqueue-scheduled.outputs.deferred || '0' }}
       matrix: ${{ steps.select.outputs.matrix }}
       max_pages: ${{ steps.mode.outputs.max_pages }}
-      min_active_shards: ${{ steps.mode.outputs.min_active_shards }}
-      min_backfill_review_age_minutes: ${{ steps.mode.outputs.min_backfill_review_age_minutes }}
       planned_count: ${{ steps.select.outputs.planned_count }}
       planned_capacity: ${{ steps.select.outputs.planned_capacity }}
       planned_item_numbers: ${{ steps.select.outputs.planned_item_numbers }}
       planned_shards: ${{ steps.select.outputs.planned_shards }}
-      active_codex_target: ${{ steps.select.outputs.active_codex_target }}
       due_backlog: ${{ steps.select.outputs.due_backlog }}
       oldest_unreviewed_at: ${{ steps.select.outputs.oldest_unreviewed_at }}
       capacity_reason: ${{ steps.select.outputs.capacity_reason }}
@@ -3594,21 +3843,36 @@ jobs:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
 
+      - uses: ./clawsweeper/.github/actions/setup-pnpm
+        with:
+          working-directory: clawsweeper
+          build-script: build:all
+
+      - name: Resolve requested review items
+        id: requested-items
+        working-directory: clawsweeper
+        env:
+          ITEM_NUMBER: ${{ github.event.inputs.item_number || '' }}
+          ITEM_NUMBERS: ${{ github.event.inputs.item_numbers || github.event.client_payload.item_number || '' }}
+        run: |
+          item_numbers="$(node --input-type=module -e "import { itemNumbersArg } from './src/clawsweeper-args.ts'; console.log(itemNumbersArg(process.env.ITEM_NUMBERS, process.env.ITEM_NUMBER).join(','))")"
+          if [ -z "$item_numbers" ] && [ -n "$ITEM_NUMBER$ITEM_NUMBERS" ]; then
+            echo "Explicit review selection contains no valid item numbers." >&2
+            exit 2
+          fi
+          echo "item_numbers=$item_numbers" >> "$GITHUB_OUTPUT"
+
       - uses: ./clawsweeper/.github/actions/setup-state
         with:
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           records-repo-slugs: ${{ steps.target.outputs.target_slug }}
+          records-item-number: ${{ steps.requested-items.outputs.item_numbers }}
           hydrate-state-blobs: "false"
           token: ${{ steps.state-token.outputs.token }}
           worktree-path: clawsweeper
           fetch-depth: 1
-
-      - uses: ./clawsweeper/.github/actions/setup-pnpm
-        with:
-          working-directory: clawsweeper
-          build-script: build:all
 
       - name: Publish planning-started status
         if: ${{ !((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '6,21,36,51 * * * *'))) && !((github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true' && github.event.inputs.item_number == '' && github.event.inputs.item_numbers == '') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) }}
@@ -3664,18 +3928,18 @@ jobs:
           }
           active_sweep_exact_workers() {
             local runs total id title status run_event jobs_json active_shards total_shards
-            local reserved_shards hard_cap requested_shards item_numbers commas item_count
+            local reserved_shards hard_cap requested_shards
             total=0
             hard_cap="$(limit review_shards.hard_cap)"
             runs="$(printf '%s' "$ACTIVE_RUNS_JSON" \
-              | STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq -r '.[] | select(.workflowPath == ".github/workflows/sweep.yml") | select(.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF))) | select((.displayTitle | startswith("Review exact item ")) or (.displayTitle | startswith("Review scheduled hot item ")) or (.displayTitle | startswith("Review scheduled normal item ")) or (.event == "workflow_dispatch" and ((.displayTitle | startswith("Review event item ")) or (.displayTitle | startswith("Review event items "))))) | [.databaseId, .displayTitle, .status, .event] | @tsv' 2>/dev/null || true)"
+              | STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq -r '.[] | select(.workflowPath == ".github/workflows/sweep.yml") | select(.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF))) | select((.displayTitle | startswith("Review exact item ")) or (.displayTitle | startswith("Review scheduled hot item ")) or (.displayTitle | startswith("Review scheduled normal item ")) or (.event == "workflow_dispatch" and ((.displayTitle | startswith("Review manual item")) or (.displayTitle | startswith("Review manual batch "))))) | [.databaseId, .displayTitle, .status, .event] | @tsv' 2>/dev/null || true)"
             while IFS=$'\t' read -r id title status run_event; do
               if [ -z "$id" ]; then
                 continue
               fi
               active_shards=0
               total_shards=0
-              if [[ "$title" == Review\ exact\ item\ * ]] || [[ "$title" == Review\ scheduled\ hot\ item\ * ]] || [[ "$title" == Review\ scheduled\ normal\ item\ * ]] || { [ "$run_event" = "workflow_dispatch" ] && [[ "$title" == Review\ event\ item\ * ]]; }; then
+              if [[ "$title" == Review\ exact\ item\ * ]] || [[ "$title" == Review\ scheduled\ hot\ item\ * ]] || [[ "$title" == Review\ scheduled\ normal\ item\ * ]] || { [ "$run_event" = "workflow_dispatch" ] && [[ "$title" == Review\ manual\ item* ]]; }; then
                 active_shards=1
                 total=$((total + active_shards))
                 continue
@@ -3696,29 +3960,20 @@ jobs:
                 total_shards=0
               fi
               # Single-item event reviews reserve one worker. Explicit batches carry
-              # enough run-name metadata to reserve their maximum possible matrix until
-              # live shard jobs exist; after expansion, only live shard jobs consume slots.
+              # their requested shard count until live shard jobs exist; after expansion,
+              # only live shard jobs consume slots.
               if [ "$active_shards" -lt 1 ] && [ "$total_shards" -lt 1 ]; then
                 reserved_shards="$(limit review_shards.exact_item_default)"
-                if [[ "$title" == Review\ event\ items\ * ]]; then
+                if [[ "$title" == Review\ manual\ batch\ * ]]; then
                   reserved_shards="$hard_cap"
                   if [[ "$title" =~ \[shards=([0-9]+)\]$ ]]; then
                     requested_shards="${BASH_REMATCH[1]}"
-                    item_numbers="${title#*#}"
-                    item_numbers="${item_numbers%% *}"
-                    if [[ "$item_numbers" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
-                      if [ "$requested_shards" -lt 1 ]; then
-                        requested_shards=1
-                      fi
-                      commas="${item_numbers//[^,]/}"
-                      item_count=$((${#commas} + 1))
-                      reserved_shards="$requested_shards"
-                      if [ "$reserved_shards" -gt "$item_count" ]; then
-                        reserved_shards="$item_count"
-                      fi
-                      if [ "$reserved_shards" -gt "$hard_cap" ]; then
-                        reserved_shards="$hard_cap"
-                      fi
+                    if [ "$requested_shards" -lt 1 ]; then
+                      requested_shards=1
+                    fi
+                    reserved_shards="$requested_shards"
+                    if [ "$reserved_shards" -gt "$hard_cap" ]; then
+                      reserved_shards="$hard_cap"
                     fi
                   fi
                 fi
@@ -3732,7 +3987,7 @@ jobs:
             local runs total id title status jobs_json active_shards total_shards
             total=0
             runs="$(printf '%s' "$ACTIVE_RUNS_JSON" \
-              | CURRENT_RUN_ID="${GITHUB_RUN_ID:-0}" STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq -r '.[] | select((.databaseId | tostring) != env.CURRENT_RUN_ID) | select(.workflowPath == ".github/workflows/sweep.yml") | select(.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF))) | select(.displayTitle == "Review ClawSweeper items" or .displayTitle == "Review hot ClawSweeper items" or (.displayTitle | startswith("Review target repo ")) or (.displayTitle | startswith("Review hot target repo "))) | [.databaseId, .displayTitle, .status] | @tsv' 2>/dev/null || true)"
+              | CURRENT_RUN_ID="${GITHUB_RUN_ID:-0}" STALE_QUEUED_CUTOFF="$STALE_QUEUED_CUTOFF" jq -r '.[] | select((.databaseId | tostring) != env.CURRENT_RUN_ID) | select(.workflowPath == ".github/workflows/sweep.yml") | select(.status == "in_progress" or ((.status == "pending" or .status == "queued" or .status == "waiting" or .status == "requested") and ((.updatedAt // .createdAt // "") >= env.STALE_QUEUED_CUTOFF))) | select(.displayTitle == "Review ClawSweeper items" or .displayTitle == "Review hot ClawSweeper items" or .displayTitle == "Review manual target" or .displayTitle == "Review manual hot target" or (.displayTitle | startswith("Review target repo ")) or (.displayTitle | startswith("Review hot target repo "))) | [.databaseId, .displayTitle, .status] | @tsv' 2>/dev/null || true)"
             while IFS=$'\t' read -r id title status; do
               if [ -z "$id" ]; then
                 continue
@@ -3758,7 +4013,7 @@ jobs:
               # lane size. Runs with completed shard jobs are publishing and consume no
               # Codex slots, so the next serialized planner may refill that capacity.
               if [ "$active_shards" -lt 1 ] && [ "$total_shards" -lt 1 ]; then
-                if [ "$title" = "Review hot ClawSweeper items" ] || [[ "$title" == Review\ hot\ target\ repo\ * ]]; then
+                if [ "$title" = "Review hot ClawSweeper items" ] || [ "$title" = "Review manual hot target" ] || [[ "$title" == Review\ hot\ target\ repo\ * ]]; then
                   active_shards="$(limit review_shards.hot_intake_default)"
                 else
                   active_shards="$(limit review_shards.normal_default)"
@@ -3840,7 +4095,7 @@ jobs:
             # The Durable Object turns every selected item into an independent exact-review
             # workflow. Direct schedules use current free queue capacity; target fanout may
             # request a smaller backlog-weighted share. The Worker remains the final owner of
-            # the fleet-wide 600/hour admission target and queue backpressure.
+            # the fleet-wide 300/hour admission target and queue backpressure.
             requested_batch_size="${{ github.event.client_payload.batch_size || '' }}"
             if ! [[ "$requested_batch_size" =~ ^[0-9]+$ ]] || [ "$requested_batch_size" -lt 1 ]; then
               requested_batch_size="$queue_candidate_capacity"
@@ -3891,10 +4146,7 @@ jobs:
           SHARD_COUNT: ${{ steps.mode.outputs.shard_count }}
           BATCH_SIZE: ${{ steps.mode.outputs.batch_size }}
           HOT_INTAKE: ${{ steps.mode.outputs.hot_intake }}
-          ITEM_NUMBER: ${{ github.event.inputs.item_number || '' }}
-          # A router fallback carries its receipt key in item_numbers because GitHub caps this
-          # workflow at 25 inputs; item_number remains the exact review target in that case.
-          ITEM_NUMBERS: ${{ (github.event.inputs.item_number != '' && startsWith(github.event.inputs.item_numbers, 'router-') && github.event.inputs.item_number) || github.event.inputs.item_numbers || github.event.client_payload.item_number || '' }}
+          ITEM_NUMBERS: ${{ steps.requested-items.outputs.item_numbers }}
           MAX_PAGES: ${{ steps.mode.outputs.max_pages }}
           MIN_ACTIVE_SHARDS: ${{ steps.mode.outputs.min_active_shards }}
           MIN_BACKFILL_REVIEW_AGE_MINUTES: ${{ steps.mode.outputs.min_backfill_review_age_minutes }}
@@ -3903,9 +4155,6 @@ jobs:
         run: |
           set -euo pipefail
           item_arg=()
-          if [ -n "$ITEM_NUMBER" ]; then
-            item_arg=(--item-number "$ITEM_NUMBER")
-          fi
           if [ -n "$ITEM_NUMBERS" ]; then
             item_arg+=("--item-numbers" "$ITEM_NUMBERS")
           fi
@@ -3964,14 +4213,6 @@ jobs:
             --queue-url "$QUEUE_URL" \
             --delivery-prefix "scheduled:${{ github.run_id }}:${{ github.run_attempt }}")"
           jq -e '.offered >= .attempted and .attempted >= (.queued + .deduped + .shed + .rejected)' <<<"$result" >/dev/null
-          {
-            echo "offered=$(jq -r .offered <<<"$result")"
-            echo "attempted=$(jq -r .attempted <<<"$result")"
-            echo "queued=$(jq -r .queued <<<"$result")"
-            echo "deduped=$(jq -r .deduped <<<"$result")"
-            echo "shed=$(jq -r .shed <<<"$result")"
-            echo "deferred=$(jq -r .deferred <<<"$result")"
-          } >> "$GITHUB_OUTPUT"
           {
             echo "### Scheduled review funnel"
             echo
@@ -4039,7 +4280,7 @@ jobs:
     needs: plan
     if: ${{ needs.plan.outputs.queue_feed != 'true' }}
     runs-on: ${{ vars.CLAWSWEEPER_REVIEW_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 75
+    timeout-minutes: 180
     continue-on-error: true
     permissions:
       actions: read
@@ -4107,11 +4348,6 @@ jobs:
         run: |
           tar -xzf .artifacts/review-runtime.tar.gz
 
-      - name: Install review compiler service
-        continue-on-error: true
-        working-directory: clawsweeper
-        run: node scripts/install-review-native-compiler.mjs
-
       - uses: ./clawsweeper/.github/actions/setup-codex
         if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' }}
         env:
@@ -4161,6 +4397,12 @@ jobs:
           fi
           git -C "$checkout_dir" rev-parse --short HEAD
 
+      - uses: ./clawsweeper/.github/actions/setup-openclaw-codex-source
+        with:
+          target-repo: ${{ needs.plan.outputs.target_repo }}
+          target-dir: ${{ needs.plan.outputs.target_checkout_dir }}
+          review-artifact-dir: ${{ github.workspace }}/review-artifacts/shard-${{ matrix.shard }}
+
       - name: Mark shard start
         id: shard-start
         run: echo "started_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
@@ -4176,6 +4418,7 @@ jobs:
           ADDITIONAL_PROMPT: ${{ github.event.inputs.additional_prompt || github.event.client_payload.review_options.additional_prompt || github.event.client_payload.additional_prompt || '' }}
           EXACT_ITEM: ${{ github.event.client_payload.item_number || github.event.inputs.item_number || github.event.inputs.item_numbers || '' }}
           EXPECTED_SOURCE_REVISION: ${{ github.event.client_payload.expected_source_revision || '' }}
+          PR_COMMENT_ACTIVITY_REVISIONS: ${{ matrix.pr_comment_activity_revisions }}
         run: |
           hot_intake_arg=()
           if [ "${{ needs.plan.outputs.hot_intake }}" = "true" ]; then
@@ -4192,6 +4435,10 @@ jobs:
           planned_automatic_review_arg=()
           if [ -z "$EXACT_ITEM" ]; then
             planned_automatic_review_arg=(--planned-automatic-review)
+          fi
+          pr_comment_activity_arg=()
+          if [ -n "$PR_COMMENT_ACTIVITY_REVISIONS" ]; then
+            pr_comment_activity_arg=(--pr-comment-activity-revisions "$PR_COMMENT_ACTIVITY_REVISIONS")
           fi
           codex_timeout_seconds=$(((${{ needs.plan.outputs.codex_timeout_ms }} + 999) / 1000))
           review_timeout_seconds=$(((codex_timeout_seconds + 180) * ${{ needs.plan.outputs.batch_size }}))
@@ -4214,6 +4461,7 @@ jobs:
             --codex-sandbox read-only \
             --codex-timeout-ms ${{ needs.plan.outputs.codex_timeout_ms }} \
             --item-numbers "${{ matrix.item_numbers }}" \
+            "${pr_comment_activity_arg[@]}" \
             "${planned_automatic_review_arg[@]}" \
             "${hot_intake_arg[@]}" \
             --readonly-openclaw \
@@ -4282,7 +4530,7 @@ jobs:
           JSON
 
       - uses: actions/upload-artifact@v7
-        if: always()
+        if: ${{ always() && steps.review-shard.outcome == 'success' }}
         with:
           name: review-shard-${{ matrix.shard }}
           path: |
@@ -4424,16 +4672,6 @@ jobs:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
           private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
 
-      - uses: ./.github/actions/setup-state
-        id: setup-publish-state
-        with:
-          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-          records-repo-slugs: ${{ needs.plan.outputs.target_slug }}
-          hydrate-state-blobs: "false"
-          token: ${{ steps.state-token.outputs.token }}
-
       - uses: ./.github/actions/setup-pnpm
         id: setup-publish-pnpm
         with:
@@ -4445,6 +4683,24 @@ jobs:
           pattern: review-shard-*
           path: artifacts
           merge-multiple: true
+
+      - name: Resolve reviewed item numbers
+        id: reviewed-items
+        run: |
+          item_numbers="$(pnpm run --silent workflow -- artifact-item-numbers --artifact-dir artifacts)"
+          echo "item_numbers=$item_numbers" >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/setup-state
+        id: setup-publish-state
+        if: ${{ steps.reviewed-items.outputs.item_numbers != '' }}
+        with:
+          coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          records-repo-slugs: ${{ needs.plan.outputs.target_slug }}
+          records-item-number: ${{ steps.reviewed-items.outputs.item_numbers }}
+          hydrate-state-blobs: "false"
+          token: ${{ steps.state-token.outputs.token }}
 
       - uses: actions/download-artifact@v8
         id: download-review-metrics
@@ -4461,6 +4717,22 @@ jobs:
           pattern: action-ledger-review-*
           path: .clawsweeper-repair/action-ledger-download
           merge-multiple: true
+
+      - name: Install review live-proof media validators
+        if: ${{ steps.download-review-artifacts.outcome == 'success' && hashFiles('artifacts/live-proof/*/live-proof-manifest.json') != '' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
+
+      - name: Fold live proofs into review artifacts
+        if: ${{ steps.download-review-artifacts.outcome == 'success' }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_AWS_SECRET_ACCESS_KEY }}
+          CLAWSWEEPER_LIVE_PROOF_S3_ENDPOINT: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_S3_ENDPOINT }}
+          CLAWSWEEPER_LIVE_PROOF_BUCKET: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_BUCKET }}
+          CLAWSWEEPER_LIVE_PROOF_BASE_URL: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_BASE_URL }}
+        run: node dist/clawsweeper.js live-proof-publish-artifacts --artifact-dir artifacts
 
       - name: Import immutable review action events
         id: import-review-action-ledger
@@ -4497,26 +4769,9 @@ jobs:
           node dist/clawsweeper.js publish-action-event-paths \
             --paths-file .artifacts/action-ledger-paths.txt
 
-      - name: Sync before applying artifacts
-        id: sync-review-artifacts
-        if: ${{ always() && !cancelled() && steps.setup-publish-state.outcome == 'success' && steps.setup-publish-pnpm.outcome == 'success' && steps.download-review-artifacts.outcome == 'success' }}
-        run: |
-          if ! pull_output="$(git pull --rebase --autostash 2>&1)"; then
-            printf '%s\n' "$pull_output" >&2
-            # A reviewed PR head branch can vanish mid-review (force-push or
-            # deletion). The newer head triggers its own review event, so this
-            # publication completes as a superseded no-op instead of failing.
-            if grep -qiE "no such ref was fetched|couldn.t find remote ref" <<<"$pull_output"; then
-              echo "::notice::The reviewed branch disappeared upstream; the newer head owns its own review. Skipping artifact publication as a superseded no-op."
-              echo "superseded=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            exit 1
-          fi
-
       - name: Apply review artifacts
         id: apply-review-artifacts
-        if: ${{ always() && !cancelled() && steps.sync-review-artifacts.outcome == 'success' && steps.sync-review-artifacts.outputs.superseded != 'true' }}
+        if: ${{ always() && !cancelled() && steps.setup-publish-state.outcome == 'success' && steps.download-review-artifacts.outcome == 'success' }}
         env:
           CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: .artifacts/review-canonical-baseline
           GH_TOKEN: ${{ github.token }}
@@ -4540,7 +4795,7 @@ jobs:
             review_batch_succeeded=true
           fi
           echo "review_batch_succeeded=$review_batch_succeeded" >> "$GITHUB_OUTPUT"
-          publish_detail="Merged ${reviewed_count} review artifacts for run ${{ github.run_id }}. Captured ${metric_count} shard metrics; ${non_success_metric_count} shards reported non-success review status. Folder reconciliation moved tracked files to match current GitHub open/closed state."
+          publish_detail="Merged ${reviewed_count} review artifacts for run ${{ github.run_id }}. Captured ${metric_count} shard metrics; ${non_success_metric_count} shards reported non-success review status. Only reviewed item tuples were hydrated and published."
           if [ "$HOT_INTAKE" = "true" ] && [ -z "$EXACT_ITEM" ]; then
             apply_artifacts_args+=(--max-pages "$MAX_PAGES" --skip-reconcile)
             publish_state="Hot intake publish complete"
@@ -4594,22 +4849,19 @@ jobs:
         env:
           CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR: .artifacts/review-canonical-baseline
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-          EXACT_ITEM: ${{ github.event.client_payload.item_number || github.event.inputs.item_number || github.event.inputs.item_numbers || '' }}
           GH_TOKEN: ${{ github.token }}
-          HOT_INTAKE: ${{ needs.plan.outputs.hot_intake }}
+          ITEM_NUMBERS: ${{ steps.reviewed-items.outputs.item_numbers }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
         run: |
           target_slug="$TARGET_REPO"
           target_slug="${target_slug//\//-}"
-          if [ "$HOT_INTAKE" = "true" ] && [ -z "$EXACT_ITEM" ]; then
-            echo "Skipping full reconcile for broad hot-intake publish."
-          else
-            pnpm run reconcile -- \
-              --target-repo "$TARGET_REPO" \
-              --skip-closed-at \
-              --canonical-record-baseline-dir "$CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR"
-          fi
+          pnpm run reconcile -- \
+            --target-repo "$TARGET_REPO" \
+            --item-numbers "$ITEM_NUMBERS" \
+            --only-item-numbers \
+            --skip-closed-at \
+            --canonical-record-baseline-dir "$CLAWSWEEPER_CANONICAL_RECORD_BASELINE_DIR"
           pnpm run repair:publish-main -- \
             --message "chore: update sweep records" \
             --path "records/${target_slug}" \
@@ -4733,43 +4985,12 @@ jobs:
               -f candidate_kind=viable \
               -f report_repo=openclaw/clawsweeper-state \
               -f report_path="$report_path" \
-              -f report_url="$report_url" \
-              -f model=internal
+              -f report_url="$report_url"
           done < /tmp/viable-implementation-candidates.tsv
-
-      - name: Dispatch background review comment sync
-        if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && steps.target-write-token.outputs.token != '' && needs.plan.outputs.hot_intake != 'true' && (github.event_name != 'repository_dispatch' || github.event.action == 'clawsweeper_target_sweep') && (github.event_name != 'workflow_dispatch' || (github.event.inputs.item_number == '' && github.event.inputs.item_numbers == '')) }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
-        run: |
-          set -euo pipefail
-          item_numbers="$(pnpm run --silent workflow -- artifact-item-numbers --artifact-dir artifacts)"
-          if [ -z "$item_numbers" ]; then
-            echo "No review artifacts to sync comments for."
-            exit 0
-          fi
-          for attempt in 1 2 3; do
-            if gh workflow run sweep.yml \
-              --ref main \
-              -f target_repo="$TARGET_REPO" \
-              -f apply_existing=true \
-              -f apply_sync_comments_only=true \
-              -f apply_item_numbers=__cursor__ \
-              -f apply_kind=all \
-              -f apply_limit=40 \
-              -f apply_min_age_days=0 \
-              -f apply_comment_sync_min_age_days=0; then
-              echo "Dispatched coalesced durable comment sync for item numbers: $item_numbers"
-              exit 0
-            fi
-            sleep "$((attempt * 10))"
-          done
-          echo "::warning::Unable to dispatch background comment sync after three attempts; apply/comment-sync backstops can pick it up later."
 
       - name: Sync selected review comments
         id: sync-selected-review-comments
-        if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && steps.target-write-token.outputs.token != '' && ((github.event_name == 'repository_dispatch' && github.event.action != 'clawsweeper_target_sweep') || github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '') }}
+        if: ${{ always() && !cancelled() && steps.commit-review-records.outputs.records_published == 'true' && steps.target-write-token.outputs.token != '' }}
         timeout-minutes: 15
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
@@ -4789,7 +5010,6 @@ jobs:
             echo "No review artifacts to sync comments for."
             exit 0
           fi
-          git pull --rebase --autostash
           set +e
           timeout --kill-after=30s 840s pnpm run apply-decisions -- \
             --target-repo "$TARGET_REPO" \
@@ -4800,7 +5020,7 @@ jobs:
             --limit 0 \
             --processed-limit 1000 \
             --max-runtime-ms 720000 \
-            --comment-sync-min-age-days 7 \
+            --comment-sync-min-age-days 0 \
             --progress-every 25
           selected_comment_exit_code=$?
           set -e
@@ -5082,7 +5302,8 @@ jobs:
 
   retry-failed-reviews:
     name: Retry failed Codex reviews
-    if: ${{ github.event_name == 'schedule' && github.event.schedule == '13 * * * *' }}
+    needs: hosted-target-admission
+    if: ${{ always() && needs.hosted-target-admission.outputs.outcome == 'public' && github.event_name == 'schedule' && github.event.schedule == '13 * * * *' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -5233,7 +5454,8 @@ jobs:
 
   audit-dashboard:
     name: Audit state
-    if: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *')) }}
+    needs: hosted-target-admission
+    if: ${{ always() && needs.hosted-target-admission.outputs.outcome == 'public' && ((github.event_name == 'workflow_dispatch' && github.event.inputs.audit_dashboard == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '7 */6 * * *' || github.event.schedule == '12 */6 * * *' || github.event.schedule == '17 */6 * * *'))) }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -5378,7 +5600,8 @@ jobs:
 
   apply-proof:
     name: Prove close coverage without write credentials
-    if: ${{ ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '6,21,36,51 * * * *'))) && !(github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') && !(github.event_name == 'schedule' && github.event.schedule == '8,23,38,53 * * * *' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
+    needs: hosted-target-admission
+    if: ${{ always() && needs.hosted-target-admission.outputs.outcome == 'public' && ((github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '3 * * * *' || github.event.schedule == '18 * * * *' || github.event.schedule == '33 * * * *' || github.event.schedule == '48 * * * *' || github.event.schedule == '8,23,38,53 * * * *' || github.event.schedule == '6,21,36,51 * * * *'))) && !(github.event_name == 'repository_dispatch' && github.event.client_payload.target_repo == 'openclaw/clawhub' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') && !(github.event_name == 'schedule' && github.event.schedule == '8,23,38,53 * * * *' && vars.CLAWSWEEPER_ENABLE_CLAWHUB != '1') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -5925,6 +6148,7 @@ jobs:
           if [ "$sync_comments_only" = "true" ]; then
             sync_comments_arg=(--sync-comments-only)
           fi
+          prepare_comment_sync_cursor_arg
           min_age_minutes_arg=()
           if [ -n "$min_age_minutes" ]; then
             min_age_minutes_arg=(--min-age-minutes "$min_age_minutes")
@@ -6025,6 +6249,7 @@ jobs:
               --processed-limit "$comment_sync_processed_limit" \
               --max-runtime-ms 300000 \
               --cursor-trace ".artifacts/comment-sync-trace-$checkpoint.json" \
+              "${comment_sync_cursor_arg[@]}" \
               --comment-sync-min-age-days "$comment_sync_min_age_days" \
               "${item_numbers_arg[@]}" \
               "${sync_comments_arg[@]}"
@@ -6475,6 +6700,50 @@ jobs:
               -f shard_count="$normal_shards" \
               -f codex_timeout_ms=1200000
           fi
+
+      - name: Requeue drift-blocked close reviews
+        if: ${{ always() && !cancelled() && steps.primary-apply-result.outputs.succeeded == 'true' && steps.target.outputs.target_repo == 'openclaw/openclaw' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "${APPLY_NOOP:-false}" = "true" ] ||
+            [ "${APPLY_SYNC_COMMENTS_ONLY:-false}" = "true" ] ||
+            [ "${APPLY_AUTO_SELECTED_BATCH:-false}" != "true" ] ||
+            [ ! -f apply-report.json ]; then
+            echo "Not a default close-mode cursor run with a merged apply report; skipping drift requeue."
+            exit 0
+          fi
+          items="$(pnpm run --silent workflow -- apply-requeue-review-item-numbers --report apply-report.json --limit 5)"
+          if [ -z "$items" ]; then
+            echo "No source-drift or unverified-checkout close blocks to requeue."
+            exit 0
+          fi
+          target_branch="$(gh api "repos/${APPLY_TARGET_REPO}" --jq .default_branch)"
+          IFS=',' read -r -a requeue_items <<< "$items"
+          for item_number in "${requeue_items[@]}"; do
+            item_kind="$(gh api "repos/${APPLY_TARGET_REPO}/issues/${item_number}" --jq 'if .pull_request then "pull_request" else "issue" end')"
+            jq -n \
+              --arg target_repo "$APPLY_TARGET_REPO" \
+              --arg target_branch "$target_branch" \
+              --arg item_number "$item_number" \
+              --arg item_kind "$item_kind" \
+              '{
+                event_type: "clawsweeper_item",
+                client_payload: {
+                  target_repo: $target_repo,
+                  target_branch: $target_branch,
+                  item_number: $item_number,
+                  item_kind: $item_kind,
+                  source_event: (if $item_kind == "pull_request" then "pull_request" else "issues" end),
+                  source_action: "source_drift_requeue",
+                  supersedes_in_progress: false,
+                  codex_timeout_ms: "1200000"
+                }
+              }' | gh api --method POST "repos/${DISPATCH_REPOSITORY}/dispatches" --input -
+            echo "::notice::Dispatched exact review refresh for ${APPLY_TARGET_REPO}#${item_number}: its close was blocked by source drift or an unverified-checkout review; durable admission is owned by queue intake."
+          done
 
   publish-apply-observability:
     name: Publish apply telemetry

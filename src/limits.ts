@@ -13,6 +13,10 @@ export type WorkerConfig = {
   lanes: {
     exact_review: {
       max_concurrent: number;
+      target_max_concurrent: number;
+    };
+    assist: {
+      max: number;
     };
     repair: {
       cluster_max_live_runs: number;
@@ -23,6 +27,10 @@ export type WorkerConfig = {
 export type AutomationLimits = {
   exact_review: {
     concurrent_max: number;
+    target_concurrent_max: number;
+  };
+  assist: {
+    default: number;
   };
   review_shards: {
     normal_default: number;
@@ -50,7 +58,8 @@ export type WorkerLane =
   | "automerge_repair"
   | "issue_implementation"
   | "cluster_repair"
-  | "exact_item";
+  | "exact_item"
+  | "assist";
 
 export const WORKER_CONFIG = readWorkerConfig();
 export const AUTOMATION_LIMITS = deriveAutomationLimits(WORKER_CONFIG);
@@ -68,6 +77,14 @@ export function deriveAutomationLimits(config: WorkerConfig): AutomationLimits {
   return {
     exact_review: {
       concurrent_max: Math.min(config.lanes.exact_review.max_concurrent, max),
+      target_concurrent_max: Math.min(
+        config.lanes.exact_review.target_max_concurrent,
+        config.lanes.exact_review.max_concurrent,
+        max,
+      ),
+    },
+    assist: {
+      default: Math.min(config.lanes.assist.max, max),
     },
     review_shards: {
       normal_default: percent(max, 70),
@@ -106,6 +123,7 @@ export function workerLimit(
   } = {},
 ): number {
   if (lane === "exact_item") return limits.review_shards.exact_item_default;
+  if (lane === "assist") return priorityLimit(limits.assist.default, activeCritical);
   if (lane === "repair") return priorityLimit(limits.repair_live_runs.default, activeCritical);
   if (lane === "automerge_repair")
     return priorityLimit(limits.repair_live_runs.automerge_default, activeCritical);
@@ -156,6 +174,14 @@ function validateWorkerConfig(value: unknown): WorkerConfig {
     lanes: {
       exact_review: {
         max_concurrent: positiveInteger(value, "lanes.exact_review.max_concurrent"),
+        target_max_concurrent: optionalPositiveInteger(
+          value,
+          "lanes.exact_review.target_max_concurrent",
+          positiveInteger(value, "lanes.exact_review.max_concurrent"),
+        ),
+      },
+      assist: {
+        max: positiveInteger(value, "lanes.assist.max"),
       },
       repair: {
         cluster_max_live_runs: optionalPositiveInteger(

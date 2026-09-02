@@ -1,0 +1,77 @@
+{
+  "overall_behavior": "satisfies_contract",
+  "overall_confidence": 0.99,
+  "target": {
+    "type": "HTTP JSON API",
+    "access": "two disposable loopback wrangler dev --local runtimes"
+  },
+  "checks": [
+    {
+      "contract_clause": "Automerge 6h, 24h, and 7d responses remain unchanged",
+      "status": "pass",
+      "severity": null,
+      "evidence": "Six filtered and unfiltered automerge queries were byte-identical after normalizing only request-time-derived timestamps.",
+      "reproduction_steps": [
+        "Seed 308 automerge events, including 6h, 24h, and 7d window-spanning sessions, through POST /api/events in both runtimes",
+        "Query each range unfiltered and with repository plus policy filters",
+        "Compare normalized JSON bytes"
+      ],
+      "confidence": 0.99
+    },
+    {
+      "contract_clause": "Apply 6h, 24h, and 7d responses remain unchanged",
+      "status": "pass",
+      "severity": null,
+      "evidence": "Six filtered and unfiltered apply queries were byte-identical after normalizing only generated_at.",
+      "reproduction_steps": [
+        "Seed 170 signed observations through POST /internal/apply-observability in both runtimes",
+        "Query each range unfiltered and repository-filtered",
+        "Compare normalized JSON bytes"
+      ],
+      "confidence": 0.99
+    },
+    {
+      "contract_clause": "Storage reads are bounded by the requested window and fixed session-context margin",
+      "status": "pass",
+      "severity": null,
+      "evidence": "Automerge rows fell from 6,600 to 690 for 6h, 744 for 24h, and 1,176 for 7d; apply rows fell from 169 to 2, 4, and 16 respectively.",
+      "reproduction_steps": [
+        "Run both StatusStore revisions through the proof-only counting storage adapter",
+        "Issue identical 6h, 24h, and 7d requests",
+        "Record rows returned by list() and get()"
+      ],
+      "confidence": 0.99
+    },
+    {
+      "contract_clause": "UTC day-boundary replay is counted once",
+      "status": "pass",
+      "severity": null,
+      "evidence": "The same signed observation at 00:00:00Z was ingested twice and the candidate response remained byte-identical to merge-base's one logical per-run record.",
+      "reproduction_steps": [
+        "Create one apply observation exactly at UTC midnight",
+        "POST it twice through the signed internal route",
+        "Compare the public apply summaries"
+      ],
+      "confidence": 0.99
+    }
+  ],
+  "anti_cheat_probes": [
+    {
+      "probe": "Varied repositories, policies, terminal outcomes, latencies, queue values, result counts, and failure kinds",
+      "result": "All filtered and unfiltered response comparisons remained identical"
+    },
+    {
+      "probe": "Seeded sessions whose activation preceded each requested window while the terminal event landed inside it, plus one session entirely before the 6h window",
+      "result": "All boundary-sensitive latency, repair, terminal inclusion, and session projections remained identical"
+    },
+    {
+      "probe": "Used real loopback HTTP, Wrangler routing, HMAC verification, and SQLite-backed Durable Objects",
+      "result": "478 seed records were accepted through production routes in each runtime"
+    },
+    {
+      "probe": "Added 6,480 retained automerge rows spread across 90 days to the counting fixture",
+      "result": "Merge-base read all 6,600 rows while the candidate returned only each requested range plus the fixed eight-day session-context margin"
+    }
+  ],
+  "blockers": []
+}

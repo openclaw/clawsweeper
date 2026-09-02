@@ -1,0 +1,63 @@
+{
+  "schema": "clawsweeper-crabbox-proof-provenance/v1",
+  "generated_at": "2026-08-11T01:22:00Z",
+  "claim": "The pushed PR emits identical GitHub App JWT and canonical request-header bytes from the real signed Worker and Durable Object routes, with no container test failures beyond the current-main blob-hydration baseline.",
+  "crabbox": {
+    "cli_version": "0.38.3-5-g2a79805d",
+    "provider": "local-container",
+    "lease_id": "cbx_585f04f5feea",
+    "slug": "violet-prawn-a71c",
+    "machine_type": "node_24-bookworm",
+    "image": "node:24-bookworm",
+    "container_engine": "Docker 29.4.0",
+    "checkout": "--fresh-pr openclaw/clawsweeper#1115 --no-hydrate",
+    "sync_ms": 10154,
+    "command_ms": 104251,
+    "total_ms": 114406,
+    "exit_code": 0,
+    "run_status": "succeeded",
+    "lease_stopped": true
+  },
+  "runtime": {
+    "node": "v24.19.0",
+    "pnpm": "11.10.0",
+    "jq": "1.8.1",
+    "git": "2.39.5"
+  },
+  "tool_verification": {
+    "corepack_enabled": true,
+    "jq_binary_sha256": "passed"
+  },
+  "reviewed_head": "075bcf0494864fb1d8fd4475d211b5b9f741c173",
+  "baseline": {
+    "head": "765644804756d5f6b1dc1e940d62c50711e398d8",
+    "selected_tests": 3,
+    "passed": 0,
+    "failed": 3,
+    "exit_code": 1,
+    "failures": [
+      "restricted PR review can inspect changed blobs from a genuine blobless clone offline",
+      "missing partial-clone objects are fetched in one bounded network request",
+      "review hydration enforces per-review byte limits without fetching oversized blobs"
+    ]
+  },
+  "result": {
+    "proof_rc": 0,
+    "full_suite_tests": 3312,
+    "full_suite_passed": 3301,
+    "full_suite_failed": 3,
+    "full_suite_skipped": 8,
+    "full_suite_exit_code": 1,
+    "failure_delta_vs_baseline": 0,
+    "container_proof_rc": 0
+  },
+  "setup_attempts": [
+    {
+      "lease_id": "cbx_0c3ea7d6f3e1",
+      "slug": "swift-krill-2dae",
+      "exit_code": 1,
+      "reason": "The baseline behaved as expected, but the harness parser initially retained Node test-duration suffixes when comparing the three titles.",
+      "lease_stopped": true
+    }
+  ]
+}

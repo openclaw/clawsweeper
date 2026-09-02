@@ -1,16 +1,28 @@
-# Repair containment validation TODO
+# Repair containment validation history
+
+- Status: historical; completed July 2026
+- Owner: ClawSweeper maintainers
+- Source of truth: the linked merged PRs, workflow runs, containment tests, and
+  current repair operations reference
+- Last verified: `openclaw/clawsweeper@9c32c14c65b0551b43a10c2086c0031338ae41e7`
+- Update when: only to correct this historical record or point to a superseding
+  active containment reference
 
 ## Purpose
 
-Move Linux repair-containment failures left from live repair jobs into
-deterministic local tests and a non-mutating production-runner smoke check.
-Live workers should confirm a fix after merge, not be the first place that an
-unsupported syscall or runner capability is discovered.
+This historical handoff records how Linux repair-containment failures were moved
+from live repair jobs into deterministic local tests and a non-mutating
+production-runner smoke check. The work completed in July 2026; active
+containment behavior belongs in the implementation, tests, and repair operations
+documentation rather than this record.
 
-This document is a handoff for a follow-up session. It does not authorize live
-apply/close operations or changes to external pull-request branches.
+This document does not authorize live apply/close operations or changes to
+external pull-request branches.
 
 ## Current status
+
+Completed. PRs #596, #598, #599, and #602 are merged. The checked items below
+are retained as decision history, not outstanding work.
 
 - PR [openclaw/clawsweeper#596](https://github.com/openclaw/clawsweeper/pull/596)
   fixed exact-review lease contention handling and added a legacy readonly
@@ -35,10 +47,9 @@ apply/close operations or changes to external pull-request branches.
   - [run 29423502149](https://github.com/openclaw/clawsweeper/actions/runs/29423502149)
   - [run 29423499463](https://github.com/openclaw/clawsweeper/actions/runs/29423499463)
 
-## Two-PR execution plan
+## Completed two-PR execution plan
 
-This file is the durable cross-session handoff. Keep completion boxes and live
-evidence current as each PR progresses.
+This section preserves the executed cross-session plan and its evidence.
 
 ### PR 1: deterministic policy and one compiled preflight
 
@@ -63,11 +74,9 @@ live repair mutations.
 ### PR 2: production-runner smoke workflow
 
 Status: [PR openclaw/clawsweeper#602](https://github.com/openclaw/clawsweeper/pull/602)
-is open from `agent/containment-blacksmith-smoke`. Full local `pnpm run check`
-and autoreview pass with no actionable findings. The repository's existing
-Crabbox hydration workflow does not contain a Blacksmith Testbox action, so
-delegated Testbox validation stops before lease allocation; the pull request's
-own two-sample workflow is the authoritative remote Blacksmith proof for this PR.
+merged as `cd68a14528558cbc26932629c4bce49f314269b0` on 2026-07-15. Its pull-request
+workflow supplied the authoritative two-sample Blacksmith proof because the
+Crabbox hydration workflow did not contain a Blacksmith Testbox action.
 
 Remote proof for code commit `53304c7ce452e6accc2e0edc866c8131d7900c19`:
 [Actions run 29432924949](https://github.com/openclaw/clawsweeper/actions/runs/29432924949)
@@ -118,7 +127,7 @@ syscall 442 and syscall 444 surfaced as the same generic `[Errno 38] Function
 not implemented` message. PR 1 replaced that with validated stage, syscall, and
 errno fields.
 
-## Required work
+## Completed work
 
 ### P0: deterministic fallback tests
 

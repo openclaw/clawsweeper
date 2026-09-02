@@ -1,12 +1,11 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { escapeRegExp, truncateText } from "./clawsweeper-text.js";
+import { querySqliteRows, querySqliteScalar } from "./sqlite-readonly.js";
 import type {
   GitcrawlClusterSource,
   Item,
-  ItemContext,
   ItemKind,
   LocalRelatedTitleEntry,
 } from "./clawsweeper-types.js";
@@ -465,14 +464,11 @@ export function createRelatedContext({
   }
 
   function sqliteScalarBestEffort(dbPath: string, sql: string): string | null {
-    const result = spawnSync("sqlite3", [dbPath, sql], {
-      cwd: ROOT,
-      encoding: "utf8",
-      maxBuffer: 1024 * 1024,
-      timeout: 10_000,
-    });
-    if (result.error || result.status !== 0) return null;
-    return result.stdout.trim();
+    try {
+      return querySqliteScalar(dbPath, sql);
+    } catch {
+      return null;
+    }
   }
 
   function sqliteJsonBestEffort(dbPath: string, sql: string): unknown[] {
@@ -480,16 +476,8 @@ export function createRelatedContext({
   }
 
   function sqliteJsonProbe(dbPath: string, sql: string): unknown[] | null {
-    const result = spawnSync("sqlite3", ["-json", dbPath, sql], {
-      cwd: ROOT,
-      encoding: "utf8",
-      maxBuffer: 16 * 1024 * 1024,
-      timeout: 10_000,
-    });
-    if (result.error || result.status !== 0) return null;
     try {
-      const parsed = JSON.parse(result.stdout.trim() || "[]") as unknown;
-      return Array.isArray(parsed) ? parsed : null;
+      return querySqliteRows(dbPath, sql);
     } catch {
       return null;
     }
@@ -778,36 +766,6 @@ export function createRelatedContext({
     return related.slice(0, RELATED_ITEMS_LIMIT);
   }
 
-  function refreshRelatedItemsContext(item: Item, context: ItemContext): unknown[] {
-    const seen = new Set<number>([item.number]);
-    const related: unknown[] = [];
-    const refreshedExplicit = (context.relatedItems ?? [])
-      .map((candidate) => {
-        const record = asRecord(candidate);
-        if (!record.issue && !record.pullRequest && !record.error && !record.pullRequestError) {
-          return null;
-        }
-        const number = relatedItemNumber(candidate);
-        if (number === null) return null;
-        const mentionedIn = Array.isArray(record.mentionedIn)
-          ? record.mentionedIn.filter((entry): entry is string => typeof entry === "string")
-          : [];
-        return compactRelatedItem(number, mentionedIn);
-      })
-      .filter((entry) => entry !== null);
-    appendUniqueRelatedItems(related, seen, refreshedExplicit);
-    if (related.length < RELATED_ITEMS_LIMIT) {
-      appendUniqueRelatedItems(related, seen, compactLocalRelatedTitleItems(item, seen));
-    }
-    if (related.length < RELATED_ITEMS_LIMIT) {
-      appendUniqueRelatedItems(related, seen, compactRelatedGitcrawlItems(item, seen));
-    }
-    if (related.length < RELATED_ITEMS_LIMIT) {
-      appendUniqueRelatedItems(related, seen, compactRelatedGitHubIssueSearchItems(item, seen));
-    }
-    return related.slice(0, RELATED_ITEMS_LIMIT);
-  }
-
   return {
     compactReferencingMergedPullRequestForTest,
     referencingMergedPullRequestCandidatesForTest,
@@ -817,7 +775,6 @@ export function createRelatedContext({
     isDigitsOnly,
     quoteGitHubSearchTerm,
     referencingMergedPullRequestsForIssue,
-    refreshRelatedItemsContext,
     relatedItemsContext,
     structuralExternalRelationSensitivity,
   };

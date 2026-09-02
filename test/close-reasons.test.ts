@@ -641,6 +641,16 @@ test("implemented-on-main closes require fix provenance", () => {
       summary: "Current main implements the useful part of this older PR.",
       closeComment:
         "Closing this older PR because current main already covers the useful change and the remaining branch diff is obsolete.",
+      fixedPullRequest: {
+        repo: "openclaw/openclaw",
+        number: 900,
+        url: "https://github.com/openclaw/openclaw/pull/900",
+        title: "Current implementation",
+        mergedAt: "2026-04-28T12:00:00Z",
+        sha: "abcdef1234567890",
+        confidence: "high",
+        source: "GitHub linked-issue current closing PR",
+      },
     }),
   );
   assert.equal(mostlyImplementedPr.ok, true);

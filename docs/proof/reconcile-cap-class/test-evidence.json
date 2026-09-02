@@ -1,0 +1,25 @@
+{
+  "red": {
+    "command": "node --test test/exact-review-dead-letter-operator.test.ts",
+    "tests": 59,
+    "passed": 56,
+    "failed": 3,
+    "duration_ms": 18909.20125,
+    "expected_missing_classes": [
+      "parked recovery_cap",
+      "standard recovery_deferred_pressure",
+      "standard recovery_cap"
+    ]
+  },
+  "green": {
+    "command": "node --test test/exact-review-dead-letter-operator.test.ts",
+    "tests": 59,
+    "passed": 59,
+    "failed": 0,
+    "duration_ms": 21872.31075,
+    "preserved_failure_classes": [
+      "http_403",
+      "timeout"
+    ]
+  }
+}

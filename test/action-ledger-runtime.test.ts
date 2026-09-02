@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import childProcess, { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -46,9 +47,9 @@ import {
 } from "../dist/action-ledger-files.js";
 
 function tempRoot(): string {
-  return fs.realpathSync.native(
-    fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-action-runtime-")),
-  );
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-action-runtime-"));
+  after(() => fs.rmSync(root, { recursive: true, force: true }));
+  return fs.realpathSync.native(root);
 }
 
 function trustedChildRoot(root: string, name: string): string {
@@ -2332,7 +2333,7 @@ test("producer locks reclaim fresh dead owners and never evict a live holder by 
   );
   const deadContent = `${actionLedgerJson({
     schema: "clawsweeper.action-ledger-producer-lock",
-    schema_version: 1,
+    schema_version: process.platform === "darwin" ? 2 : 1,
     pid: 2_147_483_647,
     process_incarnation_sha256: "0".repeat(64),
     acquired_at_ms: Date.now(),
@@ -2357,7 +2358,7 @@ test("producer locks reclaim fresh dead owners and never evict a live holder by 
   assert.ok(currentIncarnation);
   const reusedContent = `${actionLedgerJson({
     schema: "clawsweeper.action-ledger-producer-lock",
-    schema_version: 1,
+    schema_version: process.platform === "darwin" ? 2 : 1,
     pid: process.pid,
     process_incarnation_sha256:
       currentIncarnation === "0".repeat(64) ? "1".repeat(64) : "0".repeat(64),
@@ -2393,7 +2394,7 @@ const processIncarnation = processIncarnationIdentitySha256();
 if (!processIncarnation) process.exit(2);
 const content = actionLedgerJson({
   schema: "clawsweeper.action-ledger-producer-lock",
-  schema_version: 1,
+  schema_version: process.platform === "darwin" ? 2 : 1,
   pid: process.pid,
   process_incarnation_sha256: processIncarnation,
   acquired_at_ms: Date.now() - 5 * 60_000 + 75,
@@ -2436,6 +2437,128 @@ release();
   assert.equal(readOutputEvents(outputRoot, paths).length, 2);
 });
 
+for (const kind of ["producer", "import"] as const) {
+  test(
+    `macOS ${kind} locks retain live V1 owners and recover dead V1 owners`,
+    { skip: process.platform === "darwin" ? false : "requires macOS lock identity transition" },
+    () => {
+      const root = tempRoot();
+      const source = tempRoot();
+      const first = recordReviewNumber(root, 61);
+      assert.ok(first);
+      writeActionEventShard(source, shardIdentity(first), [first]);
+      const target = prepareSafeWriteTarget(
+        root,
+        kind === "producer" ? producerLockRelativePath(first) : ".action-ledger-import.lock",
+        `legacy ${kind} lock`,
+      );
+      const currentIncarnation = processIncarnationIdentitySha256();
+      assert.ok(currentIncarnation);
+      const owner = {
+        schema: `clawsweeper.action-ledger-${kind}-lock`,
+        schema_version: 1,
+        pid: process.pid,
+        process_incarnation_sha256:
+          currentIncarnation === "0".repeat(64) ? "1".repeat(64) : "0".repeat(64),
+        acquired_at_ms: Date.now(),
+        nonce: "00000000-0000-4000-8000-000000000006",
+      };
+      const invoke = () =>
+        kind === "producer" ? recordReviewNumber(root, 62) : importActionEventShards(source, root);
+      const liveContent = `${actionLedgerJson(owner)}\n`;
+      const releaseLive = tryAcquireUtf8FileLockNoFollow(target, liveContent);
+      assert.ok(releaseLive);
+      try {
+        const startedAt = Date.now();
+        assert.throws(invoke, /lock timed out after 10000ms/);
+        assert.ok(Date.now() - startedAt >= 10_000);
+        assert.equal(fs.readFileSync(target.path, "utf8"), liveContent);
+      } finally {
+        releaseLive();
+      }
+
+      const deadContent = `${actionLedgerJson({ ...owner, pid: 2_147_483_647 })}\n`;
+      const releaseDead = tryAcquireUtf8FileLockNoFollow(target, deadContent);
+      assert.ok(releaseDead);
+      const deadStartedAt = Date.now();
+      assert.ok(invoke());
+      assert.ok(Date.now() - deadStartedAt < 5_000);
+      assert.doesNotThrow(releaseDead);
+    },
+  );
+
+  test(`${kind} locks reclaim current-version PID reuse and reject unknown versions`, () => {
+    const root = tempRoot();
+    const source = tempRoot();
+    const first = recordReviewNumber(root, 71);
+    assert.ok(first);
+    writeActionEventShard(source, shardIdentity(first), [first]);
+    const target = prepareSafeWriteTarget(
+      root,
+      kind === "producer" ? producerLockRelativePath(first) : ".action-ledger-import.lock",
+      `versioned ${kind} lock`,
+    );
+    const currentIncarnation = processIncarnationIdentitySha256();
+    assert.ok(currentIncarnation);
+    const invoke = () =>
+      kind === "producer" ? recordReviewNumber(root, 72) : importActionEventShards(source, root);
+    for (const version of [0, 3, process.platform === "darwin" ? 2 : 1]) {
+      const content = `${actionLedgerJson({
+        schema: `clawsweeper.action-ledger-${kind}-lock`,
+        schema_version: version,
+        pid: process.pid,
+        process_incarnation_sha256:
+          currentIncarnation === "0".repeat(64) ? "1".repeat(64) : "0".repeat(64),
+        acquired_at_ms: Date.now(),
+        nonce: "00000000-0000-4000-8000-000000000007",
+      })}\n`;
+      const release = tryAcquireUtf8FileLockNoFollow(target, content);
+      assert.ok(release);
+      try {
+        if (version === 0 || version === 3) {
+          assert.throws(invoke, /invalid action event .*lock/);
+          assert.equal(fs.readFileSync(target.path, "utf8"), content);
+        } else {
+          const startedAt = Date.now();
+          assert.ok(invoke());
+          assert.ok(Date.now() - startedAt < 5_000);
+        }
+      } finally {
+        release();
+      }
+    }
+  });
+}
+
+test("producer and import writers serialize the platform's lock identity version", () => {
+  const root = tempRoot();
+  const source = tempRoot();
+  const captured: Array<{ schema: string; schema_version: number }> = [];
+  const originalLinkSync = fs.linkSync;
+  fs.linkSync = ((existing, destination) => {
+    const result = originalLinkSync(existing, destination);
+    if (String(destination).endsWith(".lock")) {
+      captured.push(JSON.parse(fs.readFileSync(destination, "utf8")));
+    }
+    return result;
+  }) as typeof fs.linkSync;
+  try {
+    const first = recordReviewNumber(root, 73);
+    assert.ok(first);
+    writeActionEventShard(source, shardIdentity(first), [first]);
+    assert.equal(importActionEventShards(source, root).created, 1);
+  } finally {
+    fs.linkSync = originalLinkSync;
+  }
+  assert.deepEqual(
+    captured.map(({ schema, schema_version }) => ({ schema, schema_version })),
+    ["producer", "import"].map((kind) => ({
+      schema: `clawsweeper.action-ledger-${kind}-lock`,
+      schema_version: process.platform === "darwin" ? 2 : 1,
+    })),
+  );
+});
+
 test(
   "macOS process identities distinguish processes started within the same second",
   { skip: process.platform === "darwin" ? false : "requires macOS proc_pidinfo" },
@@ -2469,6 +2592,145 @@ process.stdout.write(JSON.stringify({
     const sameSecond = [...bySecond.values()].sort((left, right) => right.length - left.length)[0]!;
     assert.ok(sameSecond.length >= 2);
     assert.equal(new Set(sameSecond.map((sample) => sample.identity)).size, sameSecond.length);
+  },
+);
+
+test(
+  "macOS process identities remain stable when a live holder is stopped",
+  { skip: process.platform === "darwin" ? false : "requires macOS proc_pidinfo" },
+  async () => {
+    const root = tempRoot();
+    const readyPath = path.join(root, "holder-identity");
+    const filesModuleUrl = pathToFileURL(
+      path.join(process.cwd(), "dist", "action-ledger-files.js"),
+    ).href;
+    await withImportRaceChildren(async (own) => {
+      const holder = spawn(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          `import fs from "node:fs";
+const { processIncarnationIdentitySha256 } = await import(${JSON.stringify(filesModuleUrl)});
+fs.writeFileSync(process.argv[1] + ".tmp", JSON.stringify(processIncarnationIdentitySha256()));
+fs.renameSync(process.argv[1] + ".tmp", process.argv[1]);
+Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);`,
+          readyPath,
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+      own(holder);
+      await waitForPath(readyPath);
+      const identity = JSON.parse(fs.readFileSync(readyPath, "utf8"));
+      assert.ok(identity);
+      assert.equal(holder.kill("SIGSTOP"), true);
+      const deadline = Date.now() + 2_000;
+      for (;;) {
+        const result = spawnSync("/bin/ps", ["-p", String(holder.pid), "-o", "state="], {
+          encoding: "utf8",
+          timeout: 2_000,
+        });
+        assert.equal(result.status, 0, result.stderr);
+        if (result.stdout.trim().startsWith("T")) break;
+        assert.ok(Date.now() < deadline, "holder did not stop");
+      }
+      assert.equal(processIncarnationIdentitySha256(holder.pid, { fresh: true }), identity);
+      assert.doesNotThrow(() => process.kill(holder.pid!, 0));
+    });
+  },
+);
+
+test(
+  "macOS process identity query failures remain unknown and recover on the next query",
+  { skip: process.platform === "darwin" ? false : "requires macOS proc_pidinfo" },
+  () => {
+    const identity = processIncarnationIdentitySha256(process.pid, { fresh: true });
+    assert.ok(identity);
+    const originalSpawnSync = childProcess.spawnSync;
+    for (const failedCommand of ["/usr/bin/python3", "/usr/sbin/sysctl"]) {
+      let injected = false;
+      childProcess.spawnSync = ((command, ...args) => {
+        if (command === failedCommand) {
+          injected = true;
+          return { status: 1, stdout: "", stderr: "" };
+        }
+        return originalSpawnSync(command, ...args);
+      }) as typeof spawnSync;
+      syncBuiltinESMExports();
+      try {
+        assert.equal(processIncarnationIdentitySha256(process.pid, { fresh: true }), null);
+        assert.equal(injected, true);
+      } finally {
+        childProcess.spawnSync = originalSpawnSync;
+        syncBuiltinESMExports();
+      }
+      assert.equal(processIncarnationIdentitySha256(), identity);
+    }
+  },
+);
+
+test(
+  "macOS process identities ignore the observer timezone",
+  { skip: process.platform === "darwin" ? false : "requires macOS proc_pidinfo" },
+  () => {
+    const priorTimezone = process.env.TZ;
+    try {
+      process.env.TZ = "UTC";
+      const utcIdentity = processIncarnationIdentitySha256(process.pid, { fresh: true });
+      assert.ok(utcIdentity);
+      process.env.TZ = "America/Los_Angeles";
+      assert.equal(
+        processIncarnationIdentitySha256(process.pid, { fresh: true }),
+        utcIdentity,
+        "observer timezone must not change the same live process incarnation",
+      );
+    } finally {
+      if (priorTimezone === undefined) delete process.env.TZ;
+      else process.env.TZ = priorTimezone;
+      processIncarnationIdentitySha256(process.pid, { fresh: true });
+    }
+  },
+);
+
+test(
+  "macOS process identities reject malformed boot timestamps and recover",
+  { skip: process.platform === "darwin" ? false : "requires macOS proc_pidinfo" },
+  () => {
+    const identity = processIncarnationIdentitySha256(process.pid, { fresh: true });
+    assert.ok(identity);
+    const originalSpawnSync = childProcess.spawnSync;
+    for (const bootTime of [
+      "not a boot timestamp",
+      "{ sec = 123 }",
+      "{ sec = 0, usec = 0 }",
+      "{ sec = 9007199254740992, usec = 0 }",
+      "{ sec = 123, usec = -1 }",
+      "{ sec = 123, usec = 1000000 }",
+      "{ sec = 123.5, usec = 0 }",
+    ]) {
+      let injected = false;
+      childProcess.spawnSync = ((command, ...args) => {
+        if (command === "/usr/sbin/sysctl") {
+          injected = true;
+          return { status: 0, stdout: bootTime, stderr: "" };
+        }
+        return originalSpawnSync(command, ...args);
+      }) as typeof spawnSync;
+      syncBuiltinESMExports();
+      try {
+        assert.equal(
+          processIncarnationIdentitySha256(process.pid, { fresh: true }),
+          null,
+          bootTime,
+        );
+        assert.equal(injected, true);
+      } finally {
+        childProcess.spawnSync = originalSpawnSync;
+        syncBuiltinESMExports();
+        processIncarnationIdentitySha256(process.pid, { fresh: true });
+      }
+      assert.equal(processIncarnationIdentitySha256(), identity);
+    }
   },
 );
 
@@ -2924,46 +3186,54 @@ test("CrabFleet projection admission is fair across spool roots", async () => {
   const firstWaveResolvers: Array<(response: Response) => void> = [];
   const startOrder: string[] = [];
   let saturatedStarted = 0;
+  let releaseFirstWave = false;
   const saturatedFetch = (() => {
     saturatedStarted += 1;
     startOrder.push("saturated");
-    if (saturatedStarted <= CRABFLEET_PROJECTION_LIMITS.maxConcurrent) {
+    if (saturatedStarted <= CRABFLEET_PROJECTION_LIMITS.maxConcurrent && !releaseFirstWave) {
       return new Promise<Response>((resolve) => firstWaveResolvers.push(resolve));
     }
     return Promise.resolve(new Response(null, { status: 204 }));
   }) as typeof fetch;
   const saturatedTotal =
     CRABFLEET_PROJECTION_LIMITS.maxConcurrent + CRABFLEET_PROJECTION_LIMITS.maxQueued;
-  for (let index = 0; index < saturatedTotal; index += 1) {
-    assert.ok(recordReviewNumber(saturatedRoot, 100 + index, env, saturatedFetch));
-  }
-  assert.ok(
-    recordReviewNumber(independentRoot, 999, env, (async () => {
-      startOrder.push("independent");
-      return new Response(null, { status: 204 });
-    }) as typeof fetch),
-  );
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(startOrder, Array(CRABFLEET_PROJECTION_LIMITS.maxConcurrent).fill("saturated"));
-
-  firstWaveResolvers.shift()!(new Response(null, { status: 204 }));
-  const fairnessDeadline = Date.now() + 500;
-  while (!startOrder.includes("independent")) {
-    if (Date.now() >= fairnessDeadline) {
-      throw new Error("independent root did not receive the next projection slot");
+  try {
+    for (let index = 0; index < saturatedTotal; index += 1) {
+      assert.ok(recordReviewNumber(saturatedRoot, 100 + index, env, saturatedFetch));
     }
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  assert.deepEqual(startOrder.slice(0, 5), [
-    "saturated",
-    "saturated",
-    "saturated",
-    "saturated",
-    "independent",
-  ]);
+    assert.ok(
+      recordReviewNumber(independentRoot, 999, env, (async () => {
+        startOrder.push("independent");
+        return new Response(null, { status: 204 });
+      }) as typeof fetch),
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(
+      startOrder,
+      Array(CRABFLEET_PROJECTION_LIMITS.maxConcurrent).fill("saturated"),
+    );
 
-  for (const resolve of firstWaveResolvers) resolve(new Response(null, { status: 204 }));
-  await flushPendingCrabFleetPosts();
+    firstWaveResolvers.shift()!(new Response(null, { status: 204 }));
+    const fairnessDeadline = Date.now() + 500;
+    while (!startOrder.includes("independent")) {
+      if (Date.now() >= fairnessDeadline) {
+        throw new Error("independent root did not receive the next projection slot");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.deepEqual(startOrder.slice(0, 5), [
+      "saturated",
+      "saturated",
+      "saturated",
+      "saturated",
+      "independent",
+    ]);
+  } finally {
+    // Release held slots on failure so later tests do not inherit a starved pool.
+    releaseFirstWave = true;
+    for (const resolve of firstWaveResolvers) resolve(new Response(null, { status: 204 }));
+    await flushPendingCrabFleetPosts();
+  }
   assert.equal(startOrder.filter((entry) => entry === "saturated").length, saturatedTotal);
 });
 
@@ -4168,6 +4438,162 @@ test("state shard imports retain global event identity and causal acyclicity", (
   assert.equal(fs.existsSync(path.join(cycleDestination, secondShard.relativePath)), false);
 });
 
+async function withImportRaceChildren(
+  run: (own: (child: ChildProcess) => ReturnType<typeof childResult>) => Promise<void>,
+): Promise<void> {
+  const children: { child: ChildProcess; closed: Promise<number | null> }[] = [];
+  let failure: { error: unknown } | undefined;
+  let cleanupErrors: unknown[] = [];
+  try {
+    await run((child) => {
+      const closed = new Promise<number | null>((resolve) => child.once("close", resolve));
+      children.push({ child, closed });
+      let error: Error | undefined;
+      child.on("error", (cause) => {
+        error ??= cause;
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout?.setEncoding("utf8");
+      child.stderr?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk) => {
+        stdout += String(chunk);
+      });
+      child.stderr?.on("data", (chunk) => {
+        stderr += String(chunk);
+      });
+      const result = closed.then((code) => {
+        if (error) throw error;
+        return { code, stdout, stderr };
+      });
+      // A readiness failure may prevent the caller from ever awaiting this result.
+      void result.catch(() => {});
+      return result;
+    });
+  } catch (error) {
+    failure = { error };
+  } finally {
+    const cleanup = await Promise.allSettled(
+      children.map(async ({ child, closed }) => {
+        // These disposable fixtures can be blocked in Atomics.wait indefinitely.
+        if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGKILL");
+        }
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          await Promise.race([
+            closed,
+            new Promise<never>((_resolve, reject) => {
+              timer = setTimeout(() => reject(new Error("import race child did not close")), 2_000);
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+      }),
+    );
+    cleanupErrors = cleanup.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    );
+  }
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError(
+      [...(failure ? [failure.error] : []), ...cleanupErrors],
+      "import race child cleanup failed",
+      failure ? { cause: failure.error } : undefined,
+    );
+  }
+  if (failure) throw failure.error;
+}
+
+test("import race child ownership closes held children on pre-release failures", async () => {
+  for (const stage of ["readiness", "second-spawn"]) {
+    const root = tempRoot();
+    const children: ChildProcess[] = [];
+    const closed: ChildProcess[] = [];
+    const releasePath = path.join(root, "release");
+    const failure = new Error("injected failure after second spawn");
+    await assert.rejects(
+      withImportRaceChildren(async (own) => {
+        const startHeldChild = (readyPath: string) => {
+          const child = spawn(
+            process.execPath,
+            [
+              "--input-type=module",
+              "-e",
+              `import fs from "node:fs";
+process.on("SIGTERM", () => {});
+fs.writeFileSync(process.argv[1], "ready");
+Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);`,
+              readyPath,
+            ],
+            { stdio: ["ignore", "pipe", "pipe"] },
+          );
+          own(child);
+          children.push(child);
+          child.once("close", () => closed.push(child));
+        };
+        const readyPath = path.join(root, "ready");
+        startHeldChild(readyPath);
+        await waitForPath(readyPath);
+        assert.equal(children[0].exitCode, null);
+        assert.equal(children[0].signalCode, null);
+        if (stage === "readiness") {
+          // Reject readiness deterministically while the first fixture is still held.
+          await waitForPath(path.join(root, "unobserved-ready"));
+        } else {
+          startHeldChild(path.join(root, "second-ready"));
+          throw failure;
+        }
+        fs.writeFileSync(releasePath, "release");
+      }),
+      (error) => {
+        if (stage === "readiness") {
+          assert.equal(
+            String(error),
+            `Error: timed out waiting for ${path.join(root, "unobserved-ready")}`,
+          );
+        } else {
+          assert.equal(error, failure);
+        }
+        return true;
+      },
+    );
+    assert.equal(fs.existsSync(releasePath), false);
+    assert.equal(children.length, stage === "readiness" ? 1 : 2);
+    assert.deepEqual(new Set(closed), new Set(children));
+    for (const child of children) {
+      assert.equal(child.signalCode, "SIGKILL");
+      assert.equal(child.stdout?.closed, true);
+      assert.equal(child.stderr?.closed, true);
+    }
+  }
+});
+
+test("import race child ownership observes spawn rejection before awaiting results", async () => {
+  const root = tempRoot();
+  let child: ChildProcess | undefined;
+  const failure = new Error("injected failure after spawn rejection");
+  await assert.rejects(
+    withImportRaceChildren(async (own) => {
+      child = spawn(process.execPath, ["-e", ""], {
+        cwd: path.join(root, "missing"),
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      const result = own(child);
+      await new Promise<void>((resolve) => child!.once("close", () => resolve()));
+      // Cross an event-loop turn before consuming the already rejected result.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await assert.rejects(result, { code: "ENOENT" });
+      throw failure;
+    }),
+    (error) => error === failure,
+  );
+  assert.equal(child?.pid, undefined);
+  assert.equal(child?.stdout?.closed, true);
+  assert.equal(child?.stderr?.closed, true);
+});
+
 test("destination import transactions prevent concurrent opposing parent edges", async () => {
   const root = tempRoot();
   const base = recordReview(root);
@@ -4220,28 +4646,40 @@ importActionEventShards(process.argv[1], process.argv[2]);`;
     moduleUrl,
   )});
 importActionEventShards(process.argv[1], process.argv[2]);`;
-  const firstChild = spawn(
-    process.execPath,
-    ["--input-type=module", "-e", firstScript, firstSource, destination, readyPath, releasePath],
-    { stdio: ["ignore", "pipe", "pipe"] },
-  );
-  const firstDone = childResult(firstChild);
-  await waitForPath(readyPath);
-  const secondChild = spawn(
-    process.execPath,
-    ["--input-type=module", "-e", importScript, secondSource, destination],
-    { stdio: ["ignore", "pipe", "pipe"] },
-  );
-  const secondDone = childResult(secondChild);
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  fs.writeFileSync(releasePath, "release\n");
+  await withImportRaceChildren(async (own) => {
+    const firstDone = own(
+      spawn(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          firstScript,
+          firstSource,
+          destination,
+          readyPath,
+          releasePath,
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      ),
+    );
+    await waitForPath(readyPath);
+    const secondDone = own(
+      spawn(
+        process.execPath,
+        ["--input-type=module", "-e", importScript, secondSource, destination],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    fs.writeFileSync(releasePath, "release\n");
 
-  const [firstResult, secondResult] = await Promise.all([firstDone, secondDone]);
-  assert.equal(firstResult.code, 0, firstResult.stderr || firstResult.stdout);
-  assert.notEqual(secondResult.code, 0, secondResult.stdout);
-  assert.match(secondResult.stderr, /causal cycle/);
-  assert.equal(fs.existsSync(path.join(destination, firstShard.relativePath)), true);
-  assert.equal(fs.existsSync(path.join(destination, secondShard.relativePath)), false);
+    const [firstResult, secondResult] = await Promise.all([firstDone, secondDone]);
+    assert.equal(firstResult.code, 0, firstResult.stderr || firstResult.stdout);
+    assert.notEqual(secondResult.code, 0, secondResult.stdout);
+    assert.match(secondResult.stderr, /causal cycle/);
+    assert.equal(fs.existsSync(path.join(destination, firstShard.relativePath)), true);
+    assert.equal(fs.existsSync(path.join(destination, secondShard.relativePath)), false);
+  });
 });
 
 test("state shard imports reject noncanonical trusted root spellings", async () => {

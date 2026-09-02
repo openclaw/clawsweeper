@@ -1,9 +1,10 @@
-import type { ReviewTriggerLane, ReviewTriggerOrigin } from "./review-telemetry.ts";
-
 const RUN_OUTCOMES = new Set(["success", "failure", "cancelled", "skipped"]);
 const TRIGGER_LANES = new Set(["exact_event", "hot_intake", "normal_backfill", "recovery"]);
 const TRIGGER_ORIGINS = new Set(["webhook", "command", "schedule", "manual", "system"]);
 const JOB_OUTCOMES = new Set(["success", "failure", "cancelled", "skipped"]);
+
+export type ReviewTriggerLane = "exact_event" | "hot_intake" | "normal_backfill" | "recovery";
+export type ReviewTriggerOrigin = "webhook" | "command" | "schedule" | "manual" | "system";
 
 export type DurableReviewRunTelemetry = {
   run_id: string;

@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-08-13T04:12:29Z",
+  "tested_source_head": "080904359d54c6e2cdf9b0e314bf44471c09d196",
+  "provider": "local-container",
+  "lease_id": "cbx_e7a1213fcc2c",
+  "slug": "silver-barnacle-f1bf",
+  "container_runtime": "docker",
+  "image": "node:24-bookworm",
+  "machine_type": "node_24-bookworm",
+  "command": "/Users/steipete/Projects/crabbox/bin/crabbox run --provider local-container --local-container-image node:24-bookworm --no-hydrate --preflight --timing-json --capture-stdout docs/proof/tuple-protocol-rootcause/container-transcript.txt --capture-stderr docs/proof/tuple-protocol-rootcause/container-stderr.txt --script docs/proof/tuple-protocol-rootcause/run-proof.sh -- 080904359d54c6e2cdf9b0e314bf44471c09d196",
+  "crabbox_exit_code": 1,
+  "lease_stopped": true,
+  "sync_ms": 2204,
+  "command_ms": 28243,
+  "total_ms": 30468,
+  "node_version": "v24.19.0",
+  "pnpm_version": "11.10.0",
+  "focused_behavior": {
+    "status": "pass",
+    "tests": 176,
+    "passed": 176,
+    "failed": 0
+  },
+  "container_full_gate": {
+    "status": "blocked_by_bounded_sync",
+    "detail": "check:docs required 36 historical proof artifact files intentionally omitted by Crabbox raw sync; no changed-surface test failed"
+  },
+  "host_full_gate": {
+    "command": "pnpm run check",
+    "exit_code": 0,
+    "tests": 3405,
+    "passed": 3396,
+    "failed": 0,
+    "skipped": 9
+  },
+  "autoreview": {
+    "pre_commit": "autoreview --mode local --parallel-tests 'pnpm run check' --stream-engine-output",
+    "committed_branch": "autoreview --mode branch --base origin/main --stream-engine-output",
+    "accepted_or_actionable_findings": 0,
+    "result": "autoreview clean: no accepted/actionable findings reported"
+  },
+  "behavior_report": "docs/proof/tuple-protocol-rootcause/behavior-report.json",
+  "content_sha256": {
+    "dashboard/exact-review-queue.ts": "009ef203ca7746ebd4db20a251e28ef5403253413b1bd5c87474e8b0b94a9470",
+    "scripts/exact-review-dead-letter-operator.mjs": "4f6a38c9cef0b756d0432205ae3cab7c8094e1d8df731c560b5c1cb70fbbf72f",
+    "test/dashboard-worker-publication-lifecycle.test.ts": "0bcfbd1d1e54e3d61a583d0ee3fe11e25cfe0148a7bfc90adfd0bc6a318b13a4",
+    "test/exact-review-dead-letter-operator.test.ts": "03cc0ee93aee2e8e4936fe6a8394b4250bbb34e09626315011b5ea2319c092ba",
+    "docs/proof/tuple-protocol-rootcause/README.md": "08b7ec94e887e8387c0619f5007800cc642a4975e5282e126865accc4e740066",
+    "docs/proof/tuple-protocol-rootcause/behavior-contract.md": "418c90f103c83863a52c58d85a8594b88587998110d6eb64104301240083c5bb",
+    "docs/proof/tuple-protocol-rootcause/red-green.md": "a0e1988edec7d9e4e4732c7ca2d3ee448f3b515a93608d5a596781ab47cadb5a",
+    "docs/proof/tuple-protocol-rootcause/run-proof.sh": "d765ea7a50eec19072846c6e672f63a91ab95647c37c337be8a22dc8eb81b22d"
+  },
+  "transcript_sha256": "9697e0f2a93cbea018222e72f46604c477e57459edbc9d9c0829cae0acf55837",
+  "stderr_sha256": "6ca8d1dac320ab4086e9b94f35c744f12a819da851b6f4e83155f1d045bc8378",
+  "secret_scan": {
+    "tool": "trufflehog 3.96.0",
+    "command": "trufflehog filesystem --no-update --results=verified,unknown --fail --fail-on-scan-errors docs/proof/tuple-protocol-rootcause/container-transcript.txt docs/proof/tuple-protocol-rootcause/container-stderr.txt",
+    "exit_code": 0,
+    "chunks": 4,
+    "bytes": 32995,
+    "verified_secrets": 0,
+    "unknown_secrets": 0
+  },
+  "cleanup": {
+    "owned_lease_reported_stopped": true,
+    "owned_lease_absent_from_local_container_list": true,
+    "unrelated_preexisting_exited_lease_untouched": true,
+    "failed_capture_state_moved_to_private_tmp": true
+  }
+}

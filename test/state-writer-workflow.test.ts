@@ -31,7 +31,7 @@ test("every state hydration uses the canonical Worker with an explicit git-state
     }
   }
 
-  assert.equal(setups.length, 20, "setup-state site count is an audited invariant");
+  assert.equal(setups.length, 21, "setup-state site count is an audited invariant");
   for (const { site, step } of setups) {
     assert.equal(step.with?.["records-url"], workerUrl, site);
     assert.equal(step.with?.["records-secret"], workerSecret, site);
@@ -45,6 +45,7 @@ test("every state hydration uses the canonical Worker with an explicit git-state
       .map(({ site }) => site),
     [
       ".github/workflows/exact-review-batch-publish.yml:publish",
+      ".github/workflows/live-proof-maintenance.yml:retract",
       ".github/workflows/sweep.yml:event-review-apply",
       ".github/workflows/sweep.yml:event-review-publish",
       ".github/workflows/sweep.yml:target-fanout",
@@ -68,6 +69,7 @@ test("per-target state hydration is slug-scoped while fleet lanes retain discove
       .map(({ site }) => site),
     [
       ".github/workflows/exact-review-batch-publish.yml:publish",
+      ".github/workflows/live-proof-maintenance.yml:retract",
       ".github/workflows/repair-cluster-intake.yml:intake",
       ".github/workflows/repair-cluster-worker.yml:cluster",
       ".github/workflows/repair-cluster-worker.yml:execute",
@@ -170,7 +172,7 @@ test("all remaining git publishers join setup-state and receive a step-scoped co
       }
     }
   }
-  assert.equal(publishers, 20, "git publisher count is an audited invariant");
+  assert.equal(publishers, 21, "git publisher count is an audited invariant");
 });
 
 test("post-side-effect git bookkeeping is non-fatal while durability fences stay strict", () => {
@@ -246,6 +248,7 @@ test("retired migration and Git recovery surfaces stay deleted", () => {
     ".github/workflows/backfill-worker-records.yml",
     ".github/workflows/migrate-state-blobs.yml",
     ".github/workflows/commit-review.yml",
+    ".github/workflows/live-proof.yml",
     ".github/workflows/deploy-crawl-remote.yml",
     ".github/workflows/proof-nudges.yml",
     ".github/workflows/repair-commit-finding-intake.yml",
@@ -256,6 +259,8 @@ test("retired migration and Git recovery surfaces stay deleted", () => {
     "src/repair/state-materializer.ts",
     "src/repair/state-compaction.ts",
     "src/repair/recovery-advisor.ts",
+    "src/repair/live-proof-dispatch-candidates.ts",
+    "src/live-proof/publication.ts",
   ]) {
     assert.throws(() => readFileSync(retired, "utf8"));
   }

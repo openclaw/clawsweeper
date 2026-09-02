@@ -1,12 +1,14 @@
 /**
  * R2-backed state blob store for the Cloudflare-canonical migration (phase 3).
  *
- * Serves the two remaining git-state trees from the shared STATE_SNAPSHOTS
- * bucket under distinct key prefixes:
+ * Serves the remaining git-state trees and exact-review artifact cache from
+ * the shared STATE_SNAPSHOTS bucket under distinct key prefixes:
  *   - `ledger/v1/...`  — immutable append-only action-ledger shards. Writes are
  *     create-only: overwriting an existing key with a different content digest
  *     is rejected; a same-digest PUT is idempotent.
  *   - `assets/...`     — mutable published assets; overwrite is allowed.
+ *   - `artifacts/exact-review/v1/<sha256>` — immutable, content-addressed
+ *     exact-review bundle archives. Queue receipts fence their reuse.
  *
  * Record snapshots produced by the phase-2 code live under
  * `<repoSlug>/<revision>/...` keys and never collide with these prefixes.
@@ -15,8 +17,6 @@
  * bounded ranges (mirroring the record-snapshot chunk endpoint) and large
  * writes stream through R2 multipart uploads with fixed-size base64 parts.
  */
-
-import { sanitizedServerError } from "./error-safety.ts";
 
 export const STATE_BLOB_OPERATIONS = [
   "put",
@@ -36,8 +36,9 @@ export const STATE_BLOB_MULTIPART_PART_BYTES = 8 * 1024 * 1024;
 export const STATE_BLOB_MAX_BYTES = 1024 * 1024 * 1024;
 export const STATE_BLOB_LIST_MAX_LIMIT = 1000;
 
-const BLOB_PATH_PREFIXES = ["ledger/v1/", "assets/"] as const;
-const IMMUTABLE_PATH_PREFIXES = ["ledger/"] as const;
+const BLOB_PATH_PREFIXES = ["ledger/v1/", "assets/", "artifacts/exact-review/v1/"] as const;
+const IMMUTABLE_PATH_PREFIXES = ["ledger/", "artifacts/exact-review/"] as const;
+const EXACT_REVIEW_ARTIFACT_PATH_PATTERN = /^artifacts\/exact-review\/v1\/[0-9a-f]{64}$/;
 const BLOB_PATH_SEGMENT_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._+@-]{0,254}$/;
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 
@@ -91,6 +92,12 @@ type BlobR2Bucket = {
 export function isValidStateBlobPath(value: unknown): value is string {
   if (typeof value !== "string" || value.length > 900) return false;
   if (!BLOB_PATH_PREFIXES.some((prefix) => value.startsWith(prefix))) return false;
+  if (
+    value.startsWith("artifacts/exact-review/") &&
+    !EXACT_REVIEW_ARTIFACT_PATH_PATTERN.test(value)
+  ) {
+    return false;
+  }
   return value.split("/").every((segment) => BLOB_PATH_SEGMENT_PATTERN.test(segment));
 }
 
@@ -133,7 +140,7 @@ export async function handleStateBlobRequest(
     return blobJson({ error: "unknown_blob_operation" }, 404);
   } catch (error) {
     if (error instanceof BlobRequestError) return blobJson(error.body, error.status);
-    console.error(`state blob request failed: ${sanitizedServerError(error)}`);
+    console.error("state_blob_request_failed");
     return blobJson({ error: "blob_store_unavailable" }, 503);
   }
 }
@@ -153,6 +160,7 @@ class BlobRequestError extends Error {
 async function putBlob(bucket: BlobR2Bucket, body: Record<string, unknown>) {
   const path = requireBlobPath(body.path);
   const digest = requireBlobDigest(body.digest);
+  requireArtifactPathDigest(path, digest);
   const content = decodeBase64(body.contentBase64);
   if (!content) throw new BlobRequestError(400, { error: "invalid_blob_content" });
   if (content.byteLength > STATE_BLOB_PUT_MAX_BYTES) {
@@ -253,6 +261,7 @@ async function listBlobs(bucket: BlobR2Bucket, body: Record<string, unknown>) {
 async function startMultipart(bucket: BlobR2Bucket, body: Record<string, unknown>) {
   const path = requireBlobPath(body.path);
   const digest = requireBlobDigest(body.digest);
+  requireArtifactPathDigest(path, digest);
   const bytes = Number(body.bytes);
   if (!Number.isSafeInteger(bytes) || bytes < 1 || bytes > STATE_BLOB_MAX_BYTES) {
     throw new BlobRequestError(400, {
@@ -315,6 +324,7 @@ async function completeMultipart(bucket: BlobR2Bucket, body: Record<string, unkn
   const path = requireBlobPath(body.path);
   const uploadId = requireUploadId(body.uploadId);
   const digest = requireBlobDigest(body.digest);
+  requireArtifactPathDigest(path, digest);
   const bytes = Number(body.bytes);
   if (!Number.isSafeInteger(bytes) || bytes < 1 || bytes > STATE_BLOB_MAX_BYTES) {
     throw new BlobRequestError(400, {
@@ -372,7 +382,9 @@ function existingConflict(
   if (existingDigest === digest && existing.size === bytes) return "unchanged";
   if (!isImmutableStateBlobPath(path)) return null;
   return new BlobRequestError(409, {
-    error: "ledger_blob_immutable_conflict",
+    error: path.startsWith("artifacts/")
+      ? "artifact_blob_immutable_conflict"
+      : "ledger_blob_immutable_conflict",
     path,
     existingBytes: existing.size,
     existingDigest,
@@ -400,6 +412,15 @@ function requireBlobDigest(value: unknown): string {
   return value;
 }
 
+function requireArtifactPathDigest(path: string, digest: string) {
+  if (
+    path.startsWith("artifacts/exact-review/") &&
+    path !== `artifacts/exact-review/v1/${digest}`
+  ) {
+    throw new BlobRequestError(400, { error: "artifact_blob_key_digest_mismatch" });
+  }
+}
+
 function requireUploadId(value: unknown): string {
   if (typeof value !== "string" || !value || value.length > 4096) {
     throw new BlobRequestError(400, { error: "invalid_blob_upload" });
@@ -421,8 +442,8 @@ function multipartParts(value: unknown): BlobR2UploadedPart[] | null {
   return parts;
 }
 
-function invalidUpload(error: unknown) {
-  console.warn(`state blob upload rejected: ${sanitizedServerError(error)}`);
+function invalidUpload(_error: unknown) {
+  console.warn("state_blob_upload_rejected");
   return new BlobRequestError(400, { error: "invalid_blob_upload" });
 }
 

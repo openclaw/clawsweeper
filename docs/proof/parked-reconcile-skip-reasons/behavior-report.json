@@ -1,0 +1,76 @@
+{
+  "overall_behavior": "satisfies_contract",
+  "overall_confidence": 0.94,
+  "target": {
+    "type": "CLI",
+    "access": "read-only parked reconciliation over the production run 31449984643 artifact"
+  },
+  "checks": [
+    {
+      "contract_clause": "User task 1: read-only reconciliation",
+      "status": "pass",
+      "severity": null,
+      "evidence": "The operator exited 0 with dry_run=true and no --execute flag; the loopback inventory transport exposed no mutation endpoints.",
+      "reproduction_steps": [
+        "Replay the immutable production parked-reviews artifact as the signed-list wire payload",
+        "Set GITHUB_TOKEN from gh auth token",
+        "Run reconcile-parked without --execute"
+      ],
+      "confidence": 0.99
+    },
+    {
+      "contract_clause": "User task 2: target and failure classification",
+      "status": "pass",
+      "severity": null,
+      "evidence": "The exact summary accounts for 20 inspected targets as 1 terminal and 19 open; skip_reasons and skip_samples are empty because no personal-token inspection failed.",
+      "reproduction_steps": [
+        "Read read-only-summary.json",
+        "Verify terminal_targets + open_targets equals inspected_targets",
+        "Verify skip_reasons and skip_samples are empty"
+      ],
+      "confidence": 0.98
+    },
+    {
+      "contract_clause": "Bounded sanitized failure diagnostics",
+      "status": "pass",
+      "severity": null,
+      "evidence": "Focused operator fixtures passed for per-target standard-reconcile attribution, reason classes, three-sample bounding, credential/control-byte sanitization, and 240-character truncation.",
+      "reproduction_steps": [
+        "Run the focused exact-review dead-letter operator tests",
+        "Observe zero failures"
+      ],
+      "confidence": 0.9
+    },
+    {
+      "contract_clause": "User task 3: real HTTP error-path attribution",
+      "status": "pass",
+      "severity": null,
+      "evidence": "A current-source operator process using GITHUB_API_URL against a real 127.0.0.1 listener reported http_403=20 for the all-403 scenario and two open targets plus http_403=18 for the mixed scenario.",
+      "reproduction_steps": [
+        "Download artifact 9085971968 from run 31449984643",
+        "Run run-error-trace.mjs with its parked-reviews.json path",
+        "Inspect all-403-summary.json, mixed-summary.json, and after-fix-error-trace.jsonl"
+      ],
+      "confidence": 0.99
+    }
+  ],
+  "anti_cheat_probes": [
+    {
+      "probe": "Compare the same 20-row inventory under workflow and personal GitHub tokens",
+      "result": "Workflow evidence skipped 20 of 20; the personal-token replay classified all 20 with no inspection failures."
+    },
+    {
+      "probe": "Account for every personal-token target",
+      "result": "1 terminal + 19 open = 20 inspected; 5 recovery previews + 14 budget skips = 19 open."
+    },
+    {
+      "probe": "Exercise invalid and sensitive failure text",
+      "result": "Focused fixtures passed for HTTP classes, credentials, control bytes, whitespace collapse, sample count, and maximum length."
+    },
+    {
+      "probe": "Mix successful and failed real HTTP responses for one production inventory",
+      "result": "Two unique targets remained open and recoverable while only the remaining 18 contributed to skip_reasons.http_403."
+    }
+  ],
+  "blockers": []
+}

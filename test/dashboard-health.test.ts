@@ -14,7 +14,6 @@ function healthySnapshot(): Record<string, unknown> {
           dead_letters: { open: 0 },
         },
       },
-      review_telemetry_health: { status: "healthy" },
     },
     operational_health: { status: "healthy" },
     health: { unresolved_failures: 0 },
@@ -60,27 +59,21 @@ test("dashboard health maps critical and stalled signals to red", () => {
   const snapshot = healthySnapshot();
   const queue = snapshot.exact_review_queue as Record<string, any>;
   queue.lanes.publication.health.status = "critical";
-  queue.review_telemetry_health.status = "critical";
   assert.deepEqual(summarizeDashboardHealth(snapshot), {
     conclusion: "needs_attention",
     severity: "red",
-    reasons: ["publication_critical", "orphan_review_status"],
+    reasons: ["publication_critical"],
   });
 });
 
 test("dashboard health fails amber when a required signal is absent", () => {
   const snapshot = healthySnapshot();
   const queue = snapshot.exact_review_queue as Record<string, any>;
-  delete queue.review_telemetry_health;
   delete queue.lanes.publication.health;
   delete snapshot.operational_health;
   assert.deepEqual(summarizeDashboardHealth(snapshot), {
     conclusion: "needs_attention",
     severity: "amber",
-    reasons: [
-      "publication_health_unavailable",
-      "review_telemetry_unavailable",
-      "workflow_execution_degraded",
-    ],
+    reasons: ["publication_health_unavailable", "workflow_execution_degraded"],
   });
 });

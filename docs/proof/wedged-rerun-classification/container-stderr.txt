@@ -1,0 +1,35 @@
+Note: switching to '0b677cbcca1651b7ea73f83f4f12a0fbf56589c9'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+debconf: delaying package configuration, since apt-utils is not installed
+$ pnpm run build && pnpm run build:repair && pnpm run build:dashboard
+$ tsc -p tsconfig.json
+$ tsc -p tsconfig.repair.json
+$ tsc -p tsconfig.dashboard.json
+$ node scripts/check-dashboard-strict.mjs
+$ pnpm run check:parallel
+$ pnpm run check:static && pnpm run build:all && pnpm run lint && pnpm run test:coverage:changed:no-build && pnpm run test:coverage:no-build
+$ pnpm run "/^(check:active-surface|check:dashboard-queue-boundary|check:dashboard-strict|check:docs|check:limits|format:check)$/"
+$ pnpm run build && pnpm run build:repair && pnpm run build:dashboard
+$ tsc -p tsconfig.json
+$ tsc -p tsconfig.repair.json
+$ tsc -p tsconfig.dashboard.json
+$ pnpm run "/^lint:.*/"
+$ node scripts/run-node-tests.mjs fix-prompt-builder -- --experimental-test-coverage --test-coverage-include='dist/repair/fix-prompt-builder.js' --test-coverage-lines=85 --test-coverage-branches=85 --test-coverage-functions=85
+[run-node-tests] target=fix-prompt-builder concurrency=16 files=1
+$ node scripts/run-node-tests.mjs all -- --experimental-test-coverage --test-coverage-include='dist/**/*.js' --test-coverage-exclude='dist/repair/*.test.js' --test-coverage-lines=49 --test-coverage-branches=66 --test-coverage-functions=57
+[run-node-tests] target=all concurrency=16 files=265

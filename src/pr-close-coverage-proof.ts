@@ -1,7 +1,7 @@
 import { runAgentProcess } from "./agent-runner.js";
 import { codexLoginConfig } from "./codex-env.js";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { codexEnv } from "./codex-env.js";
 import { safeOutputTail, truncateText } from "./clawsweeper-text.js";
@@ -198,27 +198,10 @@ export function formatPrCloseCoverageProofDetailList(values: readonly string[]):
   return values.map((value) => `  - ${value}`).join("\n");
 }
 
-export function prCloseCoverageProofStateText(
-  covering: Pick<PrCloseCoverageProofPullRequestView, "mergedAt">,
-): string {
-  return covering.mergedAt ? `merged at ${covering.mergedAt}` : "still open as the covering PR";
-}
-
 export function prCloseCoverageProofCandidateCanClose(
   covering: Pick<PrCloseCoverageProofPullRequestView, "state" | "mergedAt">,
 ): boolean {
   return covering.state === "open" || Boolean(covering.mergedAt);
-}
-
-export function summarizePrCloseCoverageProofPullRequest(
-  pull: PrCloseCoverageProofPullRequestView,
-): string {
-  const body = compactPrCloseCoverageProofText(pull.body);
-  const bodyText = body ? ` Body: ${body}` : "";
-  const commentText = pull.comments.length
-    ? ` Comments hydrated: ${pull.comments.length}${pull.commentsTruncated ? " (truncated)" : ""}.`
-    : "";
-  return `#${pull.number} ${pull.title}.${bodyText}${commentText}`;
 }
 
 function stringifyPrCloseCoverageProofPromptJson(value: unknown, space?: number): string {
@@ -232,7 +215,7 @@ function prCloseCoverageProofReportMarkdown(markdown: string): string {
   if (!match) return markdown.trim();
   const frontMatter = (match[2] ?? "")
     .split(/\r?\n/)
-    .filter((line) => !/^automation_item_updated_at\s*:/.test(line))
+    .filter((line) => !/^(?:automation_item_updated_at|labels_synced_at)\s*:/.test(line))
     .join("\n");
   return `${match[1] ?? "---\n"}${frontMatter}${match[3] ?? "\n---\n"}${markdown.slice(
     match[0].length,
@@ -290,7 +273,7 @@ export function runPrCloseCoverageProofModel(options: {
   mkdirSync(options.runtime.workDir, { recursive: true });
   const prefix = `${options.source.number}-${options.covering.number}`;
   const outputPath = join(options.runtime.workDir, `${prefix}.model.json`);
-  const promptPath = join(options.runtime.workDir, `${prefix}.prompt.md`);
+  rmSync(join(options.runtime.workDir, `${prefix}.prompt.md`), { force: true });
   const prompt = buildPrCloseCoverageProofPrompt({
     source: options.source,
     covering: options.covering,
@@ -298,15 +281,12 @@ export function runPrCloseCoverageProofModel(options: {
     relationshipSignalSnippets: options.relationshipSignalSnippets,
     promptTemplate: options.runtime.promptTemplate,
   });
-  writeFileSync(promptPath, prompt, "utf8");
-  if (existsSync(outputPath)) unlinkSync(outputPath);
   // workDir doubles as the uploaded proof-artifact tree, whose downstream
   // validator only admits N-M.proof.json plus manifest.json — scratch files
   // must never survive a successful proof run.
   const readValidatedOutputAndCleanUp = (): PrCloseCoverageProofModelResult => {
     const proof = readPrCloseCoverageProofModelOutput(outputPath);
-    unlinkSync(outputPath);
-    unlinkSync(promptPath);
+    rmSync(outputPath);
     return proof;
   };
   const codexConfig = [codexLoginConfig(), 'approval_policy="never"'];
@@ -314,6 +294,7 @@ export function runPrCloseCoverageProofModel(options: {
     codexConfig.unshift(`service_tier="${options.runtime.serviceTier}"`);
   }
   const result = runAgentProcess({
+    scanSource: { kind: "prompt" },
     label: `pr-close-coverage-${options.source.number}-${options.covering.number}`,
     prompt,
     model: options.runtime.model,
@@ -352,6 +333,7 @@ export function runPrCloseCoverageProofModel(options: {
           } and wrote invalid JSON or schema-invalid output to ${outputPath}: ${
             error instanceof Error ? error.message : String(error)
           }.\n${safeOutputTail(result.stderr) || safeOutputTail(result.stdout) || "No output."}`,
+          { cause: error },
         );
       }
     }

@@ -2,6 +2,7 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
+import { readRepairLoopComments } from "./comment-router-read-model.js";
 import { adaptiveReviewBudgetForPullRequest } from "./adaptive-review-budget.js";
 import { CLOSE_PROTECTED_LABEL_NAMES } from "./exact-review-guard-labels.js";
 import {
@@ -42,7 +43,6 @@ import {
   buildAutomergeSquashMessage,
   commandHasAction,
   commandResponseMarker,
-  commandStatusMarkerFromBody,
   createCachedIssueCommentsLookup,
   createCachedIssueCommentsLookupAsync,
   createCachedLabelNumberLookup,
@@ -61,11 +61,14 @@ import {
   issueImplementationClusterId,
   issueImplementationJobPath,
   isReadyHumanReviewPause,
+  isTrustedStatusCommentAuthor,
+  latestTrustedExactHeadReview,
   maintainerModeCommandCanResumePausedMode,
+  maintainerApprovalAppliesToExactHeadReview,
   maintainerAutomergeOptInApprovesNeedsHuman as maintainerAutomergeOptInApprovesNeedsHumanReason,
+  missingProofNeedsHumanReason,
   latestRepairLoopResumeTime,
   parseRoutedCommentCommand,
-  planCommandAckConvergence,
   pausedModeStatusBlocksReplay,
   parseTrustedAutomation,
   repairableCheckBlockers,
@@ -91,6 +94,11 @@ import {
   trustedCloseBlockReason,
   usesSharedAutomergeStatus,
 } from "./comment-router-core.js";
+import {
+  commandAckMarkerFromBody,
+  commandStatusMarkerFromBody,
+  planCommandAckConvergence,
+} from "./command-ack-convergence.js";
 import { mergeAutomergeTimelineSection } from "./automerge-status-timeline.js";
 import {
   automergeSessionId,
@@ -132,6 +140,7 @@ import {
   ghErrorText,
   ghJsonWithRetry as ghJson,
   ghJsonWithRetryAsync as ghJsonAsync,
+  ghPagedLimitWithRetry as ghPagedLimit,
   ghPagedWithRetry as ghPaged,
   ghPagedWithRetryAsync as ghPagedAsync,
   ghSpawn,
@@ -156,6 +165,8 @@ import {
   decideReviewDispatchCoordination,
   type ReviewDispatchCoordinationDecision,
 } from "./review-dispatch-coordination.js";
+import { directReReviewIntake } from "./direct-re-review-admission.js";
+import { postExactReviewCommandIntakeSync } from "./exact-review-command-queue.js";
 
 const automergeMetricWrites: Promise<boolean>[] = [];
 
@@ -186,6 +197,7 @@ const {
   maxAutoRepairsPerPr,
   lookupConcurrency,
   since,
+  sinceCommentIds,
   itemNumbers,
   commentIds,
   statusCommentId,
@@ -256,6 +268,9 @@ const collaboratorPermissionCache = new Map();
 const activeRepairRunsByPrefix = new Map<string, LooseRecord[]>();
 const liveTargetCache = new Map<number, LooseRecord>();
 const issueCommentsCache = new Map<number, JsonValue[]>();
+const throttledIssueCommentLookups = new Set<number>();
+const throttledCollaboratorLookups = new Set<string>();
+let deferredGitHubThrottle: GitHubRateLimitError | null = null;
 const MAX_MEDIA_PREPROCESSING_TIMEOUT_MS = 480_000;
 const PROOF_OVERRIDE_DESCRIPTION_MARKER = "<!-- clawsweeper-proof-override-note -->";
 const cachedIssueComments = createCachedIssueCommentsLookup(
@@ -271,6 +286,7 @@ const openIssueNumbersByLabel = createCachedLabelNumberLookup((label) =>
     `repos/${targetRepo}/issues?state=open&labels=${encodeURIComponent(label)}&per_page=100`,
   ).map((issue: JsonValue) => issue.number),
 );
+let recentCommentCursorCandidate: LooseRecord | null = null;
 const comments = measure("list_candidate_comments", () =>
   exactCommentVersionFastPath.suppress ? [] : listCandidateComments(),
 );
@@ -333,6 +349,7 @@ const report: LooseRecord = {
   lookup_concurrency: lookupConcurrency,
   commands,
   exact_comment_version_fast_path: exactCommentVersionFastPath,
+  routing_cursor_candidate: recentCommentCursorCandidate,
   short_circuited: exactCommentVersionFastPath.suppress,
 };
 
@@ -432,6 +449,7 @@ if (writeReport) writeReportFile(repoRoot(), report);
 await flushCommandActionEvents();
 await Promise.allSettled(automergeMetricWrites);
 console.log(JSON.stringify(report, null, 2));
+if (deferredGitHubThrottle) throw deferredGitHubThrottle;
 
 function measure<T>(name: string, fn: () => T): T {
   const start = Date.now();
@@ -537,6 +555,7 @@ function routedCommandForComment(comment: JsonValue): LooseRecord | null {
     trusted_bot_author: parsed.trusted_bot_author ?? null,
     automation_source: parsed.automation_source ?? null,
     repair_reason: parsed.repair_reason ?? null,
+    live_verification: parsed.live_verification ?? null,
     review_summary: reviewSummaryFromCommentBody(comment.body),
     review_followup: reviewFollowupFromCommentBody(comment.body),
     freeform_prompt: parsed.freeform_prompt ?? null,
@@ -631,7 +650,7 @@ function claimedDispatchState({
   command: LooseRecord;
   repo: string;
   workflowName: string;
-  expectedTitle: string;
+  expectedTitle: string | readonly string[];
 }) {
   const claim = priorDispatchClaim(command);
   if (!claim) return null;
@@ -715,8 +734,9 @@ function verifyDispatchExecutionRuns({
   runs: LooseRecord[];
   repo: string;
   workflowName: string;
-  expectedTitle: string;
+  expectedTitle: string | readonly string[];
 }) {
+  const expectedTitles = typeof expectedTitle === "string" ? [expectedTitle] : expectedTitle;
   const requiredJobName =
     workflowName === "assist.yml"
       ? "assist"
@@ -728,7 +748,7 @@ function verifyDispatchExecutionRuns({
   return runs.map((run) => {
     const createdAtMs = Date.parse(String(run.created_at ?? run.createdAt ?? ""));
     if (
-      String(run.display_title ?? run.displayTitle ?? "") !== expectedTitle ||
+      !expectedTitles.includes(String(run.display_title ?? run.displayTitle ?? "")) ||
       String(run.status ?? "").toLowerCase() !== "completed" ||
       !Number.isFinite(claimedAtMs) ||
       !Number.isFinite(createdAtMs) ||
@@ -822,13 +842,27 @@ async function prehydrateCommandLookups(
   );
 
   await Promise.all([
-    mapLimit(logins, lookupConcurrency, (login) => fetchCollaboratorPermissionAsync(login)),
+    mapLimit(logins, lookupConcurrency, async (login) => {
+      try {
+        await fetchCollaboratorPermissionAsync(login);
+      } catch (error) {
+        if (!(error instanceof GitHubRateLimitError)) throw error;
+        deferGitHubThrottle(error);
+        throttledCollaboratorLookups.add(login.toLowerCase());
+      }
+    }),
     mapLimit(issueNumbers, lookupConcurrency, async (number) => {
       liveTargetCache.set(number, await fetchLiveTargetAsync(number));
     }),
     mapLimit(issueNumbers, lookupConcurrency, async (number) => {
       if (options.refreshIssueComments) issueCommentsCache.delete(number);
-      await cachedIssueCommentsAsync(number);
+      try {
+        await cachedIssueCommentsAsync(number);
+      } catch (error) {
+        if (!(error instanceof GitHubRateLimitError)) throw error;
+        deferGitHubThrottle(error);
+        throttledIssueCommentLookups.add(number);
+      }
     }),
   ]);
 }
@@ -839,6 +873,16 @@ function classifyCommand(command: LooseRecord): JsonValue {
   }
   if (command.comment_version_key && supersededReReviewVersions.has(command.comment_version_key)) {
     return { ...command, status: "skipped", reason: SUPERSEDED_RE_REVIEW_REASON };
+  }
+  if (
+    throttledIssueCommentLookups.has(Number(command.issue_number)) ||
+    throttledCollaboratorLookups.has(String(command.author ?? "").toLowerCase())
+  ) {
+    return {
+      ...command,
+      status: "waiting",
+      reason: "GitHub throttled required routing context; the next cycle will retry",
+    };
   }
   let authorization: LooseRecord | null = null;
   if (command.trusted_bot) {
@@ -1231,6 +1275,7 @@ function classifyCommand(command: LooseRecord): JsonValue {
             intent: "clawsweeper_auto_merge",
             expected_head_sha: approvedProofOverride.expected_head_sha,
             repair_reason: approvedProofOverride.reason,
+            validated_maintainer_human_approval: true,
           }
         : activationRepairReason
           ? { repair_reason: `${mode} enabled; ${activationRepairReason}` }
@@ -1669,6 +1714,21 @@ function classifyMaintainerApprovedAutomerge(
       reason: "maintainer approval could not resolve the current PR head SHA",
     };
   }
+  const review = latestTrustedExactHeadReview({
+    comments: freshIssueCommentsFor(command.issue_number),
+    headSha: expectedHeadSha,
+    trustedAuthors: trustedBots,
+  });
+  const validatedMaintainerHumanApproval =
+    review?.decision === "human" &&
+    maintainerAutomergeOptInApprovesNeedsHumanReason({
+      reason: review.command?.repair_reason,
+      commentCreatedAt: review.commentCreatedAt,
+      commentUpdatedAt: review.commentUpdatedAt,
+      optInTime: command.comment_updated_at ?? command.comment_created_at,
+      replacementAutomergeRequestedBy: automergeRequestedByFromBody(command.target?.body),
+      liveVerification: review.liveVerification,
+    });
   const removePauseLabelActions = pauseLabels.map((label) => ({
     action: "remove_label",
     label,
@@ -1677,6 +1737,7 @@ function classifyMaintainerApprovedAutomerge(
   return {
     ...command,
     expected_head_sha: expectedHeadSha,
+    validated_maintainer_human_approval: validatedMaintainerHumanApproval,
     status: "ready",
     actions: [
       ...removePauseLabelActions,
@@ -1710,6 +1771,7 @@ function classifyNeedsHuman(
     return {
       ...command,
       intent: "clawsweeper_auto_merge",
+      validated_maintainer_human_approval: true,
       repair_reason: `${command.repair_reason ?? "structured ClawSweeper verdict: needs-human"}; later maintainer automerge opt-in approves landing the canonical PR`,
       status: "ready",
       actions: [
@@ -1749,12 +1811,14 @@ function classifyNeedsHuman(
 function maintainerAutomergeOptInApprovesNeedsHuman(command: LooseRecord) {
   if (!command.trusted_bot) return false;
   if (!hasLabel(command.target, AUTOMERGE_LABEL)) return false;
+  const liveVerification = String(command.live_verification ?? "");
   return maintainerAutomergeOptInApprovesNeedsHumanReason({
     reason: command.repair_reason,
     commentCreatedAt: command.comment_created_at,
     commentUpdatedAt: command.comment_updated_at,
     optInTime: latestAutomergeResumeAt(command),
     replacementAutomergeRequestedBy: automergeRequestedByFromBody(command.target?.body),
+    liveVerification,
   });
 }
 
@@ -1764,6 +1828,7 @@ function approvedMissingProofNeedsHuman(command: LooseRecord, target: LooseRecor
     .map((comment: JsonValue) => {
       const parsed = parseTrustedAutomation(comment, { trustedAuthors: trustedBots });
       if (!parsed || parsed.intent !== "clawsweeper_needs_human") return null;
+      if ((parsed as LooseRecord).live_verification !== "absent") return null;
       if (!missingProofNeedsHumanReason(parsed.repair_reason)) return null;
       if (
         reviewedHeadShaBlockReason({
@@ -1796,6 +1861,7 @@ function approvedMissingProofNeedsHuman(command: LooseRecord, target: LooseRecor
       commentUpdatedAt: latest.commentUpdatedAt,
       optInTime: command.comment_updated_at ?? command.comment_created_at,
       replacementAutomergeRequestedBy: automergeRequestedByFromBody(target.body),
+      liveVerification: "absent",
     })
   ) {
     return null;
@@ -1811,13 +1877,6 @@ function approvedMissingProofNeedsHuman(command: LooseRecord, target: LooseRecor
   };
 }
 
-function missingProofNeedsHumanReason(value: JsonValue) {
-  const text = String(value ?? "");
-  return /missing (?:real behavior )?proof|missing proof|proof needs maintainer handling|missing.*proof/i.test(
-    text,
-  );
-}
-
 function proofOverrideDescriptionNote(command: LooseRecord) {
   const maintainer = String(command.author ?? "")
     .replace(/^@/, "")
@@ -1829,9 +1888,11 @@ function proofOverrideDescriptionNote(command: LooseRecord) {
   const sha = String(command.expected_head_sha ?? "").trim();
   return [
     PROOF_OVERRIDE_DESCRIPTION_MARKER,
-    "### Maintainer note: proof: override",
+    "### Maintainer authorization: proof override",
     "",
-    "A maintainer opted this PR into ClawSweeper automerge even though ClawSweeper found missing real behavior proof. Treat this as an explicit `proof: override` for the current automerge decision.",
+    "A maintainer authorized ClawSweeper to waive only the missing real behavior proof requirement for the reviewed head.",
+    "",
+    "This authorization does not state that the PR is ready or merged. It does not bypass any current or later review finding, security or policy blocker, required check, head change, mergeability gate, or other landing requirement.",
     "",
     `- ${maintainerLine}`,
     sha ? `- Reviewed head: ${sha}` : null,
@@ -2264,29 +2325,14 @@ function executeCommand(command: LooseRecord) {
       if (commandHasAction(command, "label")) {
         applyLabelActions(command);
       }
-      if (commandHasAction(command, "update_description_note")) {
-        applyDescriptionNoteActions(command);
-      }
-      const pauseLabels = command.actions
-        .filter((action: JsonValue) => action.action === "remove_label")
-        .map((action: JsonValue) => String(action.label ?? ""))
-        .filter(Boolean);
-      const deferPauseLabelRemoval = command.intent === "maintainer_approve_automerge";
-      if (pauseLabels.length > 0 && !deferPauseLabelRemoval) applyRemoveLabelActions(command);
       const merge = executeAutomerge(command);
       dispatched = { ...dispatched, merge };
       command.actions = command.actions.map((action: JsonValue) =>
         action.action === "label"
           ? { ...action, status: "executed", label: action.label }
-          : action.action === "remove_label"
-            ? deferPauseLabelRemoval
-              ? action
-              : { ...action, status: "executed", label: action.label }
-            : action.action === "update_description_note"
-              ? { ...action, status: "executed" }
-              : action.action === "merge"
-                ? { ...action, ...merge, completed_at: new Date().toISOString() }
-                : action,
+          : action.action === "merge"
+            ? { ...action, ...merge, completed_at: new Date().toISOString() }
+            : action,
       );
       if (merge.status === "waiting") {
         command.status = "waiting";
@@ -2324,14 +2370,13 @@ function executeCommand(command: LooseRecord) {
             mode: command.target.mode,
             ...dispatchRepairActionStatus(repair),
           });
-          if (deferPauseLabelRemoval) applyRemoveLabelActions(command);
           if (repair.status === "claimed") {
             keepCommandClaimed(command);
             return;
           }
         }
       }
-      if (deferPauseLabelRemoval && merge.status === "executed") {
+      if (merge.status === "executed") {
         applyRemoveLabelActions(command);
       }
     }
@@ -2427,6 +2472,12 @@ function executeCommandWithReceipt(command: LooseRecord) {
     queueAutomergeProductMetrics(command);
   } catch (error) {
     recordCommandFailure(command, error);
+    if (error instanceof GitHubRateLimitError) {
+      deferGitHubThrottle(error);
+      command.status = "waiting";
+      command.reason = "GitHub throttled command execution; the next cycle will retry";
+      return;
+    }
     throw error;
   }
 }
@@ -3052,6 +3103,15 @@ function repairJobModeForCommand(command: LooseRecord) {
 }
 
 type ReviewLeaseGuardBlock = { reason: string; retryable: boolean };
+type FinalAutomergeSnapshot =
+  | { status: "blocked"; block: ReviewLeaseGuardBlock }
+  | { status: "not_ready"; block: string }
+  | {
+      status: "ready";
+      view: LooseRecord;
+      target: LooseRecord;
+      comments: JsonValue[];
+    };
 
 function repairLoopPreMutationReviewDispatchDecision(
   command: LooseRecord,
@@ -3263,52 +3323,11 @@ function trustedAutomationReviewLeaseBlockReason(
   }
   try {
     const before = fetchPullRequestView(number);
-    const headBefore = String(before.headRefOid ?? "")
-      .trim()
-      .toLowerCase();
     const comments = ghPaged<JsonValue>(
       `repos/${targetRepo}/issues/${number}/comments?per_page=100`,
     );
     const after = fetchPullRequestView(number);
-    const headAfter = String(after.headRefOid ?? "")
-      .trim()
-      .toLowerCase();
-    if (!headBefore || headBefore !== headAfter) {
-      return {
-        reason:
-          "PR head changed during the execution-time review lease check; next router pass will retry",
-        retryable: true,
-      };
-    }
-    const expectedHeadSha = String(command.expected_head_sha ?? "")
-      .trim()
-      .toLowerCase();
-    if (!/^[0-9a-f]{40}$/.test(expectedHeadSha) || expectedHeadSha !== headAfter) {
-      return {
-        reason: `trusted ClawSweeper verdict head ${expectedHeadSha || "missing"} does not match current head ${headAfter || "missing"}`,
-        retryable: false,
-      };
-    }
-    const activeReviewLease = freshExactHeadReviewStartLease({
-      comments: comments as LooseRecord[],
-      itemNumber: number,
-      headSha: headAfter,
-      trustedAuthors: trustedBots,
-      nowMs: Date.now(),
-    });
-    if (
-      trustedAutomationPredatesReviewStartLease({
-        command,
-        currentHeadSha: headAfter,
-        lease: activeReviewLease,
-      })
-    ) {
-      return {
-        reason: `same-head ClawSweeper review is active until ${activeReviewLease?.expiresAt}`,
-        retryable: false,
-      };
-    }
-    return null;
+    return trustedAutomationPullReviewLeaseBlockReason(command, before, comments, after);
   } catch (error) {
     return {
       reason: `execution-time review lease check failed; next router pass will retry: ${compactGhError(error)}`,
@@ -3317,12 +3336,65 @@ function trustedAutomationReviewLeaseBlockReason(
   }
 }
 
+function trustedAutomationPullReviewLeaseBlockReason(
+  command: LooseRecord,
+  before: LooseRecord,
+  comments: JsonValue[],
+  after: LooseRecord,
+): ReviewLeaseGuardBlock | null {
+  if (command.trusted_bot !== true || command.automation_source !== "clawsweeper") return null;
+  const headBefore = String(before.headRefOid ?? "")
+    .trim()
+    .toLowerCase();
+  const headAfter = String(after.headRefOid ?? "")
+    .trim()
+    .toLowerCase();
+  if (!headBefore || headBefore !== headAfter) {
+    return {
+      reason:
+        "PR head changed during the execution-time review lease check; next router pass will retry",
+      retryable: true,
+    };
+  }
+  const expectedHeadSha = String(command.expected_head_sha ?? "")
+    .trim()
+    .toLowerCase();
+  if (!/^[0-9a-f]{40}$/.test(expectedHeadSha) || expectedHeadSha !== headAfter) {
+    return {
+      reason: `trusted ClawSweeper verdict head ${expectedHeadSha || "missing"} does not match current head ${headAfter || "missing"}`,
+      retryable: false,
+    };
+  }
+  const activeReviewLease = freshExactHeadReviewStartLease({
+    comments: comments as LooseRecord[],
+    itemNumber: Number(command.issue_number),
+    headSha: headAfter,
+    trustedAuthors: trustedBots,
+    nowMs: Date.now(),
+  });
+  if (
+    trustedAutomationPredatesReviewStartLease({
+      command,
+      currentHeadSha: headAfter,
+      lease: activeReviewLease,
+    })
+  ) {
+    return {
+      reason: `same-head ClawSweeper review is active until ${activeReviewLease?.expiresAt}`,
+      retryable: false,
+    };
+  }
+  return null;
+}
+
 function dispatchClawSweeperReview(command: LooseRecord): LooseRecord {
-  const requiresCommandStatus = ["re_review", "autofix", "automerge"].includes(
-    String(command.intent ?? ""),
-  );
+  if (command.intent === "re_review") return enqueueClawSweeperReReview(command);
+  const requiresCommandStatus = ["autofix", "automerge"].includes(String(command.intent ?? ""));
   let dispatchKey = dispatchReceiptKey(command);
-  const expectedTitle = `Review event item ${command.repo}#${command.issue_number} [${dispatchKey}]`;
+  const expectedTitle = [
+    `Review event item ${command.repo}#${command.issue_number} [${dispatchKey}]`,
+    `Review manual item [${dispatchKey}]`,
+  ];
   const claimed = claimedDispatchState({
     command,
     repo: reviewRepo,
@@ -3445,6 +3517,46 @@ function dispatchClawSweeperReview(command: LooseRecord): LooseRecord {
     repo: reviewRepo,
     item_number: command.issue_number,
     dispatch_key: dispatchKey,
+  };
+}
+
+function enqueueClawSweeperReReview(command: LooseRecord): LooseRecord {
+  const dispatchKey = dispatchReceiptKey(command);
+  const itemKind = command.target?.kind === "pull_request" ? "pull_request" : "issue";
+  const intake = directReReviewIntake({
+    targetRepo: command.repo,
+    targetBranch: command.target_branch || "main",
+    itemNumber: Number(command.issue_number),
+    itemKind,
+    installationId: Number(process.env.CLAWSWEEPER_TARGET_INSTALLATION_ID),
+    sourceCommentId: Number(command.comment_id),
+    sourceCommentUpdatedAt: String(command.comment_updated_at || ""),
+    commandBodyDigest: String(command.comment_body_sha256 || ""),
+    commandOrigin: "comment_router",
+    ...(command.status_comment_id ? { statusCommentId: Number(command.status_comment_id) } : {}),
+    additionalPrompt: freeformReviewPrompt(command),
+  });
+  command.command_status_revision = intake.commandVersionId;
+  const secret = process.env.CLAWSWEEPER_WEBHOOK_SECRET || "";
+  if (!secret) throw new Error("internal exact-review queue secret is required");
+  const result = runCommandMutation(command, {
+    kind: "review_queue_admission",
+    identity: intake,
+    operation: () =>
+      postExactReviewCommandIntakeSync({
+        queueUrl: process.env.QUEUE_URL || "https://clawsweeper.openclaw.ai",
+        secret,
+        intake,
+      }),
+  });
+  return {
+    workflow: reviewWorkflow,
+    event: "exact_review_queue",
+    repo: reviewRepo,
+    item_number: command.issue_number,
+    dispatch_key: dispatchKey,
+    command_version_id: intake.commandVersionId,
+    deduped: result.kind === "accepted" && result.deduped,
   };
 }
 
@@ -4005,7 +4117,7 @@ function closeIssueOrPullRequest(command: LooseRecord, number: number, kind: str
   );
 }
 
-function executeAutomerge(command: LooseRecord) {
+function executeAutomerge(command: LooseRecord): LooseRecord {
   const stoppedReason = repairLoopStoppedReason(command);
   if (stoppedReason) {
     return { action: "merge", status: "blocked", reason: stoppedReason, merge_method: "squash" };
@@ -4015,7 +4127,8 @@ function executeAutomerge(command: LooseRecord) {
   let waitedMs = 0;
   let view = fetchPullRequestView(command.issue_number);
   let latestTarget = latestAutomergeTarget(command, view);
-  let block = validateAutomergeReadiness({ command, view, target: latestTarget });
+  let comments = freshIssueCommentsFor(command.issue_number);
+  let block = validateAutomergeReadiness({ command, view, target: latestTarget, comments });
   while (block && isTransientAutomergeBlock(block) && waitedMs < transientWait.maxWaitMs) {
     const waitMs = Math.min(transientWait.intervalMs, transientWait.maxWaitMs - waitedMs);
     transientObservations.push(automergeTransientObservation(block, view, waitedMs, waitMs));
@@ -4023,40 +4136,10 @@ function executeAutomerge(command: LooseRecord) {
     waitedMs += waitMs;
     view = fetchPullRequestView(command.issue_number);
     latestTarget = latestAutomergeTarget(command, view);
-    block = validateAutomergeReadiness({ command, view, target: latestTarget });
+    comments = freshIssueCommentsFor(command.issue_number);
+    block = validateAutomergeReadiness({ command, view, target: latestTarget, comments });
   }
-  if (block) {
-    if (isTransientAutomergeBlock(block)) {
-      return {
-        action: "merge",
-        status: "waiting",
-        reason: block,
-        merge_method: "squash",
-        transient_wait_ms: waitedMs,
-        transient_observations: transientObservations,
-      };
-    }
-    if (isAutomergeCheckBlock(block)) {
-      return {
-        action: "merge",
-        status: "repair_needed",
-        reason: block,
-        repair_reason: `failed required checks before automerge: ${block.replace(/^checks are not green:\s*/i, "")}`,
-        merge_method: "squash",
-      };
-    }
-    const readinessRepairReason = automergeReadinessRepairReason(block);
-    if (readinessRepairReason) {
-      return {
-        action: "merge",
-        status: "repair_needed",
-        reason: block,
-        repair_reason: readinessRepairReason,
-        merge_method: "squash",
-      };
-    }
-    return { action: "merge", status: "blocked", reason: block, merge_method: "squash" };
-  }
+  if (block) return blockedAutomergeResult(block, waitedMs, transientObservations);
   const gateBlock = automergeGateBlockReason(process.env);
   if (gateBlock) {
     ensureHumanReviewLabel(command);
@@ -4084,6 +4167,27 @@ function executeAutomerge(command: LooseRecord) {
     );
     return { action: "merge", status: "blocked", reason: gateBlock, merge_method: "squash" };
   }
+  if (commandHasAction(command, "update_description_note")) {
+    applyDescriptionNoteActions(command);
+    command.actions = command.actions.map((action: JsonValue) =>
+      action.action === "update_description_note" ? { ...action, status: "executed" } : action,
+    );
+  }
+  const finalSnapshot = finalAutomergeSnapshot(command);
+  if (finalSnapshot.status === "blocked") {
+    return {
+      action: "merge",
+      status: finalSnapshot.block.retryable ? "waiting" : "blocked",
+      reason: finalSnapshot.block.reason,
+      merge_method: "squash",
+    };
+  }
+  if (finalSnapshot.status === "not_ready") {
+    return blockedAutomergeResult(finalSnapshot.block, waitedMs, transientObservations);
+  }
+  view = finalSnapshot.view;
+  latestTarget = finalSnapshot.target;
+  comments = finalSnapshot.comments;
   const mergeMessage = buildAutomergeSquashMessage({
     command: {
       ...command,
@@ -4091,18 +4195,9 @@ function executeAutomerge(command: LooseRecord) {
     },
     view,
     target: latestTarget,
-    comments: issueCommentsFor(command.issue_number),
+    comments,
   });
   const bodyFile = writeAutomergeMergeBody(command, latestTarget, mergeMessage.body);
-  const reviewLeaseBlock = trustedAutomationReviewLeaseBlockReason(command);
-  if (reviewLeaseBlock) {
-    return {
-      action: "merge",
-      status: reviewLeaseBlock.retryable ? "waiting" : "blocked",
-      reason: reviewLeaseBlock.reason,
-      merge_method: "squash",
-    };
-  }
   const result = runGitHubSpawnMutation(
     command,
     "pull_request_merge",
@@ -4176,6 +4271,77 @@ function executeAutomerge(command: LooseRecord) {
   };
 }
 
+function finalAutomergeSnapshot(command: LooseRecord): FinalAutomergeSnapshot {
+  const sourceRevisionBlock = trustedAutomationSourceRevisionBlockReason(command, "execution");
+  if (sourceRevisionBlock) return { status: "blocked", block: sourceRevisionBlock };
+  try {
+    const before = fetchPullRequestView(command.issue_number);
+    const comments = freshIssueCommentsFor(command.issue_number);
+    const after = fetchPullRequestView(command.issue_number);
+    const reviewLeaseBlock = trustedAutomationPullReviewLeaseBlockReason(
+      command,
+      before,
+      comments,
+      after,
+    );
+    if (reviewLeaseBlock) return { status: "blocked", block: reviewLeaseBlock };
+    const target = latestAutomergeTarget(command, after);
+    const readinessBlock = validateAutomergeReadiness({
+      command,
+      view: after,
+      target,
+      comments,
+    });
+    if (readinessBlock) return { status: "not_ready", block: readinessBlock };
+    return { status: "ready", view: after, target, comments };
+  } catch (error) {
+    return {
+      status: "blocked",
+      block: {
+        reason: `final merge review check failed; next router pass will retry: ${compactGhError(error)}`,
+        retryable: true,
+      },
+    };
+  }
+}
+
+function blockedAutomergeResult(
+  block: string,
+  waitedMs: number,
+  transientObservations: LooseRecord[],
+): LooseRecord {
+  if (isTransientAutomergeBlock(block)) {
+    return {
+      action: "merge",
+      status: "waiting",
+      reason: block,
+      merge_method: "squash",
+      transient_wait_ms: waitedMs,
+      transient_observations: transientObservations,
+    };
+  }
+  if (isAutomergeCheckBlock(block)) {
+    return {
+      action: "merge",
+      status: "repair_needed",
+      reason: block,
+      repair_reason: `failed required checks before automerge: ${block.replace(/^checks are not green:\s*/i, "")}`,
+      merge_method: "squash",
+    };
+  }
+  const readinessRepairReason = automergeReadinessRepairReason(block);
+  if (readinessRepairReason) {
+    return {
+      action: "merge",
+      status: "repair_needed",
+      reason: block,
+      repair_reason: readinessRepairReason,
+      merge_method: "squash",
+    };
+  }
+  return { action: "merge", status: "blocked", reason: block, merge_method: "squash" };
+}
+
 function latestAutomergeTarget(command: LooseRecord, view: LooseRecord) {
   const labels = (view.labels ?? []).map((item: JsonValue) => item.name ?? item);
   return {
@@ -4223,7 +4389,7 @@ function writeAutomergeMergeBody(command: LooseRecord, target: LooseRecord, body
   return file;
 }
 
-function validateAutomergeReadiness({ command, view, target }: LooseRecord) {
+function validateAutomergeReadiness({ command, view, target, comments }: LooseRecord) {
   if (hasLabel(target, AUTOGENERATED_LABEL))
     return "generated issue implementation PRs require manual merge";
   if (hasLabel(target, AUTOFIX_LABEL))
@@ -4231,7 +4397,11 @@ function validateAutomergeReadiness({ command, view, target }: LooseRecord) {
   if (!hasLabel(target, AUTOMERGE_LABEL)) {
     return "PR is not opted into ClawSweeper automerge";
   }
-  if (hasLabel(target, HUMAN_REVIEW_LABEL) && command.intent !== "maintainer_approve_automerge") {
+  if (
+    hasLabel(target, HUMAN_REVIEW_LABEL) &&
+    command.intent !== "maintainer_approve_automerge" &&
+    command.validated_maintainer_human_approval !== true
+  ) {
     return "PR is paused for human review";
   }
   if (view.state && view.state !== "OPEN")
@@ -4252,6 +4422,9 @@ function validateAutomergeReadiness({ command, view, target }: LooseRecord) {
     return `checks are still running: ${checks.pending.slice(0, 8).join(", ")}`;
   if (checks.total === 0) return "no PR checks found";
   const mergeStateStatus = String(view.mergeStateStatus ?? "");
+  if (command.intent === "maintainer_approve_automerge" && mergeStateStatus === "BEHIND") {
+    return "maintainer-approved PR head is behind base";
+  }
   if (
     !isAutomergeMergeStateReady(mergeStateStatus) &&
     !(mergeStateStatus === "UNSTABLE" && checks.blockers.length === 0)
@@ -4261,12 +4434,73 @@ function validateAutomergeReadiness({ command, view, target }: LooseRecord) {
   if (["CHANGES_REQUESTED", "REVIEW_REQUIRED"].includes(String(view.reviewDecision ?? ""))) {
     return `review decision is ${view.reviewDecision}`;
   }
+  const review = latestTrustedExactHeadReview({
+    comments: Array.isArray(comments) ? comments : [],
+    headSha: String(view.headRefOid ?? ""),
+    trustedAuthors: trustedBots,
+  });
+  const allowHumanApproval = maintainerApprovalAppliesToExactHeadReview({
+    approvalValidated: command.validated_maintainer_human_approval === true,
+    review,
+    optInTime: authoritativeMaintainerHumanApprovalTime(command),
+    replacementAutomergeRequestedBy: automergeRequestedByFromBody(target.body),
+  });
+  const reviewBlock = trustedExactHeadReviewBlockReason({
+    review,
+    allowHumanApproval,
+  });
+  if (reviewBlock) return reviewBlock;
   const changelogBlock = automergeChangelogBlockReason({
     repo: command.repo,
     title: view.title,
     files: view.files,
   });
   if (changelogBlock) return changelogBlock;
+  return "";
+}
+
+function authoritativeMaintainerHumanApprovalTime(command: LooseRecord) {
+  if (command.intent === "maintainer_approve_automerge") {
+    return command.comment_updated_at ?? command.comment_created_at ?? 0;
+  }
+  return latestAutomergeResumeAt(command);
+}
+
+function trustedExactHeadReviewBlockReason({
+  comments,
+  headSha,
+  review = null,
+  allowHumanApproval,
+}: {
+  comments?: JsonValue[];
+  headSha?: string;
+  review?: ReturnType<typeof latestTrustedExactHeadReview>;
+  allowHumanApproval: boolean;
+}) {
+  const currentReview =
+    review ??
+    latestTrustedExactHeadReview({
+      comments: comments ?? [],
+      headSha: headSha ?? "",
+      trustedAuthors: trustedBots,
+    });
+  if (!currentReview) return "no trusted exact-head ClawSweeper review found";
+  if (currentReview.decision === "legacy") {
+    return "exact-head ClawSweeper review uses a legacy marker without live verification state";
+  }
+  if (
+    currentReview.liveVerification === "failed" ||
+    currentReview.liveVerification === "malformed" ||
+    currentReview.liveVerification === "unknown"
+  ) {
+    return `exact-head ClawSweeper review has ${currentReview.liveVerification} live verification`;
+  }
+  if (
+    currentReview.decision !== "pass" &&
+    !(allowHumanApproval && currentReview.decision === "human")
+  ) {
+    return `exact-head ClawSweeper review decision is ${currentReview.decision}`;
+  }
   return "";
 }
 
@@ -4465,9 +4699,44 @@ function existingJobPath(clusterId: string, repo: string = targetRepo) {
 }
 
 function listRecentComments() {
-  const list = ghPaged(
-    `repos/${targetRepo}/issues/comments?since=${encodeURIComponent(since)}&per_page=100`,
+  const readLimit = maxComments + sinceCommentIds.size;
+  const list = ghPagedLimit<LooseRecord>(
+    `repos/${targetRepo}/issues/comments?since=${encodeURIComponent(since)}&sort=updated&direction=asc`,
+    readLimit,
+  )
+    .filter(
+      (comment) =>
+        Date.parse(String(comment.updated_at ?? "")) !== Date.parse(since) ||
+        !sinceCommentIds.has(Number(comment.id)),
+    )
+    .slice(0, maxComments);
+  const latestUpdatedAt = list.reduce(
+    (latest, comment) =>
+      Date.parse(String(comment.updated_at ?? "")) > Date.parse(latest)
+        ? String(comment.updated_at)
+        : latest,
+    "1970-01-01T00:00:00.000Z",
   );
+  if (list.length > 0) {
+    recentCommentCursorCandidate = {
+      repo: targetRepo,
+      updated_at: new Date(latestUpdatedAt).toISOString(),
+      comment_ids: list
+        .filter(
+          (comment) =>
+            new Date(String(comment.updated_at ?? "")).toISOString() ===
+            new Date(latestUpdatedAt).toISOString(),
+        )
+        .map((comment) => Number(comment.id))
+        .filter((id) => Number.isSafeInteger(id) && id > 0),
+    };
+  } else if (sinceCommentIds.size === 0) {
+    recentCommentCursorCandidate = {
+      repo: targetRepo,
+      updated_at: new Date(since).toISOString(),
+      comment_ids: [],
+    };
+  }
   return list;
 }
 
@@ -4499,16 +4768,30 @@ function issueCommentsFor(number: JsonValue): JsonValue[] {
   return cachedIssueComments(number);
 }
 
+function freshIssueCommentsFor(number: JsonValue): JsonValue[] {
+  const key = Number(number);
+  if (!Number.isInteger(key) || key <= 0) return [];
+  issueCommentsCache.delete(key);
+  return cachedIssueComments(key);
+}
+
 function listRepairLoopReviewComments() {
   const numbers = unique([
     ...listOpenIssueNumbersWithLabel(AUTOFIX_LABEL),
     ...listOpenIssueNumbersWithLabel(AUTOMERGE_LABEL),
   ]);
   return numbers.flatMap((number) =>
-    ghPaged<JsonValue>(`repos/${targetRepo}/issues/${number}/comments?per_page=100`).filter(
-      isClawSweeperReviewMarkerComment,
-    ),
+    repairLoopIssueComments(number).filter(isClawSweeperReviewMarkerComment),
   );
+}
+
+function repairLoopIssueComments(number: number): JsonValue[] {
+  return readRepairLoopComments({
+    repository: targetRepo,
+    number,
+    liveRead: () =>
+      ghPaged<LooseRecord>(`repos/${targetRepo}/issues/${number}/comments?per_page=100`),
+  });
 }
 
 function listRepairLoopSweepCommands(existingCommands: LooseRecord[]) {
@@ -4601,6 +4884,7 @@ function fetchLiveTarget(command: LooseRecord): LooseRecord {
     const pull = issue.pull_request ? fetchPullRequestView(command.issue_number) : null;
     return { issue, pull };
   } catch (error) {
+    if (error instanceof GitHubRateLimitError) deferGitHubThrottle(error);
     return {
       ...command,
       status: "waiting",
@@ -4615,6 +4899,7 @@ async function fetchLiveTargetAsync(number: number): Promise<LooseRecord> {
     const pull = issue.pull_request ? await fetchPullRequestViewAsync(number) : null;
     return { issue, pull };
   } catch (error) {
+    if (error instanceof GitHubRateLimitError) deferGitHubThrottle(error);
     return {
       issue_number: number,
       status: "waiting",
@@ -5050,10 +5335,6 @@ function commandAckMarkerForCommentId(commentId: JsonValue) {
   return `<!-- clawsweeper-command-ack:${commentId} -->`;
 }
 
-function commandAckMarkerFromBody(body: JsonValue) {
-  return String(body ?? "").match(/<!--\s*clawsweeper-command-ack:\d+\s*-->/)?.[0] ?? null;
-}
-
 function automergeTimelineEvents(command: LooseRecord, body: string) {
   const events: LooseRecord[] = [];
   const head = command.target?.head_sha ?? command.expected_head_sha ?? "unknown";
@@ -5173,8 +5454,7 @@ function findExistingCommandStatusComment(command: LooseRecord) {
 }
 
 function isTrustedStatusComment(comment: LooseRecord) {
-  const author = String(comment.user?.login ?? "").toLowerCase();
-  return !author || author === "clawsweeper" || trustedBots.has(author);
+  return isTrustedStatusCommentAuthor(comment, trustedBots);
 }
 
 function reactToComment(command: LooseRecord, content: string) {
@@ -5405,6 +5685,10 @@ async function mapLimit<T, R>(
   });
   await Promise.all(workers);
   return results;
+}
+
+function deferGitHubThrottle(error: GitHubRateLimitError) {
+  deferredGitHubThrottle ??= error;
 }
 
 function ledgerPath() {

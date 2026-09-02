@@ -1,0 +1,50 @@
+[
+  {
+    "scenario": "no-status",
+    "command": "commit",
+    "exit_code": 0,
+    "signal": null,
+    "stdout": "{\"ok\":true,\"batch_id\":\"csw-1089-no-status\",\"state_commit_sha\":null,\"materialized\":0,\"quarantined\":0,\"superseded\":0}",
+    "stderr": ""
+  },
+  {
+    "scenario": "no-status",
+    "command": "complete",
+    "exit_code": 0,
+    "signal": null,
+    "stdout": "{\"ok\":true,\"batch_id\":\"csw-1089-no-status\",\"accepted\":1,\"retryable\":1}",
+    "stderr": ""
+  },
+  {
+    "scenario": "429",
+    "command": "commit",
+    "exit_code": 0,
+    "signal": null,
+    "stdout": "{\"ok\":true,\"batch_id\":\"csw-1089-429\",\"state_commit_sha\":null,\"materialized\":0,\"quarantined\":0,\"superseded\":0}",
+    "stderr": ""
+  },
+  {
+    "scenario": "429",
+    "command": "complete",
+    "exit_code": 0,
+    "signal": null,
+    "stdout": "{\"ok\":true,\"batch_id\":\"csw-1089-429\",\"accepted\":1,\"retryable\":1}",
+    "stderr": ""
+  },
+  {
+    "scenario": "503",
+    "command": "commit",
+    "exit_code": 0,
+    "signal": null,
+    "stdout": "{\"ok\":true,\"batch_id\":\"csw-1089-503\",\"state_commit_sha\":null,\"materialized\":0,\"quarantined\":0,\"superseded\":0}",
+    "stderr": ""
+  },
+  {
+    "scenario": "503",
+    "command": "complete",
+    "exit_code": 0,
+    "signal": null,
+    "stdout": "{\"ok\":true,\"batch_id\":\"csw-1089-503\",\"accepted\":1,\"retryable\":1}",
+    "stderr": ""
+  }
+]

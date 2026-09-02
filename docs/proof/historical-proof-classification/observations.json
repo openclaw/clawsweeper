@@ -1,0 +1,66 @@
+{
+  "claim": "A captured help-only PASS cannot replace a missing authorization proof assessment.",
+  "command": "node dist/clawsweeper.js live-proof-publish-artifacts --artifact-dir <local-artifact-dir>",
+  "projection": ["renderReviewCommentFromReport", "reviewAutomationMarkersFromReport"],
+  "originalCapturedReceiptSha256": "0499c0147dadce3fd0d42fad65f5176218d0ca134a8ef48e5c671fc41f60e502",
+  "before": {
+    "head": "f72ea010c1d7fd134b1bd0826b3a707778c312bc",
+    "productionDiff": "clean",
+    "publication": "published",
+    "attachment": "attached",
+    "realBehaviorVerified": true,
+    "addsSufficient": true,
+    "rejectionAssertion": "failed"
+  },
+  "after": {
+    "head": "f72ea010c1d7fd134b1bd0826b3a707778c312bc",
+    "productionDiffSha256": "dd38978f9d2aacc44d4bcd249f498106423c012b01c6b3bf81bceab94ca5e667",
+    "publication": "published",
+    "attachment": "attached",
+    "realBehaviorVerified": false,
+    "addsSufficient": false,
+    "rejectionAssertion": "passed"
+  },
+  "portableRecipe": {
+    "runtime": {
+      "node": "v26.7.0",
+      "platform": "darwin",
+      "architecture": "arm64",
+      "provider": "local-process",
+      "image": null,
+      "lease": null
+    },
+    "recipeSha256": "e1087687a8f052ec8ad89623eba1b0a77ecace84b43f116b806f43b2b175ad3f",
+    "normalizedReceiptSha256": "6b9d4e33bd92c731c959e541d455a8be79d3efd596390123b951e9232882ba19",
+    "reportSha256": "5d1694f1a28efb78b8bc1aa6e59d96f633c7cae5ad6ec89673c91ba9da32d419",
+    "cases": 22,
+    "passed": 22
+  },
+  "limits": "Before/after replay the same original captured receipt bytes. The public fixture normalizes identity metadata and adds a synthetic automerge label for marker coverage. Other controls are constructed, not fresh executions. No Gateway code, GitHub, R2, queue, or terminal driver was exercised.",
+  "statusReconciliation": {
+    "beforeProductionDiffSha256": "33edc78fbc9768a0c4bb3d5145ff676a3336fa3fe67475a9cb498eb3ccf9efdb",
+    "redRegression": "Sufficient recording plus passed receipt incorrectly justified the existing needs-proof status.",
+    "after": [
+      {
+        "case": "stale-contributor-attached",
+        "justifiedStatuses": ["status: 🚀 automerge armed"],
+        "passed": true
+      },
+      {
+        "case": "stale-contributor-direct",
+        "justifiedStatuses": ["status: 🚀 automerge armed"],
+        "passed": true
+      },
+      {
+        "case": "stale-maintainer-attached",
+        "justifiedStatuses": ["status: 🚀 automerge armed"],
+        "passed": true
+      },
+      {
+        "case": "stale-maintainer-direct",
+        "justifiedStatuses": ["status: 🚀 automerge armed"],
+        "passed": true
+      }
+    ]
+  }
+}

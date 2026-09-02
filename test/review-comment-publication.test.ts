@@ -135,7 +135,7 @@ test("review version timestamps round-trip through the durable parser", () => {
   assert.equal(Date.parse(parsed.reviewedAt), Date.parse(fields.reviewed_at));
 });
 
-test("oversized durable review publication replaces same-head ready state and aborts", () => {
+test("oversized durable review publication replaces ready state with a verified blocked receipt", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-publication-"));
   try {
     const existing = durableReviewComment({
@@ -195,7 +195,7 @@ test("oversized durable review publication replaces same-head ready state and ab
       "",
       `<!-- clawsweeper-verdict:needs-human item=${itemNumber} sha=${headSha} confidence=high updated_at=2026-08-07T16:01:00Z reviewed_at=2026-08-07T18:00:00+02:00 diagnostic=${"y".repeat(70_000)} -->`,
       `<!-- clawsweeper-review-state:ready item=${itemNumber} sha=${headSha} v=1 -->`,
-      `<!-- clawsweeper-review-version item=${itemNumber} reviewed_at=2026-08-07T18:00:00+02:00 sha=${headSha} source_revision=${"a".repeat(64)} lease_owner=${"z".repeat(70_000)} lease_comment_id=20 v=1 -->`,
+      `<!-- clawsweeper-review-version item=${itemNumber} reviewed_at=2026-08-07T18:00:00+02:00 sha=${headSha} source_revision=${"a".repeat(64)} lease_owner=fixture lease_comment_id=20 v=1 -->`,
       reviewMarker,
     ].join("\n\n");
 
@@ -206,8 +206,9 @@ test("oversized durable review publication replaces same-head ready state and ab
       publicationError = error;
     }
     assert.ok(publicationError instanceof DurableReviewPublicationBlockedError);
-    assert.match(publicationError.message, /published a blocked fallback and stopped apply/);
+    assert.match(publicationError.message, /published a blocked fallback and kept the item open/);
     assert.equal(publicationError.syncedComment.id, 20);
+    assert.equal(publicationError.publishedBody, publishedBody);
     assert.ok(Buffer.byteLength(publishedBody, "utf8") <= 60 * 1024);
     assert.match(publishedBody, /Codex review: publication failed closed\./);
     assert.match(publishedBody, /## Before merge[\s\S]*- \[ \]/);
@@ -227,7 +228,7 @@ test("oversized durable review publication replaces same-head ready state and ab
   }
 });
 
-test("malformed oversized fallback reuses only same-head identity and outranks older ready state", () => {
+test("malformed oversized fallback gets a new comment without borrowing an older identity", () => {
   const invalidVersionMarkers = [
     "",
     `<!-- clawsweeper-review-version item=${itemNumber} reviewed_at=2026-08-07T14:00:00Z sha=${"b".repeat(40)} v=1 -->`,
@@ -253,15 +254,17 @@ test("malformed oversized fallback reuses only same-head identity and outranks o
         comments: () => comments,
         state,
         mutate: ({ args }) => {
+          assert.ok(args.includes("POST"));
           const input = args[args.indexOf("--input") + 1];
           assert.ok(input);
           const body = JSON.parse(readFileSync(input, "utf8")).body;
           published = {
             ...current,
+            id: 100,
             updated_at: "2026-08-08T00:01:00Z",
             body,
           };
-          comments = [older, published];
+          comments = [older, current, published];
           return JSON.stringify(published);
         },
       });
@@ -282,13 +285,13 @@ test("malformed oversized fallback reuses only same-head identity and outranks o
         DurableReviewPublicationBlockedError,
       );
       const version = state.durableReviewVersion(published, itemNumber);
-      assert.ok(version);
-      assert.equal(version.headSha, headSha);
-      assert.equal(version.reviewedAt, "2026-08-07T16:00:00.000Z");
-      assert.doesNotMatch(String(published.body), /reviewed_at=2026-08-07T18:00:00[+_]02:00/);
-      assert.match(String(published.body), /clawsweeper-review-state:blocked/);
-      assert.doesNotMatch(String(published.body), /clawsweeper-review-state:ready/);
-      assert.equal(state.selectIssueReviewComment(itemNumber, comments)?.id, 20);
+      assert.equal(version, null);
+      assert.match(String(published.body), /Codex review: publication failed closed\./);
+      assert.doesNotMatch(
+        String(published.body),
+        /clawsweeper-review-state:|clawsweeper-review-version/,
+      );
+      assert.equal(state.selectIssueReviewComment(itemNumber, comments)?.id, 100);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -615,6 +618,142 @@ test("mutation fallback verifies trusted comment identity", () => {
     const recovered = postPublication.upsertReviewComment(itemNumber, publishedBody, contributor);
     assert.equal(recovered.id, 20);
     assert.match(postCalls[0]?.[1] ?? "", /issues\/120232\/comments$/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an issue review with a newer owned lease clears an identity-less fallback", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-issue-publication-"));
+  try {
+    const blocked = {
+      id: 100,
+      user: { login: "clawsweeper[bot]" },
+      body: markedReviewBody("Codex review: publication failed closed."),
+    };
+    const issueReview = (leaseCommentId: number, reviewedAt: string) => {
+      const review = durableReviewComment({
+        id: 120,
+        leaseCommentId,
+        reviewedAt,
+        updatedAt: reviewedAt,
+      });
+      return {
+        ...review,
+        body: String(review.body)
+          .replace(/<!-- clawsweeper-review-state:[^>]+-->\n\n/, "")
+          .replaceAll(`sha=${headSha}`, "sha=na"),
+      };
+    };
+    const fresh = issueReview(120, "2026-08-08T12:00:00Z");
+    const oldLease = issueReview(90, "2026-08-09T12:00:00Z");
+    let comments: Record<string, unknown>[] = [blocked, oldLease];
+    const state = reviewCommentState(() => comments);
+    let mutations = 0;
+    const publication = reviewCommentPublication({
+      root,
+      state,
+      comments: () => comments,
+      mutate: ({ args }) => {
+        mutations += 1;
+        assert.ok(args.includes("PATCH"));
+        assert.match(args[1]!, /issues\/comments\/100$/);
+        const body = JSON.parse(readFileSync(args[args.indexOf("--input") + 1]!, "utf8")).body;
+        const published = { ...blocked, body };
+        comments = [published, oldLease];
+        return JSON.stringify(published);
+      },
+    });
+    assert.equal(state.selectIssueReviewComment(itemNumber, comments)?.id, 100);
+    for (const invalid of [
+      oldLease.body,
+      fresh.body.replace("lease_owner=fixture", "lease_owner=unknown"),
+      fresh.body.replace(`source_revision=${"a".repeat(64)}`, "source_revision=unknown"),
+      fresh.body.replaceAll("sha=na", "sha=unknown"),
+      fresh.body.replace(
+        reviewMarker,
+        `<!-- clawsweeper-review-state:ready item=${itemNumber} sha=${headSha} v=1 -->\n\n${reviewMarker}`,
+      ),
+    ]) {
+      assert.throws(
+        () => publication.upsertReviewComment(itemNumber, invalid, blocked),
+        /fresh review lease is required/,
+      );
+    }
+    assert.equal(mutations, 0);
+    assert.equal(publication.upsertReviewComment(itemNumber, fresh.body, blocked).id, 100);
+    assert.equal(mutations, 1);
+    const identity = state.durableReviewCausalIdentityFromBody(
+      String(comments[0]!.body),
+      itemNumber,
+    );
+    assert.equal(identity?.headSha, null);
+    assert.equal(identity?.state, null);
+    assert.equal(identity?.leaseCommentId, 120);
+    assert.equal(state.selectIssueReviewComment(itemNumber, comments)?.id, 100);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("publication requires exact trusted receipts, with one scoped readback recovery", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-exact-receipt-"));
+  try {
+    const selected = durableReviewComment({
+      id: 20,
+      reviewedAt: "2026-08-07T12:00:00Z",
+      updatedAt: "2026-08-07T12:01:00Z",
+    });
+    const body = String(
+      durableReviewComment({
+        id: 120,
+        reviewedAt: "2026-08-08T12:00:00Z",
+        updatedAt: "2026-08-08T12:01:00Z",
+      }).body,
+    );
+    const receipt = { ...selected, body };
+    for (const response of [
+      { ...receipt, id: -1 },
+      { ...receipt, id: 0 },
+      { ...receipt, id: Number.MAX_SAFE_INTEGER + 1 },
+      { ...receipt, id: 21 },
+      { ...receipt, user: { login: "contributor" } },
+      { ...receipt, body: body + "\n" },
+      {
+        ...receipt,
+        body: body.replace("reviewed_at=2026-08-08T12:00:00Z", "reviewed_at=2026-08-08T13:00:00Z"),
+      },
+    ]) {
+      const state = reviewCommentState(() => []);
+      const publication = reviewCommentPublication({
+        root,
+        state,
+        comments: () => [],
+        mutate: () => JSON.stringify(response),
+      });
+      assert.throws(
+        () => publication.upsertReviewComment(itemNumber, body, selected),
+        /did not verify target comment 20/,
+      );
+    }
+    let reads = 0;
+    let writes = 0;
+    const comments = () => {
+      reads += 1;
+      return [receipt];
+    };
+    const recovered = reviewCommentPublication({
+      root,
+      state: reviewCommentState(comments),
+      comments,
+      mutate: () => {
+        writes += 1;
+        return "";
+      },
+    });
+    assert.equal(recovered.upsertReviewComment(itemNumber, body, selected).id, 20);
+    assert.equal(writes, 1);
+    assert.equal(reads, 1);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

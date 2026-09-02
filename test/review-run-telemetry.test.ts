@@ -99,6 +99,28 @@ test("review observer attributes each review entry path without counting support
   assert.equal(classifyReviewRun(run({ display_title: "Reconcile exact-review leases" })), null);
 });
 
+test("review observer classifies every manual run title", () => {
+  const cases = [
+    ["Review manual item", "exact_event", "manual"],
+    ["Review manual item [router-manual-key]", "exact_event", "command"],
+    ["Review manual batch [shards=4]", "exact_event", "manual"],
+    ["Review manual hot target", "hot_intake", "manual"],
+    ["Review manual target", "normal_backfill", "manual"],
+  ] as const;
+
+  for (const [displayTitle, triggerLane, triggerOrigin] of cases) {
+    assert.deepEqual(
+      classifyReviewRun(run({ display_title: displayTitle, event: "workflow_dispatch" })),
+      {
+        trigger_lane: triggerLane,
+        trigger_origin: triggerOrigin,
+        target_repo: null,
+      },
+      displayTitle,
+    );
+  }
+});
+
 test("review observer records bounded plan, item, and publication counts", () => {
   const record = buildReviewRunTelemetry(run(), [
     { name: "Plan review items" },

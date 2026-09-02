@@ -9,7 +9,7 @@ import { mockGhBinEnv } from "../helpers.ts";
 
 const repoRoot = process.cwd();
 
-test("issue implementation post-flight waits for green PR checks without merging", () => {
+test("post-flight status policy keeps duplicate and ignored-check decisions across the shared rollup", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-post-flight-"));
   const fakeBin = path.join(tmp, "bin");
   const jobPath = path.join(tmp, "job.md");
@@ -46,6 +46,14 @@ test("issue implementation post-flight waits for green PR checks without merging
       "    reviewDecision: null,",
       "    state: 'OPEN',",
       "    statusCheckRollup: [",
+      "      {",
+      "        name: 'label',",
+      "        workflowName: 'Labeler',",
+      "        startedAt: '2026-05-24T00:39:20Z',",
+      "        completedAt: '2026-05-24T00:39:25Z',",
+      "        status: 'COMPLETED',",
+      "        conclusion: 'CANCELLED',",
+      "      },",
       "      {",
       "        name: 'Real behavior proof',",
       "        workflowName: 'Real behavior proof',",

@@ -20,8 +20,16 @@ import {
   runCommandLifecycleMutation,
   type CommandLifecycleInput,
 } from "./command-action-ledger.js";
+import {
+  COMMAND_PROGRESS_START as PROGRESS_START,
+  commandAckMarkerFromBody,
+  commandStatusMarkerFromBody,
+  compareCommentsByCreatedAt,
+  isPrunableCommandAckDuplicate,
+  selectCommandAckKeeper,
+  statusMarkerDiffersFromRequested,
+} from "./command-ack-convergence.js";
 
-const PROGRESS_START = "<!-- clawsweeper-command-progress:start -->";
 const PROGRESS_END = "<!-- clawsweeper-command-progress:end -->";
 
 type Options = {
@@ -412,59 +420,6 @@ function commandAckComments(comments: LooseRecord[], marker: string, trustedBots
         commandAckMarkerFromBody(comment.body) === marker,
     )
     .sort(compareCommentsByCreatedAt);
-}
-
-function commandAckMarkerFromBody(body: JsonValue) {
-  return String(body ?? "").match(/<!--\s*clawsweeper-command-ack:\d+\s*-->/)?.[0] ?? null;
-}
-
-function commandStatusMarkerFromBody(body: JsonValue) {
-  return (
-    String(body ?? "").match(new RegExp("<!--\\s*clawsweeper-command-status:[^>]+-->"))?.[0] ?? null
-  );
-}
-
-function statusMarkerDiffersFromRequested(body: JsonValue, requestedStatusMarker: string) {
-  const statusMarker = commandStatusMarkerFromBody(body);
-  return Boolean(requestedStatusMarker && statusMarker && statusMarker !== requestedStatusMarker);
-}
-
-function isPrunableCommandAckDuplicate(comment: LooseRecord, requestedStatusMarker: string) {
-  const statusMarker = commandStatusMarkerFromBody(comment.body);
-  return !statusMarker || statusMarker === requestedStatusMarker;
-}
-
-function selectCommandAckKeeper(comments: LooseRecord[]) {
-  return [...comments].sort(compareCommandAckKeepPriority)[0] ?? null;
-}
-
-function compareCommandAckKeepPriority(left: LooseRecord, right: LooseRecord) {
-  const leftStatus = commandAckStatusScore(left);
-  const rightStatus = commandAckStatusScore(right);
-  if (leftStatus !== rightStatus) return rightStatus - leftStatus;
-  if (leftStatus > 0) return compareCommentsByUpdatedAtDesc(left, right);
-  return compareCommentsByCreatedAt(left, right);
-}
-
-function commandAckStatusScore(comment: LooseRecord) {
-  const body = String(comment.body ?? "");
-  return body.includes("clawsweeper-command-status:") || body.includes(PROGRESS_START) ? 1 : 0;
-}
-
-function compareCommentsByUpdatedAtDesc(left: LooseRecord, right: LooseRecord) {
-  const leftUpdated = String(left.updated_at ?? left.created_at ?? "");
-  const rightUpdated = String(right.updated_at ?? right.created_at ?? "");
-  return (
-    rightUpdated.localeCompare(leftUpdated) || (Number(right.id) || 0) - (Number(left.id) || 0)
-  );
-}
-
-function compareCommentsByCreatedAt(left: LooseRecord, right: LooseRecord) {
-  const leftCreated = String(left.created_at ?? "");
-  const rightCreated = String(right.created_at ?? "");
-  return (
-    leftCreated.localeCompare(rightCreated) || (Number(left.id) || 0) - (Number(right.id) || 0)
-  );
 }
 
 export function mergeCommandProgressSection(

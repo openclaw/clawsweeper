@@ -1,0 +1,9 @@
+dispatch.enabled=false
+dispatch.execute=false
+dispatch.candidates=[]
+summary.needs_checks=0
+pr=1099
+checks.total=14
+checks.counts={"SKIPPED":2,"SUCCESS":12}
+checks.blockers=[]
+needs_checks=null
