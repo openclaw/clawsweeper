@@ -482,18 +482,16 @@ test("target fanout dispatches generic public inventory after central visibility
 const fs = require("node:fs");
 const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({args, ghToken: process.env.GH_TOKEN || ""}) + "\\n");
-if (args[0] === "repo" && args[1] === "list" && args[2] === "openclaw") {
-  process.stdout.write(JSON.stringify([
-    {nameWithOwner:"openclaw/clawhub",isArchived:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}},
-    {nameWithOwner:"openclaw/example-tool",isArchived:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"trunk"}},
-    {nameWithOwner:"openclaw/private-tool",isArchived:false,isFork:false,hasIssuesEnabled:true,visibility:"PRIVATE",defaultBranchRef:{name:"main"}}
-  ]));
-  process.exit(0);
-}
-if (args[0] === "repo" && args[1] === "list" && args[2] === "steipete") {
-  process.stdout.write(JSON.stringify([
-    {nameWithOwner:"steipete/camsnap",isArchived:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"master"}}
-  ]));
+if (args[0] === "api" && args.includes("/installation/repositories?per_page=100")) {
+  const repositories = process.env.GH_TOKEN === "inventory-openclaw" ? [
+      {full_name:"openclaw/clawhub",archived:false,disabled:false,fork:false,has_issues:true,visibility:"public",default_branch:"main"},
+      {full_name:"openclaw/example-tool",archived:false,disabled:false,fork:false,has_issues:true,visibility:"public",default_branch:"trunk"},
+      {full_name:"openclaw/private-tool",archived:false,disabled:false,fork:false,has_issues:true,visibility:"private",default_branch:"main"},
+      {full_name:"outside/inaccessible",archived:false,disabled:false,fork:false,has_issues:true,visibility:"public",default_branch:"main"}
+  ] : [
+    {full_name:"steipete/camsnap",archived:false,disabled:false,fork:false,has_issues:true,visibility:"public",default_branch:"master"}
+  ];
+  process.stdout.write(repositories.map((repository) => JSON.stringify(repository)).join("\\n"));
   process.exit(0);
 }
 if (args[0] === "api" && args[1] === "graphql") {
@@ -561,12 +559,16 @@ globalThis.fetch = async (input, init) => {
     .map((line) => JSON.parse(line) as { args: string[]; ghToken: string });
   assert.deepEqual(
     calls
-      .filter((call) => call.args[0] === "repo" && call.args[1] === "list")
-      .map((call) => [call.args[2], call.ghToken]),
-    [
-      ["openclaw", "inventory-openclaw"],
-      ["steipete", "inventory-steipete"],
-    ],
+      .filter(
+        (call) =>
+          call.args[0] === "api" && call.args.includes("/installation/repositories?per_page=100"),
+      )
+      .map((call) => call.ghToken),
+    ["inventory-openclaw", "inventory-steipete"],
+  );
+  assert.equal(
+    calls.some((call) => call.args[0] === "repo" && call.args[1] === "list"),
+    false,
   );
   assert.deepEqual(
     calls
@@ -613,10 +615,10 @@ test("target fanout retryable probe exits before dispatch or cursor advancement"
 const fs = require("node:fs");
 const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({args, ghToken: process.env.GH_TOKEN || ""}) + "\\n");
-if (args[0] === "repo" && args[1] === "list" && args[2] === "openclaw") {
-  process.stdout.write(JSON.stringify([
-    {nameWithOwner:"openclaw/retry-later",isArchived:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}}
-  ]));
+if (args[0] === "api" && args.includes("/installation/repositories?per_page=100")) {
+  process.stdout.write(JSON.stringify(
+    {full_name:"openclaw/retry-later",archived:false,disabled:false,fork:false,has_issues:true,visibility:"public",default_branch:"main"}
+  ));
   process.exit(0);
 }
 if (args[0] === "api" && args[1] === "graphql") {
@@ -705,7 +707,7 @@ globalThis.fetch = async (input, init) => {
 
 test("target fanout uses explicit inventory and central metadata tokens in Actions", () => {
   const source = readFileSync("src/repair/target-fanout.ts", "utf8");
-  const inventoryStart = source.indexOf("function inventoryEnv(");
+  const inventoryStart = source.indexOf("function inventoryAccess(");
   const inventoryEnd = source.indexOf("function publicInventoryEnv(", inventoryStart);
   const metadataStart = source.indexOf("function hostedTargetMetadataToken(");
   const metadataEnd = source.indexOf("function dispatchEnv(", metadataStart);
@@ -717,7 +719,8 @@ test("target fanout uses explicit inventory and central metadata tokens in Actio
   const inventoryHelper = source.slice(inventoryStart, inventoryEnd);
   assert.match(inventoryHelper, /CLAWSWEEPER_INVENTORY_TOKEN_/);
   assert.match(inventoryHelper, /if \(process\.env\.GITHUB_ACTIONS === "true"\) return null;/);
-  assert.match(inventoryHelper, /return publicInventoryEnv\(\);/);
+  assert.match(inventoryHelper, /kind: "installation"/);
+  assert.match(inventoryHelper, /kind: "public"/);
   const metadataHelper = source.slice(metadataStart, metadataEnd);
   assert.match(metadataHelper, /CLAWSWEEPER_HOSTED_TARGET_METADATA_TOKEN/);
   assert.match(
@@ -832,16 +835,11 @@ test("normal target fanout dispatches even when canonical storage is unavailable
 const fs = require("node:fs");
 const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({args, ghToken: process.env.GH_TOKEN || ""}) + "\\n");
-if (args[0] === "repo" && args[1] === "list" && args[2] === "openclaw") {
-  process.stdout.write(JSON.stringify([
-    {nameWithOwner:"openclaw/clawhub",isArchived:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}}
-  ]));
-  process.exit(0);
-}
-if (args[0] === "repo" && args[1] === "list" && args[2] === "steipete") {
-  process.stdout.write(JSON.stringify([
-    {nameWithOwner:"steipete/camsnap",isArchived:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"master"}}
-  ]));
+if (args[0] === "api" && args.includes("/installation/repositories?per_page=100")) {
+  const repository = process.env.GH_TOKEN === "inventory-openclaw"
+    ? {full_name:"openclaw/clawhub",archived:false,disabled:false,fork:false,has_issues:true,visibility:"public",default_branch:"main"}
+    : {full_name:"steipete/camsnap",archived:false,disabled:false,fork:false,has_issues:true,visibility:"public",default_branch:"master"};
+  process.stdout.write(JSON.stringify(repository));
   process.exit(0);
 }
 if (args[0] === "api" && args[1] === "graphql") {
@@ -927,12 +925,12 @@ globalThis.fetch = async (input, init) => {
     .map((line) => JSON.parse(line) as { args: string[]; ghToken: string });
   assert.deepEqual(
     calls
-      .filter((call) => call.args[0] === "repo" && call.args[1] === "list")
-      .map((call) => [call.args[2], call.ghToken]),
-    [
-      ["openclaw", "inventory-openclaw"],
-      ["steipete", "inventory-steipete"],
-    ],
+      .filter(
+        (call) =>
+          call.args[0] === "api" && call.args.includes("/installation/repositories?per_page=100"),
+      )
+      .map((call) => call.ghToken),
+    ["inventory-openclaw", "inventory-steipete"],
   );
   assert.deepEqual(
     calls
@@ -979,11 +977,11 @@ test("target fanout dry-run does not persist its selected cursor", () => {
 const fs = require("node:fs");
 const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(args) + "\\n");
-if (args[0] === "repo" && args[1] === "list" && args[2] === "openclaw") {
-  process.stdout.write(JSON.stringify([
-    {nameWithOwner:"openclaw/clawhub",isArchived:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}},
-    {nameWithOwner:"openclaw/fs-safe",isArchived:false,isFork:false,hasIssuesEnabled:true,visibility:"PUBLIC",defaultBranchRef:{name:"main"}}
-  ]));
+if (args[0] === "api" && args.includes("/installation/repositories?per_page=100")) {
+  process.stdout.write([
+    {full_name:"openclaw/clawhub",archived:false,disabled:false,fork:false,has_issues:true,visibility:"public",default_branch:"main"},
+    {full_name:"openclaw/fs-safe",archived:false,disabled:false,fork:false,has_issues:true,visibility:"public",default_branch:"main"}
+  ].map((repository) => JSON.stringify(repository)).join("\\n"));
   process.exit(0);
 }
 if (args[0] === "api" && args[1] === "graphql") {

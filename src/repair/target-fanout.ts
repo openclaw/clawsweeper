@@ -111,6 +111,11 @@ interface FanoutOptions {
   owners: readonly string[] | undefined;
 }
 
+interface InventoryAccess {
+  env: NodeJS.ProcessEnv;
+  kind: "installation" | "public";
+}
+
 const PUBLIC_INVENTORY_TOKEN = "__public__";
 export const SCHEDULED_REVIEW_PLAN_BATCH_SIZE = 50;
 
@@ -540,10 +545,13 @@ export function allocateReviewCandidateCapacity(
 }
 
 function listOwnerRepositories(owner: string): ListedRepository[] {
-  const env = inventoryEnv(owner);
-  if (!env) {
+  const access = inventoryAccess(owner);
+  if (!access) {
     console.error(`[target-fanout] skipping ${owner}: missing inventory token`);
     return [];
+  }
+  if (access.kind === "installation") {
+    return listInstallationRepositories(owner, access.env);
   }
   const output = runGh(
     [
@@ -555,11 +563,32 @@ function listOwnerRepositories(owner: string): ListedRepository[] {
       "--json",
       "nameWithOwner,isArchived,isFork,hasIssuesEnabled,visibility,defaultBranchRef",
     ],
-    env,
+    access.env,
   );
   const parsed = JSON.parse(output) as unknown;
   if (!Array.isArray(parsed)) throw new Error(`gh repo list ${owner} did not return an array`);
   return parsed.map((entry, index) => listedRepository(entry, `${owner}[${index}]`));
+}
+
+function listInstallationRepositories(owner: string, env: NodeJS.ProcessEnv): ListedRepository[] {
+  const output = runGh(
+    [
+      "api",
+      "--paginate",
+      "-H",
+      "Accept: application/vnd.github+json",
+      "--jq",
+      'if (.repositories | type) != "array" then error("repositories must be an array") else .repositories[] end',
+      "/installation/repositories?per_page=100",
+    ],
+    env,
+  );
+  const ownerPrefix = `${owner.toLowerCase()}/`;
+  return (output === "" ? [] : output.split(/\r?\n/))
+    .map((entry, index) =>
+      listedInstallationRepository(JSON.parse(entry), `${owner}.repositories[${index}]`),
+    )
+    .filter((repository) => repository.nameWithOwner.toLowerCase().startsWith(ownerPrefix));
 }
 
 function listedRepository(value: unknown, label: string): ListedRepository {
@@ -576,6 +605,19 @@ function listedRepository(value: unknown, label: string): ListedRepository {
     hasIssuesEnabled: booleanValue(repo.hasIssuesEnabled, false),
     visibility: stringValue(repo.visibility, `${label}.visibility`).toUpperCase(),
     defaultBranch: typeof branch.name === "string" ? branch.name : "",
+  };
+}
+
+function listedInstallationRepository(value: unknown, label: string): ListedRepository {
+  const repo = record(value, label);
+  return {
+    nameWithOwner: stringValue(repo.full_name, `${label}.full_name`),
+    isArchived: booleanValue(repo.archived, false),
+    isDisabled: booleanValue(repo.disabled, false),
+    isFork: booleanValue(repo.fork, false),
+    hasIssuesEnabled: booleanValue(repo.has_issues, false),
+    visibility: stringValue(repo.visibility, `${label}.visibility`).toUpperCase(),
+    defaultBranch: typeof repo.default_branch === "string" ? repo.default_branch : "",
   };
 }
 
@@ -704,13 +746,17 @@ function runGh(args: readonly string[], env: NodeJS.ProcessEnv): string {
   }).trimEnd();
 }
 
-function inventoryEnv(owner: string): NodeJS.ProcessEnv | null {
+function inventoryAccess(owner: string): InventoryAccess | null {
   const key = `CLAWSWEEPER_INVENTORY_TOKEN_${owner.replace(/[^A-Za-z0-9]/g, "_").toUpperCase()}`;
   const token = process.env[key] || process.env.CLAWSWEEPER_INVENTORY_TOKEN;
-  if (token === PUBLIC_INVENTORY_TOKEN) return publicInventoryEnv();
-  if (token) return { GH_TOKEN: token, GITHUB_TOKEN: token };
+  if (token === PUBLIC_INVENTORY_TOKEN) {
+    return { env: publicInventoryEnv(), kind: "public" };
+  }
+  if (token) {
+    return { env: { GH_TOKEN: token, GITHUB_TOKEN: token }, kind: "installation" };
+  }
   if (process.env.GITHUB_ACTIONS === "true") return null;
-  return publicInventoryEnv();
+  return { env: publicInventoryEnv(), kind: "public" };
 }
 
 function publicInventoryEnv(): NodeJS.ProcessEnv {
