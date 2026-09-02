@@ -182,7 +182,7 @@ storage formats, SQL DDL, and structured storage keys (including frontmatter)
 remain evidence. Renames retain evidence from either production path. Missing,
 empty, or truncated patches on explicit production persistence paths or hook
 descriptors, and truncated file lists, still produce conservative unknown
-warnings. Generic `state`, `session`, and `history` path names and typed runtime
+warnings. Generic `state`, `session`, `history`, and `worker` path names and typed runtime
 parameters alone do not establish persistence, including when their patches are
 truncated. Explicit serialization, browser storage (local/session storage and
 IndexedDB), durable storage, and schema/migration evidence remain eligible in

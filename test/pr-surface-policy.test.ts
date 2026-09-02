@@ -197,6 +197,7 @@ for (const [name, fixturePath, normalizationTruncates] of [
   ["test-support workspace guard", "./fixtures/persistence-classifier-133209.json", true],
   ["Go chunk diagnostics", "./fixtures/persistence-classifier-134934.json", false],
   ["retained image runtime fields", "./fixtures/persistence-classifier-132839.json", true],
+  ["worker input layout fields", "./fixtures/persistence-classifier-132839-workers.json", true],
 ] as const) {
   for (const normalized of [false, true]) {
     test(`${name} creates no stored-data warning or migration gate (${normalized ? "production-normalized" : "full"} patch)`, () => {
@@ -249,6 +250,25 @@ test("runtime state names and typed parameters alone do not establish stored dat
   }
 });
 
+for (const [name, patch] of [
+  ["missing", undefined],
+  ["empty", ""],
+  ["truncated", "@@\n+  prompt: value,\n\n[truncated 99 chars]"],
+] as const) {
+  test(`worker request fields do not imply stored data (${name} patch)`, () => {
+    const detection = dataModelChangeFromPullFilesForTest({
+      pullFiles: [{ filename: "src/workers/turn.ts", patch }],
+    });
+    const report = persistenceReport(detection, "a".repeat(40));
+    assert.doesNotMatch(
+      renderReviewCommentFromReport(report, "none"),
+      /Persistent data-model change detected|### Stored data model|Confirm migration/,
+    );
+    assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:pass/);
+    assert.deepEqual(detection, { change: false, surfaces: [] });
+  });
+}
+
 test("generic metadata and diagnostic identifiers do not warn or gate without storage evidence", () => {
   for (const name of ["metadata", "documentId", "chunkID", "collection", "dimension", "rowId"]) {
     for (const patch of [
@@ -294,6 +314,16 @@ test("storage evidence still warns and gates browser, runtime, and schema change
     {
       filename: "src/runtime/snapshot.ts",
       patch: '@@\n await state.storage.put("snapshot", {\n+  revision: nextRevision,\n });',
+      surface: "durable storage schema",
+    },
+    {
+      filename: "src/workers/snapshot.ts",
+      patch: '@@\n await state.storage.put("snapshot", {\n+  revision: nextRevision,\n });',
+      surface: "durable storage schema",
+    },
+    {
+      filename: "src/workers/room.ts",
+      patch: "@@\n+class Room extends DurableObject {\n+  revision: number;\n+}",
       surface: "durable storage schema",
     },
     {
@@ -412,6 +442,9 @@ test("storage evidence still warns and gates browser, runtime, and schema change
 test("strong persistence evidence remains unknown when production normalization loses content", () => {
   for (const file of [
     { filename: "ui/src/persistence/preferences.ts" },
+    { filename: "src/durable-objects/room.ts" },
+    { filename: "src/storage/room.ts" },
+    { filename: "src/workers/room.ts", previous_filename: "src/storage/room.ts" },
     { filename: "src/gateway/protocol/schema/session.ts" },
     { filename: "ui/src/display.ts", previous_filename: "ui/src/storage/state.ts" },
     { filename: "ui/src/storage/state.ts", previous_filename: "ui/src/display.ts" },

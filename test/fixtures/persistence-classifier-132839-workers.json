@@ -1,0 +1,29 @@
+{
+  "repository": "openclaw/openclaw",
+  "headSha": "04bf5b4e440ee08d57d1ae3606fbab74b0ca3cd7",
+  "baseSha": "47def12ea292025c4e3b0e235c2c0e0f9a6560d3",
+  "mergeBaseSha": "4adab7342dd8ad3ba4311f5e0f9ff725c02fc3c7",
+  "sourceSha256": "4b12d03529308b63f5b9f5b6a428f6f54d11ef4942dc1c7898461582e761e578",
+  "provenance": "Git-derived review-context pullFiles reconstructed from the two immutable worker-file diffs at the published reviewed head and its actual merge base. This is not an archived ClawSweeper worker context or executed detector result. The same two-file diff is byte-identical from the previously integrated 4e36 base.",
+  "pullFilesTruncated": false,
+  "pullRequest": "https://github.com/openclaw/openclaw/pull/132839",
+  "sourceComment": "https://github.com/openclaw/openclaw/pull/132839#issuecomment-5464924250",
+  "pullFiles": [
+    {
+      "filename": "src/gateway/worker-environments/worker-turn-execution.ts",
+      "status": "modified",
+      "additions": 1,
+      "deletions": 6,
+      "changes": 7,
+      "patch": "@@ -261,12 +261,6 @@ export async function executeWorkerTurn(\n       const canonical = buildPersistedUserTurnMessage({\n         text: turn.transcriptPrompt ?? turn.prompt,\n         media: turn.media,\n-        mediaImageLayout: {\n-          slots: media.imageFactIndexes.map((factIndex) => ({\n-            kind: \"inline\" as const,\n-            ...(factIndex === null ? {} : { factIndex }),\n-          })),\n-        },\n       });\n       const message = {\n         ...canonical,\n@@ -277,6 +271,7 @@ export async function executeWorkerTurn(\n         __openclaw: {\n           ...canonical[\"__openclaw\"],\n           mediaImageBlockFactIndexes: media.imageFactIndexes,\n+          mediaImageLayout: media.mediaImageLayout,\n         },\n       };\n       baseLeafId = manager.appendMessage(message);"
+    },
+    {
+      "filename": "src/gateway/worker-environments/worker-turn-media.ts",
+      "status": "modified",
+      "additions": 6,
+      "deletions": 9,
+      "changes": 15,
+      "patch": "@@ -8,11 +8,7 @@ import {\n   hydratePromptMediaMessages,\n } from \"../../agents/embedded-agent-runner/run/images.js\";\n import { resolveMediaFactLocalRef } from \"../../agents/embedded-agent-runner/run/images.media-refs.js\";\n-import {\n-  readPersistedMediaImageLayout,\n-  readPersistedImageBlockFactIndexes,\n-  type ImageFactIndex,\n-} from \"../../agents/embedded-agent-runner/run/prompt-image-metadata.js\";\n+import type { ImageFactIndex } from \"../../agents/embedded-agent-runner/run/prompt-image-metadata.js\";\n import { resolveImageSanitizationLimits } from \"../../agents/image-sanitization.js\";\n import type { AgentMessage } from \"../../agents/runtime/index.js\";\n import type { SessionPlacementTurnParams } from \"../../agents/session-placement-admission.js\";\n@@ -30,6 +26,7 @@ import {\n   stagedInputFileName,\n } from \"../../media/staged-inputs.js\";\n import { MEDIA_MAX_BYTES } from \"../../media/store.js\";\n+import { readPersistedImageBlockFactIndexes } from \"../../sessions/user-turn-transcript.metadata.js\";\n import type { WorkerLaunchPlan } from \"../../worker/launch-descriptor.js\";\n import {\n   cloneImageContent,\n@@ -81,6 +78,7 @@ export async function prepareWorkerTurnMedia(params: {\n   history: AgentMessage[];\n   images: Awaited<ReturnType<typeof detectAndLoadPromptImages>>[\"images\"];\n   imageFactIndexes: Awaited<ReturnType<typeof detectAndLoadPromptImages>>[\"imageFactIndexes\"];\n+  mediaImageLayout: Awaited<ReturnType<typeof detectAndLoadPromptImages>>[\"mediaImageLayout\"];\n }> {\n   const { turn, signal } = params;\n   const assertCurrent = () => {\n@@ -90,9 +88,7 @@ export async function prepareWorkerTurnMedia(params: {\n     }\n   };\n   assertCurrent();\n-  const recorded =\n-    turn.userTurnTranscriptRecorder?.message ??\n-    (await turn.userTurnTranscriptRecorder?.resolveMessage());\n+  const recorded = await turn.userTurnTranscriptRecorder?.resolveMessage();\n   assertCurrent();\n   const recordedMedia = recorded ? readPersistedMediaFacts(recorded) : undefined;\n   const media = recordedMedia?.length ? recordedMedia : (turn.media ?? []);\n@@ -116,7 +112,7 @@ export async function prepareWorkerTurnMedia(params: {\n     existingImages: turn.images,\n     imageOrder: turn.imageOrder,\n     media,\n-    mediaImageLayout: recorded ? readPersistedMediaImageLayout(recorded) : undefined,\n+    userTurnTranscriptRecorder: turn.userTurnTranscriptRecorder,\n   });\n   assertCurrent();\n   if (currentImages.failedMediaCount) {\n@@ -293,6 +289,7 @@ export async function prepareWorkerTurnMedia(params: {\n   return {\n     images: currentImages.images,\n     imageFactIndexes: currentImages.imageFactIndexes,\n+    mediaImageLayout: currentImages.mediaImageLayout,\n     prompt: prompt.length === 1 && prompt[0]?.type === \"text\" ? prompt[0].text : prompt,\n     history: history.map((message) => {\n       const input = message.role === \"user\" ? replay.get(message) : undefined;"
+    }
+  ]
+}

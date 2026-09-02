@@ -544,11 +544,7 @@ function isDataModelDocumentationPath(path: string): boolean {
 }
 
 function dataModelPathHint(path: string): string {
-  if (
-    /(^|\/)(?:durable-?objects?|workers?|storage)(?:\/|[-_.])|durable-?object|state-storage/i.test(
-      path,
-    )
-  ) {
+  if (/(^|\/)(?:durable-?objects?|storage)(?:\/|[-_.])|durable-?object|state-storage/i.test(path)) {
     return "durable storage schema";
   }
   if (/(^|\/)(?:cache|caches)(?:\/|[-_.])|cache[-_.]schema/i.test(path)) {
