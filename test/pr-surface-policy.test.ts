@@ -196,6 +196,7 @@ for (const [name, fixturePath, normalizationTruncates] of [
   ["pane-local diagnostics", "./fixtures/persistence-classifier-132718.json", true],
   ["test-support workspace guard", "./fixtures/persistence-classifier-133209.json", true],
   ["Go chunk diagnostics", "./fixtures/persistence-classifier-134934.json", false],
+  ["retained image runtime fields", "./fixtures/persistence-classifier-132839.json", true],
 ] as const) {
   for (const normalized of [false, true]) {
     test(`${name} creates no stored-data warning or migration gate (${normalized ? "production-normalized" : "full"} patch)`, () => {
@@ -230,8 +231,16 @@ for (const [name, fixturePath, normalizationTruncates] of [
 test("runtime state names and typed parameters alone do not establish stored data", () => {
   const patch =
     "@@\n+function show(\n+  state: ViewState,\n+  session: string,\n+) { return state; }";
-  for (const filename of ["ui/src/state.ts", "src/runtime/session.ts", "ui/src/history/merge.ts"]) {
-    for (const evidence of [patch, `${patch}\n\n[truncated 90 chars]`, undefined]) {
+  for (const filename of [
+    "ui/src/state.ts",
+    "src/runtime/session.ts",
+    "ui/src/history/merge.ts",
+    "src/runtime/metadata.ts",
+    "src/runtime/row-id.ts",
+    "src/runtime/document-id.ts",
+    "src/runtime/chunk-id.ts",
+  ]) {
+    for (const evidence of [patch, "", `${patch}\n\n[truncated 90 chars]`, undefined]) {
       const detection = dataModelChangeFromPullFilesForTest({
         pullFiles: [{ filename, previous_filename: "ui/src/session-view.ts", patch: evidence }],
       });
@@ -358,6 +367,31 @@ test("storage evidence still warns and gates browser, runtime, and schema change
       patch: "@@\n-  ttl: 86400,\n+  ttl: 3600,",
       surface: "persistent cache schema",
     },
+    {
+      filename: "src/runtime/metadata.ts",
+      patch: '@@\n localStorage.setItem("preferences", JSON.stringify({\n+  revision: 2,\n }));',
+      surface: "serialized state",
+    },
+    {
+      filename: "src/runtime/row-id.ts",
+      patch: "@@\n CREATE TABLE sessions (\n+  revision INTEGER,\n );",
+      surface: "database schema",
+    },
+    {
+      filename: "src/runtime/document-id.ts",
+      patch: '@@\n await state.storage.put("snapshot", {\n+  revision: nextRevision,\n });',
+      surface: "durable storage schema",
+    },
+    {
+      filename: "src/runtime/chunk-id.ts",
+      patch: "@@\n-  embeddingDimension: 768,\n+  embeddingDimension: 1024,",
+      surface: "vector/embedding metadata",
+    },
+    ...["vector", "embedding", "embeddings", "memory"].map((owner) => ({
+      filename: `src/${owner}/records.ts`,
+      patch: "@@\n+  metadata: row.metadata,",
+      surface: "vector/embedding metadata",
+    })),
   ];
   for (const { surface, ...file } of cases) {
     const pullFiles = hydratePrimaryBody("", "pull_request", { pullFiles: [file] }).context
@@ -382,6 +416,12 @@ test("strong persistence evidence remains unknown when production normalization 
     { filename: "ui/src/display.ts", previous_filename: "ui/src/storage/state.ts" },
     { filename: "ui/src/storage/state.ts", previous_filename: "ui/src/display.ts" },
     { filename: "ui/src/display.ts", patch: '@@\n localStorage.getItem("preferences");\n' },
+    { filename: "src/vector/records.ts" },
+    { filename: "src/embedding/records.ts" },
+    { filename: "src/embeddings/records.ts" },
+    { filename: "src/memory/records.ts" },
+    { filename: "src/runtime/metadata.ts", previous_filename: "src/vector/records.ts" },
+    { filename: "src/vector/records.ts", previous_filename: "src/runtime/metadata.ts" },
   ]) {
     const patch = `${file.patch ?? "@@\n"}${" // retained context\n".repeat(110)}+  revision: 2,`;
     const pullFiles = hydratePrimaryBody("", "pull_request", { pullFiles: [{ ...file, patch }] })

@@ -171,8 +171,9 @@ production source or documented storage contracts, not setup in test, fixture,
 or example source paths. Colocated `*.test-support.*` and Go `*_test.go` files
 are test code too, even when their guards or setup mention metadata,
 serialization, or SQL. Generic words such as `metadata`, `chunkId`, `documentId`,
-`collection`, and `dimension` alone do not establish vector storage. Known
-storage paths, explicit vector/embedding contracts, and same-hunk persistence
+`collection`, and `dimension` alone do not establish vector storage, including
+generic metadata or identifier filenames. Known storage paths, explicit
+vector/embedding contracts, and same-hunk persistence
 evidence still require review; diagnostic logging does not exempt real storage
 changes in the same patch.
 Markdown beside source is still documentation: ordinary

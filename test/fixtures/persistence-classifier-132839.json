@@ -1,0 +1,20 @@
+{
+  "repository": "openclaw/openclaw",
+  "headSha": "61d7719d833eb6684fc603a5c3659d1ba17f0595",
+  "baseSha": "4e36c68976a9474e6c7bf6dc55e2aedb4321d54d",
+  "sourceSha256": "95951deb7c4cc78ff35fa3376fa9fd792a3f1787213eb7205178dd1318bb89fc",
+  "provenance": "Git-derived review-context pullFiles from exact reviewed committed source diff; not the unavailable archived worker JSON. No PR-body text is an input. Every patch is the full unified hunk body at these immutable endpoints. Minimal fixture selects the one path named by the captured public stored-data warning; full 43-file context is retained separately.",
+  "pullFilesTruncated": false,
+  "pullRequest": "https://github.com/openclaw/openclaw/pull/132839",
+  "sourceComment": "https://github.com/openclaw/openclaw/pull/132839#issuecomment-5464924250",
+  "pullFiles": [
+    {
+      "filename": "src/agents/embedded-agent-runner/run/prompt-image-metadata.ts",
+      "status": "modified",
+      "additions": 48,
+      "deletions": 0,
+      "changes": 48,
+      "patch": "@@ -1,3 +1,5 @@\n+import { isImageMediaFact, type MediaFact } from \"../../../media/media-facts.js\";\n+import type { PromptImageOrderEntry } from \"../../../media/prompt-image-order.js\";\n import type { AgentMessage } from \"../../runtime/index.js\";\n \n export type ImageFactIndex = number | null;\n@@ -7,6 +9,52 @@ export type MediaImageLayout = {\n   suppressedFactIndexes?: number[];\n };\n \n+/** Resolves image ownership before independent media arrays are combined. */\n+export function resolveMediaImageLayout(params: {\n+  media: readonly MediaFact[];\n+  imageOrder?: readonly PromptImageOrderEntry[];\n+  mediaImageLayout?: MediaImageLayout;\n+  inlineImageCount: number;\n+}): MediaImageLayout {\n+  const suppressed = new Set([\n+    ...(params.mediaImageLayout?.suppressedFactIndexes ?? []),\n+    ...params.media.flatMap((fact, index) => (fact.hydrationSuppressed === true ? [index] : [])),\n+  ]);\n+  const imageFactIndexes = params.media.flatMap((fact, factIndex) =>\n+    isImageMediaFact(fact) && !suppressed.has(factIndex) ? [factIndex] : [],\n+  );\n+  const slots = (() => {\n+    // Keep suppressed inline slots for byte-to-fact alignment; consumers filter\n+    // them only after associating the original inline image array.\n+    if (params.mediaImageLayout?.slots.length) {\n+      return params.mediaImageLayout.slots;\n+    }\n+    if (params.imageOrder?.length === imageFactIndexes.length) {\n+      return params.imageOrder.map((kind, index) => ({ kind, factIndex: imageFactIndexes[index] }));\n+    }\n+    if (params.imageOrder?.length) {\n+      const pending = [...imageFactIndexes];\n+      return [\n+        ...params.imageOrder.map((kind) => ({\n+          kind,\n+          ...(kind === \"offloaded\" && pending.length ? { factIndex: pending.shift() } : {}),\n+        })),\n+        ...pending.map((factIndex) => ({ kind: \"offloaded\" as const, factIndex })),\n+      ];\n+    }\n+    return imageFactIndexes.map((factIndex, imageIndex) => ({\n+      factIndex,\n+      kind:\n+        !params.media[factIndex]?.path &&\n+        !params.media[factIndex]?.url &&\n+        imageIndex < params.inlineImageCount\n+          ? (\"inline\" as const)\n+          : (\"offloaded\" as const),\n+    }));\n+  })();\n+  return { slots, suppressedFactIndexes: [...suppressed] };\n+}\n+\n export function readPersistedImageBlockFactIndexes(\n   message: AgentMessage,\n ): ImageFactIndex[] | undefined {"
+    }
+  ]
+}

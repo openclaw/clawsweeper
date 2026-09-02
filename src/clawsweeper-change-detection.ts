@@ -557,11 +557,7 @@ function dataModelPathHint(path: string): string {
   if (/(^|\/)persistence(?:\/|[-_.])|(?:serialized|persisted?)[-_.]?(?:state|json)/i.test(path)) {
     return "serialized state";
   }
-  if (
-    /(^|\/)(?:vector|embedding|embeddings|memory)(?:\/|[-_.])|(?:vector|embedding|metadata|row-id|document-id|chunk-id)/i.test(
-      path,
-    )
-  ) {
+  if (/vector|embedding|(?:^|\/)memory(?:\/|[-_.])/i.test(path)) {
     return "vector/embedding metadata";
   }
   if (
