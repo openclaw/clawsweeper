@@ -123,16 +123,25 @@ export function serializeReviewContext(context: object): string {
 }
 
 export function omitReviewedFixtureReferences(text: string): string {
-  // Prose quotations do not carry a Git source binding. Omit the complete
-  // reviewed token; a prefix match could conceal changed credentials or a query.
+  // Prose quotations have no Git source binding. Match the complete URI before
+  // stripping closing punctuation; path, query, and credential changes stay visible.
   return text.replace(
-    /(^|[\s<>"'\x60(])([A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s<>"'\x60]+)/g,
+    /(^|[\s<>"'\x60([{])([A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s<>"'\x60]+)/g,
     (match, boundary: string, uri: string) => {
-      const digest = createHash("sha256").update(uri).digest("hex");
-      const fixture = REVIEWED_FIXTURES.find((entry) => entry.fixtureSha256 === digest);
-      return fixture
-        ? boundary + "[reviewed synthetic URI omitted; inspect " + fixture.sources.join(", ") + "]"
-        : match;
+      for (const candidate of [uri, uri.replace(/[)\]},.;!]+$/, "")]) {
+        const digest = createHash("sha256").update(candidate).digest("hex");
+        const fixture = REVIEWED_FIXTURES.find((entry) => entry.fixtureSha256 === digest);
+        if (fixture) {
+          return (
+            boundary +
+            "[reviewed synthetic URI omitted; inspect " +
+            fixture.sources.join(", ") +
+            "]" +
+            uri.slice(candidate.length)
+          );
+        }
+      }
+      return match;
     },
   );
 }

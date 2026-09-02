@@ -49,11 +49,18 @@ test("GitHub review context omits complete reviewed URI quotations and preserves
   const controls = [
     uri + "?new-secret=changed",
     uri + "/changed",
+    uri + "?new-secret=changed).",
+    uri + "/changed).",
+    uri + ")?new-secret=changed",
+    uri + ".)/changed",
     uri + "\\changed",
     uri.replace("://", "://changed"),
     "https://docs.example.test/proof",
   ];
-  const body = "Existing fixture \x60" + uri + "\x60; inspect the test before judging.";
+  const reference = "[reviewed synthetic URI omitted; inspect test/action-ledger-runtime.test.ts]";
+  const quote = (value: string) =>
+    `Backticks \x60${value}\x60; Markdown [fixture](${value}). Sentence ${value}. Wrapped (${value}); [${value}], {${value}}!`;
+  const body = quote(uri);
   const context = {
     issue: { body },
     comments: [{ id: 12, body }],
@@ -67,8 +74,7 @@ test("GitHub review context omits complete reviewed URI quotations and preserves
     .split("## GitHub Context\n")[1]!
     .match(/\x60{3}json\n([\s\S]*?)\n\x60{3}/)![1]!;
   const rendered = JSON.parse(jsonText);
-  const omitted =
-    "Existing fixture \x60[reviewed synthetic URI omitted; inspect test/action-ledger-runtime.test.ts]\x60; inspect the test before judging.";
+  const omitted = quote(reference);
   assert.equal(rendered.issue.body, omitted);
   assert.equal(rendered.comments[0].body, omitted);
   assert.ok(prompt.includes("- Title: " + omitted));

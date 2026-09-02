@@ -65,7 +65,7 @@ const reviewedUri = readFileSync("test/action-ledger-runtime.test.ts", "utf8")
     (uri) => digest(uri) === "a728de5dbbef23b8aa5ef2d99060835f4f2fb5a0fa2abb9fe249d08aa09bd09e",
   );
 assert.ok(reviewedUri);
-const fixtureQuote = `Reference \`${reviewedUri}\` and changed \`${reviewedUri}?unreviewed\`.`;
+const fixtureQuote = `Reference [fixture](${reviewedUri}). Changed [fixture](${reviewedUri}?unreviewed).`;
 const safeFixtureQuote = fixtureQuote.replace(
   reviewedUri,
   "[reviewed synthetic URI omitted; inspect test/action-ledger-runtime.test.ts]",
