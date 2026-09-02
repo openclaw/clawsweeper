@@ -586,16 +586,18 @@ the [remote-CDP coverage](https://github.com/openclaw/openclaw/blob/58da2f5897fe
 the [server-context redaction test](https://github.com/openclaw/openclaw/blob/4b5987829d0f82ea44ae50f2f418ffe5ea445e7f/extensions/browser/src/browser/server-context.ensure-browser-available.waits-for-cdp-ready.test.ts),
 the [remote-CDP documentation example](https://github.com/openclaw/openclaw/blob/bf15c87d2b1223610b42775b8154b8eec60b541d/docs/tools/browser.md),
 the [credentialed-page rejection fixtures](https://github.com/openclaw/openclaw/blob/d5fb4903f1b13a4309d479f1011d995b1fc706ae/extensions/browser/src/browser-tool.test.ts),
+the [guarded CDP authentication fixtures](https://github.com/openclaw/openclaw/blob/1cf6ff3bdc08a6ac08facb1006b1d7aabc0eaff4/extensions/browser/src/browser/cdp.helpers.test.ts),
+the [MCP endpoint-redaction fixture](https://github.com/openclaw/openclaw/blob/ac21e89c13e42f6a7d152bf9be143e67edd44ed3/extensions/browser/src/browser/chrome-mcp.test.ts),
 and the [Mattermost slash-error sanitization fixtures](https://github.com/openclaw/openclaw/blob/9c0975c1c20ed635532c7aa0f510154224adee7f/extensions/mattermost/src/mattermost/slash-http.test.ts)
 after a complete scan. Static host policy associates each
 exact detector-matched URI SHA-256 with only its approved source paths and exact
 scanner `Raw` digest, including when `Raw` omits a path retained by `RawV2`. The
 matched value must be a literal in a host-staged Git blob from mode `100644`.
-The four Mattermost entries cover only the reviewed `/api` and `/hooks` URI
-prefixes and their authorities. TruffleHog's pinned URI detector excludes query
-text; this classification makes no claim about surrounding query values. The
-table binds exact values and paths across revisions, not entire enclosing URLs
-or particular commits.
+The three guarded-CDP/MCP entries and four Mattermost entries also bind complete
+reviewed source lines, including surrounding query text that TruffleHog's URI
+detector does not match. Changes to those lines or additional literal occurrences
+refuse classification. These witnesses do not expand native query detection.
+The table binds exact values and paths across revisions, not particular commits.
 The host locates that exact literal independently in the staged blob. Decoder
 coordinates can shift, and TruffleHog can omit a companion plain-text finding,
 so admission does not depend on another finding or a reported line matching the
@@ -603,6 +605,11 @@ original source. Repeated literals remain eligible unless an entry is bound to
 an approved complete-line digest; those entries require exactly one occurrence
 in the staged blob. Finding order and duplicate records do not change the exact
 value, path, and mode checks.
+Findings must use `PLAIN` or `HTML`, except the two guarded-CDP fixtures also
+permit `BASE64`. The pinned Base64 decoder preserves the rest of a chunk after
+decoding another token, so an unchanged literal can acquire that decoder label
+and win cross-decoder deduplication. Those entries still require the literal in
+its exact original source line; encoded-only content remains blocking.
 One source path may contain multiple independently reviewed fixtures; each
 digest/path/mode tuple must match exactly, so source membership alone never
 qualifies a finding.

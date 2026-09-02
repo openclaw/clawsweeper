@@ -5,6 +5,7 @@ interface ReviewedFixture {
   fixtureSha256: string;
   rawSha256?: string;
   lineSha256s?: readonly string[];
+  decoders?: readonly ("PLAIN" | "HTML" | "BASE64")[];
   sources: readonly string[];
 }
 
@@ -46,6 +47,29 @@ const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
     fixtureSha256: "d8996b8fdec57910e379c720611bc37f9433f1cb7027b6f6262d785f1506e9ff",
     rawSha256: "8d3331ee208c72c30fba199e4e2b8a65d69a5034e49875a2f20dbea3a4f2f976",
     sources: ["extensions/browser/src/browser-tool.test.ts"],
+  },
+  {
+    // Decoding a neighboring Basic-auth token can label these unchanged CDP
+    // literals BASE64. Each match still requires its exact original source line.
+    fixtureSha256: "24bd2ee9856630ff773868d946a3b3159e1bb04b297adf4d42b916218a0195d7",
+    rawSha256: "d15184614e748450d49a726f84955ca7745b87d0728afbd6bb6b50d84cce4fe0",
+    lineSha256s: ["89bc2aa05769a4016fb19125143188f20b91807aa5c47918133a119b5a91d341"],
+    decoders: ["PLAIN", "HTML", "BASE64"],
+    sources: ["extensions/browser/src/browser/cdp.helpers.test.ts"],
+  },
+  {
+    fixtureSha256: "973f5bd82def987cc78ac1211ce5f32debb1284687fc325aa3b9101879c19228",
+    rawSha256: "886f9c4f784d3bccb1899db732a298b1d10db8ffdb2b88f76435ea346956e83f",
+    lineSha256s: ["8cf15179943a1e0f6610e8bd8677c07cd69c4f9241709527c735d7a1e50ee9cf"],
+    decoders: ["PLAIN", "HTML", "BASE64"],
+    sources: ["extensions/browser/src/browser/cdp.helpers.test.ts"],
+  },
+  {
+    // Bind the complete MCP redaction fixture, including its unmatched query.
+    fixtureSha256: "1723ec81bae6840c6acfb126d527fa9cd7727764c93846424fc6136fa5dbb860",
+    rawSha256: "a89a1a50188bbcb017bc52d1d2683ea0c06d8805919c89d4813fc3ee0050061b",
+    lineSha256s: ["30136a0d64f0e22bd059dd81cc6a07cad9af26be47d7979a314dee7093011f1f"],
+    sources: ["extensions/browser/src/browser/chrome-mcp.test.ts"],
   },
   {
     // Mattermost slash-error sanitization fixtures introduced by 9c0975c1c20e.
@@ -288,7 +312,7 @@ export function classifyReviewedFixtureScan(
       finding.DetectorName !== "URI" ||
       finding.SourceType !== 15 ||
       finding.Verified !== false ||
-      (finding.DecoderName !== "PLAIN" && finding.DecoderName !== "HTML") ||
+      typeof finding.DecoderName !== "string" ||
       typeof finding.VerificationError !== "string" ||
       !finding.VerificationError ||
       typeof finding.Raw !== "string" ||
@@ -305,6 +329,8 @@ export function classifyReviewedFixtureScan(
         entry.fixtureSha256 === digest && (entry.rawSha256 ?? entry.fixtureSha256) === rawDigest,
     );
     if (!fixture) return refuse("literal_not_reviewed");
+    if (!(fixture.decoders ?? ["PLAIN", "HTML"]).some((decoder) => decoder === finding.DecoderName))
+      return refuse("finding_not_reviewed");
     if (typeof file !== "string" || scannerLine === null) return refuse("metadata_mismatch");
     if (staged?.kind !== "blob" || !staged.bytes) return refuse("material_not_reviewed");
     if (

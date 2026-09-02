@@ -548,6 +548,8 @@ const browserServerContextSource =
   "extensions/browser/src/browser/server-context.ensure-browser-available.waits-for-cdp-ready.test.ts";
 const browserDocsSource = "docs/tools/browser.md";
 const browserToolSource = "extensions/browser/src/browser-tool.test.ts";
+const browserCdpHelpersSource = "extensions/browser/src/browser/cdp.helpers.test.ts";
+const browserMcpSource = "extensions/browser/src/browser/chrome-mcp.test.ts";
 const mattermostSource = "extensions/mattermost/src/mattermost/slash-http.test.ts";
 const ledgerFixtureSha256 = "a728de5dbbef23b8aa5ef2d99060835f4f2fb5a0fa2abb9fe249d08aa09bd09e";
 const nativeContractFailures = new Map([
@@ -575,6 +577,27 @@ for (const scenario of [
   "browser local server mismatch",
   "browser docs fixture",
   "browser page URL fixture",
+  "browser CDP relay fixture",
+  "browser CDP relay shifted HTML without companion",
+  "browser CDP encoded fixture",
+  "browser CDP encoded HTML fixture",
+  "browser MCP endpoint fixture",
+  "browser MCP endpoint shifted HTML without companion",
+  "browser CDP relay changed username",
+  "browser CDP encoded changed password",
+  "browser MCP endpoint changed host",
+  "browser CDP relay source mismatch",
+  "browser MCP endpoint source mismatch",
+  "browser CDP relay query mutation",
+  "browser MCP endpoint query mutation",
+  "browser CDP relay unapproved line",
+  "browser CDP encoded duplicate on unapproved line",
+  "browser MCP endpoint duplicate on approved line",
+  "browser MCP endpoint encoded-only",
+  "browser CDP relay BASE64 fixture",
+  "browser CDP encoded shifted BASE64 without companion",
+  "browser CDP encoded BASE64 encoded-only",
+  "browser MCP endpoint BASE64 fixture",
   "mattermost api input fixture",
   "mattermost api redacted fixture",
   "mattermost hooks input fixture",
@@ -671,7 +694,39 @@ for (const scenario of [
     const mattermostFixture = scenario.startsWith("mattermost ");
     const browserDocsFixture = scenario.startsWith("browser docs");
     const browserPageFixture = scenario.startsWith("browser page URL");
-    if (scenario.startsWith("browser ")) {
+    const browserCdpFixture = scenario.startsWith("browser CDP ");
+    const browserMcpFixture = scenario.startsWith("browser MCP ");
+    const browserExactFixture = browserCdpFixture || browserMcpFixture;
+    const encodedCdpFixture = browserCdpFixture && scenario.includes("encoded");
+    // Preserve the literal witnesses captured from the native OpenClaw scan.
+    const literalLine = browserCdpFixture
+      ? encodedCdpFixture
+        ? 406
+        : 293
+      : browserMcpFixture
+        ? 1339
+        : 42;
+    const scannerLine = scenario.includes("shifted BASE64") ? literalLine - 4 : literalLine;
+    const primaryDecoder = scenario.includes("BASE64")
+      ? "BASE64"
+      : scenario === "browser CDP encoded HTML fixture"
+        ? "HTML"
+        : "PLAIN";
+    if (browserExactFixture) {
+      const url = new URL(
+        browserCdpFixture ? "http://127.0.0.1:9222/json/version" : "https://example.com/chrome",
+      );
+      url.username = browserCdpFixture && !encodedCdpFixture ? "openclaw" : "alice";
+      url.password = browserCdpFixture
+        ? encodedCdpFixture
+          ? "p@ss word"
+          : "relay-token"
+        : "supersecretpasswordvalue1234";
+      if (scenario.endsWith("changed username")) url.username += "changed";
+      if (scenario.endsWith("changed password")) url.password += "changed";
+      if (scenario.endsWith("changed host")) url.hostname = "other.example.com";
+      uri = url.href;
+    } else if (scenario.startsWith("browser ")) {
       const local = scenario.includes("local");
       const url = new URL(
         browserDocsFixture
@@ -713,7 +768,10 @@ for (const scenario of [
       authority.username = "redacted";
       authority.password = "redacted";
     }
-    const raw = browserPageFixture || mattermostFixture ? authority.href.slice(0, -1) : uri;
+    const raw =
+      browserPageFixture || browserExactFixture || mattermostFixture
+        ? authority.href.slice(0, -1)
+        : uri;
     let otherReviewedUri: string | undefined;
     if (scenario.endsWith("different approved literal")) {
       if (mattermostFixture) {
@@ -744,13 +802,21 @@ for (const scenario of [
                   ? scenario.endsWith("source mismatch")
                     ? browserToolSource
                     : browserDocsSource
-                  : browserPageFixture
+                  : browserExactFixture
                     ? scenario.endsWith("source mismatch")
-                      ? browserDocsSource
-                      : browserToolSource
-                    : scenario.includes("server")
-                      ? browserServerContextSource
-                      : browserChromeSource,
+                      ? browserCdpFixture
+                        ? browserMcpSource
+                        : browserCdpHelpersSource
+                      : browserCdpFixture
+                        ? browserCdpHelpersSource
+                        : browserMcpSource
+                    : browserPageFixture
+                      ? scenario.endsWith("source mismatch")
+                        ? browserDocsSource
+                        : browserToolSource
+                      : scenario.includes("server")
+                        ? browserServerContextSource
+                        : browserChromeSource,
               ]
             : scenario === "shared approved path OIDs"
               ? [...autoreviewSources, ledgerSource]
@@ -769,8 +835,20 @@ for (const scenario of [
                     ];
     const value =
       scenario === "decoded only" || scenario.endsWith("encoded-only")
-        ? uri.replace(":", "&#58;")
+        ? primaryDecoder === "BASE64"
+          ? Buffer.from(uri).toString("base64")
+          : uri.replace(":", "&#58;")
         : uri;
+    const sourceValue = browserMcpFixture
+      ? `${value}?token=supersecrettokenvalue1234567890${scenario.endsWith("query mutation") ? "changed" : ""}`
+      : `${value}${browserCdpFixture && scenario.endsWith("query mutation") ? "?changed=1" : ""}`;
+    const reviewedBrowserLine = browserExactFixture
+      ? scenario === "browser CDP relay unapproved line"
+        ? JSON.stringify(sourceValue)
+        : browserCdpFixture
+          ? `      fetchOk(${JSON.stringify(sourceValue)}, 250),`
+          : `          ${JSON.stringify(sourceValue)},`
+      : undefined;
     const reviewedMattermostLine =
       mattermostFixture && scenario.includes("fixture")
         ? scenario.includes("redacted")
@@ -779,15 +857,18 @@ for (const scenario of [
             ? `        ${JSON.stringify(`fallback\r\nsecond-line botToken: secret-bot ${uri}?token=secret-query`)},`
             : `        ${JSON.stringify(`primary\ntoken=secret-token ${uri}?access_token=secret-access&client_secret=secret-client`)},`
         : undefined;
+    const reviewedFixtureLine = reviewedBrowserLine ?? reviewedMattermostLine;
     const contents =
-      "// context\n".repeat(40) +
-      (reviewedMattermostLine ?? JSON.stringify(otherReviewedUri ?? value)) +
+      "// context\n".repeat(literalLine - 2) +
+      (reviewedFixtureLine ?? JSON.stringify(otherReviewedUri ?? value)) +
       "\n" +
       (scenario.includes("duplicate on unapproved line")
-        ? reviewedMattermostLine + "\n"
-        : scenario.endsWith("repeated literal")
-          ? JSON.stringify(value) + "\n"
-          : "");
+        ? (browserExactFixture ? JSON.stringify(sourceValue) : reviewedMattermostLine) + "\n"
+        : scenario.includes("duplicate on approved line")
+          ? reviewedFixtureLine + "\n"
+          : scenario.endsWith("repeated literal")
+            ? JSON.stringify(value) + "\n"
+            : "");
     const fixtureContent = (prefix: string) =>
       Buffer.concat([
         Buffer.from(prefix + contents),
@@ -855,6 +936,8 @@ for (const scenario of [
 const uri = ${JSON.stringify(uri)};
 const raw = ${JSON.stringify(raw)};
 const scenario = ${JSON.stringify(scenario)};
+const literalLine = ${literalLine};
+const scannerLine = ${scannerLine};
 fs.writeFileSync(${JSON.stringify(receipt)}, path.dirname(inputDir));
 const parsed = new URL(uri);
 const blobs = inputs.filter(({name}) => /^[a-f0-9]{40}$/.test(name));
@@ -868,9 +951,9 @@ let findings = inputs.filter(({name, bytes}) =>
   (scenario === 'raw diff' && name === '0') ||
   (scenario === 'normalized worktree' && /^\d+$/.test(name) && bytes.includes('\r\n'))
 ).map(({name, bytes}) => ({
-  SourceType: 15, DetectorType: 17, DetectorName: 'URI', DecoderName: 'PLAIN', Verified: false,
+  SourceType: 15, DetectorType: 17, DetectorName: 'URI', DecoderName: ${JSON.stringify(primaryDecoder)}, Verified: false,
   VerificationError: 'synthetic verification error', Raw: raw, RawV2: uri,
-  SourceMetadata: {Data: {Filesystem: {file: path.join(inputDir, name), line: /^[a-f0-9]{40}$/.test(name) ? 42 : scenario === 'raw diff' ? 1 : bytes.toString().split('\n').findIndex(line => line.includes(uri)) + 1}}},
+  SourceMetadata: {Data: {Filesystem: {file: path.join(inputDir, name), line: /^[a-f0-9]{40}$/.test(name) ? scannerLine : scenario === 'raw diff' ? 1 : bytes.toString().split('\n').findIndex(line => line.includes(uri)) + 1}}},
   SecretParts: {host: parsed.host, username: parsed.username, password: parsed.password},
   ExtraData: null, StructuredData: null,
 }));
@@ -878,7 +961,7 @@ if (scenario.includes('shifted HTML')) {
   const plain = findings;
   const html = plain.map(finding => ({
     ...finding, DecoderName: 'HTML',
-    SourceMetadata: {Data: {Filesystem: {...finding.SourceMetadata.Data.Filesystem, line: 38}}},
+    SourceMetadata: {Data: {Filesystem: {...finding.SourceMetadata.Data.Filesystem, line: literalLine - 4}}},
   }));
   findings = scenario.endsWith('first') ? [...html, ...plain] : [...plain, ...html];
   if (scenario.endsWith('without companion')) findings = [html[0], plain[1], html[1]];
@@ -956,6 +1039,14 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
         "browser remote server fixture",
         "browser docs fixture",
         "browser page URL fixture",
+        "browser CDP relay fixture",
+        "browser CDP relay shifted HTML without companion",
+        "browser CDP encoded fixture",
+        "browser CDP encoded HTML fixture",
+        "browser MCP endpoint fixture",
+        "browser MCP endpoint shifted HTML without companion",
+        "browser CDP relay BASE64 fixture",
+        "browser CDP encoded shifted BASE64 without companion",
         "mattermost api input fixture",
         "mattermost api redacted fixture",
         "mattermost hooks input fixture",
@@ -988,25 +1079,31 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
       const expectedLocations = (
         shiftedHtml
           ? [
-              { scannerLine: 42, decoder: "PLAIN" },
+              { scannerLine: literalLine, decoder: "PLAIN" },
               ...(scenario.endsWith("without companion")
                 ? []
-                : [{ scannerLine: 42, decoder: "PLAIN" }]),
+                : [{ scannerLine: literalLine, decoder: "PLAIN" }]),
               ...(scenario.endsWith("repeated literal")
                 ? [
                     { scannerLine: 43, decoder: "PLAIN" },
                     { scannerLine: 43, decoder: "PLAIN" },
                   ]
                 : []),
-              { scannerLine: 38, decoder: "HTML" },
-              { scannerLine: 38, decoder: "HTML" },
+              { scannerLine: literalLine - 4, decoder: "HTML" },
+              { scannerLine: literalLine - 4, decoder: "HTML" },
             ]
           : [
-              { scannerLine: scenario === "shifted PLAIN" ? 43 : 42, decoder: "PLAIN" },
-              { scannerLine: scenario === "shifted PLAIN" ? 43 : 42, decoder: "PLAIN" },
+              {
+                scannerLine: scenario === "shifted PLAIN" ? 43 : scannerLine,
+                decoder: primaryDecoder,
+              },
+              {
+                scannerLine: scenario === "shifted PLAIN" ? 43 : scannerLine,
+                decoder: primaryDecoder,
+              },
               ...(scenario === "HTML duplicate" ? [{ scannerLine: 42, decoder: "HTML" }] : []),
             ]
-      ).map((location) => ({ ...location, literalLine: 42 }));
+      ).map((location) => ({ ...location, literalLine }));
       const expectedFindings = expectedLocations.length;
       assert.equal(
         notice.findings.reduce(
