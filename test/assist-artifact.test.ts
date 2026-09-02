@@ -29,7 +29,7 @@ const request: AssistRequestBinding = {
   reasoningEffort: "high",
 };
 
-for (const admission of ["clean", "finding"]) {
+for (const admission of ["clean", "invalid-output"]) {
   test(`assist generation ${admission} leaves no diagnostic prompt copy`, (t) => {
     const root = mkdtempSync(join(tmpdir(), "clawsweeper-assist-prompt-"));
     t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -41,7 +41,7 @@ for (const admission of ["clean", "finding"]) {
       t,
       `
 assert.equal(fs.existsSync(${JSON.stringify(promptPath)}), false);
-${admission === "finding" ? "process.exit(183);" : ""}
+${admission === "invalid-output" ? "process.exit(183);" : ""}
 `,
     );
     const binary = join(root, "codex");
@@ -90,8 +90,8 @@ fs.writeFileSync(process.argv[process.argv.indexOf('--output-last-message') + 1]
         artifact: artifactPath,
         work_dir: root,
       });
-    if (admission === "finding") {
-      assert.throws(run, /Agent input scan refused: findings/);
+    if (admission === "invalid-output") {
+      assert.throws(run, /Agent input scan refused: scanner_failed/);
       assert.equal(existsSync(providerInput), false);
       assert.equal(existsSync(artifactPath), false);
     } else {

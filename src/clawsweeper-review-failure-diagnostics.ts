@@ -42,7 +42,7 @@ export function writeExactReviewFailureDiagnostics(options: {
   env?: NodeJS.ProcessEnv;
 }): string {
   const error = record(options.error);
-  const scanFailure = options.error instanceof AgentInputScanError;
+  const scanFailure = options.error instanceof AgentInputScanError ? options.error : undefined;
   const diagnosticStage = scanFailure
     ? "agent_input_scan"
     : safeCode(error.diagnosticStage, /^source_preparation$/);
@@ -81,6 +81,7 @@ export function writeExactReviewFailureDiagnostics(options: {
       failure: {
         stage: diagnosticStage ?? "unknown",
         reason_code: diagnosticReason ?? "unknown",
+        ...(scanFailure?.scanDiagnostic ? { scan: scanFailure.scanDiagnostic } : {}),
       },
       process: {
         status: Number.isInteger(error.status) && Number(error.status) >= 0 ? error.status : null,

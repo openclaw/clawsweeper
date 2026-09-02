@@ -62,7 +62,7 @@ function runLocalReview(
   return { status: result.status, out: `${result.stderr ?? ""}${result.stdout ?? ""}` };
 }
 
-for (const admission of ["clean", "finding"])
+for (const admission of ["clean", "invalid-output"])
   test(
     `local-review ${admission} preserves GitHub isolation without diagnostic prompt copies`,
     { skip: process.platform === "win32" },
@@ -74,7 +74,7 @@ for (const admission of ["clean", "finding"])
         t,
         `
 assert.equal(fs.readdirSync(${JSON.stringify(reportDir)}, {recursive: true}).some(name => String(name).endsWith('.prompt.md')), false);
-${admission === "finding" ? "process.exit(183);" : ""}
+${admission === "invalid-output" ? "process.exit(183);" : ""}
 `,
       );
       try {
@@ -136,9 +136,9 @@ fs.writeFileSync(output, "---\\nresult: success\\n---\\n\\nOffline local review 
           ),
           false,
         );
-        if (admission === "finding") {
+        if (admission === "invalid-output") {
           assert.equal(result.status, 1, result.out);
-          assert.match(result.out, /Agent input scan refused: findings/);
+          assert.match(result.out, /Agent input scan refused: scanner_failed/);
           assert.equal(existsSync(capture), false);
           return;
         }

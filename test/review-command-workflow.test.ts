@@ -659,7 +659,7 @@ for (const scenario of [
         );
 
       if (refuseScan) {
-        const reason = incompleteSource ? "incomplete_source" : "findings";
+        const reason = incompleteSource ? "incomplete_source" : "scanner_failed";
         assert.throws(execute, (error) => {
           assert.ok(error instanceof AgentInputScanError);
           assert.equal(error.reason, reason);
@@ -686,7 +686,13 @@ for (const scenario of [
           const manifest = JSON.parse(
             readFileSync(join(artifactDir, "failure-diagnostics", "manifest.json"), "utf8"),
           );
-          assert.deepEqual(manifest.failure, { stage: "agent_input_scan", reason_code: reason });
+          assert.deepEqual(manifest.failure, {
+            stage: "agent_input_scan",
+            reason_code: reason,
+            ...(!incompleteSource
+              ? { scan: { kind: "native_contract", reason: "invalid_stdout" } }
+              : {}),
+          });
           assert.equal(manifest.retryable, false);
           assert.equal(manifest.process.workflow_exit, incompleteSource ? 78 : 1);
           assert.equal(

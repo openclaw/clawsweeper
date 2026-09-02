@@ -100,7 +100,16 @@ admission. The manifest records the failure stage, reason, retryability, and
 the observed PR head. Native Git failures also retain process exit status, signal,
 error code, and bounded redacted stderr. Public errors omit raw process output;
 scanner output and verification details are never retained. Scan refusals
-preserve their original terminal classification and exit code.
+remain terminal and retain their workflow exit code. Incomplete or inconsistent
+native output uses `scanner_failed`; a complete scan with an unclassified finding
+uses `findings`. The manifest's optional `failure.scan` carries closed diagnostic
+reason codes. Finding diagnostics identify only the first blocking record, with
+the total finding count, bounded detector/decoder/line metadata, and a host-staged
+material ID. Git blobs and raw working files include up to four source references
+with exact Git revisions, modes, and SHA-256 path hashes plus the total reference
+count; patches and raw diffs identify their Git endpoints. Unknown scanner paths
+never become material identities. Raw paths, matched values, and literal digests
+are excluded. Diagnostic metadata never authorizes a finding or removes scanned input.
 
 Blob-size metadata uses batches of at most 160 objects; one explicit fetch per
 delta retrieves missing blobs only after the complete set fits the scanner's

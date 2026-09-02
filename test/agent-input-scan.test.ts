@@ -31,6 +31,7 @@ import {
   withTargetReviewSnapshot,
 } from "../dist/repair/target-validation.js";
 import { useFakeScanner } from "./agent-input-scan-helpers.ts";
+import { writeExactReviewFailureDiagnostics } from "../dist/clawsweeper-review-failure-diagnostics.js";
 
 test("only incomplete source scan failures receive the terminal review exit code", () => {
   assert.equal(
@@ -138,7 +139,7 @@ if (inputs.some(({bytes}) => bytes.includes(${JSON.stringify(needle)}))) {
       () => f.run({ kind: "committed", baseSha, headSha }),
       (error) => {
         assert.ok(error instanceof AgentInputScanError);
-        assert.equal(error.reason, "findings");
+        assert.equal(error.reason, "scanner_failed");
         assert.doesNotMatch(String(error), /must-not-escape/);
         return true;
       },
@@ -342,7 +343,7 @@ test("repair admission includes staged bytes when working bytes were restored", 
   const expected = captureTargetCheckoutBinding(f.cwd);
   assert.throws(
     () => withTargetReviewSnapshot({ cwd: f.cwd, baseSha, expected, timeoutMs: 30_000 }, f.run),
-    /findings/,
+    /scanner_failed/,
   );
   assert.equal(existsSync(f.calls), false);
 });
@@ -466,7 +467,7 @@ ${failure === "signal" ? "process.kill(process.pid, 'SIGTERM');" : failure === "
                 ? "scanner_unavailable"
                 : failure === "deadline"
                   ? "deadline"
-                  : "findings",
+                  : "scanner_failed",
         );
         assert.doesNotMatch(String(error), /synthetic-sensitive-value/);
         return true;
@@ -542,7 +543,24 @@ const browserServerContextSource =
   "extensions/browser/src/browser/server-context.ensure-browser-available.waits-for-cdp-ready.test.ts";
 const browserDocsSource = "docs/tools/browser.md";
 const browserToolSource = "extensions/browser/src/browser-tool.test.ts";
+const mattermostSource = "extensions/mattermost/src/mattermost/slash-http.test.ts";
 const ledgerFixtureSha256 = "a728de5dbbef23b8aa5ef2d99060835f4f2fb5a0fa2abb9fe249d08aa09bd09e";
+const nativeContractFailures = new Map([
+  ["missing completion", "incomplete_scan"],
+  ["detector error", "scan_error"],
+  ["info error", "scan_error"],
+  ["info errors", "scan_error"],
+  ["wrong count", "completion_mismatch"],
+  ["verified count", "completion_mismatch"],
+  ["wrong version", "completion_mismatch"],
+  ["duplicate completion", "incomplete_scan"],
+  ["trailing log", "incomplete_scan"],
+  ["unterminated output", "invalid_stdout"],
+  ["unterminated stderr", "invalid_stderr"],
+  ["malformed stderr", "invalid_stderr"],
+  ["malformed output", "invalid_stdout"],
+  ["unexpected successful output", "unexpected_exit"],
+]);
 
 for (const scenario of [
   "reviewed fixture",
@@ -552,10 +570,21 @@ for (const scenario of [
   "browser local server mismatch",
   "browser docs fixture",
   "browser page URL fixture",
+  "mattermost api input fixture",
+  "mattermost api redacted fixture",
+  "mattermost hooks input fixture",
+  "mattermost hooks redacted fixture",
+  "mattermost changed username",
+  "mattermost changed password",
+  "mattermost changed host",
+  "mattermost changed path",
+  "mattermost mismatched authority raw",
+  "mattermost source mismatch",
+  "mattermost different approved literal",
   "browser docs source mismatch",
   "browser page URL source mismatch",
   "browser page URL changed path",
-  "browser page URL changed query",
+  "browser page URL synthetic query record",
   "browser docs shifted HTML",
   "browser docs shifted HTML first",
   "browser docs shifted HTML without companion",
@@ -588,10 +617,14 @@ for (const scenario of [
   "invalid line",
   "invalid UTF-8 literal blob",
   "other file",
+  "many source references",
+  "untrusted finding metadata",
   "prompt",
   "schema",
   "additional",
   "diff",
+  "raw diff",
+  "normalized worktree",
   "decoded only",
   "wrong detector",
   "wrong source type",
@@ -628,6 +661,7 @@ for (const scenario of [
     let uri = [...existing.matchAll(/"([^"\n]+)"/g)]
       .map((match) => match[1]!)
       .find((value) => createHash("sha256").update(value).digest("hex") === ledgerFixtureSha256);
+    const mattermostFixture = scenario.startsWith("mattermost ");
     const browserDocsFixture = scenario.startsWith("browser docs");
     const browserPageFixture = scenario.startsWith("browser page URL");
     if (scenario.startsWith("browser ")) {
@@ -644,53 +678,88 @@ for (const scenario of [
       url.username = local ? "browser-user" : "user";
       url.password = browserPageFixture ? "secret" : local ? "browser-password" : "pass";
       if (scenario === "browser page URL changed path") url.pathname = "/changed";
-      if (scenario === "browser page URL changed query") url.search = "?changed=1";
+      // Parser-only control: native URI matching excludes query text.
+      if (scenario === "browser page URL synthetic query record") url.search = "?changed=1";
       uri = browserPageFixture ? url.href : url.href.slice(0, -1);
+    }
+    if (mattermostFixture) {
+      // Native URI output stops before query text in these reviewed sanitization fixtures.
+      const url = new URL(
+        scenario.includes("hooks")
+          ? "https://chat.example.com/hooks"
+          : "https://chat.example.com/api",
+      );
+      url.username = scenario.includes("redacted") ? "redacted" : "user";
+      url.password = scenario.includes("redacted") ? "redacted" : "pass";
+      if (scenario === "mattermost changed username") url.username += "changed";
+      if (scenario === "mattermost changed password") url.password += "changed";
+      if (scenario === "mattermost changed host") url.hostname = "other.example.com";
+      if (scenario === "mattermost changed path") url.pathname = "/changed";
+      uri = url.href;
     }
     assert.ok(uri, "reviewed synthetic fixture is present");
     const authority = new URL(uri);
     authority.pathname = "";
     authority.search = "";
     authority.hash = "";
-    const raw = browserPageFixture ? authority.href.slice(0, -1) : uri;
+    if (scenario === "mattermost mismatched authority raw") {
+      authority.username = "redacted";
+      authority.password = "redacted";
+    }
+    const raw = browserPageFixture || mattermostFixture ? authority.href.slice(0, -1) : uri;
     let otherReviewedUri: string | undefined;
     if (scenario.endsWith("different approved literal")) {
-      const other = new URL("http://127.0.0.1");
-      other.username = "browser-user";
-      other.password = "browser-password";
-      otherReviewedUri = other.href.slice(0, -1);
+      if (mattermostFixture) {
+        const other = new URL(uri);
+        other.pathname = "/hooks";
+        otherReviewedUri = other.href;
+      } else {
+        const other = new URL("http://127.0.0.1");
+        other.username = "browser-user";
+        other.password = "browser-password";
+        otherReviewedUri = other.href.slice(0, -1);
+      }
     }
     const findingValues = [uri, raw, ...(otherReviewedUri ? [otherReviewedUri] : [])];
     const f = fixture(t, scenario === "prompt" ? uri : undefined);
-    const files = scenario.startsWith("browser ")
-      ? [
-          browserDocsFixture
-            ? scenario.endsWith("source mismatch")
-              ? browserToolSource
-              : browserDocsSource
-            : browserPageFixture
-              ? scenario.endsWith("source mismatch")
-                ? browserDocsSource
-                : browserToolSource
-              : scenario.includes("server")
-                ? browserServerContextSource
-                : browserChromeSource,
-        ]
-      : scenario === "shared approved path OIDs"
-        ? [...autoreviewSources, ledgerSource]
-        : scenario === "shared approved and unapproved path OIDs"
-          ? [ledgerSource, "other.test.ts"]
-          : scenario === "both autoreview paths"
-            ? autoreviewSources
-            : [
-                scenario === "canonical autoreview path"
-                  ? autoreviewSources[0]!
-                  : scenario === "vendored autoreview path"
-                    ? autoreviewSources[1]!
-                    : scenario === "other file"
-                      ? "other.test.ts"
-                      : ledgerSource,
-              ];
+    const files =
+      scenario === "many source references"
+        ? Array.from({ length: 8 }, (_, index) => `unapproved-${index}.test.ts`)
+        : mattermostFixture
+          ? [
+              scenario === "mattermost source mismatch"
+                ? "extensions/mattermost/src/slash-http.test.ts"
+                : mattermostSource,
+            ]
+          : scenario.startsWith("browser ")
+            ? [
+                browserDocsFixture
+                  ? scenario.endsWith("source mismatch")
+                    ? browserToolSource
+                    : browserDocsSource
+                  : browserPageFixture
+                    ? scenario.endsWith("source mismatch")
+                      ? browserDocsSource
+                      : browserToolSource
+                    : scenario.includes("server")
+                      ? browserServerContextSource
+                      : browserChromeSource,
+              ]
+            : scenario === "shared approved path OIDs"
+              ? [...autoreviewSources, ledgerSource]
+              : scenario === "shared approved and unapproved path OIDs"
+                ? [ledgerSource, "other.test.ts"]
+                : scenario === "both autoreview paths"
+                  ? autoreviewSources
+                  : [
+                      scenario === "canonical autoreview path"
+                        ? autoreviewSources[0]!
+                        : scenario === "vendored autoreview path"
+                          ? autoreviewSources[1]!
+                          : scenario === "other file"
+                            ? "other.test.ts"
+                            : ledgerSource,
+                    ];
     const value =
       scenario === "decoded only" || scenario.endsWith("encoded-only")
         ? uri.replace(":", "&#58;")
@@ -714,6 +783,8 @@ for (const scenario of [
       if (scenario === "executable source" || scenario === "shared endpoint OID 755 to 644")
         chmodSync(join(f.cwd, file), 0o755);
     }
+    if (scenario === "normalized worktree")
+      writeFileSync(join(f.cwd, ".gitattributes"), "*.ts text eol=crlf\n");
     const baseSha = f.commit();
     for (const file of files) {
       if (scenario === "shared endpoint OID 644 to 755" || scenario === "executable head snapshot")
@@ -728,6 +799,11 @@ for (const scenario of [
         );
     }
     const headSha = f.commit();
+    if (scenario === "normalized worktree")
+      writeFileSync(
+        join(f.cwd, files[0]!),
+        fixtureContent("// after\n").toString().replaceAll("\n", "\r\n"),
+      );
     const modeOnly =
       scenario.startsWith("shared endpoint OID") || scenario === "executable head snapshot";
     if (modeOnly) {
@@ -769,11 +845,13 @@ let findings = inputs.filter(({name, bytes}) =>
   (scenario === 'prompt' && name === 'prompt') ||
   (scenario === 'schema' && name === 'schema') ||
   (scenario === 'additional' && name === '0') ||
-  (scenario === 'diff' && /^\d+$/.test(name) && bytes.includes(uri))
+  (scenario === 'diff' && /^\d+$/.test(name) && bytes.includes(uri)) ||
+  (scenario === 'raw diff' && name === '0') ||
+  (scenario === 'normalized worktree' && /^\d+$/.test(name) && bytes.includes('\r\n'))
 ).map(({name, bytes}) => ({
   SourceType: 15, DetectorType: 17, DetectorName: 'URI', DecoderName: 'PLAIN', Verified: false,
   VerificationError: 'synthetic verification error', Raw: raw, RawV2: uri,
-  SourceMetadata: {Data: {Filesystem: {file: path.join(inputDir, name), line: /^[a-f0-9]{40}$/.test(name) ? 42 : bytes.toString().split('\n').findIndex(line => line.includes(uri)) + 1}}},
+  SourceMetadata: {Data: {Filesystem: {file: path.join(inputDir, name), line: /^[a-f0-9]{40}$/.test(name) ? 42 : scenario === 'raw diff' ? 1 : bytes.toString().split('\n').findIndex(line => line.includes(uri)) + 1}}},
   SecretParts: {host: parsed.host, username: parsed.username, password: parsed.password},
   ExtraData: null, StructuredData: null,
 }));
@@ -808,6 +886,11 @@ if (scenario === 'missing verification error') findings[0].VerificationError = '
 if (scenario === 'unexpected extra data') findings[0].ExtraData = {};
 if (scenario === 'unexpected structured data') findings[0].StructuredData = {};
 if (scenario === 'wrong secret parts') findings[0].SecretParts.host = 'mismatch';
+if (scenario === 'untrusted finding metadata') {
+  findings[0].DetectorType = findings[0].DetectorName = findings[0].DecoderName = uri;
+  findings[0].SourceMetadata.Data.Filesystem.file = '/outside/' + uri;
+  findings[0].SourceMetadata.Data.Filesystem.line = Number.MAX_VALUE;
+}
 if (scenario === 'source drift') fs.appendFileSync(${JSON.stringify(join(f.cwd, files[0]!))}, '// drift');
 process.stdout.write(findings.map(value => JSON.stringify(value)).join('\n') + (scenario === 'unterminated output' ? '' : '\n'));
 if (scenario === 'malformed output') process.stdout.write('{');
@@ -816,7 +899,7 @@ if (scenario === 'info error') process.stderr.write(JSON.stringify({level:'info-
 if (scenario === 'info errors') process.stderr.write(JSON.stringify({level:'info-0', logger:'trufflehog', msg:'detector failed', errors:[]}) + '\n');
 const completion = JSON.stringify({
   level:'info-0', logger:'trufflehog', msg:'finished scanning', trufflehog_version:scenario === 'wrong version' ? 'changed' : '3.97.1',
-  chunks:2, bytes:1000, verified_secrets:scenario === 'verified count' ? 1 : 0, unverified_secrets:findings.length + (scenario === 'wrong count' ? 1 : 0),
+  chunks:2, bytes:1000, verified_secrets:findings.filter(value => value.Verified).length + (scenario === 'verified count' ? 1 : 0), unverified_secrets:findings.filter(value => !value.Verified).length + (scenario === 'wrong count' ? 1 : 0),
 }) + (scenario === 'unterminated stderr' ? '' : '\n');
 if (scenario !== 'missing completion') process.stderr.write(completion);
 if (scenario === 'duplicate completion') process.stderr.write(completion);
@@ -854,6 +937,10 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
         "browser remote server fixture",
         "browser docs fixture",
         "browser page URL fixture",
+        "mattermost api input fixture",
+        "mattermost api redacted fixture",
+        "mattermost hooks input fixture",
+        "mattermost hooks redacted fixture",
         "browser docs shifted HTML",
         "browser docs shifted HTML first",
         "browser docs shifted HTML without companion",
@@ -924,11 +1011,123 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
     } else {
       assert.throws(run, (error) => {
         assert.ok(error instanceof AgentInputScanError);
-        assert.equal(error.reason, scenario === "source drift" ? "source_drift" : "findings");
+        const contractFailure = nativeContractFailures.get(scenario);
         assert.equal(
-          findingValues.some((candidate) => String(error).includes(candidate)),
+          error.reason,
+          scenario === "source drift"
+            ? "source_drift"
+            : contractFailure
+              ? "scanner_failed"
+              : "findings",
+        );
+        const outputDir = writeExactReviewFailureDiagnostics({
+          artifactDir: join(f.root, "artifacts"),
+          error,
+          prompt: "Review the change.",
+          model: "internal",
+          classification: "codex_execution",
+          repo: "openclaw/clawsweeper",
+          itemKind: "pull_request",
+          itemNumber: 1,
+          sourceSha: headSha,
+          retryable: error.retryable,
+          workflowExit: 1,
+          env: {},
+        });
+        const manifest = JSON.parse(readFileSync(join(outputDir, "manifest.json"), "utf8"));
+        assert.equal(manifest.failure.stage, "agent_input_scan");
+        assert.equal(manifest.failure.reason_code, error.reason);
+        assert.equal(manifest.source.sha, headSha);
+        assert.equal(manifest.retryable, false);
+        const diagnostic = manifest.failure.scan;
+        if (scenario !== "source drift") {
+          assert.equal(
+            diagnostic?.kind,
+            contractFailure ? "native_contract" : "unclassified_finding",
+          );
+          if (contractFailure) assert.equal(diagnostic.reason, contractFailure);
+          else {
+            if (mattermostFixture) {
+              assert.equal(
+                diagnostic.reason,
+                scenario === "mattermost different approved literal"
+                  ? "literal_mismatch"
+                  : scenario === "mattermost source mismatch"
+                    ? "source_not_reviewed"
+                    : "literal_not_reviewed",
+              );
+            }
+            assert.ok(diagnostic.findingCount > diagnostic.findingIndex);
+            if (scenario === "untrusted finding metadata") {
+              assert.equal(diagnostic.detectorType, null);
+              assert.equal(diagnostic.decoder, "OTHER");
+              assert.equal(diagnostic.scannerLine, null);
+              assert.equal(diagnostic.material, undefined);
+            }
+            const kind = new Map([
+              ["prompt", "prompt"],
+              ["schema", "schema"],
+              ["additional", "additional"],
+              ["diff", "patch"],
+              ["raw diff", "raw_diff"],
+              ["normalized worktree", "worktree"],
+              ["other file", "blob"],
+              ["many source references", "blob"],
+            ]).get(scenario);
+            if (kind) {
+              assert.equal(diagnostic.material.kind, kind);
+              if (kind === "patch" || kind === "raw_diff") {
+                assert.equal(diagnostic.material.from, baseSha);
+                assert.equal(diagnostic.material.to, headSha);
+              } else if (kind === "blob") {
+                assert.ok(
+                  [baseSha, headSha].some(
+                    (revision) =>
+                      f.git("rev-parse", `${revision}:${files[0]!}`) === diagnostic.material.id,
+                  ),
+                );
+                assert.equal(
+                  diagnostic.material.referenceCount,
+                  scenario === "many source references" ? 8 : 1,
+                );
+                assert.equal(
+                  diagnostic.material.references.length,
+                  scenario === "many source references" ? 4 : 1,
+                );
+                assert.equal(
+                  diagnostic.material.references[0].pathSha256,
+                  createHash("sha256").update(files[0]!).digest("hex"),
+                );
+                assert.equal(diagnostic.material.references[0].mode, "100644");
+              } else if (kind === "worktree") {
+                assert.equal(diagnostic.material.references[0].revision, headSha);
+                assert.equal(
+                  diagnostic.material.references[0].pathSha256,
+                  createHash("sha256").update(files[0]!).digest("hex"),
+                );
+              }
+            }
+          }
+        }
+        const diagnosticBytes = [
+          "manifest.json",
+          "error.txt",
+          "stdout.error.txt",
+          "stderr.tail.txt",
+        ]
+          .map((name) => readFileSync(join(outputDir, name), "utf8"))
+          .join("\n");
+        assert.equal(
+          [...findingValues, f.root, ...files].some((candidate) =>
+            (String(error) + diagnosticBytes).includes(candidate),
+          ),
           false,
-          "finding bytes stay private",
+          "finding bytes and raw source paths stay private",
+        );
+        assert.equal(
+          diagnosticBytes.includes(createHash("sha256").update(uri).digest("hex")),
+          false,
+          "refusal diagnostics do not publish literal digests",
         );
         return true;
       });

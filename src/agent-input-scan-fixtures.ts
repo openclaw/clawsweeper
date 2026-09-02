@@ -46,11 +46,91 @@ const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
     rawSha256: "8d3331ee208c72c30fba199e4e2b8a65d69a5034e49875a2f20dbea3a4f2f976",
     sources: ["extensions/browser/src/browser-tool.test.ts"],
   },
+  {
+    // Mattermost slash-error sanitization fixtures introduced by 9c0975c1c20e.
+    fixtureSha256: "f2c5cfd2b711577ed9048f9bd0e6c97ae88097b8eba8c1ff37deb33ed910f5a7",
+    rawSha256: "7d765bfa6e81c336a916aaf71eab28f5c0c4ae47a359ec3adf2d4f175645456d",
+    sources: ["extensions/mattermost/src/mattermost/slash-http.test.ts"],
+  },
+  {
+    fixtureSha256: "fd79d243a5d942979882ca621cfa8bd240a2fce9ca400cdd6b2b1bfab4c5cf6a",
+    rawSha256: "014a5653f93da5c53f9a09313e7aa32753fbdf0de02314af39a65af9a1dde664",
+    sources: ["extensions/mattermost/src/mattermost/slash-http.test.ts"],
+  },
+  {
+    fixtureSha256: "14947662dc4356637571038e47cd3f37a8911d37d41688a2f6c6b2b54c209c41",
+    rawSha256: "7d765bfa6e81c336a916aaf71eab28f5c0c4ae47a359ec3adf2d4f175645456d",
+    sources: ["extensions/mattermost/src/mattermost/slash-http.test.ts"],
+  },
+  {
+    fixtureSha256: "0c2d147cb7b70169ceb0302b40bceaa60abc15263c4dcfb7f1746cc93e3c87d3",
+    rawSha256: "014a5653f93da5c53f9a09313e7aa32753fbdf0de02314af39a65af9a1dde664",
+    sources: ["extensions/mattermost/src/mattermost/slash-http.test.ts"],
+  },
 ];
 
-export interface ReviewedFixtureBlob {
-  bytes: Buffer;
-  references: readonly { source: string; mode: string }[];
+export interface ScanSourceReference {
+  source: string;
+  mode: string;
+  revision: string;
+}
+
+export type ScanInputOrigin =
+  | { kind: "prompt" | "schema" | "additional" }
+  | { kind: "raw_diff" | "patch"; from: string; to: string }
+  | { kind: "worktree" | "blob"; references: readonly ScanSourceReference[] };
+
+export type StagedScanInput = ScanInputOrigin & { id: string; bytes?: Buffer };
+
+interface ScanMaterialDiagnostic {
+  kind: ScanInputOrigin["kind"];
+  id: string;
+  from?: string;
+  to?: string;
+  referenceCount?: number;
+  references?: { revision: string; pathSha256: string; mode: string }[];
+}
+
+export type ScanRefusalDiagnostic =
+  | {
+      kind: "native_contract";
+      reason:
+        | "invalid_stdout"
+        | "invalid_stderr"
+        | "scan_error"
+        | "incomplete_scan"
+        | "completion_mismatch"
+        | "unexpected_exit";
+    }
+  | {
+      kind: "unclassified_finding";
+      reason:
+        | "finding_not_reviewed"
+        | "literal_not_reviewed"
+        | "material_not_reviewed"
+        | "source_not_reviewed"
+        | "metadata_mismatch"
+        | "literal_mismatch";
+      findingCount: number;
+      findingIndex: number;
+      detectorType: number | null;
+      decoder: "PLAIN" | "HTML" | "OTHER";
+      verified: boolean | null;
+      scannerLine: number | null;
+      material?: ScanMaterialDiagnostic;
+    };
+
+export interface ReviewedFixtureNotice {
+  fixtureSha256: string;
+  source: string;
+  detector: string;
+  findings: ClassifiedFinding[];
+}
+
+interface RefusedScan {
+  kind: "refused";
+  reason: "scanner_failed" | "findings";
+  diagnostic: ScanRefusalDiagnostic;
 }
 
 interface ClassifiedFinding {
@@ -61,157 +141,232 @@ interface ClassifiedFinding {
   occurrences: number;
 }
 
-function object(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("invalid scanner object");
-  }
-  return value as Record<string, unknown>;
+function object(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
-function records(bytes: Buffer): Record<string, unknown>[] {
-  const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  if (!text.endsWith("\n")) throw new Error("incomplete scanner output");
-  return text
-    .slice(0, -1)
-    .split("\n")
-    .map((line) => object(JSON.parse(line)));
+function records(bytes: Buffer): Record<string, unknown>[] | undefined {
+  try {
+    if (!bytes.length) return [];
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    if (!text.endsWith("\n")) return undefined;
+    return text
+      .slice(0, -1)
+      .split("\n")
+      .map((line) => {
+        const value = object(JSON.parse(line));
+        if (!value) throw new Error("invalid scanner object");
+        return value;
+      });
+  } catch {
+    // Parser errors can contain credential-shaped input; retain only a closed reason.
+    return undefined;
+  }
+}
+
+function materialDiagnostic(input: StagedScanInput): ScanMaterialDiagnostic {
+  // Only host-staged identities leave the scanner boundary. Bound reference
+  // fanout and hash paths; raw finding values and provider strings never leave.
+  return {
+    kind: input.kind,
+    id: input.id,
+    ...("from" in input ? { from: input.from, to: input.to } : {}),
+    ...("references" in input
+      ? {
+          referenceCount: input.references.length,
+          references: input.references.slice(0, 4).map(({ source, mode, revision }) => ({
+            revision,
+            pathSha256: createHash("sha256").update(source).digest("hex"),
+            mode,
+          })),
+        }
+      : {}),
+  };
 }
 
 /** Classify only complete native scans whose every finding matches host fixture policy. */
 export function classifyReviewedFixtureScan(
+  status: number,
   stdout: Buffer,
   stderr: Buffer,
-  sourceBlobs: ReadonlyMap<string, ReviewedFixtureBlob>,
-):
-  | { fixtureSha256: string; source: string; detector: string; findings: ClassifiedFinding[] }[]
-  | undefined {
-  try {
-    const findings = records(stdout);
-    const logs = records(stderr);
-    // TruffleHog can log detector failures and still exit 183. Its exit status
-    // alone therefore cannot establish that all detectors finished successfully.
-    if (
-      logs.some(
-        (entry) =>
-          entry.level !== "info-0" ||
-          typeof entry.logger !== "string" ||
-          typeof entry.msg !== "string" ||
-          entry.error !== undefined ||
-          entry.errors !== undefined,
-      ) ||
-      logs.filter((entry) => entry.msg === "finished scanning").length !== 1
+  inputs: ReadonlyMap<string, StagedScanInput>,
+): { kind: "classified"; notices: ReviewedFixtureNotice[] } | RefusedScan {
+  const nativeFailure = (
+    reason: Extract<ScanRefusalDiagnostic, { kind: "native_contract" }>["reason"],
+  ): RefusedScan => ({
+    kind: "refused",
+    reason: "scanner_failed",
+    diagnostic: { kind: "native_contract", reason },
+  });
+  if (status !== 183) return nativeFailure("unexpected_exit");
+  const findings = records(stdout);
+  if (!findings?.length) return nativeFailure("invalid_stdout");
+  const logs = records(stderr);
+  if (!logs) return nativeFailure("invalid_stderr");
+  // TruffleHog can log detector failures and still exit 183. Its exit status
+  // alone therefore cannot establish that all detectors finished successfully.
+  if (
+    logs.some(
+      (entry) =>
+        entry.level !== "info-0" ||
+        typeof entry.logger !== "string" ||
+        typeof entry.msg !== "string" ||
+        entry.error !== undefined ||
+        entry.errors !== undefined,
     )
-      return undefined;
-    const completion = logs.at(-1)!;
-    if (
-      completion.logger !== "trufflehog" ||
-      completion.msg !== "finished scanning" ||
-      completion.trufflehog_version !== "3.97.1" ||
-      typeof completion.chunks !== "number" ||
-      !Number.isSafeInteger(completion.chunks) ||
-      completion.chunks <= 0 ||
-      typeof completion.bytes !== "number" ||
-      !Number.isSafeInteger(completion.bytes) ||
-      completion.bytes <= 0 ||
-      completion.verified_secrets !== 0 ||
-      completion.unverified_secrets !== findings.length
-    )
-      return undefined;
+  )
+    return nativeFailure("scan_error");
+  const completion = logs.at(-1)!;
+  if (
+    logs.filter((entry) => entry.msg === "finished scanning").length !== 1 ||
+    completion?.logger !== "trufflehog" ||
+    completion.msg !== "finished scanning"
+  )
+    return nativeFailure("incomplete_scan");
+  const verifiedCount = findings.filter((finding) => finding.Verified === true).length;
+  if (
+    completion.trufflehog_version !== "3.97.1" ||
+    typeof completion.chunks !== "number" ||
+    !Number.isSafeInteger(completion.chunks) ||
+    completion.chunks <= 0 ||
+    typeof completion.bytes !== "number" ||
+    !Number.isSafeInteger(completion.bytes) ||
+    completion.bytes <= 0 ||
+    completion.verified_secrets !== verifiedCount ||
+    completion.unverified_secrets !== findings.length - verifiedCount
+  )
+    return nativeFailure("completion_mismatch");
 
-    const literalLines = new Map<string, number>();
-    const classified = new Map<
-      string,
-      { fixtureSha256: string; source: string; findings: Map<string, ClassifiedFinding> }
-    >();
-    for (const finding of findings) {
-      if (
-        finding.DetectorType !== 17 ||
-        finding.DetectorName !== "URI" ||
-        finding.SourceType !== 15 ||
-        finding.Verified !== false ||
-        (finding.DecoderName !== "PLAIN" && finding.DecoderName !== "HTML") ||
-        typeof finding.VerificationError !== "string" ||
-        !finding.VerificationError ||
-        typeof finding.Raw !== "string" ||
-        typeof finding.RawV2 !== "string" ||
-        finding.ExtraData !== null ||
-        finding.StructuredData !== null
+  const literalLines = new Map<string, number>();
+  const classified = new Map<
+    string,
+    { fixtureSha256: string; source: string; findings: Map<string, ClassifiedFinding> }
+  >();
+  for (const [findingIndex, finding] of findings.entries()) {
+    const source = object(object(object(finding.SourceMetadata)?.Data)?.Filesystem);
+    const file = source?.file;
+    const staged = typeof file === "string" ? inputs.get(file) : undefined;
+    const scannerLine =
+      typeof source?.line === "number" && Number.isSafeInteger(source.line) && source.line > 0
+        ? source.line
+        : null;
+    const refuse = (
+      reason: Extract<ScanRefusalDiagnostic, { kind: "unclassified_finding" }>["reason"],
+    ): RefusedScan => ({
+      kind: "refused",
+      reason: "findings",
+      diagnostic: {
+        kind: "unclassified_finding",
+        reason,
+        findingCount: findings.length,
+        findingIndex,
+        detectorType:
+          typeof finding.DetectorType === "number" &&
+          Number.isInteger(finding.DetectorType) &&
+          finding.DetectorType >= 0 &&
+          finding.DetectorType <= 2_147_483_647
+            ? finding.DetectorType
+            : null,
+        decoder:
+          finding.DecoderName === "PLAIN" || finding.DecoderName === "HTML"
+            ? finding.DecoderName
+            : "OTHER",
+        verified: typeof finding.Verified === "boolean" ? finding.Verified : null,
+        scannerLine,
+        ...(staged ? { material: materialDiagnostic(staged) } : {}),
+      },
+    });
+    if (
+      finding.DetectorType !== 17 ||
+      finding.DetectorName !== "URI" ||
+      finding.SourceType !== 15 ||
+      finding.Verified !== false ||
+      (finding.DecoderName !== "PLAIN" && finding.DecoderName !== "HTML") ||
+      typeof finding.VerificationError !== "string" ||
+      !finding.VerificationError ||
+      typeof finding.Raw !== "string" ||
+      typeof finding.RawV2 !== "string" ||
+      finding.ExtraData !== null ||
+      finding.StructuredData !== null
+    )
+      return refuse("finding_not_reviewed");
+    // URI Raw omits the path; bind both native outputs to the reviewed match.
+    const digest = createHash("sha256").update(finding.RawV2).digest("hex");
+    const rawDigest = createHash("sha256").update(finding.Raw).digest("hex");
+    const fixture = REVIEWED_FIXTURES.find(
+      (entry) =>
+        entry.fixtureSha256 === digest && (entry.rawSha256 ?? entry.fixtureSha256) === rawDigest,
+    );
+    if (!fixture) return refuse("literal_not_reviewed");
+    if (typeof file !== "string" || scannerLine === null) return refuse("metadata_mismatch");
+    if (staged?.kind !== "blob" || !staged.bytes) return refuse("material_not_reviewed");
+    if (
+      !staged.references.length ||
+      staged.references.some(
+        ({ source, mode }) => mode !== "100644" || !fixture.sources.some((path) => path === source),
       )
-        return undefined;
-      // URI Raw omits the path; bind both outputs to the complete reviewed value.
-      const digest = createHash("sha256").update(finding.RawV2).digest("hex");
-      const rawDigest = createHash("sha256").update(finding.Raw).digest("hex");
-      const fixture = REVIEWED_FIXTURES.find(
-        (entry) =>
-          entry.fixtureSha256 === digest && (entry.rawSha256 ?? entry.fixtureSha256) === rawDigest,
-      );
-      if (!fixture) return undefined;
-      const source = object(object(object(finding.SourceMetadata).Data).Filesystem);
-      const file = source.file;
-      if (typeof file !== "string") return undefined;
-      const staged = sourceBlobs.get(file);
-      if (
-        !staged ||
-        !staged.references.length ||
-        staged.references.some(
-          ({ source, mode }) =>
-            mode !== "100644" || !fixture.sources.some((path) => path === source),
-        ) ||
-        typeof source.line !== "number" ||
-        !Number.isSafeInteger(source.line) ||
-        source.line <= 0
-      )
-        return undefined;
-      const uri = new URL(finding.RawV2);
-      const parts = object(finding.SecretParts);
-      if (
-        Object.keys(parts).length !== 3 ||
-        parts.host !== uri.host ||
-        parts.username !== uri.username ||
-        parts.password !== uri.password
-      )
-        return undefined;
-      const valueKey = `${file}:${digest}`;
-      let literalLine = literalLines.get(valueKey);
-      if (literalLine === undefined) {
-        // Decoding can shift coordinates, and deduplication can drop the plain
-        // finding. Bind to staged bytes and record one literal witness separately
-        // from the scanner's location, without allocating unbounded line lists.
-        const text = new TextDecoder("utf-8", { fatal: true }).decode(staged.bytes);
-        const offset = text.indexOf(finding.RawV2);
-        if (offset < 0) return undefined;
-        literalLine = 1;
-        for (
-          let newline = text.indexOf("\n");
-          newline !== -1 && newline < offset;
-          newline = text.indexOf("\n", newline + 1)
-        ) {
-          literalLine++;
-        }
-        literalLines.set(valueKey, literalLine);
+    )
+      return refuse("source_not_reviewed");
+    const uri = new URL(finding.RawV2);
+    const parts = object(finding.SecretParts);
+    if (
+      !parts ||
+      Object.keys(parts).length !== 3 ||
+      parts.host !== uri.host ||
+      parts.username !== uri.username ||
+      parts.password !== uri.password
+    )
+      return refuse("metadata_mismatch");
+    const valueKey = `${file}:${digest}`;
+    let literalLine = literalLines.get(valueKey);
+    if (literalLine === undefined) {
+      // Decoding can shift coordinates, and deduplication can drop the plain
+      // finding. Bind to staged bytes and record one literal witness separately
+      // from the scanner's location, without allocating unbounded line lists.
+      let text;
+      try {
+        text = new TextDecoder("utf-8", { fatal: true }).decode(staged.bytes);
+      } catch {
+        return refuse("literal_mismatch");
       }
-      const blob = basename(file);
-      const key = `${blob}:${source.line}:${finding.DecoderName}`;
-      const sources = new Set(staged.references.map(({ source }) => source));
-      for (const path of sources) {
-        const groupKey = `${digest}:${path}`;
-        const group = classified.get(groupKey) ?? {
-          fixtureSha256: digest,
-          source: path,
-          findings: new Map<string, ClassifiedFinding>(),
-        };
-        const previous = group.findings.get(key);
-        group.findings.set(key, {
-          blob,
-          scannerLine: source.line,
-          literalLine,
-          decoder: finding.DecoderName,
-          occurrences: (previous?.occurrences ?? 0) + 1,
-        });
-        classified.set(groupKey, group);
+      const offset = text.indexOf(finding.RawV2);
+      if (offset < 0) return refuse("literal_mismatch");
+      literalLine = 1;
+      for (
+        let newline = text.indexOf("\n");
+        newline !== -1 && newline < offset;
+        newline = text.indexOf("\n", newline + 1)
+      ) {
+        literalLine++;
       }
+      literalLines.set(valueKey, literalLine);
     }
-    return [...classified.entries()]
+    const blob = basename(file);
+    const key = `${blob}:${scannerLine}:${finding.DecoderName}`;
+    const sources = new Set(staged.references.map(({ source }) => source));
+    for (const path of sources) {
+      const groupKey = `${digest}:${path}`;
+      const group = classified.get(groupKey) ?? {
+        fixtureSha256: digest,
+        source: path,
+        findings: new Map<string, ClassifiedFinding>(),
+      };
+      const previous = group.findings.get(key);
+      group.findings.set(key, {
+        blob,
+        scannerLine,
+        literalLine,
+        decoder: finding.DecoderName,
+        occurrences: (previous?.occurrences ?? 0) + 1,
+      });
+      classified.set(groupKey, group);
+    }
+  }
+  return {
+    kind: "classified",
+    notices: [...classified.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([, group]) => ({
         fixtureSha256: group.fixtureSha256,
@@ -220,9 +375,6 @@ export function classifyReviewedFixtureScan(
         findings: [...group.findings.entries()]
           .sort(([a], [b]) => a.localeCompare(b))
           .map(([, value]) => value),
-      }));
-  } catch {
-    // Scanner output includes credential-shaped bytes; never expose parse errors.
-    return undefined;
-  }
+      })),
+  };
 }

@@ -22,7 +22,11 @@ import { reviewToolCacheRoot } from "./review-tool-bootstrap.js";
 import { readReviewGit, reviewMergeBase, type ReviewGitReadOptions } from "./pr-review-evidence.js";
 import {
   classifyReviewedFixtureScan,
-  type ReviewedFixtureBlob,
+  type ReviewedFixtureNotice,
+  type ScanInputOrigin,
+  type ScanRefusalDiagnostic,
+  type ScanSourceReference,
+  type StagedScanInput,
 } from "./agent-input-scan-fixtures.js";
 
 export type AgentScanSource =
@@ -52,6 +56,7 @@ export class AgentInputScanError extends Error {
       | "source_drift"
       | "unsafe_path"
       | "unsupported_content",
+    readonly scanDiagnostic?: ScanRefusalDiagnostic,
   ) {
     super(
       `Agent input scan refused: ${reason}. Restore trusted scan prerequisites or remove sensitive input before retrying.`,
@@ -245,7 +250,7 @@ export function scanAgentInput(options: {
   };
   let root: string | undefined;
   let failure: AgentInputScanError | undefined;
-  let classified: ReturnType<typeof classifyReviewedFixtureScan>;
+  let classified: ReviewedFixtureNotice[] | undefined;
   try {
     const cwd = realpathSync(options.cwd);
     const scanner = trustedScanner(cwd, options.cwd, remaining());
@@ -254,22 +259,27 @@ export function scanAgentInput(options: {
       throw new AgentInputScanError("unsafe_path");
     const inputDir = join(root, "input");
     mkdirSync(inputDir, { mode: 0o700 });
-    const reviewedFixtureBlobs = new Map<string, ReviewedFixtureBlob>();
+    const inputs = new Map<string, StagedScanInput>();
     let staged = 0;
     let ordinal = 0;
-    const stage = (bytes: Buffer, name = String(ordinal++)) => {
+    const stage = (bytes: Buffer, origin: ScanInputOrigin, name = String(ordinal++)) => {
       remaining();
       staged += bytes.length;
       if (staged > MAX_SCAN_BYTES) throw new AgentInputScanError("staging_limit");
       writeFileSync(join(inputDir, name), bytes, { mode: 0o600, flag: "wx" });
+      inputs.set(join(inputDir, name), {
+        ...origin,
+        id: name,
+        ...(origin.kind === "blob" ? { bytes } : {}),
+      });
     };
-    stage(Buffer.from(options.prompt), "prompt");
+    stage(Buffer.from(options.prompt), { kind: "prompt" }, "prompt");
     if (options.schemaPath) {
       if (statSync(options.schemaPath).size > MAX_SCAN_BYTES - staged)
         throw new AgentInputScanError("staging_limit");
-      stage(readFileSync(options.schemaPath), "schema");
+      stage(readFileSync(options.schemaPath), { kind: "schema" }, "schema");
     }
-    for (const bytes of options.additionalBytes ?? []) stage(bytes);
+    for (const bytes of options.additionalBytes ?? []) stage(bytes, { kind: "additional" });
     const source = options.source;
     let assertCurrent = () => {};
     if (source.kind !== "prompt") {
@@ -462,12 +472,16 @@ export function scanAgentInput(options: {
             )
               throw new AgentInputScanError("source_drift");
             rawIdentities.set(entry.path, oid);
-            if (oid !== entry.oid) stage(bytes);
+            if (oid !== entry.oid)
+              stage(bytes, {
+                kind: "worktree",
+                references: [{ source: entry.path, mode: entry.mode, revision: source.headSha }],
+              });
           }
         };
       }
       assertCurrent();
-      const blobs = new Map<string, { source: string; mode: string }[]>();
+      const blobs = new Map<string, ScanSourceReference[]>();
       const endpoints =
         source.kind === "snapshot"
           ? [mergeBase.sha, source.headSha, source.indexTreeSha, source.treeSha]
@@ -486,7 +500,7 @@ export function scanAgentInput(options: {
           to,
         ];
         const raw = git([...args, "--raw", "--no-abbrev", "-z", "--"]);
-        stage(raw);
+        stage(raw, { kind: "raw_diff", from, to });
         const fields = new TextDecoder("utf-8", { fatal: true }).decode(raw).split("\0");
         if (fields.pop() !== "" || fields.length % 2 !== 0)
           throw new AgentInputScanError("incomplete_source");
@@ -504,9 +518,9 @@ export function scanAgentInput(options: {
           if (!match) throw new AgentInputScanError("incomplete_source");
           if (source.kind === "committed")
             currentFiles.push({ path, mode: match[2]!, oid: match[4]! });
-          for (const [mode, oid] of [
-            [match[1]!, match[3]!],
-            [match[2]!, match[4]!],
+          for (const [mode, oid, revision] of [
+            [match[1]!, match[3]!, from],
+            [match[2]!, match[4]!, to],
           ]) {
             if (mode === "000000") continue;
             if (!["100644", "100755", "120000"].includes(mode!))
@@ -514,11 +528,15 @@ export function scanAgentInput(options: {
             if (!OBJECT_ID.test(oid!)) throw new AgentInputScanError("incomplete_source");
             // An OID identifies bytes, not each scanned endpoint's path/mode eligibility.
             const references = blobs.get(oid!) ?? [];
-            references.push({ source: path, mode: mode! });
+            references.push({ source: path, mode: mode!, revision: revision! });
             blobs.set(oid!, references);
           }
         }
-        stage(git([...args, "--patch", "--binary", "--full-index", "--"]));
+        stage(git([...args, "--patch", "--binary", "--full-index", "--"]), {
+          kind: "patch",
+          from,
+          to,
+        });
       }
       // Only live committed checkouts need normalized raw files staged here;
       // snapshot objects were already captured and fenced before preparation.
@@ -535,8 +553,7 @@ export function scanAgentInput(options: {
         )
           throw new AgentInputScanError("unsupported_content");
         // OID names preserve multiline bytes and make symlinks ordinary scan files.
-        stage(bytes, oid);
-        reviewedFixtureBlobs.set(join(inputDir, oid), { bytes, references });
+        stage(bytes, { kind: "blob", references }, oid);
       }
     }
     const result = spawnSync(
@@ -570,13 +587,15 @@ export function scanAgentInput(options: {
     if (result.error || result.signal || (result.status !== 0 && result.status !== 183))
       throw new AgentInputScanError("scanner_failed");
     if (result.status === 183 || result.stdout?.length) {
-      if (result.status === 183)
-        classified = classifyReviewedFixtureScan(
-          result.stdout,
-          result.stderr,
-          reviewedFixtureBlobs,
-        );
-      if (!classified) throw new AgentInputScanError("findings");
+      const classification = classifyReviewedFixtureScan(
+        result.status!,
+        result.stdout,
+        result.stderr,
+        inputs,
+      );
+      if (classification.kind === "refused")
+        throw new AgentInputScanError(classification.reason, classification.diagnostic);
+      classified = classification.notices;
     }
     remaining();
     assertCurrent();

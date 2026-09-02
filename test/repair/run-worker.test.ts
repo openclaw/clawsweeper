@@ -33,7 +33,7 @@ test("repair output schema keeps every strict object property required", () => {
   visit(schema, "schema");
 });
 
-for (const admission of ["clean", "finding", "dry-run"])
+for (const admission of ["clean", "invalid-output", "dry-run"])
   test(`run-worker ${admission} preserves the target and prompt artifact contract`, () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-run-worker-"));
     const fakeBin = path.join(tmp, "bin");
@@ -52,7 +52,7 @@ const runs = fs.readdirSync(${JSON.stringify(path.join(repoRoot, ".clawsweeper-r
 for (const run of runs.filter(name => name.startsWith(${JSON.stringify(`${jobName}-plan-`)}))) {
   assert.equal(fs.existsSync(path.join(${JSON.stringify(path.join(repoRoot, ".clawsweeper-repair/runs"))}, run, 'prompt.md')), false);
 }
-${admission === "finding" ? "process.exit(183);" : admission === "dry-run" ? "throw new Error('dry run must not invoke scanner');" : ""}
+${admission === "invalid-output" ? "process.exit(183);" : admission === "dry-run" ? "throw new Error('dry run must not invoke scanner');" : ""}
 `,
     );
     fs.mkdirSync(targetCheckout, { recursive: true });
@@ -159,7 +159,8 @@ ${admission === "finding" ? "process.exit(183);" : admission === "dry-run" ? "th
             stdio: "pipe",
           },
         );
-      if (admission === "finding") assert.throws(run, /Agent input scan refused: findings/);
+      if (admission === "invalid-output")
+        assert.throws(run, /Agent input scan refused: scanner_failed/);
       else run();
       assert.equal(fs.readFileSync(jobPath, "utf8"), originalJob);
       const runDirs = fs.globSync(
@@ -169,7 +170,7 @@ ${admission === "finding" ? "process.exit(183);" : admission === "dry-run" ? "th
       const runDir = runDirs[0];
       assert.ok(runDir);
       const diagnosticPromptPath = path.join(runDir, "prompt.md");
-      if (admission === "finding") {
+      if (admission === "invalid-output") {
         assert.equal(fs.existsSync(cwdFile), false);
         assert.equal(fs.existsSync(diagnosticPromptPath), false);
         return;

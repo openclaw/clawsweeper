@@ -460,7 +460,7 @@ test("PR close coverage proof prompt requires concrete coverage proof", () => {
   assert.doesNotMatch(prompt, /patchSignature/);
 });
 
-for (const admission of ["clean", "finding"])
+for (const admission of ["clean", "invalid-output"])
   test(
     `PR close coverage proof ${admission} leaves no prompt copies in the proof tree`,
     { skip: process.platform === "win32" },
@@ -475,7 +475,7 @@ for (const admission of ["clean", "finding"])
           t,
           `
 assert.equal(fs.existsSync(${JSON.stringify(promptPath)}), false);
-${admission === "finding" ? "process.exit(183);" : ""}
+${admission === "invalid-output" ? "process.exit(183);" : ""}
 `,
         );
         const binDir = join(root, "bin");
@@ -522,7 +522,8 @@ ${admission === "finding" ? "process.exit(183);" : ""}
                 promptTemplate: "Prove close coverage.",
               },
             });
-          if (admission === "finding") assert.throws(run, /Agent input scan refused: findings/);
+          if (admission === "invalid-output")
+            assert.throws(run, /Agent input scan refused: scanner_failed/);
           else assert.equal(run().decision, "covered");
         } finally {
           if (previousCodexBin === undefined) delete process.env.CODEX_BIN;

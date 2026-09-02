@@ -567,6 +567,13 @@ review. The scan stages at most 256 MiB in private external temporary files and
 uses the remaining review deadline; it never silently truncates or bypasses.
 Diagnostics omit scanner output and source values. Restore prerequisites or
 remove sensitive input before retrying a refusal.
+Exact-review failure manifests distinguish a native output/scan-contract failure
+from an unclassified finding. The latter records the first blocking finding's
+bounded detector metadata and host-staged material identity: prompt, schema,
+additional input, raw diff, patch, raw working bytes, or Git blob. Source
+references contain Git revisions and hashed paths, with at most four references
+and their total count. No raw paths, matched values, literal digests, or
+verification messages are retained; this provenance does not authorize a finding.
 
 The host classifies the reviewed synthetic malformed-configuration URI in
 `test/action-ledger-runtime.test.ts` and the explicitly approved autoreview
@@ -578,11 +585,17 @@ the reviewed OpenClaw Browser CDP authentication and credential-redaction fixtur
 the [remote-CDP coverage](https://github.com/openclaw/openclaw/blob/58da2f5897feb6840937d8e50cf7ee6f26aa57d7/extensions/browser/src/browser/chrome.test.ts),
 the [server-context redaction test](https://github.com/openclaw/openclaw/blob/4b5987829d0f82ea44ae50f2f418ffe5ea445e7f/extensions/browser/src/browser/server-context.ensure-browser-available.waits-for-cdp-ready.test.ts),
 the [remote-CDP documentation example](https://github.com/openclaw/openclaw/blob/bf15c87d2b1223610b42775b8154b8eec60b541d/docs/tools/browser.md),
-and the [credentialed-page rejection fixtures](https://github.com/openclaw/openclaw/blob/d5fb4903f1b13a4309d479f1011d995b1fc706ae/extensions/browser/src/browser-tool.test.ts)
+the [credentialed-page rejection fixtures](https://github.com/openclaw/openclaw/blob/d5fb4903f1b13a4309d479f1011d995b1fc706ae/extensions/browser/src/browser-tool.test.ts),
+and the [Mattermost slash-error sanitization fixtures](https://github.com/openclaw/openclaw/blob/9c0975c1c20ed635532c7aa0f510154224adee7f/extensions/mattermost/src/mattermost/slash-http.test.ts)
 after a complete scan. Static host policy associates each
-exact full-URI SHA-256 with only its approved source paths and exact scanner `Raw`
-digest, including when `Raw` omits a path retained by `RawV2`. The complete value
-must be a literal in a host-staged Git blob from mode `100644`.
+exact detector-matched URI SHA-256 with only its approved source paths and exact
+scanner `Raw` digest, including when `Raw` omits a path retained by `RawV2`. The
+matched value must be a literal in a host-staged Git blob from mode `100644`.
+The four Mattermost entries cover only the reviewed `/api` and `/hooks` URI
+prefixes and their authorities. TruffleHog's pinned URI detector excludes query
+text; this classification makes no claim about surrounding query values. The
+table binds exact values and paths across revisions, not entire enclosing URLs
+or particular commits.
 The host locates that exact literal independently in the staged blob. Decoder
 coordinates can shift, and TruffleHog can omit a companion plain-text finding,
 so admission does not depend on another finding or a reported line matching the
