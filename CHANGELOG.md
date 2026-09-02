@@ -19,8 +19,6 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
-- Back off stalled OpenClaw Bay lifecycle recovery for one minute while preserving one-second drains whenever durable progress is made.
-
 - Retain only Cloudflare failure flags in queue transport logs so backend faults can be diagnosed without exposing exception details.
 
 - Hydrate review blobs from cached PR snapshots that store an absent previous filename as `null`, preventing repeat reviews from refusing otherwise available source.
