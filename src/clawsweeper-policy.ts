@@ -774,6 +774,7 @@ export const DECISION_SCHEMA_KEYS = new Set([
   "workConfidence",
   "workPriority",
   "workReason",
+  "nextStep",
   "workPrompt",
   "workClusterRefs",
   "workValidation",

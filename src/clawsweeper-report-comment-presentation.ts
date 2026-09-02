@@ -12,6 +12,7 @@ import { neutralizeReviewControlMarkers, renderReviewHistorySection } from "./re
 import type { CreateReportRenderingDependencies } from "./clawsweeper-report-rendering-dependencies.js";
 import type { createReportContextRendering } from "./clawsweeper-report-context.js";
 import type { createReportCommentHelpers } from "./clawsweeper-report-comment-helpers.js";
+import { nextStepFromReport } from "./clawsweeper-next-step.js";
 
 export function createReportCommentPresentation(
   dependencies: CreateReportRenderingDependencies &
@@ -317,6 +318,7 @@ export function createReportCommentPresentation(
         securityReview,
         risks,
         nextStep: nextStepLine,
+        nextStepAssessment: nextStepFromReport(markdown),
         decisionPending: Boolean(decisionPacketBlock),
         patchQualityBlocked,
         requiredRatingSteps: patchQualityBlocked ? prRating.nextSteps : [],

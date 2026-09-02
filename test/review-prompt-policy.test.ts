@@ -31,6 +31,39 @@ import {
   mediaFixtureUrls,
 } from "./primary-body-fixture.ts";
 
+test("review prompt and generation schema deliver explicit next-step presentation intent", () => {
+  const schema = JSON.parse(readFileSync("schema/clawsweeper-decision.schema.json", "utf8"));
+  assert.ok(schema.required.includes("nextStep"));
+  const [none, required] = schema.properties.nextStep.anyOf;
+  for (const branch of [none, required]) {
+    assert.equal(branch.additionalProperties, false);
+    assert.deepEqual(branch.required, ["kind", "text"]);
+  }
+  assert.deepEqual(none.properties.kind.enum, ["none"]);
+  assert.deepEqual(none.properties.text.enum, [""]);
+  assert.deepEqual(required.properties.kind.enum, ["required"]);
+  const pattern = new RegExp(required.properties.text.pattern);
+  for (const text of ["", " ", "\n", " Owner approval.", "Owner approval. "])
+    assert.equal(pattern.test(text), false);
+  assert.ok(pattern.test("Owner approval."));
+  const prompt = reviewPromptForTest(
+    item({ kind: "pull_request" }),
+    { issue: {}, comments: [], timeline: [] },
+    {
+      mainSha: "a".repeat(40),
+      latestRelease: null,
+    },
+  );
+  assert.match(prompt, /Always fill `nextStep`/);
+  assert.match(prompt, /routine CI or ordinary maintainer look/);
+  assert.match(prompt, /no, not, but, unless, or until/);
+  assert.match(prompt, /Human-owned actions can be\s+required even with `workCandidate: "none"`/);
+  assert.match(prompt, /not authority to auto-fix or\s+merge/);
+  assert.match(prompt, /do not request contributor changelog entries for OpenClaw/);
+  assert.match(prompt, /For issues, use `nextStep` kind none with empty text/);
+  assert.match(prompt, /existing next-action\s+guidance in `workReason`/);
+});
+
 for (const kind of ["issue", "pull_request"] as const) {
   test(`late instruction-like media in ${kind} excerpts never causes host fetches`, () => {
     const lateUrl = mediaFixtureUrls.loopback;

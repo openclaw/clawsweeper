@@ -17,6 +17,7 @@ export type ItemKind = "issue" | "pull_request";
 export type ApplyKind = ItemKind | "all";
 export type DecisionKind = "close" | "keep_open";
 export type WorkCandidateKind = "none" | "manual_review" | "queue_fix_pr";
+export type NextStepAssessment = { kind: "none" | "required"; text: string };
 export type FailedReviewRetryRevisionKind = "pull_head_sha" | "item_source_revision";
 export interface FailedReviewRetryRevision {
   kind: FailedReviewRetryRevisionKind;
@@ -625,6 +626,7 @@ export interface Decision {
   workConfidence: Confidence;
   workPriority: Confidence;
   workReason: string;
+  nextStep?: NextStepAssessment;
   workPrompt: string;
   workClusterRefs: string[];
   workValidation: string[];

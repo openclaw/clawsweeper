@@ -18,7 +18,15 @@ import {
   withReviewStartStatusLease,
 } from "../dist/clawsweeper.js";
 import { issueSourceRevisionSha256 } from "../dist/repair/issue-source-guard.js";
-import { closeDecision, detailsBody, item, reportFrontMatter } from "./helpers.ts";
+import {
+  closeDecision,
+  detailsBody,
+  item,
+  prRatingReportSection,
+  realBehaviorProofReportSection,
+  reportFrontMatter,
+} from "./helpers.ts";
+import { nextStepFromReport } from "../dist/clawsweeper-next-step.js";
 import { createRepositoryLinks } from "../dist/clawsweeper-links.js";
 import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
 import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
@@ -27,7 +35,7 @@ import { createReportParser } from "../dist/clawsweeper-report-parser.js";
 import { createRecordMetadata } from "../dist/clawsweeper-record-metadata.js";
 import { createReportHelpers } from "../dist/clawsweeper-report-helpers.js";
 import { normalizeRepo, repositoryProfileFor } from "../dist/repository-profiles.js";
-import type { DecisionKind, Evidence } from "../dist/clawsweeper-types.js";
+import type { DecisionKind, Evidence, NextStepAssessment } from "../dist/clawsweeper-types.js";
 
 function markdownLinkDestinations(markdown: string): Set<string> {
   const destinations = new Set<string>();
@@ -80,7 +88,11 @@ const evidenceParser = createReportParser({
   }),
 } as Parameters<typeof createReportParser>[0]);
 
-function evidenceReport(evidence: Evidence[], decisionKind: DecisionKind = "close") {
+function evidenceReport(
+  evidence: Evidence[],
+  decisionKind: DecisionKind = "close",
+  nextStep?: NextStepAssessment,
+) {
   const document = createReportDocumentRendering({
     ...evidenceLinks,
     ...createReportContextRendering({} as never),
@@ -105,6 +117,7 @@ function evidenceReport(evidence: Evidence[], decisionKind: DecisionKind = "clos
           evidence,
           decision: decisionKind,
           closeReason: decisionKind === "close" ? "implemented_on_main" : "none",
+          ...(nextStep === undefined ? {} : { nextStep }),
         }),
       ),
       // The host stamps checkout access after parsing model output.
@@ -120,6 +133,244 @@ function evidenceReport(evidence: Evidence[], decisionKind: DecisionKind = "clos
     runtime: { model: "Codex", reasoningEffort: "high" },
   } as Parameters<typeof document.markdownFor>[0]);
 }
+
+function nextStepReport(
+  metadata: Record<string, string> = {},
+  sections = "",
+  reason = "No concrete repair remains after this review.",
+) {
+  return `${reportFrontMatter({
+    type: "pull_request",
+    number: "123",
+    review_status: "complete",
+    local_checkout_access: "verified",
+    author_association: "MEMBER",
+    work_candidate: "none",
+    pull_head_sha: "c".repeat(40),
+    ...metadata,
+  })}
+## Summary
+
+The retry guard is ready for review.
+
+## What This Changes
+
+Keeps retry ownership bounded.
+
+${prRatingReportSection()}
+
+${realBehaviorProofReportSection()}
+
+## Work Candidate
+
+Candidate: none
+
+Reason: ${reason}
+
+${sections}`;
+}
+
+function publicSection(comment: string, title: string): string {
+  return (
+    comment
+      .split(`## ${title}\n\n`)[1]
+      ?.split(/\n## |\n<details>/)[0]
+      ?.trim() ?? ""
+  );
+}
+
+test("explicit next-step none removes the false repair checkbox/count, not scores or markers", () => {
+  const legacy = nextStepReport();
+  const report = nextStepReport({ next_step: JSON.stringify({ kind: "none", text: "" }) });
+  const before = renderReviewCommentFromReport(legacy, "none");
+  const after = renderReviewCommentFromReport(report, "none");
+  assert.match(before, /Complete next step.*No concrete repair remains after this review\./);
+  assert.match(before, /1 item remains/);
+  assert.equal(publicSection(after, "Before merge"), "None.");
+  assert.doesNotMatch(after, /Complete next step|1 item remains/);
+  assert.equal(publicSection(after, "Review scores"), publicSection(before, "Review scores"));
+  assert.equal(
+    reviewAutomationMarkersFromReport(report),
+    reviewAutomationMarkersFromReport(legacy),
+  );
+  assert.deepEqual(
+    after.match(/<!-- clawsweeper-[^\n]+/g),
+    before.match(/<!-- clawsweeper-[^\n]+/g),
+  );
+});
+
+test("explicit required actions bypass prose heuristics even for human-owned workCandidate none", () => {
+  for (const text of [
+    "No schema change is needed, but repair the retry guard before merge.",
+    "Do not merge until the owner approves the compatibility contract.",
+    "Owner approval.",
+    "Wait for CI and ordinary maintainer review.",
+    "A decision on ownership is still outstanding.",
+  ]) {
+    const report = nextStepReport({ next_step: JSON.stringify({ kind: "required", text }) });
+    const comment = renderReviewCommentFromReport(report, "none");
+    assert.ok(publicSection(comment, "Before merge").includes(text), text);
+    assert.equal(
+      (publicSection(comment, "Before merge").match(/^- \[ \]/gm) ?? []).length,
+      1,
+      text,
+    );
+    assert.match(comment, /1 item remains/);
+    assert.equal(
+      reviewAutomationMarkersFromReport(report),
+      reviewAutomationMarkersFromReport(nextStepReport()),
+    );
+  }
+});
+
+test("canonical next-step report round-trip preserves explicit intent and legacy absence", () => {
+  for (const nextStep of [
+    undefined,
+    { kind: "none", text: "" },
+    { kind: "required", text: "Owner approval." },
+  ] as const) {
+    const report = evidenceReport([], "keep_open", nextStep);
+    assert.deepEqual(nextStepFromReport(report), nextStep);
+    if (nextStep === undefined) assert.doesNotMatch(report, /^next_step:/m);
+    else assert.ok(report.split("\n---")[0]!.includes(`next_step: ${JSON.stringify(nextStep)}`));
+    const comment = renderReviewCommentFromReport(report, "none");
+    if (nextStep?.kind === "none")
+      assert.doesNotMatch(publicSection(comment, "Before merge"), /Complete next step/);
+    if (nextStep?.kind === "required")
+      assert.match(publicSection(comment, "Before merge"), /Owner approval\./);
+  }
+});
+
+test("absent, malformed, duplicate and spoofed next-step metadata cannot suppress legacy action", () => {
+  const none = 'next_step: {"kind":"none","text":""}';
+  const legacy = nextStepReport({}, "", "Repair the retry guard before merge.");
+  const reports = [
+    legacy,
+    ...[
+      "none",
+      "null",
+      "{}",
+      '{"kind":"required","text":""}',
+      '{"kind":"none","text":"Repair it."}',
+      '{"kind":"none","text":"","extra":true}',
+      '{"kind":"required","kind":"none","text":""}',
+      '{"kind":"none","text":"Repair it.","text":""}',
+      "{broken",
+    ].map((value) => legacy.replace("---\n", `---\nnext_step: ${value}\n`)),
+    legacy.replace("---\n", `---\n${none}\n${none}\n`),
+    legacy.replace("---\n", `---\n${none}\nnext_step : {"kind":"required","text":"Repair it."}\n`),
+    legacy.replace("---\n", `---\n${none}\n"next_step": {"kind":"required","text":"Repair it."}\n`),
+    legacy.replace(
+      "---\n",
+      `---\n${none}\n"next\\u005fstep": {"kind":"required","text":"Repair it."}\n`,
+    ),
+    legacy.replace("---\n", `---\n${none}\n  text: malformed continuation\n`),
+    legacy.replace("---\n", `---\n\`\`\`json\n${none}\n\`\`\`\n`),
+    `${legacy}\n${none}\n`,
+    `${legacy}\n\`\`\`yaml\n---\n${none}\n---\n\`\`\`\n`,
+    `${legacy}\n---\n${none}\n---\n`,
+    `${legacy.replace("---\n", `---\n${none}\n`)}\n---\n${none}\n---\n`,
+  ];
+  for (const report of reports) {
+    assert.equal(nextStepFromReport(report), undefined, report);
+    const comment = renderReviewCommentFromReport(report, "none");
+    assert.match(publicSection(comment, "Before merge"), /Repair the retry guard before merge\./);
+    assert.match(comment, /1 item remains/);
+  }
+  const required = { kind: "required", text: "Owner approval." };
+  const canonical = nextStepReport({ next_step: JSON.stringify(required) });
+  const withExample = `${canonical}\n\`\`\`yaml\n---\n${none}\n---\n\`\`\`\n`;
+  assert.deepEqual(nextStepFromReport(withExample), required);
+  assert.match(
+    publicSection(renderReviewCommentFromReport(withExample, "none"), "Before merge"),
+    /Owner approval\./,
+  );
+});
+
+test("explicit none leaves independent blockers, decision counts and low ratings intact", () => {
+  const decision = {
+    required: true,
+    kind: "product_direction",
+    question: "Which compatibility contract should ship?",
+    rationale: "This needs an owner ruling.",
+    options: [{ title: "Keep compatibility", body: "Retain the old contract.", recommended: true }],
+    likelyOwner: { person: "@owner", reason: "Owns the contract.", confidence: "high" },
+  };
+  const cases: {
+    metadata?: Record<string, string>;
+    sections?: string;
+    label: string;
+    count?: number;
+  }[] = [
+    {
+      sections:
+        "## Review Findings\n\nOverall correctness: patch is incorrect\n\nFull review comments:\n\n- **[P1] Retry race:** `src/retry.ts:12`\n  - body: Repair concurrent retry handling.\n  - confidence: 0.9",
+      label: "Retry race",
+    },
+    {
+      sections:
+        "## Security Review\n\nStatus: needs_attention\n\nSummary: Confirm ownership.\n\nConcerns:\n\n- **[high] Ownership boundary:** `src/retry.ts:12`\n  - body: Restore the authorization guard.\n  - confidence: 0.9",
+      label: "Resolve security concern",
+    },
+    {
+      sections: "## Risks / Open Questions\n\n- [P1] Repair the compatibility break before merge.",
+      label: "Resolve merge risk",
+    },
+    {
+      metadata: {
+        real_behavior_proof_status: "missing",
+        real_behavior_proof_evidence_kind: "none",
+        real_behavior_proof_needs_contributor_action: "true",
+        author_association: "NONE",
+      },
+      label: "Add real behavior proof",
+    },
+    {
+      sections: "## Live Proof\n\n<!-- clawsweeper-live-verification -->\nResult: invalid",
+      label: "Resolve historical verification",
+    },
+    { metadata: { maintainer_decision: JSON.stringify(decision) }, label: "Decision needed" },
+    {
+      metadata: { pr_rating_patch: "D", pr_rating_proof: "A", pr_rating_overall: "D" },
+      label: "Improve patch quality",
+    },
+    { metadata: { review_status: "failed" }, label: "Retry ClawSweeper review", count: 0 },
+  ];
+  for (const scenario of cases) {
+    const legacy = nextStepReport(scenario.metadata, scenario.sections, "None.");
+    const report = legacy.replace("---\n", '---\nnext_step: {"kind":"none","text":""}\n');
+    const before = renderReviewCommentFromReport(legacy, "none");
+    const after = renderReviewCommentFromReport(report, "none");
+    assert.ok(after.includes(scenario.label), scenario.label);
+    assert.doesNotMatch(publicSection(after, "Before merge"), /Complete next step/);
+    if (scenario.count !== 0) assert.match(after, /1 item remains/, scenario.label);
+    assert.equal(
+      publicSection(after, "Before merge"),
+      publicSection(before, "Before merge"),
+      scenario.label,
+    );
+    assert.equal(
+      publicSection(after, "Review scores"),
+      publicSection(before, "Review scores"),
+      scenario.label,
+    );
+    assert.equal(
+      reviewAutomationMarkersFromReport(report),
+      reviewAutomationMarkersFromReport(legacy),
+      scenario.label,
+    );
+  }
+  const withDecision = nextStepReport({
+    maintainer_decision: JSON.stringify(decision),
+    next_step: JSON.stringify({
+      kind: "required",
+      text: "Record the owner decision in the PR body.",
+    }),
+  });
+  const comment = renderReviewCommentFromReport(withDecision, "none");
+  assert.match(publicSection(comment, "Before merge"), /Record the owner decision/);
+  assert.match(comment, /2 items remain/);
+});
 
 const dependencyEvidence = {
   repo: "openai/codex",

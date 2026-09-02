@@ -8,6 +8,7 @@ import type {
   ItemKind,
   LikelyOwner,
   MergeRiskOption,
+  NextStepAssessment,
   PublicBeforeMergeItem,
   PublicPriority,
   RegressionAssessment,
@@ -298,6 +299,7 @@ export function createReportCommentHelpers(
     securityReview: SecurityReview;
     risks: string;
     nextStep: string;
+    nextStepAssessment: NextStepAssessment | undefined;
     decisionPending: boolean;
     patchQualityBlocked: boolean;
     requiredRatingSteps: readonly string[];
@@ -370,10 +372,14 @@ export function createReportCommentHelpers(
       add("Resolve security review attention item", options.securityReview.summary);
     }
     if (!isReportNoneList(options.risks)) addPrioritized(options.risks, "P1", "Resolve merge risk");
-    // Only actionable next-step text enters the checklist: routing rationale or other
-    // explanatory prose is not remaining merge work, and decision questions are
-    // already represented by the decision packet.
-    if (
+    // Producer intent controls only this item; older reports retain prose inference.
+    if (options.nextStepAssessment?.kind === "required") {
+      add(
+        `Complete next step (${publicPriorityFromText(options.nextStepAssessment.text, "P2")})`,
+        options.nextStepAssessment.text,
+      );
+    } else if (
+      options.nextStepAssessment === undefined &&
       !isRoutineBeforeMergeStep(options.nextStep) &&
       !isRoutineCiOrReviewText(options.nextStep) &&
       isActionablePriorityText(options.nextStep) &&

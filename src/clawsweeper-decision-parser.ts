@@ -87,6 +87,7 @@ import type {
   TelegramVisibleProof,
 } from "./clawsweeper-types.js";
 import { derivedPrRating, normalizePrRating } from "./clawsweeper-rating.js";
+import { parseNextStep } from "./clawsweeper-next-step.js";
 import { parseMaintainerDecision } from "./decision-packets.js";
 import { DEFAULT_TARGET_REPO, normalizeRepo } from "./repository-profiles.js";
 
@@ -495,10 +496,33 @@ export function createDecisionParser({
   const CLEAN_OPENCLAW_PR_REVIEW_NEXT_STEP =
     "Continue normal maintainer review; ClawSweeper found no patch-correctness issue.";
 
+  const STANDALONE_CHANGELOG_ENTRY_REQUEST =
+    /^(?:please\s+)?(?:add|include)\s+(?:(?:a|an|the)\s+)?(?:(?:missing|required)\s+)?(?:changelog(?:\.md)?\s+entr(?:y|ies)|release[- ]notes?)(?:\s+before\s+merge)?[.!]?\s*$/i;
+  const NEXT_STEP_CLAUSE_SEPARATOR =
+    /([.;]\s+|\n+|\s+(?:and|but)\s+(?=(?:add|include|repair|fix|verify|confirm|resolve|prove|run)\s+(?:the|a|an|this|that)\s+\S))/i;
+
   function normalizeDecisionForItem(
     decision: Decision,
     item: DecisionNormalizationItem | undefined,
   ): Decision {
+    if (decision.nextStep?.kind === "required" && isOpenClawContributorPullRequest(item)) {
+      // Unlike findings, action prose must directly request only a changelog entry;
+      // mentions in a different or ambiguous instruction retain required intent.
+      // Split conjunctions only before clear imperative clauses, not compound
+      // objects such as "a changelog entry and repair notes". Unrecognized forms
+      // stay together so an ambiguous additional action cannot be stripped.
+      const parts = decision.nextStep.text.split(NEXT_STEP_CLAUSE_SEPARATOR);
+      const retained = parts.flatMap((text, index) =>
+        index % 2 === 0 && !STANDALONE_CHANGELOG_ENTRY_REQUEST.test(text) ? [index] : [],
+      );
+      if (retained.length !== (parts.length + 1) / 2) {
+        const text = retained
+          .map((index, position) => `${position === 0 ? "" : parts[index - 1]}${parts[index]}`)
+          .join("")
+          .trim();
+        decision = { ...decision, nextStep: { kind: text ? "required" : "none", text } };
+      }
+    }
     const reviewFindings = decision.reviewFindings.filter(
       (finding) => !isContributorChangelogEntryFinding(item, finding),
     );
@@ -1001,6 +1025,10 @@ export function createDecisionParser({
       record.maintainerDecision,
       "decision.maintainerDecision",
     );
+    const nextStep =
+      record.nextStep === undefined
+        ? undefined
+        : parseNextStep(record.nextStep, "decision.nextStep");
     const decision: Decision = {
       decision: requireEnum(record.decision, DECISIONS, "decision.decision"),
       closeReason: requireEnum(record.closeReason, ALL_REASONS, "decision.closeReason"),
@@ -1138,6 +1166,14 @@ export function createDecisionParser({
       workConfidence: requireEnum(record.workConfidence, CONFIDENCES, "decision.workConfidence"),
       workPriority: requireEnum(record.workPriority, CONFIDENCES, "decision.workPriority"),
       workReason: requireReportText(record.workReason, "decision.workReason"),
+      ...(nextStep === undefined
+        ? {}
+        : {
+            nextStep: {
+              ...nextStep,
+              text: requireReportText(nextStep.text, "decision.nextStep.text"),
+            },
+          }),
       workPrompt: requireReportText(record.workPrompt, "decision.workPrompt"),
       workClusterRefs: requireSingleLineStringArray(
         record.workClusterRefs,

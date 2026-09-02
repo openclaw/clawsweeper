@@ -37,6 +37,7 @@ import {
   fitPrHydrationSnapshotToPublicationLimit,
   serializePrHydrationSnapshot,
 } from "./pr-hydration-snapshot.js";
+import { parseNextStep } from "./clawsweeper-next-step.js";
 
 export function localCheckoutAccessForDecision(
   decision: Pick<Decision, "localCheckoutAccess">,
@@ -663,7 +664,7 @@ decision: ${options.decision.decision}
 close_reason: ${options.decision.closeReason}
 confidence: ${options.decision.confidence}
 action_taken: ${options.action.actionTaken}
-work_candidate: ${options.decision.workCandidate}
+${options.decision.nextStep === undefined ? "" : `next_step: ${JSON.stringify(parseNextStep(options.decision.nextStep))}\n`}work_candidate: ${options.decision.workCandidate}
 work_confidence: ${options.decision.workConfidence}
 work_priority: ${options.decision.workPriority}
 work_status: ${workStatusForDecision(options.decision)}

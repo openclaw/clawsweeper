@@ -105,6 +105,33 @@ PR comments use a human-first shape:
 8. `## Findings` appears only when actionable review or security findings need
    a little more visible detail.
 
+New reviewer output requires a producer-owned `nextStep` assessment. Issues use
+none and retain their existing next-action guidance in `workReason`; only PR
+checklists consume this new intent. Canonical report frontmatter stores `next_step` as JSON: `{"kind":"none","text":""}` means
+no additional required next step; `{"kind":"required","text":"..."}` carries
+nonempty trimmed action text. Explanatory routing prose stays in `workReason`.
+Only the Before merge next-step checkbox and its readiness count consume this
+intent: explicit none suppresses that derived item, while required actions survive
+negation, contrast, routine-sounding prose, or lack of action keywords. Human-owned
+actions may be required even when `workCandidate` is none. Contributor changelog
+requests remain subject to OpenClaw's release-owned changelog normalization.
+
+Historical Decisions may omit the assessment, and reports are not migrated or
+rewritten. Missing, malformed, duplicated, or ambiguous metadata retains the
+conservative legacy prose fallback, never an inferred none. Only a unique valid
+value in leading canonical frontmatter counts; body or fenced examples cannot
+supply it. This compatibility limit means old false-positive prose needs a fresh
+producer assessment, not a guess from its summary, rating, or automation markers.
+Independent findings, security concerns, risks, contributor proof, historical
+verification, decisions, failed reviews, and low-quality remediation still render
+and count. Scores and marker/repair/automerge eligibility are unchanged: `nextStep`
+is presentation intent, not mutation authority. OpenClaw Bay needs no code change
+because its observer projection does not consume this checklist.
+
+The [next-step intent proof recipe](proof/review-next-step-intent/README.md)
+compares identical synthetic reports against pinned baseline and candidate
+renderers and exercises producer-to-report persistence without live publication.
+
 Everything primarily useful to agents or deep reviewers lives under one
 collapsed `Agent review details` section: security evidence, PR surface,
 review metrics, stored-data warnings, root-cause clusters, proof suggestions,

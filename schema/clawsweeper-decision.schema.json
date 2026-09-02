@@ -57,6 +57,7 @@
     "workConfidence",
     "workPriority",
     "workReason",
+    "nextStep",
     "workPrompt",
     "workClusterRefs",
     "workValidation",
@@ -1134,7 +1135,30 @@
     },
     "workReason": {
       "type": "string",
-      "description": "Short reason this item is or is not a safe fix-PR candidate. For pull requests that need human handling, make this the maintainer next action and do not restate bestSolution."
+      "description": "Short routing explanation for why this item is or is not a safe fix-PR candidate. For pull requests, keep required action intent in nextStep, not in this rationale. For issues, retain existing routing or next-action guidance here."
+    },
+    "nextStep": {
+      "description": "Producer-owned presentation intent for the PR Before merge next step only, never authority to auto-fix or merge. Issues use none and retain next-action guidance in workReason. None means no additional required action (including routine CI or ordinary maintainer look); required states the concrete action, including human-owned blockers even when workCandidate is none or the text contains no/not/but/unless/until. Independent findings, security, proof, risks, decisions, and low-quality remediation remain separate blockers.",
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "text"],
+          "properties": {
+            "kind": { "type": "string", "enum": ["none"] },
+            "text": { "type": "string", "enum": [""] }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "text"],
+          "properties": {
+            "kind": { "type": "string", "enum": ["required"] },
+            "text": { "type": "string", "pattern": "^\\S(?:[\\s\\S]*\\S)?$" }
+          }
+        }
+      ]
     },
     "workPrompt": {
       "type": "string",
