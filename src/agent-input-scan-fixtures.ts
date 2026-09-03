@@ -111,6 +111,13 @@ const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
     sources: ["extensions/mattermost/src/mattermost/slash-http.test.ts"],
   },
   {
+    // OpenClaw MCP Apps sandbox-origin rejection fixture introduced by f3971bbd56e4.
+    fixtureSha256: "354e44c28981412829c4cd79588c7c5385d55221eb1f5d0014e96421d35e76a4",
+    lineSha256s: ["f7d672c72c5b3f9f67b09a5b0f15fdab1c565d36d534c62e3424c4cd1981bb06"],
+    decoders: ["PLAIN"],
+    sources: ["src/config/config-misc.test.ts"],
+  },
+  {
     // OpenClaw config endpoint redaction and restoration fixtures.
     fixtureSha256: "a2e43ebb989e154a5cfde0e9f67d0e7465adffdba2c8be60394f35e7797149a3",
     rawSha256: "6b167ea4a777545dcca0e4d425aafccd750a6c6fca8a5b2b370f16491f3a8a4d",

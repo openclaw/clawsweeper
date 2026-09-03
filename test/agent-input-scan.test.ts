@@ -551,6 +551,7 @@ const browserToolSource = "extensions/browser/src/browser-tool.test.ts";
 const browserCdpHelpersSource = "extensions/browser/src/browser/cdp.helpers.test.ts";
 const browserMcpSource = "extensions/browser/src/browser/chrome-mcp.test.ts";
 const macDashboardSource = "apps/macos/Tests/OpenClawIPCTests/DashboardWindowSmokeTests.swift";
+const mcpAppsSource = "src/config/config-misc.test.ts";
 const mattermostSource = "extensions/mattermost/src/mattermost/slash-http.test.ts";
 const ledgerFixtureSha256 = "a728de5dbbef23b8aa5ef2d99060835f4f2fb5a0fa2abb9fe249d08aa09bd09e";
 const nativeContractFailures = new Map([
@@ -700,10 +701,11 @@ for (const scenarioName of [
     "missing verification error",
     "wrong version",
     "missing completion",
-  ].map((scenario) => `mac dashboard ${scenario}`),
+  ].flatMap((scenario) => [`mac dashboard ${scenario}`, `mcp apps ${scenario}`]),
 ]) {
   const macDashboardFixture = scenarioName.startsWith("mac dashboard ");
-  const scenario = macDashboardFixture ? scenarioName.slice("mac dashboard ".length) : scenarioName;
+  const mcpAppsFixture = scenarioName.startsWith("mcp apps ");
+  const scenario = scenarioName.replace(/^(?:mac dashboard|mcp apps) /, "");
   test(`reviewed synthetic fixture admission: ${scenarioName}`, (t) => {
     const notices: unknown[][] = [];
     t.mock.method(console, "error", (...args: unknown[]) => notices.push(args));
@@ -724,15 +726,17 @@ for (const scenarioName of [
     const browserExactFixture = browserCdpFixture || browserMcpFixture;
     const encodedCdpFixture = browserCdpFixture && scenario.includes("encoded");
     // Preserve the literal witnesses captured from the native OpenClaw scan.
-    const literalLine = macDashboardFixture
-      ? 273
-      : browserCdpFixture
-        ? encodedCdpFixture
-          ? 406
-          : 293
-        : browserMcpFixture
-          ? 1339
-          : 42;
+    const literalLine = mcpAppsFixture
+      ? 763
+      : macDashboardFixture
+        ? 273
+        : browserCdpFixture
+          ? encodedCdpFixture
+            ? 406
+            : 293
+          : browserMcpFixture
+            ? 1339
+            : 42;
     const scannerLine = scenario.includes("shifted BASE64") ? literalLine - 4 : literalLine;
     const primaryDecoder = scenario.includes("BASE64")
       ? "BASE64"
@@ -792,6 +796,12 @@ for (const scenarioName of [
       url.username = "user";
       url.password = "pass";
       uri = url.href;
+    }
+    if (mcpAppsFixture) {
+      const url = new URL("https://mcp-apps.example.com");
+      url.username = "user";
+      url.password = "pass";
+      uri = url.href.slice(0, -1);
     }
     assert.ok(uri, "reviewed synthetic fixture is present");
     const authority = new URL(uri);
@@ -869,6 +879,7 @@ for (const scenarioName of [
                     ];
     if (macDashboardFixture)
       files = [scenario === "other file" ? "other.test.swift" : macDashboardSource];
+    if (mcpAppsFixture) files = [scenario === "other file" ? "other.test.ts" : mcpAppsSource];
     const value =
       scenario === "decoded only" || scenario.endsWith("encoded-only")
         ? primaryDecoder === "BASE64"
@@ -898,8 +909,11 @@ for (const scenarioName of [
         ? JSON.stringify(value)
         : `        let credentialedFrame = try #require(URL(string: "${value}"))`
       : undefined;
-    const reviewedFixtureLine =
-      reviewedMacDashboardLine ?? reviewedBrowserLine ?? reviewedMattermostLine;
+    const reviewedFixtureLine = mcpAppsFixture
+      ? scenario === "unapproved line"
+        ? JSON.stringify(value)
+        : `      ${JSON.stringify(value)},`
+      : (reviewedMacDashboardLine ?? reviewedBrowserLine ?? reviewedMattermostLine);
     const contents =
       "// context\n".repeat(literalLine - 2) +
       (reviewedFixtureLine ?? JSON.stringify(otherReviewedUri ?? value)) +
