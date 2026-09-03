@@ -68,13 +68,167 @@ function publicPublicationQueue(storage: MemoryDurableStorage) {
   );
 }
 
+const NON_ROUTED_TERMINAL_KINDS = [
+  "superseded",
+  "requeue",
+  "dead_letter",
+  "target_closed",
+  "target_missing",
+  "policy_noop",
+  "guarded_open",
+  "failure",
+] as const;
+
+function lifecycleRouterOrderingFixture({
+  terminalKind,
+  receiptObservedAt,
+  terminalObservedAt,
+}: {
+  terminalKind: (typeof NON_ROUTED_TERMINAL_KINDS)[number];
+  receiptObservedAt?: number;
+  terminalObservedAt: number;
+}) {
+  const storage = new MemoryDurableStorage();
+  const queue = publicPublicationQueue(storage);
+  const store = new ExactReviewLifecycleProjectionStore(storage);
+  const identity = {
+    canonicalTargetKey: "openclaw/openclaw#706",
+    fenceKey: `router-ordering-${terminalKind}`,
+    revision: 1,
+  };
+  store.recordAdmission({
+    ...identity,
+    deliveryId: identity.fenceKey,
+    sourceAction: "legacy_dispatch",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    observedAt: 1,
+  });
+  store.recordCanonicalReceipt({
+    ...identity,
+    outcome: "accepted",
+    receiptId: "canonical:706:1",
+    observedAt: 2,
+  });
+  if (receiptObservedAt !== undefined) {
+    store.recordRouterReceipt({
+      ...identity,
+      outcome: "durable",
+      receiptId: "router:706:1",
+      observedAt: receiptObservedAt,
+    });
+  }
+  store.recordTerminalDisposition({
+    ...identity,
+    kind: terminalKind,
+    observedAt: terminalObservedAt,
+  });
+  const post = () =>
+    queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/lifecycle/router-receipt", {
+        method: "POST",
+        body: JSON.stringify({
+          canonical_target_key: identity.canonicalTargetKey,
+          fence_key: identity.fenceKey,
+          revision: identity.revision,
+          outcome: "durable",
+          receipt_id: "router:706:1",
+        }),
+      }),
+    );
+  const projection = () =>
+    store.read(identity.canonicalTargetKey, identity.fenceKey, identity.revision)!;
+  const driverKey = `terminal-finalization:${identity.fenceKey}:${identity.revision}`;
+  return { storage, post, projection, driverKey };
+}
+
+test("router receipt repair preserves matching later or equal terminal outcomes", async (t) => {
+  for (const terminalKind of NON_ROUTED_TERMINAL_KINDS) {
+    for (const relation of ["later", "equal"] as const) {
+      await t.test(`${terminalKind} ${relation}`, async () => {
+        const receiptObservedAt = 10;
+        const { storage, post, projection, driverKey } = lifecycleRouterOrderingFixture({
+          terminalKind,
+          receiptObservedAt,
+          terminalObservedAt: relation === "later" ? 11 : receiptObservedAt,
+        });
+        const before = {
+          terminalDisposition: projection().terminalDisposition,
+          terminalDispositions: projection().terminalDispositions,
+          queue: storage.sql.readNormalizedQueue(),
+        };
+
+        assert.equal((await post()).status, 200);
+        assert.deepEqual(
+          {
+            terminalDisposition: projection().terminalDisposition,
+            terminalDispositions: projection().terminalDispositions,
+            queue: storage.sql.readNormalizedQueue(),
+          },
+          before,
+        );
+        assert.equal(projection().routerReceipts[0]?.operationComplete, true);
+        assert.equal(storage.sql.readNormalizedQueue().items[driverKey], undefined);
+      });
+    }
+  }
+});
+
+test("router receipt repair rejects a terminal older than its matching receipt atomically", async () => {
+  const { storage, post, projection } = lifecycleRouterOrderingFixture({
+    terminalKind: "policy_noop",
+    receiptObservedAt: 11,
+    terminalObservedAt: 10,
+  });
+  const before = { projection: projection(), queue: storage.sql.readNormalizedQueue() };
+
+  assert.equal((await post()).status, 409);
+  assert.deepEqual({ projection: projection(), queue: storage.sql.readNormalizedQueue() }, before);
+});
+
+test("router receipt repair rejects a receiptless non-requeue terminal atomically", async () => {
+  const { storage, post, projection } = lifecycleRouterOrderingFixture({
+    terminalKind: "policy_noop",
+    terminalObservedAt: 10,
+  });
+  const before = { projection: projection(), queue: storage.sql.readNormalizedQueue() };
+
+  assert.equal((await post()).status, 409);
+  assert.deepEqual({ projection: projection(), queue: storage.sql.readNormalizedQueue() }, before);
+});
+
+test("router receipt repair preserves a receiptless requeue", async () => {
+  const { storage, post, projection } = lifecycleRouterOrderingFixture({
+    terminalKind: "requeue",
+    terminalObservedAt: 10,
+  });
+  const before = {
+    terminalDisposition: projection().terminalDisposition,
+    terminalDispositions: projection().terminalDispositions,
+    queue: storage.sql.readNormalizedQueue(),
+  };
+
+  assert.equal((await post()).status, 200);
+  assert.deepEqual(
+    {
+      terminalDisposition: projection().terminalDisposition,
+      terminalDispositions: projection().terminalDispositions,
+      queue: storage.sql.readNormalizedQueue(),
+    },
+    before,
+  );
+  assert.equal(projection().routerReceipts[0]?.operationComplete, true);
+});
+
 for (const route of ["router-receipt", "terminal-disposition"] as const) {
   for (const scenario of [
     "plain",
     "requeue",
     "rollback",
+    "derived-replay",
     ...(route === "router-receipt"
-      ? ["legacy", "legacy-terminal", "legacy-requeue", "legacy-requeue-tied"]
+      ? ["rollback-requeue", "legacy", "legacy-terminal", "legacy-requeue", "legacy-requeue-tied"]
       : ["conflict"]),
   ]) {
     const legacy = scenario.startsWith("legacy");
@@ -83,11 +237,15 @@ for (const route of ["router-receipt", "terminal-disposition"] as const) {
       ? `${scenario} repairs only incomplete effects and marks completion`
       : scenario === "conflict"
         ? "rejects a conflicting terminal operation kind"
-        : requeue
-          ? "after lost response and newer requeue preserves requeue without a driver"
-          : scenario === "rollback"
-            ? "after a failed driver write applies all effects atomically"
-            : "returns ok without changing durable state";
+        : scenario === "derived-replay"
+          ? "reruns derived Bay and scheduling effects after a committed response failure"
+          : scenario === "rollback-requeue"
+            ? "preserves a newer requeue after the original transaction rolls back"
+            : requeue
+              ? "after lost response and newer requeue preserves requeue without a driver"
+              : scenario === "rollback"
+                ? "after a failed driver write applies all effects atomically"
+                : "returns ok without changing durable state";
     test(`lifecycle ${route} replay ${description}`, async (t) => {
       t.mock.timers.enable({ apis: ["Date"], now: Date.UTC(2026, 8, 2) });
       const storage = new MemoryDurableStorage();
@@ -143,15 +301,32 @@ for (const route of ["router-receipt", "terminal-disposition"] as const) {
       const projection = () =>
         store.read(identity.canonicalTargetKey, identity.fenceKey, identity.revision)!;
       const driverKey = `terminal-finalization:${identity.fenceKey}:${identity.revision}`;
+      let alarmAttempts = 0;
+      if (scenario === "derived-replay") {
+        const setAlarm = storage.setAlarm.bind(storage);
+        storage.setAlarm = async (at) => {
+          alarmAttempts += 1;
+          if (alarmAttempts === 1) throw new Error("injected alarm failure");
+          await setAlarm(at);
+        };
+      }
 
-      if (scenario === "rollback") {
+      if (scenario === "rollback" || scenario === "rollback-requeue") {
         const beforeFailure = projection();
         storage.sql.failNext(/INSERT INTO exact_review_queue_items /);
         assert.equal((await post(route, payload)).status, 409);
         assert.deepEqual(projection(), beforeFailure);
         assert.equal(storage.sql.readNormalizedQueue().items[driverKey], undefined);
       }
-      if (legacy) {
+      if (scenario === "rollback-requeue") {
+        t.mock.timers.tick(1_000);
+        assert.equal(
+          (await post("terminal-disposition", JSON.stringify({ ...wireIdentity, kind: "requeue" })))
+            .status,
+          200,
+        );
+        assert.equal(lifecycleState(projection()), "requeue");
+      } else if (legacy) {
         store.recordRouterReceipt({
           ...identity,
           outcome: "durable",
@@ -169,10 +344,13 @@ for (const route of ["router-receipt", "terminal-disposition"] as const) {
         assert.equal(storage.sql.readNormalizedQueue().items[driverKey], undefined);
       } else {
         // Commit the request, then discard its response as if the transport lost it.
-        assert.equal((await post(route, payload)).status, 200);
+        assert.equal(
+          (await post(route, payload)).status,
+          scenario === "derived-replay" ? 409 : 200,
+        );
         assert.ok(storage.sql.readNormalizedQueue().items[driverKey]);
       }
-      if (requeue) {
+      if (requeue && scenario !== "rollback-requeue") {
         if (scenario !== "legacy-requeue-tied") t.mock.timers.tick(1_000);
         assert.equal(
           (await post("terminal-disposition", JSON.stringify({ ...wireIdentity, kind: "requeue" })))
@@ -188,11 +366,18 @@ for (const route of ["router-receipt", "terminal-disposition"] as const) {
       };
       // Reconstruct the queue to require durable dedupe rather than process memory.
       queue = publicPublicationQueue(storage);
+      if (scenario === "derived-replay") storage.sql.resetQueryHistory();
       t.mock.timers.tick(1_000);
       const replay = await post(route, payload);
       assert.equal(replay.status, 200);
       assert.equal((await replay.json()).ok, true);
-      if (legacy) {
+      if (scenario === "rollback-requeue") {
+        assert.equal(projection().routerReceipts.length, 1);
+        assert.equal(projection().routerReceipts[0].operationComplete, true);
+        assert.deepEqual(projection().terminalDisposition, before.projection.terminalDisposition);
+        assert.deepEqual(storage.sql.readNormalizedQueue(), before.queue);
+        before.projection = projection();
+      } else if (legacy) {
         assert.equal(projection().routerReceipts[0].operationComplete, true);
         assert.equal(projection().routerReceipts[0].observedAt, Date.UTC(2026, 8, 2));
         if (requeue) {
@@ -215,6 +400,14 @@ for (const route of ["router-receipt", "terminal-disposition"] as const) {
         { projection: projection(), queue: storage.sql.readNormalizedQueue() },
         before,
       );
+      if (scenario === "derived-replay") {
+        assert.equal(
+          storage.sql.queriesMatching(/INSERT INTO exact_review_lifecycle_bay_pending_v2/).length,
+          1,
+        );
+        assert.equal(alarmAttempts, 2);
+        assert.ok(await storage.getAlarm());
+      }
       if (scenario === "conflict") {
         const conflicting = await post(
           route,
@@ -267,7 +460,7 @@ for (const route of ["router-receipt", "terminal-disposition"] as const) {
   }
 }
 
-for (const scenario of ["conflict", "retention", "legacy"] as const) {
+for (const scenario of ["conflict", "lifetime", "old-row", "invalid"] as const) {
   test(`lifecycle terminal operation store ${scenario}`, () => {
     const storage = new MemoryDurableStorage();
     const store = new ExactReviewLifecycleProjectionStore(storage);
@@ -292,36 +485,52 @@ for (const scenario of ["conflict", "retention", "legacy"] as const) {
       observedAt: Date.now(),
     });
     let projection = store.recordTerminalDisposition(operation(0));
-    if (scenario === "retention") {
+    if (scenario === "lifetime") {
       for (let index = 1; index < 40; index += 1) {
         projection = store.recordTerminalDisposition(operation(index));
       }
+      projection = store.recordTerminalDisposition({
+        ...identity,
+        kind: "requeue",
+        observedAt: Date.now() + 1,
+      });
       assert.deepEqual(
         projection.terminalOperationIds,
-        Array.from({ length: 32 }, (_, index) => ({
-          operationId: operation(index + 8).operationId,
+        Array.from({ length: 40 }, (_, index) => ({
+          operationId: operation(index).operationId,
           kind: "policy_noop",
         })),
       );
-      assert.deepEqual(store.recordTerminalDisposition(operation(39)), projection);
-    } else if (scenario === "legacy") {
+      assert.deepEqual(store.recordTerminalDisposition(operation(0)), projection);
+      assert.equal(projection.terminalDisposition?.kind, "requeue");
+    } else if (scenario === "old-row") {
       storage.sql.exec(
         "UPDATE exact_review_lifecycle_projection_v1 SET projection_json = ?",
-        JSON.stringify({ ...projection, terminalOperationIds: [operation(0).operationId] }),
+        JSON.stringify({ ...projection, terminalOperationIds: undefined }),
       );
-      const migrated = new ExactReviewLifecycleProjectionStore(storage);
-      projection = migrated.read(
+      projection = new ExactReviewLifecycleProjectionStore(storage).read(
         identity.canonicalTargetKey,
         identity.fenceKey,
         identity.revision,
       )!;
-      assert.deepEqual(projection.terminalOperationIds, [
-        { operationId: operation(0).operationId, kind: null },
-      ]);
-      assert.deepEqual(
-        migrated.recordTerminalDisposition({ ...operation(0), kind: "requeue" }),
-        projection,
-      );
+      assert.deepEqual(projection.terminalOperationIds, []);
+    } else if (scenario === "invalid") {
+      for (const terminalOperationIds of [
+        [operation(0).operationId],
+        [
+          { operationId: operation(0).operationId, kind: "policy_noop" },
+          { operationId: operation(0).operationId, kind: "policy_noop" },
+        ],
+      ]) {
+        storage.sql.exec(
+          "UPDATE exact_review_lifecycle_projection_v1 SET projection_json = ?",
+          JSON.stringify({ ...projection, terminalOperationIds }),
+        );
+        assert.throws(
+          () => store.read(identity.canonicalTargetKey, identity.fenceKey, identity.revision),
+          /invalid lifecycle projection row/,
+        );
+      }
     } else {
       assert.deepEqual(store.recordTerminalDisposition(operation(0)), projection);
       assert.throws(
@@ -2306,66 +2515,8 @@ test("durable direct command acknowledgement survives successor lease expiry", a
     null,
   );
 
-  // A later requeue is authoritative for this revision: it must cancel the
-  // stale Complete driver rather than allowing it to restore the earlier
-  // routed disposition. A later durable route handoff may then create a new
-  // driver for that same fenced revision.
-  const requeueBody = JSON.stringify({
-    canonical_target_key: publication.canonicalTargetKey,
-    fence_key: publication.fenceKey,
-    revision: publication.revision,
-    kind: "requeue",
-  });
-  const requeueSignature = `sha256=${createHmac("sha256", secret).update(requeueBody).digest("hex")}`;
-  assert.equal(
-    (
-      await worker.fetch(
-        new Request(
-          "https://clawsweeper.openclaw.ai/internal/exact-review/lifecycle/terminal-disposition",
-          {
-            method: "POST",
-            headers: { "x-clawsweeper-exact-review-signature": requeueSignature },
-            body: requeueBody,
-          },
-        ),
-        env,
-      )
-    ).status,
-    200,
-  );
-  state = storage.sql.readNormalizedQueue() as { items: Record<string, ExactReviewQueueItem> };
-  assert.equal(state.items[driverKey], undefined);
-  const requeuedProjection = new ExactReviewLifecycleProjectionStore(storage).read(
-    "openclaw/openclaw#706",
-    leased.key,
-    4,
-  )!;
-  assert.equal(lifecycleState(requeuedProjection), "requeue");
-  assert.equal(commandAcknowledgementState(requeuedProjection), "unavailable");
-
-  const reroutedBody = JSON.stringify({
-    ...routerReceipt,
-    receipt_id: "direct-router-recovery:706:2",
-  });
-  const reroutedSignature = `sha256=${createHmac("sha256", secret)
-    .update(reroutedBody)
-    .digest("hex")}`;
-  assert.equal(
-    (
-      await worker.fetch(
-        new Request(
-          "https://clawsweeper.openclaw.ai/internal/exact-review/lifecycle/router-receipt",
-          {
-            method: "POST",
-            headers: { "x-clawsweeper-exact-review-signature": reroutedSignature },
-            body: reroutedBody,
-          },
-        ),
-        env,
-      )
-    ).status,
-    200,
-  );
+  // Requeue ordering is covered separately; this scenario retains the
+  // finalizer identity and acknowledgement retry coverage.
   state = storage.sql.readNormalizedQueue() as { items: Record<string, ExactReviewQueueItem> };
   driver = state.items[driverKey]!;
   Object.assign(driver, {

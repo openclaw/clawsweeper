@@ -7766,7 +7766,7 @@ export class ExactReviewQueue {
                 revision: prior.revision,
                 kind: requestedKind,
                 observedAt: now,
-              });
+              }).projection;
         const terminalKind = terminal.terminalDisposition?.kind;
         if (terminalKind && terminalKind !== "requeue") {
           this.ensureLifecycleTerminalFinalizationDriver({
@@ -8393,38 +8393,38 @@ export class ExactReviewQueue {
     }
     try {
       const now = Date.now();
-      const { projection, state } = this.storage.transactionSync(() => {
+      const result = this.storage.transactionSync(() => {
         const existing = this.lifecycleProjectionStore.read(
           identity.canonicalTargetKey,
           identity.fenceKey,
           identity.revision,
         );
         const receipt = existing?.routerReceipts.find((entry) => entry.receiptId === receiptId);
-        if (existing && receipt) {
-          if (receipt.outcome !== outcome) throw new Error("conflicting lifecycle router receipt");
-          if (receipt.operationComplete) return { projection: existing, state: null };
-        }
-        const recorded = this.lifecycleProjectionStore.recordRouterReceiptSync({
+        const terminal = existing?.terminalDisposition;
+        const result = this.lifecycleProjectionStore.recordRouterReceiptSync({
           ...identity,
           outcome,
           receiptId,
           observedAt: now,
           operationComplete: true,
         });
-        // A legacy routed fact may still be missing its driver; other terminal facts supersede it.
+        // Preserve a committed requeue without a receipt, plus f7's ordering
+        // rule for a matching receipt followed by a later terminal outcome.
         if (
-          receipt &&
-          existing?.terminalDisposition &&
-          existing.terminalDisposition.kind !== "review_completed_routed" &&
-          existing.terminalDisposition.observedAt >= receipt.observedAt
+          result.duplicate ||
+          terminal?.kind === "requeue" ||
+          (receipt &&
+            terminal &&
+            terminal.kind !== "review_completed_routed" &&
+            terminal.observedAt >= receipt.observedAt)
         ) {
-          return { projection: recorded, state: null };
+          return result;
         }
         const projection = this.lifecycleProjectionStore.recordTerminalDispositionSync({
           ...identity,
           kind: "review_completed_routed",
           observedAt: now,
-        });
+        }).projection;
         const state = this.readStateSync();
         const driverChanged = this.ensureLifecycleTerminalFinalizationDriver({
           state,
@@ -8434,16 +8434,14 @@ export class ExactReviewQueue {
         const receiptRemoved = this.removeTerminalizedLifecycleQueueItem(state, identity);
         // Commit the replay marker and all durable effects together.
         if (driverChanged || receiptRemoved) this.writeStateSync(state);
-        return { projection, state };
+        return { projection, duplicate: false };
       });
-      if (state) {
-        this.syncBayLifecycle(projection);
-        await this.scheduleNext(state, now);
-      }
+      this.syncBayLifecycle(result.projection);
+      await this.scheduleNext(this.readStateSync(), now);
       return json({
         ok: true,
-        lifecycle_state: lifecycleState(projection),
-        version: projection.version,
+        lifecycle_state: lifecycleState(result.projection),
+        version: result.projection.version,
       });
     } catch {
       console.warn("lifecycle_router_receipt_rejected");
@@ -9012,27 +9010,14 @@ export class ExactReviewQueue {
     }
     try {
       const now = Date.now();
-      const { projection, state } = this.storage.transactionSync(() => {
-        const existing = this.lifecycleProjectionStore.read(
-          identity.canonicalTargetKey,
-          identity.fenceKey,
-          identity.revision,
-        );
-        const operation = operationId
-          ? existing?.terminalOperationIds.find((entry) => entry.operationId === operationId)
-          : undefined;
-        if (existing && operation) {
-          if (operation.kind !== null && operation.kind !== kind) {
-            throw new Error("conflicting lifecycle terminal operation");
-          }
-          return { projection: existing, state: null };
-        }
-        const projection = this.lifecycleProjectionStore.recordTerminalDispositionSync({
+      const result = this.storage.transactionSync(() => {
+        const result = this.lifecycleProjectionStore.recordTerminalDispositionSync({
           ...identity,
           kind,
           operationId,
           observedAt: now,
         });
+        if (result.duplicate) return result;
         const state = this.readStateSync();
         const driverCancelled =
           kind === "requeue" ? this.cancelTerminalFinalizationDrivers(state, identity) : false;
@@ -9041,23 +9026,21 @@ export class ExactReviewQueue {
             ? false
             : this.ensureLifecycleTerminalFinalizationDriver({
                 state,
-                projection,
+                projection: result.projection,
                 terminalDisposition: kind,
                 now,
               });
         const receiptRemoved = this.removeTerminalizedLifecycleQueueItem(state, identity);
         if (driverChanged || driverCancelled || receiptRemoved) this.writeStateSync(state);
-        return { projection, state };
+        return result;
       });
-      if (state) {
-        this.syncBayLifecycle(projection);
-        await this.scheduleNext(state, now);
-      }
+      this.syncBayLifecycle(result.projection);
+      await this.scheduleNext(this.readStateSync(), now);
       return json({
         ok: true,
-        lifecycle_state: lifecycleState(projection),
-        acknowledgement_state: commandAcknowledgementState(projection),
-        version: projection.version,
+        lifecycle_state: lifecycleState(result.projection),
+        acknowledgement_state: commandAcknowledgementState(result.projection),
+        version: result.projection.version,
       });
     } catch (error) {
       console.warn("lifecycle_terminal_disposition_rejected");

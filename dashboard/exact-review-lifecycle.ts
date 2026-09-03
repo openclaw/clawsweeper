@@ -6,8 +6,6 @@ export const EXACT_REVIEW_LIFECYCLE_AUDIT_READ_LIMIT = 10_000;
 export const EXACT_REVIEW_LIFECYCLE_AUDIT_PAGE_MAX = 100;
 export const EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_TTL_MS = 5 * 60 * 1000;
 export const EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_MAX_ACTIVE = 4;
-// IDs are per run/attempt/fence, so 32 covers any realistic replay window.
-const EXACT_REVIEW_LIFECYCLE_TERMINAL_OPERATION_LIMIT = 32;
 const EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_TABLE = "exact_review_lifecycle_audit_snapshots_v1";
 const EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_ROW_TABLE =
   "exact_review_lifecycle_audit_snapshot_rows_v1";
@@ -225,7 +223,7 @@ export type ExactReviewLifecycleProjection = {
    */
   terminalDispositions: Array<{ kind: LifecycleTerminalDisposition; observedAt: number }>;
   /** Applied terminal POST identities, retained with the revision's receipt history. */
-  terminalOperationIds: Array<{ operationId: string; kind: LifecycleTerminalDisposition | null }>;
+  terminalOperationIds: Array<{ operationId: string; kind: LifecycleTerminalDisposition }>;
   /** Current terminal outcome used to derive lifecycle and acknowledgement state. */
   terminalDisposition: { kind: LifecycleTerminalDisposition; observedAt: number } | null;
   /**
@@ -524,7 +522,7 @@ export class ExactReviewLifecycleProjectionStore {
       operationComplete?: true;
     },
   ) {
-    return this.storage.transactionSync(() => this.recordRouterReceiptSync(input));
+    return this.storage.transactionSync(() => this.recordRouterReceiptSync(input).projection);
   }
 
   recordRouterReceiptSync(
@@ -537,7 +535,7 @@ export class ExactReviewLifecycleProjectionStore {
   ) {
     this.validateIdentity(input);
     if (!validText(input.receiptId, 1, 300)) throw new Error("invalid lifecycle router receipt");
-    return this.mutateSync(input, (projection) => {
+    return this.mutateIdempotentlySync(input, (projection) => {
       const next = {
         outcome: input.outcome,
         receiptId: input.receiptId,
@@ -553,10 +551,11 @@ export class ExactReviewLifecycleProjectionStore {
       if (projection.routerReceipt && projection.routerReceipt.outcome !== next.outcome) {
         throw new Error("conflicting lifecycle router receipt");
       }
+      if (existing && (existing.operationComplete || !input.operationComplete)) return true;
       if (!existing) projection.routerReceipts.push(next);
       else if (input.operationComplete) existing.operationComplete = true;
       projection.routerReceipt ??= next;
-      return projection;
+      return false;
     });
   }
 
@@ -567,7 +566,7 @@ export class ExactReviewLifecycleProjectionStore {
       observedAt: number;
     },
   ) {
-    return this.storage.transactionSync(() => this.recordTerminalDispositionSync(input));
+    return this.storage.transactionSync(() => this.recordTerminalDispositionSync(input).projection);
   }
 
   recordTerminalDispositionSync(
@@ -581,28 +580,24 @@ export class ExactReviewLifecycleProjectionStore {
     if (input.operationId !== undefined && !validText(input.operationId, 1, 300)) {
       throw new Error("invalid lifecycle terminal operation id");
     }
-    if (input.operationId) {
-      const existing = this.read(input.canonicalTargetKey, input.fenceKey, input.revision);
-      const operation = existing?.terminalOperationIds.find(
-        (entry) => entry.operationId === input.operationId,
-      );
-      if (existing && operation) {
-        if (operation.kind !== null && operation.kind !== input.kind) {
-          throw new Error("conflicting lifecycle terminal operation");
+    return this.mutateIdempotentlySync(input, (projection) => {
+      if (input.operationId) {
+        const operation = projection.terminalOperationIds.find(
+          (entry) => entry.operationId === input.operationId,
+        );
+        if (operation) {
+          if (operation.kind !== input.kind) {
+            throw new Error("conflicting lifecycle terminal operation");
+          }
+          return true;
         }
-        return existing;
       }
-    }
-    return this.mutateSync(input, (projection) => {
       const terminal = applyTerminalDisposition(projection, input);
       if (input.operationId) {
         terminal.terminalOperationIds.push({ operationId: input.operationId, kind: input.kind });
-        terminal.terminalOperationIds = terminal.terminalOperationIds.slice(
-          -EXACT_REVIEW_LIFECYCLE_TERMINAL_OPERATION_LIMIT,
-        );
       }
       terminal.bayTelemetryPending = true;
-      return terminal;
+      return false;
     });
   }
 
@@ -1375,6 +1370,22 @@ export class ExactReviewLifecycleProjectionStore {
     return result;
   }
 
+  private mutateIdempotentlySync(
+    input: ProjectionIdentity,
+    apply: (projection: ExactReviewLifecycleProjection) => boolean,
+  ) {
+    this.ensureSchemaSync();
+    const projection = this.readSync(input.canonicalTargetKey, input.fenceKey, input.revision);
+    if (!projection) throw new Error("missing lifecycle admission fact");
+    this.assertIdentity(projection, input);
+    const duplicate = apply(projection);
+    if (!duplicate) {
+      projection.updatedAt = Date.now();
+      this.writeSync(projection);
+    }
+    return { projection, duplicate };
+  }
+
   private readSync(canonicalTargetKey: string, fenceKey: string, revision: number) {
     const row = Array.from(
       this.storage.sql.exec(
@@ -1834,12 +1845,7 @@ function validDurableLifecycleBayProjection(value: ExactReviewLifecycleProjectio
       (disposition) =>
         terminalKinds.has(disposition.kind) && finiteTimestamp(disposition.observedAt),
     ) ||
-    !value.terminalOperationIds.every(
-      (operation) =>
-        operation &&
-        validText(operation.operationId, 1, 300) &&
-        (operation.kind === null || terminalKinds.has(operation.kind)),
-    ) ||
+    !validTerminalOperations(value.terminalOperationIds, terminalKinds) ||
     !value.acknowledgement.attempts.every(
       (attempt) =>
         /^ack:[1-9]\d*$/.test(attempt.attemptId) &&
@@ -1935,15 +1941,44 @@ function projectionFromRow(value: string): ExactReviewLifecycleProjection {
   parsed.routerReceipts ??= parsed.routerReceipt ? [parsed.routerReceipt] : [];
   parsed.terminalDispositions ??= parsed.terminalDisposition ? [parsed.terminalDisposition] : [];
   parsed.terminalOperationIds ??= [];
-  if (Array.isArray(parsed.terminalOperationIds)) {
-    parsed.terminalOperationIds = parsed.terminalOperationIds
-      .slice(-EXACT_REVIEW_LIFECYCLE_TERMINAL_OPERATION_LIMIT)
-      .map((operation) =>
-        typeof operation === "string" ? { operationId: operation, kind: null } : operation,
-      );
+  if (!validTerminalOperations(parsed.terminalOperationIds)) {
+    throw new Error("invalid lifecycle projection row");
   }
   parsed.bayTelemetryPending ??= false;
   return parsed;
+}
+
+function validTerminalOperations(
+  operations: unknown,
+  terminalKinds = new Set<LifecycleTerminalDisposition>([
+    "review_completed_routed",
+    "superseded",
+    "requeue",
+    "dead_letter",
+    "target_closed",
+    "target_missing",
+    "policy_noop",
+    "guarded_open",
+    "failure",
+  ]),
+) {
+  if (!Array.isArray(operations)) return false;
+  const operationIds = new Set<string>();
+  return operations.every((operation) => {
+    const candidate = operation as { operationId?: unknown; kind?: unknown } | null;
+    if (
+      !candidate ||
+      typeof candidate !== "object" ||
+      typeof candidate.operationId !== "string" ||
+      !validText(candidate.operationId, 1, 300) ||
+      !terminalKinds.has(candidate.kind as LifecycleTerminalDisposition) ||
+      operationIds.has(candidate.operationId)
+    ) {
+      return false;
+    }
+    operationIds.add(candidate.operationId);
+    return true;
+  });
 }
 
 function sameClaim(left: LifecycleClaimFact, right: LifecycleClaimFact) {
