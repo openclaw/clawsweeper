@@ -30,8 +30,10 @@ import {
   exactReviewFailureSource,
   exactReviewFailureSourceFingerprint,
   normalizeExactReviewFailureDetail,
+  normalizeExactReviewFailureStatus,
   stableExactReviewFailureFingerprint,
   type ExactReviewFailureDetail,
+  type ExactReviewFailureStatus,
 } from "./exact-review-failure-telemetry.ts";
 import {
   ExactReviewPublicationBatchStore,
@@ -291,7 +293,8 @@ export type ExactReviewQueueItem = {
   leaseRevision?: number;
   leaseExpiresAt?: number;
   leaseHeartbeatAt?: number;
-  leasePhase?: "review" | "finalizing";
+  leasePhase?: "review" | "status" | "finalizing";
+  statusSupersedingRevision?: number;
   claimedRunId?: string;
   claimedRunAttempt?: number;
   claimGeneration?: number;
@@ -1193,6 +1196,7 @@ export class ExactReviewQueue {
       const decision = exactReviewDecisionFrom(body.decision);
       const ingress = body.ingress === undefined ? undefined : exactReviewIngressFrom(body.ingress);
       const installationId = Number(body.installation_id);
+      const reviewAcknowledgementPending = body.review_acknowledgement_pending === true;
       if (
         !deliveryId ||
         deliveryId.length > 200 ||
@@ -1201,7 +1205,9 @@ export class ExactReviewQueue {
         decision.publication ||
         (body.ingress !== undefined && (!ingress || ingress.route !== "direct_webhook")) ||
         !Number.isInteger(installationId) ||
-        installationId <= 0
+        installationId <= 0 ||
+        (body.review_acknowledgement_pending !== undefined &&
+          typeof body.review_acknowledgement_pending !== "boolean")
       ) {
         return json({ error: "invalid_source_authority_reservation" }, 400);
       }
@@ -1254,8 +1260,9 @@ export class ExactReviewQueue {
             ...(ingress ? { ingress } : {}),
             installationId,
             sourceAuthoritySeq: next,
+            ...(reviewAcknowledgementPending ? { reviewAcknowledgementPending: true } : {}),
             attempts: 0,
-            nextAttemptAt: now,
+            nextAttemptAt: reviewAcknowledgementPending ? now + 5 * 60_000 : now,
           };
           this.storage.kv.put(reservationKey, created);
           return { deduped: false as const, reservation: created };
@@ -1304,6 +1311,46 @@ export class ExactReviewQueue {
       if (result === "conflict") return json({ error: "source_authority_conflict" }, 409);
       await this.scheduleNext(this.readStateSync(), Date.now());
       return json({ ok: true, completed: result === "completed" });
+    }
+    if (request.method === "POST" && url.pathname === "/source-authority/review-acknowledgement") {
+      const body = objectValue(await request.json().catch(() => null));
+      const deliveryId = String(body.delivery_id || "").trim();
+      const sourceAuthoritySeq = Number(body.source_authority_seq);
+      const commentId = body.comment_id === undefined ? 0 : Number(body.comment_id);
+      if (
+        !deliveryId ||
+        !Number.isSafeInteger(sourceAuthoritySeq) ||
+        sourceAuthoritySeq <= 0 ||
+        !Number.isSafeInteger(commentId) ||
+        commentId < 0
+      ) {
+        return json({ error: "invalid_source_authority_review_acknowledgement" }, 400);
+      }
+      const now = Date.now();
+      const updated = this.storage.transactionSync(() => {
+        const reservationKey = exactReviewSourceAuthorityReservationKey(deliveryId);
+        const reservation = exactReviewSourceAuthorityReservationFrom(
+          this.storage.kv.get(reservationKey),
+        );
+        if (!reservation || reservation.sourceAuthoritySeq !== sourceAuthoritySeq) return false;
+        const existing = reservation.decision.reviewAcknowledgementCommentId;
+        if (existing !== undefined && existing !== commentId) return false;
+        this.storage.kv.put(reservationKey, {
+          ...reservation,
+          decision: {
+            ...reservation.decision,
+            ...(commentId > 0 ? { reviewAcknowledgementCommentId: commentId } : {}),
+          },
+          reviewAcknowledgementPending: false,
+          nextAttemptAt: now,
+        });
+        return true;
+      });
+      if (!updated) {
+        return json({ error: "source_authority_review_acknowledgement_conflict" }, 409);
+      }
+      await this.scheduleSourceAuthorityVerification(now);
+      return json({ ok: true, ...(commentId > 0 ? { comment_id: commentId } : {}) });
     }
     if (request.method === "POST" && url.pathname === "/state-writer/acquire") {
       const input = stateWriterTicketInput(await request.json().catch(() => null));
@@ -1816,10 +1863,20 @@ export class ExactReviewQueue {
                 state,
               };
             }
+            const queuesStatusSupersession =
+              !bindsCommandToCurrentAuthority &&
+              sourceAuthorityIsNewer &&
+              decision.supersedesInProgress &&
+              current.leasePhase === "status" &&
+              Boolean(current.leaseDecision) &&
+              exactReviewInputIdentityChanged(current.leaseDecision!, decision) &&
+              (current.state === "dispatching" || current.state === "leased");
+            if (queuesStatusSupersession) current.statusSupersedingRevision = nextRevision;
             const supersedesActiveReview =
               !bindsCommandToCurrentAuthority &&
               sourceAuthorityIsNewer &&
               decision.supersedesInProgress &&
+              current.leasePhase !== "status" &&
               (current.state === "dispatching" || current.state === "leased");
             if (supersedesActiveReview) {
               const priorRevision = current.revision;
@@ -2314,6 +2371,11 @@ export class ExactReviewQueue {
       const hasClaimGeneration = body.claim_generation !== undefined;
       const claimGeneration = hasClaimGeneration ? Number(body.claim_generation) : null;
       const hasSourceHeadSha = body.source_head_sha !== undefined;
+      const hasReviewAcknowledgementCommentId =
+        body.review_acknowledgement_comment_id !== undefined;
+      const reviewAcknowledgementCommentId = hasReviewAcknowledgementCommentId
+        ? Number(body.review_acknowledgement_comment_id)
+        : null;
       const phase = body.phase === undefined ? "review" : String(body.phase);
       const sourceHeadSha = hasSourceHeadSha
         ? String(body.source_head_sha || "")
@@ -2332,7 +2394,14 @@ export class ExactReviewQueue {
       if (hasSourceHeadSha && !/^[0-9a-f]{40}$/.test(sourceHeadSha || "")) {
         return json({ error: "invalid_source_head_sha" }, 400);
       }
-      if (phase !== "review" && phase !== "finalizing") {
+      if (
+        hasReviewAcknowledgementCommentId &&
+        (!Number.isSafeInteger(reviewAcknowledgementCommentId) ||
+          Number(reviewAcknowledgementCommentId) < 1)
+      ) {
+        return json({ error: "invalid_review_acknowledgement_comment_id" }, 400);
+      }
+      if (phase !== "review" && phase !== "status" && phase !== "finalizing") {
         return json({ error: "invalid_lease_phase" }, 400);
       }
 
@@ -2375,6 +2444,56 @@ export class ExactReviewQueue {
         )
       ) {
         return json({ error: "lease_not_active" }, 409);
+      }
+      if (hasReviewAcknowledgementCommentId) {
+        const leaseDecision = item.leaseDecision;
+        if (
+          phase !== "status" ||
+          !leaseDecision ||
+          leaseDecision.itemKind !== "pull_request" ||
+          exactReviewDecisionHasCommandContext(leaseDecision) ||
+          (leaseDecision.reviewAcknowledgementCommentId !== undefined &&
+            leaseDecision.reviewAcknowledgementCommentId !== reviewAcknowledgementCommentId)
+        ) {
+          return json({ error: "review_acknowledgement_comment_conflict" }, 409);
+        }
+        leaseDecision.reviewAcknowledgementCommentId = Number(reviewAcknowledgementCommentId);
+        if (item.revision === leaseRevision) {
+          item.decision.reviewAcknowledgementCommentId = Number(reviewAcknowledgementCommentId);
+        }
+      }
+      const statusSuccessorSupersedes =
+        phase !== "status" &&
+        item.leasePhase === "status" &&
+        (Number(item.statusSupersedingRevision || 0) > leaseRevision ||
+          (item.statusSupersedingRevision === undefined &&
+            item.revision > leaseRevision &&
+            item.decision.supersedesInProgress &&
+            Boolean(item.leaseDecision) &&
+            exactReviewInputIdentityChanged(item.leaseDecision!, item.decision)));
+      if (statusSuccessorSupersedes) {
+        this.insertSupersessionAuditSync({
+          auditId: crypto.randomUUID(),
+          itemKey,
+          priorRevision: leaseRevision,
+          nextRevision: item.revision,
+          supersededLeaseId: item.leaseId || null,
+          supersededRunId: item.claimedRunId || null,
+          supersededRunAttempt: item.claimedRunAttempt ?? null,
+          supersededClaimGeneration: item.claimGeneration ?? null,
+          supersededProtocolVersion: item.claimProtocolVersion ?? null,
+          sourceAction: item.decision.sourceAction,
+          reasonCode: "newer_source_event",
+          supersededAt: now,
+        });
+        clearExactReviewLease(item);
+        item.state = "pending";
+        item.nextAttemptAt = exactReviewQueueEnqueueAttemptAt(state, now);
+        item.backoffReason = item.nextAttemptAt > now ? "dispatcher_backoff" : undefined;
+        item.updatedAt = now;
+        await this.writeState(state);
+        await this.scheduleNext(state, now);
+        return json({ error: "lease_superseded", superseded_by_revision: item.revision }, 409);
       }
       item.leaseHeartbeatAt = now;
       item.leasePhase = phase;
@@ -2429,6 +2548,16 @@ export class ExactReviewQueue {
       }
       if (reviewFailureReason && outcome !== "failure") {
         return json({ error: "review_failure_reason_without_failure" }, 400);
+      }
+      const reviewFailureStatus =
+        body.review_failure_status === undefined
+          ? undefined
+          : normalizeExactReviewFailureStatus(body.review_failure_status);
+      if (body.review_failure_status !== undefined && !reviewFailureStatus) {
+        return json({ error: "invalid_review_failure_status" }, 400);
+      }
+      if (reviewFailureStatus && !reviewFailureReason) {
+        return json({ error: "review_failure_status_without_terminal_failure" }, 400);
       }
       const suppliedReviewFailure =
         body.review_failure === undefined
@@ -2605,6 +2734,19 @@ export class ExactReviewQueue {
       if (reviewFailureReason && publicationItem) {
         return json({ error: "review_failure_reason_for_publication" }, 400);
       }
+      const reviewFailureDecision = item.leaseDecision ?? item.decision;
+      const reviewAcknowledgementCommentId =
+        reviewFailureDecision.reviewAcknowledgementCommentId ?? null;
+      if (
+        reviewFailureStatus &&
+        (reviewFailureDecision.itemKind !== "pull_request" ||
+          exactReviewDecisionHasCommandContext(reviewFailureDecision) ||
+          (reviewFailureStatus.outcome === "unavailable"
+            ? reviewAcknowledgementCommentId !== null
+            : reviewFailureStatus.commentId !== reviewAcknowledgementCommentId))
+      ) {
+        return json({ error: "review_failure_status_address_mismatch" }, 400);
+      }
       const leasedDirectLifecycle = exactReviewSavedDirectLifecycle(item);
       // A non-superseding command may replace the current decision while this
       // old lease is still publishing. Its saved direct plan, not the newer
@@ -2676,6 +2818,7 @@ export class ExactReviewQueue {
           outcome,
           ...(reviewFailureReason ? { terminalReason: reviewFailureReason } : {}),
           ...(suppliedReviewFailure ? { supplied: suppliedReviewFailure } : {}),
+          ...(reviewFailureStatus ? { status: reviewFailureStatus } : {}),
           observedAt: now,
         });
       }
@@ -6429,6 +6572,7 @@ export class ExactReviewQueue {
     outcome: Exclude<ExactReviewCompletionOutcome, "success">;
     terminalReason?: ExactReviewFailureReason;
     supplied?: ExactReviewFailureDetail;
+    status?: ExactReviewFailureStatus;
     observedAt: number;
   }) {
     try {
@@ -6436,6 +6580,7 @@ export class ExactReviewQueue {
         outcome: options.outcome,
         ...(options.terminalReason ? { terminalReason: options.terminalReason } : {}),
         ...(options.supplied ? { supplied: options.supplied } : {}),
+        ...(options.status ? { status: options.status } : {}),
       });
       const sourceDecision = options.item.leaseDecision ?? options.item.decision;
       const source = exactReviewFailureSource(sourceDecision);
@@ -6470,6 +6615,7 @@ export class ExactReviewQueue {
         failureFingerprint,
         ...source,
         ...failure,
+        ...(options.status ? { status: options.status } : {}),
         observedAt: options.observedAt,
       });
     } catch {
@@ -6502,6 +6648,8 @@ export class ExactReviewQueue {
         affected_targets: 0,
         retryable_attempts: 0,
         terminal_attempts: 0,
+        terminal_status_observed: 0,
+        terminal_status_failed: 0,
         repeated_identities: 0,
         first_seen_at: null,
         last_seen_at: null,
@@ -14164,6 +14312,7 @@ function clearExactReviewLease(item: ExactReviewQueueItem) {
   item.leaseExpiresAt = undefined;
   item.leaseHeartbeatAt = undefined;
   item.leasePhase = undefined;
+  item.statusSupersedingRevision = undefined;
   item.claimedRunId = undefined;
   item.claimedRunAttempt = undefined;
   item.claimGeneration = undefined;
@@ -16007,6 +16156,9 @@ async function dispatchClawsweeperItem({
       ? { command_status_marker: decision.commandStatusMarker }
       : {}),
     ...(decision.statusCommentId ? { status_comment_id: decision.statusCommentId } : {}),
+    ...(decision.reviewAcknowledgementCommentId
+      ? { review_acknowledgement_comment_id: decision.reviewAcknowledgementCommentId }
+      : {}),
     ...(decision.additionalPrompt ? { additional_prompt: decision.additionalPrompt } : {}),
     ...(decision.publication ? { publication: decision.publication } : {}),
   };

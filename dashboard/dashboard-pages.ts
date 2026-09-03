@@ -1975,10 +1975,10 @@ const STATUS_TEXT_VALUES = new Set([
   "no_ready_backlog", "no_admissible_backlog", "dispatcher_inactive", "capacity_full_with_backlog",
   "scheduled_disposition_v1",
   "fresh", "miss", "repeated_failure_identity", "terminal_review_failure",
-  "retryable_review_failure", "queue_telemetry_unavailable", "queue_handoff_stalled",
+  "retryable_review_failure", "terminal_status_delivery_failed", "queue_telemetry_unavailable", "queue_handoff_stalled",
   "queue_handoff_degraded", "queue_handoff_unavailable", "publication_critical",
   "publication_degraded", "publication_health_unavailable", "publication_dlq_open",
-  "review_failures_repeated", "review_failures_recent", "review_failure_telemetry_unavailable",
+  "review_failures_repeated", "review_failures_recent", "review_failure_telemetry_unavailable", "review_status_delivery_failed",
   "review_retries_exhausted", "workflow_execution_stalled", "workflow_execution_degraded",
   "worker_failures_unresolved", "apply_health_attention", "automerge_attention"
 ]);
@@ -2024,7 +2024,7 @@ const STATUS_NUMBER_FIELDS = new Set([
   "throttle_retry", "review_retry", "publication_retry", "dead_letter_capacity",
   "dispatch_rejected", "review_retry_exhausted", "direct_publication", "claim_timeout",
   "execution_timeout", "workflow_cancelled", "workflow_failed", "affected_targets",
-  "retryable_attempts", "terminal_attempts", "repeated_identities", "agent_input_scan",
+  "retryable_attempts", "terminal_attempts", "terminal_status_observed", "terminal_status_failed", "repeated_identities", "agent_input_scan",
   "source_preparation", "provider_or_model", "workflow"
 ]);
 function dashboardStatusNumber(value, field) {

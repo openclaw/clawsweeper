@@ -371,6 +371,11 @@ jobs:
           const sourceIsDraft = queueClaim.source_is_draft ?? payload.source_is_draft;
           const sourceContentRevision = String(queueClaim.source_content_revision ?? payload.source_content_revision ?? "").trim().toLowerCase();
           const sourceUpdatedAt = String(queueClaim.source_updated_at ?? payload.source_updated_at ?? "").trim();
+          const reviewAcknowledgementCommentId = Number(
+            queueClaim.review_acknowledgement_comment_id ??
+              reviewOptions.review_acknowledgement_comment_id ??
+              payload.review_acknowledgement_comment_id,
+          );
           const installationId = Number(queueClaim.installation_id ?? payload.installation_id);
           const targetBranch = String(process.env.TARGET_BRANCH || "").trim();
           const sourceAuthorityRequired = process.env.USE_SOURCE_AUTHORITY === "1";
@@ -438,6 +443,10 @@ jobs:
                   : {}),
                 ...(Object.hasOwn(payload, "status_comment_id")
                   ? { statusCommentId: payload.status_comment_id }
+                  : {}),
+                ...(Number.isSafeInteger(reviewAcknowledgementCommentId) &&
+                reviewAcknowledgementCommentId > 0
+                  ? { reviewAcknowledgementCommentId }
                   : {}),
                 ...(Object.hasOwn(payload, "additional_prompt")
                   ? { additionalPrompt: payload.additional_prompt }
@@ -577,6 +586,15 @@ jobs:
                     : {}),
                   ...(Object.hasOwn(reviewOptions, "status_comment_id")
                     ? { statusCommentId: reviewOptions.status_comment_id }
+                    : {}),
+                  ...(Number.isSafeInteger(
+                    Number(reviewOptions.review_acknowledgement_comment_id),
+                  ) && Number(reviewOptions.review_acknowledgement_comment_id) > 0
+                    ? {
+                        reviewAcknowledgementCommentId: Number(
+                          reviewOptions.review_acknowledgement_comment_id,
+                        ),
+                      }
                     : {}),
                   ...(Object.hasOwn(reviewOptions, "additional_prompt")
                     ? { additionalPrompt: reviewOptions.additional_prompt }
@@ -922,6 +940,51 @@ jobs:
           permission-pull-requests: write
           permission-statuses: read
 
+      - name: Resolve automatic review status comment
+        id: automatic-review-status
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target.outputs.has_command_context != 'true' && fromJSON(steps.claim-exact-review-queue.outputs.decision).itemKind == 'pull_request' && steps.target-write-token.outputs.token != '' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
+          CLAIMED_STATUS_COMMENT_ID: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).reviewAcknowledgementCommentId || '' }}
+        run: |
+          set -euo pipefail
+          list_ack_comments() {
+            local comments='[]' batch page
+            for ((page = 1; page <= 10; page++)); do
+              batch="$(gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER/comments?per_page=100&page=$page")" || return 1
+              jq -e 'type == "array"' <<< "$batch" >/dev/null || return 1
+              comments="$(printf '%s\n' "$comments" "$batch" | jq -s 'add')" || return 1
+              if [ "$(jq 'length' <<< "$batch")" -lt 100 ]; then
+                printf '%s\n' "$comments"
+                return 0
+              fi
+            done
+            echo "::notice::Acknowledgement lookup reached its 10-page limit; leaving existing comments untouched." >&2
+            return 1
+          }
+          status_comment_id="$CLAIMED_STATUS_COMMENT_ID"
+          if ! printf '%s' "$status_comment_id" | grep -Eq '^[1-9][0-9]*$'; then
+            comments="$(list_ack_comments)"
+            status_comment_id="$(jq -r \
+              --arg marker_prefix "clawsweeper-pr-ack:" \
+              --arg marker_suffix " item=$ITEM_NUMBER -->" \
+              '[.[] | ((.user.login // "") | ascii_downcase) as $login | select(
+                (["clawsweeper", "clawsweeper[bot]", "openclaw-clawsweeper[bot]"] | index($login)) and
+                ((.body // "") | contains($marker_prefix)) and
+                ((.body // "") | contains($marker_suffix))
+              )] as $matches |
+              ([$matches[] | select(
+                ((.body // "") | contains("<!-- clawsweeper-review-progress:start -->"))
+              )] | sort_by(.updated_at // .created_at, .id) | last) //
+              ($matches | sort_by(.created_at, .id) | first) | .id // empty' <<< "$comments")"
+          fi
+          if printf '%s' "$status_comment_id" | grep -Eq '^[1-9][0-9]*$'; then
+            echo "status_comment_id=$status_comment_id" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: React to target item review start
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
         continue-on-error: true
@@ -1148,9 +1211,109 @@ jobs:
             echo "::notice::Another exact-head review is already active; retry deferred until $RETRY_AT."
           fi
 
+      - name: Fence automatic review in progress
+        id: review-status-fence
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' && steps.target.outputs.has_command_context != 'true' && steps.automatic-review-status.outputs.status_comment_id != '' }}
+        continue-on-error: true
+        env:
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          EXACT_REVIEW_ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
+          EXACT_REVIEW_LEASE_ID: ${{ steps.claim-exact-review-queue.outputs.lease_id }}
+          EXACT_REVIEW_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
+          EXACT_REVIEW_CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
+          EXACT_REVIEW_SOURCE_HEAD_SHA: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceHeadSha || '' }}
+          REVIEW_ACKNOWLEDGEMENT_COMMENT_ID: ${{ steps.automatic-review-status.outputs.status_comment_id }}
+        run: |
+          set -euo pipefail
+          echo "authorized=false" >> "$GITHUB_OUTPUT"
+          payload="$(node -e '
+            const sourceHeadSha = String(process.env.EXACT_REVIEW_SOURCE_HEAD_SHA || "").trim().toLowerCase();
+            process.stdout.write(JSON.stringify({
+              item_key: process.env.EXACT_REVIEW_ITEM_KEY,
+              lease_id: process.env.EXACT_REVIEW_LEASE_ID,
+              lease_revision: Number(process.env.EXACT_REVIEW_LEASE_REVISION),
+              claim_generation: Number(process.env.EXACT_REVIEW_CLAIM_GENERATION),
+              run_id: process.env.GITHUB_RUN_ID,
+              run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+              ...(sourceHeadSha ? { source_head_sha: sourceHeadSha } : {}),
+              review_acknowledgement_comment_id: Number(process.env.REVIEW_ACKNOWLEDGEMENT_COMMENT_ID),
+              phase: "status",
+            }));
+          ')"
+          response="$(mktemp)"
+          trap 'rm -f "$response"' EXIT
+          status="$(curl --silent --show-error --connect-timeout 5 --max-time 20 \
+            --output "$response" --write-out '%{http_code}' --request POST \
+            --header "content-type: application/json" --data-binary "$payload" \
+            "${QUEUE_URL%/}/internal/exact-review/heartbeat")" || status=""
+          if [ "$status" = "200" ]; then echo "authorized=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$status" = "409" ] && jq -e '.error == "lease_superseded" or .error == "lease_not_active"' "$response" >/dev/null; then
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          exit 1
+
+      - name: Mark automatic review in progress
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.review-status-fence.outputs.authorized == 'true' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
+          STATUS_COMMENT_ID: ${{ steps.automatic-review-status.outputs.status_comment_id }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          pnpm run repair:update-review-status -- \
+            --repo "$TARGET_REPO" \
+            --item-number "$ITEM_NUMBER" \
+            --status-comment-id "$STATUS_COMMENT_ID" \
+            --state reviewing \
+            --run-url "$RUN_URL"
+
+      - name: Release automatic review status fence
+        id: release-review-status-fence
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.review-status-fence.outputs.authorized == 'true' }}
+        continue-on-error: true
+        env:
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          EXACT_REVIEW_ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
+          EXACT_REVIEW_LEASE_ID: ${{ steps.claim-exact-review-queue.outputs.lease_id }}
+          EXACT_REVIEW_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
+          EXACT_REVIEW_CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
+          EXACT_REVIEW_SOURCE_HEAD_SHA: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceHeadSha || '' }}
+        run: |
+          set -euo pipefail
+          echo "authorized=false" >> "$GITHUB_OUTPUT"
+          payload="$(node -e '
+            const sourceHeadSha = String(process.env.EXACT_REVIEW_SOURCE_HEAD_SHA || "").trim().toLowerCase();
+            process.stdout.write(JSON.stringify({
+              item_key: process.env.EXACT_REVIEW_ITEM_KEY,
+              lease_id: process.env.EXACT_REVIEW_LEASE_ID,
+              lease_revision: Number(process.env.EXACT_REVIEW_LEASE_REVISION),
+              claim_generation: Number(process.env.EXACT_REVIEW_CLAIM_GENERATION),
+              run_id: process.env.GITHUB_RUN_ID,
+              run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+              ...(sourceHeadSha ? { source_head_sha: sourceHeadSha } : {}),
+              phase: "review",
+            }));
+          ')"
+          response="$(mktemp)"
+          trap 'rm -f "$response"' EXIT
+          status="$(curl --silent --show-error --connect-timeout 5 --max-time 20 \
+            --output "$response" --write-out '%{http_code}' --request POST \
+            --header "content-type: application/json" --data-binary "$payload" \
+            "${QUEUE_URL%/}/internal/exact-review/heartbeat")" || status=""
+          if [ "$status" = "200" ]; then echo "authorized=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$status" = "409" ] && jq -e '.error == "lease_superseded" or .error == "lease_not_active"' "$response" >/dev/null; then
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping stale review because a newer queue revision arrived during status publication."
+            exit 0
+          fi
+          exit 1
+
       - name: Review exact event item
         id: review-exact-event-item
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' && (steps.review-status-fence.outcome == 'skipped' || (steps.review-status-fence.outputs.authorized == 'true' && steps.release-review-status-fence.outputs.authorized == 'true')) }}
         continue-on-error: true
         env:
           # Review hydration is the largest read stream (~30 calls/review); it
@@ -1390,7 +1553,7 @@ jobs:
         env:
           REVIEW_EXIT_CODE: ${{ steps.review-exact-event-item.outputs.exit_code || '' }}
           REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome || 'not_started' }}
-          REVIEW_SUPERSEDED: ${{ steps.review-exact-event-item.outputs.superseded || 'false' }}
+          REVIEW_SUPERSEDED: ${{ steps.review-exact-event-item.outputs.superseded || steps.review-status-fence.outputs.superseded || steps.release-review-status-fence.outputs.superseded || 'false' }}
         run: |
           args=()
           if [ "$REVIEW_SUPERSEDED" = "true" ] || [ "$REVIEW_OUTCOME" = "cancelled" ] || [ "$REVIEW_EXIT_CODE" = "130" ] || [ "$REVIEW_EXIT_CODE" = "143" ]; then
@@ -1401,6 +1564,90 @@ jobs:
             args=(--interrupt-open-attempts --reason workflow_failed)
           fi
           pnpm run --silent finalize-action-events -- "${args[@]}"
+
+      - name: Fence automatic review completion
+        id: review-complete-status-fence
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target.outputs.has_command_context != 'true' && steps.review-exact-event-item.outcome == 'success' && steps.review-exact-event-item.outputs.exit_code == '0' && steps.review-exact-event-item.outputs.superseded != 'true' && steps.review-exact-event-item.outputs.retry_at == '' && fromJSON(steps.claim-exact-review-queue.outputs.decision).itemKind == 'pull_request' && steps.automatic-review-status.outputs.status_comment_id != '' }}
+        continue-on-error: true
+        env:
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          EXACT_REVIEW_ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
+          EXACT_REVIEW_LEASE_ID: ${{ steps.claim-exact-review-queue.outputs.lease_id }}
+          EXACT_REVIEW_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
+          EXACT_REVIEW_CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
+          EXACT_REVIEW_SOURCE_HEAD_SHA: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceHeadSha || '' }}
+          REVIEW_ACKNOWLEDGEMENT_COMMENT_ID: ${{ steps.automatic-review-status.outputs.status_comment_id }}
+        run: |
+          set -euo pipefail
+          echo "authorized=false" >> "$GITHUB_OUTPUT"
+          payload="$(node -e '
+            const sourceHeadSha = String(process.env.EXACT_REVIEW_SOURCE_HEAD_SHA || "").trim().toLowerCase();
+            process.stdout.write(JSON.stringify({
+              item_key: process.env.EXACT_REVIEW_ITEM_KEY,
+              lease_id: process.env.EXACT_REVIEW_LEASE_ID,
+              lease_revision: Number(process.env.EXACT_REVIEW_LEASE_REVISION),
+              claim_generation: Number(process.env.EXACT_REVIEW_CLAIM_GENERATION),
+              run_id: process.env.GITHUB_RUN_ID,
+              run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+              ...(sourceHeadSha ? { source_head_sha: sourceHeadSha } : {}),
+              review_acknowledgement_comment_id: Number(process.env.REVIEW_ACKNOWLEDGEMENT_COMMENT_ID),
+              phase: "status",
+            }));
+          ')"
+          response="$(mktemp)"
+          trap 'rm -f "$response"' EXIT
+          status="$(curl --silent --show-error --connect-timeout 5 --max-time 20 \
+            --output "$response" --write-out '%{http_code}' --request POST \
+            --header "content-type: application/json" --data-binary "$payload" \
+            "${QUEUE_URL%/}/internal/exact-review/heartbeat")" || status=""
+          if [ "$status" = "200" ]; then echo "authorized=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$status" = "409" ] && jq -e '.error == "lease_superseded" or .error == "lease_not_active"' "$response" >/dev/null; then exit 0; fi
+          exit 1
+
+      - name: Mark automatic review complete
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.review-complete-status-fence.outputs.authorized == 'true' && steps.setup-pnpm.outcome == 'success' && steps.target-write-token.outputs.token != '' }}
+        env:
+          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
+          STATUS_COMMENT_ID: ${{ steps.automatic-review-status.outputs.status_comment_id }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REVIEW_STATUS_STATE: ${{ steps.review-exact-event-item.outputs.terminal_during_review == 'true' && 'closed' || 'complete' }}
+        run: |
+          pnpm run repair:update-review-status -- \
+            --repo "$TARGET_REPO" \
+            --item-number "$ITEM_NUMBER" \
+            --status-comment-id "$STATUS_COMMENT_ID" \
+            --state "$REVIEW_STATUS_STATE" \
+            --run-url "$RUN_URL"
+
+      - name: Release automatic review completion fence
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.review-complete-status-fence.outputs.authorized == 'true' }}
+        continue-on-error: true
+        env:
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          EXACT_REVIEW_ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
+          EXACT_REVIEW_LEASE_ID: ${{ steps.claim-exact-review-queue.outputs.lease_id }}
+          EXACT_REVIEW_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
+          EXACT_REVIEW_CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
+          EXACT_REVIEW_SOURCE_HEAD_SHA: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceHeadSha || '' }}
+        run: |
+          payload="$(node -e '
+            const sourceHeadSha = String(process.env.EXACT_REVIEW_SOURCE_HEAD_SHA || "").trim().toLowerCase();
+            process.stdout.write(JSON.stringify({
+              item_key: process.env.EXACT_REVIEW_ITEM_KEY,
+              lease_id: process.env.EXACT_REVIEW_LEASE_ID,
+              lease_revision: Number(process.env.EXACT_REVIEW_LEASE_REVISION),
+              claim_generation: Number(process.env.EXACT_REVIEW_CLAIM_GENERATION),
+              run_id: process.env.GITHUB_RUN_ID,
+              run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+              ...(sourceHeadSha ? { source_head_sha: sourceHeadSha } : {}),
+              phase: "finalizing",
+            }));
+          ')"
+          curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+            --request POST --header "content-type: application/json" --data-binary "$payload" \
+            "${QUEUE_URL%/}/internal/exact-review/heartbeat" >/dev/null
 
       - name: Create exact review artifact bundle
         id: create-exact-review-bundle
@@ -1778,7 +2025,7 @@ jobs:
           STATUS_COMMENT_ID: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).statusCommentId || '' }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome }}
-          REVIEW_SUPERSEDED: ${{ steps.review-exact-event-item.outputs.superseded || 'false' }}
+          REVIEW_SUPERSEDED: ${{ steps.review-exact-event-item.outputs.superseded || steps.review-status-fence.outputs.superseded || steps.release-review-status-fence.outputs.superseded || 'false' }}
           RESERVATION_STATUS: ${{ steps.reserve-exact-review-lease.outputs.status }}
           RETRY_AT: ${{ steps.reserve-exact-review-lease.outputs.retry_at || steps.review-exact-event-item.outputs.retry_at }}
           REVIEW_FAILURE_REASON: ${{ steps.review-exact-event-item.outputs.failure_reason || '' }}
@@ -1811,6 +2058,112 @@ jobs:
             --detail "$detail" \
             --run-url "$RUN_URL"
 
+      - name: Fence terminal automatic review failure
+        id: terminal-review-status-fence
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target.outputs.has_command_context != 'true' && steps.review-exact-event-item.outputs.failure_reason != '' && fromJSON(steps.claim-exact-review-queue.outputs.decision).itemKind == 'pull_request' && steps.automatic-review-status.outputs.status_comment_id != '' }}
+        continue-on-error: true
+        env:
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          EXACT_REVIEW_ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
+          EXACT_REVIEW_LEASE_ID: ${{ steps.claim-exact-review-queue.outputs.lease_id }}
+          EXACT_REVIEW_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
+          EXACT_REVIEW_CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
+          EXACT_REVIEW_SOURCE_HEAD_SHA: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceHeadSha || '' }}
+          REVIEW_ACKNOWLEDGEMENT_COMMENT_ID: ${{ steps.automatic-review-status.outputs.status_comment_id }}
+        run: |
+          set -euo pipefail
+          echo "authorized=false" >> "$GITHUB_OUTPUT"
+          payload="$(node -e '
+            const leaseRevision = Number(process.env.EXACT_REVIEW_LEASE_REVISION);
+            const claimGeneration = Number(process.env.EXACT_REVIEW_CLAIM_GENERATION);
+            const runAttempt = Number(process.env.GITHUB_RUN_ATTEMPT);
+            const sourceHeadSha = String(process.env.EXACT_REVIEW_SOURCE_HEAD_SHA || "").trim().toLowerCase();
+            if (!process.env.EXACT_REVIEW_ITEM_KEY || !process.env.EXACT_REVIEW_LEASE_ID) process.exit(1);
+            if (!Number.isInteger(leaseRevision) || leaseRevision < 1) process.exit(1);
+            if (!Number.isInteger(claimGeneration) || claimGeneration < 1) process.exit(1);
+            if (!Number.isInteger(runAttempt) || runAttempt < 1) process.exit(1);
+            if (sourceHeadSha && !/^[0-9a-f]{40}$/.test(sourceHeadSha)) process.exit(1);
+            process.stdout.write(JSON.stringify({
+              item_key: process.env.EXACT_REVIEW_ITEM_KEY,
+              lease_id: process.env.EXACT_REVIEW_LEASE_ID,
+              lease_revision: leaseRevision,
+              claim_generation: claimGeneration,
+              run_id: process.env.GITHUB_RUN_ID,
+              run_attempt: runAttempt,
+              ...(sourceHeadSha ? { source_head_sha: sourceHeadSha } : {}),
+              review_acknowledgement_comment_id: Number(process.env.REVIEW_ACKNOWLEDGEMENT_COMMENT_ID),
+              phase: "status",
+            }));
+          ')"
+          for attempt in 1 2 3; do
+            status="$(curl --silent --show-error --connect-timeout 5 --max-time 20 \
+              --output /dev/null \
+              --write-out '%{http_code}' \
+              --request POST \
+              --header "content-type: application/json" \
+              --data-binary "$payload" \
+              "${QUEUE_URL%/}/internal/exact-review/heartbeat")" || status=""
+            if [ "$status" = "200" ]; then
+              echo "authorized=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "$status" = "409" ]; then
+              echo "::notice::Skipping terminal review status because the queue lease was superseded."
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then sleep "$((attempt * 5))"; fi
+          done
+          echo "Unable to fence terminal review status against the active queue lease." >&2
+          exit 1
+
+      - name: Mark terminal automatic review failure
+        id: terminal-review-status
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.terminal-review-status-fence.outputs.authorized == 'true' && steps.setup-pnpm.outcome == 'success' && steps.target-write-token.outputs.token != '' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
+          STATUS_COMMENT_ID: ${{ steps.automatic-review-status.outputs.status_comment_id }}
+          REVIEW_FAILURE_REASON: ${{ steps.review-exact-event-item.outputs.failure_reason }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          pnpm run repair:update-review-status -- \
+            --repo "$TARGET_REPO" \
+            --item-number "$ITEM_NUMBER" \
+            --status-comment-id "$STATUS_COMMENT_ID" \
+            --state blocked \
+            --failure-reason "$REVIEW_FAILURE_REASON" \
+            --run-url "$RUN_URL"
+
+      - name: Release terminal automatic review status fence
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.terminal-review-status-fence.outputs.authorized == 'true' }}
+        continue-on-error: true
+        env:
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          EXACT_REVIEW_ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
+          EXACT_REVIEW_LEASE_ID: ${{ steps.claim-exact-review-queue.outputs.lease_id }}
+          EXACT_REVIEW_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
+          EXACT_REVIEW_CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
+          EXACT_REVIEW_SOURCE_HEAD_SHA: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceHeadSha || '' }}
+        run: |
+          payload="$(node -e '
+            const sourceHeadSha = String(process.env.EXACT_REVIEW_SOURCE_HEAD_SHA || "").trim().toLowerCase();
+            process.stdout.write(JSON.stringify({
+              item_key: process.env.EXACT_REVIEW_ITEM_KEY,
+              lease_id: process.env.EXACT_REVIEW_LEASE_ID,
+              lease_revision: Number(process.env.EXACT_REVIEW_LEASE_REVISION),
+              claim_generation: Number(process.env.EXACT_REVIEW_CLAIM_GENERATION),
+              run_id: process.env.GITHUB_RUN_ID,
+              run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+              ...(sourceHeadSha ? { source_head_sha: sourceHeadSha } : {}),
+              phase: "finalizing",
+            }));
+          ')"
+          curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+            --request POST --header "content-type: application/json" --data-binary "$payload" \
+            "${QUEUE_URL%/}/internal/exact-review/heartbeat" >/dev/null
+
       - name: Export exact review generation result
         id: exact-review-generation-result
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && always() }}
@@ -1824,7 +2177,7 @@ jobs:
           LIVE_OUTCOME: ${{ steps.live-item.outcome }}
           SCHEDULED_SEMANTIC_NOOP: ${{ steps.live-item.outputs.scheduled_semantic_noop || 'false' }}
           REVIEW_OUTCOME: ${{ steps.review-exact-event-item.outcome }}
-          REVIEW_SUPERSEDED: ${{ steps.review-exact-event-item.outputs.superseded || 'false' }}
+          REVIEW_SUPERSEDED: ${{ steps.review-exact-event-item.outputs.superseded || steps.review-status-fence.outputs.superseded || steps.release-review-status-fence.outputs.superseded || 'false' }}
           RESERVATION_STATUS: ${{ steps.reserve-exact-review-lease.outputs.status }}
           PUBLICATION_QUEUE_OUTCOME: ${{ steps.queue-exact-review-publication.outcome }}
           DIRECT_PUBLICATION_ACCEPTED: ${{ steps.direct-exact-review-publication.outputs.accepted }}
@@ -1883,6 +2236,13 @@ jobs:
           REVIEW_FAILURE_STAGE: ${{ steps.review-exact-event-item.outputs.failure_stage || '' }}
           REVIEW_FAILURE_REASON_CODE: ${{ steps.review-exact-event-item.outputs.failure_reason_code || '' }}
           REVIEW_FAILURE_RETRYABLE: ${{ steps.review-exact-event-item.outputs.failure_retryable || '' }}
+          REVIEW_ACKNOWLEDGEMENT_COMMENT_ID: ${{ steps.automatic-review-status.outputs.status_comment_id || '' }}
+          REVIEW_STATUS_OUTCOME: ${{ steps.terminal-review-status.outcome || 'skipped' }}
+          REVIEW_STATUS_VERIFIED: ${{ steps.terminal-review-status.outputs.review_status_verified || 'false' }}
+          REVIEW_STATUS_COMMENT_ID: ${{ steps.terminal-review-status.outputs.review_status_comment_id || '' }}
+          REVIEW_STATUS_COMPLETED_AT: ${{ steps.terminal-review-status.outputs.review_status_completed_at || '' }}
+          HAS_COMMAND_CONTEXT: ${{ steps.target.outputs.has_command_context || 'false' }}
+          REVIEW_ITEM_KIND: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).itemKind }}
           DIRECT_PUBLICATION_ACCEPTED: ${{ steps.direct-exact-review-publication.outputs.accepted }}
           DIRECT_PUBLICATION_SUPERSEDED: ${{ steps.direct-exact-review-publication.outputs.superseded }}
           DIRECT_LIFECYCLE_OUTCOME: ${{ steps.finalize-direct-exact-review-lifecycle.outcome }}
@@ -1932,6 +2292,17 @@ jobs:
             ).trim();
             const hasReviewFailure =
               reviewFailureStage || reviewFailureReasonCode || reviewFailureRetryable;
+            const reviewAcknowledgementCommentId = Number(
+              process.env.REVIEW_ACKNOWLEDGEMENT_COMMENT_ID,
+            );
+            const hasReviewAcknowledgement =
+              Number.isSafeInteger(reviewAcknowledgementCommentId) &&
+              reviewAcknowledgementCommentId > 0;
+            const reviewStatusVerified = process.env.REVIEW_STATUS_VERIFIED === "true";
+            const reviewStatusCommentId = Number(process.env.REVIEW_STATUS_COMMENT_ID);
+            const reviewStatusCompletedAt = String(
+              process.env.REVIEW_STATUS_COMPLETED_AT || "",
+            ).trim();
             if (
               hasReviewFailure &&
               (!reviewFailureStage ||
@@ -1961,7 +2332,26 @@ jobs:
               ...(directLifecycleRequeue ? { direct_lifecycle_requeue: true } : {}),
               ...(retryAt ? { retry_at: retryAt } : {}),
               ...(process.env.REVIEW_FAILURE_REASON
-                ? { review_failure_reason: process.env.REVIEW_FAILURE_REASON }
+                ? {
+                    review_failure_reason: process.env.REVIEW_FAILURE_REASON,
+                    ...(process.env.HAS_COMMAND_CONTEXT === "true" ||
+                    process.env.REVIEW_ITEM_KIND !== "pull_request"
+                      ? {}
+                      : {
+                          review_failure_status: reviewStatusVerified
+                            ? {
+                                outcome: "observed",
+                                comment_id: reviewStatusCommentId,
+                                completed_at: reviewStatusCompletedAt,
+                              }
+                            : hasReviewAcknowledgement
+                              ? {
+                                  outcome: "failed",
+                                  comment_id: reviewAcknowledgementCommentId,
+                                }
+                              : { outcome: "unavailable" },
+                        }),
+                  }
                 : {}),
               ...(hasReviewFailure
                 ? {
@@ -2051,11 +2441,14 @@ jobs:
             always() &&
             steps.claim-exact-review-queue.outputs.claimed == 'true' &&
             (
+              steps.review-complete-status-fence.outcome == 'failure' ||
               (
                 steps.direct-exact-review-publication.outputs.accepted != 'true' &&
                 steps.complete-exact-review-queue.outcome != 'success' &&
                 steps.reserve-exact-review-lease.outputs.status != 'superseded' &&
-                steps.review-exact-event-item.outputs.superseded != 'true'
+                steps.review-exact-event-item.outputs.superseded != 'true' &&
+                steps.review-status-fence.outputs.superseded != 'true' &&
+                steps.release-review-status-fence.outputs.superseded != 'true'
               ) ||
               (
                 steps.exact-review-generation-result.outputs.outcome != 'success' &&
@@ -2068,6 +2461,7 @@ jobs:
         env:
           CLASSIFICATION: >-
             ${{
+              steps.review-complete-status-fence.outcome == 'failure' && 'review_status_delivery_failure' ||
               (
                 steps.exact-review-generation-result.outputs.outcome != 'success' &&
                 steps.exact-review-generation-result.outputs.retry_kind == '' &&

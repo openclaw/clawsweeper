@@ -29,6 +29,8 @@ export interface ReviewCommentContext {
 
 const COMMAND_ONLY_PATTERN = /^@clawsweeper\s+(?:re-review|re-run|review)\s*$/i;
 const AUTOMATION_NOISE_PATTERNS = [
+  /clawsweeper-pr-ack:/i,
+  /clawsweeper-review-progress:(?:start|end)/i,
   /clawsweeper-pr-egg-hatch:/i,
   /clawsweeper-assist:/i,
   /clawsweeper-visual\s+item=/i,

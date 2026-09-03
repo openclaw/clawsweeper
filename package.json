@@ -69,6 +69,7 @@
     "repair:exact-review-direct-publication": "node dist/repair/exact-review-direct-publication.js",
     "repair:publish-event-result": "node dist/repair/publish-event-result.js",
     "repair:update-command-status": "node dist/repair/update-command-status.js",
+    "repair:update-review-status": "node dist/repair/update-review-status.js",
     "workflow": "node dist/repair/workflow-utils.js",
     "repair:promote-stuck-jobs": "node dist/repair/promote-stuck-jobs.js",
     "repair:sweep-openclaw-jobs": "node dist/repair/sweep-openclaw-jobs.js",

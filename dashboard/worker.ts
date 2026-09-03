@@ -434,6 +434,13 @@ const GITHUB_PULL_REQUEST_LIFECYCLE_ACTIONS = new Set([
   "auto_merge_disabled",
 ]);
 const DEFAULT_FAST_ACK_SETTLE_DELAYS_MS = [250, 1500, 10_000];
+const MAX_FAST_ACK_COMMENT_PAGES = 10;
+
+class FastAckLookupLimitError extends Error {
+  constructor() {
+    super("fast_ack_lookup_limit_reached");
+  }
+}
 const inFlightFastAcks = new Map();
 let githubReadModelDashboardFallbackReported = false;
 const CLAWSWEEPER_WEBHOOK_DENY_REPOS = new Set(["openclaw/clawsweeper-state", "openclaw/.github"]);
@@ -1784,6 +1791,7 @@ const PUBLIC_STATUS_TEXT_VALUES = new Set([
   "repeated_failure_identity",
   "terminal_review_failure",
   "retryable_review_failure",
+  "terminal_status_delivery_failed",
   "queue_telemetry_unavailable",
   "queue_handoff_stalled",
   "queue_handoff_degraded",
@@ -1796,6 +1804,7 @@ const PUBLIC_STATUS_TEXT_VALUES = new Set([
   "review_failures_repeated",
   "review_failures_recent",
   "review_failure_telemetry_unavailable",
+  "review_status_delivery_failed",
   "review_retries_exhausted",
   "workflow_execution_stalled",
   "workflow_execution_degraded",
@@ -2024,6 +2033,8 @@ const PUBLIC_STATUS_COUNT_FIELDS = new Set([
   "affected_targets",
   "retryable_attempts",
   "terminal_attempts",
+  "terminal_status_observed",
+  "terminal_status_failed",
   "repeated_identities",
   "agent_input_scan",
   "source_preparation",
@@ -3992,16 +4003,38 @@ async function githubWebhook(request, env, ctx) {
         item_key: `${itemDecision.targetRepo}#${itemDecision.itemNumber}`,
       });
     }
-    if (itemDecision.itemKind === "pull_request") {
-      await acknowledgePullRequestReceipt({ env, ctx, decision: itemDecision }).catch(() => {
-        console.error("ClawSweeper pull request fast ack failed");
-        return undefined;
-      });
-    }
     const sourceAuthoritySeq =
       sourceAuthority && "sourceAuthoritySeq" in sourceAuthority
         ? sourceAuthority.sourceAuthoritySeq
         : null;
+    if (itemDecision.itemKind === "pull_request") {
+      try {
+        const reviewAcknowledgementCommentId = await acknowledgePullRequestReceipt({
+          env,
+          ctx,
+          decision: itemDecision,
+        });
+        if (reviewAcknowledgementCommentId) {
+          itemDecision = { ...itemDecision, reviewAcknowledgementCommentId };
+        }
+        await attachExactReviewSourceAuthorityAcknowledgement(env, {
+          deliveryId,
+          sourceAuthoritySeq: Number(sourceAuthoritySeq),
+          commentId: reviewAcknowledgementCommentId,
+        });
+      } catch {
+        console.error("ClawSweeper pull request fast ack failed");
+        return json(
+          {
+            ok: true,
+            accepted: true,
+            deferred: true,
+            reason: "pull request acknowledgement deferred",
+          },
+          202,
+        );
+      }
+    }
     let exactReviewDecision: ExactReviewDecision | null;
     try {
       exactReviewDecision = await bindLivePullRequestHeadAuthority({
@@ -4959,7 +4992,9 @@ function targetDefaultBranch(repo) {
 
 function isClawsweeperGithubWebhookSender(sender) {
   const login = normalizedLogin(sender.login);
-  return login === "clawsweeper[bot]" || login === "openclaw-clawsweeper[bot]";
+  return (
+    login === "clawsweeper" || login === "clawsweeper[bot]" || login === "openclaw-clawsweeper[bot]"
+  );
 }
 
 function isAuthorReadOnlyGithubWebhookCommand({ comment, issue, commandText }) {
@@ -5064,6 +5099,7 @@ async function reserveExactReviewSourceAuthority(
         decision,
         ...(ingress ? { ingress } : {}),
         installation_id: decision.installationId,
+        review_acknowledgement_pending: true,
       }),
     }),
   );
@@ -5105,6 +5141,37 @@ async function completeExactReviewSourceAuthority(
   if (!response.ok) {
     const body = objectValue(await response.json().catch(() => null));
     throw new Error(String(body.error || "exact-review source authority completion failed"));
+  }
+}
+
+async function attachExactReviewSourceAuthorityAcknowledgement(
+  env,
+  {
+    deliveryId,
+    sourceAuthoritySeq,
+    commentId,
+  }: { deliveryId: string; sourceAuthoritySeq: number; commentId: number | null },
+) {
+  const queue = exactReviewQueueStub(env);
+  if (!queue) throw new Error("exact-review queue not configured");
+  const { response } = await exactReviewQueueFetch(
+    queue,
+    "/source-authority/review-acknowledgement",
+    new Request("https://clawsweeper-exact-review-queue/source-authority/review-acknowledgement", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        delivery_id: deliveryId,
+        source_authority_seq: sourceAuthoritySeq,
+        ...(commentId ? { comment_id: commentId } : {}),
+      }),
+    }),
+  );
+  if (!response.ok) {
+    const body = objectValue(await response.json().catch(() => null));
+    throw new Error(
+      String(body.error || "exact-review source authority acknowledgement unavailable"),
+    );
   }
 }
 
@@ -5365,6 +5432,7 @@ function publicExactReviewFailureHealth(value) {
     "repeated_failure_identity",
     "terminal_review_failure",
     "retryable_review_failure",
+    "terminal_status_delivery_failed",
   ];
   const reasons = Array.isArray(source.reasons)
     ? [...new Set(source.reasons.map(String).filter((reason) => allowedReasons.includes(reason)))]
@@ -5374,6 +5442,8 @@ function publicExactReviewFailureHealth(value) {
     "affected_targets",
     "retryable_attempts",
     "terminal_attempts",
+    "terminal_status_observed",
+    "terminal_status_failed",
     "repeated_identities",
   ];
   const counts = Object.fromEntries(countKeys.map((key) => [key, publicQueueCount(source[key])]));
@@ -5392,6 +5462,8 @@ function publicExactReviewFailureHealth(value) {
     windowMinutes !== null &&
     Number(counts.retryable_attempts) + Number(counts.terminal_attempts) ===
       Number(counts.attempts) &&
+    Number(counts.terminal_status_observed) + Number(counts.terminal_status_failed) <=
+      Number(counts.terminal_attempts) &&
     Object.values(byStage).reduce<number>((total, count) => total + Number(count), 0) ===
       Number(counts.attempts) &&
     (Number(counts.attempts) === 0
@@ -6815,12 +6887,7 @@ async function enqueueExactReview({
 }
 
 async function acknowledgePullRequestReceipt({ env, ctx, decision }) {
-  if (
-    decision.itemKind !== "pull_request" ||
-    !["opened", "ready_for_review"].includes(decision.sourceAction)
-  ) {
-    return null;
-  }
+  if (decision.itemKind !== "pull_request") return null;
   const credentials = githubAppCredentials(env);
   if (!credentials || !Number.isInteger(decision.installationId) || decision.installationId <= 0) {
     return null;
@@ -6836,26 +6903,49 @@ async function acknowledgePullRequestReceipt({ env, ctx, decision }) {
   });
   const ackMarker = pullRequestFastAckMarker(decision.itemNumber, decision.sourceAction);
   const ackMatch = pullRequestFastAckMatch(decision.itemNumber);
-  const statusCommentId = await createFastAckCommentOnce({
-    env,
-    token,
-    repo: decision.targetRepo,
-    itemNumber: decision.itemNumber,
-    ackMarker,
-    ackMatch,
-    ackDedupeKey: "clawsweeper-pr-ack",
-    ackBody: renderPullRequestFastAckComment(ackMarker),
-  });
-  settleFastAckComments({
-    env,
-    token,
-    repo: decision.targetRepo,
-    itemNumber: decision.itemNumber,
-    ackMarker,
-    ackMatch,
-    delaysMs: fastAckSettleDelaysMs(env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS),
-    waitUntil: ctx?.waitUntil?.bind(ctx),
-  });
+  const createsReceipt = ["opened", "ready_for_review"].includes(decision.sourceAction);
+  let statusCommentId;
+  try {
+    statusCommentId = createsReceipt
+      ? await createFastAckCommentOnce({
+          env,
+          token,
+          repo: decision.targetRepo,
+          itemNumber: decision.itemNumber,
+          ackMarker,
+          ackMatch,
+          ackDedupeKey: "clawsweeper-pr-ack",
+          ackBody: renderPullRequestFastAckComment(ackMarker),
+          sinceMs: null,
+        })
+      : await pruneFastAckComments({
+          env,
+          token,
+          repo: decision.targetRepo,
+          itemNumber: decision.itemNumber,
+          ackMarker,
+          ackMatch,
+          sinceMs: null,
+        });
+  } catch (error) {
+    if (!(error instanceof FastAckLookupLimitError)) throw error;
+    // A capped search cannot prove receipt absence or safely choose among receipts.
+    // Skip all acknowledgement mutation without blocking the actual review intake.
+    console.warn("ClawSweeper pull request acknowledgement lookup limit reached");
+    return null;
+  }
+  if (createsReceipt) {
+    settleFastAckComments({
+      env,
+      token,
+      repo: decision.targetRepo,
+      itemNumber: decision.itemNumber,
+      ackMarker,
+      ackMatch,
+      delaysMs: fastAckSettleDelaysMs(env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS),
+      waitUntil: ctx?.waitUntil?.bind(ctx),
+    });
+  }
   return statusCommentId;
 }
 
@@ -6868,6 +6958,7 @@ async function createFastAckComment({
   ackMarker = fastAckMarker(sourceCommentId),
   ackMatch = undefined,
   ackBody = renderFastAckComment(sourceCommentId),
+  sinceMs = 24 * 60 * 60 * 1000,
 }) {
   const existingId = await pruneFastAckComments({
     env,
@@ -6876,6 +6967,7 @@ async function createFastAckComment({
     itemNumber,
     ackMarker,
     ackMatch,
+    sinceMs,
   });
   if (existingId) return existingId;
   const payload = await githubTokenJson({
@@ -6887,7 +6979,7 @@ async function createFastAckComment({
     errorLabel: "ClawSweeper ack comment",
   });
   return (
-    (await pruneFastAckComments({ env, token, repo, itemNumber, ackMarker, ackMatch })) ||
+    (await pruneFastAckComments({ env, token, repo, itemNumber, ackMarker, ackMatch, sinceMs })) ||
     Number(payload.id) ||
     null
   );
@@ -6901,13 +6993,22 @@ function settleFastAckComments({
   sourceCommentId = undefined,
   ackMarker = fastAckMarker(sourceCommentId),
   ackMatch = undefined,
+  sinceMs = 24 * 60 * 60 * 1000,
   delaysMs = DEFAULT_FAST_ACK_SETTLE_DELAYS_MS,
   waitUntil,
 }) {
   const cleanup = async () => {
     for (const delayMs of delaysMs) {
       await sleep(delayMs);
-      await pruneFastAckComments({ env, token, repo, itemNumber, ackMarker, ackMatch });
+      await pruneFastAckComments({
+        env,
+        token,
+        repo,
+        itemNumber,
+        ackMarker,
+        ackMatch,
+        sinceMs,
+      });
     }
   };
   const promise = cleanup().catch(() => {
@@ -6934,6 +7035,7 @@ async function createFastAckCommentOnce({
   ackMatch = undefined,
   ackDedupeKey = ackMarker,
   ackBody = renderFastAckComment(sourceCommentId),
+  sinceMs = 24 * 60 * 60 * 1000,
 }) {
   const key = fastAckKey({ repo, itemNumber, ackMarker: ackDedupeKey });
   const pending = inFlightFastAcks.get(key);
@@ -6946,6 +7048,7 @@ async function createFastAckCommentOnce({
     ackMarker,
     ackMatch,
     ackBody,
+    sinceMs,
   }).finally(() => {
     inFlightFastAcks.delete(key);
   });
@@ -6972,6 +7075,7 @@ async function pruneFastAckComments({
   sourceCommentId = undefined,
   ackMarker = fastAckMarker(sourceCommentId),
   ackMatch = undefined,
+  sinceMs = 24 * 60 * 60 * 1000,
 }) {
   const comments = await listFastAckComments({
     env,
@@ -6980,6 +7084,7 @@ async function pruneFastAckComments({
     itemNumber,
     ackMarker,
     ackMatch,
+    sinceMs,
   });
   if (!comments.length) return null;
   const hasStatusComment = comments.some(isStatusBearingFastAckComment);
@@ -7016,7 +7121,8 @@ function isStatusBearingFastAckComment(comment) {
   const body = String(objectValue(comment).body || "");
   return (
     body.includes("clawsweeper-command-status:") ||
-    body.includes("<!-- clawsweeper-command-progress:start -->")
+    body.includes("<!-- clawsweeper-command-progress:start -->") ||
+    body.includes("<!-- clawsweeper-review-progress:start -->")
   );
 }
 
@@ -7045,15 +7151,19 @@ async function listFastAckComments({
   itemNumber,
   ackMarker,
   ackMatch = undefined,
+  sinceMs = 24 * 60 * 60 * 1000,
 }) {
   const comments = [];
   const matchesAckBody = ackMatch || ((body) => body.includes(ackMarker));
-  const since = encodeURIComponent(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
-  for (let page = 1; page <= 5; page += 1) {
+  const since =
+    sinceMs === null
+      ? ""
+      : `&since=${encodeURIComponent(new Date(Date.now() - sinceMs).toISOString())}`;
+  for (let page = 1; page <= MAX_FAST_ACK_COMMENT_PAGES; page += 1) {
     const payload = await githubTokenJson({
       env,
       token,
-      path: `/repos/${repo}/issues/${itemNumber}/comments?per_page=100&page=${page}&since=${since}`,
+      path: `/repos/${repo}/issues/${itemNumber}/comments?per_page=100&page=${page}${since}`,
       method: "GET",
       body: undefined,
       errorLabel: "ClawSweeper ack comment lookup",
@@ -7069,7 +7179,7 @@ async function listFastAckComments({
     }
     if (payload.length < 100) return comments;
   }
-  return comments;
+  throw new FastAckLookupLimitError();
 }
 
 function renderFastAckComment(sourceCommentId) {

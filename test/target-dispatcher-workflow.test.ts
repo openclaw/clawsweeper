@@ -24,6 +24,7 @@ assert.equal(dispatcherTemplates.length, 1, "expected one canonical target dispa
 const documentedWorkflow = dispatcherTemplates[0]!.content;
 
 type WorkflowStep = {
+  id?: string;
   name?: string;
   if?: string;
   run?: string;
@@ -161,21 +162,14 @@ test("target dispatcher acknowledges non-draft PR receipts before review dispatc
 
     const token = namedStep(steps, "Create target PR acknowledgement token");
     const acknowledgement = namedStep(steps, "Acknowledge received pull request");
-    const expectedGate = [
-      "${{",
-      "github.event_name == 'pull_request_target' &&",
-      "(",
-      "github.event.action == 'ready_for_review' ||",
-      "(github.event.action == 'opened' && github.event.pull_request.draft == false)",
-      ") &&",
-      "env.HAS_CLAWSWEEPER_APP_PRIVATE_KEY == 'true'",
-      "}}",
-    ].join(" ");
+    const expectedGate =
+      "${{ github.event_name == 'pull_request_target' && env.HAS_CLAWSWEEPER_APP_PRIVATE_KEY == 'true' }}";
 
     assert.equal(normalizeWhitespace(token.if), expectedGate);
     assert.equal(normalizeWhitespace(acknowledgement.if), expectedGate);
     assert.equal(token["continue-on-error"], true);
     assert.equal(acknowledgement["continue-on-error"], true);
+    assert.equal(acknowledgement.id, "pr_acknowledgement");
     assert.deepEqual(
       Object.keys(token.with ?? {}).filter((key) => key.startsWith("permission-")),
       ["permission-issues"],
@@ -185,14 +179,32 @@ test("target dispatcher acknowledges non-draft PR receipts before review dispatc
 
     const run = acknowledgement.run ?? "";
     assert.match(run, /issues\/\$ITEM_NUMBER\/comments\?per_page=100/);
+    assert.match(run, /page <= 10/);
+    assert.doesNotMatch(run, /--paginate/);
+    assert.match(run, /\| jq -s 'add'/);
+    assert.match(run, /leaving existing comments untouched/);
     assert.match(run, /--arg marker_prefix "clawsweeper-pr-ack:"/);
     assert.match(run, /--arg marker_suffix " item=\$ITEM_NUMBER -->"/);
+    assert.match(run, /\["clawsweeper", "clawsweeper\[bot\]", "openclaw-clawsweeper\[bot\]"\]/);
+    assert.match(run, /clawsweeper-review-progress:start/);
+    assert.match(run, /sort_by\(\.created_at, \.id\) \| first/);
+    assert.match(run, /echo "status_comment_id=\$status_comment_id" >> "\$GITHUB_OUTPUT"/);
+    assert.match(run, /\$SOURCE_ACTION" != "ready_for_review"/);
     assert.match(run, /"<!-- clawsweeper-pr-ack:\$SOURCE_ACTION item=\$ITEM_NUMBER -->"/);
     assert.match(
       run,
       /"Pull request received\. I will update this pull request when review starts\."/,
     );
     assert.match(run, /issues\/\$ITEM_NUMBER\/comments"\s*\\\s*--method POST/);
+    const dispatch = namedStep(steps, "Dispatch exact ClawSweeper review");
+    assert.equal(
+      dispatch.env?.REVIEW_ACKNOWLEDGEMENT_COMMENT_ID,
+      "${{ steps.pr_acknowledgement.outputs.status_comment_id }}",
+    );
+    assert.match(
+      dispatch.run ?? "",
+      /queueClaim\.review_acknowledgement_comment_id = reviewAcknowledgementCommentId/,
+    );
   }
 });
 
@@ -226,5 +238,92 @@ test("target dispatcher carries immutable issue and pull-request source identity
       ].length,
       10,
     );
+  }
+});
+
+test("automatic acknowledgement lookup bounds real shell pagination and fails closed", () => {
+  const sweep = readFileSync(".github/workflows/sweep.yml", "utf8");
+  const jobs = workflowJobs(sweep);
+  const scheduled = Object.values(jobs ?? {})
+    .flatMap((job) => job.steps ?? [])
+    .find((step) => step.name === "Resolve automatic review status comment");
+  assert.ok(scheduled?.run);
+  const dispatcher = namedStep(dispatchSteps(liveWorkflow), "Acknowledge received pull request");
+  const cases = [
+    {
+      name: "old receipt after five pages",
+      count: 501,
+      failPage: 0,
+      malformed: false,
+      pages: 6,
+      success: true,
+    },
+    { name: "empty thread", count: 0, failPage: 0, malformed: false, pages: 1, success: true },
+    {
+      name: "full tenth page",
+      count: 1000,
+      failPage: 0,
+      malformed: false,
+      pages: 10,
+      success: false,
+    },
+    {
+      name: "API failure discards partial lookup",
+      count: 501,
+      failPage: 2,
+      malformed: false,
+      pages: 2,
+      success: false,
+    },
+    {
+      name: "malformed response",
+      count: 0,
+      failPage: 0,
+      malformed: true,
+      pages: 1,
+      success: false,
+    },
+  ];
+  for (const run of [dispatcher.run!, scheduled.run]) {
+    const helper = /^list_ack_comments\(\) \{[\s\S]*?^\}/m.exec(run)?.[0];
+    assert.ok(helper, "expected the actual bounded workflow helper");
+    for (const scenario of cases) {
+      const fixture =
+        "const args=process.argv.slice(1);" +
+        'if(args.length!==2 || args[0]!=="api")process.exit(91);' +
+        'const page=Number(new URL(args[1],"https://fixture.invalid/").searchParams.get("page"));' +
+        'console.error("ACK_PAGE:"+page);' +
+        "if(page===Number(process.env.ACK_FAIL_PAGE))process.exit(92);" +
+        'if(process.env.ACK_MALFORMED==="true"){console.log("{}");process.exit(0);}' +
+        "const count=Math.max(0,Math.min(100,Number(process.env.ACK_COUNT)-(page-1)*100));" +
+        "console.log(JSON.stringify(Array.from({length:count},(_,i)=>({id:(page-1)*100+i+1}))));";
+      const script = [
+        "set -euo pipefail",
+        "gh() { node -e '" + fixture + '\' "$@"; }',
+        helper,
+        'comments="$(list_ack_comments)"',
+        'printf "%s" "$comments"',
+      ].join("\n");
+      const result = spawnSync("bash", ["-c", script], {
+        encoding: "utf8",
+        timeout: 20_000,
+        env: {
+          PATH: process.env.PATH,
+          TARGET_REPO: "proof/acknowledgements",
+          ITEM_NUMBER: "42",
+          ACK_COUNT: String(scenario.count),
+          ACK_FAIL_PAGE: String(scenario.failPage),
+          ACK_MALFORMED: String(scenario.malformed),
+        },
+      });
+      assert.equal(result.error, undefined, scenario.name);
+      assert.equal(result.status === 0, scenario.success, scenario.name + ": " + result.stderr);
+      assert.equal((result.stderr.match(/ACK_PAGE:/g) ?? []).length, scenario.pages, scenario.name);
+      if (scenario.success) {
+        assert.equal(JSON.parse(result.stdout).length, scenario.count, scenario.name);
+      } else {
+        assert.equal(result.stdout, "", scenario.name);
+      }
+    }
   }
 });

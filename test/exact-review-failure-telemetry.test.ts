@@ -7,6 +7,7 @@ import {
   ExactReviewFailureTelemetryStore,
   exactReviewFailureSourceFingerprint,
   normalizeExactReviewFailureDetail,
+  normalizeExactReviewFailureStatus,
   stableExactReviewFailureFingerprint,
 } from "../dashboard/exact-review-failure-telemetry.ts";
 import { MemoryDurableStorage } from "./dashboard-worker-harness.ts";
@@ -29,6 +30,118 @@ test("review failure telemetry validates only closed sanitized classifications",
   ]) {
     assert.equal(normalizeExactReviewFailureDetail(value), null);
   }
+});
+
+test("review failure telemetry validates terminal status receipts", () => {
+  assert.deepEqual(
+    normalizeExactReviewFailureStatus({
+      outcome: "observed",
+      comment_id: 4200,
+      completed_at: "2026-09-02T20:00:00.000Z",
+    }),
+    {
+      outcome: "observed",
+      commentId: 4200,
+      completedAt: "2026-09-02T20:00:00.000Z",
+    },
+  );
+  assert.deepEqual(normalizeExactReviewFailureStatus({ outcome: "unavailable" }), {
+    outcome: "unavailable",
+    commentId: null,
+    completedAt: null,
+  });
+  assert.equal(normalizeExactReviewFailureStatus({ outcome: "observed" }), null);
+  assert.equal(
+    normalizeExactReviewFailureStatus({ outcome: "failed", comment_id: "raw detail" }),
+    null,
+  );
+  assert.equal(
+    normalizeExactReviewFailureStatus({
+      outcome: "failed",
+      comment_id: 4200,
+      completed_at: "2026-09-02T20:00:00.000Z",
+    }),
+    null,
+  );
+});
+
+test("terminal status receipts accept explicit null nullable fields", () => {
+  assert.deepEqual(
+    normalizeExactReviewFailureStatus({
+      outcome: "failed",
+      comment_id: 42,
+      completed_at: null,
+    }),
+    { outcome: "failed", commentId: 42, completedAt: null },
+  );
+  assert.deepEqual(
+    normalizeExactReviewFailureStatus({
+      outcome: "unavailable",
+      comment_id: null,
+      completed_at: null,
+    }),
+    { outcome: "unavailable", commentId: null, completedAt: null },
+  );
+});
+
+test("terminal status delivery failures alert without changing attempt identity", () => {
+  const store = new ExactReviewFailureTelemetryStore(new MemoryDurableStorage());
+  store.recordSync({
+    attemptId: "e".repeat(64),
+    canonicalTargetKey: "openclaw/openclaw#42",
+    fenceKey: "openclaw/openclaw#42",
+    revision: 1,
+    claimGeneration: 1,
+    runId: "2001",
+    runAttempt: 1,
+    sourceFingerprint: "1".repeat(64),
+    failureFingerprint: "2".repeat(64),
+    sourceHeadSha: "3".repeat(40),
+    sourceContentRevision: "4".repeat(64),
+    sourceUpdatedAt: null,
+    stage: "agent_input_scan",
+    reasonCode: "findings",
+    retryable: false,
+    observedAt: NOW,
+    status: { outcome: "failed", commentId: 4200, completedAt: null },
+  });
+  const summary = store.summarySync(NOW);
+  assert.equal(summary.status, "critical");
+  assert.deepEqual(summary.reasons, ["terminal_status_delivery_failed", "terminal_review_failure"]);
+  assert.equal(summary.terminal_status_failed, 1);
+  assert.equal(summary.terminal_status_observed, 0);
+  assert.deepEqual(store.listSync({ limit: 10, now: NOW }).attempts[0]?.terminal_status, {
+    outcome: "failed",
+    comment_id: 4200,
+    completed_at: null,
+  });
+});
+
+test("unavailable terminal status does not raise a delivery failure incident", () => {
+  const store = new ExactReviewFailureTelemetryStore(new MemoryDurableStorage());
+  store.recordSync({
+    attemptId: "f".repeat(64),
+    canonicalTargetKey: "openclaw/openclaw#43",
+    fenceKey: "openclaw/openclaw#43",
+    revision: 1,
+    claimGeneration: 1,
+    runId: "2002",
+    runAttempt: 1,
+    sourceFingerprint: "5".repeat(64),
+    failureFingerprint: "6".repeat(64),
+    sourceHeadSha: "7".repeat(40),
+    sourceContentRevision: "8".repeat(64),
+    sourceUpdatedAt: null,
+    stage: "agent_input_scan",
+    reasonCode: "findings",
+    retryable: false,
+    observedAt: NOW,
+    status: { outcome: "unavailable", commentId: null, completedAt: null },
+  });
+  const summary = store.summarySync(NOW);
+  assert.equal(summary.status, "degraded");
+  assert.deepEqual(summary.reasons, ["terminal_review_failure"]);
+  assert.equal(summary.terminal_status_failed, 0);
 });
 
 test("review failure fingerprints are synchronous, stable, and source-sensitive", () => {
@@ -123,6 +236,8 @@ test("review failure telemetry deduplicates attempts and detects repeated source
     affected_targets: 1,
     retryable_attempts: 0,
     terminal_attempts: 2,
+    terminal_status_observed: 0,
+    terminal_status_failed: 0,
     repeated_identities: 1,
     first_seen_at: "2026-09-02T19:59:00.000Z",
     last_seen_at: "2026-09-02T20:00:00.000Z",

@@ -95,6 +95,8 @@ assert.deepEqual(publicQueue.review_failure_health, {
   affected_targets: 1,
   retryable_attempts: 0,
   terminal_attempts: 2,
+  terminal_status_observed: 0,
+  terminal_status_failed: 0,
   repeated_identities: 1,
   first_seen_at: publicQueue.review_failure_health.first_seen_at,
   last_seen_at: publicQueue.review_failure_health.last_seen_at,

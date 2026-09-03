@@ -1163,6 +1163,19 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   const failGeneration = step(reviewer, "Fail unsuccessful exact review generation");
   const releaseGeneration = step(reviewer, "Release unsuccessful workflow-owned review lease");
   const markUnsuccessful = step(reviewer, "Mark unsuccessful re-review");
+  const resolveAutomaticStatus = step(reviewer, "Resolve automatic review status comment");
+  const reviewStatusFence = step(reviewer, "Fence automatic review in progress");
+  const markAutomatic = step(reviewer, "Mark automatic review in progress");
+  const releaseReviewStatusFence = step(reviewer, "Release automatic review status fence");
+  const completeStatusFence = step(reviewer, "Fence automatic review completion");
+  const markComplete = step(reviewer, "Mark automatic review complete");
+  const releaseCompleteStatusFence = step(reviewer, "Release automatic review completion fence");
+  const fenceAutomatic = step(reviewer, "Fence terminal automatic review failure");
+  const terminalReviewStatus = step(reviewer, "Mark terminal automatic review failure");
+  const releaseTerminalStatusFence = step(
+    reviewer,
+    "Release terminal automatic review status fence",
+  );
   assert.match(create.if ?? "", /review-exact-event-item\.outcome == 'success'/);
   assert.match(create.if ?? "", /review-exact-event-item\.outputs\.retry_at == ''/);
   assert.match(create.if ?? "", /review-exact-event-item\.outputs\.superseded != 'true'/);
@@ -1192,6 +1205,69 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.equal(failureDiagnostics.with?.["retention-days"], 14);
   assert.equal(failureDiagnostics.with?.["include-hidden-files"], false);
   assert.equal(failureDiagnostics.with?.["if-no-files-found"], "error");
+  assert.match(resolveAutomaticStatus.if ?? "", /itemKind == 'pull_request'/);
+  assert.match(resolveAutomaticStatus.run ?? "", /page <= 10/);
+  assert.doesNotMatch(resolveAutomaticStatus.run ?? "", /--paginate/);
+  assert.match(resolveAutomaticStatus.run ?? "", /leaving existing comments untouched/);
+  assert.match(resolveAutomaticStatus.run ?? "", /clawsweeper-pr-ack:/);
+  assert.match(resolveAutomaticStatus.run ?? "", /clawsweeper-review-progress:start/);
+  assert.match(reviewStatusFence.if ?? "", /automatic-review-status\.outputs\.status_comment_id/);
+  assert.match(reviewStatusFence.run ?? "", /review_acknowledgement_comment_id/);
+  assert.match(reviewStatusFence.if ?? "", /has_command_context != 'true'/);
+  assert.match(
+    reviewStatusFence.if ?? "",
+    /reserve-exact-review-lease\.outputs\.status == 'posted'/,
+  );
+  assert.match(reviewStatusFence.run ?? "", /phase: "status"/);
+  assert.match(markAutomatic.if ?? "", /review-status-fence\.outputs\.authorized/);
+  assert.match(markAutomatic.run ?? "", /repair:update-review-status/);
+  assert.match(markAutomatic.run ?? "", /--state reviewing/);
+  assert.match(releaseReviewStatusFence.run ?? "", /phase: "review"/);
+  assert.match(releaseReviewStatusFence.run ?? "", /authorized=false/);
+  assert.match(releaseReviewStatusFence.run ?? "", /authorized=true/);
+  assert.match(releaseReviewStatusFence.run ?? "", /status.*409/);
+  const reviewExactItem = step(reviewer, "Review exact event item");
+  assert.match(reviewExactItem.if ?? "", /review-status-fence\.outcome == 'skipped'/);
+  assert.match(
+    reviewExactItem.if ?? "",
+    /release-review-status-fence\.outputs\.authorized == 'true'/,
+  );
+  assert.match(completeStatusFence.if ?? "", /review-exact-event-item\.outputs\.exit_code == '0'/);
+  assert.match(
+    completeStatusFence.if ?? "",
+    /review-exact-event-item\.outputs\.superseded != 'true'/,
+  );
+  assert.doesNotMatch(completeStatusFence.if ?? "", /terminal_during_review != 'true'/);
+  assert.match(completeStatusFence.if ?? "", /review-exact-event-item\.outputs\.retry_at == ''/);
+  assert.match(completeStatusFence.run ?? "", /phase: "status"/);
+  assert.match(completeStatusFence.run ?? "", /review_acknowledgement_comment_id/);
+  assert.match(completeStatusFence.run ?? "", /internal\/exact-review\/heartbeat/);
+  assert.match(markComplete.if ?? "", /review-complete-status-fence\.outputs\.authorized/);
+  assert.match(markComplete.env?.REVIEW_STATUS_STATE ?? "", /terminal_during_review/);
+  assert.match(markComplete.run ?? "", /--state "\$REVIEW_STATUS_STATE"/);
+  assert.notEqual(markComplete["continue-on-error"], true);
+  assert.match(releaseCompleteStatusFence.run ?? "", /phase: "finalizing"/);
+  assert.ok(
+    reviewer.steps.indexOf(markComplete) < reviewer.steps.indexOf(releaseCompleteStatusFence),
+  );
+  assert.match(fenceAutomatic.if ?? "", /failure_reason != ''/);
+  assert.equal(fenceAutomatic["continue-on-error"], true);
+  assert.match(fenceAutomatic.run ?? "", /phase: "status"/);
+  assert.match(fenceAutomatic.run ?? "", /review_acknowledgement_comment_id/);
+  assert.match(fenceAutomatic.run ?? "", /internal\/exact-review\/heartbeat/);
+  assert.match(terminalReviewStatus.if ?? "", /terminal-review-status-fence\.outputs\.authorized/);
+  assert.match(terminalReviewStatus.run ?? "", /--state blocked/);
+  assert.match(terminalReviewStatus.run ?? "", /--failure-reason/);
+  assert.match(releaseTerminalStatusFence.run ?? "", /phase: "finalizing"/);
+  assert.ok(
+    reviewer.steps.indexOf(terminalReviewStatus) <
+      reviewer.steps.indexOf(releaseTerminalStatusFence),
+  );
+  assert.ok(reviewer.steps.indexOf(terminalReviewStatus) < reviewer.steps.indexOf(complete));
+  assert.match(complete.run ?? "", /review_failure_status/);
+  assert.match(complete.run ?? "", /outcome: "observed"/);
+  assert.match(complete.run ?? "", /outcome: "failed"/);
+  assert.match(complete.run ?? "", /outcome: "unavailable"/);
   assert.ok(reviewer.steps.indexOf(failureDiagnostics) > reviewer.steps.indexOf(queuePublication));
   assert.ok(reviewer.steps.indexOf(failureDiagnostics) > reviewer.steps.indexOf(complete));
   assert.ok(reviewer.steps.indexOf(failureDiagnostics) < reviewer.steps.indexOf(failGeneration));

@@ -5115,6 +5115,460 @@ test("a newer exact-review enqueue revokes a claimed immutable decision", async 
   assert.deepEqual(await mismatchedGeneration.json(), { error: "lease_not_claimed" });
 });
 
+test("status receipt binding rejects an unknown heartbeat item without mutation", async () => {
+  const storage = new MemoryDurableStorage();
+  await storage.put("exact-review-queue", { deliveries: {}, items: {} });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/heartbeat", {
+      method: "POST",
+      body: JSON.stringify({
+        item_key: "openclaw/openclaw#626",
+        lease_id: "lease-626",
+        lease_revision: 1,
+        run_id: "6260",
+        run_attempt: 1,
+        claim_generation: 1,
+        source_head_sha: "a".repeat(40),
+        review_acknowledgement_comment_id: 62_600,
+        phase: "status",
+      }),
+    }),
+  );
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), { error: "lease_not_active" });
+  const state = (await storage.get("exact-review-queue")) as { items: Record<string, unknown> };
+  assert.deepEqual(state.items, {});
+});
+
+test("status receipt binding validates the full active lease tuple first", async (t) => {
+  for (const [field, value] of Object.entries({
+    lease_id: "stale-lease",
+    lease_revision: 2,
+    run_id: "9999",
+    run_attempt: 2,
+    claim_generation: 2,
+    source_head_sha: "b".repeat(40),
+  })) {
+    await t.test(field, async () => {
+      const storage = new MemoryDurableStorage();
+      const item = leasedExactReviewQueueItem(627, "6270");
+      for (const decision of [item.decision, item.leaseDecision]) {
+        Object.assign(decision, {
+          itemKind: "pull_request",
+          sourceEvent: "pull_request",
+          sourceHeadSha: "a".repeat(40),
+        });
+      }
+      await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+      const queue = new ExactReviewQueue({ storage }, {});
+      const tuple = {
+        item_key: item.key,
+        lease_id: item.leaseId,
+        lease_revision: 1,
+        run_id: "6270",
+        run_attempt: 1,
+        claim_generation: 1,
+        source_head_sha: "a".repeat(40),
+        phase: "status",
+      };
+      const heartbeat = (payload: Record<string, unknown>) =>
+        queue.fetch(
+          new Request("https://clawsweeper-exact-review-queue/heartbeat", {
+            method: "POST",
+            body: JSON.stringify(payload),
+          }),
+        );
+      const stale = await heartbeat({
+        ...tuple,
+        [field]: value,
+        review_acknowledgement_comment_id: 62_700,
+      });
+      assert.equal(stale.status, 409);
+      assert.deepEqual(await stale.json(), { error: "lease_not_active" });
+      const accepted = await heartbeat({
+        ...tuple,
+        review_acknowledgement_comment_id: 62_701,
+      });
+      assert.equal(accepted.status, 200);
+      const state = (await storage.get("exact-review-queue")) as {
+        items: Record<string, { leaseDecision: { reviewAcknowledgementCommentId?: number } }>;
+      };
+      assert.equal(state.items[item.key].leaseDecision.reviewAcknowledgementCommentId, 62_701);
+    });
+  }
+});
+
+test("a newer revision accumulated during status revokes the old lease when status exits", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = unclaimedExactReviewQueueItem(622);
+  for (const decision of [item.decision, item.leaseDecision]) {
+    Object.assign(decision, {
+      itemKind: "pull_request",
+      sourceEvent: "pull_request",
+      sourceHeadSha: "a".repeat(40),
+      sourceHeadVerified: true,
+      sourceAuthoritySeq: 1,
+      sourceUpdatedAt: "2026-09-03T13:00:00.000Z",
+    });
+  }
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { "openclaw/openclaw#622": item },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  assert.equal(
+    (
+      await queue.fetch(
+        new Request("https://clawsweeper-exact-review-queue/claim", {
+          method: "POST",
+          body: JSON.stringify({
+            lease_id: "lease-622",
+            item_key: "openclaw/openclaw#622",
+            lease_revision: 1,
+            run_id: "6220",
+            run_attempt: 1,
+          }),
+        }),
+      )
+    ).status,
+    200,
+  );
+  const heartbeat = (phase: "status" | "finalizing") =>
+    queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/heartbeat", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: "lease-622",
+          item_key: "openclaw/openclaw#622",
+          lease_revision: 1,
+          claim_generation: 1,
+          run_id: "6220",
+          run_attempt: 1,
+          source_head_sha: "a".repeat(40),
+          ...(phase === "status" ? { review_acknowledgement_comment_id: 62_200 } : {}),
+          phase,
+        }),
+      }),
+    );
+  assert.equal((await heartbeat("status")).status, 200);
+  const statusState = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { leaseDecision?: { reviewAcknowledgementCommentId?: number } }>;
+  };
+  assert.equal(
+    statusState.items["openclaw/openclaw#622"].leaseDecision?.reviewAcknowledgementCommentId,
+    62_200,
+  );
+  assert.equal(
+    (
+      await queue.fetch(
+        buildExactReviewQueueRequest(
+          "newer-status-622",
+          622,
+          "synchronize",
+          "pull_request",
+          "openclaw/openclaw",
+          {
+            sourceHeadSha: "b".repeat(40),
+            sourceHeadVerified: true,
+            sourceAuthoritySeq: 2,
+            sourceUpdatedAt: "2026-09-03T13:01:00.000Z",
+          },
+        ),
+      )
+    ).status,
+    202,
+  );
+  assert.equal(
+    (
+      await queue.fetch(
+        buildExactReviewQueueRequest(
+          "metadata-after-newer-status-622",
+          622,
+          "converted_to_draft",
+          "pull_request",
+          "openclaw/openclaw",
+          {
+            sourceHeadSha: "b".repeat(40),
+            sourceHeadVerified: true,
+            sourceAuthoritySeq: 3,
+            sourceUpdatedAt: "2026-09-03T13:01:01.000Z",
+            sourceIsDraft: true,
+          },
+        ),
+      )
+    ).status,
+    202,
+  );
+
+  const release = await heartbeat("finalizing");
+  assert.equal(release.status, 409);
+  assert.deepEqual(await release.json(), {
+    error: "lease_superseded",
+    superseded_by_revision: 3,
+  });
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<
+      string,
+      {
+        state: string;
+        revision: number;
+        leaseId?: string;
+        leasePhase?: string;
+        decision: { sourceHeadSha?: string };
+      }
+    >;
+  };
+  assert.equal(state.items["openclaw/openclaw#622"].state, "pending");
+  assert.equal(state.items["openclaw/openclaw#622"].revision, 3);
+  assert.equal(state.items["openclaw/openclaw#622"].leaseId, undefined);
+  assert.equal(state.items["openclaw/openclaw#622"].leasePhase, undefined);
+  assert.equal(state.items["openclaw/openclaw#622"].decision.sourceHeadSha, "b".repeat(40));
+  const completed = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: "lease-622",
+        item_key: "openclaw/openclaw#622",
+        lease_revision: 1,
+        claim_generation: 1,
+        run_id: "6220",
+        run_attempt: 1,
+        outcome: "success",
+      }),
+    }),
+  );
+  assert.equal(completed.status, 409);
+  assert.deepEqual(await completed.json(), {
+    error: "lease_superseded",
+    superseded_by_revision: 3,
+  });
+});
+
+test("a non-superseding revision accumulated during status preserves the active lease", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = unclaimedExactReviewQueueItem(624);
+  for (const decision of [item.decision, item.leaseDecision]) {
+    Object.assign(decision, {
+      itemKind: "pull_request",
+      sourceEvent: "pull_request",
+      sourceHeadSha: "a".repeat(40),
+      sourceHeadVerified: true,
+      sourceAuthoritySeq: 1,
+      sourceUpdatedAt: "2026-09-03T15:00:00.000Z",
+    });
+  }
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { "openclaw/openclaw#624": item },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  assert.equal(
+    (
+      await queue.fetch(
+        new Request("https://clawsweeper-exact-review-queue/claim", {
+          method: "POST",
+          body: JSON.stringify({
+            lease_id: "lease-624",
+            item_key: "openclaw/openclaw#624",
+            lease_revision: 1,
+            run_id: "6240",
+            run_attempt: 1,
+          }),
+        }),
+      )
+    ).status,
+    200,
+  );
+  const heartbeat = (phase: "status" | "finalizing") =>
+    queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/heartbeat", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: "lease-624",
+          item_key: "openclaw/openclaw#624",
+          lease_revision: 1,
+          claim_generation: 1,
+          run_id: "6240",
+          run_attempt: 1,
+          source_head_sha: "a".repeat(40),
+          phase,
+        }),
+      }),
+    );
+  assert.equal((await heartbeat("status")).status, 200);
+  assert.equal(
+    (
+      await queue.fetch(
+        buildExactReviewQueueRequest(
+          "metadata-status-624",
+          624,
+          "labeled",
+          "pull_request",
+          "openclaw/openclaw",
+          {
+            sourceHeadSha: "a".repeat(40),
+            sourceHeadVerified: true,
+            sourceAuthoritySeq: 2,
+            sourceUpdatedAt: "2026-09-03T15:01:00.000Z",
+          },
+        ),
+      )
+    ).status,
+    202,
+  );
+  assert.equal((await heartbeat("finalizing")).status, 200);
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<
+      string,
+      { state: string; revision: number; leaseId?: string; leasePhase?: string }
+    >;
+  };
+  assert.equal(state.items["openclaw/openclaw#624"].state, "leased");
+  assert.equal(state.items["openclaw/openclaw#624"].revision, 2);
+  assert.equal(state.items["openclaw/openclaw#624"].leaseId, "lease-624");
+  assert.equal(state.items["openclaw/openclaw#624"].leasePhase, "finalizing");
+});
+
+test("a markerless pre-deploy status lease still detects its superseding revision", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewQueueItem(625, "6250");
+  Object.assign(item.leaseDecision, {
+    itemKind: "pull_request",
+    sourceEvent: "pull_request",
+    sourceAction: "opened",
+    sourceHeadSha: "a".repeat(40),
+    sourceHeadVerified: true,
+    sourceAuthoritySeq: 1,
+    sourceUpdatedAt: "2026-09-03T16:00:00.000Z",
+  });
+  Object.assign(item.decision, {
+    itemKind: "pull_request",
+    sourceEvent: "pull_request",
+    sourceAction: "synchronize",
+    supersedesInProgress: true,
+    sourceHeadSha: "b".repeat(40),
+    sourceHeadVerified: true,
+    sourceAuthoritySeq: 2,
+    sourceUpdatedAt: "2026-09-03T16:01:00.000Z",
+  });
+  item.revision = 2;
+  item.leaseRevision = 1;
+  item.leasePhase = "status";
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { "openclaw/openclaw#625": item },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const release = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/heartbeat", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: 1,
+        claim_generation: 1,
+        run_id: "6250",
+        run_attempt: 1,
+        source_head_sha: "a".repeat(40),
+        phase: "finalizing",
+      }),
+    }),
+  );
+  assert.equal(release.status, 409);
+  assert.deepEqual(await release.json(), {
+    error: "lease_superseded",
+    superseded_by_revision: 2,
+  });
+});
+
+test("a newer revision supersedes a general finalizing lease", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = unclaimedExactReviewQueueItem(623);
+  for (const decision of [item.decision, item.leaseDecision]) {
+    Object.assign(decision, {
+      itemKind: "pull_request",
+      sourceEvent: "pull_request",
+      sourceHeadSha: "a".repeat(40),
+      sourceHeadVerified: true,
+      sourceAuthoritySeq: 1,
+      sourceUpdatedAt: "2026-09-03T14:00:00.000Z",
+    });
+  }
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { "openclaw/openclaw#623": item },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  assert.equal(
+    (
+      await queue.fetch(
+        new Request("https://clawsweeper-exact-review-queue/claim", {
+          method: "POST",
+          body: JSON.stringify({
+            lease_id: "lease-623",
+            item_key: "openclaw/openclaw#623",
+            lease_revision: 1,
+            run_id: "6230",
+            run_attempt: 1,
+          }),
+        }),
+      )
+    ).status,
+    200,
+  );
+  const fence = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/heartbeat", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: "lease-623",
+        item_key: "openclaw/openclaw#623",
+        lease_revision: 1,
+        claim_generation: 1,
+        run_id: "6230",
+        run_attempt: 1,
+        source_head_sha: "a".repeat(40),
+        phase: "finalizing",
+      }),
+    }),
+  );
+  assert.equal(fence.status, 200);
+
+  const newer = buildExactReviewQueueRequest(
+    "newer-finalizing-623",
+    623,
+    "synchronize",
+    "pull_request",
+    "openclaw/openclaw",
+    {
+      sourceHeadSha: "b".repeat(40),
+      sourceHeadVerified: true,
+      sourceAuthoritySeq: 2,
+      sourceUpdatedAt: "2026-09-03T14:01:00.000Z",
+    },
+  );
+  assert.equal((await queue.fetch(newer)).status, 202);
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<
+      string,
+      {
+        state: string;
+        revision: number;
+        leasePhase?: string;
+        leaseId?: string;
+        leaseDecision?: { sourceHeadSha?: string };
+        decision: { sourceHeadSha?: string };
+      }
+    >;
+  };
+  assert.equal(state.items["openclaw/openclaw#623"].state, "pending");
+  assert.equal(state.items["openclaw/openclaw#623"].revision, 2);
+  assert.equal(state.items["openclaw/openclaw#623"].leaseId, undefined);
+  assert.equal(state.items["openclaw/openclaw#623"].leasePhase, undefined);
+  assert.equal(state.items["openclaw/openclaw#623"].leaseDecision, undefined);
+  assert.equal(state.items["openclaw/openclaw#623"].decision.sourceHeadSha, "b".repeat(40));
+});
+
 test("a newer exact-review enqueue revokes a claimed legacy workflow lease", async () => {
   const storage = new MemoryDurableStorage();
   const item = unclaimedExactReviewQueueItem(624);
@@ -11780,6 +12234,8 @@ test("exact-review queue terminates deterministic refusals only for the unchange
     affected_targets: 4,
     retryable_attempts: 1,
     terminal_attempts: 3,
+    terminal_status_observed: 0,
+    terminal_status_failed: 0,
     repeated_identities: 0,
     first_seen_at: failureStats.review_failure_health.first_seen_at,
     last_seen_at: failureStats.review_failure_health.last_seen_at,
@@ -11846,6 +12302,69 @@ test("exact-review queue terminates deterministic refusals only for the unchange
   };
   assert.equal(sourceState.items["openclaw/openclaw#713"], undefined);
   assert.equal(sourceState.items["openclaw/openclaw#714"].revision, 2);
+});
+
+test("terminal PR refusals retain a verified explanation receipt without retrying", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewQueueItem(718, "7180");
+  for (const decision of [item.decision, item.leaseDecision]) {
+    Object.assign(decision, {
+      itemKind: "pull_request",
+      sourceEvent: "pull_request",
+      sourceHeadSha: "a".repeat(40),
+      reviewAcknowledgementCommentId: 71_800,
+    });
+  }
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { [item.key]: item },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: 1,
+        claim_generation: 1,
+        run_id: "7180",
+        run_attempt: 1,
+        outcome: "failure",
+        review_failure_reason: "findings",
+        review_failure_status: {
+          outcome: "observed",
+          comment_id: 71_800,
+          completed_at: "2026-09-03T12:00:00.000Z",
+        },
+      }),
+    }),
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, requeued: false });
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, unknown>;
+  };
+  assert.equal(state.items[item.key], undefined);
+
+  const stats = await (
+    await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+  ).json();
+  assert.equal(stats.review_failure_health.terminal_status_observed, 1);
+  assert.equal(stats.review_failure_health.terminal_status_failed, 0);
+  const inventory = await (
+    await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/review-failures/list", {
+        method: "POST",
+        body: JSON.stringify({ limit: 10 }),
+      }),
+    )
+  ).json();
+  assert.deepEqual(inventory.attempts[0]?.terminal_status, {
+    outcome: "observed",
+    comment_id: 71_800,
+    completed_at: "2026-09-03T12:00:00.000Z",
+  });
 });
 
 test("exact-review queue validates terminal review failure reasons", async () => {

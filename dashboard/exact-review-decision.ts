@@ -46,6 +46,7 @@ export type ExactReviewBaseDecision = {
   mediaProofTimeoutMs?: number;
   commandStatusMarker?: string;
   statusCommentId?: number;
+  reviewAcknowledgementCommentId?: number;
   additionalPrompt?: string;
   sourceCommentId?: number;
   sourceCommentUpdatedAt?: string;
@@ -85,6 +86,7 @@ export type ExactReviewSourceAuthorityReservation = {
   ingress?: ExactReviewIngress;
   installationId: number;
   sourceAuthoritySeq: number;
+  reviewAcknowledgementPending?: boolean;
   attempts: number;
   nextAttemptAt: number;
 };
@@ -150,6 +152,7 @@ export function exactReviewDecisionWithoutSourceAuthority(decision: ExactReviewD
     sourceBaseSha: _sourceBaseSha,
     sourceIsDraft: _sourceIsDraft,
     sourceContentRevision: _sourceContentRevision,
+    reviewAcknowledgementCommentId: _reviewAcknowledgementCommentId,
     ...rest
   } = decision;
   return rest;
@@ -230,6 +233,7 @@ export function exactReviewSourceAuthorityReservationFrom(
     reservation.ingress === undefined ? undefined : exactReviewIngressFrom(reservation.ingress);
   const installationId = Number(reservation.installationId);
   const sourceAuthoritySeq = Number(reservation.sourceAuthoritySeq);
+  const reviewAcknowledgementPending = reservation.reviewAcknowledgementPending === true;
   const attempts = Number(reservation.attempts);
   const nextAttemptAt = Number(reservation.nextAttemptAt);
   if (
@@ -244,6 +248,8 @@ export function exactReviewSourceAuthorityReservationFrom(
     !Number.isSafeInteger(sourceAuthoritySeq) ||
     sourceAuthoritySeq <= 0 ||
     decision.sourceAuthoritySeq !== sourceAuthoritySeq ||
+    (reservation.reviewAcknowledgementPending !== undefined &&
+      typeof reservation.reviewAcknowledgementPending !== "boolean") ||
     !Number.isInteger(attempts) ||
     attempts < 0 ||
     attempts > EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_LIMIT ||
@@ -258,6 +264,7 @@ export function exactReviewSourceAuthorityReservationFrom(
     ...(ingress ? { ingress } : {}),
     installationId,
     sourceAuthoritySeq,
+    ...(reviewAcknowledgementPending ? { reviewAcknowledgementPending: true } : {}),
     attempts,
     nextAttemptAt,
   };
@@ -332,6 +339,13 @@ export function exactReviewBaseDecisionFrom(value: unknown): ExactReviewBaseDeci
   const commandStatusMarker = hasCommandStatusMarker ? decision.commandStatusMarker : undefined;
   const hasStatusCommentId = Object.hasOwn(decision, "statusCommentId");
   const statusCommentId = hasStatusCommentId ? Number(decision.statusCommentId) : undefined;
+  const hasReviewAcknowledgementCommentId = Object.hasOwn(
+    decision,
+    "reviewAcknowledgementCommentId",
+  );
+  const reviewAcknowledgementCommentId = hasReviewAcknowledgementCommentId
+    ? Number(decision.reviewAcknowledgementCommentId)
+    : undefined;
   const hasAdditionalPrompt = Object.hasOwn(decision, "additionalPrompt");
   const additionalPrompt = hasAdditionalPrompt ? decision.additionalPrompt : undefined;
   const hasSourceCommentId = Object.hasOwn(decision, "sourceCommentId");
@@ -392,6 +406,14 @@ export function exactReviewBaseDecisionFrom(value: unknown): ExactReviewBaseDeci
   if (
     hasStatusCommentId &&
     (!Number.isSafeInteger(statusCommentId) || Number(statusCommentId) <= 0)
+  ) {
+    return null;
+  }
+  if (
+    hasReviewAcknowledgementCommentId &&
+    (itemKind !== "pull_request" ||
+      !Number.isSafeInteger(reviewAcknowledgementCommentId) ||
+      Number(reviewAcknowledgementCommentId) <= 0)
   ) {
     return null;
   }
@@ -457,6 +479,7 @@ export function exactReviewBaseDecisionFrom(value: unknown): ExactReviewBaseDeci
       : {}),
     ...(typeof commandStatusMarker === "string" ? { commandStatusMarker } : {}),
     ...(statusCommentId === undefined ? {} : { statusCommentId }),
+    ...(reviewAcknowledgementCommentId === undefined ? {} : { reviewAcknowledgementCommentId }),
     ...(typeof additionalPrompt === "string" ? { additionalPrompt } : {}),
     ...(sourceCommentId === undefined ? {} : { sourceCommentId }),
     ...(sourceCommentUpdatedAt === undefined ? {} : { sourceCommentUpdatedAt }),

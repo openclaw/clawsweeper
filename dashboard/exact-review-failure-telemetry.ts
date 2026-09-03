@@ -3,6 +3,7 @@ import { stableJson } from "../src/stable-json.ts";
 
 export const EXACT_REVIEW_FAILURE_TELEMETRY_TABLE = "exact_review_failure_attempts_v1";
 export const EXACT_REVIEW_FAILURE_TELEMETRY_STATE_TABLE = "exact_review_failure_telemetry_state_v1";
+export const EXACT_REVIEW_FAILURE_STATUS_TABLE = "exact_review_failure_status_v1";
 export const EXACT_REVIEW_FAILURE_TELEMETRY_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 export const EXACT_REVIEW_FAILURE_HEALTH_WINDOW_MS = 60 * 60 * 1000;
 
@@ -84,7 +85,32 @@ export type ExactReviewFailureAttempt = ExactReviewFailureDetail & {
   sourceContentRevision: string | null;
   sourceUpdatedAt: string | null;
   observedAt: number;
+  status?: ExactReviewFailureStatus;
 };
+
+export type ExactReviewFailureStatus = {
+  outcome: "observed" | "failed" | "unavailable";
+  commentId: number | null;
+  completedAt: string | null;
+};
+
+export function normalizeExactReviewFailureStatus(value: unknown): ExactReviewFailureStatus | null {
+  const record = objectValue(value);
+  const outcome = String(record.outcome || "");
+  if (outcome !== "observed" && outcome !== "failed" && outcome !== "unavailable") return null;
+  const commentId = record.comment_id == null ? null : Number(record.comment_id);
+  const completedAt = record.completed_at == null ? null : String(record.completed_at);
+  if (commentId !== null && (!Number.isSafeInteger(commentId) || commentId < 1)) return null;
+  if (completedAt !== null && !Number.isFinite(Date.parse(completedAt))) return null;
+  if (outcome === "observed" && (commentId === null || completedAt === null)) return null;
+  if (outcome === "failed" && (commentId === null || completedAt !== null)) return null;
+  if (outcome === "unavailable" && (commentId !== null || completedAt !== null)) return null;
+  return {
+    outcome,
+    commentId,
+    completedAt: completedAt === null ? null : new Date(Date.parse(completedAt)).toISOString(),
+  };
+}
 
 export function normalizeExactReviewFailureDetail(value: unknown): ExactReviewFailureDetail | null {
   const record = objectValue(value);
@@ -182,6 +208,9 @@ export class ExactReviewFailureTelemetryStore {
         this.storage.sql.exec(
           `SELECT attempt_id FROM ${EXACT_REVIEW_FAILURE_TELEMETRY_TABLE} LIMIT 0`,
         );
+        this.storage.sql.exec(
+          `SELECT attempt_id FROM ${EXACT_REVIEW_FAILURE_STATUS_TABLE} LIMIT 0`,
+        );
         return;
       } catch {
         this.schemaReady = false;
@@ -225,6 +254,19 @@ export class ExactReviewFailureTelemetryStore {
          last_drop_at INTEGER NOT NULL
        ) STRICT`,
     );
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_FAILURE_STATUS_TABLE} (
+         attempt_id TEXT PRIMARY KEY,
+         outcome TEXT NOT NULL CHECK (outcome IN ('observed', 'failed', 'unavailable')),
+         comment_id INTEGER,
+         completed_at TEXT,
+         CHECK (
+           (outcome = 'observed' AND comment_id IS NOT NULL AND completed_at IS NOT NULL) OR
+           (outcome = 'failed' AND comment_id IS NOT NULL AND completed_at IS NULL) OR
+           (outcome = 'unavailable' AND comment_id IS NULL AND completed_at IS NULL)
+         )
+       ) STRICT`,
+    );
     this.schemaReady = true;
   }
 
@@ -232,29 +274,42 @@ export class ExactReviewFailureTelemetryStore {
     validateAttempt(attempt);
     this.ensureSchemaSync();
     this.pruneSync(attempt.observedAt);
-    this.storage.sql.exec(
-      `INSERT OR IGNORE INTO ${EXACT_REVIEW_FAILURE_TELEMETRY_TABLE}
-       (attempt_id, canonical_target_key, fence_key, revision, claim_generation,
-        run_id, run_attempt, source_fingerprint, failure_fingerprint, source_head_sha,
-        source_content_revision, source_updated_at, stage, reason_code, retryable, observed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      attempt.attemptId,
-      attempt.canonicalTargetKey,
-      attempt.fenceKey,
-      attempt.revision,
-      attempt.claimGeneration,
-      attempt.runId,
-      attempt.runAttempt,
-      attempt.sourceFingerprint,
-      attempt.failureFingerprint,
-      attempt.sourceHeadSha,
-      attempt.sourceContentRevision,
-      attempt.sourceUpdatedAt,
-      attempt.stage,
-      attempt.reasonCode,
-      attempt.retryable ? 1 : 0,
-      attempt.observedAt,
-    );
+    this.storage.transactionSync(() => {
+      this.storage.sql.exec(
+        `INSERT OR IGNORE INTO ${EXACT_REVIEW_FAILURE_TELEMETRY_TABLE}
+         (attempt_id, canonical_target_key, fence_key, revision, claim_generation,
+          run_id, run_attempt, source_fingerprint, failure_fingerprint, source_head_sha,
+          source_content_revision, source_updated_at, stage, reason_code, retryable, observed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        attempt.attemptId,
+        attempt.canonicalTargetKey,
+        attempt.fenceKey,
+        attempt.revision,
+        attempt.claimGeneration,
+        attempt.runId,
+        attempt.runAttempt,
+        attempt.sourceFingerprint,
+        attempt.failureFingerprint,
+        attempt.sourceHeadSha,
+        attempt.sourceContentRevision,
+        attempt.sourceUpdatedAt,
+        attempt.stage,
+        attempt.reasonCode,
+        attempt.retryable ? 1 : 0,
+        attempt.observedAt,
+      );
+      if (attempt.status) {
+        this.storage.sql.exec(
+          `INSERT OR IGNORE INTO ${EXACT_REVIEW_FAILURE_STATUS_TABLE}
+             (attempt_id, outcome, comment_id, completed_at)
+           VALUES (?, ?, ?, ?)`,
+          attempt.attemptId,
+          attempt.status.outcome,
+          attempt.status.commentId,
+          attempt.status.completedAt,
+        );
+      }
+    });
   }
 
   recordDropSync(observedAt: number) {
@@ -301,6 +356,18 @@ export class ExactReviewFailureTelemetryStore {
         from,
       ),
     )[0] as Record<string, unknown> | undefined;
+    const status = Array.from(
+      this.storage.sql.exec(
+        `SELECT
+           COALESCE(SUM(CASE WHEN status.outcome = 'observed' THEN 1 ELSE 0 END), 0) AS observed,
+           COALESCE(SUM(CASE WHEN status.outcome = 'failed' THEN 1 ELSE 0 END), 0) AS failed
+         FROM ${EXACT_REVIEW_FAILURE_STATUS_TABLE} status
+         JOIN ${EXACT_REVIEW_FAILURE_TELEMETRY_TABLE} attempt
+           ON attempt.attempt_id = status.attempt_id
+        WHERE attempt.observed_at >= ?`,
+        from,
+      ),
+    )[0] as Record<string, unknown> | undefined;
     const telemetryState = Array.from(
       this.storage.sql.exec(
         `SELECT dropped_attempts, last_drop_at
@@ -320,18 +387,21 @@ export class ExactReviewFailureTelemetryStore {
     const attempts = Number(row?.attempts || 0);
     const repeatedIdentities = Number(repeated?.repeated_identities || 0);
     const telemetryIncomplete = Number(telemetryState?.last_drop_at || 0) >= from;
-    const status = telemetryIncomplete
+    const healthStatus = telemetryIncomplete
       ? "unknown"
-      : repeatedIdentities > 0
+      : Number(status?.failed || 0) > 0
         ? "critical"
-        : attempts > 0
-          ? "degraded"
-          : "healthy";
+        : repeatedIdentities > 0
+          ? "critical"
+          : attempts > 0
+            ? "degraded"
+            : "healthy";
     return {
-      status,
+      status: healthStatus,
       reasons: telemetryIncomplete
         ? ["telemetry_unavailable"]
         : [
+            ...(Number(status?.failed || 0) > 0 ? ["terminal_status_delivery_failed"] : []),
             ...(repeatedIdentities > 0 ? ["repeated_failure_identity"] : []),
             ...(Number(row?.terminal_attempts || 0) > 0 ? ["terminal_review_failure"] : []),
             ...(Number(row?.retryable_attempts || 0) > 0 ? ["retryable_review_failure"] : []),
@@ -341,6 +411,8 @@ export class ExactReviewFailureTelemetryStore {
       affected_targets: Number(row?.affected_targets || 0),
       retryable_attempts: Number(row?.retryable_attempts || 0),
       terminal_attempts: Number(row?.terminal_attempts || 0),
+      terminal_status_observed: Number(status?.observed || 0),
+      terminal_status_failed: Number(status?.failed || 0),
       repeated_identities: repeatedIdentities,
       first_seen_at: timestamp(row?.first_seen_at),
       last_seen_at: timestamp(row?.last_seen_at),
@@ -356,12 +428,18 @@ export class ExactReviewFailureTelemetryStore {
     const cursorId = cursor?.[2] || "~";
     const rows = Array.from(
       this.storage.sql.exec(
-        `SELECT attempt_id, canonical_target_key, revision, claim_generation, run_id, run_attempt,
-                source_fingerprint, failure_fingerprint, source_head_sha, source_content_revision,
-                source_updated_at, stage, reason_code, retryable, observed_at
-           FROM ${EXACT_REVIEW_FAILURE_TELEMETRY_TABLE}
-          WHERE observed_at < ? OR (observed_at = ? AND attempt_id < ?)
-          ORDER BY observed_at DESC, attempt_id DESC LIMIT ?`,
+        `SELECT attempt.attempt_id, canonical_target_key, revision, claim_generation, run_id,
+                run_attempt, source_fingerprint, failure_fingerprint, source_head_sha,
+                source_content_revision, source_updated_at, stage, reason_code, retryable,
+                observed_at, status.outcome AS status_outcome,
+                status.comment_id AS status_comment_id,
+                status.completed_at AS status_completed_at
+           FROM ${EXACT_REVIEW_FAILURE_TELEMETRY_TABLE} attempt
+           LEFT JOIN ${EXACT_REVIEW_FAILURE_STATUS_TABLE} status
+             ON status.attempt_id = attempt.attempt_id
+          WHERE attempt.observed_at < ? OR
+                (attempt.observed_at = ? AND attempt.attempt_id < ?)
+          ORDER BY attempt.observed_at DESC, attempt.attempt_id DESC LIMIT ?`,
         cursorAt,
         cursorAt,
         cursorId,
@@ -386,6 +464,15 @@ export class ExactReviewFailureTelemetryStore {
         stage: String(row.stage),
         reason_code: String(row.reason_code),
         retryable: Number(row.retryable) === 1,
+        terminal_status:
+          row.status_outcome === null
+            ? null
+            : {
+                outcome: String(row.status_outcome),
+                comment_id: row.status_comment_id === null ? null : Number(row.status_comment_id),
+                completed_at:
+                  row.status_completed_at === null ? null : String(row.status_completed_at),
+              },
         observed_at: timestamp(row.observed_at),
       })),
       next_cursor:
@@ -396,6 +483,14 @@ export class ExactReviewFailureTelemetryStore {
   }
 
   private pruneSync(now: number) {
+    this.storage.sql.exec(
+      `DELETE FROM ${EXACT_REVIEW_FAILURE_STATUS_TABLE}
+        WHERE attempt_id IN (
+          SELECT attempt_id FROM ${EXACT_REVIEW_FAILURE_TELEMETRY_TABLE}
+           WHERE observed_at <= ?
+        )`,
+      now - EXACT_REVIEW_FAILURE_TELEMETRY_RETENTION_MS,
+    );
     this.storage.sql.exec(
       `DELETE FROM ${EXACT_REVIEW_FAILURE_TELEMETRY_TABLE} WHERE observed_at <= ?`,
       now - EXACT_REVIEW_FAILURE_TELEMETRY_RETENTION_MS,
@@ -428,6 +523,16 @@ function validateAttempt(attempt: ExactReviewFailureAttempt) {
     !Number.isFinite(attempt.observedAt)
   ) {
     throw new Error("invalid exact-review failure attempt");
+  }
+  if (
+    attempt.status &&
+    !normalizeExactReviewFailureStatus({
+      outcome: attempt.status.outcome,
+      ...(attempt.status.commentId === null ? {} : { comment_id: attempt.status.commentId }),
+      ...(attempt.status.completedAt === null ? {} : { completed_at: attempt.status.completedAt }),
+    })
+  ) {
+    throw new Error("invalid exact-review failure status");
   }
 }
 

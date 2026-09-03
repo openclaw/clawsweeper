@@ -63,6 +63,29 @@ both `clawsweeper-command-ack:<source-comment-id>` and a version-specific
 but they must reuse the command receipt and must not enqueue the same comment
 version twice.
 
+Automatically received pull requests keep their lightweight
+`clawsweeper-pr-ack` receipt separate from command status. When a deterministic
+input refusal (`findings`, `incomplete_source`, or `source_incompatible`) stops
+review, ClawSweeper edits that exact trusted-bot receipt with bounded,
+reason-specific guidance. It never reproduces scanner findings, detected values,
+paths, or source excerpts. The failure ledger records whether the edit was
+observed, failed, or unavailable; failed delivery raises operator health without
+restarting the unchanged review. A later queue claim replaces the blocked
+section with review-in-progress text, and a successful review replaces that
+with a completed state. If the pull request closes during review, the same
+receipt records that the review ended. Failure to persist either terminal state
+leaves the workflow durably failed while queue completion still prevents a
+review loop. Scheduled PR claims recover the same trusted receipt and bind its
+ID to the active queue lease before editing it. Source-authority fallback waits for the acknowledgement
+lookup to resolve, with a bounded crash-recovery deadline, so it cannot normally
+enqueue a routed review before the receipt identity is durable. Webhook
+redelivery alone cannot erase the terminal explanation. Automatic receipt and
+progress comments are filtered from reviewer context, while human comments that
+quote those markers remain visible. Receipt lookup reads at most ten pages of
+100 comments. If the tenth page is full, the lookup cannot safely establish
+absence or choose among receipts: it leaves comments untouched and proceeds
+without a status receipt rather than blocking the underlying review intake.
+
 After a newer source revision wins its lease, ClawSweeper may delete dedicated
 review-start placeholders for older revisions. The candidate comment snapshot
 is captured first, then the worker must still own the exact queue

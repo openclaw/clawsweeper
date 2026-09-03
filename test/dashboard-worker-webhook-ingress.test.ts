@@ -2475,6 +2475,8 @@ test("hosted pull request receipt fast acks precede verification and stay idempo
   };
   const comments = new Map<number, AckComment[]>();
   const waitUntilPromises: Promise<unknown>[] = [];
+  const acknowledgementLookupUsesSince: boolean[] = [];
+  const acknowledgementLookupPages = new Map<number, number[]>();
   const fastAckPostAttempts = new Map<number, number>();
   const repository = {
     full_name: "openclaw/fs-safe",
@@ -2534,7 +2536,19 @@ test("hosted pull request receipt fast acks precede verification and stay idempo
     }
     const commentMatch = /^\/repos\/openclaw\/fs-safe\/issues\/(\d+)\/comments$/.exec(url.pathname);
     if (commentMatch && init?.method === "GET") {
-      return jsonResponse([...(comments.get(Number(commentMatch[1])) || [])]);
+      if (Number(commentMatch[1]) === 604) {
+        throw new Error("transient acknowledgement lookup failure");
+      }
+      acknowledgementLookupUsesSince.push(url.searchParams.has("since"));
+      const page = Number(url.searchParams.get("page") || "1");
+      const itemNumber = Number(commentMatch[1]);
+      acknowledgementLookupPages.set(itemNumber, [
+        ...(acknowledgementLookupPages.get(itemNumber) || []),
+        page,
+      ]);
+      const pageSize = Number(url.searchParams.get("per_page") || "100");
+      const allComments = comments.get(Number(commentMatch[1])) || [];
+      return jsonResponse(allComments.slice((page - 1) * pageSize, page * pageSize));
     }
     if (commentMatch && init?.method === "POST") {
       const itemNumber = Number(commentMatch[1]);
@@ -2550,7 +2564,7 @@ test("hosted pull request receipt fast acks precede verification and stay idempo
         id: 9000 + itemNumber,
         body: String(body.body || ""),
         created_at: "2026-08-08T12:00:01Z",
-        user: { login: "openclaw-clawsweeper[bot]" },
+        user: { login: "clawsweeper" },
       };
       comments.set(itemNumber, [...(comments.get(itemNumber) || []), comment]);
       return jsonResponse(comment);
@@ -2624,6 +2638,135 @@ test("hosted pull request receipt fast acks precede verification and stay idempo
       comments.get(597)?.[0]?.body || "",
       /^ClawSweeper status: review started\./,
     );
+    const acknowledgedState = (await storage.get("exact-review-queue")) as {
+      items: Record<string, { decision: { reviewAcknowledgementCommentId?: number } }>;
+    };
+    assert.equal(
+      acknowledgedState.items["openclaw/fs-safe#597"]?.decision.reviewAcknowledgementCommentId,
+      9597,
+    );
+
+    comments.set(602, [
+      {
+        id: 9602,
+        body: "<!-- clawsweeper-pr-ack:opened item=602 -->\n🦞👀\nClawSweeper picked this up.",
+        created_at: "2026-08-08T11:59:00Z",
+        user: { login: "openclaw-clawsweeper[bot]" },
+      },
+    ]);
+    const pendingSettleCount = waitUntilPromises.length;
+    assert.equal(
+      (
+        await send("app-synchronize-existing-ack", "synchronize", {
+          number: 602,
+          head: { sha: "f".repeat(40) },
+          updated_at: "2026-08-08T12:00:30Z",
+          body: "A later action must recover the existing receipt.",
+        })
+      ).status,
+      202,
+    );
+    assert.equal(fastAckPostAttempts.has(602), false);
+    assert.equal(waitUntilPromises.length, pendingSettleCount);
+    const laterActionState = (await storage.get("exact-review-queue")) as {
+      items: Record<string, { decision: { reviewAcknowledgementCommentId?: number } }>;
+    };
+    assert.equal(
+      laterActionState.items["openclaw/fs-safe#602"]?.decision.reviewAcknowledgementCommentId,
+      9602,
+    );
+
+    comments.set(603, [
+      ...Array.from({ length: 500 }, (_, index) => ({
+        id: 10_000 + index,
+        body: `unrelated comment ${index}`,
+        created_at: "2026-08-08T11:58:00Z",
+        user: { login: `contributor-${index}` },
+      })),
+      {
+        id: 9603,
+        body: "<!-- clawsweeper-pr-ack:opened item=603 -->\n🦞👀\nClawSweeper picked this up.",
+        created_at: "2026-08-08T11:59:00Z",
+        user: { login: "openclaw-clawsweeper[bot]" },
+      },
+    ]);
+    assert.equal(
+      (
+        await send("app-synchronize-paginated-ack", "synchronize", {
+          number: 603,
+          head: { sha: "f".repeat(40) },
+          updated_at: "2026-08-08T12:00:40Z",
+          body: "Recover a receipt after more than five comment pages.",
+        })
+      ).status,
+      202,
+    );
+    assert.equal(fastAckPostAttempts.has(603), false);
+    const paginatedState = (await storage.get("exact-review-queue")) as {
+      items: Record<string, { decision: { reviewAcknowledgementCommentId?: number } }>;
+    };
+    assert.equal(
+      paginatedState.items["openclaw/fs-safe#603"]?.decision.reviewAcknowledgementCommentId,
+      9603,
+    );
+
+    comments.set(605, [
+      {
+        id: 9605,
+        body: "<!-- clawsweeper-pr-ack:opened item=605 -->\nClawSweeper picked this up.",
+        created_at: "2026-08-08T11:57:00Z",
+        user: { login: "openclaw-clawsweeper[bot]" },
+      },
+      ...Array.from({ length: 999 }, (_, index) => ({
+        id: 20_000 + index,
+        body: `unrelated comment ${index}`,
+        created_at: "2026-08-08T11:58:00Z",
+        user: { login: `contributor-${index}` },
+      })),
+    ]);
+    const cappedAcknowledgement = await send("app-opened-ack-page-limit", "opened", {
+      number: 605,
+      head: { sha: "f".repeat(40) },
+      updated_at: "2026-08-08T12:00:45Z",
+      body: "Bound receipt lookup without deferring the actual review.",
+    });
+    assert.equal(cappedAcknowledgement.status, 202);
+    assert.deepEqual(acknowledgementLookupPages.get(605), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    assert.equal(fastAckPostAttempts.has(605), false);
+    assert.equal(comments.get(605)?.length, 1000);
+    const cappedState = (await storage.get("exact-review-queue")) as {
+      items: Record<string, { decision: { reviewAcknowledgementCommentId?: number } }>;
+    };
+    assert.ok(cappedState.items["openclaw/fs-safe#605"]);
+    assert.equal(
+      cappedState.items["openclaw/fs-safe#605"].decision.reviewAcknowledgementCommentId,
+      undefined,
+    );
+
+    const deferredAcknowledgement = await send("app-synchronize-ack-deferred", "synchronize", {
+      number: 604,
+      head: { sha: "f".repeat(40) },
+      updated_at: "2026-08-08T12:00:50Z",
+      body: "Retry a transient acknowledgement lookup.",
+    });
+    assert.deepEqual(await deferredAcknowledgement.json(), {
+      ok: true,
+      accepted: true,
+      deferred: true,
+      reason: "pull request acknowledgement deferred",
+    });
+    assert.equal(
+      (
+        storage.rawGet(
+          `exact-review-source-authority-reservation:v1:${encodeURIComponent("app-synchronize-ack-deferred")}`,
+        ) as { reviewAcknowledgementPending?: boolean }
+      )?.reviewAcknowledgementPending,
+      true,
+    );
+    const deferredState = (await storage.get("exact-review-queue")) as {
+      items: Record<string, unknown>;
+    };
+    assert.equal(deferredState.items["openclaw/fs-safe#604"], undefined);
 
     assert.equal(
       (
@@ -2653,6 +2796,22 @@ test("hosted pull request receipt fast acks precede verification and stay idempo
     });
     assert.equal(fastAckPostAttempts.get(599), 1);
     assert.equal(comments.get(599)?.length, 1);
+    assert.equal(
+      (
+        storage.rawGet(
+          `exact-review-source-authority-reservation:v1:${encodeURIComponent("app-opened-deferred")}`,
+        ) as { decision?: { reviewAcknowledgementCommentId?: number } }
+      )?.decision?.reviewAcknowledgementCommentId,
+      9599,
+    );
+    assert.equal(
+      (
+        storage.rawGet(
+          `exact-review-source-authority-reservation:v1:${encodeURIComponent("app-opened-deferred")}`,
+        ) as { reviewAcknowledgementPending?: boolean }
+      )?.reviewAcknowledgementPending,
+      false,
+    );
 
     const stale = await send("app-ready-stale", "ready_for_review", {
       number: 600,
@@ -2673,13 +2832,35 @@ test("hosted pull request receipt fast acks precede verification and stay idempo
       number: 601,
       head: { sha: "f".repeat(40) },
       updated_at: "2026-08-08T12:04:00Z",
-      body: "The ack write fails, but enqueue continues.",
+      body: "The acknowledgement write fails and intake defers safely.",
     });
     assert.equal(ackFailure.status, 202);
-    assert.equal((await ackFailure.json()).queued, true);
+    assert.deepEqual(await ackFailure.json(), {
+      ok: true,
+      accepted: true,
+      deferred: true,
+      reason: "pull request acknowledgement deferred",
+    });
     assert.equal(fastAckPostAttempts.get(601), 1);
+    assert.equal(
+      (
+        storage.rawGet(
+          `exact-review-source-authority-reservation:v1:${encodeURIComponent("app-opened-ack-failure")}`,
+        ) as { reviewAcknowledgementPending?: boolean }
+      )?.reviewAcknowledgementPending,
+      true,
+    );
+    const ackFailureState = (await storage.get("exact-review-queue")) as {
+      items: Record<string, unknown>;
+    };
+    assert.equal(ackFailureState.items["openclaw/fs-safe#601"], undefined);
     await Promise.all(waitUntilPromises);
-    assert.deepEqual(errorLogs, [["ClawSweeper pull request fast ack failed"]]);
+    assert.ok(acknowledgementLookupUsesSince.includes(false));
+    assert.ok(acknowledgementLookupUsesSince.includes(true));
+    assert.deepEqual(errorLogs, [
+      ["ClawSweeper pull request fast ack failed"],
+      ["ClawSweeper pull request fast ack failed"],
+    ]);
     assert.doesNotMatch(JSON.stringify(errorLogs), new RegExp(logMarker));
   } finally {
     globalThis.fetch = originalFetch;
@@ -2859,6 +3040,37 @@ test("hosted pull request receipts dedupe across opened and ready_for_review", a
     assert.equal(comments.get(641)?.length, 1);
     assert.equal(comments.get(641)?.[0]?.id, 9100);
     assert.match(comments.get(641)?.[0]?.body || "", /clawsweeper-pr-ack:opened item=641/);
+
+    comments.set(642, [
+      {
+        id: 9200,
+        body: pullRequestFastAckBody(642, "opened"),
+        created_at: "2026-08-09T12:02:01Z",
+        user: { login: "openclaw-clawsweeper[bot]" },
+      },
+      {
+        id: 9201,
+        body: `${pullRequestFastAckBody(642, "ready_for_review")}\n\n<!-- clawsweeper-review-progress:start -->\n### ClawSweeper review blocked\n<!-- clawsweeper-review-progress:end -->`,
+        created_at: "2026-08-09T12:02:03Z",
+        user: { login: "clawsweeper" },
+      },
+    ]);
+    assert.equal(
+      (
+        await send("pr-ack-preserve-status", "synchronize", {
+          number: 642,
+          head: { sha: "8".repeat(40) },
+          updated_at: "2026-08-09T12:02:10Z",
+          body: "Preserve the explanation-bearing duplicate.",
+        })
+      ).status,
+      202,
+    );
+    assert.deepEqual(deletedCommentIds, [9101, 9200]);
+    assert.deepEqual(
+      comments.get(642)?.map((comment) => comment.id),
+      [9201],
+    );
     await Promise.all(waitUntilPromises);
   } finally {
     globalThis.fetch = originalFetch;

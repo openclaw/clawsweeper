@@ -2915,6 +2915,11 @@ test("dashboard health grades fresh queue telemetry while retaining prior public
         ...body.lanes.publication.dead_letters,
         open: 2,
       };
+      body.review_failure_health = {
+        ...body.review_failure_health,
+        status: "critical",
+        reasons: ["terminal_status_delivery_failed"],
+      };
       return jsonResponse(body);
     },
   };
@@ -2949,6 +2954,7 @@ test("dashboard health grades fresh queue telemetry while retaining prior public
     assert.equal(status.exact_review_queue.lanes.publication.dead_letters, undefined);
     assert.equal(status.dashboard_health.reasons.includes("publication_critical"), true);
     assert.equal(status.dashboard_health.reasons.includes("publication_dlq_open"), true);
+    assert.equal(status.dashboard_health.reasons.includes("review_status_delivery_failed"), true);
     assert.equal(status.dashboard_health.reasons.includes("publication_health_unavailable"), false);
   } finally {
     globalThis.fetch = originalFetch;
