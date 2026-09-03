@@ -1,0 +1,76 @@
+{
+  "claim": "Runtime cache names no longer create migration checkboxes; twelve storage/config/protocol controls retain their gate booleans.",
+  "baselineRevision": "f8f7cb84a7a869d099d3d3551fa0c76fb37c49b7",
+  "candidateSourceSha256": "7a12b239e3864f3914e90e0ceec20ee002ef9ac083549bb3d42d6d0ba827bd39",
+  "replaySha256": "6e9258866a3e1a7a51c7af901c1c0999ed4a5f0f20ccc6c045b2f41dda147751",
+  "runs": [
+    {
+      "expectation": "baseline",
+      "provider": "local-process",
+      "image": null,
+      "lease": null,
+      "node": "v24.20.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "fixture": {
+        "path": "test/fixtures/persistence-classifier-136772.json",
+        "head": "5b8573144dfe8f1d423e55d818baeafb81efc9c4",
+        "sha256": "6e7a050b1de321690ef7c61ab2e7094dda69bf9ca6426987ba30934e445a225c"
+      },
+      "classifierSha256": "dfbadb678924440521bc3d0fb91571b2235f957ab13b6006350c697a333d2700",
+      "results": [
+        {"name": "captured-runtime-raw", "dataModel": true, "surfaces": ["persistent cache schema: ui/src/components/github-link-hovercard.runtime.ts"], "sqlite": false, "config": false, "migrationCheckbox": true, "configCheckbox": false, "needsHuman": true, "passes": false, "blocked": true, "ready": false},
+        {"name": "captured-runtime-normalized", "dataModel": true, "surfaces": ["persistent cache schema: ui/src/components/github-link-hovercard.runtime.ts"], "sqlite": false, "config": false, "migrationCheckbox": true, "configCheckbox": false, "needsHuman": true, "passes": false, "blocked": true, "ready": false},
+        {"name": "cache-path-runtime-shape", "dataModel": true, "surfaces": ["persistent cache schema: src/cache/requests.ts"], "sqlite": false, "config": false, "migrationCheckbox": true, "configCheckbox": false, "needsHuman": true, "passes": false, "blocked": true, "ready": false},
+        {"name": "sqlite-column-with-memory-map", "dataModel": true, "surfaces": ["database schema: src/runtime/cache.ts"], "sqlite": true, "config": false, "migrationCheckbox": true, "configCheckbox": false, "needsHuman": true, "passes": false, "blocked": true, "ready": false},
+        {"name": "explicit-cache-schema", "dataModel": true, "surfaces": ["persistent cache schema: src/cache/schema.ts"], "sqlite": false, "config": false, "migrationCheckbox": true, "configCheckbox": false, "needsHuman": true, "passes": false, "blocked": true, "ready": false},
+        {"name": "same-hunk-browser-storage", "dataModel": true, "surfaces": ["serialized state: ui/src/components/preview.ts"], "sqlite": false, "config": false, "migrationCheckbox": true, "configCheckbox": false, "needsHuman": true, "passes": false, "blocked": true, "ready": false},
+        {"name": "same-hunk-indexed-db", "dataModel": true, "surfaces": ["serialized state: ui/src/components/preview.ts"], "sqlite": false, "config": false, "migrationCheckbox": true, "configCheckbox": false, "needsHuman": true, "passes": false, "blocked": true, "ready": false},
+        {"name": "same-hunk-durable-storage", "dataModel": true, "surfaces": ["durable storage schema: src/cache/requests.ts", "persistent cache schema: src/cache/requests.ts"], "sqlite": false, "config": false, "migrationCheckbox": true, "configCheckbox": false, "needsHuman": true, "passes": false, "blocked": true, "ready": false},
+        {"name": "file-backed-cache", "dataModel": true, "surfaces": ["persistent cache schema: src/cache/requests.ts", "serialized state: src/cache/requests.ts"], "sqlite": false, "config": false, "migrationCheckbox": true, "configCheckbox": false, "needsHuman": true, "passes": false, "blocked": true, "ready": false},
+        {"name": "migration", "dataModel": true, "surfaces": ["migration/backfill/repair: src/migrations/cache.ts"], "sqlite": false, "config": false, "migrationCheckbox": true, "configCheckbox": false, "needsHuman": true, "passes": false, "blocked": true, "ready": false},
+        {"name": "missing-explicit-cache-schema", "dataModel": true, "surfaces": ["unknown-data-model-change: src/cache/schema.ts"], "sqlite": false, "config": false, "migrationCheckbox": true, "configCheckbox": false, "needsHuman": true, "passes": false, "blocked": true, "ready": false},
+        {"name": "missing-sqlite-cache-owner", "dataModel": true, "surfaces": ["unknown-data-model-change: src/cache/sqlite-store.ts"], "sqlite": true, "config": false, "migrationCheckbox": true, "configCheckbox": false, "needsHuman": true, "passes": false, "blocked": true, "ready": false},
+        {"name": "config-compatibility", "dataModel": false, "surfaces": [], "sqlite": false, "config": true, "migrationCheckbox": false, "configCheckbox": true, "needsHuman": true, "passes": false, "blocked": true, "ready": false},
+        {"name": "protocol-schema-incomplete", "dataModel": true, "surfaces": ["unknown-data-model-change: src/gateway/protocol/schema/session.ts"], "sqlite": false, "config": false, "migrationCheckbox": true, "configCheckbox": false, "needsHuman": true, "passes": false, "blocked": true, "ready": false},
+        {"name": "protocol-risk-independent", "dataModel": false, "surfaces": [], "sqlite": false, "config": false, "migrationCheckbox": false, "configCheckbox": false, "needsHuman": true, "passes": false, "blocked": true, "ready": false}
+      ],
+      "failures": [],
+      "limits": "Offline compiled classifier -> canonical report producer -> comment/readiness/markers. Captured runtime patch only; 12 synthetic compatibility controls. Production normalization uses the unchanged test hydration fixture. Review and lease metadata are synthetic. No model inference, migration execution, GitHub publication, or live service mutation."
+    },
+    {
+      "expectation": "candidate",
+      "provider": "local-process",
+      "image": null,
+      "lease": null,
+      "node": "v24.20.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "fixture": {
+        "path": "test/fixtures/persistence-classifier-136772.json",
+        "head": "5b8573144dfe8f1d423e55d818baeafb81efc9c4",
+        "sha256": "6e7a050b1de321690ef7c61ab2e7094dda69bf9ca6426987ba30934e445a225c"
+      },
+      "classifierSha256": "0a11ae359efd19ed2f106b7e3ae5448612679b1ff901eade26e9a0be9657e845",
+      "results": [
+        {"name": "captured-runtime-raw", "dataModel": false, "surfaces": [], "sqlite": false, "config": false, "migrationCheckbox": false, "configCheckbox": false, "needsHuman": false, "passes": true, "blocked": false, "ready": true},
+        {"name": "captured-runtime-normalized", "dataModel": false, "surfaces": [], "sqlite": false, "config": false, "migrationCheckbox": false, "configCheckbox": false, "needsHuman": false, "passes": true, "blocked": false, "ready": true},
+        {"name": "cache-path-runtime-shape", "dataModel": false, "surfaces": [], "sqlite": false, "config": false, "migrationCheckbox": false, "configCheckbox": false, "needsHuman": false, "passes": true, "blocked": false, "ready": true},
+        {"name": "sqlite-column-with-memory-map", "dataModel": true, "surfaces": ["database schema: src/runtime/cache.ts"], "sqlite": true, "config": false, "migrationCheckbox": true, "configCheckbox": false, "needsHuman": true, "passes": false, "blocked": true, "ready": false},
+        {"name": "explicit-cache-schema", "dataModel": true, "surfaces": ["persistent cache schema: src/cache/schema.ts"], "sqlite": false, "config": false, "migrationCheckbox": true, "configCheckbox": false, "needsHuman": true, "passes": false, "blocked": true, "ready": false},
+        {"name": "same-hunk-browser-storage", "dataModel": true, "surfaces": ["serialized state: ui/src/components/preview.ts"], "sqlite": false, "config": false, "migrationCheckbox": true, "configCheckbox": false, "needsHuman": true, "passes": false, "blocked": true, "ready": false},
+        {"name": "same-hunk-indexed-db", "dataModel": true, "surfaces": ["serialized state: ui/src/components/preview.ts"], "sqlite": false, "config": false, "migrationCheckbox": true, "configCheckbox": false, "needsHuman": true, "passes": false, "blocked": true, "ready": false},
+        {"name": "same-hunk-durable-storage", "dataModel": true, "surfaces": ["durable storage schema: src/cache/requests.ts"], "sqlite": false, "config": false, "migrationCheckbox": true, "configCheckbox": false, "needsHuman": true, "passes": false, "blocked": true, "ready": false},
+        {"name": "file-backed-cache", "dataModel": true, "surfaces": ["serialized state: src/cache/requests.ts"], "sqlite": false, "config": false, "migrationCheckbox": true, "configCheckbox": false, "needsHuman": true, "passes": false, "blocked": true, "ready": false},
+        {"name": "migration", "dataModel": true, "surfaces": ["migration/backfill/repair: src/migrations/cache.ts"], "sqlite": false, "config": false, "migrationCheckbox": true, "configCheckbox": false, "needsHuman": true, "passes": false, "blocked": true, "ready": false},
+        {"name": "missing-explicit-cache-schema", "dataModel": true, "surfaces": ["unknown-data-model-change: src/cache/schema.ts"], "sqlite": false, "config": false, "migrationCheckbox": true, "configCheckbox": false, "needsHuman": true, "passes": false, "blocked": true, "ready": false},
+        {"name": "missing-sqlite-cache-owner", "dataModel": true, "surfaces": ["unknown-data-model-change: src/cache/sqlite-store.ts"], "sqlite": true, "config": false, "migrationCheckbox": true, "configCheckbox": false, "needsHuman": true, "passes": false, "blocked": true, "ready": false},
+        {"name": "config-compatibility", "dataModel": false, "surfaces": [], "sqlite": false, "config": true, "migrationCheckbox": false, "configCheckbox": true, "needsHuman": true, "passes": false, "blocked": true, "ready": false},
+        {"name": "protocol-schema-incomplete", "dataModel": true, "surfaces": ["unknown-data-model-change: src/gateway/protocol/schema/session.ts"], "sqlite": false, "config": false, "migrationCheckbox": true, "configCheckbox": false, "needsHuman": true, "passes": false, "blocked": true, "ready": false},
+        {"name": "protocol-risk-independent", "dataModel": false, "surfaces": [], "sqlite": false, "config": false, "migrationCheckbox": false, "configCheckbox": false, "needsHuman": true, "passes": false, "blocked": true, "ready": false}
+      ],
+      "failures": [],
+      "limits": "Offline compiled classifier -> canonical report producer -> comment/readiness/markers. Captured runtime patch only; 12 synthetic compatibility controls. Production normalization uses the unchanged test hydration fixture. Review and lease metadata are synthetic. No model inference, migration execution, GitHub publication, or live service mutation."
+    }
+  ]
+}

@@ -733,6 +733,10 @@ DDL or migrations, database schema installers/helpers, persistent cache schemas,
 Durable Object or hosted storage schemas, serialized JSON state written to disk
 or a database, vector or embedding row identity/query-compatibility metadata,
 and doctor, repair, migration, or backfill code that rewrites persisted state.
+Cache names, keys, versions, namespaces, TTLs, and cache helper filenames alone
+do not establish persistence. Identify an explicit storage or schema boundary;
+component-local maps, promises, and abort signals are runtime state. Their
+presence does not exempt real browser or durable storage changes in the same PR.
 Do not treat pure query-only changes or non-semantic docs wording as data-model
 breakage by default. Markdown beside source is not automatically runtime code:
 distinguish prose from changed machine-consumed frontmatter, configuration, or

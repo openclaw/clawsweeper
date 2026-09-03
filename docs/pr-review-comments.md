@@ -215,9 +215,12 @@ storage formats, SQL DDL, and structured storage keys (including frontmatter)
 remain evidence. Renames retain evidence from either production path. Missing,
 empty, or truncated patches on explicit production persistence paths or hook
 descriptors, and truncated file lists, still produce conservative unknown
-warnings. Generic `state`, `session`, `history`, and `worker` path names and typed runtime
-parameters alone do not establish persistence, including when their patches are
-truncated. Explicit serialization, browser storage (local/session storage and
+warnings. Generic `state`, `session`, `history`, `worker`, and `cache` path names,
+cache keys, versions, namespaces, TTLs, and typed runtime fields alone do not
+establish persistence, including when their patches are missing or truncated.
+Cache-shaped objects need an explicit cache schema, storage path, or same-hunk
+persistence boundary; component-local maps, promises, and abort signals do not
+supply one. Explicit serialization, browser storage (local/session storage and
 IndexedDB), durable storage, and schema/migration evidence remain eligible in
 UI code too. Unchanged storage context in the same diff hunk can establish the
 boundary for changed stored fields; an in-memory map or display-only comment

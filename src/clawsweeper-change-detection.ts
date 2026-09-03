@@ -469,13 +469,7 @@ function dataModelSurfacesFromPatch(
   if (dataModelTextHasSerialization(text)) {
     add("serialized state");
   }
-  if (
-    /\b(?:cache(?:Key|Version|Schema|Namespace)?|cache[_-]?(?:key|version|schema|namespace)|ttl)\b/i.test(
-      text,
-    )
-  ) {
-    add("persistent cache schema");
-  }
+  if (dataModelTextHasCacheSchema(text)) add("persistent cache schema");
   // Generic metadata and IDs need the storage path or hunk evidence above;
   // those names alone also occur in diagnostics and in-memory values.
   if (
@@ -494,6 +488,10 @@ function dataModelTextHasSerialization(text: string): boolean {
   );
 }
 
+function dataModelTextHasCacheSchema(text: string): boolean {
+  return /\bcache[_-]?schema\b|\bcache\s+(?:data\s+)?(?:format|schema|layout)\b/i.test(text);
+}
+
 function dataModelStorageContext(patch: string): string[] {
   // Retain nearby storage evidence when only the stored fields change. Hunk
   // headers and comments cannot establish a persistence boundary on their own.
@@ -505,6 +503,7 @@ function dataModelStorageContext(patch: string): string[] {
     .join("\n");
   const surfaces: string[] = [];
   if (dataModelTextHasSerialization(text)) surfaces.push("serialized state");
+  if (dataModelTextHasCacheSchema(text)) surfaces.push("persistent cache schema");
   if (/\b(?:DurableObject|state\.storage|storage\.(?:get|put|delete|list))\b/i.test(text)) {
     surfaces.push("durable storage schema");
   }
@@ -547,7 +546,7 @@ function dataModelPathHint(path: string): string {
   if (/(^|\/)(?:durable-?objects?|storage)(?:\/|[-_.])|durable-?object|state-storage/i.test(path)) {
     return "durable storage schema";
   }
-  if (/(^|\/)(?:cache|caches)(?:\/|[-_.])|cache[-_.]schema/i.test(path)) {
+  if (/(?:^|\/)caches?\/schema(?:\/|[-_.])|cache[-_.]schema/i.test(path)) {
     return "persistent cache schema";
   }
   if (/(^|\/)persistence(?:\/|[-_.])|(?:serialized|persisted?)[-_.]?(?:state|json)/i.test(path)) {
@@ -564,7 +563,8 @@ function dataModelPathHint(path: string): string {
     return "migration/backfill/repair";
   }
   if (
-    /\.sql$|(^|\/)(?:migrations?|schema|database|db|sql)(?:\/|[-_.])|(?:schema|migration|ddl|prisma)\.(?:ts|js|sql|prisma)$/i.test(
+    isLikelySqliteSchemaPath(path) ||
+    /(^|\/)(?:migrations?|schema|database|db|sql)(?:\/|[-_.])|(?:schema|migration|ddl|prisma)\.(?:ts|js|sql|prisma)$/i.test(
       path,
     )
   ) {

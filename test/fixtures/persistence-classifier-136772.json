@@ -1,0 +1,10 @@
+{
+  "pullRequest": "https://github.com/openclaw/openclaw/pull/136772",
+  "headSha": "5b8573144dfe8f1d423e55d818baeafb81efc9c4",
+  "pullFiles": [
+    {
+      "filename": "ui/src/components/github-link-hovercard.runtime.ts",
+      "patch": "diff --git a/ui/src/components/github-link-hovercard.runtime.ts b/ui/src/components/github-link-hovercard.runtime.ts\nindex 21958537d00..12d5b6427d5 100644\n--- a/ui/src/components/github-link-hovercard.runtime.ts\n+++ b/ui/src/components/github-link-hovercard.runtime.ts\n@@ -31,6 +31,7 @@ type PreviewState = {\n type CacheEntry = {\n   expiresAt: number;\n   promise: Promise<GitHubPreview>;\n+  signal: AbortSignal;\n };\n \n let nextHovercardId = 0;\n@@ -598,14 +599,12 @@ export class GitHubLinkHovercardProvider extends ReactiveElement {\n     const key = `${target.kind}:${target.owner.toLowerCase()}/${target.repo.toLowerCase()}#${target.number}`;\n     const now = Date.now();\n     const cached = this.cache.get(key);\n-    if (cached && cached.expiresAt > now) {\n-      this.cache.delete(key);\n+    this.cache.delete(key);\n+    // Dismissal invalidates only that request, even before its rejection settles.\n+    if (cached && !cached.signal.aborted && cached.expiresAt > now) {\n       this.cache.set(key, cached);\n       return cached.promise;\n     }\n-    if (cached) {\n-      this.cache.delete(key);\n-    }\n \n     const load = async (): Promise<GitHubPreview> => {\n       if (!this.client) {\n@@ -626,6 +625,7 @@ export class GitHubLinkHovercardProvider extends ReactiveElement {\n \n     const entry: CacheEntry = {\n       expiresAt: now + SUCCESS_CACHE_MS,\n+      signal,\n       promise: load().catch((error: unknown) => {\n         // Keep short-lived failures cached so repeatedly crossing a broken or\n         // private link does not burn GitHub's anonymous rate limit.\n"
+    }
+  ]
+}

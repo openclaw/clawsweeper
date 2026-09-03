@@ -6,11 +6,15 @@ import test from "node:test";
 import {
   configSurfaceChangeFromPullFilesForTest,
   dataModelChangeFromPullFilesForTest,
+  parseDecision,
   renderReviewCommentFromReport,
   reviewAutomationMarkersFromReport,
   sqliteSchemaChangeFromPullFilesForTest,
 } from "../dist/clawsweeper.js";
-import { reviewReportFrontMatter as reportFrontMatter } from "./helpers.ts";
+import { createReportDocumentRendering } from "../dist/clawsweeper-report-document.js";
+import { createReportContextRendering } from "../dist/clawsweeper-report-context.js";
+import { createDashboardPresentation } from "../dist/clawsweeper-dashboard.js";
+import { closeDecision, item, reviewReportFrontMatter as reportFrontMatter } from "./helpers.ts";
 import { hydratePrimaryBody } from "./primary-body-fixture.ts";
 import { namedTestRoles, pinnedTestRolePaths } from "./openclaw-file-role-fixture.ts";
 
@@ -192,12 +196,81 @@ function persistenceReport(detection: { change: boolean; surfaces: string[] }, h
   })}\n\n## Summary\n\nReview completed.\n\n## Review Findings\n\nOverall correctness: patch is correct\n\nOverall confidence: 0.9\n\nFull review comments:\n\n- none\n`;
 }
 
+function renderPersistenceReport(
+  pullFiles: unknown[],
+  headSha: string,
+  pullFilesTruncated = false,
+) {
+  const document = createReportDocumentRendering({
+    ...createReportContextRendering({} as never),
+    ...createDashboardPresentation({} as never),
+    prSurfaceFilesFromContext: () => [],
+    compactPullFilePaths: (file) => [file.filename],
+    confidenceText: String,
+    fixedInText: () => "unknown",
+    formatTimestamp: String,
+    labelJustificationsMarkdown: () => "- none",
+    linkedSha: String,
+    markdownLink: (label, url) => `[${label}](${url})`,
+    publicLikelyOwnerRole: String,
+    pullHeadShaFromContext: () => headSha,
+    reviewStructuralPullStateFromContext: () => null,
+    sentence: String,
+    sha256: () => "synthetic-digest",
+  } as Parameters<typeof createReportDocumentRendering>[0]);
+  return document.markdownFor({
+    item: item({
+      kind: "pull_request",
+      url: "https://github.com/openclaw/openclaw/pull/123",
+      labels: ["clawsweeper:automerge"],
+    }),
+    decision: {
+      ...parseDecision(
+        closeDecision({
+          decision: "keep_open",
+          closeReason: "none",
+          summary: "Review completed.",
+          changeSummary: "Changes runtime fields.",
+          evidence: [],
+          overallCorrectness: "patch is correct",
+          workReason: "",
+          nextStep: { kind: "none", text: "" },
+          realBehaviorProof: {
+            status: "sufficient",
+            summary: "Synthetic runtime proof is sufficient; no upgrade proof is supplied.",
+            evidenceKind: "terminal",
+            needsContributorAction: false,
+          },
+        }),
+      ),
+      localCheckoutAccess: "verified",
+    },
+    context: {
+      issue: {},
+      comments: [],
+      timeline: [],
+      pullFiles,
+      counts: { comments: 0, timeline: 0, pullFilesTruncated },
+    },
+    git: { mainSha: "a".repeat(40), latestRelease: null, releaseStateComplete: true },
+    action: { actionTaken: "kept_open" },
+    reviewMode: "propose",
+    snapshotHash: "synthetic-snapshot",
+    contentDigest: "synthetic-content",
+    reviewPolicy: "synthetic-policy",
+    reviewLeaseOwner: "synthetic-lease",
+    reviewLeaseCommentId: 123,
+    runtime: { model: "Codex", reasoningEffort: "high" },
+  } as Parameters<typeof document.markdownFor>[0]);
+}
+
 for (const [name, fixturePath, normalizationTruncates] of [
   ["pane-local diagnostics", "./fixtures/persistence-classifier-132718.json", true],
   ["test-support workspace guard", "./fixtures/persistence-classifier-133209.json", true],
   ["Go chunk diagnostics", "./fixtures/persistence-classifier-134934.json", false],
   ["retained image runtime fields", "./fixtures/persistence-classifier-132839.json", true],
   ["worker input layout fields", "./fixtures/persistence-classifier-132839-workers.json", true],
+  ["hovercard promise cancellation", "./fixtures/persistence-classifier-136772.json", false],
 ] as const) {
   for (const normalized of [false, true]) {
     test(`${name} creates no stored-data warning or migration gate (${normalized ? "production-normalized" : "full"} patch)`, () => {
@@ -212,14 +285,17 @@ for (const [name, fixturePath, normalizationTruncates] of [
         );
       }
       const detection = dataModelChangeFromPullFilesForTest({ pullFiles });
-      const report = persistenceReport(detection, fixture.headSha ?? fixture.mergeCommit);
+      const report = renderPersistenceReport(pullFiles, fixture.headSha ?? fixture.mergeCommit);
+      const comment = renderReviewCommentFromReport(report, "none");
       // Check the contributor-visible consequence before the classification detail.
       assert.doesNotMatch(
-        renderReviewCommentFromReport(report, "none"),
+        comment,
         /Persistent data-model change detected|### Stored data model|Confirm migration/,
       );
       assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:pass/);
       assert.doesNotMatch(reviewAutomationMarkersFromReport(report), /needs-human|fix-required/);
+      assert.match(report, /^data_model_change: false$/m);
+      assert.match(comment, /clawsweeper-review-state:ready/);
       assert.deepEqual(detection, { change: false, surfaces: [] });
       assert.deepEqual(sqliteSchemaChangeFromPullFilesForTest({ pullFiles }), {
         change: false,
@@ -240,12 +316,23 @@ test("runtime state names and typed parameters alone do not establish stored dat
     "src/runtime/row-id.ts",
     "src/runtime/document-id.ts",
     "src/runtime/chunk-id.ts",
+    "ui/src/cache.ts",
+    "src/cache/helpers.ts",
+    "src/caches/request.ts",
+    "src/cache-key.ts",
+    "src/cache_version.ts",
+    "src/cache.helper.ts",
   ]) {
     for (const evidence of [patch, "", `${patch}\n\n[truncated 90 chars]`, undefined]) {
-      const detection = dataModelChangeFromPullFilesForTest({
-        pullFiles: [{ filename, previous_filename: "ui/src/session-view.ts", patch: evidence }],
-      });
+      const pullFiles = [
+        { filename, previous_filename: "ui/src/session-view.ts", patch: evidence },
+      ];
+      const detection = dataModelChangeFromPullFilesForTest({ pullFiles });
       assert.deepEqual(detection, { change: false, surfaces: [] }, filename);
+      assert.match(
+        renderReviewCommentFromReport(renderPersistenceReport(pullFiles, "a".repeat(40)), "none"),
+        /clawsweeper-review-state:ready/,
+      );
     }
   }
 });
@@ -269,13 +356,29 @@ for (const [name, patch] of [
   });
 }
 
-test("generic metadata and diagnostic identifiers do not warn or gate without storage evidence", () => {
-  for (const name of ["metadata", "documentId", "chunkID", "collection", "dimension", "rowId"]) {
+test("generic metadata, cache keys, versions, and TTL do not warn or gate without storage evidence", () => {
+  for (const name of [
+    "metadata",
+    "documentId",
+    "chunkID",
+    "collection",
+    "dimension",
+    "rowId",
+    "cache",
+    "cacheKey",
+    "cacheVersion",
+    "cacheNamespace",
+    "cache_key",
+    "cache_version",
+    "cache_namespace",
+    "ttl",
+  ]) {
     for (const patch of [
       `@@\n+  ${name}: value,`,
       `@@\n+log.Printf("rejected %s", ${name})`,
       `@@\n+const ${name} = input;`,
       `@@\n localStorage.getItem("preferences");\n@@\n+  ${name}: value,`,
+      `@@\n const cacheSchema = { revision: 1 };\n@@\n+  ${name}: value,`,
     ]) {
       const pullFiles = [{ filename: "scripts/translation/diagnostics.go", patch }];
       const detection = dataModelChangeFromPullFilesForTest({ pullFiles });
@@ -393,8 +496,45 @@ test("storage evidence still warns and gates browser, runtime, and schema change
       surface: "database schema",
     },
     {
-      filename: "src/cache/store.ts",
+      filename: "src/cache/schema.ts",
       patch: "@@\n-  ttl: 86400,\n+  ttl: 3600,",
+      surface: "persistent cache schema",
+    },
+    {
+      filename: "src/cache/helpers.ts",
+      patch: '@@\n writeFile("cache.json", JSON.stringify({\n+  expiresAt: now,\n }));',
+      surface: "serialized state",
+    },
+    {
+      filename: "ui/src/cache.ts",
+      patch: "@@\n const cacheSchema = {\n+  revision: 2,\n };",
+      surface: "persistent cache schema",
+    },
+    {
+      filename: "src/runtime/preview.ts",
+      patch: "@@\n+  cache_schema: 2,",
+      surface: "persistent cache schema",
+    },
+    {
+      filename: "ui/src/cache.ts",
+      patch:
+        '@@\n const cache = new Map();\n cache.set(key, {\n+  signal: controller.signal,\n });\n@@\n localStorage.setItem("cache", JSON.stringify({\n+  expiresAt: now,\n }));',
+      surface: "serialized state",
+    },
+    {
+      filename: "ui/src/cache.ts",
+      patch:
+        '@@\n const cache = new Map();\n const store: IDBObjectStore = transaction.objectStore("previews");\n store.put({\n+  expiresAt: now,\n });',
+      surface: "serialized state",
+    },
+    {
+      filename: "src/cache/helpers.ts",
+      patch: '@@\n await state.storage.put("cache", {\n+  expiresAt: now,\n });',
+      surface: "durable storage schema",
+    },
+    {
+      filename: "docs/storage.md",
+      patch: "@@\n+The cache schema now includes a revision field.",
       surface: "persistent cache schema",
     },
     {
@@ -431,8 +571,12 @@ test("storage evidence still warns and gates browser, runtime, and schema change
     if (file.patch.includes("TABLE")) {
       assert.equal(sqliteSchemaChangeFromPullFilesForTest({ pullFiles }).change, true);
     }
-    const report = persistenceReport(detection, "a".repeat(40));
-    assert.match(renderReviewCommentFromReport(report, "none"), /Confirm migration/);
+    const report = renderPersistenceReport(pullFiles, "a".repeat(40));
+    const comment = renderReviewCommentFromReport(report, "none");
+    assert.match(report, /^data_model_change: true$/m);
+    assert.match(comment, /- \[ \] \*\*Add data-model compatibility proof\*\*/);
+    assert.match(comment, /clawsweeper-review-state:blocked/);
+    if (file.patch.includes("TABLE")) assert.match(comment, /SQLite table change/);
     const markers = reviewAutomationMarkersFromReport(report);
     assert.match(markers, /clawsweeper-verdict:needs-human/);
     assert.doesNotMatch(markers, /clawsweeper-verdict:pass|clawsweeper-action:fix-required/);
@@ -453,6 +597,11 @@ test("strong persistence evidence remains unknown when production normalization 
     { filename: "src/embedding/records.ts" },
     { filename: "src/embeddings/records.ts" },
     { filename: "src/memory/records.ts" },
+    { filename: "src/cache/schema.ts" },
+    { filename: "src/cache-schema.ts" },
+    { filename: "ui/src/cache.ts", previous_filename: "src/cache/schema.ts" },
+    { filename: "src/cache/schema.ts", previous_filename: "ui/src/cache.ts" },
+    { filename: "ui/src/cache.ts", patch: "@@\n const cacheSchema = {\n" },
     { filename: "src/runtime/metadata.ts", previous_filename: "src/vector/records.ts" },
     { filename: "src/vector/records.ts", previous_filename: "src/runtime/metadata.ts" },
   ]) {
@@ -506,6 +655,19 @@ Full review comments:
   assert.match(markers, /clawsweeper-verdict:needs-human/);
   assert.doesNotMatch(markers, /clawsweeper-verdict:pass/);
   assert.doesNotMatch(markers, /clawsweeper-action:fix-required/);
+});
+
+test("cache config fields retain their config blocker without inventing a persistence blocker", () => {
+  const report = renderPersistenceReport(
+    [{ filename: "src/config/types.ts", patch: "@@\n+  cacheTtl?: number;" }],
+    "a".repeat(40),
+  );
+  assert.match(report, /^config_surface_change: true$/m);
+  assert.match(report, /^data_model_change: false$/m);
+  const comment = renderReviewCommentFromReport(report, "none");
+  assert.match(comment, /clawsweeper-verdict:needs-human/);
+  assert.match(comment, /clawsweeper-review-state:blocked/);
+  assert.doesNotMatch(comment, /Confirm migration/);
 });
 
 test("config surface reports preserve security-sensitive markers", () => {
@@ -810,7 +972,42 @@ test("Markdown persistence contracts and structured frontmatter remain detectabl
   }
 });
 
-for (const { name, file, surfaces, pullFilesTruncated } of [
+for (const { name, file, surfaces, pullFilesTruncated, sqliteSchemaChange } of [
+  ...[
+    { filename: "src/cache/sqlite-store.ts" },
+    { filename: "src/cache/sqlite.ts" },
+    { filename: "src/runtime/requests.ts", previous_filename: "src/cache/sqlite-schema-v2.ts" },
+    { filename: "src/cache/sqlite/store.ts", previous_filename: "src/runtime/requests.ts" },
+  ].flatMap((file) =>
+    [
+      ["missing", undefined],
+      ["empty", ""],
+      ["truncated", "@@\n+  refresh();\n\n[truncated 99 chars]"],
+    ].map(([patchKind, patch]) => ({
+      name: `incomplete SQLite cache ${file.previous_filename ? `${file.previous_filename} -> ` : ""}${file.filename} (${patchKind} patch)`,
+      file: { ...file, patch },
+      surfaces: [
+        `unknown-data-model-change: ${file.filename === "src/runtime/requests.ts" ? file.previous_filename : file.filename}`,
+      ],
+      sqliteSchemaChange: patchKind !== "empty",
+    })),
+  ),
+  {
+    name: "cache schema with a missing patch",
+    file: { filename: "src/cache/schema.ts" },
+    surfaces: ["unknown-data-model-change: src/cache/schema.ts"],
+  },
+  {
+    name: "cache schema moved to a helper with a missing patch",
+    file: { filename: "src/cache/helpers.ts", previous_filename: "src/cache/schema.ts" },
+    surfaces: ["unknown-data-model-change: src/cache/schema.ts"],
+  },
+  {
+    name: "cache helper with incomplete file list",
+    file: { filename: "src/cache/helpers.ts" },
+    pullFilesTruncated: true,
+    surfaces: ["unknown-truncated-pull-files"],
+  },
   {
     name: "plain form-validation schema fields",
     file: { filename: "ui/src/forms/schema.ts", patch: "@@\n+  fieldLabel: z.string()," },
@@ -977,11 +1174,17 @@ for (const { name, file, surfaces, pullFilesTruncated } of [
     });
 
     assert.deepEqual(detection, { change: surfaces.length > 0, surfaces });
-    const report = persistenceReport(detection, "a".repeat(40));
-    assert.equal(
-      /Confirm migration/.test(renderReviewCommentFromReport(report, "none")),
-      detection.change,
+    const report = renderPersistenceReport([file], "a".repeat(40), pullFilesTruncated);
+    const comment = renderReviewCommentFromReport(report, "none");
+    assert.equal(/Confirm migration/.test(comment), detection.change);
+    assert.match(
+      comment,
+      detection.change ? /clawsweeper-review-state:blocked/ : /clawsweeper-review-state:ready/,
     );
+    if (sqliteSchemaChange !== undefined) {
+      assert.equal(/^sqlite_schema_change: true$/m.test(report), sqliteSchemaChange);
+      assert.equal(comment.includes("SQLite table change"), sqliteSchemaChange);
+    }
     assert.match(
       reviewAutomationMarkersFromReport(report),
       detection.change ? /clawsweeper-verdict:needs-human/ : /clawsweeper-verdict:pass/,
