@@ -1,6 +1,8 @@
 name: Snapshot canonical Worker records
 
 on:
+  schedule:
+    - cron: "9 */6 * * *"
   workflow_dispatch:
     inputs:
       target_repo:
@@ -9,7 +11,7 @@ on:
         type: string
 
 concurrency:
-  group: worker-records-snapshot-${{ inputs.target_repo }}
+  group: worker-records-snapshot
   cancel-in-progress: false
 
 permissions:
@@ -36,7 +38,7 @@ jobs:
       - name: Resolve target record slug
         id: target
         env:
-          TARGET_REPO: ${{ inputs.target_repo }}
+          TARGET_REPO: ${{ github.event_name == 'schedule' && 'openclaw/openclaw' || inputs.target_repo }}
         run: |
           if ! [[ "$TARGET_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
             echo "target_repo must be owner/name" >&2

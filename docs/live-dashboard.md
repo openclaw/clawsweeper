@@ -471,6 +471,12 @@ counts but are not serialized by the public projector. Document effective
 production values from `dashboard/wrangler.toml`, not only fallback constants
 in `dashboard/exact-review-queue.ts`.
 
+Canonical record snapshots for `openclaw/openclaw` are produced every six hours
+by `worker-records-ops.yml`, at minute 9 UTC. Manual dispatch remains available
+for a selected repository; scheduled and manual snapshots share a concurrency
+group so snapshot runs do not overlap. Full record hydration replays changes
+since the latest snapshot.
+
 Batch publication heartbeats retry network errors, timeouts, and HTTP 5xx
 responses (including `exact_review_queue_unavailable`) up to three attempts
 within 45 seconds, with at most 20 seconds per attempt. Heartbeat retries
