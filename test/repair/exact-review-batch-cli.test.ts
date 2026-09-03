@@ -1277,15 +1277,23 @@ for (const scenario of [
     tolerated: true,
   },
   {
+    name: "rejects local fallback even with an ample lease",
+    response: 500,
+    leaseMs: 1_200_000,
+    source: "local",
+  },
+  {
     name: "rejects local fallback older than one safety margin",
     response: 500,
     leaseMs: 1_200_000,
+    source: "local",
     confirmationAgeMs: 180_001,
   },
   {
     name: "rejects local fallback that ages past the margin during retries",
     response: 500,
     leaseMs: 1_200_000,
+    source: "local",
     confirmationAgeMs: 179_000,
   },
   {
@@ -1342,7 +1350,7 @@ for (const scenario of [
         leaseOwner: "proof-worker",
         leaseExpiresAt: new Date(baseTime + scenario.leaseMs).toISOString(),
         leaseTtlMs: scenario.leaseMs + confirmationAgeMs,
-        leaseTtlSource: scenario.source ?? "local",
+        leaseTtlSource: scenario.source ?? "server",
         leaseConfirmedAtLocal: localTime - confirmationAgeMs,
         configuredBatchSize: 1,
         batchWaitMs: 0,

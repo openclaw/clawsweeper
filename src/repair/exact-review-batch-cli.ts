@@ -304,9 +304,10 @@ async function heartbeat() {
     if (
       !tolerate ||
       !(error instanceof ExactReviewBatchQueueTransportError) ||
-      !manifest.leaseTtlSource ||
+      // Only a server-proven lease duration may justify tolerance; a locally
+      // derived TTL can be inflated by clock skew past a reclaimed lease.
+      manifest.leaseTtlSource !== "server" ||
       elapsed < 0 ||
-      (manifest.leaseTtlSource === "local" && elapsed > safetyMs) ||
       remaining <= safetyMs ||
       !Number.isFinite(remaining)
     ) {
