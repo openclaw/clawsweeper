@@ -309,6 +309,7 @@ export type ExactReviewQueueItem = {
   firstFailureAt?: number;
   publicationFailureAttempts?: number;
   reviewFailureAttempts?: number;
+  reviewRetryPolicyEpoch?: string;
   reviewRecoveryReason?: ExactReviewReviewRecoveryReason;
   reviewRecoveryAt?: number;
   /**
@@ -646,6 +647,7 @@ const EXACT_REVIEW_COMPLETION_RETRY_MAX_MS = 2 * 60 * 60 * 1000;
 const EXACT_REVIEW_ARTIFACT_RETRY_MAX_MS = 80 * 24 * 60 * 60 * 1000;
 const EXACT_REVIEW_PUBLICATION_ARTIFACT_RETRY_LIMIT = 3;
 const EXACT_REVIEW_RETRY_LIMIT = 8;
+const DEFAULT_EXACT_REVIEW_RETRY_POLICY_EPOCH = "1";
 const EXACT_REVIEW_RECONCILE_RUN_LIMIT = 128;
 const EXACT_REVIEW_RECONCILE_CLAIM_MATCH_LIMIT = EXACT_REVIEW_RECONCILE_RUN_LIMIT * 2;
 export const EXACT_REVIEW_RECONCILE_CONCURRENCY = 8;
@@ -1422,6 +1424,7 @@ export class ExactReviewQueue {
           now,
           exactReviewPublicationDispatchLeaseMs(this.env),
           exactReviewHeartbeatGraceMs(this.env),
+          this.env,
         );
         const key = exactReviewItemKey(decision);
         const currentIngressItem = state.items[key];
@@ -1634,6 +1637,16 @@ export class ExactReviewQueue {
           // Ordinary source events retain normal replacement behavior, including the
           // command-context merge for pending items.
           if (!ignoredRecovery) {
+            if (exactReviewIssueSourceVersionIsOlder(current, decision)) {
+              this.writeStateSync(state);
+              return {
+                deduped: true as const,
+                staleSource: true as const,
+                ...(counterpartIngress ? { crossRoute: true as const } : {}),
+                key,
+                state,
+              };
+            }
             if (
               exactReviewCommandVersionIsOlder(current.leaseDecision || current.decision, decision)
             ) {
@@ -1744,6 +1757,7 @@ export class ExactReviewQueue {
               current.parkedReason = undefined;
             }
             const mergeable = current.state === "pending" || current.state === "parked";
+            const priorParkedRecoveryAt = exactReviewParkedRecoveryAt(current);
             // A command that follows an active direct-publication lease starts a
             // new review revision. Keep that old receipt only in leaseDecision:
             // carrying publication/directLifecycle into the successor would make
@@ -1758,6 +1772,11 @@ export class ExactReviewQueue {
               : mergeable || queuesCommandFollowUp
                 ? mergePendingExactReviewDecision(followUpMergeBase, decision)
                 : decision;
+            const preserveReviewRetryBudget =
+              mergeable &&
+              !exactReviewQueueIsPublication(current) &&
+              !exactReviewDecisionHasCommandContext(decision) &&
+              !exactReviewRetryIdentityChanged(current, current.decision, nextDecision, this.env);
             if (
               exactReviewDecisionHasCommandContext(current.decision) ||
               exactReviewDecisionHasCommandContext(nextDecision)
@@ -1775,32 +1794,42 @@ export class ExactReviewQueue {
               current.admissionDeliveryId = deliveryId;
               current.updatedAt = now;
             }
+            if (preserveReviewRetryBudget && priorParkedRecoveryAt !== null) {
+              // Advancing updatedAt must not invalidate an already-due recovery
+              // timestamp and restart the parked ladder's delay.
+              current.parkedRecoveryAt = Math.max(priorParkedRecoveryAt, now);
+            }
             // Immediacy must come from the merged decision: a pending explicit command
             // keeps its command marker through the merge, and a later plain webhook
             // event must not re-debounce it.
-            Object.assign(
-              current,
-              mergeable
-                ? exactReviewQueueDebouncedAttempt(
-                    state,
-                    current.decision,
-                    now,
-                    current.createdAt,
-                    this.env,
-                  )
-                : exactReviewQueueEnqueueAttempt(state, now),
-            );
+            if (!preserveReviewRetryBudget) {
+              Object.assign(
+                current,
+                mergeable
+                  ? exactReviewQueueDebouncedAttempt(
+                      state,
+                      current.decision,
+                      now,
+                      current.createdAt,
+                      this.env,
+                    )
+                  : exactReviewQueueEnqueueAttempt(state, now),
+              );
+            }
             if (mergeable) {
-              current.state = "pending";
-              current.parkedReason = undefined;
-              current.parkedRecoveryAttempts = 0;
-              clearExactReviewDispatchFailure(current);
-              current.attempts = 0;
-              current.publicationFailureAttempts = 0;
-              current.reviewFailureAttempts = 0;
-              current.firstFailureAt = undefined;
-              current.lastFailureReason = undefined;
-              clearExactReviewReviewRecovery(current);
+              if (!preserveReviewRetryBudget) {
+                current.state = "pending";
+                current.parkedReason = undefined;
+                current.parkedRecoveryAttempts = 0;
+                clearExactReviewDispatchFailure(current);
+                current.attempts = 0;
+                current.publicationFailureAttempts = 0;
+                current.reviewFailureAttempts = 0;
+                current.reviewRetryPolicyEpoch = exactReviewRetryPolicyEpoch(this.env);
+                current.firstFailureAt = undefined;
+                current.lastFailureReason = undefined;
+                clearExactReviewReviewRecovery(current);
+              }
             }
             advanceExactReviewSourceAuthorityWatermark(current, decision);
             if (followUpLeaseDecision && Number.isSafeInteger(followUpLeaseRevision)) {
@@ -1863,6 +1892,7 @@ export class ExactReviewQueue {
             updatedAt: now,
             ...exactReviewQueueDebouncedAttempt(state, decision, now, now, this.env, true),
             attempts: 0,
+            reviewRetryPolicyEpoch: exactReviewRetryPolicyEpoch(this.env),
             ...(exactReviewSourceAuthorityWatermark(decision)
               ? { sourceAuthorityWatermark: exactReviewSourceAuthorityWatermark(decision)! }
               : {}),
@@ -2000,6 +2030,7 @@ export class ExactReviewQueue {
           now,
           exactReviewPublicationDispatchLeaseMs(this.env),
           exactReviewHeartbeatGraceMs(this.env),
+          this.env,
         )
       ) {
         this.writeStateSync(state);
@@ -2172,6 +2203,7 @@ export class ExactReviewQueue {
           now,
           exactReviewPublicationDispatchLeaseMs(this.env),
           exactReviewHeartbeatGraceMs(this.env),
+          this.env,
         )
       ) {
         await this.writeState(state);
@@ -2551,6 +2583,7 @@ export class ExactReviewQueue {
                 retryKind,
                 reviewFailureReason,
                 this.random,
+                this.env,
               ),
               retried: outcome !== "success" && reviewFailureReason === undefined,
               refreshed: false,
@@ -3794,6 +3827,7 @@ export class ExactReviewQueue {
               undefined,
               undefined,
               this.random,
+              this.env,
             );
         reconciled += 1;
         if (parked) continue;
@@ -3845,6 +3879,7 @@ export class ExactReviewQueue {
           now,
           exactReviewPublicationDispatchLeaseMs(this.env),
           exactReviewHeartbeatGraceMs(this.env),
+          this.env,
         );
         if (changed) this.writeStateSync(current);
         else this.syncLegacyCompatibilitySync(current);
@@ -4202,8 +4237,9 @@ export class ExactReviewQueue {
       startedAt,
       exactReviewPublicationDispatchLeaseMs(this.env),
       exactReviewHeartbeatGraceMs(this.env),
+      this.env,
     );
-    const recoveredParkedSnapshot = recoverParkedExactReviewItems(snapshot, startedAt);
+    const recoveredParkedSnapshot = recoverParkedExactReviewItems(snapshot, startedAt, this.env);
     const expiredSnapshot = expireExactReviewPublicationItems(snapshot, startedAt, this.env);
     let snapshotChanged = reclaimedSnapshot || recoveredParkedSnapshot > 0 || expiredSnapshot;
     if (
@@ -4395,6 +4431,7 @@ export class ExactReviewQueue {
           Date.now(),
           exactReviewPublicationDispatchLeaseMs(this.env),
           exactReviewHeartbeatGraceMs(this.env),
+          this.env,
         );
         expireExactReviewPublicationItems(current, Date.now(), this.env);
         await this.writeState(current);
@@ -4456,6 +4493,7 @@ export class ExactReviewQueue {
       now,
       exactReviewPublicationDispatchLeaseMs(this.env),
       exactReviewHeartbeatGraceMs(this.env),
+      this.env,
     );
     const expired = expireExactReviewPublicationItems(state, now, this.env);
     // The preflight fetch releases the input gate, so publication demand may
@@ -4725,6 +4763,7 @@ export class ExactReviewQueue {
           item.attempts = 0;
           item.publicationFailureAttempts = 0;
           item.reviewFailureAttempts = 0;
+          item.reviewRetryPolicyEpoch = exactReviewRetryPolicyEpoch(this.env);
           item.firstFailureAt = undefined;
           item.lastFailureReason = undefined;
           clearExactReviewDispatchFailure(item);
@@ -4749,9 +4788,20 @@ export class ExactReviewQueue {
         // retry budget. The dispatcher backoff below holds the whole admission
         // pass until that dependency recovers.
         if (globalAdmissionFailure) continue;
+        const activeRetryPolicyEpoch = exactReviewRetryPolicyEpoch(this.env);
+        if (
+          (item.reviewRetryPolicyEpoch || DEFAULT_EXACT_REVIEW_RETRY_POLICY_EPOCH) !==
+          activeRetryPolicyEpoch
+        ) {
+          item.attempts = 0;
+          item.reviewFailureAttempts = 0;
+          item.parkedRecoveryAttempts = 0;
+          clearExactReviewReviewRecovery(item);
+        }
         item.attempts += 1;
         const failureAttempts = Number(item.reviewFailureAttempts || 0) + 1;
         item.reviewFailureAttempts = failureAttempts;
+        item.reviewRetryPolicyEpoch = activeRetryPolicyEpoch;
         if (failureAttempts >= EXACT_REVIEW_RETRY_LIMIT) {
           parkRecoverableExactReviewItem(item, "review_retry_exhausted", checkedAt, this.random);
           continue;
@@ -5008,6 +5058,7 @@ export class ExactReviewQueue {
         item.backoffReason = "publication_retry";
         item.attempts = Number(item.attempts || 0) + 1;
       } else if (failure.attempted && failure.failure.scope === "item") {
+        item.reviewRetryPolicyEpoch = exactReviewRetryPolicyEpoch(this.env);
         parkRecoverableExactReviewItem(item, "dispatch_rejected", completedAt, this.random);
       } else {
         item.state = "pending";
@@ -5124,6 +5175,7 @@ export class ExactReviewQueue {
           checkedAt,
           exactReviewPublicationDispatchLeaseMs(this.env),
           exactReviewHeartbeatGraceMs(this.env),
+          this.env,
         );
       }
     }
@@ -5520,6 +5572,7 @@ export class ExactReviewQueue {
           updatedAt: now,
           ...exactReviewQueueDebouncedAttempt(state, canonicalDecision, now, now, this.env),
           attempts: 0,
+          reviewRetryPolicyEpoch: exactReviewRetryPolicyEpoch(this.env),
         };
         this.storage.sql.exec(
           `UPDATE ${EXACT_REVIEW_QUEUE_DEAD_LETTER_TABLE}
@@ -5651,16 +5704,39 @@ export class ExactReviewQueue {
     }
     const cursor = String(body.cursor || "");
     if (cursor && cursor.length > 500) return json({ error: "invalid_cursor" }, 400);
-    const rows = Object.values(this.readStateSync().items)
-      .filter(
-        (item) => exactReviewParkedOperatorEligible(item) && item.key.localeCompare(cursor) > 0,
+    const scanSeed = String(body.scan_seed || "").trim();
+    if (scanSeed && !/^[A-Za-z0-9._:-]{1,200}$/.test(scanSeed)) {
+      return json({ error: "invalid_scan_seed" }, 400);
+    }
+    const activeRetryPolicyEpoch = exactReviewRetryPolicyEpoch(this.env);
+    const eligible = Object.values(this.readStateSync().items)
+      .filter((item) => exactReviewParkedOperatorEligible(item))
+      .map((item) => ({
+        item,
+        sortKey: scanSeed
+          ? stableExactReviewFailureFingerprint(`${scanSeed}\0${item.key}`)
+          : item.key,
+      }))
+      .sort(
+        (left, right) =>
+          left.sortKey.localeCompare(right.sortKey) || left.item.key.localeCompare(right.item.key),
+      );
+    const seededCursor = scanSeed && cursor ? exactReviewSeededParkedCursor(cursor) : null;
+    if (scanSeed && cursor && !seededCursor) return json({ error: "invalid_cursor" }, 400);
+    const rows = eligible
+      .filter(({ item, sortKey }) =>
+        !cursor
+          ? true
+          : seededCursor
+            ? sortKey.localeCompare(seededCursor.sortKey) > 0 ||
+              (sortKey === seededCursor.sortKey && item.key.localeCompare(seededCursor.itemKey) > 0)
+            : item.key.localeCompare(cursor) > 0,
       )
-      .sort((left, right) => left.key.localeCompare(right.key))
       .slice(0, limit + 1);
     const page = rows.slice(0, limit);
     return json({
       ok: true,
-      parked_reviews: page.map((item) => ({
+      parked_reviews: page.map(({ item }) => ({
         item_key: item.key,
         revision: item.revision,
         target_repo: item.decision.targetRepo,
@@ -5676,10 +5752,25 @@ export class ExactReviewQueue {
             : null,
         last_failure_reason:
           item.lastFailureReason || item.dispatchFailureClass || item.parkedReason || null,
+        source_head_sha: item.decision.sourceHeadSha || null,
+        source_base_sha: item.decision.sourceBaseSha || null,
+        source_is_draft:
+          typeof item.decision.sourceIsDraft === "boolean" ? item.decision.sourceIsDraft : null,
+        source_content_revision: item.decision.sourceContentRevision || null,
+        source_updated_at: item.decision.sourceUpdatedAt || null,
+        retry_policy_epoch: item.reviewRetryPolicyEpoch || DEFAULT_EXACT_REVIEW_RETRY_POLICY_EPOCH,
+        retry_policy_changed:
+          (item.reviewRetryPolicyEpoch || DEFAULT_EXACT_REVIEW_RETRY_POLICY_EPOCH) !==
+          activeRetryPolicyEpoch,
         updated_at: new Date(item.updatedAt).toISOString(),
         updated_at_ms: item.updatedAt,
       })),
-      next_cursor: rows.length > limit ? page.at(-1)?.key || null : null,
+      next_cursor:
+        rows.length > limit
+          ? scanSeed
+            ? `${page.at(-1)?.sortKey}:${page.at(-1)?.item.key}`
+            : page.at(-1)?.item.key || null
+          : null,
     });
   }
 
@@ -5728,7 +5819,14 @@ export class ExactReviewQueue {
     const body = objectValue(value);
     const items = exactReviewParkedOperatorItems(body.items, EXACT_REVIEW_PARKED_RECOVER_MAX_ITEMS);
     const recoveryKey = String(body.idempotency_key || "").trim();
+    const overrideRetryBudget = body.override_retry_budget === true;
     if (!items) return json({ error: "invalid_parked_review_items" }, 400);
+    if (
+      body.override_retry_budget !== undefined &&
+      typeof body.override_retry_budget !== "boolean"
+    ) {
+      return json({ error: "invalid_retry_budget_override" }, 400);
+    }
     if (!/^[A-Za-z0-9:._-]{1,200}$/.test(recoveryKey)) {
       return json({ error: "invalid_idempotency_key" }, 400);
     }
@@ -5739,6 +5837,8 @@ export class ExactReviewQueue {
       let recovered = 0;
       let deduped = 0;
       let skipped = 0;
+      let unchanged = 0;
+      const activeRetryPolicyEpoch = exactReviewRetryPolicyEpoch(this.env);
       for (const expected of items) {
         const previous = Array.from(
           this.storage.sql.exec(
@@ -5757,8 +5857,30 @@ export class ExactReviewQueue {
           continue;
         }
         const item = state.items[expected.itemKey];
+        const refreshedDecision = item
+          ? exactReviewDecisionFrom({
+              ...item.decision,
+              ...(expected.sourceHeadSha
+                ? { sourceHeadSha: expected.sourceHeadSha, sourceHeadVerified: true }
+                : {}),
+              ...(expected.sourceBaseSha ? { sourceBaseSha: expected.sourceBaseSha } : {}),
+              ...(expected.sourceIsDraft === null ? {} : { sourceIsDraft: expected.sourceIsDraft }),
+              ...(expected.sourceContentRevision
+                ? { sourceContentRevision: expected.sourceContentRevision }
+                : {}),
+              ...(expected.sourceUpdatedAt
+                ? { sourceUpdatedAt: new Date(Date.parse(expected.sourceUpdatedAt)).toISOString() }
+                : {}),
+            })
+          : null;
+        const retryIdentityChanged = Boolean(
+          item &&
+          refreshedDecision &&
+          exactReviewRetryIdentityChanged(item, item.decision, refreshedDecision, this.env),
+        );
         if (
           !item ||
+          !refreshedDecision ||
           !exactReviewParkedOperatorEligible(item) ||
           exactReviewQueueHasCommandContext(item) ||
           item.revision !== expected.revision ||
@@ -5767,7 +5889,16 @@ export class ExactReviewQueue {
           skipped += 1;
           continue;
         }
+        if (!overrideRetryBudget && !retryIdentityChanged) {
+          unchanged += 1;
+          skipped += 1;
+          continue;
+        }
         clearExactReviewLease(item);
+        item.decision = refreshedDecision;
+        const refreshedWatermark = exactReviewSourceAuthorityWatermark(refreshedDecision);
+        if (refreshedWatermark) item.sourceAuthorityWatermark = refreshedWatermark;
+        else delete item.sourceAuthorityWatermark;
         item.state = "pending";
         item.revision = this.nextExactReviewItemRevisionSync(item.key, item.revision + 1);
         item.admissionDeliveryId = `parked-recovery:${recoveryKey}:${item.key}`;
@@ -5779,6 +5910,7 @@ export class ExactReviewQueue {
         item.attempts = 0;
         item.publicationFailureAttempts = 0;
         item.reviewFailureAttempts = 0;
+        item.reviewRetryPolicyEpoch = activeRetryPolicyEpoch;
         item.firstFailureAt = undefined;
         item.lastFailureReason = undefined;
         clearExactReviewDispatchFailure(item);
@@ -5791,7 +5923,7 @@ export class ExactReviewQueue {
           itemKey: item.key,
           action: "recovered_fresh",
           actionKey: recoveryKey,
-          note: "recovered_fresh",
+          note: overrideRetryBudget ? "recovered_fresh_override" : "recovered_fresh",
           sourceUpdatedAt: expected.updatedAt,
           actedAt: now,
         });
@@ -5799,7 +5931,7 @@ export class ExactReviewQueue {
       }
       if (recovered) this.writeStateSync(state);
       else this.syncLegacyCompatibilitySync(state);
-      return { state, recovered, deduped, skipped };
+      return { state, recovered, deduped, skipped, unchanged };
     });
     if (result.recovered) await this.scheduleNext(result.state, now);
     return json({
@@ -5807,6 +5939,7 @@ export class ExactReviewQueue {
       recovered: result.recovered,
       deduped: result.deduped,
       skipped: result.skipped,
+      unchanged: result.unchanged,
     });
   }
 
@@ -6201,6 +6334,7 @@ export class ExactReviewQueue {
       now,
       exactReviewPublicationDispatchLeaseMs(this.env),
       exactReviewHeartbeatGraceMs(this.env),
+      this.env,
     );
     if (apply && reclaimed) {
       // Persist expiry recovery before the bounded target reads release the
@@ -8971,6 +9105,7 @@ export class ExactReviewQueue {
     item.attempts = 0;
     item.publicationFailureAttempts = 0;
     item.reviewFailureAttempts = 0;
+    item.reviewRetryPolicyEpoch = exactReviewRetryPolicyEpoch(this.env);
     item.firstFailureAt = undefined;
     item.lastFailureReason = undefined;
     clearExactReviewDispatchFailure(item);
@@ -12561,30 +12696,76 @@ function exactReviewDeadLetterIds(value): string[] | null {
   return ids;
 }
 
+function exactReviewSeededParkedCursor(value: string) {
+  const match = /^([0-9a-f]{64}):([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[1-9]\d*)$/.exec(value);
+  return match ? { sortKey: match[1], itemKey: match[2] } : null;
+}
+
 function exactReviewParkedOperatorItems(
   value: unknown,
   maximum: number,
-): Array<{ itemKey: string; revision: number; updatedAt: number }> | null {
+): Array<{
+  itemKey: string;
+  revision: number;
+  updatedAt: number;
+  sourceHeadSha: string | null;
+  sourceBaseSha: string | null;
+  sourceIsDraft: boolean | null;
+  sourceContentRevision: string | null;
+  sourceUpdatedAt: string | null;
+}> | null {
   if (!Array.isArray(value) || value.length < 1 || value.length > maximum) return null;
-  const items: Array<{ itemKey: string; revision: number; updatedAt: number }> = [];
+  const items: Array<{
+    itemKey: string;
+    revision: number;
+    updatedAt: number;
+    sourceHeadSha: string | null;
+    sourceBaseSha: string | null;
+    sourceIsDraft: boolean | null;
+    sourceContentRevision: string | null;
+    sourceUpdatedAt: string | null;
+  }> = [];
   const keys = new Set<string>();
   for (const raw of value) {
     const item = objectValue(raw);
     const itemKey = String(item.item_key || "").trim();
     const revision = Number(item.revision);
     const updatedAt = Number(item.updated_at_ms);
+    const sourceHeadSha = item.source_head_sha ? String(item.source_head_sha).toLowerCase() : null;
+    const sourceBaseSha = item.source_base_sha ? String(item.source_base_sha).toLowerCase() : null;
+    const hasSourceIsDraft = item.source_is_draft !== null && item.source_is_draft !== undefined;
+    const sourceIsDraft =
+      hasSourceIsDraft && typeof item.source_is_draft === "boolean" ? item.source_is_draft : null;
+    const sourceContentRevision = item.source_content_revision
+      ? String(item.source_content_revision).toLowerCase()
+      : null;
+    const sourceUpdatedAt = item.source_updated_at ? String(item.source_updated_at).trim() : null;
     if (
       !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[1-9]\d*$/.test(itemKey) ||
       keys.has(itemKey.toLowerCase()) ||
       !Number.isSafeInteger(revision) ||
       revision < 1 ||
       !Number.isSafeInteger(updatedAt) ||
-      updatedAt < 1
+      updatedAt < 1 ||
+      (sourceHeadSha !== null && !/^[0-9a-f]{40}$/.test(sourceHeadSha)) ||
+      (sourceBaseSha !== null && !/^[0-9a-f]{40}$/.test(sourceBaseSha)) ||
+      (hasSourceIsDraft && typeof item.source_is_draft !== "boolean") ||
+      (sourceContentRevision !== null && !/^[0-9a-f]{64}$/.test(sourceContentRevision)) ||
+      (sourceUpdatedAt !== null && !Number.isFinite(Date.parse(sourceUpdatedAt)))
     ) {
       return null;
     }
     keys.add(itemKey.toLowerCase());
-    items.push({ itemKey, revision, updatedAt });
+    items.push({
+      itemKey,
+      revision,
+      updatedAt,
+      sourceHeadSha,
+      sourceBaseSha,
+      sourceIsDraft,
+      sourceContentRevision,
+      sourceUpdatedAt,
+    });
   }
   return items;
 }
@@ -13251,6 +13432,70 @@ function exactReviewSavedDirectLifecycle(item: ExactReviewQueueItem) {
   };
 }
 
+function exactReviewRetryPolicyEpoch(env: unknown) {
+  const configured = String(
+    objectValue(env).EXACT_REVIEW_RETRY_POLICY_EPOCH || DEFAULT_EXACT_REVIEW_RETRY_POLICY_EPOCH,
+  ).trim();
+  return /^[A-Za-z0-9._-]{1,64}$/.test(configured)
+    ? configured
+    : DEFAULT_EXACT_REVIEW_RETRY_POLICY_EPOCH;
+}
+
+function exactReviewIssueSourceVersionIsOlder(
+  current: ExactReviewQueueItem,
+  incoming: ExactReviewDecision,
+) {
+  if (current.decision.itemKind !== "issue" || incoming.itemKind !== "issue") return false;
+  const currentUpdatedAt = Date.parse(String(current.decision.sourceUpdatedAt || ""));
+  const incomingUpdatedAt = Date.parse(String(incoming.sourceUpdatedAt || ""));
+  if (!Number.isFinite(currentUpdatedAt) || !Number.isFinite(incomingUpdatedAt)) return false;
+  if (incomingUpdatedAt !== currentUpdatedAt) return incomingUpdatedAt < currentUpdatedAt;
+  if (current.state !== "parked" || current.parkedReason !== "review_retry_exhausted") {
+    return false;
+  }
+  const currentContentRevision = String(current.decision.sourceContentRevision || "").toLowerCase();
+  // Same-second issue edits have no trustworthy ordering signal. Keep the
+  // durable exhausted row; the five-minute signed parked-review reconciler
+  // compares it with live GitHub content and recovers only the authoritative
+  // digest when the live source actually differs.
+  return /^[0-9a-f]{64}$/.test(currentContentRevision);
+}
+
+function exactReviewInputIdentityChanged(
+  priorDecision: ExactReviewDecision,
+  nextDecision: ExactReviewDecision,
+) {
+  const commandIdentity = (decision: ExactReviewDecision) =>
+    exactReviewDecisionHasCommandContext(decision)
+      ? stableJson({
+          commandStatusMarker: decision.commandStatusMarker ?? null,
+          statusCommentId: decision.statusCommentId ?? null,
+          additionalPrompt: decision.additionalPrompt ?? null,
+          sourceCommentId: decision.sourceCommentId ?? null,
+          sourceCommentUpdatedAt: decision.sourceCommentUpdatedAt ?? null,
+          commandBodyDigest: decision.commandBodyDigest ?? null,
+          commandOrigin: decision.commandOrigin ?? null,
+        })
+      : null;
+  return (
+    exactReviewFailureSourceFingerprint(priorDecision) !==
+      exactReviewFailureSourceFingerprint(nextDecision) ||
+    (priorDecision.additionalPrompt ?? null) !== (nextDecision.additionalPrompt ?? null) ||
+    commandIdentity(priorDecision) !== commandIdentity(nextDecision)
+  );
+}
+
+function exactReviewRetryIdentityChanged(
+  item: ExactReviewQueueItem,
+  priorDecision: ExactReviewDecision,
+  nextDecision: ExactReviewDecision,
+  env: unknown,
+) {
+  const activeEpoch = exactReviewRetryPolicyEpoch(env);
+  const priorEpoch = item.reviewRetryPolicyEpoch || DEFAULT_EXACT_REVIEW_RETRY_POLICY_EPOCH;
+  return priorEpoch !== activeEpoch || exactReviewInputIdentityChanged(priorDecision, nextDecision);
+}
+
 function finishExactReviewQueueItem(
   state: ExactReviewQueueState,
   item: ExactReviewQueueItem,
@@ -13261,27 +13506,41 @@ function finishExactReviewQueueItem(
   retryKind?: ExactReviewRetryKind,
   reviewFailureReason?: ExactReviewFailureReason,
   random: () => number = Math.random,
+  env: unknown = {},
 ) {
   const retryingFailure = outcome !== "success" && reviewFailureReason === undefined;
   const hasNewerRevision = item.revision > Number(item.leaseRevision || 0);
+  const activeRetryPolicyEpoch = exactReviewRetryPolicyEpoch(env);
+  const retryPolicyChanged =
+    (item.reviewRetryPolicyEpoch || DEFAULT_EXACT_REVIEW_RETRY_POLICY_EPOCH) !==
+    activeRetryPolicyEpoch;
+  const sourceIdentityChanged =
+    hasNewerRevision &&
+    exactReviewInputIdentityChanged(item.leaseDecision ?? item.decision, item.decision);
+  const retryIdentityChanged = retryPolicyChanged || sourceIdentityChanged;
+  const hasNewerReviewIdentity = hasNewerRevision && sourceIdentityChanged;
   if (
     !exactReviewQueueIsPublication(item) &&
     retryingFailure &&
     retryKind === undefined &&
-    !hasNewerRevision &&
+    !retryIdentityChanged &&
     !requeueLatest
   ) {
     item.reviewRecoveryReason = outcome === "cancelled" ? "workflow_cancelled" : "workflow_failed";
     item.reviewRecoveryAt = now;
   }
-  const typedDeferral = retryKind !== undefined && !hasNewerRevision && !requeueLatest;
+  const typedDeferral = retryKind !== undefined && !sourceIdentityChanged && !requeueLatest;
   // A regular queue item may back off and retry after a failed lease. Failed
   // sweep shards already consumed their one recovery attempt before reaching
   // the queue, so only a newer source revision may supersede that recovery.
   const oneShotRecovery =
     item.leaseDecision?.sourceAction === FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION;
   const requeued =
-    typedDeferral || (!oneShotRecovery && retryingFailure) || hasNewerRevision || requeueLatest;
+    typedDeferral ||
+    (!oneShotRecovery && retryingFailure) ||
+    hasNewerReviewIdentity ||
+    (retryingFailure && retryPolicyChanged) ||
+    requeueLatest;
   if (!requeued) {
     delete state.items[item.key];
     return { requeued: false, parked: false };
@@ -13290,8 +13549,9 @@ function finishExactReviewQueueItem(
   item.state = "pending";
   if (typedDeferral) {
     const dispatcherAttemptAt = exactReviewQueueEnqueueAttemptAt(state, now);
-    const deferredAttemptAt =
-      retryKind === "throttle"
+    const deferredAttemptAt = hasNewerRevision
+      ? now
+      : retryKind === "throttle"
         ? now + exactReviewJitteredDelayMs(Math.max(0, requestedRetryAt - now), random)
         : requestedRetryAt;
     item.nextAttemptAt = Math.max(dispatcherAttemptAt, deferredAttemptAt);
@@ -13302,11 +13562,12 @@ function finishExactReviewQueueItem(
           ? "coordination_retry"
           : "throttle_retry";
     item.parkedReason = undefined;
-  } else if (retryingFailure && !hasNewerRevision && !requeueLatest) {
+  } else if (retryingFailure && !retryIdentityChanged) {
     item.attempts += 1;
     if (!exactReviewQueueIsPublication(item)) {
       const failureAttempts = Number(item.reviewFailureAttempts || 0) + 1;
       item.reviewFailureAttempts = failureAttempts;
+      item.reviewRetryPolicyEpoch = activeRetryPolicyEpoch;
       if (failureAttempts >= EXACT_REVIEW_RETRY_LIMIT) {
         parkRecoverableExactReviewItem(item, "review_retry_exhausted", now, random);
         return { requeued: false, parked: true };
@@ -13315,7 +13576,7 @@ function finishExactReviewQueueItem(
     item.nextAttemptAt = Math.max(
       exactReviewQueueEnqueueAttemptAt(state, now),
       now + exactReviewRetryDelayMs(item.attempts),
-      hasNewerRevision ? 0 : requestedRetryAt,
+      hasNewerReviewIdentity ? 0 : requestedRetryAt,
     );
     item.backoffReason =
       exactReviewQueueEnqueueAttemptAt(state, now) >= item.nextAttemptAt
@@ -13325,6 +13586,7 @@ function finishExactReviewQueueItem(
     Object.assign(item, exactReviewQueueEnqueueAttempt(state, now));
     item.attempts = 0;
     item.reviewFailureAttempts = 0;
+    item.reviewRetryPolicyEpoch = activeRetryPolicyEpoch;
     item.parkedReason = undefined;
     item.parkedRecoveryAttempts = 0;
     clearExactReviewReviewRecovery(item);
@@ -13391,6 +13653,7 @@ function reclaimExpiredExactReviewLeases(
   now: number,
   publicationDispatchLeaseMs = DEFAULT_EXACT_REVIEW_PUBLICATION_DISPATCH_LEASE_MS,
   heartbeatGraceMs = DEFAULT_EXACT_REVIEW_HEARTBEAT_GRACE_MS,
+  env: unknown = {},
 ) {
   let changed = false;
   for (const [key, item] of Object.entries(state.items)) {
@@ -13402,6 +13665,7 @@ function reclaimExpiredExactReviewLeases(
         now,
         publicationDispatchLeaseMs,
         heartbeatGraceMs,
+        env,
       )
     ) {
       changed = true;
@@ -13417,6 +13681,7 @@ function reclaimExpiredExactReviewLease(
   now: number,
   publicationDispatchLeaseMs: number,
   heartbeatGraceMs = DEFAULT_EXACT_REVIEW_HEARTBEAT_GRACE_MS,
+  env: unknown = {},
 ) {
   if (
     (item.state !== "dispatching" && item.state !== "leased") ||
@@ -13428,7 +13693,13 @@ function reclaimExpiredExactReviewLease(
     (item.leaseDecision || item.decision).sourceAction ===
     FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION;
   const hasNewerRevision = item.revision > Number(item.leaseRevision || 0);
-  if (oneShotRecovery && !hasNewerRevision) {
+  const retryIdentityChanged =
+    !exactReviewQueueIsPublication(item) &&
+    exactReviewRetryIdentityChanged(item, item.leaseDecision ?? item.decision, item.decision, env);
+  const hasNewerWorkIdentity = exactReviewQueueIsPublication(item)
+    ? hasNewerRevision
+    : retryIdentityChanged;
+  if (oneShotRecovery && !hasNewerWorkIdentity) {
     delete state.items[key];
     return true;
   }
@@ -13437,10 +13708,11 @@ function reclaimExpiredExactReviewLease(
   item.state = "pending";
   item.nextAttemptAt = now;
   item.backoffReason = undefined;
-  if (hasNewerRevision) {
+  if (hasNewerWorkIdentity) {
     item.attempts = 0;
     item.publicationFailureAttempts = 0;
     item.reviewFailureAttempts = 0;
+    item.reviewRetryPolicyEpoch = exactReviewRetryPolicyEpoch(env);
     item.firstFailureAt = undefined;
     item.lastFailureReason = undefined;
     clearExactReviewReviewRecovery(item);
@@ -13468,20 +13740,30 @@ function parkRecoverableExactReviewItem(
     delay === null ? undefined : now + exactReviewJitteredDelayMs(delay, random);
 }
 
-function recoverParkedExactReviewItems(state: ExactReviewQueueState, now: number) {
+function recoverParkedExactReviewItems(
+  state: ExactReviewQueueState,
+  now: number,
+  env: unknown = {},
+) {
   let recovered = 0;
   for (const item of Object.values(state.items)) {
     const retryAt = exactReviewParkedRecoveryAt(item);
     if (retryAt === null || retryAt > now) continue;
+    const activeRetryPolicyEpoch = exactReviewRetryPolicyEpoch(env);
+    const retryPolicyChanged =
+      (item.reviewRetryPolicyEpoch || DEFAULT_EXACT_REVIEW_RETRY_POLICY_EPOCH) !==
+      activeRetryPolicyEpoch;
     item.state = "pending";
     item.parkedReason = undefined;
     item.parkedRecoveryAt = undefined;
-    item.parkedRecoveryAttempts =
-      exactReviewParkedRecoveryAttempts(item.parkedRecoveryAttempts) + 1;
+    item.parkedRecoveryAttempts = retryPolicyChanged
+      ? 0
+      : exactReviewParkedRecoveryAttempts(item.parkedRecoveryAttempts) + 1;
     item.nextAttemptAt = now;
     item.backoffReason = undefined;
     item.attempts = 0;
     item.reviewFailureAttempts = 0;
+    item.reviewRetryPolicyEpoch = activeRetryPolicyEpoch;
     item.updatedAt = now;
     clearExactReviewDispatchFailure(item);
     clearExactReviewReviewRecovery(item);
@@ -13569,6 +13851,7 @@ function refreshExactReviewPublicationItem(
     current.attempts = 0;
     current.publicationFailureAttempts = 0;
     current.reviewFailureAttempts = 0;
+    current.reviewRetryPolicyEpoch = exactReviewRetryPolicyEpoch(env);
     current.firstFailureAt = undefined;
     current.lastFailureReason = undefined;
     clearExactReviewReviewRecovery(current);
@@ -13585,6 +13868,7 @@ function refreshExactReviewPublicationItem(
     updatedAt: now,
     ...exactReviewQueueDebouncedAttempt(state, decision, now, now, env),
     attempts: 0,
+    reviewRetryPolicyEpoch: exactReviewRetryPolicyEpoch(env),
   };
 }
 

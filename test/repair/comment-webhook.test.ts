@@ -592,6 +592,57 @@ test("webhook accepts eligible issue events for public OpenClaw repositories", (
   });
 });
 
+test("fallback issue events carry the hosted source revision material", () => {
+  const title = "Keep issue retry identity aligned";
+  const body = "The issue body is unchanged across routes.";
+  const result = classifyItemWebhook({
+    event: "issues",
+    payload: {
+      action: "edited",
+      repository: {
+        full_name: "openclaw/fs-safe",
+        private: false,
+        archived: false,
+        fork: false,
+        has_issues: true,
+      },
+      issue: {
+        number: 598,
+        title,
+        body,
+        locked: false,
+        labels: [
+          { name: "security" },
+          { name: "bug" },
+          { name: "clawsweeper:automerge" },
+          { name: "status: 📣 needs proof" },
+        ],
+        updated_at: "2026-07-26T08:50:00Z",
+      },
+      installation: { id: 123 },
+    },
+  });
+
+  assert.equal(result.accepted, true);
+  if (!result.accepted || result.type !== "item") return;
+  assert.equal(
+    result.sourceContentRevision,
+    crypto
+      .createHash("sha256")
+      .update(
+        JSON.stringify({
+          version: 2,
+          title,
+          body,
+          locked: false,
+          close_guard_labels: ["bug", "clawsweeper:automerge", "security"],
+        }),
+      )
+      .digest("hex"),
+  );
+  assert.equal(result.sourceUpdatedAt, "2026-07-26T08:50:00Z");
+});
+
 test("webhook accepts eligible pull request events for configured steipete repositories", () => {
   const result = classifyWebhook({
     event: "pull_request",
@@ -626,6 +677,59 @@ test("webhook accepts eligible pull request events for configured steipete repos
   });
 });
 
+test("fallback PR lifecycle events carry the hosted source revision material", () => {
+  const title = "Keep lifecycle identity aligned";
+  const body = "Same content across a synchronize event.";
+  const result = classifyWebhook({
+    event: "pull_request",
+    payload: {
+      action: "synchronize",
+      repository: {
+        full_name: "openclaw/openclaw",
+        private: false,
+        archived: false,
+        fork: false,
+        has_issues: true,
+      },
+      pull_request: {
+        number: 858,
+        head: { sha: "a".repeat(40) },
+        base: { sha: "b".repeat(40) },
+        draft: false,
+        title,
+        body,
+        locked: false,
+        labels: [
+          { name: "security" },
+          { name: "bug" },
+          { name: "clawsweeper:autofix" },
+          { name: "rating: 🦪 silver shellfish" },
+        ],
+        updated_at: "2026-07-26T09:05:00Z",
+      },
+      installation: { id: 456 },
+    },
+  });
+
+  assert.equal(result.accepted, true);
+  if (!result.accepted || result.type !== "item") return;
+  assert.equal(
+    result.sourceContentRevision,
+    crypto
+      .createHash("sha256")
+      .update(
+        JSON.stringify({
+          version: 2,
+          title,
+          body,
+          locked: false,
+          close_guard_labels: ["bug", "clawsweeper:autofix", "security"],
+        }),
+      )
+      .digest("hex"),
+  );
+});
+
 test("webhook carries the semantic tuple through edited pull request fallback intake", () => {
   const title = "Clarify the review request";
   const body = "The revised context is ready for review.";
@@ -647,6 +751,8 @@ test("webhook carries the semantic tuple through edited pull request fallback in
         draft: false,
         title,
         body,
+        locked: false,
+        labels: [],
         updated_at: "2026-07-26T09:00:00Z",
       },
       installation: { id: 456 },
@@ -662,7 +768,15 @@ test("webhook carries the semantic tuple through edited pull request fallback in
     result.sourceContentRevision,
     crypto
       .createHash("sha256")
-      .update(JSON.stringify({ version: 1, title, body }))
+      .update(
+        JSON.stringify({
+          version: 2,
+          title,
+          body,
+          locked: false,
+          close_guard_labels: [],
+        }),
+      )
       .digest("hex"),
   );
 });
@@ -772,6 +886,8 @@ test("pull request webhooks dispatch adaptive Codex timeout payload", async () =
           base: { sha: "c".repeat(40) },
           draft: false,
           title: "Add direct fallback semantic ingress coverage",
+          locked: false,
+          labels: [],
           changed_files: 71,
           additions: 4176,
           deletions: 0,
@@ -806,13 +922,15 @@ test("pull request webhooks dispatch adaptive Codex timeout payload", async () =
         .createHash("sha256")
         .update(
           JSON.stringify({
-            version: 1,
+            version: 2,
             title: "Add direct fallback semantic ingress coverage",
             body: [
               "Proof:",
               "https://uploads.example.invalid/proof-a.mov",
               "https://uploads.example.invalid/proof-b.mp4",
             ].join("\n"),
+            locked: false,
+            close_guard_labels: [],
           }),
         )
         .digest("hex"),

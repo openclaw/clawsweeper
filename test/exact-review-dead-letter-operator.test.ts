@@ -70,6 +70,7 @@ test("automatic dead-letter reconciliation is scheduled, bounded, and least priv
   assert.equal(scheduled.on.workflow_dispatch.inputs.execute.default, false);
   assert.equal(scheduled.on.workflow_dispatch.inputs.max_targets.default, "100");
   assert.equal(scheduled.on.workflow_dispatch.inputs.max_recoveries.default, "10");
+  assert.equal(scheduled.on.workflow_dispatch.inputs.force_unchanged.default, false);
   const deadline = scheduled.jobs.reconcile.steps.find(
     (candidate) => candidate.name === "Establish reconciliation deadline",
   );
@@ -119,6 +120,8 @@ test("automatic dead-letter reconciliation is scheduled, bounded, and least priv
   assert.match(parked.run, /--action reconcile-parked/);
   assert.match(parked.run, /--max-targets "\$MAX_TARGETS"/);
   assert.match(parked.run, /--max-recoveries 5/);
+  assert.match(parked.run, /--force-unchanged/);
+  assert.match(parked.env.FORCE_UNCHANGED, /workflow_dispatch/);
   assert.match(parked.run, /parked-reviews\.json/);
   const upload = scheduled.jobs.reconcile.steps.find(
     (candidate) => candidate.name === "Upload sanitized inventory",
@@ -226,13 +229,33 @@ test("parked review reconciliation plans by default and executes terminal resolv
   let queuePressure = "idle";
   const parkedRows = [
     parkedRow("openclaw/repo#1", "openclaw/repo", 1, 1_000),
-    parkedRow("openclaw/repo#2", "openclaw/repo", 2, 2_000),
+    {
+      ...parkedRow("openclaw/repo#2", "openclaw/repo", 2, 2_000),
+      item_kind: "pull_request",
+      source_head_sha: "a".repeat(40),
+      source_base_sha: "b".repeat(40),
+      source_is_draft: false,
+      source_content_revision: "c".repeat(64),
+    },
     parkedRow("gone/repo#3", "gone/repo", 3, 3_000),
     {
       ...parkedRow("openclaw/repo#4", "openclaw/repo", 4, 4_000),
       excluded_reason: "command_context",
     },
-    parkedRow("openclaw/repo#5", "openclaw/repo", 5, 5_000),
+    {
+      ...parkedRow("openclaw/repo#5", "openclaw/repo", 5, 5_000),
+      source_content_revision: createHash("sha256")
+        .update(
+          JSON.stringify({
+            version: 2,
+            title: "Issue 5",
+            body: "changed source",
+            locked: false,
+            close_guard_labels: [],
+          }),
+        )
+        .digest("hex"),
+    },
   ];
   const server = createServer(async (request, response) => {
     const chunks = [];
@@ -261,6 +284,11 @@ test("parked review reconciliation plans by default and executes terminal resolv
           node_id: `ISSUE_${number}`,
           state: "open",
           number,
+          title: `Issue ${number}`,
+          body: "changed source",
+          locked: false,
+          labels: [],
+          updated_at: new Date(number === 5 ? 5_000 : number * 1_000 + 60_000).toISOString(),
           repository_url: "https://api.github.com/repos/openclaw/repo",
         }),
       );
@@ -273,7 +301,27 @@ test("parked review reconciliation plans by default and executes terminal resolv
           node_id: "ISSUE_2",
           state: "closed",
           number: 2,
+          title: "Issue 2",
+          body: "closed",
+          locked: false,
+          labels: [],
+          updated_at: new Date(2_000).toISOString(),
+          pull_request: {},
           repository_url: "https://api.github.com/repos/openclaw/repo",
+        }),
+      );
+      return;
+    }
+    if (request.url === "/repos/openclaw/repo/pulls/2") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          head: { sha: "a".repeat(40) },
+          base: { sha: "b".repeat(40) },
+          draft: false,
+          title: "Issue 2",
+          body: "closed",
+          updated_at: new Date(2_000).toISOString(),
         }),
       );
       return;
@@ -338,7 +386,7 @@ test("parked review reconciliation plans by default and executes terminal resolv
       open_targets: 2,
       recovered_targets: 1,
       skipped_targets: 2,
-      skip_reasons: { recovery_cap: 1 },
+      skip_reasons: { unchanged_review_identity: 1 },
       skip_samples: [],
     });
     assert.equal(mutations.length, 0);
@@ -361,13 +409,29 @@ test("parked review reconciliation plans by default and executes terminal resolv
       open_targets: 2,
       recovered_targets: 1,
       skipped_targets: 2,
-      skip_reasons: { recovery_cap: 1 },
+      skip_reasons: { unchanged_review_identity: 1 },
       skip_samples: [],
     });
     assert.equal(mutations.filter((entry) => entry.url?.endsWith("/resolve")).length, 2);
     const recovery = mutations.find((entry) => entry.url?.endsWith("/recover-fresh"));
     assert.deepEqual(recovery.payload.items, [
-      { item_key: "openclaw/repo#1", revision: 1, updated_at_ms: 1_000 },
+      {
+        item_key: "openclaw/repo#1",
+        revision: 1,
+        updated_at_ms: 1_000,
+        source_content_revision: createHash("sha256")
+          .update(
+            JSON.stringify({
+              version: 2,
+              title: "Issue 1",
+              body: "changed source",
+              locked: false,
+              close_guard_labels: [],
+            }),
+          )
+          .digest("hex"),
+        source_updated_at: new Date(61_000).toISOString(),
+      },
     ]);
     assert.match(recovery.payload.idempotency_key, /^parked-reconcile:[a-f0-9]{64}$/);
 
@@ -388,7 +452,8 @@ test("parked review reconciliation plans by default and executes terminal resolv
     );
     assert.equal(pressureDeferred.code, 0, pressureDeferred.stderr);
     assert.deepEqual(JSON.parse(pressureDeferred.stdout).skip_reasons, {
-      recovery_deferred_pressure: 2,
+      unchanged_review_identity: 1,
+      recovery_deferred_pressure: 1,
     });
     assert.equal(JSON.parse(pressureDeferred.stdout).skipped_targets, 3);
 
@@ -410,6 +475,225 @@ test("parked review reconciliation plans by default and executes terminal resolv
     );
     assert.equal(overCap.code, 1);
     assert.match(overCap.stderr, /between 0 and 5 for reconcile-parked/);
+  } finally {
+    server.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("parked pull request reconciliation requires immutable source drift", async () => {
+  const secret = "test-parked-review-source-fence";
+  const sourceUpdatedAt = "2026-08-10T12:00:00.000Z";
+  const title = "Retry fence";
+  const body = "unchanged body";
+  const sourceContentRevision = createHash("sha256")
+    .update(
+      JSON.stringify({
+        version: 2,
+        title,
+        body,
+        locked: false,
+        close_guard_labels: [],
+      }),
+    )
+    .digest("hex");
+  const sourceLegacyContentRevision = createHash("sha256")
+    .update(JSON.stringify({ version: 1, title, body }))
+    .digest("hex");
+  let liveUpdatedAt = sourceUpdatedAt;
+  let liveLabels: string[] = [];
+  const row = {
+    ...parkedRow("openclaw/repo#9", "openclaw/repo", 9, 9_000),
+    item_kind: "pull_request",
+    source_head_sha: "a".repeat(40),
+    source_base_sha: "b".repeat(40),
+    source_is_draft: false,
+    source_content_revision: sourceContentRevision,
+    source_updated_at: sourceUpdatedAt,
+  };
+  let headSha = "a".repeat(40);
+  const mutations = [];
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    if (request.url === "/api/exact-review-queue") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ pressure: { status: "idle", active: 0, capacity: 128 } }));
+      return;
+    }
+    if (request.url === "/repos/openclaw/repo/issues/9") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          node_id: "PR_9",
+          state: "open",
+          number: 9,
+          title,
+          body,
+          locked: false,
+          labels: liveLabels.map((name) => ({ name })),
+          updated_at: liveUpdatedAt,
+          pull_request: {},
+          repository_url: "https://api.github.com/repos/openclaw/repo",
+        }),
+      );
+      return;
+    }
+    if (request.url === "/repos/openclaw/repo/pulls/9") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          head: { sha: headSha },
+          base: { sha: "b".repeat(40) },
+          draft: false,
+          title,
+          body,
+          updated_at: liveUpdatedAt,
+        }),
+      );
+      return;
+    }
+    const requestBody = Buffer.concat(chunks).toString("utf8");
+    const expected = `sha256=${createHmac("sha256", secret).update(requestBody).digest("hex")}`;
+    assert.equal(request.headers["x-clawsweeper-exact-review-signature"], expected);
+    const payload = JSON.parse(requestBody);
+    if (request.url?.endsWith("/parked-reviews/list")) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true, parked_reviews: [row], next_cursor: null }));
+      return;
+    }
+    mutations.push(payload);
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ ok: true, recovered: 1, deduped: 0, skipped: 0 }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const directory = await mkdtemp(join(tmpdir(), "clawsweeper-parked-source-fence-"));
+  const common = ["--action", "reconcile-parked", "--max-targets", "1", "--max-recoveries", "1"];
+  try {
+    const unchanged = await runOperator(
+      [...common, "--output", join(directory, "unchanged.json")],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+    );
+    assert.equal(unchanged.code, 0, unchanged.stderr);
+    assert.equal(JSON.parse(unchanged.stdout).recovered_targets, 0);
+    assert.deepEqual(JSON.parse(unchanged.stdout).skip_reasons, {
+      unchanged_review_identity: 1,
+    });
+    assert.equal(mutations.length, 0);
+
+    liveUpdatedAt = "2026-08-10T12:01:00.000Z";
+    const commentOnlyTimestamp = await runOperator(
+      [...common, "--output", join(directory, "comment-only-timestamp.json")],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+    );
+    assert.equal(commentOnlyTimestamp.code, 0, commentOnlyTimestamp.stderr);
+    assert.equal(JSON.parse(commentOnlyTimestamp.stdout).recovered_targets, 0);
+    assert.deepEqual(JSON.parse(commentOnlyTimestamp.stdout).skip_reasons, {
+      unchanged_review_identity: 1,
+    });
+    assert.equal(mutations.length, 0);
+
+    liveUpdatedAt = sourceUpdatedAt;
+    liveLabels = ["security"];
+    const lifecycleChanged = await runOperator(
+      [...common, "--execute", "--output", join(directory, "lifecycle-changed.json")],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+    );
+    assert.equal(lifecycleChanged.code, 0, lifecycleChanged.stderr);
+    assert.equal(JSON.parse(lifecycleChanged.stdout).recovered_targets, 1);
+    assert.equal(mutations.length, 1);
+    assert.notEqual(mutations[0].items[0].source_content_revision, sourceContentRevision);
+
+    liveLabels = [];
+    headSha = "c".repeat(40);
+    const changed = await runOperator(
+      [...common, "--execute", "--output", join(directory, "changed.json")],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+    );
+    assert.equal(changed.code, 0, changed.stderr);
+    assert.equal(JSON.parse(changed.stdout).recovered_targets, 1);
+    assert.equal(mutations.length, 2);
+    assert.equal(mutations[1].items[0].source_head_sha, headSha);
+    assert.equal(mutations[1].override_retry_budget, undefined);
+
+    headSha = "a".repeat(40);
+    Object.assign(row, {
+      source_head_sha: headSha,
+      source_base_sha: "b".repeat(40),
+      source_is_draft: false,
+      source_content_revision: null,
+      source_updated_at: liveUpdatedAt,
+    });
+    const legacyTimestampUnchanged = await runOperator(
+      [...common, "--output", join(directory, "legacy-timestamp-unchanged.json")],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+    );
+    assert.equal(legacyTimestampUnchanged.code, 0, legacyTimestampUnchanged.stderr);
+    assert.equal(JSON.parse(legacyTimestampUnchanged.stdout).recovered_targets, 0);
+    assert.deepEqual(JSON.parse(legacyTimestampUnchanged.stdout).skip_reasons, {
+      unchanged_review_identity: 1,
+    });
+    assert.equal(mutations.length, 2);
+
+    row.source_content_revision = sourceLegacyContentRevision;
+    const legacyDigestUnchanged = await runOperator(
+      [...common, "--output", join(directory, "legacy-digest-unchanged.json")],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+    );
+    assert.equal(legacyDigestUnchanged.code, 0, legacyDigestUnchanged.stderr);
+    assert.equal(JSON.parse(legacyDigestUnchanged.stdout).recovered_targets, 0);
+    assert.deepEqual(JSON.parse(legacyDigestUnchanged.stdout).skip_reasons, {
+      unchanged_review_identity: 1,
+    });
+    assert.equal(mutations.length, 2);
+
+    Object.assign(row, {
+      source_head_sha: null,
+      source_base_sha: null,
+      source_is_draft: null,
+      source_content_revision: null,
+      source_updated_at: null,
+    });
+    headSha = "d".repeat(40);
+    const legacyHydrated = await runOperator(
+      [...common, "--execute", "--output", join(directory, "legacy-hydrated.json")],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+    );
+    assert.equal(legacyHydrated.code, 0, legacyHydrated.stderr);
+    assert.equal(JSON.parse(legacyHydrated.stdout).recovered_targets, 1);
+    assert.equal(mutations.length, 3);
+    assert.equal(mutations[2].items[0].source_head_sha, headSha);
+    assert.equal(mutations[2].items[0].source_base_sha, "b".repeat(40));
+    assert.equal(mutations[2].items[0].source_is_draft, false);
+    assert.equal(mutations[2].items[0].source_updated_at, liveUpdatedAt);
+    assert.equal(mutations[2].items[0].source_content_revision, sourceContentRevision);
+
+    headSha = "a".repeat(40);
+    Object.assign(row, {
+      source_head_sha: headSha,
+      source_base_sha: "b".repeat(40),
+      source_is_draft: false,
+      source_content_revision: sourceContentRevision,
+      source_updated_at: sourceUpdatedAt,
+    });
+    const forced = await runOperator(
+      [...common, "--execute", "--force-unchanged", "--output", join(directory, "forced.json")],
+      `http://127.0.0.1:${address.port}`,
+      secret,
+    );
+    assert.equal(forced.code, 0, forced.stderr);
+    assert.equal(JSON.parse(forced.stdout).recovered_targets, 1);
+    assert.equal(mutations.length, 4);
+    assert.equal(mutations[3].override_retry_budget, true);
   } finally {
     server.close();
     await rm(directory, { recursive: true, force: true });
@@ -4646,6 +4930,13 @@ function parkedRow(itemKey, targetRepo, itemNumber, updatedAtMs) {
     parked_recovery_attempts: 3,
     first_failed_at: "2026-08-09T00:00:00.000Z",
     last_failure_reason: "review_retry_exhausted",
+    source_head_sha: null,
+    source_base_sha: null,
+    source_is_draft: null,
+    source_content_revision: null,
+    source_updated_at: new Date(updatedAtMs).toISOString(),
+    retry_policy_epoch: "1",
+    retry_policy_changed: false,
     updated_at: new Date(updatedAtMs).toISOString(),
     updated_at_ms: updatedAtMs,
   };

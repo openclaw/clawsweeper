@@ -3090,6 +3090,70 @@ test("explicit pull request commands survive an active authoritative lease compl
   );
 });
 
+test("a newer explicit command survives completion of the active command lease", async () => {
+  const storage = new MemoryDurableStorage();
+  const item = leasedExactReviewQueueItem(761, "7610");
+  const firstMarker =
+    "<!-- clawsweeper-command-status:761:autofix:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->";
+  const nextMarker =
+    "<!-- clawsweeper-command-status:761:automerge:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb -->";
+  item.decision = {
+    ...item.decision,
+    sourceAction: "legacy_dispatch",
+    commandStatusMarker: firstMarker,
+    statusCommentId: 9004,
+  };
+  item.leaseDecision = { ...item.decision };
+  item.attempts = 7;
+  item.reviewFailureAttempts = 7;
+  item.reviewRetryPolicyEpoch = "1";
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { [item.key]: item },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const queued = await queue.fetch(
+    buildExactReviewQueueRequest(
+      "newer-explicit-command-761",
+      761,
+      "legacy_dispatch",
+      "issue",
+      "openclaw/openclaw",
+      {
+        commandStatusMarker: nextMarker,
+        statusCommentId: 9005,
+        additionalPrompt: "Run the newer explicit command.",
+      },
+    ),
+  );
+  assert.equal(queued.status, 202);
+
+  const completed = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/complete", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        claim_generation: item.claimGeneration,
+        run_id: item.claimedRunId,
+        run_attempt: item.claimedRunAttempt,
+        outcome: "success",
+      }),
+    }),
+  );
+  assert.deepEqual(await completed.json(), { ok: true, requeued: true });
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, typeof item>;
+  };
+  assert.equal(state.items[item.key].revision, 2);
+  assert.equal(state.items[item.key].state, "pending");
+  assert.equal(state.items[item.key].decision.commandStatusMarker, nextMarker);
+  assert.equal(state.items[item.key].decision.statusCommentId, 9005);
+  assert.equal(state.items[item.key].decision.additionalPrompt, "Run the newer explicit command.");
+});
+
 test("same-timestamp verified successor replaces the current pull request head", async () => {
   const storage = new MemoryDurableStorage();
   const currentHeadSha = "b".repeat(40);

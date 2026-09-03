@@ -1057,7 +1057,13 @@ test("hosted edited webhook binds and enqueues only the live pull request head",
   const sourceHeadSha = "b".repeat(40);
   const sourceContentRevision = createHash("sha256")
     .update(
-      JSON.stringify({ version: 1, title: "Document the edit", body: "Fresh review context." }),
+      JSON.stringify({
+        version: 2,
+        title: "Document the edit",
+        body: "Fresh review context.",
+        locked: false,
+        close_guard_labels: [],
+      }),
     )
     .digest("hex");
   let verificationCalls = 0;
@@ -1092,6 +1098,8 @@ test("hosted edited webhook binds and enqueues only the live pull request head",
             draft: false,
             title: "Document the edit",
             body: "Fresh review context.",
+            locked: false,
+            labels: [],
             updated_at: updatedAt,
           },
           installation: { id: 123 },
@@ -1200,6 +1208,10 @@ test("hosted issue webhook preserves the source update discriminator", async () 
           },
           issue: {
             number: 597,
+            title: "Retry fence",
+            body: `Body at ${updatedAt}`,
+            locked: false,
+            labels: [],
             updated_at: updatedAt,
           },
           installation: { id: 123 },
@@ -1215,11 +1227,28 @@ test("hosted issue webhook preserves the source update discriminator", async () 
   const first = await send("2026-09-02T19:00:00Z", "issue-edited-597-1");
   assert.equal(first.status, 202);
   let state = (await storage.get("exact-review-queue")) as {
-    items: Record<string, { decision: { sourceUpdatedAt?: string } }>;
+    items: Record<
+      string,
+      { decision: { sourceUpdatedAt?: string; sourceContentRevision?: string } }
+    >;
   };
   assert.equal(
     state.items["openclaw/fs-safe#597"].decision.sourceUpdatedAt,
     "2026-09-02T19:00:00Z",
+  );
+  assert.equal(
+    state.items["openclaw/fs-safe#597"].decision.sourceContentRevision,
+    createHash("sha256")
+      .update(
+        JSON.stringify({
+          version: 2,
+          title: "Retry fence",
+          body: "Body at 2026-09-02T19:00:00Z",
+          locked: false,
+          close_guard_labels: [],
+        }),
+      )
+      .digest("hex"),
   );
 
   const second = await send("2026-09-02T19:05:00Z", "issue-edited-597-2");
@@ -1228,6 +1257,69 @@ test("hosted issue webhook preserves the source update discriminator", async () 
   assert.equal(
     state.items["openclaw/fs-safe#597"].decision.sourceUpdatedAt,
     "2026-09-02T19:05:00Z",
+  );
+});
+
+test("hosted lifecycle webhooks distinguish close-guard state with unchanged content", async () => {
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    { hostedPublicTargetProbe: publicHostedTargetProbe },
+  );
+  const send = (deliveryId: string, removedLabel: string, labels: string[], updatedAt: string) =>
+    worker.fetch(
+      signedGithubWebhookRequest({
+        event: "issues",
+        secret: "test-secret",
+        deliveryId,
+        payload: {
+          action: "unlabeled",
+          repository: {
+            full_name: "openclaw/fs-safe",
+            default_branch: "trunk",
+            private: false,
+            archived: false,
+            fork: false,
+            has_issues: true,
+          },
+          issue: {
+            number: 598,
+            title: "Retry fence",
+            body: "Unchanged body",
+            locked: false,
+            labels: labels.map((name) => ({ name })),
+            updated_at: updatedAt,
+          },
+          label: { name: removedLabel },
+          installation: { id: 123 },
+        },
+      }),
+      {
+        CLAWSWEEPER_WEBHOOK_SECRET: "test-secret",
+        hostedPublicTargetProbe: publicHostedTargetProbe,
+        EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+      },
+    );
+
+  assert.equal(
+    (await send("issue-unlabeled-598-1", "beta-blocker", ["security"], "2026-09-02T19:00:00Z"))
+      .status,
+    202,
+  );
+  let state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { decision: { sourceContentRevision?: string } }>;
+  };
+  const firstRevision = state.items["openclaw/fs-safe#598"].decision.sourceContentRevision;
+  assert.match(firstRevision || "", /^[0-9a-f]{64}$/);
+
+  assert.equal(
+    (await send("issue-unlabeled-598-2", "security", [], "2026-09-02T19:05:00Z")).status,
+    202,
+  );
+  state = (await storage.get("exact-review-queue")) as typeof state;
+  assert.notEqual(
+    state.items["openclaw/fs-safe#598"].decision.sourceContentRevision,
+    firstRevision,
   );
 });
 

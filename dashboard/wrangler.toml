@@ -67,6 +67,9 @@ EXACT_REVIEW_HEARTBEAT_GRACE_MS = "1200000"
 EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS = "60000"
 EXACT_REVIEW_DISPATCH_DEBOUNCE_MS = "90000"
 EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS = "180000"
+# Bump only when a scanner, policy, or deployment change should grant unchanged
+# parked review inputs a fresh bounded retry budget.
+EXACT_REVIEW_RETRY_POLICY_EPOCH = "1"
 EXACT_REVIEW_PENDING_SOFT_LIMIT = "600"
 # A full review consumes about 30 GitHub requests. Keep scheduled review demand
 # at or below 9,000 requests/hour so the 15,000-request installation bucket has

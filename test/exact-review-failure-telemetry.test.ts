@@ -55,6 +55,29 @@ test("review failure source fingerprints distinguish PR base revisions", () => {
     exactReviewFailureSourceFingerprint(decision),
     exactReviewFailureSourceFingerprint({ ...decision, sourceBaseSha: "c".repeat(40) }),
   );
+  assert.notEqual(
+    exactReviewFailureSourceFingerprint(decision),
+    exactReviewFailureSourceFingerprint({ ...decision, sourceAction: "unlocked" }),
+  );
+  assert.notEqual(
+    exactReviewFailureSourceFingerprint(decision),
+    exactReviewFailureSourceFingerprint({ ...decision, targetBranch: "next" }),
+  );
+  const withContent = { ...decision, sourceContentRevision: "d".repeat(64) };
+  assert.equal(
+    exactReviewFailureSourceFingerprint(withContent),
+    exactReviewFailureSourceFingerprint({
+      ...withContent,
+      sourceUpdatedAt: "2026-09-02T19:55:00.000Z",
+    }),
+  );
+  assert.notEqual(
+    exactReviewFailureSourceFingerprint(decision),
+    exactReviewFailureSourceFingerprint({
+      ...decision,
+      sourceUpdatedAt: "2026-09-02T19:55:00.000Z",
+    }),
+  );
 });
 
 test("review failure telemetry deduplicates attempts and detects repeated source failures", () => {

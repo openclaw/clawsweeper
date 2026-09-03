@@ -7,6 +7,7 @@ import {
 import { legacyCommandCommentId } from "../src/repair/command-ack-convergence.ts";
 import { directReReviewIntake } from "../src/repair/direct-re-review-admission.ts";
 import { isExactReviewCloseGuardLabel } from "../src/repair/exact-review-guard-labels.ts";
+import { exactReviewSourceRevisionMaterial } from "./exact-review-source-revision.ts";
 import {
   githubEtagCacheKey,
   githubEtagCacheRequestBody,
@@ -3848,7 +3849,7 @@ async function githubWebhook(request, env, ctx) {
   if ("type" in decision && decision.type === "item") {
     const deliveryId = deliveryHeaders.deliveryId || "";
     let itemDecision: ExactReviewDecision & { installationId: number } = decision;
-    itemDecision = await withPullRequestEditContentRevision({
+    itemDecision = await withItemContentRevision({
       event,
       payload,
       decision: itemDecision,
@@ -4604,34 +4605,29 @@ function exactWebhookTimestamp(value: unknown): string | null {
   return text && Number.isFinite(Date.parse(text)) ? text : null;
 }
 
-async function withPullRequestEditContentRevision({
+async function withItemContentRevision({
   event,
   payload,
   decision,
 }: {
   readonly event: string;
-  readonly payload: GithubPullRequestWebhookPayload;
+  readonly payload: GithubWebhookBasePayload & {
+    readonly issue?: GithubWebhookIssuePayload | null;
+    readonly pull_request?: GithubWebhookPullRequestPayload | null;
+  };
   readonly decision: ExactReviewDecision & { readonly installationId: number };
 }): Promise<ExactReviewDecision & { installationId: number }> {
-  if (
-    event !== "pull_request" ||
-    decision.itemKind !== "pull_request" ||
-    decision.sourceAction !== "edited"
-  ) {
-    return decision;
-  }
-  const pullRequest = objectValue(payload.pull_request);
-  if (
-    typeof pullRequest.title !== "string" ||
-    (pullRequest.body !== null && typeof pullRequest.body !== "string")
-  ) {
-    return decision;
-  }
-  const title = pullRequest.title;
-  const body = pullRequest.body || "";
+  const source =
+    event === "pull_request" && decision.itemKind === "pull_request"
+      ? objectValue(payload.pull_request)
+      : event === "issues" && decision.itemKind === "issue"
+        ? objectValue(payload.issue)
+        : null;
+  const revisionMaterial = exactReviewSourceRevisionMaterial(source);
+  if (!revisionMaterial) return decision;
   return {
     ...decision,
-    sourceContentRevision: await sha256Text(JSON.stringify({ version: 1, title, body })),
+    sourceContentRevision: await sha256Text(JSON.stringify(revisionMaterial)),
   };
 }
 

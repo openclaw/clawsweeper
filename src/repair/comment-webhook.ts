@@ -16,7 +16,10 @@ import {
   staleClosedItemCommandReason,
 } from "./comment-router-core.js";
 import { adaptiveReviewBudgetForPullRequest } from "./adaptive-review-budget.js";
-import { isExactReviewCloseGuardLabel } from "./exact-review-guard-labels.js";
+import {
+  isExactReviewCloseGuardLabel,
+  reviewSourceRevisionLabels,
+} from "./exact-review-guard-labels.js";
 import { commentBodySha256 } from "./comment-router-utils.js";
 import {
   directReReviewAdditionalPrompt,
@@ -363,6 +366,7 @@ export function classifyItemWebhook({ event, payload }: { event: string; payload
     if (!Number.isInteger(itemNumber) || itemNumber <= 0) {
       return { accepted: false, reason: "missing issue number" };
     }
+    const sourceContentRevision = itemContentRevision(issue);
     const sourceUpdatedAt = exactWebhookTimestamp(issue.updated_at);
     return {
       accepted: true,
@@ -374,6 +378,7 @@ export function classifyItemWebhook({ event, payload }: { event: string; payload
       installationId,
       sourceEvent: "issues",
       sourceAction: action,
+      ...(sourceContentRevision ? { sourceContentRevision } : {}),
       ...(sourceUpdatedAt ? { sourceUpdatedAt } : {}),
       supersedesInProgress: ["edited", "unlocked", "unlabeled"].includes(action),
     };
@@ -395,7 +400,7 @@ export function classifyItemWebhook({ event, payload }: { event: string; payload
     const sourceBaseSha = String(asRecord(pull.base).sha ?? "")
       .trim()
       .toLowerCase();
-    const sourceContentRevision = pullRequestEditedContentRevision(action, pull);
+    const sourceContentRevision = itemContentRevision(pull);
     const sourceUpdatedAt = exactWebhookTimestamp(pull.updated_at);
     const reviewBudget = adaptiveReviewBudgetForPullRequest(pull);
     return {
@@ -428,18 +433,30 @@ export function classifyItemWebhook({ event, payload }: { event: string; payload
   return { accepted: false, reason: "unsupported event" };
 }
 
-function pullRequestEditedContentRevision(action: string, pull: LooseRecord) {
+function itemContentRevision(item: LooseRecord) {
+  const revisionMaterial = sourceRevisionMaterial(item);
+  if (!revisionMaterial) return null;
+  return crypto.createHash("sha256").update(JSON.stringify(revisionMaterial)).digest("hex");
+}
+
+function sourceRevisionMaterial(source: LooseRecord) {
   if (
-    action !== "edited" ||
-    typeof pull.title !== "string" ||
-    (pull.body !== null && typeof pull.body !== "string")
+    typeof source.title !== "string" ||
+    (source.body !== null && typeof source.body !== "string") ||
+    typeof source.locked !== "boolean" ||
+    !Array.isArray(source.labels)
   ) {
     return null;
   }
-  return crypto
-    .createHash("sha256")
-    .update(JSON.stringify({ version: 1, title: pull.title, body: pull.body || "" }))
-    .digest("hex");
+  return {
+    version: 2,
+    title: source.title,
+    body: source.body || "",
+    locked: source.locked,
+    close_guard_labels: reviewSourceRevisionLabels(source.labels, {
+      preserveAutomationModeLabels: true,
+    }),
+  };
 }
 
 function isCloseGuardLabel(value: JsonValue) {

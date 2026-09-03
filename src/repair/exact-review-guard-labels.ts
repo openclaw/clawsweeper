@@ -43,3 +43,62 @@ export function isExactReviewCloseGuardLabel(value: unknown): boolean {
       .toLowerCase(),
   );
 }
+
+const REVIEW_SOURCE_LABEL_EXCEPTIONS = new Set([
+  "clawsweeper:human-review",
+  "clawsweeper:manual-only",
+  "clawsweeper:bulk-filed",
+]);
+
+type ReviewSourceRevisionLabelOptions = {
+  preserveAutomationModeLabels?: boolean;
+};
+
+export function isIgnorableReviewSourceRevisionLabel(
+  value: unknown,
+  options: ReviewSourceRevisionLabelOptions = {},
+): boolean {
+  const label = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (!label || label === "proof: override") return !label;
+  if (
+    options.preserveAutomationModeLabels &&
+    (label === AUTOMERGE_LABEL || label === AUTOFIX_LABEL)
+  ) {
+    return false;
+  }
+  return (
+    /^(?:status|rating|proof|merge-risk|impact|issue-rating):/.test(label) ||
+    /^p[0-3]$/.test(label) ||
+    label === "maturity:stable" ||
+    label === "feature: ✨ showcase" ||
+    label === "good first issue" ||
+    label === "mantis: telegram-visible-proof" ||
+    label === "proof: telegram-e2e" ||
+    label === "triage: needs-real-behavior-proof" ||
+    (label.startsWith("clawsweeper:") && !REVIEW_SOURCE_LABEL_EXCEPTIONS.has(label)) ||
+    label === "clawsweeper-recovery-stuck" ||
+    label === "no-stale" ||
+    label === "stale"
+  );
+}
+
+export function reviewSourceRevisionLabels(
+  value: unknown,
+  options: ReviewSourceRevisionLabelOptions = {},
+): string[] {
+  if (!Array.isArray(value)) return [];
+  return [
+    ...new Set(
+      value
+        .map((entry) => {
+          const record = entry !== null && typeof entry === "object" ? entry : {};
+          return String((record as { name?: unknown }).name ?? entry)
+            .trim()
+            .toLowerCase();
+        })
+        .filter((label) => !isIgnorableReviewSourceRevisionLabel(label, options)),
+    ),
+  ].sort();
+}

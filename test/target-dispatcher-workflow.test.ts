@@ -195,3 +195,36 @@ test("target dispatcher acknowledges non-draft PR receipts before review dispatc
     assert.match(run, /issues\/\$ITEM_NUMBER\/comments"\s*\\\s*--method POST/);
   }
 });
+
+test("target dispatcher carries immutable issue and pull-request source identity", () => {
+  for (const source of [liveWorkflow, documentedWorkflow]) {
+    const run = namedStep(dispatchSteps(source), "Dispatch exact ClawSweeper review").run ?? "";
+    assert.match(run, /source_identity_json=/);
+    assert.match(run, /version: 2/);
+    assert.match(run, /const result = \{ queue_claim: queueClaim \}/);
+    assert.match(run, /queueClaim\.source_content_revision/);
+    assert.match(run, /queueClaim\.source_updated_at/);
+    assert.match(run, /queueClaim\.source_head_sha/);
+    assert.match(run, /queueClaim\.source_base_sha/);
+    assert.match(run, /queueClaim\.source_is_draft/);
+    assert.match(run, /result\.ingress_route = "target_dispatcher"/);
+    assert.match(run, /result\.ingress_fingerprint/);
+    assert.doesNotMatch(run, /process\.exit\(0\)/);
+    assert.match(run, /\+ \$source_identity/);
+    assert.equal(
+      [
+        "target_repo",
+        "target_branch",
+        "item_number",
+        "item_kind",
+        "source_event",
+        "source_action",
+        "supersedes_in_progress",
+        "queue_claim",
+        "ingress_route",
+        "ingress_fingerprint",
+      ].length,
+      10,
+    );
+  }
+});

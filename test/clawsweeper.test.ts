@@ -2325,7 +2325,7 @@ test("target dispatcher documents opt-in cross-route identity", () => {
 
   assert.match(dispatcher, /## Cross-route exact-review identity/);
   assert.doesNotMatch(dispatcher, /maintainer decision required/i);
-  assert.match(dispatcher, /ingress_route:"target_dispatcher"/);
+  assert.match(dispatcher, /result\.ingress_route = "target_dispatcher"/);
   assert.match(dispatcher, /ingress_fingerprint/);
   assert.match(dispatcher, /recorded as stale source/);
   assert.match(dispatcher, /later verified\s+direct decision promotes that same queue item/);

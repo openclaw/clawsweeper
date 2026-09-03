@@ -1020,6 +1020,8 @@ test("review item source revision ignores advisory labels but tracks protected l
           { name: "proof: telegram-e2e" },
           { name: "triage: needs-real-behavior-proof" },
           { name: "clawsweeper:reviewed" },
+          { name: "clawsweeper:automerge" },
+          { name: "clawsweeper:autofix" },
           { name: "clawsweeper-recovery-stuck" },
           { name: "no-stale" },
           { name: "stale" },

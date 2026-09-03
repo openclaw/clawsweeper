@@ -20,6 +20,11 @@ on:
         required: false
         type: boolean
         default: false
+      force_unchanged:
+        description: "Explicitly reset unchanged parked-review retry budgets"
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: exact-review-dead-letter-operator
@@ -147,6 +152,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           MAX_TARGETS: ${{ github.event.inputs.max_targets || '100' }}
           EXECUTE: ${{ github.event_name == 'schedule' && 'true' || github.event.inputs.execute }}
+          FORCE_UNCHANGED: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.force_unchanged || 'false' }}
         run: |
           set -euo pipefail
           args=(
@@ -157,6 +163,9 @@ jobs:
           )
           if [[ "$EXECUTE" == "true" ]]; then
             args+=(--execute)
+          fi
+          if [[ "$FORCE_UNCHANGED" == "true" ]]; then
+            args+=(--force-unchanged)
           fi
           node scripts/exact-review-dead-letter-operator.mjs "${args[@]}"
 

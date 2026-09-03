@@ -801,6 +801,7 @@ function createExactReviewAdmissionHarness(
   ) => Response | Promise<Response>,
   options: {
     maxConcurrent?: string;
+    retryPolicyEpoch?: string;
     publicationBatching?: boolean;
     publicationBatchSize?: string;
     publicationFreshLane?: boolean;
@@ -923,6 +924,9 @@ function createExactReviewAdmissionHarness(
           : {}),
       EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "0",
       EXACT_REVIEW_QUEUE_MAX_CONCURRENT: options.maxConcurrent ?? "1",
+      ...(options.retryPolicyEpoch
+        ? { EXACT_REVIEW_RETRY_POLICY_EPOCH: options.retryPolicyEpoch }
+        : {}),
       ...(options.publicationBatching
         ? {
             EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",

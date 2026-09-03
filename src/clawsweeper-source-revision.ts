@@ -2,11 +2,9 @@ import { stableJson } from "./stable-json.js";
 import { reviewPullChecksDigestParts } from "./review-checks-digest.js";
 import { reviewStructuralItemStateDigest } from "./review-structural-cache.js";
 import {
-  GOOD_FIRST_ISSUE_LABEL,
-  MATURITY_LABEL_NAMES,
-  PROOF_OVERRIDE_LABEL,
-} from "./clawsweeper-policy.js";
-import { REVIEW_RECOVERY_STUCK_LABEL } from "./review-recovery-label-backfill.js";
+  isIgnorableReviewSourceRevisionLabel,
+  reviewSourceRevisionLabels,
+} from "./repair/exact-review-guard-labels.js";
 import type { GitInfo, Item, ItemContext } from "./clawsweeper-types.js";
 
 interface SourceRevisionDependencies {
@@ -127,38 +125,11 @@ export function createSourceRevisionTools({
   }
 
   function revisionLabels(labels: unknown): string[] {
-    return (Array.isArray(labels) ? labels : [])
-      .map((label) => normalizeLabelName(String(asRecord(label).name ?? label)))
-      .filter(Boolean)
-      .filter((label) => !isIgnorableSourceRevisionLabel(label))
-      .sort();
+    return reviewSourceRevisionLabels(labels);
   }
 
   function isIgnorableSourceRevisionLabel(label: string) {
-    if (label === normalizeLabelName(PROOF_OVERRIDE_LABEL)) return false;
-    return (
-      isClawSweeperAdvisorySourceRevisionLabel(label) ||
-      (label.startsWith("clawsweeper:") &&
-        !["clawsweeper:human-review", "clawsweeper:manual-only", "clawsweeper:bulk-filed"].includes(
-          label,
-        )) ||
-      label === normalizeLabelName(REVIEW_RECOVERY_STUCK_LABEL) ||
-      label === "no-stale" ||
-      label === "stale"
-    );
-  }
-
-  function isClawSweeperAdvisorySourceRevisionLabel(label: string): boolean {
-    return (
-      /^(?:status|rating|proof|merge-risk|impact|issue-rating):/.test(label) ||
-      /^p[0-3]$/.test(label) ||
-      MATURITY_LABEL_NAMES.has(label) ||
-      label === "feature: ✨ showcase" ||
-      label === GOOD_FIRST_ISSUE_LABEL ||
-      label === "mantis: telegram-visible-proof" ||
-      label === "proof: telegram-e2e" ||
-      label === "triage: needs-real-behavior-proof"
-    );
+    return isIgnorableReviewSourceRevisionLabel(normalizeLabelName(label));
   }
 
   function itemSourceRevisionSha256ForTest(issue: unknown, comments: unknown[] = []): string {

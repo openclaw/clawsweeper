@@ -104,7 +104,13 @@ After the third automatic recovery, operator-only HMAC-signed routes provide a
 bounded parked-review inventory and guarded resolution/fresh-recovery path. The
 five-minute dead-letter reconcile workflow inspects at most 100 parked targets,
 resolves terminal or repository-gone targets with an audit note, and can queue
-at most five fresh reviews with replay-safe recovery keys. Manual runs remain
+at most five fresh reviews with replay-safe recovery keys. A fresh review now
+requires a changed source action, head, base, draft state, body/content revision, fallback
+source timestamp when no content digest exists, or retry policy epoch; a queue
+revision by itself cannot reset the budget. Bump
+`EXACT_REVIEW_RETRY_POLICY_EPOCH` when a scanner, policy, or deployment change
+should reopen unchanged inputs. Manual workflow dispatches may explicitly opt
+into `force_unchanged` for a bounded operator override. Manual runs remain
 read-only unless `execute` is enabled; scheduled runs execute. Their sanitized
 parked inventory is uploaded beside the publication dead-letter inventory.
 Parked records carrying maintainer-command context remain visible with an

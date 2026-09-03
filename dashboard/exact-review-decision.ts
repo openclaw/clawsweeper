@@ -692,6 +692,9 @@ export function mergePendingExactReviewDecision(
   ) {
     delete merged.sourceDeliveryId;
   }
+  if (Object.hasOwn(next, "sourceUpdatedAt") && !Object.hasOwn(next, "sourceContentRevision")) {
+    delete merged.sourceContentRevision;
+  }
   return merged;
 }
 
