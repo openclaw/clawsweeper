@@ -667,7 +667,9 @@ export function uniqueStrings(values: Iterable<unknown>): string[] {
 export function parseAllowedValidationCommand(command: unknown): string[] {
   const text = String(command ?? "").trim();
   if (!text) throw new Error("empty validation command");
-  const parts = normalizeEnvInvocation(splitValidationCommand(text));
+  const parts = normalizeDirectLocalShellScriptInvocation(
+    normalizeEnvInvocation(splitValidationCommand(text)),
+  );
   return validateAllowedValidationCommandParts(parts, text);
 }
 
@@ -1019,10 +1021,16 @@ function hasInlineInterpreterCode(parts: readonly string[]) {
   return false;
 }
 
-function isSafeLocalShellScriptInvocation(commandParts: readonly string[]) {
-  const executable = String(commandParts[0] ?? "").toLowerCase();
-  if (!["sh", "bash"].includes(executable)) return false;
-  const script = String(commandParts[1] ?? "");
+function normalizeDirectLocalShellScriptInvocation(parts: readonly string[]): string[] {
+  const commandParts = stripEnvPrefix(parts);
+  if (commandParts.length !== 1) return [...parts];
+  const script = String(commandParts[0] ?? "");
+  if (!script.startsWith("./") || !isSafeLocalShellScriptPath(script)) return [...parts];
+  const envPrefix = parts.slice(0, parts.length - commandParts.length);
+  return [...envPrefix, "bash", script];
+}
+
+function isSafeLocalShellScriptPath(script: string) {
   if (
     !script ||
     script.startsWith("-") ||
@@ -1033,6 +1041,13 @@ function isSafeLocalShellScriptInvocation(commandParts: readonly string[]) {
     return false;
   }
   return /(?:^|\/)[A-Za-z0-9_.-]+\.sh$/.test(script);
+}
+
+function isSafeLocalShellScriptInvocation(commandParts: readonly string[]) {
+  const executable = String(commandParts[0] ?? "").toLowerCase();
+  if (!["sh", "bash"].includes(executable)) return false;
+  const script = String(commandParts[1] ?? "");
+  return isSafeLocalShellScriptPath(script);
 }
 
 function hasUnsafePackageRunner(parts: readonly string[]) {
