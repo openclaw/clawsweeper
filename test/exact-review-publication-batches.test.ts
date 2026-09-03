@@ -1440,6 +1440,71 @@ for (const scenario of ["fresh", "stale fallback", "terminal clears", "too old",
   });
 }
 
+for (const transition of ["terminal", "retryable"]) {
+  test(`batch claim ignores cached public admission when the live probe is ${transition}`, async () => {
+    const originalNow = Date.now;
+    let now = 9_700_000;
+    Date.now = () => now;
+    let outcome = "public";
+    let probes = 0;
+    try {
+      const storage = new TestStorage();
+      const queue = new ExactReviewQueue(
+        { storage },
+        {
+          EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+          EXACT_REVIEW_HOSTED_TARGET_ADMISSION_MAX_STALE_MS: "1800000",
+          hostedPublicTargetProbe: async () => {
+            probes += 1;
+            return outcome;
+          },
+        },
+      );
+      assert.equal((await queue.fetch(publicationRequest("cached-841", 841, "8841"))).status, 202);
+      assert.equal(probes, 1);
+      // Still inside the 60 s fresh window: intake would not probe again, but
+      // the target turned private (or cannot be rechecked) in the meantime.
+      now += 1_000;
+      outcome = transition;
+      const claim = await (
+        await queue.fetch(
+          batchRequest("/publication-batches/claim", {
+            claim_id: "claim-cached-admission",
+            lease_owner: "worker-1",
+            max_items: 4,
+          }),
+        )
+      ).json();
+      assert.equal(claim.claimed, false, "credential-bearing claim must not trust the cache");
+      assert.equal(
+        claim.reason,
+        transition === "terminal" ? "private_target_unsupported" : "target_visibility_unverified",
+      );
+      assert.equal(probes, 2, "the claim performed its own live probe");
+      const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+      assert.equal(stats.lanes.publication.pending, transition === "terminal" ? 0 : 1);
+      if (transition === "terminal") {
+        assert.equal(storage.kv.get("hosted-target-admission:openclaw/openclaw"), undefined);
+        assert.equal(
+          (await queue.fetch(publicationRequest("after-private", 842, "8842"))).status,
+          422,
+          "intake is revoked too once the live probe observed a private target",
+        );
+      } else {
+        // A transient claim-side failure must not erase intake's resilience.
+        assert.equal(
+          (await queue.fetch(publicationRequest("after-transient", 843, "8843"))).status,
+          202,
+          "intake still admits from the valid cached observation",
+        );
+        assert.equal(probes, 2, "intake inside the fresh window did not probe again");
+      }
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+}
+
 test("alarm preserves command acknowledgements after batch expiry while pruning ordinary stale publications", async () => {
   const originalNow = Date.now;
   const originalFetch = globalThis.fetch;

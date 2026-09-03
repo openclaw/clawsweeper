@@ -1022,6 +1022,7 @@ export class ExactReviewQueue {
           targetRepo,
           hostedTargetMetadataToken,
           this.hasPreparedHostedTargetEligibility(request, targetRepo),
+          true,
         );
         if (admission.outcome !== "public") {
           return hostedTargetProbeResponse(admission);
@@ -1070,6 +1071,7 @@ export class ExactReviewQueue {
         decision.targetRepo,
         hostedTargetMetadataToken,
         this.hasPreparedHostedTargetEligibility(request, decision.targetRepo),
+        true,
       );
       if (admission.outcome !== "public") {
         return hostedTargetProbeResponse(admission);
@@ -1141,6 +1143,7 @@ export class ExactReviewQueue {
         decision.targetRepo,
         hostedTargetMetadataToken,
         this.hasPreparedHostedTargetEligibility(request, decision.targetRepo),
+        true,
       );
       if (admission.outcome !== "public") {
         return hostedTargetProbeResponse(admission);
@@ -1319,6 +1322,7 @@ export class ExactReviewQueue {
         decision.targetRepo,
         hostedTargetMetadataToken,
         this.hasPreparedHostedTargetEligibility(request, decision.targetRepo),
+        true,
       );
       if (admission.outcome !== "public") return hostedTargetProbeResponse(admission);
 
@@ -7632,6 +7636,11 @@ export class ExactReviewQueue {
     targetRepo: string,
     hostedTargetMetadataToken: HostedTargetMetadataToken,
     eligibilityPrepared = false,
+    // Only intake routes may consume a cached public observation. Review
+    // claims, dispatch, batch claims, and acknowledgement paths hand out
+    // credential-bearing work, so they always require a current live public
+    // probe (fail closed).
+    intake = false,
   ): Promise<HostedTargetAdmission> {
     const normalizedRepo = targetRepo.trim().toLowerCase();
     const cacheKey = `hosted-target-admission:${normalizedRepo}`;
@@ -7674,7 +7683,7 @@ export class ExactReviewQueue {
       age >= 0 &&
       age < maxStaleMs;
     if (!cachedPublic) this.storage.kv.delete(cacheKey);
-    if (cachedPublic && age < exactReviewHostedTargetAdmissionFreshMs(this.env)) {
+    if (intake && cachedPublic && age < exactReviewHostedTargetAdmissionFreshMs(this.env)) {
       return { outcome: "public" };
     }
     const injected = this.env.hostedPublicTargetProbe;
@@ -7713,16 +7722,16 @@ export class ExactReviewQueue {
       // Re-read after the probe: a concurrent terminal observation revokes fallback.
       const current = objectValue(this.storage.kv.get(cacheKey));
       const currentAge = Date.now() - Number(current.observedAt);
-      if (
+      const currentValid =
         maxStaleMs > 0 &&
         current.outcome === "public" &&
         typeof current.observedAt === "number" &&
         currentAge >= 0 &&
-        currentAge < maxStaleMs
-      ) {
-        return { outcome: "public" };
-      }
-      this.storage.kv.delete(cacheKey);
+        currentAge < maxStaleMs;
+      if (intake && currentValid) return { outcome: "public" };
+      // A transient failure on a live-only path is not evidence against the
+      // target; keep a still-valid observation for intake and drop only stale.
+      if (!currentValid) this.storage.kv.delete(cacheKey);
     }
     return admission;
   }

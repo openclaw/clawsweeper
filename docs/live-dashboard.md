@@ -466,9 +466,15 @@ arrivals wait for the next departure; changed or removed members are skipped.
 An empty subset retires that reservation and requests another preflight.
 
 Eligible hosted targets retain successful public-admission observations in
-the queue's durable KV. `EXACT_REVIEW_HOSTED_TARGET_ADMISSION_FRESH_MS` defaults
-to 60,000 ms without another probe. After that window, a retryable probe may
-reuse public admission until `EXACT_REVIEW_HOSTED_TARGET_ADMISSION_MAX_STALE_MS`
+the queue's durable KV. Only the signed intake routes (`/enqueue`,
+`/command-intake`, `/branch-authority`, `/source-authority`) may consume that
+cache; review claims, dispatch, batch claims, and acknowledgement paths always
+require a current live public probe before handing out credential-bearing
+work, so a target that turns private is refused there immediately (a batch
+fetch relies on the probe its claim performed). On intake,
+`EXACT_REVIEW_HOSTED_TARGET_ADMISSION_FRESH_MS` (60,000 ms by default) admits
+without another probe, and after that window a retryable probe may reuse public
+admission until `EXACT_REVIEW_HOSTED_TARGET_ADMISSION_MAX_STALE_MS`
 (1,800,000 ms by default). Terminal probes clear the entry; max-stale zero
 disables both cache tiers. Expired entries are removed when read.
 Terminal visibility or eligibility observations persist a revocation tombstone
