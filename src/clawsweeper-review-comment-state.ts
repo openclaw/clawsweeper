@@ -32,6 +32,26 @@ export function normalizeNoopReviewMarkerMetadata(body: string): string {
 }
 import type { createReviewCommentIdentity } from "./clawsweeper-review-comment-identity.js";
 
+export function expireReviewStartStatusLease(body: string, expiresAt: string): string {
+  const trailing = trailingHtmlComments(body);
+  const identity = /^<!--\s*clawsweeper-review(?:-lease)?\s+item=([1-9]\d*)\s*-->$/i.exec(
+    trailing.at(-1) ?? "",
+  );
+  const marker = trailing.at(-2) ?? "";
+  if (
+    !identity ||
+    !/^<!--\s*clawsweeper-review-status:started\b[^>]*-->$/i.test(marker) ||
+    /\sitem=(\d+)(?=\s|-->)/.exec(marker)?.[1] !== identity[1]
+  )
+    return body;
+  const rewritten = marker.replace(
+    /(\slease_expires_at=)[^\s>]+/,
+    (_match, prefix: string) => `${prefix}${expiresAt}`,
+  );
+  const offset = body.lastIndexOf(marker);
+  return body.slice(0, offset) + rewritten + body.slice(offset + marker.length);
+}
+
 export function createReviewCommentState(
   dependencies: ReviewCommentWorkflowDependencies & ReturnType<typeof createReviewCommentIdentity>,
 ) {

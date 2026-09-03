@@ -4063,12 +4063,16 @@ export class ExactReviewQueue {
     await this.processBranchAuthorityReservations(startedAt, hostedTargetMetadataToken);
     await this.processSourceAuthorityReservations(startedAt, hostedTargetMetadataToken);
     await this.processCommandIntakes(startedAt, hostedTargetMetadataToken);
+    const pruneBatchItemKeys = new Set<string>(
+      this.batchStore.activeLeaseSnapshot(startedAt).itemKeys,
+    );
     let snapshot = this.storage.transactionSync(() => {
       this.pruneDeliveryReceiptsSync(startedAt);
       this.commandIntakeStore.pruneTerminalReceipts(startedAt);
       this.directPublicationStore.pruneTerminalSync(startedAt);
       const current = this.readStateSync();
       this.syncLegacyCompatibilitySync(current);
+      this.pruneStalePublicationsSync(current, pruneBatchItemKeys);
       return current;
     });
     let snapshotBatchOwnership = this.batchStore.activeLeaseSnapshot(startedAt);
@@ -5879,6 +5883,79 @@ export class ExactReviewQueue {
     return json({ ok: true, superseded, skipped: candidates.length - superseded });
   }
 
+  private stalePublicationCandidatesSync(
+    state: ExactReviewQueueState,
+    activeBatchItemKeys: ReadonlySet<string>,
+  ) {
+    const newestByTarget = new Map<string, number>();
+    const versioned = Object.values(state.items).flatMap((item) => {
+      if (item.terminalFinalization || !exactReviewQueueIsPublication(item)) return [];
+      const revision = exactReviewPublicationRevision(item.decision);
+      if (!revision) return [];
+      newestByTarget.set(
+        revision.targetKey,
+        Math.max(
+          newestByTarget.get(revision.targetKey) ?? 0,
+          revision.sourceRevision,
+          this.publicationHeadRevisionSync(revision.targetKey),
+        ),
+      );
+      return [{ item, revision, lineage: exactReviewPublicationLineage(item.decision) }];
+    });
+    const stale = versioned
+      .filter(
+        ({ item, revision }) =>
+          revision.sourceRevision < (newestByTarget.get(revision.targetKey) ?? 0) &&
+          (item.state === "pending" || item.state === "parked") &&
+          !activeBatchItemKeys.has(item.key),
+      )
+      .sort(
+        (left, right) =>
+          left.item.createdAt - right.item.createdAt || left.item.key.localeCompare(right.item.key),
+      );
+    return { versioned, newestByTarget, stale };
+  }
+
+  private pruneStalePublicationsSync(
+    state: ExactReviewQueueState,
+    activeBatchItemKeys: ReadonlySet<string>,
+  ) {
+    const { stale, newestByTarget } = this.stalePublicationCandidatesSync(
+      state,
+      activeBatchItemKeys,
+    );
+    let changed = 0;
+    for (const { item, revision } of stale
+      .filter(({ item }) => !exactReviewQueueHasCommandContext(item))
+      .slice(0, exactReviewStalePublicationPruneLimit(this.env))) {
+      const current = state.items[item.key];
+      const currentRevision = current ? exactReviewPublicationRevision(current.decision) : null;
+      if (
+        !current ||
+        current.terminalFinalization ||
+        exactReviewQueueHasCommandContext(current) ||
+        current.revision !== item.revision ||
+        !currentRevision ||
+        currentRevision.sourceRevision !== revision.sourceRevision ||
+        (current.state !== "pending" && current.state !== "parked") ||
+        activeBatchItemKeys.has(current.key) ||
+        currentRevision.sourceRevision >=
+          (newestByTarget.get(currentRevision.targetKey) ?? currentRevision.sourceRevision)
+      ) {
+        continue;
+      }
+      delete state.items[current.key];
+      changed += 1;
+    }
+    if (changed) {
+      this.writeStateSync(state);
+      this.incrementQueueMetricsSync({
+        publicationCompleted: changed,
+        publicationSuperseded: changed,
+      });
+    }
+  }
+
   private async reconcilePublicationCandidates(
     value: unknown,
     hostedTargetMetadataToken: HostedTargetMetadataToken,
@@ -5926,23 +6003,10 @@ export class ExactReviewQueue {
           exactReviewLegacyTerminalPublicationCandidate(item, legacyAuthorityByTarget),
       )
       .sort((left, right) => left.createdAt - right.createdAt || left.key.localeCompare(right.key));
-    const newestByTarget = new Map<string, number>();
-    const versioned = Object.values(state.items).flatMap((item) => {
-      if (item.terminalFinalization) return [];
-      const revision = exactReviewPublicationRevision(item.decision);
-      if (!revision) return [];
-      newestByTarget.set(
-        revision.targetKey,
-        Math.max(newestByTarget.get(revision.targetKey) ?? 0, revision.sourceRevision),
-      );
-      return [{ item, revision, lineage: exactReviewPublicationLineage(item.decision) }];
-    });
-    for (const [targetKey, sourceRevision] of newestByTarget) {
-      newestByTarget.set(
-        targetKey,
-        Math.max(sourceRevision, this.publicationHeadRevisionSync(targetKey)),
-      );
-    }
+    const { versioned, newestByTarget, stale } = this.stalePublicationCandidatesSync(
+      state,
+      activeBatchItemKeys,
+    );
     const legacyStateBatchAuthorityByTarget = exactReviewLegacyStateBatchPublicationAuthorityIndex(
       state,
       activeBatchItemKeys,
@@ -5967,17 +6031,8 @@ export class ExactReviewQueue {
       retainedKey?: string;
     };
     const candidatesByKey = new Map<string, ReconcileCandidate>();
-    for (const entry of versioned) {
-      if (
-        entry.revision.sourceRevision < (newestByTarget.get(entry.revision.targetKey) ?? 0) &&
-        (entry.item.state === "pending" || entry.item.state === "parked") &&
-        !activeBatchItemKeys.has(entry.item.key)
-      ) {
-        candidatesByKey.set(entry.item.key, {
-          ...entry,
-          reason: "stale_revision",
-        });
-      }
+    for (const entry of stale) {
+      candidatesByKey.set(entry.item.key, { ...entry, reason: "stale_revision" });
     }
 
     const lineageGroups = new Map<string, typeof versioned>();
@@ -6296,6 +6351,7 @@ export class ExactReviewQueue {
     publicationCapacity: number,
     requestedSize: number,
     leaseSize: number,
+    probedPairs: ReadonlySet<string> | null = null,
   ) {
     // The outer comparison charges one publisher slot for the whole batch. The
     // shared helper counts candidate rows, so widen only its scan window by
@@ -6306,6 +6362,15 @@ export class ExactReviewQueue {
       ...this.supersededPublicationItemKeysSync(state),
     ]);
     for (const item of Object.values(state.items)) {
+      // Apply the departure fence before admission consumes its bounded scan.
+      if (
+        probedPairs &&
+        item.state === "pending" &&
+        exactReviewQueueIsPublication(item) &&
+        !probedPairs.has(JSON.stringify([item.key, item.revision]))
+      ) {
+        excludedItemKeys.add(item.key);
+      }
       // Direct receipts and terminal acknowledgement drivers must remain on
       // the normal publisher. Exclude them before admission so they cannot
       // consume a bounded batch scan slot and starve an ordinary publication.
@@ -6336,7 +6401,14 @@ export class ExactReviewQueue {
             // immutable lifecycle plan must return through the fenced legacy
             // publisher, which is the only path that replays that plan.
             .filter(exactReviewQueueIsBatchablePublication)
-            .filter((item) => !item.terminalFinalization);
+            .filter((item) => !item.terminalFinalization)
+            // A dispatched workflow may claim only members that passed its
+            // departure's terminal preflight. Filter before the lease-size cut so
+            // an unprobed fresh arrival cannot push a probed member out of the
+            // batch; the arrival waits for the next departure instead.
+            .filter(
+              (item) => !probedPairs || probedPairs.has(JSON.stringify([item.key, item.revision])),
+            );
     const selection = exactReviewPublicationBatchSelection(
       readyCandidates,
       freshItemKeys,
@@ -6504,7 +6576,14 @@ export class ExactReviewQueue {
         effective_max_items: leaseSize,
       });
     }
-    let candidates = this.publicationBatchClaimCandidates(state, now, requestedSize, leaseSize);
+    let probedPairs = exactReviewPublicationBatchReservedProbe(state, now, dispatch?.id);
+    let candidates = this.publicationBatchClaimCandidates(
+      state,
+      now,
+      requestedSize,
+      leaseSize,
+      probedPairs,
+    );
     const admissions = new Map(
       await Promise.all(
         [...new Set(candidates.map((item) => item.decision.targetRepo))].map(
@@ -6515,7 +6594,14 @@ export class ExactReviewQueue {
     );
     now = Date.now();
     state = this.readStateSync();
-    candidates = this.publicationBatchClaimCandidates(state, now, requestedSize, leaseSize);
+    probedPairs = exactReviewPublicationBatchReservedProbe(state, now, dispatch?.id);
+    candidates = this.publicationBatchClaimCandidates(
+      state,
+      now,
+      requestedSize,
+      leaseSize,
+      probedPairs,
+    );
     if (candidates.some((item) => !admissions.has(item.decision.targetRepo))) {
       return unclaimedPublicationBatch(requestedSize, leaseSize, { preflight_required: true });
     }
@@ -6577,7 +6663,9 @@ export class ExactReviewQueue {
       !terminalProbeRequired ||
       legacyDispatchReservation ||
       (dispatchReservationActive &&
-        state.dispatcher.publicationBatchTerminalProbe === candidateProbe &&
+        (probedPairs
+          ? candidates.length > 0
+          : state.dispatcher.publicationBatchTerminalProbe === candidateProbe) &&
         dispatchMatchesReservation);
     if (!probeMatches) {
       // Only the workflow holding this exact departure may retire its stale
@@ -7519,6 +7607,7 @@ export class ExactReviewQueue {
     now: number,
     requestedSize: number,
     leaseSize: number,
+    probedPairs: ReadonlySet<string> | null = null,
   ) {
     const control = this.refreshPublicationControlSync(state, now);
     return this.publicationBatchCandidates(
@@ -7535,6 +7624,7 @@ export class ExactReviewQueue {
       ),
       requestedSize,
       leaseSize,
+      probedPairs,
     );
   }
 
@@ -7543,9 +7633,30 @@ export class ExactReviewQueue {
     hostedTargetMetadataToken: HostedTargetMetadataToken,
     eligibilityPrepared = false,
   ): Promise<HostedTargetAdmission> {
+    const normalizedRepo = targetRepo.trim().toLowerCase();
+    const cacheKey = `hosted-target-admission:${normalizedRepo}`;
+    const revocationKey = `hosted-target-admission-revoked:${normalizedRepo}`;
+    const maxStaleMs = exactReviewHostedTargetAdmissionMaxStaleMs(this.env);
+    const revocationRetentionMs = Math.max(maxStaleMs, 30 * 60_000);
+    // Revocations carry a unique token, not only a timestamp: two observations
+    // inside one millisecond, or a revocation recorded after an expired
+    // tombstone was deleted, must still fence an in-flight probe.
+    const revocation = objectValue(this.storage.kv.get(revocationKey));
+    if (typeof revocation.at === "number" && Date.now() - revocation.at >= revocationRetentionMs) {
+      this.storage.kv.delete(revocationKey);
+    }
+    const revocationToken = () => {
+      const token = objectValue(this.storage.kv.get(revocationKey)).token;
+      return typeof token === "string" ? token : null;
+    };
+    const revoke = () => {
+      this.storage.kv.delete(cacheKey);
+      this.storage.kv.put(revocationKey, { at: Date.now(), token: crypto.randomUUID() });
+    };
     if (!eligibilityPrepared) {
       const eligibility = await this.hostedTargetEligibility(targetRepo);
       if (eligibility.outcome !== "eligible") {
+        if (eligibility.outcome === "terminal") revoke();
         return eligibility.outcome === "terminal"
           ? { outcome: "terminal" }
           : {
@@ -7554,22 +7665,66 @@ export class ExactReviewQueue {
             };
       }
     }
+    const cached = objectValue(this.storage.kv.get(cacheKey));
+    const age = Date.now() - Number(cached.observedAt);
+    const cachedPublic =
+      maxStaleMs > 0 &&
+      cached.outcome === "public" &&
+      typeof cached.observedAt === "number" &&
+      age >= 0 &&
+      age < maxStaleMs;
+    if (!cachedPublic) this.storage.kv.delete(cacheKey);
+    if (cachedPublic && age < exactReviewHostedTargetAdmissionFreshMs(this.env)) {
+      return { outcome: "public" };
+    }
     const injected = this.env.hostedPublicTargetProbe;
+    const probeStartedAt = Date.now();
+    const probeRevocationToken = revocationToken();
+    let admission: HostedTargetAdmission;
     if (typeof injected === "function") {
-      return normalizeHostedTargetAdmission(await injected(targetRepo));
+      admission = normalizeHostedTargetAdmission(await injected(targetRepo));
+    } else {
+      try {
+        admission = await probeHostedPublicTarget(
+          targetRepo,
+          await hostedTargetMetadataToken(),
+          (input, init) => fetch(input, init),
+          { apiUrl: (path) => githubApiUrl(this.env, path) },
+        );
+      } catch (error) {
+        admission = hostedTargetRetryableAdmission(error);
+      }
     }
-    try {
-      return await probeHostedPublicTarget(
-        targetRepo,
-        await hostedTargetMetadataToken(),
-        (input, init) => fetch(input, init),
-        {
-          apiUrl: (path) => githubApiUrl(this.env, path),
-        },
-      );
-    } catch (error) {
-      return hostedTargetRetryableAdmission(error);
+    if (admission.outcome === "public") {
+      // A tombstone that merely expired during the probe is not a new
+      // observation; any token the probe did not start with is.
+      const currentRevocationToken = revocationToken();
+      if (currentRevocationToken !== null && currentRevocationToken !== probeRevocationToken) {
+        return { outcome: "terminal" };
+      }
+      // A probe outliving revocation retention cannot safely repopulate admission.
+      if (Date.now() - probeStartedAt >= revocationRetentionMs) return { outcome: "retryable" };
+      if (maxStaleMs > 0) {
+        this.storage.kv.put(cacheKey, { outcome: "public", observedAt: Date.now() });
+      }
+    } else if (admission.outcome === "terminal") {
+      revoke();
+    } else if (admission.outcome === "retryable") {
+      // Re-read after the probe: a concurrent terminal observation revokes fallback.
+      const current = objectValue(this.storage.kv.get(cacheKey));
+      const currentAge = Date.now() - Number(current.observedAt);
+      if (
+        maxStaleMs > 0 &&
+        current.outcome === "public" &&
+        typeof current.observedAt === "number" &&
+        currentAge >= 0 &&
+        currentAge < maxStaleMs
+      ) {
+        return { outcome: "public" };
+      }
+      this.storage.kv.delete(cacheKey);
     }
+    return admission;
   }
 
   private async hostedTargetEligibility(targetRepo: string): Promise<HostedTargetEligibility> {
@@ -13993,6 +14148,55 @@ function exactReviewPublicationBatchCandidateProbe(
   candidates: ReadonlyArray<Pick<ExactReviewQueueItem, "key" | "revision">>,
 ) {
   return JSON.stringify(candidates.map((candidate) => [candidate.key, candidate.revision]));
+}
+
+function exactReviewPublicationBatchReservedProbe(
+  state: ExactReviewQueueState,
+  now: number,
+  dispatchId: string | undefined,
+): Set<string> | null {
+  const dispatcher = state.dispatcher;
+  if (
+    !dispatchId ||
+    dispatcher?.publicationBatchDispatchedAt === undefined ||
+    dispatchId !== dispatcher.publicationBatchDispatchId ||
+    Number(dispatcher.publicationBatchDispatchPendingUntil || 0) <= now
+  )
+    return null;
+  try {
+    const pairs: unknown = JSON.parse(dispatcher.publicationBatchTerminalProbe ?? "");
+    if (
+      !Array.isArray(pairs) ||
+      !pairs.every(
+        (pair) =>
+          Array.isArray(pair) &&
+          pair.length === 2 &&
+          typeof pair[0] === "string" &&
+          pair[0].length > 0 &&
+          Number.isSafeInteger(pair[1]) &&
+          pair[1] > 0,
+      )
+    )
+      return null;
+    return new Set(pairs.map((pair) => JSON.stringify(pair)));
+  } catch {
+    return null;
+  }
+}
+
+function exactReviewHostedTargetAdmissionFreshMs(env) {
+  return Math.max(0, numberFrom(env.EXACT_REVIEW_HOSTED_TARGET_ADMISSION_FRESH_MS, 60_000));
+}
+
+function exactReviewHostedTargetAdmissionMaxStaleMs(env) {
+  return Math.max(
+    0,
+    numberFrom(env.EXACT_REVIEW_HOSTED_TARGET_ADMISSION_MAX_STALE_MS, 30 * 60_000),
+  );
+}
+
+function exactReviewStalePublicationPruneLimit(env) {
+  return Math.max(0, Math.floor(numberFrom(env.EXACT_REVIEW_STALE_PUBLICATION_PRUNE_LIMIT, 100)));
 }
 
 function exactReviewPublicationBatchLeaseMs(env) {

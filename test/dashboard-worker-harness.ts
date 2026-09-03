@@ -92,6 +92,15 @@ function withHostedTargetAdmissionDefaults<Env extends Record<string, unknown>>(
       value: async () => "public",
     });
   }
+  // Visibility fencing tests exercise each live probe; cache policy has its own queue tests.
+  if (!Object.hasOwn(prepared, "EXACT_REVIEW_HOSTED_TARGET_ADMISSION_MAX_STALE_MS")) {
+    Object.defineProperty(prepared, "EXACT_REVIEW_HOSTED_TARGET_ADMISSION_MAX_STALE_MS", {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: "0",
+    });
+  }
   return prepared;
 }
 

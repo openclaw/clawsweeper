@@ -2720,7 +2720,7 @@ test("exact-review batch claims keep a newer departure fence when an older workf
   }
 });
 
-test("matching stale batch departures release their own fence and redispatch current work", async () => {
+test("matching empty batch departures release their own fence and redispatch current work", async () => {
   const originalNow = Date.now;
   let now = Date.parse("2026-07-25T14:00:00.000Z");
   Date.now = () => now;
@@ -2765,6 +2765,18 @@ test("matching stale batch departures release their own fence and redispatch cur
     };
     const firstDispatch = reserved.dispatcher;
     assert.ok(firstDispatch.publicationBatchTerminalProbe);
+    const superseded = await harness.queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/publications/supersede", {
+        method: "POST",
+        body: JSON.stringify({
+          items: [9251, 9252].map((number) => ({
+            item_key: `openclaw/gogcli#${number}@publish:${number * 10}:1`,
+            revision: 1,
+          })),
+        }),
+      }),
+    );
+    assert.equal((await superseded.json()).superseded, 2);
 
     assert.equal(
       (
@@ -2802,7 +2814,7 @@ test("matching stale batch departures release their own fence and redispatch cur
     assert.equal(released.dispatcher.publicationBatchDispatchPendingUntil, undefined);
     assert.equal(released.dispatcher.publicationBatchTerminalProbe, undefined);
 
-    now += 60_000;
+    now += 300_000;
     await harness.queue.alarm();
     assert.equal(harness.batchDispatches, 2);
     const refreshed = (await harness.storage.get("exact-review-queue")) as typeof reserved;

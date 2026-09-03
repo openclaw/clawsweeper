@@ -1270,6 +1270,7 @@ const {
   failedReviewRetryStatePath,
   readFailedReviewRetryState,
   reserveReviewLeaseCommand,
+  expireReviewLeaseCommand,
   retryFailedReviewsCommand,
 } = commandOperations;
 
@@ -1581,6 +1582,7 @@ function liveProofCommentCommand(args: Args): void {
 const COMMAND_HANDLERS: Readonly<Record<string, CommandHandler<Args>>> = {
   plan: planCommand,
   "reserve-review-lease": reserveReviewLeaseCommand,
+  "expire-review-lease": expireReviewLeaseCommand,
   review: reviewCommand,
   "retry-failed-reviews": retryFailedReviewsCommand,
   "apply-artifacts": applyArtifactsCommand,

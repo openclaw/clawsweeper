@@ -26,6 +26,42 @@ import {
 } from "./helpers.ts";
 import { scheduledReviewSemanticSourceRevision } from "../scripts/classify-scheduled-review-noop.ts";
 
+test("queued publication expires only its posted review lease after successful handoff", () => {
+  const steps = YAML.parse(readText(".github/workflows/sweep.yml")).jobs["event-review-apply"]
+    .steps;
+  const index = steps.findIndex((entry) => entry.id === "queue-exact-review-publication");
+  const expiry = steps[index + 1];
+  assert.equal(expiry.name, "Expire queued exact review lease");
+  assert.equal(expiry["continue-on-error"], true);
+  assert.equal(expiry.env.GH_TOKEN, "${{ steps.target-write-token.outputs.token }}");
+  assert.equal(expiry.env.COMMENT_ID, "${{ steps.reserve-exact-review-lease.outputs.comment_id }}");
+  assert.match(expiry.run, /node dist\/clawsweeper.js expire-review-lease/);
+  assert.match(expiry.run, /--comment-id "\$COMMENT_ID"/);
+  assert.match(expiry.if, /always\(\)/);
+  assert.match(expiry.if, /!cancelled\(\)/);
+  for (const queued of ["success", "failure"]) {
+    for (const accepted of ["true", "false"]) {
+      for (const reservation of ["posted", "held", "superseded"]) {
+        const expression = expiry.if
+          .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
+          .replace("always()", "true")
+          .replace("cancelled()", "false")
+          .replace("steps.claim-exact-review-queue.outputs.claimed", "'true'")
+          .replace("steps.queue-exact-review-publication.outcome", JSON.stringify(queued))
+          .replace(
+            "steps.direct-exact-review-publication.outputs.accepted",
+            JSON.stringify(accepted),
+          )
+          .replace("steps.reserve-exact-review-lease.outputs.status", JSON.stringify(reservation));
+        assert.equal(
+          Function(`return (${expression});`)(),
+          queued === "success" && accepted !== "true" && reservation === "posted",
+        );
+      }
+    }
+  }
+});
+
 test("exact review failure annotation follows logical generation and preserves the failure gate", () => {
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
   const failure = workflow.jobs["event-review-apply"].steps.find(

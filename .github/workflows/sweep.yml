@@ -1717,6 +1717,19 @@ jobs:
           done
           exit 1
 
+      - name: Expire queued exact review lease
+        if: ${{ always() && !cancelled() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.queue-exact-review-publication.outcome == 'success' && steps.direct-exact-review-publication.outputs.accepted != 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
+          COMMENT_ID: ${{ steps.reserve-exact-review-lease.outputs.comment_id }}
+        run: |
+          set -euo pipefail
+          node dist/clawsweeper.js expire-review-lease \
+            --repo "$TARGET_REPO" --item-number "$ITEM_NUMBER" --comment-id "$COMMENT_ID"
+
       - name: Release unsuccessful workflow-owned review lease
         if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.reserve-exact-review-lease.outputs.status != 'held' && steps.prepare-direct-exact-review-publication.outputs.failure_kind != 'github_rate_limit' && steps.prepare-direct-exact-review-publication.outputs.failure_kind != 'github_transient' && steps.direct-exact-review-publication.outputs.accepted != 'true' && steps.queue-exact-review-publication.outcome != 'success' }}
         env:
