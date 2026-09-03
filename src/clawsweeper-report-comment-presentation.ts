@@ -203,7 +203,9 @@ export function createReportCommentPresentation(
             : isPullRequest
               ? "Codex review: needs maintainer review before merge."
               : "Codex review: keeping this open for maintainer follow-up; there is still a little grit to resolve.";
-    const lines = [`${verdictLine}${reviewFreshnessText(markdown)}`, ""];
+    const reviewHistory = reviewHistoryForRender(markdown, options.previousReviewCommentBody);
+    const revision = reviewHistory.totalCompletedCycles + 1;
+    const lines = [`${verdictLine}${reviewFreshnessText(markdown, revision)}`, ""];
     const prSurface = renderOpenClawPrSurfaceFromReport(markdown);
     const dataModelWarning = renderDataModelWarningFromReport(markdown);
     const sqliteSchemaWarning = renderSqliteSchemaWarningFromReport(markdown);
@@ -307,9 +309,7 @@ export function createReportCommentPresentation(
     }
     const reviewLine = closeReviewLineFromReport(markdown);
     if (reviewLine) reviewDetails.push(...(reviewDetails.length ? [""] : []), reviewLine);
-    const reviewHistoryBlock = renderReviewHistorySection(
-      reviewHistoryForRender(markdown, options.previousReviewCommentBody),
-    );
+    const reviewHistoryBlock = renderReviewHistorySection(reviewHistory);
 
     if (isPullRequest) {
       if (!reviewReadiness) {

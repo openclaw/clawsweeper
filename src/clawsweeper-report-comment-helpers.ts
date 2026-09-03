@@ -841,9 +841,12 @@ export function createReportCommentHelpers(
     return [collapsedDetailsBlock("How this review workflow works", reviewWorkflowLines()), ""];
   }
 
-  function reviewFreshnessText(markdown: string): string {
+  function reviewFreshnessText(markdown: string, revision?: number): string {
     const timestamp = formatReviewFreshnessTimestamp(frontMatterValue(markdown, "reviewed_at"));
-    return timestamp ? ` _Reviewed ${timestamp}._` : "";
+    if (!timestamp) return "";
+    const revisionSuffix =
+      revision !== undefined && revision >= 2 ? ` (Revision ${revision})` : "";
+    return ` _Reviewed ${timestamp}${revisionSuffix}._`;
   }
 
   const REVIEW_HISTORY_RENDER_SLOT = "CLAWSWEEPER_REVIEW_HISTORY_RENDER_SLOT";
