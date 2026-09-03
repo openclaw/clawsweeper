@@ -838,12 +838,21 @@ export class ExactReviewQueue {
   private statsCache: {
     key: string;
     expiresAt: number;
+    body: string;
+    changes: number;
+  } | null = null;
+  private statsMutationGeneration = 0;
+  private statsComputation: {
+    key: string;
     body: Promise<string>;
-    changes: number | null;
+    changes: number;
+    generation: number;
   } | null = null;
 
   private invalidateStatsCache() {
+    this.statsMutationGeneration++;
     this.statsCache = null;
+    this.statsComputation = null;
   }
 
   private reviewCoverageCache: { at: number; summary: ReviewCoverageSummary } | null = null;
@@ -3888,62 +3897,78 @@ export class ExactReviewQueue {
   }
 
   private async statsResponse(url: URL) {
+    return cors(
+      new Response(await this.statsBody(url), {
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "cache-control": "no-store",
+        },
+      }),
+    );
+  }
+
+  private async statsBody(url: URL): Promise<string> {
     const configured = Number(this.env.EXACT_REVIEW_STATS_CACHE_MS ?? 10_000);
     const ttl = Number.isFinite(configured) && configured >= 0 ? configured : 10_000;
-    if (!ttl) return this.computeStatsResponse(url);
+    if (!ttl) return this.computeStatsBody(url);
     // These parameters change the private Bay sample, so never share their responses.
     const key = JSON.stringify([
       exactReviewQueueBayPriorityKeys(url.searchParams.getAll("bay_priority_key")),
       exactReviewQueueBayActiveKeys(url.searchParams.getAll("bay_active_key")),
       exactReviewQueueBayActiveKeys(url.searchParams.getAll("bay_active_legacy_key")),
     ]);
-    const now = Date.now();
-    let cached = this.statsCache;
-    if (cached && cached.changes !== null) {
-      const alarm = await this.storage.getAlarm();
-      // Another poll may have renewed the entry while the alarm read yielded.
-      // Join that replacement, including its in-flight alarm repair.
-      cached = this.statsCache;
+    for (;;) {
+      const now = Date.now();
+      if (this.statsCache) {
+        const alarm = await this.storage.getAlarm();
+        // Re-read after yielding: another poll may have renewed the memo.
+        const cached = this.statsCache;
+        if (
+          cached &&
+          cached.key === key &&
+          cached.expiresAt > now &&
+          cached.changes === this.storageChangeCountSync() &&
+          (alarm === null || alarm > now) &&
+          (alarm !== null || this.scheduledAlarmDecision === null)
+        )
+          return cached.body;
+      }
+      const changes = this.storageChangeCountSync();
+      const generation = this.statsMutationGeneration;
+      const pending = this.statsComputation;
       if (
-        cached &&
-        cached.changes !== null &&
-        (cached.changes !== this.storageChangeCountSync() ||
-          (alarm !== null && alarm <= now) ||
-          (alarm === null && this.scheduledAlarmDecision !== null))
-      )
-        cached = null;
-    }
-    if (!cached || cached.key !== key || cached.expiresAt <= now) {
-      const entry = {
+        pending?.key === key &&
+        pending.changes === changes &&
+        pending.generation === generation
+      ) {
+        // Wait only to coalesce work; never serve an unvalidated pending body.
+        await pending.body;
+        continue;
+      }
+      const computation = {
         key,
-        expiresAt: now + ttl,
-        body: Promise.resolve(""),
-        changes: null as number | null,
+        changes,
+        generation,
+        // Publish the pending slot before computation can invalidate it.
+        body: Promise.resolve().then(() => this.computeStatsBody(url)),
       };
-      cached = entry;
-      this.statsCache = entry;
-      entry.body = this.computeStatsResponse(url).then(async (response) => {
-        const body = await response.text();
-        entry.changes = this.storageChangeCountSync();
+      this.statsComputation = computation;
+      try {
+        const body = await computation.body;
+        if (
+          this.statsComputation === computation &&
+          this.statsMutationGeneration === generation &&
+          this.storageChangeCountSync() === changes
+        )
+          this.statsCache = { key, expiresAt: now + ttl, body, changes };
         return body;
-      });
-    }
-    try {
-      return cors(
-        new Response(await cached.body, {
-          headers: {
-            "content-type": "application/json; charset=utf-8",
-            "cache-control": "no-store",
-          },
-        }),
-      );
-    } catch (error) {
-      if (this.statsCache === cached) this.invalidateStatsCache();
-      throw error;
+      } finally {
+        if (this.statsComputation === computation) this.statsComputation = null;
+      }
     }
   }
 
-  private async computeStatsResponse(url: URL) {
+  private async computeStatsBody(url: URL) {
     const bayPriorityKeys = exactReviewQueueBayPriorityKeys(
       url.searchParams.getAll("bay_priority_key"),
     );
@@ -4063,7 +4088,7 @@ export class ExactReviewQueue {
       bayActiveKeys,
       bayActiveLegacyKeys,
     );
-    return json({
+    const body = {
       ...stats,
       bay_projection: bayProjection,
       review_failure_health: reviewFailureHealth,
@@ -4172,7 +4197,8 @@ export class ExactReviewQueue {
       storage_schema_version: EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION,
       legacy_rollback_available:
         !this.legacyMirrorDisabled && now < this.migratedAt + EXACT_REVIEW_QUEUE_LEGACY_ROLLBACK_MS,
-    });
+    };
+    return JSON.stringify(body, null, 2);
   }
 
   private readLifecycleAuditInventory(input: unknown) {

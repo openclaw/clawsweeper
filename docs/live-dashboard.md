@@ -451,6 +451,8 @@ The object memoizes its private stats response for 10 seconds by default
 same Bay sample parameters share the computation and its original `generated_at`.
 Queue mutations and auxiliary SQLite writes invalidate the memo; a missing or
 overdue alarm also bypasses it so polling still repairs the queue heartbeat.
+Only completed snapshots whose mutation generation and storage change counter
+remain unchanged are memoized; polls waiting on invalidated work recompute.
 This only bounds observation freshness: the public projection's fields and
 meaning, admission, publication fences, and Bay behavior are unchanged.
 
