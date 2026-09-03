@@ -464,7 +464,7 @@ Production overrides publication minimum, base, and maximum capacity to 8, 32,
 and 40, while source fallback values are 4, 24, and 48. The controller records
 failure, cooldown, recovery, and demand telemetry and scales within the
 production range. The private publication state also tracks `batches`, `direct`,
-and adaptive capacity control: production enables up to 8 concurrent size-8
+and adaptive capacity control: production enables up to 4 concurrent size-8
 batches, reserves two fresh-lane members per batch, and enables direct
 publication with retry/batch fallback. These controls affect the aggregate
 counts but are not serialized by the public projector. Document effective
