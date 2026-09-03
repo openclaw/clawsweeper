@@ -471,6 +471,15 @@ counts but are not serialized by the public projector. Document effective
 production values from `dashboard/wrangler.toml`, not only fallback constants
 in `dashboard/exact-review-queue.ts`.
 
+Batch publication heartbeats and post-effect enqueue, router-receipt, and
+terminal-disposition POSTs retry network errors, timeouts, and HTTP 5xx responses
+(including `exact_review_queue_unavailable`) up to three attempts within 45
+seconds, with at most 20 seconds per attempt. Retries preserve the signed bytes,
+use jittered exponential backoff, and honor `Retry-After` up to 10 seconds;
+heartbeats additionally stop at the last confirmed lease expiry. Validation,
+authentication, and fence rejections are never retried, and receipt retries do
+not repeat the GitHub router dispatch.
+
 Batch claims carrying the current dispatch reservation consume only the
 still-valid subset of the key/revision pairs checked before departure. Fresh
 arrivals wait for the next departure; changed or removed members are skipped.

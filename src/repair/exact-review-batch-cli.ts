@@ -1,8 +1,16 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
+import { parseArgs } from "node:util";
 
 import type { ExactReviewBatchCompletion } from "./exact-review-batch-publisher.js";
 import {
@@ -10,6 +18,7 @@ import {
   type ExactReviewGithubRateLimitObservation,
   type ExactReviewGithubRequestMetric,
   type ExactReviewBatchQueueItem,
+  type ExactReviewBatchPostEffectRoute,
 } from "./exact-review-batch-queue-client.js";
 import { exactReviewBatchStateWriterProgressReporter } from "./exact-review-batch-state-writer-progress.js";
 import { postDirectPublicationResult } from "./exact-review-direct-publication.js";
@@ -25,6 +34,7 @@ import {
 type BatchManifest = {
   batchId: string;
   leaseOwner: string;
+  leaseExpiresAt: string;
   configuredBatchSize: number;
   batchWaitMs: number;
   items: Array<ExactReviewBatchQueueItem & { outcomePath: string }>;
@@ -60,10 +70,11 @@ if (
     "release",
     "rate-limit",
     "request-metric",
+    "post-effect",
   ].includes(command)
 ) {
   throw new Error(
-    "usage: exact-review-batch-cli.ts <claim|heartbeat|observe|commit|complete|release|rate-limit|request-metric>",
+    "usage: exact-review-batch-cli.ts <claim|heartbeat|observe|commit|complete|release|rate-limit|request-metric|post-effect>",
   );
 }
 
@@ -82,7 +93,31 @@ else if (command === "commit") await commit();
 else if (command === "complete") await complete();
 else if (command === "release") await release();
 else if (command === "rate-limit") recordRateLimit();
+else if (command === "post-effect") await postEffect();
 else recordRequestMetric();
+
+async function postEffect() {
+  const { values } = parseArgs({
+    args: process.argv.slice(3),
+    options: { route: { type: "string" }, payload: { type: "string" } },
+  });
+  if (
+    !values.route ||
+    !["enqueue", "router-receipt", "terminal-disposition"].includes(values.route) ||
+    !values.payload
+  ) {
+    throw new Error(
+      "post-effect requires --route <enqueue|router-receipt|terminal-disposition> --payload <file>",
+    );
+  }
+  const payload = readFileSync(values.payload, "utf8");
+  objectValue(JSON.parse(payload));
+  const response = await client.postEffect(
+    values.route as ExactReviewBatchPostEffectRoute,
+    payload,
+  );
+  console.log(JSON.stringify(response));
+}
 
 function recordRateLimit() {
   const scope = env("EXACT_REVIEW_GITHUB_RATE_LIMIT_SCOPE");
@@ -208,6 +243,7 @@ async function claim() {
   const manifest: BatchManifest = {
     batchId: lease.batchId,
     leaseOwner,
+    leaseExpiresAt: fetched.batch.leaseExpiresAt,
     configuredBatchSize: lease.configuredBatchSize,
     batchWaitMs: lease.batchWaitMs,
     items: fetched.items.map((item, index) => ({
@@ -240,11 +276,13 @@ async function claim() {
 
 async function heartbeat() {
   const manifest = readManifest();
-  await client.heartbeat({
+  const lease = await client.heartbeat({
     batchId: manifest.batchId,
     leaseOwner: manifest.leaseOwner,
+    leaseExpiresAt: manifest.leaseExpiresAt,
     items: manifest.items,
   });
+  saveLeaseExpiry(lease.leaseExpiresAt);
   console.log(JSON.stringify({ ok: true, batch_id: manifest.batchId }));
 }
 
@@ -267,9 +305,10 @@ async function observe() {
   if (!Number.isFinite(Date.parse(observedAt))) {
     throw new Error("EXACT_REVIEW_BATCH_OBSERVED_AT is invalid");
   }
-  await client.heartbeat({
+  const lease = await client.heartbeat({
     batchId: manifest.batchId,
     leaseOwner: manifest.leaseOwner,
+    leaseExpiresAt: manifest.leaseExpiresAt,
     items: manifest.items,
     observation: {
       stage: stage as
@@ -280,7 +319,19 @@ async function observe() {
       observedAt,
     },
   });
+  saveLeaseExpiry(lease.leaseExpiresAt);
   console.log(JSON.stringify({ ok: true, batch_id: manifest.batchId, stage }));
+}
+
+function saveLeaseExpiry(leaseExpiresAt: string) {
+  const path = env("EXACT_REVIEW_BATCH_MANIFEST");
+  const manifest = objectValue(JSON.parse(readFileSync(path, "utf8")));
+  if (Date.parse(String(manifest.leaseExpiresAt)) >= Date.parse(leaseExpiresAt)) return;
+  manifest.leaseExpiresAt = leaseExpiresAt;
+  // Heartbeat and observation processes share the manifest with preparation.
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  renameSync(temporary, path);
 }
 
 async function commit() {
@@ -1075,6 +1126,7 @@ function readManifest(): BatchManifest {
   return {
     batchId: stringValue(value.batchId, "batchId"),
     leaseOwner: stringValue(value.leaseOwner, "leaseOwner"),
+    leaseExpiresAt: stringValue(value.leaseExpiresAt, "leaseExpiresAt"),
     configuredBatchSize: positiveInteger(value.configuredBatchSize),
     batchWaitMs: nonNegativeInteger(value.batchWaitMs),
     items: value.items.map((entry) => {

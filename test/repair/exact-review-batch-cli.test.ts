@@ -107,6 +107,7 @@ test("batch commit records an invalid member permanently while publishing its he
       JSON.stringify({
         batchId: "batch-cli-proof",
         leaseOwner: "proof-worker",
+        leaseExpiresAt: new Date(Date.now() + 120_000).toISOString(),
         configuredBatchSize: 2,
         batchWaitMs: 0,
         items: [
@@ -223,6 +224,7 @@ test("batch completion terminalizes a superseded member without a publication mu
       JSON.stringify({
         batchId: "batch-superseded-proof",
         leaseOwner: "proof-worker",
+        leaseExpiresAt: new Date(Date.now() + 120_000).toISOString(),
         configuredBatchSize: 1,
         batchWaitMs: 0,
         items: [{ ...member, outcomePath }],
@@ -367,6 +369,7 @@ for (const failureCase of publicationFailureCases) {
         JSON.stringify({
           batchId: `batch-publication-${failureCase.scenario}`,
           leaseOwner: "proof-worker",
+          leaseExpiresAt: new Date(Date.now() + 120_000).toISOString(),
           configuredBatchSize: 1,
           batchWaitMs: 0,
           items: [{ ...member, outcomePath }],
@@ -482,6 +485,7 @@ test("batch publication fingerprints distinct direct-plan rejection details sepa
       JSON.stringify({
         batchId: "batch-publication-rejection-details",
         leaseOwner: "proof-worker",
+        leaseExpiresAt: new Date(Date.now() + 120_000).toISOString(),
         configuredBatchSize: 1,
         batchWaitMs: 0,
         items: [{ ...member, outcomePath }],
@@ -590,6 +594,7 @@ test("batch completion forwards one quota circuit and marks collapsed members un
       JSON.stringify({
         batchId: "batch-quota-collapse",
         leaseOwner: "proof-worker",
+        leaseExpiresAt: new Date(Date.now() + 120_000).toISOString(),
         configuredBatchSize: 2,
         batchWaitMs: 0,
         items: [
@@ -717,6 +722,7 @@ for (const command of ["complete", "release"] as const) {
         JSON.stringify({
           batchId: `batch-${command}-target-app-scope`,
           leaseOwner: "proof-worker",
+          leaseExpiresAt: new Date(Date.now() + 120_000).toISOString(),
           configuredBatchSize: 1,
           batchWaitMs: 0,
           items: [{ ...member, outcomePath: join(root, "missing-outcome.json") }],
@@ -821,6 +827,7 @@ test("batch completion forwards telemetry appended after an earlier acknowledgem
       JSON.stringify({
         batchId: "batch-late-telemetry",
         leaseOwner: "proof-worker",
+        leaseExpiresAt: new Date(Date.now() + 120_000).toISOString(),
         configuredBatchSize: 1,
         batchWaitMs: 0,
         items: [{ ...member, outcomePath }],
@@ -965,6 +972,7 @@ test("batch release retains a committed eligible member until lifecycle post-eff
       JSON.stringify({
         batchId: "batch-release-proof",
         leaseOwner: "proof-worker",
+        leaseExpiresAt: new Date(Date.now() + 120_000).toISOString(),
         configuredBatchSize: 1,
         batchWaitMs: 0,
         items: [{ ...member, outcomePath }],
@@ -1048,6 +1056,7 @@ test("batch release preserves a permanent canonical receipt before lifecycle pos
       JSON.stringify({
         batchId: "batch-permanent-proof",
         leaseOwner: "proof-worker",
+        leaseExpiresAt: new Date(Date.now() + 120_000).toISOString(),
         configuredBatchSize: 1,
         batchWaitMs: 0,
         items: [{ ...member, outcomePath }],
@@ -1159,3 +1168,143 @@ function mutationPlan(member: ReturnType<typeof batchMember>) {
     totalBytes: 1,
   };
 }
+
+for (const [route, endpoint] of [
+  ["enqueue", "/internal/exact-review/enqueue"],
+  ["router-receipt", "/internal/exact-review/lifecycle/router-receipt"],
+  ["terminal-disposition", "/internal/exact-review/lifecycle/terminal-disposition"],
+]) {
+  for (const [scenario, statuses, exitCode] of [
+    ["recovers after one 500", [500, 200], 0],
+    ["exhausts three 500 attempts", [500, 500, 500], 1],
+    ["fails immediately on 409", [409], 1],
+  ]) {
+    test(`batch post-effect ${route} ${scenario}`, () => {
+      const root = mkdtempSync(join(tmpdir(), "clawsweeper-post-effect-"));
+      try {
+        const payloadPath = join(root, "payload.json");
+        const postsPath = join(root, "posts.jsonl");
+        const preloadPath = join(root, "fetch-preload.cjs");
+        const payload = '{ "receipt_id": "stable-fixture", "kind": "policy_noop" }\n';
+        writeFileSync(payloadPath, payload);
+        writeFileSync(
+          preloadPath,
+          `
+const fs = require("node:fs");
+const statuses = ${JSON.stringify(statuses)};
+let index = 0;
+Math.random = () => 0;
+globalThis.fetch = async (url, init) => {
+  fs.appendFileSync(${JSON.stringify(postsPath)}, JSON.stringify({ url, body: init.body, headers: init.headers }) + "\\n");
+  const status = statuses[index++];
+  if (!status) throw new Error("unexpected extra request");
+  return new Response(JSON.stringify(status === 200 ? { ok: true, queued: true } : { error: "exact_review_queue_unavailable" }), { status });
+};
+`,
+        );
+        const result = spawnSync(
+          process.execPath,
+          [
+            "--require",
+            preloadPath,
+            "dist/repair/exact-review-batch-cli.js",
+            "post-effect",
+            "--route",
+            route,
+            "--payload",
+            payloadPath,
+          ],
+          {
+            cwd: process.cwd(),
+            encoding: "utf8",
+            timeout: 10_000,
+            env: {
+              ...process.env,
+              CLAWSWEEPER_WEBHOOK_SECRET: "proof-secret",
+              EXACT_REVIEW_QUEUE_URL: "https://queue.example.test",
+            },
+          },
+        );
+        const posts = existsSync(postsPath)
+          ? readFileSync(postsPath, "utf8")
+              .trim()
+              .split("\n")
+              .map((line) => JSON.parse(line))
+          : [];
+        assert.equal(posts.length, statuses.length, result.stderr);
+        assert.equal(result.status, exitCode, result.stderr);
+        assert.ok(posts.every((post) => post.url === `https://queue.example.test${endpoint}`));
+        assert.ok(posts.every((post) => post.body === payload));
+        assert.ok(
+          posts.every((post) => JSON.stringify(post.headers) === JSON.stringify(posts[0].headers)),
+        );
+        assert.doesNotMatch(result.stderr, /proof-secret|stable-fixture|sha256=/);
+        if (exitCode === 0) assert.deepEqual(JSON.parse(result.stdout), { ok: true, queued: true });
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
+test("batch claim, heartbeat, and observe persist the last confirmed lease expiry", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-lease-expiry-"));
+  try {
+    const manifestPath = join(root, "manifest.json");
+    const preloadPath = join(root, "fetch-preload.cjs");
+    const baseTime = Date.UTC(2026, 8, 2);
+    writeFileSync(
+      preloadPath,
+      `
+const baseTime = ${baseTime};
+Date.now = () => baseTime;
+Math.random = () => 0;
+let attempt = 0;
+globalThis.fetch = async (url, init) => {
+  const command = process.argv[2];
+  const batch = { batch_id: "lease-proof", lease_owner: "proof-worker", items: [], lease_expires_at: new Date(baseTime + (command === "claim" ? 60000 : command === "heartbeat" ? 120000 : 180000)).toISOString() };
+  if (String(url).endsWith("/claim")) return Response.json({ claimed: true, batch, configured_batch_size: 1, batch_wait_ms: 0 });
+  if (String(url).endsWith("/fetch")) return Response.json({ batch, items: [], superseded: 0 });
+  if (String(url).endsWith("/heartbeat")) {
+    if (++attempt === 1) return new Response("exact_review_queue_unavailable", { status: 500 });
+    return Response.json({ batch });
+  }
+  throw new Error("unexpected request");
+};
+`,
+    );
+    for (const [command, expectedExpiry] of [
+      ["claim", 60_000],
+      ["heartbeat", 120_000],
+      ["observe", 180_000],
+    ]) {
+      const result = spawnSync(
+        process.execPath,
+        ["--require", preloadPath, "dist/repair/exact-review-batch-cli.js", command],
+        {
+          cwd: process.cwd(),
+          encoding: "utf8",
+          timeout: 5_000,
+          env: {
+            ...process.env,
+            CLAWSWEEPER_WEBHOOK_SECRET: "proof-secret",
+            EXACT_REVIEW_QUEUE_URL: "https://queue.example.test",
+            EXACT_REVIEW_BATCH_ID: "lease-proof",
+            EXACT_REVIEW_BATCH_LEASE_OWNER: "proof-worker",
+            EXACT_REVIEW_BATCH_MAX_ITEMS: "1",
+            EXACT_REVIEW_BATCH_MANIFEST: manifestPath,
+            EXACT_REVIEW_BATCH_OBSERVATION: "preparation_started",
+            GITHUB_OUTPUT: join(root, "github-output"),
+          },
+        },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(
+        JSON.parse(readFileSync(manifestPath, "utf8")).leaseExpiresAt,
+        new Date(baseTime + expectedExpiry).toISOString(),
+      );
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

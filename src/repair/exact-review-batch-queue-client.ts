@@ -100,6 +100,7 @@ export interface ExactReviewBatchQueue {
   heartbeat(input: {
     batchId: string;
     leaseOwner: string;
+    leaseExpiresAt: string;
     items: readonly ExactReviewBatchMember[];
     stateWriterProgress?: StateWriterProgress;
     observation?: { stage: ExactReviewBatchObservationStage; observedAt: string };
@@ -127,6 +128,19 @@ type QueueClientOptions = {
   webhookSecret: string;
   fetch?: typeof globalThis.fetch;
 };
+
+const POST_EFFECT_ROUTES = {
+  enqueue: "/internal/exact-review/enqueue",
+  "router-receipt": "/internal/exact-review/lifecycle/router-receipt",
+  "terminal-disposition": "/internal/exact-review/lifecycle/terminal-disposition",
+} as const;
+
+export type ExactReviewBatchPostEffectRoute = keyof typeof POST_EFFECT_ROUTES;
+
+const REQUEST_TIMEOUT_MS = 20_000;
+const RETRY_DEADLINE_MS = 45_000;
+const MAX_ATTEMPTS = 3;
+const MAX_RETRY_AFTER_MS = 10_000;
 
 export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
   private readonly baseUrl: string;
@@ -198,27 +212,40 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
   async heartbeat(input: {
     batchId: string;
     leaseOwner: string;
+    leaseExpiresAt: string;
     items: readonly ExactReviewBatchMember[];
     stateWriterProgress?: StateWriterProgress;
     observation?: { stage: ExactReviewBatchObservationStage; observedAt: string };
   }) {
-    const response = await this.post("heartbeat", {
-      batch_id: input.batchId,
-      lease_owner: input.leaseOwner,
-      items: input.items.map((item) => ({
-        item_key: item.itemKey,
-        revision: item.revision,
-        claim_generation: item.claimGeneration,
-      })),
-      ...(input.stateWriterProgress ? { state_writer_progress: input.stateWriterProgress } : {}),
-      ...(input.observation
-        ? {
-            timeline_stage: input.observation.stage,
-            observed_at: input.observation.observedAt,
-          }
-        : {}),
-    });
+    const leaseExpiry = Date.parse(input.leaseExpiresAt);
+    if (!Number.isFinite(leaseExpiry)) throw new Error("Invalid batch lease expiry");
+    const response = await this.postUrl(
+      "/internal/exact-review/publication-batches/heartbeat",
+      {
+        batch_id: input.batchId,
+        lease_owner: input.leaseOwner,
+        items: input.items.map((item) => ({
+          item_key: item.itemKey,
+          revision: item.revision,
+          claim_generation: item.claimGeneration,
+        })),
+        ...(input.stateWriterProgress ? { state_writer_progress: input.stateWriterProgress } : {}),
+        ...(input.observation
+          ? {
+              timeline_stage: input.observation.stage,
+              observed_at: input.observation.observedAt,
+            }
+          : {}),
+      },
+      Math.min(Date.now() + RETRY_DEADLINE_MS, leaseExpiry),
+    );
     return parseLease(response.batch);
+  }
+
+  async postEffect(route: ExactReviewBatchPostEffectRoute, payload: string) {
+    if (!Object.hasOwn(POST_EFFECT_ROUTES, route))
+      throw new Error("Invalid batch post-effect route");
+    return this.postUrl(POST_EFFECT_ROUTES[route], payload, Date.now() + RETRY_DEADLINE_MS);
   }
 
   async reconcilePublications(input: { apply: boolean; maxItems: number }) {
@@ -379,34 +406,92 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
 
   private async postUrl(
     path: string,
-    payload: Record<string, unknown>,
+    payload: Record<string, unknown> | string,
+    retryDeadline?: number,
   ): Promise<Record<string, unknown>> {
-    const body = JSON.stringify(payload);
+    // Serialize and sign once: receipt/delivery identity must survive ambiguous failures.
+    const body = typeof payload === "string" ? payload : JSON.stringify(payload);
     const signature = `sha256=${createHmac("sha256", this.webhookSecret).update(body).digest("hex")}`;
-    const response = await this.request(`${this.baseUrl}${path}`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-clawsweeper-exact-review-signature": signature,
-      },
-      body,
-      signal: AbortSignal.timeout(20_000),
-    });
-    const text = await response.text();
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      throw new Error(`Batch queue ${path} returned invalid JSON (HTTP ${response.status})`);
-    }
-    if (!response.ok) {
-      const error = objectValue(parsed).error;
-      throw new Error(
-        `Batch queue ${path} failed (HTTP ${response.status}): ${String(error || "unknown")}`,
+    const deadline = retryDeadline ?? Date.now() + REQUEST_TIMEOUT_MS;
+    const maxAttempts = retryDeadline === undefined ? 1 : MAX_ATTEMPTS;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error(`Batch queue ${path} deadline expired`);
+      const controller = new AbortController();
+      const timer = setTimeout(
+        () => controller.abort(new DOMException("Batch queue request timeout", "TimeoutError")),
+        Math.min(REQUEST_TIMEOUT_MS, remaining),
       );
+      let response: Response | undefined;
+      let responseText: string | undefined;
+      let failure: Error | undefined;
+      let reason: string | undefined;
+      try {
+        response = await this.request(`${this.baseUrl}${path}`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-clawsweeper-exact-review-signature": signature,
+          },
+          body,
+          signal: controller.signal,
+        });
+        if (response.ok) {
+          responseText = await response.text();
+        } else {
+          // Status alone determines retryability, even for plain-text edge errors.
+          void response.body?.cancel().catch(() => {});
+          throw new Error(`Batch queue ${path} failed (HTTP ${response.status})`);
+        }
+      } catch (error) {
+        const status = response?.status;
+        if (status !== undefined && !response!.ok && (status < 500 || status > 599)) throw error;
+        reason =
+          status !== undefined && !response!.ok
+            ? `HTTP_${status}`
+            : controller.signal.aborted ||
+                error?.name === "TimeoutError" ||
+                error?.name === "AbortError"
+              ? "timeout"
+              : "network_error";
+        // Do not surface response bodies, URLs from exceptions, or signed payloads.
+        failure = new Error(
+          `Batch queue ${path} failed (${reason.startsWith("HTTP_") ? reason.replace("_", " ") : reason})`,
+        );
+      } finally {
+        clearTimeout(timer);
+      }
+      if (!failure) {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(responseText ?? "");
+        } catch {
+          throw new Error(`Batch queue ${path} returned invalid JSON (HTTP ${response!.status})`);
+        }
+        return objectValue(parsed);
+      }
+      if (attempt === maxAttempts) throw failure;
+      const backoff = Math.floor(1_000 * 2 ** (attempt - 1) * (0.5 + Math.random() * 0.5));
+      const delay = Math.max(
+        backoff,
+        retryAfterMs(response?.headers.get("retry-after"), Date.now()),
+      );
+      // No new request can be admitted once this confirmed lease/deadline expires.
+      if (Date.now() + delay >= deadline) throw failure;
+      console.warn(
+        `Batch queue retry endpoint=${path} reason=${reason} attempt=${attempt + 1}/${maxAttempts}`,
+      );
+      await new Promise<void>((resolve) => setTimeout(resolve, delay));
     }
-    return objectValue(parsed);
+    throw new Error(`Batch queue ${path} retry attempts exhausted`);
   }
+}
+
+function retryAfterMs(value: string | null | undefined, now: number): number {
+  if (!value) return 0;
+  const seconds = /^\d+(?:\.\d+)?$/.test(value.trim()) ? Number(value) : NaN;
+  const delay = Number.isFinite(seconds) ? seconds * 1_000 : Date.parse(value) - now;
+  return Number.isFinite(delay) ? Math.min(MAX_RETRY_AFTER_MS, Math.max(0, delay)) : 0;
 }
 
 function parseQueueItem(value: unknown): ExactReviewBatchQueueItem {

@@ -519,8 +519,12 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   );
   assert.match(source, /--item-number "\$item_number"/);
   assert.match(prepareSource, /outcomePath\.replace\(\/\\\.json\$\/, "\.report\.md"\)/);
-  assert.match(source, /internal\/exact-review\/lifecycle\/router-receipt/);
-  assert.match(source, /internal\/exact-review\/lifecycle\/terminal-disposition/);
+  assert.match(source, /post-effect --route router-receipt --payload/);
+  assert.match(source, /post-effect --route terminal-disposition --payload/);
+  assert.doesNotMatch(
+    source,
+    /curl --fail|lifecycle_signature|x-clawsweeper-exact-review-signature/,
+  );
   assert.match(source, /router-batch-not-required/);
   assert.match(source, /router-batch/);
   assert.match(source, /router-batch-proof/);
@@ -529,7 +533,7 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   assert.match(source, /lifecycle_terminal="target_missing"/);
   assert.match(source, /lifecycle_terminal="superseded"/);
   assert.doesNotMatch(source, /lifecycle_terminal="failure"/);
-  const lifecycleHandoff = source.indexOf("internal/exact-review/lifecycle/terminal-disposition");
+  const lifecycleHandoff = source.indexOf("post-effect --route terminal-disposition");
   const implementationDispatch = source.indexOf("dispatch-issue-implementation-candidates.mjs");
   const postEffectsComplete = source.indexOf(".postEffectsComplete = true");
   assert.ok(
@@ -540,7 +544,7 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   assert.doesNotMatch(source, /TARGET_GH_TOKEN/);
   assert.doesNotMatch(source, /lifecycle\/command-ack\/attempt/);
   assert.doesNotMatch(source, /repair:update-command-status/);
-  assert.match(source, /internal\/exact-review\/enqueue/);
+  assert.match(source, /post-effect --route enqueue --payload/);
   assert.match(source, /source_drift_requeue/);
   assert.match(source, /state-receipt\.json/);
   assert.match(source, /receipt_outcome/);

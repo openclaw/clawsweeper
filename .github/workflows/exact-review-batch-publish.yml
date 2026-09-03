@@ -257,13 +257,9 @@ jobs:
                     supersedesInProgress: true
                   })
                 }')"
-              signature="$(PAYLOAD="$payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
-              response="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
-                --request POST \
-                --header "content-type: application/json" \
-                --header "x-clawsweeper-exact-review-signature: $signature" \
-                --data "$payload" \
-                "${EXACT_REVIEW_QUEUE_URL%/}/internal/exact-review/enqueue")"
+              post_effect_payload="${outcome_path}.post-effect.json"
+              printf '%s' "$payload" > "$post_effect_payload"
+              response="$(pnpm run --silent repair:exact-review-batch post-effect --route enqueue --payload "$post_effect_payload")"
               jq -e '.ok == true and (.queued == true or .deduped == true or .shed == true)' <<<"$response" >/dev/null
               lifecycle_terminal="requeue"
             elif jq -e '.disposition.terminalMissingExpected == true' "$outcome_path" >/dev/null; then
@@ -348,13 +344,9 @@ jobs:
                   receipt_id: `${prefix}:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}:${receiptFence}`,
                 }));
               ')"
-              lifecycle_signature="$(PAYLOAD="$lifecycle_payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
-              lifecycle_response="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
-                --request POST \
-                --header "content-type: application/json" \
-                --header "x-clawsweeper-exact-review-signature: $lifecycle_signature" \
-                --data "$lifecycle_payload" \
-                "${EXACT_REVIEW_QUEUE_URL%/}/internal/exact-review/lifecycle/router-receipt")"
+              post_effect_payload="${outcome_path}.post-effect.json"
+              printf '%s' "$lifecycle_payload" > "$post_effect_payload"
+              lifecycle_response="$(pnpm run --silent repair:exact-review-batch post-effect --route router-receipt --payload "$post_effect_payload")"
               jq -e '.ok == true' <<<"$lifecycle_response" >/dev/null
             elif [ -n "$lifecycle_terminal" ]; then
               export LIFECYCLE_TERMINAL="$lifecycle_terminal"
@@ -368,13 +360,9 @@ jobs:
                   kind: process.env.LIFECYCLE_TERMINAL,
                 }));
               ')"
-              lifecycle_signature="$(PAYLOAD="$lifecycle_payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
-              lifecycle_response="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
-                --request POST \
-                --header "content-type: application/json" \
-                --header "x-clawsweeper-exact-review-signature: $lifecycle_signature" \
-                --data "$lifecycle_payload" \
-                "${EXACT_REVIEW_QUEUE_URL%/}/internal/exact-review/lifecycle/terminal-disposition")"
+              post_effect_payload="${outcome_path}.post-effect.json"
+              printf '%s' "$lifecycle_payload" > "$post_effect_payload"
+              lifecycle_response="$(pnpm run --silent repair:exact-review-batch post-effect --route terminal-disposition --payload "$post_effect_payload")"
               jq -e '.ok == true' <<<"$lifecycle_response" >/dev/null
             fi
             # The optional implementation lane consumes only a durable lifecycle
