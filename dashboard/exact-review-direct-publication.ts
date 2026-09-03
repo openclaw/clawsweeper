@@ -997,6 +997,15 @@ export class ExactReviewDirectPublicationStore {
     return row ? this.recordExportEntrySync(row) : null;
   }
 
+  count(): number {
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT COUNT(*) AS count FROM ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}`,
+      ),
+    )[0];
+    return Number(row?.count ?? 0);
+  }
+
   list(): DirectPublicationRow[] {
     return Array.from(
       this.storage.sql.exec(

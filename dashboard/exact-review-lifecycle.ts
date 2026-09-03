@@ -260,6 +260,13 @@ type LifecycleAdmissionInput = ProjectionIdentity & {
 
 export class ExactReviewLifecycleProjectionStore {
   private readonly storage: DurableStorage;
+  private readonly bayProjectionCache = new Map<
+    string,
+    {
+      json: string;
+      projection: ExactReviewLifecycleProjection;
+    }
+  >();
   private schemaReady = false;
   private auditSchemaReady = false;
 
@@ -956,7 +963,18 @@ export class ExactReviewLifecycleProjectionStore {
           )) {
             let projection: ExactReviewLifecycleProjection;
             try {
-              projection = projectionFromRow(String(row.projection_json || ""));
+              const source = String(row.projection_json || "");
+              const key = JSON.stringify([row.canonical_target_key, row.fence_key, row.revision]);
+              const cached = this.bayProjectionCache.get(key);
+              if (cached?.json === source) projection = cached.projection;
+              else {
+                projection = projectionFromRow(source);
+                this.bayProjectionCache.set(key, { json: source, projection });
+                // Retain only a bounded working set; SQL remains authoritative.
+                if (this.bayProjectionCache.size > 512) {
+                  this.bayProjectionCache.delete(this.bayProjectionCache.keys().next().value!);
+                }
+              }
             } catch {
               return unknown("malformed");
             }
@@ -1003,15 +1021,28 @@ export class ExactReviewLifecycleProjectionStore {
         }
         // Resolve only sampled targets; a newer revision can be arbitrarily
         // old and absent from every retained lane sample.
+        const sampledTargets = [
+          ...new Set(sample.map((card) => `${card.target.repository}#${card.target.number}`)),
+        ];
         const maxRevisionByTarget = new Map<string, number>();
+        if (sampledTargets.length) {
+          for (const row of this.storage.sql.exec(
+            `SELECT canonical_target_key, MAX(revision) AS max_revision
+             FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+             WHERE canonical_target_key IN (SELECT value FROM json_each(?))
+             GROUP BY canonical_target_key`,
+            JSON.stringify(sampledTargets),
+          )) {
+            const revision = Number(row.max_revision || 0);
+            maxRevisionByTarget.set(
+              String(row.canonical_target_key),
+              Number.isSafeInteger(revision) && revision >= 0 ? revision : 0,
+            );
+          }
+        }
         for (const card of sample) {
           const key = `${card.target.repository}#${card.target.number}`;
-          let maxRevision = maxRevisionByTarget.get(key);
-          if (maxRevision === undefined) {
-            maxRevision = this.maxRevision(key);
-            maxRevisionByTarget.set(key, maxRevision);
-          }
-          card.current_revision &&= card.revision === maxRevision;
+          card.current_revision &&= card.revision === (maxRevisionByTarget.get(key) ?? 0);
         }
         return {
           version: 1,

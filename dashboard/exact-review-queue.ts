@@ -485,6 +485,7 @@ type LegacyExactReviewQueueState = ExactReviewQueueState & {
 type ExactReviewQueueBaseline = {
   items: Map<string, string>;
   dispatcherJson: string | null;
+  unreadItems?: Map<string, () => ExactReviewQueueItem>;
 };
 type ExactReviewDeadLetterInsert = {
   id: string;
@@ -834,6 +835,17 @@ export class ExactReviewQueue {
   private githubWebhookReadModelStore;
   private readonly random: () => number;
   private readonly baselines = new WeakMap<ExactReviewQueueState, ExactReviewQueueBaseline>();
+  private statsCache: {
+    key: string;
+    expiresAt: number;
+    body: Promise<string>;
+    changes: number | null;
+  } | null = null;
+
+  private invalidateStatsCache() {
+    this.statsCache = null;
+  }
+
   private reviewCoverageCache: { at: number; summary: ReviewCoverageSummary } | null = null;
   // Back off a wedged Bay row without adding durable queue state. Any durable
   // progress clears this single-slot deadline so the one-second drain resumes.
@@ -901,10 +913,15 @@ export class ExactReviewQueue {
     request: Request,
     hostedTargetMetadataToken = exactReviewHostedTargetMetadataTokenSource(this.env),
   ) {
+    const mutating = request.method !== "GET";
+    if (mutating) this.invalidateStatsCache();
     try {
       return await this.handleFetch(request, hostedTargetMetadataToken);
     } catch (error) {
       rethrowQueueFailure(error, "fetch", request);
+    } finally {
+      // Mutators can yield to a dashboard poll while awaiting external work.
+      if (mutating) this.invalidateStatsCache();
     }
   }
 
@@ -3856,241 +3873,306 @@ export class ExactReviewQueue {
     }
 
     if (request.method === "GET" && url.pathname === "/stats") {
-      const bayPriorityKeys = exactReviewQueueBayPriorityKeys(
-        url.searchParams.getAll("bay_priority_key"),
-      );
-      const bayActiveKeys = exactReviewQueueBayActiveKeys(
-        url.searchParams.getAll("bay_active_key"),
-      );
-      const bayActiveLegacyKeys = exactReviewQueueBayActiveKeys(
-        url.searchParams.getAll("bay_active_legacy_key"),
-      );
-      const now = Date.now();
-      const snapshot = this.storage.transactionSync(() => {
-        this.pruneDeliveryReceiptsSync(now);
-        this.pruneEditedSemanticInputsSync(now);
-        this.pruneQueueTelemetrySync(now);
-        this.pruneReviewRunTelemetrySync(now);
-        const current = this.readStateSync();
-        // Dashboard reads are also the operational heartbeat. Reclaim leases and
-        // restore the alarm here so a deploy or lost alarm cannot strand backlog.
-        const changed = reclaimExpiredExactReviewLeases(
-          current,
-          now,
-          exactReviewPublicationDispatchLeaseMs(this.env),
-          exactReviewHeartbeatGraceMs(this.env),
-          this.env,
-        );
-        if (changed) this.writeStateSync(current);
-        else this.syncLegacyCompatibilitySync(current);
-        return {
-          state: current,
-          metrics: this.queueMetricTotalsSync(),
-          reviewFlow: this.reviewFlowSummarySync(now),
-          reviewFailureHealth: this.reviewFailureHealthSafely(now),
-          publicationFlow: this.publicationFlowSummarySync(now),
-          deadLetters: this.deadLetterStatsSync(),
-          // Full review observability scans up to 10k durable records. Keep it on
-          // the diagnostic endpoint so the frequently-polled status path stays bounded.
-          stateWriter: this.stateWriterSummarySync(now),
-        };
-      });
-      const {
-        state,
-        metrics,
-        reviewFlow,
-        reviewFailureHealth,
-        publicationFlow,
-        deadLetters,
-        stateWriter,
-      } = snapshot;
-      // Coordinator methods own their SQLite transaction. Keep this adjacent to
-      // the queue snapshot without nesting transactionSync calls.
-      const stateWriterCoordinator = this.stateWriterCoordinator.stats(
-        now,
-        stateWriterCoordinatorQueuedStaleMs(this.env),
-      );
-      const publicationBatches = this.batchStore.stats(now);
-      const directPublications = this.directPublicationStore.list();
-      const sourceAuthorityReservations = await this.sourceAuthorityReservations();
-      const branchAuthorityReservations = await this.branchAuthorityReservations();
-      const authorityPendingByOwner = exactReviewAuthorityPendingByOwner([
-        ...sourceAuthorityReservations,
-        ...branchAuthorityReservations,
-      ]);
-      const batchByItemKey = new Map<string, ExactReviewBayBatchOwner>(
-        publicationBatches.activeItemBatches.map((batch) => [batch.itemKey, batch] as const),
-      );
-      const batchOwnedItemKeys = new Set<string>(batchByItemKey.keys());
-      const freshPublicationItemKeys = this.freshPublicationItemKeysSync(state, now);
-      const legacyExcludedItemKeys = new Set(batchOwnedItemKeys);
-      if (exactReviewPublicationBatchingEnabled(this.env)) {
-        for (const item of Object.values(state.items) as ExactReviewQueueItem[]) {
-          if (
-            item.state === "pending" &&
-            exactReviewQueueIsBatchablePublication(item) &&
-            !item.terminalFinalization
-          ) {
-            legacyExcludedItemKeys.add(item.key);
-          }
-        }
-      }
-      const publicationControl = this.refreshPublicationControlSync(state, now);
-      await this.scheduleNext(state, now);
-      const stats = exactReviewQueueStats(
-        state,
-        now,
-        exactReviewQueueCapacity(this.env),
-        exactReviewTargetCapacity(this.env),
-        exactReviewPublicationCapacityForState(
-          this.env,
-          state,
-          now,
-          publicationControl.capacityCeiling,
-          true,
-          publicationControl.demandCapacity,
-        ),
-        exactReviewDispatchLeaseMs(this.env),
-        exactReviewExecutionLeaseMs(this.env),
-        exactReviewPublicationDispatchLeaseMs(this.env),
-        exactReviewHeartbeatGraceMs(this.env),
-        legacyExcludedItemKeys,
-        publicationBatches.nextLeaseExpiresAt,
-      );
-      const publicationHealth = summarizeExactReviewPublicationHealth(
-        stats.lanes.publication,
-        publicationFlow,
-      );
-      const reservationClaimObservability = exactReviewReservationClaimObservability({
-        now,
-        dispatcher: state.dispatcher,
-        publication: stats.lanes.publication,
-        batches: this.batchStore.observability(now).batches,
-        directPublicationEnabled: exactReviewDirectPublicationEnabled(this.env),
-        legacyStateRepoBatchEnabled: exactReviewPublicationBatchingEnabled(this.env),
-        maxConcurrentBatches: exactReviewPublicationBatchMaxConcurrent(this.env),
-      });
-      const bayProjection = exactReviewQueueBayProjectionFromStats(
-        stats,
-        bayPriorityKeys,
-        batchByItemKey,
-        bayActiveKeys,
-        bayActiveLegacyKeys,
-      );
-      return json({
-        ...stats,
-        bay_projection: bayProjection,
-        review_failure_health: reviewFailureHealth,
-        lanes: {
-          review: {
-            ...stats.lanes.review,
-            enqueued_total: metrics.review.enqueued,
-            completed_total: metrics.review.completed,
-            superseded_total: metrics.review.superseded,
-            semantic_deduped_total: metrics.review.semanticDeduped,
-            shed_reasons_since_reset: {
-              backpressure: metrics.review.shedBackpressure,
-              scheduled_rate: metrics.review.shedScheduledRate,
-              unattributed: Math.max(0, exactReviewShedSinceReset(state) - metrics.review.shed),
-            },
-            authority_pending: {
-              total: sourceAuthorityReservations.length + branchAuthorityReservations.length,
-              branch_resolution: branchAuthorityReservations.length,
-              source_verification: sourceAuthorityReservations.length,
-            },
-            flow: reviewFlow,
-          },
-          publication: {
-            ...stats.lanes.publication,
-            pending: stats.lanes.publication.pending,
-            enqueued_total: metrics.publication.enqueued,
-            completed_total: metrics.publication.completed,
-            published_total: metrics.publication.published,
-            superseded_total: metrics.publication.superseded,
-            semantic_deduped_total: metrics.publication.semanticDeduped,
-            retried_total: metrics.publication.retried,
-            dead_lettered_total: metrics.publication.deadLettered,
-            refreshed_total: metrics.publication.refreshed,
-            flow: publicationFlow,
-            dead_letters: deadLetters,
-            health: publicationHealth,
-            capacity_control: exactReviewPublicationControlStatus(this.env, publicationControl),
-            credential_circuits: exactReviewGithubCredentialCircuitStatus(
-              state,
-              now,
-              authorityPendingByOwner,
-            ),
-            github_request_metrics: {
-              updated_at: state.dispatcher?.githubRequestMetrics?.updatedAt
-                ? new Date(state.dispatcher.githubRequestMetrics.updatedAt).toISOString()
-                : null,
-              counters: state.dispatcher?.githubRequestMetrics?.counters || {},
-            },
-            github_egress_metrics_v2: this.githubEgressTelemetryStore.publicSummary(now),
-            batches: {
-              enabled: exactReviewPublicationBatchingEnabled(this.env),
-              max_items: exactReviewPublicationBatchSize(this.env),
-              max_concurrent: exactReviewPublicationBatchMaxConcurrent(this.env),
-              max_wait_seconds: exactReviewPublicationBatchWaitMs(this.env) / 1_000,
-              fresh_lane: {
-                enabled: exactReviewPublicationFreshLaneMaxItems(this.env) > 0,
-                reserved_items: exactReviewPublicationFreshLaneMaxItems(this.env),
-                max_age_seconds: exactReviewPublicationFreshLaneMaxAgeMs(this.env) / 1_000,
-                ready_items: freshPublicationItemKeys.size,
-                historical_ready_items: Math.max(
-                  0,
-                  stats.lanes.publication.ready - freshPublicationItemKeys.size,
-                ),
-              },
-              last_dispatch_at: state.dispatcher?.publicationBatchDispatchedAt
-                ? new Date(state.dispatcher.publicationBatchDispatchedAt).toISOString()
-                : null,
-              last_dispatch_succeeded: state.dispatcher?.publicationBatchDispatchSucceeded ?? null,
-              dispatch_pending_until: state.dispatcher?.publicationBatchDispatchPendingUntil
-                ? new Date(state.dispatcher.publicationBatchDispatchPendingUntil).toISOString()
-                : null,
-              leased: publicationBatches.leased,
-              completed: publicationBatches.completed,
-              expired: publicationBatches.expired,
-              active_items: publicationBatches.activeItems,
-              oldest_active_at:
-                publicationBatches.oldestActiveAt === null
-                  ? null
-                  : new Date(publicationBatches.oldestActiveAt).toISOString(),
-              oldest_active_age_seconds:
-                publicationBatches.oldestActiveAt === null
-                  ? null
-                  : Math.max(0, Math.floor((now - publicationBatches.oldestActiveAt) / 1000)),
-              reclaimed_items_retained: publicationBatches.reclaimedItemsRetained,
-              cleanup: {
-                deleted_this_pass: publicationBatches.cleanup.deletedThisPass,
-                eligible_remaining: publicationBatches.cleanup.eligibleRemaining,
-                limit: publicationBatches.cleanup.limit,
-              },
-            },
-            direct: {
-              enabled: exactReviewDirectPublicationEnabled(this.env),
-              health: { status: "healthy", store: "durable_object_sqlite" },
-              pending: 0,
-              retryable: 0,
-              failed: 0,
-              retained_receipts: directPublications.length,
-              oldest_pending_at: null,
-            },
-          },
-        },
-        delivery_receipts: this.deliveryReceiptCountSync(),
-        scheduled_feed: this.scheduledReviewFeedStatusSync(now),
-        reservation_claim_observability: reservationClaimObservability,
-        state_writer: { ...stateWriter, coordinator: stateWriterCoordinator },
-        storage_schema_version: EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION,
-        legacy_rollback_available:
-          !this.legacyMirrorDisabled &&
-          now < this.migratedAt + EXACT_REVIEW_QUEUE_LEGACY_ROLLBACK_MS,
-      });
+      return this.statsResponse(url);
     }
 
     return new Response("not found", { status: 404 });
+  }
+
+  private storageChangeCountSync(): number {
+    return Number(
+      Array.from(
+        this.storage.sql.exec("SELECT total_changes() AS changes") as Iterable<{ changes: number }>,
+      )[0]?.changes,
+    );
+  }
+
+  private async statsResponse(url: URL) {
+    const configured = Number(this.env.EXACT_REVIEW_STATS_CACHE_MS ?? 10_000);
+    const ttl = Number.isFinite(configured) && configured >= 0 ? configured : 10_000;
+    if (!ttl) return this.computeStatsResponse(url);
+    // These parameters change the private Bay sample, so never share their responses.
+    const key = JSON.stringify([
+      exactReviewQueueBayPriorityKeys(url.searchParams.getAll("bay_priority_key")),
+      exactReviewQueueBayActiveKeys(url.searchParams.getAll("bay_active_key")),
+      exactReviewQueueBayActiveKeys(url.searchParams.getAll("bay_active_legacy_key")),
+    ]);
+    const now = Date.now();
+    let cached = this.statsCache;
+    if (cached && cached.changes !== null) {
+      const alarm = await this.storage.getAlarm();
+      // Another poll may have renewed the entry while the alarm read yielded.
+      // Join that replacement, including its in-flight alarm repair.
+      cached = this.statsCache;
+      if (
+        cached &&
+        cached.changes !== null &&
+        (cached.changes !== this.storageChangeCountSync() ||
+          (alarm !== null && alarm <= now) ||
+          (alarm === null && this.scheduledAlarmDecision !== null))
+      )
+        cached = null;
+    }
+    if (!cached || cached.key !== key || cached.expiresAt <= now) {
+      const entry = {
+        key,
+        expiresAt: now + ttl,
+        body: Promise.resolve(""),
+        changes: null as number | null,
+      };
+      cached = entry;
+      this.statsCache = entry;
+      entry.body = this.computeStatsResponse(url).then(async (response) => {
+        const body = await response.text();
+        entry.changes = this.storageChangeCountSync();
+        return body;
+      });
+    }
+    try {
+      return cors(
+        new Response(await cached.body, {
+          headers: {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "no-store",
+          },
+        }),
+      );
+    } catch (error) {
+      if (this.statsCache === cached) this.invalidateStatsCache();
+      throw error;
+    }
+  }
+
+  private async computeStatsResponse(url: URL) {
+    const bayPriorityKeys = exactReviewQueueBayPriorityKeys(
+      url.searchParams.getAll("bay_priority_key"),
+    );
+    const bayActiveKeys = exactReviewQueueBayActiveKeys(url.searchParams.getAll("bay_active_key"));
+    const bayActiveLegacyKeys = exactReviewQueueBayActiveKeys(
+      url.searchParams.getAll("bay_active_legacy_key"),
+    );
+    const now = Date.now();
+    const snapshot = this.storage.transactionSync(() => {
+      this.pruneDeliveryReceiptsSync(now);
+      this.pruneEditedSemanticInputsSync(now);
+      this.pruneQueueTelemetrySync(now);
+      this.pruneReviewRunTelemetrySync(now);
+      const current = this.readStateSync();
+      // Dashboard reads are also the operational heartbeat. Reclaim leases and
+      // restore the alarm here so a deploy or lost alarm cannot strand backlog.
+      const changed = reclaimExpiredExactReviewLeases(
+        current,
+        now,
+        exactReviewPublicationDispatchLeaseMs(this.env),
+        exactReviewHeartbeatGraceMs(this.env),
+        this.env,
+      );
+      if (changed) this.writeStateSync(current);
+      else this.syncLegacyCompatibilitySync(current);
+      return {
+        state: current,
+        metrics: this.queueMetricTotalsSync(),
+        reviewFlow: this.reviewFlowSummarySync(now),
+        reviewFailureHealth: this.reviewFailureHealthSafely(now),
+        publicationFlow: this.publicationFlowSummarySync(now),
+        deadLetters: this.deadLetterStatsSync(),
+        // Full review observability scans up to 10k durable records. Keep it on
+        // the diagnostic endpoint so the frequently-polled status path stays bounded.
+        stateWriter: this.stateWriterSummarySync(now),
+      };
+    });
+    const {
+      state,
+      metrics,
+      reviewFlow,
+      reviewFailureHealth,
+      publicationFlow,
+      deadLetters,
+      stateWriter,
+    } = snapshot;
+    // Coordinator methods own their SQLite transaction. Keep this adjacent to
+    // the queue snapshot without nesting transactionSync calls.
+    const stateWriterCoordinator = this.stateWriterCoordinator.stats(
+      now,
+      stateWriterCoordinatorQueuedStaleMs(this.env),
+    );
+    const publicationBatches = this.batchStore.stats(now);
+    const directPublicationCount = this.directPublicationStore.count();
+    const sourceAuthorityReservations = await this.sourceAuthorityReservations();
+    const branchAuthorityReservations = await this.branchAuthorityReservations();
+    const authorityPendingByOwner = exactReviewAuthorityPendingByOwner([
+      ...sourceAuthorityReservations,
+      ...branchAuthorityReservations,
+    ]);
+    const batchByItemKey = new Map<string, ExactReviewBayBatchOwner>(
+      publicationBatches.activeItemBatches.map((batch) => [batch.itemKey, batch] as const),
+    );
+    const batchOwnedItemKeys = new Set<string>(batchByItemKey.keys());
+    const freshPublicationItemKeys = this.freshPublicationItemKeysSync(state, now);
+    const legacyExcludedItemKeys = new Set(batchOwnedItemKeys);
+    if (exactReviewPublicationBatchingEnabled(this.env)) {
+      for (const item of Object.values(state.items) as ExactReviewQueueItem[]) {
+        if (
+          item.state === "pending" &&
+          exactReviewQueueIsBatchablePublication(item) &&
+          !item.terminalFinalization
+        ) {
+          legacyExcludedItemKeys.add(item.key);
+        }
+      }
+    }
+    const publicationControl = this.refreshPublicationControlSync(state, now);
+    await this.scheduleNext(state, now);
+    const stats = exactReviewQueueStats(
+      state,
+      now,
+      exactReviewQueueCapacity(this.env),
+      exactReviewTargetCapacity(this.env),
+      exactReviewPublicationCapacityForState(
+        this.env,
+        state,
+        now,
+        publicationControl.capacityCeiling,
+        true,
+        publicationControl.demandCapacity,
+      ),
+      exactReviewDispatchLeaseMs(this.env),
+      exactReviewExecutionLeaseMs(this.env),
+      exactReviewPublicationDispatchLeaseMs(this.env),
+      exactReviewHeartbeatGraceMs(this.env),
+      legacyExcludedItemKeys,
+      publicationBatches.nextLeaseExpiresAt,
+    );
+    const publicationHealth = summarizeExactReviewPublicationHealth(
+      stats.lanes.publication,
+      publicationFlow,
+    );
+    const reservationClaimObservability = exactReviewReservationClaimObservability({
+      now,
+      dispatcher: state.dispatcher,
+      publication: stats.lanes.publication,
+      batches: this.batchStore.observability(now).batches,
+      directPublicationEnabled: exactReviewDirectPublicationEnabled(this.env),
+      legacyStateRepoBatchEnabled: exactReviewPublicationBatchingEnabled(this.env),
+      maxConcurrentBatches: exactReviewPublicationBatchMaxConcurrent(this.env),
+    });
+    const bayProjection = exactReviewQueueBayProjectionFromStats(
+      stats,
+      bayPriorityKeys,
+      batchByItemKey,
+      bayActiveKeys,
+      bayActiveLegacyKeys,
+    );
+    return json({
+      ...stats,
+      bay_projection: bayProjection,
+      review_failure_health: reviewFailureHealth,
+      lanes: {
+        review: {
+          ...stats.lanes.review,
+          enqueued_total: metrics.review.enqueued,
+          completed_total: metrics.review.completed,
+          superseded_total: metrics.review.superseded,
+          semantic_deduped_total: metrics.review.semanticDeduped,
+          shed_reasons_since_reset: {
+            backpressure: metrics.review.shedBackpressure,
+            scheduled_rate: metrics.review.shedScheduledRate,
+            unattributed: Math.max(0, exactReviewShedSinceReset(state) - metrics.review.shed),
+          },
+          authority_pending: {
+            total: sourceAuthorityReservations.length + branchAuthorityReservations.length,
+            branch_resolution: branchAuthorityReservations.length,
+            source_verification: sourceAuthorityReservations.length,
+          },
+          flow: reviewFlow,
+        },
+        publication: {
+          ...stats.lanes.publication,
+          pending: stats.lanes.publication.pending,
+          enqueued_total: metrics.publication.enqueued,
+          completed_total: metrics.publication.completed,
+          published_total: metrics.publication.published,
+          superseded_total: metrics.publication.superseded,
+          semantic_deduped_total: metrics.publication.semanticDeduped,
+          retried_total: metrics.publication.retried,
+          dead_lettered_total: metrics.publication.deadLettered,
+          refreshed_total: metrics.publication.refreshed,
+          flow: publicationFlow,
+          dead_letters: deadLetters,
+          health: publicationHealth,
+          capacity_control: exactReviewPublicationControlStatus(this.env, publicationControl),
+          credential_circuits: exactReviewGithubCredentialCircuitStatus(
+            state,
+            now,
+            authorityPendingByOwner,
+          ),
+          github_request_metrics: {
+            updated_at: state.dispatcher?.githubRequestMetrics?.updatedAt
+              ? new Date(state.dispatcher.githubRequestMetrics.updatedAt).toISOString()
+              : null,
+            counters: state.dispatcher?.githubRequestMetrics?.counters || {},
+          },
+          github_egress_metrics_v2: this.githubEgressTelemetryStore.publicSummary(now),
+          batches: {
+            enabled: exactReviewPublicationBatchingEnabled(this.env),
+            max_items: exactReviewPublicationBatchSize(this.env),
+            max_concurrent: exactReviewPublicationBatchMaxConcurrent(this.env),
+            max_wait_seconds: exactReviewPublicationBatchWaitMs(this.env) / 1_000,
+            fresh_lane: {
+              enabled: exactReviewPublicationFreshLaneMaxItems(this.env) > 0,
+              reserved_items: exactReviewPublicationFreshLaneMaxItems(this.env),
+              max_age_seconds: exactReviewPublicationFreshLaneMaxAgeMs(this.env) / 1_000,
+              ready_items: freshPublicationItemKeys.size,
+              historical_ready_items: Math.max(
+                0,
+                stats.lanes.publication.ready - freshPublicationItemKeys.size,
+              ),
+            },
+            last_dispatch_at: state.dispatcher?.publicationBatchDispatchedAt
+              ? new Date(state.dispatcher.publicationBatchDispatchedAt).toISOString()
+              : null,
+            last_dispatch_succeeded: state.dispatcher?.publicationBatchDispatchSucceeded ?? null,
+            dispatch_pending_until: state.dispatcher?.publicationBatchDispatchPendingUntil
+              ? new Date(state.dispatcher.publicationBatchDispatchPendingUntil).toISOString()
+              : null,
+            leased: publicationBatches.leased,
+            completed: publicationBatches.completed,
+            expired: publicationBatches.expired,
+            active_items: publicationBatches.activeItems,
+            oldest_active_at:
+              publicationBatches.oldestActiveAt === null
+                ? null
+                : new Date(publicationBatches.oldestActiveAt).toISOString(),
+            oldest_active_age_seconds:
+              publicationBatches.oldestActiveAt === null
+                ? null
+                : Math.max(0, Math.floor((now - publicationBatches.oldestActiveAt) / 1000)),
+            reclaimed_items_retained: publicationBatches.reclaimedItemsRetained,
+            cleanup: {
+              deleted_this_pass: publicationBatches.cleanup.deletedThisPass,
+              eligible_remaining: publicationBatches.cleanup.eligibleRemaining,
+              limit: publicationBatches.cleanup.limit,
+            },
+          },
+          direct: {
+            enabled: exactReviewDirectPublicationEnabled(this.env),
+            health: { status: "healthy", store: "durable_object_sqlite" },
+            pending: 0,
+            retryable: 0,
+            failed: 0,
+            retained_receipts: directPublicationCount,
+            oldest_pending_at: null,
+          },
+        },
+      },
+      delivery_receipts: this.deliveryReceiptCountSync(),
+      scheduled_feed: this.scheduledReviewFeedStatusSync(now),
+      reservation_claim_observability: reservationClaimObservability,
+      state_writer: { ...stateWriter, coordinator: stateWriterCoordinator },
+      storage_schema_version: EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION,
+      legacy_rollback_available:
+        !this.legacyMirrorDisabled && now < this.migratedAt + EXACT_REVIEW_QUEUE_LEGACY_ROLLBACK_MS,
+    });
   }
 
   private readLifecycleAuditInventory(input: unknown) {
@@ -4189,6 +4271,15 @@ export class ExactReviewQueue {
   }
 
   async alarm() {
+    this.invalidateStatsCache();
+    try {
+      await this.handleAlarm();
+    } finally {
+      this.invalidateStatsCache();
+    }
+  }
+
+  private async handleAlarm() {
     await this.ensureReady();
     this.cleanupLegacyCompatibilitySync();
     const startedAt = Date.now();
@@ -4268,6 +4359,7 @@ export class ExactReviewQueue {
       true,
       snapshotPublicationControl.demandCapacity,
     );
+    let snapshotHeads = this.publicationHeadsSync(snapshot);
     let snapshotAdmission = exactReviewQueueAdmittedItems(
       snapshot,
       startedAt,
@@ -4283,8 +4375,8 @@ export class ExactReviewQueue {
       startedAt,
       new Set(snapshotBatchOwnership.itemKeys),
       snapshotBatchOwnership.activeBatches,
-      this.freshPublicationItemKeysSync(snapshot, startedAt),
-      this.supersededPublicationItemKeysSync(snapshot),
+      this.freshPublicationItemKeysSync(snapshot, startedAt, snapshotHeads),
+      this.supersededPublicationItemKeysSync(snapshot, snapshotHeads),
     );
     let snapshotBatchCandidates = snapshotBatchDeparture?.due
       ? this.publicationBatchCandidates(
@@ -4325,6 +4417,7 @@ export class ExactReviewQueue {
       // change gets a new departure and therefore a new probe.
       const recheckedAt = Date.now();
       snapshot = this.readStateSync();
+      snapshotHeads = this.publicationHeadsSync(snapshot);
       snapshotBatchOwnership = this.batchStore.activeLeaseSnapshot(recheckedAt);
       snapshotPublicationControl = this.refreshPublicationControlSync(snapshot, recheckedAt);
       snapshotPublicationCapacity = exactReviewPublicationCapacityForState(
@@ -4351,8 +4444,8 @@ export class ExactReviewQueue {
         recheckedAt,
         new Set(snapshotBatchOwnership.itemKeys),
         snapshotBatchOwnership.activeBatches,
-        this.freshPublicationItemKeysSync(snapshot, recheckedAt),
-        this.supersededPublicationItemKeysSync(snapshot),
+        this.freshPublicationItemKeysSync(snapshot, recheckedAt, snapshotHeads),
+        this.supersededPublicationItemKeysSync(snapshot, snapshotHeads),
       );
       snapshotBatchCandidates = snapshotBatchDeparture?.due
         ? this.publicationBatchCandidates(
@@ -6235,6 +6328,7 @@ export class ExactReviewQueue {
   private stalePublicationCandidatesSync(
     state: ExactReviewQueueState,
     activeBatchItemKeys: ReadonlySet<string>,
+    heads = this.publicationHeadsSync(state),
   ) {
     const newestByTarget = new Map<string, number>();
     const versioned = Object.values(state.items).flatMap((item) => {
@@ -6244,8 +6338,7 @@ export class ExactReviewQueue {
       newestByTarget.set(
         revision.targetKey,
         Math.max(
-          newestByTarget.get(revision.targetKey) ??
-            this.publicationHeadRevisionSync(revision.targetKey),
+          newestByTarget.get(revision.targetKey) ?? heads.get(revision.targetKey) ?? 0,
           revision.sourceRevision,
         ),
       );
@@ -7329,6 +7422,7 @@ export class ExactReviewQueue {
       return json({ error: "invalid_failure_fingerprint" }, 400);
     }
     let acceptedCount = 0;
+    let completedState: ExactReviewQueueState | undefined;
     const requestedByFence = new Map(
       completions.map(
         (completion) =>
@@ -7370,6 +7464,7 @@ export class ExactReviewQueue {
         acceptedCount = accepted.length;
         if (!accepted.length) return;
         const state = this.readStateSync();
+        completedState = state;
         let published = 0;
         let superseded = 0;
         let completed = 0;
@@ -7675,7 +7770,11 @@ export class ExactReviewQueue {
       batch = this.batchStore.recordGithubThrottle(batchId, leaseOwner, now) ?? batch;
     }
     this.recordStateWriterOperationSafely(stateWriter, false, now);
-    if (acceptedCount || telemetryApplied) await this.scheduleNext(this.readStateSync(), now);
+    if (acceptedCount || telemetryApplied)
+      await this.scheduleNext(
+        !telemetrySubmitted && completedState ? completedState : this.readSchedulingStateSync(),
+        now,
+      );
     return json({
       ok: true,
       accepted: acceptedCount,
@@ -8393,6 +8492,7 @@ export class ExactReviewQueue {
     }
     try {
       const now = Date.now();
+      let state: ExactReviewQueueState | undefined;
       const result = this.storage.transactionSync(() => {
         const existing = this.lifecycleProjectionStore.read(
           identity.canonicalTargetKey,
@@ -8425,7 +8525,7 @@ export class ExactReviewQueue {
           kind: "review_completed_routed",
           observedAt: now,
         }).projection;
-        const state = this.readStateSync();
+        state = this.readStateSync();
         const driverChanged = this.ensureLifecycleTerminalFinalizationDriver({
           state,
           projection,
@@ -8437,7 +8537,7 @@ export class ExactReviewQueue {
         return { projection, duplicate: false };
       });
       this.syncBayLifecycle(result.projection);
-      await this.scheduleNext(this.readStateSync(), now);
+      await this.scheduleNext(state ?? this.readSchedulingStateSync(), now);
       return json({
         ok: true,
         lifecycle_state: lifecycleState(result.projection),
@@ -8696,7 +8796,7 @@ export class ExactReviewQueue {
         statusCommentId,
         observedAt: now,
       });
-      await this.scheduleNext(state, now);
+      await this.scheduleNext(this.readSchedulingStateSync(), now);
       return json({
         ok: true,
         allowed: result.allowed,
@@ -9114,14 +9214,38 @@ export class ExactReviewQueue {
     return Number(row?.source_revision || 0);
   }
 
-  private supersededPublicationItemKeysSync(state: ExactReviewQueueState) {
+  private publicationHeadsSync(state: ExactReviewQueueState): ReadonlyMap<string, number> {
+    const targets = [
+      ...new Set(
+        Object.values(state.items).flatMap((item) => {
+          const revision = exactReviewPublicationRevision(item.decision);
+          return revision ? [revision.targetKey] : [];
+        }),
+      ),
+    ];
+    if (!targets.length) return new Map();
+    return new Map(
+      Array.from(
+        this.storage.sql.exec(
+          `SELECT target_key, source_revision FROM ${EXACT_REVIEW_PUBLICATION_HEAD_TABLE}
+       WHERE target_key IN (SELECT value FROM json_each(?))`,
+          JSON.stringify(targets),
+        ) as Iterable<{ target_key: string; source_revision: number }>,
+        (row) => [row.target_key, Number(row.source_revision)],
+      ),
+    );
+  }
+
+  private supersededPublicationItemKeysSync(
+    state: ExactReviewQueueState,
+    heads = this.publicationHeadsSync(state),
+  ) {
     // Active batch ownership can preserve an older row after a newer head lands.
     // Departure and claim must exclude that same row when ownership expires.
     return new Set(
       Object.values(state.items).flatMap((item) => {
         const revision = exactReviewPublicationRevision(item.decision);
-        return revision &&
-          revision.sourceRevision < this.publicationHeadRevisionSync(revision.targetKey)
+        return revision && revision.sourceRevision < (heads.get(revision.targetKey) ?? 0)
           ? [item.key]
           : [];
       }),
@@ -9142,7 +9266,11 @@ export class ExactReviewQueue {
     );
   }
 
-  private freshPublicationItemKeysSync(state: ExactReviewQueueState, now: number) {
+  private freshPublicationItemKeysSync(
+    state: ExactReviewQueueState,
+    now: number,
+    heads = this.publicationHeadsSync(state),
+  ) {
     const reserve = exactReviewPublicationFreshLaneMaxItems(this.env);
     if (!reserve) return new Set<string>();
     const cutoff = now - exactReviewPublicationFreshLaneMaxAgeMs(this.env);
@@ -9158,8 +9286,7 @@ export class ExactReviewQueue {
           return [];
         }
         const revision = exactReviewPublicationRevision(item.decision);
-        return revision &&
-          revision.sourceRevision >= this.publicationHeadRevisionSync(revision.targetKey)
+        return revision && revision.sourceRevision >= (heads.get(revision.targetKey) ?? 0)
           ? [item.key]
           : [];
       }),
@@ -10007,6 +10134,35 @@ export class ExactReviewQueue {
     return { generation, receipts };
   }
 
+  private readonly schedulingStates = new WeakSet<ExactReviewQueueState>();
+
+  private readSchedulingStateSync(): ExactReviewQueueState {
+    const meta = this.readStorageMetaSync();
+    if (!meta || Number(meta.schema_version) !== EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION) {
+      throw new Error("exact-review queue storage is not initialized");
+    }
+    const items: Record<string, ExactReviewQueueItem> = {};
+    for (const row of this.storage.sql.exec(
+      `SELECT item_key, json_remove(item_json,
+        '$.leaseDecision', '$.decision.additionalPrompt',
+        '$.decision.publication.producerDecision.additionalPrompt') AS census_json
+       FROM ${EXACT_REVIEW_QUEUE_ITEM_TABLE}`,
+    ) as Iterable<{ item_key: string; census_json: string }>) {
+      const item = JSON.parse(row.census_json) as ExactReviewQueueItem;
+      if (!item || typeof item !== "object" || item.key !== row.item_key) {
+        throw new Error(`invalid exact-review queue item for ${row.item_key}`);
+      }
+      items[row.item_key] = item;
+    }
+    const state: ExactReviewQueueState = {
+      items,
+      dispatcher: meta.dispatcher_json ? JSON.parse(meta.dispatcher_json) : undefined,
+      shedSinceReset: Math.max(0, Number(meta.shed_since_reset || 0)),
+    };
+    this.schedulingStates.add(state);
+    return state;
+  }
+
   private readStateSync(): ExactReviewQueueState {
     const meta = this.readStorageMetaSync();
     if (!meta || Number(meta.schema_version) !== EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION) {
@@ -10015,19 +10171,39 @@ export class ExactReviewQueue {
 
     const items: Record<string, ExactReviewQueueItem> = {};
     const baselineItems = new Map<string, string>();
+    const unreadItems = new Map<string, () => ExactReviewQueueItem>();
     for (const row of this.storage.sql.exec(
       `SELECT item_key, item_json FROM ${EXACT_REVIEW_QUEUE_ITEM_TABLE}`,
     ) as Iterable<{ item_key: string; item_json: string }>) {
+      let loaded = false;
       let item: ExactReviewQueueItem;
-      try {
-        item = JSON.parse(row.item_json) as ExactReviewQueueItem;
-      } catch {
-        throw new Error(`invalid exact-review queue item JSON for ${row.item_key}`);
-      }
-      if (!item || typeof item !== "object" || item.key !== row.item_key) {
-        throw new Error(`invalid exact-review queue item for ${row.item_key}`);
-      }
-      items[row.item_key] = item;
+      const read = () => {
+        if (loaded) return item;
+        try {
+          item = JSON.parse(row.item_json) as ExactReviewQueueItem;
+        } catch {
+          throw new Error(`invalid exact-review queue item JSON for ${row.item_key}`);
+        }
+        if (!item || typeof item !== "object" || item.key !== row.item_key) {
+          throw new Error(`invalid exact-review queue item for ${row.item_key}`);
+        }
+        loaded = true;
+        unreadItems.delete(row.item_key);
+        return item;
+      };
+      // Keep property descriptors stable during census enumeration. Redefining
+      // getters inside Object.values makes large snapshots quadratic in V8.
+      Object.defineProperty(items, row.item_key, {
+        get: read,
+        set: (next: ExactReviewQueueItem) => {
+          item = next;
+          loaded = true;
+          unreadItems.delete(row.item_key);
+        },
+        enumerable: true,
+        configurable: true,
+      });
+      unreadItems.set(row.item_key, read);
       baselineItems.set(row.item_key, row.item_json);
     }
 
@@ -10046,6 +10222,7 @@ export class ExactReviewQueue {
     };
     this.baselines.set(state, {
       items: baselineItems,
+      unreadItems,
       dispatcherJson: meta.dispatcher_json,
     });
     return state;
@@ -11210,11 +11387,19 @@ export class ExactReviewQueue {
   }
 
   private writeStateSync(state: ExactReviewQueueState) {
+    if (this.schedulingStates.has(state)) throw new Error("cannot persist a queue census");
+    this.invalidateStatsCache();
     const baseline = this.baselines.get(state) || this.readStateBaselineSync();
     const nextItems = new Map<string, string>();
     let reviewEnqueued = 0;
     let publicationEnqueued = 0;
-    for (const [itemKey, item] of Object.entries(state.items)) {
+    for (const itemKey of Object.keys(state.items)) {
+      const unread = baseline.unreadItems?.get(itemKey);
+      if (unread && Object.getOwnPropertyDescriptor(state.items, itemKey)?.get === unread) {
+        nextItems.set(itemKey, baseline.items.get(itemKey)!);
+        continue;
+      }
+      const item = state.items[itemKey]!;
       const itemJson = JSON.stringify(item);
       nextItems.set(itemKey, itemJson);
       if (baseline.items.get(itemKey) === itemJson) continue;
@@ -11255,6 +11440,7 @@ export class ExactReviewQueue {
     this.syncLegacyCompatibilitySync(state);
     this.baselines.set(state, {
       items: nextItems,
+      unreadItems: baseline.unreadItems,
       dispatcherJson,
     });
   }
@@ -12236,14 +12422,15 @@ export class ExactReviewQueue {
         ? Number(state.dispatcher?.reviewAdmissionNextAt)
         : null,
     );
+    const heads = this.publicationHeadsSync(state);
     const batchDeparture = exactReviewPublicationBatchDeparture(
       this.env,
       state,
       now,
       new Set(batchOwnership.itemKeys),
       batchOwnership.activeBatches,
-      this.freshPublicationItemKeysSync(state, now),
-      this.supersededPublicationItemKeysSync(state),
+      this.freshPublicationItemKeysSync(state, now, heads),
+      this.supersededPublicationItemKeysSync(state, heads),
     );
     const sourceAuthorityNext = await this.nextSourceAuthorityVerificationAt();
     const commandIntakeNext = this.commandIntakeStore.nextAttemptAt();

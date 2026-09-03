@@ -280,8 +280,9 @@ test("durable lifecycle Bay is a pure, bounded public-reference reducer snapshot
     queryBindings.push(bindings);
     assert.match(query, /^\s*SELECT\b/i, "Bay route must be read-only");
     assert.match(query, /FROM exact_review_lifecycle_projection_v1/);
-    if (/SELECT MAX\(revision\)/.test(query)) {
-      assert.match(query, /WHERE canonical_target_key = \?/);
+    if (/MAX\(revision\) AS max_revision/.test(query)) {
+      assert.match(query, /WHERE canonical_target_key IN \(SELECT value FROM json_each\(\?\)\)/);
+      assert.ok(JSON.parse(String(bindings[0])).length <= 24);
     } else {
       assert.match(query, /WHERE LOWER\(SUBSTR\(canonical_target_key/);
     }
@@ -313,7 +314,7 @@ test("durable lifecycle Bay is a pure, bounded public-reference reducer snapshot
   assert.equal(response.headers.get("cache-control"), "no-store");
   assert.equal(initialized, 1, "constructor must provision only the Bay read schema");
   assert.equal(storage.sql.hasNormalizedQueue(), false);
-  assert.equal(queries.filter((query) => /SELECT MAX\(revision\)/.test(query)).length, 6);
+  assert.equal(queries.filter((query) => /MAX\(revision\) AS max_revision/.test(query)).length, 1);
   assert.deepEqual(queryBindings.slice(0, 4), [
     ["openclaw/clawsweeper"],
     ["openclaw/clawsweeper"],

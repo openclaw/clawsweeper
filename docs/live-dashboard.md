@@ -446,6 +446,14 @@ so handoff recovery stays live. If the optional queue read fails or is malformed
 the public response uses an unavailable/unknown aggregate and a bounded
 `telemetry_unavailable` diagnostic; it never returns the underlying error text.
 
+The object memoizes its private stats response for 10 seconds by default
+(`EXACT_REVIEW_STATS_CACHE_MS`; set `0` to disable). Concurrent polls with the
+same Bay sample parameters share the computation and its original `generated_at`.
+Queue mutations and auxiliary SQLite writes invalidate the memo; a missing or
+overdue alarm also bypasses it so polling still repairs the queue heartbeat.
+This only bounds observation freshness: the public projection's fields and
+meaning, admission, publication fences, and Bay behavior are unchanged.
+
 For capacity displays, `/api/exact-review-queue` also exposes compatible
 `lanes.review` and `lanes.publication` objects. Each lane reports its own
 pending, ready, backoff, dispatching, leased, capacity, active, available-slot,
