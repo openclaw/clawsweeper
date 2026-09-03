@@ -849,10 +849,25 @@ export class ExactReviewQueue {
     generation: number;
   } | null = null;
 
-  private invalidateStatsCache() {
+  private lifecycleBayCache: {
+    key: string;
+    expiresAt: number;
+    body: string;
+    changes: number;
+  } | null = null;
+  private lifecycleBayComputation: {
+    key: string;
+    body: Promise<string>;
+    changes: number;
+    generation: number;
+  } | null = null;
+
+  private invalidateReadCaches() {
     this.statsMutationGeneration++;
     this.statsCache = null;
     this.statsComputation = null;
+    this.lifecycleBayCache = null;
+    this.lifecycleBayComputation = null;
   }
 
   private reviewCoverageCache: { at: number; summary: ReviewCoverageSummary } | null = null;
@@ -923,14 +938,14 @@ export class ExactReviewQueue {
     hostedTargetMetadataToken = exactReviewHostedTargetMetadataTokenSource(this.env),
   ) {
     const mutating = request.method !== "GET";
-    if (mutating) this.invalidateStatsCache();
+    if (mutating) this.invalidateReadCaches();
     try {
       return await this.handleFetch(request, hostedTargetMetadataToken);
     } catch (error) {
       rethrowQueueFailure(error, "fetch", request);
     } finally {
       // Mutators can yield to a dashboard poll while awaiting external work.
-      if (mutating) this.invalidateStatsCache();
+      if (mutating) this.invalidateReadCaches();
     }
   }
 
@@ -945,19 +960,7 @@ export class ExactReviewQueue {
     // cleanup, queue reclamation, alarm scheduling, or GitHub work.
     if (request.method === "GET" && url.pathname === "/lifecycle-bay") {
       await this.lifecycleProjectionReady.catch(() => undefined);
-      const publicRepositories = url.searchParams
-        .getAll("public_repo")
-        .map((value) => value.trim().toLowerCase());
-      const validPublicRepositories =
-        publicRepositories.length <= 32 &&
-        publicRepositories.every((value) => /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(value));
-      return json({
-        durable_lifecycle_bay: !url.searchParams.has("public_repo")
-          ? this.lifecycleProjectionStore.readBaySnapshot()
-          : validPublicRepositories
-            ? this.lifecycleProjectionStore.readBaySnapshot(Date.now(), new Set(publicRepositories))
-            : this.lifecycleProjectionStore.readBaySnapshot(Date.now(), new Set()),
-      });
+      return this.lifecycleBayResponse(url);
     }
     if (request.method === "GET" && url.pathname === "/bay-lifecycle-metrics") {
       await this.lifecycleProjectionReady.catch(() => undefined);
@@ -2830,29 +2833,40 @@ export class ExactReviewQueue {
       // so corrupt duplicates remain ambiguous, and bound the snapshot to the global worker
       // budget so one reconciliation never becomes an unbounded GitHub API fan-out.
       const requestedRunIds = new Set(requestedRuns.map((run) => run.runId));
-      const matchesByRunId = new Map<string, ExactReviewQueueItem[]>();
-      const state = this.readStateSync();
-      for (const item of Object.values(state.items)) {
-        if (
-          item.state !== "leased" ||
-          !item.claimedRunId ||
-          (!includeAllClaimed && !requestedRunIds.has(item.claimedRunId))
-        ) {
-          continue;
-        }
-        const matches = matchesByRunId.get(item.claimedRunId) || [];
-        if (matches.length < 2) matches.push(item);
-        matchesByRunId.set(item.claimedRunId, matches);
+      const matchesByRunId = new Map<
+        string,
+        Array<{ run_id: string; run_attempt: number | null; claim_generation: number }>
+      >();
+      // Extract only lease identity fields. Reading the full state would parse
+      // every pending item's decision and retained publication payload too.
+      for (const row of this.storage.sql.exec(
+        `SELECT item_key,
+                json_extract(item_json, '$.key', '$.claimedRunId',
+                             '$.claimedRunAttempt', '$.claimGeneration') AS claim_json
+           FROM ${EXACT_REVIEW_QUEUE_ITEM_TABLE}
+          WHERE json_extract(item_json, '$.state') = 'leased'
+            ${includeAllClaimed ? "" : "AND json_extract(item_json, '$.claimedRunId') IN (SELECT value FROM json_each(?))"}
+          ORDER BY rowid`,
+        ...(includeAllClaimed ? [] : [JSON.stringify([...requestedRunIds])]),
+      ) as Iterable<{ item_key: string; claim_json: string }>) {
+        const [key, runId, runAttempt, generation] = JSON.parse(row.claim_json) as [
+          string,
+          string | null,
+          number | null,
+          number | null,
+        ];
+        if (key !== row.item_key) throw new Error("invalid exact-review queue claim item");
+        if (!runId || (!includeAllClaimed && !requestedRunIds.has(runId))) continue;
+        const matches = matchesByRunId.get(runId) || [];
+        if (matches.length < 2)
+          matches.push({
+            run_id: String(runId),
+            run_attempt: runAttempt ?? null,
+            claim_generation: exactReviewClaimGeneration(generation),
+          });
+        matchesByRunId.set(runId, matches);
       }
-      const runs = [...matchesByRunId.values()]
-        .flatMap((matches) =>
-          matches.map((item) => ({
-            run_id: String(item.claimedRunId),
-            run_attempt: item.claimedRunAttempt ?? null,
-            claim_generation: exactReviewClaimGeneration(item.claimGeneration),
-          })),
-        )
-        .slice(0, EXACT_REVIEW_RECONCILE_RUN_LIMIT);
+      const runs = [...matchesByRunId.values()].flat().slice(0, EXACT_REVIEW_RECONCILE_RUN_LIMIT);
       return json({ runs });
     }
 
@@ -3896,6 +3910,88 @@ export class ExactReviewQueue {
     );
   }
 
+  private computeLifecycleBayBody(repositories?: ReadonlySet<string>) {
+    return JSON.stringify(
+      {
+        durable_lifecycle_bay: this.lifecycleProjectionStore.readBaySnapshot(
+          Date.now(),
+          repositories,
+        ),
+      },
+      null,
+      2,
+    );
+  }
+
+  private async lifecycleBayResponse(url: URL) {
+    return cors(
+      new Response(await this.lifecycleBayBody(url), {
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "cache-control": "no-store",
+        },
+      }),
+    );
+  }
+
+  private async lifecycleBayBody(url: URL): Promise<string> {
+    const publicRepositories = url.searchParams
+      .getAll("public_repo")
+      .map((value) => value.trim().toLowerCase());
+    const valid =
+      publicRepositories.length <= 32 &&
+      publicRepositories.every((value) => /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/.test(value));
+    const repositories = !url.searchParams.has("public_repo")
+      ? undefined
+      : new Set(valid ? publicRepositories.sort() : []);
+    const configured = Number(this.env.EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS ?? 10_000);
+    const ttl = Number.isFinite(configured) && configured >= 0 ? configured : 10_000;
+    if (!ttl) {
+      this.lifecycleBayCache = null;
+      this.lifecycleBayComputation = null;
+      return this.computeLifecycleBayBody(repositories);
+    }
+    const key = JSON.stringify(repositories ? [...repositories] : null);
+    for (;;) {
+      const now = Date.now();
+      const changes = this.storageChangeCountSync();
+      const generation = this.statsMutationGeneration;
+      const cached = this.lifecycleBayCache;
+      if (cached?.key === key && cached.expiresAt > now && cached.changes === changes)
+        return cached.body;
+      const pending = this.lifecycleBayComputation;
+      if (
+        pending?.key === key &&
+        pending.changes === changes &&
+        pending.generation === generation
+      ) {
+        // An in-flight body is not a validated cache entry. A waiter must check
+        // again after yielding because writes can invalidate that computation.
+        await pending.body;
+        continue;
+      }
+      const computation = {
+        key,
+        changes,
+        generation,
+        body: Promise.resolve().then(() => this.computeLifecycleBayBody(repositories)),
+      };
+      this.lifecycleBayComputation = computation;
+      try {
+        const body = await computation.body;
+        if (
+          this.lifecycleBayComputation === computation &&
+          this.statsMutationGeneration === generation &&
+          this.storageChangeCountSync() === changes
+        )
+          this.lifecycleBayCache = { key, expiresAt: now + ttl, body, changes };
+        return body;
+      } finally {
+        if (this.lifecycleBayComputation === computation) this.lifecycleBayComputation = null;
+      }
+    }
+  }
+
   private async statsResponse(url: URL) {
     return cors(
       new Response(await this.statsBody(url), {
@@ -4297,11 +4393,11 @@ export class ExactReviewQueue {
   }
 
   async alarm() {
-    this.invalidateStatsCache();
+    this.invalidateReadCaches();
     try {
       await this.handleAlarm();
     } finally {
-      this.invalidateStatsCache();
+      this.invalidateReadCaches();
     }
   }
 
@@ -11414,7 +11510,7 @@ export class ExactReviewQueue {
 
   private writeStateSync(state: ExactReviewQueueState) {
     if (this.schedulingStates.has(state)) throw new Error("cannot persist a queue census");
-    this.invalidateStatsCache();
+    this.invalidateReadCaches();
     const baseline = this.baselines.get(state) || this.readStateBaselineSync();
     const nextItems = new Map<string, string>();
     let reviewEnqueued = 0;

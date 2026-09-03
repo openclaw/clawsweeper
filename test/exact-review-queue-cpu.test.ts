@@ -20,7 +20,7 @@ const post = (path: string, body: unknown) =>
 
 // Same publication/lease shape as the publication-batch fixtures. Historical direct
 // rows include the old inline base64 operations still readable after the cutover.
-async function fixture(size = 300, overrides = {}) {
+async function fixture(size = 300, overrides = {}, leasedCount = 50) {
   const storage = new TestStorage();
   const env: Record<string, unknown> = {
     EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
@@ -32,7 +32,7 @@ async function fixture(size = 300, overrides = {}) {
   await queue.fetch(new Request("https://queue/stats"));
   const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
   const items: ExactReviewQueueItem[] = [];
-  for (let n = 1; n <= size + 50; n++) {
+  for (let n = 1; n <= size + leasedCount; n++) {
     const producerDecision = {
       targetRepo: "openclaw/openclaw",
       targetBranch: "main",
@@ -337,11 +337,71 @@ test(
   },
 );
 
+test(
+  "Bay and claimed-run CPU benchmark at 500 projections and 100 leases (opt in)",
+  { skip: process.env.EXACT_REVIEW_CPU_BENCH !== "1" },
+  async (t) => {
+    t.mock.method(Date, "now", () => NOW);
+    const { queue, storage, items, env } = await fixture(400, {}, 100);
+    const samples: Record<string, unknown>[] = [];
+    async function measure(route: string, request: () => Request) {
+      const times: number[] = [];
+      let queries = 0;
+      const exec = storage.sql.exec;
+      storage.sql.exec = (query, ...bindings) => {
+        queries++;
+        return exec(query, ...bindings);
+      };
+      try {
+        for (let i = 0; i < 20; i++) {
+          const start = process.cpuUsage();
+          const response = await queue.fetch(request());
+          assert.equal(response.status, 200);
+          const body = await response.json();
+          if (route.startsWith("lifecycle-bay")) {
+            assert.equal(body.durable_lifecycle_bay.collection.state, "complete");
+            assert.equal(body.durable_lifecycle_bay.inventory.lifecycle_records, 500);
+          } else assert.ok(body.runs.length > 0);
+          const cpu = process.cpuUsage(start);
+          times.push((cpu.user + cpu.system) / 1000);
+        }
+      } finally {
+        storage.sql.exec = exec;
+      }
+      times.sort((a, b) => a - b);
+      samples.push({
+        route,
+        median_cpu_ms: times[10],
+        max_cpu_ms: times.at(-1),
+        sql_per_call: queries / times.length,
+      });
+    }
+    const bayRequest = () =>
+      new Request("https://queue/lifecycle-bay?public_repo=openclaw/openclaw");
+    env.EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "0";
+    await measure("lifecycle-bay-uncached", bayRequest);
+    env.EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "10000";
+    await queue.fetch(bayRequest());
+    await measure("lifecycle-bay-cached", bayRequest);
+    await measure("claimed-runs-all", () =>
+      post("/claimed-runs", { runs: [], include_all_claimed: true }),
+    );
+    await measure("claimed-runs-filtered", () =>
+      post("/claimed-runs", {
+        runs: items.slice(400, 432).map((item) => ({ run_id: item.claimedRunId, run_attempt: 1 })),
+      }),
+    );
+    console.log(
+      JSON.stringify({ fixture: { pending: 400, leased: 100, lifecycle: 500 }, samples }),
+    );
+  },
+);
+
 type QueueInternals = {
   readStateSync(): ExactReviewQueueState;
   readSchedulingStateSync(): ExactReviewQueueState;
   writeStateSync(state: ExactReviewQueueState): void;
-  invalidateStatsCache(): void;
+  invalidateReadCaches(): void;
   scheduleNext(state: ExactReviewQueueState, now: number): Promise<void>;
   hostedTargetAdmission(): Promise<{ outcome: "terminal" }>;
 };
@@ -430,11 +490,11 @@ for (const mutation of ["explicit invalidation", "auxiliary SQL write"] as const
         await resume.promise;
       }
     });
-    internals(queue).invalidateStatsCache();
+    internals(queue).invalidateReadCaches();
     const first = queue.fetch(new Request("https://queue/stats"));
     await entered.promise;
     if (mutation === "explicit invalidation") {
-      internals(queue).invalidateStatsCache();
+      internals(queue).invalidateReadCaches();
     } else {
       storage.run(
         "DELETE FROM exact_review_direct_publication_plans WHERE item_key = ?",
@@ -667,4 +727,280 @@ test("concurrent renewal of an expired stats memo performs one queue scan", asyn
       .length,
     1,
   );
+});
+
+test("lifecycle Bay memo shares fresh polls, expires, and preserves headers and snapshot time", async (t) => {
+  let now = NOW;
+  t.mock.method(Date, "now", () => now);
+  const { queue, storage } = await fixture(3);
+  const exec = t.mock.method(storage.sql, "exec");
+  const read = () => queue.fetch(new Request("https://queue/lifecycle-bay"));
+  const responses = await Promise.all(Array.from({ length: 8 }, read));
+  const first = await responses[0]!.text();
+  assert.equal(responses[0]!.headers.get("cache-control"), "no-store");
+  assert.equal(responses[0]!.headers.get("content-type"), "application/json; charset=utf-8");
+  assert.equal(responses[0]!.headers.get("access-control-allow-origin"), "*");
+  for (const response of responses.slice(1)) assert.equal(await response.text(), first);
+  now += 9_999;
+  assert.equal(await (await read()).text(), first);
+  assert.equal(
+    exec.mock.calls.filter(({ arguments: [sql] }) => /SELECT projection_json,/.test(sql)).length,
+    1,
+  );
+  now++;
+  const renewed = await Promise.all(Array.from({ length: 8 }, async () => (await read()).text()));
+  assert.notEqual(renewed[0], first);
+  assert.ok(renewed.every((body) => body === renewed[0]));
+  assert.equal(
+    exec.mock.calls.filter(({ arguments: [sql] }) => /SELECT projection_json,/.test(sql)).length,
+    2,
+  );
+});
+
+test("lifecycle Bay memo separates repository scopes, including invalid and absent scopes", async (t) => {
+  t.mock.method(Date, "now", () => NOW);
+  const { queue, storage, lifecycle } = await fixture(3);
+  lifecycle.recordAdmission({
+    canonicalTargetKey: "openclaw/clawhub#1",
+    fenceKey: "hub-1",
+    revision: 1,
+    deliveryId: "hub-1",
+    sourceAction: "opened",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    observedAt: NOW,
+  });
+  const read = async (query = "") =>
+    (await (await queue.fetch(new Request(`https://queue/lifecycle-bay${query}`))).json())
+      .durable_lifecycle_bay;
+  const all = await read();
+  const scoped = await read("?public_repo=openclaw/openclaw");
+  assert.equal(all.inventory.lifecycle_records, scoped.inventory.lifecycle_records + 1);
+  assert.equal((await read("?public_repo=openclaw/clawhub")).inventory.lifecycle_records, 1);
+  assert.equal((await read("?public_repo=invalid")).inventory.lifecycle_records, 0);
+  assert.equal((await read("?public_repo=")).inventory.lifecycle_records, 0);
+  const exec = t.mock.method(storage.sql, "exec");
+  const combined = await read("?public_repo=openclaw/openclaw&public_repo=openclaw/clawhub");
+  const count = exec.mock.calls.length;
+  assert.deepEqual(
+    await read(
+      "?public_repo=OpenClaw/ClawHub&public_repo=openclaw/openclaw&public_repo=openclaw/clawhub",
+    ),
+    combined,
+  );
+  assert.equal(
+    exec.mock.calls.length,
+    count + 1,
+    "equivalent scopes only check the storage generation",
+  );
+  assert.deepEqual(await read(), all);
+  assert.equal(
+    (await read(`?${Array.from({ length: 33 }, () => "public_repo=openclaw/openclaw").join("&")}`))
+      .inventory.lifecycle_records,
+    0,
+  );
+});
+
+test("lifecycle Bay memo can be disabled and invalidates on queue state writes", async (t) => {
+  t.mock.method(Date, "now", () => NOW);
+  const { queue, storage, env } = await fixture(3);
+  const exec = t.mock.method(storage.sql, "exec");
+  const read = () => queue.fetch(new Request("https://queue/lifecycle-bay"));
+  await read();
+  await read();
+  const state = internals(queue).readStateSync();
+  storage.transactionSync(() => internals(queue).writeStateSync(state));
+  await read();
+  env.EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "0";
+  await read();
+  await read();
+  env.EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "10000";
+  await read();
+  await read();
+  assert.equal(
+    exec.mock.calls.filter(({ arguments: [sql] }) => /SELECT projection_json,/.test(sql)).length,
+    5,
+  );
+});
+
+test("lifecycle Bay writes during in-flight serialization cannot restore the older memo", async (t) => {
+  t.mock.method(Date, "now", () => NOW);
+  const { queue, lifecycle, items } = await fixture(3);
+  const target = queue as unknown as {
+    computeLifecycleBayBody(repositories?: ReadonlySet<string>): string | Promise<string>;
+  };
+  const compute = target.computeLifecycleBayBody.bind(target);
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let calls = 0;
+  t.mock.method(target, "computeLifecycleBayBody", (repositories?: ReadonlySet<string>) => {
+    const body = compute(repositories);
+    if (++calls === 1) {
+      entered();
+      return gate.then(() => body);
+    }
+    return body;
+  });
+  const read = async () =>
+    (await (await queue.fetch(new Request("https://queue/lifecycle-bay"))).json())
+      .durable_lifecycle_bay;
+  const pending = read();
+  await started;
+  const waiter = read();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(calls, 1, "the second reader waits on the in-flight computation");
+  lifecycle.recordTerminalDisposition({
+    canonicalTargetKey: "openclaw/openclaw#1",
+    fenceKey: items[0]!.key,
+    revision: 1,
+    kind: "superseded",
+    observedAt: NOW,
+  });
+  const fresh = await read();
+  release();
+  const old = await pending;
+  assert.equal(fresh.lanes.superseded, old.lanes.superseded + 1);
+  assert.deepEqual(await waiter, fresh, "a waiting reader revalidates after an in-flight write");
+  assert.deepEqual(await read(), fresh);
+  assert.equal(calls, 2);
+});
+
+test("lifecycle Bay serialization failures do not poison or evict a replacement memo", async (t) => {
+  t.mock.method(Date, "now", () => NOW);
+  const { queue, lifecycle, items } = await fixture(3);
+  const target = queue as unknown as { computeLifecycleBayBody(): string | Promise<string> };
+  const compute = target.computeLifecycleBayBody.bind(target);
+  let reject!: (reason: Error) => void;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<string>((_resolve, fail) => {
+    reject = fail;
+  });
+  let calls = 0;
+  t.mock.method(target, "computeLifecycleBayBody", () => {
+    const body = compute();
+    if (++calls === 1) {
+      entered();
+      return gate;
+    }
+    return body;
+  });
+  const read = async () => (await queue.fetch(new Request("https://queue/lifecycle-bay"))).text();
+  const pending = read();
+  const rejected = assert.rejects(pending, /serialization failed/);
+  await started;
+  lifecycle.recordTerminalDisposition({
+    canonicalTargetKey: "openclaw/openclaw#1",
+    fenceKey: items[0]!.key,
+    revision: 1,
+    kind: "superseded",
+    observedAt: NOW,
+  });
+  const fresh = await read();
+  reject(new Error("serialization failed"));
+  await rejected;
+  assert.equal(await read(), fresh);
+  assert.equal(calls, 2);
+});
+
+test("lean claimed-run reads equal full reads across mixed leases, duplicates, legacy claims, and limits", async (t) => {
+  t.mock.method(Date, "now", () => NOW);
+  const { queue, storage, items } = await fixture(8, {}, 150);
+  const state = internals(queue).readStateSync();
+  const leased = items.slice(8);
+  for (const [index, original] of leased.entries()) {
+    const item = state.items[original.key]!;
+    if (index < 3) item.claimedRunId = "9999";
+    if (index === 3) {
+      delete item.claimedRunAttempt;
+      delete item.claimGeneration;
+    }
+    if (index === 4) {
+      item.claimGeneration = 0;
+      item.leaseExpiresAt = NOW - 1;
+    }
+    if (index === 5) delete item.claimedRunId;
+    if (index === 6) item.state = "pending";
+    if (index === 7) item.state = "dispatching";
+    if (index === 8) item.state = "parked";
+    if (index === 9)
+      item.terminalFinalization = {
+        disposition: "policy_noop",
+        statusState: "Complete",
+        statusDetail: "Done.",
+      };
+    item.decision.additionalPrompt = "Synthetic large decision. ".repeat(400);
+  }
+  storage.transactionSync(() => internals(queue).writeStateSync(state));
+  const full = Object.values(internals(queue).readStateSync().items);
+  function expected(runIds: string[], all: boolean) {
+    const grouped = new Map<string, ExactReviewQueueItem[]>();
+    for (const item of full) {
+      if (
+        item.state !== "leased" ||
+        !item.claimedRunId ||
+        (!all && !runIds.includes(item.claimedRunId))
+      )
+        continue;
+      const matches = grouped.get(item.claimedRunId) || [];
+      if (matches.length < 2) matches.push(item);
+      grouped.set(item.claimedRunId, matches);
+    }
+    return {
+      runs: [...grouped.values()]
+        .flatMap((matches) =>
+          matches.map((item) => ({
+            run_id: String(item.claimedRunId),
+            run_attempt: item.claimedRunAttempt ?? null,
+            claim_generation:
+              Number.isInteger(Number(item.claimGeneration)) && Number(item.claimGeneration) >= 0
+                ? Number(item.claimGeneration)
+                : 0,
+          })),
+        )
+        .slice(0, 128),
+    };
+  }
+  const exec = t.mock.method(storage.sql, "exec");
+  for (const [runIds, all] of [
+    [[], true],
+    [["9999", leased[3]!.claimedRunId!, leased[4]!.claimedRunId!], false],
+    [["999999999"], false],
+    [["9999"], true],
+  ] as const) {
+    const response = await queue.fetch(
+      post("/claimed-runs", {
+        runs: runIds.map((run_id) => ({ run_id, run_attempt: 7 })),
+        include_all_claimed: all,
+      }),
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), expected([...runIds], all));
+  }
+  assert.equal(exec.mock.calls.length, 4);
+  assert.ok(exec.mock.calls.every(({ arguments: [sql] }) => /AS claim_json/.test(sql)));
+  const owned = state.items[leased[3]!.key]!;
+  owned.claimGeneration = 12;
+  storage.transactionSync(() => internals(queue).writeStateSync(state));
+  const fresh = await queue.fetch(
+    post("/claimed-runs", { runs: [{ run_id: owned.claimedRunId }] }),
+  );
+  assert.equal(
+    (await fresh.json()).runs[0].claim_generation,
+    12,
+    "claim changes are immediately visible",
+  );
+  const invalid = await queue.fetch(
+    post("/claimed-runs", { runs: [], include_all_claimed: "true" }),
+  );
+  assert.equal(invalid.status, 400);
 });

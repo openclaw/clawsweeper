@@ -464,6 +464,13 @@ remain unchanged are memoized; polls waiting on invalidated work recompute.
 This only bounds observation freshness: the public projection's fields and
 meaning, admission, publication fences, and Bay behavior are unchanged.
 
+The object's lifecycle Bay response also has a 10-second memo
+(`EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS`; set `0` to disable), scoped to the
+requested public repositories. Concurrent reads share the original snapshot
+and `generated_at`; lifecycle and queue state writes invalidate it, including
+writes during an in-flight read. This complements the Worker's existing
+20-second public response cache without changing Bay fields or freshness rules.
+
 For capacity displays, `/api/exact-review-queue` also exposes compatible
 `lanes.review` and `lanes.publication` objects. Each lane reports its own
 pending, ready, backoff, dispatching, leased, capacity, active, available-slot,

@@ -276,9 +276,10 @@ test("durable lifecycle Bay is a pure, bounded public-reference reducer snapshot
   const queries: string[] = [];
   const queryBindings: unknown[][] = [];
   storage.sql.exec = (query: string, ...bindings: unknown[]) => {
+    assert.match(query, /^\s*SELECT\b/i, "Bay route must be read-only");
+    if (query === "SELECT total_changes() AS changes") return exec(query, ...bindings);
     queries.push(query);
     queryBindings.push(bindings);
-    assert.match(query, /^\s*SELECT\b/i, "Bay route must be read-only");
     assert.match(query, /FROM exact_review_lifecycle_projection_v1/);
     if (/MAX\(revision\) AS max_revision/.test(query)) {
       assert.match(query, /WHERE canonical_target_key IN \(SELECT value FROM json_each\(\?\)\)/);
