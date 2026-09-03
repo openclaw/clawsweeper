@@ -480,6 +480,15 @@ heartbeats additionally stop at the last confirmed lease expiry. Validation,
 authentication, and fence rejections are never retried, and receipt retries do
 not repeat the GitHub router dispatch.
 
+Lifecycle receipt replays are no-ops for the whole operation, including terminal
+transitions and acknowledgement drivers. Terminal-disposition requests from the
+batch workflow carry a stable `operation_id` derived from the run, attempt, and
+fence; applied IDs are retained with the lifecycle revision's receipt history.
+A replay after a newer requeue preserves that requeue. Older workflows without
+an operation ID retain their existing terminal-transition behavior. Failed
+queue requests report the HTTP status and, when present, a validated short
+server error code; raw response bodies are never included.
+
 Batch claims carrying the current dispatch reservation consume only the
 still-valid subset of the key/revision pairs checked before departure. Fresh
 arrivals wait for the next departure; changed or removed members are skipped.

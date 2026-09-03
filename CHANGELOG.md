@@ -19,8 +19,6 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
-- Batch publication now retries transient queue heartbeat and post-effect failures within bounded deadlines, preserving signed payloads and confirmed lease fences without repeating GitHub dispatches.
-
 - Retain only Cloudflare failure flags in queue transport logs so backend faults can be diagnosed without exposing exception details.
 
 - Hydrate review blobs from cached PR snapshots that store an absent previous filename as `null`, preventing repeat reviews from refusing otherwise available source.

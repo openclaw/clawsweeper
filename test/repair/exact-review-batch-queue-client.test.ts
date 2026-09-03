@@ -139,6 +139,64 @@ for (const status of [400, 401, 403, 404, 409, 422, 429]) {
   });
 }
 
+for (const status of [409, 500]) {
+  test(`post-effect HTTP ${status} preserves the safe server error code`, async (t) => {
+    const { client, calls } = fixture(t, () =>
+      Response.json({ error: "exact_review_queue_unavailable" }, { status }),
+    );
+    const result = assert.rejects(client.postEffect("enqueue", payload), {
+      message: `Batch queue /internal/exact-review/enqueue failed (HTTP ${status}): exact_review_queue_unavailable`,
+    });
+    await flush();
+    if (status === 500) {
+      t.mock.timers.tick(1_000);
+      await flush();
+      t.mock.timers.tick(2_000);
+    }
+    await result;
+    assert.equal(calls.length, status === 500 ? 3 : 1);
+  });
+}
+
+for (const [name, body] of [
+  ["raw text", "private rejection"],
+  ["URL", JSON.stringify({ error: "https://private.example.test/token" })],
+  ["payload", JSON.stringify({ error: payload })],
+  ["long code", JSON.stringify({ error: "a".repeat(65) })],
+  ["non-string", JSON.stringify({ error: { private: "detail" } })],
+  ["beyond bound", `${" ".repeat(512)}${JSON.stringify({ error: "private_tail" })}`],
+]) {
+  test(`post-effect omits ${name} from HTTP failure messages`, async (t) => {
+    const { client } = fixture(t, () => new Response(body, { status: 409 }));
+    await assert.rejects(client.postEffect("enqueue", payload), {
+      message: "Batch queue /internal/exact-review/enqueue failed (HTTP 409)",
+    });
+  });
+}
+
+test("post-effect stops reading error bodies at 512 bytes and cancels the stream", async (t) => {
+  let cancelled = false;
+  const { client } = fixture(
+    t,
+    () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(" ".repeat(512)));
+          },
+          cancel() {
+            cancelled = true;
+          },
+        }),
+        { status: 409 },
+      ),
+  );
+  await assert.rejects(client.postEffect("enqueue", payload), {
+    message: "Batch queue /internal/exact-review/enqueue failed (HTTP 409)",
+  });
+  assert.equal(cancelled, true);
+});
+
 for (const [header, delay] of [
   ["5", 5_000],
   [new Date(now + 6_000).toUTCString(), 6_000],

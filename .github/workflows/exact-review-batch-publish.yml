@@ -351,13 +351,16 @@ jobs:
             elif [ -n "$lifecycle_terminal" ]; then
               export LIFECYCLE_TERMINAL="$lifecycle_terminal"
               lifecycle_payload="$(node -e '
+                const crypto = require("node:crypto");
                 const revision = Number(process.env.REVISION);
                 if (!Number.isInteger(revision) || revision < 1 || !process.env.FENCE_KEY || !process.env.LIFECYCLE_TERMINAL) process.exit(1);
+                const operationFence = crypto.createHash("sha256").update(process.env.FENCE_KEY).digest("hex").slice(0, 24);
                 process.stdout.write(JSON.stringify({
                   canonical_target_key: `${process.env.TARGET_REPO}#${process.env.ITEM_NUMBER}`,
                   fence_key: process.env.FENCE_KEY,
                   revision,
                   kind: process.env.LIFECYCLE_TERMINAL,
+                  operation_id: `terminal-batch:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}:${operationFence}`,
                 }));
               ')"
               post_effect_payload="${outcome_path}.post-effect.json"

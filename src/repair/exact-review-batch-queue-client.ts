@@ -424,6 +424,7 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
       );
       let response: Response | undefined;
       let responseText: string | undefined;
+      let errorCode: string | undefined;
       let failure: Error | undefined;
       let reason: string | undefined;
       try {
@@ -440,8 +441,10 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
           responseText = await response.text();
         } else {
           // Status alone determines retryability, even for plain-text edge errors.
-          void response.body?.cancel().catch(() => {});
-          throw new Error(`Batch queue ${path} failed (HTTP ${response.status})`);
+          errorCode = await responseErrorCode(response);
+          throw new Error(
+            `Batch queue ${path} failed (HTTP ${response.status})${errorCode ? `: ${errorCode}` : ""}`,
+          );
         }
       } catch (error) {
         const status = response?.status;
@@ -454,9 +457,9 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
                 error?.name === "AbortError"
               ? "timeout"
               : "network_error";
-        // Do not surface response bodies, URLs from exceptions, or signed payloads.
+        // Only a validated server code may accompany the closed failure class.
         failure = new Error(
-          `Batch queue ${path} failed (${reason.startsWith("HTTP_") ? reason.replace("_", " ") : reason})`,
+          `Batch queue ${path} failed (${reason.startsWith("HTTP_") ? reason.replace("_", " ") : reason})${errorCode ? `: ${errorCode}` : ""}`,
         );
       } finally {
         clearTimeout(timer);
@@ -484,6 +487,29 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
       await new Promise<void>((resolve) => setTimeout(resolve, delay));
     }
     throw new Error(`Batch queue ${path} retry attempts exhausted`);
+  }
+}
+
+async function responseErrorCode(response: Response): Promise<string | undefined> {
+  const reader = response.body?.getReader();
+  if (!reader) return undefined;
+  try {
+    const bytes = new Uint8Array(512);
+    let length = 0;
+    while (length < bytes.length) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const chunk = value.subarray(0, bytes.length - length);
+      bytes.set(chunk, length);
+      length += chunk.length;
+    }
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes.subarray(0, length)));
+    const error = objectValue(parsed).error;
+    return typeof error === "string" && /^[a-z0-9_]{1,64}$/.test(error) ? error : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    void reader.cancel().catch(() => {});
   }
 }
 

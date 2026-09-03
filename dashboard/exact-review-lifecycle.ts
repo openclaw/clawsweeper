@@ -221,6 +221,8 @@ export type ExactReviewLifecycleProjection = {
    * followed by a durable completion of the same admitted revision.
    */
   terminalDispositions: Array<{ kind: LifecycleTerminalDisposition; observedAt: number }>;
+  /** Applied terminal POST identities, retained with the revision's receipt history. */
+  terminalOperationIds: string[];
   /** Current terminal outcome used to derive lifecycle and acknowledgement state. */
   terminalDisposition: { kind: LifecycleTerminalDisposition; observedAt: number } | null;
   /**
@@ -389,6 +391,7 @@ export class ExactReviewLifecycleProjectionStore {
       routerReceipt: null,
       acknowledgement: { required: input.commandOriginated, attempts: [], observed: null },
       terminalDispositions: [],
+      terminalOperationIds: [],
       terminalDisposition: null,
       bayTelemetryPending: false,
       updatedAt: input.observedAt,
@@ -517,9 +520,19 @@ export class ExactReviewLifecycleProjectionStore {
       observedAt: number;
     },
   ) {
+    return this.storage.transactionSync(() => this.recordRouterReceiptSync(input));
+  }
+
+  recordRouterReceiptSync(
+    input: ProjectionIdentity & {
+      outcome: "durable" | "not_required";
+      receiptId: string;
+      observedAt: number;
+    },
+  ) {
     this.validateIdentity(input);
     if (!validText(input.receiptId, 1, 300)) throw new Error("invalid lifecycle router receipt");
-    return this.mutate(input, (projection) => {
+    return this.mutateSync(input, (projection) => {
       const next = {
         outcome: input.outcome,
         receiptId: input.receiptId,
@@ -543,26 +556,31 @@ export class ExactReviewLifecycleProjectionStore {
   recordTerminalDisposition(
     input: ProjectionIdentity & {
       kind: LifecycleTerminalDisposition;
+      operationId?: string;
       observedAt: number;
     },
   ) {
-    this.validateIdentity(input);
-    return this.mutate(input, (projection) => {
-      const terminal = applyTerminalDisposition(projection, input);
-      terminal.bayTelemetryPending = true;
-      return terminal;
-    });
+    return this.storage.transactionSync(() => this.recordTerminalDispositionSync(input));
   }
 
   recordTerminalDispositionSync(
     input: ProjectionIdentity & {
       kind: LifecycleTerminalDisposition;
+      operationId?: string;
       observedAt: number;
     },
   ) {
     this.validateIdentity(input);
+    if (input.operationId !== undefined && !validText(input.operationId, 1, 300)) {
+      throw new Error("invalid lifecycle terminal operation id");
+    }
+    if (input.operationId) {
+      const existing = this.read(input.canonicalTargetKey, input.fenceKey, input.revision);
+      if (existing?.terminalOperationIds.includes(input.operationId)) return existing;
+    }
     return this.mutateSync(input, (projection) => {
       const terminal = applyTerminalDisposition(projection, input);
+      if (input.operationId) terminal.terminalOperationIds.push(input.operationId);
       terminal.bayTelemetryPending = true;
       return terminal;
     });
@@ -1754,6 +1772,7 @@ function validDurableLifecycleBayProjection(value: ExactReviewLifecycleProjectio
     !Array.isArray(value.canonicalReceipts) ||
     !Array.isArray(value.routerReceipts) ||
     !Array.isArray(value.terminalDispositions) ||
+    !Array.isArray(value.terminalOperationIds) ||
     !value.acknowledgement ||
     typeof value.acknowledgement.required !== "boolean" ||
     !Array.isArray(value.acknowledgement.attempts)
@@ -1794,6 +1813,7 @@ function validDurableLifecycleBayProjection(value: ExactReviewLifecycleProjectio
       (disposition) =>
         terminalKinds.has(disposition.kind) && finiteTimestamp(disposition.observedAt),
     ) ||
+    !value.terminalOperationIds.every((operationId) => validText(operationId, 1, 300)) ||
     !value.acknowledgement.attempts.every(
       (attempt) =>
         /^ack:[1-9]\d*$/.test(attempt.attemptId) &&
@@ -1888,6 +1908,7 @@ function projectionFromRow(value: string): ExactReviewLifecycleProjection {
   // during a rolling deployment so append-only facts are never lost.
   parsed.routerReceipts ??= parsed.routerReceipt ? [parsed.routerReceipt] : [];
   parsed.terminalDispositions ??= parsed.terminalDisposition ? [parsed.terminalDisposition] : [];
+  parsed.terminalOperationIds ??= [];
   parsed.bayTelemetryPending ??= false;
   return parsed;
 }
