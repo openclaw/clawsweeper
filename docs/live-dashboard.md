@@ -477,6 +477,7 @@ within 45 seconds, with at most 20 seconds per attempt. Heartbeat retries
 preserve the signed bytes, use jittered exponential backoff, honor `Retry-After`
 up to 10 seconds, and stop at the last confirmed server lease expiry.
 Validation, authentication, and fence rejections are never retried.
+Periodic workflow heartbeats use `--tolerate-until-lease` to tolerate exhausted transport failures only while the confirmed lease has more than `EXACT_REVIEW_BATCH_HEARTBEAT_SAFETY_MS` (default 180,000 ms) remaining; each pre-loop heartbeat stays strict to establish live ownership, and 4xx/fence rejections remain fatal.
 
 Post-effect enqueue, router-receipt, and terminal-disposition POSTs are
 deliberately one-shot until Worker replay ordering is repaired. An ambiguous

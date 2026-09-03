@@ -1259,6 +1259,146 @@ globalThis.fetch = async (url, init) => {
   }
 }
 
+for (const scenario of [
+  {
+    name: "tolerates exhausted 5xx with ample lease",
+    response: 500,
+    leaseMs: 1_200_000,
+    tolerated: true,
+  },
+  {
+    name: "tolerates network failure with ample lease",
+    response: "network",
+    leaseMs: 1_200_000,
+    tolerated: true,
+  },
+  {
+    name: "tolerates timeout with ample lease",
+    response: "timeout",
+    leaseMs: 1_200_000,
+    tolerated: true,
+  },
+  { name: "fails on 5xx inside the safety margin", response: 500, leaseMs: 180_000 },
+  { name: "fails on 5xx at the safety margin after retries", response: 500, leaseMs: 183_000 },
+  { name: "fails on 409 despite ample lease", response: 409, leaseMs: 1_200_000 },
+  { name: "fails on 401 despite ample lease", response: 401, leaseMs: 1_200_000 },
+  { name: "fails on invalid success despite ample lease", response: "invalid", leaseMs: 1_200_000 },
+  { name: "fails on expired lease", response: 500, leaseMs: -1 },
+  { name: "honors a larger safety margin", response: 500, leaseMs: 1_200_000, safetyMs: "1500000" },
+  {
+    name: "honors a smaller safety margin",
+    response: 500,
+    leaseMs: 120_000,
+    safetyMs: "60000",
+    tolerated: true,
+  },
+  {
+    name: "keeps strict heartbeat failures fatal",
+    response: 500,
+    leaseMs: 1_200_000,
+    strict: true,
+  },
+  { name: "refreshes the confirmed lease on success", response: 200, leaseMs: 1_200_000 },
+]) {
+  test(`batch heartbeat lease tolerance ${scenario.name}`, () => {
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-heartbeat-tolerance-"));
+    try {
+      const manifestPath = join(root, "manifest.json");
+      const preloadPath = join(root, "fetch-preload.cjs");
+      const requestsPath = join(root, "requests.jsonl");
+      const baseTime = Date.UTC(2026, 8, 3);
+      const manifest = {
+        batchId: "lease-proof",
+        leaseOwner: "proof-worker",
+        leaseExpiresAt: new Date(baseTime + scenario.leaseMs).toISOString(),
+        configuredBatchSize: 1,
+        batchWaitMs: 0,
+        items: [],
+      };
+      writeFileSync(manifestPath, JSON.stringify(manifest));
+      writeFileSync(
+        preloadPath,
+        `
+const { appendFileSync } = require("node:fs");
+const baseTime = ${baseTime};
+let attempts = 0;
+Date.now = () => baseTime + attempts * 1000;
+Math.random = () => 0;
+globalThis.fetch = async (url) => {
+  appendFileSync(${JSON.stringify(requestsPath)}, JSON.stringify({ url: String(url), attempt: ++attempts }) + "\\n");
+  const response = ${JSON.stringify(scenario.response)};
+  if (response === "network") throw new TypeError("private transport details");
+  if (response === "timeout") throw new DOMException("private timeout details", "TimeoutError");
+  if (response === "invalid") return new Response("not json", { status: 200 });
+  if (response !== 200) return Response.json({ error: "exact_review_queue_unavailable" }, { status: response });
+  return Response.json({ batch: { batch_id: "lease-proof", lease_owner: "proof-worker", items: [], lease_expires_at: new Date(baseTime + 1800000).toISOString() } });
+};
+`,
+      );
+      const result = spawnSync(
+        process.execPath,
+        [
+          "--require",
+          preloadPath,
+          "dist/repair/exact-review-batch-cli.js",
+          "heartbeat",
+          ...(scenario.strict ? [] : ["--tolerate-until-lease"]),
+        ],
+        {
+          encoding: "utf8",
+          timeout: 10_000,
+          env: {
+            ...process.env,
+            CLAWSWEEPER_WEBHOOK_SECRET: "proof-secret",
+            EXACT_REVIEW_QUEUE_URL: "https://queue.example.test",
+            EXACT_REVIEW_BATCH_MANIFEST: manifestPath,
+            EXACT_REVIEW_BATCH_HEARTBEAT_SAFETY_MS: scenario.safetyMs ?? "180000",
+          },
+        },
+      );
+      const requests = existsSync(requestsPath)
+        ? readFileSync(requestsPath, "utf8").trim().split("\n")
+        : [];
+      const retryable = [500, "network", "timeout"].includes(scenario.response);
+      assert.equal(requests.length, scenario.leaseMs < 0 ? 0 : retryable ? 3 : 1, result.stderr);
+      assert.equal(
+        result.status,
+        scenario.tolerated || scenario.response === 200 ? 0 : 1,
+        result.stderr,
+      );
+      const stored = JSON.parse(readFileSync(manifestPath, "utf8"));
+      if (scenario.response === 200) {
+        assert.equal(stored.leaseExpiresAt, new Date(baseTime + 1_800_000).toISOString());
+        assert.deepEqual(JSON.parse(result.stdout), { ok: true, batch_id: manifest.batchId });
+      } else {
+        assert.deepEqual(stored, manifest);
+        if (scenario.tolerated) {
+          assert.equal(result.stdout.trim().split("\n").length, 1);
+          assert.deepEqual(JSON.parse(result.stdout), {
+            ok: false,
+            tolerated: true,
+            remaining_ms: scenario.leaseMs - 3_000,
+            reason:
+              scenario.response === 500
+                ? "HTTP_500"
+                : scenario.response === "network"
+                  ? "network_error"
+                  : "timeout",
+          });
+        } else {
+          assert.equal(result.stdout, "");
+        }
+      }
+      assert.doesNotMatch(
+        result.stdout + result.stderr,
+        /proof-secret|private transport details|private timeout details/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
 test("batch claim, heartbeat, and observe persist the last confirmed lease expiry", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-lease-expiry-"));
   try {

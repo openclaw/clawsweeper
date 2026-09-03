@@ -142,6 +142,17 @@ const RETRY_DEADLINE_MS = 45_000;
 const MAX_ATTEMPTS = 3;
 const MAX_RETRY_AFTER_MS = 10_000;
 
+type TransportFailureReason = "network_error" | "timeout" | `HTTP_${number}`;
+
+export class ExactReviewBatchQueueTransportError extends Error {
+  constructor(
+    readonly reason: TransportFailureReason,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
   private readonly baseUrl: string;
   private readonly webhookSecret: string;
@@ -426,7 +437,7 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
       let responseText: string | undefined;
       let errorCode: string | undefined;
       let failure: Error | undefined;
-      let reason: string | undefined;
+      let reason: TransportFailureReason | undefined;
       try {
         response = await this.request(`${this.baseUrl}${path}`, {
           method: "POST",
@@ -458,7 +469,8 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
               ? "timeout"
               : "network_error";
         // Only a validated server code may accompany the closed failure class.
-        failure = new Error(
+        failure = new ExactReviewBatchQueueTransportError(
+          reason,
           `Batch queue ${path} failed (${reason.startsWith("HTTP_") ? reason.replace("_", " ") : reason})${errorCode ? `: ${errorCode}` : ""}`,
         );
       } finally {

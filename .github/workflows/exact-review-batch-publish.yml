@@ -139,7 +139,7 @@ jobs:
           pnpm run --silent repair:exact-review-batch heartbeat
           (
             while sleep 60; do
-              if ! pnpm run --silent repair:exact-review-batch heartbeat; then
+              if ! pnpm run --silent repair:exact-review-batch heartbeat --tolerate-until-lease; then
                 touch "$heartbeat_failed"
                 exit 1
               fi
@@ -179,7 +179,7 @@ jobs:
           pnpm run --silent repair:exact-review-batch heartbeat
           (
             while sleep 60; do
-              if ! pnpm run --silent repair:exact-review-batch heartbeat; then
+              if ! pnpm run --silent repair:exact-review-batch heartbeat --tolerate-until-lease; then
                 touch "$heartbeat_failed"
                 exit 1
               fi

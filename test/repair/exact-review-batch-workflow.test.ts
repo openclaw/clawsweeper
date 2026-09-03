@@ -710,6 +710,22 @@ test("batch preparation is bounded, heartbeat-fenced, and deterministically aggr
   assert.match(prepareSource, /prepare-telemetry\.json/);
 });
 
+test("batch workflow tolerates periodic heartbeat outages but establishes each lease strictly", () => {
+  for (const name of [
+    "Prepare each item independently",
+    "Finalize healthy members under a fenced heartbeat",
+  ]) {
+    const step = workflow.jobs.publish!.steps.find((step) => step.name === name);
+    assert.ok(step?.run, name);
+    assert.match(step.run, /pnpm run --silent repair:exact-review-batch heartbeat\n\s*\(/);
+    assert.match(
+      step.run,
+      /while sleep 60; do\s*if ! pnpm run --silent repair:exact-review-batch heartbeat --tolerate-until-lease; then\s*touch "\$heartbeat_failed"\s*exit 1/,
+    );
+    assert.match(step.run, /test ! -f "\$heartbeat_failed"/);
+  }
+});
+
 test("batch workflow shell steps are valid Bash", () => {
   for (const step of workflow.jobs.publish!.steps) {
     if (!step.run) continue;

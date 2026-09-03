@@ -15,6 +15,7 @@ import { parseArgs } from "node:util";
 import type { ExactReviewBatchCompletion } from "./exact-review-batch-publisher.js";
 import {
   ExactReviewBatchQueueClient,
+  ExactReviewBatchQueueTransportError,
   type ExactReviewGithubRateLimitObservation,
   type ExactReviewGithubRequestMetric,
   type ExactReviewBatchQueueItem,
@@ -275,13 +276,38 @@ async function claim() {
 }
 
 async function heartbeat() {
-  const manifest = readManifest();
-  const lease = await client.heartbeat({
-    batchId: manifest.batchId,
-    leaseOwner: manifest.leaseOwner,
-    leaseExpiresAt: manifest.leaseExpiresAt,
-    items: manifest.items,
+  const { values } = parseArgs({
+    args: process.argv.slice(3),
+    options: { "tolerate-until-lease": { type: "boolean", default: false } },
   });
+  const tolerate = values["tolerate-until-lease"];
+  const safetyMs = tolerate
+    ? positiveInteger(process.env.EXACT_REVIEW_BATCH_HEARTBEAT_SAFETY_MS ?? 180_000)
+    : 180_000;
+  const manifest = readManifest();
+  let lease;
+  try {
+    lease = await client.heartbeat({
+      batchId: manifest.batchId,
+      leaseOwner: manifest.leaseOwner,
+      leaseExpiresAt: manifest.leaseExpiresAt,
+      items: manifest.items,
+    });
+  } catch (error) {
+    const remaining = Date.parse(manifest.leaseExpiresAt) - Date.now();
+    if (
+      !tolerate ||
+      !(error instanceof ExactReviewBatchQueueTransportError) ||
+      remaining <= safetyMs ||
+      !Number.isFinite(remaining)
+    ) {
+      throw error;
+    }
+    console.log(
+      JSON.stringify({ ok: false, tolerated: true, remaining_ms: remaining, reason: error.reason }),
+    );
+    return;
+  }
   saveLeaseExpiry(lease.leaseExpiresAt);
   console.log(JSON.stringify({ ok: true, batch_id: manifest.batchId }));
 }

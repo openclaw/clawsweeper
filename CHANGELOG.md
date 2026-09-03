@@ -76,6 +76,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Let periodic batch publication heartbeats survive queue transport outages while the confirmed lease retains its safety margin, without tolerating authentication or ownership-fence rejections.
+
 - Bound standalone webhook bodies to 2 MiB before signature verification, preserving chunked deliveries and flushing rejection responses before closing oversized requests. Thanks @SebTardif.
 - Preserve committed lifecycle outcomes when later queue completions disagree, preventing terminal-state conflicts from failing completion callbacks and acknowledgement drivers.
 - Retain numeric queue failure source locations inside the Durable Object before remote transport discards the original stack, without logging private error text.
