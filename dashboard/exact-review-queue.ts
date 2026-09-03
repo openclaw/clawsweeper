@@ -8237,14 +8237,24 @@ export class ExactReviewQueue {
         const receipt = existing?.routerReceipts.find((entry) => entry.receiptId === receiptId);
         if (existing && receipt) {
           if (receipt.outcome !== outcome) throw new Error("conflicting lifecycle router receipt");
-          return { projection: existing, state: null };
+          if (receipt.operationComplete) return { projection: existing, state: null };
         }
-        this.lifecycleProjectionStore.recordRouterReceiptSync({
+        const recorded = this.lifecycleProjectionStore.recordRouterReceiptSync({
           ...identity,
           outcome,
           receiptId,
           observedAt: now,
+          operationComplete: true,
         });
+        // A legacy routed fact may still be missing its driver; other terminal facts supersede it.
+        if (
+          receipt &&
+          existing?.terminalDisposition &&
+          existing.terminalDisposition.kind !== "review_completed_routed" &&
+          existing.terminalDisposition.observedAt >= receipt.observedAt
+        ) {
+          return { projection: recorded, state: null };
+        }
         const projection = this.lifecycleProjectionStore.recordTerminalDispositionSync({
           ...identity,
           kind: "review_completed_routed",
@@ -8843,7 +8853,13 @@ export class ExactReviewQueue {
           identity.fenceKey,
           identity.revision,
         );
-        if (operationId && existing?.terminalOperationIds.includes(operationId)) {
+        const operation = operationId
+          ? existing?.terminalOperationIds.find((entry) => entry.operationId === operationId)
+          : undefined;
+        if (existing && operation) {
+          if (operation.kind !== null && operation.kind !== kind) {
+            throw new Error("conflicting lifecycle terminal operation");
+          }
           return { projection: existing, state: null };
         }
         const projection = this.lifecycleProjectionStore.recordTerminalDispositionSync({
@@ -8878,8 +8894,11 @@ export class ExactReviewQueue {
         acknowledgement_state: commandAcknowledgementState(projection),
         version: projection.version,
       });
-    } catch {
+    } catch (error) {
       console.warn("lifecycle_terminal_disposition_rejected");
+      if (error instanceof Error && error.message === "conflicting lifecycle terminal operation") {
+        return json({ error: "conflicting_lifecycle_terminal_operation" }, 409);
+      }
       return json({ error: "invalid_lifecycle_terminal_disposition" }, 409);
     }
   }

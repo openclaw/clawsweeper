@@ -6,6 +6,8 @@ export const EXACT_REVIEW_LIFECYCLE_AUDIT_READ_LIMIT = 10_000;
 export const EXACT_REVIEW_LIFECYCLE_AUDIT_PAGE_MAX = 100;
 export const EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_TTL_MS = 5 * 60 * 1000;
 export const EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_MAX_ACTIVE = 4;
+// IDs are per run/attempt/fence, so 32 covers any realistic replay window.
+const EXACT_REVIEW_LIFECYCLE_TERMINAL_OPERATION_LIMIT = 32;
 const EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_TABLE = "exact_review_lifecycle_audit_snapshots_v1";
 const EXACT_REVIEW_LIFECYCLE_AUDIT_SNAPSHOT_ROW_TABLE =
   "exact_review_lifecycle_audit_snapshot_rows_v1";
@@ -199,6 +201,7 @@ export type ExactReviewLifecycleProjection = {
     outcome: "durable" | "not_required";
     receiptId: string;
     observedAt: number;
+    operationComplete?: true;
   }>;
   /** The first durable handoff retained for the completion-state contract. */
   routerReceipt: {
@@ -222,7 +225,7 @@ export type ExactReviewLifecycleProjection = {
    */
   terminalDispositions: Array<{ kind: LifecycleTerminalDisposition; observedAt: number }>;
   /** Applied terminal POST identities, retained with the revision's receipt history. */
-  terminalOperationIds: string[];
+  terminalOperationIds: Array<{ operationId: string; kind: LifecycleTerminalDisposition | null }>;
   /** Current terminal outcome used to derive lifecycle and acknowledgement state. */
   terminalDisposition: { kind: LifecycleTerminalDisposition; observedAt: number } | null;
   /**
@@ -518,6 +521,7 @@ export class ExactReviewLifecycleProjectionStore {
       outcome: "durable" | "not_required";
       receiptId: string;
       observedAt: number;
+      operationComplete?: true;
     },
   ) {
     return this.storage.transactionSync(() => this.recordRouterReceiptSync(input));
@@ -528,6 +532,7 @@ export class ExactReviewLifecycleProjectionStore {
       outcome: "durable" | "not_required";
       receiptId: string;
       observedAt: number;
+      operationComplete?: true;
     },
   ) {
     this.validateIdentity(input);
@@ -537,6 +542,7 @@ export class ExactReviewLifecycleProjectionStore {
         outcome: input.outcome,
         receiptId: input.receiptId,
         observedAt: input.observedAt,
+        ...(input.operationComplete ? { operationComplete: input.operationComplete } : {}),
       };
       const existing = projection.routerReceipts.find(
         (candidate) => candidate.receiptId === next.receiptId,
@@ -548,6 +554,7 @@ export class ExactReviewLifecycleProjectionStore {
         throw new Error("conflicting lifecycle router receipt");
       }
       if (!existing) projection.routerReceipts.push(next);
+      else if (input.operationComplete) existing.operationComplete = true;
       projection.routerReceipt ??= next;
       return projection;
     });
@@ -576,11 +583,24 @@ export class ExactReviewLifecycleProjectionStore {
     }
     if (input.operationId) {
       const existing = this.read(input.canonicalTargetKey, input.fenceKey, input.revision);
-      if (existing?.terminalOperationIds.includes(input.operationId)) return existing;
+      const operation = existing?.terminalOperationIds.find(
+        (entry) => entry.operationId === input.operationId,
+      );
+      if (existing && operation) {
+        if (operation.kind !== null && operation.kind !== input.kind) {
+          throw new Error("conflicting lifecycle terminal operation");
+        }
+        return existing;
+      }
     }
     return this.mutateSync(input, (projection) => {
       const terminal = applyTerminalDisposition(projection, input);
-      if (input.operationId) terminal.terminalOperationIds.push(input.operationId);
+      if (input.operationId) {
+        terminal.terminalOperationIds.push({ operationId: input.operationId, kind: input.kind });
+        terminal.terminalOperationIds = terminal.terminalOperationIds.slice(
+          -EXACT_REVIEW_LIFECYCLE_TERMINAL_OPERATION_LIMIT,
+        );
+      }
       terminal.bayTelemetryPending = true;
       return terminal;
     });
@@ -1807,13 +1827,19 @@ function validDurableLifecycleBayProjection(value: ExactReviewLifecycleProjectio
       (receipt) =>
         ["durable", "not_required"].includes(receipt.outcome) &&
         validText(receipt.receiptId, 1, 300) &&
-        finiteTimestamp(receipt.observedAt),
+        finiteTimestamp(receipt.observedAt) &&
+        (receipt.operationComplete === undefined || receipt.operationComplete === true),
     ) ||
     !value.terminalDispositions.every(
       (disposition) =>
         terminalKinds.has(disposition.kind) && finiteTimestamp(disposition.observedAt),
     ) ||
-    !value.terminalOperationIds.every((operationId) => validText(operationId, 1, 300)) ||
+    !value.terminalOperationIds.every(
+      (operation) =>
+        operation &&
+        validText(operation.operationId, 1, 300) &&
+        (operation.kind === null || terminalKinds.has(operation.kind)),
+    ) ||
     !value.acknowledgement.attempts.every(
       (attempt) =>
         /^ack:[1-9]\d*$/.test(attempt.attemptId) &&
@@ -1909,6 +1935,13 @@ function projectionFromRow(value: string): ExactReviewLifecycleProjection {
   parsed.routerReceipts ??= parsed.routerReceipt ? [parsed.routerReceipt] : [];
   parsed.terminalDispositions ??= parsed.terminalDisposition ? [parsed.terminalDisposition] : [];
   parsed.terminalOperationIds ??= [];
+  if (Array.isArray(parsed.terminalOperationIds)) {
+    parsed.terminalOperationIds = parsed.terminalOperationIds
+      .slice(-EXACT_REVIEW_LIFECYCLE_TERMINAL_OPERATION_LIMIT)
+      .map((operation) =>
+        typeof operation === "string" ? { operationId: operation, kind: null } : operation,
+      );
+  }
   parsed.bayTelemetryPending ??= false;
   return parsed;
 }
