@@ -341,7 +341,9 @@ type QueueInternals = {
   readStateSync(): ExactReviewQueueState;
   readSchedulingStateSync(): ExactReviewQueueState;
   writeStateSync(state: ExactReviewQueueState): void;
+  invalidateStatsCache(): void;
   scheduleNext(state: ExactReviewQueueState, now: number): Promise<void>;
+  hostedTargetAdmission(): Promise<{ outcome: "terminal" }>;
 };
 const internals = (queue: ExactReviewQueue) => queue as unknown as QueueInternals;
 
@@ -411,6 +413,113 @@ test("stats memo TTL zero disables reuse and failures do not poison the memo", a
   storage.failNextSqlMatching(/SELECT item_key, item_json FROM/);
   await assert.rejects(queue.fetch(new Request("https://queue/stats")));
   assert.equal((await queue.fetch(new Request("https://queue/stats"))).status, 200);
+});
+
+for (const mutation of ["explicit invalidation", "auxiliary SQL write"] as const) {
+  test(`stats memo recomputes after ${mutation} during an in-flight computation`, async (t) => {
+    t.mock.method(Date, "now", () => NOW);
+    const { queue, storage, items } = await fixture(3);
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const original = internals(queue).scheduleNext.bind(queue);
+    let computations = 0;
+    t.mock.method(internals(queue), "scheduleNext", async (state, now) => {
+      await original(state, now);
+      if (++computations === 1) {
+        entered.resolve();
+        await resume.promise;
+      }
+    });
+    internals(queue).invalidateStatsCache();
+    const first = queue.fetch(new Request("https://queue/stats"));
+    await entered.promise;
+    if (mutation === "explicit invalidation") {
+      internals(queue).invalidateStatsCache();
+    } else {
+      storage.run(
+        "DELETE FROM exact_review_direct_publication_plans WHERE item_key = ?",
+        items[0]!.key,
+      );
+    }
+    resume.resolve();
+    await first;
+    const next = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(computations, 2);
+    assert.equal(
+      next.lanes.publication.direct.retained_receipts,
+      mutation === "explicit invalidation" ? 3 : 2,
+    );
+  });
+}
+
+test("stats memo observes an alarm removing a branch reservation mid-computation", async (t) => {
+  t.mock.method(Date, "now", () => NOW);
+  const { queue, storage } = await fixture(3);
+  for (const deliveryId of ["a", "b"]) {
+    storage.kv.put(`exact-review-branch-authority-reservation:v1:${deliveryId}`, {
+      deliveryId,
+      decision: {
+        targetRepo: "openclaw/openclaw",
+        itemNumber: 900,
+        itemKind: "issue",
+        sourceEvent: "issues",
+        sourceAction: "opened",
+        supersedesInProgress: false,
+      },
+      sourceAuthorityRequired: false,
+      attempts: 0,
+      nextAttemptAt: NOW,
+    });
+  }
+  const alarmEntered = Promise.withResolvers<void>();
+  const resumeAlarm = Promise.withResolvers<void>();
+  const removed = Promise.withResolvers<void>();
+  const finishAlarm = Promise.withResolvers<void>();
+  const statsEntered = Promise.withResolvers<void>();
+  const resumeStats = Promise.withResolvers<void>();
+  const deleteAlarm = storage.deleteAlarm.bind(storage);
+  t.mock.method(storage, "deleteAlarm", async () => {
+    await deleteAlarm();
+    alarmEntered.resolve();
+    await resumeAlarm.promise;
+  });
+  let admissions = 0;
+  t.mock.method(internals(queue), "hostedTargetAdmission", async () => {
+    if (++admissions === 2) {
+      removed.resolve();
+      await finishAlarm.promise;
+    }
+    return { outcome: "terminal" as const };
+  });
+  const scheduleNext = internals(queue).scheduleNext.bind(queue);
+  let computations = 0;
+  t.mock.method(internals(queue), "scheduleNext", async (state, now) => {
+    await scheduleNext(state, now);
+    if (++computations === 1) {
+      statsEntered.resolve();
+      await resumeStats.promise;
+    }
+  });
+  const alarm = queue.alarm();
+  try {
+    await alarmEntered.promise;
+    const first = queue.fetch(new Request("https://queue/stats"));
+    await statsEntered.promise;
+    resumeAlarm.resolve();
+    await removed.promise;
+    assert.equal(storage.kv.get("exact-review-branch-authority-reservation:v1:a"), undefined);
+    const next = queue.fetch(new Request("https://queue/stats"));
+    resumeStats.resolve();
+    assert.equal((await (await first).json()).lanes.review.authority_pending.branch_resolution, 2);
+    assert.equal((await (await next).json()).lanes.review.authority_pending.branch_resolution, 1);
+    const repeated = await (await queue.fetch(new Request("https://queue/stats"))).json();
+    assert.equal(repeated.lanes.review.authority_pending.branch_resolution, 1);
+  } finally {
+    resumeAlarm.resolve();
+    resumeStats.resolve();
+    finishAlarm.resolve();
+    await alarm;
+  }
 });
 
 test("lazy item writes retain unread bytes and persist replacement, deletion, and nested edits", async (t) => {
