@@ -154,7 +154,7 @@ a 403/429 or
 explicit rate-limit failure records a 15-minute cooldown, while GitHub 5xx
 failures record a 5-minute cooldown. Demand and recovery signals scale effective
 capacity within the production range. Production batch
-preparation is enabled for up to 8 concurrent size-8 batches, including 2
+preparation is enabled for up to 4 concurrent size-8 batches, including 2
 fresh-lane members per batch. Direct publication is also enabled and falls back
 to the retry/batch path when the direct result is retryable. Apply/comment sync
 remains per-target serialized. See [`docs/limits.md`](limits.md) for effective values and
