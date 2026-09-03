@@ -460,7 +460,14 @@ for (const route of ["router-receipt", "terminal-disposition"] as const) {
   }
 }
 
-for (const scenario of ["conflict", "lifetime", "old-row", "invalid"] as const) {
+for (const scenario of [
+  "conflict",
+  "lifetime",
+  "old-row",
+  "legacy-string",
+  "legacy-null",
+  "invalid",
+] as const) {
   test(`lifecycle terminal operation store ${scenario}`, () => {
     const storage = new MemoryDurableStorage();
     const store = new ExactReviewLifecycleProjectionStore(storage);
@@ -514,13 +521,35 @@ for (const scenario of ["conflict", "lifetime", "old-row", "invalid"] as const) 
         identity.revision,
       )!;
       assert.deepEqual(projection.terminalOperationIds, []);
+    } else if (scenario === "legacy-string" || scenario === "legacy-null") {
+      storage.sql.exec(
+        "UPDATE exact_review_lifecycle_projection_v1 SET projection_json = ?",
+        JSON.stringify({
+          ...projection,
+          terminalOperationIds:
+            scenario === "legacy-string"
+              ? [operation(0).operationId]
+              : [{ operationId: operation(0).operationId, kind: null }],
+        }),
+      );
+      const upgradedStore = new ExactReviewLifecycleProjectionStore(storage);
+      projection = upgradedStore.read(
+        identity.canonicalTargetKey,
+        identity.fenceKey,
+        identity.revision,
+      )!;
+      assert.deepEqual(projection.terminalOperationIds, [
+        { operationId: operation(0).operationId, kind: null },
+      ]);
+      assert.deepEqual(
+        upgradedStore.recordTerminalDisposition({ ...operation(0), kind: "requeue" }),
+        projection,
+      );
     } else if (scenario === "invalid") {
       for (const terminalOperationIds of [
-        [operation(0).operationId],
-        [
-          { operationId: operation(0).operationId, kind: "policy_noop" },
-          { operationId: operation(0).operationId, kind: "policy_noop" },
-        ],
+        [""],
+        [{ operationId: operation(0).operationId, kind: "unknown" }],
+        [operation(0).operationId, { operationId: operation(0).operationId, kind: null }],
       ]) {
         storage.sql.exec(
           "UPDATE exact_review_lifecycle_projection_v1 SET projection_json = ?",

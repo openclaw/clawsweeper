@@ -223,7 +223,7 @@ export type ExactReviewLifecycleProjection = {
    */
   terminalDispositions: Array<{ kind: LifecycleTerminalDisposition; observedAt: number }>;
   /** Applied terminal POST identities, retained with the revision's receipt history. */
-  terminalOperationIds: Array<{ operationId: string; kind: LifecycleTerminalDisposition }>;
+  terminalOperationIds: Array<{ operationId: string; kind: LifecycleTerminalDisposition | null }>;
   /** Current terminal outcome used to derive lifecycle and acknowledgement state. */
   terminalDisposition: { kind: LifecycleTerminalDisposition; observedAt: number } | null;
   /**
@@ -586,7 +586,7 @@ export class ExactReviewLifecycleProjectionStore {
           (entry) => entry.operationId === input.operationId,
         );
         if (operation) {
-          if (operation.kind !== input.kind) {
+          if (operation.kind !== null && operation.kind !== input.kind) {
             throw new Error("conflicting lifecycle terminal operation");
           }
           return true;
@@ -1845,7 +1845,7 @@ function validDurableLifecycleBayProjection(value: ExactReviewLifecycleProjectio
       (disposition) =>
         terminalKinds.has(disposition.kind) && finiteTimestamp(disposition.observedAt),
     ) ||
-    !validTerminalOperations(value.terminalOperationIds, terminalKinds) ||
+    !normalizeTerminalOperations(value.terminalOperationIds, terminalKinds) ||
     !value.acknowledgement.attempts.every(
       (attempt) =>
         /^ack:[1-9]\d*$/.test(attempt.attemptId) &&
@@ -1941,14 +1941,14 @@ function projectionFromRow(value: string): ExactReviewLifecycleProjection {
   parsed.routerReceipts ??= parsed.routerReceipt ? [parsed.routerReceipt] : [];
   parsed.terminalDispositions ??= parsed.terminalDisposition ? [parsed.terminalDisposition] : [];
   parsed.terminalOperationIds ??= [];
-  if (!validTerminalOperations(parsed.terminalOperationIds)) {
-    throw new Error("invalid lifecycle projection row");
-  }
+  const terminalOperationIds = normalizeTerminalOperations(parsed.terminalOperationIds);
+  if (!terminalOperationIds) throw new Error("invalid lifecycle projection row");
+  parsed.terminalOperationIds = terminalOperationIds;
   parsed.bayTelemetryPending ??= false;
   return parsed;
 }
 
-function validTerminalOperations(
+function normalizeTerminalOperations(
   operations: unknown,
   terminalKinds = new Set<LifecycleTerminalDisposition>([
     "review_completed_routed",
@@ -1962,23 +1962,32 @@ function validTerminalOperations(
     "failure",
   ]),
 ) {
-  if (!Array.isArray(operations)) return false;
+  if (!Array.isArray(operations)) return null;
   const operationIds = new Set<string>();
-  return operations.every((operation) => {
-    const candidate = operation as { operationId?: unknown; kind?: unknown } | null;
+  const normalized: ExactReviewLifecycleProjection["terminalOperationIds"] = [];
+  for (const operation of operations) {
+    const candidate =
+      typeof operation === "string"
+        ? { operationId: operation, kind: null }
+        : (operation as { operationId?: unknown; kind?: unknown } | null);
     if (
       !candidate ||
       typeof candidate !== "object" ||
       typeof candidate.operationId !== "string" ||
       !validText(candidate.operationId, 1, 300) ||
-      !terminalKinds.has(candidate.kind as LifecycleTerminalDisposition) ||
+      (candidate.kind !== null &&
+        !terminalKinds.has(candidate.kind as LifecycleTerminalDisposition)) ||
       operationIds.has(candidate.operationId)
     ) {
-      return false;
+      return null;
     }
     operationIds.add(candidate.operationId);
-    return true;
-  });
+    normalized.push({
+      operationId: candidate.operationId,
+      kind: candidate.kind as LifecycleTerminalDisposition | null,
+    });
+  }
+  return normalized;
 }
 
 function sameClaim(left: LifecycleClaimFact, right: LifecycleClaimFact) {
