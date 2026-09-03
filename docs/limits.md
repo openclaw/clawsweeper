@@ -356,6 +356,27 @@ and hot intake `14`. Existing repair lanes keep their
 40% derived caps, while imported cluster repair remains separately bounded until
 `lanes.repair.cluster_max_live_runs` is raised.
 
+## Canonical record export
+
+`/internal/state/records/export` defaults to 200 records and accepts at most
+200 per request. Its reconstruction cap is also 200, and the hydration client
+requests 200 by default. A replay of 111,000 small records therefore needs
+555 requests instead of 2,220 with the former 50-record cap.
+
+The source-content budget remains 2 MiB and the serialized-entry budget remains
+4 MiB. Byte preflight selects identities before a single batched source read;
+chunked records retain their existing reassembly. Large records can end a page
+before the count limit, and `nextCursor` advances only through returned records.
+The existing single-record progress exception is retained: the first record is
+returned even if it exceeds a page byte budget, preventing an unexportable record
+from pinning the cursor. The serialized budget measures entries, not the outer
+JSON envelope.
+
+These limits are owned by `dashboard/exact-review-queue.ts`, implemented in
+`dashboard/exact-review-direct-publication.ts`, and consumed by
+`scripts/worker-records.ts`. Regression coverage lives in
+`test/record-export-bounds.test.ts` and `test/worker-records-request.test.ts`.
+
 ## Runtime Overrides
 
 - `EXACT_REVIEW_HOSTED_TARGET_ADMISSION_FRESH_MS`: intake's no-probe public-admission cache window (default 60,000 ms).

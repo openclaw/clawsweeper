@@ -112,6 +112,7 @@ test("canonical record export recovers through a signed loopback HTTP transport"
   for (const request of requests) {
     assert.equal(request.method, "POST");
     assert.equal(request.path, "/internal/state/records/export");
+    assert.equal(JSON.parse(request.body).limit, 200);
     assert.equal(
       request.signature,
       `sha256=${createHmac("sha256", webhookSecret).update(request.body).digest("hex")}`,

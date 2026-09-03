@@ -11,6 +11,14 @@
 Read when changing the Cloudflare status dashboard, status ingest contract, or
 operator-facing ClawSweeper observability.
 
+The signed internal canonical-record export route serves up to 200 records per
+page (also the Worker and hydration-client default), bounded by 2 MiB of source
+content and 4 MiB of serialized entries. Large-record pages stop early and resume
+from the last returned record; the existing first-record progress exception
+remains. See [canonical record export limits](limits.md#canonical-record-export).
+This changes hydration request volume only; OpenClaw Bay's observer projection
+and public data contract are unaffected.
+
 The live dashboard is observer-only. ClawSweeper still owns review, repair,
 apply, merge, comments, labels, and all GitHub mutations. The Cloudflare Worker
 reads GitHub workflow state, projects it into closed status and Bay views, and

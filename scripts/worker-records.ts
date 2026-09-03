@@ -137,7 +137,7 @@ type SignedPostOptions = Omit<SignedRequestOptions, "method"> & {
 // Cold hydration (no stored snapshot yet) replays the full journal from
 // revision 0, so it must stay a small-repo affordance: a slug whose record set
 // outgrows this bound has earned a real snapshot and still refuses cutover.
-// 2000 records is ~20 export pages and covers hundreds of reviewed items,
+// 2000 small records is ~10 export pages and covers hundreds of reviewed items,
 // giving a newly onboarded repository long runway before the first manual
 // snapshot sweep is required.
 export const COLD_HYDRATION_MAX_RECORDS = 2000;
@@ -183,7 +183,7 @@ export async function exportWorkerRecords(options: {
         sections,
         sinceRevision,
         cursor,
-        limit: options.limit ?? 100,
+        limit: options.limit ?? 200,
       },
       fetch: options.fetch,
       validateResponse: (value) => {

@@ -745,11 +745,11 @@ type AlarmScheduleDecision = readonly [AlarmWakeReason, number, number, boolean 
 // hung runner into a permanent queue owner. The Git fence blocks any in-flight
 // push that outlives this absolute coordinator horizon.
 const DEFAULT_STATE_WRITER_COORDINATOR_MAX_LEASE_AGE_MS = 30 * 60_000;
-const RECORD_EXPORT_DEFAULT_LIMIT = 100;
+const RECORD_EXPORT_DEFAULT_LIMIT = 200;
 const RECORD_EXPORT_MAX_LIMIT = 200;
 const RECORD_EXPORT_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const RECORD_EXPORT_MAX_SOURCE_BYTES = EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES;
-const RECORD_EXPORT_MAX_RECONSTRUCTION_RECORDS = 50;
+const RECORD_EXPORT_MAX_RECONSTRUCTION_RECORDS = 200;
 const RECORD_INGEST_MAX_RECORDS = 100;
 const RECORD_INGEST_MAX_REQUEST_BYTES = 4 * 1024 * 1024;
 const RECORD_INGEST_MAX_FILE_BYTES = 2 * 1024 * 1024;
