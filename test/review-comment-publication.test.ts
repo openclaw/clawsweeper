@@ -11,8 +11,10 @@ import {
   DurableReviewPublicationBlockedError,
 } from "../dist/clawsweeper-review-comment-publication.js";
 import { createReviewCommentAutomation } from "../dist/clawsweeper-review-comment-automation.js";
-import { createReviewCommentState } from "../dist/clawsweeper-review-comment-state.js";
-import * as commentState from "../dist/clawsweeper-review-comment-state.js";
+import {
+  createReviewCommentState,
+  expireReviewStartStatusLease,
+} from "../dist/clawsweeper-review-comment-state.js";
 import { freshExactHeadReviewStartLease } from "../dist/repair/comment-router-core.js";
 
 const itemNumber = 120232;
@@ -25,12 +27,8 @@ test("expireReviewStartStatusLease changes only the canonical expiry and release
   const queuedAt = "2026-09-02T21:23:00.000Z";
   const marker = `<!-- clawsweeper-review-status:started item=${itemNumber} sha=${headSha} started_at=${startedAt} lease_expires_at=${expiresAt} owner=worker-1 v=1 -->`;
   const body = `Review started.  \r\n\r\n${marker}\r\n<!-- clawsweeper-review-lease item=${itemNumber} -->\r\n`;
-  assert.equal(typeof commentState.expireReviewStartStatusLease, "function");
-  const rewritten = commentState.expireReviewStartStatusLease(body, queuedAt);
-  assert.equal(
-    rewritten,
-    body.replace(`lease_expires_at=${expiresAt}`, `lease_expires_at=${queuedAt}`),
-  );
+  const rewritten = expireReviewStartStatusLease(body, queuedAt);
+  assert.equal(rewritten, body.replace(expiresAt, queuedAt));
   const options = {
     itemNumber,
     headSha,
@@ -39,24 +37,18 @@ test("expireReviewStartStatusLease changes only the canonical expiry and release
     comments: [{ body, user: { login: "clawsweeper[bot]" } }],
   };
   assert.ok(freshExactHeadReviewStartLease(options));
-  assert.equal(
-    freshExactHeadReviewStartLease({
-      ...options,
-      comments: [{ body: rewritten, user: { login: "clawsweeper[bot]" } }],
-    }),
-    null,
-  );
+  options.comments[0].body = rewritten;
+  assert.equal(freshExactHeadReviewStartLease(options), null);
 });
 
 test("expireReviewStartStatusLease leaves noncanonical markers and unrelated text byte-identical", () => {
-  assert.equal(typeof commentState.expireReviewStartStatusLease, "function");
   for (const body of [
     "No marker.  \r\n",
     "<!-- clawsweeper-review-status:started item=1 lease_expires_at=later -->\nVisible text",
     "```\n<!-- clawsweeper-review-status:started item=1 lease_expires_at=later -->\n```",
     "<!-- clawsweeper-review-status:started item=1 lease_expires_at=later -->\n<!-- clawsweeper-review-lease item=2 -->",
   ]) {
-    assert.equal(commentState.expireReviewStartStatusLease(body, "2026-09-02T21:23:00.000Z"), body);
+    assert.equal(expireReviewStartStatusLease(body, "2026-09-02T21:23:00.000Z"), body);
   }
 });
 

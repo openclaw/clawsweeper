@@ -32,20 +32,21 @@ import { writeFakeScanner } from "./agent-input-scan-helpers.ts";
 
 const CLI = fileURLToPath(new URL("../dist/clawsweeper.js", import.meta.url));
 
-test("expire-review-lease patches the queued placeholder and preserves unrelated comments", () => {
+test("expire-review-lease patches the queued placeholder and preserves unrelated comments", (t) => {
+  const repo = "openclaw/openclaw";
   const root = mkdtempSync(join(tmpdir(), "cmd-expire-lease-"));
   const ghPath = join(root, "gh.js");
   const commentPath = join(root, "comment.json");
   const patchPath = join(root, "patch.json");
   const expiresAt = "2099-09-02T21:41:00.000Z";
   const body = `Review started.\n<!-- clawsweeper-review-status:started item=357 sha=${"a".repeat(40)} started_at=2026-09-02T21:00:00.000Z lease_expires_at=${expiresAt} owner=worker-1 v=1 -->\n<!-- clawsweeper-review-lease item=357 -->\n`;
-  try {
-    writeFileSync(
-      ghPath,
-      `
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(
+    ghPath,
+    `
 const fs = require("node:fs");
 const args = process.argv.slice(2);
-if (args[0] !== "api" || args[1] !== "repos/openclaw/openclaw/issues/comments/9991") process.exit(1);
+if (args[0] !== "api" || args[1] !== "repos/${repo}/issues/comments/9991") process.exit(1);
 if (args.includes("PATCH")) {
   const field = args.find((arg) => arg.startsWith("body="));
   if (!field) process.exit(2);
@@ -53,45 +54,32 @@ if (args.includes("PATCH")) {
 }
 process.stdout.write(fs.readFileSync(${JSON.stringify(commentPath)}, "utf8"));
 `,
+  );
+  for (const fixture of [
+    body,
+    "Published review without a lease.\n",
+    body.replace(/item=357/g, "item=358"),
+  ]) {
+    writeFileSync(
+      commentPath,
+      JSON.stringify({ id: 9991, body: fixture, user: { login: "clawsweeper[bot]" } }),
     );
-    for (const fixture of [
-      body,
-      "Published review without a lease.\n",
-      body.replace(/item=357/g, "item=358"),
-    ]) {
-      writeFileSync(
-        commentPath,
-        JSON.stringify({ id: 9991, body: fixture, user: { login: "clawsweeper[bot]" } }),
-      );
-      rmSync(patchPath, { force: true });
-      const before = Date.now();
-      const result = spawnSync(
-        process.execPath,
-        [
-          CLI,
-          "expire-review-lease",
-          "--repo",
-          "openclaw/openclaw",
-          "--item-number",
-          "357",
-          "--comment-id",
-          "9991",
-        ],
-        {
-          encoding: "utf8",
-          env: { ...process.env, ...mockGhBinEnv(ghPath, root) },
-        },
-      );
-      assert.equal(result.status, 0, result.stderr);
-      if (fixture === body) {
-        const patched = JSON.parse(readFileSync(patchPath, "utf8")).body;
-        const expiry = /lease_expires_at=([^\s>]+)/.exec(patched)![1];
-        assert.ok(Date.parse(expiry) >= before && Date.parse(expiry) <= Date.now());
-        assert.equal(patched, body.replace(expiresAt, expiry));
-      } else assert.equal(existsSync(patchPath), false);
-    }
-  } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(patchPath, { force: true });
+    const before = Date.now();
+    execFileSync(
+      process.execPath,
+      [CLI, "expire-review-lease", "--repo", repo, "--item-number", "357", "--comment-id", "9991"],
+      {
+        encoding: "utf8",
+        env: { ...process.env, ...mockGhBinEnv(ghPath, root) },
+      },
+    );
+    if (fixture === body) {
+      const patched = JSON.parse(readFileSync(patchPath, "utf8")).body;
+      const expiry = /lease_expires_at=([^\s>]+)/.exec(patched)![1];
+      assert.ok(Date.parse(expiry) >= before && Date.parse(expiry) <= Date.now());
+      assert.equal(patched, body.replace(expiresAt, expiry));
+    } else assert.equal(existsSync(patchPath), false);
   }
 });
 

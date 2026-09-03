@@ -5899,9 +5899,9 @@ export class ExactReviewQueue {
       newestByTarget.set(
         revision.targetKey,
         Math.max(
-          newestByTarget.get(revision.targetKey) ?? 0,
+          newestByTarget.get(revision.targetKey) ??
+            this.publicationHeadRevisionSync(revision.targetKey),
           revision.sourceRevision,
-          this.publicationHeadRevisionSync(revision.targetKey),
         ),
       );
       return [{ item, revision, lineage: exactReviewPublicationLineage(item.decision) }];
@@ -5928,10 +5928,14 @@ export class ExactReviewQueue {
       state,
       activeBatchItemKeys,
     );
+    const limit = Math.max(
+      0,
+      Math.floor(numberFrom(this.env.EXACT_REVIEW_STALE_PUBLICATION_PRUNE_LIMIT, 100)),
+    );
     let changed = 0;
     for (const { item, revision } of stale
       .filter(({ item }) => !exactReviewQueueHasCommandContext(item))
-      .slice(0, exactReviewStalePublicationPruneLimit(this.env))) {
+      .slice(0, limit)) {
       const current = state.items[item.key];
       const currentRevision = current ? exactReviewPublicationRevision(current.decision) : null;
       if (
@@ -6405,14 +6409,7 @@ export class ExactReviewQueue {
             // immutable lifecycle plan must return through the fenced legacy
             // publisher, which is the only path that replays that plan.
             .filter(exactReviewQueueIsBatchablePublication)
-            .filter((item) => !item.terminalFinalization)
-            // A dispatched workflow may claim only members that passed its
-            // departure's terminal preflight. Filter before the lease-size cut so
-            // an unprobed fresh arrival cannot push a probed member out of the
-            // batch; the arrival waits for the next departure instead.
-            .filter(
-              (item) => !probedPairs || probedPairs.has(JSON.stringify([item.key, item.revision])),
-            );
+            .filter((item) => !item.terminalFinalization);
     const selection = exactReviewPublicationBatchSelection(
       readyCandidates,
       freshItemKeys,
@@ -7636,20 +7633,18 @@ export class ExactReviewQueue {
     targetRepo: string,
     hostedTargetMetadataToken: HostedTargetMetadataToken,
     eligibilityPrepared = false,
-    // Only intake routes may consume a cached public observation. Review
-    // claims, dispatch, batch claims, and acknowledgement paths hand out
-    // credential-bearing work, so they always require a current live public
-    // probe (fail closed).
+    // Credential-bearing paths must probe live; only intake can consume the cache.
     intake = false,
   ): Promise<HostedTargetAdmission> {
     const normalizedRepo = targetRepo.trim().toLowerCase();
     const cacheKey = `hosted-target-admission:${normalizedRepo}`;
     const revocationKey = `hosted-target-admission-revoked:${normalizedRepo}`;
-    const maxStaleMs = exactReviewHostedTargetAdmissionMaxStaleMs(this.env);
+    const maxStaleMs = Math.max(
+      0,
+      numberFrom(this.env.EXACT_REVIEW_HOSTED_TARGET_ADMISSION_MAX_STALE_MS, 30 * 60_000),
+    );
     const revocationRetentionMs = Math.max(maxStaleMs, 30 * 60_000);
-    // Revocations carry a unique token, not only a timestamp: two observations
-    // inside one millisecond, or a revocation recorded after an expired
-    // tombstone was deleted, must still fence an in-flight probe.
+    // Unique tokens fence probes across same-millisecond revocations and tombstone expiry.
     const revocation = objectValue(this.storage.kv.get(revocationKey));
     if (typeof revocation.at === "number" && Date.now() - revocation.at >= revocationRetentionMs) {
       this.storage.kv.delete(revocationKey);
@@ -7674,16 +7669,22 @@ export class ExactReviewQueue {
             };
       }
     }
-    const cached = objectValue(this.storage.kv.get(cacheKey));
-    const age = Date.now() - Number(cached.observedAt);
-    const cachedPublic =
-      maxStaleMs > 0 &&
-      cached.outcome === "public" &&
-      typeof cached.observedAt === "number" &&
-      age >= 0 &&
-      age < maxStaleMs;
-    if (!cachedPublic) this.storage.kv.delete(cacheKey);
-    if (intake && cachedPublic && age < exactReviewHostedTargetAdmissionFreshMs(this.env)) {
+    const cachedPublicAge = () => {
+      const cached = objectValue(this.storage.kv.get(cacheKey));
+      const age = Date.now() - Number(cached.observedAt);
+      if (
+        cached.outcome === "public" &&
+        typeof cached.observedAt === "number" &&
+        age >= 0 &&
+        age < maxStaleMs
+      ) {
+        return age;
+      }
+      this.storage.kv.delete(cacheKey);
+      return null;
+    };
+    const age = cachedPublicAge();
+    if (intake && age !== null && age < exactReviewHostedTargetAdmissionFreshMs(this.env)) {
       return { outcome: "public" };
     }
     const injected = this.env.hostedPublicTargetProbe;
@@ -7711,7 +7712,7 @@ export class ExactReviewQueue {
       if (currentRevocationToken !== null && currentRevocationToken !== probeRevocationToken) {
         return { outcome: "terminal" };
       }
-      // A probe outliving revocation retention cannot safely repopulate admission.
+      // A longer probe could miss both a revocation and its later expiry.
       if (Date.now() - probeStartedAt >= revocationRetentionMs) return { outcome: "retryable" };
       if (maxStaleMs > 0) {
         this.storage.kv.put(cacheKey, { outcome: "public", observedAt: Date.now() });
@@ -7720,18 +7721,7 @@ export class ExactReviewQueue {
       revoke();
     } else if (admission.outcome === "retryable") {
       // Re-read after the probe: a concurrent terminal observation revokes fallback.
-      const current = objectValue(this.storage.kv.get(cacheKey));
-      const currentAge = Date.now() - Number(current.observedAt);
-      const currentValid =
-        maxStaleMs > 0 &&
-        current.outcome === "public" &&
-        typeof current.observedAt === "number" &&
-        currentAge >= 0 &&
-        currentAge < maxStaleMs;
-      if (intake && currentValid) return { outcome: "public" };
-      // A transient failure on a live-only path is not evidence against the
-      // target; keep a still-valid observation for intake and drop only stale.
-      if (!currentValid) this.storage.kv.delete(cacheKey);
+      if (cachedPublicAge() !== null && intake) return { outcome: "public" };
     }
     return admission;
   }
@@ -14174,20 +14164,16 @@ function exactReviewPublicationBatchReservedProbe(
     return null;
   try {
     const pairs: unknown = JSON.parse(dispatcher.publicationBatchTerminalProbe ?? "");
-    if (
-      !Array.isArray(pairs) ||
-      !pairs.every(
-        (pair) =>
-          Array.isArray(pair) &&
-          pair.length === 2 &&
-          typeof pair[0] === "string" &&
-          pair[0].length > 0 &&
-          Number.isSafeInteger(pair[1]) &&
-          pair[1] > 0,
-      )
-    )
-      return null;
-    return new Set(pairs.map((pair) => JSON.stringify(pair)));
+    if (!Array.isArray(pairs)) return null;
+    const probed = new Set<string>();
+    for (const pair of pairs) {
+      if (!Array.isArray(pair) || pair.length !== 2) return null;
+      const [key, revision] = pair;
+      if (typeof key !== "string" || !key || !Number.isSafeInteger(revision) || revision <= 0)
+        return null;
+      probed.add(JSON.stringify(pair));
+    }
+    return probed;
   } catch {
     return null;
   }
@@ -14195,17 +14181,6 @@ function exactReviewPublicationBatchReservedProbe(
 
 function exactReviewHostedTargetAdmissionFreshMs(env) {
   return Math.max(0, numberFrom(env.EXACT_REVIEW_HOSTED_TARGET_ADMISSION_FRESH_MS, 60_000));
-}
-
-function exactReviewHostedTargetAdmissionMaxStaleMs(env) {
-  return Math.max(
-    0,
-    numberFrom(env.EXACT_REVIEW_HOSTED_TARGET_ADMISSION_MAX_STALE_MS, 30 * 60_000),
-  );
-}
-
-function exactReviewStalePublicationPruneLimit(env) {
-  return Math.max(0, Math.floor(numberFrom(env.EXACT_REVIEW_STALE_PUBLICATION_PRUNE_LIMIT, 100)));
 }
 
 function exactReviewPublicationBatchLeaseMs(env) {

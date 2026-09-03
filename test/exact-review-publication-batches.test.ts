@@ -1053,30 +1053,90 @@ function batchRequest(path: string, body: unknown) {
   });
 }
 
+function admissionQueue(t: import("node:test").TestContext, overrides = {}) {
+  const storage = new TestStorage();
+  const harness = {
+    now: 7_000_000,
+    outcome: "public" as string | Promise<string>,
+    eligible: true,
+    probes: [] as string[],
+    networkCalls: 0,
+    probeStarted: () => {},
+    storage,
+    queue: null! as ExactReviewQueue,
+    async enqueue(number: number, revision = 1, repo = "openclaw/openclaw") {
+      const delivery = `delivery-${number}-${revision}`;
+      return harness.queue.fetch(
+        publicationRequest(delivery, number, String(7000 + number), repo, revision),
+      );
+    },
+    async post(path: string, body = {}) {
+      return (await harness.queue.fetch(batchRequest(path, body))).json();
+    },
+    async claim(body = {}) {
+      return harness.post("/publication-batches/claim", {
+        claim_id: "claim-1",
+        lease_owner: "worker-1",
+        max_items: 4,
+        ...body,
+      });
+    },
+    async publicationStats() {
+      return (await (await harness.queue.fetch(new Request("https://queue/stats"))).json()).lanes
+        .publication;
+    },
+    restart() {
+      harness.queue = new ExactReviewQueue({ storage }, env);
+    },
+  };
+  const env = {
+    EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+    hostedTargetPredicate: () => harness.eligible,
+    hostedPublicTargetProbe: async (repo: string) => {
+      harness.probes.push(repo);
+      harness.probeStarted();
+      return harness.outcome;
+    },
+    ...overrides,
+  };
+  t.mock.method(Date, "now", () => harness.now);
+  t.mock.method(globalThis, "fetch", async () => {
+    harness.networkCalls += 1;
+    throw new Error("unexpected network");
+  });
+  harness.restart();
+  return harness;
+}
+
 for (const churn of [
   "fresh arrival",
   "revision bump",
   "all probed items gone",
   "older retries become ready beyond the scan window",
 ]) {
-  test(`batch claim after ${churn} consumes only still-valid probed items`, async () => {
-    const originalNow = Date.now;
-    const originalFetch = globalThis.fetch;
-    let now = 7_000_000;
-    Date.now = () => now;
+  test(`batch claim after ${churn} consumes only still-valid probed items`, async (t) => {
     const { privateKey } = generateKeyPairSync("rsa", {
       modulusLength: 2048,
       privateKeyEncoding: { type: "pkcs8", format: "pem" },
       publicKeyEncoding: { type: "spki", format: "pem" },
     });
+    const h = admissionQueue(t, {
+      CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+      CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+      EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "4",
+      EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT: "2",
+      EXACT_REVIEW_PUBLICATION_FRESH_LANE_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_ITEMS: "1",
+      EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_AGE_MS: "60000",
+      EXACT_REVIEW_PUBLICATION_BATCH_DISPATCH_COOLDOWN_MS: "5000",
+      EXACT_REVIEW_HOSTED_TARGET_ADMISSION_MAX_STALE_MS: "0",
+    });
     const dispatches: Array<{ inputs: Record<string, string> }> = [];
-    const admissionRepos: string[] = [];
-    globalThis.fetch = async (input, init) => {
+    t.mock.method(globalThis, "fetch", async (input, init) => {
       const path = new URL(String(input)).pathname;
       if (path.endsWith("/installation")) return Response.json({ id: 999 });
-      if (path === "/app/installations/999/access_tokens") {
+      if (path === "/app/installations/999/access_tokens")
         return Response.json({ token: "test-token" });
-      }
       if (/\/issues\/\d+$/.test(path)) return Response.json({ state: "open" });
       if (path.endsWith("/exact-review-batch-publish.yml/dispatches")) {
         dispatches.push(JSON.parse(String(init?.body)));
@@ -1084,569 +1144,230 @@ for (const churn of [
       }
       if (path.endsWith("/sweep.yml")) return Response.json({ state: "active" });
       throw new Error(`unexpected fetch ${path}`);
-    };
-    try {
-      const storage = new TestStorage();
-      const queue = new ExactReviewQueue(
-        { storage },
-        {
-          CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
-          CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
-          EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
-          EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "4",
-          EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT: "2",
-          EXACT_REVIEW_PUBLICATION_FRESH_LANE_ENABLED: "1",
-          EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_ITEMS: "1",
-          EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_AGE_MS: "60000",
-          EXACT_REVIEW_PUBLICATION_BATCH_DISPATCH_COOLDOWN_MS: "5000",
-          EXACT_REVIEW_HOSTED_TARGET_ADMISSION_MAX_STALE_MS: "0",
-          hostedPublicTargetProbe: async (repo: string) => {
-            admissionRepos.push(repo);
-            return "public";
-          },
-        },
-      );
-      if (churn === "older retries become ready beyond the scan window") {
-        for (let number = 1; number <= 6; number += 1) {
-          await queue.fetch(publicationRequest(`retry-${number}`, number, String(7000 + number)));
-          now += 1;
-        }
-        const rows = Array.from(
-          storage.sql.exec("SELECT item_key, item_json FROM exact_review_queue_items"),
-        ) as Array<{ item_key: string; item_json: string }>;
-        for (const row of rows) {
-          const item = JSON.parse(row.item_json);
-          item.nextAttemptAt = now + 80_000;
-          storage.run(
-            "UPDATE exact_review_queue_items SET item_json = ? WHERE item_key = ?",
-            JSON.stringify(item),
-            row.item_key,
-          );
-        }
+    });
+    if (churn === "older retries become ready beyond the scan window") {
+      for (let number = 1; number <= 6; number += 1) {
+        await h.enqueue(number);
+        h.now += 1;
       }
-      for (let number = 10; number <= 13; number += 1) {
-        await queue.fetch(publicationRequest(`probe-${number}`, number, String(7000 + number)));
-        now += 1;
-      }
-      now += 60_001;
-      await queue.alarm();
-      assert.equal(dispatches.length, 1);
-      if (churn === "all probed items gone") {
-        await queue.fetch(
-          batchRequest("/publications/supersede", {
-            items: [10, 11, 12, 13].map((number) => ({
-              item_key: `openclaw/openclaw#${number}@publish:${7000 + number}:1`,
-              revision: 1,
-            })),
-          }),
-        );
-      } else if (churn === "revision bump") {
-        await queue.fetch(publicationRequest("probe-bump", 13, "7013"));
-      }
-      await queue.fetch(publicationRequest("probe-fresh", 90, "7090", "openclaw/other"));
-      now += 30_000;
-      admissionRepos.length = 0;
-      const claim = await (
-        await queue.fetch(
-          batchRequest("/publication-batches/claim", {
-            claim_id: "claim-probed-subset",
-            lease_owner: "worker-1",
-            max_items: 4,
-            dispatch_id: dispatches[0].inputs.dispatch_id,
-            dispatched_at: dispatches[0].inputs.dispatched_at,
-          }),
-        )
-      ).json();
-      if (churn === "all probed items gone") {
-        assert.equal(claim.claimed, false);
-        assert.equal(claim.preflight_required, true);
-        assert.deepEqual(admissionRepos, []);
-      } else {
-        assert.equal(
-          claim.claimed,
-          true,
-          "claim after a fresh arrival no longer returns unclaimed",
-        );
-        assert.deepEqual(admissionRepos, ["openclaw/openclaw"]);
-        assert.deepEqual(
-          claim.batch.items.map((item: { item_key: string }) => item.item_key),
-          (churn === "revision bump" ? [10, 11, 12] : [10, 11, 12, 13]).map(
-            (number) => `openclaw/openclaw#${number}@publish:${7000 + number}:1`,
-          ),
+      for (const row of h.storage.sql.exec(
+        "SELECT item_key, item_json FROM exact_review_queue_items",
+      )) {
+        const item = JSON.parse(String(row.item_json));
+        item.nextAttemptAt = h.now + 80_000;
+        h.storage.run(
+          "UPDATE exact_review_queue_items SET item_json = ? WHERE item_key = ?",
+          JSON.stringify(item),
+          row.item_key,
         );
       }
-      const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-      assert.equal(stats.lanes.publication.batches.dispatch_pending_until, null);
-      now += 60_001;
-      await queue.alarm();
-      assert.equal(dispatches.length, 2);
-    } finally {
-      Date.now = originalNow;
-      globalThis.fetch = originalFetch;
     }
+    for (const number of [10, 11, 12, 13]) {
+      await h.enqueue(number);
+      h.now += 1;
+    }
+    h.now += 60_001;
+    await h.queue.alarm();
+    assert.equal(dispatches.length, 1);
+    if (churn === "all probed items gone") {
+      await h.post("/publications/supersede", {
+        items: [10, 11, 12, 13].map((number) => ({
+          item_key: `openclaw/openclaw#${number}@publish:${7000 + number}:1`,
+          revision: 1,
+        })),
+      });
+    } else if (churn === "revision bump") {
+      await h.queue.fetch(publicationRequest("probe-bump", 13, "7013"));
+    }
+    await h.enqueue(90, 1, "openclaw/other");
+    h.now += 30_000;
+    h.probes.length = 0;
+    const claim = await h.claim(dispatches[0].inputs);
+    const empty = churn === "all probed items gone";
+    assert.deepEqual(h.probes, empty ? [] : ["openclaw/openclaw"]);
+    if (empty) assert.deepEqual([claim.claimed, claim.preflight_required], [false, true]);
+    else
+      assert.deepEqual(
+        claim.batch.items.map((item: { item_key: string }) => item.item_key),
+        (churn === "revision bump" ? [10, 11, 12] : [10, 11, 12, 13]).map(
+          (number) => `openclaw/openclaw#${number}@publish:${7000 + number}:1`,
+        ),
+      );
+    assert.equal((await h.publicationStats()).batches.dispatch_pending_until, null);
+    h.now += 60_001;
+    await h.queue.alarm();
+    assert.equal(dispatches.length, 2);
   });
 }
 
-for (const maxStaleMs of [1_800_000, 0]) {
-  test(`hosted admission rejects an older public probe after terminal revocation (cache ${maxStaleMs})`, async () => {
-    const originalNow = Date.now;
-    let now = 9_000_000;
-    Date.now = () => now;
+const revocationCases = [
+  ...[1_800_000, 0].map((maxStaleMs) => ({
+    name: `hosted admission rejects an older public probe after terminal revocation (cache ${maxStaleMs})`,
+    maxStaleMs,
+  })),
+  ...["same-millisecond revocations", "revocation tombstone expiry"].map((race) => ({
+    name: `hosted admission fences an older public probe across ${race}`,
+    seed: "terminal",
+    before: race === "revocation tombstone expiry" ? 29 * 60_000 : 0,
+    during: race === "revocation tombstone expiry" ? 2 * 60_000 : 0,
+  })),
+  ...["public", "retryable"].map((result) => ({
+    name: `terminal eligibility revokes cached admission and an overlapping ${result} probe`,
+    seed: "public",
+    before: 60_001,
+    eligibility: true,
+    result,
+  })),
+];
+for (const entry of revocationCases) {
+  const scenario = {
+    maxStaleMs: 1_800_000,
+    seed: "",
+    before: 0,
+    during: 1,
+    eligibility: false,
+    result: "public",
+    ...entry,
+  };
+  test(scenario.name, async (t) => {
+    const h = admissionQueue(t, {
+      EXACT_REVIEW_HOSTED_TARGET_ADMISSION_MAX_STALE_MS: String(scenario.maxStaleMs),
+    });
+    if (scenario.seed) {
+      h.outcome = scenario.seed;
+      assert.equal((await h.enqueue(811)).status, scenario.seed === "public" ? 202 : 422);
+    }
+    h.now += scenario.before;
     const started = Promise.withResolvers<void>();
-    const olderProbe = Promise.withResolvers<string>();
-    let probes = 0;
-    try {
-      const storage = new TestStorage();
-      const queue = new ExactReviewQueue(
-        { storage },
-        {
-          EXACT_REVIEW_HOSTED_TARGET_ADMISSION_MAX_STALE_MS: String(maxStaleMs),
-          hostedPublicTargetProbe: async () => {
-            probes += 1;
-            if (probes === 1) {
-              started.resolve();
-              return olderProbe.promise;
-            }
-            return probes === 2 ? "terminal" : "retryable";
-          },
-        },
-      );
-      const older = queue.fetch(publicationRequest("older-public", 811, "8811"));
-      await started.promise;
-      now += 1;
-      assert.equal(
-        (await queue.fetch(publicationRequest("newer-terminal", 812, "8812"))).status,
-        422,
-      );
-      now += 1;
-      olderProbe.resolve("public");
-      assert.equal(
-        (await older).status,
-        422,
-        "newer terminal observation fences the older public result",
-      );
-      assert.equal(storage.kv.get("hosted-target-admission:openclaw/openclaw"), undefined);
-      assert.equal(
-        (await queue.fetch(publicationRequest("later-retryable", 813, "8813"))).status,
-        503,
-      );
-      assert.equal(probes, 3);
-    } finally {
-      olderProbe.resolve("retryable");
-      Date.now = originalNow;
-    }
+    const probe = Promise.withResolvers<string>();
+    t.after(() => probe.resolve("retryable"));
+    h.probeStarted = started.resolve;
+    h.outcome = probe.promise;
+    const older = h.enqueue(812);
+    await started.promise;
+    h.now += scenario.during;
+    h.outcome = "terminal";
+    h.eligible = !scenario.eligibility;
+    assert.equal((await h.enqueue(813)).status, 422);
+    probe.resolve(scenario.result);
+    assert.equal((await older).status, scenario.result === "public" ? 422 : 503);
+    assert.equal(h.storage.kv.get("hosted-target-admission:openclaw/openclaw"), undefined);
+    h.eligible = true;
+    h.outcome = "retryable";
+    assert.equal((await h.enqueue(814)).status, 503);
+    assert.equal(
+      h.probes.length,
+      3 + Number(Boolean(scenario.seed)) - Number(scenario.eligibility),
+    );
   });
 }
 
-test("hosted admission fences an older public probe across same-millisecond revocations", async () => {
-  const originalNow = Date.now;
-  // Frozen clock: an earlier revocation, the probe start, and a second
-  // terminal observation all share one timestamp.
-  Date.now = () => 9_500_000;
-  const started = Promise.withResolvers<void>();
-  const olderProbe = Promise.withResolvers<string>();
-  let probes = 0;
-  try {
-    const storage = new TestStorage();
-    const queue = new ExactReviewQueue(
-      { storage },
-      {
-        hostedPublicTargetProbe: async () => {
-          probes += 1;
-          if (probes === 1) return "terminal";
-          if (probes === 2) {
-            started.resolve();
-            return olderProbe.promise;
-          }
-          return probes === 3 ? "terminal" : "retryable";
-        },
-      },
+for (const [scenario, age, probes, expectedStatus] of [
+  ["fresh", 1, 1, 202],
+  ["stale fallback", 60_001, 2, 202],
+  ["terminal clears", 60_001, 3, 503],
+  ["too old", 1_800_001, 2, 503],
+  ["disabled", 1, 2, 503],
+] as const) {
+  test(`hosted admission cache: ${scenario}`, async (t) => {
+    const h = admissionQueue(t, {
+      EXACT_REVIEW_HOSTED_TARGET_ADMISSION_MAX_STALE_MS: scenario === "disabled" ? "0" : "1800000",
+    });
+    assert.equal((await h.enqueue(801)).status, 202);
+    const cacheKey = "hosted-target-admission:openclaw/openclaw";
+    assert.deepEqual(
+      h.storage.kv.get(cacheKey),
+      scenario === "disabled" ? undefined : { outcome: "public", observedAt: h.now },
     );
-    assert.equal(
-      (await queue.fetch(publicationRequest("first-terminal", 821, "8821"))).status,
-      422,
-    );
-    const older = queue.fetch(publicationRequest("older-public", 822, "8822"));
-    await started.promise;
-    assert.equal(
-      (await queue.fetch(publicationRequest("second-terminal", 823, "8823"))).status,
-      422,
-    );
-    olderProbe.resolve("public");
-    assert.equal((await older).status, 422, "same-millisecond revocation still fences the probe");
-    assert.equal(storage.kv.get("hosted-target-admission:openclaw/openclaw"), undefined);
-    assert.equal(
-      (await queue.fetch(publicationRequest("later-retryable", 824, "8824"))).status,
-      503,
-    );
-    assert.equal(probes, 4);
-  } finally {
-    olderProbe.resolve("retryable");
-    Date.now = originalNow;
-  }
-});
-
-test("hosted admission fences an older public probe across revocation tombstone expiry", async () => {
-  const originalNow = Date.now;
-  let now = 9_600_000;
-  Date.now = () => now;
-  const started = Promise.withResolvers<void>();
-  const olderProbe = Promise.withResolvers<string>();
-  let probes = 0;
-  try {
-    const storage = new TestStorage();
-    const queue = new ExactReviewQueue(
-      { storage },
-      {
-        hostedPublicTargetProbe: async () => {
-          probes += 1;
-          if (probes === 1) return "terminal";
-          if (probes === 2) {
-            started.resolve();
-            return olderProbe.promise;
-          }
-          return probes === 3 ? "terminal" : "retryable";
-        },
-      },
-    );
-    assert.equal(
-      (await queue.fetch(publicationRequest("first-terminal", 831, "8831"))).status,
-      422,
-    );
-    // The probe starts while the first tombstone is still retained, then the
-    // tombstone expires and a new terminal observation replaces it.
-    now += 29 * 60_000;
-    const older = queue.fetch(publicationRequest("older-public", 832, "8832"));
-    await started.promise;
-    now += 2 * 60_000;
-    assert.equal(
-      (await queue.fetch(publicationRequest("second-terminal", 833, "8833"))).status,
-      422,
-    );
-    olderProbe.resolve("public");
-    assert.equal((await older).status, 422, "a revocation after tombstone expiry still fences");
-    assert.equal(storage.kv.get("hosted-target-admission:openclaw/openclaw"), undefined);
-    assert.equal(
-      (await queue.fetch(publicationRequest("later-retryable", 834, "8834"))).status,
-      503,
-    );
-    assert.equal(probes, 4);
-  } finally {
-    olderProbe.resolve("retryable");
-    Date.now = originalNow;
-  }
-});
-
-for (const outcome of ["public", "retryable"]) {
-  test(`terminal eligibility revokes cached admission and an overlapping ${outcome} probe`, async () => {
-    const originalNow = Date.now;
-    let now = 9_000_000;
-    Date.now = () => now;
-    let eligible = true;
-    let probes = 0;
-    const started = Promise.withResolvers<void>();
-    const pendingProbe = Promise.withResolvers<string>();
-    try {
-      const storage = new TestStorage();
-      const queue = new ExactReviewQueue(
-        { storage },
-        {
-          hostedTargetPredicate: () => eligible,
-          hostedPublicTargetProbe: async () => {
-            probes += 1;
-            if (probes === 1) return "public";
-            if (probes === 2) {
-              started.resolve();
-              return pendingProbe.promise;
-            }
-            return "retryable";
-          },
-        },
-      );
-      assert.equal(
-        (await queue.fetch(publicationRequest("eligible-seed", 821, "8821"))).status,
-        202,
-      );
-      now += 60_001;
-      const pending = queue.fetch(publicationRequest("eligible-inflight", 822, "8822"));
-      await started.promise;
-      now += 1;
-      eligible = false;
-      assert.equal((await queue.fetch(publicationRequest("ineligible", 823, "8823"))).status, 422);
-      pendingProbe.resolve(outcome);
-      assert.equal((await pending).status, outcome === "public" ? 422 : 503);
-      assert.equal(storage.kv.get("hosted-target-admission:openclaw/openclaw"), undefined);
-      eligible = true;
-      assert.equal(
-        (await queue.fetch(publicationRequest("eligible-retry", 824, "8824"))).status,
-        503,
-      );
-      assert.equal(probes, 3, "terminal eligibility never invokes the visibility probe");
-    } finally {
-      pendingProbe.resolve("retryable");
-      Date.now = originalNow;
+    h.restart();
+    h.outcome = "retryable";
+    h.now += age;
+    if (scenario === "terminal clears") {
+      h.outcome = "terminal";
+      assert.equal((await h.enqueue(802)).status, 422);
+      h.outcome = "retryable";
     }
-  });
-}
-
-for (const scenario of ["fresh", "stale fallback", "terminal clears", "too old", "disabled"]) {
-  test(`hosted admission cache: ${scenario}`, async () => {
-    const originalNow = Date.now;
-    let now = 9_000_000;
-    Date.now = () => now;
-    let outcome = "public";
-    let probes = 0;
-    try {
-      const storage = new TestStorage();
-      const env = {
-        EXACT_REVIEW_HOSTED_TARGET_ADMISSION_MAX_STALE_MS:
-          scenario === "disabled" ? "0" : "1800000",
-        hostedPublicTargetProbe: async () => {
-          probes += 1;
-          return outcome;
-        },
-      };
-      let queue = new ExactReviewQueue({ storage }, env);
-      assert.equal((await queue.fetch(publicationRequest("cache-1", 801, "8801"))).status, 202);
-      assert.equal(probes, 1);
-      const cacheKey = "hosted-target-admission:openclaw/openclaw";
-      if (scenario === "terminal clears" || scenario === "too old") {
-        assert.deepEqual(storage.kv.get(cacheKey), { outcome: "public", observedAt: now });
-      }
-      // Recreate the object to prove the cache survives a Worker restart.
-      queue = new ExactReviewQueue({ storage }, env);
-      outcome = scenario === "fresh" ? "public" : "retryable";
-      now +=
-        scenario === "fresh" || scenario === "disabled"
-          ? 1
-          : scenario === "too old"
-            ? 1_800_001
-            : 60_001;
-      if (scenario === "terminal clears") {
-        outcome = "terminal";
-        const terminal = await queue.fetch(publicationRequest("cache-terminal", 802, "8802"));
-        assert.equal(terminal.status, 422);
-        assert.equal(storage.kv.get(cacheKey), undefined);
-        outcome = "retryable";
-      }
-      const response = await queue.fetch(publicationRequest("cache-2", 803, "8803"));
-      const admitted = scenario === "fresh" || scenario === "stale fallback";
-      assert.equal(response.status, admitted ? 202 : 503);
-      assert.equal(probes, scenario === "fresh" ? 1 : scenario === "terminal clears" ? 3 : 2);
-      if (scenario === "too old") assert.equal(storage.kv.get(cacheKey), undefined);
-    } finally {
-      Date.now = originalNow;
-    }
+    assert.equal((await h.enqueue(803)).status, expectedStatus);
+    assert.equal(h.probes.length, probes);
+    if (expectedStatus === 503) assert.equal(h.storage.kv.get(cacheKey), undefined);
   });
 }
 
 for (const transition of ["terminal", "retryable"]) {
-  test(`batch claim ignores cached public admission when the live probe is ${transition}`, async () => {
-    const originalNow = Date.now;
-    let now = 9_700_000;
-    Date.now = () => now;
-    let outcome = "public";
-    let probes = 0;
-    try {
-      const storage = new TestStorage();
-      const queue = new ExactReviewQueue(
-        { storage },
-        {
-          EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
-          EXACT_REVIEW_HOSTED_TARGET_ADMISSION_MAX_STALE_MS: "1800000",
-          hostedPublicTargetProbe: async () => {
-            probes += 1;
-            return outcome;
-          },
-        },
-      );
-      assert.equal((await queue.fetch(publicationRequest("cached-841", 841, "8841"))).status, 202);
-      assert.equal(probes, 1);
-      // Still inside the 60 s fresh window: intake would not probe again, but
-      // the target turned private (or cannot be rechecked) in the meantime.
-      now += 1_000;
-      outcome = transition;
-      const claim = await (
-        await queue.fetch(
-          batchRequest("/publication-batches/claim", {
-            claim_id: "claim-cached-admission",
-            lease_owner: "worker-1",
-            max_items: 4,
-          }),
-        )
-      ).json();
-      assert.equal(claim.claimed, false, "credential-bearing claim must not trust the cache");
-      assert.equal(
-        claim.reason,
+  test(`batch claim ignores cached public admission when the live probe is ${transition}`, async (t) => {
+    const h = admissionQueue(t, { EXACT_REVIEW_HOSTED_TARGET_ADMISSION_MAX_STALE_MS: "1800000" });
+    assert.equal((await h.enqueue(841)).status, 202);
+    h.now += 1_000;
+    h.outcome = transition;
+    const claim = await h.claim();
+    assert.deepEqual(
+      [claim.claimed, claim.reason],
+      [
+        false,
         transition === "terminal" ? "private_target_unsupported" : "target_visibility_unverified",
-      );
-      assert.equal(probes, 2, "the claim performed its own live probe");
-      const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-      assert.equal(stats.lanes.publication.pending, transition === "terminal" ? 0 : 1);
-      if (transition === "terminal") {
-        assert.equal(storage.kv.get("hosted-target-admission:openclaw/openclaw"), undefined);
-        assert.equal(
-          (await queue.fetch(publicationRequest("after-private", 842, "8842"))).status,
-          422,
-          "intake is revoked too once the live probe observed a private target",
-        );
-      } else {
-        // A transient claim-side failure must not erase intake's resilience.
-        assert.equal(
-          (await queue.fetch(publicationRequest("after-transient", 843, "8843"))).status,
-          202,
-          "intake still admits from the valid cached observation",
-        );
-        assert.equal(probes, 2, "intake inside the fresh window did not probe again");
-      }
-    } finally {
-      Date.now = originalNow;
-    }
+      ],
+    );
+    assert.equal(h.probes.length, 2);
+    assert.equal((await h.publicationStats()).pending, transition === "terminal" ? 0 : 1);
+    if (transition === "terminal")
+      assert.equal(h.storage.kv.get("hosted-target-admission:openclaw/openclaw"), undefined);
+    assert.equal((await h.enqueue(842)).status, transition === "terminal" ? 422 : 202);
+    assert.equal(
+      h.probes.length,
+      transition === "terminal" ? 3 : 2,
+      "transient claim failure preserves intake's fresh cache",
+    );
   });
 }
 
-test("alarm preserves command acknowledgements after batch expiry while pruning ordinary stale publications", async () => {
-  const originalNow = Date.now;
-  const originalFetch = globalThis.fetch;
-  let now = 6_400_000;
-  Date.now = () => now;
-  globalThis.fetch = async () => {
-    throw new Error("unexpected network");
-  };
-  try {
-    const storage = new TestStorage();
-    const queue = new ExactReviewQueue(
-      { storage },
-      {
-        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+for (const [limit, command] of [
+  [100, false],
+  [1, false],
+  [1, true],
+] as const) {
+  test(
+    command
+      ? "alarm preserves command acknowledgements after batch expiry while pruning ordinary stale publications"
+      : `alarm prunes stale publication revisions after batch expiry with limit ${limit}`,
+    async (t) => {
+      const h = admissionQueue(t, {
         EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
-        EXACT_REVIEW_STALE_PUBLICATION_PRUNE_LIMIT: "1",
-      },
-    );
-    for (const number of [831, 832]) {
-      const request = publicationRequest(`command-prune-old-${number}`, number, String(number));
-      const body = await request.json();
-      if (number === 831) body.decision.publication.producerDecision.statusCommentId = 12345;
-      assert.equal((await queue.fetch(batchRequest("/enqueue", body))).status, 202);
-      now += 1;
-    }
-    const claim = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "command-prune",
-          lease_owner: "worker-1",
-          max_items: 2,
-        }),
-      )
-    ).json();
-    assert.equal(claim.claimed, true);
-    assert.equal(claim.batch.items.length, 2);
-    for (const number of [831, 832]) {
-      await queue.fetch(
-        publicationRequest(
-          `command-prune-new-${number}`,
-          number,
-          String(number + 1000),
-          "openclaw/openclaw",
-          2,
-        ),
-      );
-    }
-    now += 60_001;
-    await queue.alarm();
-    const remaining = await (await queue.fetch(batchRequest("/publications/reconcile", {}))).json();
-    assert.equal(remaining.stale_revision_eligible, 1);
-    assert.equal(remaining.sample[0].item_key, "openclaw/openclaw#831@publish:831:1");
-    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(stats.lanes.publication.pending, 3);
-    assert.equal(stats.lanes.publication.completed_total, 1);
-    // Explicit operator reconciliation retains its existing command-row authority.
-    const reconciled = await (
-      await queue.fetch(batchRequest("/publications/reconcile", { apply: true }))
-    ).json();
-    assert.equal(reconciled.stale_revision_changed, 1);
-  } finally {
-    Date.now = originalNow;
-    globalThis.fetch = originalFetch;
-  }
-});
-
-for (const limit of [100, 1]) {
-  test(`alarm prunes stale publication revisions after batch expiry with limit ${limit}`, async () => {
-    const originalNow = Date.now;
-    const originalFetch = globalThis.fetch;
-    let now = 6_400_000;
-    Date.now = () => now;
-    let networkCalls = 0;
-    globalThis.fetch = async () => {
-      networkCalls += 1;
-      throw new Error("unexpected network");
-    };
-    try {
-      const queue = new ExactReviewQueue(
-        { storage: new TestStorage() },
-        {
-          EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
-          EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
-          EXACT_REVIEW_STALE_PUBLICATION_PRUNE_LIMIT: String(limit),
-        },
-      );
+        EXACT_REVIEW_STALE_PUBLICATION_PRUNE_LIMIT: String(limit),
+      });
       for (const number of [801, 802]) {
-        await queue.fetch(
-          publicationRequest(`prune-old-${number}`, number, String(number), "openclaw/openclaw", 1),
-        );
-        now += 1;
+        const body = await publicationRequest(`prune-old-${number}`, number, String(number)).json();
+        if (command && number === 801)
+          body.decision.publication.producerDecision.statusCommentId = 12345;
+        assert.equal((await h.queue.fetch(batchRequest("/enqueue", body))).status, 202);
+        h.now += 1;
       }
-      assert.equal(
-        (
-          await (
-            await queue.fetch(
-              batchRequest("/publication-batches/claim", {
-                claim_id: "claim-prune",
-                lease_owner: "worker-1",
-                max_items: 2,
-              }),
-            )
-          ).json()
-        ).claimed,
-        true,
-      );
-      for (const number of [801, 802]) {
-        await queue.fetch(
-          publicationRequest(
-            `prune-new-${number}`,
-            number,
-            String(number + 1000),
-            "openclaw/openclaw",
-            2,
-          ),
-        );
-      }
-      await queue.alarm();
-      const before = await (await queue.fetch(new Request("https://queue/stats"))).json();
-      assert.equal(before.lanes.publication.pending, 4);
-      now += 60_001;
-      await queue.alarm();
-      const after = await (await queue.fetch(new Request("https://queue/stats"))).json();
-      assert.equal(after.lanes.publication.pending, limit === 1 ? 3 : 2);
-      assert.equal(after.lanes.publication.completed_total, limit === 1 ? 1 : 2);
-      const remaining = await (
-        await queue.fetch(batchRequest("/publications/reconcile", {}))
-      ).json();
+      assert.equal((await h.claim()).batch.items.length, 2);
+      for (const number of [801, 802]) await h.enqueue(number, 2);
+      await h.queue.alarm();
+      assert.equal((await h.publicationStats()).pending, 4);
+      h.now += 60_001;
+      await h.queue.alarm();
+      const after = await h.publicationStats();
+      assert.deepEqual([after.pending, after.completed_total], limit === 1 ? [3, 1] : [2, 2]);
+      const remaining = await h.post("/publications/reconcile");
       assert.equal(remaining.stale_revision_eligible, limit === 1 ? 1 : 0);
       if (limit === 1) {
-        assert.equal(remaining.sample[0].item_key, "openclaw/openclaw#802@publish:802:1");
-        await queue.alarm();
+        assert.equal(
+          remaining.sample[0].item_key,
+          `openclaw/openclaw#${command ? 801 : 802}@publish:${command ? 801 : 802}:1`,
+        );
+        if (command)
+          assert.equal(
+            (await h.post("/publications/reconcile", { apply: true })).stale_revision_changed,
+            1,
+          );
+        else await h.queue.alarm();
       }
-      const final = await (await queue.fetch(new Request("https://queue/stats"))).json();
-      assert.equal(final.lanes.publication.pending, 2);
-      assert.equal(final.lanes.publication.completed_total, 2);
-      assert.equal(networkCalls, 0);
-    } finally {
-      Date.now = originalNow;
-      globalThis.fetch = originalFetch;
-    }
-  });
+      const final = await h.publicationStats();
+      assert.deepEqual([final.pending, final.completed_total], [2, 2]);
+      assert.equal(h.networkCalls, 0);
+    },
+  );
 }
 
 test("batch claims retain lifecycle identity until canonical routing is durable", async () => {
