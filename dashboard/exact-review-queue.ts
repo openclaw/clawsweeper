@@ -15932,6 +15932,7 @@ function exactReviewPublicationBatchJson(batch) {
     state: batch.state,
     lease_owner: batch.leaseOwner,
     lease_expires_at: new Date(batch.leaseExpiresAt).toISOString(),
+    server_time: new Date(Date.now()).toISOString(),
     configured_batch_size: batch.configuredBatchSize,
     attempt: batch.attempt,
     created_at: new Date(batch.createdAt).toISOString(),

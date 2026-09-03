@@ -1261,6 +1261,34 @@ globalThis.fetch = async (url, init) => {
 
 for (const scenario of [
   {
+    name: "rejects exhausted 5xx after server TTL with runner five minutes behind",
+    response: 500,
+    leaseMs: 20_000,
+    attemptMs: 7_000,
+    clockSkewMs: -300_000,
+    source: "server",
+  },
+  {
+    name: "tolerates exhausted 5xx within server TTL with runner five minutes ahead",
+    response: 500,
+    leaseMs: 240_000,
+    clockSkewMs: 300_000,
+    source: "server",
+    tolerated: true,
+  },
+  {
+    name: "rejects local fallback older than one safety margin",
+    response: 500,
+    leaseMs: 1_200_000,
+    confirmationAgeMs: 180_001,
+  },
+  {
+    name: "rejects local fallback that ages past the margin during retries",
+    response: 500,
+    leaseMs: 1_200_000,
+    confirmationAgeMs: 179_000,
+  },
+  {
     name: "tolerates exhausted 5xx with ample lease",
     response: 500,
     leaseMs: 1_200_000,
@@ -1307,10 +1335,15 @@ for (const scenario of [
       const preloadPath = join(root, "fetch-preload.cjs");
       const requestsPath = join(root, "requests.jsonl");
       const baseTime = Date.UTC(2026, 8, 3);
+      const localTime = baseTime + (scenario.clockSkewMs ?? 0);
+      const confirmationAgeMs = scenario.confirmationAgeMs ?? 0;
       const manifest = {
         batchId: "lease-proof",
         leaseOwner: "proof-worker",
         leaseExpiresAt: new Date(baseTime + scenario.leaseMs).toISOString(),
+        leaseTtlMs: scenario.leaseMs + confirmationAgeMs,
+        leaseTtlSource: scenario.source ?? "local",
+        leaseConfirmedAtLocal: localTime - confirmationAgeMs,
         configuredBatchSize: 1,
         batchWaitMs: 0,
         items: [],
@@ -1322,7 +1355,7 @@ for (const scenario of [
 const { appendFileSync } = require("node:fs");
 const baseTime = ${baseTime};
 let attempts = 0;
-Date.now = () => baseTime + attempts * 1000;
+Date.now = () => ${localTime} + attempts * ${scenario.attemptMs ?? 1_000};
 Math.random = () => 0;
 globalThis.fetch = async (url) => {
   appendFileSync(${JSON.stringify(requestsPath)}, JSON.stringify({ url: String(url), attempt: ++attempts }) + "\\n");
@@ -1399,22 +1432,25 @@ globalThis.fetch = async (url) => {
   });
 }
 
-test("batch claim, heartbeat, and observe persist the last confirmed lease expiry", () => {
-  const root = mkdtempSync(join(tmpdir(), "clawsweeper-lease-expiry-"));
-  try {
-    const manifestPath = join(root, "manifest.json");
-    const preloadPath = join(root, "fetch-preload.cjs");
-    const baseTime = Date.UTC(2026, 8, 2);
-    writeFileSync(
-      preloadPath,
-      `
+for (const source of ["server", "local"]) {
+  test(`batch claim, heartbeat, and observe persist the confirmed ${source} TTL`, () => {
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-lease-expiry-"));
+    try {
+      const manifestPath = join(root, "manifest.json");
+      const preloadPath = join(root, "fetch-preload.cjs");
+      const baseTime = Date.UTC(2026, 8, 2);
+      writeFileSync(
+        preloadPath,
+        `
 const baseTime = ${baseTime};
-Date.now = () => baseTime;
+const localTime = baseTime - 300000 + (process.env.CONFIRMATION_ADVANCE_MS ? 1000 : 0);
+Date.now = () => localTime;
 Math.random = () => 0;
 let attempt = 0;
 globalThis.fetch = async (url, init) => {
   const command = process.argv[2];
   const batch = { batch_id: "lease-proof", lease_owner: "proof-worker", items: [], lease_expires_at: new Date(baseTime + (command === "claim" ? 60000 : command === "heartbeat" ? 120000 : 180000)).toISOString() };
+  if (${JSON.stringify(source)} === "server") batch.server_time = new Date(baseTime + (process.env.CONFIRMATION_ADVANCE_MS ? 1000 : 0)).toISOString();
   if (String(url).endsWith("/claim")) return Response.json({ claimed: true, batch, configured_batch_size: 1, batch_wait_ms: 0 });
   if (String(url).endsWith("/fetch")) return Response.json({ batch, items: [], superseded: 0 });
   if (String(url).endsWith("/heartbeat")) {
@@ -1424,39 +1460,49 @@ globalThis.fetch = async (url, init) => {
   throw new Error("unexpected request");
 };
 `,
-    );
-    for (const [command, expectedExpiry] of [
-      ["claim", 60_000],
-      ["heartbeat", 120_000],
-      ["observe", 180_000],
-    ]) {
-      const result = spawnSync(
-        process.execPath,
-        ["--require", preloadPath, "dist/repair/exact-review-batch-cli.js", command],
-        {
-          cwd: process.cwd(),
-          encoding: "utf8",
-          timeout: 5_000,
-          env: {
-            ...process.env,
-            CLAWSWEEPER_WEBHOOK_SECRET: "proof-secret",
-            EXACT_REVIEW_QUEUE_URL: "https://queue.example.test",
-            EXACT_REVIEW_BATCH_ID: "lease-proof",
-            EXACT_REVIEW_BATCH_LEASE_OWNER: "proof-worker",
-            EXACT_REVIEW_BATCH_MAX_ITEMS: "1",
-            EXACT_REVIEW_BATCH_MANIFEST: manifestPath,
-            EXACT_REVIEW_BATCH_OBSERVATION: "preparation_started",
-            GITHUB_OUTPUT: join(root, "github-output"),
+      );
+      for (const [command, expectedExpiry, advanceMs] of [
+        ["claim", 60_000, 0],
+        ["heartbeat", 120_000, 0],
+        ["observe", 180_000, 0],
+        ["observe", 180_000, 1_000],
+      ]) {
+        const result = spawnSync(
+          process.execPath,
+          ["--require", preloadPath, "dist/repair/exact-review-batch-cli.js", command],
+          {
+            cwd: process.cwd(),
+            encoding: "utf8",
+            timeout: 5_000,
+            env: {
+              ...process.env,
+              CLAWSWEEPER_WEBHOOK_SECRET: "proof-secret",
+              EXACT_REVIEW_QUEUE_URL: "https://queue.example.test",
+              EXACT_REVIEW_BATCH_ID: "lease-proof",
+              EXACT_REVIEW_BATCH_LEASE_OWNER: "proof-worker",
+              EXACT_REVIEW_BATCH_MAX_ITEMS: "1",
+              EXACT_REVIEW_BATCH_MANIFEST: manifestPath,
+              EXACT_REVIEW_BATCH_OBSERVATION: "preparation_started",
+              GITHUB_OUTPUT: join(root, "github-output"),
+              CONFIRMATION_ADVANCE_MS: advanceMs ? String(advanceMs) : "",
+            },
           },
-        },
-      );
-      assert.equal(result.status, 0, result.stderr);
-      assert.equal(
-        JSON.parse(readFileSync(manifestPath, "utf8")).leaseExpiresAt,
-        new Date(baseTime + expectedExpiry).toISOString(),
-      );
+        );
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(
+          JSON.parse(readFileSync(manifestPath, "utf8")).leaseExpiresAt,
+          new Date(baseTime + expectedExpiry).toISOString(),
+        );
+        const saved = JSON.parse(readFileSync(manifestPath, "utf8"));
+        assert.equal(
+          saved.leaseTtlMs,
+          expectedExpiry + (source === "local" ? 300_000 : 0) - advanceMs,
+        );
+        assert.equal(saved.leaseTtlSource, source);
+        assert.equal(saved.leaseConfirmedAtLocal, baseTime - 300_000 + advanceMs);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
+  });
+}

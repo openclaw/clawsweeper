@@ -120,6 +120,7 @@ test("heartbeat retries 500 with unchanged signed bytes and returns the renewed 
     batch_id: heartbeat.batchId,
     lease_owner: heartbeat.leaseOwner,
     lease_expires_at: new Date(now + 240_000).toISOString(),
+    server_time: new Date(now).toISOString(),
     items: [],
   };
   const { client, calls } = fixture(t, (attempt) =>
@@ -129,6 +130,7 @@ test("heartbeat retries 500 with unchanged signed bytes and returns the renewed 
   await flush();
   t.mock.timers.tick(1_000);
   assert.equal((await result).leaseExpiresAt, batch.lease_expires_at);
+  assert.equal((await result).serverTime, batch.server_time);
   assert.equal(calls.length, 2);
   assert.equal(calls[0].body, calls[1].body);
   assert.deepEqual(calls[0].headers, calls[1].headers);

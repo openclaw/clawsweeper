@@ -2889,6 +2889,51 @@ test("authenticated publication reconciliation dry-run reports without mutation"
   }
 });
 
+test("batch claim, fetch, and heartbeat responses carry current server time", async (t) => {
+  let now = 1_000_000;
+  t.mock.method(Date, "now", () => now);
+  const queue = new ExactReviewQueue(
+    { storage: new TestStorage() },
+    {
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
+    },
+  );
+  assert.equal((await queue.fetch(publicationRequest("server-time", 102, "1002"))).status, 202);
+  const claimBody = { claim_id: "server-time", lease_owner: "worker-1", max_items: 1 };
+  const claim = await (
+    await queue.fetch(batchRequest("/publication-batches/claim", claimBody))
+  ).json();
+  assert.equal(claim.claimed, true);
+  assert.equal(claim.batch.server_time, new Date(now).toISOString());
+  assert.equal(
+    Date.parse(claim.batch.lease_expires_at) - Date.parse(claim.batch.server_time),
+    60_000,
+  );
+  for (const route of ["claim", "fetch", "heartbeat"]) {
+    now += 1_000;
+    const response = await queue.fetch(
+      batchRequest(
+        `/publication-batches/${route}`,
+        route === "claim"
+          ? claimBody
+          : {
+              batch_id: claim.batch.batch_id,
+              lease_owner: "worker-1",
+              items: claim.batch.items,
+            },
+      ),
+    );
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.equal(result.batch.server_time, new Date(now).toISOString(), route);
+    assert.equal(
+      Date.parse(result.batch.lease_expires_at) - Date.parse(result.batch.server_time),
+      route === "heartbeat" ? 60_000 : 60_000 - (now - 1_000_000),
+    );
+  }
+});
+
 test("queue fetch terminalizes a stale batch revision before dispatch", async () => {
   const originalNow = Date.now;
   Date.now = () => 1_000_000;
@@ -4157,6 +4202,7 @@ test("direct fenced cleanup treats an expired batch as an idempotent no-op", asy
       batch: {
         ...claim.batch,
         state: "expired",
+        server_time: new Date(now).toISOString(),
         completed_at: new Date(now).toISOString(),
         items: [{ ...member, terminal_outcome: "lease_expired" }],
       },
