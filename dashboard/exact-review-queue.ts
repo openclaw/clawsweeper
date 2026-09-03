@@ -732,6 +732,12 @@ const DEFAULT_EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_ITEMS = 2;
 const DEFAULT_EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_AGE_MS = 15 * 60_000;
 const DEFAULT_STATE_WRITER_COORDINATOR_LEASE_MS = 2 * 60_000;
 const DEFAULT_STATE_WRITER_COORDINATOR_QUEUED_STALE_MS = 2 * 60_000;
+const EXACT_REVIEW_ALARM_SAMPLE_WINDOW_MS = 60_000;
+const EXACT_REVIEW_ALARM_SAMPLE_THRESHOLD = 10;
+type AlarmWakeReason =
+  | `batch_${"lease" | "departure"}`
+  | `${"queue" | "source_authority" | "command_intake" | "credential_circuit" | "bay_recovery"}`;
+type AlarmScheduleDecision = readonly [AlarmWakeReason, number, number, boolean | null, boolean];
 // A watchdog may keep a synchronous Git operation alive, but it cannot turn a
 // hung runner into a permanent queue owner. The Git fence blocks any in-flight
 // push that outlives this absolute coordinator horizon.
@@ -830,6 +836,10 @@ export class ExactReviewQueue {
   // Back off a wedged Bay row without adding durable queue state. Any durable
   // progress clears this single-slot deadline so the one-second drain resumes.
   private bayTelemetryNoProgressDeadline: number | null = null;
+  private alarmSampleWindowStartedAt = Number.NEGATIVE_INFINITY;
+  private alarmSampleCount = 0;
+  private alarmSampleLoggedAt = -1;
+  private scheduledAlarmDecision: AlarmScheduleDecision | null = null;
   private recentDurablePublicationEventsCache = new Map<
     string,
     { expiresAt: number; value: NonNullable<ReturnType<typeof recentDurablePublicationEvents>> }
@@ -1044,7 +1054,7 @@ export class ExactReviewQueue {
       const now = Date.now();
       const admitted = this.commandIntakeStore.admit(value, now);
       if (!admitted) return json({ error: "invalid_command_intake" }, 400);
-      if (admitted.accepted) await this.scheduleSourceAuthorityVerification(now);
+      if (admitted.accepted) await this.scheduleSourceAuthorityVerification(now, "command_intake");
       return json(
         {
           ok: true,
@@ -4148,7 +4158,28 @@ export class ExactReviewQueue {
     this.cleanupLegacyCompatibilitySync();
     const startedAt = Date.now();
     const hostedTargetMetadataToken = exactReviewHostedTargetMetadataTokenSource(this.env);
+    const newSampleWindow =
+      startedAt - this.alarmSampleWindowStartedAt >= EXACT_REVIEW_ALARM_SAMPLE_WINDOW_MS;
+    if (newSampleWindow) this.alarmSampleWindowStartedAt = startedAt;
+    this.alarmSampleCount = newSampleWindow ? 1 : this.alarmSampleCount + 1;
+    if (
+      this.alarmSampleCount >= EXACT_REVIEW_ALARM_SAMPLE_THRESHOLD &&
+      this.alarmSampleLoggedAt < this.alarmSampleWindowStartedAt
+    ) {
+      const decision = this.scheduledAlarmDecision;
+      console.warn("exact_review_queue_alarm_schedule_sample", {
+        alarm_count: this.alarmSampleCount,
+        wake_reason: decision?.[0] ?? "unknown",
+        scheduled_delay_ms: decision ? Math.max(0, decision[1] - decision[2]) : null,
+        alarm_lag_ms: decision ? Math.max(0, startedAt - decision[1]) : null,
+        decision_age_ms: decision ? Math.max(0, startedAt - decision[2]) : null,
+        bay_pending: decision ? decision[3] : null,
+        bay_backoff: decision?.[4] ?? false,
+      });
+      this.alarmSampleLoggedAt = startedAt;
+    }
     await this.storage.deleteAlarm();
+    this.scheduledAlarmDecision = null;
     this.reconcileBayTelemetryInternalSync(startedAt);
     await this.processBranchAuthorityReservations(startedAt, hostedTargetMetadataToken);
     await this.processSourceAuthorityReservations(startedAt, hostedTargetMetadataToken);
@@ -11982,10 +12013,16 @@ export class ExactReviewQueue {
     );
   }
 
-  private async scheduleSourceAuthorityVerification(nextAttemptAt: number) {
+  private async scheduleSourceAuthorityVerification(
+    next: number,
+    reason: "source_authority" | "command_intake" = "source_authority",
+  ) {
     const scheduled = await this.storage.getAlarm();
-    if (scheduled === null || scheduled <= Date.now() || nextAttemptAt < scheduled) {
-      await this.storage.setAlarm(nextAttemptAt);
+    const now = Date.now();
+    if (scheduled === null || scheduled <= now || next < scheduled) {
+      await this.storage.setAlarm(next);
+      const backoff = (this.bayTelemetryNoProgressDeadline ?? 0) > now;
+      this.scheduledAlarmDecision = [reason, next, now, null, backoff];
     }
   }
 
@@ -12044,27 +12081,35 @@ export class ExactReviewQueue {
     const bayTelemetryRecoveryNext = bayTelemetryRecoveryPending
       ? Math.max(now + 1_000, this.bayTelemetryNoProgressDeadline ?? 0)
       : null;
-    const next = [
-      queueNext,
-      batchOwnership.nextLeaseExpiresAt,
-      batchDeparture?.dueAt ?? null,
-      sourceAuthorityNext,
-      commandIntakeNext,
-      credentialCircuitNext,
-      bayTelemetryRecoveryNext,
-    ]
-      .filter((candidate): candidate is number => candidate !== null)
-      .reduce<number | null>(
-        (earliest, candidate) => (earliest === null ? candidate : Math.min(earliest, candidate)),
-        null,
-      );
-    if (next === null) {
+    const candidates: Array<readonly [AlarmWakeReason, number | null]> = [
+      ["queue", queueNext],
+      ["batch_lease", batchOwnership.nextLeaseExpiresAt],
+      ["batch_departure", batchDeparture?.dueAt ?? null],
+      ["source_authority", sourceAuthorityNext],
+      ["command_intake", commandIntakeNext],
+      ["credential_circuit", credentialCircuitNext],
+      ["bay_recovery", bayTelemetryRecoveryNext],
+    ];
+    const selected = candidates.reduce(
+      (a, b) => (b[1] !== null && b[1] < (a?.[1] ?? Infinity) ? b : a),
+      null as (typeof candidates)[number] | null,
+    );
+    if (selected === null) {
       await this.storage.deleteAlarm();
+      this.scheduledAlarmDecision = null;
       return;
     }
+    const next = selected[1]!;
     const scheduled = await this.storage.getAlarm();
     if (scheduled === null || scheduled <= now || next < scheduled) {
       await this.storage.setAlarm(next);
+      this.scheduledAlarmDecision = [
+        selected[0],
+        next,
+        now,
+        bayTelemetryRecoveryPending,
+        (this.bayTelemetryNoProgressDeadline ?? 0) > now,
+      ];
     }
   }
 }

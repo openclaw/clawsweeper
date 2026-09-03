@@ -35,6 +35,7 @@ import {
   HOSTED_TARGET_ELIGIBILITY_HEADER,
   isHostedTargetEligible,
 } from "../src/hosted-target-admission.ts";
+import { directReReviewIntake } from "../src/repair/direct-re-review-admission.ts";
 
 function serializedConsoleCalls(calls: unknown[][]) {
   return calls
@@ -98,6 +99,181 @@ test("ordinary queue and state-blob logs reject unbounded diagnostic arguments",
       );
       assert.doesNotMatch(call, /,\s*(?:_?error|detail|reason|key|path|delivery)\s*[,)]/);
     }
+  }
+});
+
+test("alarm scheduling keeps a closed reason set and stable tie priority", async () => {
+  const source = fs.readFileSync("dashboard/exact-review-queue.ts", "utf8");
+  const candidatesStart = source.indexOf(
+    "const candidates: Array<readonly [AlarmWakeReason, number | null]>",
+  );
+  const candidatesEnd = source.indexOf("const selected =", candidatesStart);
+  const candidateBlock = source.slice(candidatesStart, candidatesEnd);
+  assert.deepEqual(
+    [...candidateBlock.matchAll(/\["([^"]+)",/g)].map((match) => match[1]),
+    [
+      "queue",
+      "batch_lease",
+      "batch_departure",
+      "source_authority",
+      "command_intake",
+      "credential_circuit",
+      "bay_recovery",
+    ],
+  );
+
+  const now = Date.parse("2026-09-03T02:30:00.000Z");
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    { hostedPublicTargetProbe: async () => "public" },
+  );
+  await queue.alarm();
+  const internals = queue as unknown as {
+    batchStore: {
+      activeLeaseSnapshot: (now: number) => {
+        itemKeys: string[];
+        activeBatches: number;
+        nextLeaseExpiresAt: number | null;
+      };
+    };
+    nextSourceAuthorityVerificationAt: () => Promise<number | null>;
+    scheduleSourceAuthorityVerification: (
+      nextAttemptAt: number,
+      reason: "source_authority" | "command_intake",
+    ) => Promise<void>;
+    scheduleNext: (state: { deliveries: {}; items: {} }, now: number) => Promise<void>;
+    scheduledAlarmDecision: readonly [string, number, number, boolean | null, boolean] | null;
+  };
+  internals.batchStore.activeLeaseSnapshot = () => ({
+    itemKeys: [],
+    activeBatches: 0,
+    nextLeaseExpiresAt: now + 5_000,
+  });
+  internals.nextSourceAuthorityVerificationAt = async () => now + 5_000;
+
+  await internals.scheduleNext({ deliveries: {}, items: {} }, now);
+  assert.equal(internals.scheduledAlarmDecision?.[0], "batch_lease");
+  await storage.deleteAlarm();
+  await internals.scheduleSourceAuthorityVerification(now + 5_000, "source_authority");
+  assert.equal(internals.scheduledAlarmDecision?.[0], "source_authority");
+  assert.equal(internals.scheduledAlarmDecision?.[3], null);
+  await storage.deleteAlarm();
+  const intake = directReReviewIntake({
+    targetRepo: "example/project",
+    targetBranch: "main",
+    itemNumber: 42,
+    itemKind: "pull_request",
+    installationId: 123,
+    sourceCommentId: 9001,
+    sourceCommentUpdatedAt: "2026-09-03T02:30:00.000Z",
+    commandBodyDigest: createHash("sha256").update("test").digest("hex"),
+    commandOrigin: "hosted_webhook",
+    additionalPrompt: "",
+  });
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/command-intake", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(intake),
+    }),
+  );
+  assert.equal(response.status, 202);
+  assert.equal(internals.scheduledAlarmDecision?.[0], "command_intake");
+});
+
+test("alarm scheduling samples only the tenth invocation in each minute", async () => {
+  const originalNow = Date.now;
+  const originalFetch = globalThis.fetch;
+  const originalWarn = console.warn;
+  const warnings: unknown[][] = [];
+  let fetches = 0;
+  let now = Date.parse("2026-09-03T02:30:00.000Z");
+  Date.now = () => now;
+  globalThis.fetch = async () => {
+    fetches += 1;
+    throw new Error("unexpected fetch");
+  };
+  console.warn = (...args) => warnings.push(args);
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  const internals = queue as unknown as {
+    alarmSampleWindowStartedAt: number;
+    alarmSampleCount: number;
+    alarmSampleLoggedAt: number;
+    scheduledAlarmDecision: readonly [string, number, number, boolean | null, boolean] | null;
+  };
+  const samples = () =>
+    warnings.filter(([message]) => message === "exact_review_queue_alarm_schedule_sample");
+  const invoke = async (
+    reason: string,
+    bayPending: boolean | null,
+    bayBackoff: boolean,
+  ): Promise<void> => {
+    internals.scheduledAlarmDecision = [reason, now - 250, now - 1_250, bayPending, bayBackoff];
+    await queue.alarm();
+  };
+
+  try {
+    for (let count = 0; count < 9; count += 1) await invoke("queue", false, false);
+    assert.equal(samples().length, 0);
+    await invoke("queue", false, false);
+    assert.deepEqual(samples(), [
+      [
+        "exact_review_queue_alarm_schedule_sample",
+        {
+          alarm_count: 10,
+          wake_reason: "queue",
+          scheduled_delay_ms: 1_000,
+          alarm_lag_ms: 250,
+          decision_age_ms: 1_250,
+          bay_pending: false,
+          bay_backoff: false,
+        },
+      ],
+    ]);
+    await invoke("queue", false, false);
+    assert.equal(samples().length, 1);
+
+    now += 60_000;
+    for (let count = 0; count < 9; count += 1) await invoke("bay_recovery", true, true);
+    assert.equal(samples().length, 1);
+    await invoke("bay_recovery", true, true);
+    assert.equal(samples().length, 2);
+    assert.deepEqual(samples()[1]?.[1], {
+      alarm_count: 10,
+      wake_reason: "bay_recovery",
+      scheduled_delay_ms: 1_000,
+      alarm_lag_ms: 250,
+      decision_age_ms: 1_250,
+      bay_pending: true,
+      bay_backoff: true,
+    });
+    now += 60_000;
+    for (let count = 0; count < 10; count += 1) {
+      await invoke("source_authority", null, false);
+    }
+    assert.deepEqual(samples()[2]?.[1], {
+      alarm_count: 10,
+      wake_reason: "source_authority",
+      scheduled_delay_ms: 1_000,
+      alarm_lag_ms: 250,
+      decision_age_ms: 1_250,
+      bay_pending: null,
+      bay_backoff: false,
+    });
+    assert.equal(fetches, 0);
+    assert.equal(storage.rawHas("exact_review_queue_alarm_schedule_sample"), false);
+    assertConsoleCallsExclude(samples(), [
+      "openclaw/openclaw",
+      "delivery-id",
+      "item-key",
+      "https://private.example",
+    ]);
+  } finally {
+    Date.now = originalNow;
+    globalThis.fetch = originalFetch;
+    console.warn = originalWarn;
   }
 });
 
