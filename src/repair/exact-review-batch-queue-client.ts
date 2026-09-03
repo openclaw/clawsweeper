@@ -245,7 +245,7 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
   async postEffect(route: ExactReviewBatchPostEffectRoute, payload: string) {
     if (!Object.hasOwn(POST_EFFECT_ROUTES, route))
       throw new Error("Invalid batch post-effect route");
-    return this.postUrl(POST_EFFECT_ROUTES[route], payload, Date.now() + RETRY_DEADLINE_MS);
+    return this.postUrl(POST_EFFECT_ROUTES[route], payload);
   }
 
   async reconcilePublications(input: { apply: boolean; maxItems: number }) {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import {
   appendFileSync,
   existsSync,
@@ -1174,10 +1175,10 @@ for (const [route, endpoint] of [
   ["router-receipt", "/internal/exact-review/lifecycle/router-receipt"],
   ["terminal-disposition", "/internal/exact-review/lifecycle/terminal-disposition"],
 ]) {
-  for (const [scenario, statuses, exitCode] of [
-    ["recovers after one 500", [500, 200], 0],
-    ["exhausts three 500 attempts", [500, 500, 500], 1],
-    ["fails immediately on 409", [409], 1],
+  for (const [scenario, statuses, exitCode, expectedAttempts] of [
+    ["fails after the first 500 in a recovery sequence", [500, 200], 1, 1],
+    ["fails after the first 500 in a repeated failure sequence", [500, 500, 500], 1, 1],
+    ["fails immediately on 409", [409], 1, 1],
   ]) {
     test(`batch post-effect ${route} ${scenario}`, () => {
       const root = mkdtempSync(join(tmpdir(), "clawsweeper-post-effect-"));
@@ -1231,15 +1232,26 @@ globalThis.fetch = async (url, init) => {
               .split("\n")
               .map((line) => JSON.parse(line))
           : [];
-        assert.equal(posts.length, statuses.length, result.stderr);
+        assert.equal(posts.length, expectedAttempts, result.stderr);
         assert.equal(result.status, exitCode, result.stderr);
+        assert.equal(result.stdout, "");
         assert.ok(posts.every((post) => post.url === `https://queue.example.test${endpoint}`));
         assert.ok(posts.every((post) => post.body === payload));
         assert.ok(
           posts.every((post) => JSON.stringify(post.headers) === JSON.stringify(posts[0].headers)),
         );
+        assert.ok(
+          posts.every(
+            (post) =>
+              post.headers["x-clawsweeper-exact-review-signature"] ===
+              `sha256=${createHmac("sha256", "proof-secret").update(payload).digest("hex")}`,
+          ),
+        );
         assert.doesNotMatch(result.stderr, /proof-secret|stable-fixture|sha256=/);
-        if (exitCode === 0) assert.deepEqual(JSON.parse(result.stdout), { ok: true, queued: true });
+        if (statuses[0] === 500) {
+          assert.match(result.stderr, /HTTP 500/);
+          assert.doesNotMatch(result.stderr, /Batch queue retry/);
+        }
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
