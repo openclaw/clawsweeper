@@ -1,8 +1,8 @@
 #!/usr/bin/env node
+import { sha256 } from "../content-hash.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
-import { createHash } from "node:crypto";
 import {
   assertAllowedOwner,
   hasDeterministicSecuritySignal,
@@ -1841,8 +1841,4 @@ function positiveIntegerSetting(value: JsonValue, fallback: number) {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) return fallback;
   return Math.floor(number);
-}
-
-function sha256(text: string) {
-  return createHash("sha256").update(text).digest("hex");
 }

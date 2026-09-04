@@ -1,3 +1,4 @@
+import { isRecord } from "../value-coerce.js";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -88,8 +89,4 @@ function addPositiveInteger(values: Set<number>, value: unknown): void {
 
 function frontmatterRepo(frontmatter: string): string {
   return /^repo:\s*["']?([^\s"']+)["']?\s*$/m.exec(frontmatter)?.[1] ?? "";
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

@@ -1,4 +1,6 @@
-import { createHash } from "node:crypto";
+import { requireRecord as record } from "../value-coerce.js";
+import { sha256 } from "../content-hash.js";
+
 import fs from "node:fs";
 import path from "node:path";
 
@@ -503,13 +505,6 @@ function canonicalTimestamp(value: string): string {
   return value;
 }
 
-function record(value: unknown, label: string): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${label} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
 function exactKeys(value: Record<string, unknown>, expected: readonly string[]): void {
   const actual = Object.keys(value).sort();
   const sortedExpected = [...expected].sort();
@@ -518,6 +513,7 @@ function exactKeys(value: Record<string, unknown>, expected: readonly string[]):
   }
 }
 
+// Bundle strings reject empty text but preserve whitespace.
 function stringValue(value: unknown, label: string): string {
   if (typeof value !== "string" || !value) throw new Error(`${label} must be a string`);
   return value;
@@ -544,8 +540,4 @@ function positiveInteger(value: number, label: string): void {
 
 function nullablePositiveInteger(value: number | null, label: string): void {
   if (value !== null) positiveInteger(value, label);
-}
-
-function sha256(value: string | Buffer): string {
-  return createHash("sha256").update(value).digest("hex");
 }

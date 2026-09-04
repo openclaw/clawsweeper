@@ -1,3 +1,4 @@
+import { escapeRegExp } from "../clawsweeper-text.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 
 const TIMELINE_START = "<!-- clawsweeper-automerge-timeline:start -->";
@@ -159,8 +160,4 @@ function compact(value: JsonValue, max: number): string {
   if (!text) return "";
   if (text.length <= max) return text;
   return `${text.slice(0, Math.max(0, max - 1)).trimEnd()}...`;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

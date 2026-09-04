@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { requiredEnv } from "../required-env.js";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -200,12 +201,6 @@ function writeGitHubEnv(values: Record<string, string>): void {
     if (/[\r\n]/.test(value)) throw new Error(`${key} contains a newline`);
     fs.appendFileSync(envPath, `${key}=${value}\n`, "utf8");
   }
-}
-
-function requiredEnv(name: string): string {
-  const value = String(process.env[name] ?? "").trim();
-  if (!value) throw new Error(`${name} is required`);
-  return value;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

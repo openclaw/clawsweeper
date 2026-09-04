@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createHash } from "node:crypto";
+import { sha256 } from "./content-hash.js";
 import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -341,10 +341,6 @@ const {
   ghWithRetry,
   mutationErrorMessage,
 } = githubExecution;
-
-function sha256(text: string): string {
-  return createHash("sha256").update(text).digest("hex");
-}
 
 const CLAWSWEEPER_BOT_AUTHORS = new Set(
   [

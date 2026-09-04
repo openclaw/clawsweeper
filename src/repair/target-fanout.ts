@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { requireRecord as record, errorSummary as errorMessage } from "../value-coerce.js";
 import { execFileSync } from "node:child_process";
 import { createHmac } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
@@ -21,8 +22,6 @@ import {
 import { fetchExactReviewQueuePressure } from "../queue-pressure.js";
 import { coverageTrackedCountsFromManifest } from "../review-coverage-manifest.js";
 import { parseArgs, repoRoot } from "./lib.js";
-
-type JsonRecord = Record<string, unknown>;
 
 export type FanoutMode = "hot-intake" | "normal-review" | "audit";
 
@@ -983,12 +982,6 @@ function nonNegativeNumber(value: unknown, label: string): number {
   return parsed;
 }
 
-function errorMessage(error: unknown): string {
-  return (error instanceof Error ? error.message : String(error))
-    .replace(/[\r\n]+/g, " ")
-    .slice(0, 300);
-}
-
 function positiveNumber(value: string, label: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) throw new Error(`--${label} must be positive`);
@@ -1023,13 +1016,6 @@ function stringValue(value: unknown, label: string): string {
 
 function booleanValue(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
-}
-
-function record(value: unknown, label: string): JsonRecord {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${label} must be an object`);
-  }
-  return value as JsonRecord;
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {

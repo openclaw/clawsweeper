@@ -1,3 +1,4 @@
+import { recordOrEmpty as record } from "./value-coerce.js";
 import { createHash } from "node:crypto";
 
 import { stableJsonCodeUnit } from "./stable-json.js";
@@ -505,12 +506,6 @@ function compactReviewThread(value: unknown) {
     id: scalar(thread.id),
     is_resolved: scalar(thread.isResolved ?? thread.is_resolved),
   };
-}
-
-function record(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
 }
 
 function scalar(value: unknown): string {

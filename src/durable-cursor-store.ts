@@ -1,3 +1,4 @@
+import { requireRecord as record, errorSummary as errorMessage } from "./value-coerce.js";
 import { createHmac } from "node:crypto";
 
 type JsonRecord = Record<string, unknown>;
@@ -102,17 +103,4 @@ function nonNegativeNumber(value: unknown, label: string): number {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error(`${label} must be non-negative`);
   return parsed;
-}
-
-function record(value: unknown, label: string): JsonRecord {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${label} must be an object`);
-  }
-  return value as JsonRecord;
-}
-
-function errorMessage(error: unknown): string {
-  return (error instanceof Error ? error.message : String(error))
-    .replace(/[\r\n]+/g, " ")
-    .slice(0, 300);
 }

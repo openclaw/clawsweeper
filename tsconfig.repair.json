@@ -17,6 +17,10 @@
   },
   "include": [
     "src/repair/**/*.ts",
+    "src/value-coerce.ts",
+    "src/content-hash.ts",
+    "src/clawsweeper-text.ts",
+    "src/required-env.ts",
     "src/repository-profiles.ts",
     "src/codex-output-capture.ts",
     "src/codex-spawn.ts",

@@ -1,3 +1,4 @@
+import { errorMessage } from "../value-coerce.js";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
@@ -362,8 +363,4 @@ export function observeClusterDispatch(
 
 function clusterIntakeLedgerPath(intent: ClusterIntakeIntent): string {
   return `results/cluster-repair-intake/${intent.repo_slug}.json`;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

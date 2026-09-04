@@ -1,3 +1,4 @@
+import { requireRecord as record } from "./value-coerce.js";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -454,6 +455,7 @@ function packageManagerValue(value: unknown, label: string): RepositoryPackageMa
   return packageManager;
 }
 
+// Profile strings reject whitespace-only text without trimming accepted values.
 function stringValue(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "")
     throw new Error(`${label} must be a string`);
@@ -507,13 +509,6 @@ function numberValue(value: unknown, label: string): number {
 function arrayValue(value: unknown, label: string): unknown[] {
   if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
   return value;
-}
-
-function record(value: unknown, label: string): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${label} must be an object`);
-  }
-  return value as Record<string, unknown>;
 }
 
 function repoRoot(): string {

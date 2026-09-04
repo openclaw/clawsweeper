@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { escapeRegExp } from "../clawsweeper-text.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -1530,10 +1531,6 @@ function stripQuotes(value: string) {
     return trimmed.slice(1, -1);
   }
   return trimmed;
-}
-
-function escapeRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function relative(filePath: string) {

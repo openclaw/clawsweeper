@@ -1,3 +1,4 @@
+import { errorMessage } from "../value-coerce.js";
 import { spawn, spawnSync } from "node:child_process";
 import { createHmac, randomUUID } from "node:crypto";
 
@@ -396,8 +397,4 @@ function positiveInteger(value: string | undefined, fallback: number): number {
 
 function sleepSync(milliseconds: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

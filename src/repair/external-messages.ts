@@ -1,3 +1,4 @@
+import { escapeRegExp } from "../clawsweeper-text.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import { randomInt } from "node:crypto";
 import { repairCodexReasoningEffort } from "./process-env.js";
@@ -397,10 +398,6 @@ function compactForComment(value: JsonValue, max: JsonValue) {
   if (!text) return "";
   if (text.length <= max) return text;
   return `${text.slice(0, Math.max(0, max - 1)).trimEnd()}...`;
-}
-
-function escapeRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export function replacementSourceCloseComment({

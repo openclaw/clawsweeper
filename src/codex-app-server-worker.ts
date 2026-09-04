@@ -1,3 +1,4 @@
+import { errorMessage } from "./value-coerce.js";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
@@ -548,10 +549,6 @@ function readStdin(): Promise<string> {
     process.stdin.once("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
     process.stdin.once("error", reject);
   });
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function serializedError(error: Error): { message: string; code?: string } {

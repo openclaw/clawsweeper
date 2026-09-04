@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { stringOrEmpty as stringValue } from "../value-coerce.js";
+import { escapeRegExp } from "../clawsweeper-text.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -2670,14 +2672,6 @@ function sectionValue(markdown: string, heading: string): string {
 function sectionLineValue(markdown: string, key: string): string {
   const match = markdown.match(new RegExp(`^${escapeRegExp(key)}:\\s*(.+)$`, "m"));
   return match?.[1]?.trim() ?? "";
-}
-
-function stringValue(value: JsonValue): string {
-  return typeof value === "string" ? value : "";
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function repoFor(markdown: string, name: string): string {

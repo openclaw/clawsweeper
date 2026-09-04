@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256 } from "./content-hash.js";
 import {
   GITHUB_ETAG_CACHE_MAX_BODY_BYTES,
   type GithubEtagCacheKey,
@@ -138,8 +138,4 @@ function validLookupEntry(
   return Boolean(
     value?.etag && !/[\r\n]/.test(value.etag) && /^[0-9a-f]{64}$/.test(value.bodyDigest),
   );
-}
-
-function sha256(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
 }

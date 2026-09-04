@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256 } from "./content-hash.js";
 import { isIP } from "node:net";
 import path from "node:path";
 
@@ -2682,10 +2682,6 @@ function highRiskCredentialField(value: string): boolean {
       normalized,
     )
   );
-}
-
-function sha256(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
 }
 
 function containsConfidentialIdentifier(value: string): boolean {

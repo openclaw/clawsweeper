@@ -1,3 +1,4 @@
+import { isRecord } from "./value-coerce.js";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -246,10 +247,6 @@ function getOptionalPath(root: Record<string, unknown>, path: string): unknown {
     cursor = cursor[segment];
   }
   return cursor;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function repoRoot(): string {

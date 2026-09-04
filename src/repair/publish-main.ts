@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { sha256 } from "../content-hash.js";
 import { createHash } from "node:crypto";
 import {
   appendFileSync,
@@ -794,10 +795,6 @@ function collectRecordFiles(root: string, relativePath: string, files: Map<strin
   for (const entry of readdirSync(absolute, { withFileTypes: true })) {
     collectRecordFiles(root, `${relativePath}/${entry.name}`, files);
   }
-}
-
-function sha256(content: string): string {
-  return createHash("sha256").update(content).digest("hex");
 }
 
 function readContainedRegularFile(root: string, path: string): string {

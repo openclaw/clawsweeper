@@ -1,3 +1,4 @@
+import { requiredEnv } from "../required-env.js";
 import { createHmac } from "node:crypto";
 import fs from "node:fs";
 
@@ -245,12 +246,6 @@ function boundedAttempts(value: number) {
   if (!Number.isSafeInteger(value) || value < 1 || value > 5) {
     throw new Error("Direct publication attempts must be between 1 and 5");
   }
-  return value;
-}
-
-function requiredEnv(name: string) {
-  const value = String(process.env[name] || "").trim();
-  if (!value) throw new Error(`${name} is required`);
   return value;
 }
 

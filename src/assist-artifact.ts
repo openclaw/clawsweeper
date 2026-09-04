@@ -1,4 +1,8 @@
-import { createHash } from "node:crypto";
+import {
+  requireRecord as record,
+  requirePositiveInteger as positiveInteger,
+} from "./value-coerce.js";
+import { sha256 } from "./content-hash.js";
 
 export const ASSIST_ARTIFACT_SCHEMA_VERSION = 1 as const;
 export const ASSIST_ARTIFACT_MAX_BYTES = 128 * 1024;
@@ -412,17 +416,6 @@ function assistIdempotencyKey(options: {
   );
 }
 
-function sha256(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function record(value: unknown, name: string): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${name} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
 function exactKeys(value: Record<string, unknown>, expected: string[]): void {
   const actual = Object.keys(value).sort();
   const allowed = [...expected].sort();
@@ -469,13 +462,6 @@ function digits(value: unknown, name: string, maxBytes: number): string {
 function optionalCommentId(value: unknown, name: string): string {
   if (value === "") return "";
   return digits(value, name, 30);
-}
-
-function positiveInteger(value: unknown, name: string): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`${name} must be a positive safe integer`);
-  }
-  return value;
 }
 
 function digest(value: unknown, name: string): string {

@@ -1,3 +1,4 @@
+import { isRecord, errorMessage } from "../value-coerce.js";
 import { createHmac } from "node:crypto";
 
 export type CanonicalRecordTupleOperation = {
@@ -183,14 +184,6 @@ function parseConflictState(value: unknown): CanonicalRecordTupleConflictState |
     });
   }
   return { key, revision, deliveryId, operations };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 let stateAppendSecretsToRedact: string[] = [];

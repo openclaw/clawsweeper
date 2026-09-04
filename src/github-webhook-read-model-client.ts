@@ -1,3 +1,4 @@
+import { recordOrEmpty as record } from "./value-coerce.js";
 import { createHmac } from "node:crypto";
 import { spawnSync } from "node:child_process";
 
@@ -293,10 +294,6 @@ function parseResponse(value: string): GithubReadModelResponse | null {
   } catch {
     return null;
   }
-}
-
-function record(value: unknown): JsonRecord {
-  return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
 }
 
 function positiveInteger(value: unknown): number | null {

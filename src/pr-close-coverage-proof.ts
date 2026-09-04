@@ -1,3 +1,4 @@
+import { requireRecord, requireString } from "./value-coerce.js";
 import { runAgentProcess } from "./agent-runner.js";
 import { codexLoginConfig } from "./codex-env.js";
 import { createHash } from "node:crypto";
@@ -555,13 +556,6 @@ function prCloseCoverageProofCoveredWorkIsConcrete(value: string): boolean {
   );
 }
 
-function requireRecord(value: unknown, path: string): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${path} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
 function parseProofSnapshotBinding(
   value: unknown,
   path: string,
@@ -600,6 +594,7 @@ function requireSha256(value: unknown, path: string): string {
   return digest;
 }
 
+// Coverage-proof diagnostics retain their "had unexpected keys" wording.
 function rejectUnexpectedKeys(
   record: Record<string, unknown>,
   allowed: ReadonlySet<string>,
@@ -609,11 +604,6 @@ function rejectUnexpectedKeys(
   if (unexpected.length) {
     throw new Error(`${path} had unexpected keys: ${unexpected.join(", ")}`);
   }
-}
-
-function requireString(value: unknown, path: string): string {
-  if (typeof value !== "string") throw new Error(`${path} must be a string`);
-  return value;
 }
 
 function requireStringArray(value: unknown, path: string): string[] {
