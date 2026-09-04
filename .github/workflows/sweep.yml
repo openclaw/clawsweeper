@@ -1030,9 +1030,11 @@ jobs:
       - uses: ./.github/actions/setup-codex
         if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
+          OPENAI_API_KEY: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.OPENAI_API_KEY || '' }}
+          CLAWSWEEPER_INTERNAL_MODEL: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.CLAWSWEEPER_MODEL || '' }}
+          CLAWSWEEPER_CLAWROUTER_CONFIG: ${{ secrets.CLAWSWEEPER_CLAWROUTER_CONFIG }}
         with:
+          auth-mode: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE || 'proxy' }}
           login-status: "true"
 
       - uses: ./.github/actions/setup-openclaw
@@ -4411,9 +4413,11 @@ jobs:
       - uses: ./clawsweeper/.github/actions/setup-codex
         if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' }}
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
+          OPENAI_API_KEY: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.OPENAI_API_KEY || '' }}
+          CLAWSWEEPER_INTERNAL_MODEL: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.CLAWSWEEPER_MODEL || '' }}
+          CLAWSWEEPER_CLAWROUTER_CONFIG: ${{ secrets.CLAWSWEEPER_CLAWROUTER_CONFIG }}
         with:
+          auth-mode: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE || 'proxy' }}
           login-status: "true"
 
       - uses: ./clawsweeper/.github/actions/setup-openclaw
@@ -5819,8 +5823,11 @@ jobs:
       - uses: ./.github/actions/setup-codex
         if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.proof-select.outputs.item_numbers != '' }}
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
+          OPENAI_API_KEY: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.OPENAI_API_KEY || '' }}
+          CLAWSWEEPER_INTERNAL_MODEL: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.CLAWSWEEPER_MODEL || '' }}
+          CLAWSWEEPER_CLAWROUTER_CONFIG: ${{ secrets.CLAWSWEEPER_CLAWROUTER_CONFIG }}
+        with:
+          auth-mode: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE || 'proxy' }}
 
       - uses: ./.github/actions/setup-openclaw
         if: ${{ steps.proof-select.outputs.item_numbers != '' }}

@@ -376,7 +376,10 @@ The workflow needs:
   materialization or dispatch; publication recovery retains the exact selected
   job and selector decision.
 - merge is separately gated by `CLAWSWEEPER_ALLOW_MERGE`, which defaults to `0`; merge-ready PRs are labeled `clawsweeper:human-review` and `clawsweeper:merge-ready` for a maintainer to merge manually when the global gate is closed
-- required `CLAWSWEEPER_MODEL` GitHub Actions secret containing the actual
+- optional private alias routing through ClawRouter; see
+  [`../private-inference.md`](../private-inference.md) for the isolated deployment,
+  workload credential, and native metadata contract
+- required `CLAWSWEEPER_MODEL` GitHub Actions secret for direct Codex modes, containing the actual
   internal model name; workflows, dispatch payloads, comments, and reports use
   only the public `internal` alias
 - Codex CLI and its responses API proxy install from their latest npm tags on

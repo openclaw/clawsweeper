@@ -35,8 +35,11 @@ jobs:
           build-script: build
       - uses: ./.github/actions/setup-codex
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
+          OPENAI_API_KEY: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.OPENAI_API_KEY || '' }}
+          CLAWSWEEPER_INTERNAL_MODEL: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.CLAWSWEEPER_MODEL || '' }}
+          CLAWSWEEPER_CLAWROUTER_CONFIG: ${{ secrets.CLAWSWEEPER_CLAWROUTER_CONFIG }}
+        with:
+          auth-mode: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE || 'proxy' }}
       - name: Prove refusal then clean structured review
         run: node scripts/hosted-review-scan-smoke.mjs "$RUNNER_TEMP/hosted-review-scan-proof.json"
       - uses: actions/upload-artifact@v7

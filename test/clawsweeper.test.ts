@@ -2284,7 +2284,7 @@ test("agent workflows install pinned CLI releases and keep runner models secret"
     ".github/workflows/sweep.yml",
   ].map((file) => readText(file));
 
-  assert.match(action, /codex-version:[\s\S]*default: "0\.146\.0"/);
+  assert.match(action, /codex-version:[\s\S]*default: "0\.151\.0"/);
   assert.match(action, /proxy-version:[\s\S]*default: "0\.139\.0"/);
   assert.match(action, /@openai\/codex@\$\{\{ inputs\['codex-version'\] \}\}/);
   assert.match(action, /@openai\/codex-responses-api-proxy@\$\{\{ inputs\['proxy-version'\] \}\}/);
@@ -2304,7 +2304,10 @@ test("agent workflows install pinned CLI releases and keep runner models secret"
   );
   for (const workflow of workflows) {
     assert.match(workflow, /CLAWSWEEPER_MODEL: internal/);
-    assert.match(workflow, /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ secrets\.CLAWSWEEPER_MODEL \}\}/);
+    assert.match(
+      workflow,
+      /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ vars\.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets\.CLAWSWEEPER_MODEL \|\| '' \}\}/,
+    );
     assert.doesNotMatch(workflow, /CLAWSWEEPER_CODEX_CLI_VERSION/);
     for (const line of workflow
       .split("\n")

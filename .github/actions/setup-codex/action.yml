@@ -3,12 +3,12 @@ description: Cache, install, and authenticate the OpenAI Codex CLI.
 inputs:
   codex-version:
     description: Exact Codex CLI npm package version.
-    default: "0.146.0"
+    default: "0.151.0"
   proxy-version:
     description: Exact Codex Responses proxy npm package version.
     default: "0.139.0"
   auth-mode:
-    description: Authentication mode. Use proxy to keep OPENAI_API_KEY out of Codex subprocesses, or login for legacy codex login.
+    description: Authentication mode. Use clawrouter for private alias inference, proxy for an isolated API-key proxy, or login for legacy codex login.
     default: "proxy"
   codex-home:
     description: CODEX_HOME directory. Defaults to an isolated per-run ClawSweeper directory.
@@ -47,7 +47,7 @@ runs:
         echo "$HOME/.clawsweeper-repair/codex/bin" >> "$GITHUB_PATH"
         export PATH="$HOME/.clawsweeper-repair/codex/bin:$PATH"
 
-        install_env=(env -u OPENAI_API_KEY -u CODEX_API_KEY -u PROXY_API_KEY -u CLAWSWEEPER_INTERNAL_MODEL)
+        install_env=(env -u OPENAI_API_KEY -u CODEX_API_KEY -u PROXY_API_KEY -u CLAWSWEEPER_INTERNAL_MODEL -u CLAWSWEEPER_CLAWROUTER_CONFIG)
         "${install_env[@]}" npm install -g "@openai/codex@${{ inputs['codex-version'] }}" \
           --prefer-online --no-audit --no-fund --ignore-scripts
         if [[ "${{ inputs['auth-mode'] }}" == "proxy" ]]; then
@@ -94,6 +94,7 @@ runs:
         echo "Using isolated CODEX_HOME=$CODEX_HOME"
 
     - name: Configure internal Codex model
+      if: ${{ inputs['auth-mode'] != 'clawrouter' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -102,6 +103,11 @@ runs:
         model_json="$(node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$CLAWSWEEPER_INTERNAL_MODEL")"
         printf 'model = %s\n' "$model_json" > "$CODEX_HOME/config.toml"
         chmod 600 "$CODEX_HOME/config.toml"
+
+    - name: Configure private ClawRouter inference
+      if: ${{ inputs['auth-mode'] == 'clawrouter' }}
+      shell: bash
+      run: node "${{ github.action_path }}/configure-clawrouter.mjs"
 
     - name: Authenticate Codex through Responses proxy
       if: ${{ inputs['auth-mode'] == 'proxy' }}
@@ -151,7 +157,7 @@ runs:
         fi
 
     - name: Reject unknown Codex auth mode
-      if: ${{ inputs['auth-mode'] != 'proxy' && inputs['auth-mode'] != 'login' }}
+      if: ${{ inputs['auth-mode'] != 'proxy' && inputs['auth-mode'] != 'login' && inputs['auth-mode'] != 'clawrouter' }}
       shell: bash
       run: |
         echo "Unsupported setup-codex auth-mode: ${{ inputs['auth-mode'] }}" >&2

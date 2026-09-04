@@ -277,9 +277,10 @@ jobs:
         if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
         env:
           JOB_PATH: ${{ inputs.job }}
+          CODEX_AUTH_MODE: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE || 'proxy' }}
         run: |
           set -euo pipefail
-          key="$(printf '%s' "$JOB_PATH" | sha256sum | cut -d' ' -f1)"
+          key="$(printf '%s\n' "$CODEX_AUTH_MODE" "$JOB_PATH" | sha256sum | cut -d' ' -f1)"
           codex_home="$HOME/.clawsweeper-repair/codex-home/work-$key"
           echo "key=$key" >> "$GITHUB_OUTPUT"
           echo "codex_home=$codex_home" >> "$GITHUB_OUTPUT"
@@ -288,9 +289,11 @@ jobs:
       - uses: ./.github/actions/setup-codex
         if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' }}
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          CLAWSWEEPER_INTERNAL_MODEL: ${{ secrets.CLAWSWEEPER_MODEL }}
+          OPENAI_API_KEY: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.OPENAI_API_KEY || '' }}
+          CLAWSWEEPER_INTERNAL_MODEL: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.CLAWSWEEPER_MODEL || '' }}
+          CLAWSWEEPER_CLAWROUTER_CONFIG: ${{ secrets.CLAWSWEEPER_CLAWROUTER_CONFIG }}
         with:
+          auth-mode: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE || 'proxy' }}
           codex-home: ${{ steps.codex_session.outputs.codex_home }}
 
       - uses: ./.github/actions/setup-openclaw
@@ -572,9 +575,10 @@ jobs:
         if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
         env:
           JOB_PATH: ${{ inputs.job }}
+          CODEX_AUTH_MODE: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE || 'proxy' }}
         run: |
           set -euo pipefail
-          key="$(printf '%s' "$JOB_PATH" | sha256sum | cut -d' ' -f1)"
+          key="$(printf '%s\n' "$CODEX_AUTH_MODE" "$JOB_PATH" | sha256sum | cut -d' ' -f1)"
           codex_home="$HOME/.clawsweeper-repair/codex-home/work-$key"
           echo "key=$key" >> "$GITHUB_OUTPUT"
           echo "codex_home=$codex_home" >> "$GITHUB_OUTPUT"
@@ -583,9 +587,11 @@ jobs:
       - uses: ./.github/actions/setup-codex
         if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' }}
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          CLAWSWEEPER_INTERNAL_MODEL: ${{ contains(inputs.job, '/inbox/issue-') && (vars.CLAWSWEEPER_FIX_PR_MODEL || 'gpt-5.6-sol') || secrets.CLAWSWEEPER_MODEL }}
+          OPENAI_API_KEY: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.OPENAI_API_KEY || '' }}
+          CLAWSWEEPER_INTERNAL_MODEL: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && (contains(inputs.job, '/inbox/issue-') && (vars.CLAWSWEEPER_FIX_PR_MODEL || 'gpt-5.6-sol') || secrets.CLAWSWEEPER_MODEL) || '' }}
+          CLAWSWEEPER_CLAWROUTER_CONFIG: ${{ secrets.CLAWSWEEPER_CLAWROUTER_CONFIG }}
         with:
+          auth-mode: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE || 'proxy' }}
           cache-suffix: target-pnpm
           codex-home: ${{ steps.codex_session.outputs.codex_home }}
 
