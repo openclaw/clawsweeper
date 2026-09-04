@@ -815,6 +815,12 @@ function createExactReviewAdmissionHarness(
     targetRepository?: (targetRepo: string, init?: RequestInit) => Response | Promise<Response>;
     targetItem?: (targetRepo: string) => Response | Promise<Response>;
     targetPull?: (targetRepo: string) => Response | Promise<Response>;
+    targetComments?: (
+      targetRepo: string,
+      itemNumber: number,
+      init: RequestInit | undefined,
+      url: URL,
+    ) => Response | Promise<Response>;
     producerRun?: (
       runId: string,
       runAttempt: number | null,
@@ -896,6 +902,10 @@ function createExactReviewAdmissionHarness(
         options.targetItem?.(targetPull[1]) ??
         liveItem(targetPull[1], Number(targetPull[2]), "pull_request")
       );
+    }
+    const targetComments = url.pathname.match(/^\/repos\/([^/]+\/[^/]+)\/issues\/(\d+)\/comments$/);
+    if (targetComments && options.targetComments) {
+      return options.targetComments(targetComments[1]!, Number(targetComments[2]), init, url);
     }
     if (
       options.captureBatchDispatch &&

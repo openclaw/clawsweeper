@@ -103,6 +103,7 @@ import {
   unknownBaySnapshot,
 } from "./exact-review-lifecycle-telemetry.ts";
 import { GithubEgressTelemetryStore } from "./github-egress-telemetry.ts";
+import { resolvePullRequestAcknowledgement } from "./pull-request-acknowledgement.ts";
 import {
   ExactReviewCommandIntakeStore,
   type ExactReviewCommandIntakeRecord,
@@ -12514,10 +12515,10 @@ export class ExactReviewQueue {
         hostedTargetMetadataToken,
       );
       const observedAt = Date.now();
-      const current = exactReviewSourceAuthorityReservationFrom(
+      let current = exactReviewSourceAuthorityReservationFrom(
         this.storage.kv.get(exactReviewSourceAuthorityReservationKey(reservation.deliveryId)),
       );
-      if (current?.sourceAuthoritySeq !== reservation.sourceAuthoritySeq) continue;
+      if (!current || stableJson(current) !== stableJson(reservation)) continue;
       if (admission.outcome === "terminal") {
         this.completeSourceAuthorityReservationSync(current, "mismatch");
         continue;
@@ -12546,6 +12547,21 @@ export class ExactReviewQueue {
         continue;
       }
       try {
+        if (current.reviewAcknowledgementPending) {
+          const acknowledgement = await exactReviewSourceAuthorityAcknowledgement(
+            this.env,
+            current,
+          );
+          if (acknowledgement.outcome === "lookup_limit") {
+            console.warn("exact-review source authority acknowledgement lookup limit reached");
+          }
+          const recovered = this.attachSourceAuthorityAcknowledgementSync(
+            current,
+            acknowledgement.commentId,
+          );
+          if (!recovered) continue;
+          current = recovered;
+        }
         const liveHeadSha = await exactReviewSourceAuthorityLiveHead(this.env, current);
         this.recordAuthorityGithubOutcomeSync(current.attempts > 0, "success", Date.now());
         const reservedHeadSha = String(current.decision.sourceHeadSha || "").toLowerCase();
@@ -12553,15 +12569,19 @@ export class ExactReviewQueue {
           this.completeSourceAuthorityReservationSync(current, "mismatch");
           continue;
         }
+        const verified = exactReviewSourceAuthorityReservationFrom(
+          this.storage.kv.get(exactReviewSourceAuthorityReservationKey(current.deliveryId)),
+        );
+        if (!verified || stableJson(verified) !== stableJson(current)) continue;
         const response = await this.fetch(
           new Request("https://clawsweeper-exact-review-queue/enqueue", {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
-              delivery_id: current.deliveryId,
-              ...(current.ingress ? { ingress: current.ingress } : {}),
+              delivery_id: verified.deliveryId,
+              ...(verified.ingress ? { ingress: verified.ingress } : {}),
               decision: {
-                ...current.decision,
+                ...verified.decision,
                 sourceHeadVerified: true,
               },
             }),
@@ -12569,7 +12589,7 @@ export class ExactReviewQueue {
           hostedTargetMetadataToken,
         );
         if (!response.ok) throw new Error(`source authority enqueue failed: ${response.status}`);
-        this.completeSourceAuthorityReservationSync(current, "enqueued");
+        this.completeSourceAuthorityReservationSync(verified, "enqueued");
       } catch (error) {
         const failedAt = Date.now();
         const observation = exactReviewGithubTargetAppObservation(
@@ -12734,7 +12754,7 @@ export class ExactReviewQueue {
     this.storage.transactionSync(() => {
       const key = exactReviewSourceAuthorityReservationKey(expected.deliveryId);
       const current = exactReviewSourceAuthorityReservationFrom(this.storage.kv.get(key));
-      if (current?.sourceAuthoritySeq === expected.sourceAuthoritySeq) {
+      if (current && stableJson(current) === stableJson(expected)) {
         if (disposition === "mismatch") {
           this.storage.sql.exec(
             `INSERT OR IGNORE INTO ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}
@@ -12757,7 +12777,7 @@ export class ExactReviewQueue {
     this.storage.transactionSync(() => {
       const key = exactReviewSourceAuthorityReservationKey(expected.deliveryId);
       const current = exactReviewSourceAuthorityReservationFrom(this.storage.kv.get(key));
-      if (current?.sourceAuthoritySeq !== expected.sourceAuthoritySeq) return;
+      if (!current || stableJson(current) !== stableJson(expected)) return;
       const attempts = incrementAttempts
         ? Math.min(EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_LIMIT, current.attempts + 1)
         : current.attempts;
@@ -12770,6 +12790,38 @@ export class ExactReviewQueue {
         attempts,
         nextAttemptAt: Math.max(now + 1_000, requestedRetryAt || now + backoffMs),
       });
+    });
+  }
+
+  private attachSourceAuthorityAcknowledgementSync(
+    expected: ExactReviewSourceAuthorityReservation,
+    commentId: number | null,
+  ) {
+    return this.storage.transactionSync(() => {
+      const key = exactReviewSourceAuthorityReservationKey(expected.deliveryId);
+      const current = exactReviewSourceAuthorityReservationFrom(this.storage.kv.get(key));
+      if (!current || current.sourceAuthoritySeq !== expected.sourceAuthoritySeq) return null;
+      if (stableJson(current) !== stableJson(expected)) {
+        // A webhook acknowledgement may have completed while recovery was in
+        // flight. Reuse that current reservation without overwriting its
+        // receipt; any other concurrent change gets a fresh alarm pass.
+        return !current.reviewAcknowledgementPending &&
+          stableJson(sourceAuthorityAcknowledgementIdentity(current)) ===
+            stableJson(sourceAuthorityAcknowledgementIdentity(expected))
+          ? current
+          : null;
+      }
+      const { reviewAcknowledgementPending: _pending, ...acknowledged } = current;
+      const next: ExactReviewSourceAuthorityReservation = {
+        ...acknowledged,
+        decision: {
+          ...current.decision,
+          ...(commentId ? { reviewAcknowledgementCommentId: commentId } : {}),
+        },
+        nextAttemptAt: Date.now(),
+      };
+      this.storage.kv.put(key, next);
+      return next;
     });
   }
 
@@ -15734,6 +15786,50 @@ async function exactReviewSourceAuthorityLiveHead(
   return String(objectValue(objectValue(pull).head).sha || "")
     .trim()
     .toLowerCase();
+}
+
+async function exactReviewSourceAuthorityAcknowledgement(
+  env,
+  reservation: ExactReviewSourceAuthorityReservation,
+) {
+  const credentials = githubAppCredentials(env);
+  if (!credentials) throw new Error("github app is not configured");
+  const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
+  const token = await createGithubAppTokenFor({
+    env,
+    appJwt,
+    installationId: reservation.installationId,
+    label: reservation.decision.targetRepo,
+    repositories: [repoName(reservation.decision.targetRepo)],
+    permissions: { issues: "write", pull_requests: "write" },
+  });
+  return resolvePullRequestAcknowledgement({
+    githubJson: (request) =>
+      githubTokenJson({
+        env,
+        token,
+        path: request.path,
+        method: request.method,
+        body: request.body,
+        errorLabel: request.errorLabel,
+      }),
+    targetRepo: reservation.decision.targetRepo,
+    itemNumber: reservation.decision.itemNumber,
+    sourceAction: reservation.decision.sourceAction,
+  });
+}
+
+function sourceAuthorityAcknowledgementIdentity(
+  reservation: ExactReviewSourceAuthorityReservation,
+) {
+  const { reviewAcknowledgementCommentId: _commentId, ...decision } = reservation.decision;
+  const {
+    reviewAcknowledgementPending: _pending,
+    nextAttemptAt: _nextAttemptAt,
+    decision: _decision,
+    ...identity
+  } = reservation;
+  return { ...identity, decision };
 }
 
 async function exactReviewCommandTargetToken(

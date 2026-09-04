@@ -10,6 +10,10 @@ import { isExactReviewCloseGuardLabel } from "../src/repair/exact-review-guard-l
 import { sha256Hex } from "./exact-review-direct-publication.ts";
 import { exactReviewSourceRevisionMaterial } from "./exact-review-source-revision.ts";
 import {
+  resolvePullRequestAcknowledgement,
+  settlePullRequestAcknowledgement,
+} from "./pull-request-acknowledgement.ts";
+import {
   GITHUB_ETAG_CACHE_MAX_BODY_BYTES,
   githubEtagCacheKey,
   githubEtagCacheRequestBody,
@@ -6901,52 +6905,51 @@ async function acknowledgePullRequestReceipt({ env, ctx, decision }) {
     repositories: [repoName(decision.targetRepo)],
     permissions: { issues: "write", pull_requests: "write" },
   });
-  const ackMarker = pullRequestFastAckMarker(decision.itemNumber, decision.sourceAction);
-  const ackMatch = pullRequestFastAckMatch(decision.itemNumber);
   const createsReceipt = ["opened", "ready_for_review"].includes(decision.sourceAction);
-  let statusCommentId;
-  try {
-    statusCommentId = createsReceipt
-      ? await createFastAckCommentOnce({
-          env,
-          token,
-          repo: decision.targetRepo,
-          itemNumber: decision.itemNumber,
-          ackMarker,
-          ackMatch,
-          ackDedupeKey: "clawsweeper-pr-ack",
-          ackBody: renderPullRequestFastAckComment(ackMarker),
-          sinceMs: null,
-        })
-      : await pruneFastAckComments({
-          env,
-          token,
-          repo: decision.targetRepo,
-          itemNumber: decision.itemNumber,
-          ackMarker,
-          ackMatch,
-          sinceMs: null,
-        });
-  } catch (error) {
-    if (!(error instanceof FastAckLookupLimitError)) throw error;
-    // A capped search cannot prove receipt absence or safely choose among receipts.
-    // Skip all acknowledgement mutation without blocking the actual review intake.
+  const acknowledgement = await resolvePullRequestAcknowledgement({
+    githubJson: (request) =>
+      githubTokenJson({
+        env,
+        token,
+        path: request.path,
+        method: request.method,
+        body: request.body,
+        errorLabel: request.errorLabel,
+      }),
+    targetRepo: decision.targetRepo,
+    itemNumber: decision.itemNumber,
+    sourceAction: decision.sourceAction,
+  });
+  if (acknowledgement.outcome === "lookup_limit") {
     console.warn("ClawSweeper pull request acknowledgement lookup limit reached");
     return null;
   }
   if (createsReceipt) {
-    settleFastAckComments({
-      env,
-      token,
-      repo: decision.targetRepo,
-      itemNumber: decision.itemNumber,
-      ackMarker,
-      ackMatch,
-      delaysMs: fastAckSettleDelaysMs(env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS),
-      waitUntil: ctx?.waitUntil?.bind(ctx),
+    const cleanup = async () => {
+      for (const delayMs of fastAckSettleDelaysMs(env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS)) {
+        await sleep(delayMs);
+        await settlePullRequestAcknowledgement({
+          githubJson: (request) =>
+            githubTokenJson({
+              env,
+              token,
+              path: request.path,
+              method: request.method,
+              body: request.body,
+              errorLabel: request.errorLabel,
+            }),
+          targetRepo: decision.targetRepo,
+          itemNumber: decision.itemNumber,
+          sourceAction: decision.sourceAction,
+        });
+      }
+    };
+    const promise = cleanup().catch(() => {
+      console.error("ClawSweeper fast ack cleanup failed");
     });
+    if (ctx?.waitUntil) ctx.waitUntil(promise);
   }
-  return statusCommentId;
+  return acknowledgement.commentId;
 }
 
 async function createFastAckComment({
@@ -7194,28 +7197,6 @@ function renderFastAckComment(sourceCommentId) {
 
 function fastAckMarker(sourceCommentId) {
   return `<!-- clawsweeper-command-ack:${sourceCommentId} -->`;
-}
-
-function pullRequestFastAckMarker(itemNumber, sourceAction) {
-  return `<!-- clawsweeper-pr-ack:${sourceAction} item=${itemNumber} -->`;
-}
-
-// `opened` and `ready_for_review` can arrive seconds apart for one pull
-// request, so receipts dedupe per item across actions — the same
-// prefix+suffix identity the target dispatch workflow checks.
-function pullRequestFastAckMatch(itemNumber) {
-  const suffix = ` item=${itemNumber} -->`;
-  return (body) => body.includes("clawsweeper-pr-ack:") && body.includes(suffix);
-}
-
-function renderPullRequestFastAckComment(ackMarker) {
-  return [
-    ackMarker,
-    "🦞👀",
-    "ClawSweeper picked this up.",
-    "",
-    "Pull request received. I will update this pull request when review starts.",
-  ].join("\n");
 }
 
 async function addIssueCommentReaction({ env, token, repo, commentId, content }) {

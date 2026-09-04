@@ -2466,7 +2466,14 @@ test("hosted pull request receipt fast acks precede verification and stay idempo
     publicKeyEncoding: { type: "spki", format: "pem" },
   });
   const storage = new MemoryDurableStorage();
-  const queue = new ExactReviewQueue({ storage }, {});
+  const queue = new ExactReviewQueue(
+    { storage },
+    {
+      CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+      CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+      hostedPublicTargetProbe: publicHostedTargetProbe,
+    },
+  );
   type AckComment = {
     id: number;
     body: string;
@@ -2478,6 +2485,7 @@ test("hosted pull request receipt fast acks precede verification and stay idempo
   const acknowledgementLookupUsesSince: boolean[] = [];
   const acknowledgementLookupPages = new Map<number, number[]>();
   const fastAckPostAttempts = new Map<number, number>();
+  let failOpenedAcknowledgement = true;
   const repository = {
     full_name: "openclaw/fs-safe",
     default_branch: "trunk",
@@ -2510,15 +2518,22 @@ test("hosted pull request receipt fast acks precede verification and stay idempo
   globalThis.fetch = async (input, init) => {
     const url = new URL(String(input));
     if (url.pathname === "/app/installations/123/access_tokens") {
-      assert.deepEqual(JSON.parse(String(init?.body)), {
-        repositories: ["fs-safe"],
-        permissions: { issues: "write", pull_requests: "write" },
-      });
+      const tokenRequest = JSON.parse(String(init?.body));
+      assert.deepEqual(tokenRequest.repositories, ["fs-safe"]);
+      assert.ok(
+        JSON.stringify(tokenRequest.permissions) ===
+          JSON.stringify({ issues: "write", pull_requests: "write" }) ||
+          JSON.stringify(tokenRequest.permissions) === JSON.stringify({ pull_requests: "read" }),
+      );
       return jsonResponse({ token: "target-token" });
     }
     const pullMatch = /^\/repos\/openclaw\/fs-safe\/pulls\/(\d+)$/.exec(url.pathname);
     if (pullMatch) {
-      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer verification-token");
+      assert.ok(
+        ["Bearer verification-token", "Bearer target-token"].includes(
+          new Headers(init?.headers).get("authorization") || "",
+        ),
+      );
       const itemNumber = Number(pullMatch[1]);
       if (itemNumber === 599) throw new Error("transient GitHub verification failure");
       return jsonResponse({
@@ -2553,7 +2568,7 @@ test("hosted pull request receipt fast acks precede verification and stay idempo
     if (commentMatch && init?.method === "POST") {
       const itemNumber = Number(commentMatch[1]);
       fastAckPostAttempts.set(itemNumber, (fastAckPostAttempts.get(itemNumber) || 0) + 1);
-      if (itemNumber === 601) {
+      if (itemNumber === 601 && failOpenedAcknowledgement) {
         return new Response(JSON.stringify({ message: logMarker }), {
           status: 403,
           headers: { "content-type": "application/json" },
@@ -2854,6 +2869,28 @@ test("hosted pull request receipt fast acks precede verification and stay idempo
       items: Record<string, unknown>;
     };
     assert.equal(ackFailureState.items["openclaw/fs-safe#601"], undefined);
+    failOpenedAcknowledgement = false;
+    const ackFailureReservationKey =
+      "exact-review-source-authority-reservation:v1:app-opened-ack-failure";
+    const ackFailureReservation = storage.rawGet(ackFailureReservationKey) as Record<
+      string,
+      unknown
+    >;
+    storage.rawPut(ackFailureReservationKey, {
+      ...ackFailureReservation,
+      nextAttemptAt: 0,
+    });
+    await queue.alarm();
+    const recoveredState = (await storage.get("exact-review-queue")) as {
+      items: Record<string, { decision: { reviewAcknowledgementCommentId?: number } }>;
+    };
+    assert.equal(
+      recoveredState.items["openclaw/fs-safe#601"]?.decision.reviewAcknowledgementCommentId,
+      9601,
+    );
+    assert.equal(comments.get(601)?.length, 1);
+    assert.equal(fastAckPostAttempts.get(601), 2);
+    assert.equal(storage.rawHas(ackFailureReservationKey), false);
     await Promise.all(waitUntilPromises);
     assert.ok(acknowledgementLookupUsesSince.includes(false));
     assert.ok(acknowledgementLookupUsesSince.includes(true));

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { proveCompletionSupersession } from "./completion-supersession.mjs";
+import { proveSourceAuthorityAcknowledgementRecovery } from "./source-authority-ack-recovery.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -130,14 +131,16 @@ for (const [index, reason] of ["findings", "incomplete_source", "source_incompat
 }
 
 const completionSupersession = await proveCompletionSupersession();
+const sourceAuthorityAcknowledgementRecovery = await proveSourceAuthorityAcknowledgementRecovery();
 const result = {
-  proof: "terminal-review-explanations-v2",
+  proof: "terminal-review-explanations-v3",
   source_head: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(),
   dirty: execFileSync("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: root, encoding: "utf8" }).trim() !== "",
-  runtime: { node: process.version, queue: "production ExactReviewQueue", updater: "compiled production CLI", persistence: "SQLite-backed Durable Storage harness" },
+  runtime: { node: process.version, webhook: "production dashboard worker", queue: "production ExactReviewQueue", updater: "compiled production CLI", persistence: "SQLite-backed Durable Storage harness" },
   scenarios,
   completion_supersession: completionSupersession,
-  limits: ["Controlled local GitHub CLI fixture; no GitHub or live queue mutation.", "Runs queue Request/Response and updater subprocesses, not deployed workerd or a full GitHub Actions job."],
+  source_authority_acknowledgement_recovery: sourceAuthorityAcknowledgementRecovery,
+  limits: ["Controlled local GitHub CLI and Request/Response fixtures; no GitHub or live queue mutation.", "Runs webhook/queue Request/Response and updater subprocesses, not deployed workerd or a full GitHub Actions job."],
 };
 writeFileSync(output, JSON.stringify(result, null, 2) + "\n");
 console.log(JSON.stringify(result));

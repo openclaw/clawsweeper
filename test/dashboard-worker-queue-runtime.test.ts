@@ -36,6 +36,7 @@ import {
   isHostedTargetEligible,
 } from "../src/hosted-target-admission.ts";
 import { directReReviewIntake } from "../src/repair/direct-re-review-admission.ts";
+import { EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_LIMIT } from "../dashboard/exact-review-decision.ts";
 
 function serializedConsoleCalls(calls: unknown[][]) {
   return calls
@@ -66,6 +67,51 @@ function sqlCount(storage: MemoryDurableStorage, table: string) {
   return Number(
     Array.from(storage.sql.exec(`SELECT COUNT(*) AS count FROM ${table}`))[0]?.count ?? 0,
   );
+}
+
+async function reserveDueSourceAuthority(
+  harness: ReturnType<typeof createExactReviewAdmissionHarness>,
+  {
+    deliveryId,
+    itemNumber,
+    sourceAction = "opened",
+    sourceHeadSha = "a".repeat(40),
+  }: {
+    deliveryId: string;
+    itemNumber: number;
+    sourceAction?: string;
+    sourceHeadSha?: string;
+  },
+) {
+  const response = await harness.queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/source-authority", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        [HOSTED_TARGET_ELIGIBILITY_HEADER]: "openclaw/fs-safe",
+      },
+      body: JSON.stringify({
+        delivery_id: deliveryId,
+        installation_id: 123,
+        review_acknowledgement_pending: true,
+        decision: {
+          targetRepo: "openclaw/fs-safe",
+          targetBranch: "main",
+          itemNumber,
+          itemKind: "pull_request",
+          sourceEvent: "pull_request",
+          sourceAction,
+          supersedesInProgress: sourceAction === "synchronize",
+          sourceHeadSha,
+        },
+      }),
+    }),
+  );
+  assert.equal(response.status, 200);
+  const key = `exact-review-source-authority-reservation:v1:${encodeURIComponent(deliveryId)}`;
+  const reservation = harness.storage.rawGet(key) as Record<string, unknown>;
+  harness.storage.rawPut(key, { ...reservation, nextAttemptAt: 0 });
+  return key;
 }
 
 function consoleCallBlocks(source: string) {
@@ -737,6 +783,326 @@ test("branch and source authority admission precedes durable reservation", async
       } finally {
         harness.restore();
       }
+    }
+  }
+});
+
+test("source authority fallback recovers a trusted receipt before admission", async () => {
+  const sourceHeadSha = "a".repeat(40);
+  const commentId = 98_081;
+  let commentPosts = 0;
+  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
+    hostedPublicTargetProbe: async () => "public",
+    targetAccessToken: () => jsonResponse({ token: "target-token" }),
+    targetPull: () => jsonResponse({ head: { sha: sourceHeadSha } }),
+    targetComments: (_repo, itemNumber, init) => {
+      assert.equal(itemNumber, 8_081);
+      if (init?.method === "POST") commentPosts += 1;
+      return jsonResponse([
+        {
+          id: commentId,
+          body: "<!-- clawsweeper-pr-ack:opened item=8081 -->\nClawSweeper picked this up.",
+          created_at: "2026-09-04T00:00:00Z",
+          user: { login: "openclaw-clawsweeper[bot]" },
+        },
+      ]);
+    },
+  });
+  try {
+    const reservationKey = await reserveDueSourceAuthority(harness, {
+      deliveryId: "source-ack-recovery",
+      itemNumber: 8_081,
+      sourceHeadSha,
+    });
+    await harness.queue.alarm();
+
+    const state = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<string, { decision: { reviewAcknowledgementCommentId?: number } }>;
+    };
+    assert.equal(
+      state.items["openclaw/fs-safe#8081"]?.decision.reviewAcknowledgementCommentId,
+      commentId,
+    );
+    assert.equal(harness.storage.rawHas(reservationKey), false);
+    assert.equal(commentPosts, 0);
+  } finally {
+    harness.restore();
+  }
+});
+
+test("source authority synchronize recovery never creates a missing receipt", async () => {
+  const sourceHeadSha = "f".repeat(40);
+  let commentPosts = 0;
+  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
+    hostedPublicTargetProbe: async () => "public",
+    targetAccessToken: () => jsonResponse({ token: "target-token" }),
+    targetPull: () => jsonResponse({ head: { sha: sourceHeadSha } }),
+    targetComments: (_repo, _itemNumber, init) => {
+      if (init?.method === "POST") commentPosts += 1;
+      return jsonResponse([]);
+    },
+  });
+  try {
+    const reservationKey = await reserveDueSourceAuthority(harness, {
+      deliveryId: "source-sync-ack-recovery",
+      itemNumber: 8_086,
+      sourceAction: "synchronize",
+      sourceHeadSha,
+    });
+    await harness.queue.alarm();
+
+    const state = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<string, { decision: { reviewAcknowledgementCommentId?: number } }>;
+    };
+    assert.ok(state.items["openclaw/fs-safe#8086"]);
+    assert.equal(
+      state.items["openclaw/fs-safe#8086"].decision.reviewAcknowledgementCommentId,
+      undefined,
+    );
+    assert.equal(commentPosts, 0);
+    assert.equal(harness.storage.rawHas(reservationKey), false);
+  } finally {
+    harness.restore();
+  }
+});
+
+test("source authority acknowledgement errors remain deferred without enqueue", async () => {
+  const sourceHeadSha = "b".repeat(40);
+  let pullReads = 0;
+  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
+    hostedPublicTargetProbe: async () => "public",
+    targetAccessToken: () => jsonResponse({ token: "target-token" }),
+    targetPull: () => {
+      pullReads += 1;
+      return jsonResponse({ head: { sha: sourceHeadSha } });
+    },
+    targetComments: () =>
+      new Response(JSON.stringify({ message: "temporary failure" }), {
+        status: 503,
+        headers: { "content-type": "application/json" },
+      }),
+  });
+  try {
+    const reservationKey = await reserveDueSourceAuthority(harness, {
+      deliveryId: "source-ack-error",
+      itemNumber: 8_082,
+      sourceHeadSha,
+    });
+    const due = harness.storage.rawGet(reservationKey) as Record<string, unknown>;
+    harness.storage.rawPut(reservationKey, {
+      ...due,
+      attempts: EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_LIMIT,
+    });
+    await harness.queue.alarm();
+
+    const reservation = harness.storage.rawGet(reservationKey) as {
+      attempts: number;
+      nextAttemptAt: number;
+      reviewAcknowledgementPending?: boolean;
+    };
+    assert.equal(reservation.attempts, EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_LIMIT);
+    assert.ok(reservation.nextAttemptAt > 0);
+    assert.equal(reservation.reviewAcknowledgementPending, true);
+    assert.equal(pullReads, 0);
+    const state = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<string, unknown>;
+    };
+    assert.equal(state.items["openclaw/fs-safe#8082"], undefined);
+    assert.equal(sqlCount(harness.storage, "exact_review_queue_deliveries"), 0);
+  } finally {
+    harness.restore();
+  }
+});
+
+test("source authority acknowledgement recovery defers when credentials are missing", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error("credential deferral must stop before GitHub I/O");
+  };
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    { hostedPublicTargetProbe: async () => "public" },
+  );
+  const deliveryId = "source-ack-missing-credentials";
+  const reservationKey = `exact-review-source-authority-reservation:v1:${encodeURIComponent(deliveryId)}`;
+  try {
+    const response = await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/source-authority", {
+        method: "POST",
+        headers: { [HOSTED_TARGET_ELIGIBILITY_HEADER]: "openclaw/fs-safe" },
+        body: JSON.stringify({
+          delivery_id: deliveryId,
+          installation_id: 123,
+          review_acknowledgement_pending: true,
+          decision: {
+            targetRepo: "openclaw/fs-safe",
+            targetBranch: "main",
+            itemNumber: 8_087,
+            itemKind: "pull_request",
+            sourceEvent: "pull_request",
+            sourceAction: "opened",
+            supersedesInProgress: false,
+            sourceHeadSha: "a".repeat(40),
+          },
+        }),
+      }),
+    );
+    assert.equal(response.status, 200);
+    const reserved = storage.rawGet(reservationKey) as Record<string, unknown>;
+    storage.rawPut(reservationKey, { ...reserved, nextAttemptAt: 0 });
+
+    await queue.alarm();
+
+    const deferred = storage.rawGet(reservationKey) as {
+      attempts: number;
+      reviewAcknowledgementPending?: boolean;
+    };
+    assert.equal(deferred.attempts, 1);
+    assert.equal(deferred.reviewAcknowledgementPending, true);
+    const state = (await storage.get("exact-review-queue")) as {
+      items: Record<string, unknown>;
+    };
+    assert.equal(state.items["openclaw/fs-safe#8087"], undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("source authority recovery reuses a receipt after create response loss", async () => {
+  const sourceHeadSha = "c".repeat(40);
+  const comments: Record<string, unknown>[] = [];
+  let commentPosts = 0;
+  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
+    hostedPublicTargetProbe: async () => "public",
+    targetAccessToken: () => jsonResponse({ token: "target-token" }),
+    targetPull: () => jsonResponse({ head: { sha: sourceHeadSha } }),
+    targetComments: (_repo, itemNumber, init) => {
+      if (init?.method === "GET") return jsonResponse(comments);
+      assert.equal(init?.method, "POST");
+      commentPosts += 1;
+      comments.push({
+        id: 98_083,
+        body: `<!-- clawsweeper-pr-ack:opened item=${itemNumber} -->\nClawSweeper picked this up.`,
+        created_at: "2026-09-04T00:00:00Z",
+        user: { login: "clawsweeper[bot]" },
+      });
+      throw new Error("simulated response loss");
+    },
+  });
+  try {
+    const reservationKey = await reserveDueSourceAuthority(harness, {
+      deliveryId: "source-ack-response-loss",
+      itemNumber: 8_083,
+      sourceHeadSha,
+    });
+    await harness.queue.alarm();
+    assert.equal(commentPosts, 1);
+    assert.equal(harness.storage.rawHas(reservationKey), true);
+    assert.equal(comments.length, 1);
+
+    const deferred = harness.storage.rawGet(reservationKey) as Record<string, unknown>;
+    harness.storage.rawPut(reservationKey, { ...deferred, nextAttemptAt: 0 });
+    await harness.queue.alarm();
+
+    const state = (await harness.storage.get("exact-review-queue")) as {
+      items: Record<string, { decision: { reviewAcknowledgementCommentId?: number } }>;
+    };
+    assert.equal(
+      state.items["openclaw/fs-safe#8083"]?.decision.reviewAcknowledgementCommentId,
+      98_083,
+    );
+    assert.equal(commentPosts, 1);
+    assert.equal(comments.length, 1);
+    assert.equal(harness.storage.rawHas(reservationKey), false);
+  } finally {
+    harness.restore();
+  }
+});
+
+test("source authority acknowledgement recovery preserves concurrent receipt and source guards", async () => {
+  for (const concurrentChange of ["receipt", "source"] as const) {
+    const itemNumber = concurrentChange === "receipt" ? 8_084 : 8_085;
+    const sourceHeadSha = "d".repeat(40);
+    let reservationKey = "";
+    let changed = false;
+    let pullReads = 0;
+    const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
+      hostedPublicTargetProbe: async () => "public",
+      targetAccessToken: () => jsonResponse({ token: "target-token" }),
+      targetPull: () => {
+        pullReads += 1;
+        return jsonResponse({ head: { sha: sourceHeadSha } });
+      },
+      targetComments: () => {
+        if (!changed) {
+          changed = true;
+          const current = harness.storage.rawGet(reservationKey) as {
+            decision: Record<string, unknown>;
+          } & Record<string, unknown>;
+          harness.storage.rawPut(
+            reservationKey,
+            concurrentChange === "receipt"
+              ? {
+                  ...current,
+                  decision: { ...current.decision, reviewAcknowledgementCommentId: 98_084 },
+                  reviewAcknowledgementPending: false,
+                  nextAttemptAt: 0,
+                }
+              : {
+                  ...current,
+                  decision: { ...current.decision, sourceHeadSha: "e".repeat(40) },
+                },
+          );
+        }
+        return jsonResponse([
+          {
+            id: 88_000 + itemNumber,
+            body: `<!-- clawsweeper-pr-ack:opened item=${itemNumber} -->`,
+            created_at: "2026-09-04T00:00:00Z",
+            user: { login: "clawsweeper[bot]" },
+          },
+        ]);
+      },
+    });
+    try {
+      reservationKey = await reserveDueSourceAuthority(harness, {
+        deliveryId: `source-ack-concurrent-${concurrentChange}`,
+        itemNumber,
+        sourceHeadSha,
+      });
+      await harness.queue.alarm();
+      const state = (await harness.storage.get("exact-review-queue")) as {
+        items: Record<string, { decision: { reviewAcknowledgementCommentId?: number } }>;
+      };
+      if (concurrentChange === "receipt") {
+        assert.equal(
+          state.items[`openclaw/fs-safe#${itemNumber}`]?.decision.reviewAcknowledgementCommentId,
+          98_084,
+        );
+        assert.equal(harness.storage.rawHas(reservationKey), false);
+        assert.equal(pullReads, 1);
+      } else {
+        assert.equal(state.items[`openclaw/fs-safe#${itemNumber}`], undefined);
+        const reservation = harness.storage.rawGet(reservationKey) as {
+          decision: { sourceHeadSha: string };
+          reviewAcknowledgementPending?: boolean;
+        };
+        assert.equal(reservation.decision.sourceHeadSha, "e".repeat(40));
+        assert.equal(reservation.reviewAcknowledgementPending, true);
+        assert.equal(pullReads, 0);
+        harness.storage.rawPut(reservationKey, { ...reservation, nextAttemptAt: 0 });
+        await harness.queue.alarm();
+        const afterStaleHead = (await harness.storage.get("exact-review-queue")) as {
+          items: Record<string, unknown>;
+        };
+        assert.equal(afterStaleHead.items[`openclaw/fs-safe#${itemNumber}`], undefined);
+        assert.equal(harness.storage.rawHas(reservationKey), false);
+        assert.equal(pullReads, 1);
+        assert.equal(sqlCount(harness.storage, "exact_review_queue_deliveries"), 1);
+      }
+    } finally {
+      harness.restore();
     }
   }
 });
