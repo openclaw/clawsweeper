@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 
 import { discoverWorkerRecordRepoSlugs, exportWorkerRecords } from "./worker-records.ts";
 
-export const CANONICAL_PROMOTION_KEYS = Object.freeze([
+const CANONICAL_PROMOTION_KEYS = Object.freeze([
   "real_behavior_proof_status",
   "real_behavior_proof_evidence_kind",
   "real_behavior_proof_needs_contributor_action",
@@ -83,7 +83,7 @@ export async function auditCanonicalItemRecords(options) {
   };
 }
 
-export async function runAuditCli(argv, env = process.env) {
+async function runAuditCli(argv, env = process.env) {
   const args = parseArgs(argv);
   const webhookSecret = env.CLAWSWEEPER_RECORDS_SECRET ?? env.CLAWSWEEPER_WEBHOOK_SECRET ?? "";
   if (!webhookSecret) throw new Error("CLAWSWEEPER_WEBHOOK_SECRET is required");
