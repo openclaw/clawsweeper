@@ -4,11 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { adaptiveReviewBudgetForPullRequest } from "./adaptive-review-budget.js";
-import {
-  spawn,
-  type ChildProcess,
-  type SpawnSyncOptionsWithStringEncoding,
-} from "node:child_process";
+import { spawn } from "node:child_process";
 import { assertAllowedOwner, parseArgs, parseJob, repoRoot, validateJob } from "./lib.js";
 import {
   automergeRepairOutcomeComment,
@@ -37,7 +33,7 @@ import {
 import { runAgentProcess } from "../agent-runner.js";
 import { AgentInputScanError, type AgentScanSource } from "../agent-input-scan.js";
 import { withTargetReviewSnapshot } from "./target-validation.js";
-import { codexAppServerProcessOptionsFromEnv } from "../codex-process.js";
+import { codexAppServerProcessOptionsFromEnv, type CodexProcessResult } from "../codex-process.js";
 import {
   branchHasBaseDiff,
   currentHead,
@@ -356,38 +352,59 @@ function currentCodexTimeoutMs(preserveLateWorkerBudget = false) {
   });
 }
 
-function spawnCodexSyncWithHeartbeat(
-  label: string,
-  args: string[],
-  options: SpawnSyncOptionsWithStringEncoding & {
-    stdoutPath?: string;
-    stderrPath?: string;
-    scanSource: AgentScanSource;
-  },
-) {
+function runCodexWithHeartbeat({
+  label,
+  targetDir,
+  prompt,
+  timeoutMs,
+  outputPath,
+  logPrefix,
+  review,
+}: {
+  label: string;
+  targetDir: string;
+  prompt: string;
+  timeoutMs: number;
+  outputPath: string;
+  logPrefix: string;
+  review?: { schemaPath: string; scanSource: AgentScanSource };
+}) {
+  const sandbox = review ? codexReviewSandbox : codexWriteSandbox;
+  const networkAccess = review ? codexReviewNetworkAccess : codexWriteNetworkAccess;
+  const codexExtraArgs = [
+    "--cd",
+    targetDir,
+    ...executionModelArgs,
+    "--sandbox",
+    sandbox,
+    ...codexWorkspaceSandboxConfigArgs(sandbox, networkAccess),
+    ...codexConfigArgs(),
+    ...(review ? ["--output-schema", review.schemaPath] : []),
+    "--output-last-message",
+    outputPath,
+    "--json",
+    "-",
+  ];
+  const env = codexEnv();
   const heartbeat = startCodexHeartbeat(label);
   try {
-    if (typeof options.cwd !== "string" || typeof options.input !== "string") {
-      throw new Error(`${label} requires string cwd and input.`);
-    }
-    if (args[0] !== "exec") throw new Error(`${label} requires a Codex exec argument list.`);
     const appServer = codexAppServerProcessOptionsFromEnv(label);
     return runAgentProcess({
-      scanSource: options.scanSource,
+      scanSource: review?.scanSource ?? { kind: "prompt" },
       label,
-      prompt: options.input,
+      prompt,
       model,
       reasoningEffort: codexReasoningEffort,
-      codexExtraArgs: args.slice(1),
-      cwd: options.cwd,
-      env: options.env ?? process.env,
-      timeoutMs: options.timeout ?? currentCodexTimeoutMs(),
-      ...(options.stdoutPath ? { stdoutPath: options.stdoutPath } : {}),
-      ...(options.stderrPath ? { stderrPath: options.stderrPath } : {}),
+      codexExtraArgs,
+      cwd: targetDir,
+      env,
+      timeoutMs,
+      stdoutPath: path.join(workRoot, `${logPrefix}.jsonl`),
+      stderrPath: path.join(workRoot, `${logPrefix}.stderr.log`),
       ...(appServer ? { appServer } : {}),
     });
   } finally {
-    stopCodexHeartbeat(heartbeat);
+    if (!heartbeat.killed) heartbeat.kill("SIGTERM");
   }
 }
 
@@ -411,10 +428,6 @@ setInterval(() => {
   });
   child.on("error", () => {});
   return child;
-}
-
-function stopCodexHeartbeat(child: ChildProcess) {
-  if (!child.killed) child.kill("SIGTERM");
 }
 
 function remainingFixStepBudgetMs() {
@@ -773,9 +786,9 @@ function shouldFallbackToReplacementAfterRepairError(error: JsonValue) {
 
 function isExecutableFixAction(action: LooseRecord, promotedReplacement: JsonValue) {
   if (!FIX_ACTIONS.has(String(action.action ?? ""))) return false;
-  if (action.status === "planned") return true;
-  if (!promotedReplacement || action.status !== "blocked") return false;
-  return ["fix_needed", "build_fix_artifact", "open_fix_pr"].includes(String(action.action ?? ""));
+  return (
+    action.status === "planned" || (Boolean(promotedReplacement) && action.status === "blocked")
+  );
 }
 
 function executableReplacementFixArtifact(fixArtifact: LooseRecord, workerResult: JsonValue) {
@@ -1075,7 +1088,6 @@ function pushRepairBranchAndUpdateStatus({
       targetDir,
       pull,
       sourceRef: prep.commit,
-      rewritten: branchUpdate.rewritten,
     });
   }
   const settleSeconds = repairPushSettleSeconds();
@@ -1111,7 +1123,6 @@ function pushRepairBranchAndUpdateStatus({
   assertTargetCheckoutBinding(targetDir, checkoutBinding, targetValidationTimeoutMs);
   const pushArgs = repairBranchPushArgs({
     pull,
-    rewritten: branchUpdate.rewritten,
     sourceRef: checkoutBinding.headSha,
   });
   try {
@@ -1287,7 +1298,6 @@ function openReplacementPrFromPreparedRepairCheckout({
     checkpointCommits: prep.checkpoint_commits,
   });
   prep.commit = historyCompaction.commit;
-  prep.history_compaction = historyCompaction;
   prep.checkout_binding = captureFinalTargetCheckoutBinding(
     targetDir,
     prep.checkout_binding,
@@ -2272,33 +2282,14 @@ function editValidatePrepareMerge({
         details: reconcileWithBase ? "reconciling latest base" : "repairing branch",
         headSha: headBeforeAttempt,
       });
-      const codexResult = spawnCodexSyncWithHeartbeat(
-        `Codex fix worker ${mode} attempt ${attempt}`,
-        [
-          "exec",
-          "--cd",
-          targetDir,
-          ...executionModelArgs,
-          "--sandbox",
-          codexWriteSandbox,
-          ...codexWriteSandboxConfigArgs(),
-          ...codexConfigArgs(),
-          "--output-last-message",
-          summaryPath,
-          "--json",
-          "-",
-        ],
-        {
-          cwd: targetDir,
-          input: prompt,
-          encoding: "utf8",
-          env: codexEnv(),
-          timeout: workerTimeoutMs,
-          scanSource: { kind: "prompt" },
-          stdoutPath: path.join(workRoot, `${mode}-codex-${attempt}.jsonl`),
-          stderrPath: path.join(workRoot, `${mode}-codex-${attempt}.stderr.log`),
-        },
-      );
+      const codexResult = runCodexWithHeartbeat({
+        label: `Codex fix worker ${mode} attempt ${attempt}`,
+        targetDir,
+        prompt,
+        timeoutMs: workerTimeoutMs,
+        outputPath: summaryPath,
+        logPrefix: `${mode}-codex-${attempt}`,
+      });
       const timedOut = (codexResult.error as JsonValue)?.code === "ETIMEDOUT";
       const errorDetail = timedOut
         ? `Codex fix worker timed out after ${workerTimeoutMs}ms`
@@ -2543,7 +2534,6 @@ function editValidatePrepareMerge({
     commit: expectedCommit,
     checkout_binding: checkoutBinding,
     checkpoint_commits: checkpointCommits,
-    history_compaction: historyCompaction,
     merge_preflight: buildMergePreflight({ fixArtifact, codexReview }),
     target_base_sha: acceptedBaseSha,
   };
@@ -2709,39 +2699,14 @@ function runCodexBaseReconcile({
       `${mode}-final-base-reconcile-summary-${attempt}-${codexAttempt}.md`,
     );
     const reconcileTimeoutMs = currentCodexTimeoutMs(true);
-    const codexResult = spawnCodexSyncWithHeartbeat(
-      `Codex final rebase worker ${mode} attempt ${attempt}.${codexAttempt}`,
-      [
-        "exec",
-        "--cd",
-        targetDir,
-        ...executionModelArgs,
-        "--sandbox",
-        codexWriteSandbox,
-        ...codexWriteSandboxConfigArgs(),
-        ...codexConfigArgs(),
-        "--output-last-message",
-        summaryPath,
-        "--json",
-        "-",
-      ],
-      {
-        cwd: targetDir,
-        input: prompt,
-        encoding: "utf8",
-        env: codexEnv(),
-        timeout: reconcileTimeoutMs,
-        scanSource: { kind: "prompt" },
-        stdoutPath: path.join(
-          workRoot,
-          `${mode}-final-base-reconcile-${attempt}-${codexAttempt}.jsonl`,
-        ),
-        stderrPath: path.join(
-          workRoot,
-          `${mode}-final-base-reconcile-${attempt}-${codexAttempt}.stderr.log`,
-        ),
-      },
-    );
+    const codexResult = runCodexWithHeartbeat({
+      label: `Codex final rebase worker ${mode} attempt ${attempt}.${codexAttempt}`,
+      targetDir,
+      prompt,
+      timeoutMs: reconcileTimeoutMs,
+      outputPath: summaryPath,
+      logPrefix: `${mode}-final-base-reconcile-${attempt}-${codexAttempt}`,
+    });
     if ((codexResult.error as JsonValue)?.code === "ETIMEDOUT") {
       throw new Error(`Codex final rebase worker timed out after ${reconcileTimeoutMs}ms`);
     }
@@ -2754,13 +2719,12 @@ function runCodexBaseReconcile({
       );
     }
     try {
-      const completed = completeTargetRebaseWithIsolation({
+      return completeTargetRebaseWithIsolation({
         cwd: targetDir,
         expectedBaseRef: baseSha,
         requireInProgress: true,
         timeoutMs: targetValidationTimeoutMs,
       });
-      return completed;
     } catch (error) {
       if (codexAttempt === maxEditAttempts) throw error;
       previousSummary = readTextIfExists(summaryPath).trim();
@@ -2812,11 +2776,11 @@ function readTextIfExists(filePath: string) {
   return fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf8") : "";
 }
 
-function codexFailureDetail(child: LooseRecord, fallback: string) {
+function codexFailureDetail(child: CodexProcessResult, fallback: string) {
   const detail =
-    codexJsonlFailureDetail(String(child.stdout ?? "")) ||
-    codexJsonlFailureDetail(String(child.stderr ?? "")) ||
-    stripAnsi(String(child.stderr ?? child.stdout ?? "")).trim();
+    codexJsonlFailureDetail(child.stdout) ||
+    codexJsonlFailureDetail(child.stderr) ||
+    stripAnsi(child.stderr).trim();
   return detail || fallback;
 }
 
@@ -2824,8 +2788,7 @@ function codexFailureMessage(label: string, detail: string) {
   return `${label}: ${compactText(stripAnsi(detail || "no Codex output"), 900)}`;
 }
 
-function stripAnsi(value: string) {
-  const text = String(value ?? "");
+function stripAnsi(text: string) {
   let out = "";
   for (let index = 0; index < text.length; index += 1) {
     if (text.charCodeAt(index) !== 27) {
@@ -2843,14 +2806,6 @@ function stripAnsi(value: string) {
   return out;
 }
 
-function codexWriteSandboxConfigArgs() {
-  return codexWorkspaceSandboxConfigArgs(codexWriteSandbox, codexWriteNetworkAccess);
-}
-
-function codexReviewSandboxConfigArgs() {
-  return codexWorkspaceSandboxConfigArgs(codexReviewSandbox, codexReviewNetworkAccess);
-}
-
 function codexConfigArgs() {
   const configs = [
     'approval_policy="never"',
@@ -2861,12 +2816,12 @@ function codexConfigArgs() {
   return configs.flatMap((config: JsonValue) => ["-c", config]);
 }
 
-function codexWorkspaceSandboxConfigArgs(sandbox: string, networkAccess: string) {
+function codexWorkspaceSandboxConfigArgs(sandbox: string, networkAccess: boolean) {
   if (sandbox !== "workspace-write") return [];
   return ["-c", `sandbox_workspace_write.network_access=${networkAccess ? "true" : "false"}`];
 }
 
-function parseBooleanEnv(value: JsonValue, fallback: JsonValue) {
+function parseBooleanEnv(value: string | undefined, fallback: boolean): boolean {
   if (value == null || value === "") return fallback;
   if (/^(1|true|yes|on)$/i.test(String(value))) return true;
   if (/^(0|false|no|off)$/i.test(String(value))) return false;
@@ -3211,35 +3166,15 @@ function runCodexReview({
       timeoutMs: reviewTimeoutMs,
     },
     (scanSource, timeoutMs) =>
-      spawnCodexSyncWithHeartbeat(
-        `Codex /review ${mode} attempt ${attempt}`,
-        [
-          "exec",
-          "--cd",
-          targetDir,
-          ...executionModelArgs,
-          "--sandbox",
-          codexReviewSandbox,
-          ...codexReviewSandboxConfigArgs(),
-          ...codexConfigArgs(),
-          "--output-schema",
-          schemaPath,
-          "--output-last-message",
-          outputPath,
-          "--json",
-          "-",
-        ],
-        {
-          cwd: targetDir,
-          input: prompt,
-          encoding: "utf8",
-          env: codexEnv(),
-          timeout: timeoutMs,
-          scanSource,
-          stdoutPath: path.join(workRoot, `${mode}-codex-review-${attempt}.jsonl`),
-          stderrPath: path.join(workRoot, `${mode}-codex-review-${attempt}.stderr.log`),
-        },
-      ),
+      runCodexWithHeartbeat({
+        label: `Codex /review ${mode} attempt ${attempt}`,
+        targetDir,
+        prompt,
+        timeoutMs,
+        outputPath,
+        logPrefix: `${mode}-codex-review-${attempt}`,
+        review: { schemaPath, scanSource },
+      }),
   );
   if ((child.error as JsonValue)?.code === "ETIMEDOUT")
     throw new Error(`Codex /review timed out after ${reviewTimeoutMs}ms`);
@@ -3268,7 +3203,7 @@ function runCodexReview({
 }
 
 function extractCodexReviewFromJsonl(stdout: JsonValue) {
-  const candidates: LooseRecord[] = [];
+  const candidates: string[] = [];
   for (const line of String(stdout ?? "").split(/\r?\n/)) {
     if (!line.trim()) continue;
     let event;
@@ -3336,33 +3271,14 @@ function runCodexReviewFix({
     "```",
   ].join("\n");
   const reviewFixTimeoutMs = currentCodexTimeoutMs();
-  const child = spawnCodexSyncWithHeartbeat(
-    `Codex review-fix worker ${mode} attempt ${attempt}`,
-    [
-      "exec",
-      "--cd",
-      targetDir,
-      ...executionModelArgs,
-      "--sandbox",
-      codexWriteSandbox,
-      ...codexWriteSandboxConfigArgs(),
-      ...codexConfigArgs(),
-      "--output-last-message",
-      path.join(workRoot, `${mode}-codex-review-fix-${attempt}.md`),
-      "--json",
-      "-",
-    ],
-    {
-      cwd: targetDir,
-      input: prompt,
-      encoding: "utf8",
-      env: codexEnv(),
-      timeout: reviewFixTimeoutMs,
-      scanSource: { kind: "prompt" },
-      stdoutPath: path.join(workRoot, `${mode}-codex-review-fix-${attempt}.jsonl`),
-      stderrPath: path.join(workRoot, `${mode}-codex-review-fix-${attempt}.stderr.log`),
-    },
-  );
+  const child = runCodexWithHeartbeat({
+    label: `Codex review-fix worker ${mode} attempt ${attempt}`,
+    targetDir,
+    prompt,
+    timeoutMs: reviewFixTimeoutMs,
+    outputPath: path.join(workRoot, `${mode}-codex-review-fix-${attempt}.md`),
+    logPrefix: `${mode}-codex-review-fix-${attempt}`,
+  });
   if ((child.error as JsonValue)?.code === "ETIMEDOUT")
     throw new Error(`Codex review-fix worker timed out after ${reviewFixTimeoutMs}ms`);
   if (child.error) throw new Error(child.error.message || String(child.error));
@@ -3417,33 +3333,14 @@ function runCodexValidationFix({
     "```",
   ].join("\n");
   const validationFixTimeoutMs = currentCodexTimeoutMs();
-  const child = spawnCodexSyncWithHeartbeat(
-    `Codex validation-fix worker ${mode} attempt ${attempt}`,
-    [
-      "exec",
-      "--cd",
-      targetDir,
-      ...executionModelArgs,
-      "--sandbox",
-      codexWriteSandbox,
-      ...codexWriteSandboxConfigArgs(),
-      ...codexConfigArgs(),
-      "--output-last-message",
-      path.join(workRoot, `${mode}-codex-validation-fix-${attempt}.md`),
-      "--json",
-      "-",
-    ],
-    {
-      cwd: targetDir,
-      input: prompt,
-      encoding: "utf8",
-      env: codexEnv(),
-      timeout: validationFixTimeoutMs,
-      scanSource: { kind: "prompt" },
-      stdoutPath: path.join(workRoot, `${mode}-codex-validation-fix-${attempt}.jsonl`),
-      stderrPath: path.join(workRoot, `${mode}-codex-validation-fix-${attempt}.stderr.log`),
-    },
-  );
+  const child = runCodexWithHeartbeat({
+    label: `Codex validation-fix worker ${mode} attempt ${attempt}`,
+    targetDir,
+    prompt,
+    timeoutMs: validationFixTimeoutMs,
+    outputPath: path.join(workRoot, `${mode}-codex-validation-fix-${attempt}.md`),
+    logPrefix: `${mode}-codex-validation-fix-${attempt}`,
+  });
   if ((child.error as JsonValue)?.code === "ETIMEDOUT")
     throw new Error(`Codex validation-fix worker timed out after ${validationFixTimeoutMs}ms`);
   if (child.error) throw new Error(child.error.message || String(child.error));
@@ -3678,7 +3575,7 @@ function checkoutRecoverableReplacementBranch({
         const pull = fetchPullRequest(result.repo, sourcePr.number);
         if (pull.state !== "open")
           throw new Error(`source PR #${sourcePr.number} is ${pull.state}`);
-        const checkout = checkoutSourcePullRequestHead({
+        checkoutSourcePullRequestHead({
           targetDir,
           repo: result.repo,
           branch,
@@ -3687,20 +3584,16 @@ function checkoutRecoverableReplacementBranch({
         });
         return {
           resumed: false,
-          replaced_stale_branch: true,
-          branch,
-          source_pr: checkout.sourcePr.url,
-          source_head_sha: checkout.sourceHeadSha,
           remote_lease_sha: remoteLeaseSha,
         };
       }
     }
-    return { resumed: true, branch, remote_lease_sha: remoteLeaseSha };
+    return { resumed: true, remote_lease_sha: remoteLeaseSha };
   }
   if (sourcePr) {
     const pull = fetchPullRequest(result.repo, sourcePr.number);
     if (pull.state !== "open") throw new Error(`source PR #${sourcePr.number} is ${pull.state}`);
-    const checkout = checkoutSourcePullRequestHead({
+    checkoutSourcePullRequestHead({
       targetDir,
       repo: result.repo,
       branch,
@@ -3709,9 +3602,6 @@ function checkoutRecoverableReplacementBranch({
     });
     return {
       resumed: false,
-      branch,
-      source_pr: checkout.sourcePr.url,
-      source_head_sha: checkout.sourceHeadSha,
       remote_lease_sha: remoteLeaseSha,
     };
   }
@@ -3721,7 +3611,7 @@ function checkoutRecoverableReplacementBranch({
     expectedHeadSha: run("git", ["rev-parse", `origin/${baseBranch}`], { cwd: targetDir }).trim(),
     timeoutMs: targetValidationTimeoutMs,
   });
-  return { resumed: false, branch, remote_lease_sha: remoteLeaseSha };
+  return { resumed: false, remote_lease_sha: remoteLeaseSha };
 }
 
 function commitCheckpointIfNeeded({ targetDir, message, trailers = [] }: LooseRecord) {
@@ -3904,13 +3794,13 @@ function safeBranchName(value: JsonValue) {
 function findLatestResultPath() {
   const runsRoot = path.join(repoRoot(), ".clawsweeper-repair", "runs");
   if (!fs.existsSync(runsRoot)) throw new Error("no run directory exists");
-  const candidates: LooseRecord[] = [];
+  const candidates: { path: string; mtimeMs: number }[] = [];
   for (const runName of fs.readdirSync(runsRoot)) {
     const candidate = path.join(runsRoot, runName, "result.json");
     if (fs.existsSync(candidate))
       candidates.push({ path: candidate, mtimeMs: fs.statSync(candidate).mtimeMs });
   }
-  candidates.sort((left: JsonValue, right: JsonValue) => right.mtimeMs - left.mtimeMs);
+  candidates.sort((left, right) => right.mtimeMs - left.mtimeMs);
   if (!candidates[0]) throw new Error("no result.json files found");
   return candidates[0].path;
 }

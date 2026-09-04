@@ -192,18 +192,18 @@ function findLatestResultPath() {
   if (!fs.existsSync(runsRoot)) {
     throw new Error("no run directory exists");
   }
-  const candidates: LooseRecord[] = [];
+  const candidates: { path: string; mtimeMs: number }[] = [];
   for (const runName of fs.readdirSync(runsRoot)) {
     const candidate = path.join(runsRoot, runName, "result.json");
     if (!fs.existsSync(candidate)) continue;
     candidates.push({ path: candidate, mtimeMs: fs.statSync(candidate).mtimeMs });
   }
-  candidates.sort((left: JsonValue, right: JsonValue) => right.mtimeMs - left.mtimeMs);
+  candidates.sort((left, right) => right.mtimeMs - left.mtimeMs);
   if (!candidates[0]) throw new Error("no result.json files found");
   return candidates[0].path;
 }
 
-function readFixExecutionReport(_result?: JsonValue) {
+function readFixExecutionReport() {
   const reportPath = path.join(path.dirname(resultPath), "fix-execution-report.json");
   if (!fs.existsSync(reportPath)) return null;
   return JSON.parse(fs.readFileSync(reportPath, "utf8"));
@@ -429,25 +429,8 @@ function applyCloseAction({
   }
 
   const expectedUpdatedAt = action.target_updated_at ?? action.live_updated_at;
-  if (!expectedUpdatedAt && !allowMissingUpdatedAt) {
-    return {
-      ...base,
-      status: "blocked",
-      reason: "missing target_updated_at; rerun the worker against live GitHub state",
-      live_state: live.state,
-      live_updated_at: live.updated_at,
-    };
-  }
-  if (expectedUpdatedAt && expectedUpdatedAt !== live.updated_at) {
-    return {
-      ...base,
-      status: "blocked",
-      reason: "target changed since worker review",
-      expected_updated_at: expectedUpdatedAt,
-      live_updated_at: live.updated_at,
-      live_state: live.state,
-    };
-  }
+  const revisionBlock = targetRevisionBlock(expectedUpdatedAt, live, allowMissingUpdatedAt);
+  if (revisionBlock) return { ...base, ...revisionBlock };
 
   const comment = renderCloseComment({ action, classification, result, target, live });
   const marker = idempotencyMarker(result.cluster_id, target, idempotencyKey);
@@ -496,16 +479,12 @@ function applyCloseAction({
       live_state: live.state,
     };
   }
-  if (expectedUpdatedAt && expectedUpdatedAt !== live.updated_at) {
-    return {
-      ...base,
-      status: "blocked",
-      reason: "target changed since worker review",
-      expected_updated_at: expectedUpdatedAt,
-      live_updated_at: live.updated_at,
-      live_state: live.state,
-    };
-  }
+  const postProofRevisionBlock = targetRevisionBlock(
+    expectedUpdatedAt,
+    live,
+    allowMissingUpdatedAt,
+  );
+  if (postProofRevisionBlock) return { ...base, ...postProofRevisionBlock };
   if (proofValidation?.status === "covered") {
     const postProofCoveringFreshnessBlock = validatePrCloseCoverageCoveringFreshness({
       result,
@@ -579,9 +558,34 @@ function applyCloseAction({
 function prCloseCoverageProofActionReport(proofValidation: PrCloseCoverageProofValidation): {
   pr_close_coverage_proof?: PrCloseCoverageProofModelResult;
 } {
-  return proofValidation?.status === "covered" && proofValidation.proof
+  return proofValidation?.status === "covered"
     ? { pr_close_coverage_proof: proofValidation.proof }
     : {};
+}
+
+function targetRevisionBlock(
+  expectedUpdatedAt: unknown,
+  live: { state?: unknown; updated_at?: unknown },
+  allowMissingUpdatedAt: boolean,
+) {
+  if (!expectedUpdatedAt && !allowMissingUpdatedAt) {
+    return {
+      status: "blocked",
+      reason: "missing target_updated_at; rerun the worker against live GitHub state",
+      live_state: live.state,
+      live_updated_at: live.updated_at,
+    };
+  }
+  if (expectedUpdatedAt && expectedUpdatedAt !== live.updated_at) {
+    return {
+      status: "blocked",
+      reason: "target changed since worker review",
+      expected_updated_at: expectedUpdatedAt,
+      live_updated_at: live.updated_at,
+      live_state: live.state,
+    };
+  }
+  return null;
 }
 
 function applyMergeAction({
@@ -593,7 +597,7 @@ function applyMergeAction({
   target,
   base,
 }: LooseRecord) {
-  const policyBlock = validateMergePolicy({ job, action });
+  const policyBlock = validateMergePolicy(job);
   if (policyBlock) return { ...base, status: "blocked", reason: policyBlock };
   if (!allowedRefs.has(target)) {
     return { ...base, status: "blocked", reason: "merge target is not listed in job refs" };
@@ -622,25 +626,8 @@ function applyMergeAction({
   }
 
   const expectedUpdatedAt = action.target_updated_at ?? action.live_updated_at;
-  if (!expectedUpdatedAt && !allowMissingUpdatedAt) {
-    return {
-      ...base,
-      status: "blocked",
-      reason: "missing target_updated_at; rerun the worker against live GitHub state",
-      live_state: live.state,
-      live_updated_at: live.updated_at,
-    };
-  }
-  if (expectedUpdatedAt && expectedUpdatedAt !== live.updated_at) {
-    return {
-      ...base,
-      status: "blocked",
-      reason: "target changed since worker review",
-      expected_updated_at: expectedUpdatedAt,
-      live_updated_at: live.updated_at,
-      live_state: live.state,
-    };
-  }
+  const revisionBlock = targetRevisionBlock(expectedUpdatedAt, live, allowMissingUpdatedAt);
+  if (revisionBlock) return { ...base, ...revisionBlock };
 
   const pullRequest = fetchPullRequest(result.repo, target);
   const view = fetchPullRequestView(result.repo, target);
@@ -802,7 +789,7 @@ function validateFixFirstClose({
     return "fixed_by_candidate close requires a merged fix PR unless allow_unmerged_fix_close: true";
   }
 
-  const fixReport = readFixExecutionReport(result);
+  const fixReport = readFixExecutionReport();
   const fixLanded = (fixReport?.actions ?? []).some(
     (entry: JsonValue) =>
       ["open_fix_pr", "repair_contributor_branch"].includes(String(entry.action ?? "")) &&
@@ -821,14 +808,11 @@ function isMergedCandidateFix(repo: string, candidateFix: LooseRecord) {
   }
 }
 
-function validateMergePolicy({ job, action }: LooseRecord) {
+function validateMergePolicy(job: LooseRecord) {
   if (!job.frontmatter.allowed_actions.includes("merge")) return "job does not allow merge";
   if ((job.frontmatter.blocked_actions ?? []).includes("merge"))
     return "merge is blocked by job frontmatter";
   if (job.frontmatter.allow_merge !== true) return "merge requires allow_merge: true";
-  if (!["merge_candidate", "merge_canonical"].includes(String(action.action ?? ""))) {
-    return "unsupported merge action";
-  }
   return "";
 }
 
@@ -1010,7 +994,7 @@ function validatePrCloseCoverageProof({
       return { status: "blocked", reason: coveringSafetyBlock };
     }
   } catch (error) {
-    return prCloseCoverageProofSetupFailureBlock(error);
+    return { status: "blocked", ...prCloseCoverageProofFailureBlock(error) };
   }
 
   try {
@@ -1054,12 +1038,6 @@ function validatePrCloseCoverageProof({
       reason: prCloseCoverageProofFailureReason(error),
     };
   }
-}
-
-function prCloseCoverageProofSetupFailureBlock(
-  error: unknown,
-): Extract<PrCloseCoverageProofValidation, { status: "blocked" }> {
-  return { status: "blocked", ...prCloseCoverageProofFailureBlock(error) };
 }
 
 function prCloseCoverageProofFailureBlock(error: unknown): PrCloseCoverageProofBlock {
@@ -1290,17 +1268,9 @@ function hydratePrCloseCoveragePullRequest(
     mergedAt: stringOrNull(pull.merged_at ?? pull.mergedAt),
     body: compactPrCloseCoverageProofText(pull.body),
     updatedAt: stringOrNull(pull.updated_at ?? pull.updatedAt ?? issue.updated_at),
-    comments: compactPrCloseCoverageProofCommentWindow(
-      comments,
-      comments.length,
-      PR_CLOSE_COVERAGE_PROOF_COMMENT_LIMIT,
-    ),
+    comments: compactPrCloseCoverageProofCommentWindow(comments),
     commentsTruncated: commentsWindow.total > PR_CLOSE_COVERAGE_PROOF_COMMENT_LIMIT,
   };
-}
-
-function rawCommentBody(value: JsonValue): string {
-  return stringFromUnknown(value?.body);
 }
 
 function isClawSweeperComment(value: JsonValue): boolean {
@@ -1309,7 +1279,7 @@ function isClawSweeperComment(value: JsonValue): boolean {
 }
 
 function isClawSweeperNoiseComment(value: JsonValue): boolean {
-  const body = rawCommentBody(value);
+  const body = stringFromUnknown(value?.body);
   if (CLAWSWEEPER_COMMAND_ONLY_PATTERN.test(body.trim())) return true;
   if (!body.trim() || !isClawSweeperComment(value)) return false;
   if (/<!--\s*clawsweeper-review\s+item=/i.test(body)) return true;
@@ -1335,20 +1305,13 @@ function fetchPrCloseCoverageProofCommentWindow(
   if (total === 0 || limit <= 0) {
     return { comments: [], total };
   }
-  if (total <= limit) {
+  if (total <= limit || total <= GITHUB_MAX_PAGE_SIZE) {
     return {
       comments: fetchPrCloseCoverageProofCommentPage(
         apiPath,
         Math.min(total, GITHUB_MAX_PAGE_SIZE),
         1,
       ),
-      total,
-    };
-  }
-
-  if (total <= GITHUB_MAX_PAGE_SIZE) {
-    return {
-      comments: fetchPrCloseCoverageProofCommentPage(apiPath, total, 1),
       total,
     };
   }
@@ -1473,25 +1436,18 @@ function githubLastPageNumber(headers: string): number | null {
   return null;
 }
 
-function compactPrCloseCoverageProofCommentWindow(
-  comments: JsonValue[],
-  total: number,
-  limit: number,
-): unknown[] {
-  const boundedLimit = Math.max(0, Math.floor(limit));
-  const boundedTotal = Math.max(0, Math.floor(total));
-  if (boundedTotal <= boundedLimit && comments.length <= boundedLimit) {
+function compactPrCloseCoverageProofCommentWindow(comments: JsonValue[]): unknown[] {
+  if (comments.length <= PR_CLOSE_COVERAGE_PROOF_COMMENT_LIMIT) {
     return comments.map(compactPrCloseCoverageProofComment);
   }
-  if (boundedLimit === 0) {
-    return [{ omitted: boundedTotal, note: "comments omitted from proof context" }];
-  }
-  const keepStart = Math.floor(boundedLimit / 2);
-  const keepEnd = Math.max(0, boundedLimit - keepStart);
-  const omitted = Math.max(0, boundedTotal - keepStart - keepEnd);
+  const keepStart = Math.floor(PR_CLOSE_COVERAGE_PROOF_COMMENT_LIMIT / 2);
+  const keepEnd = PR_CLOSE_COVERAGE_PROOF_COMMENT_LIMIT - keepStart;
   return [
     ...comments.slice(0, keepStart).map(compactPrCloseCoverageProofComment),
-    ...(omitted > 0 ? [{ omitted, note: "middle comments omitted from proof context" }] : []),
+    {
+      omitted: comments.length - PR_CLOSE_COVERAGE_PROOF_COMMENT_LIMIT,
+      note: "middle comments omitted from proof context",
+    },
     ...comments.slice(comments.length - keepEnd).map(compactPrCloseCoverageProofComment),
   ];
 }

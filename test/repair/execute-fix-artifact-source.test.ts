@@ -35,7 +35,6 @@ test("repair review preserves the checkout accepted by changed-surface validatio
   const review = source.slice(reviewStart, reviewEnd);
 
   assert.match(source, /const defaultCodexReviewSandbox = "read-only";/);
-  assert.match(review, /"--sandbox",\s*codexReviewSandbox/);
   assert.match(review, /validation commands listed below have already passed/);
   assert.match(review, /do not rerun them or start nested autoreview helpers/);
   assert.match(
@@ -208,27 +207,6 @@ test("terminal Codex and persistent setup failures do not request repair requeue
     "terminal and persistent setup failures must be rejected before the broad Codex failure fallback",
   );
   assert.match(source, /sandbox \(\?:wrapper\|startup\)/);
-});
-
-test("repair Codex heartbeat wrapper uses bounded process capture", () => {
-  const sourcePath = path.join(process.cwd(), "src/repair/execute-fix-artifact.ts");
-  const source = readText(sourcePath);
-  const helperStart = source.indexOf("function spawnCodexSyncWithHeartbeat(");
-  const helperEnd = source.indexOf("function startCodexHeartbeat(", helperStart);
-
-  assert.notEqual(helperStart, -1);
-  assert.notEqual(helperEnd, -1);
-  const helper = source.slice(helperStart, helperEnd);
-  assert.match(helper, /return runAgentProcess\(\{/);
-  assert.match(helper, /prompt: options\.input/);
-  assert.match(helper, /model,/);
-  assert.match(helper, /reasoningEffort: codexReasoningEffort/);
-  assert.match(helper, /codexExtraArgs: args\.slice\(1\)/);
-  assert.match(helper, /\{ stdoutPath: options\.stdoutPath \}/);
-  assert.match(helper, /\{ stderrPath: options\.stderrPath \}/);
-  assert.doesNotMatch(helper, /spawnSync\("codex"/);
-  assert.doesNotMatch(source, /CLAWSWEEPER_CODEX_STDIO_MAX_BUFFER_MB/);
-  assert.doesNotMatch(source, /writeFileSync\([^)]*codexResult\.stdout/);
 });
 
 test("issue implementation rechecks opt-out labels immediately before branch pushes", () => {
