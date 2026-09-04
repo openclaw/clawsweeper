@@ -1,5 +1,13 @@
 export const RECORD_SNAPSHOT_UPLOAD_MAX_BYTES = 1024 * 1024 * 1024;
 export const SNAPSHOT_UPLOAD_PART_BYTES = 6 * 1024 * 1024;
+export const SNAPSHOT_UPLOAD_JSON_MAX_BYTES = (SNAPSHOT_UPLOAD_PART_BYTES / 3) * 4 + 16 * 1024;
+export const SNAPSHOT_MAX_IDENTITIES = 250_000;
+export const SNAPSHOT_MANIFEST_CHUNK_IDENTITIES = 10_000;
+export type SnapshotIdentity = [section: string, id: string];
+
+export function snapshotIdentityKey([section, id]: SnapshotIdentity) {
+  return `${section}/${id}`;
+}
 
 const TAR_BLOCK_BYTES = 512;
 const encoder = new TextEncoder();

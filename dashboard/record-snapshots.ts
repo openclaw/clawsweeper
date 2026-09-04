@@ -2,6 +2,9 @@ import {
   recordExtension,
   tarHeader,
   RECORD_SNAPSHOT_UPLOAD_MAX_BYTES,
+  SNAPSHOT_MAX_IDENTITIES,
+  snapshotIdentityKey,
+  type SnapshotIdentity,
 } from "../src/record-snapshot-protocol.ts";
 import type {
   ExactReviewDirectPublicationStore,
@@ -230,6 +233,24 @@ export class ExactReviewRecordSnapshotStore {
     );
     if (snapshot.fileCount < expected)
       throw new SnapshotRegistrationError("snapshot_coverage_incomplete", 422);
+    const identities = validateSnapshotIdentities(value.identities);
+    const hash = await crypto.subtle.digest("SHA-256", encoder.encode(JSON.stringify(identities)));
+    const digest = Array.from(new Uint8Array(hash), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+    if (digest !== snapshot.identityDigest)
+      throw new SnapshotRegistrationError("snapshot_identity_digest_mismatch");
+    const provided = new Set(identities.map(snapshotIdentityKey));
+    // One ids-only scan; concurrent updates/deletions can only shrink the required set.
+    for (const { section, id } of this.records.snapshotRecordIdentities(
+      snapshot.repoSlug,
+      snapshot.revisionWatermark,
+    )) {
+      if (!provided.has(snapshotIdentityKey([section, id])))
+        throw new SnapshotRegistrationError("snapshot_coverage_incomplete", 422);
+    }
+    if (identities.length !== snapshot.fileCount)
+      throw new SnapshotRegistrationError("invalid_snapshot_identities");
     // A lost response can retry registration; it must not insert another row.
     const existing = Array.from(
       this.storage.sql.exec(
@@ -516,6 +537,7 @@ export function validateSnapshotRegistration(
     Number(uncompressedBytes) < 0 ||
     !Number.isSafeInteger(fileCount) ||
     Number(fileCount) < 0 ||
+    Number(fileCount) > SNAPSHOT_MAX_IDENTITIES ||
     typeof identityDigest !== "string" ||
     !/^[0-9a-f]{64}$/.test(identityDigest) ||
     !Number.isSafeInteger(createdAt) ||
@@ -538,4 +560,29 @@ export function validateSnapshotRegistration(
     identityDigest,
     createdAt: Number(createdAt),
   };
+}
+
+export function validateSnapshotIdentities(value: unknown, fileCount?: number): SnapshotIdentity[] {
+  if (
+    !Array.isArray(value) ||
+    value.length > SNAPSHOT_MAX_IDENTITIES ||
+    (fileCount !== undefined && value.length !== fileCount)
+  )
+    throw new SnapshotRegistrationError("invalid_snapshot_identities");
+  let previous = "";
+  for (const pair of value) {
+    if (
+      !Array.isArray(pair) ||
+      pair.length !== 2 ||
+      !["items", "closed", "plans", "decision-packets", "commits"].includes(pair[0]) ||
+      typeof pair[1] !== "string" ||
+      pair[1].length > 255 ||
+      !(pair[0] === "commits" ? /^[0-9a-f]{40}$/.test(pair[1]) : /^[1-9]\d*$/.test(pair[1]))
+    )
+      throw new SnapshotRegistrationError("invalid_snapshot_identities");
+    const key = snapshotIdentityKey(pair as SnapshotIdentity);
+    if (key <= previous) throw new SnapshotRegistrationError("invalid_snapshot_identities");
+    previous = key;
+  }
+  return value as SnapshotIdentity[];
 }

@@ -84,10 +84,11 @@ test("runner packs hydrated records and the existing snapshot restore reads exac
     packed.identityDigest,
     createHash("sha256")
       .update(
-        fixture
-          .map(({ section, id }) => `${section}/${id}`)
-          .sort()
-          .join("\n"),
+        JSON.stringify(
+          fixture
+            .map(({ section, id }) => [section, id])
+            .sort((a, b) => (a.join("/") < b.join("/") ? -1 : 1)),
+        ),
       )
       .digest("hex"),
   );
@@ -167,7 +168,8 @@ test("signed registration validates descriptor, verifies R2, inserts and prunes"
     bytes: 20,
     uncompressedBytes: 0,
     fileCount: 0,
-    identityDigest: createHash("sha256").update("").digest("hex"),
+    identityDigest: createHash("sha256").update("[]").digest("hex"),
+    identities: [],
     createdAt,
   };
   const post = (body: unknown) =>
@@ -207,7 +209,7 @@ test("signed registration validates descriptor, verifies R2, inserts and prunes"
     assert.equal(registered.status, 201, await registered.clone().text());
     assert.equal((await registered.json()).snapshot.objectKey, next.objectKey);
     assert.equal((await post(next)).status, 201, "retry must be idempotent");
-    assert.equal((await post({ ...next, fileCount: 1 })).status, 409);
+    assert.equal((await post({ ...next, uncompressedBytes: 1 })).status, 409);
   }
   assert.equal(bucket.keys().length, 2);
   assert.equal(
@@ -296,11 +298,71 @@ test("registration counts live export identities at or below the watermark witho
     assert.equal(response.status, 422);
     assert.equal((await response.json()).error, "snapshot_coverage_incomplete");
   }
-  const response = await post({ ...descriptor, fileCount: 2 });
+  const identities = [
+    ["items", "1"],
+    ["items", "2"],
+  ];
+  descriptor.identityDigest = createHash("sha256").update(JSON.stringify(identities)).digest("hex");
+  const response = await post({ ...descriptor, fileCount: 2, identities });
   assert.equal(response.status, 201, await response.clone().text());
   assert.equal(
     Array.from(storage.sql.exec("SELECT identity_digest FROM exact_review_record_snapshots"))[0]
       .identity_digest,
     descriptor.identityDigest,
   );
+  for (const identities of [
+    undefined,
+    [
+      ["items", "1"],
+      ["items", "1"],
+    ],
+    [
+      ["items", "2"],
+      ["items", "1"],
+    ],
+    [
+      ["invalid", "1"],
+      ["items", "2"],
+    ],
+  ]) {
+    assert.equal((await post({ ...descriptor, fileCount: 2, identities })).status, 400);
+  }
+  const mismatch = await post({
+    ...descriptor,
+    fileCount: 2,
+    identities,
+    identityDigest: "b".repeat(64),
+  });
+  assert.equal(mismatch.status, 400);
+  assert.equal((await mismatch.json()).error, "snapshot_identity_digest_mismatch");
+  assert.equal((await post({ ...descriptor, fileCount: 250_001 })).status, 400);
+  const missing = [["items", "1"]];
+  const missingResponse = await post({
+    ...descriptor,
+    fileCount: 2,
+    identities: missing,
+    identityDigest: createHash("sha256").update(JSON.stringify(missing)).digest("hex"),
+  });
+  assert.equal(missingResponse.status, 422);
+  assert.equal((await missingResponse.json()).error, "snapshot_coverage_incomplete");
+  for (const [ids, status] of [
+    [["1", "99"], 422],
+    [["1"], 422],
+    [["1", "2"], 201],
+    [["1", "2", "3", "99"], 201],
+  ] as const) {
+    const identities = ids.map((id) => ["items", id]);
+    const objectKey = descriptor.objectKey.replace("000000000001", crypto.randomUUID().slice(-12));
+    const upload = await bucket.createMultipartUpload(objectKey);
+    await upload.complete([await upload.uploadPart(1, new Uint8Array(20))]);
+    const response = await post({
+      ...descriptor,
+      objectKey,
+      fileCount: ids.length,
+      identities,
+      identityDigest: createHash("sha256").update(JSON.stringify(identities)).digest("hex"),
+    });
+    assert.equal(response.status, status, await response.clone().text());
+    if (status === 422) assert.equal((await response.json()).error, "snapshot_coverage_incomplete");
+  }
 });

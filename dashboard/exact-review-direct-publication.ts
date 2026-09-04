@@ -993,14 +993,18 @@ export class ExactReviewDirectPublicationStore {
     return Number(row?.count ?? 0);
   }
 
-  snapshotRecordIdentities(repoSlug: string): RecordSnapshotIdentity[] {
+  snapshotRecordIdentities(
+    repoSlug: string,
+    watermark = Number.MAX_SAFE_INTEGER,
+  ): RecordSnapshotIdentity[] {
     return Array.from(
       this.storage.sql.exec(
         `SELECT section, record_id
            FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
-          WHERE repo_slug = ? AND deleted = 0
+          WHERE repo_slug = ? AND deleted = 0 AND store_revision <= ?
           ORDER BY section, record_id`,
         repoSlug,
+        watermark,
       ),
       (row) => ({
         section: String(row.section) as RecordSection,

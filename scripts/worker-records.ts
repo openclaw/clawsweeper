@@ -32,6 +32,11 @@ import {
   tarHeader,
   RECORD_SNAPSHOT_UPLOAD_MAX_BYTES,
   SNAPSHOT_UPLOAD_PART_BYTES,
+  SNAPSHOT_UPLOAD_JSON_MAX_BYTES,
+  SNAPSHOT_MAX_IDENTITIES,
+  SNAPSHOT_MANIFEST_CHUNK_IDENTITIES,
+  snapshotIdentityKey,
+  type SnapshotIdentity,
 } from "../src/record-snapshot-protocol.ts";
 
 export const RECORD_SECTIONS = ["items", "closed", "plans", "decision-packets", "commits"] as const;
@@ -1020,7 +1025,9 @@ function validateStoredSnapshot(snapshot: WorkerStoredSnapshot, repoSlug: string
 
 export async function packWorkerRecordSnapshot(options: { repoRoot: string; archivePath: string }) {
   const fileCount = validateSnapshotTree(options.repoRoot);
-  const identities: string[] = [];
+  if (fileCount > SNAPSHOT_MAX_IDENTITIES)
+    throw new Error("Snapshot exceeds the 250,000 identity limit");
+  const identities: SnapshotIdentity[] = [];
   let uncompressedBytes = 0;
   async function* chunks() {
     for (const section of RECORD_SECTIONS) {
@@ -1034,18 +1041,20 @@ export async function packWorkerRecordSnapshot(options: { repoRoot: string; arch
         const padding = (512 - (size % 512)) % 512;
         if (padding) yield new Uint8Array(padding);
         uncompressedBytes += size;
-        identities.push(`${section}/${name.slice(0, -recordExtension(section).length)}`);
+        identities.push([section, name.slice(0, -recordExtension(section).length)]);
       }
     }
     yield new Uint8Array(1024);
   }
   await pipeline(Readable.from(chunks()), createGzip(), createWriteStream(options.archivePath));
+  identities.sort((a, b) => (snapshotIdentityKey(a) < snapshotIdentityKey(b) ? -1 : 1));
   return {
     archivePath: options.archivePath,
     bytes: statSync(options.archivePath).size,
     uncompressedBytes,
     fileCount,
-    identityDigest: createHash("sha256").update(identities.sort().join("\n")).digest("hex"),
+    identities,
+    identityDigest: createHash("sha256").update(JSON.stringify(identities)).digest("hex"),
   };
 }
 
@@ -1458,7 +1467,7 @@ export async function uploadWorkerRecordSnapshot(options: {
     signedPost<T>({
       ...options,
       path: `/internal/state/records/snapshots/upload/${operation}`,
-      body: { ...body, operation },
+      body: { ...body, operation, issuedAt: new Date().toISOString() },
     });
   try {
     const hydrated = await materializeWorkerRecords({
@@ -1532,10 +1541,37 @@ export async function uploadWorkerRecordSnapshot(options: {
     } finally {
       await file.close();
     }
-    const result = await post<{ ok: boolean; snapshot: WorkerStoredSnapshot }>("complete", {
+    const completion: Record<string, unknown> = {
       uploadId,
       parts,
-    });
+      identities: packed.identities,
+    };
+    if (
+      Buffer.byteLength(
+        JSON.stringify({
+          ...completion,
+          operation: "complete",
+          issuedAt: new Date().toISOString(),
+        }),
+      ) > SNAPSHOT_UPLOAD_JSON_MAX_BYTES
+    ) {
+      delete completion.identities;
+      for (
+        let offset = 0, partNumber = 1;
+        offset < packed.identities.length;
+        offset += SNAPSHOT_MANIFEST_CHUNK_IDENTITIES, partNumber++
+      ) {
+        await post("manifest", {
+          uploadId,
+          partNumber,
+          identities: packed.identities.slice(offset, offset + SNAPSHOT_MANIFEST_CHUNK_IDENTITIES),
+        });
+      }
+    }
+    const result = await post<{ ok: boolean; snapshot: WorkerStoredSnapshot }>(
+      "complete",
+      completion,
+    );
     if (
       result.ok !== true ||
       result.snapshot?.repoSlug !== options.repoSlug ||

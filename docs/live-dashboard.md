@@ -536,10 +536,14 @@ archive. As with object-side production, later record versions may be included;
 future hydration replays every change after the initial watermark.
 
 The outer Worker's signed `POST /internal/state/records/snapshots/upload/`
-`start`, `part`, `complete`, and `abort` routes reuse the blob upload pattern:
+`start`, `part`, `manifest`, `complete`, and `abort` routes reuse the blob upload pattern:
 bounded JSON/base64 requests, each HMAC-signed over the exact body with
 `CLAWSWEEPER_WEBHOOK_SECRET`. Every signed body includes `operation` matching
-its route; a mismatch returns 400 `upload_operation_mismatch`. `start` accepts
+its route; a mismatch returns 400 `upload_operation_mismatch`. Each body also
+includes ISO `issuedAt`: requests at least one hour old or more than five minutes
+in the future return 400 `upload_request_expired` before accessing upload state.
+Start receipts survive the entire validity window, including allowed clock skew,
+so an expired signed start cannot recreate an upload. `start` accepts
 `repoSlug`, `revisionWatermark`, `bytes`, gzip `sha256`, `fileCount`,
 `uncompressedBytes`, `identityDigest`, and a client-generated `operationId`;
 the runner uses `<repoSlug>:<GITHUB_RUN_ID>:<GITHUB_RUN_ATTEMPT>` or a UUID outside
@@ -551,28 +555,40 @@ original session, while conflicting metadata returns 409. A new start generates
 `uploadId`, `partNumber`, base64 `data`, and per-part `sha256`. Parts are 6 MiB
 decoded (above R2's 5 MiB minimum), except the final part. Requests are bounded
 before parsing, with at most 200 parts and 1 GiB per archive. Descriptors and
-part receipts use the existing StatusStore and expire after one hour. Multipart
+part receipts use the existing StatusStore and expire after one hour (extended
+for an accepted future `issuedAt`). Multipart
 bytes pass from the outer Worker directly to R2. The
 runner retries transport failures with identical bytes and part numbers.
 Aborts and expiry alarms clean up unfinished multipart uploads and completed
 objects that have no snapshot descriptor. Cleanup failures retain the session
-for an alarm retry; the bucket's multipart lifecycle policy remains a backstop.
+and its part/manifest receipts. Explicit retry alarms back off from one minute
+to one hour; after eight failed cleanup attempts a bounded warning is logged and
+the receipt remains for the next upload-triggered cleanup. The bucket's multipart
+lifecycle policy remains a backstop.
 
-`complete` accepts `uploadId` and ordered `{partNumber, etag}` receipts. The
+`complete` accepts `uploadId`, ordered `{partNumber, etag}` receipts, and the
+sorted packed `identities` as `[section, id]` pairs (at most 250,000). If the
+signed completion body would exceed the outer JSON cap, the runner first stages
+final signed `manifest` chunks of at most 10,000 identities in R2. Each chunk
+includes `uploadId`, sequential `partNumber`, and `identities`; StatusStore keeps
+only its digest receipt. Completion reads these chunks and registration checks
+the combined list. Manifest chunks are removed with session cleanup. The
 StatusStore assembles the R2 multipart upload, verifies the per-part
 SHA-256 receipts and total R2 object size, and calls the object's
 `/records/snapshots/register`. It does not download the entire object to
 recompute gzip SHA-256; R2 metadata marks that digest as a runner claim verified
 by parts and length. Registration checks the descriptor watermark against the
-current export revision, object key prefix, and R2 existence/size. One aggregate
-SQL query counts the object's live export-index identities for the repository
-with `store_revision <= revisionWatermark`; a smaller `fileCount` returns 422
-`snapshot_coverage_incomplete`. Coverage is checked by count against the object's
-index, not by reading record or archive content. Later updates can move identities
-above the watermark, so this count is a lower bound, not a content-completeness
-proof. The runner's `identityDigest` is SHA-256 over sorted `section/id` strings
-joined with newlines (no trailing newline), stored in the descriptor for audit.
-It is not independently recomputed by the server. Registration inserts into the
+current export revision, object key prefix, and R2 existence/size. A cheap aggregate
+SQL count rejects a smaller `fileCount` with 422 `snapshot_coverage_incomplete`.
+Registration then recomputes `identityDigest`, SHA-256 over the JSON encoding of
+the pair list sorted by `section/id`, and scans the live export index once for
+identities with `store_revision <= revisionWatermark`, reading ids only. Every
+required identity must appear in the supplied list, or registration returns 422
+`snapshot_coverage_incomplete`; extra entries are allowed because records may
+have been deleted after the watermark. Later updates can move identities above
+the watermark, so the required set is a lower bound. The verified digest is
+stored for audit; membership verifies the manifest claim, not archive content.
+Registration inserts into the
 existing snapshot table and retains the newest two snapshots. Retrying completion
 or registration after response loss is safe. Cleanup checks all descriptor
 references and serializes deletion with registration, preserving registered

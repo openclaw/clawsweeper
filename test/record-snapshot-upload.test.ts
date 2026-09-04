@@ -59,8 +59,15 @@ function fixture(registrationStatus = 201) {
       const bytes = objects.get(key);
       return bytes ? { size: bytes.length } : null;
     },
-    async delete(key: string) {
-      objects.delete(key);
+    async put(key: string, value: string) {
+      objects.set(key, Buffer.from(value));
+    },
+    async get(key: string) {
+      const value = objects.get(key);
+      return value ? { text: async () => value.toString() } : null;
+    },
+    async delete(keys: string[]) {
+      for (const key of keys) objects.delete(key);
     },
   };
   let serial = Promise.resolve();
@@ -99,16 +106,28 @@ function fixture(registrationStatus = 201) {
     }),
   };
   const post = (operation: string, body: Record<string, unknown>) =>
-    worker.fetch(signedStateAppendRequest(prefix + operation, { operation, ...body }, secret), env);
-  const start = async (bytes: number) => {
+    worker.fetch(
+      signedStateAppendRequest(
+        prefix + operation,
+        {
+          operation,
+          issuedAt: new Date(Date.now()).toISOString(),
+          ...(operation === "complete" ? { identities: [["items", "1"]] } : {}),
+          ...body,
+        },
+        secret,
+      ),
+      env,
+    );
+  const start = async (bytes: number, fileCount = 1) => {
     const response = await post("start", {
       operationId: crypto.randomUUID(),
       repoSlug: "fixture-repo",
       revisionWatermark: 0,
       bytes,
       sha256: "a".repeat(64),
-      identityDigest: digest(Buffer.from("items/1")),
-      fileCount: 1,
+      identityDigest: digest(Buffer.from(JSON.stringify([["items", "1"]]))),
+      fileCount,
       uncompressedBytes: bytes,
     });
     assert.equal(response.status, 201, await response.clone().text());
@@ -122,8 +141,8 @@ function fixture(registrationStatus = 201) {
     objects,
     queueCalls,
     alarm: () => new StatusStore(state, env).alarm(),
-    failNextDiscard: () => {
-      discardFailures = 1;
+    failNextDiscard: (count = 1) => {
+      discardFailures = count;
     },
     counts: () => ({ writes, aborted, uploads: uploads.size }),
   };
@@ -160,6 +179,136 @@ test("start retries and concurrent identical starts reuse one upload", async () 
   assert.equal((await f.post("start", { ...body, operationId: undefined })).status, 400);
 });
 
+test("identical signed starts expire before dedupe receipts can be recreated, including clock skew", async (t) => {
+  const f = fixture();
+  const initial = Date.now();
+  let now = initial;
+  t.mock.method(Date, "now", () => now);
+  const body = {
+    operationId: "fixture:expiry:1",
+    repoSlug: "fixture-repo",
+    revisionWatermark: 0,
+    bytes: 1,
+    sha256: "a".repeat(64),
+    identityDigest: "b".repeat(64),
+    fileCount: 0,
+    uncompressedBytes: 0,
+    issuedAt: new Date(initial + 300_000).toISOString(),
+  };
+  const first = await f.post("start", body);
+  assert.equal(first.status, 201);
+  const session = await first.json();
+  now += 3_600_001;
+  await f.alarm();
+  const replay = await f.post("start", body);
+  assert.equal(replay.status, 200);
+  assert.deepEqual(await replay.json(), session);
+  now = initial + 3_900_001;
+  await f.alarm();
+  for (const issuedAt of [
+    body.issuedAt,
+    new Date(now - 3_600_001).toISOString(),
+    new Date(now + 300_001).toISOString(),
+    "invalid",
+    undefined,
+  ]) {
+    for (const operation of ["start", "part", "manifest", "complete", "abort"]) {
+      const response = await f.post(operation, { ...body, issuedAt, uploadId: session.uploadId });
+      assert.equal(response.status, 400);
+      assert.equal((await response.json()).error, "upload_request_expired");
+    }
+  }
+  assert.equal(f.counts().uploads, 1);
+});
+
+test("cleanup survives repeated failures, backs off, and retains receipts after bounded exhaustion", async (t) => {
+  const f = fixture(422);
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const warnings = t.mock.method(console, "warn", () => {});
+  const session = await f.start(1);
+  f.objects.set(session.objectKey, Buffer.from("x"));
+  const key = `record-snapshot-upload/${session.uploadId}`;
+  await f.storage.put(`${key}/parts/1`, { value: "receipt", expires_at: now + 3_600_000 });
+  now += 3_900_001;
+  f.failNextDiscard(8);
+  for (let attempt = 1; attempt <= 7; attempt++) {
+    await f.alarm();
+    assert.ok(await f.storage.get(key));
+    assert.ok(await f.storage.get(`${key}/parts/1`));
+    assert.ok(f.objects.has(session.objectKey));
+    const alarm = await f.storage.getAlarm();
+    assert.equal(alarm, now + Math.min(60_000 * 2 ** (attempt - 1), 3_600_000));
+    now = alarm!;
+  }
+  await f.alarm();
+  assert.equal(await f.storage.getAlarm(), null);
+  assert.equal((await f.storage.get(key))?.cleanup_attempts, 8);
+  assert.ok(await f.storage.get(`${key}/parts/1`));
+  await f.alarm();
+  assert.equal(warnings.mock.callCount(), 1);
+  await f.start(1);
+  assert.equal(f.objects.has(session.objectKey), false);
+  assert.equal(await f.storage.get(key), undefined);
+  assert.equal(await f.storage.get(`${key}/parts/1`), undefined);
+});
+
+test("signed manifest chunks are retryable, bounded, reassembled, and cleaned with the session", async () => {
+  const f = fixture();
+  const session = await f.start(partBytes + 1, 10_001);
+  const identities = Array.from({ length: 10_001 }, (_, i) => ["items", String(i + 1)]).sort(
+    (a, b) => (a[1] < b[1] ? -1 : 1),
+  );
+  const parts = [];
+  for (const [i, bytes] of [Buffer.alloc(partBytes), Buffer.from("x")].entries()) {
+    parts.push(
+      (
+        await (
+          await f.post("part", {
+            uploadId: session.uploadId,
+            partNumber: i + 1,
+            data: bytes.toString("base64"),
+            sha256: digest(bytes),
+          })
+        ).json()
+      ).part,
+    );
+  }
+  const complete = () =>
+    f.post("complete", { uploadId: session.uploadId, parts, identities: undefined });
+  assert.equal((await complete()).status, 400);
+  for (let index = 0; index < 2; index++) {
+    const body = {
+      uploadId: session.uploadId,
+      partNumber: index + 1,
+      identities: identities.slice(index * 10_000, (index + 1) * 10_000),
+    };
+    assert.equal((await f.post("manifest", body)).status, 200);
+    assert.equal((await f.post("manifest", body)).status, 200);
+  }
+  assert.equal(
+    (await f.post("manifest", { uploadId: session.uploadId, partNumber: 3, identities: [] }))
+      .status,
+    400,
+  );
+  assert.equal(
+    (
+      await f.post("manifest", {
+        uploadId: session.uploadId,
+        partNumber: 2,
+        identities: [["items", "999999"]],
+      })
+    ).status,
+    409,
+  );
+  const response = await complete();
+  assert.equal(response.status, 201);
+  assert.deepEqual((await response.json()).snapshot.identities, identities);
+  assert.equal((await complete()).status, 201);
+  assert.equal((await f.post("abort", { uploadId: session.uploadId })).status, 200);
+  assert.deepEqual([...f.objects.keys()], [session.objectKey]);
+});
+
 for (const cleanup of ["abort", "expiry"] as const) {
   test(`${cleanup} deletes completed objects when registration failed`, async () => {
     const f = fixture(422);
@@ -184,8 +333,11 @@ for (const cleanup of ["abort", "expiry"] as const) {
       Date.now = () => originalNow() + 3_600_001;
       try {
         f.failNextDiscard();
-        await assert.rejects(f.alarm(), /snapshot_discard_unavailable/);
+        await f.alarm();
+        const retryAt = await f.storage.getAlarm();
+        assert.ok(retryAt! > Date.now());
         assert.ok(f.objects.has(session.objectKey));
+        Date.now = () => retryAt!;
         await f.alarm();
       } finally {
         Date.now = originalNow;
@@ -197,7 +349,7 @@ for (const cleanup of ["abort", "expiry"] as const) {
 
 test("snapshot upload authenticates and bounds JSON bodies before touching R2 or queue", async () => {
   const f = fixture();
-  for (const operation of ["start", "part", "complete", "abort"]) {
+  for (const operation of ["start", "part", "manifest", "complete", "abort"]) {
     const response = await worker.fetch(
       new Request(`https://example.test${prefix}${operation}`, { method: "POST", body: "{}" }),
       f.env,
@@ -343,6 +495,7 @@ test("runner snapshot-upload retries identical signed starts and parts after los
         });
       if (pathname.endsWith("/part")) partBodies.push(String(init?.body));
       assert.equal(JSON.parse(String(init?.body)).operation, pathname.split("/").at(-1));
+      assert.ok(Number.isFinite(Date.parse(JSON.parse(String(init?.body)).issuedAt)));
       if (pathname.endsWith("/start")) startBodies.push(String(init?.body));
       const response = await worker.fetch(new Request(String(input), init), f.env);
       if (pathname.endsWith("/start") && !lostStart) {
@@ -366,7 +519,7 @@ test("runner snapshot-upload retries identical signed starts and parts after los
   assert.equal(startBodies.length, 2);
   assert.equal(startBodies[0], startBodies[1]);
   const started = JSON.parse(startBodies[0]);
-  assert.equal(started.identityDigest, digest(Buffer.from("")));
+  assert.equal(started.identityDigest, digest(Buffer.from("[]")));
   if (process.env.GITHUB_RUN_ID && process.env.GITHUB_RUN_ATTEMPT) {
     assert.equal(
       started.operationId,

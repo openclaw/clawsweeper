@@ -113,6 +113,7 @@ import {
   SNAPSHOT_UPLOAD_SESSION_PREFIX,
   SNAPSHOT_UPLOAD_JSON_MAX_BYTES,
   SNAPSHOT_UPLOAD_OPERATIONS,
+  validateSnapshotUploadIssuedAt,
   type SnapshotUploadOperation,
 } from "./record-snapshot-uploads.ts";
 import {
@@ -137,7 +138,13 @@ const QUEUED_RUN_STATUSES = new Set(["queued", "waiting", "requested", "pending"
 const OPERATIONAL_QUEUED_RUN_STATUSES = new Set(["queued", "requested", "pending"]);
 type DashboardContext = { waitUntil?: (promise: Promise<unknown>) => void };
 type GithubJsonReader = (path: string) => ReturnType<typeof githubJson>;
-type StoredValue = { value: string; expires_at?: number };
+type StoredValue = {
+  value: string;
+  expires_at?: number;
+  cleanup_attempts?: number;
+  cleanup_retry_at?: number;
+};
+const SNAPSHOT_CLEANUP_MAX_ATTEMPTS = 8;
 type GithubWebhookDeliveryHeaders = {
   readonly event: string;
   readonly deliveryId: string | null;
@@ -648,11 +655,15 @@ export class StatusStore {
     const key = decodeURIComponent(url.pathname.slice(1));
     if (!key) return new Response("missing key", { status: 400 });
 
-    if (request.method === "POST" && /^snapshot-upload\/(start|complete|abort)$/.test(key)) {
+    if (
+      request.method === "POST" &&
+      /^snapshot-upload\/(start|manifest|complete|abort)$/.test(key)
+    ) {
       const operation = key.slice("snapshot-upload/".length) as SnapshotUploadOperation;
       const body = (await request.json()) as Record<string, unknown>;
-      return this.state.blockConcurrencyWhile(() =>
-        handleSnapshotUpload(
+      return this.state.blockConcurrencyWhile(async () => {
+        if (operation === "start") await this.cleanupExpired(true);
+        return handleSnapshotUpload(
           this.env.STATE_SNAPSHOTS,
           {
             read: async (entryKey) => (await this.storage.get(entryKey))?.value ?? null,
@@ -666,8 +677,8 @@ export class StatusStore {
           body,
           (snapshot) => snapshotDescriptorRequest(this.env, "register", snapshot),
           (snapshot) => snapshotDescriptorRequest(this.env, "discard", snapshot),
-        ),
-      );
+        );
+      });
     }
 
     if (request.method === "GET" && key === AUTOMERGE_METRICS_STORE_KEY) {
@@ -891,23 +902,57 @@ export class StatusStore {
     return this.cleanupExpired();
   }
 
-  private async cleanupExpired() {
+  private async cleanupExpired(uploadTriggered = false) {
     const now = Date.now();
     const entries = (await this.storage.list()) as Map<string, StoredValue>;
     const expired = [];
+    const retainedSessions: string[] = [];
     let nextExpiration = Number.POSITIVE_INFINITY;
     for (const [key, stored] of entries) {
       if (!stored?.expires_at) continue;
       if (stored.expires_at <= now) {
-        if (key.startsWith(SNAPSHOT_UPLOAD_SESSION_PREFIX) && !key.includes("/parts/")) {
-          await cleanupSnapshotUpload(this.env.STATE_SNAPSHOTS, stored.value, (snapshot) =>
-            snapshotDescriptorRequest(this.env, "discard", snapshot),
-          );
+        if (
+          key.startsWith(SNAPSHOT_UPLOAD_SESSION_PREFIX) &&
+          !key.slice(SNAPSHOT_UPLOAD_SESSION_PREFIX.length).includes("/")
+        ) {
+          const attempts = stored.cleanup_attempts ?? 0;
+          if (
+            !uploadTriggered &&
+            (attempts >= SNAPSHOT_CLEANUP_MAX_ATTEMPTS || (stored.cleanup_retry_at ?? 0) > now)
+          ) {
+            retainedSessions.push(key);
+            if (attempts < SNAPSHOT_CLEANUP_MAX_ATTEMPTS)
+              nextExpiration = Math.min(nextExpiration, stored.cleanup_retry_at!);
+            continue;
+          }
+          try {
+            await cleanupSnapshotUpload(this.env.STATE_SNAPSHOTS, stored.value, (snapshot) =>
+              snapshotDescriptorRequest(this.env, "discard", snapshot),
+            );
+          } catch {
+            const nextAttempts = Math.min(attempts + 1, SNAPSHOT_CLEANUP_MAX_ATTEMPTS);
+            const retryAt = now + Math.min(60_000 * 2 ** attempts, 3_600_000);
+            await this.storage.put(key, {
+              ...stored,
+              cleanup_attempts: nextAttempts,
+              cleanup_retry_at: retryAt,
+            });
+            retainedSessions.push(key);
+            if (nextAttempts < SNAPSHOT_CLEANUP_MAX_ATTEMPTS)
+              nextExpiration = Math.min(nextExpiration, retryAt);
+            else if (attempts < SNAPSHOT_CLEANUP_MAX_ATTEMPTS)
+              console.warn("snapshot_cleanup_retries_exhausted");
+            continue;
+          }
         }
         expired.push(key);
       } else nextExpiration = Math.min(nextExpiration, stored.expires_at);
     }
-    await Promise.all(expired.map((key) => this.storage.delete(key)));
+    await Promise.all(
+      expired
+        .filter((key) => !retainedSessions.some((session) => key.startsWith(`${session}/`)))
+        .map((key) => this.storage.delete(key)),
+    );
     await this.storage.deleteAlarm();
     if (Number.isFinite(nextExpiration)) await this.storage.setAlarm(nextExpiration);
   }
@@ -6448,6 +6493,11 @@ async function authenticatedSnapshotUpload(
   const body = parseJsonObject(bodyText);
   if (!body) return json({ error: "invalid_json" }, 400);
   if (body.operation !== operation) return json({ error: "upload_operation_mismatch" }, 400);
+  try {
+    validateSnapshotUploadIssuedAt(body.issuedAt);
+  } catch {
+    return json({ error: "upload_request_expired" }, 400);
+  }
   if (!isDurableStatusStore(env.STATUS_STORE))
     return json({ error: "snapshot_upload_store_unavailable" }, 503);
   const store = durableStatusStoreStub(env.STATUS_STORE, "record-snapshot-uploads");
