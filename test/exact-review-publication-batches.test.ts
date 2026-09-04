@@ -1082,12 +1082,12 @@ for (const churn of [
     await h.queue.alarm();
     assert.equal(dispatches.length, 1);
     if (churn === "all probed items gone") {
-      await h.post("/publications/supersede", {
-        items: [10, 11, 12, 13].map((number) => ({
-          item_key: `openclaw/openclaw#${number}@publish:${7000 + number}:1`,
-          revision: 1,
-        })),
-      });
+      for (const number of [10, 11, 12, 13]) {
+        h.storage.run(
+          "DELETE FROM exact_review_queue_items WHERE item_key = ?",
+          `openclaw/openclaw#${number}@publish:${7000 + number}:1`,
+        );
+      }
     } else if (churn === "revision bump") {
       await h.queue.fetch(publicationRequest("probe-bump", 13, "7013"));
     }
@@ -1233,14 +1233,17 @@ for (const transition of ["terminal", "retryable"]) {
 }
 
 for (const [limit, command] of [
-  [100, false],
-  [1, false],
-  [1, true],
+  [100, "none"],
+  [1, "none"],
+  [1, "producer"],
+  [1, "outer"],
 ] as const) {
   test(
-    command
+    command === "producer"
       ? "alarm preserves command acknowledgements after batch expiry while pruning ordinary stale publications"
-      : `alarm prunes stale publication revisions after batch expiry with limit ${limit}`,
+      : command === "outer"
+        ? "alarm treats outer-only command fields as non-command publication context"
+        : `alarm prunes stale publication revisions after batch expiry with limit ${limit}`,
     async (t) => {
       const h = admissionQueue(t, {
         EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
@@ -1248,8 +1251,9 @@ for (const [limit, command] of [
       });
       for (const number of [801, 802]) {
         const body = await publicationRequest(`prune-old-${number}`, number, String(number)).json();
-        if (command && number === 801)
+        if (command === "producer" && number === 801)
           body.decision.publication.producerDecision.statusCommentId = 12345;
+        if (command === "outer" && number === 801) body.decision.statusCommentId = 12345;
         assert.equal((await h.queue.fetch(batchRequest("/enqueue", body))).status, 202);
         h.now += 1;
       }
@@ -1260,23 +1264,24 @@ for (const [limit, command] of [
       h.now += 60_001;
       await h.queue.alarm();
       const after = await h.publicationStats();
+      const protectedCommand = command === "producer";
       assert.deepEqual([after.pending, after.completed_total], limit === 1 ? [3, 1] : [2, 2]);
       const remaining = await h.post("/publications/reconcile");
       assert.equal(remaining.stale_revision_eligible, limit === 1 ? 1 : 0);
       if (limit === 1) {
         assert.equal(
           remaining.sample[0].item_key,
-          `openclaw/openclaw#${command ? 801 : 802}@publish:${command ? 801 : 802}:1`,
+          `openclaw/openclaw#${protectedCommand ? 801 : 802}@publish:${protectedCommand ? 801 : 802}:1`,
         );
-        if (command)
+        if (protectedCommand)
           assert.equal(
             (await h.post("/publications/reconcile", { apply: true })).stale_revision_changed,
-            1,
+            0,
           );
         else await h.queue.alarm();
       }
       const final = await h.publicationStats();
-      assert.deepEqual([final.pending, final.completed_total], [2, 2]);
+      assert.deepEqual([final.pending, final.completed_total], protectedCommand ? [3, 1] : [2, 2]);
       assert.equal(h.networkCalls, 0);
     },
   );
@@ -1736,19 +1741,16 @@ test("stale publication ingress is acknowledged without replacing a newer revisi
   const originalNow = Date.now;
   Date.now = () => 6_300_000;
   try {
+    const storage = new TestStorage();
     const queue = new ExactReviewQueue(
-      { storage: new TestStorage() },
+      { storage },
       { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
     );
     await queue.fetch(publicationRequest("delivery-newer", 108701, "2202", "openclaw/openclaw", 2));
-    const removedNewer = await (
-      await queue.fetch(
-        batchRequest("/publications/supersede", {
-          items: [{ item_key: "openclaw/openclaw#108701@publish:2202:1", revision: 1 }],
-        }),
-      )
-    ).json();
-    assert.equal(removedNewer.superseded, 1);
+    storage.run(
+      "DELETE FROM exact_review_queue_items WHERE item_key = ?",
+      "openclaw/openclaw#108701@publish:2202:1",
+    );
     const response = await (
       await queue.fetch(
         publicationRequest("delivery-stale", 108701, "2201", "openclaw/openclaw", 1),
@@ -1771,8 +1773,9 @@ test("publication reconcile preserves active batches and removes older revisions
   let now = 6_400_000;
   Date.now = () => now;
   try {
+    const storage = new TestStorage();
     const queue = new ExactReviewQueue(
-      { storage: new TestStorage() },
+      { storage },
       {
         EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
         EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
@@ -1794,14 +1797,10 @@ test("publication reconcile preserves active batches and removes older revisions
     await queue.fetch(
       publicationRequest("delivery-unowned-new", 108702, "2302", "openclaw/openclaw", 2),
     );
-    const removedNewer = await (
-      await queue.fetch(
-        batchRequest("/publications/supersede", {
-          items: [{ item_key: "openclaw/openclaw#108702@publish:2302:1", revision: 1 }],
-        }),
-      )
-    ).json();
-    assert.equal(removedNewer.superseded, 1);
+    storage.run(
+      "DELETE FROM exact_review_queue_items WHERE item_key = ?",
+      "openclaw/openclaw#108702@publish:2302:1",
+    );
 
     const protectedResult = await (
       await queue.fetch(batchRequest("/publications/reconcile", { apply: true, max_items: 100 }))
@@ -1889,11 +1888,13 @@ test("publication reconcile backfills historical duplicate lineages in bounded p
     const firstPass = await (
       await queue.fetch(batchRequest("/publications/reconcile", { apply: true, max_items: 1 }))
     ).json();
-    assert.equal(firstPass.changed, 1);
-    assert.equal(firstPass.eligible_remaining, 1);
-    assert.equal(firstPass.lineage_duplicate_changed, 1);
-    assert.equal(firstPass.lineage_refreshed, 1);
-    assert.equal(firstPass.oldest_remaining_age_seconds, 100);
+    assert.equal(firstPass.changed, 0);
+    assert.equal(firstPass.eligible_remaining, 2);
+    assert.equal(firstPass.lineage_duplicate_changed, 0);
+    assert.equal(firstPass.lineage_refreshed, 0);
+    assert.equal(firstPass.oldest_remaining_age_seconds, 200);
+    assert.equal(firstPass.sample[0].item_key, keys[1]);
+    assert.equal(firstPass.sample[0].supersede_safe, true);
 
     const afterFirstPass = await (
       await queue.fetch(batchRequest("/publications/list", { limit: 100 }))
@@ -1902,8 +1903,9 @@ test("publication reconcile backfills historical duplicate lineages in bounded p
       (item: { item_key: string }) => item.item_key === keys[0],
     );
     assert.equal(retained.attempts, 7);
-    assert.equal(retained.revision, 2);
-    assert.equal(retained.decision.publication.producerRunId, "2403");
+    assert.equal(retained.revision, 1);
+    assert.equal(retained.decision.publication.producerRunId, "2401");
+    assert.equal(afterFirstPass.publications.length, 3);
 
     const staleSupersede = await (
       await queue.fetch(
@@ -1917,16 +1919,78 @@ test("publication reconcile backfills historical duplicate lineages in bounded p
     const secondPass = await (
       await queue.fetch(batchRequest("/publications/reconcile", { apply: true, max_items: 100 }))
     ).json();
-    assert.equal(secondPass.changed, 1);
+    assert.equal(secondPass.changed, 2);
     assert.equal(secondPass.eligible_remaining, 0);
-    assert.equal(secondPass.lineage_duplicate_changed, 1);
-    assert.equal(secondPass.lineage_refreshed, 0);
+    assert.equal(secondPass.lineage_duplicate_changed, 2);
+    assert.equal(secondPass.lineage_refreshed, 1);
     assert.equal(secondPass.oldest_remaining_age_seconds, null);
 
     const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
     assert.equal(stats.lanes.publication.pending, 1);
     assert.equal(stats.lanes.publication.superseded_total, 2);
     assert.equal(stats.lanes.publication.semantic_deduped_total, 2);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("publication lineage refresh preserves a retained command decision", async () => {
+  const originalNow = Date.now;
+  const now = 6_460_000;
+  Date.now = () => now;
+  try {
+    const storage = new TestStorage();
+    const decisions = await Promise.all(
+      ["2411", "2412"].map(async (producerRunId) => {
+        const payload = (await publicationRequest(
+          `command-lineage-${producerRunId}`,
+          108705,
+          producerRunId,
+        ).json()) as { decision: Record<string, any> };
+        return payload.decision;
+      }),
+    );
+    decisions[0].publication.producerDecision.statusCommentId = 24_111;
+    const keys = ["2411", "2412"].map(
+      (producerRunId) => `openclaw/openclaw#108705@publish:${producerRunId}:1`,
+    );
+    await storage.put("exact-review-queue", {
+      items: Object.fromEntries(
+        keys.map((key, index) => [
+          key,
+          {
+            decision: decisions[index],
+            state: "pending",
+            revision: 1,
+            createdAt: now - (2 - index) * 100_000,
+            updatedAt: now - (2 - index) * 100_000,
+            nextAttemptAt: now - (2 - index) * 100_000,
+            attempts: 0,
+          },
+        ]),
+      ),
+      deliveries: {},
+    });
+    const queue = new ExactReviewQueue({ storage }, {});
+
+    const result = await (
+      await queue.fetch(batchRequest("/publications/reconcile", { apply: true, max_items: 100 }))
+    ).json();
+    assert.equal(result.changed, 1);
+    assert.equal(result.lineage_duplicate_changed, 1);
+    assert.equal(result.lineage_refreshed, 0);
+
+    const after = await (
+      await queue.fetch(batchRequest("/publications/list", { limit: 100 }))
+    ).json();
+    assert.equal(after.publications.length, 1);
+    assert.equal(after.publications[0].item_key, keys[0]);
+    assert.equal(after.publications[0].revision, 1);
+    assert.equal(
+      after.publications[0].decision.publication.producerDecision.statusCommentId,
+      24_111,
+    );
+    assert.equal(after.publications[0].decision.publication.producerRunId, "2411");
   } finally {
     Date.now = originalNow;
   }
@@ -3215,14 +3279,10 @@ test("aged superseded publication does not dispatch a fresh owner before its dea
 
     now += 1;
     await queue.fetch(publicationRequest("superseded-aged-2", 160, "1061", "stale/repo", 2));
-    const removedNewer = await (
-      await queue.fetch(
-        batchRequest("/publications/supersede", {
-          items: [{ item_key: "stale/repo#160@publish:1061:1", revision: 1 }],
-        }),
-      )
-    ).json();
-    assert.equal(removedNewer.superseded, 1);
+    storage.run(
+      "DELETE FROM exact_review_queue_items WHERE item_key = ?",
+      "stale/repo#160@publish:1061:1",
+    );
 
     now = agedEnqueuedAt + 300_001;
     const freshEnqueuedAt = now;

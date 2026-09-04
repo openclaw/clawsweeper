@@ -2372,6 +2372,18 @@ test("publication reconcile dry runs verify terminal legacy rows without deletin
     assert.equal(liveChecks, 2);
     assert.equal(terminalResult.legacy_terminal_eligible, 1);
     assert.equal(terminalResult.changed, 0);
+    assert.deepEqual(
+      {
+        command_context: terminalResult.sample[0]?.command_context,
+        acknowledgement_state: terminalResult.sample[0]?.acknowledgement_state,
+        supersede_safe: terminalResult.sample[0]?.supersede_safe,
+      },
+      {
+        command_context: false,
+        acknowledgement_state: "not_required",
+        supersede_safe: false,
+      },
+    );
     const state = (await harness.storage.get("exact-review-queue")) as {
       items: Record<string, unknown>;
     };
@@ -2446,7 +2458,7 @@ test("publication reconcile terminalizes a closed legacy publication after its l
   }
 });
 
-test("publication reconcile retains a legacy command publication awaiting acknowledgement", async () => {
+test("publication reconcile terminalizes a legacy row with outer-only command context", async () => {
   let liveChecks = 0;
   const harness = createExactReviewAdmissionHarness(() => {
     liveChecks += 1;
@@ -2485,13 +2497,13 @@ test("publication reconcile retains a legacy command publication awaiting acknow
       )
     ).json();
 
-    assert.equal(liveChecks, 0);
-    assert.equal(reconciled.changed, 0);
-    assert.equal(reconciled.legacy_terminal_eligible, 0);
+    assert.equal(liveChecks, 1);
+    assert.equal(reconciled.changed, 1);
+    assert.equal(reconciled.legacy_terminal_eligible, 1);
     const state = (await harness.storage.get("exact-review-queue")) as {
       items: Record<string, { decision: { commandStatusMarker?: string } }>;
     };
-    assert.equal(state.items[itemKey]?.decision.commandStatusMarker, commandStatusMarker);
+    assert.equal(state.items[itemKey], undefined);
   } finally {
     harness.restore();
   }
@@ -2731,6 +2743,18 @@ test("publication reconcile terminalizes a completed protocol-v2 state-batch pub
     assert.equal(reconciled.legacy_state_batch_terminal_producer_succeeded, 1);
     assert.equal(reconciled.legacy_state_batch_terminal_eligible, 1);
     assert.equal(reconciled.legacy_state_batch_terminal_changed, 1);
+    assert.deepEqual(
+      {
+        command_context: reconciled.sample[0]?.command_context,
+        acknowledgement_state: reconciled.sample[0]?.acknowledgement_state,
+        supersede_safe: reconciled.sample[0]?.supersede_safe,
+      },
+      {
+        command_context: false,
+        acknowledgement_state: "not_required",
+        supersede_safe: false,
+      },
+    );
     const state = (await harness.storage.get("exact-review-queue")) as {
       items: Record<string, unknown>;
     };
@@ -2740,7 +2764,7 @@ test("publication reconcile terminalizes a completed protocol-v2 state-batch pub
   }
 });
 
-test("publication reconcile retains a protocol-v2 command publication awaiting acknowledgement", async () => {
+test("publication reconcile terminalizes a protocol-v2 row with outer-only command context", async () => {
   let liveChecks = 0;
   let producerChecks = 0;
   const harness = createExactReviewAdmissionHarness(
@@ -2749,9 +2773,14 @@ test("publication reconcile retains a protocol-v2 command publication awaiting a
       return jsonResponse({ state: "closed" });
     },
     {
-      producerRun: () => {
+      producerRun: (runId, _runAttempt, kind) => {
         producerChecks += 1;
-        return jsonResponse({ id: "30091560738", run_attempt: 1, status: "completed" });
+        return jsonResponse({
+          id: runId,
+          run_attempt: 1,
+          status: "completed",
+          ...(kind === "attempt" ? { conclusion: "success" } : {}),
+        });
       },
     },
   );
@@ -2789,15 +2818,15 @@ test("publication reconcile retains a protocol-v2 command publication awaiting a
       )
     ).json();
 
-    assert.equal(liveChecks, 0);
-    assert.equal(producerChecks, 0);
-    assert.equal(reconciled.changed, 0);
-    assert.equal(reconciled.legacy_state_batch_terminal_candidates, 0);
-    assert.equal(reconciled.legacy_state_batch_terminal_eligible, 0);
+    assert.equal(liveChecks, 1);
+    assert.equal(producerChecks, 2);
+    assert.equal(reconciled.changed, 1);
+    assert.equal(reconciled.legacy_state_batch_terminal_candidates, 1);
+    assert.equal(reconciled.legacy_state_batch_terminal_eligible, 1);
     const state = (await harness.storage.get("exact-review-queue")) as {
       items: Record<string, { decision: { commandStatusMarker?: string } }>;
     };
-    assert.equal(state.items[itemKey]?.decision.commandStatusMarker, commandStatusMarker);
+    assert.equal(state.items[itemKey], undefined);
   } finally {
     harness.restore();
   }
@@ -3307,18 +3336,11 @@ test("matching empty batch departures release their own fence and redispatch cur
     };
     const firstDispatch = reserved.dispatcher;
     assert.ok(firstDispatch.publicationBatchTerminalProbe);
-    const superseded = await harness.queue.fetch(
-      new Request("https://clawsweeper-exact-review-queue/publications/supersede", {
-        method: "POST",
-        body: JSON.stringify({
-          items: [9251, 9252].map((number) => ({
-            item_key: `openclaw/gogcli#${number}@publish:${number * 10}:1`,
-            revision: 1,
-          })),
-        }),
-      }),
+    harness.storage.sql.exec(
+      "DELETE FROM exact_review_queue_items WHERE item_key IN (?, ?)",
+      "openclaw/gogcli#9251@publish:92510:1",
+      "openclaw/gogcli#9252@publish:92520:1",
     );
-    assert.equal((await superseded.json()).superseded, 2);
 
     assert.equal(
       (

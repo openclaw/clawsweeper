@@ -62,6 +62,13 @@ export type ExactReviewBatchFetch = {
   superseded: number;
 };
 
+type ExactReviewPublicationAcknowledgementState =
+  | "not_required"
+  | "pending"
+  | "observed"
+  | `skipped_${"locked" | "missing_comment"}`
+  | "unavailable";
+
 export type ExactReviewPublicationReconcileSample = {
   itemKey: string;
   queueRevision: number;
@@ -75,6 +82,9 @@ export type ExactReviewPublicationReconcileSample = {
   supersededByRevision: number | null;
   lineageClaimGeneration: number | null;
   retainedItemKey: string | null;
+  commandContext: boolean;
+  acknowledgementState: ExactReviewPublicationAcknowledgementState;
+  supersedeSafe: boolean;
   producerRunId?: string;
   producerRunAttempt?: number;
 };
@@ -303,8 +313,9 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
       apply: input.apply,
       max_items: input.maxItems,
     });
+    if (response.apply !== input.apply) throw new Error("Invalid batch queue reconciliation apply");
     return {
-      apply: response.apply === true,
+      apply: response.apply,
       scanned: nonNegativeInteger(response.scanned, "scanned"),
       legacyTerminalScanned: nonNegativeInteger(
         response.legacy_terminal_scanned ?? 0,
@@ -638,6 +649,20 @@ function parseReconciliationSample(value: unknown): ExactReviewPublicationReconc
   if ((producerRunId === undefined) !== (producerRunAttempt === undefined)) {
     throw new Error("Invalid batch queue sample producer identity");
   }
+  const ack = stringValue(sample.acknowledgement_state, "sample acknowledgement_state");
+  if (!/^(not_required|pending|observed|skipped_(locked|missing_comment)|unavailable)$/.test(ack)) {
+    throw new Error("Invalid batch queue sample acknowledgement_state");
+  }
+  const commandContext = sample.command_context;
+  const staleCandidate = reason === "stale_revision" || reason === "duplicate_lineage";
+  if (
+    typeof commandContext !== "boolean" ||
+    typeof sample.supersede_safe !== "boolean" ||
+    commandContext === (ack === "not_required") ||
+    sample.supersede_safe !== (staleCandidate && !["pending", "unavailable"].includes(ack))
+  ) {
+    throw new Error("Invalid batch queue sample supersede safety");
+  }
   return {
     itemKey: stringValue(sample.item_key, "sample item_key"),
     queueRevision: positiveInteger(sample.queue_revision, "sample queue_revision"),
@@ -656,6 +681,9 @@ function parseReconciliationSample(value: unknown): ExactReviewPublicationReconc
       "sample lineage_claim_generation",
     ),
     retainedItemKey: nullableStringValue(sample.retained_item_key, "sample retained_item_key"),
+    commandContext,
+    acknowledgementState: ack as ExactReviewPublicationAcknowledgementState,
+    supersedeSafe: sample.supersede_safe,
     ...(producerRunId === undefined
       ? {}
       : { producerRunId, producerRunAttempt: producerRunAttempt! }),

@@ -3741,6 +3741,477 @@ test("signed Worker records a status-ID-only terminal acknowledgement", async ()
   );
 });
 
+test("signed Worker supersedes only an acknowledgement-safe exact stale publication", async () => {
+  const storage = new MemoryDurableStorage();
+  const stale = leasedExactReviewPublicationItem(17960, "179600");
+  const fresh = leasedExactReviewPublicationItem(17960, "179601");
+  const marker =
+    "<!-- clawsweeper-command-status:17960:re_review:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->";
+  stale.state = "pending";
+  stale.revision = 4;
+  stale.decision.publication!.leaseRevision = 1;
+  stale.leaseDecision!.publication!.leaseRevision = 1;
+  Object.assign(stale.decision.publication!.producerDecision, {
+    commandStatusMarker: marker,
+    statusCommentId: 179600,
+  });
+  fresh.state = "pending";
+  fresh.decision.publication!.leaseRevision = 2;
+  fresh.leaseDecision!.publication!.leaseRevision = 2;
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { [stale.key]: stale, [fresh.key]: fresh },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const identity = {
+    canonicalTargetKey: "openclaw/openclaw#17960",
+    fenceKey: stale.key,
+    revision: 4,
+  };
+  lifecycle.recordAdmission({
+    ...identity,
+    deliveryId: "signed-supersede-admission",
+    sourceAction: "re_review",
+    commandOriginated: true,
+    statusMarker: marker,
+    statusCommentId: 179600,
+    observedAt: Date.now() - 4,
+  });
+  lifecycle.recordCanonicalReceipt({
+    ...identity,
+    outcome: "accepted",
+    receiptId: "signed-supersede-canonical",
+    observedAt: Date.now() - 3,
+  });
+  lifecycle.recordRouterReceipt({
+    ...identity,
+    outcome: "durable",
+    receiptId: "signed-supersede-router",
+    observedAt: Date.now() - 2,
+  });
+  lifecycle.recordTerminalDisposition({
+    ...identity,
+    kind: "review_completed_routed",
+    observedAt: Date.now() - 1,
+  });
+  const secret = "signed-supersede-secret";
+  const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: secret,
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  };
+  const postSigned = (path: string, payload: Record<string, unknown>) => {
+    const body = JSON.stringify(payload);
+    return worker.fetch(
+      new Request(`https://clawsweeper.openclaw.ai/internal/exact-review/${path}`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-clawsweeper-exact-review-signature": `sha256=${createHmac("sha256", secret)
+            .update(body)
+            .digest("hex")}`,
+        },
+        body,
+      }),
+      env,
+    );
+  };
+  const dryRun = await (await postSigned("publications/reconcile", { max_items: 1 })).json();
+  assert.deepEqual(dryRun.sample[0], {
+    item_key: stale.key,
+    queue_revision: 4,
+    reason: "stale_revision",
+    target_key: "openclaw/openclaw#17960",
+    publication_revision: 1,
+    superseded_by_revision: 2,
+    lineage_claim_generation: 1,
+    retained_item_key: null,
+    command_context: true,
+    acknowledgement_state: "pending",
+    supersede_safe: false,
+  });
+  const unsafeApply = await (
+    await postSigned("publications/reconcile", {
+      apply: true,
+      max_items: 1,
+    })
+  ).json();
+  assert.equal(unsafeApply.changed, 0);
+  assert.equal(unsafeApply.stale_revision_changed, 0);
+  assert.deepEqual(unsafeApply.sample, dryRun.sample);
+  assert.deepEqual(
+    await (
+      await postSigned("publications/supersede", {
+        items: [{ item_key: stale.key, revision: stale.revision }],
+      })
+    ).json(),
+    { ok: true, superseded: 0, skipped: 1 },
+  );
+  const attempt = lifecycle.authorizeCommandAcknowledgement({
+    ...identity,
+    statusMarker: marker,
+    statusCommentId: 179600,
+    observedAt: Date.now(),
+  });
+  assert.equal(attempt.allowed, true);
+  assert.equal(
+    (
+      await postSigned("lifecycle/command-ack/observed", {
+        canonical_target_key: identity.canonicalTargetKey,
+        fence_key: identity.fenceKey,
+        revision: identity.revision,
+        status_marker: marker,
+        command_comment_id: 17960,
+        completion_comment_id: 179600,
+        observed_at: Date.now(),
+      })
+    ).status,
+    200,
+  );
+  const before = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.deepEqual(
+    await (
+      await postSigned("publications/supersede", {
+        items: [{ item_key: stale.key, revision: stale.revision }],
+      })
+    ).json(),
+    { ok: true, superseded: 1, skipped: 0 },
+  );
+  const after = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(
+    after.lanes.publication.completed_total,
+    before.lanes.publication.completed_total + 1,
+  );
+  assert.equal(
+    after.lanes.publication.superseded_total,
+    before.lanes.publication.superseded_total + 1,
+  );
+  const state = storage.sql.readNormalizedQueue() as {
+    items: Record<string, ExactReviewQueueItem>;
+  };
+  assert.equal(state.items[stale.key], undefined);
+  assert.ok(state.items[fresh.key]);
+});
+
+test("publication reconciliation derives every acknowledgement state from the exact queue revision", async () => {
+  const storage = new MemoryDurableStorage();
+  const cases = [
+    ["pending", true, "pending", false],
+    ["not_required", false, "not_required", true],
+    ["observed", true, "observed", true],
+    ["skipped_locked", true, "skipped_locked", true],
+    ["skipped_missing_comment", true, "skipped_missing_comment", true],
+    ["unavailable", true, "unavailable", false],
+    ["missing", true, "unavailable", false],
+    ["mismatch", true, "unavailable", false],
+  ] as const;
+  const items: Record<string, ExactReviewQueueItem> = {};
+  const staleByName = new Map<string, ExactReviewQueueItem>();
+  for (const [index, [name, commandContext]] of cases.entries()) {
+    const number = 18000 + index;
+    const stale = leasedExactReviewPublicationItem(number, `${number}0`);
+    const fresh = leasedExactReviewPublicationItem(number, `${number}1`);
+    stale.state = "pending";
+    stale.revision = 4;
+    stale.decision.publication!.leaseRevision = 1;
+    stale.leaseDecision!.publication!.leaseRevision = 1;
+    fresh.state = "pending";
+    fresh.decision.publication!.leaseRevision = 2;
+    fresh.leaseDecision!.publication!.leaseRevision = 2;
+    if (commandContext) {
+      Object.assign(stale.decision.publication!.producerDecision, {
+        commandStatusMarker: `<!-- clawsweeper-command-status:${number}:re_review:${"b".repeat(40)} -->`,
+        statusCommentId: number * 10,
+      });
+    }
+    items[stale.key] = stale;
+    items[fresh.key] = fresh;
+    staleByName.set(name, stale);
+  }
+  await storage.put("exact-review-queue", { deliveries: {}, items });
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  for (const [name, commandContext] of cases) {
+    if (name === "not_required" || name === "missing") continue;
+    const item = staleByName.get(name)!;
+    const source = item.decision.publication!.producerDecision;
+    const identity = {
+      canonicalTargetKey: `${source.targetRepo}#${source.itemNumber}`,
+      fenceKey: item.key,
+      revision: item.revision,
+    };
+    const projectionMarker =
+      name === "mismatch"
+        ? `<!-- clawsweeper-command-status:${source.itemNumber}:re_review:${"c".repeat(40)} -->`
+        : source.commandStatusMarker!;
+    lifecycle.recordAdmission({
+      ...identity,
+      deliveryId: `ack-state-${name}`,
+      sourceAction: source.sourceAction,
+      commandOriginated: commandContext,
+      statusMarker: commandContext ? projectionMarker : null,
+      statusCommentId: commandContext ? source.statusCommentId! : null,
+      observedAt: 1,
+    });
+    if (!["pending", "observed", "skipped_locked", "skipped_missing_comment"].includes(name)) {
+      continue;
+    }
+    lifecycle.recordCanonicalReceipt({
+      ...identity,
+      outcome: "accepted",
+      receiptId: `canonical-${name}`,
+      observedAt: 2,
+    });
+    lifecycle.recordRouterReceipt({
+      ...identity,
+      outcome: "durable",
+      receiptId: `router-${name}`,
+      observedAt: 3,
+    });
+    lifecycle.recordTerminalDisposition({
+      ...identity,
+      kind: "review_completed_routed",
+      observedAt: 4,
+    });
+    if (name === "pending") continue;
+    const attempt = lifecycle.authorizeCommandAcknowledgement({
+      ...identity,
+      statusMarker: source.commandStatusMarker!,
+      statusCommentId: source.statusCommentId!,
+      observedAt: 5,
+    });
+    assert.equal(attempt.allowed, true);
+    if (name === "observed") {
+      lifecycle.observeCommandAcknowledgement({
+        ...identity,
+        statusMarker: source.commandStatusMarker!,
+        statusCommentId: source.statusCommentId!,
+        commandCommentId: source.itemNumber,
+        completionCommentId: source.statusCommentId!,
+        observedAt: 6,
+      });
+    } else {
+      lifecycle.recordCommandAcknowledgementTerminalSkip({
+        ...identity,
+        attemptId: attempt.attemptId!,
+        statusMarker: source.commandStatusMarker!,
+        statusCommentId: source.statusCommentId!,
+        reason: name === "skipped_locked" ? "locked_conversation" : "missing_status_comment",
+        observedAt: 6,
+      });
+    }
+  }
+  const queue = new ExactReviewQueue({ storage }, {});
+  const result = await (
+    await queue.fetch(
+      new Request("https://queue/publications/reconcile", {
+        method: "POST",
+        body: JSON.stringify({ max_items: 20 }),
+      }),
+    )
+  ).json();
+  const sampleByTarget = new Map(result.sample.map((entry) => [entry.target_key, entry]));
+  for (const [name, commandContext, acknowledgementState, supersedeSafe] of cases) {
+    const item = staleByName.get(name)!;
+    const source = item.decision.publication!.producerDecision;
+    const sample = sampleByTarget.get(`${source.targetRepo}#${source.itemNumber}`);
+    assert.deepEqual(
+      {
+        queueRevision: sample.queue_revision,
+        commandContext: sample.command_context,
+        acknowledgementState: sample.acknowledgement_state,
+        supersedeSafe: sample.supersede_safe,
+      },
+      { queueRevision: 4, commandContext, acknowledgementState, supersedeSafe },
+    );
+  }
+  const applied = await (
+    await queue.fetch(
+      new Request("https://queue/publications/reconcile", {
+        method: "POST",
+        body: JSON.stringify({ apply: true, max_items: 1 }),
+      }),
+    )
+  ).json();
+  assert.equal(applied.changed, 0);
+  assert.equal(applied.sample[0].target_key, "openclaw/openclaw#18000");
+  assert.equal(applied.sample[0].acknowledgement_state, "pending");
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, ExactReviewQueueItem>;
+  };
+  assert.ok(state.items[staleByName.get("pending")!.key]);
+  assert.ok(state.items[staleByName.get("not_required")!.key]);
+});
+
+test("publication reconciliation preserves and does not transplant an unsafe command lineage", async () => {
+  const storage = new MemoryDurableStorage();
+  const retained = leasedExactReviewPublicationItem(18020, "180200");
+  const ordinary = leasedExactReviewPublicationItem(18020, "180201");
+  const command = leasedExactReviewPublicationItem(18020, "180202");
+  for (const item of [retained, ordinary, command]) {
+    item.state = "pending";
+    item.revision = 4;
+    item.decision.publication!.leaseRevision = 1;
+    item.leaseDecision!.publication!.leaseRevision = 1;
+  }
+  retained.createdAt = 1;
+  ordinary.createdAt = 2;
+  command.createdAt = 3;
+  Object.assign(command.decision.publication!.producerDecision, {
+    commandStatusMarker: `<!-- clawsweeper-command-status:18020:re_review:${"d".repeat(40)} -->`,
+    statusCommentId: 180202,
+  });
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { [retained.key]: retained, [ordinary.key]: ordinary, [command.key]: command },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const result = await (
+    await queue.fetch(
+      new Request("https://queue/publications/reconcile", {
+        method: "POST",
+        body: JSON.stringify({ apply: true, max_items: 100 }),
+      }),
+    )
+  ).json();
+  assert.equal(result.changed, 1);
+  assert.equal(result.lineage_refreshed, 0);
+  assert.deepEqual(
+    {
+      itemKey: result.sample[1].item_key,
+      commandContext: result.sample[1].command_context,
+      acknowledgementState: result.sample[1].acknowledgement_state,
+      supersedeSafe: result.sample[1].supersede_safe,
+    },
+    {
+      itemKey: command.key,
+      commandContext: true,
+      acknowledgementState: "unavailable",
+      supersedeSafe: false,
+    },
+  );
+  const state = storage.sql.readNormalizedQueue() as {
+    items: Record<string, ExactReviewQueueItem>;
+  };
+  assert.ok(state.items[retained.key]);
+  assert.equal(state.items[retained.key]!.decision.publication!.producerRunId, "180200");
+  assert.equal(state.items[ordinary.key], undefined);
+  assert.ok(state.items[command.key]);
+});
+
+test("max-items one does not reclaim an unsampled expired lineage lease", async () => {
+  const storage = new MemoryDurableStorage();
+  const expired = leasedExactReviewPublicationItem(18021, "180210");
+  const duplicate = leasedExactReviewPublicationItem(18021, "180211");
+  expired.leaseExpiresAt = Date.now() - 1;
+  duplicate.state = "pending";
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { [expired.key]: expired, [duplicate.key]: duplicate },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const result = await (
+    await queue.fetch(
+      new Request("https://queue/publications/reconcile", {
+        method: "POST",
+        body: JSON.stringify({ apply: true, max_items: 1 }),
+      }),
+    )
+  ).json();
+  assert.equal(result.changed, 0);
+  assert.equal(result.sample.length, 0);
+  const state = storage.sql.readNormalizedQueue() as {
+    items: Record<string, ExactReviewQueueItem>;
+  };
+  assert.equal(state.items[expired.key]!.state, "leased");
+  assert.equal(state.items[expired.key]!.leaseId, expired.leaseId);
+});
+
+test("publication supersede preserves stale rows with active ownership or mutable identity", async () => {
+  const storage = new MemoryDurableStorage();
+  const states = ["safe", "active_batch", "leased", "dispatching", "finalizer"] as const;
+  const items: Record<string, ExactReviewQueueItem> = {};
+  const staleByState = new Map<(typeof states)[number], ExactReviewQueueItem>();
+  for (const [index, state] of states.entries()) {
+    const number = 18100 + index;
+    const stale = leasedExactReviewPublicationItem(number, `${number}0`);
+    const fresh = leasedExactReviewPublicationItem(number, `${number}1`);
+    stale.revision = 4;
+    stale.decision.publication!.leaseRevision = 1;
+    stale.leaseDecision!.publication!.leaseRevision = 1;
+    stale.state =
+      state === "leased" ? "leased" : state === "dispatching" ? "dispatching" : "pending";
+    fresh.state = "pending";
+    fresh.decision.publication!.leaseRevision = 2;
+    fresh.leaseDecision!.publication!.leaseRevision = 2;
+    if (state === "finalizer") {
+      stale.terminalFinalization = {
+        disposition: "superseded",
+        statusState: "Complete",
+        statusDetail: "Retained acknowledgement driver.",
+        projection: {
+          canonicalTargetKey: `${stale.decision.targetRepo}#${stale.decision.itemNumber}`,
+          fenceKey: stale.key,
+          revision: stale.revision,
+        },
+      };
+    }
+    items[stale.key] = stale;
+    items[fresh.key] = fresh;
+    staleByState.set(state, stale);
+  }
+  await storage.put("exact-review-queue", { deliveries: {}, items });
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  for (const [state, item] of staleByState) {
+    const source = item.decision.publication!.producerDecision;
+    lifecycle.recordAdmission({
+      canonicalTargetKey: `${source.targetRepo}#${source.itemNumber}`,
+      fenceKey: item.key,
+      revision: item.revision,
+      deliveryId: `supersede-protection-${state}`,
+      sourceAction: source.sourceAction,
+      commandOriginated: false,
+      statusMarker: null,
+      statusCommentId: null,
+      observedAt: 1,
+    });
+  }
+  const batches = new ExactReviewPublicationBatchStore(storage);
+  batches.ensureSchemaSync();
+  const active = staleByState.get("active_batch")!;
+  assert.ok(
+    batches.claim({
+      batchId: "supersede-protection",
+      leaseOwner: "worker",
+      leaseExpiresAt: Date.now() + 60_000,
+      now: Date.now(),
+      maxItems: 1,
+      candidates: [{ itemKey: active.key, revision: active.revision }],
+    }),
+  );
+  const queue = new ExactReviewQueue({ storage }, {});
+  const safe = staleByState.get("safe")!;
+  const response = await queue.fetch(
+    new Request("https://queue/publications/supersede", {
+      method: "POST",
+      body: JSON.stringify({
+        items: [
+          { item_key: safe.key, revision: safe.revision - 1 },
+          ...[...staleByState.values()].map((item) => ({
+            item_key: item.key,
+            revision: item.revision,
+          })),
+        ],
+      }),
+    }),
+  );
+  assert.deepEqual(await response.json(), { ok: true, superseded: 1, skipped: 5 });
+  const state = storage.sql.readNormalizedQueue() as {
+    items: Record<string, ExactReviewQueueItem>;
+  };
+  assert.equal(state.items[safe.key], undefined);
+  for (const name of states.slice(1)) assert.ok(state.items[staleByState.get(name)!.key]);
+});
+
 test("Worker lifecycle acknowledgement preserves canonical GitHub repository casing", async () => {
   const storage = new MemoryDurableStorage();
   const queue = new ExactReviewQueue({ storage }, {});
