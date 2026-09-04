@@ -100,19 +100,17 @@ export function compareCommentsByCreatedAt(left: LooseRecord, right: LooseRecord
   );
 }
 
-function compareCommandAckKeepPriority(left: LooseRecord, right: LooseRecord): number {
-  const leftStatus = commandAckStatusScore(left);
-  const rightStatus = commandAckStatusScore(right);
+export function compareCommandAckKeepPriority(left: LooseRecord, right: LooseRecord): number {
+  const leftStatus = isCommandAckStatusComment(left) ? 1 : 0;
+  const rightStatus = isCommandAckStatusComment(right) ? 1 : 0;
   if (leftStatus !== rightStatus) return rightStatus - leftStatus;
   if (leftStatus > 0) return compareCommentsByUpdatedAtDesc(left, right);
   return compareCommentsByCreatedAt(left, right);
 }
 
-function commandAckStatusScore(comment: LooseRecord): number {
+export function isCommandAckStatusComment(comment: LooseRecord): boolean {
   const body = String(comment.body ?? "");
-  return body.includes("clawsweeper-command-status:") || body.includes(COMMAND_PROGRESS_START)
-    ? 1
-    : 0;
+  return body.includes("clawsweeper-command-status:") || body.includes(COMMAND_PROGRESS_START);
 }
 
 function compareCommentsByUpdatedAtDesc(left: LooseRecord, right: LooseRecord): number {

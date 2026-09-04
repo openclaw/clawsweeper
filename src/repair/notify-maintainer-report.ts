@@ -2,8 +2,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { JsonObject, JsonValue } from "./json-types.js";
+import type { JsonObject } from "./json-types.js";
 import { asJsonObject } from "./json-types.js";
+import { writeJsonFile } from "./json-file.js";
 import { parseArgs, repoRoot } from "./lib.js";
 import {
   boolEnv,
@@ -387,11 +388,6 @@ function formatDate(value: string): string {
     year: "numeric",
     timeZone: "UTC",
   }).format(date);
-}
-
-function writeJsonFile(filePath: string, value: JsonValue) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
 async function main() {

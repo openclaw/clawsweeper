@@ -27,6 +27,10 @@ import {
 } from "./comment-command-text.js";
 import { directReReviewIntake } from "./direct-re-review-admission.js";
 import { postExactReviewCommandIntake } from "./exact-review-command-queue.js";
+import {
+  compareCommandAckKeepPriority,
+  isCommandAckStatusComment,
+} from "./command-ack-convergence.js";
 
 const DEFAULT_PORT = 8787;
 export const WEBHOOK_MAX_BODY_BYTES = 2 * 1024 * 1024;
@@ -746,13 +750,13 @@ async function pruneFastAckComments({
 }) {
   const comments = await listFastAckComments({ token, repo, itemNumber, sourceCommentId });
   if (comments.length === 0) return null;
-  const hasStatusComment = comments.some(isStatusBearingFastAckComment);
-  comments.sort(compareFastAckKeepPriority);
+  const hasStatusComment = comments.some(isCommandAckStatusComment);
+  comments.sort(compareCommandAckKeepPriority);
   const keepId = Number(comments[0]?.id) || null;
   for (const comment of comments) {
     const id = Number(comment.id) || 0;
     if (id <= 0 || id === keepId) continue;
-    if (hasStatusComment && isStatusBearingFastAckComment(comment)) continue;
+    if (hasStatusComment && isCommandAckStatusComment(comment)) continue;
     await githubFetch({
       token,
       path: `/repos/${repo}/issues/comments/${id}`,
@@ -763,38 +767,6 @@ async function pruneFastAckComments({
     });
   }
   return keepId;
-}
-
-function compareFastAckKeepPriority(left: LooseRecord, right: LooseRecord) {
-  const leftStatus = isStatusBearingFastAckComment(left) ? 1 : 0;
-  const rightStatus = isStatusBearingFastAckComment(right) ? 1 : 0;
-  if (leftStatus !== rightStatus) return rightStatus - leftStatus;
-  if (leftStatus > 0) return compareCommentsByUpdatedAtDesc(left, right);
-  return compareCommentsByCreatedAt(left, right);
-}
-
-function isStatusBearingFastAckComment(comment: LooseRecord) {
-  const body = String(comment.body ?? "");
-  return (
-    body.includes("clawsweeper-command-status:") ||
-    body.includes("<!-- clawsweeper-command-progress:start -->")
-  );
-}
-
-function compareCommentsByUpdatedAtDesc(left: LooseRecord, right: LooseRecord) {
-  const leftUpdated = String(left.updated_at ?? left.created_at ?? "");
-  const rightUpdated = String(right.updated_at ?? right.created_at ?? "");
-  return (
-    rightUpdated.localeCompare(leftUpdated) || (Number(right.id) || 0) - (Number(left.id) || 0)
-  );
-}
-
-function compareCommentsByCreatedAt(left: LooseRecord, right: LooseRecord) {
-  const leftCreated = String(left.created_at ?? "");
-  const rightCreated = String(right.created_at ?? "");
-  return (
-    leftCreated.localeCompare(rightCreated) || (Number(left.id) || 0) - (Number(right.id) || 0)
-  );
 }
 
 async function listFastAckComments({

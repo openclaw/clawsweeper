@@ -224,8 +224,3 @@ function formatError(error: unknown): string {
   if (error instanceof Error) return `${error.name}: ${error.message}`;
   return String(error);
 }
-
-/** Test-only: clear the per-message warning suppression cache. */
-export function __resetTargetRepoToolchainWarnings(): void {
-  warnedMessages.clear();
-}

@@ -5,8 +5,15 @@ import { pathToFileURL } from "node:url";
 import type { JsonObject, JsonValue } from "./json-types.js";
 import { asJsonObject } from "./json-types.js";
 import { parseArgs, repoRoot } from "./lib.js";
-import { readJsonFile } from "./json-file.js";
-import { errorText, postOpenClawAgentHook, resolveOpenClawHookConfig } from "./openclaw-hook.js";
+import { readJsonFile, writeJsonFile } from "./json-file.js";
+import {
+  errorText,
+  normalizeString,
+  postOpenClawAgentHook,
+  resolveOpenClawHookConfig,
+  stringArg,
+  stringOrNull,
+} from "./openclaw-hook.js";
 import type {
   CollectionResult,
   MergeLedgerEntry,
@@ -352,28 +359,11 @@ function reportRow(
   };
 }
 
-function writeJsonFile(filePath: string, value: JsonValue) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-}
-
 function parseTargetNumber(value: JsonValue): number | null {
   const match = String(value ?? "").match(/^#?([0-9]+)$/);
   if (!match?.[1]) return null;
   const parsed = Number.parseInt(match[1], 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
-}
-
-function stringArg(value: JsonValue): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function stringOrNull(value: JsonValue): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function normalizeString(value: string | undefined): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

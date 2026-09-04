@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { DEFAULT_TRUSTED_BOTS } from "./config.js";
 import type { JsonObject, JsonValue } from "./json-types.js";
 import { asJsonObject } from "./json-types.js";
+import { writeJsonFile } from "./json-file.js";
 import { parseArgs, repoRoot } from "./lib.js";
 import {
   boolEnv,
@@ -680,11 +681,6 @@ function summaryRow(
   reason: string | null,
 ): GithubActivityNotifierSummary {
   return { status, sent, failed, exitCode: 0, reason };
-}
-
-function writeJsonFile(filePath: string, value: JsonValue) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
 async function main() {
