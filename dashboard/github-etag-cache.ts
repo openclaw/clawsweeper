@@ -3,6 +3,7 @@ import {
   githubEtagCacheKeyFromValue,
   type GithubEtagCacheKey,
 } from "../src/github-etag-cache-contract.ts";
+import { recordOrEmpty as objectValue } from "../src/value-coerce.ts";
 
 export const GITHUB_ETAG_CACHE_TABLE = "github_etag_response_cache_v1";
 export const GITHUB_ETAG_CACHE_MAX_ENTRIES = 2_048;
@@ -330,10 +331,4 @@ async function sha256Bytes(value: Uint8Array<ArrayBuffer>): Promise<string> {
 
 function firstRow(rows: Iterable<SqlRow>): SqlRow | undefined {
   return Array.from(rows)[0];
-}
-
-function objectValue(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
 }

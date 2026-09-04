@@ -1,3 +1,5 @@
+import { recordOrEmpty as object } from "../src/value-coerce.ts";
+
 export const APPLY_OBSERVABILITY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const APPLY_OBSERVABILITY_RANGES = {
   "6h": 6 * 60 * 60 * 1000,
@@ -335,11 +337,6 @@ function unknownQueue() {
     oldest_backoff_age_seconds: null,
     oldest_lease_age_seconds: null,
   };
-}
-function object(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
 }
 function timestamp(value: unknown) {
   const time = Date.parse(String(value || ""));

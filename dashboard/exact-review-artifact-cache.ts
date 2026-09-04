@@ -1,3 +1,5 @@
+import { recordOrEmpty as objectValue } from "../src/value-coerce.ts";
+
 export const EXACT_REVIEW_ARTIFACT_RECEIPT_TABLE = "exact_review_artifact_receipts";
 const EXACT_REVIEW_ARTIFACT_CACHE_META_TABLE = "exact_review_artifact_cache_meta";
 export const EXACT_REVIEW_ARTIFACT_CACHE_PREFIX = "artifacts/exact-review/v1/";
@@ -344,10 +346,4 @@ function artifactBucket(value: unknown): ArtifactR2Bucket | null {
 
 function firstRow(rows: Iterable<SqlRow>): SqlRow | undefined {
   return Array.from(rows)[0];
-}
-
-function objectValue(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
 }
