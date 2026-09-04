@@ -1441,42 +1441,6 @@ test("multiple independently blocked groups share one authoritative refresh", as
   );
 });
 
-test("blocked canonical targets are counted only once across inventory refreshes", async () => {
-  const scenario = await automaticReconcileScenario({
-    rows: [
-      ...Array.from({ length: 2 }, (_, index) =>
-        row(
-          `blocked-${index + 1}`,
-          `publication:blocked-${index + 1}`,
-          index + 1,
-          "retry_exhausted",
-          true,
-          "eligible",
-          `openclaw/repo#${index + 1}`,
-        ),
-      ),
-      row(
-        "recoverable",
-        "publication:recoverable",
-        3,
-        "retry_exhausted",
-        true,
-        "eligible",
-        "openclaw/repo#3",
-      ),
-    ],
-    closedNumbers: [1, 2],
-    blockedCleanupIds: ["blocked-1", "blocked-2"],
-  });
-
-  assert.equal(scenario.first.code, 0, scenario.first.stderr);
-  const summary = JSON.parse(scenario.first.stdout);
-  assert.equal(summary.inspected_targets, 3);
-  assert.equal(summary.recovered_targets, 1);
-  assert.equal(summary.skipped_targets, 2);
-  assert.equal(scenario.inventoryRequests, 2);
-});
-
 test("active and capped targets are counted only once across blocked inventory refreshes", async () => {
   for (const active of [true, false]) {
     const scenario = await automaticReconcileScenario({

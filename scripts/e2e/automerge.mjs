@@ -10,7 +10,7 @@
  */
 
 import path from "node:path";
-import { parseArgs as parseNodeArgs } from "node:util";
+import { parseCliArgs } from "../cli-args.mjs";
 import { AUTOMERGE_E2E_SCENARIOS, runAutomergeE2E } from "../../test/e2e/automerge/run.mjs";
 import { AUTOMERGE_E2E_FIXTURES } from "../../test/e2e/automerge/target-fixtures.mjs";
 
@@ -90,31 +90,16 @@ try {
 }
 
 function parseArgs(argv) {
-  const normalized = [];
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (arg === "--") continue;
-    if (["-h", "--help", "--list-scenarios", "--list-fixtures", "--keep"].includes(arg)) {
-      normalized.push(arg);
-    } else if (
-      ["--scenario", "--fixture", "--expect", "--candidate-root", "--output"].includes(arg)
-    ) {
-      normalized.push(`${arg}=${requiredValue(argv, ++index, arg)}`);
-    } else throw new Error(`unknown option: ${arg}; use --help for usage`);
-  }
-  const { values } = parseNodeArgs({
-    args: normalized,
-    options: {
-      help: { type: "boolean", short: "h" },
-      "list-scenarios": { type: "boolean" },
-      "list-fixtures": { type: "boolean" },
-      keep: { type: "boolean" },
-      scenario: { type: "string" },
-      fixture: { type: "string" },
-      expect: { type: "string" },
-      "candidate-root": { type: "string" },
-      output: { type: "string" },
-    },
+  const values = parseCliArgs(argv, {
+    help: { type: "boolean", short: "h" },
+    "list-scenarios": { type: "boolean" },
+    "list-fixtures": { type: "boolean" },
+    keep: { type: "boolean" },
+    scenario: { type: "string" },
+    fixture: { type: "string" },
+    expect: { type: "string" },
+    "candidate-root": { type: "string" },
+    output: { type: "string" },
   });
   return {
     help: values.help,
@@ -127,10 +112,4 @@ function parseArgs(argv) {
     candidateRoot: values["candidate-root"],
     output: values.output,
   };
-}
-
-function requiredValue(argv, index, option) {
-  const value = argv[index];
-  if (!value || value.startsWith("--")) throw new Error(`${option} requires a value`);
-  return value;
 }

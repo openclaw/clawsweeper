@@ -13,7 +13,7 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { parseArgs as parseNodeArgs } from "node:util";
+import { parseCliArgs } from "../cli-args.mjs";
 
 const args = parseArgs(process.argv.slice(2));
 if (args.help) {
@@ -172,38 +172,16 @@ function assertRunSucceeded(command, child) {
 }
 
 function parseArgs(argv) {
-  const normalized = [];
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (arg === "--") continue;
-    if (["-h", "--help", "--no-build"].includes(arg)) normalized.push(arg);
-    else if (
-      [
-        "--scenario",
-        "--fixture",
-        "--expect",
-        "--candidate-root",
-        "--output",
-        "--image",
-        "--base-image",
-      ].includes(arg)
-    ) {
-      normalized.push(`${arg}=${requiredValue(argv, ++index, arg)}`);
-    } else throw new Error(`unknown option: ${arg}; use --help for usage`);
-  }
-  const { values } = parseNodeArgs({
-    args: normalized,
-    options: {
-      help: { type: "boolean", short: "h" },
-      "no-build": { type: "boolean" },
-      scenario: { type: "string" },
-      fixture: { type: "string" },
-      expect: { type: "string" },
-      "candidate-root": { type: "string" },
-      output: { type: "string" },
-      image: { type: "string" },
-      "base-image": { type: "string" },
-    },
+  const values = parseCliArgs(argv, {
+    help: { type: "boolean", short: "h" },
+    "no-build": { type: "boolean" },
+    scenario: { type: "string" },
+    fixture: { type: "string" },
+    expect: { type: "string" },
+    "candidate-root": { type: "string" },
+    output: { type: "string" },
+    image: { type: "string" },
+    "base-image": { type: "string" },
   });
   return {
     help: values.help,
@@ -216,10 +194,4 @@ function parseArgs(argv) {
     image: values.image,
     baseImage: values["base-image"],
   };
-}
-
-function requiredValue(argv, index, option) {
-  const value = argv[index];
-  if (!value || value.startsWith("--")) throw new Error(`${option} requires a value`);
-  return value;
 }

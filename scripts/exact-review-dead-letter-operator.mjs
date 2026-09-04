@@ -422,6 +422,7 @@ async function main(argv) {
 }
 
 function parseArgs(argv) {
+  // Unlike the E2E CLIs, this operator consumes missing or option-looking values verbatim.
   const normalized = [];
   const stringOptions = new Set([
     "--action",
@@ -462,12 +463,12 @@ function parseArgs(argv) {
   const maxRecoveriesProvided = values["max-recoveries"] !== undefined;
   const args = {
     action: values.action ?? "",
-    ids: String(values.ids ?? "")
+    ids: (values.ids ?? "")
       .split(",")
       .map((id) => id.trim())
       .filter(Boolean),
-    idempotencyKey: String(values["idempotency-key"] ?? "").trim(),
-    note: String(values.note ?? "").trim(),
+    idempotencyKey: (values["idempotency-key"] ?? "").trim(),
+    note: (values.note ?? "").trim(),
     execute: values.execute ?? false,
     forceUnchanged: values["force-unchanged"] ?? false,
     maxTargets:
@@ -477,8 +478,7 @@ function parseArgs(argv) {
     maxRecoveries: maxRecoveriesProvided
       ? boundedInteger(values["max-recoveries"], "--max-recoveries", 0, MAX_RECONCILE_RECOVERIES)
       : MAX_RECONCILE_RECOVERIES,
-    maxRecoveriesProvided,
-    output: String(values.output ?? DEFAULT_OUTPUT).trim(),
+    output: (values.output ?? DEFAULT_OUTPUT).trim(),
     help: values.help ?? false,
   };
   if (args.help) return args;
@@ -495,7 +495,7 @@ function parseArgs(argv) {
   if (args.forceUnchanged && args.action !== "reconcile-parked") {
     throw new Error("--force-unchanged requires --action reconcile-parked");
   }
-  if (args.action === "reconcile-parked" && !args.maxRecoveriesProvided) {
+  if (args.action === "reconcile-parked" && !maxRecoveriesProvided) {
     args.maxRecoveries = MAX_PARKED_RECONCILE_RECOVERIES;
   }
   if (args.action === "reconcile-parked" && args.maxRecoveries > MAX_PARKED_RECONCILE_RECOVERIES) {
@@ -590,6 +590,19 @@ async function reconcileDeadLetters({
       return { ...error.summary, blocked: true };
     }
   };
+  const resolveInvalidRows = async () => {
+    const resolution = await resolveForReconciliation({
+      queueUrl,
+      secret,
+      rows: invalidRows.slice(0, MAX_RESOLUTION_IDS),
+      note: "automatic reconciliation: invalid legacy publication has no recoverable target",
+      execute: args.execute,
+      openIds,
+    });
+    summary.resolved_rows += resolution.resolved;
+    summary.invalid_rows += resolution.resolved;
+    return resolution;
+  };
   const refreshBlockedInventory = () => {
     if (!blockedResolutions.length) return;
     throw new DeadLetterInventoryChangedError(
@@ -624,21 +637,12 @@ async function reconcileDeadLetters({
   // drain; every GitHub-targeted mutation waits for a complete inventory.
   if (!inventory.complete) {
     if (invalidRows.length) {
-      const resolution = await resolveForReconciliation({
-        queueUrl,
-        secret,
-        rows: invalidRows.slice(0, MAX_RESOLUTION_IDS),
-        note: "automatic reconciliation: invalid legacy publication has no recoverable target",
-        execute: args.execute,
-        openIds,
-      });
-      summary.resolved_rows += resolution.resolved;
-      summary.invalid_rows += resolution.resolved;
+      await resolveInvalidRows();
     }
     refreshBlockedInventory();
     accountClassifiedSkips(
       summary,
-      selectedRecoveryTargets(groups),
+      [...groups.values()].map((group) => group.target),
       "inventory_incomplete",
       new Error("dead-letter inventory is incomplete"),
     );
@@ -689,16 +693,7 @@ async function reconcileDeadLetters({
       );
     }
     if (invalidRows.length) {
-      const resolution = await resolveForReconciliation({
-        queueUrl,
-        secret,
-        rows: invalidRows.slice(0, MAX_RESOLUTION_IDS),
-        note: "automatic reconciliation: invalid legacy publication has no recoverable target",
-        execute: args.execute,
-        openIds,
-      });
-      summary.resolved_rows += resolution.resolved;
-      summary.invalid_rows += resolution.resolved;
+      await resolveInvalidRows();
     }
     refreshBlockedInventory();
     summary.skipped_targets += groups.size;
@@ -712,7 +707,9 @@ async function reconcileDeadLetters({
     if (!["open", "closed"].includes(live.state)) {
       accountClassifiedSkips(
         summary,
-        selectedInspectedRecoveryTargets(groups, identities),
+        selectedGroups
+          .filter((group) => identities.has(normalizeRecoveryTargetKey(group.target)))
+          .map((group) => group.target),
         "identity_not_actionable",
         new Error("canonical target identity is not open or closed"),
       );
@@ -1039,16 +1036,7 @@ async function reconcileDeadLetters({
   }
 
   if (invalidRows.length) {
-    const resolution = await resolveForReconciliation({
-      queueUrl,
-      secret,
-      rows: invalidRows.slice(0, MAX_RESOLUTION_IDS),
-      note: "automatic reconciliation: invalid legacy publication has no recoverable target",
-      execute: args.execute,
-      openIds,
-    });
-    summary.resolved_rows += resolution.resolved;
-    summary.invalid_rows += resolution.resolved;
+    const resolution = await resolveInvalidRows();
     if (resolution.unparked) {
       printReconcileResult(summary);
       return;
@@ -1779,7 +1767,7 @@ async function reconcileResolve({
   outcome,
 }) {
   if (!execute) {
-    for (const row of rows) openIds?.delete(row.dead_letter_id);
+    for (const row of rows) openIds.delete(row.dead_letter_id);
     return { resolved: rows.length, unparked: 0 };
   }
   const result = await signedPost({
@@ -1816,7 +1804,7 @@ async function reconcileResolve({
       ],
     );
   }
-  for (const row of rows) openIds?.delete(row.dead_letter_id);
+  for (const row of rows) openIds.delete(row.dead_letter_id);
   return summary;
 }
 
@@ -2206,16 +2194,6 @@ function countBy(rows, keyFor) {
   );
 }
 
-function selectedRecoveryTargets(groups) {
-  return [...groups.values()].map((group) => group.target);
-}
-
-function selectedInspectedRecoveryTargets(groups, identities) {
-  return [...groups.values()]
-    .filter((group) => identities.has(normalizeRecoveryTargetKey(group.target)))
-    .map((group) => group.target);
-}
-
 function accountClassifiedSkips(summary, targets, reasonClass, reason, count = targets.length) {
   if (count < 1) return;
   summary.skipped_targets += count;
@@ -2375,11 +2353,8 @@ async function assertOpenRecoveryTargets(targets, targetReadTokens) {
   const canonicalTargetIds = [];
   for (const target of targets) {
     const item = await inspectRecoveryTarget(target, targetReadTokens);
-    if (item?.state !== "open") {
+    if (item.state !== "open") {
       throw new Error(`fresh recovery target is not open: ${target}`);
-    }
-    if (typeof item.node_id !== "string" || !item.node_id) {
-      throw new Error(`live target check returned an invalid canonical identity for ${target}`);
     }
     canonicalTargetIds.push(item.node_id);
   }
