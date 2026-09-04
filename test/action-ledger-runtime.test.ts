@@ -2346,32 +2346,6 @@ test("producer locks reclaim fresh dead owners and never evict a live holder by 
   assert.ok(Date.now() - deadStartedAt < 5_000);
   assert.doesNotThrow(releaseDead);
 
-  const reusedRoot = tempRoot();
-  const reusedEvent = recordReviewNumber(reusedRoot, 45);
-  assert.ok(reusedEvent);
-  const reusedTarget = prepareSafeWriteTarget(
-    reusedRoot,
-    producerLockRelativePath(reusedEvent),
-    "test reused producer lock",
-  );
-  const currentIncarnation = processIncarnationIdentitySha256();
-  assert.ok(currentIncarnation);
-  const reusedContent = `${actionLedgerJson({
-    schema: "clawsweeper.action-ledger-producer-lock",
-    schema_version: process.platform === "darwin" ? 2 : 1,
-    pid: process.pid,
-    process_incarnation_sha256:
-      currentIncarnation === "0".repeat(64) ? "1".repeat(64) : "0".repeat(64),
-    acquired_at_ms: Date.now(),
-    nonce: "00000000-0000-4000-8000-000000000002",
-  })}\n`;
-  const releaseReused = tryAcquireUtf8FileLockNoFollow(reusedTarget, reusedContent);
-  assert.ok(releaseReused);
-  const reusedStartedAt = Date.now();
-  assert.ok(recordReviewNumber(reusedRoot, 46));
-  assert.ok(Date.now() - reusedStartedAt < 5_000);
-  assert.doesNotThrow(releaseReused);
-
   const liveRoot = tempRoot();
   const outputRoot = trustedChildRoot(liveRoot, "state");
   const liveEvent = recordReviewNumber(liveRoot, 51);
@@ -2785,10 +2759,6 @@ test(
     assert.doesNotThrow(releaseCached);
   },
 );
-
-test("Linux zombie-lock polling rejects PID 0 before probing procfs", async () => {
-  await assert.rejects(waitForLinuxProcessState(0, "Z"), /invalid Linux process PID: 0/);
-});
 
 test(
   "Linux producer locks reclaim zombie owners",

@@ -28,6 +28,16 @@ import {
   workPlanCandidateReport,
 } from "./helpers.ts";
 
+function createApplyDirectories(root: string) {
+  const itemsDir = join(root, "items");
+  const closedDir = join(root, "closed");
+  const plansDir = join(root, "plans");
+  const reportPath = join(root, "apply-report.json");
+  mkdirSync(itemsDir, { recursive: true });
+  mkdirSync(plansDir, { recursive: true });
+  return { itemsDir, closedDir, plansDir, reportPath };
+}
+
 test("apply-time implementation provenance keeps incomplete PR closeout metadata open", () => {
   const incomplete = `repository: openclaw/openclaw
 fixed_pr_url: unknown
@@ -147,13 +157,8 @@ test("closeout receipts ignore spoofed markers after posting the owned receipt",
 test("partial label-sync authentication failures preserve labels already applied", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+    const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
     const labelState = join(root, "labels.json");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     writeFileSync(labelState, "[]");
     const synced = reportWithSyncedReviewComment(
       workPlanCandidateReport({
@@ -217,13 +222,8 @@ if (actual[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
 test("a lost mutation lease preserves labels already applied", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+    const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
     const statePath = join(root, "state.json");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     const number = 321;
     const reviewedAt = new Date(Date.now() - 180_000).toISOString();
     const startedAt = new Date(Date.now() - 120_000).toISOString();
@@ -430,15 +430,10 @@ test("complete activity hydration distinguishes truncation from hidden human act
 test("apply-decisions publishes a detected bulk-filer label from a failed exact review artifact", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+    const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
     const logPath = join(root, "gh.log");
     const number = 74486;
     const reviewedAt = new Date().toISOString();
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     writeFileSync(
       join(itemsDir, `${number}.md`),
       `${reportFrontMatter({
@@ -557,15 +552,10 @@ if (args[0] === "api" && /\\/issues\\/${number}$/.test(path)) {
 test("apply-decisions clears a stale bulk-filer label for a redacted maintain role", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+    const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
     const logPath = join(root, "gh.log");
     const number = 74487;
     const reviewedAt = new Date().toISOString();
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     writeFileSync(
       join(itemsDir, `${number}.md`),
       `${reportFrontMatter({
@@ -698,13 +688,10 @@ test("exact event source drift includes a revision change while its apply lease 
   );
 });
 
-test("exact publication consumes its matching completed issue review lease", () => {
+function assertCompletedIssueLeaseAccepted(extraArgs: string[]): void {
   const root = mkdtempSync(tmpPrefix);
   try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+    const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
     const number = 103599;
     const reviewedAt = new Date(Date.now() - 5 * 60_000).toISOString();
     const leaseUpdatedAt = new Date(Date.now() - 60_000).toISOString();
@@ -729,8 +716,6 @@ test("exact publication consumes its matching completed issue review lease", () 
       pull_request: null,
     };
     const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     const closeReport = implementedCloseReport({
       repository: "openclaw/clawsweeper",
       number,
@@ -805,7 +790,7 @@ if (args[0] === "api" && new RegExp("/issues/${number}/comments(?:\\\\?|$)").tes
         extraArgs: [
           "--dry-run",
           "--event-apply-proof",
-          "--exact-event-publication",
+          ...extraArgs,
           "--item-numbers",
           String(number),
           "--processed-limit",
@@ -830,15 +815,20 @@ if (args[0] === "api" && new RegExp("/issues/${number}/comments(?:\\\\?|$)").tes
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+}
+
+test("exact publication consumes its matching completed issue review lease", () => {
+  assertCompletedIssueLeaseAccepted(["--exact-event-publication"]);
+});
+
+test("exact issue apply accepts its report-owned lease update after stable source proof", () => {
+  assertCompletedIssueLeaseAccepted([]);
 });
 
 test("exact publication rechecks after batched labels and again before close", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+    const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
     const statePath = join(root, "state.json");
     const logPath = join(root, "gh.log");
     const number = 103701;
@@ -866,8 +856,6 @@ test("exact publication rechecks after batched labels and again before close", (
       pull_request: null,
     };
     const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     const closeReport = implementedCloseReport({
       repository: "openclaw/openclaw",
       number,
@@ -1104,10 +1092,7 @@ if (args[0] === "api" && new RegExp("/issues/comments/\\\\d+$").test(path) && ar
 test("exact metadata-only publication flushes recoverable labels and drops failed optional additions", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+    const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
     const statePath = join(root, "state.json");
     const logPath = join(root, "gh.log");
     const patchedCommentPath = join(root, "patched-comment.md");
@@ -1135,8 +1120,6 @@ test("exact metadata-only publication flushes recoverable labels and drops faile
       pull_request: null,
     };
     const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     const sourceReport = workPlanCandidateReport({
       repository: "openclaw/openclaw",
       number,
@@ -1349,10 +1332,7 @@ for (const scenario of [
   test(`issue apply CAS and publisher preserve ${scenario.name} tuple evidence`, () => {
     const root = mkdtempSync(tmpPrefix);
     try {
-      const itemsDir = join(root, "items");
-      const closedDir = join(root, "closed");
-      const plansDir = join(root, "plans");
-      const reportPath = join(root, "apply-report.json");
+      const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
       const logPath = join(root, "gh.log");
       const commentReadCountPath = join(root, "comment-read-count");
       const number = 74490;
@@ -1376,8 +1356,6 @@ for (const scenario of [
         pull_request: null,
       };
       const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
-      mkdirSync(itemsDir, { recursive: true });
-      mkdirSync(plansDir, { recursive: true });
 
       const oldReport = workPlanCandidateReport({
         number,
@@ -1537,10 +1515,7 @@ if (args[0] === "api" && args[1] === "-i" && new RegExp("/issues/${number}/timel
 test("issue apply rejects a stable live source revision that differs from the report", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+    const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
     const logPath = join(root, "gh.log");
     const number = 74492;
     const reviewedAt = "2026-05-01T00:00:00Z";
@@ -1564,8 +1539,6 @@ test("issue apply rejects a stable live source revision that differs from the re
     const reviewedIssue = { ...liveIssue, body: "Body at review time.", updated_at: reviewedAt };
     const reviewedRevision = itemSourceRevisionSha256ForTest(reviewedIssue, []);
     const liveRevision = itemSourceRevisionSha256ForTest(liveIssue, []);
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     writeFileSync(
       join(itemsDir, `${number}.md`),
       workPlanCandidateReport({
@@ -1638,10 +1611,7 @@ if (args[0] === "api" && new RegExp("/issues/${number}/comments(?:\\\\?|$)").tes
 test("issue apply preserves an owned active review lease for the live source revision", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+    const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
     const logPath = join(root, "gh.log");
     const number = 74491;
     const reviewedAt = "2026-05-01T00:00:00Z";
@@ -1665,8 +1635,6 @@ test("issue apply preserves an owned active review lease for the live source rev
       pull_request: null,
     };
     const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     const report = workPlanCandidateReport({
       number,
       title: issue.title,
@@ -1763,153 +1731,11 @@ if (args[0] === "api" && new RegExp("/issues/${number}/comments(?:\\\\?|$)").tes
   }
 });
 
-test("exact issue apply accepts its report-owned lease update after stable source proof", () => {
-  for (const number of [103599, 103690]) {
-    const root = mkdtempSync(tmpPrefix);
-    try {
-      const itemsDir = join(root, "items");
-      const closedDir = join(root, "closed");
-      const plansDir = join(root, "plans");
-      const reportPath = join(root, "apply-report.json");
-      const reviewedAt = new Date(Date.now() - 5 * 60_000).toISOString();
-      const leaseUpdatedAt = new Date(Date.now() - 60_000).toISOString();
-      const leaseExpiresAt = new Date(Date.now() + 30 * 60_000).toISOString();
-      const leaseOwner = `exact-issue-${number}`;
-      const leaseCommentId = 700_000 + number;
-      const issue = {
-        number,
-        title: `Incident issue ${number}`,
-        body: "The reviewed issue source remains unchanged.",
-        html_url: `https://github.com/openclaw/openclaw/issues/${number}`,
-        created_at: "2026-04-01T00:00:00Z",
-        updated_at: leaseUpdatedAt,
-        closed_at: null,
-        state: "open",
-        locked: false,
-        active_lock_reason: null,
-        author_association: "CONTRIBUTOR",
-        user: { login: "reporter" },
-        labels: [],
-        comments: 2,
-        pull_request: null,
-      };
-      const sourceRevision = itemSourceRevisionSha256ForTest(issue, []);
-      mkdirSync(itemsDir, { recursive: true });
-      mkdirSync(plansDir, { recursive: true });
-      const closeReport = implementedCloseReport({
-        repository: "openclaw/clawsweeper",
-        number,
-        type: "issue",
-        title: issue.title,
-        reviewed_at: reviewedAt,
-        item_updated_at: reviewedAt,
-        item_source_revision: sourceRevision,
-        review_lease_owner: leaseOwner,
-        review_lease_comment_id: String(leaseCommentId),
-        labels: JSON.stringify([]),
-      });
-      const synced = reportWithSyncedReviewComment(closeReport, number, "implemented_on_main");
-      writeFileSync(join(itemsDir, `${number}.md`), synced.report, "utf8");
-      const leaseComment = renderReviewStartStatusComment({
-        number,
-        kind: "issue",
-        title: issue.title,
-        headSha: sourceRevision,
-        startedAt: leaseUpdatedAt,
-        leaseExpiresAt,
-        leaseOwner,
-      });
-      const comments = [
-        {
-          id: 9000 + number,
-          html_url: `https://github.com/openclaw/openclaw/issues/${number}#issuecomment-${
-            9000 + number
-          }`,
-          created_at: reviewedAt,
-          updated_at: reviewedAt,
-          user: { login: "clawsweeper[bot]" },
-          body: synced.comment,
-        },
-        {
-          id: leaseCommentId,
-          html_url: `https://github.com/openclaw/openclaw/issues/${number}#issuecomment-${leaseCommentId}`,
-          created_at: leaseUpdatedAt,
-          updated_at: leaseUpdatedAt,
-          user: { login: "clawsweeper[bot]" },
-          body: leaseComment,
-        },
-      ];
-
-      const ghMock = `
-const issue = ${JSON.stringify(issue)};
-const comments = ${JSON.stringify(comments)};
-const rawArgs = process.argv.slice(2);
-const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
-const path = args.includes("-i") ? args[args.indexOf("-i") + 1] : args[1] || "";
-const slurp = args.includes("--slurp");
-if (args[0] === "api" && new RegExp("/issues/${number}/comments(?:\\\\?|$)").test(path)) {
-  console.log(JSON.stringify(slurp ? [comments] : comments));
-} else if (args[0] === "api" && new RegExp("/issues/${number}/timeline(?:\\\\?|$)").test(path)) {
-  console.log(JSON.stringify(slurp ? [[]] : []));
-} else if (args[0] === "api" && new RegExp("/issues/${number}$").test(path)) {
-  console.log(JSON.stringify(issue));
-} else if (args[0] === "api" && path.startsWith("search/issues?")) {
-  console.log(JSON.stringify({ items: [] }));
-} else if (args[0] === "issue" && args[1] === "view") {
-  console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
-} else if (args[0] === "label" || args[0] === "issue") {
-  console.log("");
-} else {
-  console.error("unexpected gh args", JSON.stringify(args));
-  process.exit(1);
-}
-      `;
-      withMockGh(root, ghMock, () => {
-        runApplyDecisionsForTest({
-          itemsDir,
-          closedDir,
-          plansDir,
-          reportPath,
-          extraArgs: [
-            "--dry-run",
-            "--event-apply-proof",
-            "--item-numbers",
-            String(number),
-            "--processed-limit",
-            "2",
-          ],
-        });
-      });
-
-      assert.deepEqual(JSON.parse(readFileSync(reportPath, "utf8")), [
-        {
-          number,
-          action: "review_comment_synced",
-          reason: "would update durable Codex review comment",
-          durableReviewSynced: true,
-        },
-        {
-          number,
-          action: "closed",
-          reason: "dry-run: would close as already implemented on main",
-        },
-      ]);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  }
-});
-
 test("apply-decisions rejects a changed close report even when an expired lease is newest", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+    const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
     const logPath = join(root, "gh.log");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     writeFileSync(
       join(itemsDir, "321.md"),
       workPlanCandidateReport({
@@ -2019,14 +1845,9 @@ if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
 test("apply-decisions records PR label sync as ClawSweeper-owned churn", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+    const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
     const logPath = join(root, "gh.log");
     const itemPath = join(itemsDir, "74478.md");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     writeFileSync(
       itemPath,
       `${reportFrontMatter({
@@ -2186,14 +2007,9 @@ if (args[0] === "api" && /\\/issues\\/74478$/.test(path)) {
 test("apply-decisions clears stale PR review labels when live head changed", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+    const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
     const logPath = join(root, "gh.log");
     const itemPath = join(itemsDir, "74481.md");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     const staleLabels = [
       "P2",
       "rating: 🧂 unranked krab",
@@ -2377,14 +2193,9 @@ if (args[0] === "api" && /\\/issues\\/74481$/.test(path)) {
 test("apply-decisions skips stale label cleanup when the durable review comment is newer", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+    const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
     const logPath = join(root, "gh.log");
     const itemPath = join(itemsDir, "74483.md");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     const readyLabel = "status: \u{1F440} ready for maintainer look";
     const mergeRiskLabel = "merge-risk: \u{1F6A8} message-delivery";
     const staleLabels = [
@@ -2566,10 +2377,7 @@ for (const scenario of [
   test(`exact publication reconciles labels only for a current review: ${scenario}`, () => {
     const root = mkdtempSync(tmpPrefix);
     try {
-      const itemsDir = join(root, "items");
-      const closedDir = join(root, "closed");
-      const plansDir = join(root, "plans");
-      const reportPath = join(root, "apply-report.json");
+      const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
       const logPath = join(root, "gh.log");
       const itemPath = join(itemsDir, "74482.md");
       const headSha = "bc60b889bc60b889bc60b889bc60b889bc60b889";
@@ -2603,8 +2411,6 @@ for (const scenario of [
           },
         ],
       );
-      mkdirSync(itemsDir, { recursive: true });
-      mkdirSync(plansDir, { recursive: true });
       const sourceReport = `${reportFrontMatter({
         repository: "openclaw/openclaw",
         type: "pull_request",
@@ -2843,14 +2649,9 @@ if (args[0] === "api" && /\\/issues\\/74482$/.test(path)) {
 test("apply-decisions skips fresh-head PR label sync when humans act after the review snapshot", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+    const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
     const logPath = join(root, "gh.log");
     const itemPath = join(itemsDir, "74483.md");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     const sourceReport = `${reportFrontMatter({
       repository: "openclaw/openclaw",
       type: "pull_request",
@@ -3021,14 +2822,9 @@ if (args[0] === "api" && /\\/issues\\/74483$/.test(path)) {
 test("apply-decisions withholds fresh-head PR label sync from close proposals", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+    const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
     const logPath = join(root, "gh.log");
     const itemPath = join(itemsDir, "74484.md");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     const sourceReport = `${reportFrontMatter({
       repository: "openclaw/openclaw",
       type: "pull_request",
@@ -3198,14 +2994,9 @@ if (args[0] === "api" && /\\/issues\\/74484$/.test(path)) {
 test("apply-decisions routes parsed security owner acceptance to maintainer review", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+    const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
     const labelLogPath = join(root, "label-sync.log");
     const itemPath = join(itemsDir, "74480.md");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
 
     const sourceReport = `${reportFrontMatter({
       repository: "openclaw/openclaw",
@@ -3300,14 +3091,9 @@ Full review comments:
 test("apply-decisions clears a recovery escalation only after publishing a completed PR review", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+    const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
     const logPath = join(root, "gh.log");
     const itemPath = join(itemsDir, "74479.md");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     writeFileSync(
       itemPath,
       `${reportFrontMatter({
@@ -3480,16 +3266,11 @@ if (args[0] === "api" && /\\/issues\\/74479$/.test(path)) {
 test("apply preserves an in-flight exact-head review lease and defers old report actions", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+    const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
     const number = 74486;
     const headSha = "0123456789abcdef0123456789abcdef01234567";
     const startedAt = new Date(Date.now() - 60_000).toISOString();
     const expiresAt = new Date(Date.now() + 30 * 60_000).toISOString();
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
 
     const closeReport = lowSignalCloseReport({
       number,
@@ -3563,16 +3344,11 @@ test("apply preserves an in-flight exact-head review lease and defers old report
 test("a lease published during durable comment sync survives the write and blocks close", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+    const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
     const number = 74489;
     const headSha = "0123456789abcdef0123456789abcdef01234567";
     const startedAt = new Date(Date.now() - 30_000).toISOString();
     const expiresAt = new Date(Date.now() + 30 * 60_000).toISOString();
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
 
     const closeReport = lowSignalCloseReport({
       number,
@@ -3692,18 +3468,13 @@ test("a lease published during durable comment sync survives the write and block
 test("durable publication never deletes a legacy lease that can refresh concurrently", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+    const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
     const commentWriteLogPath = join(root, "comment-writes.log");
     const number = 74493;
     const headSha = "0123456789abcdef0123456789abcdef01234567";
     const startedAt = new Date(Date.now() - 2 * 60_000).toISOString();
     const expiredAt = new Date(Date.now() - 60_000).toISOString();
     const refreshedAt = new Date(Date.now() + 30 * 60_000).toISOString();
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
 
     const closeReport = lowSignalCloseReport({
       number,
@@ -3793,16 +3564,11 @@ test("durable publication never deletes a legacy lease that can refresh concurre
 test("apply defers incomplete old report actions when a same-head review finishes mid-run", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+    const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
     const number = 74488;
     const headSha = "0123456789abcdef0123456789abcdef01234567";
     const oldReviewedAt = "2026-05-01T00:00:00Z";
     const newReviewedAt = new Date().toISOString();
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
 
     const closeReport = lowSignalCloseReport({
       number,
@@ -3883,13 +3649,8 @@ test("apply defers incomplete old report actions when a same-head review finishe
 test("apply-decisions does not advisory-label close proposals before close gates finish", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+    const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
     const logPath = join(root, "gh.log");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     const closeReport = workPlanCandidateReport({
       decision: "close",
       action_taken: "proposed_close",
@@ -4021,7 +3782,6 @@ test("apply-decisions verifies provenance after a closeout note and before closi
     "paired_provenance_retargeted_before_close",
     "paired_human_activity_during_lease",
   ] as const) {
-    const lifecycleDrift = scenario === "lifecycle_drift";
     const multipleLinkedIssues = scenario === "multiple_linked_issues";
     const mismatchedCanonical = scenario === "mismatched_canonical";
     const mismatchedCanonicalRepository = scenario === "mismatched_canonical_repository";
@@ -4041,23 +3801,13 @@ test("apply-decisions verifies provenance after a closeout note and before closi
     const pairedProvenanceRetargetedBeforeClose =
       scenario === "paired_provenance_retargeted_before_close";
     const pairedHumanActivityDuringLease = scenario === "paired_human_activity_during_lease";
-    const lockedCloseoutComment = scenario === "locked_closeout_comment";
-    const betweenFreshnessAndCloseoutHumanActivity =
-      scenario === "between_freshness_and_closeout_human_activity";
-    const postCloseoutHumanActivity = scenario === "post_closeout_human_activity";
-    const postCloseoutPrReviewActivity = scenario === "post_closeout_pr_review_activity";
     const root = mkdtempSync(tmpPrefix);
     try {
-      const itemsDir = join(root, "items");
-      const closedDir = join(root, "closed");
-      const plansDir = join(root, "plans");
-      const reportPath = join(root, "apply-report.json");
+      const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
       const logPath = join(root, "gh.log");
       const postedBodiesPath = join(root, "posted-bodies.jsonl");
       const prCommentPath = join(root, "pr-review-comment");
       const linkedIssueCommentPath = join(root, "linked-issue-review-comment");
-      mkdirSync(itemsDir, { recursive: true });
-      mkdirSync(plansDir, { recursive: true });
       const reviewedSourceRevision = itemSourceRevisionSha256ForTest(
         {
           title: "Render work plans",
@@ -4123,12 +3873,7 @@ test("apply-decisions verifies provenance after a closeout note and before closi
 const { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } = require("fs");
 const logPath = ${JSON.stringify(logPath)};
 const postedBodiesPath = ${JSON.stringify(postedBodiesPath)};
-const graphqlStatePath = ${JSON.stringify(join(root, "graphql-reads"))};
 const closeoutPostedPath = ${JSON.stringify(join(root, "closeout-posted"))};
-const betweenFreshnessAndCloseoutHumanActivityPath = ${JSON.stringify(
-        join(root, "between-freshness-and-closeout-human-activity"),
-      )};
-const issueReadsAfterCloseoutPath = ${JSON.stringify(join(root, "issue-reads-after-closeout"))};
 const pairedIssueCloseoutPostedPath = ${JSON.stringify(join(root, "paired-issue-closeout-posted"))};
 const pairedIssueBotActivityPath = ${JSON.stringify(join(root, "paired-issue-bot-activity"))};
 const pairedIssueHumanActivityPath = ${JSON.stringify(join(root, "paired-issue-human-activity"))};
@@ -4137,18 +3882,12 @@ const pairedIssueLeasePath = ${JSON.stringify(join(root, "paired-issue-lease"))}
 const pairedIssueLeaseWritesPath = ${JSON.stringify(join(root, "paired-issue-lease-writes"))};
 const prCommentPath = ${JSON.stringify(prCommentPath)};
 const linkedIssueCommentPath = ${JSON.stringify(linkedIssueCommentPath)};
-const comment = ${JSON.stringify(synced.comment)};
 const linkedIssueComment = ${JSON.stringify(linkedIssueSynced.comment)};
 const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 appendFileSync(logPath, JSON.stringify(args) + "\\n");
 const path = args[1] || "";
-const lifecycleDrift = ${lifecycleDrift};
 const multipleLinkedIssues = ${multipleLinkedIssues};
-const lockedCloseoutComment = ${lockedCloseoutComment};
-const betweenFreshnessAndCloseoutHumanActivity = ${betweenFreshnessAndCloseoutHumanActivity};
-const postCloseoutHumanActivity = ${postCloseoutHumanActivity};
-const postCloseoutPrReviewActivity = ${postCloseoutPrReviewActivity};
 const pairedSourceChangeDuringCloseout = ${pairedSourceChangeDuringCloseout};
 const pairedMetadataChangeDuringCloseout = ${pairedMetadataChangeDuringCloseout};
 const pairedBotActivityDuringCloseout = ${pairedBotActivityDuringCloseout};
@@ -4162,24 +3901,13 @@ const pairedProvenanceRevokedBeforeClose = ${pairedProvenanceRevokedBeforeClose}
 const pairedProvenanceRetargetedBeforeClose = ${pairedProvenanceRetargetedBeforeClose};
 const pairedHumanActivityDuringLease = ${pairedHumanActivityDuringLease};
 if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(args[2] || "")) {
-  const timeline = existsSync(betweenFreshnessAndCloseoutHumanActivityPath)
-    ? [{
-        id: 9323,
-        event: "commented",
-        created_at: readFileSync(betweenFreshnessAndCloseoutHumanActivityPath, "utf8"),
-        actor: { login: "contributor" }
-  }]
-    : [];
-  console.log("HTTP/2 200\\n\\n" + JSON.stringify(timeline));
+  console.log("HTTP/2 200\\n\\n[]");
 } else if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/456\\/timeline(?:\\?|$)/.test(args[2] || "")) {
   console.log("HTTP/2 200\\n\\n[]");
 } else if (args[0] === "issue" && args[1] === "view") {
   console.log(JSON.stringify({ closedByPullRequestsReferences: [] }));
 } else if (args[0] === "api" && args[1] === "graphql") {
-  const graphqlReads = existsSync(graphqlStatePath) ? Number(readFileSync(graphqlStatePath, "utf8")) : 0;
-  writeFileSync(graphqlStatePath, String(graphqlReads + 1), "utf8");
   const closingReferenceQuery = args.some((argument) => argument.includes("closingIssuesReferences"));
-  const currentState = closingReferenceQuery || lifecycleDrift ? "OPEN" : "CLOSED";
   const closingReferenceNodes = closingReferenceQuery
     ? pairedProvenanceRevokedBeforeClose && existsSync(pairedIssueLeasePath)
       ? []
@@ -4195,12 +3923,10 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
           repository: { nameWithOwner: "openclaw/clawsweeper" }
         }]
     : [];
-  const timelineNodes = lifecycleDrift
-    ? []
-    : [{ __typename: "ClosedEvent", createdAt: "2026-05-01T02:00:00Z", closer: { __typename: "PullRequest", number: 900, url: "https://github.com/openclaw/clawsweeper/pull/900", mergedAt: "2026-05-01T02:00:00Z", repository: { nameWithOwner: "openclaw/clawsweeper" } } }];
+  const timelineNodes = [{ __typename: "ClosedEvent", createdAt: "2026-05-01T02:00:00Z", closer: { __typename: "PullRequest", number: 900, url: "https://github.com/openclaw/clawsweeper/pull/900", mergedAt: "2026-05-01T02:00:00Z", repository: { nameWithOwner: "openclaw/clawsweeper" } } }];
   const repository = closingReferenceQuery
     ? { pullRequest: { closingIssuesReferences: { nodes: closingReferenceNodes } } }
-    : { issue: { state: currentState, timelineItems: { nodes: timelineNodes } } };
+    : { issue: { state: "CLOSED", timelineItems: { nodes: timelineNodes } } };
   console.log(JSON.stringify({ data: { repository } }));
 } else if (args[0] === "api" && /\\/commits\\/head-sha\\/(?:check-runs|status)(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify({ check_runs: [] }));
@@ -4295,21 +4021,11 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
   }
 } else if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
   if (args.includes("--method") && args.includes("POST")) {
-    if (lockedCloseoutComment) {
-      console.error("gh: conversation is locked (HTTP 403)");
-      process.exit(1);
-    }
     const input = args[args.indexOf("--input") + 1];
     const payload = JSON.parse(readFileSync(input, "utf8"));
     appendFileSync(postedBodiesPath, JSON.stringify(payload.body) + "\\n");
     writeFileSync(prCommentPath, payload.body, "utf8");
     writeFileSync(closeoutPostedPath, "true");
-    if (betweenFreshnessAndCloseoutHumanActivity) {
-      writeFileSync(
-        betweenFreshnessAndCloseoutHumanActivityPath,
-        new Date(Date.now() + 60_000).toISOString(),
-      );
-    }
     console.log(JSON.stringify({ id: 9322, html_url: "https://github.com/openclaw/clawsweeper/pull/321#issuecomment-9322" }));
   } else {
     const comments = [{
@@ -4320,16 +4036,6 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
       user: { login: "clawsweeper[bot]" },
       body: readFileSync(prCommentPath, "utf8")
     }];
-    if (existsSync(betweenFreshnessAndCloseoutHumanActivityPath)) {
-      comments.push({
-        id: 9323,
-        html_url: "https://github.com/openclaw/clawsweeper/pull/321#issuecomment-9323",
-        created_at: readFileSync(betweenFreshnessAndCloseoutHumanActivityPath, "utf8"),
-        updated_at: readFileSync(betweenFreshnessAndCloseoutHumanActivityPath, "utf8"),
-        user: { login: "contributor" },
-        body: "Please keep this PR open."
-      });
-    }
     console.log(JSON.stringify([comments]));
   }
 } else if (args[0] === "api" && /\\/issues\\/comments\\/9456$/.test(path) && args.includes("PATCH")) {
@@ -4363,27 +4069,14 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
 } else if (args[0] === "api" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
-  const issueReadsAfterCloseout = existsSync(closeoutPostedPath)
-    ? (existsSync(issueReadsAfterCloseoutPath)
-        ? Number(readFileSync(issueReadsAfterCloseoutPath, "utf8") || "0")
-        : 0) + 1
-    : 0;
-  if (existsSync(closeoutPostedPath)) {
-    writeFileSync(issueReadsAfterCloseoutPath, String(issueReadsAfterCloseout));
-  }
-  const humanActivityLanded =
-    (postCloseoutHumanActivity && issueReadsAfterCloseout >= 2) ||
-    existsSync(betweenFreshnessAndCloseoutHumanActivityPath);
   console.log(JSON.stringify({
     number: 321,
     title: "Render work plans",
     html_url: "https://github.com/openclaw/clawsweeper/pull/321",
     created_at: "2026-05-01T00:00:00Z",
-    updated_at: humanActivityLanded
-      ? "2026-05-01T03:00:00Z"
-      : existsSync(closeoutPostedPath)
-        ? "2026-05-01T02:30:00Z"
-        : "2026-05-01T00:00:00Z",
+    updated_at: existsSync(closeoutPostedPath)
+      ? "2026-05-01T02:30:00Z"
+      : "2026-05-01T00:00:00Z",
     closed_at: null,
     state: "open",
     locked: false,
@@ -4464,11 +4157,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
     user: { login: "reporter" }
   }));
 } else if (args[0] === "api" && /\\/pulls\\/321\\/reviews(?:\\?|$)/.test(path)) {
-  console.log(JSON.stringify(
-    postCloseoutPrReviewActivity && existsSync(closeoutPostedPath)
-      ? [{ id: 7701, user: { login: "maintainer" }, state: "COMMENTED", submitted_at: "2026-08-20T00:00:00Z" }]
-      : []
-  ));
+  console.log("[]");
 } else if (args[0] === "api" && /\\/pulls\\/321\\/(files|commits|comments|reviews)(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "pr" && args[1] === "close" && args[2] === "321") {
@@ -4517,12 +4206,6 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
         .split("\n")
         .filter(Boolean)
         .map((line) => JSON.parse(line) as string[]);
-      const postIndex = calls.findIndex(
-        (args) =>
-          args[0] === "api" &&
-          (args[1] ?? "").endsWith("/issues/321/comments") &&
-          args.includes("POST"),
-      );
       const closeIndex = calls.findIndex(
         (args) => args[0] === "pr" && args[1] === "close" && args[2] === "321",
       );
@@ -4541,23 +4224,6 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
       const graphqlIndices = calls
         .map((args, index) => (args[0] === "api" && args[1] === "graphql" ? index : -1))
         .filter((index) => index >= 0);
-      if (lockedCloseoutComment) {
-        assert.equal(closeIndex, -1);
-        assert.equal(existsSync(join(closedDir, "321.md")), false);
-        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
-          action: string;
-          reason: string;
-        }>;
-        assert.equal(
-          report.some(
-            (entry) =>
-              entry.action === "skipped_locked_conversation" &&
-              entry.reason === "conversation was locked while recording closeout evidence",
-          ),
-          true,
-        );
-        continue;
-      }
       if (pairedLockedCloseoutCleanup) {
         assert.ok(pairedIssueLeaseDeleteIndex >= 0);
         assert.equal(pairedIssueCloseIndex, -1);
@@ -4703,76 +4369,6 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
         );
         continue;
       }
-      if (lifecycleDrift) {
-        assert.ok(graphqlIndices.length >= 2);
-        assert.equal(closeIndex, -1);
-        assert.ok(postIndex >= 0);
-        assert.equal(existsSync(join(closedDir, "321.md")), false);
-        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
-          action: string;
-          reason: string;
-        }>;
-        assert.equal(
-          report.some((entry) => entry.action === "closed"),
-          false,
-        );
-        continue;
-      }
-      if (postCloseoutHumanActivity) {
-        assert.ok(graphqlIndices.length >= 2);
-        assert.equal(closeIndex, -1);
-        assert.ok(postIndex >= 0);
-        assert.equal(existsSync(join(closedDir, "321.md")), false);
-        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
-          action: string;
-          reason: string;
-        }>;
-        assert.equal(
-          report.some(
-            (entry) =>
-              entry.action === "skipped_changed_since_review" &&
-              entry.reason === "updated_at changed",
-          ),
-          true,
-        );
-        continue;
-      }
-      if (betweenFreshnessAndCloseoutHumanActivity) {
-        assert.equal(closeIndex, -1);
-        assert.ok(postIndex >= 0);
-        assert.equal(existsSync(join(closedDir, "321.md")), false);
-        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
-          action: string;
-          reason: string;
-        }>;
-        assert.equal(
-          report.some(
-            (entry) =>
-              entry.action === "skipped_changed_since_review" &&
-              entry.reason === "closeout evidence freshness receipt could not be recorded",
-          ),
-          true,
-        );
-        continue;
-      }
-      if (postCloseoutPrReviewActivity) {
-        assert.equal(closeIndex, -1);
-        assert.ok(postIndex >= 0);
-        assert.equal(existsSync(join(closedDir, "321.md")), false);
-        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
-          action: string;
-          reason: string;
-        }>;
-        assert.equal(
-          report.some(
-            (entry) =>
-              entry.action === "skipped_changed_since_review" &&
-              entry.reason === "closeout evidence freshness receipt could not be recorded",
-          ),
-          true,
-        );
-        continue;
-      }
       assert.ok(graphqlIndices.length >= 2);
       assert.ok(closeIndex >= 0, `${scenario}: ${readFileSync(reportPath, "utf8")}`);
       assert.ok(pairedIssueCloseIndex >= 0, scenario);
@@ -4816,13 +4412,8 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
 test("apply-decisions keeps low-signal PRs open when live maintainer comments exist", () => {
   const root = mkdtempSync(tmpPrefix);
   try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+    const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
     const logPath = join(root, "gh.log");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     const closeReport = lowSignalCloseReport({ number: 322, title: "Add provider clamp" });
     const synced = reportWithSyncedReviewComment(closeReport, 322, "low_signal_unmergeable_pr");
     writeFileSync(join(itemsDir, "322.md"), synced.report, "utf8");
