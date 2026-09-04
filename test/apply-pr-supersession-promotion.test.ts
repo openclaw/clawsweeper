@@ -8,8 +8,10 @@ import {
   promotionGhMock,
   reportWithSyncedReviewComment,
   runApplyDecisionsForTest,
+  runOpenClawApplyDecisionsForTest,
   stalePullRequestReport,
   tmpPrefix,
+  withApplyTestWorkspace,
   withMockGh,
 } from "./helpers.ts";
 
@@ -187,14 +189,7 @@ test("apply-decisions does not promote PRs superseded by skipped close proposal 
 });
 
 test("apply-decisions does not promote unrelated linked open PRs", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const synced = reportWithSyncedReviewComment(
       stalePullRequestReport({
         number: 333,
@@ -226,20 +221,12 @@ test("apply-decisions does not promote unrelated linked open PRs", () => {
         },
       }),
       () => {
-        runApplyDecisionsForTest({
+        runOpenClawApplyDecisionsForTest({
           itemsDir,
           closedDir,
           plansDir,
           reportPath,
-          extraArgs: [
-            "--target-repo",
-            "openclaw/openclaw",
-            "--dry-run",
-            "--apply-kind",
-            "all",
-            "--processed-limit",
-            "3",
-          ],
+          dryRun: true,
         });
       },
     );
@@ -249,20 +236,11 @@ test("apply-decisions does not promote unrelated linked open PRs", () => {
       report.some((entry) => entry.action === "closed"),
       false,
     );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });
 
 test("apply-decisions does not promote unrelated linked merged PRs", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const synced = reportWithSyncedReviewComment(
       stalePullRequestReport({
         number: 334,
@@ -294,20 +272,12 @@ test("apply-decisions does not promote unrelated linked merged PRs", () => {
         },
       }),
       () => {
-        runApplyDecisionsForTest({
+        runOpenClawApplyDecisionsForTest({
           itemsDir,
           closedDir,
           plansDir,
           reportPath,
-          extraArgs: [
-            "--target-repo",
-            "openclaw/openclaw",
-            "--dry-run",
-            "--apply-kind",
-            "all",
-            "--processed-limit",
-            "3",
-          ],
+          dryRun: true,
         });
       },
     );
@@ -317,7 +287,5 @@ test("apply-decisions does not promote unrelated linked merged PRs", () => {
       report.some((entry) => entry.action === "closed"),
       false,
     );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });

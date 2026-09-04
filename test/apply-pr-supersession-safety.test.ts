@@ -7,9 +7,11 @@ import {
   promotionGhMock,
   reportWithSyncedReviewComment,
   runApplyDecisionsForTest,
+  runOpenClawApplyDecisionsForTest,
   stalePullRequestReport,
   stripProofAndRatingFrontMatter,
   tmpPrefix,
+  withApplyTestWorkspace,
   withMockCodexProof,
   withMockGh,
 } from "./helpers.ts";
@@ -215,14 +217,7 @@ test("apply-decisions does not promote PRs superseded by no-proof linked pull re
 });
 
 test("apply-decisions does not promote PRs superseded by unsafe linked pull requests", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const synced = reportWithSyncedReviewComment(
       stalePullRequestReport({
         number: 335,
@@ -258,20 +253,12 @@ test("apply-decisions does not promote PRs superseded by unsafe linked pull requ
       }),
       () => {
         withMockCodexProof(root, { type: "failure", message: "proof should not run" }, () => {
-          runApplyDecisionsForTest({
+          runOpenClawApplyDecisionsForTest({
             itemsDir,
             closedDir,
             plansDir,
             reportPath,
-            extraArgs: [
-              "--target-repo",
-              "openclaw/openclaw",
-              "--dry-run",
-              "--apply-kind",
-              "all",
-              "--processed-limit",
-              "3",
-            ],
+            dryRun: true,
           });
         });
       },
@@ -283,20 +270,11 @@ test("apply-decisions does not promote PRs superseded by unsafe linked pull requ
       false,
     );
     assert.doesNotMatch(JSON.stringify(report), /proof should not run/);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });
 
 test("apply-decisions does not promote PRs superseded by F-rated linked pull requests", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const sourceReport = stalePullRequestReport({
       number: 338,
       title: "Old activity PR",
@@ -336,20 +314,12 @@ test("apply-decisions does not promote PRs superseded by F-rated linked pull req
       }),
       () => {
         withMockCodexProof(root, { type: "failure", message: "proof should not run" }, () => {
-          runApplyDecisionsForTest({
+          runOpenClawApplyDecisionsForTest({
             itemsDir,
             closedDir,
             plansDir,
             reportPath,
-            extraArgs: [
-              "--target-repo",
-              "openclaw/openclaw",
-              "--dry-run",
-              "--apply-kind",
-              "all",
-              "--processed-limit",
-              "3",
-            ],
+            dryRun: true,
           });
         });
       },
@@ -361,9 +331,7 @@ test("apply-decisions does not promote PRs superseded by F-rated linked pull req
       false,
     );
     assert.doesNotMatch(JSON.stringify(report), /proof should not run/);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });
 
 test("apply-decisions does not promote PRs superseded by section-only unsafe linked reports", () => {
@@ -552,14 +520,7 @@ test("apply-decisions does not promote PRs when live labels supersede stale proo
 });
 
 test("apply-decisions does not promote PRs superseded by unknown-mergeability PRs", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const sourceReport = stalePullRequestReport({
       number: 343,
       title: "Old activity PR",
@@ -598,20 +559,12 @@ test("apply-decisions does not promote PRs superseded by unknown-mergeability PR
         },
       }),
       () => {
-        runApplyDecisionsForTest({
+        runOpenClawApplyDecisionsForTest({
           itemsDir,
           closedDir,
           plansDir,
           reportPath,
-          extraArgs: [
-            "--target-repo",
-            "openclaw/openclaw",
-            "--dry-run",
-            "--apply-kind",
-            "all",
-            "--processed-limit",
-            "3",
-          ],
+          dryRun: true,
         });
       },
     );
@@ -621,20 +574,11 @@ test("apply-decisions does not promote PRs superseded by unknown-mergeability PR
       report.some((entry) => entry.action === "closed"),
       false,
     );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });
 
 test("apply-decisions does not promote PRs superseded by non-clean linked pull requests", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const sourceReport = stalePullRequestReport({
       number: 345,
       title: "Old activity PR",
@@ -673,20 +617,12 @@ test("apply-decisions does not promote PRs superseded by non-clean linked pull r
         },
       }),
       () => {
-        runApplyDecisionsForTest({
+        runOpenClawApplyDecisionsForTest({
           itemsDir,
           closedDir,
           plansDir,
           reportPath,
-          extraArgs: [
-            "--target-repo",
-            "openclaw/openclaw",
-            "--dry-run",
-            "--apply-kind",
-            "all",
-            "--processed-limit",
-            "3",
-          ],
+          dryRun: true,
         });
       },
     );
@@ -696,7 +632,5 @@ test("apply-decisions does not promote PRs superseded by non-clean linked pull r
       report.some((entry) => entry.action === "closed"),
       false,
     );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });

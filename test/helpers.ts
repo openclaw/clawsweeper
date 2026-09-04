@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { writeFakeScanner } from "./agent-input-scan-helpers.ts";
@@ -1089,6 +1089,59 @@ export function runApplyDecisionsForTest(options: {
     "0",
     ...(options.extraArgs ?? []),
   ]);
+}
+
+export function withApplyTestWorkspace(
+  prefix: string,
+  run: (workspace: {
+    root: string;
+    itemsDir: string;
+    closedDir: string;
+    plansDir: string;
+    reportPath: string;
+  }) => void,
+): void {
+  const root = mkdtempSync(prefix);
+  const workspace = {
+    root,
+    itemsDir: join(root, "items"),
+    closedDir: join(root, "closed"),
+    plansDir: join(root, "plans"),
+    reportPath: join(root, "apply-report.json"),
+  };
+  try {
+    mkdirSync(workspace.itemsDir, { recursive: true });
+    mkdirSync(workspace.plansDir, { recursive: true });
+    run(workspace);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+export function runOpenClawApplyDecisionsForTest(options: {
+  itemsDir: string;
+  closedDir: string;
+  plansDir: string;
+  reportPath: string;
+  dryRun?: boolean;
+  extraArgs?: string[];
+}): void {
+  runApplyDecisionsForTest({
+    itemsDir: options.itemsDir,
+    closedDir: options.closedDir,
+    plansDir: options.plansDir,
+    reportPath: options.reportPath,
+    extraArgs: [
+      "--target-repo",
+      "openclaw/openclaw",
+      ...(options.dryRun ? ["--dry-run"] : []),
+      "--apply-kind",
+      "all",
+      ...(options.extraArgs ?? []),
+      "--processed-limit",
+      "3",
+    ],
+  });
 }
 
 export const git = {

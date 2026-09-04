@@ -12,7 +12,9 @@ import {
   promotionGhMock,
   reportWithSyncedReviewComment,
   runApplyDecisionsForTest,
+  runOpenClawApplyDecisionsForTest,
   tmpPrefix,
+  withApplyTestWorkspace,
   withMockCodexProof,
   withMockGh,
 } from "./helpers.ts";
@@ -183,16 +185,9 @@ function boundDuplicateCloseComment(number: number, canonicalUrl: string): strin
 }
 
 test("apply-decisions fails closed when a self-mutation receipt is truncated", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const proofLogPath = join(root, "proof.log");
     const labelLogPath = join(root, "labels.log");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     const synced = reportWithSyncedReviewComment(
       lowSignalCloseReport({
         number: 359,
@@ -245,19 +240,11 @@ test("apply-decisions fails closed when a self-mutation receipt is truncated", (
             invocationLogPath: proofLogPath,
           },
           () => {
-            runApplyDecisionsForTest({
+            runOpenClawApplyDecisionsForTest({
               itemsDir,
               closedDir,
               plansDir,
               reportPath,
-              extraArgs: [
-                "--target-repo",
-                "openclaw/openclaw",
-                "--apply-kind",
-                "all",
-                "--processed-limit",
-                "3",
-              ],
             });
           },
         );
@@ -277,22 +264,13 @@ test("apply-decisions fails closed when a self-mutation receipt is truncated", (
     assert.equal(report[0]?.action, "skipped_changed_since_review");
     assert.match(report[0]?.reason ?? "", /same-second activity requires a fresh review/);
     assert.equal(existsSync(join(closedDir, "359.md")), false);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });
 
 test("apply-decisions blocks same-second human timeline activity hidden by self-updates", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const proofLogPath = join(root, "proof.log");
     const labelLogPath = join(root, "labels.log");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     const synced = reportWithSyncedReviewComment(
       lowSignalCloseReport({
         number: 362,
@@ -355,19 +333,11 @@ test("apply-decisions blocks same-second human timeline activity hidden by self-
             invocationLogPath: proofLogPath,
           },
           () => {
-            runApplyDecisionsForTest({
+            runOpenClawApplyDecisionsForTest({
               itemsDir,
               closedDir,
               plansDir,
               reportPath,
-              extraArgs: [
-                "--target-repo",
-                "openclaw/openclaw",
-                "--apply-kind",
-                "all",
-                "--processed-limit",
-                "3",
-              ],
             });
           },
         );
@@ -386,21 +356,12 @@ test("apply-decisions blocks same-second human timeline activity hidden by self-
     assert.match(report[0]?.reason ?? "", /same-second activity requires a fresh review/);
     assert.match(readFileSync(labelLogPath, "utf8"), /issue edit 362/);
     assert.equal(existsSync(join(closedDir, "362.md")), false);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });
 
 test("apply-decisions accepts same-second human activity already captured by the review", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const proofLogPath = join(root, "proof.log");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     const reviewedTimeline = [
       {
         id: 9364,
@@ -460,19 +421,11 @@ test("apply-decisions accepts same-second human activity already captured by the
             invocationLogPath: proofLogPath,
           },
           () => {
-            runApplyDecisionsForTest({
+            runOpenClawApplyDecisionsForTest({
               itemsDir,
               closedDir,
               plansDir,
               reportPath,
-              extraArgs: [
-                "--target-repo",
-                "openclaw/openclaw",
-                "--apply-kind",
-                "all",
-                "--processed-limit",
-                "3",
-              ],
             });
           },
         );
@@ -489,20 +442,11 @@ test("apply-decisions accepts same-second human activity already captured by the
       JSON.stringify(report, null, 2),
     );
     assert.equal(existsSync(join(closedDir, "364.md")), true);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });
 
 test("apply-decisions keeps existing duplicate PR close proposals open when coverage proof fails", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const synced = reportWithSyncedReviewComment(
       lowSignalCloseReport({
         number: 350,
@@ -541,20 +485,12 @@ test("apply-decisions keeps existing duplicate PR close proposals open when cove
       }),
       () => {
         withMockCodexProof(root, { type: "failure", message: "model unavailable" }, () => {
-          runApplyDecisionsForTest({
+          runOpenClawApplyDecisionsForTest({
             itemsDir,
             closedDir,
             plansDir,
             reportPath,
-            extraArgs: [
-              "--target-repo",
-              "openclaw/openclaw",
-              "--dry-run",
-              "--apply-kind",
-              "all",
-              "--processed-limit",
-              "3",
-            ],
+            dryRun: true,
           });
         });
       },
@@ -572,21 +508,12 @@ test("apply-decisions keeps existing duplicate PR close proposals open when cove
       report.find((entry) => entry.action === "retry_pr_close_coverage_proof")?.reason ?? "",
       /PR close coverage proof failed/,
     );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });
 
 test("apply-decisions retries transient duplicate PR coverage proof failures", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const proofLogPath = join(root, "proof.log");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     const synced = reportWithSyncedReviewComment(
       lowSignalCloseReport({
         number: 353,
@@ -633,19 +560,11 @@ test("apply-decisions retries transient duplicate PR coverage proof failures", (
             invocationLogPath: proofLogPath,
           },
           () => {
-            runApplyDecisionsForTest({
+            runOpenClawApplyDecisionsForTest({
               itemsDir,
               closedDir,
               plansDir,
               reportPath,
-              extraArgs: [
-                "--target-repo",
-                "openclaw/openclaw",
-                "--apply-kind",
-                "all",
-                "--processed-limit",
-                "3",
-              ],
             });
           },
         );
@@ -698,19 +617,11 @@ test("apply-decisions retries transient duplicate PR coverage proof failures", (
             invocationLogPath: proofLogPath,
           },
           () => {
-            runApplyDecisionsForTest({
+            runOpenClawApplyDecisionsForTest({
               itemsDir,
               closedDir,
               plansDir,
               reportPath,
-              extraArgs: [
-                "--target-repo",
-                "openclaw/openclaw",
-                "--apply-kind",
-                "all",
-                "--processed-limit",
-                "3",
-              ],
             });
           },
         );
@@ -727,9 +638,7 @@ test("apply-decisions retries transient duplicate PR coverage proof failures", (
     );
     assert.equal(readFileSync(proofLogPath, "utf8").trim().split("\n").length, 2);
     assert.ok(existsSync(join(closedDir, "353.md")));
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });
 
 test("apply-decisions checks age before duplicate PR coverage proof", () => {
@@ -819,14 +728,7 @@ test("apply-decisions checks age before duplicate PR coverage proof", () => {
 });
 
 test("apply-decisions ignores unrelated unsafe PR links when canonical PR is safe", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const reportMarkdown = lowSignalCloseReport({
       number: 347,
       title: "Already proposed duplicate close",
@@ -877,20 +779,12 @@ test("apply-decisions ignores unrelated unsafe PR links when canonical PR is saf
             reason: "PR B is the merged canonical PR covering PR A.",
           },
           () => {
-            runApplyDecisionsForTest({
+            runOpenClawApplyDecisionsForTest({
               itemsDir,
               closedDir,
               plansDir,
               reportPath,
-              extraArgs: [
-                "--target-repo",
-                "openclaw/openclaw",
-                "--dry-run",
-                "--apply-kind",
-                "all",
-                "--processed-limit",
-                "3",
-              ],
+              dryRun: true,
             });
           },
         );
@@ -902,20 +796,11 @@ test("apply-decisions ignores unrelated unsafe PR links when canonical PR is saf
       report.some((entry) => entry.action === "closed"),
       true,
     );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });
 
 test("apply-decisions blocks duplicate close when canonical PR is a bare cluster ref", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const synced = reportWithSyncedReviewComment(
       lowSignalCloseReport({
         number: 341,
@@ -946,20 +831,12 @@ test("apply-decisions blocks duplicate close when canonical PR is a bare cluster
         },
       }),
       () => {
-        runApplyDecisionsForTest({
+        runOpenClawApplyDecisionsForTest({
           itemsDir,
           closedDir,
           plansDir,
           reportPath,
-          extraArgs: [
-            "--target-repo",
-            "openclaw/openclaw",
-            "--dry-run",
-            "--apply-kind",
-            "all",
-            "--processed-limit",
-            "3",
-          ],
+          dryRun: true,
         });
       },
     );
@@ -976,20 +853,11 @@ test("apply-decisions blocks duplicate close when canonical PR is a bare cluster
       report.find((entry) => entry.action === "kept_open")?.reason ?? "",
       /closed and unmerged/,
     );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });
 
 test("apply-decisions retries duplicate close when linked canonical PR comments cannot be read", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const synced = reportWithSyncedReviewComment(
       lowSignalCloseReport({
         number: 340,
@@ -1025,20 +893,12 @@ test("apply-decisions retries duplicate close when linked canonical PR comments 
         },
       }),
       () => {
-        runApplyDecisionsForTest({
+        runOpenClawApplyDecisionsForTest({
           itemsDir,
           closedDir,
           plansDir,
           reportPath,
-          extraArgs: [
-            "--target-repo",
-            "openclaw/openclaw",
-            "--dry-run",
-            "--apply-kind",
-            "all",
-            "--processed-limit",
-            "3",
-          ],
+          dryRun: true,
         });
       },
     );
@@ -1055,7 +915,5 @@ test("apply-decisions retries duplicate close when linked canonical PR comments 
       report.find((entry) => entry.action === "retry_pr_close_coverage_proof")?.reason ?? "",
       /temporary comments outage/,
     );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });
