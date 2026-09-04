@@ -1,4 +1,4 @@
-import { summarizeExactReviewPressure } from "./exact-review-health.ts";
+import { projectExactReviewHandoff, summarizeExactReviewPressure } from "./exact-review-health.ts";
 import {
   exactReviewQueueHasCommandContext,
   exactReviewQueueIsBatchablePublication,
@@ -1010,112 +1010,6 @@ export function percentileFor(rows: Array<Record<string, number | string | null>
   return { p50: at(0.5), p95: at(0.95), samples: values.length };
 }
 
-function exactReviewHandoffFromCensus(
-  census: ExactReviewQueueCensus,
-  state: ExactReviewQueueState,
-  now: number,
-  capacity: number,
-  dispatchLeaseMs: number,
-) {
-  const safeNow = finiteExactReviewTimestamp(now, Date.now());
-  const safeCapacity = Math.max(0, Math.floor(finiteExactReviewNumber(capacity, 0)));
-  const safeShedSinceReset = Math.max(
-    0,
-    Math.floor(finiteExactReviewNumber(exactReviewShedSinceReset(state), 0)),
-  );
-  const safeLeaseMs = Math.max(1_000, finiteExactReviewNumber(dispatchLeaseMs, 10 * 60_000));
-  const warningMs = Math.min(2 * 60_000, Math.max(30_000, Math.floor(safeLeaseMs / 3)));
-  const stalledMs = Math.min(
-    5 * 60_000,
-    Math.max(warningMs + 1_000, Math.floor((safeLeaseMs * 2) / 3)),
-  );
-  const phases = Object.fromEntries(
-    (["pending", "dispatching", "leased"] as const).map((phaseName) => {
-      const phase = census.handoffPhases[phaseName];
-      return [
-        phaseName,
-        {
-          count: phase.count,
-          oldest_at: phase.oldestAt === null ? null : new Date(phase.oldestAt).toISOString(),
-          oldest_age_seconds:
-            phase.oldestAt === null
-              ? null
-              : Math.max(0, Math.floor((safeNow - phase.oldestAt) / 1_000)),
-          oldest_key: phase.oldestKey,
-        },
-      ];
-    }),
-  ) as Record<
-    "pending" | "dispatching" | "leased",
-    {
-      count: number;
-      oldest_at: string | null;
-      oldest_age_seconds: number | null;
-      oldest_key: string | null;
-    }
-  >;
-  const active = phases.dispatching.count + phases.leased.count;
-  const common = {
-    observed_at: new Date(safeNow).toISOString(),
-    warning_after_seconds: Math.floor(warningMs / 1_000),
-    stalled_after_seconds: Math.floor(stalledMs / 1_000),
-    capacity: safeCapacity,
-    active,
-    available_slots: Math.max(0, safeCapacity - active),
-    pending_depth: phases.pending.count,
-    shed_since_reset: safeShedSinceReset,
-    recovery_reasons: census.reviewRecoveryReasons,
-    phases,
-  };
-  if (census.handoffItemCount === 0) {
-    return {
-      status: "idle" as const,
-      reason: "queue_empty" as const,
-      message: "No exact-review work is queued or active.",
-      ...common,
-    };
-  }
-  const dispatchingAgeMs = (phases.dispatching.oldest_age_seconds || 0) * 1_000;
-  if (dispatchingAgeMs >= stalledMs) {
-    return {
-      status: "stalled" as const,
-      reason: "claim_stalled" as const,
-      message: "A dispatched review has not been claimed within the expected handoff window.",
-      ...common,
-    };
-  }
-  if (state.dispatcher?.state === "blocked" && phases.pending.count > 0) {
-    return {
-      status: "stalled" as const,
-      reason: "dispatcher_blocked" as const,
-      message: "The dispatcher cannot verify workflow availability while reviews are pending.",
-      ...common,
-    };
-  }
-  if (state.dispatcher?.state === "paused" && phases.pending.count > 0) {
-    return {
-      status: "degraded" as const,
-      reason: "dispatcher_paused" as const,
-      message: "The exact-review workflow is paused while reviews are pending.",
-      ...common,
-    };
-  }
-  if (dispatchingAgeMs >= warningMs) {
-    return {
-      status: "degraded" as const,
-      reason: "claim_delayed" as const,
-      message: "A dispatched review is taking longer than expected to claim.",
-      ...common,
-    };
-  }
-  return {
-    status: "healthy" as const,
-    reason: "handoff_current" as const,
-    message: "Dispatch-to-claim handoffs are within the expected window.",
-    ...common,
-  };
-}
-
 export function exactReviewQueueStats(
   state: ExactReviewQueueState,
   now = Date.now(),
@@ -1139,7 +1033,17 @@ export function exactReviewQueueStats(
     heartbeatGraceMs,
     excludedItemKeys,
   });
-  const handoffHealth = exactReviewHandoffFromCensus(census, state, now, capacity, dispatchLeaseMs);
+  const safeNow = finiteExactReviewTimestamp(now, Date.now());
+  const handoffHealth = projectExactReviewHandoff({
+    itemCount: census.handoffItemCount,
+    phaseCensus: census.handoffPhases,
+    recoveryReasons: census.reviewRecoveryReasons,
+    dispatcher: state.dispatcher,
+    now: safeNow,
+    capacity,
+    dispatchLeaseMs,
+    shedSinceReset: exactReviewShedSinceReset(state),
+  });
   const targetStats = [...census.targets.values()]
     .map((target) => ({
       target_repo: target.target_repo,
