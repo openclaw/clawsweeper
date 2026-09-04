@@ -295,3 +295,95 @@ test("heartbeat with an expired or invalid lease sends no request", async (t) =>
   await assert.rejects(client.heartbeat({ ...heartbeat, leaseExpiresAt: "invalid" }), /expiry/i);
   assert.equal(calls.length, 0);
 });
+
+test("publication reconciliation returns a bounded allowlisted sample", async (t) => {
+  const sample = Array.from({ length: 21 }, (_, index) => ({
+    item_key: `openclaw/example#${index + 1}@publish:${index + 2}:1`,
+    queue_revision: String(index + 1),
+    reason: "stale_revision",
+    target_key: `openclaw/example#${index + 1}`,
+    publication_revision: String(index + 1),
+    superseded_by_revision: String(index + 2),
+    lineage_claim_generation: null,
+    retained_item_key: null,
+    private_detail: `must-not-escape-${index}`,
+  }));
+  const { client } = fixture(t, () =>
+    Response.json({
+      apply: false,
+      scanned: 21,
+      legacy_terminal_scanned: 0,
+      eligible: 21,
+      changed: 0,
+      eligible_remaining: 21,
+      stale_revision_eligible: 21,
+      stale_revision_changed: 0,
+      lineage_duplicate_eligible: 0,
+      lineage_duplicate_changed: 0,
+      lineage_refreshed: 0,
+      legacy_terminal_candidates: 0,
+      legacy_terminal_selected: 0,
+      legacy_terminal_eligible: 0,
+      legacy_terminal_changed: 0,
+      legacy_state_batch_terminal_candidates: 0,
+      legacy_state_batch_terminal_selected: 0,
+      legacy_state_batch_terminal_producer_succeeded: 0,
+      legacy_state_batch_terminal_eligible: 0,
+      legacy_state_batch_terminal_changed: 0,
+      protected_batch_items: 0,
+      protected_lineage_items: 0,
+      oldest_eligible_age_seconds: 60,
+      oldest_remaining_age_seconds: 60,
+      sample,
+      private_response_detail: "must-not-escape",
+    }),
+  );
+
+  const result = await client.reconcilePublications({ apply: false, maxItems: 1 });
+
+  assert.equal(result.sample.length, 20);
+  assert.deepEqual(result.sample[0], {
+    itemKey: "openclaw/example#1@publish:2:1",
+    queueRevision: 1,
+    reason: "stale_revision",
+    targetKey: "openclaw/example#1",
+    publicationRevision: 1,
+    supersededByRevision: 2,
+    lineageClaimGeneration: null,
+    retainedItemKey: null,
+  });
+  assert.equal("private_detail" in result.sample[0]!, false);
+  assert.equal("private_response_detail" in result, false);
+});
+
+test("publication reconciliation rejects malformed sample rows", async (t) => {
+  const { client } = fixture(t, () =>
+    Response.json({
+      apply: false,
+      scanned: 1,
+      eligible: 1,
+      changed: 0,
+      eligible_remaining: 1,
+      protected_batch_items: 0,
+      oldest_eligible_age_seconds: 60,
+      oldest_remaining_age_seconds: 60,
+      sample: [
+        {
+          item_key: "openclaw/example#1@publish:2:1",
+          queue_revision: 1,
+          reason: "private_reason",
+          target_key: "openclaw/example#1",
+          publication_revision: 1,
+          superseded_by_revision: 2,
+          lineage_claim_generation: null,
+          retained_item_key: null,
+        },
+      ],
+    }),
+  );
+
+  await assert.rejects(
+    client.reconcilePublications({ apply: false, maxItems: 1 }),
+    /sample reason/,
+  );
+});

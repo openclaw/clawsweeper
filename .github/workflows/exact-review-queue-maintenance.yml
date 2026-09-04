@@ -13,6 +13,11 @@ on:
         required: true
         type: string
         default: "1"
+      max_items:
+        description: "Maximum reconciliation candidates to inspect"
+        required: true
+        type: number
+        default: 1
 
 concurrency:
   group: exact-review-queue-maintenance
@@ -44,8 +49,9 @@ jobs:
         env:
           EXECUTE: ${{ inputs.execute }}
           PASSES: ${{ inputs.passes }}
+          MAX_ITEMS: ${{ inputs.max_items }}
         run: |
-          args=(--max-items 100)
+          args=(--max-items "$MAX_ITEMS")
           if [[ "$EXECUTE" == "true" ]]; then
             args+=(--apply)
           fi

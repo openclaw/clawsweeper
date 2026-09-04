@@ -21,7 +21,17 @@ const workflow = YAML.parse(source) as {
 
 test("queue maintenance is explicit, bounded, and non-cancelling", () => {
   assert.equal(workflow.on.schedule, undefined);
-  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), ["execute", "passes"]);
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), [
+    "execute",
+    "passes",
+    "max_items",
+  ]);
+  assert.deepEqual(workflow.on.workflow_dispatch.inputs.max_items, {
+    description: "Maximum reconciliation candidates to inspect",
+    required: true,
+    type: "number",
+    default: 1,
+  });
   assert.equal(workflow.concurrency["cancel-in-progress"], false);
   assert.deepEqual(workflow.permissions, { contents: "read" });
   const maintenance = workflow.jobs.reconcile!.steps.find(
@@ -29,9 +39,10 @@ test("queue maintenance is explicit, bounded, and non-cancelling", () => {
   );
   assert.equal(maintenance?.env?.EXECUTE, "${{ inputs.execute }}");
   assert.equal(maintenance?.env?.PASSES, "${{ inputs.passes }}");
+  assert.equal(maintenance?.env?.MAX_ITEMS, "${{ inputs.max_items }}");
   const run = maintenance?.run || "";
   assert.match(run, /repair:exact-review-queue-maintenance/);
-  assert.match(run, /--max-items 100/);
+  assert.match(run, /--max-items "\$MAX_ITEMS"/);
   assert.match(run, /args\+=\(--apply\)/);
   assert.match(run, /--passes "\$PASSES"/);
   assert.match(cliSource, /requestedPasses = integerArg\("--passes", 1, 1, 100\)/);

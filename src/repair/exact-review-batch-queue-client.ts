@@ -62,6 +62,23 @@ export type ExactReviewBatchFetch = {
   superseded: number;
 };
 
+export type ExactReviewPublicationReconcileSample = {
+  itemKey: string;
+  queueRevision: number;
+  reason:
+    | "stale_revision"
+    | "duplicate_lineage"
+    | "legacy_terminal"
+    | "legacy_state_batch_terminal";
+  targetKey: string;
+  publicationRevision: number | null;
+  supersededByRevision: number | null;
+  lineageClaimGeneration: number | null;
+  retainedItemKey: string | null;
+  producerRunId?: string;
+  producerRunAttempt?: number;
+};
+
 export type ExactReviewPublicationReconcileResult = {
   apply: boolean;
   scanned: number;
@@ -87,6 +104,7 @@ export type ExactReviewPublicationReconcileResult = {
   protectedLineageItems: number;
   oldestEligibleAgeSeconds: number | null;
   oldestRemainingAgeSeconds: number | null;
+  sample: ExactReviewPublicationReconcileSample[];
 };
 
 export interface ExactReviewBatchQueue {
@@ -143,6 +161,13 @@ const REQUEST_TIMEOUT_MS = 20_000;
 const RETRY_DEADLINE_MS = 45_000;
 const MAX_ATTEMPTS = 3;
 const MAX_RETRY_AFTER_MS = 10_000;
+const RECONCILIATION_SAMPLE_LIMIT = 20;
+const RECONCILIATION_REASONS = new Set<ExactReviewPublicationReconcileSample["reason"]>([
+  "stale_revision",
+  "duplicate_lineage",
+  "legacy_terminal",
+  "legacy_state_batch_terminal",
+]);
 
 type TransportFailureReason = "network_error" | "timeout" | `HTTP_${number}`;
 
@@ -357,6 +382,9 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
         response.oldest_remaining_age_seconds,
         "oldest_remaining_age_seconds",
       ),
+      sample: arrayValue(response.sample)
+        .slice(0, RECONCILIATION_SAMPLE_LIMIT)
+        .map(parseReconciliationSample),
     } satisfies ExactReviewPublicationReconcileResult;
   }
 
@@ -593,6 +621,47 @@ function parseMember(value: unknown): ExactReviewBatchMember {
   };
 }
 
+function parseReconciliationSample(value: unknown): ExactReviewPublicationReconcileSample {
+  const sample = objectValue(value);
+  const reason = stringValue(sample.reason, "sample reason");
+  if (!RECONCILIATION_REASONS.has(reason as ExactReviewPublicationReconcileSample["reason"])) {
+    throw new Error("Invalid batch queue sample reason");
+  }
+  const producerRunId =
+    sample.producer_run_id === undefined
+      ? undefined
+      : stringValue(sample.producer_run_id, "sample producer_run_id");
+  const producerRunAttempt =
+    sample.producer_run_attempt === undefined
+      ? undefined
+      : positiveInteger(sample.producer_run_attempt, "sample producer_run_attempt");
+  if ((producerRunId === undefined) !== (producerRunAttempt === undefined)) {
+    throw new Error("Invalid batch queue sample producer identity");
+  }
+  return {
+    itemKey: stringValue(sample.item_key, "sample item_key"),
+    queueRevision: positiveInteger(sample.queue_revision, "sample queue_revision"),
+    reason: reason as ExactReviewPublicationReconcileSample["reason"],
+    targetKey: stringValue(sample.target_key, "sample target_key"),
+    publicationRevision: nullablePositiveInteger(
+      sample.publication_revision,
+      "sample publication_revision",
+    ),
+    supersededByRevision: nullablePositiveInteger(
+      sample.superseded_by_revision,
+      "sample superseded_by_revision",
+    ),
+    lineageClaimGeneration: nullablePositiveInteger(
+      sample.lineage_claim_generation,
+      "sample lineage_claim_generation",
+    ),
+    retainedItemKey: nullableStringValue(sample.retained_item_key, "sample retained_item_key"),
+    ...(producerRunId === undefined
+      ? {}
+      : { producerRunId, producerRunAttempt: producerRunAttempt! }),
+  };
+}
+
 function objectValue(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Invalid batch queue response object");
@@ -624,4 +693,12 @@ function nonNegativeInteger(value: unknown, name: string): number {
 
 function nullableNonNegativeInteger(value: unknown, name: string): number | null {
   return value === null || value === undefined ? null : nonNegativeInteger(value, name);
+}
+
+function nullablePositiveInteger(value: unknown, name: string): number | null {
+  return value === null ? null : positiveInteger(value, name);
+}
+
+function nullableStringValue(value: unknown, name: string): string | null {
+  return value === null ? null : stringValue(value, name);
 }
