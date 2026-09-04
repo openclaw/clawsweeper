@@ -78,6 +78,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Count oversized ETag responses as durable cache skips using size-only store requests, preserving telemetry without sending or storing the response bodies.
+
 - Bound standalone webhook bodies to 2 MiB before signature verification, preserving chunked deliveries and flushing rejection responses before closing oversized requests. Thanks @SebTardif.
 - Preserve committed lifecycle outcomes when later queue completions disagree, preventing terminal-state conflicts from failing completion callbacks and acknowledgement drivers.
 - Retain numeric queue failure source locations inside the Durable Object before remote transport discards the original stack, without logging private error text.

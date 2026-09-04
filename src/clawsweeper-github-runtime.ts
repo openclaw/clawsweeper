@@ -510,8 +510,7 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
       store200: (_cacheKey, response) => {
         const stored = signedEtagBrokerPost("store", {
           ...requestBody,
-          etag: response.etag,
-          body: response.body,
+          ...response,
         });
         return { stored: stored.stored === true };
       },

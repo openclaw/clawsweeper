@@ -44,7 +44,10 @@ export function durableGithubEtagReadSync(options: {
   lookup: (key: GithubEtagCacheKey) => GithubEtagLookupResponse;
   store200: (
     key: GithubEtagCacheKey,
-    response: { etag: string; body: string },
+    response: { etag: string } & (
+      | { body: string; body_bytes?: never }
+      | { body?: never; body_bytes: number }
+    ),
   ) => GithubEtagStoreResponse;
   confirm304: (
     key: GithubEtagCacheKey,
@@ -97,12 +100,17 @@ function acceptLive200(
   response: GithubConditionalResponse,
 ): string {
   const body = requireLive200(response);
-  if (!response.etag || Buffer.byteLength(body, "utf8") > GITHUB_ETAG_CACHE_MAX_BODY_BYTES) {
+  const bodyBytes = Buffer.byteLength(body, "utf8");
+  if (!response.etag && bodyBytes <= GITHUB_ETAG_CACHE_MAX_BODY_BYTES) {
     options.record({ unit: "broker_lookup", outcome: "cache_skip" });
     return body;
   }
   try {
-    if (options.store200(options.key, { etag: response.etag, body }).stored) {
+    const stored = options.store200(options.key, {
+      etag: response.etag || "",
+      ...(bodyBytes > GITHUB_ETAG_CACHE_MAX_BODY_BYTES ? { body_bytes: bodyBytes } : { body }),
+    });
+    if (stored.stored) {
       options.record({
         unit: "conditional_response",
         outcome: "cache_200_stored",

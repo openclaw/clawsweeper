@@ -117,10 +117,12 @@ runner access uses the publisher-scoped webhook HMAC because publication jobs
 already hold that narrowly scoped credential; the operator secret stays
 reserved for human recovery.
 
-Publication clients skip oversized bodies before sending a store request and
-record the existing local `cache_skip` event. Dashboard health reads also skip
-these store requests; they do not emit local broker metrics. Requests that reach
-the store retain its `body_size_bound` skip reason and `cache_skip` metric.
+Publication clients and dashboard health reads count oversized bodies as skips
+via a size-only store request: `body_bytes` carries the UTF-8 byte count and
+`body` is omitted. The store records `cache_skip` with reason `body_size_bound`
+without accessing the body table. Publication clients also retain their local
+`cache_skip` event. Store requests that include a body keep the existing
+validation and storage behavior; `body_bytes` does not override that body.
 The store keeps an in-memory entry count, reconciling it with SQLite on the
 first store and every 64 stores thereafter. Inserts and expiry/oldest-validation
 evictions maintain that count so the 2,048-entry cap holds after every store.

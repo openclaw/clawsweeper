@@ -110,6 +110,14 @@ export class GithubEtagResponseStore {
     const etag = String(body.etag || "").trim();
     const responseBody = typeof body.body === "string" ? body.body : "";
     if (!key) return { ok: false, error: "invalid_github_etag_cache_key", status: 400 };
+    if (
+      !("body" in body) &&
+      typeof body.body_bytes === "number" &&
+      Number.isSafeInteger(body.body_bytes) &&
+      body.body_bytes > GITHUB_ETAG_CACHE_MAX_BODY_BYTES
+    ) {
+      return this.skipped(key, now, "body_size_bound");
+    }
     if (!validEtag(etag)) return this.skipped(key, now, "missing_or_invalid_etag");
     const encodedBody = new TextEncoder().encode(responseBody);
     const bodyBytes = encodedBody.byteLength;

@@ -11542,13 +11542,14 @@ async function githubJson(env, path) {
   }
   if (!response.ok) throw new Error(`GitHub ${response.status} for ${path}`);
   const body = await response.text();
-  if (
-    etagBrokerEnabled &&
-    requestBody &&
-    new TextEncoder().encode(body).byteLength <= GITHUB_ETAG_CACHE_MAX_BODY_BYTES
-  ) {
+  if (etagBrokerEnabled && requestBody) {
     const etag = response.headers.get("etag") || "";
-    await githubEtagQueuePost(env, "store", { ...requestBody, etag, body }).catch(() => undefined);
+    const bodyBytes = new TextEncoder().encode(body).byteLength;
+    await githubEtagQueuePost(env, "store", {
+      ...requestBody,
+      etag,
+      ...(bodyBytes > GITHUB_ETAG_CACHE_MAX_BODY_BYTES ? { body_bytes: bodyBytes } : { body }),
+    }).catch(() => undefined);
   }
   return parseGithubJsonBody(body, path);
 }
