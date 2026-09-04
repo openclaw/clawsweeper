@@ -27,9 +27,7 @@ import {
   autocloseReasonFromCommand,
   autoRepairBlockReason,
   autoRepairHeadKey,
-  automergeChangelogBlockReason,
   automergeFailedChecksRepairReason,
-  automergeActivationRepairReason,
   automergeGateBlockReason,
   automergeClusterId,
   automergeJobPath,
@@ -1143,16 +1141,7 @@ function classifyCommand(command: LooseRecord): JsonValue {
     const pauseLabels = pauseLabelsOn(target);
     const failedChecksRepairReason = automergeFailedChecksRepairReason(target.checks);
     const rebaseRepairReason = automergeRebaseRepairReason(target);
-    const activationRepairReason =
-      failedChecksRepairReason ??
-      rebaseRepairReason ??
-      automergeActivationRepairReason({
-        intent: command.intent,
-        repo: command.repo,
-        title: target.title,
-        files: target.files,
-        target,
-      });
+    const activationRepairReason = failedChecksRepairReason ?? rebaseRepairReason;
     if (
       command.trusted_bot &&
       command.automation_source === "repair_loop_label_sweep" &&
@@ -2110,21 +2099,7 @@ function executeCommand(command: LooseRecord) {
         .map((action: JsonValue) => String(action.label ?? ""))
         .filter(Boolean);
       for (const pausedLabel of labelsToRemove) {
-        runGitHubBestEffortMutation(
-          command,
-          "label_remove",
-          { repository: command.repo, number: command.issue_number, label: pausedLabel },
-          [
-            "issue",
-            "edit",
-            String(command.issue_number),
-            "--repo",
-            command.repo,
-            "--remove-label",
-            pausedLabel,
-          ],
-          githubNotFoundNoMutation,
-        );
+        editIssueLabel(command, pausedLabel, "remove");
       }
       command.actions = command.actions.map((action: JsonValue) => {
         if (
@@ -2170,54 +2145,12 @@ function executeCommand(command: LooseRecord) {
       const job = ensureAutomergeJob(command);
       ensureRepairLoopLabel(command, modeLabel);
       for (const pausedLabel of pauseLabelsOn(command.target)) {
-        runGitHubBestEffortMutation(
-          command,
-          "label_remove",
-          { repository: command.repo, number: command.issue_number, label: pausedLabel },
-          [
-            "issue",
-            "edit",
-            String(command.issue_number),
-            "--repo",
-            command.repo,
-            "--remove-label",
-            pausedLabel,
-          ],
-          githubNotFoundNoMutation,
-        );
+        editIssueLabel(command, pausedLabel, "remove");
       }
       if (hasLabel(command.target, oppositeModeLabel)) {
-        runGitHubBestEffortMutation(
-          command,
-          "label_remove",
-          { repository: command.repo, number: command.issue_number, label: oppositeModeLabel },
-          [
-            "issue",
-            "edit",
-            String(command.issue_number),
-            "--repo",
-            command.repo,
-            "--remove-label",
-            oppositeModeLabel,
-          ],
-          githubNotFoundNoMutation,
-        );
+        editIssueLabel(command, oppositeModeLabel, "remove");
       }
-      runGitHubBestEffortMutation(
-        command,
-        "label_add",
-        { repository: command.repo, number: command.issue_number, label: modeLabel },
-        [
-          "issue",
-          "edit",
-          String(command.issue_number),
-          "--repo",
-          command.repo,
-          "--add-label",
-          modeLabel,
-        ],
-        githubAlreadyExistsNoMutation,
-      );
+      editIssueLabel(command, modeLabel, "add");
       const dispatchDecision = reviewDispatchDecisionForCommand(command);
       if (dispatchDecision.action !== "dispatch") {
         const verdictRouter =
@@ -2381,58 +2314,13 @@ function executeCommand(command: LooseRecord) {
       }
     }
     if (
-      command.intent === "clawsweeper_needs_human" &&
+      ["clawsweeper_needs_human", "stop"].includes(command.intent) &&
       command.issue_number &&
       shouldApplyHumanReviewLabel
     ) {
+      if (command.intent === "stop") applyRemoveLabelActions(command);
       ensureHumanReviewLabel(command);
-      runGitHubBestEffortMutation(
-        command,
-        "label_add",
-        {
-          repository: command.repo,
-          number: command.issue_number,
-          label: HUMAN_REVIEW_LABEL,
-        },
-        [
-          "issue",
-          "edit",
-          String(command.issue_number),
-          "--repo",
-          command.repo,
-          "--add-label",
-          HUMAN_REVIEW_LABEL,
-        ],
-        githubAlreadyExistsNoMutation,
-      );
-      command.actions = command.actions.map((action: JsonValue) =>
-        action.action === "label"
-          ? { ...action, status: "executed", label: HUMAN_REVIEW_LABEL }
-          : action,
-      );
-    }
-    if (command.intent === "stop" && command.issue_number && shouldApplyHumanReviewLabel) {
-      applyRemoveLabelActions(command);
-      ensureHumanReviewLabel(command);
-      runGitHubBestEffortMutation(
-        command,
-        "label_add",
-        {
-          repository: command.repo,
-          number: command.issue_number,
-          label: HUMAN_REVIEW_LABEL,
-        },
-        [
-          "issue",
-          "edit",
-          String(command.issue_number),
-          "--repo",
-          command.repo,
-          "--add-label",
-          HUMAN_REVIEW_LABEL,
-        ],
-        githubAlreadyExistsNoMutation,
-      );
+      editIssueLabel(command, HUMAN_REVIEW_LABEL, "add");
       command.actions = command.actions.map((action: JsonValue) =>
         action.action === "label"
           ? { ...action, status: "executed", label: HUMAN_REVIEW_LABEL }
@@ -2689,6 +2577,24 @@ function githubNotFoundNoMutation(error: unknown) {
   return isGitHubNotFoundError(error);
 }
 
+function editIssueLabel(command: LooseRecord, label: string, operation: "add" | "remove") {
+  runGitHubBestEffortMutation(
+    command,
+    operation === "add" ? "label_add" : "label_remove",
+    { repository: command.repo, number: command.issue_number, label },
+    [
+      "issue",
+      "edit",
+      String(command.issue_number),
+      "--repo",
+      command.repo,
+      `--${operation}-label`,
+      label,
+    ],
+    operation === "add" ? githubAlreadyExistsNoMutation : githubNotFoundNoMutation,
+  );
+}
+
 function applyRemoveLabelActions(command: LooseRecord) {
   const labelsToRemove = (command.actions ?? [])
     .filter((action: JsonValue) => action.action === "remove_label")
@@ -2696,21 +2602,7 @@ function applyRemoveLabelActions(command: LooseRecord) {
     .filter(Boolean);
   if (labelsToRemove.length === 0) return;
   for (const label of labelsToRemove) {
-    runGitHubBestEffortMutation(
-      command,
-      "label_remove",
-      { repository: command.repo, number: command.issue_number, label },
-      [
-        "issue",
-        "edit",
-        String(command.issue_number),
-        "--repo",
-        command.repo,
-        "--remove-label",
-        label,
-      ],
-      githubNotFoundNoMutation,
-    );
+    editIssueLabel(command, label, "remove");
   }
   command.target = {
     ...command.target,
@@ -2733,13 +2625,7 @@ function applyLabelActions(command: LooseRecord) {
   if (labels.length === 0) return;
   for (const label of labels) {
     if (label === AUTOMERGE_LABEL || label === AUTOFIX_LABEL) ensureRepairLoopLabel(command, label);
-    runGitHubBestEffortMutation(
-      command,
-      "label_add",
-      { repository: command.repo, number: command.issue_number, label },
-      ["issue", "edit", String(command.issue_number), "--repo", command.repo, "--add-label", label],
-      githubAlreadyExistsNoMutation,
-    );
+    editIssueLabel(command, label, "add");
   }
   command.target = {
     ...command.target,
@@ -2819,56 +2705,14 @@ function applyRepairLoopOptIn(command: LooseRecord) {
 
   const labels = new Set((command.target?.labels ?? []).map((label: JsonValue) => String(label)));
   for (const pausedLabel of pauseLabelsOn(command.target)) {
-    runGitHubBestEffortMutation(
-      command,
-      "label_remove",
-      { repository: command.repo, number: command.issue_number, label: pausedLabel },
-      [
-        "issue",
-        "edit",
-        String(command.issue_number),
-        "--repo",
-        command.repo,
-        "--remove-label",
-        pausedLabel,
-      ],
-      githubNotFoundNoMutation,
-    );
+    editIssueLabel(command, pausedLabel, "remove");
     labels.delete(pausedLabel);
   }
   if (labels.has(oppositeModeLabel)) {
-    runGitHubBestEffortMutation(
-      command,
-      "label_remove",
-      { repository: command.repo, number: command.issue_number, label: oppositeModeLabel },
-      [
-        "issue",
-        "edit",
-        String(command.issue_number),
-        "--repo",
-        command.repo,
-        "--remove-label",
-        oppositeModeLabel,
-      ],
-      githubNotFoundNoMutation,
-    );
+    editIssueLabel(command, oppositeModeLabel, "remove");
     labels.delete(oppositeModeLabel);
   }
-  runGitHubBestEffortMutation(
-    command,
-    "label_add",
-    { repository: command.repo, number: command.issue_number, label: modeLabel },
-    [
-      "issue",
-      "edit",
-      String(command.issue_number),
-      "--repo",
-      command.repo,
-      "--add-label",
-      modeLabel,
-    ],
-    githubAlreadyExistsNoMutation,
-  );
+  editIssueLabel(command, modeLabel, "add");
   labels.add(modeLabel);
   command.target = { ...command.target, labels: [...labels] };
 }
@@ -4228,25 +4072,7 @@ function executeAutomerge(command: LooseRecord): LooseRecord {
       };
     }
     ensureMergeReadyLabel(command);
-    runGitHubBestEffortMutation(
-      command,
-      "label_add",
-      {
-        repository: command.repo,
-        number: command.issue_number,
-        label: MERGE_READY_LABEL,
-      },
-      [
-        "issue",
-        "edit",
-        String(command.issue_number),
-        "--repo",
-        command.repo,
-        "--add-label",
-        MERGE_READY_LABEL,
-      ],
-      githubAlreadyExistsNoMutation,
-    );
+    editIssueLabel(command, MERGE_READY_LABEL, "add");
     return {
       action: "merge",
       status: "blocked",
@@ -4450,12 +4276,6 @@ function validateAutomergeReadiness({ command, view, target, comments }: LooseRe
     allowHumanApproval,
   });
   if (reviewBlock) return reviewBlock;
-  const changelogBlock = automergeChangelogBlockReason({
-    repo: command.repo,
-    title: view.title,
-    files: view.files,
-  });
-  if (changelogBlock) return changelogBlock;
   return "";
 }
 
@@ -4921,41 +4741,42 @@ function fetchIssueAsync(number: JsonValue) {
 }
 
 function fetchPullRequestView(number: JsonValue) {
-  return ghJson(
+  return ghJson(pullRequestViewArgs(number), { attempts: TARGET_LOOKUP_RETRY_ATTEMPTS });
+}
+
+function pullRequestViewArgs(number: JsonValue) {
+  return [
+    "pr",
+    "view",
+    String(number),
+    "--repo",
+    targetRepo,
+    "--json",
     [
-      "pr",
-      "view",
-      String(number),
-      "--repo",
-      targetRepo,
-      "--json",
-      [
-        "additions",
-        "headRefName",
-        "headRefOid",
-        "author",
-        "baseRefName",
-        "body",
-        "changedFiles",
-        "closingIssuesReferences",
-        "commits",
-        "deletions",
-        "files",
-        "isDraft",
-        "labels",
-        "mergeable",
-        "mergeCommit",
-        "mergeStateStatus",
-        "mergedAt",
-        "reviewDecision",
-        "state",
-        "statusCheckRollup",
-        "title",
-        "url",
-      ].join(","),
-    ],
-    { attempts: TARGET_LOOKUP_RETRY_ATTEMPTS },
-  );
+      "additions",
+      "headRefName",
+      "headRefOid",
+      "author",
+      "baseRefName",
+      "body",
+      "changedFiles",
+      "closingIssuesReferences",
+      "commits",
+      "deletions",
+      "files",
+      "isDraft",
+      "labels",
+      "mergeable",
+      "mergeCommit",
+      "mergeStateStatus",
+      "mergedAt",
+      "reviewDecision",
+      "state",
+      "statusCheckRollup",
+      "title",
+      "url",
+    ].join(","),
+  ];
 }
 
 function fetchPullRequestApi(number: JsonValue) {
@@ -4971,41 +4792,9 @@ function fetchPullRequestApi(number: JsonValue) {
 }
 
 function fetchPullRequestViewAsync(number: JsonValue) {
-  return ghJsonAsync<LooseRecord>(
-    [
-      "pr",
-      "view",
-      String(number),
-      "--repo",
-      targetRepo,
-      "--json",
-      [
-        "additions",
-        "headRefName",
-        "headRefOid",
-        "author",
-        "baseRefName",
-        "body",
-        "changedFiles",
-        "closingIssuesReferences",
-        "commits",
-        "deletions",
-        "files",
-        "isDraft",
-        "labels",
-        "mergeable",
-        "mergeCommit",
-        "mergeStateStatus",
-        "mergedAt",
-        "reviewDecision",
-        "state",
-        "statusCheckRollup",
-        "title",
-        "url",
-      ].join(","),
-    ],
-    { attempts: TARGET_LOOKUP_RETRY_ATTEMPTS },
-  );
+  return ghJsonAsync<LooseRecord>(pullRequestViewArgs(number), {
+    attempts: TARGET_LOOKUP_RETRY_ATTEMPTS,
+  });
 }
 
 function compactGhError(error: unknown): string {
@@ -5567,89 +5356,51 @@ function isOwnCommentReaction(reaction: LooseRecord, content: string) {
   return isAllowedMutationActor(login, DEFAULT_TRUSTED_BOTS);
 }
 
-function ensureAutomergeLabel(command: LooseRecord) {
-  runGitHubBestEffortMutation(
-    command,
-    "label_create",
-    { repository: command.repo, label: AUTOMERGE_LABEL },
-    [
-      "label",
-      "create",
-      AUTOMERGE_LABEL,
-      "--repo",
-      command.repo,
-      "--color",
-      "1A7F37",
-      "--description",
-      "Maintainer opted this ClawSweeper PR into bounded ClawSweeper-reviewed automerge",
-    ],
-    githubAlreadyExistsNoMutation,
-  );
-}
-
-function ensureAutofixLabel(command: LooseRecord) {
-  runGitHubBestEffortMutation(
-    command,
-    "label_create",
-    { repository: command.repo, label: AUTOFIX_LABEL },
-    [
-      "label",
-      "create",
-      AUTOFIX_LABEL,
-      "--repo",
-      command.repo,
-      "--color",
-      "0A3069",
-      "--description",
-      "Maintainer opted this PR into bounded ClawSweeper-reviewed autofix without merge",
-    ],
-    githubAlreadyExistsNoMutation,
-  );
-}
-
 function ensureRepairLoopLabel(command: LooseRecord, label: string) {
-  if (label === AUTOFIX_LABEL) {
-    ensureAutofixLabel(command);
-    return;
-  }
-  ensureAutomergeLabel(command);
+  const autofix = label === AUTOFIX_LABEL;
+  ensureLabel(
+    command,
+    autofix ? AUTOFIX_LABEL : AUTOMERGE_LABEL,
+    autofix ? "0A3069" : "1A7F37",
+    autofix
+      ? "Maintainer opted this PR into bounded ClawSweeper-reviewed autofix without merge"
+      : "Maintainer opted this ClawSweeper PR into bounded ClawSweeper-reviewed automerge",
+  );
 }
 
 function ensureHumanReviewLabel(command: LooseRecord) {
-  runGitHubBestEffortMutation(
+  ensureLabel(
     command,
-    "label_create",
-    { repository: command.repo, label: HUMAN_REVIEW_LABEL },
-    [
-      "label",
-      "create",
-      HUMAN_REVIEW_LABEL,
-      "--repo",
-      command.repo,
-      "--color",
-      "B60205",
-      "--description",
-      "ClawSweeper automerge is paused for maintainer review",
-    ],
-    githubAlreadyExistsNoMutation,
+    HUMAN_REVIEW_LABEL,
+    "B60205",
+    "ClawSweeper automerge is paused for maintainer review",
   );
 }
 
 function ensureMergeReadyLabel(command: LooseRecord) {
+  ensureLabel(
+    command,
+    MERGE_READY_LABEL,
+    "57606A",
+    "ClawSweeper found the PR merge-ready but a human gate is still closed",
+  );
+}
+
+function ensureLabel(command: LooseRecord, label: string, color: string, description: string) {
   runGitHubBestEffortMutation(
     command,
     "label_create",
-    { repository: command.repo, label: MERGE_READY_LABEL },
+    { repository: command.repo, label },
     [
       "label",
       "create",
-      MERGE_READY_LABEL,
+      label,
       "--repo",
       command.repo,
       "--color",
-      "57606A",
+      color,
       "--description",
-      "ClawSweeper found the PR merge-ready but a human gate is still closed",
+      description,
     ],
     githubAlreadyExistsNoMutation,
   );

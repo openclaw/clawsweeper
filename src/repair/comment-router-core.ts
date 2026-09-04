@@ -198,7 +198,6 @@ export function createCachedIssueCommentsLookup<T = JsonValue>(
     const cached = cache.get(key);
     if (cached) return [...cached];
     const comments = fetchComments(key);
-    if (!Array.isArray(comments)) return [];
     cache.set(key, comments);
     return [...comments];
   };
@@ -218,7 +217,6 @@ export function createCachedIssueCommentsLookupAsync<T = JsonValue>(
     if (pending) return [...(await pending)];
     const next = fetchComments(key)
       .then((comments) => {
-        if (!Array.isArray(comments)) return [];
         cache.set(key, comments);
         return comments;
       })
@@ -735,28 +733,7 @@ export function automergeRebaseRepairReason(target: LooseRecord = {}): string | 
   if (mergeable === "CONFLICTING")
     return "PR has merge conflicts and needs a cloud rebase repair before automerge";
 
-  // GitHub can safely merge an otherwise-ready BEHIND head with a three-way
-  // merge. Let the exact-head merge call enforce repository policy instead of
-  // rewriting a contributor branch solely because main advanced.
-  if (mergeStateStatus === "BEHIND") return null;
-  return null;
-}
-
-export function automergeActivationRepairReason({
-  intent,
-  repo,
-  title,
-  files,
-  target = {},
-}: LooseRecord): string | null {
-  const failedChecksRepairReason = automergeFailedChecksRepairReason(target.checks ?? {});
-  if (failedChecksRepairReason) return failedChecksRepairReason;
-
-  const rebaseRepairReason = automergeRebaseRepairReason(target);
-  if (rebaseRepairReason) return rebaseRepairReason;
-
-  if (String(intent ?? "") !== "automerge") return null;
-  automergeChangelogBlockReason({ repo, title, files });
+  // BEHIND alone allows a three-way merge; the exact-head merge call enforces repo policy.
   return null;
 }
 
@@ -1708,6 +1685,7 @@ type AutoRepairDispatchEntry = {
   status?: unknown;
   target?: { head_sha?: unknown } | null;
   comment_updated_at?: unknown;
+  actions?: readonly { action?: unknown; status?: unknown }[];
 };
 
 export function autoRepairHeadKey({
@@ -1759,11 +1737,8 @@ export function autoRepairBlockReason({
     return "ClawSweeper auto repair already planned for this PR head in this scan";
   }
 
-  const priorHeadDispatches = entries.filter(
-    (entry) =>
-      isAutoRepairDispatchForPr(entry, repo, issueNumber) &&
-      String(entry.target?.head_sha ?? "") === String(headSha ?? "") &&
-      isAfterAutoRepairResumeBoundary(entry, resumeBoundary),
+  const priorHeadDispatches = priorPrDispatches.filter(
+    (entry) => String(entry.target?.head_sha ?? "") === String(headSha ?? ""),
   );
   if (priorHeadDispatches.length >= maxRepairsPerHead) {
     return `ClawSweeper auto repair already dispatched ${priorHeadDispatches.length} time(s) for this PR head`;
@@ -1777,8 +1752,8 @@ function isAutoRepairDispatchForPr(
   repo: unknown,
   issueNumber: unknown,
 ) {
-  const hasRepairDispatchAction = (entry as LooseRecord).actions?.some(
-    (action: JsonValue) => action?.action === "dispatch_repair" && action?.status === "executed",
+  const hasRepairDispatchAction = entry.actions?.some(
+    (action) => action?.action === "dispatch_repair" && action?.status === "executed",
   );
   return (
     entry.repo === repo &&
@@ -1839,7 +1814,7 @@ export function parseTrustedAutomation(
   if (actionMarker?.action === "close-required" || verdict?.action === "close") {
     const marker = actionMarker ?? verdict;
     if (marker) {
-      return trustedClose({
+      return trustedCommand("autoclose", {
         author,
         reason: `structured ClawSweeper close marker: ${marker.action}${markerReasonSuffix(marker.attrs)}`,
         marker,
@@ -1847,28 +1822,28 @@ export function parseTrustedAutomation(
     }
   }
   if (verdict?.action === "human-review") {
-    return trustedHumanReview({
+    return trustedCommand("clawsweeper_needs_human", {
       author,
       reason: trustedHumanReviewReason(body, verdict),
       marker: verdict,
     });
   }
   if (verdict?.action === "needs-human" && securityMarker?.action === "security-sensitive") {
-    return trustedHumanReview({
+    return trustedCommand("clawsweeper_needs_human", {
       author,
       reason: trustedHumanReviewReason(body, verdict),
       marker: verdict,
     });
   }
   if (verdict?.action === "needs-human" && trustedCommentHasPriorityFinding(body)) {
-    return trustedRepair({
+    return trustedCommand("clawsweeper_auto_repair", {
       author,
       reason: `structured ClawSweeper needs-human verdict with repairable P-severity findings${markerReasonSuffix(verdict.attrs)}`,
       marker: verdict,
     });
   }
   if (verdict?.action === "needs-human") {
-    return trustedHumanReview({
+    return trustedCommand("clawsweeper_needs_human", {
       author,
       reason: trustedHumanReviewReason(body, verdict),
       marker: verdict,
@@ -1878,7 +1853,7 @@ export function parseTrustedAutomation(
     actionMarker &&
     ["fix-required", "repair-required", "address-review", "fix-ci"].includes(actionMarker.action)
   ) {
-    return trustedRepair({
+    return trustedCommand("clawsweeper_auto_repair", {
       author,
       reason: `structured ClawSweeper marker: ${actionMarker.action}${markerReasonSuffix(actionMarker.attrs)}`,
       marker: actionMarker,
@@ -1894,14 +1869,14 @@ export function parseTrustedAutomation(
       "repair-required",
     ].includes(verdict.action)
   ) {
-    return trustedRepair({
+    return trustedCommand("clawsweeper_auto_repair", {
       author,
       reason: `structured ClawSweeper verdict: ${verdict.action}${markerReasonSuffix(verdict.attrs)}`,
       marker: verdict,
     });
   }
   if (trustedCommentHasPriorityFinding(body)) {
-    return trustedRepair({
+    return trustedCommand("clawsweeper_auto_repair", {
       author,
       reason: `trusted ClawSweeper review contains P-severity findings${markerReasonSuffix(verdict?.attrs)}`,
       marker: verdict,
@@ -1910,14 +1885,14 @@ export function parseTrustedAutomation(
   if (verdict && ["pass", "approved", "no-changes"].includes(verdict.action)) {
     const liveVerification = markerLiveVerificationState(verdict);
     if (liveVerification === "failed" || liveVerification === "malformed") {
-      return trustedHumanReview({
+      return trustedCommand("clawsweeper_needs_human", {
         author,
         reason: `attached live verification is ${liveVerification}`,
         marker: verdict,
       });
     }
     if (liveVerification === "unknown") return null;
-    return trustedMerge({
+    return trustedCommand("clawsweeper_auto_merge", {
       author,
       reason: `structured ClawSweeper verdict: ${verdict.action}${markerReasonSuffix(verdict.attrs)}`,
       marker: verdict,
@@ -2620,25 +2595,7 @@ export function renderResponse(command: LooseRecord, dispatched: LooseRecord) {
       "",
       `Source: \`${commandSource(command)}\``,
       `Feedback: ${command.repair_reason ?? "ClawSweeper reported a passing review."}`,
-      ...(dispatched?.merge?.reason ? [`Merge status: ${dispatched.merge.reason}`] : []),
-      ...(dispatched?.merge?.merged_at ? [`Merged at: ${dispatched.merge.merged_at}`] : []),
-      ...(dispatched?.merge?.merge_commit_sha
-        ? [`Merge commit: ${markdownCommitLink(command.repo, dispatched.merge.merge_commit_sha)}`]
-        : []),
-      ...(dispatched?.merge?.summary_lines?.length
-        ? ["", "What merged:", ...dispatched.merge.summary_lines.map((line: string) => `- ${line}`)]
-        : []),
-      ...(dispatched?.merge?.fixup_lines?.length
-        ? [
-            "",
-            "Automerge notes:",
-            ...dispatched.merge.fixup_lines.map((line: string) => `- ${line}`),
-          ]
-        : []),
-      "",
-      dispatched?.merge?.status === "executed"
-        ? "The automerge loop is complete."
-        : "I left the PR open for the remaining gate instead of bypassing it.",
+      ...mergeResponseLines(command.repo, dispatched?.merge),
     ].join("\n");
   }
   if (command.intent === "maintainer_approve_automerge") {
@@ -2650,25 +2607,7 @@ export function renderResponse(command: LooseRecord, dispatched: LooseRecord) {
       "",
       `Approver: \`${command.author ?? "maintainer"}\``,
       `Head: ${markdownCommitLink(command.repo, command.expected_head_sha ?? command.target?.head_sha) || "`unknown`"}`,
-      ...(dispatched?.merge?.reason ? [`Merge status: ${dispatched.merge.reason}`] : []),
-      ...(dispatched?.merge?.merged_at ? [`Merged at: ${dispatched.merge.merged_at}`] : []),
-      ...(dispatched?.merge?.merge_commit_sha
-        ? [`Merge commit: ${markdownCommitLink(command.repo, dispatched.merge.merge_commit_sha)}`]
-        : []),
-      ...(dispatched?.merge?.summary_lines?.length
-        ? ["", "What merged:", ...dispatched.merge.summary_lines.map((line: string) => `- ${line}`)]
-        : []),
-      ...(dispatched?.merge?.fixup_lines?.length
-        ? [
-            "",
-            "Automerge notes:",
-            ...dispatched.merge.fixup_lines.map((line: string) => `- ${line}`),
-          ]
-        : []),
-      "",
-      dispatched?.merge?.status === "executed"
-        ? "The automerge loop is complete."
-        : "I left the PR open for the remaining gate instead of bypassing it.",
+      ...mergeResponseLines(command.repo, dispatched?.merge),
     ].join("\n");
   }
   if (command.intent === "clawsweeper_needs_human") {
@@ -2711,6 +2650,26 @@ export function renderResponse(command: LooseRecord, dispatched: LooseRecord) {
     "",
     "I will keep the change narrow and update the PR branch if the repair worker finds a safe fix.",
   ].join("\n");
+}
+
+function mergeResponseLines(repo: string, merge: LooseRecord) {
+  return [
+    ...(merge?.reason ? [`Merge status: ${merge.reason}`] : []),
+    ...(merge?.merged_at ? [`Merged at: ${merge.merged_at}`] : []),
+    ...(merge?.merge_commit_sha
+      ? [`Merge commit: ${markdownCommitLink(repo, merge.merge_commit_sha)}`]
+      : []),
+    ...(merge?.summary_lines?.length
+      ? ["", "What merged:", ...merge.summary_lines.map((line: string) => `- ${line}`)]
+      : []),
+    ...(merge?.fixup_lines?.length
+      ? ["", "Automerge notes:", ...merge.fixup_lines.map((line: string) => `- ${line}`)]
+      : []),
+    "",
+    merge?.status === "executed"
+      ? "The automerge loop is complete."
+      : "I left the PR open for the remaining gate instead of bypassing it.",
+  ];
 }
 
 export function buildClawSweeperAssistDispatchPayload(command: LooseRecord) {
@@ -2800,7 +2759,7 @@ function commandFromText(trigger: JsonValue, value: JsonValue) {
   if (intent === "autoclose") parsed.autoclose_message = autocloseReasonFromCommand(rawCommand);
   if (intent === "freeform_assist") parsed.freeform_prompt = assistPromptFromCommand(rawCommand);
   if (intent === "re_review") {
-    const prompt = reviewPromptFromCommand(rawText);
+    const prompt = reviewPromptFromClawSweeperCommandText(rawText);
     if (prompt) parsed.freeform_prompt = prompt;
   }
   if (intent === "visualize") parsed.visual_lens = visualLensFromCommand(rawCommand);
@@ -2867,10 +2826,6 @@ function isIssueImplementationOverride(command: string) {
 function assistPromptFromCommand(command: LooseRecord) {
   const prompt = String(command ?? "").trim();
   return prompt.replace(/^(?:ask|explain)\b[:\s-]*/i, "").trim() || prompt;
-}
-
-function reviewPromptFromCommand(command: LooseRecord) {
-  return reviewPromptFromClawSweeperCommandText(command);
 }
 
 export const VISUAL_LENSES = new Set([
@@ -3009,8 +2964,6 @@ export function staleClosedItemCommandReason({
   return `PR closed after this ${intent} command`;
 }
 
-export const staleAutomergeActivationReason = staleClosedItemCommandReason;
-
 export function repairLoopStopPauseReason({ command, entries = [] }: LooseRecord): string | null {
   const stopAt = latestRepairLoopControlTime(entries, command, ["stop"]);
   if (!stopAt) return null;
@@ -3075,83 +3028,46 @@ function inlineQuote(value: JsonValue): string {
     : "_No request text provided._";
 }
 
-function trustedRepair({ author, reason, marker = null }: LooseRecord) {
+function trustedCommand(
+  intent:
+    | "clawsweeper_auto_repair"
+    | "clawsweeper_auto_merge"
+    | "clawsweeper_needs_human"
+    | "autoclose",
+  {
+    author,
+    reason,
+    marker = null,
+  }: {
+    author: string;
+    reason: string;
+    marker?: { action: string; attrs: Record<string, string> } | null;
+  },
+) {
+  const attrs = marker?.attrs;
   return {
     trigger: "trusted_bot",
-    command: "clawsweeper auto repair",
-    intent: "clawsweeper_auto_repair",
+    command: intent === "autoclose" ? `autoclose ${reason}` : intent.replaceAll("_", " "),
+    intent,
     trusted_bot: true,
     trusted_bot_author: author,
     automation_source: "clawsweeper",
     repair_reason: reason,
-    expected_head_sha: marker?.attrs?.sha ?? null,
-    reviewed_at: marker?.attrs?.reviewed_at ?? null,
-    review_lease_owner: marker?.attrs?.lease_owner ?? null,
-    review_lease_comment_id: marker?.attrs?.lease_comment_id ?? null,
-    expected_source_revision: marker?.attrs?.source_revision ?? null,
-    finding_id: marker?.attrs?.finding ?? null,
-    live_verification: markerLiveVerificationState(marker),
-  };
-}
-
-function trustedMerge({ author, reason, marker = null }: LooseRecord) {
-  return {
-    trigger: "trusted_bot",
-    command: "clawsweeper auto merge",
-    intent: "clawsweeper_auto_merge",
-    trusted_bot: true,
-    trusted_bot_author: author,
-    automation_source: "clawsweeper",
-    repair_reason: reason,
-    expected_head_sha: marker?.attrs?.sha ?? null,
-    reviewed_at: marker?.attrs?.reviewed_at ?? null,
-    review_lease_owner: marker?.attrs?.lease_owner ?? null,
-    review_lease_comment_id: marker?.attrs?.lease_comment_id ?? null,
-    expected_source_revision: marker?.attrs?.source_revision ?? null,
-    finding_id: marker?.attrs?.finding ?? null,
-    live_verification: markerLiveVerificationState(marker),
-  };
-}
-
-function trustedClose({ author, reason, marker = null }: LooseRecord) {
-  return {
-    trigger: "trusted_bot",
-    command: `autoclose ${reason}`,
-    intent: "autoclose",
-    trusted_bot: true,
-    trusted_bot_author: author,
-    automation_source: "clawsweeper",
-    repair_reason: reason,
-    autoclose_message: reason,
-    expected_head_sha: marker?.attrs?.sha ?? null,
-    close_reason: marker?.attrs?.reason ?? null,
-    close_confidence: marker?.attrs?.confidence ?? null,
-    close_action_taken: marker?.attrs?.action_taken ?? null,
-    reviewed_at: marker?.attrs?.reviewed_at ?? null,
-    review_lease_owner: marker?.attrs?.lease_owner ?? null,
-    review_lease_comment_id: marker?.attrs?.lease_comment_id ?? null,
-    expected_item_updated_at: marker?.attrs?.updated_at ?? null,
-    expected_source_revision: marker?.attrs?.source_revision ?? null,
-    finding_id: marker?.attrs?.finding ?? null,
-  };
-}
-
-function trustedHumanReview({ author, reason, marker = null }: LooseRecord) {
-  return {
-    trigger: "trusted_bot",
-    command: "clawsweeper needs human",
-    intent: "clawsweeper_needs_human",
-    trusted_bot: true,
-    trusted_bot_author: author,
-    automation_source: "clawsweeper",
-    repair_reason: reason,
-    expected_head_sha: marker?.attrs?.sha ?? null,
-    reviewed_at: marker?.attrs?.reviewed_at ?? null,
-    review_lease_owner: marker?.attrs?.lease_owner ?? null,
-    review_lease_comment_id: marker?.attrs?.lease_comment_id ?? null,
-    expected_source_revision: marker?.attrs?.source_revision ?? null,
-    finding_id: marker?.attrs?.finding ?? null,
-    live_verification: markerLiveVerificationState(marker),
+    expected_head_sha: attrs?.sha ?? null,
+    reviewed_at: attrs?.reviewed_at ?? null,
+    review_lease_owner: attrs?.lease_owner ?? null,
+    review_lease_comment_id: attrs?.lease_comment_id ?? null,
+    expected_source_revision: attrs?.source_revision ?? null,
+    finding_id: attrs?.finding ?? null,
+    ...(intent === "autoclose"
+      ? {
+          autoclose_message: reason,
+          close_reason: attrs?.reason ?? null,
+          close_confidence: attrs?.confidence ?? null,
+          close_action_taken: attrs?.action_taken ?? null,
+          expected_item_updated_at: attrs?.updated_at ?? null,
+        }
+      : { live_verification: markerLiveVerificationState(marker) }),
   };
 }
 
