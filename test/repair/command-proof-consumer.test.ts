@@ -166,6 +166,12 @@ test("compiled consumer CLI reopens SQL claims and completes only verified indep
   assert.equal(receipt.ok, true);
   assert.equal(receipt.observations.length, 15);
   assert.equal(receipt.codeSecurityCiPreserved, true);
+  assert.deepEqual(receipt.exceptionResponseSafety, {
+    status: 500,
+    contentType: "application/json; charset=utf-8",
+    contentTypeOptions: "nosniff",
+    body: { message: "fixture_request_failed" },
+  });
   assert.deepEqual(
     receipt.observations,
     [

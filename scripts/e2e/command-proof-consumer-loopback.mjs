@@ -30,6 +30,7 @@ fs.writeFileSync(gh, "#!/usr/bin/env node\n(" + fixtureGh.toString() + ")();\n",
 const secret = randomBytes(32).toString("hex"); // Ephemeral loopback auth only; never printed.
 let f, storage, queue, database, comments, dispatches, apiWrites, queueEnqueues;
 let scenario = "";
+let exceptionResponseSafety;
 const enqueueRejections = {
   "queue-shed": { ok: true, shed: true, reason: "backpressure" },
   "queue-rejected": { ok: true, accepted: false, reason: "target not enabled" },
@@ -150,8 +151,20 @@ const server = http.createServer(async (req, res) => {
       JSON.stringify({ message: "unexpected fixture request " + req.method + " " + url.pathname }),
     );
   } catch (error) {
-    res.writeHead(500);
-    res.end(JSON.stringify({ message: String(error.message) }));
+    // Keep diagnostics out of the HTTP body; never log exception text, payloads,
+    // headers or stacks that might contain signed URLs or ephemeral credentials.
+    const category =
+      error instanceof SyntaxError
+        ? "invalid_json"
+        : error?.code === "ERR_ASSERTION"
+          ? "fixture_assertion"
+          : "request_failure";
+    console.error("fixture_handler_error scenario=" + scenario + " category=" + category);
+    res.writeHead(500, {
+      "content-type": "application/json; charset=utf-8",
+      "x-content-type-options": "nosniff",
+    });
+    res.end(JSON.stringify({ message: "fixture_request_failed" }));
   }
 });
 
@@ -187,6 +200,33 @@ try {
     queueEnqueues = 0;
     database = path.join(temporary, scenario + ".sqlite");
     ({ storage, queue } = startQueue(database));
+    if (scenario === "pass") {
+      // Exercise the real JSON.parse -> catch response path before any dispatch.
+      const attackerHtml = "<script>alert('fixture-xss')</script>";
+      const response = await fetch(
+        base + "/repos/openclaw/openclaw/actions/workflows/mantis-web-ui-chat-proof.yml/dispatches",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: attackerHtml,
+        },
+      );
+      const body = await response.text();
+      assert.equal(response.status, 500);
+      assert.equal(response.headers.get("content-type"), "application/json; charset=utf-8");
+      assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+      assert.equal(body, JSON.stringify({ message: "fixture_request_failed" }));
+      assert.equal(body.includes(attackerHtml), false);
+      assert.doesNotMatch(body, /[<>]/);
+      assert.equal(dispatches, 0);
+      assert.equal(queueEnqueues, 0);
+      exceptionResponseSafety = {
+        status: response.status,
+        contentType: response.headers.get("content-type"),
+        contentTypeOptions: response.headers.get("x-content-type-options"),
+        body: JSON.parse(body),
+      };
+    }
     const input = path.join(temporary, "request.json");
     fs.writeFileSync(
       input,
@@ -470,6 +510,7 @@ try {
         runtime: "compiled CLI + real Worker HTTP routing + file-backed SQLite ExactReviewQueue",
         observations,
         codeSecurityCiPreserved: true,
+        exceptionResponseSafety,
         limits:
           "GitHub metadata/artifact delivery and the independent model response are controlled fixtures. No live GitHub dispatch, Mantis UI run, semantic model accuracy, public-provider or channel claim. The production verifier, ZIP parser, durable store, queue enqueue, status owner, proof-only fold and exact-event lease tuple check are exercised. This is not end-to-end canonical publication, apply-time GitHub mutation or hosted-deployment proof.",
       },
