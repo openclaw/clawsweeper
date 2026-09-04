@@ -1663,12 +1663,17 @@ export class ExactReviewLifecycleTelemetryStore {
     );
   }
 
-  hasBayLifecyclePending() {
+  hasBayLifecyclePending(includeSource = false) {
     try {
       return (
         Array.from(
           this.storage.sql.exec(
-            `SELECT 1 AS pending FROM ${EXACT_REVIEW_LIFECYCLE_BAY_PENDING_TABLE} LIMIT 1`,
+            includeSource
+              ? `SELECT 1 AS pending WHERE
+                   EXISTS(SELECT 1 FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+                           WHERE bay_telemetry_pending = 1)
+                   OR EXISTS(SELECT 1 FROM ${EXACT_REVIEW_LIFECYCLE_BAY_PENDING_TABLE})`
+              : `SELECT 1 AS pending FROM ${EXACT_REVIEW_LIFECYCLE_BAY_PENDING_TABLE} LIMIT 1`,
           ),
         ).length > 0
       );
@@ -2387,8 +2392,12 @@ function sameBayLifecycleEvent(left: BayLifecycleEvent, right: BayLifecycleEvent
 }
 
 function hadBayLifecycleTerminalEvent(projection: ExactReviewLifecycleProjection) {
+  // A routed receipt can precede the first final-effect receipt. With no
+  // immutable timing boundary it has never contributed to either tide. Keep
+  // legacy/materialized markers conservative, including after event retention.
+  if (projection.bayTelemetryEventId !== undefined) return true;
   return projection.terminalDispositions.some(
-    (terminal) => terminal.kind === "review_completed_routed" || terminal.kind === "failure",
+    (terminal) => bayLifecycleEvent({ ...projection, terminalDisposition: terminal }) !== null,
   );
 }
 

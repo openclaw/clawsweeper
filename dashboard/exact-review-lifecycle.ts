@@ -434,6 +434,14 @@ export class ExactReviewLifecycleProjectionStore {
         observedAt: number;
       },
   ) {
+    return this.recordReviewResultIfPresent(input, true)!;
+  }
+
+  recordReviewResultIfPresent(
+    input: ProjectionIdentity &
+      Omit<LifecycleReviewResultFact, "fenceKey" | "observedAt"> & { observedAt: number },
+    requirePresent = false,
+  ) {
     this.validateIdentity(input);
     if (!positiveInteger(input.claimGeneration) || !validRunId(input.runId)) {
       throw new Error("invalid lifecycle review result");
@@ -441,21 +449,26 @@ export class ExactReviewLifecycleProjectionStore {
     if (input.runAttempt !== null && !positiveInteger(input.runAttempt)) {
       throw new Error("invalid lifecycle review result attempt");
     }
-    return this.mutate(input, (projection) => {
-      const fact: LifecycleReviewResultFact = {
-        fenceKey: input.fenceKey,
-        claimGeneration: input.claimGeneration,
-        runId: input.runId,
-        runAttempt: input.runAttempt,
-        outcome: input.outcome,
-        observedAt: input.observedAt,
-      };
-      const existing = projection.reviewResults.find((candidate) =>
-        sameReviewResult(candidate, fact),
-      );
-      if (!existing) projection.reviewResults.push(fact);
-      return projection;
-    });
+    return this.mutate<ExactReviewLifecycleProjection | null>(
+      input,
+      (projection) => {
+        const fact: LifecycleReviewResultFact = {
+          fenceKey: input.fenceKey,
+          claimGeneration: input.claimGeneration,
+          runId: input.runId,
+          runAttempt: input.runAttempt,
+          outcome: input.outcome,
+          observedAt: input.observedAt,
+        };
+        const existing = projection.reviewResults.find((candidate) =>
+          sameReviewResult(candidate, fact),
+        );
+        if (!existing) projection.reviewResults.push(fact);
+        return projection;
+      },
+      true,
+      requirePresent ? undefined : () => null,
+    );
   }
 
   recordGithubEffect(
@@ -1366,18 +1379,25 @@ export class ExactReviewLifecycleProjectionStore {
     input: ProjectionIdentity,
     apply: (projection: ExactReviewLifecycleProjection) => T,
     writeResult = true,
+    onMissing?: () => T,
   ): T {
-    return this.storage.transactionSync(() => this.mutateSync(input, apply, writeResult));
+    return this.storage.transactionSync(() =>
+      this.mutateSync(input, apply, writeResult, onMissing),
+    );
   }
 
   private mutateSync<T>(
     input: ProjectionIdentity,
     apply: (projection: ExactReviewLifecycleProjection) => T,
     writeResult = true,
+    onMissing?: () => T,
   ): T {
     this.ensureSchemaSync();
     const projection = this.readSync(input.canonicalTargetKey, input.fenceKey, input.revision);
-    if (!projection) throw new Error("missing lifecycle admission fact");
+    if (!projection) {
+      if (onMissing) return onMissing();
+      throw new Error("missing lifecycle admission fact");
+    }
     this.assertIdentity(projection, input);
     const result = apply(projection);
     if (writeResult) {

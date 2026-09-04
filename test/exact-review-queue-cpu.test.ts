@@ -1066,3 +1066,299 @@ test(
     console.log(JSON.stringify({ fixture: { lifecycle: 20_000 }, samples }));
   },
 );
+
+// Inclusive method timings overlap; SQL counts include every request query but
+// exclude fixture restoration. CPU is process CPU on Node/SQLite, not edge CPU.
+test(
+  "completion and receipt CPU breakdown (opt in)",
+  {
+    skip: process.env.EXACT_REVIEW_COMPLETION_CPU_BENCH !== "1",
+  },
+  async (t) => {
+    t.mock.method(Date, "now", () => NOW);
+    const samples = [];
+    for (const route of [
+      "complete-success",
+      "complete-failure",
+      "lifecycle/router-receipt",
+      "terminal-finalization/attempt",
+      "heartbeat",
+    ]) {
+      const h = await fixture(300, {}, 65);
+      for (const item of h.items.slice(350)) {
+        item.state = "pending";
+        for (const key of [
+          "leaseDecision",
+          "leaseId",
+          "leaseRevision",
+          "leaseExpiresAt",
+          "claimedRunId",
+          "claimedRunAttempt",
+          "claimGeneration",
+          "claimProtocolVersion",
+        ])
+          delete item[key];
+        h.storage.run(
+          "UPDATE exact_review_queue_items SET item_json = ? WHERE item_key = ?",
+          JSON.stringify(item),
+          item.key,
+        );
+      }
+      const metrics: Record<string, { cpu_ms: number; calls: number }> = {};
+      const instrument = (object, name, label = name) => {
+        const original = object[name];
+        object[name] = function (...args) {
+          const start = process.cpuUsage();
+          const finish = () => {
+            const cpu = process.cpuUsage(start);
+            const entry = (metrics[label] ??= { cpu_ms: 0, calls: 0 });
+            entry.cpu_ms += (cpu.user + cpu.system) / 1000;
+            entry.calls++;
+          };
+          try {
+            const result = original.apply(this, args);
+            if (result instanceof Promise) return result.finally(finish);
+            finish();
+            return result;
+          } catch (error) {
+            finish();
+            throw error;
+          }
+        };
+      };
+      for (const name of [
+        "readStateSync",
+        "readSchedulingStateSync",
+        "writeStateSync",
+        "scheduleNext",
+        "refreshPublicationControlSync",
+        "publicationHeadsSync",
+        "freshPublicationItemKeysSync",
+        "supersededPublicationItemKeysSync",
+        "syncBayLifecycle",
+        "incrementQueueMetricsSync",
+      ])
+        instrument(h.queue, name);
+      instrument(h.queue["lifecycleProjectionStore"], "writeSync", "lifecycleWrite");
+      const exec = h.storage.sql.exec;
+      let queries = 0;
+      const queryCounts = new Map<string, number>();
+      h.storage.sql.exec = (query, ...bindings) => {
+        queries++;
+        const normalized = query.replace(/\s+/g, " ").trim();
+        queryCounts.set(normalized, (queryCounts.get(normalized) || 0) + 1);
+        return exec(query, ...bindings);
+      };
+      const times = [];
+      for (let i = 0; i < 10; i++) {
+        // Terminal finalization needs one extra owned publication driver; all
+        // other routes retain exactly 300 publications / 50 leases / 15 pending.
+        const item = structuredClone(h.items[route === "lifecycle/router-receipt" ? i : 300 + i]!);
+        if (route === "terminal-finalization/attempt") {
+          item.key += "@finalizer";
+          item.decision = {
+            ...h.items[40]!.decision,
+            itemNumber: item.decision.itemNumber,
+            statusCommentId: 41,
+          };
+          item.terminalFinalization = {
+            disposition: "policy_noop",
+            statusState: "Complete",
+            statusDetail: "No action required.",
+            projection: {
+              canonicalTargetKey: "openclaw/openclaw#41",
+              fenceKey: h.items[40]!.key,
+              revision: 1,
+            },
+          };
+          h.storage.run(
+            "INSERT OR REPLACE INTO exact_review_queue_items (item_key,item_json) VALUES (?,?)",
+            item.key,
+            JSON.stringify(item),
+          );
+        }
+        const tuple = {
+          item_key: item.key,
+          lease_id: item.leaseId,
+          lease_revision: 1,
+          claim_generation: 1,
+          run_id: item.claimedRunId,
+          run_attempt: 1,
+        };
+        const request = route.startsWith("complete-")
+          ? post("/complete", {
+              ...tuple,
+              outcome: route === "complete-success" ? "success" : "failure",
+            })
+          : route === "lifecycle/router-receipt"
+            ? post(`/${route}`, {
+                canonical_target_key: `openclaw/openclaw#${i + 1}`,
+                fence_key: item.key,
+                revision: 1,
+                receipt_id: `breakdown-${i}`,
+              })
+            : post(`/${route}`, {
+                ...tuple,
+                ...(route === "terminal-finalization/attempt" ? { status_comment_id: 41 } : {}),
+              });
+        const start = process.cpuUsage();
+        const response = await h.queue.fetch(request);
+        const body = await response.json();
+        const cpu = process.cpuUsage(start);
+        times.push((cpu.user + cpu.system) / 1000);
+        assert.equal(response.status, 200, JSON.stringify(body));
+        if (route.startsWith("complete-"))
+          assert.equal(body.requeued, route === "complete-failure");
+        if (route === "terminal-finalization/attempt")
+          h.storage.run("DELETE FROM exact_review_queue_items WHERE item_key = ?", item.key);
+        else
+          h.storage.run(
+            "INSERT OR REPLACE INTO exact_review_queue_items (item_key,item_json) VALUES (?,?)",
+            item.key,
+            JSON.stringify(item),
+          );
+      }
+      times.sort((a, b) => a - b);
+      samples.push({
+        route,
+        median_cpu_ms: times[5],
+        max_cpu_ms: times.at(-1),
+        sql_per_call: queries / 10,
+        inclusive_methods: Object.fromEntries(
+          Object.entries(metrics).map(([key, value]) => [
+            key,
+            { cpu_ms: value.cpu_ms / 10, calls: value.calls / 10 },
+          ]),
+        ),
+        queries: [...queryCounts].map(([query, count]) => ({ query, per_call: count / 10 })),
+      });
+    }
+    console.log(
+      JSON.stringify({
+        fixture: { pending_publications: 300, leased_reviews: 50, pending_reviews: 15 },
+        samples,
+      }),
+    );
+  },
+);
+
+test("retained-alarm scheduling equals full scans across queue transitions and admission gates", async (t) => {
+  t.mock.method(Date, "now", () => NOW);
+  const scenarios = [
+    "unchanged",
+    "success",
+    "retry-later",
+    "retry-earlier",
+    "heartbeat",
+    "finalizing",
+    "ready-batch",
+    "expired-lease",
+    "parked",
+    "paused",
+    "target-cap",
+    "empty",
+  ];
+  for (const scenario of scenarios) {
+    const h = await fixture(300, {}, 65);
+    const q = h.queue as unknown as QueueInternals & {
+      scheduleNext(state: ExactReviewQueueState, now: number, forceScan?: boolean): Promise<void>;
+    };
+    const state = q.readStateSync();
+    for (const item of Object.values(state.items).slice(350)) {
+      item.state = "pending";
+      item.nextAttemptAt = NOW + 60_000;
+    }
+    const leased = state.items[h.items[300]!.key]!;
+    if (scenario === "success") delete state.items[leased.key];
+    if (scenario.startsWith("retry-")) {
+      leased.state = "pending";
+      leased.nextAttemptAt = NOW + (scenario === "retry-later" ? 120_000 : 5_000);
+    }
+    if (scenario === "heartbeat" || scenario === "finalizing") {
+      leased.leaseHeartbeatAt = NOW;
+      leased.leasePhase = scenario === "heartbeat" ? "review" : "finalizing";
+    }
+    if (scenario === "ready-batch")
+      for (const item of Object.values(state.items).slice(0, 8)) item.nextAttemptAt = NOW;
+    if (scenario === "expired-lease") leased.leaseExpiresAt = NOW - 1;
+    if (scenario === "parked") {
+      leased.state = "parked";
+      leased.parkedReason = "review_retry_exhausted";
+      leased.updatedAt = NOW;
+    }
+    if (scenario === "paused")
+      state.dispatcher = { ...state.dispatcher, state: "paused", retryAt: NOW + 10_000 };
+    if (scenario === "target-cap") h.env.EXACT_REVIEW_TARGET_MAX_CONCURRENT = "1";
+    if (scenario === "empty") state.items = {};
+    h.storage.transactionSync(() => q.writeStateSync(state));
+    const alarmBefore = h.storage.scheduledAlarm();
+    const controlsBefore = structuredClone(h.storage.kv.get("exact-review-publication-control:v1"));
+    const before = exactReviewQueueStats(q.readStateSync(), NOW, 128, 120, 32);
+    await q.scheduleNext(q.readStateSync(), NOW);
+    const actual = h.storage.scheduledAlarm();
+    const controlsAfter = structuredClone(h.storage.kv.get("exact-review-publication-control:v1"));
+    if (alarmBefore === null) await h.storage.deleteAlarm();
+    else await h.storage.setAlarm(alarmBefore);
+    if (controlsBefore === undefined) h.storage.kv.delete("exact-review-publication-control:v1");
+    else h.storage.kv.put("exact-review-publication-control:v1", controlsBefore);
+    await q.scheduleNext(q.readStateSync(), NOW, true);
+    assert.equal(actual, h.storage.scheduledAlarm(), scenario);
+    assert.deepEqual(
+      controlsAfter,
+      h.storage.kv.get("exact-review-publication-control:v1"),
+      scenario,
+    );
+    assert.deepEqual(before, exactReviewQueueStats(q.readStateSync(), NOW, 128, 120, 32), scenario);
+  }
+});
+
+test("retained alarm falls back to a fresh durable census after an await consumes the alarm", async (t) => {
+  t.mock.method(Date, "now", () => NOW);
+  const h = await fixture(10);
+  const q = internals(h.queue);
+  const original = h.storage.getAlarm.bind(h.storage);
+  let consumed = false;
+  t.mock.method(h.storage, "getAlarm", async () => {
+    if (!consumed) {
+      consumed = true;
+      await h.storage.deleteAlarm();
+      const item = { ...h.items[0]!, nextAttemptAt: NOW + 1_000 };
+      h.storage.run(
+        "UPDATE exact_review_queue_items SET item_json = ? WHERE item_key = ?",
+        JSON.stringify(item),
+        item.key,
+      );
+    }
+    return original();
+  });
+  await q.scheduleNext(q.readStateSync(), NOW);
+  assert.equal(h.storage.scheduledAlarm(), NOW + 1_000);
+});
+
+test("receipt without a final timing boundary updates only its lifecycle row and never rebuilds tides", async (t) => {
+  t.mock.method(Date, "now", () => NOW);
+  const h = await fixture(300);
+  const sql = t.mock.method(h.storage.sql, "exec");
+  const item = h.items[0]!;
+  const response = await h.queue.fetch(
+    post("/lifecycle/router-receipt", {
+      canonical_target_key: "openclaw/openclaw#1",
+      fence_key: item.key,
+      revision: 1,
+      receipt_id: "no-final-boundary",
+    }),
+  );
+  assert.equal(response.status, 200);
+  const queries = sql.mock.calls.map((call) => call.arguments[0]);
+  assert.equal(queries.filter((query) => /WITH lifecycle_events/.test(query)).length, 0);
+  for (const call of sql.mock.calls.filter((call) =>
+    /(?:INSERT INTO|UPDATE) exact_review_lifecycle_projection_v1/.test(call.arguments[0]),
+  )) {
+    assert.ok(call.arguments.includes("openclaw/openclaw#1"));
+    assert.ok(call.arguments.includes(item.key));
+  }
+  assert.equal(
+    h.lifecycle.read("openclaw/openclaw#2", h.items[1]!.key, 1)!.terminalDisposition,
+    null,
+  );
+});
