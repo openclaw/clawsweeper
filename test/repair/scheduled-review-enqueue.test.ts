@@ -125,6 +125,202 @@ test("scheduled review enqueue reports the full selection-to-queue funnel and st
   assert.equal(second.decision.supersedesInProgress, false);
 });
 
+for (const failure of ["HTTP 500", "TimeoutError"] as const) {
+  test(`scheduled review enqueue retries ${failure} with one logical attempt and stable identity`, async () => {
+    const secret = "scheduled-review-retry-secret";
+    const requests: Array<{ body: string; signature: string }> = [];
+    const summary = await enqueueScheduledReviewPlan({
+      plan: {
+        candidates: [
+          {
+            repo: "openclaw/openclaw",
+            number: 42,
+            kind: "issue",
+            updatedAt: "2026-09-04T00:00:00Z",
+          },
+        ],
+      },
+      lane: "normal_backfill",
+      targetRepo: "openclaw/openclaw",
+      targetBranch: "main",
+      queueUrl: "https://queue.example",
+      secret,
+      deliveryPrefix: "scheduled:retry:1",
+      fetchImpl: async (_input, init) => {
+        if (!init?.method) {
+          return Response.json({ scheduled_feed: { target_rate_per_hour: 300 } });
+        }
+        const headers = init.headers as Record<string, string>;
+        requests.push({
+          body: String(init.body),
+          signature: String(headers["x-clawsweeper-exact-review-signature"]),
+        });
+        if (requests.length === 1) {
+          if (failure === "HTTP 500") {
+            return Response.json({ error: "exact_review_queue_unavailable" }, { status: 500 });
+          }
+          throw new DOMException("synthetic timeout", "TimeoutError");
+        }
+        return Response.json({ ok: true, queued: true }, { status: 202 });
+      },
+    });
+
+    assert.equal(summary.attempted, 1);
+    assert.equal(summary.queued, 1);
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0]!.body, requests[1]!.body);
+    assert.equal(requests[0]!.signature, requests[1]!.signature);
+    assert.equal(
+      requests[0]!.signature,
+      `sha256=${createHmac("sha256", secret).update(requests[0]!.body).digest("hex")}`,
+    );
+    assert.equal(JSON.parse(requests[0]!.body).delivery_id, "scheduled:retry:1:0:42");
+  });
+}
+
+test("scheduled review enqueue fails closed when a retry loses the original disposition", async () => {
+  const requests: Array<{ body: string; signature: string }> = [];
+  await assert.rejects(
+    enqueueScheduledReviewPlan({
+      plan: {
+        candidates: [
+          {
+            repo: "openclaw/openclaw",
+            number: 42,
+            kind: "issue",
+            updatedAt: "2026-09-04T00:00:00Z",
+          },
+        ],
+      },
+      lane: "normal_backfill",
+      targetRepo: "openclaw/openclaw",
+      targetBranch: "main",
+      queueUrl: "https://queue.example",
+      secret: "scheduled-review-retry-secret",
+      deliveryPrefix: "scheduled:retry:1",
+      fetchImpl: async (_input, init) => {
+        if (!init?.method) {
+          return Response.json({ scheduled_feed: { target_rate_per_hour: 300 } });
+        }
+        const headers = init.headers as Record<string, string>;
+        requests.push({
+          body: String(init.body),
+          signature: String(headers["x-clawsweeper-exact-review-signature"]),
+        });
+        return requests.length === 1
+          ? Response.json({ error: "exact_review_queue_unavailable" }, { status: 500 })
+          : Response.json({ ok: true, deduped: true }, { status: 202 });
+      },
+    }),
+    /ambiguous dedupe after retry/,
+  );
+
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0]!.body, requests[1]!.body);
+  assert.equal(requests[0]!.signature, requests[1]!.signature);
+});
+
+test("scheduled review enqueue accepts a scoped item dedupe after retry", async () => {
+  const secret = "scheduled-review-retry-secret";
+  const requests: Array<{ body: string; signature: string }> = [];
+  const summary = await enqueueScheduledReviewPlan({
+    plan: {
+      candidates: [
+        {
+          repo: "openclaw/openclaw",
+          number: 42,
+          kind: "issue",
+          updatedAt: "2026-09-04T00:00:00Z",
+        },
+      ],
+    },
+    lane: "normal_backfill",
+    targetRepo: "openclaw/openclaw",
+    targetBranch: "main",
+    queueUrl: "https://queue.example",
+    secret,
+    deliveryPrefix: "scheduled:retry:1",
+    fetchImpl: async (_input, init) => {
+      if (!init?.method) {
+        return Response.json({ scheduled_feed: { target_rate_per_hour: 300 } });
+      }
+      const headers = init.headers as Record<string, string>;
+      requests.push({
+        body: String(init.body),
+        signature: String(headers["x-clawsweeper-exact-review-signature"]),
+      });
+      return requests.length === 1
+        ? Response.json({ error: "exact_review_queue_unavailable" }, { status: 500 })
+        : Response.json(
+            {
+              ok: true,
+              deduped: true,
+              dedupe_scope: "scheduled_queue_item",
+              dedupe_reason: "item_already_pending_or_active",
+            },
+            { status: 202 },
+          );
+    },
+  });
+
+  assert.equal(summary.attempted, 1);
+  assert.equal(summary.deduped, 1);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0]!.body, requests[1]!.body);
+  assert.equal(requests[0]!.signature, requests[1]!.signature);
+  assert.equal(
+    requests[0]!.signature,
+    `sha256=${createHmac("sha256", secret).update(requests[0]!.body).digest("hex")}`,
+  );
+});
+
+test("scheduled review enqueue does not retry HTTP 4xx and preserves request identity", async () => {
+  const secret = "scheduled-review-retry-secret";
+  const requests: Array<{ body: string; signature: string }> = [];
+  await assert.rejects(
+    enqueueScheduledReviewPlan({
+      plan: {
+        candidates: [
+          {
+            repo: "openclaw/openclaw",
+            number: 42,
+            kind: "issue",
+            updatedAt: "2026-09-04T00:00:00Z",
+          },
+        ],
+      },
+      lane: "normal_backfill",
+      targetRepo: "openclaw/openclaw",
+      targetBranch: "main",
+      queueUrl: "https://queue.example",
+      secret,
+      deliveryPrefix: "scheduled:retry:1",
+      fetchImpl: async (_input, init) => {
+        if (!init?.method) {
+          return Response.json({ scheduled_feed: { target_rate_per_hour: 300 } });
+        }
+        const headers = init.headers as Record<string, string>;
+        requests.push({
+          body: String(init.body),
+          signature: String(headers["x-clawsweeper-exact-review-signature"]),
+        });
+        return Response.json({ error: "exact_review_conflict" }, { status: 409 });
+      },
+    }),
+    {
+      message:
+        "Batch queue /internal/exact-review/enqueue failed (HTTP 409): exact_review_conflict",
+    },
+  );
+
+  assert.equal(requests.length, 1);
+  assert.equal(
+    requests[0]!.signature,
+    `sha256=${createHmac("sha256", secret).update(requests[0]!.body).digest("hex")}`,
+  );
+  assert.equal(JSON.parse(requests[0]!.body).delivery_id, "scheduled:retry:1:0:42");
+});
+
 test("scheduled review enqueue rejects numeric target branches before queue admission", async () => {
   await assert.rejects(
     enqueueScheduledReviewPlan({

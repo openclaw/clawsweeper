@@ -269,6 +269,10 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
     return this.postUrl(POST_EFFECT_ROUTES[route], payload);
   }
 
+  async enqueueScheduledReview(payload: string) {
+    return this.postUrl(POST_EFFECT_ROUTES.enqueue, payload, Date.now() + RETRY_DEADLINE_MS, true);
+  }
+
   async reconcilePublications(input: { apply: boolean; maxItems: number }) {
     const response = await this.postUrl("/internal/exact-review/publications/reconcile", {
       apply: input.apply,
@@ -429,6 +433,7 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
     path: string,
     payload: Record<string, unknown> | string,
     retryDeadline?: number,
+    rejectUnscopedRetriedDedupe = false,
   ): Promise<Record<string, unknown>> {
     // Serialize and sign once: receipt/delivery identity must survive ambiguous failures.
     const body = typeof payload === "string" ? payload : JSON.stringify(payload);
@@ -493,7 +498,16 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
         } catch {
           throw new Error(`Batch queue ${path} returned invalid JSON (HTTP ${response!.status})`);
         }
-        return objectValue(parsed);
+        const result = objectValue(parsed);
+        if (
+          rejectUnscopedRetriedDedupe &&
+          attempt > 1 &&
+          result.deduped === true &&
+          result.dedupe_scope !== "scheduled_queue_item"
+        ) {
+          throw new Error(`Batch queue ${path} returned an ambiguous dedupe after retry`);
+        }
+        return result;
       }
       if (attempt === maxAttempts) throw failure;
       const backoff = Math.floor(1_000 * 2 ** (attempt - 1) * (0.5 + Math.random() * 0.5));

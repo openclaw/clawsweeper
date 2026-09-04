@@ -576,6 +576,9 @@ observed planning average of 30 requests per completed review.
 The producer probes that field before its first enqueue and fails closed while
 an older Worker is still deployed, preventing a workflow-first rollout from
 bypassing the rate limiter.
+Scheduled review ingress retries transient transport and HTTP 5xx failures with
+the same signed delivery bytes, but fails closed when a retry cannot recover the
+original admission disposition; publication post-effects remain single-attempt.
 
 Normal fanout ordinarily divides one live queue-advertised candidate-capacity
 budget across the selected repositories; it does not grant 50 candidates to
