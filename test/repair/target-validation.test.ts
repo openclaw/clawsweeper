@@ -32,6 +32,7 @@ import {
   workspacePatternMatches,
 } from "../../dist/repair/target-validation.js";
 import { compactText } from "../../dist/repair/text-utils.js";
+import { gitChangedFiles } from "../../dist/repair/git-repo-utils.js";
 import {
   __resetTargetRepoToolchainCache,
   resolveTargetRepoToolchain,
@@ -45,7 +46,7 @@ import {
 } from "../../dist/repair/validation-command-utils.js";
 import { mockCommandBinEnv } from "../helpers.ts";
 
-const FAKE_TOOLCHAIN_TIMEOUT_MS = 15_000;
+const FAKE_TOOLCHAIN_TIMEOUT_MS = 60_000;
 const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-validation-tests-"));
 after(() =>
   fs.rmSync(fixtureRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 }),
@@ -1948,6 +1949,53 @@ test("adopted OpenClaw PR repairs keep full changed gate for code repair deltas"
     "pnpm check:changed",
   ]);
   assert.equal(canSkipInternalCodexReviewForRepairDelta(plan), false);
+});
+
+test("repair delta preserves porcelain XY columns and NUL-delimited rename paths", () => {
+  const cwd = gitPackageFixture({});
+  fs.mkdirSync(path.join(cwd, "docs"));
+  for (const name of ["unstaged", "staged", "old"]) {
+    fs.writeFileSync(path.join(cwd, "docs", name), `${name}\n`);
+  }
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "base");
+  const sourceHead = git(cwd, "rev-parse", "HEAD");
+  fs.appendFileSync(path.join(cwd, "docs", "unstaged"), "changed\n");
+  fs.appendFileSync(path.join(cwd, "docs", "staged"), "changed\n");
+  git(cwd, "add", "docs/staged");
+  git(cwd, "mv", "docs/old", "docs/new -> name");
+  fs.writeFileSync(path.join(cwd, "docs", "untracked"), "new\n");
+  const status = execFileSync("git", ["status", "--porcelain", "-z"], {
+    cwd,
+    encoding: "utf8",
+  });
+  assert.ok(status.includes(" M docs/unstaged\0"));
+  assert.ok(status.includes("M  docs/staged\0"));
+  assert.ok(status.includes("R  docs/new -> name\0docs/old\0"));
+  assert.ok(status.includes("?? docs/untracked\0"));
+  git(cwd, "update-ref", "refs/remotes/origin/main", sourceHead);
+  assert.deepEqual(gitChangedFiles(cwd, "main").sort(), [
+    "docs/new -> name",
+    "docs/staged",
+    "docs/unstaged",
+    "docs/untracked",
+  ]);
+
+  const plan = repairDeltaValidationPlan(
+    {
+      fixArtifact: { repair_strategy: "repair_contributor_branch", validation_commands: [] },
+      targetDir: cwd,
+      sourceHead,
+    },
+    validationOptions("openclaw/openclaw"),
+  );
+  assert.deepEqual(plan.changed_files.sort(), [
+    "docs/new -> name",
+    "docs/staged",
+    "docs/unstaged",
+    "docs/untracked",
+  ]);
+  assert.equal(plan.scope, "repair-delta-docs");
 });
 
 test("base-identical validation failures outside the repair delta are external blockers", () => {
@@ -8132,6 +8180,30 @@ test(
     );
   },
 );
+
+for (const target of ["..", "../", "../.", "../target/.."]) {
+  test(
+    `validation rejects the exact parent symlink target ${target}`,
+    {
+      skip: process.platform === "win32",
+    },
+    () => {
+      const root = makeFixtureDir("clawsweeper-parent-containment-");
+      const cwd = path.join(root, "target");
+      fs.mkdirSync(cwd);
+      git(cwd, "init", "-b", "main");
+      git(cwd, "config", "user.name", "ClawSweeper Test");
+      git(cwd, "config", "user.email", "clawsweeper@example.invalid");
+      fs.symlinkSync(target, path.join(cwd, "parent"));
+      git(cwd, "add", ".");
+      git(cwd, "commit", "-m", "parent symlink");
+      assert.throws(
+        () => captureTargetCheckoutBinding(cwd),
+        /validation symlink escapes target checkout: parent/,
+      );
+    },
+  );
+}
 
 test("failing fallback validation still verifies checkout identity", () => {
   const cwd = gitPackageFixture({

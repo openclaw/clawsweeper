@@ -1268,7 +1268,7 @@ function hydratePrCloseCoveragePullRequest(
     mergedAt: stringOrNull(pull.merged_at ?? pull.mergedAt),
     body: compactPrCloseCoverageProofText(pull.body),
     updatedAt: stringOrNull(pull.updated_at ?? pull.updatedAt ?? issue.updated_at),
-    comments: compactPrCloseCoverageProofCommentWindow(comments),
+    comments: compactPrCloseCoverageProofCommentWindow(comments, commentsWindow.total),
     commentsTruncated: commentsWindow.total > PR_CLOSE_COVERAGE_PROOF_COMMENT_LIMIT,
   };
 }
@@ -1436,16 +1436,22 @@ function githubLastPageNumber(headers: string): number | null {
   return null;
 }
 
-function compactPrCloseCoverageProofCommentWindow(comments: JsonValue[]): unknown[] {
-  if (comments.length <= PR_CLOSE_COVERAGE_PROOF_COMMENT_LIMIT) {
+function compactPrCloseCoverageProofCommentWindow(comments: JsonValue[], total: number): unknown[] {
+  if (total <= PR_CLOSE_COVERAGE_PROOF_COMMENT_LIMIT) {
     return comments.map(compactPrCloseCoverageProofComment);
   }
-  const keepStart = Math.floor(PR_CLOSE_COVERAGE_PROOF_COMMENT_LIMIT / 2);
-  const keepEnd = PR_CLOSE_COVERAGE_PROOF_COMMENT_LIMIT - keepStart;
+  const keepStart = Math.min(
+    comments.length,
+    Math.floor(PR_CLOSE_COVERAGE_PROOF_COMMENT_LIMIT / 2),
+  );
+  const keepEnd = Math.min(
+    comments.length - keepStart,
+    PR_CLOSE_COVERAGE_PROOF_COMMENT_LIMIT - keepStart,
+  );
   return [
     ...comments.slice(0, keepStart).map(compactPrCloseCoverageProofComment),
     {
-      omitted: comments.length - PR_CLOSE_COVERAGE_PROOF_COMMENT_LIMIT,
+      omitted: total - keepStart - keepEnd,
       note: "middle comments omitted from proof context",
     },
     ...comments.slice(comments.length - keepEnd).map(compactPrCloseCoverageProofComment),

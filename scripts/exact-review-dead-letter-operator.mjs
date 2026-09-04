@@ -2025,37 +2025,47 @@ async function inspectCanonicalTargets(groups, maxTargets, targetReadTokens) {
     }
     return ownerBatches;
   });
-  for (const [batchIndex, selected] of batches.entries()) {
+  batchLoop: for (const [batchIndex, batch] of batches.entries()) {
+    let selected = batch;
     const remainingTargets = batches
       .slice(batchIndex + 1)
       .flat()
       .map((candidate) => candidate.target);
     let token;
-    try {
-      token = await targetReadTokens.tokenFor(selected[0].target);
-    } catch (error) {
-      if (error instanceof TargetInstallationMissingError) {
-        for (const group of selected) failedTargets.push({ target: group.target, error });
-        continue;
-      }
-      if (isThrottleInspectionError(error)) {
-        for (const group of selected) failedTargets.push({ target: group.target, error });
-        if (throttleFuseReached(error)) {
-          return {
-            identities,
-            failedTargets,
-            notInspectedTargets: remainingTargets,
-          };
+    while (selected.length > 0) {
+      try {
+        token = await targetReadTokens.tokenFor(selected[0].target);
+        break;
+      } catch (error) {
+        if (error instanceof TargetInstallationMissingError) {
+          const missingRepo = parseTargetRepository(selected[0].target).repo.toLowerCase();
+          selected = selected.filter((group) => {
+            if (parseTargetRepository(group.target).repo.toLowerCase() !== missingRepo) return true;
+            failedTargets.push({ target: group.target, error });
+            return false;
+          });
+          continue;
         }
-        continue;
+        if (isThrottleInspectionError(error)) {
+          for (const group of selected) failedTargets.push({ target: group.target, error });
+          if (throttleFuseReached(error)) {
+            return {
+              identities,
+              failedTargets,
+              notInspectedTargets: remainingTargets,
+            };
+          }
+          continue batchLoop;
+        }
+        throw new CanonicalTargetInspectionError(error, {
+          inspectedTargets,
+          classifiedFailures: failedTargets,
+          failedTargets: selected.map((group) => group.target),
+          notInspectedTargets: remainingTargets,
+        });
       }
-      throw new CanonicalTargetInspectionError(error, {
-        inspectedTargets,
-        classifiedFailures: failedTargets,
-        failedTargets: selected.map((group) => group.target),
-        notInspectedTargets: remainingTargets,
-      });
     }
+    if (selected.length === 0) continue;
     const fields = selected.map(({ target }, index) => {
       const match = /^([^/]+)\/([^#]+)#([1-9]\d*)$/.exec(target);
       if (!match) throw new Error(`invalid fresh recovery target: ${target}`);

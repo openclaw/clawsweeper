@@ -1546,6 +1546,7 @@ function tryAutomergeFastRebaseRepair({
     commit,
     prep: {
       commit,
+      target_base_sha: targetBaseSha,
       checkout_binding: validationExecution.checkoutBinding,
       checkpoint_commits: [],
       merge_preflight: {

@@ -3762,26 +3762,32 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
   }
 });
 
-test("apply-decisions verifies provenance after a closeout note and before closing PR proposals", () => {
-  for (const scenario of [
-    "normal",
-    "multiple_linked_issues",
-    "mismatched_canonical",
-    "mismatched_canonical_repository",
-    "missing_canonical_merge",
-    "paired_keep_open",
-    "paired_review_stale",
-    "paired_source_change_during_closeout",
-    "paired_metadata_change_during_closeout",
-    "paired_bot_activity_during_closeout",
-    "paired_self_timestamp_settles_late",
-    "paired_fresh_owned_review_comment",
-    "paired_durable_review_mismatch",
-    "paired_locked_closeout_cleanup",
-    "paired_provenance_revoked_before_close",
-    "paired_provenance_retargeted_before_close",
-    "paired_human_activity_during_lease",
-  ] as const) {
+for (const scenario of [
+  "normal",
+  "lifecycle_drift",
+  "locked_closeout_comment",
+  "between_freshness_and_closeout_human_activity",
+  "post_closeout_human_activity",
+  "post_closeout_pr_review_activity",
+  "multiple_linked_issues",
+  "mismatched_canonical",
+  "mismatched_canonical_repository",
+  "missing_canonical_merge",
+  "paired_keep_open",
+  "paired_review_stale",
+  "paired_source_change_during_closeout",
+  "paired_metadata_change_during_closeout",
+  "paired_bot_activity_during_closeout",
+  "paired_self_timestamp_settles_late",
+  "paired_fresh_owned_review_comment",
+  "paired_durable_review_mismatch",
+  "paired_locked_closeout_cleanup",
+  "paired_provenance_revoked_before_close",
+  "paired_provenance_retargeted_before_close",
+  "paired_human_activity_during_lease",
+] as const) {
+  test(`apply-decisions verifies provenance after a closeout note and before closing PR proposals (${scenario})`, () => {
+    const lifecycleDrift = scenario === "lifecycle_drift";
     const multipleLinkedIssues = scenario === "multiple_linked_issues";
     const mismatchedCanonical = scenario === "mismatched_canonical";
     const mismatchedCanonicalRepository = scenario === "mismatched_canonical_repository";
@@ -3801,6 +3807,11 @@ test("apply-decisions verifies provenance after a closeout note and before closi
     const pairedProvenanceRetargetedBeforeClose =
       scenario === "paired_provenance_retargeted_before_close";
     const pairedHumanActivityDuringLease = scenario === "paired_human_activity_during_lease";
+    const lockedCloseoutComment = scenario === "locked_closeout_comment";
+    const betweenFreshnessAndCloseoutHumanActivity =
+      scenario === "between_freshness_and_closeout_human_activity";
+    const postCloseoutHumanActivity = scenario === "post_closeout_human_activity";
+    const postCloseoutPrReviewActivity = scenario === "post_closeout_pr_review_activity";
     const root = mkdtempSync(tmpPrefix);
     try {
       const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
@@ -3874,6 +3885,10 @@ const { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } = 
 const logPath = ${JSON.stringify(logPath)};
 const postedBodiesPath = ${JSON.stringify(postedBodiesPath)};
 const closeoutPostedPath = ${JSON.stringify(join(root, "closeout-posted"))};
+const betweenFreshnessAndCloseoutHumanActivityPath = ${JSON.stringify(
+        join(root, "between-freshness-and-closeout-human-activity"),
+      )};
+const issueReadsAfterCloseoutPath = ${JSON.stringify(join(root, "issue-reads-after-closeout"))};
 const pairedIssueCloseoutPostedPath = ${JSON.stringify(join(root, "paired-issue-closeout-posted"))};
 const pairedIssueBotActivityPath = ${JSON.stringify(join(root, "paired-issue-bot-activity"))};
 const pairedIssueHumanActivityPath = ${JSON.stringify(join(root, "paired-issue-human-activity"))};
@@ -3887,7 +3902,12 @@ const rawArgs = process.argv.slice(2);
 const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 appendFileSync(logPath, JSON.stringify(args) + "\\n");
 const path = args[1] || "";
+const lifecycleDrift = ${lifecycleDrift};
 const multipleLinkedIssues = ${multipleLinkedIssues};
+const lockedCloseoutComment = ${lockedCloseoutComment};
+const betweenFreshnessAndCloseoutHumanActivity = ${betweenFreshnessAndCloseoutHumanActivity};
+const postCloseoutHumanActivity = ${postCloseoutHumanActivity};
+const postCloseoutPrReviewActivity = ${postCloseoutPrReviewActivity};
 const pairedSourceChangeDuringCloseout = ${pairedSourceChangeDuringCloseout};
 const pairedMetadataChangeDuringCloseout = ${pairedMetadataChangeDuringCloseout};
 const pairedBotActivityDuringCloseout = ${pairedBotActivityDuringCloseout};
@@ -3901,7 +3921,15 @@ const pairedProvenanceRevokedBeforeClose = ${pairedProvenanceRevokedBeforeClose}
 const pairedProvenanceRetargetedBeforeClose = ${pairedProvenanceRetargetedBeforeClose};
 const pairedHumanActivityDuringLease = ${pairedHumanActivityDuringLease};
 if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(args[2] || "")) {
-  console.log("HTTP/2 200\\n\\n[]");
+  const timeline = existsSync(betweenFreshnessAndCloseoutHumanActivityPath)
+    ? [{
+        id: 9323,
+        event: "commented",
+        created_at: readFileSync(betweenFreshnessAndCloseoutHumanActivityPath, "utf8"),
+        actor: { login: "contributor" }
+  }]
+    : [];
+  console.log("HTTP/2 200\\n\\n" + JSON.stringify(timeline));
 } else if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/456\\/timeline(?:\\?|$)/.test(args[2] || "")) {
   console.log("HTTP/2 200\\n\\n[]");
 } else if (args[0] === "issue" && args[1] === "view") {
@@ -3919,7 +3947,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
             existsSync(pairedIssueLeasePath)
               ? 457
               : 456,
-          state: "OPEN",
+          state: lifecycleDrift && existsSync(closeoutPostedPath) ? "CLOSED" : "OPEN",
           repository: { nameWithOwner: "openclaw/clawsweeper" }
         }]
     : [];
@@ -4021,11 +4049,21 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
   }
 } else if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
   if (args.includes("--method") && args.includes("POST")) {
+    if (lockedCloseoutComment) {
+      console.error("gh: conversation is locked (HTTP 403)");
+      process.exit(1);
+    }
     const input = args[args.indexOf("--input") + 1];
     const payload = JSON.parse(readFileSync(input, "utf8"));
     appendFileSync(postedBodiesPath, JSON.stringify(payload.body) + "\\n");
     writeFileSync(prCommentPath, payload.body, "utf8");
     writeFileSync(closeoutPostedPath, "true");
+    if (betweenFreshnessAndCloseoutHumanActivity) {
+      writeFileSync(
+        betweenFreshnessAndCloseoutHumanActivityPath,
+        new Date(Date.now() + 60_000).toISOString(),
+      );
+    }
     console.log(JSON.stringify({ id: 9322, html_url: "https://github.com/openclaw/clawsweeper/pull/321#issuecomment-9322" }));
   } else {
     const comments = [{
@@ -4036,6 +4074,16 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
       user: { login: "clawsweeper[bot]" },
       body: readFileSync(prCommentPath, "utf8")
     }];
+    if (existsSync(betweenFreshnessAndCloseoutHumanActivityPath)) {
+      comments.push({
+        id: 9323,
+        html_url: "https://github.com/openclaw/clawsweeper/pull/321#issuecomment-9323",
+        created_at: readFileSync(betweenFreshnessAndCloseoutHumanActivityPath, "utf8"),
+        updated_at: readFileSync(betweenFreshnessAndCloseoutHumanActivityPath, "utf8"),
+        user: { login: "contributor" },
+        body: "Please keep this PR open."
+      });
+    }
     console.log(JSON.stringify([comments]));
   }
 } else if (args[0] === "api" && /\\/issues\\/comments\\/9456$/.test(path) && args.includes("PATCH")) {
@@ -4069,14 +4117,27 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
 } else if (args[0] === "api" && /\\/issues\\/321\\/timeline(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "api" && /\\/issues\\/321$/.test(path)) {
+  const issueReadsAfterCloseout = existsSync(closeoutPostedPath)
+    ? (existsSync(issueReadsAfterCloseoutPath)
+        ? Number(readFileSync(issueReadsAfterCloseoutPath, "utf8") || "0")
+        : 0) + 1
+    : 0;
+  if (existsSync(closeoutPostedPath)) {
+    writeFileSync(issueReadsAfterCloseoutPath, String(issueReadsAfterCloseout));
+  }
+  const humanActivityLanded =
+    (postCloseoutHumanActivity && issueReadsAfterCloseout >= 2) ||
+    existsSync(betweenFreshnessAndCloseoutHumanActivityPath);
   console.log(JSON.stringify({
     number: 321,
     title: "Render work plans",
     html_url: "https://github.com/openclaw/clawsweeper/pull/321",
     created_at: "2026-05-01T00:00:00Z",
-    updated_at: existsSync(closeoutPostedPath)
-      ? "2026-05-01T02:30:00Z"
-      : "2026-05-01T00:00:00Z",
+    updated_at: humanActivityLanded
+      ? "2026-05-01T03:00:00Z"
+      : existsSync(closeoutPostedPath)
+        ? "2026-05-01T02:30:00Z"
+        : "2026-05-01T00:00:00Z",
     closed_at: null,
     state: "open",
     locked: false,
@@ -4107,7 +4168,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
       ? "2026-05-02T00:00:01Z"
       : "2026-05-02T00:00:00Z",
     closed_at: null,
-    state: "open",
+    state: lifecycleDrift && existsSync(closeoutPostedPath) ? "closed" : "open",
     locked: false,
     active_lock_reason: null,
     author_association: "CONTRIBUTOR",
@@ -4157,7 +4218,11 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
     user: { login: "reporter" }
   }));
 } else if (args[0] === "api" && /\\/pulls\\/321\\/reviews(?:\\?|$)/.test(path)) {
-  console.log("[]");
+  console.log(JSON.stringify(
+    postCloseoutPrReviewActivity && existsSync(closeoutPostedPath)
+      ? [{ id: 7701, user: { login: "maintainer" }, state: "COMMENTED", submitted_at: "2026-08-20T00:00:00Z" }]
+      : []
+  ));
 } else if (args[0] === "api" && /\\/pulls\\/321\\/(files|commits|comments|reviews)(?:\\?|$)/.test(path)) {
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "pr" && args[1] === "close" && args[2] === "321") {
@@ -4185,6 +4250,11 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
         });
         if (
           scenario === "normal" ||
+          lifecycleDrift ||
+          lockedCloseoutComment ||
+          betweenFreshnessAndCloseoutHumanActivity ||
+          postCloseoutHumanActivity ||
+          postCloseoutPrReviewActivity ||
           pairedSelfTimestampSettlesLate ||
           pairedFreshOwnedReviewComment ||
           pairedLockedCloseoutCleanup ||
@@ -4206,6 +4276,12 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
         .split("\n")
         .filter(Boolean)
         .map((line) => JSON.parse(line) as string[]);
+      const postIndex = calls.findIndex(
+        (args) =>
+          args[0] === "api" &&
+          (args[1] ?? "").endsWith("/issues/321/comments") &&
+          args.includes("POST"),
+      );
       const closeIndex = calls.findIndex(
         (args) => args[0] === "pr" && args[1] === "close" && args[2] === "321",
       );
@@ -4224,6 +4300,23 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
       const graphqlIndices = calls
         .map((args, index) => (args[0] === "api" && args[1] === "graphql" ? index : -1))
         .filter((index) => index >= 0);
+      if (lockedCloseoutComment) {
+        assert.equal(closeIndex, -1);
+        assert.equal(existsSync(join(closedDir, "321.md")), false);
+        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+          action: string;
+          reason: string;
+        }>;
+        assert.equal(
+          report.some(
+            (entry) =>
+              entry.action === "skipped_locked_conversation" &&
+              entry.reason === "conversation was locked while recording closeout evidence",
+          ),
+          true,
+        );
+        return;
+      }
       if (pairedLockedCloseoutCleanup) {
         assert.ok(pairedIssueLeaseDeleteIndex >= 0);
         assert.equal(pairedIssueCloseIndex, -1);
@@ -4244,7 +4337,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
           true,
           JSON.stringify(report),
         );
-        continue;
+        return;
       }
       if (pairedDurableReviewMismatch) {
         const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
@@ -4265,7 +4358,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
           true,
           JSON.stringify(report),
         );
-        continue;
+        return;
       }
       if (multipleLinkedIssues) {
         assert.equal(closeIndex, -1);
@@ -4281,7 +4374,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
           ),
           true,
         );
-        continue;
+        return;
       }
       if (
         mismatchedCanonical ||
@@ -4303,7 +4396,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
           report.some((entry) => entry.action === "kept_open"),
           true,
         );
-        continue;
+        return;
       }
       if (pairedProvenanceRevokedBeforeClose) {
         assert.ok(graphqlIndices.length >= 2);
@@ -4325,7 +4418,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
           true,
           JSON.stringify(report),
         );
-        continue;
+        return;
       }
       if (pairedProvenanceRetargetedBeforeClose) {
         assert.equal(pairedIssueCloseIndex, -1);
@@ -4346,7 +4439,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
           true,
           JSON.stringify(report),
         );
-        continue;
+        return;
       }
       if (pairedHumanActivityDuringLease) {
         assert.equal(pairedIssueCloseIndex, -1);
@@ -4367,7 +4460,79 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
           true,
           JSON.stringify(report),
         );
-        continue;
+        return;
+      }
+      if (lifecycleDrift) {
+        assert.ok(graphqlIndices.length >= 2);
+        assert.equal(closeIndex, -1);
+        assert.equal(pairedIssueCloseIndex, -1);
+        assert.ok(postIndex >= 0);
+        assert.equal(existsSync(join(closedDir, "321.md")), false);
+        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+          number: number;
+          action: string;
+          reason: string;
+        }>;
+        assert.equal(
+          report.find((entry) => entry.number === 321)?.reason,
+          "implemented-on-main close no longer has current GitHub issue-to-fixing-pull-request provenance",
+        );
+        return;
+      }
+      if (postCloseoutHumanActivity) {
+        assert.ok(graphqlIndices.length >= 2);
+        assert.equal(closeIndex, -1);
+        assert.ok(postIndex >= 0);
+        assert.equal(existsSync(join(closedDir, "321.md")), false);
+        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+          action: string;
+          reason: string;
+        }>;
+        assert.equal(
+          report.some(
+            (entry) =>
+              entry.action === "skipped_changed_since_review" &&
+              entry.reason === "updated_at changed",
+          ),
+          true,
+        );
+        return;
+      }
+      if (betweenFreshnessAndCloseoutHumanActivity) {
+        assert.equal(closeIndex, -1);
+        assert.ok(postIndex >= 0);
+        assert.equal(existsSync(join(closedDir, "321.md")), false);
+        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+          action: string;
+          reason: string;
+        }>;
+        assert.equal(
+          report.some(
+            (entry) =>
+              entry.action === "skipped_changed_since_review" &&
+              entry.reason === "closeout evidence freshness receipt could not be recorded",
+          ),
+          true,
+        );
+        return;
+      }
+      if (postCloseoutPrReviewActivity) {
+        assert.equal(closeIndex, -1);
+        assert.ok(postIndex >= 0);
+        assert.equal(existsSync(join(closedDir, "321.md")), false);
+        const report = JSON.parse(readFileSync(reportPath, "utf8")) as Array<{
+          action: string;
+          reason: string;
+        }>;
+        assert.equal(
+          report.some(
+            (entry) =>
+              entry.action === "skipped_changed_since_review" &&
+              entry.reason === "closeout evidence freshness receipt could not be recorded",
+          ),
+          true,
+        );
+        return;
       }
       assert.ok(graphqlIndices.length >= 2);
       assert.ok(closeIndex >= 0, `${scenario}: ${readFileSync(reportPath, "utf8")}`);
@@ -4406,8 +4571,8 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  }
-});
+  });
+}
 
 test("apply-decisions keeps low-signal PRs open when live maintainer comments exist", () => {
   const root = mkdtempSync(tmpPrefix);

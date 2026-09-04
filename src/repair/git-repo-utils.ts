@@ -242,13 +242,20 @@ export function gitChangedFiles(targetDir: string, baseBranch: string): string[]
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
-  const uncommitted = gitOutput(["status", "--porcelain"], { targetDir })
-    .split("\n")
-    .map((line) => line.trim())
-    .map((line) => line.replace(/^.. /, ""))
-    .map((line) => line.split(" -> ").pop())
-    .filter(Boolean);
-  return uniqueStrings([...committed, ...uncommitted]);
+  return uniqueStrings([...committed, ...gitStatusPaths(targetDir)]);
+}
+
+export function gitStatusPaths(targetDir: string): string[] {
+  const entries = gitOutput(["status", "--porcelain", "-z"], { targetDir }).split("\0");
+  const paths: string[] = [];
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index]!;
+    if (!entry) continue;
+    paths.push(entry.slice(3));
+    // Porcelain -z emits the destination first, then a separate source path for renames/copies.
+    if (/[RC]/.test(entry.slice(0, 2))) index += 1;
+  }
+  return paths;
 }
 
 export function gitLsFiles(targetDir: string): string[] {

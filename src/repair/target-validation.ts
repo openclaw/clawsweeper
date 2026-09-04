@@ -9,6 +9,7 @@ import { runCommand as run, runContainedCommand } from "./command-runner.js";
 import {
   ensureMergeBaseAvailable,
   gitChangedFiles,
+  gitStatusPaths,
   gitLsFiles,
   isAncestor,
 } from "./git-repo-utils.js";
@@ -4349,7 +4350,7 @@ function updateFileDigest(
 
 function assertPathWithin(root: string, targetPath: string, logicalPath: string) {
   const relative = path.relative(root, targetPath);
-  if (relative === "" || (!relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))) {
+  if (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) {
     return;
   }
   throw new Error(`validation symlink escapes target checkout: ${logicalPath}`);
@@ -5259,12 +5260,7 @@ function gitChangedFilesFromRef(cwd: string, baseRef: string) {
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
-  const uncommitted = run("git", ["status", "--porcelain"], { cwd })
-    .split("\n")
-    .map((line) => line.replace(/\r$/, "").slice(3))
-    .map((line) => line.split(" -> ").pop())
-    .filter((line): line is string => Boolean(line));
-  return uniqueStrings([...committed, ...uncommitted]);
+  return uniqueStrings([...committed, ...gitStatusPaths(cwd)]);
 }
 
 function referencedTrackedPaths(
@@ -5909,13 +5905,7 @@ function changedFilesSinceRef(cwd: string, sourceRef: string) {
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
-  const uncommitted = run("git", ["status", "--porcelain"], { cwd })
-    .split("\n")
-    .map((line) => line.trim())
-    .map((line) => line.replace(/^.. /, ""))
-    .map((line) => line.split(" -> ").pop())
-    .filter(Boolean);
-  return uniqueStrings([...committed, ...uncommitted]);
+  return uniqueStrings([...committed, ...gitStatusPaths(cwd)]);
 }
 
 function isDocsOnlyRepairDeltaFile(filePath: string) {

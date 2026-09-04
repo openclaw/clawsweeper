@@ -82,6 +82,9 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Reject parent-directory validation symlinks, preserve porcelain paths when selecting repair checks, retain the fast-rebase base SHA for replacement publication, and mark omitted PR comments in close-coverage proof.
+- Run dashboard smoke checks through symlinks and continue dead-letter recovery after a repository without an App installation.
+
 - Count oversized ETag responses as durable cache skips using size-only store requests, preserving telemetry without sending or storing the response bodies.
 
 - Bound standalone webhook bodies to 2 MiB before signature verification, preserving chunked deliveries and flushing rejection responses before closing oversized requests. Thanks @SebTardif.

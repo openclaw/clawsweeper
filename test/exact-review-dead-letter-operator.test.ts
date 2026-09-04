@@ -2933,13 +2933,19 @@ test("multi-owner reconciliation recovers installed targets and reports missing 
   );
 });
 
-test("a missing selected repository does not hide an accessible repository under the same owner", async () => {
+for (const maxTargets of [10, 1]) {
+  test(`a missing selected repository does not hide an accessible repository under the same owner (maxTargets=${maxTargets})`, () =>
+    assertMissingRepositoryRecovery(maxTargets));
+}
+
+async function assertMissingRepositoryRecovery(maxTargets: number) {
   const { privateKey } = generateKeyPairSync("rsa", {
     modulusLength: 2048,
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
     publicKeyEncoding: { type: "spki", format: "pem" },
   });
   const scenario = await automaticReconcileScenario({
+    maxTargets,
     rows: [
       row(
         "missing",
@@ -2990,7 +2996,7 @@ test("a missing selected repository does not hide an accessible repository under
     new Set(scenario.targetReadAuthorizations),
     new Set(["Bearer selected-owner-token"]),
   );
-});
+}
 
 for (const failedStatus of [429, 403]) {
   test(`throttled owner token mint ${failedStatus} skips that owner's targets and recovers another owner`, async () => {

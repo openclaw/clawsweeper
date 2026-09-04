@@ -1,12 +1,50 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import {
   containsDirectGitHubApiUrl,
   isCanonicalLegacyBayRedirect,
   waitForDashboardDeployment,
 } from "../scripts/dashboard-smoke.mjs";
+
+test("dashboard smoke executes through a symlink and reports unhealthy responses", async () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-smoke-symlink-"));
+  const requests: string[] = [];
+  const server = createServer((request, response) => {
+    requests.push(request.url!);
+    response.writeHead(503);
+    response.end();
+  });
+  try {
+    const script = join(root, "smoke.mjs");
+    symlinkSync(fileURLToPath(new URL("../scripts/dashboard-smoke.mjs", import.meta.url)), script);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    await assert.rejects(
+      promisify(execFile)(process.execPath, [script, `http://127.0.0.1:${address.port}`], {
+        env: { ...process.env, CLAWSWEEPER_EXPECTED_DEPLOY_SHA: "" },
+        timeout: 30_000,
+      }),
+      (error: Error & { code?: number; stderr?: string }) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr ?? "", /api\/health returned 503/);
+        return true;
+      },
+    );
+    assert.deepEqual(requests, ["/api/health"]);
+  } finally {
+    server.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("dashboard smoke detects only the exact GitHub API hostname", () => {
   assert.equal(containsDirectGitHubApiUrl('fetch("https://api.github.com/repos/openclaw")'), true);
