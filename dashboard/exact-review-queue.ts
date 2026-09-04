@@ -2731,35 +2731,39 @@ export class ExactReviewQueue {
           : undefined,
         completionResult.deadLetter,
       );
-      const projectionAfterCompletion = this.recordLifecycleCompletion({
-        item: lifecycleItem,
-        revision: lifecycleRevision,
-        claimGeneration: lifecycleClaimGeneration,
-        runId,
-        runAttempt,
-        outcome,
-        publicationCompletion,
-        requeued: lifecycleRequeued,
-        parked: Boolean(completionResult.parked),
-        deadLetter: Boolean(completionResult.deadLetter),
-        lifecycleTerminal,
-        now,
-      });
-      if (publicationItem && publicationCompletion) {
-        this.recordLifecycleTelemetryNonBatchPublication({
-          identity: lifecycleIdentity,
+      try {
+        const projectionAfterCompletion = this.recordLifecycleCompletion({
+          item: lifecycleItem,
+          revision: lifecycleRevision,
           claimGeneration: lifecycleClaimGeneration,
-          completion: publicationCompletion,
-          projection: projectionBeforeTerminalCommit,
-          observedAt: now,
+          runId,
+          runAttempt,
+          outcome,
+          publicationCompletion,
+          requeued: lifecycleRequeued,
+          parked: Boolean(completionResult.parked),
+          deadLetter: Boolean(completionResult.deadLetter),
+          lifecycleTerminal,
+          now,
         });
-      }
-      if (projectionAfterCompletion?.terminalDisposition?.kind === "requeue") {
-        if (this.cancelTerminalFinalizationDrivers(state, lifecycleIdentity)) {
-          await this.writeState(state);
+        if (publicationItem && publicationCompletion) {
+          this.recordLifecycleTelemetryNonBatchPublication({
+            identity: lifecycleIdentity,
+            claimGeneration: lifecycleClaimGeneration,
+            completion: publicationCompletion,
+            projection: projectionBeforeTerminalCommit,
+            observedAt: now,
+          });
         }
+        if (projectionAfterCompletion?.terminalDisposition?.kind === "requeue") {
+          if (this.cancelTerminalFinalizationDrivers(state, lifecycleIdentity)) {
+            await this.writeState(state);
+          }
+        }
+      } finally {
+        // The queue transition is durable even when its lifecycle update fails.
+        await this.scheduleNext(state, now);
       }
-      await this.scheduleNext(state, now);
       return json({
         ok: true,
         requeued,

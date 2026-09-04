@@ -407,6 +407,83 @@ type QueueInternals = {
 };
 const internals = (queue: ExactReviewQueue) => queue as unknown as QueueInternals;
 
+for (const outcome of ["success", "failure"] as const) {
+  for (const claimGeneration of [undefined, 1]) {
+    test(`legacy v1 ${outcome} completion without lifecycle row reschedules the alarm (generation ${claimGeneration})`, async (t) => {
+      t.mock.method(Date, "now", () => NOW);
+      const h = await fixture(0, {}, 2);
+      const q = internals(h.queue);
+      const state = q.readStateSync();
+      const item = state.items[h.items[0]!.key]!;
+      item.claimProtocolVersion = 1;
+      item.claimGeneration = claimGeneration;
+      const pending = state.items[h.items[1]!.key]!;
+      pending.state = "pending";
+      pending.nextAttemptAt = NOW + 60_000;
+      h.storage.transactionSync(() => q.writeStateSync(state));
+      h.storage.run(
+        `DELETE FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} WHERE fence_key = ?`,
+        item.key,
+      );
+      await h.storage.setAlarm(NOW + 3_600_000);
+
+      const response = await h.queue.fetch(
+        post("/complete", {
+          lease_id: item.leaseId,
+          run_id: item.claimedRunId,
+          run_attempt: item.claimedRunAttempt,
+          outcome,
+          ...(outcome === "failure" ? { retry_at: new Date(NOW + 30_000).toISOString() } : {}),
+        }),
+      );
+
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { ok: true, requeued: outcome === "failure" });
+      const completed = q.readStateSync().items[item.key];
+      if (outcome === "success") {
+        assert.equal(completed, undefined);
+        assert.equal(h.storage.scheduledAlarm(), NOW + 60_000);
+      } else {
+        assert.equal(completed?.state, "pending");
+        assert.equal(completed?.nextAttemptAt, NOW + 30_000);
+        assert.equal(h.storage.scheduledAlarm(), completed.nextAttemptAt);
+      }
+      assert.equal(h.lifecycle.read(item.key, item.key, item.revision), null);
+    });
+  }
+}
+
+test("completion reschedules a committed retry even when lifecycle validation throws", async (t) => {
+  t.mock.method(Date, "now", () => NOW);
+  const h = await fixture(0, {}, 1);
+  const q = internals(h.queue);
+  const state = q.readStateSync();
+  const item = state.items[h.items[0]!.key]!;
+  item.claimProtocolVersion = 1;
+  item.claimGeneration = undefined;
+  h.storage.transactionSync(() => q.writeStateSync(state));
+  await h.storage.setAlarm(NOW + 3_600_000);
+
+  await assert.rejects(
+    h.queue.fetch(
+      post("/complete", {
+        lease_id: item.leaseId,
+        run_id: item.claimedRunId,
+        run_attempt: item.claimedRunAttempt,
+        outcome: "failure",
+        retry_at: new Date(NOW + 30_000).toISOString(),
+      }),
+    ),
+    /invalid lifecycle review result/,
+  );
+
+  const retried = q.readStateSync().items[item.key]!;
+  assert.equal(retried.state, "pending");
+  assert.equal(retried.nextAttemptAt, NOW + 30_000);
+  assert.equal(h.storage.scheduledAlarm(), retried.nextAttemptAt);
+  assert.deepEqual(h.lifecycle.read(item.key, item.key, item.revision)?.reviewResults, []);
+});
+
 test("stats memo shares concurrent polls, expires, and retains the snapshot timestamp", async (t) => {
   let now = NOW;
   t.mock.method(Date, "now", () => now);

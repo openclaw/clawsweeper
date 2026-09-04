@@ -139,6 +139,11 @@ travels as structured apply evidence; reason text is diagnostic only. Ambiguous
 or mixed results cannot terminalize the artifact, and legacy tupleless artifacts
 retain the existing fresh-review path.
 
+Legacy protocol-v1 review leases without lifecycle admission rows complete without
+writing lifecycle facts. Once a completion commits its queue transition, alarm
+scheduling runs even if the subsequent lifecycle update fails, so persisted
+retries retain their scheduled wake-up.
+
 Review publication and apply/comment sync use separate non-dropping queues.
 Apply treats a typed GitHub installation or abuse-rate-limit response as a
 bounded yield, not a failed scan. It checkpoints completed item work, records

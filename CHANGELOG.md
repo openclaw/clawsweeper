@@ -19,6 +19,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Preserve legacy review lease completions without lifecycle admission rows and reschedule queue alarms even when a lifecycle update fails.
+
 - Reduce cold Bay snapshot work by reading full projections through the existing parser, preserving the 30-second TTL memo and edge cache.
 
 - Keep queue stats fresh when alarm or auxiliary-state writes overlap a memo computation, without changing the cache TTL or response fields.

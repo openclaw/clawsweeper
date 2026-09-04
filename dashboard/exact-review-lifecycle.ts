@@ -443,15 +443,16 @@ export class ExactReviewLifecycleProjectionStore {
     requirePresent = false,
   ) {
     this.validateIdentity(input);
-    if (!positiveInteger(input.claimGeneration) || !validRunId(input.runId)) {
-      throw new Error("invalid lifecycle review result");
-    }
-    if (input.runAttempt !== null && !positiveInteger(input.runAttempt)) {
-      throw new Error("invalid lifecycle review result attempt");
-    }
     return this.mutate<ExactReviewLifecycleProjection | null>(
       input,
       (projection) => {
+        // Legacy leases without admission rows have no lifecycle metadata to validate.
+        if (!positiveInteger(input.claimGeneration) || !validRunId(input.runId)) {
+          throw new Error("invalid lifecycle review result");
+        }
+        if (input.runAttempt !== null && !positiveInteger(input.runAttempt)) {
+          throw new Error("invalid lifecycle review result attempt");
+        }
         const fact: LifecycleReviewResultFact = {
           fenceKey: input.fenceKey,
           claimGeneration: input.claimGeneration,

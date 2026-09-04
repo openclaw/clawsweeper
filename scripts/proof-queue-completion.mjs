@@ -74,9 +74,13 @@ export class ProofQueue extends ExactReviewQueue {
         const decision = n <= 300 ? {...producerDecision, sourceAction: 'exact_review_artifact_publish', publication} : producerDecision;
         const item = {key: n <= 300 ? key + '@publish:' + (10000+n) + ':1' : key, decision, state: n <= 300 || n > 350 ? 'pending' : 'leased', revision: 1, attempts: 0, createdAt: Date.now()-60000-n, updatedAt: Date.now()-60000, nextAttemptAt: Date.now()+60000,
           ...(n > 300 && n <= 350 ? {leaseDecision: decision, leaseId: 'lease-'+n, leaseRevision: 1, leaseExpiresAt: Date.now()+3600000, claimedRunId: String(10000+n), claimedRunAttempt: 1, claimGeneration: 1, claimProtocolVersion: 2} : {})};
+        if (body.legacy && n === 301) {
+          delete item.claimGeneration;
+          item.claimProtocolVersion = 1;
+        }
         this.storage.sql.exec('INSERT INTO exact_review_queue_items (item_key,item_json) VALUES (?,?)', item.key, JSON.stringify(item));
         this.storage.sql.exec('INSERT INTO exact_review_publication_heads (target_key,source_revision,updated_at) VALUES (?,1,?)', key, Date.now());
-        this.lifecycleProjectionStore.recordAdmission({canonicalTargetKey: key, fenceKey: item.key, revision: 1, deliveryId: 'fixture-'+n, sourceAction: 'opened', commandOriginated: n === 41, statusMarker: null, statusCommentId: n === 41 ? 41 : null, observedAt: Date.now()-60000});
+        if (!body.legacy || n !== 301) this.lifecycleProjectionStore.recordAdmission({canonicalTargetKey: key, fenceKey: item.key, revision: 1, deliveryId: 'fixture-'+n, sourceAction: 'opened', commandOriginated: n === 41, statusMarker: null, statusCommentId: n === 41 ? 41 : null, observedAt: Date.now()-60000});
         if (body.terminal && n === 301) {
           const driver = {...item, key: item.key+'@finalizer', decision: {...decision, sourceAction: 'exact_review_artifact_publish', publication, statusCommentId: 41}, terminalFinalization: {disposition: 'policy_noop', statusState: 'Complete', statusDetail: 'No action required.', projection: {canonicalTargetKey: 'openclaw/openclaw#41', fenceKey: 'openclaw/openclaw#41@publish:10041:1', revision: 1}}};
           this.storage.sql.exec('INSERT INTO exact_review_queue_items (item_key,item_json) VALUES (?,?)', driver.key, JSON.stringify(driver));
@@ -86,6 +90,7 @@ export class ProofQueue extends ExactReviewQueue {
       this.migratedAt = Date.now()-172800000;
       this.storage.kv.delete('exact-review-queue');
       await super.fetch(new Request('https://queue/stats'));
+      if (body.legacy) await this.storage.setAlarm(Date.now()+3600000);
       return Response.json({seeded: true});
     }
     if (body.snapshot) {
@@ -126,6 +131,8 @@ export default { fetch(request, env) { return env.QUEUE.get(env.QUEUE.idFromName
     for (const route of [
       "complete-success",
       "complete-failure",
+      "complete-legacy-success",
+      "complete-legacy-failure",
       "lifecycle/router-receipt",
       "terminal-finalization/attempt",
       "heartbeat",
@@ -138,7 +145,11 @@ export default { fetch(request, env) { return env.QUEUE.get(env.QUEUE.idFromName
           })
         ).json();
       assert.deepEqual(
-        await call({ seed: true, terminal: route === "terminal-finalization/attempt" }),
+        await call({
+          seed: true,
+          terminal: route === "terminal-finalization/attempt",
+          legacy: route.startsWith("complete-legacy-"),
+        }),
         { seeded: true },
       );
       const tuple = {
@@ -150,25 +161,54 @@ export default { fetch(request, env) { return env.QUEUE.get(env.QUEUE.idFromName
         run_id: "10301",
         run_attempt: 1,
       };
-      const payload = route.startsWith("complete-")
-        ? { ...tuple, outcome: route === "complete-success" ? "success" : "failure" }
-        : route === "lifecycle/router-receipt"
-          ? {
-              canonical_target_key: "openclaw/openclaw#1",
-              fence_key: "openclaw/openclaw#1@publish:10001:1",
-              revision: 1,
-              receipt_id: "proof-receipt",
-            }
-          : {
-              ...tuple,
-              ...(route === "terminal-finalization/attempt" ? { status_comment_id: 41 } : {}),
-            };
+      const payload = route.startsWith("complete-legacy-")
+        ? {
+            lease_id: tuple.lease_id,
+            run_id: tuple.run_id,
+            run_attempt: tuple.run_attempt,
+            outcome: route.endsWith("success") ? "success" : "failure",
+            ...(route.endsWith("failure")
+              ? { retry_at: new Date(now + 30_000).toISOString() }
+              : {}),
+          }
+        : route.startsWith("complete-")
+          ? { ...tuple, outcome: route === "complete-success" ? "success" : "failure" }
+          : route === "lifecycle/router-receipt"
+            ? {
+                canonical_target_key: "openclaw/openclaw#1",
+                fence_key: "openclaw/openclaw#1@publish:10001:1",
+                revision: 1,
+                receipt_id: "proof-receipt",
+              }
+            : {
+                ...tuple,
+                ...(route === "terminal-finalization/attempt" ? { status_comment_id: 41 } : {}),
+              };
       const result = await call({
         path: route.startsWith("complete-") ? "/complete" : "/" + route,
         payload,
       });
       assert.equal(result.status, 200, JSON.stringify(result));
       const snapshot = await call({ snapshot: true });
+      if (route.startsWith("complete-legacy-")) {
+        const failed = route.endsWith("failure");
+        assert.deepEqual(result.body, { ok: true, requeued: failed });
+        assert.equal(snapshot.alarm, now + (failed ? 30_000 : 60_000));
+        const completed = snapshot.tables.exact_review_queue_items.find(
+          (row) => row.item_key === tuple.item_key,
+        );
+        if (failed) {
+          const item = JSON.parse(completed.item_json);
+          assert.equal(item.state, "pending");
+          assert.equal(item.nextAttemptAt, now + 30_000);
+        } else assert.equal(completed, undefined);
+        assert.equal(
+          snapshot.tables.exact_review_lifecycle_projection_v1.some(
+            (row) => row.fence_key === tuple.item_key,
+          ),
+          false,
+        );
+      }
       // No trace ids, credentials, or production data enter the artifacts.
       writeFileSync(
         path.join(out, variant + "-" + route.replaceAll("/", "-") + ".json"),
