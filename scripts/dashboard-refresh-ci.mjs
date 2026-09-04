@@ -1,7 +1,5 @@
 #!/usr/bin/env node
 
-import { fetchJson } from "./json-http.mjs";
-
 const statusUrl = trimTrailingSlash(
   process.env.CLAWSWEEPER_STATUS_URL || "https://clawsweeper.openclaw.ai",
 );
@@ -138,6 +136,12 @@ async function githubJson(path) {
     },
   });
   if (!response.ok) throw new Error(`GitHub ${response.status} for ${path}`);
+  return response.json();
+}
+
+async function fetchJson(url) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`${url} returned ${response.status}`);
   return response.json();
 }
 

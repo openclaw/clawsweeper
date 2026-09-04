@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import { pathToFileURL } from "node:url";
-import { fetchJson } from "./json-http.mjs";
 
 const cliUrl = process.argv.find((arg, index) => index > 1 && arg !== "--");
 const baseUrl = cliUrl || process.env.CLAWSWEEPER_STATUS_URL || "http://127.0.0.1:8787";
@@ -200,6 +199,12 @@ export async function waitForDashboardDeployment({
     }
     await sleep(Math.min(intervalMs, deadline - afterAttempt));
   }
+}
+
+async function fetchJson(url) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`${url} returned ${response.status}`);
+  return response.json();
 }
 
 async function fetchText(url) {
