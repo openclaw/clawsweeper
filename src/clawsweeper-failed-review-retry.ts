@@ -545,7 +545,6 @@ export function createFailedReviewRetryWorkflow({
     revision: FailedReviewRetryRevision;
     reportPath: string;
     attempts: number;
-    dispatchUrl: string;
   }): void {
     const repository = targetRepo();
     const key = reviewRetryDispatchAttemptKey({
@@ -596,7 +595,7 @@ export function createFailedReviewRetryWorkflow({
         sourceRevision: options.revision.value,
         ...(recordPath.startsWith("../") ? {} : { recordPath }),
       },
-      evidence: [...workflowRunEvidence(), { kind: "retry_dispatch", runUrl: options.dispatchUrl }],
+      evidence: workflowRunEvidence(),
       attributes: {
         attempt: options.attempts + 1,
         retry_count: options.attempts,
@@ -783,7 +782,6 @@ export function createFailedReviewRetryWorkflow({
                 revision: retryRevision,
                 reportPath: path,
                 attempts: attemptsBeforeDispatch,
-                dispatchUrl: nextDispatchUrl,
               });
               markdown = checkpointFailedReviewRetry({
                 markdown,
@@ -1166,9 +1164,6 @@ export function createFailedReviewRetryWorkflow({
           ? [actionLedgerFileEvidence("review_record", result.reportPath)].filter(
               (entry): entry is ActionEventEvidence => entry !== null,
             )
-          : []),
-        ...(result.dispatchUrl?.startsWith("https://github.com/")
-          ? [{ kind: "retry_dispatch", runUrl: result.dispatchUrl }]
           : []),
       ];
       const retrySlot = reviewRetryIdempotencySlot(result.action);

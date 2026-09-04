@@ -83,6 +83,7 @@ checkpoint, and status-only commits are intentionally omitted.
 ### Fixed
 
 - Replay durable scheduled enqueue dispositions after transient response loss while preserving signed delivery identity, rejecting mismatched bytes, failing closed on legacy ambiguous receipts, and leaving publication post-effects single-attempt.
+- Use the producer Actions run URL in failed-review retry receipts so ledger validation no longer prevents dispatch and fails the retry command.
 - Preserve canonical repository slugs when reading persisted apply records, including dots, underscores, and repeated or trailing hyphens.
 - Make timeout tests tolerate loaded macOS hosts by isolating checkout timing, synchronizing lock contention, and budgeting snapshot admission fixtures separately from deadline tests.
 - Preserve a valid stale Bay lifecycle snapshot when a background refresh is unavailable or malformed, without extending its original 60-second expiry.

@@ -126,6 +126,8 @@ confidential-identifier checks as every other durable machine-text field.
   so a changed failed-review record cannot reuse an earlier dispatch receipt.
   Operators must reconcile the workflow run before another launch; automatic
   retry never duplicates an outcome-unknown dispatch.
+  Retry receipts link to the producing Actions run; the dispatch workflow page
+  remains in the retry report and sidecar, not in ledger run-URL evidence.
 - Repository, producer SHA, workflow, job, run, attempt, and component all bind
   shard identity. They do not define the logical operation.
 - Workflow, step, invocation, and component identifiers keep a readable prefix
