@@ -38,6 +38,11 @@ const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
     ],
   },
   {
+    // Profile-status redaction repeats this synthetic URI in config and a mocked-call assertion.
+    fixtureSha256: "d15184614e748450d49a726f84955ca7745b87d0728afbd6bb6b50d84cce4fe0",
+    sources: ["extensions/browser/src/browser/server-context.list-profiles.test.ts"],
+  },
+  {
     // OpenClaw remote-CDP documentation example introduced by bf15c87d2b12.
     fixtureSha256: "e6907dddaccdec944b0f02e14fe9186293e2d513ff753db0a95b3460aa5dc1d9",
     sources: ["docs/tools/browser.md"],

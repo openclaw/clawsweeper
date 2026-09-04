@@ -550,6 +550,7 @@ const browserDocsSource = "docs/tools/browser.md";
 const browserToolSource = "extensions/browser/src/browser-tool.test.ts";
 const browserCdpHelpersSource = "extensions/browser/src/browser/cdp.helpers.test.ts";
 const browserMcpSource = "extensions/browser/src/browser/chrome-mcp.test.ts";
+const browserProfilesSource = "extensions/browser/src/browser/server-context.list-profiles.test.ts";
 const macDashboardSource = "apps/macos/Tests/OpenClawIPCTests/DashboardWindowSmokeTests.swift";
 const mcpAppsSource = "src/config/config-misc.test.ts";
 const marketplaceFeedSource = "src/cli/plugins-cli.marketplace-refresh.test.ts";
@@ -711,13 +712,37 @@ for (const scenarioName of [
   ]),
   "marketplace feed query mutation",
   "gateway config query mutation",
+  ...[
+    "reviewed fixture",
+    "HTML repeated literal",
+    "changed raw",
+    "changed full URI",
+    "changed matching raw values",
+    "other file",
+    "executable source",
+    "prompt",
+    "schema",
+    "additional",
+    "diff",
+    "decoded only",
+    "verified",
+    "mixed findings",
+    "wrong detector",
+    "wrong source type",
+    "wrong decoder",
+    "wrong secret parts",
+    "missing verification error",
+    "wrong version",
+    "missing completion",
+  ].map((scenario) => `browser profiles ${scenario}`),
 ]) {
+  const browserProfilesFixture = scenarioName.startsWith("browser profiles ");
   const macDashboardFixture = scenarioName.startsWith("mac dashboard ");
   const mcpAppsFixture = scenarioName.startsWith("mcp apps ");
   const marketplaceFeedFixture = scenarioName.startsWith("marketplace feed ");
   const gatewayConfigFixture = scenarioName.startsWith("gateway config ");
   const scenario = scenarioName.replace(
-    /^(?:mac dashboard|mcp apps|marketplace feed|gateway config) /,
+    /^(?:mac dashboard|mcp apps|marketplace feed|gateway config|browser profiles) /,
     "",
   );
   test(`reviewed synthetic fixture admission: ${scenarioName}`, (t) => {
@@ -758,7 +783,9 @@ for (const scenarioName of [
     const scannerLine = scenario.includes("shifted BASE64") ? literalLine - 4 : literalLine;
     const primaryDecoder = scenario.includes("BASE64")
       ? "BASE64"
-      : scenario === "browser CDP encoded HTML fixture" || scenario === "unreviewed HTML"
+      : scenario === "browser CDP encoded HTML fixture" ||
+          scenario === "unreviewed HTML" ||
+          (browserProfilesFixture && scenario === "HTML repeated literal")
         ? "HTML"
         : "PLAIN";
     if (browserExactFixture) {
@@ -833,6 +860,12 @@ for (const scenarioName of [
       const url = new URL("https://chrome.remote.example.com");
       url.username = "alice";
       url.password = "secret";
+      uri = url.href.slice(0, -1);
+    }
+    if (browserProfilesFixture) {
+      const url = new URL("http://127.0.0.1:9222");
+      url.username = "openclaw";
+      url.password = "relay-token";
       uri = url.href.slice(0, -1);
     }
     assert.ok(uri, "reviewed synthetic fixture is present");
@@ -920,6 +953,8 @@ for (const scenarioName of [
       files = [scenario === "other file" ? "other.test.ts" : marketplaceFeedSource];
     if (gatewayConfigFixture)
       files = [scenario === "other file" ? "other.test.ts" : gatewayConfigSource];
+    if (browserProfilesFixture)
+      files = [scenario === "other file" ? "other.test.ts" : browserProfilesSource];
     const value =
       scenario === "decoded only" || scenario.endsWith("encoded-only")
         ? primaryDecoder === "BASE64"
@@ -1145,6 +1180,7 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
     if (
       [
         "reviewed fixture",
+        "HTML repeated literal",
         "browser local Chrome fixture",
         "browser remote Chrome fixture",
         "browser remote server fixture",
