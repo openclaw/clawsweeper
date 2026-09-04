@@ -64,7 +64,7 @@ test("canonical record snapshots run every six hours without cancelling an activ
   });
 });
 
-test("scheduled canonical record snapshots use the manual apply path for OpenClaw", () => {
+test("scheduled and manual canonical snapshots run the runner upload command", () => {
   const workflow = parse(readFileSync(".github/workflows/worker-records-ops.yml", "utf8"));
   const job = workflow.jobs.snapshot;
   assert.equal(job.if, undefined);
@@ -74,12 +74,13 @@ test("scheduled canonical record snapshots use the manual apply path for OpenCla
     "${{ github.event_name == 'schedule' && 'openclaw/openclaw' || inputs.target_repo }}",
   );
   const trigger = job.steps.find(
-    (step: { name?: string }) => step.name === "Trigger canonical records snapshot",
+    (step: { name?: string }) => step.name === "Build and upload canonical records snapshot",
   );
+  assert.ok(trigger, "runner snapshot step must exist");
   assert.equal(trigger.if, undefined);
   assert.equal(trigger.env.TARGET_SLUG, "${{ steps.target.outputs.slug }}");
-  assert.match(trigger.run, /await signedPost\(/);
-  assert.match(trigger.run, /path: "\/internal\/state\/records\/snapshots\/trigger"/);
-  assert.match(trigger.run, /body: \{ repoSlug: process.env.TARGET_SLUG \}/);
+  assert.match(trigger.run, /node scripts\/worker-records\.ts snapshot-upload/);
+  assert.match(trigger.run, /--repo-slug "\$TARGET_SLUG"/);
+  assert.doesNotMatch(trigger.run, /snapshots\/trigger/);
   assert.doesNotMatch(trigger.run, /dry.run|inputs\./i);
 });

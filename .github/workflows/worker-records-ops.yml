@@ -22,7 +22,7 @@ env:
 
 jobs:
   snapshot:
-    name: Trigger canonical records snapshot
+    name: Build and upload canonical records snapshot
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -46,34 +46,17 @@ jobs:
           fi
           echo "slug=${TARGET_REPO//\//-}" >> "$GITHUB_OUTPUT"
 
-      - name: Trigger canonical records snapshot
+      - name: Build and upload canonical records snapshot
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           TARGET_SLUG: ${{ steps.target.outputs.slug }}
         run: |
-          node --input-type=module <<'NODE'
-          import { appendFileSync } from "node:fs";
-          import { signedPost } from "./scripts/worker-records.ts";
-
-          const result = await signedPost({
-            baseUrl: process.env.CLAWSWEEPER_RECORDS_URL,
-            path: "/internal/state/records/snapshots/trigger",
-            webhookSecret: process.env.CLAWSWEEPER_WEBHOOK_SECRET,
-            body: { repoSlug: process.env.TARGET_SLUG },
-          });
-          if (result?.ok !== true || result.snapshot?.repoSlug !== process.env.TARGET_SLUG) {
-            throw new Error("Worker returned an invalid snapshot response");
-          }
-          const summary = {
-            repoSlug: result.snapshot.repoSlug,
-            revisionWatermark: result.snapshot.revisionWatermark,
-            bytes: result.snapshot.bytes,
-            fileCount: result.snapshot.fileCount,
-            createdAt: result.snapshot.createdAt,
-          };
-          console.log(JSON.stringify(summary));
-          appendFileSync(
-            process.env.GITHUB_STEP_SUMMARY,
-            `### Canonical records snapshot\n\n\`\`\`json\n${JSON.stringify(summary, null, 2)}\n\`\`\`\n`,
-          );
-          NODE
+          node scripts/worker-records.ts snapshot-upload --repo-slug "$TARGET_SLUG" > snapshot-result.json
+          cat snapshot-result.json
+          {
+            echo '### Canonical records snapshot'
+            echo
+            echo '```json'
+            cat snapshot-result.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
