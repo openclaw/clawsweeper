@@ -18,10 +18,6 @@ type TargetDir = {
   targetDir: string;
 };
 
-type TargetBranch = TargetDir & {
-  branch: string;
-};
-
 type TargetBaseBranch = TargetDir & {
   baseBranch: string;
 };
@@ -30,13 +26,6 @@ export type RebaseOntoBaseResult = {
   status: "already-current" | "rebased" | "conflicts";
   base_ref: string;
   base_sha: string;
-  previous_head: string;
-  current_head: string;
-  detail?: string;
-};
-
-export type CompleteRebaseResult = {
-  status: "not-in-progress" | "continued";
   previous_head: string;
   current_head: string;
   detail?: string;
@@ -72,16 +61,6 @@ export function isAncestor({
   return child.status === 0;
 }
 
-export function remoteBranchSha({ targetDir, branch }: TargetBranch): string {
-  const child = runGitCommand(["ls-remote", "--heads", "origin", branch], {
-    targetDir,
-    timeoutMs: gitNetworkTimeoutMs,
-  });
-  if (child.status !== 0) return "";
-  const sha = child.stdout.trim().split(/\s+/)[0] ?? "";
-  return /^[0-9a-f]{40}$/.test(sha) ? sha : "";
-}
-
 export function branchHasBaseDiff({ targetDir, baseBranch }: TargetBaseBranch): boolean {
   const range = `origin/${baseBranch}...HEAD`;
   const first = runGitCommand(["diff", "--name-only", range], { targetDir });
@@ -109,106 +88,6 @@ export function ensureMergeBaseAvailable({ targetDir, baseBranch }: TargetBaseBr
 
   const detail = `${retry.stderr ?? ""}\n${retry.stdout ?? ""}`.trim();
   throw new Error(detail || `no merge base between ${baseRef} and HEAD`);
-}
-
-export function rebaseOntoBase({ targetDir, baseBranch }: TargetBaseBranch): RebaseOntoBaseResult {
-  ensureMergeBaseAvailable({ targetDir, baseBranch });
-  const baseRef = `origin/${baseBranch}`;
-  const baseSha = gitOutput(["rev-parse", baseRef], { targetDir }).trim();
-  const previousHead = currentHead(targetDir);
-  if (isAncestor({ targetDir, ancestor: baseRef, descendant: "HEAD" })) {
-    return {
-      status: "already-current",
-      base_ref: baseRef,
-      base_sha: baseSha,
-      previous_head: previousHead,
-      current_head: previousHead,
-    };
-  }
-
-  const child = runGitCommand(["rebase", baseRef], { targetDir });
-  const detail = `${child.stderr ?? ""}\n${child.stdout ?? ""}`.trim();
-  if (child.status === 0) {
-    return {
-      status: "rebased",
-      base_ref: baseRef,
-      base_sha: baseSha,
-      previous_head: previousHead,
-      current_head: currentHead(targetDir),
-      detail,
-    };
-  }
-  if (hasRebaseInProgress(targetDir) || unmergedPaths(targetDir).length > 0) {
-    return {
-      status: "conflicts",
-      base_ref: baseRef,
-      base_sha: baseSha,
-      previous_head: previousHead,
-      current_head: currentHead(targetDir),
-      detail,
-    };
-  }
-  throw new Error(detail || `git rebase ${baseRef} failed`);
-}
-
-export function completeRebaseIfResolved({ targetDir }: TargetDir): CompleteRebaseResult {
-  const previousHead = currentHead(targetDir);
-  if (!hasRebaseInProgress(targetDir)) {
-    return {
-      status: "not-in-progress",
-      previous_head: previousHead,
-      current_head: previousHead,
-    };
-  }
-
-  assertNoConflictMarkers({ targetDir, paths: unmergedPaths(targetDir) });
-  gitOutput(["add", "--all"], { targetDir });
-  const unresolved = unmergedPaths(targetDir);
-  if (unresolved.length > 0) {
-    throw new Error(`rebase conflicts remain unresolved: ${unresolved.join(", ")}`);
-  }
-  let detail = "";
-  while (hasRebaseInProgress(targetDir)) {
-    const child = runGitCommand(["-c", "core.editor=true", "rebase", "--continue"], {
-      targetDir,
-    });
-    detail = `${detail}\n${child.stderr ?? ""}\n${child.stdout ?? ""}`.trim();
-    if (child.status !== 0) {
-      const remaining = unmergedPaths(targetDir);
-      if (remaining.length > 0) {
-        throw new Error(`rebase produced additional conflicts: ${remaining.join(", ")}`);
-      }
-      throw new Error(detail || "git rebase --continue failed");
-    }
-  }
-
-  return {
-    status: "continued",
-    previous_head: previousHead,
-    current_head: currentHead(targetDir),
-    detail,
-  };
-}
-
-function assertNoConflictMarkers({ targetDir, paths }: TargetDir & { paths: string[] }): void {
-  const unresolved = paths.filter((filePath) => {
-    const absolute = path.join(targetDir, filePath);
-    if (!fs.existsSync(absolute) || !fs.statSync(absolute).isFile()) return false;
-    const text = fs.readFileSync(absolute, "utf8");
-    return /^<{7} |^={7}$|^>{7} /m.test(text);
-  });
-  if (unresolved.length > 0) {
-    throw new Error(`rebase conflicts remain unresolved: ${unresolved.join(", ")}`);
-  }
-}
-
-export function hasRebaseInProgress(targetDir: string): boolean {
-  const gitDir = gitOutput(["rev-parse", "--git-dir"], { targetDir }).trim();
-  const absoluteGitDir = path.isAbsolute(gitDir) ? gitDir : path.join(targetDir, gitDir);
-  return (
-    fs.existsSync(path.join(absoluteGitDir, "rebase-merge")) ||
-    fs.existsSync(path.join(absoluteGitDir, "rebase-apply"))
-  );
 }
 
 export function unmergedPaths(targetDir: string): string[] {

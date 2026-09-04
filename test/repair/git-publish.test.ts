@@ -5,11 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import {
-  commitMessageForPublishedPaths,
-  publishMainCommit,
-  runGit,
-} from "../../dist/repair/git-publish.js";
+import { publishMainCommit, runGit } from "../../dist/repair/git-publish.js";
 
 test("remaining git publisher performs one ordinary push without lease refs or rebuild recovery", () => {
   const source = fs.readFileSync("src/repair/git-publish.ts", "utf8");
@@ -56,11 +52,4 @@ test("remaining git publisher commits an operational path to the requested branc
     else process.env.CLAWSWEEPER_STATE_DIR = previousStateDir;
     fs.rmSync(root, { recursive: true, force: true });
   }
-});
-
-test("git publish commit messages are no longer path-specialized", () => {
-  assert.equal(
-    commitMessageForPublishedPaths("chore: publish operational state", ["results/status.json"]),
-    "chore: publish operational state",
-  );
 });

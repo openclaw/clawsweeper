@@ -2,7 +2,7 @@ import type { JsonValue } from "./json-types.js";
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { stripAnsi } from "./comment-router-utils.js";
-import { ghCliEnv } from "./process-env.js";
+import { ghCliEnv as ghEnv } from "./process-env.js";
 import { repoRoot } from "./paths.js";
 import { GitHubRateLimitError, ghRetryKind, ghRetryWaitMs } from "../github-retry.js";
 import { parseGhJsonWithRetry, parseGhJsonWithRetryAsync } from "../github-json.js";
@@ -266,14 +266,6 @@ export async function ghTextAsync(ghArgs: string[], options: GhRunOptions = {}):
   return stripAnsi(String(stdout)).trim();
 }
 
-export function ghBestEffort(ghArgs: string[], options: GhRunOptions = {}): void {
-  try {
-    ghText(ghArgs, options);
-  } catch {
-    // Helpful metadata should not block the primary command path.
-  }
-}
-
 export function ghBestEffortWithRetry(
   ghArgs: string[],
   options: GhRetryOptions | number = {},
@@ -296,10 +288,6 @@ export function ghSpawn(ghArgs: string[], options: GhRunOptions = {}) {
     input: options.input,
     stdio: "pipe",
   });
-}
-
-export function ghEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
-  return ghCliEnv(overrides);
 }
 
 function ghCommandEnv(ghArgs: readonly string[], options: GhRunOptions): NodeJS.ProcessEnv {

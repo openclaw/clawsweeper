@@ -191,10 +191,12 @@ test("authoritative state refresh exposes a remote winner hidden by a stale loca
     const previousStateDir = process.env.CLAWSWEEPER_STATE_DIR;
     process.env.CLAWSWEEPER_STATE_DIR = stateRoot;
     try {
-      refreshSourceAfterStatePublish(
-        [paths.itemRecord, paths.closedRecord, paths.planRecord, paths.decisionPacket],
-        null,
-      );
+      refreshSourceAfterStatePublish([
+        paths.itemRecord,
+        paths.closedRecord,
+        paths.planRecord,
+        paths.decisionPacket,
+      ]);
     } finally {
       if (previousStateDir === undefined) delete process.env.CLAWSWEEPER_STATE_DIR;
       else process.env.CLAWSWEEPER_STATE_DIR = previousStateDir;
