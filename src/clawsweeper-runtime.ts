@@ -402,19 +402,12 @@ function reviewPolicyHash(options: {
     stableJson({
       version: REVIEW_POLICY_VERSION,
       freshDays: FRESH_DAYS,
-      // Maintainer decision 2026-07-17: the model is deliberately NOT part of
-      // review-policy identity. Baking it in made every model change invalidate
-      // all stored reviews (a fleet-wide re-review wave), which makes model
-      // swaps untestable in production. Model changes now roll through the
-      // normal review cadence instead; bump REVIEW_POLICY_VERSION explicitly
-      // when a full re-review is actually wanted. The sentinel migrates all
-      // hashes once, riding the 2026-07 prompt-change wave already in flight.
+      // Model changes roll through normal review cadence. Keep this sentinel
+      // stable; bump REVIEW_POLICY_VERSION to invalidate stored reviews.
       model: "model-excluded-2026-07",
       reasoningEffort: options.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
       sandboxMode: options.sandboxMode ?? "read-only",
-      // Service tier changes latency, never decisions. Pinned to the historical
-      // hash value so tier changes cannot mark every stored review policy-stale
-      // and trigger a fleet-wide re-review wave.
+      // Keep the historical hash value so service tier changes do not invalidate reviews.
       serviceTier: "",
       targetRepo: policyTargetRepo,
       ...(policyTargetRepo.toLowerCase() === "openclaw/openclaw"
@@ -849,12 +842,12 @@ const regressionProvenanceVerifier = createRegressionProvenanceVerifier({
 });
 
 function verifyRegressionProvenance(
-  decision: import("./clawsweeper-types.js").Decision,
-  item: import("./clawsweeper-types.js").Item,
-  context: import("./clawsweeper-types.js").ItemContext,
+  decision: Decision,
+  item: Item,
+  context: ItemContext,
   checkoutDir: string,
-  git: import("./clawsweeper-types.js").GitInfo,
-): import("./clawsweeper-types.js").Decision {
+  git: GitInfo,
+): Decision {
   const regressionProvenance = regressionProvenanceVerifier.verify({
     candidate: decision.regressionProvenance,
     item,
@@ -1079,27 +1072,6 @@ const {
   sectionList,
 } = reportHelpers;
 
-// A routine phrase inside a larger actionable or negated sentence ("Do not merge
-// after required checks are green; rotate the token first") must not suppress the
-// step, so require the routine phrase, reject negation, and re-check actionability.
-
-// Checklist entries are list items, not table cells; only flatten newlines so
-// downstream consumers of the checklist see command/path text unaltered.
-
-// Labels are wrapped in renderer-owned bold markers, so Markdown delimiters inside
-// report-provided titles must be escaped or they would break the bold span and the
-// downstream label-stripping parsers.
-
-// Model-generated text is rendered above renderer-owned sections such as
-// "## Before merge", and downstream routing extracts those sections from the first
-// matching Markdown heading. Escape heading-shaped lines in model text so injected
-// content can never spoof a renderer-owned section boundary.
-
-// The review prompt and schema require Mermaid flowchart source with no code fences,
-// click directives, URLs, HTML, or initialization/styling directives. The diagram is
-// model output that crosses into a trusted bot comment, so enforce that allowlist
-// here and drop the diagram entirely when it does not comply.
-
 const closeDecisionWorkflow = createCloseDecisionWorkflow({
   targetRepo,
   isMaintainerAuthorAssociation,
@@ -1184,12 +1156,6 @@ const planCommand = createPlanCommand({
   targetProfile,
 });
 
-// Offline local-range review: synthesize the Item + ItemContext from the local
-// git range (merge-base(base, HEAD)..HEAD) so the FULL review (real-behavior
-// proof + mantis decision) can run BEFORE a PR exists — the "advisory review
-// before submission" #357 describes but gates behind an already-open PR. No
-// GitHub fetch: the diff comes from `git diff`, the body from the commit message
-// (or --body-file), so it works offline on a fork checkout.
 const buildLocalRangeReview = createLocalRangeReviewer({
   run,
   pullCommitContentRevision,

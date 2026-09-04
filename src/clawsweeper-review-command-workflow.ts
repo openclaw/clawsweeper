@@ -208,8 +208,9 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       reviewPolicy,
       explicitDispatch,
       maintainerRequest,
+      additionalPrompt,
     } = preparation;
-    let { additionalPrompt, git } = preparation;
+    let { git } = preparation;
     const readonlyModeSnapshots = readonlyOpenclaw ? makeTreeReadOnly(openclawDir) : [];
     const acquiredReviewLeases: Array<{ itemNumber: number; lease: AcquiredReviewStartLease }> = [];
     const releaseOwnedReviewLease = (
@@ -543,6 +544,39 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           ? previousClawSweeperReviewDigestFromReport(priorReview.markdown)
           : null;
         let acquiredReviewLease: AcquiredReviewStartLease | null = null;
+        const acquireReviewStartLease = (headSha: () => string): AcquiredReviewStartLease | null => {
+          try {
+            const startComment = postReviewStartStatusComment({
+              item,
+              headSha: headSha(),
+              reviewTimeoutMs: timeoutMs,
+              position: completed + 1,
+              total: candidates.length,
+              shardIndex,
+              shardCount,
+            });
+            console.error(
+              `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start-comment=${startComment.status} #${item.number}`,
+            );
+            if (startComment.status === "held") {
+              coordinationHeldRetryAt = startComment.retryAt;
+              return null;
+            }
+            acquiredReviewLeases.push({ itemNumber: item.number, lease: startComment.lease });
+            return startComment.lease;
+          } catch (error) {
+            leaseAcquisitionFailures += 1;
+            leaseAcquisitionFailureDetails.push(
+              `#${item.number}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+            console.error(
+              `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start-comment=failed #${item.number}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+            );
+            return null;
+          }
+        };
         let structuralRecord: ReviewStructuralRecord | null = null;
         let preHydrationStructuralRecord: ReviewStructuralRecord | null = null;
         let hydratedStructuralAnchor: ReviewStructuralRecord | null = null;
@@ -672,11 +706,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                     continue;
                   }
                   acquiredReviewLease = startComment.lease;
-                  if (!acquiredReviewLease) {
-                    throw new Error(
-                      `structural cache lease acquisition returned no identity for #${item.number}`,
-                    );
-                  }
                   acquiredReviewLeases.push({ itemNumber: item.number, lease: acquiredReviewLease });
                 }
               } catch (error) {
@@ -846,42 +875,10 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           }
         }
         if (!skipStartComment && !acquiredReviewLease && item.kind === "pull_request") {
-          try {
-            const startComment = postReviewStartStatusComment({
-              item,
-              headSha: structuralRecord?.pullHeadSha ?? pullRequestHeadSha(item.number),
-              reviewTimeoutMs: timeoutMs,
-              position: completed + 1,
-              total: candidates.length,
-              shardIndex,
-              shardCount,
-            });
-            console.error(
-              `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start-comment=${startComment.status} #${item.number}`,
-            );
-            if (startComment.status === "held") {
-              coordinationHeldRetryAt = startComment.retryAt;
-              continue;
-            }
-            acquiredReviewLease = startComment.lease;
-            if (!acquiredReviewLease) {
-              throw new Error(
-                `review lease acquisition returned no identity for PR #${item.number}`,
-              );
-            }
-            acquiredReviewLeases.push({ itemNumber: item.number, lease: acquiredReviewLease });
-          } catch (error) {
-            leaseAcquisitionFailures += 1;
-            leaseAcquisitionFailureDetails.push(
-              `#${item.number}: ${error instanceof Error ? error.message : String(error)}`,
-            );
-            console.error(
-              `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start-comment=failed #${item.number}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-            );
-            continue;
-          }
+          acquiredReviewLease = acquireReviewStartLease(
+            () => structuralRecord?.pullHeadSha ?? pullRequestHeadSha(item.number),
+          );
+          if (!acquiredReviewLease) continue;
         }
         const contextStartedAt = Date.now();
         if (!localRangeData) hydrationRuns += 1;
@@ -1087,42 +1084,8 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             );
           }
         } else if (item.kind !== "pull_request") {
-          try {
-            const startComment = postReviewStartStatusComment({
-              item,
-              headSha: context.sourceRevision ?? "",
-              reviewTimeoutMs: timeoutMs,
-              position: completed + 1,
-              total: candidates.length,
-              shardIndex,
-              shardCount,
-            });
-            console.error(
-              `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start-comment=${startComment.status} #${item.number}`,
-            );
-            if (startComment.status === "held") {
-              coordinationHeldRetryAt = startComment.retryAt;
-              continue;
-            }
-            acquiredReviewLease = startComment.lease;
-            if (!acquiredReviewLease) {
-              throw new Error(
-                `review lease acquisition returned no identity for issue #${item.number}`,
-              );
-            }
-            acquiredReviewLeases.push({ itemNumber: item.number, lease: acquiredReviewLease });
-          } catch (error) {
-            leaseAcquisitionFailures += 1;
-            leaseAcquisitionFailureDetails.push(
-              `#${item.number}: ${error instanceof Error ? error.message : String(error)}`,
-            );
-            console.error(
-              `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} start-comment=failed #${item.number}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-            );
-            continue;
-          }
+          acquiredReviewLease = acquireReviewStartLease(() => context.sourceRevision ?? "");
+          if (!acquiredReviewLease) continue;
         }
         if (!localRangeData && item.kind === "issue" && acquiredReviewLease) {
           try {

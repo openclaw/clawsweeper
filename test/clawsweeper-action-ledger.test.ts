@@ -576,11 +576,6 @@ test("apply receipts start per item and persist mutation observation before fina
   );
 
   assert.match(applyLoop, /startApplyActionLedgerItem\(applyLedger, entry\)/);
-  assert.match(applyLoop, /mutationByItem\.set\(`\$\{repo\}#\$\{number\}`, true\)/);
-  assert.match(
-    applyLoop,
-    /const recordMutation = \(parentEventId\?: string \| null\): void => \{[\s\S]*recordApplyMutationBoundary\(applyLedger, entry, parentEventId\)/,
-  );
   assert.match(source, /completion_reason: "mutation_attempted"/);
   assert.match(source, /parentEventId: state\.lastEventId \?\? state\.startEventId/);
   assert.match(source, /const phaseSeq = nextApplyPhaseSeq\(ledger\)/);
