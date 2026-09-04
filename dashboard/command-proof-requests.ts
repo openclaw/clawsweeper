@@ -207,10 +207,12 @@ export class CommandProofRequestStore {
     });
   }
   private expire(now: number) {
+    // Reconciliation backoff ends with the active request. A later terminal
+    // notification defer survives because this transition only matches active states.
     this.storage.sql.exec(
       "UPDATE " +
         TABLE +
-        " SET record_json = json_set(record_json, '$.state', 'inconclusive', '$.reason', 'proof_deadline_expired') WHERE expires_at <= ? AND json_extract(record_json, '$.state') IN ('dispatch_claimed', 'review_pending')",
+        " SET record_json = json_remove(json_set(record_json, '$.state', 'inconclusive', '$.reason', 'proof_deadline_expired'), '$.nextAttemptAt') WHERE expires_at <= ? AND json_extract(record_json, '$.state') IN ('dispatch_claimed', 'review_pending')",
       now,
     );
     this.storage.sql.exec(

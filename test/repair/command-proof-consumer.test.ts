@@ -960,6 +960,70 @@ test("transactional store dispatches once, fences edits/replays and expires unkn
   assert.equal(store.pending(now + 3600001).length, 0);
 });
 
+test("expired proof clears reconciliation backoff once and honors new terminal notification deferral", () => {
+  for (const activeState of ["dispatch_claimed", "review_pending"]) {
+    const storage = new MemoryDurableStorage();
+    try {
+      const store = new CommandProofRequestStore(storage);
+      store.ensureSchemaSync();
+      const { claim } = proofFixture();
+      const now = Date.now();
+      const claimed = store.claim(claim, now);
+      assert.equal(claimed.dispatch, true);
+      const deadline = store.get(claim.requestId)!.expiresAt;
+      if (activeState === "review_pending") {
+        store.update(
+          {
+            requestId: claim.requestId,
+            operation: "verified",
+            result: {
+              outcome: "pass",
+              digest: digest("evidence"),
+              reviewContext: "independent review context",
+              runId: "300",
+              runAttempt: 1,
+            },
+          },
+          now,
+        );
+      }
+      const oldRetryAt = deadline + 300_000;
+      store.update({ requestId: claim.requestId, operation: "defer", retryAt: oldRetryAt }, now);
+      assert.equal(store.get(claim.requestId)?.state, activeState);
+      assert.deepEqual(store.pending(deadline - 1), []);
+      assert.equal(store.claim(claim, deadline - 1).dispatch, false);
+      const expired = store.pending(deadline);
+      assert.equal(expired.length, 1);
+      assert.equal(expired[0]?.claim.requestId, claim.requestId);
+      assert.equal(expired[0]?.state, "inconclusive");
+      assert.equal(expired[0]?.reason, "proof_deadline_expired");
+      assert.notEqual(expired[0]?.notified, true);
+      assert.equal(Object.hasOwn(expired[0]!, "nextAttemptAt"), false);
+      assert.equal(store.claim(claim, deadline).dispatch, false);
+      const notificationRetryAt = deadline + 60_000;
+      store.update(
+        { requestId: claim.requestId, operation: "defer", retryAt: notificationRetryAt },
+        deadline + 1,
+      );
+      assert.deepEqual(store.pending(deadline + 2), []);
+      assert.deepEqual(store.pending(notificationRetryAt - 1), []);
+      assert.equal(store.get(claim.requestId)?.nextAttemptAt, notificationRetryAt);
+      assert.equal(store.claim(claim, notificationRetryAt - 1).dispatch, false);
+      const due = store.pending(notificationRetryAt);
+      assert.equal(due.length, 1);
+      assert.equal(due[0]?.state, "inconclusive");
+      assert.notEqual(due[0]?.notified, true);
+      store.update({ requestId: claim.requestId, operation: "notified" }, notificationRetryAt);
+      assert.equal(store.get(claim.requestId)?.notified, true);
+      assert.deepEqual(store.pending(notificationRetryAt), []);
+      assert.deepEqual(store.pending(oldRetryAt + 1), []);
+      assert.equal(store.claim(claim, oldRetryAt + 1).dispatch, false);
+    } finally {
+      storage.sql.close();
+    }
+  }
+});
+
 test("immutable proof claims require a base commit and cannot redispatch the same command after base advance", () => {
   const { claim } = proofFixture();
   const unbound = { ...claim } as Record<string, unknown>;
