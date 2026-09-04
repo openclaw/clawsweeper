@@ -1,3 +1,5 @@
+import type { DurableStorage } from "./durable-storage.ts";
+
 const STATE_WRITER_TICKET_TABLE = "state_writer_tickets";
 const STATE_WRITER_META_TABLE = "state_writer_meta";
 const STATE_WRITER_TERMINAL_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -7,15 +9,6 @@ const MAX_CONSECUTIVE_INTAKE_TURNS = 1;
 const MAX_CONSECUTIVE_PRIORITY_TURNS = 2;
 
 export type StateWriterClass = "ordinary" | "publication_batch" | "cluster_intake";
-
-type SqlStorage = {
-  exec: (query: string, ...bindings: unknown[]) => Iterable<Record<string, unknown>>;
-};
-
-type DurableStorage = {
-  sql: SqlStorage;
-  transactionSync: <T>(callback: () => T) => T;
-};
 
 export type StateWriterTicketInput = {
   ticketId: string;

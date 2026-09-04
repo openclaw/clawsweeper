@@ -12,6 +12,7 @@ import {
   GITHUB_EGRESS_STATUS_BUCKETS,
   GITHUB_EGRESS_UNITS,
 } from "../src/github-egress-telemetry-contract.ts";
+import type { DurableStorage } from "./durable-storage.ts";
 
 const ROLLUP_TABLE = "exact_review_github_egress_rollups_v2";
 const RATE_LIMIT_TABLE = "exact_review_github_rate_limits_v2";
@@ -36,15 +37,6 @@ export type GithubEgressCredentialCircuitObservation = {
   retryAt: number;
   provenance: "retry_after" | "rate_limit_reset";
   authoritative: true;
-};
-
-type SqlStorage = {
-  exec: (query: string, ...bindings: unknown[]) => Iterable<Record<string, unknown>>;
-};
-
-type DurableStorage = {
-  sql: SqlStorage;
-  transactionSync: <T>(callback: () => T) => T;
 };
 
 function alignedBucketStart(bucketKind: "five_minute" | "hour", timestamp: number) {

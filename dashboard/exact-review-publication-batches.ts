@@ -1,3 +1,5 @@
+import type { DurableStorage } from "./durable-storage.ts";
+
 export const EXACT_REVIEW_PUBLICATION_BATCH_TABLE = "exact_review_publication_batches";
 export const EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE = "exact_review_publication_batch_items";
 const EXACT_REVIEW_PUBLICATION_BATCH_GENERATION_TABLE =
@@ -5,15 +7,6 @@ const EXACT_REVIEW_PUBLICATION_BATCH_GENERATION_TABLE =
 
 const DEFAULT_COMPLETED_BATCH_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_CLEANUP_LIMIT = 100;
-
-type SqlStorage = {
-  exec: (query: string, ...bindings: unknown[]) => Iterable<Record<string, unknown>>;
-};
-
-type DurableStorage = {
-  sql: SqlStorage;
-  transactionSync: <T>(callback: () => T) => T;
-};
 
 export type PublicationBatchCandidate = {
   itemKey: string;

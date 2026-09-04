@@ -10,6 +10,7 @@ import type {
   ExactReviewDirectPublicationStore,
   RecordSnapshotIdentity,
 } from "./exact-review-direct-publication.ts";
+import type { DurableStorage } from "./durable-storage.ts";
 
 export const EXACT_REVIEW_RECORD_SNAPSHOT_TABLE = "exact_review_record_snapshots";
 export const RECORD_SNAPSHOT_KEEP = 2;
@@ -18,15 +19,6 @@ export const RECORD_SNAPSHOT_DOWNLOAD_MAX_BYTES = 32 * 1024 * 1024;
 const R2_MULTIPART_PART_BYTES = 8 * 1024 * 1024;
 const TAR_BLOCK_BYTES = 512;
 const encoder = new TextEncoder();
-
-type SqlStorage = {
-  exec: (query: string, ...bindings: unknown[]) => Iterable<Record<string, unknown>>;
-};
-
-type DurableStorage = {
-  sql: SqlStorage;
-  transactionSync: <T>(callback: () => T) => T;
-};
 
 type UploadedPart = { partNumber: number; etag: string };
 

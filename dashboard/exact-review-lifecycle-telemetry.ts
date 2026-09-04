@@ -5,6 +5,7 @@ import {
   type ExactReviewLifecycleProjection,
   type LifecycleTerminalDisposition,
 } from "./exact-review-lifecycle.ts";
+import type { DurableStorage } from "./durable-storage.ts";
 
 export const EXACT_REVIEW_LIFECYCLE_TELEMETRY_DIRECT_TABLE =
   "exact_review_lifecycle_telemetry_direct_v1";
@@ -41,15 +42,6 @@ export const EXACT_REVIEW_LIFECYCLE_BAY_RECOVERY_BATCH_LIMIT = 256;
 // allowlist. Keep the unfiltered aggregate in a distinct tide-buffer partition
 // so changing to or from that empty public scope cannot corrupt either view.
 const BAY_GLOBAL_TIDE_SCOPE = "__all_repositories__";
-
-type SqlStorage = {
-  exec: (query: string, ...bindings: unknown[]) => Iterable<Record<string, unknown>>;
-};
-
-type DurableStorage = {
-  sql: SqlStorage;
-  transactionSync: <T>(callback: () => T) => T;
-};
 
 export type DirectPublicationTelemetryOutcome = "accepted" | "deduped" | "superseded" | "fallback";
 

@@ -1,4 +1,5 @@
 import { EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES } from "../src/exact-review-publication-limits.ts";
+import type { DurableStorage } from "./durable-storage.ts";
 
 export { EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES };
 
@@ -30,15 +31,6 @@ const RECORD_SECTIONS = new Set<RecordSection>([
   "decision-packets",
   "commits",
 ]);
-
-type SqlStorage = {
-  exec: (query: string, ...bindings: unknown[]) => Iterable<Record<string, unknown>>;
-};
-
-type DurableStorage = {
-  sql: SqlStorage;
-  transactionSync: <T>(callback: () => T) => T;
-};
 
 export type RecordSection = "items" | "closed" | "plans" | "decision-packets" | "commits";
 export type ExactReviewTupleRecordSection = Exclude<RecordSection, "commits">;
