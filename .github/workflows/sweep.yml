@@ -3799,6 +3799,28 @@ jobs:
             --coverage-tracked-items-manifest "$COVERAGE_MANIFEST" \
             --publish-url "$REVIEW_COVERAGE_URL"
 
+      - name: Refresh openclaw coverage inventory token
+        id: openclaw-coverage-token
+        if: ${{ github.event.schedule == '37 */6 * * *' }}
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: openclaw
+          permission-metadata: read
+
+      - name: Refresh steipete coverage inventory token
+        id: steipete-coverage-token
+        if: ${{ github.event.schedule == '37 */6 * * *' }}
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: steipete
+          permission-metadata: read
+
       - name: Summarize trailing weekly review coverage
         # Also runs for operator dispatches of the audit lane: the signed live
         # inventory is what gives /api/review-coverage its true denominator, and
@@ -3808,8 +3830,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CLAWSWEEPER_DISPATCH_TOKEN: ${{ github.token }}
-          CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: ${{ steps.openclaw-inventory-token.outputs.token || '__public__' }}
-          CLAWSWEEPER_INVENTORY_TOKEN_STEIPETE: ${{ steps.steipete-inventory-token.outputs.token || '__public__' }}
+          CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: ${{ steps.openclaw-coverage-token.outputs.token || '__public__' }}
+          CLAWSWEEPER_INVENTORY_TOKEN_STEIPETE: ${{ steps.steipete-coverage-token.outputs.token || '__public__' }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           REVIEW_COVERAGE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: pnpm run target-fanout -- coverage --window-days 7 --publish-url "$REVIEW_COVERAGE_URL" >> "$GITHUB_STEP_SUMMARY"

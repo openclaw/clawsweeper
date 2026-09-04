@@ -5916,7 +5916,7 @@ test("audit target fanout waits in bounded waves without changing cadence or sel
   assert.match(fanout["timeout-minutes"], /'37 \*\/6 \* \* \*' && 240 \|\| 30/);
   const source = readText("src/repair/target-fanout.ts");
   assert.match(source, /mode === "audit" && !options.dryRun/);
-  assert.match(source, /await dispatchAuditWaves\(commands/);
+  assert.match(source, /await dispatchAuditWaves\(selection.repositories/);
   assert.match(source, /maxParallelTargets = AUTOMATION_LIMITS.audit.max_parallel_targets/);
   assert.match(source, /return_run_details=true/);
   assert.match(source, /result.status === "completed"/);

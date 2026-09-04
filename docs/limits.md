@@ -68,6 +68,8 @@ Audit hydration is bounded independently of review capacity:
 | `audit.max_parallel_targets` | 3 | Target audits dispatched per wave; wait for every run to complete before the next wave. |
 
 The fanout reads this limit through `AUTOMATION_LIMITS` in `src/limits.ts`.
+The signed audit cursor checkpoints remaining targets and outstanding children;
+resumed batches drain those children before admitting a new wave.
 It does not alter worker budgets, exact-review admission, or target selection.
 
 | Name                                       | Current | Meaning                                                                                         |

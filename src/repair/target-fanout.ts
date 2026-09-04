@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { AUTOMATION_LIMITS } from "../limits.js";
+import { type AuditWaveState } from "../audit-wave-state.js";
 import { resolveCommand } from "../command.js";
 import {
   fetchDurableCursor,
@@ -208,13 +209,20 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
       planningRepositories = repositoriesWithOpenItems(repositories, openCounts);
     }
   }
-  const cursor = await loadFanoutCursor({
+  const cursorStore: FanoutCursorStoreOptions = {
     baseUrl: options.cursorStoreUrl,
     webhookSecret: process.env.CLAWSWEEPER_WEBHOOK_SECRET ?? "",
     mode,
-  });
+  };
+  const cursor = await loadFanoutCursor(cursorStore);
   let selection: SelectionResult;
-  if (mode === "normal-review") {
+  if (mode === "audit" && cursor.auditBatch) {
+    selection = {
+      repositories: cursor.auditBatch.remainingTargets,
+      cursor: cursor.nextCursor,
+      total: repositories.length,
+    };
+  } else if (mode === "normal-review") {
     const fallbackCapacity =
       SCHEDULED_REVIEW_PLAN_BATCH_SIZE * Math.min(options.limit, planningRepositories.length);
     const pressure = await fetchExactReviewQueuePressure({ queueUrl: options.cursorStoreUrl });
@@ -251,9 +259,18 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
 
   const dispatched: string[] = [];
   if (mode === "audit" && !options.dryRun) {
-    await dispatchAuditWaves(commands, {
+    let revision = cursor.revision;
+    await dispatchAuditWaves(selection.repositories, {
       dispatchRepo: options.dispatchRepo,
-      run: (command) => runGh(command, dispatchEnv()),
+      commandForTarget: (target) => workflowDispatchArgs(target, options),
+      run: (command) => runGh(command, dispatchEnv(), 30_000),
+      ...(cursor.auditBatch
+        ? { state: { ...cursor.auditBatch, remainingTargets: selection.repositories } }
+        : {}),
+      persist: async (auditBatch) => {
+        const saved = await putDurableCursor(cursorStore, selection.cursor, revision, auditBatch);
+        revision = saved.revision;
+      },
     });
     dispatched.push(...selection.repositories.map((repository) => repository.targetRepo));
   } else
@@ -270,15 +287,17 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
 
   const cursorPersisted = options.dryRun
     ? false
-    : await persistFanoutCursorFailOpen(
-        {
-          baseUrl: options.cursorStoreUrl,
-          webhookSecret: process.env.CLAWSWEEPER_WEBHOOK_SECRET ?? "",
-          mode,
-        },
-        selection.cursor,
-        cursor.revision,
-      );
+    : mode === "audit"
+      ? true
+      : await persistFanoutCursorFailOpen(
+          {
+            baseUrl: options.cursorStoreUrl,
+            webhookSecret: process.env.CLAWSWEEPER_WEBHOOK_SECRET ?? "",
+            mode,
+          },
+          selection.cursor,
+          cursor.revision,
+        );
   process.stdout.write(
     `${JSON.stringify(
       {
@@ -704,64 +723,114 @@ function workflowDispatchArgs(
 }
 
 export async function dispatchAuditWaves(
-  commands: readonly string[][],
+  targets: readonly SelectedRepository[],
   {
     dispatchRepo,
+    commandForTarget,
     run,
+    state: savedState,
+    persist,
     maxParallelTargets = AUTOMATION_LIMITS.audit.max_parallel_targets,
     wait = () => delay(60_000),
     now = Date.now,
     waveTimeoutMs = 55 * 60_000,
+    retryWait = delay,
   }: {
     dispatchRepo: string;
+    commandForTarget: (target: SelectedRepository) => string[];
     run: (args: readonly string[]) => string;
+    state?: AuditWaveState;
+    persist: (state: AuditWaveState | null) => Promise<void>;
     maxParallelTargets?: number;
     wait?: () => Promise<unknown>;
     now?: () => number;
     waveTimeoutMs?: number;
+    retryWait?: (milliseconds: number) => Promise<unknown>;
   },
 ): Promise<void> {
   if (!Number.isInteger(maxParallelTargets) || maxParallelTargets < 1) {
     throw new Error("audit max_parallel_targets must be a positive integer");
   }
-  for (let offset = 0; offset < commands.length; offset += maxParallelTargets) {
+  const state: AuditWaveState = structuredClone(
+    savedState ?? {
+      remainingTargets: [...targets],
+      outstandingRunIds: [],
+      dispatchingTarget: null,
+    },
+  );
+  if (state.dispatchingTarget)
+    throw new Error(`audit dispatch receipt unresolved for ${state.dispatchingTarget}`);
+  await persist(state);
+  while (state.remainingTargets.length || state.outstandingRunIds.length) {
     const deadline = now() + waveTimeoutMs;
-    const pending = new Set<string>();
-    for (const command of commands.slice(offset, offset + maxParallelTargets)) {
-      const response = record(JSON.parse(run(command)), "audit dispatch response");
-      const runId = String(response.workflow_run_id ?? "");
-      // An unacknowledged dispatch may be running: never refill its slot by guessing.
-      if (!/^\d+$/.test(runId) || runId === "0") throw new Error("audit dispatch missing run id");
-      if (pending.has(runId)) throw new Error("audit dispatch returned a duplicate run id");
-      pending.add(runId);
+    // A resumed wave must drain first; its children still own their slots.
+    if (!state.outstandingRunIds.length) {
+      for (const target of state.remainingTargets.slice(0, maxParallelTargets)) {
+        state.dispatchingTarget = target.targetRepo;
+        await persist(state);
+        const response = record(
+          JSON.parse(run(commandForTarget(target))),
+          "audit dispatch response",
+        );
+        const runId = String(response.workflow_run_id ?? "");
+        if (!/^[1-9]\d*$/.test(runId)) throw new Error("audit dispatch missing run id");
+        if (state.outstandingRunIds.includes(runId))
+          throw new Error("audit dispatch returned a duplicate run id");
+        state.outstandingRunIds.push(runId);
+        state.remainingTargets.shift();
+        state.dispatchingTarget = null;
+        await persist(state);
+      }
     }
-    console.log(`[target-fanout] audit wave dispatched: ${[...pending].join(",")}`);
-    while (pending.size) {
+    console.log(`[target-fanout] audit wave pending: ${state.outstandingRunIds.join(",")}`);
+    while (state.outstandingRunIds.length) {
       if (now() >= deadline) throw new Error("audit wave timed out; no further targets dispatched");
       await wait();
-      for (const runId of pending) {
-        const result = record(
-          JSON.parse(
-            run([
-              "run",
-              "view",
-              runId,
-              "--repo",
-              dispatchRepo,
-              "--json",
-              "databaseId,status,conclusion",
-            ]),
-          ),
-          "audit run response",
-        );
+      for (const runId of state.outstandingRunIds) {
+        let result: Record<string, unknown> | undefined;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          if (now() >= deadline)
+            throw new Error("audit wave timed out; no further targets dispatched");
+          try {
+            result = record(
+              JSON.parse(
+                run([
+                  "run",
+                  "view",
+                  runId,
+                  "--repo",
+                  dispatchRepo,
+                  "--json",
+                  "databaseId,status,conclusion",
+                ]),
+              ),
+              "audit run response",
+            );
+            break;
+          } catch (error) {
+            if (attempt === 2) throw error;
+            await retryWait(Math.min((attempt + 1) * 1_000, Math.max(0, deadline - now())));
+          }
+        }
+        if (!result) throw new Error("audit run lookup failed");
         if (String(result.databaseId) !== runId) throw new Error("audit run lookup id mismatch");
+        if (
+          typeof result.status !== "string" ||
+          !["queued", "in_progress", "waiting", "requested", "pending", "completed"].includes(
+            result.status,
+          )
+        ) {
+          throw new Error("audit run lookup status unknown");
+        }
         if (result.status === "completed") {
           console.log(`[target-fanout] audit ${runId} completed: ${String(result.conclusion)}`);
-          pending.delete(runId);
+          state.outstandingRunIds = state.outstandingRunIds.filter((id) => id !== runId);
+          await persist(state);
         }
       }
     }
   }
+  await persist(null);
 }
 
 export async function fetchFanoutCursor(
@@ -782,8 +851,13 @@ export async function loadFanoutCursor(
   options: FanoutCursorStoreOptions,
 ): Promise<FanoutCursorSnapshot & { loaded: boolean }> {
   try {
-    return { ...(await fetchFanoutCursor(options)), loaded: true };
+    const cursor = await fetchFanoutCursor(options);
+    if (options.mode === "audit" && cursor.auditBatch === undefined) {
+      throw new Error("canonical audit cursor does not support resumable batches");
+    }
+    return { ...cursor, loaded: true };
   } catch (error) {
+    if (options.mode === "audit") throw error;
     console.error(
       `[target-fanout] WARNING: canonical ${options.mode} cursor is unavailable; continuing dispatch from cursor 0 without blocking productive work: ${errorMessage(error)}`,
     );
@@ -807,7 +881,7 @@ export async function persistFanoutCursorFailOpen(
   }
 }
 
-function runGh(args: readonly string[], env: NodeJS.ProcessEnv): string {
+function runGh(args: readonly string[], env: NodeJS.ProcessEnv, timeout?: number): string {
   const childEnv = { ...process.env, ...env, NO_COLOR: "1", CLICOLOR: "0" };
   const command = resolveCommand("gh", args, childEnv);
   return execFileSync(command.command, command.args, {
@@ -815,6 +889,7 @@ function runGh(args: readonly string[], env: NodeJS.ProcessEnv): string {
     env: childEnv,
     maxBuffer: 32 * 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
+    timeout,
   }).trimEnd();
 }
 

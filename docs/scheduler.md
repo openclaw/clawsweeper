@@ -100,8 +100,10 @@ Before event repair, `scripts/exact-review-reconcile-guard.mjs` reads the latest
 succeeded within that window, even if its observer job is still running.
 Observer-only runs, skipped repairs, and failed repairs do not extend the
 cooldown. A job-level output guard skips repair after a recent
-success; unavailable history allows repair to proceed. Scheduled and manual
-sweeps bypass the guard and inspect all claimed runs, so a terminal attempt
+success; unavailable history or the 60-second aggregate history-read deadline
+allows repair to proceed. Each lookup is bounded by the remaining deadline,
+and a successful result is checked for freshness after the read. Scheduled and
+manual sweeps bypass the guard and inspect all claimed runs, so a terminal attempt
 whose event was coalesced or skipped is normally reconciled within about
 15 minutes worst case, plus Actions scheduling and execution delay. This is a
 cadence backstop, not a hard wall-clock guarantee during platform outages.
@@ -295,8 +297,15 @@ Audit fanout keeps at most 3 target audits in flight using
 bounded waves and waits for every acknowledged run in a wave to become terminal
 before dispatching the next, including when a target fails or is cancelled.
 The dispatch API returns exact run IDs (`return_run_details=true`); a missing
-receipt, failed lookup, or 55-minute wave timeout stops further dispatch rather
-than assuming a slot is free. Run status is read once per minute. The fanout job
+receipt, exhausted lookup retries, or 55-minute wave timeout stops further
+dispatch. The existing signed audit cursor stores remaining targets and
+outstanding run IDs after each dispatch and completion. The next invocation
+resumes that batch and drains the saved children before admitting another wave.
+Transient lookup errors retry twice with one- and two-second backoff. Audit
+dispatch requires available durable state; an unresolved dispatch receipt stays
+marked for operator investigation rather than freeing its slot. Run status is
+read once per minute. Coverage inventory tokens are minted again after the waves,
+immediately before the trailing coverage summary. The fanout job
 allows four hours for the twelve-target batch; ordinary review/hot fanout keeps
 its 30-minute timeout. The six-hour cadence, cursor selection, and twelve targets
 are unchanged. This bound covers the scheduled fleet fanout, not separate manual
@@ -336,9 +345,10 @@ match. This evidence does not attribute the remaining receipt mismatch to
 
 Each mode's cursor lives in the authenticated ExactReviewQueue Durable Object,
 not generated Git state. Reads and writes use a monotonic revision. If the
-canonical cursor endpoint is unavailable, fanout warns and continues dispatch
-from a safe default; cursor persistence failure after dispatch never fails the
-productive lane.
+canonical cursor endpoint is unavailable, normal and hot fanout warn and
+continue dispatch from a default cursor; persistence failure after dispatch
+does not fail those lanes. Audit fanout requires a batch-aware cursor store and
+stops on state failures so outstanding children cannot be forgotten.
 
 Normal fanout refreshes the same signed live-open inventory consumed by
 `GET /api/review-coverage`, and both normal and hot fanout skip repositories

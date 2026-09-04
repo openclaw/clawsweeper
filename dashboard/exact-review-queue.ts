@@ -1,4 +1,5 @@
 import { stableJson } from "../src/stable-json.ts";
+import { parseAuditWaveState, type AuditWaveState } from "../src/audit-wave-state.ts";
 import {
   HOSTED_TARGET_ELIGIBILITY_HEADER,
   hostedTargetRetryAfterSeconds,
@@ -688,6 +689,7 @@ type OperationalCursor = {
   nextCursor: number;
   revision: number;
   updatedAt: number;
+  auditBatch?: AuditWaveState | null;
 };
 const EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_BASE_MS = 15_000;
 const EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_MAX_MS = 15 * 60_000;
@@ -4338,6 +4340,15 @@ export class ExactReviewQueue {
 
   private writeOperationalCursor(mode: OperationalCursorMode, value: unknown) {
     const body = objectValue(value);
+    let auditBatch: AuditWaveState | null | undefined;
+    try {
+      if (body.audit_batch !== undefined) {
+        if (mode !== "audit") throw new Error("audit batch requires audit cursor");
+        auditBatch = parseAuditWaveState(body.audit_batch);
+      }
+    } catch {
+      return json({ error: "invalid_audit_batch" }, 400);
+    }
     const nextCursor = Number(body.next_cursor);
     const expectedRevision = Number(body.expected_revision);
     if (
@@ -4364,6 +4375,9 @@ export class ExactReviewQueue {
           nextCursor,
           revision: current.revision + 1,
           updatedAt: Date.now(),
+          ...(mode === "audit"
+            ? { auditBatch: auditBatch === undefined ? (current.auditBatch ?? null) : auditBatch }
+            : {}),
         };
         this.storage.kv.put(operationalCursorKey(mode), next);
         return { kind: "written" as const, cursor: next };
@@ -16625,7 +16639,17 @@ function readOperationalCursor(
   ) {
     return "invalid";
   }
-  return { mode, nextCursor, revision, updatedAt };
+  try {
+    return {
+      mode,
+      nextCursor,
+      revision,
+      updatedAt,
+      ...(mode === "audit" ? { auditBatch: parseAuditWaveState(cursor.auditBatch ?? null) } : {}),
+    };
+  } catch {
+    return "invalid";
+  }
 }
 
 function operationalCursorJson(cursor: OperationalCursor) {
@@ -16635,6 +16659,7 @@ function operationalCursorJson(cursor: OperationalCursor) {
     next_cursor: cursor.nextCursor,
     revision: cursor.revision,
     updated_at: cursor.updatedAt > 0 ? new Date(cursor.updatedAt).toISOString() : null,
+    ...(cursor.mode === "audit" ? { audit_batch: cursor.auditBatch ?? null } : {}),
   };
 }
 

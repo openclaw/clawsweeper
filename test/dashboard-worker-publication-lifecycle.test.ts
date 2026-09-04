@@ -4400,3 +4400,59 @@ test("signed migrated receipts cannot complete a newer same-marker lifecycle rev
     assert.equal(malformedIdentity.status, 400);
   }
 });
+
+test("audit cursor checkpoints survive reconstruction and reject stale batch writers", async () => {
+  const { fetchDurableCursor, putDurableCursor } = await import("../dist/durable-cursor-store.js");
+  const storage = new MemoryDurableStorage();
+  const secret = "synthetic-audit-cursor";
+  let queue = new ExactReviewQueue({ storage }, {});
+  const store = {
+    baseUrl: "https://clawsweeper.openclaw.ai",
+    webhookSecret: secret,
+    mode: "audit",
+    attempts: 1,
+    fetchImpl: async (url, init) =>
+      worker.fetch(new Request(url, init), {
+        CLAWSWEEPER_WEBHOOK_SECRET: secret,
+        EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+      }),
+  };
+  const batch = {
+    remainingTargets: [
+      { targetRepo: "synthetic/audit-4", defaultBranch: "main", visibility: "PUBLIC" },
+    ],
+    outstandingRunIds: ["1", "2", "3"],
+    dispatchingTarget: null,
+  };
+  const empty = await fetchDurableCursor(store);
+  assert.equal(empty.auditBatch, null);
+  const written = await putDurableCursor(store, 12, empty.revision, batch);
+  queue = new ExactReviewQueue({ storage }, {});
+  assert.deepEqual(await fetchDurableCursor(store), written);
+  assert.deepEqual(written.auditBatch, batch);
+  await assert.rejects(putDurableCursor(store, 24, empty.revision, null), /revision_conflict/);
+  // An older cursor-only writer cannot erase a live batch.
+  const preserved = await putDurableCursor(store, 12, written.revision);
+  assert.deepEqual(preserved.auditBatch, batch);
+  const completed = await putDurableCursor(store, 12, preserved.revision, null);
+  assert.equal(completed.auditBatch, null);
+  await assert.rejects(
+    putDurableCursor(
+      {
+        ...store,
+        fetchImpl: async () =>
+          Response.json({
+            ok: true,
+            mode: "audit",
+            next_cursor: 12,
+            revision: 1,
+            updated_at: null,
+          }),
+      },
+      12,
+      0,
+      batch,
+    ),
+    /invalid audit wave state/,
+  );
+});

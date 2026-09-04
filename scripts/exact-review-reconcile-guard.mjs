@@ -4,10 +4,15 @@ import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 export const RECONCILE_COOLDOWN_MS = 5 * 60_000;
+export const HISTORY_READ_DEADLINE_MS = 60_000;
 
-export function recentReconciliation(runs, loadJobs, { now = Date.now(), currentRunId = "" } = {}) {
+export function recentReconciliation(
+  runs,
+  loadJobs,
+  { now = Date.now(), currentRunId = "", clock = () => now } = {},
+) {
   for (const run of runs) {
-    const age = now - Date.parse(run.updatedAt);
+    const age = clock() - Date.parse(run.updatedAt);
     if (
       String(run.databaseId) === currentRunId ||
       !Number.isFinite(age) ||
@@ -18,7 +23,7 @@ export function recentReconciliation(runs, loadJobs, { now = Date.now(), current
     const jobs = loadJobs(String(run.databaseId));
     if (
       jobs.some((job) => {
-        const completedAge = now - Date.parse(job.completedAt);
+        const completedAge = clock() - Date.parse(job.completedAt);
         return (
           job.status === "completed" &&
           job.conclusion === "success" &&
@@ -36,17 +41,29 @@ export function recentReconciliation(runs, loadJobs, { now = Date.now(), current
   return null;
 }
 
-export function main() {
-  const repository = process.env.GITHUB_REPOSITORY;
-  if (!repository || !process.env.GITHUB_OUTPUT) throw new Error("missing guard configuration");
-  const gh = (args) =>
-    JSON.parse(
-      execFileSync("gh", args, {
+export function main({
+  env = process.env,
+  exec = execFileSync,
+  clock = () => performance.now(),
+  now = Date.now,
+} = {}) {
+  const repository = env.GITHUB_REPOSITORY;
+  if (!repository || !env.GITHUB_OUTPUT) throw new Error("missing guard configuration");
+  const deadline = clock() + HISTORY_READ_DEADLINE_MS;
+  const gh = (args) => {
+    const remaining = Math.floor(deadline - clock());
+    if (remaining <= 0) throw new Error("history read deadline exhausted");
+    const result = JSON.parse(
+      exec("gh", args, {
         encoding: "utf8",
-        timeout: 15_000,
+        timeout: Math.min(15_000, remaining),
+        killSignal: "SIGKILL",
         stdio: ["ignore", "pipe", "pipe"],
       }),
     );
+    if (clock() >= deadline) throw new Error("history read deadline exhausted");
+    return result;
+  };
   let recentRun = null;
   try {
     const runs = gh([
@@ -64,13 +81,13 @@ export function main() {
     recentRun = recentReconciliation(
       runs,
       (id) => gh(["run", "view", id, "--repo", repository, "--json", "jobs"]).jobs,
-      { currentRunId: process.env.GITHUB_RUN_ID || "" },
+      { currentRunId: env.GITHUB_RUN_ID || "", clock: now },
     );
   } catch {
     // History is an optimization, not authority to postpone lease recovery.
     console.error("Reconcile history unavailable; continuing reconciliation.");
   }
-  appendFileSync(process.env.GITHUB_OUTPUT, `reconcile=${recentRun === null}\n`);
+  appendFileSync(env.GITHUB_OUTPUT, `reconcile=${recentRun === null}\n`);
   console.log(
     recentRun
       ? `Skipping lease reconciliation: completed run ${recentRun} is under five minutes old.`
