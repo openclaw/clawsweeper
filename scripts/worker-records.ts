@@ -31,8 +31,8 @@ import {
   recordExtension,
   tarHeader,
   RECORD_SNAPSHOT_UPLOAD_MAX_BYTES,
-} from "../dashboard/record-snapshots.ts";
-import { SNAPSHOT_UPLOAD_PART_BYTES } from "../dashboard/record-snapshot-uploads.ts";
+  SNAPSHOT_UPLOAD_PART_BYTES,
+} from "../src/record-snapshot-protocol.ts";
 
 export const RECORD_SECTIONS = ["items", "closed", "plans", "decision-packets", "commits"] as const;
 export type RecordSection = (typeof RECORD_SECTIONS)[number];

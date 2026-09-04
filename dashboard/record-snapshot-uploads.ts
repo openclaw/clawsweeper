@@ -1,11 +1,13 @@
 import {
   RECORD_SNAPSHOT_UPLOAD_MAX_BYTES,
+  SNAPSHOT_UPLOAD_PART_BYTES,
+} from "../src/record-snapshot-protocol.ts";
+import {
   SnapshotRegistrationError,
   validateSnapshotRegistration,
   type RecordSnapshot,
 } from "./record-snapshots.ts";
 
-export const SNAPSHOT_UPLOAD_PART_BYTES = 6 * 1024 * 1024;
 export const SNAPSHOT_UPLOAD_MAX_PARTS = 200;
 export const SNAPSHOT_UPLOAD_TTL_SECONDS = 3600;
 export const SNAPSHOT_UPLOAD_JSON_MAX_BYTES = (SNAPSHOT_UPLOAD_PART_BYTES / 3) * 4 + 16 * 1024;
