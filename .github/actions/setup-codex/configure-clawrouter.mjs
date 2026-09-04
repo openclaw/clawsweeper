@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 
 const alias = "internal";
 
@@ -8,7 +9,16 @@ try {
   const home = process.env.CODEX_HOME;
   const raw = process.env.CLAWSWEEPER_CLAWROUTER_CONFIG ?? "";
   if (Buffer.byteLength(raw) > 256 * 1024) throw new Error("Private configuration is too large.");
-  const settings = JSON.parse(raw);
+  let payload = raw;
+  if (raw.startsWith("gzip:")) {
+    const encoded = raw.slice(5);
+    const compressed = Buffer.from(encoded, "base64");
+    if (compressed.toString("base64") !== encoded) throw new Error("Invalid private encoding.");
+    payload = new TextDecoder("utf-8", { fatal: true }).decode(
+      gunzipSync(compressed, { maxOutputLength: 256 * 1024 }),
+    );
+  }
+  const settings = JSON.parse(payload);
   if (
     !settings ||
     typeof settings !== "object" ||
@@ -52,6 +62,7 @@ try {
   ) {
     throw new Error("Full alias-only native model metadata is required.");
   }
+  if (process.env.GITHUB_ACTIONS === "true") console.log(`::add-mask::${credential}`);
   mkdirSync(home, { recursive: true, mode: 0o700 });
   chmodSync(home, 0o700);
   const catalog = join(home, "clawrouter-models.json");

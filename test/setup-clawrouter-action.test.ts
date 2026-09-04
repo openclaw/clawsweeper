@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { gzipSync } from "node:zlib";
 
 const script = resolve(".github/actions/setup-codex/configure-clawrouter.mjs");
 const token = "private-workload-SYNTHETIC_PRIVATE_CREDENTIAL_123456789";
@@ -24,6 +25,10 @@ const modelInfo = {
   use_responses_lite: true,
   auto_review_model_override: null,
 };
+
+function publicOutput(result: { stdout: string; stderr: string }) {
+  return result.stdout.replace(/^::add-mask::[^\r\n]*\n/gm, "") + result.stderr;
+}
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-private-setup-"));
@@ -69,6 +74,7 @@ test(
     try {
       const result = f.run(f.settings);
       assert.equal(result.status, 0, result.stderr);
+      assert.ok(result.stdout.startsWith(`::add-mask::${token}\n`));
       const receipt = JSON.parse(readFileSync(f.receipt, "utf8"));
       assert.deepEqual(receipt.args, ["login", "--with-api-key"]);
       assert.equal(receipt.input, token);
@@ -86,10 +92,7 @@ test(
         models: [modelInfo],
       });
       assert.equal(statSync(join(f.home, "config.toml")).mode & 0o777, 0o600);
-      assert.doesNotMatch(
-        result.stdout + result.stderr + config,
-        /SYNTHETIC_PRIVATE|SYNTHETIC_UNRELATED/,
-      );
+      assert.doesNotMatch(publicOutput(result) + config, /SYNTHETIC_PRIVATE|SYNTHETIC_UNRELATED/);
     } finally {
       rmSync(f.root, { recursive: true, force: true });
     }
@@ -105,6 +108,9 @@ test("private setup rejects malformed config, non-private endpoints, and non-ali
     for (const settings of [
       "",
       "invalid",
+      "gzip:invalid-base64",
+      `gzip:${Buffer.from("invalid compressed data").toString("base64")}`,
+      `gzip:${gzipSync(Buffer.alloc(256 * 1024 + 1)).toString("base64")}`,
       { ...f.settings, token: "SYNTHETIC_API_CREDENTIAL" },
       ...[
         "http://127.0.0.1/private/v1",
@@ -139,7 +145,34 @@ test(
       const result = f.run(f.settings, { CODEX_TEST_EXIT: "23" });
       assert.equal(result.status, 1);
       assert.match(result.stderr, /Private ClawRouter setup failed/);
-      assert.doesNotMatch(result.stdout + result.stderr, /SYNTHETIC/);
+      assert.doesNotMatch(publicOutput(result), /SYNTHETIC/);
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "packed private configuration preserves a full catalog larger than an Actions secret",
+  { skip: process.platform === "win32" },
+  () => {
+    const f = fixture();
+    try {
+      const largeModel = {
+        ...modelInfo,
+        model_messages: { base_instructions: "Synthetic native instruction.\n".repeat(3000) },
+      };
+      const raw = JSON.stringify({ ...f.settings, modelInfo: largeModel });
+      const packed = `gzip:${gzipSync(raw).toString("base64")}`;
+      assert.ok(Buffer.byteLength(raw) > 48 * 1024);
+      assert.ok(Buffer.byteLength(packed) < 48 * 1024);
+      const result = f.run(packed);
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(JSON.parse(readFileSync(join(f.home, "clawrouter-models.json"), "utf8")), {
+        models: [largeModel],
+      });
+      assert.ok(result.stdout.startsWith(`::add-mask::${token}\n`));
+      assert.doesNotMatch(publicOutput(result), /SYNTHETIC/);
     } finally {
       rmSync(f.root, { recursive: true, force: true });
     }

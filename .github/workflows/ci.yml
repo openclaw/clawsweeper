@@ -12,6 +12,14 @@ on:
       - "results/**"
   pull_request:
   workflow_dispatch:
+    inputs:
+      codex_auth_mode:
+        description: "Inference route for the hosted canary; configured uses the repository setting"
+        type: choice
+        default: configured
+        options:
+          - configured
+          - clawrouter
 
 permissions:
   contents: read
@@ -35,11 +43,11 @@ jobs:
           build-script: build
       - uses: ./.github/actions/setup-codex
         env:
-          OPENAI_API_KEY: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.OPENAI_API_KEY || '' }}
-          CLAWSWEEPER_INTERNAL_MODEL: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.CLAWSWEEPER_MODEL || '' }}
+          OPENAI_API_KEY: ${{ inputs.codex_auth_mode != 'clawrouter' && vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.OPENAI_API_KEY || '' }}
+          CLAWSWEEPER_INTERNAL_MODEL: ${{ inputs.codex_auth_mode != 'clawrouter' && vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.CLAWSWEEPER_MODEL || '' }}
           CLAWSWEEPER_CLAWROUTER_CONFIG: ${{ secrets.CLAWSWEEPER_CLAWROUTER_CONFIG }}
         with:
-          auth-mode: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE || 'proxy' }}
+          auth-mode: ${{ inputs.codex_auth_mode == 'clawrouter' && 'clawrouter' || vars.CLAWSWEEPER_CODEX_AUTH_MODE || 'proxy' }}
       - name: Prove refusal then clean structured review
         run: node scripts/hosted-review-scan-smoke.mjs "$RUNNER_TEMP/hosted-review-scan-proof.json"
       - uses: actions/upload-artifact@v7
