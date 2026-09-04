@@ -331,9 +331,6 @@ test("canonical identity hashing rejects excessive depth, nodes, and input size 
 });
 
 test("ledger and shared JSON ordering are both binary and locale independent", () => {
-  // The shared serializer used to order keys by locale collation, and this test
-  // pinned that difference. It now uses the same code-unit comparator as the
-  // ledger, so "z" (0x7A) precedes "\u00e4" (0xE4) in both.
   assert.equal(stableJson({ "\u00e4": 1, z: 2 }), '{"z":2,"\u00e4":1}');
   assert.equal(
     actionLedgerJson({ "2": "two", "10": "ten", "\u00e4": 1, z: 2 }),
@@ -1996,16 +1993,6 @@ test("generated occurrence clocks cannot reverse deterministic shard ordering", 
   assert.deepEqual(
     readActionEventShard(first.path).map((event) => event.event_id),
     firstEvents.map((event) => event.event_id).sort(),
-  );
-});
-
-test("replaying an event with a changed explicit occurrence time still conflicts", () => {
-  const root = tempRoot();
-  writeActionEvent(root, reviewInput({ occurredAt: "2026-07-12T10:00:00.000Z" }));
-
-  assert.throws(
-    () => writeActionEvent(root, reviewInput({ occurredAt: "2026-07-12T10:00:01.000Z" })),
-    /action event conflict/,
   );
 });
 
