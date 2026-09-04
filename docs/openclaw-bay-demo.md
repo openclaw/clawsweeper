@@ -4,8 +4,8 @@
 - Owner: ClawSweeper maintainers
 - Source of truth: `dashboard/bay-page.ts`, public Worker and queue projectors,
   Bay tests, and the read-only `/bay` route
-- Last verified: 2026-09-02, with baseline
-  `openclaw/clawsweeper@ff071968ca4e3fa62c364f9642e10a03c2fda025`; the lifecycle
+- Last verified: 2026-09-04, with baseline
+  `openclaw/clawsweeper@ea976d0cda362d3547f0058f25174f6a1c97ff18`; the lifecycle
   inventory follow-up's exact tested revision and native/browser evidence are
   recorded in its pull request
 - Update when: lane names, stage mapping, public projection or completeness
@@ -19,6 +19,11 @@ show a canonical repository and issue or pull-request number when the
 repository is on the deployment's verified-public allowlist. It is linked from
 the Overview, issue-triage, and PR-proof headers as a normal ClawSweeper
 web-page destination.
+
+The page reads top to bottom: a hero with the last-hour review timing, the
+shoreline toolbar (finder, repository filters, tide, view options) above the
+illustrated beach, the durable lifecycle board, the collapsed queue telemetry
+disclosure, and a footer.
 
 Bay is an observer-only surface: it displays bounded public status and may
 provide view-only navigation to verified-public GitHub repository, item,
@@ -113,7 +118,7 @@ timestamps. The Preview tide button changes only the browser animation and does
 not mutate stored state.
 
 The exact-review control board is secondary operator context under the closed
-`System details` disclosure. Expanding it separates review admission from
+`Queue telemetry` disclosure. Expanding it separates review admission from
 result publication and shows aggregate lane totals, bounded 6-hour, 24-hour,
 or 7-day history, and closed observed cause counts. The crab lanes remain the
 primary pipeline visualization. The control board does not infer an upstream
