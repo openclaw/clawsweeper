@@ -38,6 +38,14 @@ Supporting regressions execute the real workflow pagination helpers with a
 controlled GitHub CLI response boundary: old receipts beyond five pages remain
 reachable, the tenth full page stops lookup without returning partial results,
 and API/malformed-response failures leave acknowledgement mutation unavailable.
+The completion-supersession proof runs the actual workflow Bash/curl fences over
+a loopback HTTP bridge to the production queue. It admits a newer source while
+the completion status lease is held, observes the finalizing heartbeat transfer
+ownership with `lease_superseded`, and evaluates the actual artifact/direct/queued
+publication gates. All eight downstream stages are skipped, the old run completes
+as a successful no-op, and the new revision remains pending. The published
+pre-fix workflow is a failing baseline for this same scenario.
+
 The hosted webhook regression additionally verifies that a capped lookup still
 admits the review without creating or deleting comments. Review-context tests
 exclude trusted automatic status noise but retain human quotations.

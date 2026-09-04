@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { proveCompletionSupersession } from "./completion-supersession.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -128,12 +129,14 @@ for (const [index, reason] of ["findings", "incomplete_source", "source_incompat
     new_comments: 0, operator_delivery_alert: mode !== "ok" });
 }
 
+const completionSupersession = await proveCompletionSupersession();
 const result = {
-  proof: "terminal-review-explanations-v1",
+  proof: "terminal-review-explanations-v2",
   source_head: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(),
   dirty: execFileSync("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: root, encoding: "utf8" }).trim() !== "",
   runtime: { node: process.version, queue: "production ExactReviewQueue", updater: "compiled production CLI", persistence: "SQLite-backed Durable Storage harness" },
   scenarios,
+  completion_supersession: completionSupersession,
   limits: ["Controlled local GitHub CLI fixture; no GitHub or live queue mutation.", "Runs queue Request/Response and updater subprocesses, not deployed workerd or a full GitHub Actions job."],
 };
 writeFileSync(output, JSON.stringify(result, null, 2) + "\n");

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import YAML from "yaml";
+import { proveCompletionSupersession } from "../docs/proof/terminal-review-explanations/completion-supersession.mjs";
 
 function outputs(path: string): Record<string, string> {
   return Object.fromEntries(
@@ -62,7 +63,12 @@ test("automatic status fences distinguish stale handoffs from operational failur
     { status: "503", error: "unavailable", successful: false, superseded: false },
   ];
   try {
-    for (const id of ["review-status-fence", "release-review-status-fence"]) {
+    for (const id of [
+      "review-status-fence",
+      "release-review-status-fence",
+      "review-complete-status-fence",
+      "release-review-complete-status-fence",
+    ]) {
       const fence = steps.find((step) => step.id === id);
       assert.ok(fence);
       assert.match(generation.env.REVIEW_SUPERSEDED, new RegExp(`${id}\\.outputs\\.superseded`));
@@ -92,12 +98,25 @@ test("automatic status fences distinguish stale handoffs from operational failur
         const actual = outputs(outputPath);
         assert.equal(actual.authorized, scenario.status === "200" ? "true" : "false");
         assert.equal(actual.superseded === "true", scenario.superseded);
+        if (!scenario.successful && id.includes("complete")) {
+          assert.equal(
+            evaluate(failure.if, {
+              "claim-exact-review-queue.claimed": "true",
+              "direct-exact-review-publication.accepted": "true",
+              "complete-exact-review-queue.outcome": "success",
+              "exact-review-generation-result.outcome": "success",
+              [id + ".outcome"]: "failure",
+            }),
+            true,
+          );
+        }
         if (!scenario.superseded) continue;
         const values = {
           "claim-exact-review-queue.claimed": "true",
           "target.target_enabled": "true",
           "live-item.outcome": "success",
-          "review-exact-event-item.outcome": "skipped",
+          "review-exact-event-item.outcome": id.includes("complete") ? "success" : "skipped",
+          "review-exact-event-item.superseded": "false",
           "reserve-exact-review-lease.status": "posted",
           "complete-exact-review-queue.outcome": "failure",
           [`${id}.superseded`]: "true",
@@ -206,4 +225,13 @@ test("completion-fence outages fail the workflow without changing successful que
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("a new revision during completion status blocks the obsolete artifact and publication path", async () => {
+  const result = await proveCompletionSupersession();
+  assert.equal(result.release_reason, "lease_superseded");
+  assert.equal(result.new_revision_state, "pending");
+  assert.equal(result.generation_outcome, "success");
+  assert.equal(result.requeue_latest, false);
+  assert.equal(result.blocked_steps.length, 8);
 });
