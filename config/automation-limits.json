@@ -1,4 +1,7 @@
 {
+  "audit": {
+    "max_parallel_targets": 3
+  },
   "workers": {
     "max": 128,
     "reserve_for_interactive": 16,

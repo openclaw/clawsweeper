@@ -3708,7 +3708,8 @@ jobs:
     needs: hosted-target-admission
     if: ${{ always() && needs.hosted-target-admission.outputs.outcome == 'public' && github.event_name == 'schedule' && (github.event.schedule == '4/20 * * * *' || github.event.schedule == '41/10 * * * *' || github.event.schedule == '37 */6 * * *') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Four audit waves may each need the full 45-minute target job timeout.
+    timeout-minutes: ${{ github.event.schedule == '37 */6 * * *' && 240 || 30 }}
     permissions:
       actions: write
       contents: write

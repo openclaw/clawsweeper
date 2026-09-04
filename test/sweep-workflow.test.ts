@@ -5908,6 +5908,21 @@ test("target fanout uses the canonical cursor store without a git publisher", ()
   assert.doesNotMatch(workflow, /Publish fanout cursor/);
 });
 
+test("audit target fanout waits in bounded waves without changing cadence or selection", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as Record<string, any>;
+  const fanout = workflow.jobs["target-fanout"];
+  const dispatch = fanout.steps.find((step: any) => step.name === "Dispatch selected targets");
+  assert.match(dispatch.env.FANOUT_MODE, /'37 \*\/6 \* \* \*' && 'audit'/);
+  assert.match(dispatch.env.FANOUT_LIMIT, /'37 \*\/6 \* \* \*' && '12'/);
+  assert.match(fanout["timeout-minutes"], /'37 \*\/6 \* \* \*' && 240 \|\| 30/);
+  const source = readText("src/repair/target-fanout.ts");
+  assert.match(source, /mode === "audit" && !options.dryRun/);
+  assert.match(source, /await dispatchAuditWaves\(commands/);
+  assert.match(source, /maxParallelTargets = AUTOMATION_LIMITS.audit.max_parallel_targets/);
+  assert.match(source, /return_run_details=true/);
+  assert.match(source, /result.status === "completed"/);
+});
+
 test("hot fleet fanout runs every 20 minutes without changing other schedules", () => {
   const workflowText = readText(".github/workflows/sweep.yml");
   const workflow = YAML.parse(workflowText) as {

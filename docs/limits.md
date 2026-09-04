@@ -61,6 +61,15 @@ The mental model:
 
 ## Worker Budget
 
+Audit hydration is bounded independently of review capacity:
+
+| Name | Current | Meaning |
+| ---- | ------: | ------- |
+| `audit.max_parallel_targets` | 3 | Target audits dispatched per wave; wait for every run to complete before the next wave. |
+
+The fanout reads this limit through `AUTOMATION_LIMITS` in `src/limits.ts`.
+It does not alter worker budgets, exact-review admission, or target selection.
+
 | Name                                       | Current | Meaning                                                                                         |
 | ------------------------------------------ | ------: | ----------------------------------------------------------------------------------------------- |
 | `workers.max`                              |     128 | Maximum global Codex worker budget used to derive lane limits.                                  |

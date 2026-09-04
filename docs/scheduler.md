@@ -267,6 +267,18 @@ manual workflow inputs. Scheduled fanout uses:
 - normal review: `41/10 * * * *`, 12 target repositories per cursor step
 - audit: `37 */6 * * *`, 12 target repositories per cursor step
 
+Audit fanout keeps at most 3 target audits in flight using
+`audit.max_parallel_targets` from `config/automation-limits.json`. It dispatches
+bounded waves and waits for every acknowledged run in a wave to become terminal
+before dispatching the next, including when a target fails or is cancelled.
+The dispatch API returns exact run IDs (`return_run_details=true`); a missing
+receipt, failed lookup, or 55-minute wave timeout stops further dispatch rather
+than assuming a slot is free. Run status is read once per minute. The fanout job
+allows four hours for the twelve-target batch; ordinary review/hot fanout keeps
+its 30-minute timeout. The six-hour cadence, cursor selection, and twelve targets
+are unchanged. This bound covers the scheduled fleet fanout, not separate manual
+audits or the three dedicated core-repository audit schedules.
+
 [PR #1007](https://github.com/openclaw/clawsweeper/pull/1007) is directly
 relevant but was insufficient for the observed `openclaw/libterminal#41`
 path. It was intended to recognize structurally proven ClawSweeper-owned

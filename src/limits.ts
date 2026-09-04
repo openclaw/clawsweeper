@@ -5,6 +5,9 @@ import { fileURLToPath } from "node:url";
 import type { QueuePressureLevel } from "./queue-pressure.js";
 
 export type WorkerConfig = {
+  audit: {
+    max_parallel_targets: number;
+  };
   workers: {
     max: number;
     reserve_for_interactive: number;
@@ -26,6 +29,9 @@ export type WorkerConfig = {
 };
 
 export type AutomationLimits = {
+  audit: {
+    max_parallel_targets: number;
+  };
   exact_review: {
     concurrent_max: number;
     target_concurrent_max: number;
@@ -76,6 +82,7 @@ export function deriveAutomationLimits(config: WorkerConfig): AutomationLimits {
   const max = config.workers.max;
   const clusterRepairMax = Math.min(config.lanes.repair.cluster_max_live_runs, max);
   return {
+    audit: { max_parallel_targets: config.audit.max_parallel_targets },
     exact_review: {
       concurrent_max: Math.min(config.lanes.exact_review.max_concurrent, max),
       target_concurrent_max: Math.min(
@@ -166,6 +173,7 @@ export function workerLimit(
 function validateWorkerConfig(value: unknown): WorkerConfig {
   if (!isRecord(value)) throw new Error("automation limits must be an object");
   return {
+    audit: { max_parallel_targets: positiveInteger(value, "audit.max_parallel_targets") },
     workers: {
       max: positiveInteger(value, "workers.max"),
       reserve_for_interactive: nonNegativeInteger(value, "workers.reserve_for_interactive"),

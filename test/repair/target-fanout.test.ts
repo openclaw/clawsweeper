@@ -19,6 +19,7 @@ import {
   admitSelectedRepositories,
   allocateReviewCandidateCapacity,
   defaultLimit,
+  dispatchAuditWaves,
   fetchFanoutCursor,
   filterEligibleRepositories,
   loadFanoutCursor,
@@ -66,6 +67,84 @@ test("target fanout defaults match the scheduled cursor batch sizes", () => {
   assert.equal(defaultLimit("hot-intake"), "20");
   assert.equal(defaultLimit("normal-review"), "12");
   assert.equal(defaultLimit("audit"), "12");
+});
+
+test("audit waves retain queued slots and drain failures before dispatching all twelve targets", async () => {
+  let dispatched = 0;
+  let polls = 0;
+  let active = 0;
+  let peak = 0;
+  const completed: string[] = [];
+  await dispatchAuditWaves(
+    Array.from({ length: 12 }, (_, index) => [String(index)]),
+    {
+      dispatchRepo: "openclaw/clawsweeper",
+      wait: async () => {
+        polls++;
+      },
+      run: (args) => {
+        if (args[0] !== "run") {
+          if (dispatched % 3 === 0) assert.equal(active, 0);
+          active++;
+          peak = Math.max(peak, active);
+          return JSON.stringify({ workflow_run_id: ++dispatched });
+        }
+        assert.deepEqual(args.slice(3), [
+          "--repo",
+          "openclaw/clawsweeper",
+          "--json",
+          "databaseId,status,conclusion",
+        ]);
+        const terminal = polls % 3 === 0;
+        if (terminal) {
+          active--;
+          completed.push(args[2]);
+        }
+        return JSON.stringify({
+          databaseId: Number(args[2]),
+          status: terminal ? "completed" : polls % 3 === 1 ? "queued" : "in_progress",
+          conclusion: terminal ? ["success", "failure", "cancelled"][Number(args[2]) % 3] : null,
+        });
+      },
+    },
+  );
+  assert.equal(dispatched, 12);
+  assert.equal(completed.length, 12);
+  assert.equal(peak, 3);
+});
+
+test("audit waves stop on unknown dispatch or run state without admitting another wave", async () => {
+  for (const scenario of ["missing-id", "lookup-failed", "mismatched-id", "timeout"]) {
+    let dispatched = 0;
+    let clock = 0;
+    await assert.rejects(
+      dispatchAuditWaves(
+        Array.from({ length: 12 }, () => ["dispatch"]),
+        {
+          dispatchRepo: "openclaw/clawsweeper",
+          wait: async () => {
+            clock += 10;
+          },
+          now: () => clock,
+          waveTimeoutMs: 10,
+          run: (args) => {
+            if (args[0] === "dispatch") {
+              dispatched++;
+              return JSON.stringify(
+                scenario === "missing-id" ? {} : { workflow_run_id: dispatched },
+              );
+            }
+            if (scenario === "lookup-failed") throw new Error("lookup failed");
+            return JSON.stringify({
+              databaseId: scenario === "mismatched-id" ? 999 : Number(args[2]),
+              status: "in_progress",
+            });
+          },
+        },
+      ),
+    );
+    assert.ok(dispatched <= 3, scenario);
+  }
 });
 
 test("scheduled fanout retains a bounded fallback when queue capacity is unavailable", () => {

@@ -5,6 +5,8 @@ import { createHmac } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
+import { AUTOMATION_LIMITS } from "../limits.js";
 import { resolveCommand } from "../command.js";
 import {
   fetchDurableCursor,
@@ -248,16 +250,23 @@ export async function runTargetFanout(argv: string[]): Promise<void> {
   }
 
   const dispatched: string[] = [];
-  for (const [index, repository] of selection.repositories.entries()) {
-    const commandArgs = commands[index];
-    if (!commandArgs) continue;
-    if (options.dryRun) {
-      console.log(`dry-run ${commandArgs.join(" ")}`);
-    } else {
-      runGh(commandArgs, dispatchEnv());
+  if (mode === "audit" && !options.dryRun) {
+    await dispatchAuditWaves(commands, {
+      dispatchRepo: options.dispatchRepo,
+      run: (command) => runGh(command, dispatchEnv()),
+    });
+    dispatched.push(...selection.repositories.map((repository) => repository.targetRepo));
+  } else
+    for (const [index, repository] of selection.repositories.entries()) {
+      const commandArgs = commands[index];
+      if (!commandArgs) continue;
+      if (options.dryRun) {
+        console.log(`dry-run ${commandArgs.join(" ")}`);
+      } else {
+        runGh(commandArgs, dispatchEnv());
+      }
+      dispatched.push(repository.targetRepo);
     }
-    dispatched.push(repository.targetRepo);
-  }
 
   const cursorPersisted = options.dryRun
     ? false
@@ -676,19 +685,83 @@ function workflowDispatchArgs(
       "client_payload[shard_count]=1",
     ];
   }
-  const args = [
-    "workflow",
-    "run",
-    options.workflow,
-    "--repo",
-    options.dispatchRepo,
-    "--ref",
-    options.ref,
+  return [
+    "api",
+    `repos/${options.dispatchRepo}/actions/workflows/${options.workflow}/dispatches`,
+    "--method",
+    "POST",
+    "-H",
+    "X-GitHub-Api-Version: 2022-11-28",
     "-f",
-    `target_repo=${repository.targetRepo}`,
+    `ref=${options.ref}`,
+    "-F",
+    "return_run_details=true",
+    "-f",
+    `inputs[target_repo]=${repository.targetRepo}`,
+    "-f",
+    "inputs[audit_dashboard]=true",
   ];
-  args.push("-f", "audit_dashboard=true");
-  return args;
+}
+
+export async function dispatchAuditWaves(
+  commands: readonly string[][],
+  {
+    dispatchRepo,
+    run,
+    maxParallelTargets = AUTOMATION_LIMITS.audit.max_parallel_targets,
+    wait = () => delay(60_000),
+    now = Date.now,
+    waveTimeoutMs = 55 * 60_000,
+  }: {
+    dispatchRepo: string;
+    run: (args: readonly string[]) => string;
+    maxParallelTargets?: number;
+    wait?: () => Promise<unknown>;
+    now?: () => number;
+    waveTimeoutMs?: number;
+  },
+): Promise<void> {
+  if (!Number.isInteger(maxParallelTargets) || maxParallelTargets < 1) {
+    throw new Error("audit max_parallel_targets must be a positive integer");
+  }
+  for (let offset = 0; offset < commands.length; offset += maxParallelTargets) {
+    const deadline = now() + waveTimeoutMs;
+    const pending = new Set<string>();
+    for (const command of commands.slice(offset, offset + maxParallelTargets)) {
+      const response = record(JSON.parse(run(command)), "audit dispatch response");
+      const runId = String(response.workflow_run_id ?? "");
+      // An unacknowledged dispatch may be running: never refill its slot by guessing.
+      if (!/^\d+$/.test(runId) || runId === "0") throw new Error("audit dispatch missing run id");
+      if (pending.has(runId)) throw new Error("audit dispatch returned a duplicate run id");
+      pending.add(runId);
+    }
+    console.log(`[target-fanout] audit wave dispatched: ${[...pending].join(",")}`);
+    while (pending.size) {
+      if (now() >= deadline) throw new Error("audit wave timed out; no further targets dispatched");
+      await wait();
+      for (const runId of pending) {
+        const result = record(
+          JSON.parse(
+            run([
+              "run",
+              "view",
+              runId,
+              "--repo",
+              dispatchRepo,
+              "--json",
+              "databaseId,status,conclusion",
+            ]),
+          ),
+          "audit run response",
+        );
+        if (String(result.databaseId) !== runId) throw new Error("audit run lookup id mismatch");
+        if (result.status === "completed") {
+          console.log(`[target-fanout] audit ${runId} completed: ${String(result.conclusion)}`);
+          pending.delete(runId);
+        }
+      }
+    }
+  }
 }
 
 export async function fetchFanoutCursor(
