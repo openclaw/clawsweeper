@@ -1351,9 +1351,6 @@ function openReplacementPrFromPreparedRepairCheckout({
   });
   const body = replacementPrBody({
     fixArtifact,
-    fallbackReason,
-    clusterId: result.cluster_id,
-    provenance,
     contributorCredits,
     maintainerAttribution: jobMaintainerAttribution(),
     sourceClosingReferences: sourceClosingReferences({
@@ -1419,6 +1416,7 @@ function openReplacementPrFromPreparedRepairCheckout({
             parsed,
             replacementPrUrl: prUrl,
             targetDir,
+            contributorCredits,
             provenance,
           }),
     );
@@ -1754,9 +1752,6 @@ function executeReplacementBranch({
   });
   const body = replacementPrBody({
     fixArtifact,
-    fallbackReason,
-    clusterId: result.cluster_id,
-    provenance,
     contributorCredits,
     maintainerAttribution: jobMaintainerAttribution(),
     sourceClosingReferences: sourceClosingReferences({
@@ -1876,6 +1871,7 @@ function executeReplacementBranch({
               parsed,
               replacementPrUrl: prUrl,
               targetDir,
+              contributorCredits,
               provenance,
             }),
       );

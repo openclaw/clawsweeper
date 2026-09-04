@@ -82,6 +82,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Preserve explicit contributor credits in source-PR link comments for both direct replacements and fallback publication after a blocked fork push.
+
 - Reject parent-directory validation symlinks, preserve porcelain paths when selecting repair checks, retain the fast-rebase base SHA for replacement publication, and mark omitted PR comments in close-coverage proof.
 - Run dashboard smoke checks through symlinks and continue dead-letter recovery after a repository without an App installation.
 
