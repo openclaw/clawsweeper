@@ -58,6 +58,7 @@ export type RecordSnapshot = {
   bytes: number;
   uncompressedBytes: number;
   fileCount: number;
+  identityDigest?: string;
   createdAt: number;
 };
 
@@ -82,6 +83,7 @@ export class ExactReviewRecordSnapshotStore {
   private readonly storage: DurableStorage;
   private readonly records: ExactReviewDirectPublicationStore;
   private readonly bucket: SnapshotR2Bucket | null;
+  private registrationTail: Promise<unknown> = Promise.resolve();
 
   constructor(
     storage: DurableStorage,
@@ -103,9 +105,20 @@ export class ExactReviewRecordSnapshotStore {
          bytes INTEGER NOT NULL CHECK (bytes >= 0),
          uncompressed_bytes INTEGER NOT NULL CHECK (uncompressed_bytes >= 0),
          file_count INTEGER NOT NULL CHECK (file_count >= 0),
+         identity_digest TEXT,
          created_at INTEGER NOT NULL
        ) STRICT`,
     );
+    const columns = Array.from(
+      this.storage.sql.exec(
+        `SELECT name FROM pragma_table_info('${EXACT_REVIEW_RECORD_SNAPSHOT_TABLE}')`,
+      ),
+    );
+    if (!columns.some((column) => column.name === "identity_digest")) {
+      this.storage.sql.exec(
+        `ALTER TABLE ${EXACT_REVIEW_RECORD_SNAPSHOT_TABLE} ADD COLUMN identity_digest TEXT`,
+      );
+    }
     this.storage.sql.exec(
       `CREATE INDEX IF NOT EXISTS exact_review_record_snapshots_latest
          ON ${EXACT_REVIEW_RECORD_SNAPSHOT_TABLE}
@@ -173,7 +186,32 @@ export class ExactReviewRecordSnapshotStore {
     }
   }
 
-  async register(value: Record<string, unknown>): Promise<RecordSnapshot> {
+  register(value: Record<string, unknown>): Promise<RecordSnapshot> {
+    return this.serializeRegistration(() => this.registerSnapshot(value));
+  }
+
+  discardUnregistered(value: Record<string, unknown>): Promise<void> {
+    return this.serializeRegistration(async () => {
+      const snapshot = validateSnapshotRegistration(value, Number.MAX_SAFE_INTEGER);
+      const referenced =
+        Array.from(
+          this.storage.sql.exec(
+            `SELECT 1 FROM ${EXACT_REVIEW_RECORD_SNAPSHOT_TABLE} WHERE object_key = ? LIMIT 1`,
+            snapshot.objectKey,
+          ),
+        ).length > 0;
+      if (!referenced) await this.requireBucket().delete(snapshot.objectKey);
+    });
+  }
+
+  private serializeRegistration<T>(callback: () => Promise<T>): Promise<T> {
+    // Reference checks and deletion must not race registration across R2 awaits.
+    const result = this.registrationTail.then(callback);
+    this.registrationTail = result.catch(() => undefined);
+    return result;
+  }
+
+  private async registerSnapshot(value: Record<string, unknown>): Promise<RecordSnapshot> {
     const snapshot = validateSnapshotRegistration(value, this.records.currentExportRevision());
     const bucket = this.requireBucket();
     let object: { size: number } | null;
@@ -185,11 +223,18 @@ export class ExactReviewRecordSnapshotStore {
     if (!object) throw new SnapshotRegistrationError("snapshot_object_not_found", 404);
     if (object.size !== snapshot.bytes)
       throw new SnapshotRegistrationError("snapshot_size_mismatch");
+    // Updates after the watermark lower this live-index count; no content is read.
+    const expected = this.records.snapshotRecordCount(
+      snapshot.repoSlug,
+      snapshot.revisionWatermark,
+    );
+    if (snapshot.fileCount < expected)
+      throw new SnapshotRegistrationError("snapshot_coverage_incomplete", 422);
     // A lost response can retry registration; it must not insert another row.
     const existing = Array.from(
       this.storage.sql.exec(
         `SELECT repo_slug, revision_watermark, object_key, bytes, uncompressed_bytes,
-              file_count, created_at FROM ${EXACT_REVIEW_RECORD_SNAPSHOT_TABLE}
+              file_count, identity_digest, created_at FROM ${EXACT_REVIEW_RECORD_SNAPSHOT_TABLE}
         WHERE object_key = ?`,
         snapshot.objectKey,
       ),
@@ -247,7 +292,7 @@ export class ExactReviewRecordSnapshotStore {
     const row = Array.from(
       this.storage.sql.exec(
         `SELECT repo_slug, revision_watermark, object_key, bytes, uncompressed_bytes,
-                file_count, created_at
+                file_count, identity_digest, created_at
            FROM ${EXACT_REVIEW_RECORD_SNAPSHOT_TABLE}
           WHERE repo_slug = ?
           ORDER BY created_at DESC, snapshot_id DESC
@@ -262,7 +307,7 @@ export class ExactReviewRecordSnapshotStore {
     const row = Array.from(
       this.storage.sql.exec(
         `SELECT repo_slug, revision_watermark, object_key, bytes, uncompressed_bytes,
-                file_count, created_at
+                file_count, identity_digest, created_at
            FROM ${EXACT_REVIEW_RECORD_SNAPSHOT_TABLE}
           WHERE repo_slug = ? AND revision_watermark = ?
           ORDER BY created_at DESC, snapshot_id DESC
@@ -278,14 +323,15 @@ export class ExactReviewRecordSnapshotStore {
     this.storage.sql.exec(
       `INSERT INTO ${EXACT_REVIEW_RECORD_SNAPSHOT_TABLE}
          (repo_slug, revision_watermark, object_key, bytes, uncompressed_bytes,
-          file_count, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          file_count, identity_digest, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       snapshot.repoSlug,
       snapshot.revisionWatermark,
       snapshot.objectKey,
       snapshot.bytes,
       snapshot.uncompressedBytes,
       snapshot.fileCount,
+      snapshot.identityDigest ?? null,
       snapshot.createdAt,
     );
   }
@@ -346,6 +392,7 @@ function snapshotFromRow(row: Record<string, unknown>): RecordSnapshot {
     bytes: Number(row.bytes),
     uncompressedBytes: Number(row.uncompressed_bytes),
     fileCount: Number(row.file_count),
+    ...(row.identity_digest == null ? {} : { identityDigest: String(row.identity_digest) }),
     createdAt: Number(row.created_at),
   };
 }
@@ -446,8 +493,16 @@ export function validateSnapshotRegistration(
   value: Record<string, unknown>,
   currentRevision: number,
 ): RecordSnapshot {
-  const { repoSlug, revisionWatermark, objectKey, bytes, uncompressedBytes, fileCount, createdAt } =
-    value;
+  const {
+    repoSlug,
+    revisionWatermark,
+    objectKey,
+    bytes,
+    uncompressedBytes,
+    fileCount,
+    createdAt,
+    identityDigest,
+  } = value;
   if (
     typeof repoSlug !== "string" ||
     !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/.test(repoSlug) ||
@@ -461,6 +516,8 @@ export function validateSnapshotRegistration(
     Number(uncompressedBytes) < 0 ||
     !Number.isSafeInteger(fileCount) ||
     Number(fileCount) < 0 ||
+    typeof identityDigest !== "string" ||
+    !/^[0-9a-f]{64}$/.test(identityDigest) ||
     !Number.isSafeInteger(createdAt) ||
     Number(createdAt) < 1 ||
     Number(createdAt) > Date.now() ||
@@ -478,6 +535,7 @@ export function validateSnapshotRegistration(
     bytes: Number(bytes),
     uncompressedBytes: Number(uncompressedBytes),
     fileCount: Number(fileCount),
+    identityDigest,
     createdAt: Number(createdAt),
   };
 }

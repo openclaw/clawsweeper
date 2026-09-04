@@ -1,4 +1,4 @@
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import {
   closeSync,
   createReadStream,
@@ -1020,6 +1020,7 @@ function validateStoredSnapshot(snapshot: WorkerStoredSnapshot, repoSlug: string
 
 export async function packWorkerRecordSnapshot(options: { repoRoot: string; archivePath: string }) {
   const fileCount = validateSnapshotTree(options.repoRoot);
+  const identities: string[] = [];
   let uncompressedBytes = 0;
   async function* chunks() {
     for (const section of RECORD_SECTIONS) {
@@ -1033,6 +1034,7 @@ export async function packWorkerRecordSnapshot(options: { repoRoot: string; arch
         const padding = (512 - (size % 512)) % 512;
         if (padding) yield new Uint8Array(padding);
         uncompressedBytes += size;
+        identities.push(`${section}/${name.slice(0, -recordExtension(section).length)}`);
       }
     }
     yield new Uint8Array(1024);
@@ -1043,6 +1045,7 @@ export async function packWorkerRecordSnapshot(options: { repoRoot: string; arch
     bytes: statSync(options.archivePath).size,
     uncompressedBytes,
     fileCount,
+    identityDigest: createHash("sha256").update(identities.sort().join("\n")).digest("hex"),
   };
 }
 
@@ -1447,11 +1450,15 @@ export async function uploadWorkerRecordSnapshot(options: {
   validateRepoSlug(options.repoSlug);
   const root = mkdtempSync(path.join(tmpdir(), "clawsweeper-snapshot-upload-"));
   let uploadId: string | undefined;
+  const operationId =
+    process.env.GITHUB_RUN_ID && process.env.GITHUB_RUN_ATTEMPT
+      ? `${options.repoSlug}:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`
+      : randomUUID();
   const post = <T>(operation: string, body: Record<string, unknown>) =>
     signedPost<T>({
       ...options,
       path: `/internal/state/records/snapshots/upload/${operation}`,
-      body,
+      body: { ...body, operation },
     });
   try {
     const hydrated = await materializeWorkerRecords({
@@ -1473,6 +1480,8 @@ export async function uploadWorkerRecordSnapshot(options: {
       bytes: packed.bytes,
       uncompressedBytes: packed.uncompressedBytes,
       fileCount: packed.fileCount,
+      identityDigest: packed.identityDigest,
+      operationId,
       sha256: hash.digest("hex"),
     };
     const started = await post<{

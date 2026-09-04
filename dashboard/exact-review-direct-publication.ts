@@ -981,6 +981,18 @@ export class ExactReviewDirectPublicationStore {
     return this.currentExportRevisionSync();
   }
 
+  snapshotRecordCount(repoSlug: string, watermark: number): number {
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT COUNT(*) AS count FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+       WHERE repo_slug = ? AND deleted = 0 AND store_revision <= ?`,
+        repoSlug,
+        watermark,
+      ),
+    )[0];
+    return Number(row?.count ?? 0);
+  }
+
   snapshotRecordIdentities(repoSlug: string): RecordSnapshotIdentity[] {
     return Array.from(
       this.storage.sql.exec(

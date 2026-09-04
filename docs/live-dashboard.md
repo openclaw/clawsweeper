@@ -538,28 +538,45 @@ future hydration replays every change after the initial watermark.
 The outer Worker's signed `POST /internal/state/records/snapshots/upload/`
 `start`, `part`, `complete`, and `abort` routes reuse the blob upload pattern:
 bounded JSON/base64 requests, each HMAC-signed over the exact body with
-`CLAWSWEEPER_WEBHOOK_SECRET`. `start` accepts `repoSlug`, `revisionWatermark`,
-`bytes`, gzip `sha256`, `fileCount`, and `uncompressedBytes`; it generates
+`CLAWSWEEPER_WEBHOOK_SECRET`. Every signed body includes `operation` matching
+its route; a mismatch returns 400 `upload_operation_mismatch`. `start` accepts
+`repoSlug`, `revisionWatermark`, `bytes`, gzip `sha256`, `fileCount`,
+`uncompressedBytes`, `identityDigest`, and a client-generated `operationId`;
+the runner uses `<repoSlug>:<GITHUB_RUN_ID>:<GITHUB_RUN_ATTEMPT>` or a UUID outside
+Actions. A dedicated instance of the existing StatusStore serializes metadata
+operations and deduplicates starts: an identical retry returns 200 and the
+original session, while conflicting metadata returns 409. A new start generates
 `createdAt`, an upload ID, and the R2 key
 `<repoSlug>/<revisionWatermark>/<createdAt>-<uuid>.tar.gz`. `part` accepts
 `uploadId`, `partNumber`, base64 `data`, and per-part `sha256`. Parts are 6 MiB
 decoded (above R2's 5 MiB minimum), except the final part. Requests are bounded
 before parsing, with at most 200 parts and 1 GiB per archive. Descriptors and
-part receipts use the existing StatusStore and expire after one hour. The
+part receipts use the existing StatusStore and expire after one hour. Multipart
+bytes pass from the outer Worker directly to R2. The
 runner retries transport failures with identical bytes and part numbers.
-Aborts clean up unfinished multipart uploads; abandoned uploads remain subject
-to the bucket's multipart lifecycle cleanup after their session expires.
+Aborts and expiry alarms clean up unfinished multipart uploads and completed
+objects that have no snapshot descriptor. Cleanup failures retain the session
+for an alarm retry; the bucket's multipart lifecycle policy remains a backstop.
 
 `complete` accepts `uploadId` and ordered `{partNumber, etag}` receipts. The
-outer Worker assembles the R2 multipart upload directly, verifies the per-part
+StatusStore assembles the R2 multipart upload, verifies the per-part
 SHA-256 receipts and total R2 object size, and calls the object's
 `/records/snapshots/register`. It does not download the entire object to
 recompute gzip SHA-256; R2 metadata marks that digest as a runner claim verified
 by parts and length. Registration checks the descriptor watermark against the
-current export revision, object key prefix, and R2 existence/size, then inserts
-into the existing snapshot table and retains the newest two snapshots. Retrying
-completion or registration after response loss is safe. Abort never deletes a
-completed object, whose lifetime belongs to descriptor pruning.
+current export revision, object key prefix, and R2 existence/size. One aggregate
+SQL query counts the object's live export-index identities for the repository
+with `store_revision <= revisionWatermark`; a smaller `fileCount` returns 422
+`snapshot_coverage_incomplete`. Coverage is checked by count against the object's
+index, not by reading record or archive content. Later updates can move identities
+above the watermark, so this count is a lower bound, not a content-completeness
+proof. The runner's `identityDigest` is SHA-256 over sorted `section/id` strings
+joined with newlines (no trailing newline), stored in the descriptor for audit.
+It is not independently recomputed by the server. Registration inserts into the
+existing snapshot table and retains the newest two snapshots. Retrying completion
+or registration after response loss is safe. Cleanup checks all descriptor
+references and serializes deletion with registration, preserving registered
+objects even after a lost completion response.
 
 The small signed `/internal/state/records/snapshots/register` route is also
 available for descriptor registration. The existing
@@ -567,7 +584,10 @@ available for descriptor registration. The existing
 object-side production, but neither scheduled nor manual ops invokes it.
 Cold hydration retains its existing record bound; a large repository without
 any snapshot still needs an initial snapshot before normal hydration can run.
-No bindings or migrations change. OpenClaw Bay is unaffected.
+No bindings or Durable Object migrations change. The existing descriptor table
+gains a nullable `identity_digest` column; existing snapshots remain readable.
+OpenClaw Bay is unaffected because its public observer contract does not use
+these internal maintenance routes.
 
 Batch publication heartbeats retry network errors, timeouts, and HTTP 5xx
 responses (including `exact_review_queue_unavailable`) up to three attempts

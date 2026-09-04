@@ -23,6 +23,7 @@ type Session = {
   expiresAt: number;
   aborted?: boolean;
 };
+export const SNAPSHOT_UPLOAD_SESSION_PREFIX = "record-snapshot-upload/";
 type Multipart = {
   uploadId: string;
   uploadPart: (partNumber: number, bytes: Uint8Array) => Promise<Part>;
@@ -48,15 +49,47 @@ export async function handleSnapshotUpload(
   operation: SnapshotUploadOperation,
   body: Record<string, unknown>,
   register: (snapshot: RecordSnapshot) => Promise<Response>,
+  discard: (snapshot: RecordSnapshot) => Promise<Response>,
 ): Promise<Response> {
   const bucket = bucketBinding as Bucket | undefined;
   if (!bucket?.createMultipartUpload || !bucket.resumeMultipartUpload || !bucket.head)
     return Response.json({ error: "snapshot_store_unavailable" }, { status: 503 });
   try {
+    if (body.operation !== operation)
+      throw new SnapshotRegistrationError("upload_operation_mismatch");
     if (operation === "start") {
       if (typeof body.bytes === "number" && body.bytes > RECORD_SNAPSHOT_UPLOAD_MAX_BYTES)
         throw new SnapshotRegistrationError("snapshot_too_large", 413);
       const sha256 = requireDigest(body.sha256);
+      if (
+        typeof body.operationId !== "string" ||
+        !/^[A-Za-z0-9:_.-]{1,256}$/.test(body.operationId)
+      )
+        throw new SnapshotRegistrationError("invalid_snapshot_operation_id");
+      const operationKey = `record-snapshot-operation/${body.operationId}`;
+      // The owning StatusStore serializes metadata operations, including this
+      // lookup, R2 creation, and the durable session/operation receipts.
+      const previous = await store.read(operationKey);
+      const fingerprint = JSON.stringify([
+        body.repoSlug,
+        body.revisionWatermark,
+        body.bytes,
+        body.uncompressedBytes,
+        body.fileCount,
+        body.identityDigest,
+        sha256,
+      ]);
+      if (previous) {
+        const receipt = JSON.parse(previous);
+        if (receipt.fingerprint !== fingerprint)
+          throw new SnapshotRegistrationError("snapshot_operation_conflict", 409);
+        const stored = await store.read(sessionKey(receipt.uploadId));
+        if (!stored) throw new SnapshotRegistrationError("snapshot_upload_expired", 410);
+        const session: Session = JSON.parse(stored);
+        if (session.aborted || session.expiresAt <= Date.now())
+          throw new SnapshotRegistrationError("snapshot_upload_expired", 410);
+        return startResponse(receipt.uploadId, session, 200);
+      }
       const createdAt = Date.now();
       const uploadId = crypto.randomUUID();
       const objectKey = `${body.repoSlug}/${body.revisionWatermark}/${createdAt}-${uploadId}.tar.gz`;
@@ -81,20 +114,16 @@ export async function handleSnapshotUpload(
           JSON.stringify(session),
           SNAPSHOT_UPLOAD_TTL_SECONDS,
         );
+        await store.write(
+          operationKey,
+          JSON.stringify({ fingerprint, uploadId }),
+          SNAPSHOT_UPLOAD_TTL_SECONDS,
+        );
       } catch (error) {
         await upload.abort().catch(() => undefined);
         throw error;
       }
-      return Response.json(
-        {
-          ok: true,
-          uploadId,
-          objectKey,
-          partBytes: SNAPSHOT_UPLOAD_PART_BYTES,
-          expiresAt: session.expiresAt,
-        },
-        { status: 201 },
-      );
+      return startResponse(uploadId, session, 201);
     }
     if (typeof body.uploadId !== "string" || body.uploadId.length > 200)
       throw new SnapshotRegistrationError("invalid_snapshot_upload_id");
@@ -109,9 +138,7 @@ export async function handleSnapshotUpload(
     const ttl = Math.max(1, Math.ceil((session.expiresAt - Date.now()) / 1000));
     const partCount = Math.ceil(snapshot.bytes / SNAPSHOT_UPLOAD_PART_BYTES);
     if (operation === "abort") {
-      // A completion response may have been lost after registration. Never delete
-      // a completed object here: the descriptor's pruning owns its lifetime.
-      if (!(await bucket.head(snapshot.objectKey))) await upload.abort();
+      await cleanupSnapshotUpload(bucket, stored, discard);
       await store.write(key, JSON.stringify({ ...session, aborted: true }), ttl);
       return Response.json({ ok: true });
     }
@@ -194,8 +221,37 @@ export async function handleSnapshotUpload(
   }
 }
 
+function startResponse(uploadId: string, session: Session, status: number) {
+  return Response.json(
+    {
+      ok: true,
+      uploadId,
+      objectKey: session.snapshot.objectKey,
+      partBytes: SNAPSHOT_UPLOAD_PART_BYTES,
+      expiresAt: session.expiresAt,
+    },
+    { status },
+  );
+}
+
+export async function cleanupSnapshotUpload(
+  bucketBinding: unknown,
+  stored: string,
+  discard: (snapshot: RecordSnapshot) => Promise<Response>,
+) {
+  const bucket = bucketBinding as Bucket;
+  const session: Session = JSON.parse(stored);
+  if (session.aborted) return;
+  if (await bucket.head(session.snapshot.objectKey)) {
+    const response = await discard(session.snapshot);
+    if (!response.ok) throw new Error("snapshot_discard_unavailable");
+  } else {
+    await bucket.resumeMultipartUpload(session.snapshot.objectKey, session.r2UploadId).abort();
+  }
+}
+
 function sessionKey(uploadId: string) {
-  return `record-snapshot-upload/${uploadId}`;
+  return `${SNAPSHOT_UPLOAD_SESSION_PREFIX}${uploadId}`;
 }
 function requireDigest(value: unknown): string {
   if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value))

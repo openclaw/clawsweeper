@@ -14,13 +14,15 @@ const prefix = "/internal/state/records/snapshots/upload/";
 const partBytes = 6 * 1024 * 1024;
 const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
-function fixture() {
+function fixture(registrationStatus = 201) {
   const storage = new MemoryDurableStorage();
   const uploads = new Map<string, { key: string; parts: Map<number, Uint8Array> }>();
   const objects = new Map<string, Uint8Array>();
   const queueCalls: string[] = [];
   let writes = 0;
   let aborted = 0;
+  let discardFailures = 0;
+  const registered = new Set<string>();
   const bucket = {
     async createMultipartUpload(key: string, options: unknown) {
       assert.deepEqual((options as any).httpMetadata, { contentType: "application/gzip" });
@@ -57,36 +59,140 @@ function fixture() {
       const bytes = objects.get(key);
       return bytes ? { size: bytes.length } : null;
     },
+    async delete(key: string) {
+      objects.delete(key);
+    },
+  };
+  let serial = Promise.resolve();
+  const state = {
+    storage,
+    blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T> {
+      const next = serial.then(callback);
+      serial = next.then(
+        () => undefined,
+        () => undefined,
+      );
+      return next;
+    },
   };
   const env = {
     CLAWSWEEPER_WEBHOOK_SECRET: secret,
     STATE_SNAPSHOTS: bucket,
     STATUS_STORE: new MemoryDurableNamespace({
       fetch: (request: Request, init?: RequestInit) =>
-        new StatusStore({ storage }).fetch(new Request(request, init)),
+        new StatusStore(state, env).fetch(new Request(request, init)),
     }),
     EXACT_REVIEW_QUEUE: new MemoryDurableNamespace({
       async fetch(request: Request) {
-        queueCalls.push(new URL(request.url).pathname);
-        return Response.json({ ok: true, snapshot: await request.json() }, { status: 201 });
+        const pathname = new URL(request.url).pathname;
+        queueCalls.push(pathname);
+        const snapshot = await request.json();
+        if (pathname.endsWith("/discard")) {
+          if (discardFailures-- > 0)
+            return Response.json({ error: "unavailable" }, { status: 503 });
+          if (!registered.has(snapshot.objectKey)) objects.delete(snapshot.objectKey);
+          return Response.json({ ok: true });
+        }
+        if (registrationStatus === 201) registered.add(snapshot.objectKey);
+        return Response.json({ ok: true, snapshot }, { status: registrationStatus });
       },
     }),
   };
-  const post = (operation: string, body: unknown) =>
-    worker.fetch(signedStateAppendRequest(prefix + operation, body, secret), env);
+  const post = (operation: string, body: Record<string, unknown>) =>
+    worker.fetch(signedStateAppendRequest(prefix + operation, { operation, ...body }, secret), env);
   const start = async (bytes: number) => {
     const response = await post("start", {
+      operationId: crypto.randomUUID(),
       repoSlug: "fixture-repo",
       revisionWatermark: 0,
       bytes,
       sha256: "a".repeat(64),
+      identityDigest: digest(Buffer.from("items/1")),
       fileCount: 1,
       uncompressedBytes: bytes,
     });
     assert.equal(response.status, 201, await response.clone().text());
     return response.json();
   };
-  return { env, post, start, storage, objects, queueCalls, counts: () => ({ writes, aborted }) };
+  return {
+    env,
+    post,
+    start,
+    storage,
+    objects,
+    queueCalls,
+    alarm: () => new StatusStore(state, env).alarm(),
+    failNextDiscard: () => {
+      discardFailures = 1;
+    },
+    counts: () => ({ writes, aborted, uploads: uploads.size }),
+  };
+}
+
+test("signed part bodies cannot be replayed as aborts", async () => {
+  const f = fixture();
+  const session = await f.start(partBytes + 1);
+  const response = await f.post("abort", { operation: "part", uploadId: session.uploadId });
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error, "upload_operation_mismatch");
+  assert.equal(f.counts().aborted, 0);
+});
+
+test("start retries and concurrent identical starts reuse one upload", async () => {
+  const f = fixture();
+  const body = {
+    operationId: "fixture-repo:123:1",
+    repoSlug: "fixture-repo",
+    revisionWatermark: 0,
+    bytes: 1,
+    sha256: "a".repeat(64),
+    identityDigest: "b".repeat(64),
+    fileCount: 1,
+    uncompressedBytes: 1,
+  };
+  const responses = await Promise.all([f.post("start", body), f.post("start", body)]);
+  assert.deepEqual(responses.map((r) => r.status).sort(), [200, 201]);
+  const [first, second] = await Promise.all(responses.map((r) => r.json()));
+  assert.deepEqual(first, second);
+  assert.deepEqual(await (await f.post("start", body)).json(), first);
+  assert.equal(f.counts().uploads, 1);
+  assert.equal((await f.post("start", { ...body, fileCount: 2 })).status, 409);
+  assert.equal((await f.post("start", { ...body, operationId: undefined })).status, 400);
+});
+
+for (const cleanup of ["abort", "expiry"] as const) {
+  test(`${cleanup} deletes completed objects when registration failed`, async () => {
+    const f = fixture(422);
+    const session = await f.start(partBytes + 1);
+    const parts = [];
+    for (const [index, bytes] of [Buffer.alloc(partBytes), Buffer.from("a")].entries()) {
+      const response = await f.post("part", {
+        uploadId: session.uploadId,
+        partNumber: index + 1,
+        data: bytes.toString("base64"),
+        sha256: digest(bytes),
+      });
+      assert.equal(response.status, 200);
+      parts.push((await response.json()).part);
+    }
+    assert.equal((await f.post("complete", { uploadId: session.uploadId, parts })).status, 422);
+    assert.ok(f.objects.has(session.objectKey));
+    if (cleanup === "abort") {
+      assert.equal((await f.post("abort", { uploadId: session.uploadId })).status, 200);
+    } else {
+      const originalNow = Date.now;
+      Date.now = () => originalNow() + 3_600_001;
+      try {
+        f.failNextDiscard();
+        await assert.rejects(f.alarm(), /snapshot_discard_unavailable/);
+        assert.ok(f.objects.has(session.objectKey));
+        await f.alarm();
+      } finally {
+        Date.now = originalNow;
+      }
+    }
+    assert.equal(f.objects.has(session.objectKey), false);
+  });
 }
 
 test("snapshot upload authenticates and bounds JSON bodies before touching R2 or queue", async () => {
@@ -166,6 +272,14 @@ test("snapshot upload verifies each bounded part and completes directly in R2 be
     f.objects.has(session.objectKey),
     "abort must preserve completed objects after response loss",
   );
+  const originalNow = Date.now;
+  Date.now = () => originalNow() + 3_600_001;
+  try {
+    await f.alarm();
+  } finally {
+    Date.now = originalNow;
+  }
+  assert.ok(f.objects.has(session.objectKey), "expiry must preserve registered objects");
 });
 
 test("snapshot upload rejects wrong lengths and expired sessions and aborts partial uploads", async () => {
@@ -197,11 +311,13 @@ test("snapshot upload rejects wrong lengths and expired sessions and aborts part
   }
 });
 
-test("runner snapshot-upload retries identical part bytes after a lost response", async () => {
+test("runner snapshot-upload retries identical signed starts and parts after lost responses", async () => {
   const { uploadWorkerRecordSnapshot } = await import("../scripts/worker-records.ts");
   const f = fixture();
   const partBodies: string[] = [];
+  const startBodies: string[] = [];
   let lost = false;
+  let lostStart = false;
   const snapshot = await uploadWorkerRecordSnapshot({
     baseUrl: "http://127.0.0.1:8787",
     webhookSecret: secret,
@@ -226,7 +342,14 @@ test("runner snapshot-upload retries identical part bytes after a lost response"
           nextCursor: null,
         });
       if (pathname.endsWith("/part")) partBodies.push(String(init?.body));
+      assert.equal(JSON.parse(String(init?.body)).operation, pathname.split("/").at(-1));
+      if (pathname.endsWith("/start")) startBodies.push(String(init?.body));
       const response = await worker.fetch(new Request(String(input), init), f.env);
+      if (pathname.endsWith("/start") && !lostStart) {
+        lostStart = true;
+        assert.equal(response.status, 201);
+        throw new TypeError("synthetic lost start response");
+      }
       if (pathname.endsWith("/part") && !lost) {
         lost = true;
         assert.equal(response.status, 200);
@@ -239,6 +362,19 @@ test("runner snapshot-upload retries identical part bytes after a lost response"
   assert.equal(partBodies.length, 2);
   assert.equal(partBodies[0], partBodies[1]);
   assert.equal(f.counts().writes, 1);
+  assert.equal(f.counts().uploads, 1);
+  assert.equal(startBodies.length, 2);
+  assert.equal(startBodies[0], startBodies[1]);
+  const started = JSON.parse(startBodies[0]);
+  assert.equal(started.identityDigest, digest(Buffer.from("")));
+  if (process.env.GITHUB_RUN_ID && process.env.GITHUB_RUN_ATTEMPT) {
+    assert.equal(
+      started.operationId,
+      `fixture-repo:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`,
+    );
+  } else {
+    assert.match(started.operationId, /^[0-9a-f-]{36}$/);
+  }
   assert.deepEqual(f.queueCalls, ["/records/snapshots/register"]);
 });
 
@@ -257,4 +393,42 @@ test("snapshot part body is bounded without Content-Length", async () => {
   } as RequestInit);
   assert.equal((await worker.fetch(request, f.env)).status, 413);
   assert.equal(f.counts().writes, 0);
+});
+
+test("runner aborts the completed object after exhausting registration retries", async () => {
+  const { uploadWorkerRecordSnapshot } = await import("../scripts/worker-records.ts");
+  const f = fixture(503);
+  const operations: string[] = [];
+  await assert.rejects(
+    uploadWorkerRecordSnapshot({
+      baseUrl: "http://127.0.0.1:8787",
+      webhookSecret: secret,
+      repoSlug: "fixture-repo",
+      log: () => {},
+      fetch: async (input, init) => {
+        const pathname = new URL(String(input)).pathname;
+        if (pathname.endsWith("/latest"))
+          return Response.json({ error: "snapshot_not_found" }, { status: 404 });
+        if (pathname.endsWith("/export"))
+          return Response.json({
+            repoSlug: "fixture-repo",
+            revision: 0,
+            records: [],
+            nextCursor: null,
+          });
+        if (pathname.endsWith("/list"))
+          return Response.json({
+            repoSlug: "fixture-repo",
+            section: "items",
+            records: [],
+            nextCursor: null,
+          });
+        operations.push(JSON.parse(String(init?.body)).operation);
+        return worker.fetch(new Request(String(input), init), f.env);
+      },
+    }),
+  );
+  assert.equal(operations.filter((operation) => operation === "complete").length, 3);
+  assert.equal(operations.at(-1), "abort");
+  assert.equal(f.objects.size, 0);
 });

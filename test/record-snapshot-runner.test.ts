@@ -80,6 +80,17 @@ test("runner packs hydrated records and the existing snapshot restore reads exac
     repoRoot: path.join(hydrated.recordsRoot, repoSlug),
     archivePath: path.join(root, "snapshot.tar.gz"),
   });
+  assert.equal(
+    packed.identityDigest,
+    createHash("sha256")
+      .update(
+        fixture
+          .map(({ section, id }) => `${section}/${id}`)
+          .sort()
+          .join("\n"),
+      )
+      .digest("hex"),
+  );
   const archive = readFileSync(packed.archivePath);
   assert.equal(packed.fileCount, fixture.length);
   assert.equal(packed.bytes, archive.length);
@@ -156,6 +167,7 @@ test("signed registration validates descriptor, verifies R2, inserts and prunes"
     bytes: 20,
     uncompressedBytes: 0,
     fileCount: 0,
+    identityDigest: createHash("sha256").update("").digest("hex"),
     createdAt,
   };
   const post = (body: unknown) =>
@@ -174,6 +186,8 @@ test("signed registration validates descriptor, verifies R2, inserts and prunes"
     { bytes: 1024 * 1024 * 1024 + 1 },
     { fileCount: -1 },
     { fileCount: 1.5 },
+    { identityDigest: undefined },
+    { identityDigest: "invalid" },
     { uncompressedBytes: -1 },
     { createdAt: "yesterday" },
     { createdAt: Date.now() + 60_000 },
@@ -199,5 +213,94 @@ test("signed registration validates descriptor, verifies R2, inserts and prunes"
   assert.equal(
     Array.from(storage.sql.exec("SELECT * FROM exact_review_record_snapshots")).length,
     2,
+  );
+});
+
+test("snapshot descriptor schema adds audit metadata while preserving old descriptors", async () => {
+  const { ExactReviewRecordSnapshotStore } = await import("../dashboard/record-snapshots.ts");
+  const { ExactReviewDirectPublicationStore } =
+    await import("../dashboard/exact-review-direct-publication.ts");
+  const storage = new MemoryDurableStorage();
+  storage.sql.exec(`CREATE TABLE exact_review_record_snapshots (
+    snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT, repo_slug TEXT NOT NULL,
+    revision_watermark INTEGER NOT NULL, object_key TEXT NOT NULL UNIQUE,
+    bytes INTEGER NOT NULL, uncompressed_bytes INTEGER NOT NULL,
+    file_count INTEGER NOT NULL, created_at INTEGER NOT NULL) STRICT`);
+  storage.sql.exec(
+    "INSERT INTO exact_review_record_snapshots VALUES (1, 'fixture-repo', 0, 'legacy', 1, 0, 0, 1)",
+  );
+  const store = new ExactReviewRecordSnapshotStore(
+    storage,
+    new ExactReviewDirectPublicationStore(storage),
+    new MemoryR2Bucket(),
+  );
+  store.ensureSchemaSync();
+  store.ensureSchemaSync();
+  assert.deepEqual(
+    Array.from(
+      storage.sql.exec("SELECT object_key, identity_digest FROM exact_review_record_snapshots"),
+      (row) => ({ ...row }),
+    ),
+    [{ object_key: "legacy", identity_digest: null }],
+  );
+});
+
+test("registration counts live export identities at or below the watermark without reading content", async () => {
+  const storage = new MemoryDurableStorage();
+  const bucket = new MemoryR2Bucket();
+  const queue = new ExactReviewQueue({ storage }, { STATE_SNAPSHOTS: bucket });
+  const post = (body: unknown) =>
+    queue.fetch(
+      new Request("https://queue/records/snapshots/register", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    );
+  // Initialize the schema, then seed only the index: content reads would fail.
+  await post({});
+  for (const [id, deleted, repo] of [
+    [1, 0, repoSlug],
+    [2, 0, repoSlug],
+    [3, 1, repoSlug],
+    [4, 0, repoSlug],
+    [5, 0, "other-repo"],
+  ] as const) {
+    storage.sql.exec(
+      `INSERT INTO exact_review_record_export_index
+      (repo_slug, section, record_id, digest, deleted, revision, store_revision, source, updated_at)
+      VALUES (?, 'items', ?, ?, ?, 1, ?, 'canonical', ?)`,
+      repo,
+      String(id),
+      deleted ? null : "a".repeat(64),
+      deleted,
+      id,
+      Date.now(),
+    );
+  }
+  storage.sql.exec("UPDATE exact_review_record_export_meta SET current_revision = 5");
+  const createdAt = Date.now() - 1000;
+  const descriptor = {
+    repoSlug,
+    revisionWatermark: 3,
+    createdAt,
+    objectKey: `${repoSlug}/3/${createdAt}-00000000-0000-4000-8000-000000000001.tar.gz`,
+    bytes: 20,
+    uncompressedBytes: 0,
+    fileCount: 0,
+    identityDigest: "a".repeat(64),
+  };
+  const upload = await bucket.createMultipartUpload(descriptor.objectKey);
+  await upload.complete([await upload.uploadPart(1, new Uint8Array(20))]);
+  for (const fileCount of [0, 1]) {
+    const response = await post({ ...descriptor, fileCount });
+    assert.equal(response.status, 422);
+    assert.equal((await response.json()).error, "snapshot_coverage_incomplete");
+  }
+  const response = await post({ ...descriptor, fileCount: 2 });
+  assert.equal(response.status, 201, await response.clone().text());
+  assert.equal(
+    Array.from(storage.sql.exec("SELECT identity_digest FROM exact_review_record_snapshots"))[0]
+      .identity_digest,
+    descriptor.identityDigest,
   );
 });

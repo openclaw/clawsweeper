@@ -3053,6 +3053,15 @@ export class ExactReviewQueue {
       }
     }
 
+    if (request.method === "POST" && url.pathname === "/records/snapshots/discard") {
+      try {
+        await this.recordSnapshotStore.discardUnregistered(objectValue(await request.json()));
+        return json({ ok: true });
+      } catch (error) {
+        return snapshotErrorResponse(error);
+      }
+    }
+
     if (request.method === "POST" && url.pathname === "/records/snapshots/register") {
       const body = objectValue(await request.json().catch(() => null));
       try {
