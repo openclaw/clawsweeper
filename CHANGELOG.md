@@ -19,6 +19,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Reduce cold Bay snapshot work by reading full projections through the existing parser, preserving the 30-second TTL memo and edge cache.
+
 - Keep queue stats fresh when alarm or auxiliary-state writes overlap a memo computation, without changing the cache TTL or response fields.
 
 - Admit the reviewed OpenClaw MCP Apps sandbox-origin test fixture using exact URI, source-line, path, and decoder bindings so config reviews can proceed through the existing scanner rules.

@@ -487,16 +487,12 @@ public field set, freshness contract, and observer-only boundary are unchanged.
 An uncached Bay build still scans every retained projection in the requested
 repositories (all repositories for an unscoped internal request). It has no
 seven-day cutoff: seven-day telemetry retention and 30-day Bay event retention
-belong to separate telemetry tables. The compact SQL JSON cursor retains the
-fields needed for lane counts, bounded cards, and integrity validation, without
-the former 512-row parsed-object cache that thrashed on large histories. Strict
-JSON validation and a full-parser fallback for unusual JSON, duplicate keys, and
-NULs preserve the original reader’s malformed-data handling. The
-remaining full-history scan is not a constant-size aggregate query; adding
+belong to separate telemetry tables. Each row's full `projection_json` passes
+through the existing parser and integrity validation, without a per-row
+parsed-object cache. This preserves malformed-data handling and avoids the
+extra SQL JSON validation, extraction, and serialization of the compact cursor.
+The remaining full-history scan is not a constant-size aggregate query; adding
 persisted counters requires a separate backfill and writer-compatibility change.
-Use `node scripts/proof-bay-ttl.mjs BASE_SHA OUTPUT_DIR` to compare full and compact
-materialization on 20,000 mixed synthetic projections; this local SQLite proof
-does not predict production Cloudflare CPU.
 
 For capacity displays, `/api/exact-review-queue` also exposes compatible
 `lanes.review` and `lanes.publication` objects. Each lane reports its own

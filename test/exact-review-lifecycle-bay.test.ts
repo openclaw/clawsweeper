@@ -28,7 +28,10 @@ test("lifecycle Bay streams more than 10k historical facts without losing lanes 
         }
         return (function* () {
           for (const row of statement.iterate(...(bindings as SQLInputValue[]))) {
-            if (!observing || !/AS bay_json,/.test(query)) {
+            if (
+              !observing ||
+              !/SELECT projection_json, canonical_target_key, fence_key, revision/.test(query)
+            ) {
               yield row;
               continue;
             }
@@ -36,9 +39,9 @@ test("lifecycle Bay streams more than 10k historical facts without losing lanes 
             let consumed = false;
             yield {
               ...row,
-              get bay_json() {
+              get projection_json() {
                 consumed = true;
-                return row.bay_json;
+                return row.projection_json;
               },
             };
             assert.equal(
@@ -251,7 +254,7 @@ test("lifecycle Bay streams more than 10k historical facts without losing lanes 
   assert.deepEqual(read(), snapshot, "an invalid-row early return must release the read cursor");
 });
 
-test("compact Bay materialization equals full audit materialization on mixed lifecycle facts", async () => {
+test("streamed Bay materialization equals full audit materialization on mixed lifecycle facts", async () => {
   const { TestStorage } = await import("./exact-review-test-storage.ts");
   const storage = new TestStorage();
   const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
@@ -319,16 +322,16 @@ test("compact Bay materialization equals full audit materialization on mixed lif
     "fence:19",
   );
   const full = lifecycle.createAuditInventorySnapshot(100, now);
-  const compact = lifecycle.readBaySnapshot(now);
+  const bay = lifecycle.readBaySnapshot(now);
   assert.equal(full.collection.state, "complete");
-  assert.equal(compact.collection.state, "complete");
+  assert.equal(bay.collection.state, "complete");
   const key = (card: { target: { number: number }; revision: number }) =>
     `${card.target.number}:${card.revision}`;
   assert.deepEqual(
-    [...compact.sample!.cards].sort((a, b) => key(a).localeCompare(key(b))),
+    [...bay.sample!.cards].sort((a, b) => key(a).localeCompare(key(b))),
     [...full.page!.records].sort((a, b) => key(a).localeCompare(key(b))),
   );
-  for (const [lane, count] of Object.entries(compact.lanes!))
+  for (const [lane, count] of Object.entries(bay.lanes!))
     assert.equal(count, full.page!.records.filter((card) => card.lane === lane).length);
-  assert.equal(compact.inventory!.lifecycle_records, full.page!.records.length);
+  assert.equal(bay.inventory!.lifecycle_records, full.page!.records.length);
 });

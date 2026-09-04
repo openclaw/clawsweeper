@@ -746,7 +746,9 @@ test("lifecycle Bay memo shares fresh polls, expires, and preserves headers and 
   now += 29_999;
   assert.equal(await (await read()).text(), first);
   assert.equal(
-    exec.mock.calls.filter(({ arguments: [sql] }) => /AS bay_json,/.test(sql)).length,
+    exec.mock.calls.filter(({ arguments: [sql] }) =>
+      /SELECT projection_json, canonical_target_key, fence_key, revision/.test(sql),
+    ).length,
     1,
   );
   now++;
@@ -754,7 +756,9 @@ test("lifecycle Bay memo shares fresh polls, expires, and preserves headers and 
   assert.notEqual(renewed[0], first);
   assert.ok(renewed.every((body) => body === renewed[0]));
   assert.equal(
-    exec.mock.calls.filter(({ arguments: [sql] }) => /AS bay_json,/.test(sql)).length,
+    exec.mock.calls.filter(({ arguments: [sql] }) =>
+      /SELECT projection_json, canonical_target_key, fence_key, revision/.test(sql),
+    ).length,
     2,
   );
 });
@@ -817,7 +821,9 @@ test("lifecycle Bay memo can be disabled and survives queue state writes", async
   await read();
   await read();
   assert.equal(
-    exec.mock.calls.filter(({ arguments: [sql] }) => /AS bay_json,/.test(sql)).length,
+    exec.mock.calls.filter(({ arguments: [sql] }) =>
+      /SELECT projection_json, canonical_target_key, fence_key, revision/.test(sql),
+    ).length,
     4,
   );
 });
@@ -1027,7 +1033,7 @@ test(
       let scans = 0;
       const original = storage.sql.exec;
       storage.sql.exec = (sql, ...bindings) => {
-        if (/AS bay_json,/.test(sql)) scans++;
+        if (/SELECT projection_json, canonical_target_key, fence_key, revision/.test(sql)) scans++;
         return original(sql, ...bindings);
       };
       try {

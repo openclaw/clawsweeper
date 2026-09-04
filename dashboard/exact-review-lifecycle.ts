@@ -949,29 +949,14 @@ export class ExactReviewLifecycleProjectionStore {
           }
 
           for (const row of this.storage.sql.exec(
-            `SELECT CASE WHEN instr(projection_json, char(0)) = 0 AND json_valid(projection_json)
-                    THEN CASE WHEN NOT EXISTS (
-                      SELECT 1 FROM json_each(projection_json)
-                      GROUP BY key HAVING COUNT(*) > 1 OR instr(key, char(0)) > 0
-                    ) THEN json_array('compact', json_extract(projection_json,
-                      '$.version', '$.canonicalTargetKey', '$.fenceKey', '$.revision',
-                      '$.updatedAt', '$.bayTelemetryPending', '$.bayTelemetryEventId',
-                      '$.admission', '$.claims', '$.reviewResults', '$.githubEffect',
-                      '$.canonicalReceipts', '$.routerReceipts', '$.routerReceipt',
-                      '$.acknowledgement', '$.terminalDispositions', '$.terminalOperationIds',
-                      '$.terminalDisposition'),
-                      json_type(projection_json, '$.githubEffect'),
-                      json_type(projection_json, '$.bayTelemetryEventId'))
-                    ELSE json_array('full', projection_json) END
-                    ELSE json_array('full', projection_json) END AS bay_json,
-                    canonical_target_key, fence_key, revision
+            `SELECT projection_json, canonical_target_key, fence_key, revision
                FROM ${source}
               ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC`,
             ...bindings,
           )) {
             let projection: ExactReviewLifecycleProjection;
             try {
-              projection = bayProjectionFromRow(row);
+              projection = projectionFromRow(String(row.projection_json || ""));
             } catch {
               return unknown("malformed");
             }
@@ -1955,54 +1940,6 @@ function commandAcknowledgementTerminalSkip(projection: ExactReviewLifecycleProj
     [...projection.acknowledgement.attempts].reverse().find((attempt) => attempt.terminalSkip)
       ?.terminalSkip ?? null
   );
-}
-
-// The Bay cursor omits object keys and unrelated extension data, but retains
-// every fact needed by the reducer and its fail-closed integrity validation.
-function bayProjectionFromRow(row: Record<string, unknown>): ExactReviewLifecycleProjection {
-  const [mode, fields, effectType, eventType] = JSON.parse(String(row.bay_json || ""));
-  // Preserve full-parser semantics for unusual JSON, duplicate keys, and NULs.
-  if (mode === "full") return projectionFromRow(fields);
-  const [
-    version,
-    canonicalTargetKey,
-    fenceKey,
-    revision,
-    updatedAt,
-    bayTelemetryPending,
-    bayTelemetryEventId,
-    admission,
-    claims,
-    reviewResults,
-    githubEffect,
-    canonicalReceipts,
-    routerReceipts,
-    routerReceipt,
-    acknowledgement,
-    terminalDispositions,
-    terminalOperationIds,
-    terminalDisposition,
-  ] = fields;
-  return normalizeProjection({
-    version,
-    canonicalTargetKey,
-    fenceKey,
-    revision,
-    updatedAt,
-    bayTelemetryPending,
-    bayTelemetryEventId: eventType === null ? undefined : bayTelemetryEventId,
-    admission,
-    claims,
-    reviewResults,
-    githubEffect: effectType === null ? undefined : githubEffect,
-    canonicalReceipts,
-    routerReceipts,
-    routerReceipt,
-    acknowledgement,
-    terminalDispositions,
-    terminalOperationIds,
-    terminalDisposition,
-  } as ExactReviewLifecycleProjection);
 }
 
 function projectionFromRow(value: string): ExactReviewLifecycleProjection {
