@@ -253,7 +253,7 @@ jobs:
                 '{
                   delivery_id: $delivery_id,
                   decision: ($decision + {
-                    sourceAction: (if $source_action == "failed_review_shard_recovery" then $source_action else "source_drift_requeue" end),
+                    sourceAction: (if $source_action == "failed_review_shard_recovery" or $source_action == "command_proof_result" then $source_action else "source_drift_requeue" end),
                     supersedesInProgress: true
                   })
                 }')"
@@ -275,7 +275,7 @@ jobs:
               continue
             elif [ "$outcome_kind" = "superseded" ]; then
               lifecycle_terminal="superseded"
-            elif [ "$source_action" = "failed_review_shard_recovery" ]; then
+            elif [ "$source_action" = "failed_review_shard_recovery" ] || [ "$source_action" = "command_proof_result" ]; then
               lifecycle_router_outcome="not_required"
             elif jq -e '.disposition.routableSyncExpected == true' "$outcome_path" >/dev/null; then
               github_apply_error="$(mktemp)"

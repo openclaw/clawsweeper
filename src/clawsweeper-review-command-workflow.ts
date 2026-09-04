@@ -40,6 +40,25 @@ import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-revi
 import { prepareReviewCommand } from "./clawsweeper-review-preparation.js";
 import { parsePrHydrationSnapshot } from "./pr-hydration-snapshot.js";
 import { ReviewSourcePreparationError } from "./review-source-preparation.js";
+import {
+  commandProofBinding,
+  assertCommandProofSubject,
+  foldCommandProofAssessment,
+  assertNoNewProofReviewBlockers,
+} from "./command-proof-assessment.js";
+import { COMMAND_PROOF_SOURCE_ACTION } from "./command-proof-contract.js";
+
+/** Only the trusted dispatch source may authorize proof-only folding. */
+export function reviewCommandProofBinding(sourceAction: unknown, additionalPrompt: string) {
+  if (sourceAction !== COMMAND_PROOF_SOURCE_ACTION) return null;
+  const binding = commandProofBinding(additionalPrompt);
+  if (!binding) {
+    throw new UserFacingCommandError(
+      "commanded proof reassessment is missing its exact-subject binding",
+    );
+  }
+  return binding;
+}
 
 function reviewStartLeaseCommentUpdatedAt(
   comment: Record<string, unknown> | undefined,
@@ -158,6 +177,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     renderReviewCommentFromReport,
     reportFileName,
     reportReviewFindings,
+    reportSecurityReview,
     restoreTreeModes,
     reviewActionForDecision,
     reviewLeaseStillMatchesContext,
@@ -210,6 +230,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       maintainerRequest,
       additionalPrompt,
     } = preparation;
+    const proofBinding = reviewCommandProofBinding(args.review_source_action, additionalPrompt);
     let { git } = preparation;
     const readonlyModeSnapshots = readonlyOpenclaw ? makeTreeReadOnly(openclawDir) : [];
     const acquiredReviewLeases: Array<{ itemNumber: number; lease: AcquiredReviewStartLease }> = [];
@@ -539,6 +560,9 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           // Ownership and bulk-filer policy changes require a fresh decision;
           // carrying stale front matter would preserve the wrong safeguards.
           priorReview = null;
+        }
+        if (proofBinding && !priorReview) {
+          throw new UserFacingCommandError("commanded proof reassessment requires a valid prior full review");
         }
         const expectedPreviousReviewDigest = priorReview
           ? previousClawSweeperReviewDigestFromReport(priorReview.markdown)
@@ -1215,6 +1239,9 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           }
           continue;
         }
+        if (proofBinding) {
+          assertCommandProofSubject(proofBinding, pullHeadShaFromContext(context), context.pullRequest ?? context.issue, asRecord(asRecord(context.pullRequest).base).ref, asRecord(asRecord(context.pullRequest).base).sha);
+        }
         const codexWorkDir = join(artifactDir, "codex");
         const proofScratchDir = join(codexWorkDir, "proof-scratch", String(item.number));
         // --local-range is a pre-PR LOCAL code review — it has no telegram-visible-proof to
@@ -1319,7 +1346,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         const action = reviewActionForDecision({ item, decision, git, runtime });
         structuralRecord = refreshStructuralRecordForVerdict();
         const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
-        const reportMarkdown = markdownFor({
+        let reportMarkdown = markdownFor({
             item,
             context,
             decision,
@@ -1338,6 +1365,12 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 }
               : {}),
         });
+        if (proofBinding) {
+          const previous = priorReview?.markdown ?? "";
+          assertNoNewProofReviewBlockers(reportReviewFindings(previous), decision.reviewFindings);
+          assertNoNewProofReviewBlockers(reportSecurityReview(previous).concerns, decision.securityReview.concerns);
+          reportMarkdown = foldCommandProofAssessment(priorReview?.markdown, reportMarkdown, proofBinding.requestId, proofBinding.bodySha256, proofBinding.baseRefSha256, proofBinding.baseSha);
+        }
         writeFileSync(reportPath, reportMarkdown, "utf8");
         if (codexFailureError) {
           recordFailureDiagnostics(codexFailureError, codexFailureLogKind(reportMarkdown));

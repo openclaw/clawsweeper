@@ -17,6 +17,30 @@ export interface PrimaryBodyContext {
   };
 }
 
+/** Source identity from host-created primary-body context, never from model output. */
+export function primaryBodySourceSha256(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const body = value as Record<string, unknown>;
+  if (typeof body.body !== "string" && body.body !== null) return null;
+  if (Object.hasOwn(body, "bodyCoverage")) {
+    const coverage = body.bodyCoverage;
+    if (!coverage || typeof coverage !== "object" || Array.isArray(coverage)) return null;
+    const source = coverage as Record<string, unknown>;
+    if (
+      source.complete !== false ||
+      !Number.isSafeInteger(source.originalUnits) ||
+      Number(source.originalUnits) <= String(body.body ?? "").length ||
+      typeof source.sourceBodySha256 !== "string" ||
+      !/^[0-9a-f]{64}$/.test(source.sourceBodySha256)
+    )
+      return null;
+    return source.sourceBodySha256;
+  }
+  return createHash("sha256")
+    .update(body.body ?? "")
+    .digest("hex");
+}
+
 const BODY_BUDGET = 12_000;
 const MAX_CANDIDATES = 64;
 

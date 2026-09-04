@@ -626,6 +626,53 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   );
 });
 
+test("legacy batch proof publications never dispatch the verdict router", () => {
+  const run =
+    workflow.jobs.publish!.steps.find(
+      (step) => step.name === "Finalize healthy members under a fenced heartbeat",
+    )?.run ?? "";
+  const start = run.indexOf('if [ "$receipt_outcome" = "superseded" ]; then');
+  const end = run.indexOf(
+    'if [ -n "$lifecycle_router_outcome" ] || [ -n "$lifecycle_terminal" ]; then',
+    start,
+  );
+  assert.ok(start >= 0 && end > start);
+  const branch = run.slice(start, end);
+  for (const action of [
+    "command_proof_result",
+    "failed_review_shard_recovery",
+    "legacy_dispatch",
+  ]) {
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        [
+          'source_action="$SOURCE_ACTION_CASE"',
+          "receipt_outcome=accepted; outcome_kind=eligible; outcome_path=fixture.json",
+          "lifecycle_router_outcome=; lifecycle_terminal=",
+          'jq() { [ "$1" = "-e" ] && [ "$2" = ".disposition.routableSyncExpected == true" ]; }',
+          'gh() { printf "router_called\\n"; }',
+          "pnpm() { :; }",
+          "for once in only; do",
+          branch,
+          "done",
+          'printf "outcome=%s\\n" "$lifecycle_router_outcome"',
+        ].join("\n"),
+      ],
+      { encoding: "utf8", env: { ...process.env, SOURCE_ACTION_CASE: action } },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    if (action === "legacy_dispatch") {
+      assert.match(result.stdout, /router_called/);
+      assert.match(result.stdout, /outcome=durable/);
+    } else {
+      assert.doesNotMatch(result.stdout, /router_called/);
+      assert.match(result.stdout, /outcome=not_required/);
+    }
+  }
+});
+
 test("batch publisher gives canonical supersession precedence over artifact terminal plans", () => {
   const healthyMembers = workflow.jobs.publish!.steps.find(
     (step) => step.name === "Finalize healthy members under a fenced heartbeat",
@@ -638,6 +685,51 @@ test("batch publisher gives canonical supersession precedence over artifact term
   assert.ok(supersededReceipt >= 0);
   assert.ok(staleArtifactPlan > supersededReceipt);
   assert.ok(supersededTerminal > supersededReceipt && supersededTerminal < staleArtifactPlan);
+});
+
+test("direct proof and failure-recovery publications never dispatch the verdict router", () => {
+  const sweep = YAML.parse(sweepSource) as typeof workflow;
+  const run =
+    Object.values(sweep.jobs)
+      .flatMap((job) => job.steps ?? [])
+      .find((step) => step.name === "Finalize direct exact review lifecycle")?.run ?? "";
+  const start = run.indexOf('if [ "${DIRECT_PUBLICATION_SUPERSEDED:-false}" != "true" ]; then');
+  const end = run.indexOf('if [ -n "$lifecycle_router_outcome" ]; then', start);
+  assert.ok(start >= 0 && end > start);
+  const branch = run.slice(start, end);
+  for (const action of [
+    "command_proof_result",
+    "failed_review_shard_recovery",
+    "legacy_dispatch",
+  ]) {
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        [
+          'source_action="$SOURCE_ACTION_CASE"',
+          "DIRECT_PUBLICATION_SUPERSEDED=false; DIRECT_OUTCOME=fixture.json",
+          "lifecycle_router_outcome=; lifecycle_terminal=",
+          'jq() { [ "$1" = "-e" ] && [ "$2" = ".disposition.routableSyncExpected == true" ]; }',
+          'gh() { printf "router_called\n"; }',
+          branch,
+          'printf "outcome=%s\nterminal=%s\n" "$lifecycle_router_outcome" "$lifecycle_terminal"',
+        ].join("\n"),
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, SOURCE_ACTION_CASE: action },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      result.stdout,
+      action === "legacy_dispatch"
+        ? "router_called\noutcome=durable\nterminal=\n"
+        : "outcome=not_required\nterminal=\n",
+      action,
+    );
+  }
 });
 
 test("exact-review producer uses direct publication with bounded legacy fallback", () => {

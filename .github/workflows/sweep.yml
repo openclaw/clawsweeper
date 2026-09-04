@@ -1740,7 +1740,7 @@ jobs:
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.target.outputs.item_number }}
           MIN_AGE_MINUTES: "0"
-          REVIEW_ONLY: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceAction == 'failed_review_shard_recovery' && 'true' || 'false' }}
+          REVIEW_ONLY: ${{ contains(fromJSON('["failed_review_shard_recovery","command_proof_result"]'), fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceAction) && 'true' || 'false' }}
           EXACT_EVENT_PUBLICATION: "true"
           EXACT_REVIEW_CLOSE_COVERAGE_DEFERRED: "true"
           EXACT_REVIEW_BATCH_ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
@@ -1803,7 +1803,7 @@ jobs:
               lifecycle_terminal="target_closed"
             elif jq -e '.disposition.guardedOpenAction != null and .disposition.guardedOpenAction != ""' "$DIRECT_OUTCOME" >/dev/null; then
               lifecycle_terminal="guarded_open"
-            elif [ "$source_action" = "failed_review_shard_recovery" ]; then
+            elif [ "$source_action" = "failed_review_shard_recovery" ] || [ "$source_action" = "command_proof_result" ]; then
               lifecycle_router_outcome="not_required"
             elif jq -e '.disposition.routableSyncExpected == true' "$DIRECT_OUTCOME" >/dev/null; then
               gh workflow run repair-comment-router.yml \
@@ -3020,7 +3020,7 @@ jobs:
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
           MIN_AGE_MINUTES: "0"
-          REVIEW_ONLY: ${{ fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' && 'true' || 'false' }}
+          REVIEW_ONLY: ${{ contains(fromJSON('["failed_review_shard_recovery","command_proof_result"]'), fromJSON(steps.publication-context.outputs.decision).sourceAction) && 'true' || 'false' }}
           EXACT_EVENT_PUBLICATION: "true"
           EXACT_REVIEW_CLOSE_COVERAGE_DEFERRED: "true"
           LIVE_PROCEEDED: ${{ steps.publication-context.outputs.live_proceeded }}
@@ -3188,7 +3188,7 @@ jobs:
 
       - name: Queue deferred exact verdict router
         id: queue-deferred-verdict-router
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && fromJSON(steps.publication-context.outputs.decision).sourceAction != 'failed_review_shard_recovery' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' && steps.publish-event-result.outputs.routing_deferred == 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && fromJSON(steps.publication-context.outputs.decision).sourceAction != 'failed_review_shard_recovery' && fromJSON(steps.publication-context.outputs.decision).sourceAction != 'command_proof_result' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' && steps.publish-event-result.outputs.routing_deferred == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           CLAWSWEEPER_GITHUB_POOL_CLASS: repository_actions
@@ -3266,7 +3266,7 @@ jobs:
 
       - name: Record no-router exact review lifecycle receipt
         id: record-no-router-lifecycle-receipt
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && contains(fromJSON('["failed_review_shard_recovery","command_proof_result"]'), fromJSON(steps.publication-context.outputs.decision).sourceAction) && steps.publish-event-result.outcome == 'success' && steps.publish-event-result.outputs.remote_tuple_verified == 'true' }}
         env:
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
@@ -3330,7 +3330,7 @@ jobs:
             decision: {
               ...decision,
               sourceAction:
-                decision.sourceAction === "failed_review_shard_recovery"
+                ["failed_review_shard_recovery", "command_proof_result"].includes(decision.sourceAction)
                   ? decision.sourceAction
                   : "source_drift_requeue",
               supersedesInProgress: true,
@@ -3390,14 +3390,14 @@ jobs:
           echo "confirmed=true" >> "$GITHUB_OUTPUT"
 
       - name: React to target item completion
-        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.publish-event-result.outputs.requeue_latest != 'true' && (steps.publish-event-result.outputs.terminal_closed == 'true' || steps.publish-event-result.outputs.guarded_open == 'true' || steps.publish-event-result.outputs.policy_noop == 'true' || steps.queue-deferred-verdict-router.outcome == 'success' || (fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' && steps.publish-event-result.outputs.remote_tuple_verified == 'true')) }}
+        if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.publish-event-result.outputs.requeue_latest != 'true' && (steps.publish-event-result.outputs.terminal_closed == 'true' || steps.publish-event-result.outputs.guarded_open == 'true' || steps.publish-event-result.outputs.policy_noop == 'true' || steps.queue-deferred-verdict-router.outcome == 'success' || (contains(fromJSON('["failed_review_shard_recovery","command_proof_result"]'), fromJSON(steps.publication-context.outputs.decision).sourceAction) && steps.publish-event-result.outputs.remote_tuple_verified == 'true')) }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
           ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
           POLICY_NOOP: ${{ steps.publish-event-result.outputs.policy_noop }}
-          REVIEW_ONLY: ${{ fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' && 'true' || 'false' }}
+          REVIEW_ONLY: ${{ contains(fromJSON('["failed_review_shard_recovery","command_proof_result"]'), fromJSON(steps.publication-context.outputs.decision).sourceAction) && 'true' || 'false' }}
         run: |
           set -euo pipefail
           if [ "$POLICY_NOOP" != "true" ] && [ "$REVIEW_ONLY" != "true" ]; then
@@ -3465,7 +3465,7 @@ jobs:
           DIRECT_RECOVERY_REASON_CODE: ${{ steps.replay-direct-lifecycle.outputs.reason_code }}
           DIRECT_RECOVERY_REQUEUE_LATEST: ${{ steps.replay-direct-lifecycle.outputs.requeue_latest }}
           DIRECT_RECOVERY_DIRECT_REQUEUE: ${{ steps.replay-direct-lifecycle.outputs.direct_requeue }}
-          REVIEW_ONLY: ${{ fromJSON(steps.publication-context.outputs.decision).sourceAction == 'failed_review_shard_recovery' && 'true' || 'false' }}
+          REVIEW_ONLY: ${{ contains(fromJSON('["failed_review_shard_recovery","command_proof_result"]'), fromJSON(steps.publication-context.outputs.decision).sourceAction) && 'true' || 'false' }}
         run: |
           set -euo pipefail
           outcome=failure

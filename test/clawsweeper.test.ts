@@ -2643,10 +2643,32 @@ test("sweep review recovery uses explicit failed shard artifacts", () => {
   assert.match(eventReviewJob, /CLAIM_TARGET_BRANCH:/);
   assert.match(eventReviewJob, /target_branch="\$CLAIM_TARGET_BRANCH"/);
   assert.match(eventReviewJob, /REVIEW_ONLY:/);
-  assert.match(
-    eventReviewJob,
-    /sourceAction == 'failed_review_shard_recovery' && 'true' \|\| 'false'/,
-  );
+  const reviewOnly = parseYaml(workflow).jobs["event-review-apply"].steps.find(
+    (entry: { id?: string }) => entry.id === "prepare-direct-exact-review-publication",
+  )?.env?.REVIEW_ONLY;
+  assert.equal(typeof reviewOnly, "string");
+  for (const [sourceAction, expected] of [
+    ["failed_review_shard_recovery", "true"],
+    ["command_proof_result", "true"],
+    ["opened", "false"],
+    ["source_drift_requeue", "false"],
+  ]) {
+    const expression = reviewOnly
+      .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
+      .replace(
+        "fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceAction",
+        JSON.stringify(sourceAction),
+      );
+    assert.equal(
+      Function(
+        "contains",
+        "fromJSON",
+        "return (" + expression + ");",
+      )((values: string[], value: string) => values.includes(value), JSON.parse),
+      expected,
+      sourceAction,
+    );
+  }
   assert.match(
     eventReviewJob,
     /Queue deferred exact verdict router[\s\S]*sourceAction != 'failed_review_shard_recovery'/,
@@ -2654,11 +2676,14 @@ test("sweep review recovery uses explicit failed shard artifacts", () => {
   assert.match(eventReviewJob, /Export exact review publication result[\s\S]*REVIEW_ONLY:/);
   assert.match(
     eventReviewJob,
-    /React to target item completion[\s\S]*sourceAction == 'failed_review_shard_recovery'/,
+    /React to target item completion[\s\S]*contains\(fromJSON\('\["failed_review_shard_recovery","command_proof_result"\]'\), fromJSON\(steps\.publication-context\.outputs\.decision\)\.sourceAction\)/,
   );
   assert.match(eventReviewJob, /\[ "\$REVIEW_ONLY" != "true" \]/);
   assert.match(eventReviewJob, /\[ "\$REVIEW_ONLY" = "true" \]/);
-  assert.match(publishEventResult, /reviewOnly: process\.env\.REVIEW_ONLY === "true"/);
+  assert.match(
+    publishEventResult,
+    /reviewOnly:\s+process\.env\.REVIEW_ONLY === "true" \|\|\s+process\.env\.CLAWSWEEPER_GITHUB_SOURCE_ACTION === "command_proof_result"/,
+  );
   assert.match(
     publishEventResult,
     /options\.reviewOnly \? \["--sync-comments-only", "--suppress-automation-markers"\] : \[\]/,

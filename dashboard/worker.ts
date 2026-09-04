@@ -1054,6 +1054,20 @@ export default {
       return json({ ok: true, service: "clawsweeper-github-webhook" });
     if (url.pathname === "/github/webhook" && request.method === "POST")
       return githubWebhook(request, env, ctx);
+    if (
+      /^\/internal\/command-proof\/(claim|pending|get|update)$/.test(url.pathname) &&
+      request.method === "POST"
+    ) {
+      const declared = Number(request.headers.get("content-length") || "0");
+      if (declared > 128 * 1024) return json({ error: "proof_request_too_large" }, 413);
+      const body = await boundedCommandProofBody(request);
+      if (body === null) return json({ error: "proof_request_too_large_or_invalid" }, 413);
+      return authenticatedExactReviewQueueRequest(
+        new Request(request, { method: "POST", body }),
+        env,
+        url.pathname.slice("/internal".length),
+      );
+    }
     if (url.pathname === "/internal/exact-review/command-intake" && request.method === "POST")
       return authenticatedHostedTargetQueueRequest(request, env, "/command-intake");
     if (url.pathname === "/internal/exact-review/enqueue" && request.method === "POST")
@@ -6408,6 +6422,34 @@ function bayLifecycleTimingHistory(value) {
     result.push({ ended_at: endedAt, average_ms: average, median_ms: median, samples });
   }
   return { bucket_minutes: 5, points: result };
+}
+
+async function boundedCommandProofBody(request: Request): Promise<string | null> {
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const result = await reader.read();
+      if (result.done) break;
+      size += result.value.byteLength;
+      if (size > 128 * 1024) return null;
+      chunks.push(result.value);
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return null;
+  } finally {
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
 }
 
 async function authenticatedExactReviewQueueRequest(

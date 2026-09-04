@@ -2,6 +2,7 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { readRepairLoopComments } from "./comment-router-read-model.js";
 import { adaptiveReviewBudgetForPullRequest } from "./adaptive-review-budget.js";
 import { CLOSE_PROTECTED_LABEL_NAMES } from "./exact-review-guard-labels.js";
@@ -164,6 +165,7 @@ import {
   type ReviewDispatchCoordinationDecision,
 } from "./review-dispatch-coordination.js";
 import { directReReviewIntake } from "./direct-re-review-admission.js";
+import { admitProofCommand } from "./proof-command.js";
 import { postExactReviewCommandIntakeSync } from "./exact-review-command-queue.js";
 
 const automergeMetricWrites: Promise<boolean>[] = [];
@@ -531,6 +533,7 @@ function routedCommandForComment(comment: JsonValue): LooseRecord | null {
     issue_number: issueNumber,
     author: comment.user?.login ?? null,
     author_id: comment.user?.id ?? null,
+    author_type: comment.user?.type ?? null,
     author_association: String(comment.author_association ?? "").toUpperCase(),
     comment_created_at: comment.created_at,
     comment_updated_at: comment.updated_at,
@@ -557,6 +560,7 @@ function routedCommandForComment(comment: JsonValue): LooseRecord | null {
     review_summary: reviewSummaryFromCommentBody(comment.body),
     review_followup: reviewFollowupFromCommentBody(comment.body),
     freeform_prompt: parsed.freeform_prompt ?? null,
+    proof_command_text: parsed.proof_command_text ?? null,
     visual_lens: parsed.visual_lens ?? null,
     expected_head_sha: parsed.expected_head_sha ?? null,
     close_reason: parsed.close_reason ?? null,
@@ -990,6 +994,39 @@ function classifyCommand(command: LooseRecord): JsonValue {
     };
   }
 
+  if (command.intent === "request_proof") {
+    const admission = admitProofCommand({
+      commandText: String(command.proof_command_text ?? ""),
+      repository: targetRepo,
+      pullRequest: Number(command.issue_number),
+      isPullRequest: Boolean(pull),
+      isOpen: String(issue.state ?? "").toLowerCase() === "open",
+      maintainerAuthorized:
+        command.author_type === "User" && !command.trusted_bot && authorization?.allowed === true,
+      currentHeadSha: String(target.head_sha ?? ""),
+    });
+    const configured =
+      /^[0-9a-f]{40}$/.test(process.env.CLAWSWEEPER_PROOF_WORKFLOW_SHA ?? "") &&
+      /^[0-9a-f]{40}$/.test(process.env.CLAWSWEEPER_PROOF_HARNESS_SHA ?? "") &&
+      Boolean(
+        process.env.CLAWSWEEPER_PROOF_WORKFLOW_REF && process.env.CLAWSWEEPER_PROOF_WORKFLOW_PATH,
+      );
+    const dispatchProof =
+      configured &&
+      admission.request?.scenarioId === "web-ui-chat-proof" &&
+      targetRepo === "openclaw/openclaw";
+    return {
+      ...next,
+      status: "ready",
+      proof_admission: admission,
+      actions: [
+        ...(dispatchProof
+          ? [{ action: "dispatch_proof", status: execute ? "pending" : "planned" }]
+          : []),
+        { action: "comment", status: execute ? "pending" : "planned" },
+      ],
+    };
+  }
   if (["status", "explain", "help"].includes(command.intent)) {
     return {
       ...next,
@@ -2041,6 +2078,52 @@ function executeCommand(command: LooseRecord) {
     const shouldMerge = commandHasAction(command, "merge");
     const shouldApplyHumanReviewLabel = commandHasAction(command, "label");
     if (!command.trusted_bot) reactToComment(command, "eyes");
+    if (command.intent === "request_proof" && commandHasAction(command, "dispatch_proof")) {
+      const input = writePayload(repoRoot(), "proof-request-" + command.comment_id, {
+        repository: command.repo,
+        pullRequest: Number(command.issue_number),
+        commentId: String(command.comment_id),
+      });
+      const result = runCommandMutation(command, {
+        kind: "proof_request_dispatch",
+        identity: {
+          repository: command.repo,
+          number: command.issue_number,
+          commentId: command.comment_id,
+        },
+        operation: () =>
+          spawnSync(
+            process.execPath,
+            [path.join(repoRoot(), "dist/repair/command-proof-cli.js"), "request", input],
+            { encoding: "utf8", timeout: 180000 },
+          ),
+        outcome: (result) => (result.status === 0 ? "accepted" : "unknown"),
+      });
+      if (result.status !== 0) {
+        command.status = "waiting";
+        command.reason =
+          "Proof request transport unavailable; durable ownership will be rechecked without blind redispatch.";
+        command.actions = command.actions.map((action: JsonValue) => ({
+          ...action,
+          status: "waiting",
+        }));
+        return;
+      }
+      const proof = JSON.parse(result.stdout);
+      if (/^[0-9a-f]{64}$/.test(String(proof.requestId)))
+        command.command_status_revision = proof.requestId;
+      command.proof_admission = {
+        ...command.proof_admission,
+        status: proof.status === "queued" ? "queued" : "inconclusive",
+        reason: String(proof.reason || "proof_request_inconclusive"),
+        ...(command.proof_admission.request && /^[0-9a-f]{64}$/.test(String(proof.requestId))
+          ? { request: { ...command.proof_admission.request, requestId: proof.requestId } }
+          : {}),
+      };
+      command.actions = command.actions.map((action: JsonValue) =>
+        action.action === "dispatch_proof" ? { ...action, status: "executed" } : action,
+      );
+    }
     if (
       shouldDispatchRepair &&
       (canRepairPullTarget(command.target) ||

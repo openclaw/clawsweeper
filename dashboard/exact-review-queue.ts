@@ -1,4 +1,5 @@
 import { stableJson } from "../src/stable-json.ts";
+import { CommandProofRequestStore } from "./command-proof-requests.ts";
 import { parseAuditWaveState, type AuditWaveState } from "../src/audit-wave-state.ts";
 import {
   HOSTED_TARGET_ELIGIBILITY_HEADER,
@@ -887,6 +888,8 @@ export class ExactReviewQueue {
     this.statsComputation = null;
   }
 
+  private readonly commandProofStore: CommandProofRequestStore;
+
   private reviewCoverageCache: { at: number; summary: ReviewCoverageSummary } | null = null;
   // Back off a wedged Bay row without adding durable queue state. Any durable
   // progress clears this single-slot deadline so the one-second drain resumes.
@@ -918,6 +921,7 @@ export class ExactReviewQueue {
     this.reviewFailureTelemetryStore = new ExactReviewFailureTelemetryStore(this.storage);
     this.githubEgressTelemetryStore = new GithubEgressTelemetryStore(this.storage);
     this.commandIntakeStore = new ExactReviewCommandIntakeStore(this.storage);
+    this.commandProofStore = new CommandProofRequestStore(this.storage);
     this.artifactReceiptStore = new ExactReviewArtifactReceiptStore(
       this.storage,
       env.STATE_SNAPSHOTS,
@@ -1028,6 +1032,25 @@ export class ExactReviewQueue {
     }
     await this.ensureReady();
     this.cleanupLegacyCompatibilitySync();
+    if (request.method === "POST" && url.pathname.startsWith("/command-proof/")) {
+      const body = objectValue(await request.json().catch(() => null));
+      const now = Date.now();
+      if (url.pathname === "/command-proof/claim") {
+        const result = this.commandProofStore.claim(body.claim, now);
+        return json({ ok: true, ...result });
+      }
+      if (url.pathname === "/command-proof/pending")
+        return json({ ok: true, records: this.commandProofStore.pending(now) });
+      if (url.pathname === "/command-proof/get" && /^[0-9a-f]{64}$/.test(String(body.requestId))) {
+        const record = this.commandProofStore.get(String(body.requestId));
+        return json({ ok: true, record });
+      }
+      if (url.pathname === "/command-proof/update") {
+        const record = this.commandProofStore.update(body, now);
+        return record ? json({ ok: true, record }) : json({ error: "invalid_proof_update" }, 409);
+      }
+      return json({ error: "invalid_proof_request" }, 400);
+    }
     if (request.method === "POST" && url.pathname === "/github-egress-telemetry") {
       const now = Date.now();
       const result = this.githubEgressTelemetryStore.ingest(
@@ -1422,14 +1445,21 @@ export class ExactReviewQueue {
       }
       if (!decision) return json({ error: "invalid_exact_review_item" }, 400);
       const scheduledLane = exactReviewScheduledLane(decision);
+      const storesAdmissionReceipt = Boolean(
+        scheduledLane || decision.sourceAction === "command_proof_result",
+      );
       const bodyFingerprintHeader = request.headers.get(
         EXACT_REVIEW_AUTHENTICATED_BODY_FINGERPRINT_HEADER,
       );
-      if (scheduledLane && bodyFingerprintHeader && !/^[a-f0-9]{64}$/.test(bodyFingerprintHeader)) {
+      if (
+        storesAdmissionReceipt &&
+        bodyFingerprintHeader &&
+        !/^[a-f0-9]{64}$/.test(bodyFingerprintHeader)
+      ) {
         return json({ error: "invalid_authenticated_body_fingerprint" }, 400);
       }
       const authenticatedBodyFingerprint =
-        scheduledLane && bodyFingerprintHeader ? bodyFingerprintHeader : null;
+        storesAdmissionReceipt && bodyFingerprintHeader ? bodyFingerprintHeader : null;
       if (body.ingress !== undefined && !ingress) {
         return json({ error: "invalid_exact_review_ingress" }, 400);
       }
@@ -2105,7 +2135,9 @@ export class ExactReviewQueue {
           this.insertSupersessionAuditSync(supersessionAudit);
           this.incrementQueueMetricsSync({ reviewSuperseded: 1 });
         }
-        const scheduledDispositionJson = scheduledLane
+        // Command-proof handoffs also need an exact successful-admission receipt:
+        // an unscoped dedupe must never be mistaken for an admitted reassessment.
+        const scheduledDispositionJson = storesAdmissionReceipt
           ? this.recordScheduledDispositionSync(deliveryId, authenticatedBodyFingerprint, {
               ok: true,
               queued: true,
@@ -9732,8 +9764,9 @@ export class ExactReviewQueue {
     const decision: ExactReviewDecision = {
       ...publication.producerDecision,
       sourceAction:
-        publication.producerDecision.sourceAction === FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION
-          ? FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION
+        publication.producerDecision.sourceAction === FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION ||
+        publication.producerDecision.sourceAction === "command_proof_result"
+          ? publication.producerDecision.sourceAction
           : EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_SOURCE_ACTION,
       supersedesInProgress: true,
     };
@@ -9889,6 +9922,7 @@ export class ExactReviewQueue {
   private async initializeStorage() {
     this.ensureStorageSchemaSync();
     this.commandIntakeStore.ensureSchemaSync();
+    this.commandProofStore.ensureSchemaSync();
     this.batchStore.ensureSchemaSync();
     this.directPublicationStore.ensureSchemaSync();
     this.recordSnapshotStore.ensureSchemaSync();
@@ -13779,8 +13813,9 @@ function exactReviewFreshRecoveryFromPublicationItem(
     ...item.decision.publication.producerDecision,
     sourceAction:
       item.decision.publication.producerDecision.sourceAction ===
-      FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION
-        ? FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION
+        FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION ||
+      item.decision.publication.producerDecision.sourceAction === "command_proof_result"
+        ? item.decision.publication.producerDecision.sourceAction
         : EXACT_REVIEW_ARTIFACT_RETENTION_RECOVERY_SOURCE_ACTION,
     supersedesInProgress: true,
   });
@@ -14739,8 +14774,9 @@ function refreshExactReviewPublicationItem(
   const decision: ExactReviewDecision = {
     ...publication.producerDecision,
     sourceAction:
-      publication.producerDecision.sourceAction === FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION
-        ? FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION
+      publication.producerDecision.sourceAction === FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION ||
+      publication.producerDecision.sourceAction === "command_proof_result"
+        ? publication.producerDecision.sourceAction
         : EXACT_REVIEW_ARTIFACT_RETENTION_RECOVERY_SOURCE_ACTION,
     supersedesInProgress: true,
   };

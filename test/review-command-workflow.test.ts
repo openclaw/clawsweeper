@@ -33,6 +33,7 @@ import { ReviewSourcePreparationError } from "../dist/review-source-preparation.
 import { parseArgs } from "../dist/clawsweeper-args.js";
 import {
   createReviewCommandWorkflow,
+  reviewCommandProofBinding,
   localExactBootstrapReviewCommentBody,
   withRunnerPreflightProvenance,
 } from "../dist/clawsweeper-review-command-workflow.js";
@@ -42,6 +43,8 @@ import {
   suppliedReviewStartLeaseFromArgs,
 } from "../dist/clawsweeper-review-lease.js";
 import { PUBLIC_CODEX_MODEL } from "../dist/codex-env.js";
+import { proofFixture } from "./helpers/command-proof-fixtures.ts";
+import { verifyCommandProof } from "../dist/repair/proof-receipt-verification.js";
 import {
   createReviewStructuralRecord,
   type ReviewStructuralSnapshot,
@@ -114,6 +117,45 @@ function structuralRecord(
   assert.ok(record);
   return record;
 }
+
+test("proof-only workflow boundary requires its trusted source action and complete subject binding", () => {
+  const fixture = proofFixture();
+  const verified = verifyCommandProof(fixture);
+  assert.notEqual(verified.outcome, "inconclusive");
+  if (verified.outcome === "inconclusive") throw new Error(verified.reason);
+  const prompt = verified.reviewContext;
+  for (const sourceAction of [
+    undefined,
+    "",
+    "re_review",
+    "manual",
+    "internal",
+    "scheduled_normal_backfill",
+  ]) {
+    assert.equal(reviewCommandProofBinding(sourceAction, prompt), null, String(sourceAction));
+  }
+  assert.deepEqual(reviewCommandProofBinding("command_proof_result", prompt), {
+    headSha: fixture.claim.headSha,
+    bodySha256: fixture.claim.bodySha256,
+    baseRefSha256: digest(fixture.claim.targetBranch),
+    baseSha: fixture.claim.baseSha,
+    requestId: fixture.claim.requestId,
+  });
+  for (const invalid of [
+    "",
+    "ordinary review",
+    prompt.replace(" base=" + digest("main"), ""),
+    prompt.replace("base=" + digest("main"), "base=unknown"),
+    prompt.replace(" base_sha=" + fixture.claim.baseSha, ""),
+    prompt.replace("base_sha=" + fixture.claim.baseSha, "base_sha=unknown"),
+    "prefix\n" + prompt,
+  ]) {
+    assert.throws(
+      () => reviewCommandProofBinding("command_proof_result", invalid),
+      /missing its exact-subject binding/,
+    );
+  }
+});
 
 test("exact local bootstrap rejects a same-number report from another repository", () => {
   const report = [
@@ -192,11 +234,15 @@ for (const scenario of [
   "changed-pr-exact-native-checkout-failure",
   "changed-pr-exact-source-incompatible",
   "changed-pr-clean",
+  "changed-pr-proof-invalid-cursor",
+  "changed-pr-proof-maintainer-change",
   "content-clean",
   "fresh-refusal",
 ]) {
   test(`scheduled ${scenario} preserves admission and terminal ledger classification`, (t) => {
     const refuseScan = scenario.endsWith("refusal");
+    const invalidProofPrior = scenario.startsWith("changed-pr-proof-");
+    const proofMaintainerChange = scenario === "changed-pr-proof-maintainer-change";
     const sourceIncompatible = scenario.endsWith("source-incompatible");
     const codexFailure = scenario.endsWith("codex-failure") || sourceIncompatible;
     const exactFailure = scenario.includes("exact");
@@ -332,7 +378,7 @@ for (const scenario of [
       updatedAt: PRIOR_ACTIVITY_AT,
       author: "contributor",
       authorAssociation: "CONTRIBUTOR",
-      labels: ["bug"],
+      labels: proofMaintainerChange ? ["bug", "maintainer"] : ["bug"],
     };
     const leaseComment = {
       id: LEASE_COMMENT_ID,
@@ -401,7 +447,7 @@ for (const scenario of [
         `${value.repo}#${value.number}`,
       asRecord,
       bulkFilerPolicyInvalidatesCachedReview: () => false,
-      bulkFilerRepositoryPermission: () => null,
+      bulkFilerRepositoryPermission: () => (proofMaintainerChange ? "maintain" : null),
       buildLocalRangeReview: () => {
         throw new Error("local range must not run");
       },
@@ -501,7 +547,11 @@ for (const scenario of [
         ];
       },
       frontMatterValue: (_markdown: string, key: string) =>
-        key === "review_activity_cursor" ? `v2:0:${digest("activity")}` : undefined,
+        key === "review_activity_cursor"
+          ? scenario === "changed-pr-proof-invalid-cursor"
+            ? "unusable-cursor"
+            : `v2:0:${digest("activity")}`
+          : undefined,
       gitInfo: () => ({
         mainSha: "a".repeat(40),
         releaseStateComplete: true,
@@ -671,10 +721,25 @@ for (const scenario of [
             "--review-lease-comment-id",
             String(LEASE_COMMENT_ID),
             "--review-source-action",
-            "scheduled_normal_backfill",
+            invalidProofPrior ? "command_proof_result" : "scheduled_normal_backfill",
+            ...(invalidProofPrior
+              ? [
+                  "--additional-prompt",
+                  `<!-- command-proof-assessment-v1 head=${headSha} body=${digest("body")} base=${digest("main")} base_sha=${baseSha} request=${digest("request")} -->\nProof assessment`,
+                ]
+              : []),
           ]),
         );
 
+      if (invalidProofPrior) {
+        assert.throws(execute, /requires a valid prior full review/);
+        assert.equal(generationCalls, 0);
+        assert.equal(hydrationCalls, 0);
+        assert.equal(cachedCompletions, 0);
+        assert.equal(existsSync(join(artifactDir, ITEM_NUMBER + ".md")), false);
+        assert.equal(existsSync(providerCalls), false);
+        return;
+      }
       if (refuseScan) {
         const reason = incompleteSource ? "incomplete_source" : "scanner_failed";
         assert.throws(execute, (error) => {

@@ -1,3 +1,4 @@
+import { commandProofOnlyReport } from "./command-proof-assessment.js";
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
 import type {
   Item,
@@ -46,6 +47,14 @@ export function syncApplyPullRequestLabels(
   labels: string[];
   markdown: string;
 } {
+  if (commandProofOnlyReport(options.markdown)) {
+    return {
+      changed: false,
+      currentPrStatusKind: null,
+      labels: options.item.labels,
+      markdown: options.markdown,
+    };
+  }
   const {
     frontMatterValue,
     prStatusLabelKindFromReport,

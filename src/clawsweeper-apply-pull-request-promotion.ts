@@ -1,3 +1,4 @@
+import { commandProofOnlyReport } from "./command-proof-assessment.js";
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
 import type {
   AuthorPrBudgetApplyGate,
@@ -73,6 +74,7 @@ export function promoteApplyPullRequest(
   } = options;
   let { closeReason, isCloseProposal, markdown, storedHash, storedUpdatedAt } = options;
   const eligible =
+    !commandProofOnlyReport(markdown) &&
     state === "open" &&
     !isCloseProposal &&
     item.kind === "pull_request" &&

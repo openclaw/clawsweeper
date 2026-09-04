@@ -81,6 +81,7 @@ import { isAutoCloseAllowed, repositoryProfileFor } from "./repository-profiles.
 import { stableJson } from "./stable-json.js";
 import { LiveReadGeneration, type GenerationBoundValue } from "./live-read-generation.js";
 import { parsePrHydrationSnapshot } from "./pr-hydration-snapshot.js";
+import { commandProofOnlyReport } from "./command-proof-assessment.js";
 
 export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWorkflowDependencies) {
   const {
@@ -691,6 +692,10 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         }
       };
       examinedItemNumbers.push(number);
+      const proofOnlyPublication = commandProofOnlyReport(markdown);
+      if (proofOnlyPublication && (!syncCommentsOnly || !suppressAutomationMarkers)) {
+        throw new Error("proof-only publication requires comment-only sync and suppressed automation markers");
+      }
       const decision = frontMatterValue(markdown, "decision");
       let closeReason = frontMatterValue(markdown, "close_reason") as CloseReason | undefined;
       const action = frontMatterValue(markdown, "action_taken");
@@ -1684,7 +1689,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           continue;
         }
       }
-      if (state === "open" && exactEventPublication && !dryRun) {
+      if (state === "open" && exactEventPublication && !dryRun && !proofOnlyPublication) {
         beginIssueLabelMutationBatch(number);
         issueLabelBatchActive = true;
         preserveGuardReadCacheAfterMutation = true;
@@ -1876,7 +1881,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           break;
         continue;
       }
-      const labelsCanSync = !lockedMetadataOnly && !stalePrReviewHead && labelSyncFreshEnough();
+      const labelsCanSync = !proofOnlyPublication && !lockedMetadataOnly && !stalePrReviewHead && labelSyncFreshEnough();
       const complete = frontMatterValue(markdown, "review_status") === "complete" && labelsCanSync;
       const reportLabelSync = syncApplyReportLabels(dependencies, {
         bulkFilerRepositoryPermissionCache,
@@ -2218,7 +2223,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
               rememberSelfMutationUpdatedAt();
               deferredSelfMutationReceipt = false;
               syncReasons.push("updated durable Codex review comment");
-              if (complete && item.labels.includes(REVIEW_RECOVERY_STUCK_LABEL)) {
+              if (!proofOnlyPublication && complete && item.labels.includes(REVIEW_RECOVERY_STUCK_LABEL)) {
                 try {
                   clearResolvedReviewRecoveryLabel({
                     number,

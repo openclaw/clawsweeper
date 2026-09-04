@@ -16,11 +16,106 @@ proof files. Exact review bundles contain the review and action ledger only, and
 ordinary exact reviews remain eligible for direct publication without waiting
 for proof.
 
-There is no replacement proof lane, execution toggle, or OpenClaw Bay action.
+There is no automatic replacement proof lane or OpenClaw Bay action. Explicit
+maintainer requests use the separate, opt-in consumer described below.
 Future review journeys simply omit the former automatic proof delay. Bay has a
 presentation-only switch for including the retired proof/legacy-batch path in
 historical cards and timing; that switch is off by default and cannot trigger
 work.
+
+## Explicit command-triggered proof
+
+The existing maintainer comment router recognizes
+`/clawsweeper proof web-ui-chat-proof <40-character-head-sha>` (or the
+`@clawsweeper proof ...` form). This initial contract accepts only open,
+same-repository PR heads in `openclaw/openclaw`. It exercises browser UI chat
+with a mocked Gateway, not live providers, channels, authentication, or arbitrary
+changed behavior. The human maintainer's current repository permission, exact
+comment version, repository ID, PR number, head, and body are checked again
+before dispatch and before independent reassessment.
+
+The existing ExactReviewQueue Durable Object stores the immutable request before
+any producer dispatch. Admission is transactional, with one active pilot request;
+repeat delivery cannot issue another producer POST. A new human comment version
+can request another attempt after the active request finishes. Unknown dispatch
+outcomes are never blindly retried. The bounded reconciliation step in the
+existing comment-router workflow follows only explicit stored requests and
+expires incomplete work as inconclusive. It is not on ordinary review
+publication's critical path and does not inspect `liveProofPlan`.
+
+### Producer dependency and configuration
+
+Execution is disabled until the operator supplies these repository variables:
+
+- `CLAWSWEEPER_PROOF_WORKFLOW_PATH`: the path of the producer's
+  [Mantis web-chat workflow](https://github.com/openclaw/openclaw/blob/main/.github/workflows/mantis-web-ui-chat-proof.yml)
+- `CLAWSWEEPER_PROOF_WORKFLOW_REF`: a named branch/tag, not a bare SHA
+- `CLAWSWEEPER_PROOF_WORKFLOW_SHA`: the reviewed, approved producer revision
+- `CLAWSWEEPER_PROOF_HARNESS_SHA`: the same revision for this first contract
+
+The named ref must resolve to the expected SHA before dispatch. The completed
+run and artifact metadata must independently match that SHA. Configuration does
+not create refs, provision credentials, or authorize live QA accounts. Do not
+point these pins at a producer lacking the request-bound trusted-observer and
+finalizer implementation. The existing OpenClaw docs-only companion does not
+supply that implementation.
+
+The consumer uses the versioned GitHub dispatch response's run ID as the durable
+execution identity. Only an unknown POST response permits bounded recovery by
+an explicit request-ID run name, followed by the same complete verification;
+it never chooses the latest run by timestamp, actor, or head. The only producer
+inputs are `candidate_ref`, `request_id`, and `pr_number`.
+
+### Evidence, assessment, and authority
+
+The closed `mantis.request-proof.v1` receipt is correlated, not self-authorizing.
+The consumer verifies the current target, pinned workflow/harness, run attempt,
+successful trusted observer and finalizer jobs, both GitHub artifact inventories,
+archive digests, and the three observation-file digests. Receipt and evidence are
+separate artifacts: `mantis-request-receipt-<run>-<attempt>` contains
+`receipt.json`; `mantis-request-web-ui-<run>-<attempt>` carries `chat-send.json`,
+`final-reply.json`, and `final-reply.png`. ZIP parsing is bounded, in memory,
+and rejects traversal, links, duplicate names, corrupt entries and oversized
+expansion. Receipt fields and observation metadata reject unknown keys.
+
+Complete trusted observations can yield scenario assertion **pass** or **fail**.
+Candidate-reported, missing, partial, malformed, stale, unverifiable, cancelled,
+timed-out or infrastructure-failed evidence is **inconclusive**, never pass.
+A video, successful process exit, digest, or receipt authority string alone is
+not sufficient proof. GitHub throttles defer stored reconciliation until its
+retry time; no immediate dispatch retry follows an uncertain POST.
+
+Verified evidence enters the existing read-only review queue. The reviewer must
+independently decide whether this limited scenario proves the changed behavior.
+The proof-only fold changes only the behavioral-proof assessment in an existing
+same-head full review; code/security/CI decisions, findings, ratings, and the last
+full-review age survive. Missing or failed prior/current review data blocks this
+fold. Additional non-proof findings require a full review rather than being
+silently discarded. This mocked-Gateway scenario cannot replace required
+authority-chain proof. Exact head/body checks also run at review time, and existing publication
+freshness checks still apply. Publication is report/comment-only: no label
+setter, repair/close/merge action, or verdict-router handoff is authorized by
+this path. A sufficient assessment may remove the report's proof blocker, not
+any other blocker or the human merge-approval boundary.
+
+The existing command-status owner reports assertion/inconclusive outcomes and
+independent-review handoff separately; queued or pass is not a readiness claim.
+The new HTTP adapter records explicitly incomplete GitHub invocation telemetry,
+not fabricated complete wire-attempt metrics. Public observer payloads gain no
+request IDs, evidence, queue controls, or new actions. Bay uses its existing
+review/no-router lifecycle representation; no Bay browser GitHub calls or
+mutation controls are added.
+
+### Validation scope
+
+`scripts/e2e/command-proof-consumer-loopback.mjs` exercises the compiled CLI,
+real Worker HTTP handlers, file-backed SQLite claims across DO recreation,
+artifact verification, the existing review queue/status owner, and proof-only
+folding. GitHub metadata/artifact delivery and the independent model's response
+are controlled external fixtures. It does not claim a live GitHub workflow run,
+Mantis UI execution, or semantic model accuracy. The producer dependency owns
+its separate trusted-observer runtime proof. The earlier admission-only harness
+`scripts/e2e/proof-command-loopback.mjs` remains narrower evidence.
 
 ## Decision compatibility
 
