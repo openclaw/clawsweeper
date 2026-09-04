@@ -1,3 +1,5 @@
+import type { TestContext } from "node:test";
+
 import {
   assert,
   createHmac,
@@ -3021,3 +3023,128 @@ test("durable lifecycle Bay stale polls share one background refresh and respect
   assert.notEqual(await (await read()).text(), fresh);
   assert.equal(reads, 3, "expired source data cannot be served as stale success");
 });
+
+async function assertFailedBayRefreshPreservesStaleSuccess(
+  t: TestContext,
+  failure: "unavailable" | "malformed",
+) {
+  const startedAt = Date.parse("2026-09-04T00:00:00Z");
+  t.mock.timers.enable({ apis: ["Date"], now: new Date(startedAt) });
+  const originalCaches = globalThis.caches;
+  const values = new MemoryCache();
+  const expires = new Map<string, number>();
+  let writes = 0;
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: {
+      default: {
+        async match(request: Request) {
+          if ((expires.get(request.url) || 0) <= Date.now()) return undefined;
+          return values.match(request);
+        },
+        async put(request: Request, response: Response) {
+          const ttl = Number(
+            /max-age=(\d+)/.exec(response.headers.get("cache-control") || "")?.[1],
+          );
+          expires.set(request.url, Date.now() + ttl * 1000);
+          writes += 1;
+          await values.put(request, response);
+        },
+      },
+    },
+  });
+  t.after(() => Object.defineProperty(globalThis, "caches", { value: originalCaches }));
+
+  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  let reads = 0;
+  let mode: "success" | "unavailable" | "malformed" = "success";
+  let releaseFailedRefresh!: () => void;
+  const failedRefreshGate = new Promise<void>((resolve) => {
+    releaseFailedRefresh = resolve;
+  });
+  const namespace = new MemoryDurableNamespace({
+    async fetch(request: Request) {
+      reads += 1;
+      if (reads === 2) await failedRefreshGate;
+      if (mode === "unavailable") return new Response(null, { status: 503 });
+      if (mode === "malformed") return jsonResponse({ durable_lifecycle_bay: {} });
+      return queue.fetch(request);
+    },
+  });
+  const env = {
+    PUBLIC_BAY_REPOS: "openclaw/openclaw",
+    EXACT_REVIEW_QUEUE: namespace,
+  };
+  const url = "https://failed-refresh.example/api/durable-lifecycle-bay";
+  const background: Promise<unknown>[] = [];
+  const ctx = {
+    waitUntil(promise: Promise<unknown>) {
+      background.push(promise);
+    },
+  };
+  const read = async (context?: typeof ctx) => {
+    const response = await worker.fetch(new Request(url), env, context);
+    return { text: await response.text(), response };
+  };
+
+  const initial = await read();
+  const initialBody = JSON.parse(initial.text);
+  const initialGeneratedAt = initialBody.durable_lifecycle_bay.generated_at;
+  assert.equal(initialBody.durable_lifecycle_bay.collection.state, "complete");
+  assert.equal(reads, 1);
+  assert.equal(writes, 2);
+  const freshKey = [...expires.keys()].find((key) => key.endsWith("/fresh"))!;
+  const staleKey = [...expires.keys()].find((key) => key.endsWith("/stale"))!;
+  const originalFreshExpiry = expires.get(freshKey);
+  const originalStaleExpiry = expires.get(staleKey);
+  assert.equal(originalFreshExpiry, startedAt + 30_000);
+  assert.equal(originalStaleExpiry, startedAt + 60_000);
+
+  t.mock.timers.tick(30_000);
+  mode = failure;
+  const staleBatch = await Promise.all(Array.from({ length: 8 }, () => read(ctx)));
+  assert.ok(staleBatch.every((entry) => entry.text === initial.text));
+  assert.equal(reads, 2, "concurrent stale polls share one failed owner refresh");
+  releaseFailedRefresh();
+  await Promise.all(background.splice(0));
+  assert.equal(writes, 2, "a failed refresh must not replace either cache bucket");
+  assert.equal(expires.get(freshKey), originalFreshExpiry);
+  assert.equal(expires.get(staleKey), originalStaleExpiry);
+
+  t.mock.timers.tick(29_999);
+  const beforeExpiry = await read(ctx);
+  assert.equal(beforeExpiry.text, initial.text);
+  await Promise.all(background.splice(0));
+  assert.equal(expires.get(staleKey), originalStaleExpiry);
+
+  t.mock.timers.tick(2);
+  const afterExpiry = await read();
+  const failedBody = JSON.parse(afterExpiry.text);
+  assert.deepEqual(failedBody.durable_lifecycle_bay.collection, {
+    state: "unknown",
+    reason: failure,
+  });
+  assert.notEqual(failedBody.durable_lifecycle_bay.generated_at, initialGeneratedAt);
+
+  t.mock.timers.tick(30_001);
+  mode = "success";
+  const recovered = await read();
+  const recoveredBody = JSON.parse(recovered.text);
+  const recoveredGeneratedAt = recoveredBody.durable_lifecycle_bay.generated_at;
+  assert.equal(recoveredBody.durable_lifecycle_bay.collection.state, "complete");
+  assert.notEqual(recoveredGeneratedAt, initialGeneratedAt);
+  assert.equal(writes, 6, "failed-close and later success each replace both buckets");
+  for (const key of [freshKey, staleKey]) {
+    const cached = await values.match(new Request(key));
+    assert.ok(cached);
+    assert.equal((await cached.json()).durable_lifecycle_bay.generated_at, recoveredGeneratedAt);
+  }
+  assert.equal(expires.get(freshKey), Date.now() + 30_000);
+  assert.equal(expires.get(staleKey), Date.now() + 60_000);
+}
+
+test("durable lifecycle Bay preserves stale success across unavailable background refresh", (t) =>
+  assertFailedBayRefreshPreservesStaleSuccess(t, "unavailable"));
+
+test("durable lifecycle Bay preserves stale success across malformed background refresh", (t) =>
+  assertFailedBayRefreshPreservesStaleSuccess(t, "malformed"));

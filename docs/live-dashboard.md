@@ -479,10 +479,13 @@ The outer `/api/durable-lifecycle-bay` route caches the sanitized response for
 After expiry it serves a stale copy while coalescing one background refresh per
 scope per isolate, as the status route does. Both cache buckets are capped by
 the original snapshot's 60-second maximum age; neither layer renews
-`generated_at`. Without a background execution context, an expired fresh entry
-is refreshed synchronously. Edge caches are local to each colo, so cross-colo
-misses can still reach the object; its TTL memo absorbs those reads. Bay's
-public field set, freshness contract, and observer-only boundary are unchanged.
+`generated_at`. An unavailable or malformed background refresh leaves an
+existing complete stale snapshot untouched until that original age expires,
+then the route fails closed until a complete refresh replaces both buckets.
+Without a background execution context, an expired fresh entry is refreshed
+synchronously. Edge caches are local to each colo, so cross-colo misses can
+still reach the object; its TTL memo absorbs those reads. Bay's public field
+set, freshness contract, and observer-only boundary are unchanged.
 
 An uncached Bay build still scans every retained projection in the requested
 repositories (all repositories for an unscoped internal request). It has no

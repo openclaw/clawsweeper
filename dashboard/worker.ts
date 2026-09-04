@@ -5615,7 +5615,11 @@ async function publicExactReviewQueueJson(env) {
 }
 
 const DURABLE_LIFECYCLE_BAY_CACHE_SECONDS = 30;
-const durableLifecycleBayRefreshes = new Map<string, Promise<Record<string, unknown>>>();
+type DurableLifecycleBayRefresh = {
+  promise: Promise<Record<string, unknown>>;
+  state: { preserveStaleSuccess: boolean };
+};
+const durableLifecycleBayRefreshes = new Map<string, DurableLifecycleBayRefresh>();
 
 function durableLifecycleBayCacheKey(request: Request, env, bucket: "fresh" | "stale") {
   const scope = publicBayRepositoryScope(verifiedPublicBayRepositories(env));
@@ -5658,30 +5662,54 @@ async function durableLifecycleBayJson(request: Request, env, ctx?: DashboardCon
   const staleKey = durableLifecycleBayCacheKey(request, env, "stale");
   const stale = await cachedDurableLifecycleBay(staleKey);
   if (stale && ctx?.waitUntil) {
-    ctx.waitUntil(refreshDurableLifecycleBay(env, freshKey, staleKey).catch(() => undefined));
+    const preserveStaleSuccess =
+      objectValue(objectValue(stale.durable_lifecycle_bay).collection).state === "complete";
+    ctx.waitUntil(
+      refreshDurableLifecycleBay(env, freshKey, staleKey, preserveStaleSuccess).catch(
+        () => undefined,
+      ),
+    );
     return json(stale);
   }
   return json(await refreshDurableLifecycleBay(env, freshKey, staleKey));
 }
 
-function refreshDurableLifecycleBay(env, freshKey: Request, staleKey: Request) {
+function refreshDurableLifecycleBay(
+  env,
+  freshKey: Request,
+  staleKey: Request,
+  preserveStaleSuccess = false,
+) {
   const key = freshKey.url;
   const pending = durableLifecycleBayRefreshes.get(key);
-  if (pending) return pending;
-  const promise = refreshDurableLifecycleBayCaches(env, freshKey, staleKey);
-  durableLifecycleBayRefreshes.set(key, promise);
+  if (pending) {
+    if (preserveStaleSuccess) pending.state.preserveStaleSuccess = true;
+    return pending.promise;
+  }
+  const state = { preserveStaleSuccess };
+  const promise = refreshDurableLifecycleBayCaches(env, freshKey, staleKey, state);
+  const refresh = { promise, state };
+  durableLifecycleBayRefreshes.set(key, refresh);
   promise
     .finally(() => {
-      if (durableLifecycleBayRefreshes.get(key) === promise)
+      if (durableLifecycleBayRefreshes.get(key) === refresh)
         durableLifecycleBayRefreshes.delete(key);
     })
     .catch(() => undefined);
   return promise;
 }
 
-async function refreshDurableLifecycleBayCaches(env, freshKey: Request, staleKey: Request) {
+async function refreshDurableLifecycleBayCaches(
+  env,
+  freshKey: Request,
+  staleKey: Request,
+  state: { preserveStaleSuccess: boolean },
+) {
   const snapshot = await durableLifecycleBaySnapshot(env);
   const body = { durable_lifecycle_bay: snapshot };
+  if (state.preserveStaleSuccess && objectValue(snapshot.collection).state !== "complete") {
+    return body;
+  }
   const remainingSeconds = Math.floor(
     (Date.parse(snapshot.generated_at) + 60_000 - Date.now()) / 1000,
   );
