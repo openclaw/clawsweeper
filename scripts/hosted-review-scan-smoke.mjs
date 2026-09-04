@@ -20,6 +20,7 @@ import { AgentInputScanError } from "../dist/agent-input-scan.js";
 // Dispatch-only proof: no GitHub credentials, publications, or target repository.
 assert.equal(process.platform, "linux");
 const originalPath = process.env.PATH;
+const originalScannerCache = process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR;
 const artifact = process.argv[2];
 assert.ok(artifact, "pass a proof JSON destination");
 const sourceHead = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
@@ -116,6 +117,9 @@ ${live ? `const child = require('node:child_process').spawnSync(${JSON.stringify
     assert.equal(readFileSync(join(cwd, "value.txt"), "utf8"), `two ${marker}\n`);
     assert.deepEqual(scratch(), initialScratch);
   };
+  // A missing PATH scanner can now bootstrap automatically. Make that second
+  // source unavailable only for the synthetic refusal cases, before any download.
+  process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR = "relative-unavailable-scanner-cache";
   for (const scenario of ["missing", "failure", "findings", "unexpected-output"]) {
     process.env.PATH = bin;
     if (scenario !== "missing")
@@ -149,6 +153,8 @@ ${live ? `const child = require('node:child_process').spawnSync(${JSON.stringify
     assertCheckout();
   }
   process.env.PATH = originalPath;
+  if (originalScannerCache === undefined) delete process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR;
+  else process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR = originalScannerCache;
   writeProvider(true);
   const result = run();
   // Raw model output/diagnostics and configured model identity never enter proof artifacts.
@@ -203,5 +209,7 @@ ${live ? `const child = require('node:child_process').spawnSync(${JSON.stringify
   );
 } finally {
   process.env.PATH = originalPath;
+  if (originalScannerCache === undefined) delete process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR;
+  else process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR = originalScannerCache;
   rmSync(root, { recursive: true, force: true });
 }
