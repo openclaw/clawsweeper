@@ -958,6 +958,17 @@ function createExactReviewAdmissionHarness(
   };
 }
 
+async function withExactReviewAdmissionHarness<T>(
+  harness: ReturnType<typeof createExactReviewAdmissionHarness>,
+  callback: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await callback();
+  } finally {
+    harness.restore();
+  }
+}
+
 function buildExactReviewQueueRequest(
   deliveryId: string,
   itemNumber: number,
@@ -1182,6 +1193,7 @@ export {
   stateAppendQueueRequest,
   signedStateAppendRequest,
   createExactReviewAdmissionHarness,
+  withExactReviewAdmissionHarness,
   buildExactReviewQueueRequest,
   exactReviewPublicationOverrides,
   legacyExactReviewPublicationOverrides,

@@ -31,6 +31,7 @@ import {
   stateAppendQueueRequest,
   signedStateAppendRequest,
   createExactReviewAdmissionHarness,
+  withExactReviewAdmissionHarness,
   buildExactReviewQueueRequest,
   completedReviewRun,
   exactReviewPublicationOverrides,
@@ -4584,7 +4585,7 @@ test("runnerless batch completion preserves terminal command acknowledgement dur
     publicationBatchSize: "1",
     captureBatchDispatch: true,
   });
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     const itemNumber = 783;
     const marker = "<!-- clawsweeper-command-status:783:re_review:batch-terminal -->";
     const publication = exactReviewPublicationOverrides(itemNumber, "7830");
@@ -4680,9 +4681,7 @@ test("runnerless batch completion preserves terminal command acknowledgement dur
       harness.dispatched[0]?.client_payload?.source_action,
       "exact_review_command_acknowledgement",
     );
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("canonical commit records and tuples export with one monotonic revision", async () => {
