@@ -665,8 +665,13 @@ No dashboard projection or observer API changes; OpenClaw Bay is unaffected.
 Maintainers can run the dispatch-only `Hosted native review scan smoke` job in
 `ci.yml`. It uses the existing `OPENAI_API_KEY` and `CLAWSWEEPER_MODEL` secrets
 only during host setup, with no App mutation token. The proof artifact records
-zero provider starts on refusal, one clean native structured run, exact fixture
-and runner identities, and coverage limits without exposing the configured model.
+zero Codex launches on refusal, then proves the production review path completed
+a read-only command over a synthetic committed diff before returning a
+schema-valid decision and terminal turn. Raw commands, output, prompts,
+transcripts, fixture values, runner identities, and model identities stay in
+ephemeral private files; the uploaded artifact contains only booleans and counts,
+including explicit false coverage flags for external repositories, review
+publication, and queue lifecycle.
 
 - Review and repair base fetches use fully qualified branch refspecs so inherited
   `fetch.prune` or `remote.origin.prune` settings do not delete the requested

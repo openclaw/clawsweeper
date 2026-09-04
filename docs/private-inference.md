@@ -47,9 +47,14 @@ gh workflow run ci.yml --ref main -f codex_auth_mode=clawrouter
 ```
 
 This override affects only the dispatch-only native review smoke job. It proves
-scanner refusals, native sandbox execution, and a structured review against a
-synthetic repository without GitHub mutation. The default `configured` choice
-uses the repository's current authentication mode.
+scanner refusals, then uses the production review runner and decision schema to
+inspect a synthetic committed diff with a read-only command, consume that tool
+result in the final review, and reach terminal turn completion without GitHub
+mutation. Raw commands, output, prompts, transcripts, fixture values, and
+runtime identities remain ephemeral; the uploaded artifact contains only
+booleans and counts, including explicit false coverage flags for external
+repositories, review publication, and queue lifecycle. The default `configured`
+choice uses the repository's current authentication mode.
 
 The default `proxy` mode and explicit legacy `login` mode retain their existing
 API-key configuration. Changing the authentication-mode variable affects new
