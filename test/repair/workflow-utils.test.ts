@@ -28,6 +28,7 @@ import {
   writeApplyCursor,
   writeCommentSyncCursor,
 } from "../../dist/repair/workflow-utils.js";
+import { repositoryProfileFor } from "../../dist/repository-profiles.js";
 import {
   AUTOMATION_LIMITS,
   WORKER_CONFIG,
@@ -3264,36 +3265,82 @@ test("manual all-item cursors still include recently synchronized issues", () =>
   }
 });
 
-test("comment synchronization preserves canonical dotted and underscored repository slugs", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
-  const targetRepo = "steipete/tool.v2_debug";
-  const targetSlug = "steipete-tool.v2_debug";
-  const cursorPath = path.join(root, `results/comment-sync-cursors/${targetSlug}.json`);
-  const reportPath = path.join(root, `records/${targetSlug}/items/${targetSlug}-41.md`);
-  try {
+for (const [input, expectedSlug] of [
+  ["openclaw/some.repo", "openclaw-some.repo"],
+  ["openclaw/some_repo", "openclaw-some_repo"],
+  ["OpenClaw/Some.Repo_Debug", "openclaw-some.repo_debug"],
+  ["openclaw/some-repo", "openclaw-some-repo"],
+  ["openclaw/some--repo", "openclaw-some--repo"],
+  ["openclaw/-some-", "openclaw--some-"],
+] as const) {
+  test(`workflow record lookup preserves the writer slug for ${input}`, (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-slug-"));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const profile = repositoryProfileFor(input);
+    assert.equal(profile.slug, expectedSlug);
+    const checkedAt = "2026-01-02T00:00:00Z";
+    const record = [
+      "---",
+      `repository: ${profile.targetRepo}`,
+      "type: issue",
+      "review_status: complete",
+      "item_snapshot_hash: abc123",
+      "decision: close",
+      "confidence: high",
+      "action_taken: proposed_close",
+      "close_reason: implemented_on_main",
+      "item_created_at: 2024-01-01T00:00:00Z",
+      `apply_checked_at: ${checkedAt}`,
+      "---",
+      "",
+    ].join("\n");
+    const repoRoot = path.join(root, "records", profile.slug);
+    const item = path.join(repoRoot, "items", "41.md");
+    write(item, record);
     write(
-      reportPath,
-      [
-        "---",
-        `repository: ${targetRepo}`,
-        "type: issue",
-        "review_status: complete",
-        "item_snapshot_hash: abc123",
-        "action_taken: kept_open",
-        "---",
-        "",
-      ].join("\n"),
+      path.join(repoRoot, "items", "42.md"),
+      record.replace("confidence: high", "confidence: low"),
     );
-    const result = withCwd(root, () =>
-      commentSyncBatchOutput({ targetRepo, applyKind: "all", batchSize: 40, cursorPath }),
-    );
-
-    assert.equal(result.item_numbers, "41");
-    assert.equal(result.next_cursor, "41");
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
+    const options = {
+      targetRepo: profile.targetRepo,
+      applyKind: "all",
+      applyCloseReasons: "all",
+      staleMinAgeDays: 60,
+      minAgeDays: 0,
+      minAgeMinutes: null,
+    };
+    withCwd(root, () => {
+      assert.deepEqual(proposedItemNumbers(options), [41]);
+      const inventory = proposedItemInventory(options);
+      assert.equal(inventory.eligible_total, 1);
+      assert.equal(inventory.inconsistent_or_stale, 1);
+      assert.equal(
+        commentSyncBatchOutput({
+          targetRepo: profile.targetRepo,
+          applyKind: "all",
+          batchSize: 40,
+          cursorPath: path.join(root, "comment-cursor.json"),
+        }).item_numbers,
+        "41,42",
+      );
+      const report = path.join(root, "apply-report.json");
+      const cursor = path.join(root, "apply-cursor.json");
+      write(report, JSON.stringify([{ number: 41, action: "kept_open" }]));
+      for (const section of ["items", "closed"]) {
+        if (section === "closed") {
+          fs.mkdirSync(path.join(repoRoot, section));
+          fs.renameSync(item, path.join(repoRoot, section, "41.md"));
+        }
+        writeApplyCursor(cursor, report, input);
+        assert.equal(
+          JSON.parse(fs.readFileSync(cursor, "utf8")).next_after_apply_checked_at,
+          checkedAt,
+          section,
+        );
+      }
+    });
+  });
+}
 
 test("fresh review priority crosses an existing maintenance cursor", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));

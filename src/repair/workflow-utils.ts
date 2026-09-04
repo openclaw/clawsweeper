@@ -18,7 +18,7 @@ import {
   isLiveRecheckCloseGuardAction,
   isSelectableApplyCloseAction,
 } from "../apply-close-actions.js";
-import { repositoryProfileFor } from "../repository-profiles.js";
+import { repositoryProfileFor, slugForRepo } from "../repository-profiles.js";
 
 type ApplyAction = {
   action: string;
@@ -1353,7 +1353,7 @@ function selectedProposedItemCandidates(
   candidateSnapshot?: readonly ProposedItemCandidate[],
   nowMs = Date.now(),
 ): ProposedItemCandidate[] {
-  const itemsDir = path.join("records", targetSlug(options.targetRepo), "items");
+  const itemsDir = path.join("records", slugForRepo(options.targetRepo.toLowerCase()), "items");
   if (!candidateSnapshot && !fs.existsSync(itemsDir)) return [];
 
   const allowedCloseReasons =
@@ -1540,7 +1540,7 @@ function inconsistentOrStaleProposedItemCount(
   options: ProposedItemOptions,
   candidateNumbers: ReadonlySet<number>,
 ): number {
-  const itemsDir = path.join("records", targetSlug(options.targetRepo), "items");
+  const itemsDir = path.join("records", slugForRepo(options.targetRepo.toLowerCase()), "items");
   if (!fs.existsSync(itemsDir)) return 0;
   const allowedCloseReasons =
     options.applyCloseReasons === "all"
@@ -1930,7 +1930,7 @@ function closePromotionSignalTexts(markdown: string): string[] {
 
 export function commentSyncBatchOutput(options: CommentSyncBatchOptions): Record<string, string> {
   const urgentCandidates = new Map<number, number>();
-  const targetSlug = commentSyncTargetSlug(options.targetRepo);
+  const targetSlug = slugForRepo(options.targetRepo.toLowerCase());
   const automaticAllItemCursor =
     options.applyKind === "all" && path.basename(options.cursorPath) === `${targetSlug}.json`;
   const candidates = commentSyncCandidates(
@@ -2174,7 +2174,7 @@ function readApplyCursorTrace(tracePath: string): number[] {
 }
 
 function applyCheckedAtForItem(targetRepo: string, itemNumber: number): string {
-  const baseDir = path.join("records", targetSlug(targetRepo));
+  const baseDir = path.join("records", slugForRepo(targetRepo.toLowerCase()));
   for (const stateDir of ["items", "closed"]) {
     const dir = path.join(baseDir, stateDir);
     if (!fs.existsSync(dir)) continue;
@@ -2264,8 +2264,7 @@ function commentSyncCandidates(
   urgentCandidates = new Map<number, number>(),
   automaticAllItemCursor = false,
 ): number[] {
-  const targetSlug = commentSyncTargetSlug(targetRepo);
-  const itemsDir = path.join("records", targetSlug, "items");
+  const itemsDir = path.join("records", slugForRepo(targetRepo.toLowerCase()), "items");
   if (!fs.existsSync(itemsDir)) return [];
 
   return fs
@@ -2404,10 +2403,6 @@ function commentSyncCandidates(
       return [number];
     })
     .sort((left, right) => left - right);
-}
-
-function commentSyncTargetSlug(targetRepo: string): string {
-  return targetRepo.toLowerCase().replace(/[^a-z0-9_.-]+/g, "-");
 }
 
 function readCommentSyncCursor(cursorPath: string): number {
@@ -2612,13 +2607,6 @@ function repoFor(markdown: string, name: string): string {
   return (
     frontMatterValue(markdown, "repository") || (/^\d+\.md$/.test(name) ? "openclaw/openclaw" : "")
   );
-}
-
-function targetSlug(targetRepo: string): string {
-  return targetRepo
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "");
 }
 
 function numberFor(name: string): number {

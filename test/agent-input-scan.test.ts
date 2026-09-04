@@ -91,7 +91,7 @@ function fixture(t: test.TestContext, prompt = "Review the change.") {
     `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(calls)}, 'called'); require('node:fs').readFileSync(0);`,
     { mode: 0o755 },
   );
-  const run = (source: Parameters<typeof scanAgentInput>[0]["source"]) =>
+  const run = (source: Parameters<typeof scanAgentInput>[0]["source"], timeoutMs = 30_000) =>
     runAgentProcess({
       label: "scan-fixture",
       prompt,
@@ -100,7 +100,7 @@ function fixture(t: test.TestContext, prompt = "Review the change.") {
       model: "internal",
       cwd,
       env: { ...process.env, CODEX_BIN: binary },
-      timeoutMs: 30_000,
+      timeoutMs,
     });
   return { root, cwd, git, commit, calls, diagnosticPromptPath, run };
 }
@@ -1070,7 +1070,8 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
       if (scenario.includes("snapshot")) {
         const expected = captureTargetCheckoutBinding(f.cwd);
         return withTargetReviewSnapshot(
-          { cwd: f.cwd, baseSha, expected, timeoutMs: 30_000 },
+          // Admission fixtures include repeated Git fences; deadline failures have separate tests.
+          { cwd: f.cwd, baseSha, expected, timeoutMs: 120_000 },
           f.run,
         );
       }

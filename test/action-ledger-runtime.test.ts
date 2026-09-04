@@ -2322,7 +2322,7 @@ test("concurrent flushes converge on one immutable shard", async () => {
   );
 });
 
-test("producer locks reclaim fresh dead owners and never evict a live holder by age", async () => {
+test("producer locks reclaim fresh dead owners and never evict a live holder by age", async (t) => {
   const deadRoot = tempRoot();
   const deadEvent = recordReviewNumber(deadRoot, 41);
   assert.ok(deadEvent);
@@ -2341,9 +2341,10 @@ test("producer locks reclaim fresh dead owners and never evict a live holder by 
   })}\n`;
   const releaseDead = tryAcquireUtf8FileLockNoFollow(deadTarget, deadContent);
   assert.ok(releaseDead);
-  const deadStartedAt = Date.now();
+  const deadWait = t.mock.method(Atomics, "wait");
   assert.ok(recordReviewNumber(deadRoot, 42));
-  assert.ok(Date.now() - deadStartedAt < 5_000);
+  assert.equal(deadWait.mock.callCount(), 0);
+  deadWait.mock.restore();
   assert.doesNotThrow(releaseDead);
 
   const liveRoot = tempRoot();
@@ -2351,6 +2352,7 @@ test("producer locks reclaim fresh dead owners and never evict a live holder by 
   const liveEvent = recordReviewNumber(liveRoot, 51);
   assert.ok(liveEvent);
   const readyPath = path.join(liveRoot, "holder-ready");
+  const releasePath = path.join(liveRoot, "holder-release");
   const filesModuleUrl = pathToFileURL(
     path.join(process.cwd(), "dist", "action-ledger-files.js"),
   ).href;
@@ -2371,36 +2373,52 @@ const content = actionLedgerJson({
   schema_version: process.platform === "darwin" ? 2 : 1,
   pid: process.pid,
   process_incarnation_sha256: processIncarnation,
-  acquired_at_ms: Date.now() - 5 * 60_000 + 75,
+  acquired_at_ms: Date.now() - 5 * 60_000 - 1,
   nonce: "00000000-0000-4000-8000-000000000001"
 }) + "\\n";
 const release = tryAcquireUtf8FileLockNoFollow(target, content);
 if (!release) process.exit(3);
 fs.writeFileSync(process.argv[3], "ready\\n");
-await new Promise((resolve) => setTimeout(resolve, 150));
+const deadline = performance.now() + 60_000;
+while (!fs.existsSync(process.argv[4])) {
+  if (performance.now() >= deadline) process.exit(5);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+}
 if (!fs.existsSync(target.path) || fs.readFileSync(target.path, "utf8") !== content) process.exit(4);
 release();
 `;
-  const holder = spawn(
-    process.execPath,
-    [
-      "--input-type=module",
-      "-e",
-      holderScript,
-      liveRoot,
-      producerLockRelativePath(liveEvent),
-      readyPath,
-    ],
-    { stdio: ["ignore", "pipe", "pipe"] },
-  );
-  const holderDone = childResult(holder);
-  await waitForPath(readyPath);
-
-  const startedAt = Date.now();
-  assert.ok(recordReviewNumber(liveRoot, 52));
-  assert.ok(Date.now() - startedAt >= 100);
-  const result = await holderDone;
-  assert.equal(result.code, 0, result.stderr || result.stdout);
+  await withImportRaceChildren(async (own) => {
+    const holderDone = own(
+      spawn(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          holderScript,
+          liveRoot,
+          producerLockRelativePath(liveEvent),
+          readyPath,
+          releasePath,
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      ),
+    );
+    await waitForPath(readyPath, 60_000);
+    const originalWait = Atomics.wait;
+    const liveWait = t.mock.method(Atomics, "wait", (...args: Parameters<typeof Atomics.wait>) => {
+      // The holder releases only after the contender has observed the occupied lock.
+      fs.writeFileSync(releasePath, "release\n");
+      return originalWait(...args);
+    });
+    try {
+      assert.ok(recordReviewNumber(liveRoot, 52));
+      assert.ok(liveWait.mock.callCount() > 0);
+    } finally {
+      liveWait.mock.restore();
+    }
+    const result = await holderDone;
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+  });
 
   const paths = await flushWorkflowActionEvents(liveRoot, {
     env: workflowEnv(),
@@ -2415,7 +2433,7 @@ for (const kind of ["producer", "import"] as const) {
   test(
     `macOS ${kind} locks retain live V1 owners and recover dead V1 owners`,
     { skip: process.platform === "darwin" ? false : "requires macOS lock identity transition" },
-    () => {
+    (t) => {
       const root = tempRoot();
       const source = tempRoot();
       const first = recordReviewNumber(root, 61);
@@ -2443,9 +2461,9 @@ for (const kind of ["producer", "import"] as const) {
       const releaseLive = tryAcquireUtf8FileLockNoFollow(target, liveContent);
       assert.ok(releaseLive);
       try {
-        const startedAt = Date.now();
+        const startedAt = performance.now();
         assert.throws(invoke, /lock timed out after 10000ms/);
-        assert.ok(Date.now() - startedAt >= 10_000);
+        assert.ok(performance.now() - startedAt >= 10_000);
         assert.equal(fs.readFileSync(target.path, "utf8"), liveContent);
       } finally {
         releaseLive();
@@ -2454,9 +2472,9 @@ for (const kind of ["producer", "import"] as const) {
       const deadContent = `${actionLedgerJson({ ...owner, pid: 2_147_483_647 })}\n`;
       const releaseDead = tryAcquireUtf8FileLockNoFollow(target, deadContent);
       assert.ok(releaseDead);
-      const deadStartedAt = Date.now();
+      const deadWait = t.mock.method(Atomics, "wait");
       assert.ok(invoke());
-      assert.ok(Date.now() - deadStartedAt < 5_000);
+      assert.equal(deadWait.mock.callCount(), 0);
       assert.doesNotThrow(releaseDead);
     },
   );

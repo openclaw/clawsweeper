@@ -82,6 +82,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Preserve canonical repository slugs when reading persisted apply records, including dots, underscores, and repeated or trailing hyphens.
+- Make timeout tests tolerate loaded macOS hosts by isolating checkout timing, synchronizing lock contention, and budgeting snapshot admission fixtures separately from deadline tests.
 - Preserve explicit contributor credits in source-PR link comments for both direct replacements and fallback publication after a blocked fork push.
 
 - Reject parent-directory validation symlinks, preserve porcelain paths when selecting repair checks, retain the fast-rebase base SHA for replacement publication, and mark omitted PR comments in close-coverage proof.

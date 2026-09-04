@@ -2363,23 +2363,52 @@ test("pinned-base reproduction preserves the source SHA-256 object format", () =
   assert.match(String(baseError), /src\/base\.ts:1: lint failed/);
 });
 
-test("pinned-base reproduction bounds checkout and possible promisor fetches", () => {
+test("pinned-base reproduction bounds checkout and possible promisor fetches", (t) => {
   const cwd = gitPackageFixture({ "check:changed": "node check.js" });
   fs.writeFileSync(path.join(cwd, "check.js"), "process.exit(1);\n");
   git(cwd, "add", ".");
   git(cwd, "commit", "-m", "base");
   const pinnedBaseRef = git(cwd, "rev-parse", "HEAD");
-  const startedAt = Date.now();
-
-  assert.equal(
-    reproduceValidationFailureAtPinnedBase({
-      commands: ["pnpm check:changed"],
-      targetDir: cwd,
-      options: validationOptions("openclaw/openclaw", { pinnedBaseRef, setupTimeoutMs: 1 }),
-    }),
-    null,
+  const originalSpawnSync = childProcess.spawnSync;
+  let checkoutTimeout: number | undefined;
+  let checkoutElapsed = Infinity;
+  let checkoutError: Error | undefined;
+  const spawn = t.mock.method(
+    childProcess,
+    "spawnSync",
+    (command: string, args: readonly string[], options?: childProcess.SpawnSyncOptions) => {
+      if (path.basename(command).replace(/\.exe$/, "") !== "git" || !args.includes("checkout")) {
+        return originalSpawnSync(command, args, options);
+      }
+      checkoutTimeout = options?.timeout;
+      // Time only the bounded subprocess, not the preceding repository setup.
+      const startedAt = performance.now();
+      const result = originalSpawnSync(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], {
+        ...options,
+        timeout: checkoutTimeout ?? 2_000,
+      });
+      checkoutElapsed = performance.now() - startedAt;
+      checkoutError = result.error;
+      return result;
+    },
   );
-  assert.ok(Date.now() - startedAt < 2_000);
+  syncBuiltinESMExports();
+  try {
+    assert.equal(
+      reproduceValidationFailureAtPinnedBase({
+        commands: ["pnpm check:changed"],
+        targetDir: cwd,
+        options: validationOptions("openclaw/openclaw", { pinnedBaseRef, setupTimeoutMs: 1 }),
+      }),
+      null,
+    );
+    assert.equal(checkoutTimeout, 1);
+    assert.match(checkoutError?.message ?? "", /ETIMEDOUT/);
+    assert.ok(checkoutElapsed < 2_000);
+  } finally {
+    spawn.mock.restore();
+    syncBuiltinESMExports();
+  }
 });
 
 test("pinned-base reproduction does not inherit target-controlled checkout hooks", () => {

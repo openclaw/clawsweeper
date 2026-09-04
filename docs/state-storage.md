@@ -5,6 +5,12 @@ for review records, R2 is canonical for immutable action ledgers and published
 assets, and the `state` branch of `openclaw/clawsweeper-state` retains only the
 operational paths that have not migrated yet.
 
+Record paths use the repository profile's lowercase slug: the owner/repository
+separator becomes a hyphen, while dots, underscores, and existing hyphens remain
+literal. For example, `OpenClaw/Some.Repo_Debug` uses
+`records/openclaw-some.repo_debug/`. Apply selection and cursor reads use the same
+slug as record publication and hydration; existing records need no migration.
+
 Report readers share one anchored leading-front-matter parser. A unique header
 value remains authoritative when report prose or a valid fenced example quotes
 the same key. Duplicate header keys and competing unfenced metadata blocks
