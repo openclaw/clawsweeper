@@ -2404,6 +2404,69 @@ test("review dispatch coordination guards label sweeps and maintainer mode comma
   assert.match(trustedVerdictGuard, /trustedAutomationPredatesReviewStartLease\(\{/);
 });
 
+test("proof override authorization is durable before merge while pause labels remain success-only", () => {
+  const source = readFileSync("src/repair/comment-router.ts", "utf8");
+  const mergeExecution = source.slice(
+    source.indexOf("if (\n      MERGE_INTENTS.has(command.intent)"),
+    source.indexOf('if (\n      ["clawsweeper_needs_human", "stop"].includes(command.intent)'),
+  );
+  const executeIndex = mergeExecution.indexOf("const merge = executeAutomerge(command)");
+  const successIndex = mergeExecution.indexOf('if (merge.status === "executed")');
+  const labelRemovalIndex = mergeExecution.indexOf("applyRemoveLabelActions(command)");
+  const automergeOwner = source.slice(
+    source.indexOf("function executeAutomerge"),
+    source.indexOf("function latestAutomergeTarget"),
+  );
+  const initialReadinessIndex = automergeOwner.indexOf("validateAutomergeReadiness");
+  const descriptionIndex = automergeOwner.indexOf("applyDescriptionNoteActions(command)");
+  const finalSnapshotIndex = automergeOwner.indexOf(
+    "const finalSnapshot = finalAutomergeSnapshot(command)",
+  );
+  const mergeMessageIndex = automergeOwner.indexOf(
+    "const mergeMessage = buildAutomergeSquashMessage",
+  );
+  const mergeIndex = automergeOwner.indexOf("runGitHubSpawnMutation");
+  const finalSnapshotOwner = source.slice(
+    source.indexOf("function finalAutomergeSnapshot"),
+    source.indexOf("function blockedAutomergeResult"),
+  );
+  const pullBeforeIndex = finalSnapshotOwner.indexOf(
+    "const before = fetchPullRequestView(command.issue_number)",
+  );
+  const commentsIndex = finalSnapshotOwner.indexOf(
+    "const comments = freshIssueCommentsFor(command.issue_number)",
+  );
+  const pullAfterIndex = finalSnapshotOwner.indexOf(
+    "const after = fetchPullRequestView(command.issue_number)",
+  );
+  const leaseIndex = finalSnapshotOwner.indexOf("trustedAutomationPullReviewLeaseBlockReason");
+  const readinessIndex = finalSnapshotOwner.indexOf("validateAutomergeReadiness");
+
+  assert.ok(executeIndex >= 0);
+  assert.ok(successIndex > executeIndex);
+  assert.ok(labelRemovalIndex > successIndex);
+  assert.doesNotMatch(mergeExecution, /applyDescriptionNoteActions/);
+  assert.ok(initialReadinessIndex >= 0);
+  assert.ok(descriptionIndex > initialReadinessIndex);
+  assert.ok(finalSnapshotIndex > descriptionIndex);
+  assert.ok(mergeMessageIndex > finalSnapshotIndex);
+  assert.ok(mergeIndex > mergeMessageIndex);
+  assert.ok(pullBeforeIndex >= 0);
+  assert.ok(commentsIndex > pullBeforeIndex);
+  assert.ok(pullAfterIndex > commentsIndex);
+  assert.ok(leaseIndex > pullAfterIndex);
+  assert.ok(readinessIndex > leaseIndex);
+  assert.match(finalSnapshotOwner, /status: "not_ready"/);
+  assert.doesNotMatch(
+    automergeOwner.slice(mergeMessageIndex, mergeIndex),
+    /trustedAutomationReviewLeaseBlockReason/,
+  );
+  assert.doesNotMatch(automergeOwner, /applyRemoveLabelActions/);
+  assert.match(source, /waive only the missing real behavior proof requirement/);
+  assert.match(source, /does not state that the PR is ready or merged/);
+  assert.match(source, /does not bypass any current or later review finding/);
+});
+
 test("comment router durably claims dispatch commands and recovers exact workflow receipts", () => {
   const source = readFileSync("src/repair/comment-router.ts", "utf8");
   const sweepWorkflow = readFileSync(".github/workflows/sweep.yml", "utf8");
