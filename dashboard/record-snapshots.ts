@@ -7,6 +7,7 @@ import type {
 export const EXACT_REVIEW_RECORD_SNAPSHOT_TABLE = "exact_review_record_snapshots";
 export const RECORD_SNAPSHOT_KEEP = 2;
 export const RECORD_SNAPSHOT_DOWNLOAD_MAX_BYTES = 32 * 1024 * 1024;
+export const RECORD_SNAPSHOT_UPLOAD_MAX_BYTES = 1024 * 1024 * 1024;
 
 const R2_MULTIPART_PART_BYTES = 8 * 1024 * 1024;
 const TAR_BLOCK_BYTES = 512;
@@ -39,7 +40,7 @@ export type SnapshotR2Bucket = {
     key: string,
     options?: { httpMetadata?: { contentType?: string } },
   ) => Promise<R2MultipartUploadLike>;
-  head: (key: string) => Promise<unknown | null>;
+  head: (key: string) => Promise<{ size: number } | null>;
   get: (
     key: string,
     options?: { range?: { offset: number; length: number } },
@@ -61,6 +62,16 @@ export class SnapshotStoreUnavailableError extends Error {
   constructor(message = "snapshot store unavailable", options?: ErrorOptions) {
     super(message, options);
     this.name = "SnapshotStoreUnavailableError";
+  }
+}
+
+export class SnapshotRegistrationError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status = 400) {
+    super(message);
+    this.name = "SnapshotRegistrationError";
+    this.status = status;
   }
 }
 
@@ -157,6 +168,38 @@ export class ExactReviewRecordSnapshotStore {
       if (upload) await upload.abort().catch(() => undefined);
       throw error;
     }
+  }
+
+  async register(value: Record<string, unknown>): Promise<RecordSnapshot> {
+    const snapshot = validateSnapshotRegistration(value, this.records.currentExportRevision());
+    const bucket = this.requireBucket();
+    let object: { size: number } | null;
+    try {
+      object = await bucket.head(snapshot.objectKey);
+    } catch (error) {
+      throw unavailable(error);
+    }
+    if (!object) throw new SnapshotRegistrationError("snapshot_object_not_found", 404);
+    if (object.size !== snapshot.bytes)
+      throw new SnapshotRegistrationError("snapshot_size_mismatch");
+    // A lost response can retry registration; it must not insert another row.
+    const existing = Array.from(
+      this.storage.sql.exec(
+        `SELECT repo_slug, revision_watermark, object_key, bytes, uncompressed_bytes,
+              file_count, created_at FROM ${EXACT_REVIEW_RECORD_SNAPSHOT_TABLE}
+        WHERE object_key = ?`,
+        snapshot.objectKey,
+      ),
+    )[0];
+    if (existing) {
+      if (JSON.stringify(snapshotFromRow(existing)) !== JSON.stringify(snapshot)) {
+        throw new SnapshotRegistrationError("snapshot_registration_conflict", 409);
+      }
+    } else {
+      this.insertSync(snapshot);
+    }
+    await this.prune(snapshot.repoSlug);
+    return snapshot;
   }
 
   async readRange(
@@ -396,7 +439,7 @@ async function* tarChunks(
   yield new Uint8Array(TAR_BLOCK_BYTES * 2);
 }
 
-function tarHeader(relativePath: string, size: number) {
+export function tarHeader(relativePath: string, size: number) {
   const header = new Uint8Array(TAR_BLOCK_BYTES);
   const { name, prefix } = splitTarPath(relativePath);
   writeTarString(header, 0, 100, name);
@@ -449,6 +492,46 @@ function writeTarOctal(target: Uint8Array, offset: number, length: number, value
   target[offset + length - 1] = 0;
 }
 
-function recordExtension(section: RecordSection) {
+export function recordExtension(section: RecordSection) {
   return section === "decision-packets" ? ".json" : ".md";
+}
+
+export function validateSnapshotRegistration(
+  value: Record<string, unknown>,
+  currentRevision: number,
+): RecordSnapshot {
+  const { repoSlug, revisionWatermark, objectKey, bytes, uncompressedBytes, fileCount, createdAt } =
+    value;
+  if (
+    typeof repoSlug !== "string" ||
+    !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/.test(repoSlug) ||
+    !Number.isSafeInteger(revisionWatermark) ||
+    Number(revisionWatermark) < 0 ||
+    Number(revisionWatermark) > currentRevision ||
+    !Number.isSafeInteger(bytes) ||
+    Number(bytes) < 1 ||
+    Number(bytes) > RECORD_SNAPSHOT_UPLOAD_MAX_BYTES ||
+    !Number.isSafeInteger(uncompressedBytes) ||
+    Number(uncompressedBytes) < 0 ||
+    !Number.isSafeInteger(fileCount) ||
+    Number(fileCount) < 0 ||
+    !Number.isSafeInteger(createdAt) ||
+    Number(createdAt) < 1 ||
+    Number(createdAt) > Date.now() ||
+    typeof objectKey !== "string" ||
+    !objectKey.startsWith(`${repoSlug}/${revisionWatermark}/${createdAt}-`) ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tar\.gz$/.test(
+      objectKey.slice(`${repoSlug}/${revisionWatermark}/${createdAt}-`.length),
+    )
+  )
+    throw new SnapshotRegistrationError("invalid_snapshot_descriptor");
+  return {
+    repoSlug,
+    revisionWatermark: Number(revisionWatermark),
+    objectKey,
+    bytes: Number(bytes),
+    uncompressedBytes: Number(uncompressedBytes),
+    fileCount: Number(fileCount),
+    createdAt: Number(createdAt),
+  };
 }

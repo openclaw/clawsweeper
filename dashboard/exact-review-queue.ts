@@ -82,6 +82,7 @@ import {
 import {
   ExactReviewRecordSnapshotStore,
   RECORD_SNAPSHOT_DOWNLOAD_MAX_BYTES,
+  SnapshotRegistrationError,
   SnapshotStoreUnavailableError,
   type RecordSnapshot,
 } from "./record-snapshots.ts";
@@ -3047,6 +3048,19 @@ export class ExactReviewQueue {
           return json({ error: "snapshot_not_found", snapshotStoreAvailable: true, repoSlug }, 404);
         }
         return json({ ok: true, snapshotStoreAvailable: true, snapshot: snapshotJson(snapshot) });
+      } catch (error) {
+        return snapshotErrorResponse(error);
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/records/snapshots/register") {
+      const body = objectValue(await request.json().catch(() => null));
+      try {
+        const snapshot = await this.recordSnapshotStore.register(body);
+        return json(
+          { ok: true, snapshotStoreAvailable: true, snapshot: snapshotJson(snapshot) },
+          201,
+        );
       } catch (error) {
         return snapshotErrorResponse(error);
       }
@@ -16609,6 +16623,9 @@ function snapshotJson(snapshot: RecordSnapshot) {
 }
 
 function snapshotErrorResponse(error: unknown) {
+  if (error instanceof SnapshotRegistrationError) {
+    return json({ error: error.message, snapshotStoreAvailable: true }, error.status);
+  }
   if (error instanceof SnapshotStoreUnavailableError) {
     console.error("snapshot_store_unavailable");
     return json(

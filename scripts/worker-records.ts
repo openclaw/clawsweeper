@@ -1,6 +1,8 @@
 import { createHash, createHmac } from "node:crypto";
 import {
   closeSync,
+  createReadStream,
+  createWriteStream,
   cpSync,
   existsSync,
   mkdirSync,
@@ -10,13 +12,27 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
 import path from "node:path";
+import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
+import { parseArgs } from "node:util";
+import { open } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { createGzip } from "node:zlib";
 
 import { WORKER_RECORDS_MANIFEST_SCHEMA_VERSION } from "../src/review-coverage-manifest.ts";
+import {
+  recordExtension,
+  tarHeader,
+  RECORD_SNAPSHOT_UPLOAD_MAX_BYTES,
+} from "../dashboard/record-snapshots.ts";
+import { SNAPSHOT_UPLOAD_PART_BYTES } from "../dashboard/record-snapshot-uploads.ts";
 
 export const RECORD_SECTIONS = ["items", "closed", "plans", "decision-packets", "commits"] as const;
 export type RecordSection = (typeof RECORD_SECTIONS)[number];
@@ -42,6 +58,7 @@ type ExportPage = {
 export type WorkerRecordSnapshot = {
   repoSlug: string;
   revision: number;
+  exportStartRevision: number;
   records: WorkerRecord[];
 };
 
@@ -173,6 +190,7 @@ export async function exportWorkerRecords(options: {
   const records = new Map<string, WorkerRecord>();
   let cursor: number | null = 0;
   let revision = sinceRevision;
+  let exportStartRevision: number | undefined;
   do {
     const page = await signedWorkerRecordReadPost<ExportPage>({
       baseUrl: options.baseUrl,
@@ -214,6 +232,9 @@ export async function exportWorkerRecords(options: {
     if (page.repoSlug !== options.repoSlug || !Number.isSafeInteger(page.revision)) {
       throw new Error("Worker returned an invalid record export envelope");
     }
+    // Only the first page's watermark is safe for a new snapshot: later pages
+    // may observe writes to records whose earlier revisions were already read.
+    exportStartRevision ??= page.revision;
     revision = Math.max(revision, page.revision);
     for (const record of page.records) {
       validateWorkerRecord(record);
@@ -240,6 +261,7 @@ export async function exportWorkerRecords(options: {
   return {
     repoSlug: options.repoSlug,
     revision,
+    exportStartRevision: exportStartRevision!,
     records: [...records.values()].sort((left, right) =>
       recordRelativePath(left).localeCompare(recordRelativePath(right)),
     ),
@@ -269,6 +291,7 @@ export async function materializeWorkerRecords(options: {
     string,
     {
       revision: number;
+      exportStartRevision: number;
       snapshotRevision: number;
       snapshotBytes: number;
       snapshotCache: "hit" | "miss" | "cold";
@@ -348,6 +371,7 @@ export async function materializeWorkerRecords(options: {
         });
         repositories[repoSlug] = {
           revision: journal.revision,
+          exportStartRevision: journal.exportStartRevision,
           snapshotRevision: storedSnapshot?.revisionWatermark ?? 0,
           snapshotBytes,
           snapshotCache,
@@ -994,6 +1018,34 @@ function validateStoredSnapshot(snapshot: WorkerStoredSnapshot, repoSlug: string
   }
 }
 
+export async function packWorkerRecordSnapshot(options: { repoRoot: string; archivePath: string }) {
+  const fileCount = validateSnapshotTree(options.repoRoot);
+  let uncompressedBytes = 0;
+  async function* chunks() {
+    for (const section of RECORD_SECTIONS) {
+      const directory = path.join(options.repoRoot, section);
+      if (!existsSync(directory)) continue;
+      for (const name of readdirSync(directory).sort()) {
+        const filename = path.join(directory, name);
+        const size = statSync(filename).size;
+        yield tarHeader(`${section}/${name}`, size);
+        yield* createReadStream(filename);
+        const padding = (512 - (size % 512)) % 512;
+        if (padding) yield new Uint8Array(padding);
+        uncompressedBytes += size;
+      }
+    }
+    yield new Uint8Array(1024);
+  }
+  await pipeline(Readable.from(chunks()), createGzip(), createWriteStream(options.archivePath));
+  return {
+    archivePath: options.archivePath,
+    bytes: statSync(options.archivePath).size,
+    uncompressedBytes,
+    fileCount,
+  };
+}
+
 function validateSnapshotTree(treeRoot: string) {
   let fileCount = 0;
   for (const entry of readdirSync(treeRoot, { withFileTypes: true })) {
@@ -1368,10 +1420,6 @@ function recordRelativePath(record: Pick<WorkerRecord, "section" | "id">) {
   return path.join(record.section, `${record.id}${recordExtension(record.section)}`);
 }
 
-function recordExtension(section: RecordSection) {
-  return section === "decision-packets" ? ".json" : ".md";
-}
-
 function validateRecordId(section: RecordSection, id: string) {
   const valid = section === "commits" ? /^[0-9a-f]{40}$/.test(id) : /^[1-9]\d*$/.test(id);
   if (!valid) throw new Error(`Invalid ${section} record id: ${id}`);
@@ -1387,4 +1435,142 @@ function isRepoSlug(value: string) {
 
 function sha256(content: string) {
   return createHash("sha256").update(content).digest("hex");
+}
+
+export async function uploadWorkerRecordSnapshot(options: {
+  baseUrl: string;
+  webhookSecret: string;
+  repoSlug: string;
+  fetch?: typeof globalThis.fetch;
+  log?: (line: string) => void;
+}) {
+  validateRepoSlug(options.repoSlug);
+  const root = mkdtempSync(path.join(tmpdir(), "clawsweeper-snapshot-upload-"));
+  let uploadId: string | undefined;
+  const post = <T>(operation: string, body: Record<string, unknown>) =>
+    signedPost<T>({
+      ...options,
+      path: `/internal/state/records/snapshots/upload/${operation}`,
+      body,
+    });
+  try {
+    const hydrated = await materializeWorkerRecords({
+      ...options,
+      worktreeRoot: root,
+      repoSlugs: [options.repoSlug],
+    });
+    const packed = await packWorkerRecordSnapshot({
+      repoRoot: path.join(hydrated.recordsRoot, options.repoSlug),
+      archivePath: path.join(root, "snapshot.tar.gz"),
+    });
+    if (packed.bytes > RECORD_SNAPSHOT_UPLOAD_MAX_BYTES)
+      throw new Error("Snapshot exceeds the 1 GiB upload limit");
+    const hash = createHash("sha256");
+    for await (const chunk of createReadStream(packed.archivePath)) hash.update(chunk);
+    const descriptor = {
+      repoSlug: options.repoSlug,
+      revisionWatermark: hydrated.repositories[options.repoSlug]!.exportStartRevision,
+      bytes: packed.bytes,
+      uncompressedBytes: packed.uncompressedBytes,
+      fileCount: packed.fileCount,
+      sha256: hash.digest("hex"),
+    };
+    const started = await post<{
+      ok: boolean;
+      uploadId: string;
+      objectKey: string;
+      partBytes: number;
+    }>("start", descriptor);
+    if (
+      started.ok !== true ||
+      typeof started.uploadId !== "string" ||
+      started.partBytes !== SNAPSHOT_UPLOAD_PART_BYTES ||
+      typeof started.objectKey !== "string"
+    )
+      throw new Error("Worker returned an invalid snapshot upload session");
+    uploadId = started.uploadId;
+    const parts: Array<{ partNumber: number; etag: string }> = [];
+    const file = await open(packed.archivePath, "r");
+    try {
+      for (let offset = 0, partNumber = 1; offset < packed.bytes; partNumber++) {
+        const bytes = Buffer.alloc(Math.min(SNAPSHOT_UPLOAD_PART_BYTES, packed.bytes - offset));
+        let read = 0;
+        while (read < bytes.length) {
+          const result = await file.read(bytes, read, bytes.length - read, offset + read);
+          if (result.bytesRead === 0)
+            throw new Error("Snapshot archive ended before its declared length");
+          read += result.bytesRead;
+        }
+        const result = await post<{ ok: boolean; part: { partNumber: number; etag: string } }>(
+          "part",
+          {
+            uploadId,
+            partNumber,
+            data: bytes.toString("base64"),
+            sha256: createHash("sha256").update(bytes).digest("hex"),
+          },
+        );
+        if (
+          result.ok !== true ||
+          result.part?.partNumber !== partNumber ||
+          typeof result.part.etag !== "string" ||
+          !result.part.etag
+        )
+          throw new Error("Worker returned an invalid snapshot part receipt");
+        parts.push(result.part);
+        offset += bytes.length;
+      }
+    } finally {
+      await file.close();
+    }
+    const result = await post<{ ok: boolean; snapshot: WorkerStoredSnapshot }>("complete", {
+      uploadId,
+      parts,
+    });
+    if (
+      result.ok !== true ||
+      result.snapshot?.repoSlug !== options.repoSlug ||
+      result.snapshot.objectKey !== started.objectKey ||
+      result.snapshot.revisionWatermark !== descriptor.revisionWatermark ||
+      result.snapshot.bytes !== packed.bytes
+    )
+      throw new Error("Worker returned an invalid registered snapshot");
+    return result.snapshot;
+  } catch (error) {
+    if (uploadId) await post("abort", { uploadId }).catch(() => undefined);
+    throw error;
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+export async function workerRecordsMain(argv: string[], env: NodeJS.ProcessEnv = process.env) {
+  const [command, ...args] = argv;
+  if (command !== "snapshot-upload")
+    throw new Error(
+      "Usage: worker-records.ts snapshot-upload --repo-slug <slug> [--records-url <url>]",
+    );
+  const { values } = parseArgs({
+    args,
+    options: { "repo-slug": { type: "string" }, "records-url": { type: "string" } },
+    strict: true,
+  });
+  if (!values["repo-slug"]) throw new Error("--repo-slug is required");
+  const webhookSecret = env.CLAWSWEEPER_RECORDS_SECRET ?? env.CLAWSWEEPER_WEBHOOK_SECRET ?? "";
+  if (!webhookSecret) throw new Error("CLAWSWEEPER_WEBHOOK_SECRET is required");
+  const snapshot = await uploadWorkerRecordSnapshot({
+    repoSlug: values["repo-slug"],
+    baseUrl:
+      values["records-url"] ?? env.CLAWSWEEPER_RECORDS_URL ?? "https://clawsweeper.openclaw.ai",
+    webhookSecret,
+  });
+  console.log(JSON.stringify(snapshot));
+  return snapshot;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  workerRecordsMain(process.argv.slice(2)).catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
 }

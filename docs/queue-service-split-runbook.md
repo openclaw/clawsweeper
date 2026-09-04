@@ -38,6 +38,14 @@ applied once per environment. External Durable Object bindings use Wrangler's
   binding to the destination script. Moving routes or changing
   `CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL` is a separate follow-up.
 
+Runner-built record snapshot uploads remain on the outer Worker. Its
+`/internal/state/records/snapshots/upload/{start,part,complete,abort}` routes use
+`STATE_SNAPSHOTS` and `STATUS_STORE` directly; only the small descriptor
+registration request is forwarded to `ExactReviewQueue`. Preserve both sides'
+existing R2 access when planning the split. This change does not alter bindings
+or migrations. See [snapshot operations](live-dashboard.md) for the upload and
+watermark contract.
+
 ## Configuration inventory
 
 Copy these queue-runtime values to the destination without changing them:

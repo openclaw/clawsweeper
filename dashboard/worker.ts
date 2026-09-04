@@ -108,6 +108,12 @@ import {
   type StateBlobOperation,
 } from "./state-blobs.ts";
 import {
+  handleSnapshotUpload,
+  SNAPSHOT_UPLOAD_JSON_MAX_BYTES,
+  SNAPSHOT_UPLOAD_OPERATIONS,
+  type SnapshotUploadOperation,
+} from "./record-snapshot-uploads.ts";
+import {
   GITHUB_WEBHOOK_READ_MODEL_WORKFLOW_TTL_MS,
   githubWebhookReadModelDeliveryFromWebhook,
   type GithubWebhookReadModelDelivery,
@@ -998,6 +1004,18 @@ export default {
       return authenticatedExactReviewQueueRequest(request, env, "/records/snapshots/latest");
     if (url.pathname === "/internal/state/records/snapshots/trigger" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/records/snapshots/trigger");
+    if (url.pathname === "/internal/state/records/snapshots/register" && request.method === "POST")
+      return authenticatedExactReviewQueueRequest(request, env, "/records/snapshots/register");
+    if (
+      url.pathname.startsWith("/internal/state/records/snapshots/upload/") &&
+      request.method === "POST"
+    ) {
+      const operation = url.pathname.slice(
+        "/internal/state/records/snapshots/upload/".length,
+      ) as SnapshotUploadOperation;
+      if (!SNAPSHOT_UPLOAD_OPERATIONS.includes(operation)) return json({ error: "not_found" }, 404);
+      return authenticatedSnapshotUpload(request, env, operation);
+    }
     if (url.pathname === "/internal/state/records/snapshots/chunk" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/records/snapshots/chunk");
     if (url.pathname.startsWith("/internal/state/blobs/") && request.method === "POST") {
@@ -6348,6 +6366,64 @@ async function authenticatedExactReviewQueueCursorRequest(request, env, path: st
     env,
     path,
     new Request(`https://clawsweeper-exact-review-queue${path}`, init),
+  );
+}
+
+async function authenticatedSnapshotUpload(
+  request: Request,
+  env: DashboardEnv,
+  operation: SnapshotUploadOperation,
+) {
+  const secret = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET);
+  if (!secret) return json({ error: "webhook_not_configured" }, 503);
+  const signature = request.headers.get("x-clawsweeper-exact-review-signature") || "";
+  if (!signature) return json({ error: "invalid_signature" }, 401);
+  if (Number(request.headers.get("content-length")) > SNAPSHOT_UPLOAD_JSON_MAX_BYTES)
+    return json({ error: "snapshot_request_too_large" }, 413);
+  const reader = request.body?.getReader();
+  let size = 0;
+  let bodyText = "";
+  const decoder = new TextDecoder();
+  if (reader) {
+    try {
+      while (true) {
+        const next = await reader.read();
+        if (next.done) break;
+        size += next.value.byteLength;
+        if (size > SNAPSHOT_UPLOAD_JSON_MAX_BYTES) {
+          await reader.cancel();
+          return json({ error: "snapshot_request_too_large" }, 413);
+        }
+        bodyText += decoder.decode(next.value, { stream: true });
+      }
+      bodyText += decoder.decode();
+    } finally {
+      reader.releaseLock();
+    }
+  }
+  if (!(await verifyGithubWebhookSignature({ secret, signature, bodyText })))
+    return json({ error: "invalid_signature" }, 401);
+  const body = parseJsonObject(bodyText);
+  if (!body) return json({ error: "invalid_json" }, 400);
+  if (!env.STATUS_STORE) return json({ error: "snapshot_upload_store_unavailable" }, 503);
+  return handleSnapshotUpload(
+    env.STATE_SNAPSHOTS,
+    {
+      read: (key) => readStatusStoreText(env.STATUS_STORE, key),
+      write: (key, value, ttl) => writeStatusStoreText(env.STATUS_STORE, key, value, ttl),
+    },
+    operation,
+    body,
+    (snapshot) =>
+      exactReviewQueueRequest(
+        env,
+        "/records/snapshots/register",
+        new Request("https://clawsweeper-exact-review-queue/records/snapshots/register", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(snapshot),
+        }),
+      ),
   );
 }
 

@@ -834,6 +834,8 @@ export class ExactReviewDirectPublicationStore {
     maxSourceBytes: number;
     maxRecords: number;
   }): { records: RecordExportEntry[]; nextCursor: number | null; watermark: number } {
+    // Snapshot builders use the first page's revision as their replay boundary.
+    const watermark = this.currentExportRevisionSync();
     const placeholders = options.sections.map(() => "?").join(", ");
     // The preflight joins source metadata before reconstruction. It must not
     // scan more candidates than the reconstruction bound can ever consume.
@@ -901,7 +903,6 @@ export class ExactReviewDirectPublicationStore {
       records.push(entry);
       responseBytes += entryBytes;
     }
-    const watermark = this.currentExportRevisionSync();
     const lastRevision = records.at(-1)?.storeRevision ?? null;
     const hasMore =
       lastRevision !== null && records.length === rows.length && rows.length === rowLimit

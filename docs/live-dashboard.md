@@ -525,6 +525,50 @@ for a selected repository; scheduled and manual snapshots share a concurrency
 group so snapshot runs do not overlap. Full record hydration replays changes
 since the latest snapshot.
 
+The workflow runs `node scripts/worker-records.ts snapshot-upload --repo-slug
+<slug>`: it hydrates the latest snapshot plus export delta into a temporary tree,
+streams the same ustar/gzip layout to disk on the runner, then uploads and
+registers the archive. The temporary tree and archive are removed on success or
+failure. The snapshot watermark is `exportStartRevision`, the revision returned
+by the **first** delta page. Later pages may observe concurrent writes, so using
+the highest revision observed would risk claiming changes not present in the
+archive. As with object-side production, later record versions may be included;
+future hydration replays every change after the initial watermark.
+
+The outer Worker's signed `POST /internal/state/records/snapshots/upload/`
+`start`, `part`, `complete`, and `abort` routes reuse the blob upload pattern:
+bounded JSON/base64 requests, each HMAC-signed over the exact body with
+`CLAWSWEEPER_WEBHOOK_SECRET`. `start` accepts `repoSlug`, `revisionWatermark`,
+`bytes`, gzip `sha256`, `fileCount`, and `uncompressedBytes`; it generates
+`createdAt`, an upload ID, and the R2 key
+`<repoSlug>/<revisionWatermark>/<createdAt>-<uuid>.tar.gz`. `part` accepts
+`uploadId`, `partNumber`, base64 `data`, and per-part `sha256`. Parts are 6 MiB
+decoded (above R2's 5 MiB minimum), except the final part. Requests are bounded
+before parsing, with at most 200 parts and 1 GiB per archive. Descriptors and
+part receipts use the existing StatusStore and expire after one hour. The
+runner retries transport failures with identical bytes and part numbers.
+Aborts clean up unfinished multipart uploads; abandoned uploads remain subject
+to the bucket's multipart lifecycle cleanup after their session expires.
+
+`complete` accepts `uploadId` and ordered `{partNumber, etag}` receipts. The
+outer Worker assembles the R2 multipart upload directly, verifies the per-part
+SHA-256 receipts and total R2 object size, and calls the object's
+`/records/snapshots/register`. It does not download the entire object to
+recompute gzip SHA-256; R2 metadata marks that digest as a runner claim verified
+by parts and length. Registration checks the descriptor watermark against the
+current export revision, object key prefix, and R2 existence/size, then inserts
+into the existing snapshot table and retains the newest two snapshots. Retrying
+completion or registration after response loss is safe. Abort never deletes a
+completed object, whose lifetime belongs to descriptor pruning.
+
+The small signed `/internal/state/records/snapshots/register` route is also
+available for descriptor registration. The existing
+`/internal/state/records/snapshots/trigger` endpoint remains for explicit
+object-side production, but neither scheduled nor manual ops invokes it.
+Cold hydration retains its existing record bound; a large repository without
+any snapshot still needs an initial snapshot before normal hydration can run.
+No bindings or migrations change. OpenClaw Bay is unaffected.
+
 Batch publication heartbeats retry network errors, timeouts, and HTTP 5xx
 responses (including `exact_review_queue_unavailable`) up to three attempts
 within 45 seconds, with at most 20 seconds per attempt. Heartbeat retries
