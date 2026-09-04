@@ -1011,64 +1011,47 @@ function applyCycleSummary(options: {
       ? options.cursorAdvanceCount
       : null;
   const cadence = options.scheduledIntervalMinutes;
-  if (!closeCursorMode) {
-    return {
-      basis: "not_close_cursor",
-      apply_ready_count: options.candidateCount,
-      candidate_counts: options.candidateCounts,
-      window_size: windowSize,
-      estimated_full_cycle_windows: null,
-      estimated_full_cycle_minutes: null,
-      scheduled_interval_minutes: cadence,
-      label: "Cycle estimate is only reported for scheduled close cursor windows.",
-    };
-  }
+  const summary: ApplyCycleSummary = {
+    basis: "not_close_cursor",
+    apply_ready_count: options.candidateCount,
+    candidate_counts: options.candidateCounts,
+    window_size: windowSize,
+    estimated_full_cycle_windows: null,
+    estimated_full_cycle_minutes: null,
+    scheduled_interval_minutes: cadence,
+    label: "Cycle estimate is only reported for scheduled close cursor windows.",
+  };
+  if (!closeCursorMode) return summary;
   if (options.candidateCount === null) {
     return {
+      ...summary,
       basis: "missing_candidate_count",
-      apply_ready_count: null,
-      candidate_counts: options.candidateCounts,
-      window_size: windowSize,
-      estimated_full_cycle_windows: null,
-      estimated_full_cycle_minutes: null,
-      scheduled_interval_minutes: cadence,
       label: "Cycle estimate is unavailable because the close-candidate count was not recorded.",
     };
   }
   if (options.candidateCount === 0) {
     return {
+      ...summary,
       basis: "no_apply_ready_candidates",
-      apply_ready_count: 0,
-      candidate_counts: options.candidateCounts,
-      window_size: windowSize,
       estimated_full_cycle_windows: 0,
       estimated_full_cycle_minutes: 0,
-      scheduled_interval_minutes: cadence,
       label: zeroCandidateCycleLabel(options.candidateCounts),
     };
   }
   if (!windowSize) {
     return {
+      ...summary,
       basis: "missing_window_size",
-      apply_ready_count: options.candidateCount,
-      candidate_counts: options.candidateCounts,
-      window_size: null,
-      estimated_full_cycle_windows: null,
-      estimated_full_cycle_minutes: null,
-      scheduled_interval_minutes: cadence,
       label: "Cycle estimate is unavailable because no scan window size was recorded.",
     };
   }
   const windows = Math.ceil(options.candidateCount / windowSize);
   const minutes = cadence && cadence > 0 ? windows * cadence : null;
   return {
+    ...summary,
     basis: "scheduled_close_cursor",
-    apply_ready_count: options.candidateCount,
-    candidate_counts: options.candidateCounts,
-    window_size: windowSize,
     estimated_full_cycle_windows: windows,
     estimated_full_cycle_minutes: minutes,
-    scheduled_interval_minutes: cadence,
     label: cycleLabel(
       options.candidateCount,
       windowSize,
@@ -1270,27 +1253,13 @@ function proposedItemInventorySelection(options: ProposedItemOptions): {
 
 function printProposedItemInventory(options: ProposedItemOptions): void {
   const { inventory, itemNumbers } = proposedItemInventorySelection(options);
-  const candidateCounts: ApplyCandidateCounts = {
-    confirmed_proposal: inventory.confirmed_proposal,
-    guarded_retry: inventory.guarded_retry,
-    proof_required: inventory.proof_required,
-    promotion_total: inventory.promotion_total,
-    promotion_eligible: inventory.promotion_eligible,
-    promotion_cooldown_eligible: inventory.promotion_cooldown_eligible,
-    cooldown_eligible_total: inventory.cooldown_eligible_total,
-    inconsistent_or_stale: inventory.inconsistent_or_stale,
-  };
+  const { eligible_total, ...candidateCounts } = inventory;
   printOutput({
     item_numbers: itemNumbers.join(","),
-    apply_ready_count: String(inventory.eligible_total),
-    confirmed_proposal: String(inventory.confirmed_proposal),
-    guarded_retry: String(inventory.guarded_retry),
-    proof_required: String(inventory.proof_required),
-    promotion_total: String(inventory.promotion_total),
-    promotion_eligible: String(inventory.promotion_eligible),
-    promotion_cooldown_eligible: String(inventory.promotion_cooldown_eligible),
-    cooldown_eligible_total: String(inventory.cooldown_eligible_total),
-    inconsistent_or_stale: String(inventory.inconsistent_or_stale),
+    apply_ready_count: String(eligible_total),
+    ...Object.fromEntries(
+      Object.entries(candidateCounts).map(([key, count]) => [key, String(count)]),
+    ),
     candidate_counts_json: JSON.stringify(candidateCounts),
   });
 }
@@ -1301,14 +1270,12 @@ export function proposedPrCloseCoverageItemNumbers(options: ProposedItemOptions)
   );
 }
 
-type ProposedItemSelection = "all" | "pr-close-coverage-proof" | "quality-summary";
+type ProposedItemSelection = "all" | "pr-close-coverage-proof";
 
 type ProposedItemCandidate = {
   number: number;
   applyCheckedAt: string;
   reviewedAt: string;
-  kind: string;
-  closeReason: string;
   action: string;
   stage: "confirmed_close" | "promotion_probe";
   coverageProof: boolean;
@@ -1373,16 +1340,11 @@ const ALLOWED_CLOSE_REASONS = new Set([
 function prioritizeFastCloseCandidates(
   candidates: ProposedItemCandidate[],
 ): ProposedItemCandidate[] {
-  const rank = new Map(FAST_CLOSE_BUCKET_ORDER.map((bucket, index) => [bucket, index]));
-  return candidates
-    .map((candidate, index) => ({ candidate, index }))
-    .sort(
-      (left, right) =>
-        (rank.get(left.candidate.qualityBucket) ?? Number.MAX_SAFE_INTEGER) -
-          (rank.get(right.candidate.qualityBucket) ?? Number.MAX_SAFE_INTEGER) ||
-        left.index - right.index,
-    )
-    .map(({ candidate }) => candidate);
+  return candidates.toSorted(
+    (left, right) =>
+      FAST_CLOSE_BUCKET_ORDER.indexOf(left.qualityBucket) -
+      FAST_CLOSE_BUCKET_ORDER.indexOf(right.qualityBucket),
+  );
 }
 
 function selectedProposedItemCandidates(
@@ -1427,7 +1389,7 @@ function selectedProposedItemCandidates(
           const selectableClose =
             decision === "close" &&
             confidence === "high" &&
-            isSelectableCloseAction(action, reason) &&
+            isSelectableApplyCloseAction(action, reason) &&
             allowedForTarget(options.targetRepo, type, reason, ALLOWED_CLOSE_REASONS) &&
             (!allowedCloseReasons || allowedCloseReasons.has(reason));
           const promotionCloseReasons = pullRequestClosePromotionReasons(
@@ -1480,8 +1442,6 @@ function selectedProposedItemCandidates(
               number,
               applyCheckedAt: frontMatterValue(markdown, "apply_checked_at"),
               reviewedAt: frontMatterValue(markdown, "reviewed_at"),
-              kind: type,
-              closeReason: candidateCloseReason,
               action,
               stage: selectablePromotion
                 ? ("promotion_probe" as const)
@@ -1521,11 +1481,11 @@ function selectedProposedItemCandidates(
       .sort(compareApplyCursorCandidate);
     if (!position) return sorted;
     const afterCursor = sorted.filter(
-      (candidate) => compareCandidateToApplyCursor(candidate, position) > 0,
+      (candidate) => compareApplyCursorCandidate(candidate, position) > 0,
     );
     return [
       ...afterCursor,
-      ...sorted.filter((candidate) => compareCandidateToApplyCursor(candidate, position) <= 0),
+      ...sorted.filter((candidate) => compareApplyCursorCandidate(candidate, position) <= 0),
     ];
   };
 
@@ -1636,7 +1596,7 @@ function promotionProbeCoolingDown(candidate: ProposedItemCandidate, nowMs = Dat
 export function proposedItemQualitySummary(
   options: ProposedItemOptions,
 ): ProposedItemQualitySummary {
-  const candidates = selectedProposedItemCandidates(options, "quality-summary");
+  const candidates = selectedProposedItemCandidates(options, "all");
   const counts = new Map<ProposedItemQualityBucket, number>();
   for (const candidate of candidates) {
     counts.set(candidate.qualityBucket, (counts.get(candidate.qualityBucket) || 0) + 1);
@@ -1756,38 +1716,19 @@ function qualitySummaryText(buckets: ProposedItemQualityBucketSummary[]): string
 }
 
 function compareApplyCursorCandidate(
-  left: ProposedItemCandidate,
-  right: ProposedItemCandidate,
+  left: ApplyCursorPosition,
+  right: ApplyCursorPosition,
 ): number {
   return (
-    compareApplyCheckedAt(left.applyCheckedAt, right.applyCheckedAt) || left.number - right.number
+    timestampValue(left.applyCheckedAt) - timestampValue(right.applyCheckedAt) ||
+    left.number - right.number
   );
-}
-
-function compareCandidateToApplyCursor(
-  candidate: ProposedItemCandidate,
-  cursor: ApplyCursorPosition,
-): number {
-  return (
-    compareApplyCheckedAt(candidate.applyCheckedAt, cursor.applyCheckedAt) ||
-    candidate.number - cursor.number
-  );
-}
-
-function compareApplyCheckedAt(left: string, right: string): number {
-  const leftMs = timestampValue(left);
-  const rightMs = timestampValue(right);
-  return leftMs - rightMs;
 }
 
 function timestampValue(value: string): number {
   if (!value) return 0;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function isSelectableCloseAction(action: string, reason: string): boolean {
-  return isSelectableApplyCloseAction(action, reason);
 }
 
 function hasPullRequestClosePromotionSignal(
@@ -2098,15 +2039,11 @@ function readApplyCursor(cursorPath: string): ApplyCursor | null {
   if (!fs.existsSync(cursorPath)) return null;
   const parsed: unknown = JSON.parse(fs.readFileSync(cursorPath, "utf8"));
   if (!isJsonObject(parsed)) return null;
-  const number = Number(parsed.next_after_number);
-  if (!Number.isInteger(number) || number < 0) return null;
-  const applyCheckedAt =
-    typeof parsed.next_after_apply_checked_at === "string"
-      ? parsed.next_after_apply_checked_at
-      : "";
+  const position = applyCursorPosition(parsed);
+  if (!position) return null;
   const updatedAt = typeof parsed.updated_at === "string" ? parsed.updated_at : null;
   const coverageProof = applyCursorPosition(parsed.coverage_proof_cursor);
-  return { number, applyCheckedAt, updatedAt, coverageProof };
+  return { ...position, updatedAt, coverageProof };
 }
 
 function applyCursorPosition(value: unknown): ApplyCursorPosition | null {
@@ -2224,8 +2161,7 @@ function lastExaminedSelectedNumber(
   selected: readonly number[],
   examined: ReadonlySet<number>,
 ): number | null {
-  const index = selected.findLastIndex((number) => examined.has(number));
-  return index >= 0 ? (selected[index] ?? null) : null;
+  return selected.findLast((number) => examined.has(number)) ?? null;
 }
 
 function readApplyCursorTrace(tracePath: string): number[] {
@@ -2376,13 +2312,11 @@ function commentSyncCandidates(
         frontMatterValue(markdown, "close_reason") === "duplicate_or_superseded" &&
         hasStoredReviewComment;
       const reviewCommentHash = frontMatterValue(markdown, "review_comment_sha256");
+      const invalidReviewCommentHash = !/^[a-f\d]{64}$/i.test(reviewCommentHash);
       const requiresDurableCommentRepair =
         actionTaken === "retry_stale_canonical_comment_sync" ||
         changedDuplicateClose ||
-        !reviewCommentHash ||
-        !/^[a-f\d]{64}$/i.test(reviewCommentHash);
-      const invalidReviewCommentHash =
-        !reviewCommentHash || !/^[a-f\d]{64}$/i.test(reviewCommentHash);
+        invalidReviewCommentHash;
       const syncedAt = Date.parse(frontMatterValue(markdown, "review_comment_synced_at") ?? "");
       const hasSyncedTimestamp = Number.isFinite(syncedAt);
       const verifiedAt = Date.parse(frontMatterValue(markdown, "review_comment_checked_at") ?? "");

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { escapeRegExp } from "../clawsweeper-text.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
+import { asJsonObject as asRecord } from "./json-types.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -52,6 +53,29 @@ type IntakeDecision = {
 type ReviewReport = {
   frontmatter: Record<string, string>;
   body: string;
+};
+
+type IntakeContext = {
+  targetRepo: string;
+  reportRepo: string;
+  itemNumber: number;
+  reportPath: string;
+  reportUrl: string;
+  report: ReviewReport;
+  reportMarkdown: string;
+  live: ReturnType<typeof liveIssueContext>;
+  decision: IntakeDecision;
+  candidateKind: CandidateKind;
+  jobPath: string;
+  auditPath: string;
+  preparedAt: string;
+  operatorOverride: boolean;
+  overrideRequestedBy: string;
+  workerDispatched: boolean;
+  workerDispatchedAt: string;
+  workerAttemptCount: number;
+  jobReportRevisionSha256: string;
+  workerRetryAfter: string;
 };
 
 const args = parseArgs(process.argv.slice(2));
@@ -121,7 +145,7 @@ function prepare() {
     repoSlug(targetRepo),
     `${itemNumber}.md`,
   );
-  let decision = intakeDecision({
+  let decision = eligibilityDecision({
     enabled,
     targetRepo,
     itemNumber,
@@ -208,7 +232,7 @@ function prepare() {
         previousAudit?.frontmatter.prepared_at ||
         ""
       : "";
-  const context = {
+  const context: IntakeContext = {
     targetRepo,
     reportRepo,
     itemNumber,
@@ -526,37 +550,6 @@ export function reportOnlyDecision({
   });
 }
 
-function intakeDecision({
-  enabled,
-  targetRepo,
-  itemNumber,
-  candidateKind,
-  report,
-  reportMarkdown,
-  live,
-  operatorOverride,
-}: {
-  enabled: string;
-  targetRepo: string;
-  itemNumber: number;
-  candidateKind: CandidateKind;
-  report: ReviewReport;
-  reportMarkdown: string;
-  live: LooseRecord;
-  operatorOverride: boolean;
-}): IntakeDecision {
-  return eligibilityDecision({
-    enabled,
-    targetRepo,
-    itemNumber,
-    candidateKind,
-    report,
-    reportMarkdown,
-    live,
-    operatorOverride,
-  });
-}
-
 function eligibilityDecision({
   enabled,
   targetRepo,
@@ -581,9 +574,7 @@ function eligibilityDecision({
   if (!truthy(enabled)) {
     return decision("disabled", false, "issue implementation intake disabled");
   }
-  // The execution gates (assertAllowedOwner, CrabFleet registration) enforce
-  // the same owner policy; rejecting here keeps durable state free of repair
-  // jobs that could never pass their first gate (#604).
+  // Match execution's owner policy before creating durable jobs.
   if (!isAllowedRepairOwner(targetRepo, allowedOwner)) {
     return decision(
       "owner_policy_blocked",
@@ -733,7 +724,11 @@ function eligibilityDecision({
   }
 
   if (blockers.length) {
-    const blockerClass = strongestBlockerClass(blockers);
+    const blockerClass = blockers.some(
+      (blocker) => issueImplementationBlockerClass(blocker) === "hard",
+    )
+      ? "hard"
+      : "soft";
     if (operatorOverride) {
       return {
         status: blockerClass === "hard" ? "override_handoff" : "override_queued_for_repair",
@@ -763,20 +758,18 @@ function eligibilityDecision({
   );
 }
 
-function writeJob(context: LooseRecord) {
-  const fm = context.report.frontmatter as Record<string, string>;
+function writeJob(context: IntakeContext) {
+  const fm = context.report.frontmatter;
   const issue = asRecord(context.live.issue);
-  const candidateKind = context.candidateKind as CandidateKind;
+  const candidateKind = context.candidateKind;
   const body = renderIssueImplementationJob({
     repo: context.targetRepo,
     issueNumber: context.itemNumber,
     title: issue.title || displayTitle(fm.title ?? "") || `Issue #${context.itemNumber}`,
     implementationPrompt:
-      candidateKind === "vision_fit"
-        ? visionFitImplementationPrompt(context)
-        : candidateKind === "viable"
-          ? viableImplementationPrompt(context)
-          : strictImplementationPrompt(context),
+      candidateKind === "viable"
+        ? viableImplementationPrompt(context)
+        : reviewImplementationPrompt(context),
     triggerSource:
       candidateKind === "vision_fit"
         ? REVIEW_VISION_FIT_TRIGGER_SOURCE
@@ -807,7 +800,7 @@ function writeJob(context: LooseRecord) {
   if (errors.length) die(errors.join("\n"));
 }
 
-function viableImplementationPrompt(context: LooseRecord) {
+function viableImplementationPrompt(context: IntakeContext) {
   const workPrompt = section(context.report.body, "Repair Work Prompt");
   return [
     "ClawSweeper finished reviewing this open issue and found no active implementation PR.",
@@ -823,67 +816,54 @@ function viableImplementationPrompt(context: LooseRecord) {
   ].join("\n");
 }
 
-function strictImplementationPrompt(context: LooseRecord) {
-  const fm = context.report.frontmatter as Record<string, string>;
-  const validation = frontMatterStringArray(fm.work_validation);
-  const likelyFiles = frontMatterStringArray(fm.work_likely_files);
-  const workPrompt = section(context.report.body, "Repair Work Prompt");
-  return [
-    "This was selected by ClawSweeper's high-confidence bug-fix lane.",
-    "",
-    `Review report: ${context.reportUrl}`,
-    `Category: ${fm.item_category}`,
-    `Reproduction: ${fm.reproduction_status} (${fm.reproduction_confidence})`,
-    "Feature/config/product blockers: false.",
-    "",
-    "Bug-fix boundary:",
-    "",
-    "- fix broken existing behavior only",
-    "- do not add config options, feature modes, providers, broad UX changes, or product policy",
-    "- reproduce first; if reproduction fails on latest main, stop and report that blocker",
-    "",
-    "Review work prompt:",
-    "",
-    workPrompt.trim() || fm.work_reason_sha256 || "Fix the narrow reproduced bug.",
-    "",
-    "Likely files:",
-    "",
-    ...(likelyFiles.length ? likelyFiles.map((file) => `- ${file}`) : ["- unknown"]),
-    "",
-    "Validation:",
-    "",
-    ...(validation.length ? validation.map((command) => `- ${command}`) : ["- pnpm check:changed"]),
-  ].join("\n");
-}
-
-function visionFitImplementationPrompt(context: LooseRecord) {
-  const fm = context.report.frontmatter as Record<string, string>;
+function reviewImplementationPrompt(context: IntakeContext) {
+  const fm = context.report.frontmatter;
   const validation = frontMatterStringArray(fm.work_validation);
   const likelyFiles = frontMatterStringArray(fm.work_likely_files);
   const visionEvidence = frontMatterStringArray(fm.vision_fit_evidence);
+  const visionFit = context.candidateKind === "vision_fit";
   const workPrompt = section(context.report.body, "Repair Work Prompt");
   return [
-    "This was selected by ClawSweeper's vision-fit issue lane.",
-    "",
-    `Review report: ${context.reportUrl}`,
-    `Category: ${fm.item_category}`,
-    `Vision fit: ${fm.vision_fit}`,
-    `Implementation complexity: ${fm.implementation_complexity}`,
-    "",
-    "Vision evidence:",
-    "",
-    ...(visionEvidence.length ? visionEvidence.map((entry) => `- ${entry}`) : ["- unknown"]),
-    "",
-    "Implementation boundary:",
-    "",
-    "- read VISION.md before editing and stop if the issue no longer fits it",
-    "- keep one small focused PR",
-    "- stop if the work expands into medium/large scope or needs a product decision",
-    "- preserve plugin, ClawHub, extension, config, and docs boundaries from VISION.md",
+    ...(visionFit
+      ? [
+          "This was selected by ClawSweeper's vision-fit issue lane.",
+          "",
+          `Review report: ${context.reportUrl}`,
+          `Category: ${fm.item_category}`,
+          `Vision fit: ${fm.vision_fit}`,
+          `Implementation complexity: ${fm.implementation_complexity}`,
+          "",
+          "Vision evidence:",
+          "",
+          ...(visionEvidence.length ? visionEvidence.map((entry) => `- ${entry}`) : ["- unknown"]),
+          "",
+          "Implementation boundary:",
+          "",
+          "- read VISION.md before editing and stop if the issue no longer fits it",
+          "- keep one small focused PR",
+          "- stop if the work expands into medium/large scope or needs a product decision",
+          "- preserve plugin, ClawHub, extension, config, and docs boundaries from VISION.md",
+        ]
+      : [
+          "This was selected by ClawSweeper's high-confidence bug-fix lane.",
+          "",
+          `Review report: ${context.reportUrl}`,
+          `Category: ${fm.item_category}`,
+          `Reproduction: ${fm.reproduction_status} (${fm.reproduction_confidence})`,
+          "Feature/config/product blockers: false.",
+          "",
+          "Bug-fix boundary:",
+          "",
+          "- fix broken existing behavior only",
+          "- do not add config options, feature modes, providers, broad UX changes, or product policy",
+          "- reproduce first; if reproduction fails on latest main, stop and report that blocker",
+        ]),
     "",
     "Review work prompt:",
     "",
-    workPrompt.trim() || fm.work_reason_sha256 || "Implement the narrow vision-fit issue.",
+    workPrompt.trim() ||
+      fm.work_reason_sha256 ||
+      (visionFit ? "Implement the narrow vision-fit issue." : "Fix the narrow reproduced bug."),
     "",
     "Likely files:",
     "",
@@ -895,12 +875,12 @@ function visionFitImplementationPrompt(context: LooseRecord) {
   ].join("\n");
 }
 
-function writeAudit(context: LooseRecord) {
+function writeAudit(context: IntakeContext) {
   fs.mkdirSync(path.dirname(context.auditPath), { recursive: true });
   const jobLine = context.decision.shouldRepair
     ? `- Job: \`${relative(context.jobPath)}\``
     : "- Job: none";
-  const [itemUpdatedAt, reviewedAt] = reviewFreshness(context.report as ReviewReport);
+  const [itemUpdatedAt, reviewedAt] = reviewFreshness(context.report);
   const body = `---
 repo: ${context.targetRepo}
 number: ${context.itemNumber}
@@ -1274,7 +1254,7 @@ export function referencedIssueNumbers({
   itemNumber: number;
   references: string[];
 }): number[] {
-  const escapedRepo = targetRepo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escapedRepo = escapeRegExp(targetRepo);
   const numbers = new Set<number>();
   for (const reference of references) {
     const shorthandReference = reference.replace(/\[[^\]]*\]\([^\s)]+\)/gi, " ");
@@ -1410,12 +1390,6 @@ function decision(status: string, shouldRepair: boolean, reason: string): Intake
   return { status, shouldRepair, reason, blockers: shouldRepair ? [] : [reason] };
 }
 
-function strongestBlockerClass(blockers: string[]): "soft" | "hard" {
-  return blockers.some((blocker) => issueImplementationBlockerClass(blocker) === "hard")
-    ? "hard"
-    : "soft";
-}
-
 function writeStepOutputs(values: Record<string, JsonValue>) {
   const output = process.env.GITHUB_OUTPUT;
   if (!output) return;
@@ -1473,12 +1447,6 @@ function reportSecurityNeedsAttention(markdown: string): boolean {
   if (status === "needs_attention") return true;
   if (["not_applicable", "clear", "cleared", "none"].includes(status ?? "")) return false;
   return securitySensitiveText(securityReview || markdown);
-}
-
-function asRecord(value: unknown): Record<string, JsonValue> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, JsonValue>)
-    : {};
 }
 
 function stringArg(key: string, fallback = ""): string {

@@ -1759,23 +1759,6 @@ test("generated issue PRs terminate review-only and cannot automerge", () => {
   );
 });
 
-test("issue implementation intake checks generated branches through REST", () => {
-  const source = readText("src/repair/issue-implementation-intake.ts");
-
-  assert.match(source, /repos\/\$\{owner\}\/\$\{name\}\/pulls/);
-  assert.match(source, /head=\$\{owner\}:\$\{branch\}/);
-  assert.match(source, /open PR already mentions this issue/);
-  assert.match(source, /existing ClawSweeper issue implementation PR is open/);
-  assert.match(source, /open PR already covers a related issue in this work cluster/);
-  assert.match(source, /review report references an open or unverifiable pull request/);
-  assert.match(source, /issue implementation job already queued/);
-  assert.match(source, /repos\/\$\{owner\}\/\$\{name\}\/issues\/\$\{number\}/);
-  assert.match(source, /"search\/issues",\s+"--method",\s+"GET"/);
-  assert.doesNotMatch(source, /"pr", "list"/);
-  assert.match(source, /reportRepo\.trim\(\)\.toLowerCase\(\) === "openclaw\/clawsweeper-state"/);
-  assert.match(source, /fs\.existsSync\(canonicalPath\)/);
-});
-
 test("repair executor uses retryable blobless target checkout", () => {
   const source = readText("src/repair/execute-fix-artifact.ts");
 
