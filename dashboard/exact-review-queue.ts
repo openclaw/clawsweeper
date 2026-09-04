@@ -849,25 +849,13 @@ export class ExactReviewQueue {
     generation: number;
   } | null = null;
 
-  private lifecycleBayCache: {
-    key: string;
-    expiresAt: number;
-    body: string;
-    changes: number;
-  } | null = null;
-  private lifecycleBayComputation: {
-    key: string;
-    body: Promise<string>;
-    changes: number;
-    generation: number;
-  } | null = null;
+  private lifecycleBayCache: { key: string; expiresAt: number; body: string } | null = null;
+  private readonly lifecycleBayComputations = new Map<string, Promise<string>>();
 
   private invalidateReadCaches() {
     this.statsMutationGeneration++;
     this.statsCache = null;
     this.statsComputation = null;
-    this.lifecycleBayCache = null;
-    this.lifecycleBayComputation = null;
   }
 
   private reviewCoverageCache: { at: number; summary: ReviewCoverageSummary } | null = null;
@@ -3944,51 +3932,32 @@ export class ExactReviewQueue {
     const repositories = !url.searchParams.has("public_repo")
       ? undefined
       : new Set(valid ? publicRepositories.sort() : []);
-    const configured = Number(this.env.EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS ?? 10_000);
-    const ttl = Number.isFinite(configured) && configured >= 0 ? configured : 10_000;
+    const configured = Number(this.env.EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS ?? 30_000);
+    const ttl = Number.isFinite(configured) && configured >= 0 ? configured : 30_000;
     if (!ttl) {
       this.lifecycleBayCache = null;
-      this.lifecycleBayComputation = null;
+      this.lifecycleBayComputations.clear();
       return this.computeLifecycleBayBody(repositories);
     }
     const key = JSON.stringify(repositories ? [...repositories] : null);
-    for (;;) {
-      const now = Date.now();
-      const changes = this.storageChangeCountSync();
-      const generation = this.statsMutationGeneration;
-      const cached = this.lifecycleBayCache;
-      if (cached?.key === key && cached.expiresAt > now && cached.changes === changes)
-        return cached.body;
-      const pending = this.lifecycleBayComputation;
-      if (
-        pending?.key === key &&
-        pending.changes === changes &&
-        pending.generation === generation
-      ) {
-        // An in-flight body is not a validated cache entry. A waiter must check
-        // again after yielding because writes can invalidate that computation.
-        await pending.body;
-        continue;
-      }
-      const computation = {
-        key,
-        changes,
-        generation,
-        body: Promise.resolve().then(() => this.computeLifecycleBayBody(repositories)),
-      };
-      this.lifecycleBayComputation = computation;
-      try {
-        const body = await computation.body;
-        if (
-          this.lifecycleBayComputation === computation &&
-          this.statsMutationGeneration === generation &&
-          this.storageChangeCountSync() === changes
-        )
-          this.lifecycleBayCache = { key, expiresAt: now + ttl, body, changes };
-        return body;
-      } finally {
-        if (this.lifecycleBayComputation === computation) this.lifecycleBayComputation = null;
-      }
+    const cached = this.lifecycleBayCache;
+    if (cached?.key === key && cached.expiresAt > Date.now()) return cached.body;
+    const pending = this.lifecycleBayComputations.get(key);
+    if (pending) return pending;
+
+    // Bay accepts TTL-bounded staleness across writes; stats still invalidate.
+    const startedAt = Date.now();
+    const computation = Promise.resolve().then(() => this.computeLifecycleBayBody(repositories));
+    this.lifecycleBayComputations.set(key, computation);
+    try {
+      const body = await computation;
+      // Disabling the memo resets in-flight work without letting it repopulate.
+      if (this.lifecycleBayComputations.get(key) === computation)
+        this.lifecycleBayCache = { key, expiresAt: startedAt + ttl, body };
+      return body;
+    } finally {
+      if (this.lifecycleBayComputations.get(key) === computation)
+        this.lifecycleBayComputations.delete(key);
     }
   }
 

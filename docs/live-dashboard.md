@@ -464,14 +464,39 @@ remain unchanged are memoized; polls waiting on invalidated work recompute.
 This only bounds observation freshness: the public projection's fields and
 meaning, admission, publication fences, and Bay behavior are unchanged.
 
-The object's lifecycle Bay response has a 30-second memo in production
-(`EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "30000"`; set `0` to disable), scoped to
-the requested public repositories. The source fallback remains 10 seconds.
-Bay is observer-only, so 30 seconds of staleness is acceptable.
-Concurrent reads share the original snapshot
-and `generated_at`; lifecycle and queue state writes invalidate it, including
-writes during an in-flight read. This complements the Worker's existing
-20-second public response cache without changing Bay fields or invalidation rules.
+The object's lifecycle Bay response has a 30-second TTL-only memo
+(`EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS`; set `0` to disable). Production explicitly
+sets `EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "30000"`. Ordinary lifecycle, queue,
+and auxiliary writes do not invalidate it: this public, observer-only,
+closed-aggregate surface accepts staleness up to the TTL. Concurrent reads for
+the same normalized repository scope share one in-flight computation and its
+original `generated_at`. Only completed work enters the memo; disabling it
+resets pending work so an older computation cannot restore the cache. The stats
+memo retains its separate write-invalidation rules for admission diagnostics.
+
+The outer `/api/durable-lifecycle-bay` route caches the sanitized response for
+30 seconds at the edge, keyed by origin and verified-public repository scope.
+After expiry it serves a stale copy while coalescing one background refresh per
+scope per isolate, as the status route does. Both cache buckets are capped by
+the original snapshot's 60-second maximum age; neither layer renews
+`generated_at`. Without a background execution context, an expired fresh entry
+is refreshed synchronously. Edge caches are local to each colo, so cross-colo
+misses can still reach the object; its TTL memo absorbs those reads. Bay's
+public field set, freshness contract, and observer-only boundary are unchanged.
+
+An uncached Bay build still scans every retained projection in the requested
+repositories (all repositories for an unscoped internal request). It has no
+seven-day cutoff: seven-day telemetry retention and 30-day Bay event retention
+belong to separate telemetry tables. The compact SQL JSON cursor retains the
+fields needed for lane counts, bounded cards, and integrity validation, without
+the former 512-row parsed-object cache that thrashed on large histories. Strict
+JSON validation and a full-parser fallback for unusual JSON, duplicate keys, and
+NULs preserve the original reader’s malformed-data handling. The
+remaining full-history scan is not a constant-size aggregate query; adding
+persisted counters requires a separate backfill and writer-compatibility change.
+Use `node scripts/proof-bay-ttl.mjs BASE_SHA OUTPUT_DIR` to compare full and compact
+materialization on 20,000 mixed synthetic projections; this local SQLite proof
+does not predict production Cloudflare CPU.
 
 For capacity displays, `/api/exact-review-queue` also exposes compatible
 `lanes.review` and `lanes.publication` objects. Each lane reports its own

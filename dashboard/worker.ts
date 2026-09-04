@@ -1220,7 +1220,7 @@ export default {
     if (url.pathname === "/api/exact-review-queue" && request.method === "GET")
       return publicExactReviewQueueJson(env);
     if (url.pathname === "/api/durable-lifecycle-bay" && request.method === "GET")
-      return durableLifecycleBayJson(request, env);
+      return durableLifecycleBayJson(request, env, ctx);
     if (url.pathname === "/api/live-activity-bay" && request.method === "GET")
       return json({
         live_activity_bay: await liveActivityBaySnapshotForRequest(request, env, ctx),
@@ -5509,45 +5509,91 @@ async function publicExactReviewQueueJson(env) {
   }
 }
 
-async function durableLifecycleBayJson(request: Request, env) {
+const DURABLE_LIFECYCLE_BAY_CACHE_SECONDS = 30;
+const durableLifecycleBayRefreshes = new Map<string, Promise<Record<string, unknown>>>();
+
+function durableLifecycleBayCacheKey(request: Request, env, bucket: "fresh" | "stale") {
   const scope = publicBayRepositoryScope(verifiedPublicBayRepositories(env));
-  const cacheKey = new Request(
-    new URL(`/api/durable-lifecycle-bay-cache/v1/${encodeURIComponent(scope) || "_"}`, request.url),
+  return new Request(
+    new URL(
+      `/api/durable-lifecycle-bay-cache/v1/${encodeURIComponent(scope) || "_"}/${bucket}`,
+      request.url,
+    ),
   );
+}
+
+async function cachedDurableLifecycleBay(request: Request) {
   try {
-    const cached = await caches.default.match(cacheKey);
+    const cached = await caches.default.match(request);
     if (cached?.ok) {
       const body = await cached.json();
       const snapshot = objectValue(body.durable_lifecycle_bay);
       const generatedAt = publicQueueTimestamp(snapshot.generated_at);
       const age = Date.now() - Date.parse(generatedAt || "");
-      // This versioned cache contains only the sanitized public response below.
+      // Only sanitized public responses enter this versioned cache. Both buckets
+      // remain bounded by the source snapshot's existing maximum age.
       if (
         generatedAt &&
         objectValue(snapshot.freshness).maximum_age_ms === 60_000 &&
         age >= -60_000 &&
         age <= 60_000
       )
-        return json(body);
+        return body;
     }
   } catch {
     // Cache availability must not prevent a fresh lifecycle read.
   }
+  return null;
+}
 
-  const snapshot = await durableLifecycleBaySnapshot(env);
-  const response = json({ durable_lifecycle_bay: snapshot });
-  const remainingAgeMs = Date.parse(snapshot.generated_at) + 60_000 - Date.now();
-  const ttl = Math.min(20, Math.floor(remainingAgeMs / 1000));
-  if (ttl > 0) {
-    try {
-      const cached = response.clone();
-      cached.headers.set("cache-control", `public, max-age=${ttl}`);
-      await caches.default.put(cacheKey, cached);
-    } catch {
-      // Serve the current public snapshot even when the cache cannot store it.
-    }
+async function durableLifecycleBayJson(request: Request, env, ctx?: DashboardContext) {
+  const freshKey = durableLifecycleBayCacheKey(request, env, "fresh");
+  const cached = await cachedDurableLifecycleBay(freshKey);
+  if (cached) return json(cached);
+  const staleKey = durableLifecycleBayCacheKey(request, env, "stale");
+  const stale = await cachedDurableLifecycleBay(staleKey);
+  if (stale && ctx?.waitUntil) {
+    ctx.waitUntil(refreshDurableLifecycleBay(env, freshKey, staleKey).catch(() => undefined));
+    return json(stale);
   }
-  return response;
+  return json(await refreshDurableLifecycleBay(env, freshKey, staleKey));
+}
+
+function refreshDurableLifecycleBay(env, freshKey: Request, staleKey: Request) {
+  const key = freshKey.url;
+  const pending = durableLifecycleBayRefreshes.get(key);
+  if (pending) return pending;
+  const promise = refreshDurableLifecycleBayCaches(env, freshKey, staleKey);
+  durableLifecycleBayRefreshes.set(key, promise);
+  promise
+    .finally(() => {
+      if (durableLifecycleBayRefreshes.get(key) === promise)
+        durableLifecycleBayRefreshes.delete(key);
+    })
+    .catch(() => undefined);
+  return promise;
+}
+
+async function refreshDurableLifecycleBayCaches(env, freshKey: Request, staleKey: Request) {
+  const snapshot = await durableLifecycleBaySnapshot(env);
+  const body = { durable_lifecycle_bay: snapshot };
+  const remainingSeconds = Math.floor(
+    (Date.parse(snapshot.generated_at) + 60_000 - Date.now()) / 1000,
+  );
+  if (remainingSeconds > 0) {
+    await Promise.allSettled(
+      [freshKey, staleKey].map(async (key) => {
+        const ttl =
+          key === freshKey
+            ? Math.min(DURABLE_LIFECYCLE_BAY_CACHE_SECONDS, remainingSeconds)
+            : remainingSeconds;
+        const cached = json(body);
+        cached.headers.set("cache-control", `public, max-age=${ttl}`);
+        await caches.default.put(key, cached);
+      }),
+    );
+  }
+  return body;
 }
 
 export async function durableLifecycleBaySnapshot(env, now = Date.now()) {

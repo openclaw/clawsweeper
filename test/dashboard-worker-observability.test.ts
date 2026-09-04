@@ -636,7 +636,7 @@ test("durable lifecycle Bay provisions only its indexed reader before ordinary q
   assert.equal(ordinaryBody.recent_durable_publication_events.collection.complete, true);
 });
 
-test("durable lifecycle Bay caches public responses by origin and repository scope for 20 seconds", async (t) => {
+test("durable lifecycle Bay caches public responses by origin and repository scope for 30 seconds", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-02T12:00:00Z") });
   const originalCaches = globalThis.caches;
   const values = new MemoryCache();
@@ -650,8 +650,8 @@ test("durable lifecycle Bay caches public responses by origin and repository sco
           return values.match(request);
         },
         async put(request: Request, response: Response) {
-          assert.equal(response.headers.get("cache-control"), "public, max-age=20");
-          expires.set(request.url, Date.now() + 20_000);
+          const ttl = request.url.endsWith("/stale") ? 60_000 : 30_000;
+          expires.set(request.url, Date.now() + ttl);
           await values.put(request, response);
         },
       },
@@ -675,7 +675,7 @@ test("durable lifecycle Bay caches public responses by origin and repository sco
   assert.equal(first.headers.get("cache-control"), "no-store");
   assert.equal(initialBody.durable_lifecycle_bay.collection.state, "complete");
   assert.equal(reads, 1);
-  t.mock.timers.tick(19_000);
+  t.mock.timers.tick(29_000);
   const second = await worker.fetch(new Request(`${url}?ignored=cache-bypass`), env);
   assert.deepEqual(
     await second.json(),
@@ -769,7 +769,7 @@ test("durable lifecycle Bay rejects malformed or stale cached timestamps and cap
     assert.equal(response.headers.get("cache-control"), "no-store");
   }
   assert.equal(reads, 4);
-  assert.equal(writes, 4);
+  assert.equal(writes, 8);
 });
 
 test("durable lifecycle Bay serves fresh snapshots when native cache reads or writes fail", async (t) => {
@@ -811,7 +811,7 @@ test("durable lifecycle Bay serves fresh snapshots when native cache reads or wr
     assert.equal(response.headers.get("cache-control"), "no-store");
   }
   assert.equal(reads, 2);
-  assert.equal(writes, 2);
+  assert.equal(writes, 4);
 });
 
 test("durable lifecycle Bay fail-closes unknown snapshots without partial cards or counts", async () => {
@@ -2820,4 +2820,70 @@ test("optional queue status failure retains the last complete public Bay queue s
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
   }
+});
+
+test("durable lifecycle Bay stale polls share one background refresh and respect maximum age", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-04T00:00:00Z") });
+  const originalCaches = globalThis.caches;
+  const values = new MemoryCache();
+  const expires = new Map<string, number>();
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: {
+      default: {
+        async match(request: Request) {
+          if ((expires.get(request.url) || 0) <= Date.now()) return undefined;
+          return values.match(request);
+        },
+        async put(request: Request, response: Response) {
+          const ttl = Number(
+            /max-age=(\d+)/.exec(response.headers.get("cache-control") || "")?.[1],
+          );
+          expires.set(request.url, Date.now() + ttl * 1000);
+          await values.put(request, response);
+        },
+      },
+    },
+  });
+  t.after(() => Object.defineProperty(globalThis, "caches", { value: originalCaches }));
+  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  let reads = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const env = {
+    PUBLIC_BAY_REPOS: "openclaw/openclaw",
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace({
+      async fetch(request: Request) {
+        if (++reads === 2) await gate;
+        return queue.fetch(request);
+      },
+    }),
+  };
+  const background: Promise<unknown>[] = [];
+  const ctx = {
+    waitUntil(promise: Promise<unknown>) {
+      background.push(promise);
+    },
+  };
+  const read = () =>
+    worker.fetch(new Request("https://swr.example/api/durable-lifecycle-bay"), env, ctx);
+  const first = await (await read()).text();
+  t.mock.timers.tick(29_999);
+  assert.equal(await (await read()).text(), first);
+  assert.equal(reads, 1);
+  t.mock.timers.tick(1);
+  const stale = await Promise.all(Array.from({ length: 8 }, async () => (await read()).text()));
+  assert.ok(stale.every((body) => body === first));
+  assert.equal(reads, 2);
+  assert.equal(background.length, 8);
+  release();
+  await Promise.all(background);
+  const fresh = await (await read()).text();
+  assert.notEqual(fresh, first);
+  assert.equal(reads, 2);
+  t.mock.timers.tick(60_001);
+  assert.notEqual(await (await read()).text(), fresh);
+  assert.equal(reads, 3, "expired source data cannot be served as stale success");
 });

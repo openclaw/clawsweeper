@@ -260,13 +260,6 @@ type LifecycleAdmissionInput = ProjectionIdentity & {
 
 export class ExactReviewLifecycleProjectionStore {
   private readonly storage: DurableStorage;
-  private readonly bayProjectionCache = new Map<
-    string,
-    {
-      json: string;
-      projection: ExactReviewLifecycleProjection;
-    }
-  >();
   private schemaReady = false;
   private auditSchemaReady = false;
 
@@ -956,25 +949,29 @@ export class ExactReviewLifecycleProjectionStore {
           }
 
           for (const row of this.storage.sql.exec(
-            `SELECT projection_json, canonical_target_key, fence_key, revision
+            `SELECT CASE WHEN instr(projection_json, char(0)) = 0 AND json_valid(projection_json)
+                    THEN CASE WHEN NOT EXISTS (
+                      SELECT 1 FROM json_each(projection_json)
+                      GROUP BY key HAVING COUNT(*) > 1 OR instr(key, char(0)) > 0
+                    ) THEN json_array('compact', json_extract(projection_json,
+                      '$.version', '$.canonicalTargetKey', '$.fenceKey', '$.revision',
+                      '$.updatedAt', '$.bayTelemetryPending', '$.bayTelemetryEventId',
+                      '$.admission', '$.claims', '$.reviewResults', '$.githubEffect',
+                      '$.canonicalReceipts', '$.routerReceipts', '$.routerReceipt',
+                      '$.acknowledgement', '$.terminalDispositions', '$.terminalOperationIds',
+                      '$.terminalDisposition'),
+                      json_type(projection_json, '$.githubEffect'),
+                      json_type(projection_json, '$.bayTelemetryEventId'))
+                    ELSE json_array('full', projection_json) END
+                    ELSE json_array('full', projection_json) END AS bay_json,
+                    canonical_target_key, fence_key, revision
                FROM ${source}
               ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC`,
             ...bindings,
           )) {
             let projection: ExactReviewLifecycleProjection;
             try {
-              const source = String(row.projection_json || "");
-              const key = JSON.stringify([row.canonical_target_key, row.fence_key, row.revision]);
-              const cached = this.bayProjectionCache.get(key);
-              if (cached?.json === source) projection = cached.projection;
-              else {
-                projection = projectionFromRow(source);
-                this.bayProjectionCache.set(key, { json: source, projection });
-                // Retain only a bounded working set; SQL remains authoritative.
-                if (this.bayProjectionCache.size > 512) {
-                  this.bayProjectionCache.delete(this.bayProjectionCache.keys().next().value!);
-                }
-              }
+              projection = bayProjectionFromRow(row);
             } catch {
               return unknown("malformed");
             }
@@ -1060,8 +1057,12 @@ export class ExactReviewLifecycleProjectionStore {
           },
         };
       });
-    } catch {
-      return unknown("unavailable");
+    } catch (error) {
+      return unknown(
+        error instanceof Error && /malformed JSON/i.test(error.message)
+          ? "malformed"
+          : "unavailable",
+      );
     }
   }
 
@@ -1793,18 +1794,19 @@ function isMalformedLifecycleError(error: unknown) {
   );
 }
 
+const lifecycleTerminalKinds = new Set<LifecycleTerminalDisposition>([
+  "review_completed_routed",
+  "superseded",
+  "requeue",
+  "dead_letter",
+  "target_closed",
+  "target_missing",
+  "policy_noop",
+  "guarded_open",
+  "failure",
+]);
+
 function validDurableLifecycleBayProjection(value: ExactReviewLifecycleProjection) {
-  const terminalKinds = new Set<LifecycleTerminalDisposition>([
-    "review_completed_routed",
-    "superseded",
-    "requeue",
-    "dead_letter",
-    "target_closed",
-    "target_missing",
-    "policy_noop",
-    "guarded_open",
-    "failure",
-  ]);
   if (
     !value ||
     typeof value !== "object" ||
@@ -1874,9 +1876,8 @@ function validDurableLifecycleBayProjection(value: ExactReviewLifecycleProjectio
     ) ||
     !value.terminalDispositions.every(
       (disposition) =>
-        terminalKinds.has(disposition.kind) && finiteTimestamp(disposition.observedAt),
+        lifecycleTerminalKinds.has(disposition.kind) && finiteTimestamp(disposition.observedAt),
     ) ||
-    !validTerminalOperations(value.terminalOperationIds, terminalKinds) ||
     !value.acknowledgement.attempts.every(
       (attempt) =>
         /^ack:[1-9]\d*$/.test(attempt.attemptId) &&
@@ -1926,7 +1927,7 @@ function validDurableLifecycleBayProjection(value: ExactReviewLifecycleProjectio
   if (value.terminalDisposition) {
     const latest = value.terminalDispositions.at(-1);
     if (
-      !terminalKinds.has(value.terminalDisposition.kind) ||
+      !lifecycleTerminalKinds.has(value.terminalDisposition.kind) ||
       !finiteTimestamp(value.terminalDisposition.observedAt) ||
       !latest ||
       latest.kind !== value.terminalDisposition.kind ||
@@ -1956,8 +1957,61 @@ function commandAcknowledgementTerminalSkip(projection: ExactReviewLifecycleProj
   );
 }
 
+// The Bay cursor omits object keys and unrelated extension data, but retains
+// every fact needed by the reducer and its fail-closed integrity validation.
+function bayProjectionFromRow(row: Record<string, unknown>): ExactReviewLifecycleProjection {
+  const [mode, fields, effectType, eventType] = JSON.parse(String(row.bay_json || ""));
+  // Preserve full-parser semantics for unusual JSON, duplicate keys, and NULs.
+  if (mode === "full") return projectionFromRow(fields);
+  const [
+    version,
+    canonicalTargetKey,
+    fenceKey,
+    revision,
+    updatedAt,
+    bayTelemetryPending,
+    bayTelemetryEventId,
+    admission,
+    claims,
+    reviewResults,
+    githubEffect,
+    canonicalReceipts,
+    routerReceipts,
+    routerReceipt,
+    acknowledgement,
+    terminalDispositions,
+    terminalOperationIds,
+    terminalDisposition,
+  ] = fields;
+  return normalizeProjection({
+    version,
+    canonicalTargetKey,
+    fenceKey,
+    revision,
+    updatedAt,
+    bayTelemetryPending,
+    bayTelemetryEventId: eventType === null ? undefined : bayTelemetryEventId,
+    admission,
+    claims,
+    reviewResults,
+    githubEffect: effectType === null ? undefined : githubEffect,
+    canonicalReceipts,
+    routerReceipts,
+    routerReceipt,
+    acknowledgement,
+    terminalDispositions,
+    terminalOperationIds,
+    terminalDisposition,
+  } as ExactReviewLifecycleProjection);
+}
+
 function projectionFromRow(value: string): ExactReviewLifecycleProjection {
-  const parsed = JSON.parse(value) as ExactReviewLifecycleProjection;
+  return normalizeProjection(JSON.parse(value));
+}
+
+function normalizeProjection(
+  parsed: ExactReviewLifecycleProjection,
+): ExactReviewLifecycleProjection {
   if (
     !parsed ||
     parsed.version !== 1 ||
@@ -1979,20 +2033,7 @@ function projectionFromRow(value: string): ExactReviewLifecycleProjection {
   return parsed;
 }
 
-function validTerminalOperations(
-  operations: unknown,
-  terminalKinds = new Set<LifecycleTerminalDisposition>([
-    "review_completed_routed",
-    "superseded",
-    "requeue",
-    "dead_letter",
-    "target_closed",
-    "target_missing",
-    "policy_noop",
-    "guarded_open",
-    "failure",
-  ]),
-) {
+function validTerminalOperations(operations: unknown, terminalKinds = lifecycleTerminalKinds) {
   if (!Array.isArray(operations)) return false;
   const operationIds = new Set<string>();
   return operations.every((operation) => {

@@ -28,7 +28,7 @@ test("lifecycle Bay streams more than 10k historical facts without losing lanes 
         }
         return (function* () {
           for (const row of statement.iterate(...(bindings as SQLInputValue[]))) {
-            if (!observing || !/^\s*SELECT projection_json,/.test(query)) {
+            if (!observing || !/AS bay_json,/.test(query)) {
               yield row;
               continue;
             }
@@ -36,9 +36,9 @@ test("lifecycle Bay streams more than 10k historical facts without losing lanes 
             let consumed = false;
             yield {
               ...row,
-              get projection_json() {
+              get bay_json() {
                 consumed = true;
-                return row.projection_json;
+                return row.bay_json;
               },
             };
             assert.equal(
@@ -199,8 +199,43 @@ test("lifecycle Bay streams more than 10k historical facts without losing lanes 
 
   for (const [json, reason] of [
     ["{not-json", "malformed"],
+    [JSON.stringify(oldestProjection) + "\0trailing", "malformed"],
+    [
+      JSON.stringify(oldestProjection).replace('"githubEffect"', '"githubEffect\\u0000extra"'),
+      "mixed",
+    ],
+    [
+      JSON.stringify(oldestProjection).replace(
+        '"githubEffect":null',
+        '"githubEffect":null,"githubEffect":{}',
+      ),
+      "mixed",
+    ],
+    [
+      JSON.stringify(oldestProjection).replace('"githubEffect":null', '"githubEffect":NaN'),
+      "malformed",
+    ],
+    [JSON.stringify(oldestProjection).replace('"version":1', "version:1"), "malformed"],
     [JSON.stringify({ ...oldestProjection, githubEffect: undefined }), "mixed"],
     [JSON.stringify({ ...oldestProjection, revision: 3 }), "mixed"],
+    [JSON.stringify({ ...oldestProjection, bayTelemetryEventId: null }), "mixed"],
+    [
+      JSON.stringify({
+        ...oldestProjection,
+        terminalOperationIds: [
+          { operationId: "duplicate", kind: "failure" },
+          { operationId: "duplicate", kind: "failure" },
+        ],
+      }),
+      "malformed",
+    ],
+    [
+      JSON.stringify({
+        ...oldestProjection,
+        claims: [{ fenceKey: "ok", claimGeneration: 0, runId: "1", runAttempt: 1, claimedAt: now }],
+      }),
+      "mixed",
+    ],
   ]) {
     replaceOldest(json!);
     const invalid = read();
@@ -209,6 +244,91 @@ test("lifecycle Bay streams more than 10k historical facts without losing lanes 
     assert.equal(invalid.lanes, null);
     assert.equal(invalid.sample, null);
   }
+  const deepExtension = "[".repeat(1_010) + "0" + "]".repeat(1_010);
+  replaceOldest(JSON.stringify(legacyProjection).replace(/}$/, `,"extension":${deepExtension}}`));
+  assert.deepEqual(read(), snapshot, "SQLite depth limits must not reject valid full-parser rows");
   replaceOldest(JSON.stringify(legacyProjection));
   assert.deepEqual(read(), snapshot, "an invalid-row early return must release the read cursor");
+});
+
+test("compact Bay materialization equals full audit materialization on mixed lifecycle facts", async () => {
+  const { TestStorage } = await import("./exact-review-test-storage.ts");
+  const storage = new TestStorage();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  lifecycle.ensureSchemaSync();
+  const now = Date.parse("2026-09-04T00:00:00Z");
+  const kinds: Array<LifecycleTerminalDisposition | null> = [
+    null,
+    "review_completed_routed",
+    "superseded",
+    "requeue",
+    "dead_letter",
+    "failure",
+    "target_closed",
+    "target_missing",
+    "policy_noop",
+    "guarded_open",
+  ];
+  for (let n = 0; n < 20; n++) {
+    const identity = {
+      canonicalTargetKey: `openclaw/openclaw#${Math.floor(n / 2) + 1}`,
+      fenceKey: `fence:${n}`,
+      revision: (n % 2) + 1,
+    };
+    lifecycle.recordAdmission({
+      ...identity,
+      deliveryId: `delivery:${n}`,
+      sourceAction: "opened",
+      commandOriginated: n < 10,
+      statusMarker: null,
+      statusCommentId: n + 1,
+      observedAt: now - n,
+    });
+    lifecycle.recordClaim({
+      ...identity,
+      claimGeneration: 1,
+      runId: String(n + 1),
+      runAttempt: 1,
+      observedAt: now - n,
+    });
+    lifecycle.recordReviewResult({
+      ...identity,
+      claimGeneration: 1,
+      runId: String(n + 1),
+      runAttempt: 1,
+      outcome: "completed",
+      observedAt: now - n,
+    });
+    lifecycle.recordCanonicalReceipt({
+      ...identity,
+      outcome: n % 2 ? "deduped" : "accepted",
+      receiptId: `receipt:${n}`,
+      observedAt: now - n,
+    });
+    lifecycle.recordRouterReceipt({
+      ...identity,
+      outcome: "durable",
+      receiptId: `router:${n}`,
+      observedAt: now - n,
+    });
+    const kind = kinds[n % kinds.length];
+    if (kind) lifecycle.recordTerminalDisposition({ ...identity, kind, observedAt: now - n });
+  }
+  storage.run(
+    "UPDATE exact_review_lifecycle_projection_v1 SET projection_json = json_remove(projection_json, '$.routerReceipts', '$.terminalDispositions', '$.terminalOperationIds', '$.bayTelemetryPending') WHERE fence_key = ?",
+    "fence:19",
+  );
+  const full = lifecycle.createAuditInventorySnapshot(100, now);
+  const compact = lifecycle.readBaySnapshot(now);
+  assert.equal(full.collection.state, "complete");
+  assert.equal(compact.collection.state, "complete");
+  const key = (card: { target: { number: number }; revision: number }) =>
+    `${card.target.number}:${card.revision}`;
+  assert.deepEqual(
+    [...compact.sample!.cards].sort((a, b) => key(a).localeCompare(key(b))),
+    [...full.page!.records].sort((a, b) => key(a).localeCompare(key(b))),
+  );
+  for (const [lane, count] of Object.entries(compact.lanes!))
+    assert.equal(count, full.page!.records.filter((card) => card.lane === lane).length);
+  assert.equal(compact.inventory!.lifecycle_records, full.page!.records.length);
 });
