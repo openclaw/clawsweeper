@@ -13,15 +13,26 @@ permissions: {}
 env:
   CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
 
-concurrency:
-  # This workflow owns both run telemetry and exact-lease repair. Keep terminal
-  # tuples distinct because coalescing workflow_run events would drop telemetry.
-  group: exact-review-reconcile-${{ github.event_name == 'workflow_run' && format('{0}-{1}', github.event.workflow_run.id, github.event.workflow_run.run_attempt) || 'sweep' }}
-  cancel-in-progress: false
-
 jobs:
   reconcile:
-    name: Observe and reconcile terminal review run
+    name: Reconcile leases
+    if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.event == 'repository_dispatch' && startsWith(github.event.workflow_run.display_title, 'Review event item ') }}
+    # Hold the lock across the cooldown check AND repair. Telemetry stays per-run.
+    concurrency:
+      group: exact-review-reconcile-workflow-run
+      cancel-in-progress: false
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/exact-review-reconcile-run.yml
+    secrets:
+      CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+
+  observe:
+    name: Observe terminal review run
+    concurrency:
+      group: exact-review-observe-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+      cancel-in-progress: false
     # Schedule a runner only for titles the observer can classify. Queue-backed
     # "Review exact item" runs and support runs otherwise start an ubuntu runner
     # only to print "skipped", starving the Blacksmith jobs that must claim their
@@ -51,44 +62,6 @@ jobs:
       actions: read
       contents: read
     steps:
-      - name: Reconcile terminal run
-        if: ${{ github.event.workflow_run.event == 'repository_dispatch' && startsWith(github.event.workflow_run.display_title, 'Review event item ') }}
-        env:
-          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
-          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
-        run: |
-          set -euo pipefail
-          test -n "$CLAWSWEEPER_WEBHOOK_SECRET"
-          queue_url="${QUEUE_URL%/}"
-          payload="$(node -e '
-            const runAttempt = Number(process.env.SOURCE_RUN_ATTEMPT);
-            if (!Number.isInteger(runAttempt) || runAttempt < 1) process.exit(1);
-            process.stdout.write(JSON.stringify({
-              runs: [{
-                run_id: process.env.SOURCE_RUN_ID,
-                run_attempt: runAttempt,
-              }],
-              include_all_claimed: true,
-            }));
-          ')"
-          signature="$(PAYLOAD="$payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
-          for attempt in 1 2 3; do
-            if curl --fail --silent --show-error --connect-timeout 5 --max-time 120 \
-              --request POST \
-              --header "content-type: application/json" \
-              --header "x-clawsweeper-exact-review-signature: $signature" \
-              --data-binary "$payload" \
-              "$queue_url/internal/exact-review/reconcile" >/dev/null; then
-              exit 0
-            fi
-            if [ "$attempt" -lt 3 ]; then
-              sleep "$((attempt * 5))"
-            fi
-          done
-          exit 1
-
       - uses: actions/checkout@v7
         if: ${{ always() }}
         # workflow_run may expose secrets, so execute observer code only from the trusted default branch.
@@ -106,6 +79,9 @@ jobs:
 
   sweep:
     name: Sweep terminal exact-review runs
+    concurrency:
+      group: exact-review-reconcile-sweep
+      cancel-in-progress: false
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10

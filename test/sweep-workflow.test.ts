@@ -2299,8 +2299,9 @@ test("dashboard CI refreshes on cadence without completion-trigger storms", () =
 
 test("terminal exact-review runs reconcile through a signed isolated backstop", () => {
   const workflow = readText(".github/workflows/exact-review-reconcile.yml");
-  const eventJob = workflow.slice(
-    workflow.indexOf("\n  reconcile:"),
+  const eventJob = readText(".github/workflows/exact-review-reconcile-run.yml");
+  const observerJob = workflow.slice(
+    workflow.indexOf("\n  observe:"),
     workflow.indexOf("\n  sweep:"),
   );
 
@@ -2309,16 +2310,14 @@ test("terminal exact-review runs reconcile through a signed isolated backstop", 
   assert.match(workflow, /schedule:\s+- cron: "\*\/15 \* \* \* \*"/);
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /permissions: \{\}/);
+  assert.match(workflow, /group: exact-review-reconcile-workflow-run/);
+  assert.match(workflow, /cancel-in-progress: false/);
+  assert.match(eventJob, /needs: cooldown/);
+  assert.match(eventJob, /if: \$\{\{ needs\.cooldown\.outputs\.reconcile == 'true' \}\}/);
+  assert.match(eventJob, /permissions:\s+actions: read\s+contents: read/);
+  assert.match(workflow, /github\.event\.workflow_run\.event == 'repository_dispatch'/);
   assert.match(
     workflow,
-    /group: exact-review-reconcile-\$\{\{ github\.event_name == 'workflow_run' && format\('\{0\}-\{1\}', github\.event\.workflow_run\.id, github\.event\.workflow_run\.run_attempt\) \|\| 'sweep' \}\}/,
-  );
-  assert.match(workflow, /cancel-in-progress: false/);
-  assert.match(eventJob, /if: >-\s+\$\{\{\s+github\.event_name == 'workflow_run' &&/);
-  assert.match(eventJob, /permissions:\s+actions: read\s+contents: read/);
-  assert.match(eventJob, /github\.event\.workflow_run\.event == 'repository_dispatch'/);
-  assert.match(
-    eventJob,
     /startsWith\(github\.event\.workflow_run\.display_title, 'Review event item '\)/,
   );
   for (const prefix of [
@@ -2328,7 +2327,7 @@ test("terminal exact-review runs reconcile through a signed isolated backstop", 
     "Review manual target",
   ]) {
     assert.match(
-      eventJob,
+      observerJob,
       new RegExp(`startsWith\\(github\\.event\\.workflow_run\\.display_title, '${prefix}'\\)`),
       prefix,
     );
@@ -2349,7 +2348,7 @@ test("terminal exact-review runs reconcile through a signed isolated backstop", 
   assert.match(eventJob, /actions\/checkout@v7/);
   assert.match(eventJob, /ref: \$\{\{ github\.event\.repository\.default_branch \}\}/);
   assert.match(eventJob, /persist-credentials: false/);
-  assert.match(eventJob, /node scripts\/review-run-observer\.mjs --event-file/);
+  assert.match(observerJob, /node scripts\/review-run-observer\.mjs --event-file/);
   assert.match(eventJob, /GH_TOKEN: \$\{\{ github\.token \}\}/);
 
   const sweepJob = workflow.slice(workflow.indexOf("\n  sweep:"));

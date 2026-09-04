@@ -309,12 +309,17 @@ immediately schedules a known newer revision. Failed and cancelled executors
 requeue their item with bounded retry backoff. Successful finalizer reports stay
 leased until a signed terminal-run reconciliation backstop confirms that exact
 GitHub attempt completed successfully; this backstop can also recover terminal
-failed or cancelled runs before lease expiry. Completion triggers share one
-running and one pending reconciler; each surviving run inspects every live claim
-against bounded workflow-run pages, then verifies only matching terminal attempts.
-Candidates absent from those pages fall back to exact run lookup. This keeps
-steady-state GitHub API work constant without losing an older claim, while a
-terminal burst does not consume one Actions runner per review. Unclaimed
+failed or cancelled runs before lease expiry. Event-triggered lease repair shares
+one running and one pending job in `exact-review-reconcile-workflow-run` with
+`cancel-in-progress: false`. A five-minute successful-reconciliation guard
+suppresses redundant scans; skipped and observer-only runs do not reset it.
+Per-run reliability observations retain their own jobs so no telemetry is lost.
+The independent `*/15` sweep reads `/internal/exact-review/claimed-runs`, checks
+exact GitHub attempts in batches of eight, and posts terminal tuples to
+`/internal/exact-review/reconcile`. It bypasses the event cooldown, providing an
+approximately 15-minute backstop for coalesced terminal events, subject to Actions
+scheduling and API availability. See [Scheduler](scheduler.md) for the bounded
+Actions history reads that implement the cooldown. Unclaimed
 dispatches expire after six minutes and receive a new opaque lease; delayed
 workflows holding the expired lease cannot claim it. The six-minute timer covers
 only the GitHub dispatch-to-claim handoff. Once the first workflow step claims

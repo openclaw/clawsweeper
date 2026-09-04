@@ -85,6 +85,29 @@ requeue plan to preserve one owed source-drift review. The terminal `requeue`
 disposition is recorded before completion and stays on the old fenced revision.
 A superseded receipt cannot authorize a requeue; a newer command keeps its
 current decision and revision through the ordinary finishing path.
+The terminal-run backstop retains its `*/15 * * * *` schedule. Event-triggered
+lease repair uses the reusable `exact-review-reconcile-run.yml` job with the
+`exact-review-reconcile-workflow-run` concurrency group and
+`cancel-in-progress: false`: one running job and one pending follow-up, with
+new events replacing superseded pending jobs. The lock covers both the cooldown
+check and reconciliation. Per-run reliability observations remain separate so
+coalescing does not drop telemetry; eligible events still create observer jobs.
+
+Before event repair, `scripts/exact-review-reconcile-guard.mjs` reads the latest
+30 runs of `exact-review-reconcile.yml` using
+`gh run list --json databaseId,updatedAt`. For runs updated within five minutes,
+`gh run view --json jobs` verifies that a lease-reconciliation job actually
+succeeded within that window, even if its observer job is still running.
+Observer-only runs, skipped repairs, and failed repairs do not extend the
+cooldown. A job-level output guard skips repair after a recent
+success; unavailable history allows repair to proceed. Scheduled and manual
+sweeps bypass the guard and inspect all claimed runs, so a terminal attempt
+whose event was coalesced or skipped is normally reconciled within about
+15 minutes worst case, plus Actions scheduling and execution delay. This is a
+cadence backstop, not a hard wall-clock guarantee during platform outages.
+OpenClaw Bay is unaffected: queue schemas, telemetry observations, and public
+observer data contracts do not change.
+
 Queue-completion failures remain visible separately from Codex or content
 failures, using the logical generation result and typed deferral rather than
 the review process exit alone. The workflow failure gate is unchanged.

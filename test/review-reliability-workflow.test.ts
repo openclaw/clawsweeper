@@ -16,7 +16,7 @@ test("review reliability telemetry shares the terminal reconciler workflow", () 
     types: ["completed"],
   });
   assert.deepEqual(workflow.permissions, {});
-  const reconcileIf = String(workflow.jobs.reconcile.if);
+  const reconcileIf = String(workflow.jobs.observe.if);
   assert.match(reconcileIf, /github\.event_name == 'workflow_run'/);
   const gatedPrefixes = [
     ...reconcileIf.matchAll(/startsWith\(github\.event\.workflow_run\.display_title, '([^']+)'\)/g),
@@ -33,14 +33,14 @@ test("review reliability telemetry shares the terminal reconciler workflow", () 
     );
   }
   assert.doesNotMatch(reconcileIf, /Review exact item/);
-  assert.deepEqual(workflow.jobs.reconcile.permissions, { actions: "read", contents: "read" });
-  const checkout = workflow.jobs.reconcile.steps.find((candidate: Record<string, unknown>) =>
+  assert.deepEqual(workflow.jobs.observe.permissions, { actions: "read", contents: "read" });
+  const checkout = workflow.jobs.observe.steps.find((candidate: Record<string, unknown>) =>
     String(candidate.uses || "").startsWith("actions/checkout@"),
   );
   assert.equal(checkout.if, "${{ always() }}");
   assert.equal(checkout.with.ref, "${{ github.event.repository.default_branch }}");
   assert.equal(checkout.with["persist-credentials"], false);
-  const step = workflow.jobs.reconcile.steps.find((candidate: Record<string, unknown>) =>
+  const step = workflow.jobs.observe.steps.find((candidate: Record<string, unknown>) =>
     String(candidate.run || "").includes("review-run-observer.mjs"),
   );
   assert.ok(step);
@@ -50,10 +50,10 @@ test("review reliability telemetry shares the terminal reconciler workflow", () 
   assert.ok(step.env.GH_TOKEN);
   assert.ok(step.env.QUEUE_URL);
   assert.match(
-    workflow.concurrency.group,
-    /format\('\{0\}-\{1\}', github\.event\.workflow_run\.id, github\.event\.workflow_run\.run_attempt\)/,
+    workflow.jobs.observe.concurrency.group,
+    /exact-review-observe-.*github\.event\.workflow_run\.id.*github\.event\.workflow_run\.run_attempt/,
   );
-  assert.equal(workflow.concurrency["cancel-in-progress"], false);
+  assert.equal(workflow.jobs.observe.concurrency["cancel-in-progress"], false);
 });
 
 test("queued workflow remediation shares the guarded dead-letter cadence", () => {

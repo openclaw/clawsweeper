@@ -338,6 +338,10 @@ test("apply continuation blocker CLI emits workflow fields", () => {
 
 test("workflow utilities expose automation limits", () => {
   assert.equal(
+    automationLimit("audit.max_parallel_targets"),
+    AUTOMATION_LIMITS.audit.max_parallel_targets,
+  );
+  assert.equal(
     automationLimit("exact_review.concurrent_max"),
     AUTOMATION_LIMITS.exact_review.concurrent_max,
   );
@@ -461,12 +465,13 @@ test("workflow worker scheduler applies queue pressure only to background lanes"
   }
 });
 
-test("worker config defaults imported cluster repair capacity for older configs", () => {
+test("worker config defaults omitted per-lane overrides", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-limits-"));
   const configPath = path.join(root, "automation-limits.json");
   write(
     configPath,
     JSON.stringify({
+      audit: { max_parallel_targets: 3 },
       workers: {
         max: 55,
         reserve_for_interactive: 8,

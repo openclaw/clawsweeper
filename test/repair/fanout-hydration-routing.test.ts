@@ -31,7 +31,10 @@ test("only normal-review fanout uses identities; hot intake skips preflight and 
   assert.equal(identity["continue-on-error"], undefined);
   assert.equal(dispatch.if, undefined); // ordinary success() dependency, not always()
   assert.ok(fanout.steps.indexOf(identity) < fanout.steps.indexOf(dispatch));
-  assert.equal(fanout["timeout-minutes"], 30);
+  assert.equal(
+    fanout["timeout-minutes"],
+    "${{ github.event.schedule == '37 */6 * * *' && 240 || 30 }}",
+  );
   assert.equal(full.with["hydrate-git-state"], "false");
   assert.equal(full.with["hydrate-state-blobs"], "false");
   assert.equal(

@@ -1,0 +1,75 @@
+name: Reconcile coalesced exact-review run
+
+on:
+  workflow_call:
+    secrets:
+      CLAWSWEEPER_WEBHOOK_SECRET:
+        required: true
+
+permissions: {}
+
+jobs:
+  cooldown:
+    name: Check recent lease reconciliation
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      reconcile: ${{ steps.history.outputs.reconcile }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Read recent completed reconciliation runs
+        id: history
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/exact-review-reconcile-guard.mjs
+
+  reconcile:
+    name: Reconcile terminal run
+    needs: cooldown
+    if: ${{ needs.cooldown.outputs.reconcile == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Reconcile terminal run
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          test -n "$CLAWSWEEPER_WEBHOOK_SECRET"
+          queue_url="${QUEUE_URL%/}"
+          payload="$(node -e '
+            const runAttempt = Number(process.env.SOURCE_RUN_ATTEMPT);
+            if (!Number.isInteger(runAttempt) || runAttempt < 1) process.exit(1);
+            process.stdout.write(JSON.stringify({
+              runs: [{
+                run_id: process.env.SOURCE_RUN_ID,
+                run_attempt: runAttempt,
+              }],
+              include_all_claimed: true,
+            }));
+          ')"
+          signature="$(PAYLOAD="$payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
+          for attempt in 1 2 3; do
+            if curl --fail --silent --show-error --connect-timeout 5 --max-time 120 \
+              --request POST \
+              --header "content-type: application/json" \
+              --header "x-clawsweeper-exact-review-signature: $signature" \
+              --data-binary "$payload" \
+              "$queue_url/internal/exact-review/reconcile" >/dev/null; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              sleep "$((attempt * 5))"
+            fi
+          done
+          exit 1
