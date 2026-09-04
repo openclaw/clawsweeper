@@ -322,7 +322,9 @@ Three identities are related but intentionally distinct:
 
 A new Action attempt registers the same work key with CrabFleet. Register
 and work-state update fetches use a 15-second `AbortSignal` deadline so a
-hung CrabFleet host cannot stall the Action job. CrabFleet:
+hung CrabFleet host cannot stall the Action job; the Codex app-server worker
+applies the same deadline to its own turn-start, heartbeat, and completion
+work-state updates. CrabFleet:
 
 - returns the existing logical session when one exists;
 - rotates the session-scoped agent token;
