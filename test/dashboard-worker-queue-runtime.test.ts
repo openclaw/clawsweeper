@@ -3091,6 +3091,106 @@ test("exact-review batch claim retries re-admit each target and return only publ
   }
 });
 
+test("concurrent identical batch claims replay after admission clears the reservation", async () => {
+  const releases: Array<() => void> = [];
+  const starts: Array<Promise<void>> = [];
+  let blockClaims = false;
+  let probes = 0;
+  const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
+    publicationBatching: true,
+    captureBatchDispatch: true,
+    hostedPublicTargetProbe: async () => {
+      if (!blockClaims) return "public";
+      probes += 1;
+      let started!: () => void;
+      let release!: () => void;
+      starts.push(new Promise<void>((resolve) => (started = resolve)));
+      const blocked = new Promise<void>((resolve) => (release = resolve));
+      releases.push(release);
+      started();
+      await blocked;
+      return "public";
+    },
+  });
+  try {
+    assert.equal(
+      (
+        await harness.queue.fetch(
+          buildExactReviewQueueRequest(
+            "concurrent-claim",
+            9248,
+            "exact_review_artifact_publish",
+            "issue",
+            "openclaw/gogcli",
+            exactReviewPublicationOverrides(9248, "92480"),
+          ),
+        )
+      ).status,
+      202,
+    );
+    await harness.queue.alarm();
+    const reserved = (await harness.storage.get("exact-review-queue")) as {
+      dispatcher: {
+        publicationBatchDispatchId: string;
+        publicationBatchDispatchedAt: number;
+        publicationBatchDispatchPendingUntil?: number;
+      };
+    };
+    const request = () =>
+      new Request("https://clawsweeper-exact-review-queue/publication-batches/claim", {
+        method: "POST",
+        body: JSON.stringify({
+          claim_id: "concurrent-claim",
+          lease_owner: "concurrent-worker",
+          dispatch_id: reserved.dispatcher.publicationBatchDispatchId,
+          dispatched_at: new Date(reserved.dispatcher.publicationBatchDispatchedAt).toISOString(),
+        }),
+      });
+
+    blockClaims = true;
+    const firstPending = harness.queue.fetch(request());
+    while (starts.length < 1) await Promise.resolve();
+    await starts[0];
+    const secondPending = harness.queue.fetch(request());
+    while (starts.length < 2) await Promise.resolve();
+    await starts[1];
+
+    releases[0]();
+    const first = await (await firstPending).json();
+    assert.equal(first.claimed, true, JSON.stringify(first));
+    const afterFirst = (await harness.storage.get("exact-review-queue")) as {
+      dispatcher?: { publicationBatchDispatchPendingUntil?: number };
+    };
+    assert.equal(afterFirst.dispatcher?.publicationBatchDispatchPendingUntil, undefined);
+
+    releases[1]();
+    while (starts.length < 3) await Promise.resolve();
+    await starts[2];
+    releases[2]();
+    const second = await (await secondPending).json();
+    assert.equal(second.claimed, true, JSON.stringify(second));
+    assert.equal(probes, 3);
+    const { server_time: firstServerTime, ...firstLease } = first.batch;
+    const { server_time: secondServerTime, ...secondLease } = second.batch;
+    assert.ok(Date.parse(secondServerTime) >= Date.parse(firstServerTime));
+    assert.deepEqual(secondLease, firstLease);
+    assert.deepEqual(
+      second.batch.items.map((item) => ({
+        item_key: item.item_key,
+        revision: item.revision,
+        claim_generation: item.claim_generation,
+      })),
+      first.batch.items.map((item) => ({
+        item_key: item.item_key,
+        revision: item.revision,
+        claim_generation: item.claim_generation,
+      })),
+    );
+  } finally {
+    harness.restore();
+  }
+});
+
 test("exact-review batch retry rereads the membership fence after visibility I/O", async () => {
   let retry = false;
   let retryProbeBlocked = false;

@@ -526,6 +526,31 @@ test("publication batches atomically select ready items without duplicate active
   assert.equal(batches.fetch("batch-1", "wrong-worker", 1_500), null);
 });
 
+test("publication batch store replays the exact lease for the same identity", () => {
+  const storage = new TestStorage();
+  const batches = new ExactReviewPublicationBatchStore(storage);
+  batches.ensureSchemaSync();
+
+  const first = batches.claim({
+    batchId: "batch-replay",
+    leaseOwner: "worker-replay",
+    leaseExpiresAt: 2_000,
+    now: 1_000,
+    maxItems: 2,
+    candidates,
+  });
+  const replay = batches.claim({
+    batchId: "batch-replay",
+    leaseOwner: "worker-replay",
+    leaseExpiresAt: 9_000,
+    now: 1_500,
+    maxItems: 4,
+    candidates: candidates.slice(2),
+  });
+
+  assert.deepEqual(replay, first);
+});
+
 test("publication batches allow a bounded number of disjoint active owners", () => {
   const storage = new TestStorage();
   const batches = new ExactReviewPublicationBatchStore(storage);

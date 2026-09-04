@@ -7030,8 +7030,31 @@ export class ExactReviewQueue {
     // visibility can change while the lease is active. Re-probe each unfinished
     // repository before returning any credential-bearing work.
     let existingBatch = this.batchStore.fetch(claimId, leaseOwner, now);
-    if (existingBatch?.state === "leased") {
-      const unfinished = existingBatch.items.filter((item) => item.terminalOutcome === null);
+    const claimedResponse = async (
+      batch: NonNullable<typeof existingBatch>,
+      lifecycleBatch = batch,
+    ) => {
+      if (batch.items.length && lifecycleBatch.state === "leased") {
+        this.recordLifecycleBatchClaim(lifecycleBatch, state, now);
+      }
+      await this.scheduleNext(state, now);
+      const oldestCandidateAt = batch.items.reduce(
+        (oldest, membership) =>
+          Math.min(oldest, state.items[membership.itemKey]?.createdAt ?? batch.createdAt),
+        batch.createdAt,
+      );
+      return json({
+        ok: true,
+        claimed: true,
+        batch: exactReviewPublicationBatchJson(batch),
+        configured_batch_size: batch.configuredBatchSize,
+        batch_wait_ms: Math.max(0, now - oldestCandidateAt),
+        requested_max_items: requestedSize,
+        effective_max_items: leaseSize,
+      });
+    };
+    const replayExistingBatch = async (batch: NonNullable<typeof existingBatch>) => {
+      const unfinished = batch.items.filter((item) => item.terminalOutcome === null);
       const unfinishedRepos = new Map<string, string>(
         unfinished.flatMap((membership) => {
           const item = state.items[membership.itemKey];
@@ -7052,11 +7075,11 @@ export class ExactReviewQueue {
       );
       now = Date.now();
       state = this.readStateSync();
-      existingBatch = this.batchStore.fetch(claimId, leaseOwner, now);
-      if (!existingBatch || existingBatch.state !== "leased") {
+      batch = this.batchStore.fetch(claimId, leaseOwner, now)!;
+      if (!batch || batch.state !== "leased") {
         return json({ error: "batch_lease_not_active" }, 409);
       }
-      const completions = existingBatch.items.flatMap((membership) => {
+      const completions = batch.items.flatMap((membership) => {
         if (membership.terminalOutcome !== null) return [];
         const item = state.items[membership.itemKey];
         if (
@@ -7102,14 +7125,14 @@ export class ExactReviewQueue {
         });
         now = Date.now();
         state = this.readStateSync();
-        existingBatch = this.batchStore.fetch(claimId, leaseOwner, now);
-        if (!existingBatch) {
+        batch = this.batchStore.fetch(claimId, leaseOwner, now)!;
+        if (!batch) {
           return json({ error: "batch_lease_not_active" }, 409);
         }
       }
       const publicBatch = {
-        ...existingBatch,
-        items: existingBatch.items.filter((membership) => {
+        ...batch,
+        items: batch.items.filter((membership) => {
           if (membership.terminalOutcome !== null) return false;
           const item = state.items[membership.itemKey];
           return (
@@ -7119,25 +7142,9 @@ export class ExactReviewQueue {
           );
         }),
       };
-      if (publicBatch.items.length && existingBatch.state === "leased") {
-        this.recordLifecycleBatchClaim(existingBatch, state, now);
-      }
-      await this.scheduleNext(state, now);
-      const oldestCandidateAt = publicBatch.items.reduce(
-        (oldest, membership) =>
-          Math.min(oldest, state.items[membership.itemKey]?.createdAt ?? existingBatch.createdAt),
-        existingBatch.createdAt,
-      );
-      return json({
-        ok: true,
-        claimed: true,
-        batch: exactReviewPublicationBatchJson(publicBatch),
-        configured_batch_size: existingBatch.configuredBatchSize,
-        batch_wait_ms: Math.max(0, now - oldestCandidateAt),
-        requested_max_items: requestedSize,
-        effective_max_items: leaseSize,
-      });
-    }
+      return claimedResponse(publicBatch, batch);
+    };
+    if (existingBatch?.state === "leased") return replayExistingBatch(existingBatch);
     let probedPairs = exactReviewPublicationBatchReservedProbe(state, now, dispatch?.id);
     let candidates = this.publicationBatchClaimCandidates(
       state,
@@ -7156,6 +7163,8 @@ export class ExactReviewQueue {
     );
     now = Date.now();
     state = this.readStateSync();
+    existingBatch = this.batchStore.fetch(claimId, leaseOwner, now);
+    if (existingBatch?.state === "leased") return replayExistingBatch(existingBatch);
     probedPairs = exactReviewPublicationBatchReservedProbe(state, now, dispatch?.id);
     candidates = this.publicationBatchClaimCandidates(
       state,

@@ -12,6 +12,17 @@ const heartbeat = {
   leaseExpiresAt: new Date(now + 120_000).toISOString(),
   items: [],
 };
+const dispatchedClaim = {
+  claimId: "claim-proof",
+  leaseOwner: "worker-proof",
+  maxItems: 4,
+  dispatch: { id: "dispatch-proof", at: new Date(now - 60_000).toISOString() },
+  runner: {
+    runId: "123456",
+    runAttempt: 2,
+    startedAt: new Date(now - 30_000).toISOString(),
+  },
+};
 
 function fixture(t, respond) {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
@@ -37,6 +48,107 @@ async function flush() {
 function unavailable(headers = {}) {
   return new Response("exact_review_queue_unavailable", { status: 500, headers });
 }
+
+test("dispatched claim retries timeout and HTTP 500 with unchanged identity", async (t) => {
+  const batch = {
+    batch_id: dispatchedClaim.claimId,
+    lease_owner: dispatchedClaim.leaseOwner,
+    lease_expires_at: new Date(now + 120_000).toISOString(),
+    items: [
+      {
+        item_key: "openclaw/example#1@publish:10:1",
+        revision: 3,
+        claim_generation: 7,
+      },
+    ],
+  };
+  const { client, calls } = fixture(t, (attempt, init) => {
+    if (attempt === 1) {
+      return new Promise((_resolve, reject) =>
+        init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true }),
+      );
+    }
+    if (attempt === 2) return unavailable();
+    return Response.json({
+      claimed: true,
+      batch,
+      configured_batch_size: 4,
+      batch_wait_ms: 125,
+    });
+  });
+
+  const result = client.claim(dispatchedClaim);
+  await flush();
+  t.mock.timers.tick(20_000);
+  await flush();
+  t.mock.timers.tick(1_000);
+  await flush();
+  t.mock.timers.tick(2_000);
+  await flush();
+
+  assert.deepEqual(await result, {
+    batchId: dispatchedClaim.claimId,
+    leaseOwner: dispatchedClaim.leaseOwner,
+    leaseExpiresAt: batch.lease_expires_at,
+    items: [
+      {
+        itemKey: "openclaw/example#1@publish:10:1",
+        revision: 3,
+        claimGeneration: 7,
+      },
+    ],
+    configuredBatchSize: 4,
+    batchWaitMs: 125,
+  });
+  assert.equal(calls.length, 3);
+  assert.equal(calls[0].body, calls[1].body);
+  assert.equal(calls[1].body, calls[2].body);
+  assert.deepEqual(calls[0].headers, calls[1].headers);
+  assert.deepEqual(calls[1].headers, calls[2].headers);
+  assert.deepEqual(JSON.parse(calls[0].body), {
+    claim_id: dispatchedClaim.claimId,
+    lease_owner: dispatchedClaim.leaseOwner,
+    max_items: dispatchedClaim.maxItems,
+    dispatch_id: dispatchedClaim.dispatch.id,
+    dispatched_at: dispatchedClaim.dispatch.at,
+    runner_run_id: dispatchedClaim.runner.runId,
+    runner_run_attempt: dispatchedClaim.runner.runAttempt,
+    runner_started_at: dispatchedClaim.runner.startedAt,
+  });
+  assert.equal(
+    calls[0].headers["x-clawsweeper-exact-review-signature"],
+    `sha256=${createHmac("sha256", "synthetic-test-secret").update(calls[0].body).digest("hex")}`,
+  );
+});
+
+test("dispatched claim does not retry HTTP 4xx", async (t) => {
+  const { client, calls, logs } = fixture(t, () => new Response(null, { status: 409 }));
+  await assert.rejects(client.claim(dispatchedClaim), /HTTP 409/);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(logs, []);
+});
+
+test("undispatched claim and completion remain single-attempt", async (t) => {
+  const { client, calls, logs } = fixture(t, () => unavailable());
+  await assert.rejects(
+    client.claim({
+      claimId: dispatchedClaim.claimId,
+      leaseOwner: dispatchedClaim.leaseOwner,
+      maxItems: dispatchedClaim.maxItems,
+    }),
+    /HTTP 500/,
+  );
+  await assert.rejects(
+    client.complete({
+      batchId: dispatchedClaim.claimId,
+      leaseOwner: dispatchedClaim.leaseOwner,
+      items: [],
+    }),
+    /HTTP 500/,
+  );
+  assert.equal(calls.length, 2);
+  assert.deepEqual(logs, []);
+});
 
 test("post-effect HTTP 500 is attempted once", async (t) => {
   const { client, calls, logs } = fixture(t, () => unavailable());

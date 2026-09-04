@@ -175,21 +175,25 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
     dispatch?: { id: string; at: string };
     runner?: { runId: string; runAttempt: number; startedAt: string };
   }) {
-    const response = await this.post("claim", {
-      claim_id: input.claimId,
-      lease_owner: input.leaseOwner,
-      max_items: input.maxItems,
-      ...(input.dispatch
-        ? { dispatch_id: input.dispatch.id, dispatched_at: input.dispatch.at }
-        : {}),
-      ...(input.runner
-        ? {
-            runner_run_id: input.runner.runId,
-            runner_run_attempt: input.runner.runAttempt,
-            runner_started_at: input.runner.startedAt,
-          }
-        : {}),
-    });
+    const response = await this.postUrl(
+      "/internal/exact-review/publication-batches/claim",
+      {
+        claim_id: input.claimId,
+        lease_owner: input.leaseOwner,
+        max_items: input.maxItems,
+        ...(input.dispatch
+          ? { dispatch_id: input.dispatch.id, dispatched_at: input.dispatch.at }
+          : {}),
+        ...(input.runner
+          ? {
+              runner_run_id: input.runner.runId,
+              runner_run_attempt: input.runner.runAttempt,
+              runner_started_at: input.runner.startedAt,
+            }
+          : {}),
+      },
+      input.dispatch ? Date.now() + RETRY_DEADLINE_MS : undefined,
+    );
     if (response.claimed !== true) return null;
     const batch = parseLease(response.batch);
     const legacyConfiguredBatchSize =
