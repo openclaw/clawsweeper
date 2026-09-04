@@ -133,6 +133,22 @@ const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
     fixtureSha256: "f11c92a245b2308a02f08759cdc5952b4ebe9af5225923807769267fce35f464",
     sources: ["src/config/redact-snapshot.test.ts"],
   },
+  {
+    // OpenClaw mocked marketplace telemetry-redaction fixture introduced by 9c5ee4676d07.
+    fixtureSha256: "838f16c9fef468c069583811edaac840bd0378ff46b59008793c552bfbf1c77b",
+    rawSha256: "a9bdc2ad7ded74870594f1addb8c4f86a5a075516bc840235ed7cc74ed306959",
+    lineSha256s: ["6b9804d61dcc7c7c1f9220403787eb71b340645797a7a7926297db085f36c4d5"],
+    decoders: ["PLAIN"],
+    sources: ["src/cli/plugins-cli.marketplace-refresh.test.ts"],
+  },
+  {
+    // OpenClaw Gateway config CDP-redaction fixture introduced by 4b5987829d0f.
+    fixtureSha256: "3699f73147f6969e1a3273a5809e2dd7886b95fad51315008b75bb20c4c9832f",
+    rawSha256: "3699f73147f6969e1a3273a5809e2dd7886b95fad51315008b75bb20c4c9832f",
+    lineSha256s: ["fab950a882e7e3d2f50a68a07fa6adec03baeecf9f604321ebe80098dba167ec"],
+    decoders: ["PLAIN"],
+    sources: ["src/gateway/server.config-patch.test.ts"],
+  },
 ];
 
 export function serializeReviewContext(context: object): string {

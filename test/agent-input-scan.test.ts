@@ -552,6 +552,8 @@ const browserCdpHelpersSource = "extensions/browser/src/browser/cdp.helpers.test
 const browserMcpSource = "extensions/browser/src/browser/chrome-mcp.test.ts";
 const macDashboardSource = "apps/macos/Tests/OpenClawIPCTests/DashboardWindowSmokeTests.swift";
 const mcpAppsSource = "src/config/config-misc.test.ts";
+const marketplaceFeedSource = "src/cli/plugins-cli.marketplace-refresh.test.ts";
+const gatewayConfigSource = "src/gateway/server.config-patch.test.ts";
 const mattermostSource = "extensions/mattermost/src/mattermost/slash-http.test.ts";
 const ledgerFixtureSha256 = "a728de5dbbef23b8aa5ef2d99060835f4f2fb5a0fa2abb9fe249d08aa09bd09e";
 const nativeContractFailures = new Map([
@@ -701,11 +703,23 @@ for (const scenarioName of [
     "missing verification error",
     "wrong version",
     "missing completion",
-  ].flatMap((scenario) => [`mac dashboard ${scenario}`, `mcp apps ${scenario}`]),
+  ].flatMap((scenario) => [
+    `mac dashboard ${scenario}`,
+    `mcp apps ${scenario}`,
+    `marketplace feed ${scenario}`,
+    `gateway config ${scenario}`,
+  ]),
+  "marketplace feed query mutation",
+  "gateway config query mutation",
 ]) {
   const macDashboardFixture = scenarioName.startsWith("mac dashboard ");
   const mcpAppsFixture = scenarioName.startsWith("mcp apps ");
-  const scenario = scenarioName.replace(/^(?:mac dashboard|mcp apps) /, "");
+  const marketplaceFeedFixture = scenarioName.startsWith("marketplace feed ");
+  const gatewayConfigFixture = scenarioName.startsWith("gateway config ");
+  const scenario = scenarioName.replace(
+    /^(?:mac dashboard|mcp apps|marketplace feed|gateway config) /,
+    "",
+  );
   test(`reviewed synthetic fixture admission: ${scenarioName}`, (t) => {
     const notices: unknown[][] = [];
     t.mock.method(console, "error", (...args: unknown[]) => notices.push(args));
@@ -726,17 +740,21 @@ for (const scenarioName of [
     const browserExactFixture = browserCdpFixture || browserMcpFixture;
     const encodedCdpFixture = browserCdpFixture && scenario.includes("encoded");
     // Preserve the literal witnesses captured from the native OpenClaw scan.
-    const literalLine = mcpAppsFixture
-      ? 763
-      : macDashboardFixture
-        ? 273
-        : browserCdpFixture
-          ? encodedCdpFixture
-            ? 406
-            : 293
-          : browserMcpFixture
-            ? 1339
-            : 42;
+    const literalLine = gatewayConfigFixture
+      ? 866
+      : marketplaceFeedFixture
+        ? 342
+        : mcpAppsFixture
+          ? 763
+          : macDashboardFixture
+            ? 273
+            : browserCdpFixture
+              ? encodedCdpFixture
+                ? 406
+                : 293
+              : browserMcpFixture
+                ? 1339
+                : 42;
     const scannerLine = scenario.includes("shifted BASE64") ? literalLine - 4 : literalLine;
     const primaryDecoder = scenario.includes("BASE64")
       ? "BASE64"
@@ -803,6 +821,20 @@ for (const scenarioName of [
       url.password = "pass";
       uri = url.href.slice(0, -1);
     }
+    if (marketplaceFeedFixture) {
+      // Native 3.97.1 witness from OpenClaw base blob 0515b909, line 342.
+      const url = new URL("https://packages.acme.example/openclaw/feed");
+      url.username = "user";
+      url.password = "secret";
+      uri = url.href;
+    }
+    if (gatewayConfigFixture) {
+      // Native 3.97.1 witness from OpenClaw base blob 57d0322c, line 866.
+      const url = new URL("https://chrome.remote.example.com");
+      url.username = "alice";
+      url.password = "secret";
+      uri = url.href.slice(0, -1);
+    }
     assert.ok(uri, "reviewed synthetic fixture is present");
     const authority = new URL(uri);
     authority.pathname = "";
@@ -813,7 +845,11 @@ for (const scenarioName of [
       authority.password = "redacted";
     }
     const raw =
-      macDashboardFixture || browserPageFixture || browserExactFixture || mattermostFixture
+      macDashboardFixture ||
+      marketplaceFeedFixture ||
+      browserPageFixture ||
+      browserExactFixture ||
+      mattermostFixture
         ? authority.href.slice(0, -1)
         : uri;
     let otherReviewedUri: string | undefined;
@@ -880,6 +916,10 @@ for (const scenarioName of [
     if (macDashboardFixture)
       files = [scenario === "other file" ? "other.test.swift" : macDashboardSource];
     if (mcpAppsFixture) files = [scenario === "other file" ? "other.test.ts" : mcpAppsSource];
+    if (marketplaceFeedFixture)
+      files = [scenario === "other file" ? "other.test.ts" : marketplaceFeedSource];
+    if (gatewayConfigFixture)
+      files = [scenario === "other file" ? "other.test.ts" : gatewayConfigSource];
     const value =
       scenario === "decoded only" || scenario.endsWith("encoded-only")
         ? primaryDecoder === "BASE64"
@@ -909,11 +949,25 @@ for (const scenarioName of [
         ? JSON.stringify(value)
         : `        let credentialedFrame = try #require(URL(string: "${value}"))`
       : undefined;
+    const reviewedMarketplaceFeedLine = marketplaceFeedFixture
+      ? scenario === "unapproved line"
+        ? JSON.stringify(value)
+        : `        url: ${JSON.stringify(`${value}?token=leak#frag${scenario === "query mutation" ? "changed" : ""}`)},`
+      : undefined;
+    const reviewedGatewayConfigLine = gatewayConfigFixture
+      ? scenario === "unapproved line"
+        ? JSON.stringify(value)
+        : `              cdpUrl: ${JSON.stringify(`${value}?token=profile-secret${scenario === "query mutation" ? "changed" : ""}`)},`
+      : undefined;
     const reviewedFixtureLine = mcpAppsFixture
       ? scenario === "unapproved line"
         ? JSON.stringify(value)
         : `      ${JSON.stringify(value)},`
-      : (reviewedMacDashboardLine ?? reviewedBrowserLine ?? reviewedMattermostLine);
+      : (reviewedGatewayConfigLine ??
+        reviewedMarketplaceFeedLine ??
+        reviewedMacDashboardLine ??
+        reviewedBrowserLine ??
+        reviewedMattermostLine);
     const contents =
       "// context\n".repeat(literalLine - 2) +
       (reviewedFixtureLine ?? JSON.stringify(otherReviewedUri ?? value)) +
