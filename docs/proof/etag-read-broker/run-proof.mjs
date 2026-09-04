@@ -5,7 +5,11 @@ import { createHash, createHmac } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 
-import { githubEtagCacheKey, githubEtagCacheRequestBody } from "../../../dist/github-etag-cache-contract.js";
+import {
+  GITHUB_ETAG_CACHE_MAX_BODY_BYTES,
+  githubEtagCacheKey,
+  githubEtagCacheRequestBody,
+} from "../../../dist/github-etag-cache-contract.js";
 import { durableGithubEtagReadSync } from "../../../dist/github-etag-read-broker.js";
 
 const secret = "etag-proof-publisher-placeholder";
@@ -98,13 +102,44 @@ async function runProof() {
         (outcome) => [outcome, events.filter((event) => event.outcome === outcome).length],
       ),
     );
+    const bodyBounds = {};
+    for (const size of [100, 200]) {
+      const body = JSON.stringify({ body: "x".repeat(size * 1024 - 11) });
+      assert.equal(Buffer.byteLength(body), size * 1024);
+      await adminPost(baseUrl, "/admin/mutate", {
+        route: key1.route,
+        etag: `"size-${size}"`,
+        body,
+      });
+      const before = await (await fetch(`${baseUrl}/admin/store-requests`)).json();
+      assert.equal(read(key1), body);
+      const after = await (await fetch(`${baseUrl}/admin/store-requests`)).json();
+      assert.equal(after - before, size === 100 ? 1 : 0);
+      assert.equal(events.at(-1).outcome, size === 100 ? "cache_200_stored" : "cache_skip");
+      bodyBounds[`${size}_kib`] = {
+        returned_bytes: Buffer.byteLength(body),
+        store_requests: after - before,
+        outcome: events.at(-1).outcome,
+      };
+    }
+    const rejected = signedPost(baseUrl, "store", {
+      ...githubEtagCacheRequestBody(key1, "apply"),
+      etag: '"direct-oversized"',
+      body: JSON.stringify({ body: "x".repeat(200 * 1024 - 11) }),
+    });
+    assert.deepEqual(rejected, { ok: true, stored: false, reason: "body_size_bound" });
+    bodyBounds.direct_200_kib = rejected;
     const report = {
       schema: "clawsweeper-etag-read-broker-proof/v1",
       generated_at: new Date().toISOString(),
       tested_head: head,
       merge_base: base,
       key_schema: "[1, credential_pool, route_with_sorted_query, media_type]",
-      storage: { max_entries: 2048, max_body_bytes: 524288, ttl_days: 30 },
+      storage: {
+        max_entries: 2048,
+        max_body_bytes: GITHUB_ETAG_CACHE_MAX_BODY_BYTES,
+        ttl_days: 30,
+      },
       results: {
         first_read: "200_stored",
         unchanged_read: "304_confirmed_body_served",
@@ -119,6 +154,7 @@ async function runProof() {
         telemetry: counts,
         publisher_hmac_status: publisherStatus,
         operator_hmac_status: operatorStatus,
+        body_bounds: bodyBounds,
       },
       limits: [
         "Loopback GitHub and credentials are deterministic fixtures.",
@@ -157,9 +193,11 @@ async function runServer() {
     ],
   ]);
   const requests = [];
+  let storeRequests = 0;
   const server = createServer(async (request, response) => {
     const url = new URL(request.url || "/", "http://127.0.0.1");
     if (url.pathname === "/admin/requests") return sendJson(response, 200, requests);
+    if (url.pathname === "/admin/store-requests") return sendJson(response, 200, storeRequests);
     if (url.pathname === "/admin/mutate") {
       const value = JSON.parse(await requestText(request));
       resources.set(value.route, { etag: value.etag, body: value.body });
@@ -177,6 +215,7 @@ async function runServer() {
       return;
     }
     if (url.pathname.startsWith("/internal/exact-review/github-etag-cache/")) {
+      if (url.pathname.endsWith("/store")) storeRequests += 1;
       const body = await requestText(request);
       const forwarded = new Request(`https://clawsweeper.openclaw.ai${url.pathname}`, {
         method: "POST",

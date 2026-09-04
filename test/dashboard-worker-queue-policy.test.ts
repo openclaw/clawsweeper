@@ -273,6 +273,7 @@ test("production doubles exact review claims and canonical publication batches",
   assert.match(wrangler, /EXACT_REVIEW_TARGET_RATE_PER_HOUR = "300"/);
   assert.match(wrangler, /EXACT_REVIEW_TARGET_BURST = "30"/);
   assert.match(wrangler, /EXACT_REVIEW_PENDING_SOFT_LIMIT = "600"/);
+  assert.match(wrangler, /EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "30000"/);
 });
 
 test("exact-review lifecycle projection keeps immutable per-revision facts and terminal distinctions", () => {

@@ -110,12 +110,22 @@ private pool identities are never persisted or exposed.
 
 Entries live in the exact-review queue Durable Object for 30 days, matching the
 artifact-receipt retention convention. The store is capped at 2,048 entries and
-512 KiB of UTF-8 JSON per body; missing ETags, malformed JSON, and larger bodies
+128 KiB of UTF-8 JSON per body; missing ETags, malformed JSON, and larger bodies
 are counted as `cache_skip` and read normally. Each entry retains its response
 timestamp, last validation timestamp, ETag, body digest, and body. Automated
 runner access uses the publisher-scoped webhook HMAC because publication jobs
 already hold that narrowly scoped credential; the operator secret stays
 reserved for human recovery.
+
+Publication clients skip oversized bodies before sending a store request and
+record the existing local `cache_skip` event. Dashboard health reads also skip
+these store requests; they do not emit local broker metrics. Requests that reach
+the store retain its `body_size_bound` skip reason and `cache_skip` metric.
+The store keeps an in-memory entry count, reconciling it with SQLite on the
+first store and every 64 stores thereafter. Inserts and expiry/oldest-validation
+evictions maintain that count so the 2,048-entry cap holds after every store.
+Expiry housekeeping runs at most once per minute per object instance; lookup
+and 304 confirmation still check expiry on every read.
 
 Lookup returns only ETag and digest. After GitHub returns 304, a separate
 confirmation must still match that ETag/digest before the Worker returns the

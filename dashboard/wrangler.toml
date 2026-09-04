@@ -71,6 +71,8 @@ EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS = "180000"
 # parked review inputs a fresh bounded retry budget.
 EXACT_REVIEW_RETRY_POLICY_EPOCH = "1"
 EXACT_REVIEW_PENDING_SOFT_LIMIT = "600"
+# Bay is observer-only; 30 seconds of staleness is acceptable.
+EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "30000"
 # A full review consumes about 30 GitHub requests. Keep scheduled review demand
 # at or below 9,000 requests/hour so the 15,000-request installation bucket has
 # explicit capacity for exact ingress, comment routing, apply proof, publication,
