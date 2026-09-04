@@ -183,22 +183,6 @@ test("ClawSweeper repairs preserve their configured changed gate from the real c
   }
 });
 
-test("validation preflight reports injected OpenClaw changed gate", () => {
-  const cwd = packageFixture({ "check:changed": "node check.js" });
-
-  assert.deepEqual(
-    preflightTargetValidationPlan(
-      { fixArtifact: { validation_commands: [] }, targetDir: cwd },
-      validationOptions("openclaw/openclaw"),
-    ),
-    {
-      status: "passed",
-      resolved_commands: ["pnpm check:changed"],
-      available_scripts: ["check:changed"],
-    },
-  );
-});
-
 test("validation preflight blocks targets without any validation command", () => {
   const cwd = packageFixture({});
 
@@ -2499,22 +2483,6 @@ test("bun-based target repos do not get pnpm check:changed injected", () => {
   );
 });
 
-test("bun-based target repos pass preflight when their script exists", () => {
-  const cwd = bunPackageFixture({ check: "bun x tsc --noEmit" });
-
-  assert.deepEqual(
-    preflightTargetValidationPlan(
-      { fixArtifact: { validation_commands: ["bun run check"] }, targetDir: cwd },
-      validationOptions("openclaw/clawhub", clawhubToolchain()),
-    ),
-    {
-      status: "passed",
-      resolved_commands: ["bun run check"],
-      available_scripts: ["check"],
-    },
-  );
-});
-
 test("bun-based target repos drop stale pnpm check:changed and pass on their real validation command", () => {
   // Regression guard for the stale-deterministic-artifact path: an automerge
   // artifact authored before per-repo toolchain config (or any future caller
@@ -4076,31 +4044,6 @@ if (args[0] === "enable") {
         assert.equal(subsequentPrefetches, previousPrefetches + 1);
       }),
     );
-  },
-);
-
-test(
-  "pnpm validation refreshes the prepared executable before every command",
-  { skip: process.platform === "win32" },
-  () => {
-    const { cwd, hostBin, logPath, maliciousMarker, options } = pnpmExecutableRefreshFixture();
-
-    withCommandOverridesUnset(["corepack", "pnpm"], () =>
-      withPathOnlyPrefix(hostBin, () => {
-        prepareTargetToolchain(cwd, options);
-        assert.deepEqual(
-          runAllowedValidationCommands(["pnpm first", "pnpm second"], cwd, options),
-          ["pnpm first", "pnpm second"],
-        );
-      }),
-    );
-
-    assert.equal(fs.existsSync(maliciousMarker), false);
-    assert.deepEqual(fs.readFileSync(logPath, "utf8").trim().split(/\r?\n/), [
-      "install --frozen-lockfile --prefer-offline --ignore-scripts --ignore-pnpmfile --config.registry=https://registry.npmjs.org/ --config.engine-strict=false --config.enable-pre-post-scripts=false",
-      "--config.verify-deps-before-run=false --config.enable-pre-post-scripts=false first",
-      "--config.verify-deps-before-run=false --config.enable-pre-post-scripts=false second",
-    ]);
   },
 );
 

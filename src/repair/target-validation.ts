@@ -18,11 +18,7 @@ import {
   preparePinnedOpenClawValidationHelper,
   restorePinnedOpenClawValidationHelperCache,
 } from "./pinned-openclaw-validation-helper.js";
-import {
-  resolveTargetRepoToolchain,
-  type TargetChangedGate,
-  type TargetRepoToolchain,
-} from "./target-toolchain-config.js";
+import { resolveTargetRepoToolchain, type TargetRepoToolchain } from "./target-toolchain-config.js";
 import { compactText } from "./text-utils.js";
 import {
   isExpensivePnpmValidation,
@@ -32,6 +28,7 @@ import {
   packageManagerCommandIndex,
   packageManagerWorkspaceScoped,
   packageScriptRequirement,
+  type PackageScriptRequirement,
   parseAllowedValidationCommand,
   requireWorkspaceMatchFailure,
   stripEnvPrefix,
@@ -80,12 +77,6 @@ export type TargetValidationOptions = {
   pinnedBaseRef?: string;
   /** Trusted upstream override for deterministic local integration fixtures. */
   pinnedBaseRemoteUrl?: string;
-  /**
-   * Optional override of the per-repo toolchain (package manager, base validation
-   * commands, changed gate). If omitted, it is resolved from
-   * config/target-repositories.json via `resolveTargetRepoToolchain(targetRepo)`.
-   * Tests inject this directly to avoid touching the config file.
-   */
   toolchain?: TargetRepoToolchain;
 };
 
@@ -558,7 +549,7 @@ function openClawValidationNeedsPinnedHelper(
     return false;
   }
   const commands = requiredValidationCommands(validationCommands, cwd, options);
-  if (!commands.some((command) => isOpenClawChangedGateValidationCommand(command))) return false;
+  if (!commands.some(isOpenClawChangedGateValidationCommand)) return false;
   const changedPaths = options.pinnedBaseRef
     ? gitChangedFilesFromRef(cwd, options.pinnedBaseRef)
     : gitChangedFiles(cwd, DEFAULT_BASE_BRANCH);
@@ -594,17 +585,6 @@ function prepareBunToolchain({
   deadlineAt: number;
   installRegistry: string;
 }) {
-  // The repair execution workflow provisions pinned Bun before this path runs.
-  // Keep a clear fail-fast probe so local/manual runners surface setup gaps early.
-  //
-  // ClawSweeper itself runs under pnpm (e.g. `pnpm run repair:execute-fix`), so
-  // process.env carries pnpm-injected `npm_config_user_agent=pnpm/...`. When we
-  // shell out to `bun install` for a target repo whose package.json has a
-  // preinstall hook like `bunx only-allow bun` (e.g. openclaw/clawhub), bun
-  // forwards the parent env to the preinstall script and `only-allow` reads the
-  // pnpm user-agent and refuses to run. Strip caller identity/lifecycle metadata;
-  // the shared validation environment already removed credentials and
-  // execution-controlling path configuration.
   const bunEnv = sanitizeEnvForBun(validationEnv);
   run("bun", ["--version"], {
     cwd,
@@ -646,25 +626,19 @@ function prepareBunToolchain({
 function sanitizeEnvForBun(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(env)) {
-    if (value === undefined) continue;
-    if (shouldStripBunInstallEnv(key)) continue;
+    if (
+      value === undefined ||
+      /^(?:PNPM_|npm_config_user_agent$|npm_execpath$|npm_node_execpath$|npm_lifecycle_|npm_package_)/i.test(
+        key,
+      )
+    )
+      continue;
     out[key] = value;
   }
   // Declare bun as the active package manager so target preinstall hooks
   // such as `bunx only-allow bun` recognise the caller.
   out.npm_config_user_agent = `bun/unknown npm/? node/${process.versions.node} ${process.platform} ${process.arch}`;
   return out;
-}
-
-function shouldStripBunInstallEnv(key: string): boolean {
-  return (
-    /^PNPM_/i.test(key) ||
-    /^npm_config_user_agent$/i.test(key) ||
-    /^npm_execpath$/i.test(key) ||
-    /^npm_node_execpath$/i.test(key) ||
-    /^npm_lifecycle_/i.test(key) ||
-    /^npm_package_/i.test(key)
-  );
 }
 
 function prepareNpmToolchain({
@@ -1329,8 +1303,7 @@ export function runAllowedValidationCommandsWithBinding(
       options.validationTimeoutMs ?? DEFAULT_TARGET_VALIDATION_TIMEOUT_MS,
       options.validationTimeoutMs,
     );
-    // Match the pre-change shape: each capture stage gets its own fresh window
-    // so ignored-path enumeration cannot starve the checkout identity capture.
+    // Separate windows keep ignored-path enumeration from starving identity capture.
     const identityCaptureWindowMs = Math.max(
       validationTimeoutMs,
       MIN_VALIDATION_IDENTITY_WINDOW_MS,
@@ -1671,7 +1644,7 @@ export function preflightTargetValidationPlan(
   const scripts = readPackageScriptSet(targetDir);
   const availableScripts = [...scripts].sort();
   const resolved: string[] = [];
-  const requiredScripts: LooseRecord[] = [];
+  const requiredScripts: PackageScriptRequirement[] = [];
   for (const command of requiredValidationCommands(
     fixArtifact.validation_commands ?? [],
     targetDir,
@@ -1703,7 +1676,7 @@ export function preflightTargetValidationPlan(
   }
 
   const missing = requiredScripts.find(
-    (script: JsonValue) => !targetPackageScriptIsAvailable(targetDir, scripts, script),
+    (script) => !targetPackageScriptIsAvailable(targetDir, scripts, script),
   );
   const bunInspection = requiredScripts
     .map((script) => unsafeBunLifecycleHook(targetDir, script))
@@ -1762,7 +1735,7 @@ export function requiredValidationCommands(
   const toolchain = getToolchain(options);
   const gate = toolchain.changedGate;
   const injectedChangedGate =
-    gate && !options.skipOpenClawChangedGate && requiresChangedGate(cwd, toolchain)
+    gate && !options.skipOpenClawChangedGate && readPackageScriptSet(cwd).has(gate.requiredScript)
       ? gate.command
       : null;
   const replacementCommands = [
@@ -1796,21 +1769,7 @@ function isMutatingFormatterValidationHint(command: LooseRecord): boolean {
   });
 }
 
-/**
- * Drop validation commands that look like "some other repo's changed gate"
- * when the current target repo does not have one. This protects against stale
- * fixArtifacts (most notably deterministic automerge artifacts authored before
- * per-repo toolchain config landed) that ship `pnpm check:changed` even when
- * the target is bun-based and has no `check:changed` script. Without this
- * guard preflight terminates with `validation_script_missing` and the
- * executor never tries the project's real validation command.
- *
- * We are deliberately conservative: we only drop commands that match the
- * fingerprint of a known changed-gate command and only when the active
- * toolchain has no gate of its own. If no repository-specific replacement
- * exists, fall back to `git diff --check`; unrelated commands still pass
- * through so genuinely missing scripts remain visible.
- */
+// Only the canonical OpenClaw gate is replaceable; unrelated missing scripts must block.
 function sanitizeStaleChangedGateCommands(
   commands: readonly LooseRecord[],
   toolchain: TargetRepoToolchain,
@@ -1829,14 +1788,7 @@ function sanitizeStaleChangedGateCommands(
 }
 
 function looksLikeStaleChangedGateCommand(command: LooseRecord): boolean {
-  const text = String(command ?? "").trim();
-  if (!text) return false;
-  // Matches the canonical openclaw/openclaw changed gate verbatim, with or
-  // without a leading `env` wrapper. Kept narrow on purpose so we only
-  // discard things we are confident are the stale gate.
-  return /^(?:env\s+(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*)?pnpm\s+(?:-s\s+|--silent\s+)?(?:run\s+)?check:changed$/.test(
-    text,
-  );
+  return isOpenClawChangedGateValidationCommand(String(command ?? ""));
 }
 
 export function repairDeltaValidationPlan(
@@ -2909,13 +2861,8 @@ function sameValidationSourceIdentity(
   expected: ValidationSourceIdentity,
 ) {
   return (
-    actual.contentTreeSha === expected.contentTreeSha &&
-    actual.gitAdminSha256 === expected.gitAdminSha256 &&
-    actual.headSha === expected.headSha &&
-    actual.runtimeInputsSha256 === expected.runtimeInputsSha256 &&
-    actual.treeSha === expected.treeSha &&
-    actual.status === expected.status &&
-    actual.worktreeSha256 === expected.worktreeSha256
+    sameValidationSourceIdentityExceptRuntime(actual, expected) &&
+    actual.runtimeInputsSha256 === expected.runtimeInputsSha256
   );
 }
 
@@ -3339,7 +3286,7 @@ function validationRuntimeInputsSha256(
       .split("\0")
       .filter(Boolean),
   );
-  const runtimePaths = validationRuntimeInputPaths(cwd, deadlineAt).filter(
+  const runtimePaths = ignoredValidationRuntimePaths(cwd, deadlineAt).filter(
     (relativePath) =>
       !excludedRuntimeRoots.some(
         (excludedRoot) =>
@@ -3418,10 +3365,6 @@ function validationRuntimeInputsSha256(
   }
   assertValidationIdentityDeadline(deadlineAt, "runtime input digest");
   return hash.digest("hex");
-}
-
-function validationRuntimeInputPaths(cwd: string, deadlineAt: number) {
-  return ignoredValidationRuntimePaths(cwd, deadlineAt);
 }
 
 function clearNewIgnoredValidationRuntimePaths(
@@ -5012,7 +4955,7 @@ function validationCommandInvokesRust(parts: readonly string[]) {
   return false;
 }
 
-function targetPackageScriptMayInvokeRust(cwd: string, requirement: LooseRecord) {
+function targetPackageScriptMayInvokeRust(cwd: string, requirement: PackageScriptRequirement) {
   const manifests = readWorkspacePackageManifests(cwd, requirement.packageManager);
   if (manifests === null) return true;
   const selected = requirement.workspaceScoped
@@ -5024,12 +4967,10 @@ function targetPackageScriptMayInvokeRust(cwd: string, requirement: LooseRecord)
     : manifests.filter((manifest) => manifest.relativeDir === ".");
   if (selected === null) return true;
   return selected.some((manifest) =>
-    shellCommandMayInvokeRust(manifest.scriptCommands.get(String(requirement.name)) ?? ""),
+    /(?:^|[\s;&|()])(?:cargo|rustc)(?=$|[\s;&|()])/.test(
+      manifest.scriptCommands.get(requirement.name) ?? "",
+    ),
   );
-}
-
-function shellCommandMayInvokeRust(command: string) {
-  return /(?:^|[\s;&|()])(?:cargo|rustc)(?=$|[\s;&|()])/.test(command);
 }
 
 type VerifiedRustupToolchain = {
@@ -5421,7 +5362,7 @@ const DEFAULT_WORKSPACE_SELECTOR_LIMITS: WorkspaceSelectorLimits = {
 function targetPackageScriptIsAvailable(
   cwd: string,
   rootScripts: ReadonlySet<string>,
-  requirement: LooseRecord,
+  requirement: PackageScriptRequirement,
 ) {
   if (!requirement.workspaceScoped) return rootScripts.has(requirement.name);
   const manifests = readWorkspacePackageManifests(cwd, requirement.packageManager);
@@ -5436,8 +5377,7 @@ function targetPackageScriptIsAvailable(
       requirement.packageManager === "pnpm" &&
       hasDeferredPnpmWorkspaceSelector(requirement.workspaceSelectors) &&
       manifests.some(
-        (manifest) =>
-          manifest.relativeDir !== "." && manifest.scripts.has(String(requirement.name)),
+        (manifest) => manifest.relativeDir !== "." && manifest.scripts.has(requirement.name),
       )
     );
   }
@@ -5473,13 +5413,13 @@ function assertNoUnsafeBunLifecycleHooks(cwd: string, parts: readonly string[]) 
 
 function unsafeBunLifecycleHook(
   cwd: string,
-  requirement: LooseRecord,
+  requirement: PackageScriptRequirement,
 ):
   | { status: "safe" }
   | { status: "unsafe"; command: string; hook: string }
   | { status: "inconclusive"; command: string; reason: string } {
   if (requirement.packageManager !== "bun") return { status: "safe" };
-  const command = String(requirement.command);
+  const command = requirement.command;
   const manifests = readWorkspacePackageManifests(cwd, requirement.packageManager);
   if (manifests === null) {
     return { status: "inconclusive", command, reason: "workspace metadata or traversal failed" };
@@ -5951,30 +5891,17 @@ function workspaceGlobMatches(value: string, pattern: string) {
   }
 }
 
-function requiresChangedGate(cwd: string, toolchain: TargetRepoToolchain) {
-  if (!toolchain.changedGate) return false;
-  return readPackageScriptSet(cwd).has(toolchain.changedGate.requiredScript);
-}
-
 function getToolchain(options: TargetValidationOptions): TargetRepoToolchain {
   return options.toolchain ?? resolveTargetRepoToolchain(options.targetRepo);
 }
 
 function isChangedGateCommand(parts: readonly string[], options: TargetValidationOptions) {
-  return changedGateCommandParts(getToolchain(options).changedGate, parts) !== null;
-}
-
-function changedGateCommandParts(
-  gate: TargetChangedGate | null,
-  parts: readonly string[],
-): readonly string[] | null {
-  if (!gate) return null;
+  const gate = getToolchain(options).changedGate;
+  if (!gate) return false;
   const gateParts = gate.command.split(/\s+/).filter(Boolean);
-  if (gateParts.length !== parts.length) return null;
-  for (let i = 0; i < gateParts.length; i += 1) {
-    if (gateParts[i] !== parts[i]) return null;
-  }
-  return gateParts;
+  return (
+    gateParts.length === parts.length && gateParts.every((part, index) => part === parts[index])
+  );
 }
 
 function changedFilesSinceRef(cwd: string, sourceRef: string) {
