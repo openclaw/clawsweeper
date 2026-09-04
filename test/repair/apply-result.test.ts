@@ -1133,6 +1133,8 @@ test("repair apply leaves current-main fixed closeout outside coverage proof", (
 test("post-flight authorization promotes only candidate-bound closeouts into guarded apply", () => {
   const source = fs.readFileSync("src/repair/apply-result.ts", "utf8");
 
+  assert.match(source, /from "\.\/merge-readiness-github\.js"/);
+  assert.doesNotMatch(source, /function (?:fetchPullRequestView|validateResolvedReviewThreads)\(/);
   assert.match(source, /closure_authorization\?\.status !== "authorized"/);
   assert.match(source, /mergedFixes\.has\(candidateFix\)/);
   assert.match(source, /normalizeIssueRef\(entry\.target, result\.repo\) === candidateFix/);
