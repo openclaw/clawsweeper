@@ -7556,7 +7556,6 @@ async function attachExactReviewQueueStatus(snapshot, env) {
   ]
     .map((item) => String(objectValue(item).item_key || ""))
     .filter(Boolean);
-  let exactReviewQueue = null;
   let recentDurablePublicationEvents = null;
   const exactReviewQueueRequest = withTimeout(
     exactReviewQueueStatusSnapshot(env, {
@@ -7576,7 +7575,8 @@ async function attachExactReviewQueueStatus(snapshot, env) {
     exactReviewQueueRequest,
     recentDurablePublicationEventsRequest,
   ]);
-  if (queueResult.status === "fulfilled") exactReviewQueue = queueResult.value;
+  const freshExactReviewQueue = queueResult.status === "fulfilled" ? queueResult.value : null;
+  let exactReviewQueue = freshExactReviewQueue;
   if (eventsResult.status === "fulfilled") recentDurablePublicationEvents = eventsResult.value;
   const allowedRepositories = verifiedPublicBayRepositories(env);
   const staleStatusSnapshot =
@@ -7646,7 +7646,8 @@ async function attachExactReviewQueueStatus(snapshot, env) {
       recent_durable_publication_events_error: eventsResult.status === "rejected",
     },
   };
-  return { ...attached, dashboard_health: summarizeDashboardHealth(attached) };
+  const healthSnapshot = { ...attached, exact_review_queue: freshExactReviewQueue };
+  return { ...attached, dashboard_health: summarizeDashboardHealth(healthSnapshot) };
 }
 
 async function triageSnapshot(env) {

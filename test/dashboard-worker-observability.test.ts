@@ -2822,6 +2822,140 @@ test("optional queue status failure retains the last complete public Bay queue s
   }
 });
 
+test("dashboard health grades fresh queue telemetry while retaining prior public Bay activity", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: new MemoryCache() },
+  });
+  globalThis.fetch = async () => {
+    throw new Error("shared snapshot should avoid GitHub requests");
+  };
+
+  const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
+  const enqueue = await queue.fetch(
+    buildExactReviewQueueRequest(
+      "bay-status-fresh-health",
+      125_205,
+      "opened",
+      "issue",
+      "openclaw/openclaw",
+    ),
+  );
+  assert.equal(enqueue.status, 202);
+  const publicQueueResponse = await worker.fetch(
+    new Request("https://clawsweeper.openclaw.ai/api/exact-review-queue"),
+    {
+      EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+      PUBLIC_BAY_REPOS: "openclaw/openclaw",
+    },
+  );
+  assert.equal(publicQueueResponse.status, 200);
+  const priorExactReviewQueue = await publicQueueResponse.json();
+  const emptyActivityStages = Object.fromEntries(
+    Object.keys(priorExactReviewQueue.bay_projection.stages).map((stage) => [stage, 0]),
+  );
+  priorExactReviewQueue.bay_projection.activity = {
+    complete: true,
+    queue_stages: { ...emptyActivityStages, arriving: 1 },
+    live_stages: { ...emptyActivityStages, reviewing: 1 },
+    total: 2,
+    items: [
+      {
+        repository: "openclaw/openclaw",
+        item_number: 125_205,
+        stage: "reviewing",
+        source: "worker",
+      },
+    ],
+  };
+  const priorActivity = structuredClone(priorExactReviewQueue.bay_projection.activity);
+  assert.equal(priorActivity.complete, true);
+
+  const statusStore = new MemoryKv();
+  await statusStore.put(
+    "snapshot:bay-scope:v1:openclaw%2Fopenclaw",
+    JSON.stringify({
+      schema_version: 1,
+      generated_at: new Date().toISOString(),
+      public_projection_complete: true,
+      health: {},
+      workers: [],
+      automatic_work: [],
+      bay: {
+        active_census_complete: false,
+        timings: {
+          sample_kind: "completed_review_journeys",
+          source: "durable_exact_review_lifecycles",
+          completion_source: "verified_final_review_receipts",
+          including_legacy_batch: {
+            overall: { average_ms: null, median_ms: null, samples: 0 },
+            history: { bucket_minutes: 5, points: [] },
+          },
+        },
+      },
+      pipeline: [],
+      recent: {},
+      fleet: { active_workflow_runs: 0 },
+      diagnostics: { errors: [], error_count: 0 },
+      exact_review_queue: priorExactReviewQueue,
+    }),
+  );
+  const queueWithCriticalPublicationHealth = {
+    fetch: async (request: Request) => {
+      const response = await queue.fetch(request);
+      if (new URL(request.url).pathname !== "/stats") return response;
+      const body = await response.json();
+      body.lanes.publication.health = {
+        ...body.lanes.publication.health,
+        status: "critical",
+      };
+      body.lanes.publication.dead_letters = {
+        ...body.lanes.publication.dead_letters,
+        open: 2,
+      };
+      return jsonResponse(body);
+    },
+  };
+
+  try {
+    const response = await worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/status"),
+      {
+        CACHE_TTL_SECONDS: "60",
+        STATUS_STORE: statusStore,
+        EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queueWithCriticalPublicationHealth),
+        PUBLIC_BAY_REPOS: "openclaw/openclaw",
+      },
+      { waitUntil: () => undefined },
+    );
+    const status = await response.json();
+    assert.deepEqual(
+      status.exact_review_queue.bay_projection.items,
+      priorExactReviewQueue.bay_projection.items,
+    );
+    assert.equal(status.exact_review_queue.bay_projection.activity.complete, true);
+    assert.deepEqual(
+      status.exact_review_queue.bay_projection.activity.queue_stages,
+      priorActivity.queue_stages,
+    );
+    assert.deepEqual(
+      status.exact_review_queue.bay_projection.activity.live_stages,
+      priorActivity.live_stages,
+    );
+    assert.equal(status.exact_review_queue.bay_projection.activity.total, priorActivity.total);
+    assert.equal(status.exact_review_queue.lanes.publication.health, undefined);
+    assert.equal(status.exact_review_queue.lanes.publication.dead_letters, undefined);
+    assert.equal(status.dashboard_health.reasons.includes("publication_critical"), true);
+    assert.equal(status.dashboard_health.reasons.includes("publication_dlq_open"), true);
+    assert.equal(status.dashboard_health.reasons.includes("publication_health_unavailable"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
 test("durable lifecycle Bay stale polls share one background refresh and respect maximum age", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-04T00:00:00Z") });
   const originalCaches = globalThis.caches;
