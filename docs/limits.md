@@ -240,7 +240,7 @@ Codex and does not deduct these control-plane workflows from `workers.max`.
 
 Legacy state-repository publication once limited exact-review preparation to
 four concurrent size-8 batches. Canonical Worker publication removes that
-shared Git writer constraint, so production now admits 4 preparation
+shared Git writer constraint, so production now admits 8 preparation
 batches (up to 64 publication members) while retaining the Durable Object's
 transactional SQLite ownership boundaries.
 

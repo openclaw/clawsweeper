@@ -452,7 +452,7 @@ lease without checking out or pushing the state repository. The queue retries
 publication independently, so a cancelled publisher does not rerun Codex. The
 source fallback uses adaptive minimum/base/maximum values of 4/24/48; production
 overrides them with 8/32/40 and enables direct
-publication plus up to 4 concurrent size-8 batches. The Durable Object validates
+publication plus up to 8 concurrent size-8 batches. The Durable Object validates
 each artifact's workflow run, queue tuple,
 target, decision digest, file inventory, sizes, and SHA-256 hashes before a
 publisher receives write tokens.

@@ -86,10 +86,7 @@ EXACT_REVIEW_DIRECT_PUBLICATION_ENABLED = "1"
 EXACT_REVIEW_STATE_REPO = "openclaw/clawsweeper-state"
 EXACT_REVIEW_STATE_REF = "state"
 EXACT_REVIEW_PUBLICATION_BATCH_SIZE = "8"
-# Temporary relief while the queue object is CPU-bound (openclaw/clawsweeper#1372):
-# fewer concurrent batches cut heartbeat/complete/receipt load until the
-# per-request CPU fixes land. Restore 8 afterwards.
-EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT = "4"
+EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT = "8"
 # Reserve 2 members for recent protocol-v2 tuples that still match the
 # queue's current source revision. The other 6 members keep draining FIFO.
 EXACT_REVIEW_PUBLICATION_FRESH_LANE_ENABLED = "1"
