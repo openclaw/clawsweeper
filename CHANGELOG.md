@@ -82,7 +82,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
-- Retry transient scheduled review enqueue failures with the same signed delivery identity, while failing closed on ambiguous dedupes and preserving single-attempt publication post-effects.
+- Replay durable scheduled enqueue dispositions after transient response loss while preserving signed delivery identity, rejecting mismatched bytes, failing closed on legacy ambiguous receipts, and leaving publication post-effects single-attempt.
 - Preserve canonical repository slugs when reading persisted apply records, including dots, underscores, and repeated or trailing hyphens.
 - Make timeout tests tolerate loaded macOS hosts by isolating checkout timing, synchronizing lock contention, and budgeting snapshot admission fixtures separately from deadline tests.
 - Preserve explicit contributor credits in source-PR link comments for both direct replacements and fallback publication after a blocked fork push.

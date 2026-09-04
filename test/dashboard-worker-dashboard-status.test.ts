@@ -814,7 +814,11 @@ test("dashboard sanitizes stored status immediately and never renders transport 
       maximum_age_ms: 60_000,
     },
     exact_review_queue: {
-      scheduled_feed: { target_rate_per_hour: 300, token_balance: marker },
+      scheduled_feed: {
+        target_rate_per_hour: 300,
+        enqueue_replay: "scheduled_disposition_v1",
+        token_balance: marker,
+      },
     },
   });
   const withCache = await run(cached);
@@ -824,6 +828,7 @@ test("dashboard sanitizes stored status immediately and never renders transport 
   assert.match(withCache.writes[0], /telemetry_unavailable/);
   assert.deepEqual(JSON.parse(withCache.writes[0]).exact_review_queue.scheduled_feed, {
     target_rate_per_hour: 300,
+    enqueue_replay: "scheduled_disposition_v1",
   });
   const persisted = JSON.parse(withCache.writes[0]);
   assert.equal(persisted.freshness.state, "stale");

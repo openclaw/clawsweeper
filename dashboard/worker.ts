@@ -7,6 +7,7 @@ import {
 import { legacyCommandCommentId } from "../src/repair/command-ack-convergence.ts";
 import { directReReviewIntake } from "../src/repair/direct-re-review-admission.ts";
 import { isExactReviewCloseGuardLabel } from "../src/repair/exact-review-guard-labels.ts";
+import { sha256Hex } from "./exact-review-direct-publication.ts";
 import { exactReviewSourceRevisionMaterial } from "./exact-review-source-revision.ts";
 import {
   GITHUB_ETAG_CACHE_MAX_BODY_BYTES,
@@ -46,6 +47,7 @@ import { TRIAGE_ROUTING_GROUPS, triageRoutingGroupsForLabels } from "./triage-ro
 import {
   EXACT_REVIEW_QUEUE_NAME,
   EXACT_REVIEW_RECONCILE_CONCURRENCY,
+  EXACT_REVIEW_AUTHENTICATED_BODY_FINGERPRINT_HEADER,
   HOSTED_TARGET_ELIGIBILITY_HEADER,
   exactReviewActionsReadToken,
   exactReviewClaimedRuns,
@@ -1786,6 +1788,7 @@ const PUBLIC_STATUS_TEXT_VALUES = new Set([
   "queue_handoff_stalled",
   "queue_handoff_degraded",
   "queue_handoff_unavailable",
+  "scheduled_disposition_v1",
   "publication_critical",
   "publication_degraded",
   "publication_health_unavailable",
@@ -1804,6 +1807,7 @@ const PUBLIC_STATUS_TEXT_VALUES = new Set([
 const PUBLIC_STATUS_TEXT_FIELDS = new Set([
   "conclusion",
   "completion_source",
+  "enqueue_replay",
   "mode",
   "outcome",
   "reason",
@@ -5109,11 +5113,17 @@ async function exactReviewQueueFetch(queue: DurableObjectStub, path: string, req
   const traceId = newExactReviewQueueTraceId();
   const endpoint = exactReviewQueueEndpointTemplate(path);
   const preparedHostedTarget = request?.headers.get(HOSTED_TARGET_ELIGIBILITY_HEADER);
+  const authenticatedBodyFingerprint = request?.headers.get(
+    EXACT_REVIEW_AUTHENTICATED_BODY_FINGERPRINT_HEADER,
+  );
   try {
     const headers = new Headers(body ? { "content-type": "application/json" } : undefined);
     headers.set(EXACT_REVIEW_QUEUE_TRACE_HEADER, traceId);
     if (preparedHostedTarget) {
       headers.set(HOSTED_TARGET_ELIGIBILITY_HEADER, preparedHostedTarget);
+    }
+    if (authenticatedBodyFingerprint) {
+      headers.set(EXACT_REVIEW_AUTHENTICATED_BODY_FINGERPRINT_HEADER, authenticatedBodyFingerprint);
     }
     const response = await queue.fetch(
       new Request(`https://clawsweeper-exact-review-queue${path}`, {
@@ -5486,10 +5496,13 @@ export function publicExactReviewQueueProjection(
   const sourcePressure = objectValue(source.pressure);
   const projectedPressure = publicExactReviewPressure(sourcePressure);
   const projectedReviewFailureHealth = publicExactReviewFailureHealth(source.review_failure_health);
+  const scheduledFeed = objectValue(source.scheduled_feed);
   const scheduledTargetRate = publicQueueCount(
-    objectValue(source.scheduled_feed).target_rate_per_hour,
+    scheduledFeed.target_rate_per_hour,
     PUBLIC_SCHEDULED_FEED_RATE_LIMIT,
   );
+  const scheduledEnqueueReplay =
+    scheduledFeed.enqueue_replay === "scheduled_disposition_v1" ? "scheduled_disposition_v1" : null;
   const requiredCounts = [
     source.pending,
     source.ready_pending,
@@ -5590,8 +5603,11 @@ export function publicExactReviewQueueProjection(
     pressure: projectedPressure,
     review_failure_health: projectedReviewFailureHealth.value,
     scheduled_feed:
-      scheduledTargetRate !== null && scheduledTargetRate > 0
-        ? { target_rate_per_hour: scheduledTargetRate }
+      scheduledTargetRate !== null && scheduledTargetRate > 0 && scheduledEnqueueReplay
+        ? {
+            target_rate_per_hour: scheduledTargetRate,
+            enqueue_replay: scheduledEnqueueReplay,
+          }
         : null,
     lanes: {
       review: projectedReviewLane.value,
@@ -6337,15 +6353,22 @@ async function authenticatedHostedTargetQueueRequest(request, env, path: string)
       });
     }
   }
+  const headers = new Headers({
+    "content-type": "application/json",
+    [HOSTED_TARGET_ELIGIBILITY_HEADER]: targetRepo,
+  });
+  if (path === "/enqueue") {
+    headers.set(
+      EXACT_REVIEW_AUTHENTICATED_BODY_FINGERPRINT_HEADER,
+      await sha256Hex(new TextEncoder().encode(body)),
+    );
+  }
   return exactReviewQueueRequest(
     env,
     path,
     new Request(`https://clawsweeper-exact-review-queue${path}`, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        [HOSTED_TARGET_ELIGIBILITY_HEADER]: targetRepo,
-      },
+      headers,
       body,
     }),
   );

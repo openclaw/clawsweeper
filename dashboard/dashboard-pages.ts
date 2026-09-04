@@ -1956,7 +1956,7 @@ const STATUS_BOOLEAN_FIELDS = new Set([
   "workflow_run_census_complete", "durable_server_observed"
 ]);
 const STATUS_TEXT_FIELDS = new Set([
-  "conclusion", "mode", "outcome", "reason", "sample_kind", "severity", "source", "stage", "state",
+  "conclusion", "enqueue_replay", "mode", "outcome", "reason", "sample_kind", "severity", "source", "stage", "state",
   "status", "terminal_outcome", "work_kind", "errors", "reasons", "cache_state"
 ]);
 const STATUS_TEXT_VALUES = new Set([
@@ -1973,6 +1973,7 @@ const STATUS_TEXT_VALUES = new Set([
   "observed", "queue_empty", "claim_stalled", "dispatcher_blocked", "dispatcher_paused",
   "claim_delayed", "handoff_current", "handoff_unknown", "capacity_unavailable", "capacity_available",
   "no_ready_backlog", "no_admissible_backlog", "dispatcher_inactive", "capacity_full_with_backlog",
+  "scheduled_disposition_v1",
   "fresh", "miss", "repeated_failure_identity", "terminal_review_failure",
   "retryable_review_failure", "queue_telemetry_unavailable", "queue_handoff_stalled",
   "queue_handoff_degraded", "queue_handoff_unavailable", "publication_critical",

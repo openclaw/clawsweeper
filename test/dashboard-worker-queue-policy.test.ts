@@ -3539,6 +3539,7 @@ test("scheduled review feed is lane-paced and exposes its configured target", as
   assert.equal(stats.shed_since_reset, 2);
   assert.deepEqual(stats.scheduled_feed, {
     target_rate_per_hour: 2,
+    enqueue_replay: "scheduled_disposition_v1",
     burst: 2,
     token_balance: 0,
     lanes: {

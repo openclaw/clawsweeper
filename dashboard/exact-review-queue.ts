@@ -646,6 +646,25 @@ const DEFAULT_EXACT_REVIEW_TARGET_BURST = 50;
 const EXACT_REVIEW_GITHUB_THROTTLE_ADMISSION_COOLDOWN_MS = 15 * 60 * 1000;
 const EXACT_REVIEW_SCHEDULED_FEED_KEY_PREFIX = "exact-review-scheduled-feed:v1";
 type ExactReviewScheduledBucket = ExactReviewScheduledLane | "global";
+type ExactReviewScheduledDisposition =
+  | {
+      ok: true;
+      queued: true;
+      item_key: string;
+      superseded_publications: number;
+    }
+  | {
+      ok: true;
+      deduped: true;
+      item_key: string;
+      dedupe_scope: "scheduled_queue_item";
+      dedupe_reason: "item_already_pending_or_active";
+    }
+  | {
+      ok: true;
+      shed: true;
+      reason: "backpressure" | "scheduled_rate";
+    };
 const EXACT_REVIEW_COMPLETION_RETRY_MAX_MS = 2 * 60 * 60 * 1000;
 const EXACT_REVIEW_ARTIFACT_RETRY_MAX_MS = 80 * 24 * 60 * 60 * 1000;
 const EXACT_REVIEW_PUBLICATION_ARTIFACT_RETRY_LIMIT = 3;
@@ -696,6 +715,8 @@ const EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_MAX_MS = 15 * 60_000;
 const EXACT_REVIEW_QUEUE_META_TABLE = "exact_review_queue_meta";
 const EXACT_REVIEW_QUEUE_ITEM_TABLE = "exact_review_queue_items";
 const EXACT_REVIEW_QUEUE_DELIVERY_TABLE = "exact_review_queue_deliveries";
+export const EXACT_REVIEW_AUTHENTICATED_BODY_FINGERPRINT_HEADER =
+  "x-clawsweeper-exact-review-body-sha256";
 const EXACT_REVIEW_QUEUE_INGRESS_TABLE = "exact_review_queue_ingress";
 const EXACT_REVIEW_QUEUE_EDIT_SEMANTIC_TABLE = "exact_review_queue_edit_semantic";
 const EXACT_REVIEW_QUEUE_METRICS_TABLE = "exact_review_queue_metrics";
@@ -1351,6 +1372,15 @@ export class ExactReviewQueue {
         return json({ error: "reserved_delivery_id" }, 400);
       }
       if (!decision) return json({ error: "invalid_exact_review_item" }, 400);
+      const scheduledLane = exactReviewScheduledLane(decision);
+      const bodyFingerprintHeader = request.headers.get(
+        EXACT_REVIEW_AUTHENTICATED_BODY_FINGERPRINT_HEADER,
+      );
+      if (scheduledLane && bodyFingerprintHeader && !/^[a-f0-9]{64}$/.test(bodyFingerprintHeader)) {
+        return json({ error: "invalid_authenticated_body_fingerprint" }, 400);
+      }
+      const authenticatedBodyFingerprint =
+        scheduledLane && bodyFingerprintHeader ? bodyFingerprintHeader : null;
       if (body.ingress !== undefined && !ingress) {
         return json({ error: "invalid_exact_review_ingress" }, 400);
       }
@@ -1391,19 +1421,44 @@ export class ExactReviewQueue {
           deliveryId,
           now - EXACT_REVIEW_QUEUE_DELIVERY_TTL_MS,
         );
-        const insertedReceipts = Array.from(
+        const existingReceipt = Array.from(
           this.storage.sql.exec(
-            `INSERT OR IGNORE INTO ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}
-             (delivery_id, received_at) VALUES (?, ?)
-           RETURNING delivery_id`,
+            `SELECT authenticated_body_fingerprint, scheduled_disposition_json
+               FROM ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}
+              WHERE delivery_id = ?`,
             deliveryId,
-            now,
           ),
-        );
-        if (insertedReceipts.length !== 1) {
+        )[0] as
+          | {
+              authenticated_body_fingerprint?: string | null;
+              scheduled_disposition_json?: string | null;
+            }
+          | undefined;
+        if (existingReceipt) {
           this.syncLegacyCompatibilitySync(this.readStateSync());
-          return { deduped: true as const };
+          const storedFingerprint = existingReceipt.authenticated_body_fingerprint;
+          const storedDispositionJson = existingReceipt.scheduled_disposition_json;
+          if (!storedFingerprint) return { deduped: true as const };
+          if (storedFingerprint !== authenticatedBodyFingerprint) {
+            return { conflict: true as const };
+          }
+          if (!storedDispositionJson) return { deduped: true as const };
+          const disposition = exactReviewScheduledDispositionFromJson(storedDispositionJson);
+          if (!disposition) return { deduped: true as const };
+          return {
+            replayed: true as const,
+            disposition,
+            dispositionJson: storedDispositionJson,
+          };
         }
+        this.storage.sql.exec(
+          `INSERT INTO ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}
+             (delivery_id, received_at, authenticated_body_fingerprint)
+           VALUES (?, ?, ?)`,
+          deliveryId,
+          now,
+          authenticatedBodyFingerprint,
+        );
         const counterpartIngress = ingress
           ? this.recordIngressSync(ingress, decision.targetBranch, now)
           : null;
@@ -1637,13 +1692,25 @@ export class ExactReviewQueue {
           }
         }
         const current = state.items[key];
-        if (current && exactReviewScheduledLane(decision)) {
+        if (current && scheduledLane) {
           this.writeStateSync(state);
+          const disposition: ExactReviewScheduledDisposition = {
+            ok: true,
+            deduped: true,
+            item_key: key,
+            dedupe_scope: "scheduled_queue_item",
+            dedupe_reason: "item_already_pending_or_active",
+          };
           return {
             deduped: true as const,
             scheduled: true as const,
             key,
             state,
+            scheduledDispositionJson: this.recordScheduledDispositionSync(
+              deliveryId,
+              authenticatedBodyFingerprint,
+              disposition,
+            ),
           };
         }
         let supersededRunId: string | null = null;
@@ -1871,7 +1938,7 @@ export class ExactReviewQueue {
         } else {
           if (
             !decision.publication &&
-            (isLowPriorityExactReviewDecision(decision) || exactReviewScheduledLane(decision)) &&
+            (isLowPriorityExactReviewDecision(decision) || scheduledLane) &&
             exactReviewQueuePendingReviewCount(state) >= exactReviewPendingSoftLimit(this.env)
           ) {
             state.shedSinceReset = exactReviewShedSinceReset(state) + 1;
@@ -1883,7 +1950,22 @@ export class ExactReviewQueue {
               pending_count: ordinaryLogCount(exactReviewQueuePendingReviewCount(state)),
               configured_limit: ordinaryLogCount(exactReviewPendingSoftLimit(this.env)),
             });
-            return { shed: true as const, reason: "backpressure" as const };
+            const disposition: ExactReviewScheduledDisposition = {
+              ok: true,
+              shed: true,
+              reason: "backpressure",
+            };
+            return {
+              shed: true as const,
+              reason: "backpressure" as const,
+              scheduledDispositionJson: scheduledLane
+                ? this.recordScheduledDispositionSync(
+                    deliveryId,
+                    authenticatedBodyFingerprint,
+                    disposition,
+                  )
+                : null,
+            };
           }
           if (!this.takeScheduledReviewTokenSync(decision, now)) {
             state.shedSinceReset = exactReviewShedSinceReset(state) + 1;
@@ -1894,9 +1976,22 @@ export class ExactReviewQueue {
               category: "scheduled_rate",
               lane: exactReviewScheduledLane(decision) || "background",
             });
-            return { shed: true as const, reason: "scheduled_rate" as const };
+            const disposition: ExactReviewScheduledDisposition = {
+              ok: true,
+              shed: true,
+              reason: "scheduled_rate",
+            };
+            return {
+              shed: true as const,
+              reason: "scheduled_rate" as const,
+              scheduledDispositionJson: this.recordScheduledDispositionSync(
+                deliveryId,
+                authenticatedBodyFingerprint,
+                disposition,
+              ),
+            };
           }
-          if (!decision.publication && !exactReviewScheduledLane(decision)) {
+          if (!decision.publication && !scheduledLane) {
             this.consumeScheduledReviewCapacitySync(now);
           }
           state.items[key] = {
@@ -1950,17 +2045,41 @@ export class ExactReviewQueue {
           this.insertSupersessionAuditSync(supersessionAudit);
           this.incrementQueueMetricsSync({ reviewSuperseded: 1 });
         }
+        const scheduledDispositionJson = scheduledLane
+          ? this.recordScheduledDispositionSync(deliveryId, authenticatedBodyFingerprint, {
+              ok: true,
+              queued: true,
+              item_key: key,
+              superseded_publications: supersededPublications,
+            })
+          : null;
         return {
           deduped: false as const,
           key,
           state,
           supersededPublications,
           supersededRunId,
+          scheduledDispositionJson,
         };
       });
       if (deferredBayLifecycle) this.syncBayLifecycle(deferredBayLifecycle);
+      if ("conflict" in accepted && accepted.conflict) {
+        return json({ error: "exact_review_delivery_conflict" }, 409);
+      }
+      if ("replayed" in accepted && accepted.replayed) {
+        if (accepted.disposition.queued || accepted.disposition.deduped) {
+          await this.scheduleNext(this.readStateSync(), now);
+        }
+        return jsonText(accepted.dispositionJson, 202);
+      }
       if (accepted.deduped) {
         if ("state" in accepted) await this.scheduleNext(accepted.state, now);
+        if (
+          "scheduledDispositionJson" in accepted &&
+          typeof accepted.scheduledDispositionJson === "string"
+        ) {
+          return jsonText(accepted.scheduledDispositionJson, 202);
+        }
         return json(
           {
             ok: true,
@@ -2006,9 +2125,15 @@ export class ExactReviewQueue {
         );
       }
       if (accepted.shed) {
+        if (typeof accepted.scheduledDispositionJson === "string") {
+          return jsonText(accepted.scheduledDispositionJson, 202);
+        }
         return json({ ok: true, shed: true, reason: accepted.reason }, 202);
       }
       await this.scheduleNext(accepted.state, now);
+      if (typeof accepted.scheduledDispositionJson === "string") {
+        return jsonText(accepted.scheduledDispositionJson, 202);
+      }
       return json(
         {
           ok: true,
@@ -9575,9 +9700,25 @@ export class ExactReviewQueue {
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE} (
          delivery_id TEXT PRIMARY KEY,
-         received_at INTEGER NOT NULL
+         received_at INTEGER NOT NULL,
+         authenticated_body_fingerprint TEXT,
+         scheduled_disposition_json TEXT
        ) STRICT`,
     );
+    const deliveryColumns = new Set(
+      Array.from(
+        this.storage.sql.exec(
+          `SELECT name FROM pragma_table_info('${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}')`,
+        ) as Iterable<{ name: string }>,
+      ).map((row) => row.name),
+    );
+    for (const column of ["authenticated_body_fingerprint", "scheduled_disposition_json"]) {
+      if (!deliveryColumns.has(column)) {
+        this.storage.sql.exec(
+          `ALTER TABLE ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE} ADD COLUMN ${column} TEXT`,
+        );
+      }
+    }
     // Store only the current SHA-256 tuple for a PR. That lets a later genuine
     // change back to an older tuple enqueue normally, while duplicate webhook
     // deliveries of the current edit stay idempotent even after queue handoff.
@@ -10479,6 +10620,7 @@ export class ExactReviewQueue {
     const normal = this.scheduledReviewBucketSync("normal_backfill", now);
     return {
       target_rate_per_hour: global.ratePerHour,
+      enqueue_replay: "scheduled_disposition_v1",
       burst: global.burst,
       token_balance: Math.floor(global.tokens),
       ...(global.throttleObservedAt
@@ -11764,6 +11906,32 @@ export class ExactReviewQueue {
       ),
     )[0] as { receipt_count?: number } | undefined;
     return Number(row?.receipt_count || 0);
+  }
+
+  private recordScheduledDispositionSync(
+    deliveryId: string,
+    authenticatedBodyFingerprint: string | null,
+    disposition: ExactReviewScheduledDisposition,
+  ) {
+    if (!authenticatedBodyFingerprint) return null;
+    // Persist the exact response with admission so response-loss retries replay
+    // it without consuming queue capacity or scheduled-feed tokens twice.
+    const dispositionJson = JSON.stringify(disposition, null, 2);
+    const updated = Array.from(
+      this.storage.sql.exec(
+        `UPDATE ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}
+            SET scheduled_disposition_json = ?
+          WHERE delivery_id = ? AND authenticated_body_fingerprint = ?
+        RETURNING delivery_id`,
+        dispositionJson,
+        deliveryId,
+        authenticatedBodyFingerprint,
+      ),
+    );
+    if (updated.length !== 1) {
+      throw new Error("scheduled exact-review disposition receipt is unavailable");
+    }
+    return dispositionJson;
   }
 
   private legacyReceiptTimestamp(receivedAt: number) {
@@ -15207,6 +15375,55 @@ function exactReviewPendingSoftLimit(env) {
   );
 }
 
+function exactReviewScheduledDispositionFromJson(
+  value: string,
+): ExactReviewScheduledDisposition | null {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    const body = objectValue(parsed);
+    let disposition: ExactReviewScheduledDisposition | null = null;
+    if (
+      body.ok === true &&
+      body.queued === true &&
+      typeof body.item_key === "string" &&
+      /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[1-9]\d*$/.test(body.item_key) &&
+      Number.isSafeInteger(body.superseded_publications) &&
+      Number(body.superseded_publications) >= 0
+    ) {
+      disposition = {
+        ok: true,
+        queued: true,
+        item_key: body.item_key,
+        superseded_publications: Number(body.superseded_publications),
+      };
+    } else if (
+      body.ok === true &&
+      body.deduped === true &&
+      typeof body.item_key === "string" &&
+      /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[1-9]\d*$/.test(body.item_key) &&
+      body.dedupe_scope === "scheduled_queue_item" &&
+      body.dedupe_reason === "item_already_pending_or_active"
+    ) {
+      disposition = {
+        ok: true,
+        deduped: true,
+        item_key: body.item_key,
+        dedupe_scope: "scheduled_queue_item",
+        dedupe_reason: "item_already_pending_or_active",
+      };
+    } else if (
+      body.ok === true &&
+      body.shed === true &&
+      (body.reason === "backpressure" || body.reason === "scheduled_rate")
+    ) {
+      disposition = { ok: true, shed: true, reason: body.reason };
+    }
+    return disposition && stableJson(parsed) === stableJson(disposition) ? disposition : null;
+  } catch {
+    return null;
+  }
+}
+
 function exactReviewScheduledFeedKey(lane: ExactReviewScheduledBucket) {
   return `${EXACT_REVIEW_SCHEDULED_FEED_KEY_PREFIX}:${lane}`;
 }
@@ -16759,9 +16976,9 @@ function snapshotErrorResponse(error: unknown) {
   return json({ error: "snapshot_request_failed", snapshotStoreAvailable: true }, 500);
 }
 
-function json(value, status = 200) {
+function jsonText(value: string, status = 200) {
   return cors(
-    new Response(JSON.stringify(value, null, 2), {
+    new Response(value, {
       status,
       headers: {
         "content-type": "application/json; charset=utf-8",
@@ -16769,6 +16986,10 @@ function json(value, status = 200) {
       },
     }),
   );
+}
+
+function json(value, status = 200) {
+  return jsonText(JSON.stringify(value, null, 2), status);
 }
 
 export function hostedTargetProbeResponse(admission: HostedTargetAdmission) {

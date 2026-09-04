@@ -69,7 +69,8 @@ export async function enqueueScheduledReviewPlan(
   if (
     !capabilityResponse.ok ||
     !scheduledFeed ||
-    !Number.isFinite(Number(scheduledFeed.target_rate_per_hour))
+    !Number.isFinite(Number(scheduledFeed.target_rate_per_hour)) ||
+    scheduledFeed.enqueue_replay !== "scheduled_disposition_v1"
   ) {
     throw new Error("exact-review queue does not advertise scheduled feed admission");
   }

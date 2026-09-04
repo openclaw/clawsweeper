@@ -1324,6 +1324,7 @@ test("public queue projection retains only closed operational aggregates", () =>
     },
     scheduled_feed: {
       target_rate_per_hour: 300,
+      enqueue_replay: "scheduled_disposition_v1",
       burst: 50,
       token_balance: 42,
       throttle_source: sentinel,
@@ -1467,7 +1468,10 @@ test("public queue projection retains only closed operational aggregates", () =>
       workflow: 1,
     },
   });
-  assert.deepEqual(projected.scheduled_feed, { target_rate_per_hour: 300 });
+  assert.deepEqual(projected.scheduled_feed, {
+    target_rate_per_hour: 300,
+    enqueue_replay: "scheduled_disposition_v1",
+  });
   assert.deepEqual(projected.bay_projection.activity, {
     complete: false,
     queue_stages: null,
@@ -1519,6 +1523,7 @@ test("public queue projection retains only closed operational aggregates", () =>
   );
   assert.deepEqual(statusProjected.exact_review_queue.scheduled_feed, {
     target_rate_per_hour: 300,
+    enqueue_replay: "scheduled_disposition_v1",
   });
   assert.deepEqual(statusProjected.exact_review_queue.handoff_health.phases, {
     pending: { count: 7, oldest_at: null, oldest_age_seconds: null },
@@ -1552,6 +1557,8 @@ test("public queue projection retains only closed operational aggregates", () =>
     { target_rate_per_hour: 1.5 },
     { target_rate_per_hour: 2_001 },
     { target_rate_per_hour: "300" },
+    { target_rate_per_hour: 300 },
+    { target_rate_per_hour: 300, enqueue_replay: "future_contract" },
   ]) {
     assert.equal(
       publicExactReviewQueueProjection({ ...source, scheduled_feed }).scheduled_feed,
