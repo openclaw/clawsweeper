@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parse } from "yaml";
@@ -114,9 +114,12 @@ export async function proveCompletionSupersession(
       calls.push({ phase: payload.phase, status: reply.status, body: JSON.parse(text) });
       response.writeHead(reply.status, { "content-type": "application/json" });
       response.end(text);
-    } catch (error) {
-      response.writeHead(500);
-      response.end(String(error));
+    } catch {
+      response.writeHead(500, {
+        "content-type": "application/json; charset=utf-8",
+        "x-content-type-options": "nosniff",
+      });
+      response.end(JSON.stringify({ error: "proof_bridge_failed" }));
     }
   });
   const artifacts = join(root, ".artifacts/terminal-review-explanations");
@@ -127,6 +130,31 @@ export async function proveCompletionSupersession(
       server.once("error", reject);
       server.listen(0, "127.0.0.1", resolve);
     });
+    const rejected = await new Promise((resolve, reject) => {
+      const request = httpRequest(
+        "http://127.0.0.1:" + server.address().port + "/internal/exact-review/heartbeat",
+        { method: "POST", agent: false, headers: { "content-type": "application/json" } },
+        (response) => {
+          let body = "";
+          response.setEncoding("utf8");
+          response.once("error", reject);
+          response.once("aborted", () => reject(new Error("proof rejection probe aborted")));
+          response.on("data", (chunk) => {
+            body += chunk;
+          });
+          response.on("end", () =>
+            resolve({ status: response.statusCode, headers: response.headers, body }),
+          );
+        },
+      );
+      request.on("error", reject);
+      request.setTimeout(5000, () => request.destroy(new Error("proof rejection probe timed out")));
+      request.end("<proof-bridge-input>");
+    });
+    assert.equal(rejected.status, 500);
+    assert.equal(rejected.headers["content-type"], "application/json; charset=utf-8");
+    assert.equal(rejected.headers["x-content-type-options"], "nosniff");
+    assert.equal(rejected.body, JSON.stringify({ error: "proof_bridge_failed" }));
     const output = join(scratch, "github-output");
     const env = {
       PATH: dirname(process.execPath) + ":/usr/local/bin:/usr/bin:/bin",
@@ -252,6 +280,7 @@ export async function proveCompletionSupersession(
     values["exact-review-generation-result.outcome"] = generationOutputs.outcome;
     assert.equal(evaluate(failure.if, values), false);
     return {
+      error_response_sanitized: true,
       status_fence: 200,
       newer_source_accepted: 202,
       release_status: 409,
