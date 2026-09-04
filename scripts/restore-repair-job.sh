@@ -19,26 +19,31 @@ write_output() {
   fi
 }
 
+parse_repair_job_path() {
+  local kind="$1" filename stem rest
+  filename="${JOB_PATH##*/}"
+  stem="${filename%.md}"
+  rest="${stem#${kind}-}"
+  PARSED_JOB_NUMBER="${rest##*-}"
+  PARSED_JOB_REPO_SLUG="${rest%-${PARSED_JOB_NUMBER}}"
+  PARSED_JOB_OWNER="${JOB_PATH#jobs/}"
+  PARSED_JOB_OWNER="${PARSED_JOB_OWNER%%/*}"
+  PARSED_JOB_REPO_NAME="${PARSED_JOB_REPO_SLUG#${PARSED_JOB_OWNER}-}"
+  if [ -z "$PARSED_JOB_NUMBER" ] || [ "$PARSED_JOB_NUMBER" = "$rest" ] || [ -z "$PARSED_JOB_REPO_NAME" ] || [ "$PARSED_JOB_REPO_NAME" = "$PARSED_JOB_REPO_SLUG" ]; then
+    return 1
+  fi
+  PARSED_JOB_REPO="$PARSED_JOB_OWNER/$PARSED_JOB_REPO_NAME"
+  PARSED_JOB_REF="#$PARSED_JOB_NUMBER"
+  PARSED_JOB_BRANCH="clawsweeper/$kind-$PARSED_JOB_REPO_SLUG-$PARSED_JOB_NUMBER"
+}
+
 restore_automerge_job() {
   case "$JOB_PATH" in
     jobs/*/inbox/automerge-*.md) ;;
     *) return 1 ;;
   esac
-  local filename stem rest number repo_slug owner repo_name repo ref branch repair_mode labels merge_instruction
-  filename="${JOB_PATH##*/}"
-  stem="${filename%.md}"
-  rest="${stem#automerge-}"
-  number="${rest##*-}"
-  repo_slug="${rest%-${number}}"
-  owner="${JOB_PATH#jobs/}"
-  owner="${owner%%/*}"
-  repo_name="${repo_slug#${owner}-}"
-  if [ -z "$number" ] || [ "$number" = "$rest" ] || [ -z "$repo_name" ] || [ "$repo_name" = "$repo_slug" ]; then
-    return 1
-  fi
-  repo="$owner/$repo_name"
-  ref="#$number"
-  branch="clawsweeper/automerge-$repo_slug-$number"
+  parse_repair_job_path automerge || return 1
+  local number="$PARSED_JOB_NUMBER" repo_slug="$PARSED_JOB_REPO_SLUG" repo="$PARSED_JOB_REPO" ref="$PARSED_JOB_REF" branch="$PARSED_JOB_BRANCH" repair_mode labels merge_instruction
   repair_mode="autofix"
   merge_instruction="Final merge is disabled for autofix. Keep the PR open after a passing ClawSweeper verdict unless a maintainer explicitly changes mode."
   if [[ "${CLAWSWEEPER_REQUESTED_ALLOW_MERGE:-${CLAWSWEEPER_ALLOW_MERGE:-0}}" == 1 ]]; then
@@ -113,21 +118,8 @@ restore_issue_implementation_job() {
     jobs/*/inbox/issue-*.md) ;;
     *) return 1 ;;
   esac
-  local filename stem rest number repo_slug owner repo_name repo ref branch
-  filename="${JOB_PATH##*/}"
-  stem="${filename%.md}"
-  rest="${stem#issue-}"
-  number="${rest##*-}"
-  repo_slug="${rest%-${number}}"
-  owner="${JOB_PATH#jobs/}"
-  owner="${owner%%/*}"
-  repo_name="${repo_slug#${owner}-}"
-  if [ -z "$number" ] || [ "$number" = "$rest" ] || [ -z "$repo_name" ] || [ "$repo_name" = "$repo_slug" ]; then
-    return 1
-  fi
-  repo="$owner/$repo_name"
-  ref="#$number"
-  branch="clawsweeper/issue-$repo_slug-$number"
+  parse_repair_job_path issue || return 1
+  local number="$PARSED_JOB_NUMBER" repo_slug="$PARSED_JOB_REPO_SLUG" repo="$PARSED_JOB_REPO" ref="$PARSED_JOB_REF" branch="$PARSED_JOB_BRANCH"
   mkdir -p "$(dirname "$JOB_PATH")"
   cat > "$JOB_PATH" <<EOF
 ---
@@ -194,21 +186,8 @@ restore_self_heal_job() {
     jobs/*/inbox/self-heal-*.md) ;;
     *) return 1 ;;
   esac
-  local filename stem rest number repo_slug owner repo_name repo ref branch
-  filename="${JOB_PATH##*/}"
-  stem="${filename%.md}"
-  rest="${stem#self-heal-}"
-  number="${rest##*-}"
-  repo_slug="${rest%-${number}}"
-  owner="${JOB_PATH#jobs/}"
-  owner="${owner%%/*}"
-  repo_name="${repo_slug#${owner}-}"
-  if [ -z "$number" ] || [ "$number" = "$rest" ] || [ -z "$repo_name" ] || [ "$repo_name" = "$repo_slug" ]; then
-    return 1
-  fi
-  repo="$owner/$repo_name"
-  ref="#$number"
-  branch="clawsweeper/self-heal-$repo_slug-$number"
+  parse_repair_job_path self-heal || return 1
+  local number="$PARSED_JOB_NUMBER" repo_slug="$PARSED_JOB_REPO_SLUG" repo="$PARSED_JOB_REPO" ref="$PARSED_JOB_REF" branch="$PARSED_JOB_BRANCH"
   mkdir -p "$(dirname "$JOB_PATH")"
   cat > "$JOB_PATH" <<EOF
 ---
