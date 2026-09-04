@@ -247,10 +247,19 @@ This changes evidence rendering only, not the observer API or OpenClaw Bay.
 ## PR Introduction Evidence
 
 Before model execution, the host assembles bounded local Git evidence for the
-pinned PR base and head. The reviewer receives the actual checkout SHA separately
-from fetched main, the unique merge base, introduced files and patch from
-merge-base to head, base-branch changes, and a separately labeled base-to-head
-endpoint comparison. A file that differs only because main advanced is not
+pinned PR base and head. `originalHead` records the exact pinned head and its raw
+parents; `checkout` separately records the actual local commit and its raw parents.
+Both carry explicit roles and inspection status. Reads disable replacement refs
+and grafts, require an exact commit object, and bound these parent lists to eight
+entries. Failed, malformed, missing, or oversized inspection yields unavailable
+with `parents: null`; only an inspected root yields `parents: []`. Shallow history
+does not erase recorded parents or prove their objects are available. Neither
+workspace/test-merge ancestry nor fetched main or the merge base may substitute
+for original parentage; raw parents do not establish causality or authorship.
+
+The reviewer also receives fetched main, the unique merge base, introduced files
+and patch from merge-base to head, base-branch changes, and a separately labeled
+base-to-head endpoint comparison. A file that differs only because main advanced is not
 automatically a PR edit. Findings in untouched files remain valid when an
 introduced hunk elsewhere causes the failure; risks, labels, scores, and fixups
 must use that same ownership boundary.

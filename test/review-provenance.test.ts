@@ -109,10 +109,20 @@ test("real Git graph distinguishes introduced changes from main-only upgrades an
       );
     }
     const { evidence } = promptEvidence(f);
-    assert.equal(evidence.checkoutSha, f.H);
+    assert.deepEqual(evidence.checkout, {
+      role: "actual_checkout",
+      status: "verified",
+      sha: f.H,
+      parents: [f.B],
+    });
     assert.equal(evidence.fetchedMainSha, f.M);
     assert.equal(evidence.baseSha, f.M);
-    assert.equal(evidence.headSha, f.H);
+    assert.deepEqual(evidence.originalHead, {
+      role: "original_pr_head",
+      status: "verified",
+      sha: f.H,
+      parents: [f.B],
+    });
     assert.deepEqual(evidence.mergeBase, { status: "verified", sha: f.B });
     assert.equal(evidence.introduced.role, "pr_introduced");
     assert.deepEqual(evidence.introduced.files, ["docs/hooks.md"]);
@@ -123,6 +133,7 @@ test("real Git graph distinguishes introduced changes from main-only upgrades an
     assert.equal(evidence.endpointDrift.role, "endpoint_drift_not_introduction");
     assert.deepEqual(evidence.baseOnlyFiles, [...upgradeFiles].sort());
     assert.equal(evidence.testMerge.status, "verified");
+    assert.equal(evidence.testMerge.role, "github_test_merge");
     assert.deepEqual(evidence.testMerge.parents, [f.M, f.H]);
     assert.deepEqual(evidence.testMerge.result.files, ["docs/hooks.md"]);
     if (process.env.CLAWSWEEPER_PROVENANCE_PROOF_DIR) {
@@ -147,6 +158,164 @@ test("real Git graph distinguishes introduced changes from main-only upgrades an
         ) + "\n",
       );
     }
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test("original head parents survive synthetic merge and rebased checkout identities", () => {
+  const f = fixture();
+  try {
+    git(f.root, "checkout", "-qb", "rebased-pr", f.H);
+    git(f.root, "rebase", f.M);
+    const rebased = git(f.root, "rev-parse", "HEAD");
+    assert.notEqual(rebased, f.H);
+    const original = promptEvidence(f).evidence.originalHead;
+    assert.deepEqual(original, {
+      role: "original_pr_head",
+      status: "verified",
+      sha: f.H,
+      parents: [f.B],
+    });
+    for (const [checkout, parents] of [
+      [f.T, [f.M, f.H]],
+      [rebased, [f.M]],
+      [f.M, [f.B]],
+      [f.H, [f.B]],
+    ] as const) {
+      git(f.root, "checkout", "-q", "--detach", checkout);
+      const { evidence } = promptEvidence(f);
+      assert.deepEqual(evidence.originalHead, original);
+      assert.deepEqual(evidence.checkout, {
+        role: "actual_checkout",
+        status: "verified",
+        sha: checkout,
+        parents,
+      });
+      assert.equal(evidence.testMerge.status, "verified");
+      assert.deepEqual(evidence.testMerge.parents, [f.M, f.H]);
+      assert.deepEqual(evidence.introduced.files, ["docs/hooks.md"]);
+    }
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+for (const overlay of ["replace", "graft", "shallow"] as const) {
+  test(`raw original head and checkout parents ignore ${overlay} ancestry`, () => {
+    const f = fixture();
+    try {
+      if (overlay === "replace") {
+        git(f.root, "replace", f.H, f.T);
+        assert.notEqual(
+          git(f.root, "cat-file", "commit", f.H),
+          git(f.root, "--no-replace-objects", "cat-file", "commit", f.H),
+        );
+      } else {
+        writeFileSync(
+          join(f.root, ".git", overlay === "graft" ? "info/grafts" : "shallow"),
+          overlay === "graft" ? `${f.H} ${f.M}\n` : `${f.H}\n`,
+        );
+        assert.equal(git(f.root, "show", "-s", "--format=%P", f.H), overlay === "graft" ? f.M : "");
+      }
+      const { evidence } = promptEvidence(f);
+      assert.deepEqual(evidence.originalHead, {
+        role: "original_pr_head",
+        status: "verified",
+        sha: f.H,
+        parents: [f.B],
+      });
+      assert.deepEqual(evidence.checkout.parents, [f.B]);
+      assert.equal(evidence.testMerge.status, "verified");
+      assert.deepEqual(evidence.testMerge.parents, [f.M, f.H]);
+      assert.equal(evidence.mergeBase.status, overlay === "shallow" ? "unavailable" : "verified");
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("unavailable raw commits stay unknown while inspected roots have empty parents", () => {
+  const f = fixture();
+  try {
+    const tree = git(f.root, "rev-parse", `${f.H}^{tree}`);
+    git(f.root, "-c", "tag.gpgsign=false", "tag", "-a", "fixture-tag", "-m", "fixture", f.H);
+    const tag = git(f.root, "rev-parse", "refs/tags/fixture-tag");
+    for (const sha of [undefined, "not-an-object-id", "f".repeat(40), tree, tag]) {
+      const { evidence } = promptEvidence(f, { head: { sha } });
+      assert.equal(evidence.originalHead.status, "unavailable");
+      assert.equal(evidence.originalHead.parents, null);
+      assert.equal(
+        evidence.originalHead.sha,
+        sha === undefined || sha === "not-an-object-id" ? null : sha,
+      );
+      assert.ok(evidence.originalHead.reason);
+      assert.deepEqual(evidence.checkout.parents, [f.B]);
+    }
+    const root = promptEvidence(f, { head: { sha: f.B } }).evidence.originalHead;
+    assert.deepEqual(root, {
+      role: "original_pr_head",
+      status: "verified",
+      sha: f.B,
+      parents: [],
+    });
+    // HEAD identity can resolve even when its object cannot be inspected.
+    writeFileSync(join(f.root, ".git", "HEAD"), "f".repeat(40) + "\n");
+    const { evidence } = promptEvidence(f);
+    assert.equal(evidence.checkout.sha, "f".repeat(40));
+    assert.equal(evidence.checkout.status, "unavailable");
+    assert.equal(evidence.checkout.parents, null);
+    assert.ok(evidence.checkout.reason);
+    assert.deepEqual(evidence.originalHead.parents, [f.B]);
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test("original head records immediate parents, not the merge base or commit message", () => {
+  const f = fixture();
+  try {
+    f.put("docs/hooks.md", "Clarified guide again\n");
+    const H = f.commit(`follow-up\n\nparent ${f.M}`);
+    const { evidence } = promptEvidence({ ...f, H });
+    assert.equal(evidence.mergeBase.sha, f.B);
+    assert.deepEqual(evidence.originalHead.parents, [f.H]);
+    assert.deepEqual(evidence.checkout.parents, [f.H]);
+    assert.deepEqual(promptEvidence(f, { head: { sha: f.T } }).evidence.originalHead.parents, [
+      f.M,
+      f.H,
+    ]);
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test("invalid or oversized raw parent evidence is unavailable, never a truncated root", () => {
+  const f = fixture();
+  try {
+    const tree = git(f.root, "rev-parse", `${f.H}^{tree}`);
+    const ident = "Fixture <fixture@example.invalid> 1700000000 +0000";
+    for (const raw of [
+      `tree ${tree}\nparent invalid\nauthor ${ident}\ncommitter ${ident}\n\nfixture\n`,
+      `tree ${tree}\n${`parent ${f.B}\n`.repeat(9)}author ${ident}\ncommitter ${ident}\n\nfixture\n`,
+      `tree ${tree}\nparent ${f.B}\nauthor ${ident}\ncommitter ${ident}\n\n${"x".repeat(1024 * 1024)}`,
+    ]) {
+      const rawFile = join(f.root, ".git", "fixture-commit");
+      writeFileSync(rawFile, raw);
+      const H = git(f.root, "hash-object", "--literally", "-t", "commit", "-w", rawFile);
+      const { evidence } = promptEvidence({ ...f, H });
+      assert.equal(evidence.originalHead.sha, H);
+      assert.equal(evidence.originalHead.status, "unavailable");
+      assert.equal(evidence.originalHead.parents, null);
+      assert.ok(evidence.originalHead.reason);
+    }
+    const { evidence } = promptEvidence({ ...f, root: join(f.root, "missing-checkout") });
+    assert.equal(evidence.originalHead.sha, f.H);
+    assert.equal(evidence.originalHead.status, "unavailable");
+    assert.equal(evidence.originalHead.parents, null);
+    assert.equal(evidence.checkout.sha, null);
+    assert.equal(evidence.checkout.status, "unavailable");
+    assert.equal(evidence.checkout.parents, null);
   } finally {
     rmSync(f.root, { recursive: true, force: true });
   }
@@ -279,7 +448,7 @@ test("production source preparation recovers a shallow PR tip and fetches the pi
     const { evidence } = promptEvidence({ ...f, root: clone });
     assert.equal(evidence.mergeBase.sha, f.B);
     assert.equal(evidence.testMerge.status, "verified");
-    assert.equal(evidence.checkoutSha, f.H);
+    assert.equal(evidence.checkout.sha, f.H);
     assert.equal(git(clone, "rev-parse", "--is-shallow-repository"), "false");
     assert.equal(git(clone, "status", "--porcelain"), "");
   } finally {

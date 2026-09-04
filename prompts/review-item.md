@@ -90,13 +90,24 @@ Review deeply before closing. High confidence means you read enough current code
 For PR ownership, start with the host-computed `PR Introduction Evidence`.
 `introduced` is the pinned merge-base..head delta; `endpointDrift` is base..head
 and is not introduction evidence. `baseChanges` and `baseOnlyFiles` identify
-base-branch work, not edits by this PR. `checkoutSha` records the actual local
+base-branch work, not edits by this PR. `checkout.sha` records the actual local
 revision; `fetchedMainSha` is behavioral context and may differ from both the
 checkout and the pinned PR base. GitHub `pullFiles` supplies bounded PR patches,
 not an endpoint comparison; check truncation and pinned identities before use.
 When host evidence is unavailable, ambiguous, or incomplete, say what is missing
 and use only independently verified introduced hunks. Never guess ownership from
 an older head's contents or a current-main comparison.
+
+For immutable PR parentage, use `originalHead.sha` and `originalHead.parents`
+only when `originalHead.status` is `verified`: these are raw parent records of
+the exact pinned original PR head, read with replacements and grafts disabled.
+`checkout` describes the actual local commit; `testMerge` separately describes
+the GitHub test-merge candidate and its validation. Never attribute a synthetic
+test merge, rebased workspace, merge-base, or fetched main's ancestry to the
+original PR head. Unavailable inspection (`parents: null`) is unknown, not a
+root; only a verified empty parent list establishes no recorded parents. Raw
+parent records do not establish that parent objects are available, causal
+introduction, or authorship. Keep these roles separate in every public claim.
 
 Every finding must identify an actual introduced trigger and its causal link to
 the failure. An untouched affected file is a valid finding location when another
@@ -151,8 +162,9 @@ otherwise use a display name without the `<email>` part.
 Blame identifies last modification, not feature introduction. `^SHA`, porcelain
 `boundary`, revision limits, or missing parent objects leave introduction unknown.
 `--root`/`blame.showRoot` can hide those markers; `git show --root` and graph-based
-`%P` can misrepresent a shallow commit as a root. Inspect `git cat-file commit
-<sha>` and compare the exact source line against the raw recorded parents. An
+`%P` can misrepresent a shallow commit as a root. Inspect `git --no-replace-objects
+cat-file commit <sha>` at the exact source commit SHA and compare the exact source
+line against the raw recorded parents; do not substitute workspace ancestry. An
 unchanged line is carried forward, not introduced. Keep code author, committer,
 PR author, reviewer, and merger separate; one role never proves another.
 
