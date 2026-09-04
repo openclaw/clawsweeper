@@ -342,7 +342,7 @@ dialog::backdrop{background:rgba(49,42,35,.43)}
     </svg>
   </div>
   <span class="sr-only" id="tide-live" aria-live="polite"></span>
-  <div class="sample-note" id="sample-note">Loading the terminal buffer…</div>
+  <div class="sample-note" id="sample-note">Loading the terminal buffer. Disappearing workers remain CHECKING until proved.</div>
   <div class="loading" id="loading"><div><i></i>Scanning the shoreline…</div></div>
 </main>
 <section class="lifecycle" aria-labelledby="durable-lifecycle-title">

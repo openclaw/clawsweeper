@@ -6199,23 +6199,23 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.doesNotMatch(body, /<meta name="robots"/);
   assert.doesNotMatch(body, /Experimental demo/);
   assert.match(body, /href="\/bay" aria-current="page"/);
-  assert.match(body, /Verified public GitHub work/);
+  assert.match(body, /Live ClawSweeper review work/);
   assert.match(body, /id="finder"/);
   assert.match(body, /id="finder-input"/);
   assert.match(body, /owner\/repo#number/);
   assert.match(body, /id="drawer"/);
   assert.match(body, /function openDrawer\(id\)/);
   assert.match(body, /id="queue-sample-drawer"/);
-  assert.match(body, /Retired proof\/batch journeys hidden/);
+  assert.match(body, /Retired proof\/batch hidden/);
   assert.match(body, /id="legacy-proof-toggle"/);
   assert.match(body, /buildItems\(state\.data,false\)/);
   assert.doesNotMatch(body, /buildItems\(state\.data,state\.includeLegacyBatch\)/);
-  assert.match(body, /Include retired proof\/batch/);
-  assert.match(body, /Master Sweeper/);
-  assert.match(body, /<details class="bay-system-details" id="bay-system-details">/);
-  assert.doesNotMatch(body, /<details class="bay-system-details"[^>]*\sopen/);
-  assert.match(body, /System details/);
-  assert.match(body, /Queue, handoff and GitHub transport diagnostics/);
+  assert.match(body, /id="legacy-proof-toggle"[^>]*>Retired proof\/batch</);
+  assert.match(body, /Master sweeper mode/);
+  assert.match(body, /<details class="telemetry" id="bay-system-details">/);
+  assert.doesNotMatch(body, /<details class="telemetry"[^>]*\sopen/);
+  assert.match(body, /Queue telemetry/);
+  assert.match(body, /Review admission · result publication · handoff · GitHub throttles/);
   assert.match(body, /id="bay-control-board"/);
   assert.match(body, /Review admission/);
   assert.match(body, /Result publication/);
@@ -6228,36 +6228,29 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.match(body, /status-403/);
   assert.match(body, /status-429/);
   assert.match(body, /Only closed time buckets are graphed/);
-  assert.match(body, /Incomplete \/ truncated evidence/);
+  assert.match(body, /Partial evidence/);
   assert.match(body, /series incomplete/);
   assert.match(body, /window:\{hours:hours,bucket_minutes:hours>6\?60:5\}/);
   assert.doesNotMatch(body, /github_request_metrics/);
-  assert.match(body, /State writer/);
   assert.match(body, /Queue handoff/);
   assert.match(body, /HANDOFF_RECOVERY_REASONS/);
   assert.match(body, /recovering after/);
   assert.doesNotMatch(body, /Recent durable events/);
   assert.doesNotMatch(body, /function bayRecentPublicationEvents/);
   assert.match(body, /id="durable-lifecycle-kanban"/);
-  assert.match(body, /Durable lifecycle Kanban/);
-  assert.match(body, /Queue and live activity/i);
+  assert.match(body, /Durable lifecycle/);
+  assert.match(body, /Live shoreline/);
   assert.match(body, /class="active-duration"/);
   assert.match(body, /This queue record has been waiting about/);
   assert.match(body, /This GitHub run has been active about/);
   assert.match(body, /I do not have a trustworthy active clock/);
-  assert.match(body, /does not establish that durable lifecycle history is available or complete/i);
   assert.doesNotMatch(body, /fetch\("\/api\/live-activity-bay"/);
   assert.match(body, /function durableSnapshot/);
   assert.match(body, /fetch\("\/api\/durable-lifecycle-bay"/);
   assert.match(body, /durableLifecycleLoading/);
   assert.match(body, /if\(state\.durableLifecycleLoading\)return/);
-  assert.match(body, /Canonical lifecycle projection only/);
-  assert.match(body, /Internal revisions and workflow details remain withheld/);
-  assert.match(body, /Empty complete lifecycle snapshot/);
-  assert.match(
-    body,
-    /No lifecycle cards are shown until a complete, fresh projection is available/,
-  );
+  assert.match(body, /No lifecycle records yet/);
+  assert.match(body, /Lifecycle snapshot unavailable/);
   assert.match(body, /function durableCard|class="durable-card"/);
   const durableScriptStart = body.indexOf("function durableUnknown");
   const durableScriptEnd = body.indexOf("function hash", durableScriptStart);
@@ -6299,6 +6292,11 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
     },
     state: durableState,
     esc: (value: unknown) => String(value),
+    fmt: (value: unknown) => Number(value).toLocaleString("en-US"),
+    sentence: (value: unknown) => {
+      const text = String(value ?? "");
+      return text.charAt(0).toUpperCase() + text.slice(1);
+    },
     document: {
       getElementById: (id: string) =>
         id === "durable-lifecycle-kanban" ? durableTarget : durableProvenance,
@@ -6395,9 +6393,12 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   );
   durableState.durableLifecycle = closedLifecycle;
   durableRuntime.renderDurableLifecycle();
-  assert.match(durableTarget.innerHTML, /Inventory: 6 lifecycle records/);
-  assert.match(durableTarget.innerHTML, /Pending<span>1<\/span>/);
-  assert.match(durableTarget.innerHTML, /Terminal attention<span>1<\/span>/);
+  assert.match(durableTarget.innerHTML, /6 records · 6 target revisions · 4 unique targets/);
+  assert.match(durableTarget.innerHTML, /<h3>Pending<\/h3><span class="lane-count">1<\/span>/);
+  assert.match(
+    durableTarget.innerHTML,
+    /<h3>Terminal attention<\/h3><span class="lane-count">1<\/span>/,
+  );
   assert.doesNotMatch(
     durableTarget.innerHTML,
     /private-owner|example\.invalid|must-not-surface|target revision card/,
@@ -6406,7 +6407,10 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
     durableTarget.innerHTML,
     /href="https:\/\/github\.com\/openclaw\/openclaw\/issues\/41"/,
   );
-  assert.match(durableTarget.innerHTML, /openclaw\/clawhub#42/);
+  assert.match(
+    durableTarget.innerHTML,
+    /openclaw\/clawhub<\/span><span class="lane-number">#42<\/span>/,
+  );
   const formerlyCapped = durableRuntime.durableSnapshot({
     durable_lifecycle_bay: {
       ...lifecyclePayload.durable_lifecycle_bay,
@@ -6454,8 +6458,6 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   }
   assert.match(body, /function loadBayHistory/);
   assert.match(body, /function bayRateSparkline/);
-  assert.match(body, /function bayStateWriterCard/);
-  assert.match(body, /function bayStateWriterHistory/);
   assert.match(body, /max-width:970px\) and \(orientation:landscape/);
   assert.match(body, /net throughput over .*bayRangeLabel/);
   assert.match(body, /data-bay-history-range="24h"/);
@@ -6468,7 +6470,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.match(body, /oldest pending/);
   assert.doesNotMatch(body, /handoff\.message|handoff\.detail/);
   assert.match(body, /Handoffs are current/);
-  assert.match(body, /Handoff telemetry is unavailable in this snapshot/);
+  assert.match(body, /Handoff telemetry unavailable/);
   assert.match(body, /indexPhases=\["pending","dispatching","leased"\]/);
   assert.match(body, /api\/health-history\?range="\+encodeURIComponent\(range\)/);
   assert.match(body, /function bayHealthHistorySnapshot/);
@@ -6481,8 +6483,6 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   const bayHandoffEnd = body.indexOf("function bayHandoffSparkline", bayHandoffStart);
   const bayLoadStart = body.indexOf("async function loadBayHistory");
   const bayLoadEnd = body.indexOf("function reconcileConfirmingOutcomes", bayLoadStart);
-  const bayWriterStart = body.indexOf("function bayFiniteCount");
-  const bayWriterEnd = body.indexOf("function bayStateWriterCard", bayWriterStart);
   for (const boundary of [
     bayStrictStart,
     bayStrictEnd,
@@ -6492,8 +6492,6 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
     bayHandoffEnd,
     bayLoadStart,
     bayLoadEnd,
-    bayWriterStart,
-    bayWriterEnd,
   ]) {
     assert.ok(boundary > 0);
   }
@@ -6504,7 +6502,6 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
     healthHistoryContractByRange: {} as Record<string, unknown>,
     healthHistoryLoadedAt: {} as Record<string, number>,
     healthHistoryLoading: {} as Record<string, boolean>,
-    previewSource: false,
   };
   let bayPayload: unknown = null;
   let bayRendered = "";
@@ -6514,8 +6511,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
       body.slice(bayHistoryStart, bayHistoryEnd),
       body.slice(bayHandoffStart, bayHandoffEnd),
       body.slice(bayLoadStart, bayLoadEnd),
-      body.slice(bayWriterStart, bayWriterEnd),
-      ";({bayHealthHistorySnapshot,bayHistory,bayHandoffHistory,bayStateWriterHistory,loadBayHistory})",
+      ";({bayHealthHistorySnapshot,bayHistory,bayHandoffHistory,loadBayHistory})",
     ].join("\n"),
   ).runInNewContext({
     state: bayHistoryState,
@@ -6571,7 +6567,6 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.equal(bayHistoryRuntime.bayHistory("review")[0].pending, 4);
   assert.equal(bayHistoryRuntime.bayHistory("review")[0].enqueued, 10_000_020);
   assert.equal(bayHistoryRuntime.bayHandoffHistory()[0].dispatching, 1);
-  assert.equal(bayHistoryRuntime.bayStateWriterHistory()[0].pending, 2);
   const projectedBayHistory = bayHistoryRuntime.bayHealthHistorySnapshot(validBayHistory, "6h");
   assert.equal(bayHistoryRuntime.bayHealthHistorySnapshot(projectedBayHistory, "6h"), null);
 
@@ -6687,7 +6682,6 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.equal(bayHistoryState.healthHistory.length, 0);
   assert.equal(bayHistoryRuntime.bayHistory("review").length, 0);
   assert.equal(bayHistoryRuntime.bayHandoffHistory().length, 0);
-  assert.equal(bayHistoryRuntime.bayStateWriterHistory().length, 0);
   assert.doesNotMatch(bayRendered, new RegExp(bayMarker, "i"));
   assert.doesNotMatch(bayRendered, /invalid\.example|repo=|token=/i);
   assert.match(body, /function expandQueue/);
@@ -6715,11 +6709,12 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.match(body, /function terminalCapacity\(stage\)/);
   assert.match(body, /stage==="completed"&&terminalStack&&terminalStack\.clientWidth>=340\?20:12/);
   assert.match(body, /columns===4/);
-  assert.match(body, /Typical review request → final review/);
+  assert.match(body, /Typical review · last hour/);
+  assert.match(body, /request → final review/);
   assert.match(body, /median; mean is shown for context/);
-  assert.match(body, /Awaiting a completed review/);
+  assert.match(body, /No completed reviews/);
   assert.match(body, /id="queue-sample-drawer"|function openQueueSampleDrawer/);
-  assert.match(body, /more GitHub item/);
+  assert.match(body, /more item/);
   assert.match(body, /data-overflow-stage/);
   assert.match(body, /function laneHelp/);
   assert.match(body, /lane-nudge/);
@@ -6752,7 +6747,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.match(body, /OUTCOME_CONFIRM_MS=150000/);
   assert.match(body, /function reconcileConfirmingOutcomes/);
   assert.match(body, /confirming-flag/);
-  assert.match(body, /completed item/);
+  assert.match(body, /completed in view/);
   assert.match(body, /data-key=/);
   assert.match(body, /aria-pressed=/);
   assert.match(body, /function laneChatCopy/);
@@ -7082,7 +7077,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   const aggregateRowsEnd = body.indexOf("function terminalRows(", aggregateRowsStart);
   assert.ok(aggregateRowsStart > 0 && aggregateRowsEnd > aggregateRowsStart);
   const aggregateRows = new Script(
-    `${body.slice(aggregateRowsStart, aggregateRowsEnd)};({expandActive,queueStageCount,liveStageCount})`,
+    `${body.slice(aggregateRowsStart, aggregateRowsEnd)};({expandQueue,queueStageCount,liveStageCount})`,
   ).runInNewContext({
     Array,
     Math,
@@ -7144,7 +7139,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
       },
     },
   };
-  const renderedAggregateRows = aggregateRows.expandActive(aggregateData);
+  const renderedAggregateRows = aggregateRows.expandQueue(aggregateData);
   assert.deepEqual(
     renderedAggregateRows.reduce((counts, row) => {
       counts[row.stage] = (counts[row.stage] || 0) + 1;
@@ -7158,7 +7153,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
     "https://github.com/openclaw/clawsweeper/issues/78",
     "https://github.com/openclaw/openclaw/issues/77",
   ]);
-  const incompleteRows = aggregateRows.expandActive({
+  const incompleteRows = aggregateRows.expandQueue({
     ...aggregateData,
     bay: { active_stages: { ...closedStages, reviewing: 1 } },
     exact_review_queue: {
@@ -7238,6 +7233,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   };
   const drawerLocation = { hash: "", pathname: "/bay", search: "" };
   const drawerContext = createContext({
+    fmt: (value: unknown) => Number(value).toLocaleString("en-US"),
     LABELS: {
       reviewing: "Reviewing",
       completed: "Completed",
@@ -7328,7 +7324,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
     .join(" ");
   assert.match(drawerText, /openclaw\/openclaw#77/);
   assert.match(drawerText, /Current stage/);
-  assert.match(drawerText, /Bounded queue sample/);
+  assert.match(drawerText, /Queue sample/);
   assert.match(drawerText, /https:\/\/github\.com\/openclaw\/openclaw\/issues\/77/);
   assert.match(drawerText, /https:\/\/github\.com\/openclaw\/openclaw/);
   assert.match(
@@ -7359,7 +7355,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.match(drawerElement("queue-sample-body").innerHTML, /openclaw\/openclaw#26/);
   assert.match(
     drawerElement("queue-sample-body").innerHTML,
-    /2 additional active items have no verified public GitHub reference/,
+    /2 more active items have no public reference/,
   );
   assert.match(drawerElement("queue-sample-body").innerHTML, /data-overflow-reference/);
   drawerContext.state.items.push(
@@ -7380,7 +7376,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   new Script('openQueueSampleDrawer("reviewing", false);').runInContext(drawerContext);
   assert.doesNotMatch(
     drawerElement("queue-sample-body").innerHTML,
-    /additional active items have no verified public GitHub reference/,
+    /more active items have no public reference/,
   );
   assert.doesNotMatch(drawerElement("queue-sample-body").innerHTML, /openclaw\/clawsweeper/);
   drawerContext.state.filter = "all";
@@ -7410,7 +7406,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   drawerLocation.hash = "#item-openclaw%2Fopenclaw%2377";
   new Script("openDrawerFromHash();").runInContext(drawerContext);
   assert.match(drawerElement("drawer-body").innerHTML, /Completed/);
-  assert.match(drawerElement("drawer-body").innerHTML, /Bounded live sample/);
+  assert.match(drawerElement("drawer-body").innerHTML, /Live run sample/);
   drawerContext.state.items = [
     {
       id: "terminal:completed:openclaw/openclaw#77:0",
@@ -7496,7 +7492,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
     OUTCOME_CONFIRM_MS: 150_000,
     Date,
     Object,
-    expandActive: () => [],
+    expandQueue: () => [],
     terminalRows: () => [],
     transitionKind: () => null,
     result: null,
@@ -7560,12 +7556,13 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
     document: { getElementById: () => sampleNote },
     state: sampleState,
     terminalRows: () => [{}, {}],
+    fmt: (value: unknown) => Number(value).toLocaleString("en-US"),
   });
   updateSampleNote();
-  assert.match(sampleNote.textContent, /^2 completed items visible in the current normal-review/);
+  assert.equal(sampleNote.textContent, "2 completed in view · 4 completed jobs observed");
   sampleState.includeLegacyBatch = true;
   updateSampleNote();
-  assert.match(sampleNote.textContent, /^7 \/ 20 completed items visible in the current shared/);
+  assert.equal(sampleNote.textContent, "7 / 20 completed in view · 4 completed jobs observed");
 
   const toggleStart = body.indexOf("function toggleLegacyProof(");
   const toggleEnd = body.indexOf("async function fetchStatus(", toggleStart);
