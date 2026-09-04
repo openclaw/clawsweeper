@@ -5,7 +5,7 @@ import {
   type ExactReviewLifecycleProjection,
   type LifecycleTerminalDisposition,
 } from "./exact-review-lifecycle.ts";
-import type { DurableStorage } from "./durable-storage.ts";
+import { sqlColumnNames, type DurableStorage } from "./durable-storage.ts";
 
 export const EXACT_REVIEW_LIFECYCLE_TELEMETRY_DIRECT_TABLE =
   "exact_review_lifecycle_telemetry_direct_v1";
@@ -347,13 +347,7 @@ export class ExactReviewLifecycleTelemetryStore {
          ON ${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}
          (repository_scope, bucket, completed_at, event_id)`,
     );
-    const bayEventColumns = new Set(
-      Array.from(
-        this.storage.sql.exec(
-          `SELECT name FROM pragma_table_info('${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}')`,
-        ),
-      ).map((row) => String(row.name || "")),
-    );
+    const bayEventColumns = sqlColumnNames(this.storage, EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE);
     if (!bayEventColumns.has("legacy_batch_path")) {
       this.storage.sql.exec(
         `ALTER TABLE ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE}
@@ -413,12 +407,9 @@ export class ExactReviewLifecycleTelemetryStore {
         );
       }
     }
-    const tideBufferColumns = new Set(
-      Array.from(
-        this.storage.sql.exec(
-          `SELECT name FROM pragma_table_info('${EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE}')`,
-        ),
-      ).map((row) => String(row.name || "")),
+    const tideBufferColumns = sqlColumnNames(
+      this.storage,
+      EXACT_REVIEW_LIFECYCLE_BAY_TIDE_BUFFER_TABLE,
     );
     if (!tideBufferColumns.has("legacy_batch_path")) {
       this.storage.sql.exec(
@@ -503,11 +494,7 @@ export class ExactReviewLifecycleTelemetryStore {
       EXACT_REVIEW_LIFECYCLE_BAY_META_TABLE,
       EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE,
     ]) {
-      const columns = new Set(
-        Array.from(this.storage.sql.exec(`SELECT name FROM pragma_table_info('${table}')`)).map(
-          (row) => String(row.name || ""),
-        ),
-      );
+      const columns = sqlColumnNames(this.storage, table);
       if (!columns.has("tide_base_count")) {
         tideProgressBackfillTables.add(table);
         this.storage.sql.exec(
@@ -520,13 +507,7 @@ export class ExactReviewLifecycleTelemetryStore {
         this.storage.sql.exec(`ALTER TABLE ${table} ADD COLUMN last_tide_at INTEGER`);
       }
     }
-    const scopeColumns = new Set(
-      Array.from(
-        this.storage.sql.exec(
-          `SELECT name FROM pragma_table_info('${EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE}')`,
-        ),
-      ).map((row) => String(row.name || "")),
-    );
+    const scopeColumns = sqlColumnNames(this.storage, EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE);
     if (!scopeColumns.has("trigger_coverage_started_at")) {
       this.storage.sql.exec(
         `ALTER TABLE ${EXACT_REVIEW_LIFECYCLE_BAY_SCOPE_TABLE}

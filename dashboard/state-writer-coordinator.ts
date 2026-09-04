@@ -1,4 +1,4 @@
-import type { DurableStorage } from "./durable-storage.ts";
+import { sqlColumnNames, type DurableStorage } from "./durable-storage.ts";
 
 const STATE_WRITER_TICKET_TABLE = "state_writer_tickets";
 const STATE_WRITER_META_TABLE = "state_writer_meta";
@@ -379,11 +379,7 @@ export class StateWriterCoordinator {
   }
 
   private ensureMetaColumnsSync(): void {
-    const columns = new Set(
-      Array.from(
-        this.storage.sql.exec(`SELECT name FROM pragma_table_info('${STATE_WRITER_META_TABLE}')`),
-      ).map((row) => String(row.name || "")),
-    );
+    const columns = sqlColumnNames(this.storage, STATE_WRITER_META_TABLE);
     for (const column of [
       "admitted_total",
       "completed_total",
@@ -404,11 +400,7 @@ export class StateWriterCoordinator {
   }
 
   private ensureTicketColumnsSync(): void {
-    const columns = new Set(
-      Array.from(
-        this.storage.sql.exec(`SELECT name FROM pragma_table_info('${STATE_WRITER_TICKET_TABLE}')`),
-      ).map((row) => String(row.name || "")),
-    );
+    const columns = sqlColumnNames(this.storage, STATE_WRITER_TICKET_TABLE);
     // The absolute deadline was added after the first coordinator prototype.
     // Preserve already-queued tickets during deployment; a leased legacy row
     // remains bounded by lease_expires_at; every subsequently admitted ticket

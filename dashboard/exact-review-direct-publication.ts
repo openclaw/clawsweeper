@@ -1,5 +1,5 @@
 import { EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES } from "../src/exact-review-publication-limits.ts";
-import type { DurableStorage } from "./durable-storage.ts";
+import { sqlColumnNames, type DurableStorage } from "./durable-storage.ts";
 
 export { EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES };
 
@@ -228,12 +228,9 @@ export class ExactReviewDirectPublicationStore {
          PRIMARY KEY (item_key, revision)
        ) STRICT`,
     );
-    const directPublicationColumns = new Set(
-      Array.from(
-        this.storage.sql.exec(
-          `SELECT name FROM pragma_table_info('${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}')`,
-        ),
-      ).map((row) => String(row.name || "")),
+    const directPublicationColumns = sqlColumnNames(
+      this.storage,
+      EXACT_REVIEW_DIRECT_PUBLICATION_TABLE,
     );
     if (!directPublicationColumns.has("canonical_target_key")) {
       this.storage.sql.exec(

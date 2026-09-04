@@ -1,4 +1,4 @@
-import type { DurableStorage } from "./durable-storage.ts";
+import { sqlColumnNames, type DurableStorage } from "./durable-storage.ts";
 
 export const EXACT_REVIEW_PUBLICATION_BATCH_TABLE = "exact_review_publication_batches";
 export const EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE = "exact_review_publication_batch_items";
@@ -111,13 +111,7 @@ export class ExactReviewPublicationBatchStore {
          failure_fingerprint TEXT
        ) STRICT`,
     );
-    const batchColumns = new Set(
-      Array.from(
-        this.storage.sql.exec(
-          `SELECT name FROM pragma_table_info('${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}')`,
-        ),
-      ).map((row) => String(row.name || "")),
-    );
+    const batchColumns = sqlColumnNames(this.storage, EXACT_REVIEW_PUBLICATION_BATCH_TABLE);
     if (!batchColumns.has("configured_batch_size")) {
       this.storage.sql.exec(
         `ALTER TABLE ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
@@ -160,12 +154,9 @@ export class ExactReviewPublicationBatchStore {
            ON DELETE CASCADE
        ) STRICT`,
     );
-    const batchItemColumns = new Set(
-      Array.from(
-        this.storage.sql.exec(
-          `SELECT name FROM pragma_table_info('${EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE}')`,
-        ),
-      ).map((row) => String(row.name || "")),
+    const batchItemColumns = sqlColumnNames(
+      this.storage,
+      EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE,
     );
     const telemetryItemColumns = [
       ["producer_run_id", "TEXT"],
