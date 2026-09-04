@@ -2359,6 +2359,24 @@ test("background review fanout keeps per-review transient recovery", () => {
   assert.match(workflow, /publish:[\s\S]*needs: \[plan, review\]/);
 });
 
+// Source guard: review surfaces must stay on the bounded agent runner, never a raw codex spawn.
+test("synchronous Codex review surfaces use the shared bounded runner", () => {
+  for (const file of [
+    "src/clawsweeper-review-runtime.ts",
+    "src/commit-sweeper.ts",
+    "src/pr-close-coverage-proof.ts",
+  ]) {
+    const source = readText(file);
+    assert.match(source, /runAgentProcess/);
+    assert.doesNotMatch(source, /runCodexProcess/);
+    assert.doesNotMatch(source, /spawnSync\(\s*"codex"/);
+  }
+  assert.match(
+    readText("src/clawsweeper-review-runtime.ts"),
+    /"--output-last-message",\s*outputPath,\s*"--json"/,
+  );
+});
+
 // Source guard: the planner sandbox and retry ceiling bound failed repair workers.
 test("failed Codex workers use bounded automatic retry paths", () => {
   const worker = readText("src/repair/run-worker.ts");
