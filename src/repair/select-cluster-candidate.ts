@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 
 import type { JsonValue, LooseRecord } from "./json-types.js";
+import { ghJson } from "./github-cli.js";
 import { parseArgs, parseJob, repoRoot } from "./lib.js";
 import { internalCodexModel, PUBLIC_CODEX_MODEL } from "../codex-env.js";
+
+// Same class of model call as spam-scanner: bound a stalled Responses API hang.
+const OPENAI_CLUSTER_SELECTION_TIMEOUT_MS = 120_000;
 
 type LiveItem = {
   number: number;
@@ -258,6 +261,7 @@ export async function selectClusterCandidateWithModel(options: {
       authorization: `Bearer ${apiKey}`,
       "content-type": "application/json",
     },
+    signal: AbortSignal.timeout(OPENAI_CLUSTER_SELECTION_TIMEOUT_MS),
     body: JSON.stringify({
       model: internalCodexModel(options.model),
       reasoning: { effort: "high" },
@@ -301,9 +305,7 @@ function outputText(data: LooseRecord): string {
 }
 
 function githubJson(endpoint: string): any {
-  return JSON.parse(
-    execFileSync("gh", ["api", endpoint], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 }),
-  );
+  return ghJson(["api", endpoint]);
 }
 
 function refs(values: JsonValue): number[] {
