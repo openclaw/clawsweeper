@@ -166,6 +166,7 @@ import {
 } from "./review-dispatch-coordination.js";
 import { directReReviewIntake } from "./direct-re-review-admission.js";
 import { admitProofCommand } from "./proof-command.js";
+import { commandProofProducerFromEnv } from "../command-proof-contract.js";
 import { postExactReviewCommandIntakeSync } from "./exact-review-command-queue.js";
 
 const automergeMetricWrites: Promise<boolean>[] = [];
@@ -1005,16 +1006,9 @@ function classifyCommand(command: LooseRecord): JsonValue {
         command.author_type === "User" && !command.trusted_bot && authorization?.allowed === true,
       currentHeadSha: String(target.head_sha ?? ""),
     });
-    const configured =
-      /^[0-9a-f]{40}$/.test(process.env.CLAWSWEEPER_PROOF_WORKFLOW_SHA ?? "") &&
-      /^[0-9a-f]{40}$/.test(process.env.CLAWSWEEPER_PROOF_HARNESS_SHA ?? "") &&
-      Boolean(
-        process.env.CLAWSWEEPER_PROOF_WORKFLOW_REF && process.env.CLAWSWEEPER_PROOF_WORKFLOW_PATH,
-      );
+    const configured = commandProofProducerFromEnv(admission.request?.scenarioId, process.env);
     const dispatchProof =
-      configured &&
-      admission.request?.scenarioId === "web-ui-chat-proof" &&
-      targetRepo === "openclaw/openclaw";
+      configured !== null && admission.request !== undefined && targetRepo === "openclaw/openclaw";
     return {
       ...next,
       status: "ready",

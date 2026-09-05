@@ -1,5 +1,6 @@
 import {
-  COMMAND_PROOF_SCENARIO,
+  commandProofProfile,
+  type CommandProofProducerRegistry,
   COMMAND_PROOF_SOURCE_ACTION,
   parseCommandProofClaim,
   parseMantisProofReceipt,
@@ -37,7 +38,7 @@ export type ProofProducer = {
 export class CommandProofConsumer {
   constructor(
     private transport: CommandProofTransport,
-    private producer: ProofProducer,
+    private producer: ProofProducer | CommandProofProducerRegistry,
   ) {}
   async request(input: { repository: string; pullRequest: number; commentId: string }) {
     if (
@@ -47,8 +48,6 @@ export class CommandProofConsumer {
       !/^[1-9][0-9]{0,19}$/.test(input.commentId)
     )
       throw new Error("invalid_proof_target");
-    if (!proofSha(this.producer.workflowSha, 40) || !proofSha(this.producer.harnessSha, 40))
-      throw new Error("proof_producer_not_pinned");
     const live = await this.live(input.repository, input.pullRequest, input.commentId);
     const repo = proofRecord(live.repository),
       pull = proofRecord(live.pull),
@@ -65,8 +64,17 @@ export class CommandProofConsumer {
         proofRecord(comment.user).type === "User" &&
         ["write", "maintain", "admin"].includes(String(proofRecord(live.permission).permission)),
     });
-    if (!admission.request || admission.request.scenarioId !== COMMAND_PROOF_SCENARIO)
+    const profile = commandProofProfile(admission.request?.scenarioId);
+    if (!admission.request || !profile)
       return { status: "inconclusive", reason: "unsupported_or_invalid_proof_command" };
+    // Flat producer arguments remain compatible with existing WebUI callers,
+    // but never supply pins for a different scenario's workflow.
+    const producer =
+      "workflowPath" in this.producer ? this.producer : this.producer[profile.scenario];
+    if (!producer || producer.workflowPath !== profile.workflowPath)
+      return { status: "inconclusive", reason: "proof_producer_not_configured" };
+    if (!proofSha(producer.workflowSha, 40) || !proofSha(producer.harnessSha, 40))
+      throw new Error("proof_producer_not_pinned");
     const identity = {
       repository: input.repository,
       repositoryId: String(repo.id),
@@ -75,8 +83,8 @@ export class CommandProofConsumer {
       baseSha: proofRecord(pull.base).sha,
       bodySha256: proofDigest(String(pull.body ?? "")),
       targetBranch: String(proofRecord(pull.base).ref || ""),
-      scenario: COMMAND_PROOF_SCENARIO,
-      ...this.producer,
+      scenario: profile.scenario,
+      ...producer,
       sourceCommentId: input.commentId,
       sourceCommentUpdatedAt: String(comment.updated_at),
       sourceCommentBodySha256: proofDigest(String(comment.body)),

@@ -1,16 +1,32 @@
 import { createHash } from "node:crypto";
 import { deflateRawSync } from "node:zlib";
-import type { CommandProofClaim, MantisProofReceipt } from "../../src/command-proof-contract.ts";
+import {
+  COMMAND_PROOF_PROFILES,
+  COMMAND_PROOF_SCENARIO,
+  TELEGRAM_PROOF_SCENARIO,
+  type CommandProofScenario,
+  type CommandProofClaim,
+  type MantisProofReceipt,
+} from "../../src/command-proof-contract.ts";
+import { telegramProofFixture } from "./telegram-proof-fixtures.ts";
 import {
   proofReceiptArtifactName,
   proofEvidenceArtifactName,
 } from "../../dist/repair/proof-receipt-verification.js";
 export const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
-export function proofFixture(requestId = "d".repeat(64)) {
+export function proofFixture(
+  requestId = "d".repeat(64),
+  scenario: CommandProofScenario = COMMAND_PROOF_SCENARIO,
+  outcome: "pass" | "fail" = "pass",
+) {
+  const profile = COMMAND_PROOF_PROFILES[scenario];
   const head = "a".repeat(40),
-    workflow = "b".repeat(40),
-    body = "Change browser chat rendering.";
-  const command = "/clawsweeper proof web-ui-chat-proof " + head;
+    workflow = (scenario === COMMAND_PROOF_SCENARIO ? "b" : "e").repeat(40),
+    body =
+      scenario === COMMAND_PROOF_SCENARIO
+        ? "Change browser chat rendering."
+        : "Change Telegram bot DM handling.";
+  const command = "/clawsweeper proof " + scenario + " " + head;
   const updatedAt = new Date().toISOString();
   const claim: CommandProofClaim = {
     requestId,
@@ -21,9 +37,10 @@ export function proofFixture(requestId = "d".repeat(64)) {
     baseSha: "c".repeat(40),
     bodySha256: digest(body),
     targetBranch: "main",
-    scenario: "web-ui-chat-proof",
-    workflowPath: ".github/workflows/mantis-web-ui-chat-proof.yml",
-    workflowRef: "mantis-proof-v1",
+    scenario,
+    workflowPath: profile.workflowPath,
+    workflowRef:
+      scenario === COMMAND_PROOF_SCENARIO ? "mantis-proof-v1" : "mantis-telegram-proof-v1",
     workflowSha: workflow,
     harnessSha: workflow,
     sourceCommentId: "200",
@@ -64,11 +81,19 @@ export function proofFixture(requestId = "d".repeat(64)) {
   const observation = Buffer.from(
     JSON.stringify({ finalReply: "fixture final reply", phase: "final" }),
   );
-  const sourceFiles = ["chat-send.json", "final-reply.json", "final-reply.png"];
-  const evidenceArchive = zip(sourceFiles.map((name) => ({ name, content: observation })));
+  const telegram =
+    scenario === TELEGRAM_PROOF_SCENARIO
+      ? telegramProofFixture(
+          { requestId, headSha: head, harnessSha: workflow, runId: "300", runAttempt: 1 },
+          outcome,
+        )
+      : null;
+  const sourceFiles = profile.observations.map(([, file]) => file);
+  const evidenceFiles = telegram?.files ?? new Map(sourceFiles.map((name) => [name, observation]));
+  const evidenceArchive = zip([...evidenceFiles].map(([name, content]) => ({ name, content })));
   const jobs = {
     total_count: 2,
-    jobs: ["Run request-bound web chat proof", "Finalize request-bound evidence"].map((name) => ({
+    jobs: [profile.observerJob, "Finalize request-bound evidence"].map((name) => ({
       name,
       status: "completed",
       conclusion: "success",
@@ -78,7 +103,7 @@ export function proofFixture(requestId = "d".repeat(64)) {
   };
   const evidenceArtifact = artifactMetadata(
     400,
-    proofEvidenceArtifactName(requestId, "300", 1),
+    proofEvidenceArtifactName(requestId, "300", 1, scenario),
     evidenceArchive,
     workflow,
   );
@@ -98,17 +123,23 @@ export function proofFixture(requestId = "d".repeat(64)) {
       sha256: digest(evidenceArchive),
     },
     execution_outcome: "completed",
-    assertion_outcome: "pass",
-    observations: ["chat-send", "final-reply", "final-screenshot"].map((id, index) => ({
+    assertion_outcome: outcome,
+    observations: profile.observations.map(([id, file]) => ({
       id,
-      expected: "fixture final reply",
-      actual: "fixture final reply",
-      source_path: sourceFiles[index]!,
-      sha256: digest(observation),
+      expected:
+        telegram?.observations.find((entry) => entry.id === id)?.expected ?? "fixture final reply",
+      actual:
+        telegram?.observations.find((entry) => entry.id === id)?.actual ?? "fixture final reply",
+      source_path: file,
+      sha256: digest(evidenceFiles.get(file)!),
       availability: "present",
       authority: "trusted_observer",
     })),
-    limits: ["UI with mocked Gateway only; not live channel or provider proof."],
+    limits: [
+      scenario === COMMAND_PROOF_SCENARIO
+        ? "UI with mocked Gateway only; not live channel or provider proof."
+        : profile.scopeNotice,
+    ],
   };
   const receiptArchive = zip([
     { name: "receipt.json", content: Buffer.from(JSON.stringify(receipt)) },
@@ -131,6 +162,36 @@ export function proofFixture(requestId = "d".repeat(64)) {
     receiptArtifact,
   };
 }
+export function replaceProofEvidence(
+  fixture: ReturnType<typeof proofFixture>,
+  files: ReadonlyMap<string, Buffer>,
+  outcome = fixture.receipt.assertion_outcome,
+) {
+  const evidenceArchive = zip([...files].map(([name, content]) => ({ name, content })));
+  const evidenceArtifact = artifactMetadata(
+    400,
+    fixture.evidenceArtifact.name,
+    evidenceArchive,
+    fixture.claim.workflowSha,
+  );
+  const receipt: MantisProofReceipt = {
+    ...fixture.receipt,
+    assertion_outcome: outcome,
+    evidence: {
+      artifact_id: "400",
+      artifact_name: evidenceArtifact.name,
+      sha256: digest(evidenceArchive),
+    },
+    observations: fixture.receipt.observations.map((observation) => ({
+      ...observation,
+      sha256: files.has(observation.source_path)
+        ? digest(files.get(observation.source_path)!)
+        : observation.sha256,
+    })),
+  };
+  return { ...replaceReceipt({ ...fixture, evidenceArchive, evidenceArtifact }, receipt), receipt };
+}
+
 export function artifactMetadata(id: number, name: string, bytes: Buffer, sha: string) {
   return {
     id,

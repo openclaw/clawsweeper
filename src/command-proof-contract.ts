@@ -2,6 +2,87 @@
 export const COMMAND_PROOF_SOURCE_ACTION = "command_proof_result";
 export const COMMAND_PROOF_SCENARIO = "web-ui-chat-proof";
 export const COMMAND_PROOF_WORKFLOW = ".github/workflows/mantis-web-ui-chat-proof.yml";
+export const TELEGRAM_PROOF_SCENARIO = "telegram-bot-e2e-proof";
+export const COMMAND_PROOF_PROFILES = {
+  [COMMAND_PROOF_SCENARIO]: {
+    scenario: COMMAND_PROOF_SCENARIO,
+    workflowPath: COMMAND_PROOF_WORKFLOW,
+    configPrefix: "CLAWSWEEPER_PROOF",
+    observerJob: "Run request-bound web chat proof",
+    evidenceArtifactPrefix: "mantis-request-web-ui",
+    observations: [
+      ["chat-send", "chat-send.json"],
+      ["final-reply", "final-reply.json"],
+      ["final-screenshot", "final-reply.png"],
+    ],
+    scopeNotice:
+      "This is UI chat against a mocked Gateway ONLY; not real providers, channels or authentication.",
+  },
+  [TELEGRAM_PROOF_SCENARIO]: {
+    scenario: TELEGRAM_PROOF_SCENARIO,
+    workflowPath: ".github/workflows/mantis-telegram-bot-e2e-proof.yml",
+    configPrefix: "CLAWSWEEPER_TELEGRAM_PROOF",
+    observerJob: "Run request-bound Telegram bot proof",
+    evidenceArtifactPrefix: "mantis-request-telegram",
+    observations: [
+      ["telegram-send", "telegram-send.json"],
+      ["provider-request", "provider-request.json"],
+      ["telegram-reply", "telegram-reply.json"],
+    ],
+    scopeNotice:
+      "This is Telegram bot DM via TelegramTestServer/TDLib with an external mock provider ONLY; not live Telegram, real providers, groups/topics or blanket authority-chain proof.",
+  },
+} as const;
+export type CommandProofScenario = keyof typeof COMMAND_PROOF_PROFILES;
+export type CommandProofProducer = {
+  workflowPath: string;
+  workflowRef: string;
+  workflowSha: string;
+  harnessSha: string;
+};
+export type CommandProofProducerRegistry = Partial<
+  Record<CommandProofScenario, CommandProofProducer>
+>;
+
+export function commandProofProfile(scenario: unknown) {
+  return typeof scenario === "string" && Object.hasOwn(COMMAND_PROOF_PROFILES, scenario)
+    ? COMMAND_PROOF_PROFILES[scenario as CommandProofScenario]
+    : null;
+}
+
+export function commandProofProducerFromEnv(
+  scenario: unknown,
+  env: Record<string, string | undefined>,
+): CommandProofProducer | null {
+  const profile = commandProofProfile(scenario);
+  if (!profile) return null;
+  const producer = {
+    workflowPath: env[profile.configPrefix + "_WORKFLOW_PATH"] ?? "",
+    workflowRef: env[profile.configPrefix + "_WORKFLOW_REF"] ?? "",
+    workflowSha: env[profile.configPrefix + "_WORKFLOW_SHA"] ?? "",
+    harnessSha: env[profile.configPrefix + "_HARNESS_SHA"] ?? "",
+  };
+  return producer.workflowPath === profile.workflowPath &&
+    proofText(producer.workflowRef, 200) &&
+    /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(producer.workflowRef) &&
+    !/^[0-9a-f]{40}$/.test(producer.workflowRef) &&
+    proofSha(producer.workflowSha, 40) &&
+    proofSha(producer.harnessSha, 40) &&
+    producer.workflowSha === producer.harnessSha
+    ? producer
+    : null;
+}
+
+export function commandProofProducersFromEnv(
+  env: Record<string, string | undefined>,
+): CommandProofProducerRegistry {
+  const producers: CommandProofProducerRegistry = {};
+  for (const scenario of Object.keys(COMMAND_PROOF_PROFILES) as CommandProofScenario[]) {
+    const producer = commandProofProducerFromEnv(scenario, env);
+    if (producer) producers[scenario] = producer;
+  }
+  return producers;
+}
 export const COMMAND_PROOF_RECEIPT_MAX_BYTES = 64 * 1024;
 export const COMMAND_PROOF_ARCHIVE_MAX_BYTES = 16 * 1024 * 1024;
 export const COMMAND_PROOF_LIFETIME_MS = 60 * 60 * 1000;
@@ -15,7 +96,7 @@ export type CommandProofClaim = {
   baseSha: string;
   bodySha256: string;
   targetBranch: string;
-  scenario: typeof COMMAND_PROOF_SCENARIO;
+  scenario: CommandProofScenario;
   workflowPath: string;
   workflowRef: string;
   workflowSha: string;
@@ -39,7 +120,7 @@ export type MantisProofReceipt = {
   repository: { id: string; full_name: string };
   pull_request: number;
   candidate_sha: string;
-  scenario: typeof COMMAND_PROOF_SCENARIO;
+  scenario: CommandProofScenario;
   workflow: { path: string; sha: string };
   harness: { sha: string };
   run: { id: string; attempt: number };
@@ -81,6 +162,7 @@ function closed(value: Record<string, unknown>, required: string[], optional: st
 }
 export function parseCommandProofClaim(value: unknown): CommandProofClaim | null {
   const c = proofRecord(value);
+  const profile = commandProofProfile(c.scenario);
   if (
     !closed(c, [
       "requestId",
@@ -108,12 +190,12 @@ export function parseCommandProofClaim(value: unknown): CommandProofClaim | null
     !proofSha(c.headSha, 40) ||
     !proofSha(c.baseSha, 40) ||
     !proofSha(c.bodySha256, 64) ||
-    c.scenario !== COMMAND_PROOF_SCENARIO ||
+    !profile ||
     !proofText(c.targetBranch, 200) ||
     !proofText(c.workflowRef, 200) ||
     !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(c.workflowRef) ||
     /^[0-9a-f]{40}$/.test(c.workflowRef) ||
-    c.workflowPath !== COMMAND_PROOF_WORKFLOW ||
+    c.workflowPath !== profile.workflowPath ||
     c.harnessSha !== c.workflowSha ||
     !proofSha(c.workflowSha, 40) ||
     !proofSha(c.harnessSha, 40) ||
@@ -129,6 +211,7 @@ export function parseMantisProofReceipt(value: unknown): MantisProofReceipt | nu
   const r = proofRecord(value),
     repo = proofRecord(r.repository),
     workflow = proofRecord(r.workflow);
+  const profile = commandProofProfile(r.scenario);
   const harness = proofRecord(r.harness),
     run = proofRecord(r.run),
     evidence = proofRecord(r.evidence);
@@ -161,9 +244,10 @@ export function parseMantisProofReceipt(value: unknown): MantisProofReceipt | nu
     !Number.isSafeInteger(r.pull_request) ||
     Number(r.pull_request) < 1 ||
     !proofSha(r.candidate_sha, 40) ||
-    r.scenario !== COMMAND_PROOF_SCENARIO ||
+    !profile ||
     !closed(workflow, ["path", "sha"]) ||
     !proofSafePath(workflow.path) ||
+    workflow.path !== profile.workflowPath ||
     !proofSha(workflow.sha, 40) ||
     !closed(harness, ["sha"]) ||
     !proofSha(harness.sha, 40) ||
@@ -171,7 +255,7 @@ export function parseMantisProofReceipt(value: unknown): MantisProofReceipt | nu
     !proofNumericId(run.id) ||
     !Number.isSafeInteger(run.attempt) ||
     Number(run.attempt) < 1 ||
-    Number(run.attempt) > 100 ||
+    Number(run.attempt) > (profile.scenario === TELEGRAM_PROOF_SCENARIO ? 1_000_000 : 100) ||
     !["completed", "failed", "cancelled", "timed_out", "skipped"].includes(
       String(r.execution_outcome),
     ) ||

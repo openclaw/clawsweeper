@@ -9,9 +9,18 @@ import {
   compactPrimaryBody,
   primaryBodySourceSha256,
 } from "../../dist/clawsweeper-primary-body.js";
-import { proofFixture, replaceReceipt, zip, digest } from "../helpers/command-proof-fixtures.ts";
+import {
+  proofFixture,
+  replaceReceipt,
+  replaceProofEvidence,
+  zip,
+  digest,
+} from "../helpers/command-proof-fixtures.ts";
 import {
   parseCommandProofClaim,
+  COMMAND_PROOF_PROFILES,
+  type CommandProofScenario,
+  commandProofProducersFromEnv,
   parseMantisProofReceipt,
   proofText,
 } from "../../dist/command-proof-contract.js";
@@ -43,9 +52,15 @@ import {
 } from "../dashboard-worker-harness.ts";
 
 async function commandProofRetryHarness(
-  options: { pages?: unknown[]; knownRun?: boolean; loseEnqueueResponse?: boolean } = {},
+  options: {
+    pages?: unknown[];
+    knownRun?: boolean;
+    loseEnqueueResponse?: boolean;
+    scenario?: CommandProofScenario;
+    outcome?: "pass" | "fail";
+  } = {},
 ) {
-  const fixture = proofFixture();
+  const fixture = proofFixture(undefined, options.scenario, options.outcome);
   const storage = new MemoryDurableStorage();
   const queue = new ExactReviewQueue({ storage }, {});
   const secret = randomBytes(32).toString("hex");
@@ -96,7 +111,10 @@ async function commandProofRetryHarness(
         if (url.pathname === repo + "/issues/comments/200") return fixture.live.comment;
         if (url.pathname === repo + "/collaborators/maintainer/permission")
           return fixture.live.permission;
-        if (url.pathname === repo + "/actions/workflows/mantis-web-ui-chat-proof.yml/runs") {
+        if (
+          url.pathname ===
+          repo + "/actions/workflows/" + fixture.claim.workflowPath.split("/").at(-1) + "/runs"
+        ) {
           pageRequests.push(url);
           return options.pages?.[Number(url.searchParams.get("page")) - 1];
         }
@@ -213,6 +231,277 @@ test("compiled consumer CLI reopens SQL claims and completes only verified indep
       }),
     ),
   );
+});
+
+test("compiled Telegram consumer preserves exact runtime outcomes across replay, stale and cross-evidence cases", async () => {
+  const { stdout } = await promisify(execFile)(
+    process.execPath,
+    ["scripts/e2e/command-proof-consumer-loopback.mjs", "--scenario", "telegram-bot-e2e-proof"],
+    { timeout: 180000 },
+  );
+  const receipt = JSON.parse(stdout);
+  assert.equal(receipt.ok, true);
+  assert.equal(receipt.scenarioProfile, "telegram-bot-e2e-proof");
+  assert.equal(receipt.codeSecurityCiPreserved, true);
+  const ids = [
+    "pass",
+    "fail",
+    "candidate-only",
+    "stale-head",
+    "cross-pr",
+    "bad-digest",
+    "missing-observation",
+    "infra",
+    "rerun-attempt",
+    "queue-shed",
+    "queue-rejected",
+    "queue-stale-dedupe",
+    "queue-unscoped-dedupe",
+    "enqueue-response-lost",
+    "ref-lookup-failure",
+    "cross-scenario",
+    "cross-workflow",
+    "cross-observer-job",
+    "cross-evidence-artifact",
+    "cross-evidence-files",
+    "malformed-observation",
+    "uncorrelated-reply",
+    "outcome-mismatch",
+  ];
+  assert.equal(receipt.observations.length, 23);
+  assert.deepEqual(
+    receipt.observations,
+    ids.map((scenario) => {
+      const admitted = ["pass", "fail", "enqueue-response-lost"].includes(scenario);
+      const blocked = [
+        "queue-shed",
+        "queue-rejected",
+        "queue-stale-dedupe",
+        "queue-unscoped-dedupe",
+      ].includes(scenario);
+      return {
+        scenario,
+        state: admitted ? "completed" : blocked ? "review_pending" : "inconclusive",
+        producerDispatches: scenario === "ref-lookup-failure" ? 0 : 1,
+        independentReviews: admitted ? 1 : 0,
+        reviewEnqueueAttempts:
+          scenario === "enqueue-response-lost" ? 2 : blocked ? 3 : admitted ? 1 : 0,
+        reopenedSqliteClaim: true,
+        statusOwnerUpdated: !admitted && !blocked,
+        reviewStatusOwnerDelegated: admitted,
+        reviewAdmissionBlocked: blocked,
+      };
+    }),
+  );
+  assert.deepEqual(receipt.exceptionResponseSafety, {
+    status: 500,
+    contentType: "application/json; charset=utf-8",
+    contentTypeOptions: "nosniff",
+    body: { message: "fixture_request_failed" },
+  });
+});
+
+test("both proof profiles admit pass or fail evidence once through the actual Worker queue without cross-transport replay", async (t) => {
+  for (const scenario of ["web-ui-chat-proof", "telegram-bot-e2e-proof"] as const) {
+    for (const outcome of ["pass", "fail"] as const) {
+      const h = await commandProofRetryHarness({ scenario, outcome });
+      t.after(() => h.storage.sql.close());
+      const claim = h.fixture.claim;
+      assert.deepEqual(await h.consumer.reconcile(), [
+        { requestId: claim.requestId, status: "independent_review_queued", outcome },
+      ]);
+      assert.equal(h.store.get(claim.requestId)?.state, "completed");
+      const item = (await h.state()).items[claim.repository + "#42"]!;
+      assert.equal(item.decision.sourceAction, "command_proof_result");
+      assert.ok(
+        item.decision.additionalPrompt!.includes(COMMAND_PROOF_PROFILES[scenario].scopeNotice),
+      );
+      assert.deepEqual(commandProofBinding(item.decision.additionalPrompt!), {
+        headSha: claim.headSha,
+        bodySha256: claim.bodySha256,
+        baseRefSha256: digest(claim.targetBranch),
+        baseSha: claim.baseSha,
+        requestId: claim.requestId,
+      });
+      assert.deepEqual(await h.consumer.reconcile(), []);
+      assert.equal(h.enqueueBodies.length, 1);
+      assert.equal(h.counts.dispatches, 0);
+      const other =
+        scenario === "web-ui-chat-proof" ? "telegram-bot-e2e-proof" : "web-ui-chat-proof";
+      const switched = {
+        ...claim,
+        requestId: digest("switched transport"),
+        scenario: other,
+        workflowPath: COMMAND_PROOF_PROFILES[other].workflowPath,
+      };
+      const replay = await h.post("command-proof/claim", { claim: switched });
+      assert.equal(replay.accepted, false);
+      assert.equal(replay.reason, "proof_target_binding_changed");
+    }
+  }
+});
+
+test("both proof consumers reject stale, incomplete and cross-transport artifacts without reassessment", async (t) => {
+  for (const scenario of ["web-ui-chat-proof", "telegram-bot-e2e-proof"] as const) {
+    for (const failure of [
+      "scenario",
+      "workflow",
+      "job",
+      "artifact",
+      "files",
+      "candidate",
+      "missing",
+      "infra",
+      "base",
+      "head",
+      "receipt-outcome",
+    ]) {
+      if (failure === "receipt-outcome" && scenario === "web-ui-chat-proof") continue;
+      const h = await commandProofRetryHarness({ scenario });
+      t.after(() => h.storage.sql.close());
+      const fixture = h.fixture;
+      const other =
+        scenario === "web-ui-chat-proof" ? "telegram-bot-e2e-proof" : "web-ui-chat-proof";
+      if (failure === "scenario")
+        Object.assign(fixture, replaceReceipt(fixture, { ...fixture.receipt, scenario: other }));
+      if (failure === "workflow") fixture.run.path = COMMAND_PROOF_PROFILES[other].workflowPath;
+      if (failure === "job") fixture.jobs.jobs[0]!.name = COMMAND_PROOF_PROFILES[other].observerJob;
+      if (failure === "artifact")
+        fixture.evidenceArtifact.name =
+          COMMAND_PROOF_PROFILES[other].evidenceArtifactPrefix + "-300-1";
+      if (failure === "files")
+        Object.assign(
+          fixture,
+          replaceProofEvidence(
+            fixture,
+            readProofZip(proofFixture(fixture.claim.requestId, other).evidenceArchive),
+          ),
+        );
+      if (failure === "candidate")
+        Object.assign(
+          fixture,
+          replaceReceipt(fixture, {
+            ...fixture.receipt,
+            observations: fixture.receipt.observations.map((o) => ({
+              ...o,
+              authority: "candidate_reported",
+            })),
+          }),
+        );
+      if (failure === "missing")
+        Object.assign(
+          fixture,
+          replaceReceipt(fixture, {
+            ...fixture.receipt,
+            observations: fixture.receipt.observations.slice(1),
+          }),
+        );
+      if (failure === "infra") fixture.run.conclusion = "timed_out";
+      if (failure === "base") fixture.live.pull.base.sha = "f".repeat(40);
+      if (failure === "head") fixture.live.pull.head.sha = "f".repeat(40);
+      if (failure === "receipt-outcome")
+        Object.assign(
+          fixture,
+          replaceReceipt(fixture, { ...fixture.receipt, assertion_outcome: "fail" }),
+        );
+      const result = (await h.consumer.reconcile()) as Array<{ status: string }>;
+      assert.equal(result[0]?.status, "inconclusive", scenario + ": " + failure);
+      assert.equal(h.store.get(fixture.claim.requestId)?.state, "inconclusive");
+      assert.equal(h.enqueueBodies.length, 0);
+      assert.equal(h.counts.dispatches, 0);
+    }
+  }
+});
+
+test("each proof scenario selects only its independently pinned producer and dispatches one immutable request", async (t) => {
+  for (const scenario of ["web-ui-chat-proof", "telegram-bot-e2e-proof"] as const) {
+    const fixture = proofFixture();
+    fixture.live.comment.body = "/clawsweeper proof " + scenario + " " + fixture.claim.headSha;
+    const storage = new MemoryDurableStorage();
+    t.after(() => storage.sql.close());
+    const store = new CommandProofRequestStore(storage);
+    store.ensureSchemaSync();
+    const environment: Record<string, string> = {};
+    for (const profile of Object.values(COMMAND_PROOF_PROFILES)) {
+      environment[profile.configPrefix + "_WORKFLOW_PATH"] = profile.workflowPath;
+      environment[profile.configPrefix + "_WORKFLOW_REF"] = profile.scenario + "-pinned";
+      environment[profile.configPrefix + "_WORKFLOW_SHA"] = (
+        profile.scenario === "web-ui-chat-proof" ? "b" : "e"
+      ).repeat(40);
+      environment[profile.configPrefix + "_HARNESS_SHA"] =
+        environment[profile.configPrefix + "_WORKFLOW_SHA"]!;
+    }
+    const producers = commandProofProducersFromEnv(environment);
+    const producer = producers[scenario]!;
+    const dispatches: Array<{ path: string; body: unknown }> = [];
+    const transport = {
+      github: async (path: string, body?: unknown) => {
+        const repo = "repos/openclaw/openclaw";
+        if (body !== undefined) {
+          dispatches.push({ path, body });
+          assert.equal(
+            path,
+            repo + "/actions/workflows/" + producer.workflowPath.split("/").at(-1) + "/dispatches",
+          );
+          return { workflow_run_id: 300 };
+        }
+        if (path === repo) return fixture.live.repository;
+        if (path === repo + "/pulls/42") return fixture.live.pull;
+        if (path === repo + "/issues/comments/200") return fixture.live.comment;
+        if (path === repo + "/collaborators/maintainer/permission") return fixture.live.permission;
+        if (path === repo + "/commits/" + producer.workflowRef)
+          return { sha: producer.workflowSha };
+        throw new Error("unexpected fixture request " + path);
+      },
+      queue: async (operation: string, body: unknown) => {
+        const value = body as { claim?: unknown };
+        return operation === "claim"
+          ? store.claim(value.claim, Date.now())
+          : { record: store.update(body, Date.now()) };
+      },
+      artifact: async () => {
+        throw new Error("request must not read artifacts");
+      },
+      enqueue: async () => {
+        throw new Error("request must not enqueue reassessment");
+      },
+      status: async () => {},
+    };
+    const other = scenario === "web-ui-chat-proof" ? "telegram-bot-e2e-proof" : "web-ui-chat-proof";
+    const input = { repository: "openclaw/openclaw", pullRequest: 42, commentId: "200" };
+    assert.deepEqual(
+      await new CommandProofConsumer(transport, { [other]: producers[other] }).request(input),
+      { status: "inconclusive", reason: "proof_producer_not_configured" },
+    );
+    assert.equal(dispatches.length, 0);
+    const consumer = new CommandProofConsumer(transport, producers);
+    const result = await consumer.request(input);
+    assert.equal(result.status, "queued");
+    const record = store.pending(Date.now())[0]!;
+    assert.equal(record.claim.scenario, scenario);
+    assert.equal(record.claim.workflowPath, producer.workflowPath);
+    assert.equal(record.claim.workflowSha, producer.workflowSha);
+    assert.equal(record.claim.harnessSha, producer.harnessSha);
+    assert.equal(record.runId, "300");
+    assert.deepEqual(dispatches, [
+      {
+        path:
+          "repos/openclaw/openclaw/actions/workflows/" +
+          producer.workflowPath.split("/").at(-1) +
+          "/dispatches",
+        body: {
+          ref: producer.workflowRef,
+          inputs: {
+            request_id: record.claim.requestId,
+            pr_number: "42",
+            candidate_ref: fixture.claim.headSha,
+          },
+        },
+      },
+    ]);
+    await consumer.request(input);
+    assert.equal(dispatches.length, 1);
+  }
 });
 
 test("proof retry waits for queued or leased full reviews and admits one authenticated delivery", async (t) => {

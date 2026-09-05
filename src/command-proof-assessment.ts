@@ -164,7 +164,7 @@ export function foldCommandProofAssessment(
       .slice(beforeSection.start, beforeSection.end)
       .includes("Summary: " + AUTHORITY_CHAIN_PROOF_MARKER)
   ) {
-    throw new Error("mocked-Gateway UI proof cannot replace required authority-chain proof");
+    throw new Error("limited commanded proof cannot replace required authority-chain proof");
   }
   const body =
     beforeBody.slice(0, beforeSection.start) +

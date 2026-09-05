@@ -12,9 +12,30 @@ import {
   MemoryDurableStorage,
   MemoryDurableNamespace,
 } from "../../test/dashboard-worker-harness.ts";
-import { proofFixture, replaceReceipt, digest } from "../../test/helpers/command-proof-fixtures.ts";
+import {
+  proofFixture,
+  replaceReceipt,
+  replaceProofEvidence,
+  digest,
+} from "../../test/helpers/command-proof-fixtures.ts";
 import { foldCommandProofAssessment } from "../../dist/command-proof-assessment.js";
+import {
+  commandProofProfile,
+  COMMAND_PROOF_SCENARIO,
+  TELEGRAM_PROOF_SCENARIO,
+} from "../../dist/command-proof-contract.js";
+import { readProofZip } from "../../dist/repair/proof-zip.js";
 import { createRecordMetadata } from "../../dist/clawsweeper-record-metadata.js";
+
+const requestedScenario =
+  process.argv.length === 2
+    ? COMMAND_PROOF_SCENARIO
+    : process.argv.length === 4 && process.argv[2] === "--scenario"
+      ? process.argv[3]
+      : null;
+const proofProfile = commandProofProfile(requestedScenario);
+if (!proofProfile) throw new Error("unsupported_loopback_profile");
+const workflowFile = proofProfile.workflowPath.split("/").at(-1);
 
 const source = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 fs.mkdirSync(path.join(source, ".openclaw/tmp"), { recursive: true });
@@ -98,7 +119,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, { sha: f.claim.workflowSha });
     }
     if (
-      url.pathname === p + "/actions/workflows/mantis-web-ui-chat-proof.yml/dispatches" &&
+      url.pathname === p + "/actions/workflows/" + workflowFile + "/dispatches" &&
       req.method === "POST"
     ) {
       const payload = JSON.parse(raw);
@@ -110,7 +131,7 @@ const server = http.createServer(async (req, res) => {
       ]);
       assert.equal(req.headers["x-github-api-version"], "2026-03-10");
       dispatches++;
-      const bound = proofFixture(payload.inputs.request_id);
+      const bound = proofFixture(payload.inputs.request_id, proofProfile.scenario);
       f = {
         ...f,
         receipt: bound.receipt,
@@ -192,8 +213,20 @@ try {
     "queue-unscoped-dedupe",
     "enqueue-response-lost",
     "ref-lookup-failure",
+    ...(proofProfile.scenario === TELEGRAM_PROOF_SCENARIO
+      ? [
+          "cross-scenario",
+          "cross-workflow",
+          "cross-observer-job",
+          "cross-evidence-artifact",
+          "cross-evidence-files",
+          "malformed-observation",
+          "uncorrelated-reply",
+          "outcome-mismatch",
+        ]
+      : []),
   ]) {
-    f = proofFixture();
+    f = proofFixture(undefined, proofProfile.scenario);
     comments = [];
     dispatches = 0;
     apiWrites = [];
@@ -204,7 +237,7 @@ try {
       // Exercise the real JSON.parse -> catch response path before any dispatch.
       const attackerHtml = "<script>alert('fixture-xss')</script>";
       const response = await fetch(
-        base + "/repos/openclaw/openclaw/actions/workflows/mantis-web-ui-chat-proof.yml/dispatches",
+        base + "/repos/openclaw/openclaw/actions/workflows/" + workflowFile + "/dispatches",
         {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -280,7 +313,36 @@ try {
         f.claim.headSha +
         " -->\nProof requested; not sufficient or ready.",
     });
-    if (scenario === "fail") f = replaceReceipt(f, { ...f.receipt, assertion_outcome: "fail" });
+    if (scenario === "fail") {
+      const failure = proofFixture(id, proofProfile.scenario, "fail");
+      f = replaceProofEvidence(f, readProofZip(failure.evidenceArchive), "fail");
+    }
+    if (scenario === "cross-scenario")
+      f = replaceReceipt(f, { ...f.receipt, scenario: COMMAND_PROOF_SCENARIO });
+    if (scenario === "cross-workflow")
+      f.run.path = commandProofProfile(COMMAND_PROOF_SCENARIO).workflowPath;
+    if (scenario === "cross-observer-job")
+      f.jobs.jobs[0].name = commandProofProfile(COMMAND_PROOF_SCENARIO).observerJob;
+    if (scenario === "cross-evidence-artifact")
+      f.evidenceArtifact.name = "mantis-request-web-ui-300-1";
+    if (scenario === "cross-evidence-files") {
+      const browser = [...readProofZip(proofFixture(id).evidenceArchive).values()];
+      // Negative test: renaming browser bytes to Telegram filenames must not pass.
+      f = replaceProofEvidence(
+        f,
+        new Map(proofProfile.observations.map(([, file], index) => [file, browser[index]])),
+      );
+    }
+    if (scenario === "malformed-observation" || scenario === "uncorrelated-reply") {
+      const files = readProofZip(f.evidenceArchive);
+      const reply = JSON.parse(files.get("telegram-reply.json").toString("utf8"));
+      if (scenario === "malformed-observation") reply.private_chat_id = "not-allowed";
+      else reply.conversation_digest = "f".repeat(64);
+      files.set("telegram-reply.json", Buffer.from(JSON.stringify(reply)));
+      f = replaceProofEvidence(f, files);
+    }
+    if (scenario === "outcome-mismatch")
+      f = replaceReceipt(f, { ...f.receipt, assertion_outcome: "fail" });
     if (scenario === "candidate-only")
       f = replaceReceipt(f, {
         ...f.receipt,
@@ -332,7 +394,7 @@ try {
       assert.equal(item.decision.sourceAction, "command_proof_result");
       assert.equal(item.decision.sourceHeadSha, f.claim.headSha);
       assert.match(item.decision.additionalPrompt, /independent assessment still required/);
-      assert.match(item.decision.additionalPrompt, /mocked Gateway ONLY/);
+      assert.ok(item.decision.additionalPrompt.includes(proofProfile.scopeNotice));
       assert.equal(
         item.decision.commandStatusMarker,
         "<!-- clawsweeper-command-status:42:request_proof:" + id + " -->",
@@ -508,6 +570,7 @@ try {
       {
         ok: true,
         runtime: "compiled CLI + real Worker HTTP routing + file-backed SQLite ExactReviewQueue",
+        scenarioProfile: proofProfile.scenario,
         observations,
         codeSecurityCiPreserved: true,
         exceptionResponseSafety,
@@ -543,10 +606,10 @@ function runCli(args, base) {
         CLAWSWEEPER_WEBHOOK_SECRET: secret,
         NODE_OPTIONS: "--import=" + fetchShim,
         PROOF_FIXTURE_ENDPOINT: base,
-        CLAWSWEEPER_PROOF_WORKFLOW_PATH: f.claim.workflowPath,
-        CLAWSWEEPER_PROOF_WORKFLOW_REF: f.claim.workflowRef,
-        CLAWSWEEPER_PROOF_WORKFLOW_SHA: f.claim.workflowSha,
-        CLAWSWEEPER_PROOF_HARNESS_SHA: f.claim.harnessSha,
+        [proofProfile.configPrefix + "_WORKFLOW_PATH"]: f.claim.workflowPath,
+        [proofProfile.configPrefix + "_WORKFLOW_REF"]: f.claim.workflowRef,
+        [proofProfile.configPrefix + "_WORKFLOW_SHA"]: f.claim.workflowSha,
+        [proofProfile.configPrefix + "_HARNESS_SHA"]: f.claim.harnessSha,
       },
       stdio: ["ignore", "pipe", "pipe"],
     },

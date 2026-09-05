@@ -25,14 +25,27 @@ work.
 
 ## Explicit command-triggered proof
 
-The existing maintainer comment router recognizes
-`/clawsweeper proof web-ui-chat-proof <40-character-head-sha>` (or the
-`@clawsweeper proof ...` form). This initial contract accepts only open,
-same-repository PR heads in `openclaw/openclaw`. It exercises browser UI chat
-with a mocked Gateway, not live providers, channels, authentication, or arbitrary
-changed behavior. The human maintainer's current repository permission, exact
-comment version, repository ID, PR number, head, and body are checked again
-before dispatch and before independent reassessment.
+The existing maintainer comment router recognizes explicit
+`/clawsweeper proof <scenario-id> <40-character-head-sha>` commands
+(or the `@clawsweeper proof ...` form). The closed scenario registry accepts:
+
+| Scenario                 | Pinned producer workflow            | Scope and limits                                                                                                                                   |
+| ------------------------ | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `web-ui-chat-proof`      | `mantis-web-ui-chat-proof.yml`      | Existing browser UI chat with a mocked Gateway; not live providers, channels or authentication.                                                    |
+| `telegram-bot-e2e-proof` | `mantis-telegram-bot-e2e-proof.yml` | TelegramTestServer/TDLib bot DM with an external mock provider; not live Telegram, real providers, groups/topics or blanket authority-chain proof. |
+
+Both accept only open, same-repository PR heads in `openclaw/openclaw`.
+Neither permits freeform execution or arbitrary messaging targets. The human
+maintainer's repository permission, immutable source-comment version, repository
+ID, PR number, head, body, base ref and base SHA are rechecked before dispatch
+and independent reassessment. One unchanged human command version cannot start
+another transport/configuration after target or producer drift.
+
+Both profiles have closed consumer validation. Telegram acceptance additionally
+requires the hash-only public observation contract below; a registry entry or
+renamed browser fixture is not Telegram proof. The actual producer adapter must
+separately prove how it maps trusted captures into these observations before
+any operator enables its pins.
 
 The existing ExactReviewQueue Durable Object stores the immutable request before
 any producer dispatch. Admission is transactional, with one active pilot request;
@@ -53,6 +66,19 @@ Execution is disabled until the operator supplies these repository variables:
 - `CLAWSWEEPER_PROOF_WORKFLOW_SHA`: the reviewed, approved producer revision
 - `CLAWSWEEPER_PROOF_HARNESS_SHA`: the same revision for this first contract
 
+The four existing WebUI variables retain their names. Telegram has an independent,
+all-or-nothing pin set with no fallback to WebUI configuration:
+
+- `CLAWSWEEPER_TELEGRAM_PROOF_WORKFLOW_PATH`: the producer
+  [Mantis Telegram bot workflow](https://github.com/openclaw/openclaw/blob/main/.github/workflows/mantis-telegram-bot-e2e-proof.yml), required separately
+- `CLAWSWEEPER_TELEGRAM_PROOF_WORKFLOW_REF`: a named reviewed branch/tag
+- `CLAWSWEEPER_TELEGRAM_PROOF_WORKFLOW_SHA`: approved producer revision
+- `CLAWSWEEPER_TELEGRAM_PROOF_HARNESS_SHA`: the same revision for this contract
+
+Both transports are disabled when their own complete valid pins are absent.
+Configuring either profile does not authorize real messaging accounts, public
+Telegram delivery, activation of the other profile, merge, or automatic proof.
+
 The named ref must resolve to the expected SHA before dispatch. The completed
 run and artifact metadata must independently match that SHA. Configuration does
 not create refs, provision credentials, or authorize live QA accounts. Do not
@@ -71,12 +97,50 @@ inputs are `candidate_ref`, `request_id`, and `pr_number`.
 The closed `mantis.request-proof.v1` receipt is correlated, not self-authorizing.
 The consumer verifies the current target, pinned workflow/harness, run attempt,
 successful trusted observer and finalizer jobs, both GitHub artifact inventories,
-archive digests, and the three observation-file digests. Receipt and evidence are
+archive digests, and the three profile-specific observation-file digests. Receipt and evidence are
 separate artifacts: `mantis-request-receipt-<run>-<attempt>` contains
 `receipt.json`; `mantis-request-web-ui-<run>-<attempt>` carries `chat-send.json`,
 `final-reply.json`, and `final-reply.png`. ZIP parsing is bounded, in memory,
 and rejects traversal, links, duplicate names, corrupt entries and oversized
 expansion. Receipt fields and observation metadata reject unknown keys.
+
+Telegram uses the same request-bound receipt envelope and receipt artifact, but
+only its Telegram workflow and the trusted job `Run request-bound Telegram bot proof`
+plus `Finalize request-bound evidence`. Its evidence artifact is
+`mantis-request-telegram-<run>-<attempt>` and its required observations are
+`telegram-send/telegram-send.json`, `provider-request/provider-request.json`, and
+`telegram-reply/telegram-reply.json`. These must describe actual TDLib/TestServer
+and external mock-provider observations, not renamed browser files. Wrong
+scenario/workflow/job/artifact/file/schema combinations remain inconclusive.
+
+Each Telegram observation is a closed UTF-8 JSON object of at most 8 KiB with
+schema `mantis.telegram-observation.v1`. Common fields bind `request_id`,
+`scenario`, `candidate_sha`, `harness_sha`, `run_id` and `run_attempt`.
+All three must agree on their public 64-hex `nonce` and salted run-local
+`conversation_digest`, and declare `transport: "TelegramTestServer"`,
+`test_dc: true`, `chat_type: "dm"` and `capture: "complete"`.
+
+| Kind / file                                  | Transport-specific facts                                                                                                                             |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `telegram-send` / `telegram-send.json`       | Canonical positive-decimal `message_id`; `text_sha256` must hash exactly `Mantis Telegram request <nonce>`.                                          |
+| `provider-request` / `provider-request.json` | `request_sha256`, matching `input_nonce`, `response_nonce` and `response_sha256`; response hash must match `MANTIS_TELEGRAM_REPLY_<response_nonce>`. |
+| `telegram-reply` / `telegram-reply.json`     | A distinct positive-decimal `message_id`, `in_reply_to` equal to the sent ID or null, actual `text_sha256`, and `from_sut: true`.                    |
+
+Only after all identities and provenance/coherence fields validate is the reply
+hash compared with the mock-provider response hash: equality yields assertion
+pass and inequality yields assertion fail. A wrong send/provider hash, wrong
+nonce/peer binding, duplicate message ID, non-SUT reply, missing/partial capture,
+unknown key, invalid UTF-8 or oversized file is inconclusive. The enclosing
+receipt outcome must agree with the independently derived outcome. Reviewer
+summaries are derived from validated facts, not freeform receipt claims.
+
+The public exporter emits only these three records; raw skill events, TDLib
+recordings, gateway/provider logs, account/chat/user IDs and credentials are not
+public artifacts. There are no fabricated timestamps or wall-clock claims.
+The pinned producer must select actual post-send, matching-peer TDLib events
+before declaring capture complete; the consumer cannot reconstruct that private
+recording from hashes. This is a trusted-producer boundary, not an internal app
+attestation or proof of live/public Telegram delivery.
 
 Complete trusted observations can yield scenario assertion **pass** or **fail**.
 Candidate-reported, missing, partial, malformed, stale, unverifiable, cancelled,
@@ -91,8 +155,7 @@ The proof-only fold changes only the behavioral-proof assessment in an existing
 same-head full review; code/security/CI decisions, findings, ratings, and the last
 full-review age survive. Missing or failed prior/current review data blocks this
 fold. Additional non-proof findings require a full review rather than being
-silently discarded. This mocked-Gateway scenario cannot replace required
-authority-chain proof. Exact head/body checks also run at review time, and existing publication
+silently discarded. Neither limited scenario can replace required authority-chain proof. Exact head/body checks also run at review time, and existing publication
 freshness checks still apply. Publication is report/comment-only: no label
 setter, repair/close/merge action, or verdict-router handoff is authorized by
 this path. A sufficient assessment may remove the report's proof blocker, not
@@ -114,7 +177,21 @@ artifact verification, the existing review queue/status owner, and proof-only
 folding. GitHub metadata/artifact delivery and the independent model's response
 are controlled external fixtures. It does not claim a live GitHub workflow run,
 Mantis UI execution, or semantic model accuracy. The producer dependency owns
-its separate trusted-observer runtime proof. The earlier admission-only harness
+its separate trusted-observer runtime proof. Run the consumer loopback without
+arguments for the unchanged 15 WebUI cases, or with
+`--scenario telegram-bot-e2e-proof` for the same 15 cases plus eight Telegram
+cross-transport/schema/coherence cases. Telegram fixtures are generated by the
+same public hash-only exporter/validator contract, not by relabeling browser
+observations. The deliberately renamed-browser negative case must fail closed.
+
+| Boundary      | Consumer coverage                                                                                        | Still requires separate proof                                                        |
+| ------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| WebUI         | Compiled consumer CLI, signed Worker/SQLite/ZIP/reassessment fixture paths                               | Actual pinned browser producer execution                                             |
+| Telegram      | Hash-only schema/semantic source tests and compiled consumer CLI/Worker/SQLite/ZIP/reassessment fixtures | Actual TelegramTestServer/TDLib adapter capture and external provider mapping        |
+| Publication   | Existing proof-only label/promotion/freshness guards and focused apply fixtures                          | End-to-end canonical deployment/publication validation                               |
+| Live Telegram | Not enabled or claimed                                                                                   | Exact runtime readiness, explicitly authorized target and lease/credential preflight |
+
+The earlier admission-only harness
 `scripts/e2e/proof-command-loopback.mjs` remains narrower evidence.
 
 ## Decision compatibility

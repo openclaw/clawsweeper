@@ -2,7 +2,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { CommandProofConsumer } from "./command-proof-consumer.js";
 import { CommandProofHttpTransport } from "./command-proof-http.js";
-import { proofRecord } from "../command-proof-contract.js";
+import { proofRecord, commandProofProducersFromEnv } from "../command-proof-contract.js";
 import { parseOptions, runCommandStatusUpdate } from "./update-command-status.js";
 
 try {
@@ -33,12 +33,7 @@ try {
       );
     },
   });
-  const consumer = new CommandProofConsumer(transport, {
-    workflowPath: process.env.CLAWSWEEPER_PROOF_WORKFLOW_PATH ?? "",
-    workflowRef: process.env.CLAWSWEEPER_PROOF_WORKFLOW_REF ?? "",
-    workflowSha: process.env.CLAWSWEEPER_PROOF_WORKFLOW_SHA ?? "",
-    harnessSha: process.env.CLAWSWEEPER_PROOF_HARNESS_SHA ?? "",
-  });
+  const consumer = new CommandProofConsumer(transport, commandProofProducersFromEnv(process.env));
   if (process.argv[2] === "reconcile" && process.argv.length === 3) {
     console.log(JSON.stringify(await consumer.reconcile()));
   } else if (process.argv[2] === "request" && process.argv.length === 4) {
