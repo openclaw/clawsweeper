@@ -36,8 +36,7 @@
     "dashboard/review-observability.ts",
     "dashboard/review-run-telemetry.ts",
     "dashboard/state-blobs.ts",
-    "dashboard/state-writer-coordinator.ts",
-    "dashboard/triage-routing-groups.ts"
+    "dashboard/state-writer-coordinator.ts"
   ],
   "include": []
 }

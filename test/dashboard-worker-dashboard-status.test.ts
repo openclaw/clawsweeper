@@ -5027,6 +5027,72 @@ test("dashboard fetches additional closed pages only when the first page is full
   }
 });
 
+for (const scenario of [
+  { name: "authenticated linked issue", authenticated: true, count: 1, searchFails: false },
+  { name: "public linked issue without auth", authenticated: false, count: 1, searchFails: false },
+  {
+    name: "linked issues above the former enrichment cap",
+    authenticated: true,
+    count: 241,
+    searchFails: false,
+  },
+  { name: "genuine Search failure", authenticated: true, count: 1, searchFails: true },
+]) {
+  test(`triage counts skip GraphQL for ${scenario.name}`, async () => {
+    const originalFetch = globalThis.fetch;
+    const originalCaches = globalThis.caches;
+    Object.defineProperty(globalThis, "caches", {
+      configurable: true,
+      value: { default: new MemoryCache() },
+    });
+    const requests: string[] = [];
+    globalThis.fetch = async (input) => {
+      const url = new URL(String(input));
+      requests.push(url.pathname);
+      if (url.pathname.endsWith("/labels")) {
+        return jsonResponse([{ name: "clawsweeper:linked-pr-open" }]);
+      }
+      if (url.pathname === "/search/issues") {
+        if (scenario.searchFails) return new Response("synthetic Search failure", { status: 503 });
+        const perPage = Number(url.searchParams.get("per_page"));
+        const offset = (Number(url.searchParams.get("page")) - 1) * perPage;
+        return jsonResponse({
+          total_count: scenario.count,
+          items: Array.from({ length: scenario.count }, (_, index) =>
+            triageIssue(index + 1, ["clawsweeper:linked-pr-open"]),
+          ).slice(offset, offset + perPage),
+        });
+      }
+      if (url.pathname === "/graphql")
+        return new Response("synthetic GraphQL failure", { status: 503 });
+      throw new Error(`unexpected fetch ${url.pathname}`);
+    };
+    try {
+      const response = await worker.fetch(
+        new Request("https://clawsweeper.openclaw.ai/api/triage"),
+        {
+          TARGET_REPOS: "openclaw/openclaw",
+          TRIAGE_ITEMS_PER_VIEW: "500",
+          ...(scenario.authenticated ? { GITHUB_TOKEN: "synthetic-fixture-only" } : {}),
+        },
+      );
+      const snapshot = await response.json();
+      assert.equal(response.status, 200);
+      assert.equal(snapshot.schema_version, 2);
+      assert.equal(snapshot.complete, !scenario.searchFails);
+      assert.equal(snapshot.error_count, scenario.searchFails ? 1 : 0);
+      assert.equal(snapshot.counts.clawsweeper, scenario.searchFails ? 0 : scenario.count);
+      assert.equal(snapshot.counts["already-has-pr"], scenario.searchFails ? 0 : scenario.count);
+      assert.ok(snapshot.views.every((view: { items: unknown[] }) => view.items.length === 0));
+      assert.ok(requests.includes("/search/issues"));
+      assert.equal(requests.filter((pathname) => pathname === "/graphql").length, 0);
+    } finally {
+      globalThis.fetch = originalFetch;
+      Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+    }
+  });
+}
+
 test("triage focused views use direct search when broad snapshot is capped", async () => {
   const originalFetch = globalThis.fetch;
   const originalCaches = globalThis.caches;

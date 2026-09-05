@@ -32,10 +32,6 @@ import runtimeWorker, {
   workerWorkKind,
   workflowJobsForRunSnapshot,
 } from "../dashboard/worker.ts";
-import {
-  TRIAGE_ROUTING_GROUPS,
-  triageRoutingGroupsForLabels,
-} from "../dashboard/triage-routing-groups.ts";
 import { ExactReviewPublicationBatchStore } from "../dashboard/exact-review-publication-batches.ts";
 import {
   ExactReviewDirectPublicationStore,
@@ -1153,8 +1149,6 @@ export {
   summarizeBayJourneyTimings,
   workerWorkKind,
   workflowJobsForRunSnapshot,
-  TRIAGE_ROUTING_GROUPS,
-  triageRoutingGroupsForLabels,
   ExactReviewPublicationBatchStore,
   ExactReviewDirectPublicationStore,
   validateDirectPublicationPlan,

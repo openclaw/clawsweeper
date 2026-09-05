@@ -47,7 +47,6 @@ import {
   stateWriterHistorySample,
   summarizeOperationalHealth,
 } from "./operational-health.ts";
-import { TRIAGE_ROUTING_GROUPS, triageRoutingGroupsForLabels } from "./triage-routing-groups.ts";
 import {
   EXACT_REVIEW_QUEUE_NAME,
   EXACT_REVIEW_RECONCILE_CONCURRENCY,
@@ -528,8 +527,6 @@ const DEFAULT_PR_PROOF_ITEMS_PER_VIEW = 500;
 const MAX_TRIAGE_ITEMS_PER_VIEW = 1000;
 const TRIAGE_SEARCH_PAGE_SIZE = 100;
 const TRIAGE_FOCUSED_FALLBACK_ITEMS_PER_VIEW = 100;
-const TRIAGE_LINKED_PR_ITEM_LIMIT = 240;
-const TRIAGE_LINKED_PR_BATCH_SIZE = 25;
 const TRIAGE_LABEL_PREFIX = "clawsweeper:";
 const PUBLIC_TRIAGE_SCHEMA_VERSION = 2;
 const PUBLIC_TRIAGE_COUNT_LIMIT = 1_000_000;
@@ -7818,8 +7815,6 @@ async function triageSnapshot(env) {
     );
   }
   const views = mergeTriageRepoViews(repoSnapshots, itemLimit);
-  await attachTriageLinkedPullRequests(env, views, errors);
-  attachTriageRoutingGroupCounts(views);
   const counts = Object.fromEntries(views.map((view) => [view.id, view.total_count]));
   return {
     schema_version: 1,
@@ -7831,7 +7826,6 @@ async function triageSnapshot(env) {
       search_request_budget_remaining: searchBudget.remaining,
     },
     counts,
-    routing_groups: TRIAGE_ROUTING_GROUPS,
     views,
     diagnostics: {
       errors: errors.slice(0, 20),
@@ -7863,190 +7857,6 @@ async function prProofTriageSnapshot(env) {
       errors: errors.slice(0, 20),
     },
   };
-}
-
-function attachTriageRoutingGroupCounts(views) {
-  for (const view of views) {
-    view.loaded_routing_group_counts = Object.fromEntries(
-      TRIAGE_ROUTING_GROUPS.map((group) => [
-        group.id,
-        (view.items || []).filter((item) =>
-          (item.routing_groups || []).some((candidate) => candidate.id === group.id),
-        ).length,
-      ]),
-    );
-  }
-}
-
-async function attachTriageLinkedPullRequests(env, views, errors) {
-  const allItems = allTriageItems(views);
-  for (const item of allItems) item.linked_pull_requests = [];
-  const items = uniqueTriageItems(views);
-  if (!items.length) return;
-  if (!hasGithubAuth(env)) {
-    errors.push(
-      "linked pull requests: GITHUB_TOKEN or ClawSweeper GitHub App credentials are required for GraphQL enrichment",
-    );
-    return;
-  }
-  const limitedItems = items.slice(0, TRIAGE_LINKED_PR_ITEM_LIMIT);
-  if (items.length > limitedItems.length) {
-    errors.push(
-      `linked pull requests: limited to ${limitedItems.length} of ${items.length} loaded issues`,
-    );
-  }
-  const byRepo = new Map();
-  for (const item of limitedItems) {
-    const bucket = byRepo.get(item.repository) || [];
-    bucket.push(item);
-    byRepo.set(item.repository, bucket);
-  }
-  await Promise.all(
-    [...byRepo.entries()].map(async ([repo, repoItems]) => {
-      for (let index = 0; index < repoItems.length; index += TRIAGE_LINKED_PR_BATCH_SIZE) {
-        const batch = repoItems.slice(index, index + TRIAGE_LINKED_PR_BATCH_SIZE);
-        await attachTriageLinkedPullRequestBatch(env, repo, batch).catch((error) => {
-          errors.push(`${repo} linked pull requests: ${error.message}`);
-        });
-      }
-    }),
-  );
-  syncLinkedPullRequestsToDuplicateItems(views, limitedItems);
-}
-
-function allTriageItems(views) {
-  return views.flatMap((view) => view.items || []);
-}
-
-function syncLinkedPullRequestsToDuplicateItems(views, linkedItems) {
-  const linkedByKey = new Map(
-    linkedItems.map((item) => [triageItemKey(item), item.linked_pull_requests || []]),
-  );
-  for (const item of allTriageItems(views)) {
-    if (triageItemHasLabel(item, "clawsweeper:linked-pr-open")) {
-      item.linked_pull_requests = linkedByKey.get(triageItemKey(item)) || [];
-    }
-  }
-}
-
-function triageItemKey(item) {
-  return `${item.repository}#${item.number}`;
-}
-
-function uniqueTriageItems(views) {
-  const seen = new Map();
-  for (const view of views) {
-    for (const item of view.items || []) {
-      const key = triageItemKey(item);
-      if (!seen.has(key) && triageItemHasLabel(item, "clawsweeper:linked-pr-open")) {
-        seen.set(key, item);
-      }
-    }
-  }
-  return [...seen.values()].sort(newestTriageCreatedFirst);
-}
-
-function triageItemHasLabel(item, labelName) {
-  return (item.labels || []).some(
-    (label) => String(label.name || "").toLowerCase() === labelName.toLowerCase(),
-  );
-}
-
-async function attachTriageLinkedPullRequestBatch(env, repo, items) {
-  const [owner, name] = repo.split("/");
-  if (!owner || !name || !items.length) return;
-  const aliases = items
-    .map(
-      (item, index) => `
-        issue${index}: issue(number: ${Number(item.number)}) {
-          timelineItems(first: 100, itemTypes: [CROSS_REFERENCED_EVENT, CONNECTED_EVENT]) {
-            nodes {
-              __typename
-              ... on CrossReferencedEvent {
-                willCloseTarget
-                source {
-                  __typename
-                  ... on PullRequest {
-                    number
-                    title
-                    url
-                    state
-                    repository { nameWithOwner }
-                  }
-                }
-              }
-              ... on ConnectedEvent {
-                subject {
-                  __typename
-                  ... on PullRequest {
-                    number
-                    title
-                    url
-                    state
-                    repository { nameWithOwner }
-                  }
-                }
-              }
-            }
-          }
-        }`,
-    )
-    .join("\n");
-  const data = await githubGraphql(
-    env,
-    `query TriageLinkedPullRequests($owner: String!, $name: String!) {
-      repository(owner: $owner, name: $name) {
-        ${aliases}
-      }
-    }`,
-    { owner, name },
-  );
-  const repository = data?.repository || {};
-  for (let index = 0; index < items.length; index += 1) {
-    items[index].linked_pull_requests = linkedPullRequestsFromTimeline(
-      repository[`issue${index}`]?.timelineItems?.nodes || [],
-    );
-  }
-}
-
-function linkedPullRequestsFromTimeline(nodes) {
-  const prs = new Map();
-  for (const node of nodes || []) {
-    const source =
-      node?.source?.__typename === "PullRequest"
-        ? node.source
-        : node?.subject?.__typename === "PullRequest"
-          ? node.subject
-          : null;
-    if (!source?.url || !source?.number) continue;
-    const repository = source.repository?.nameWithOwner || "";
-    const key = `${repository}#${source.number}`;
-    prs.set(key, {
-      repository,
-      number: source.number,
-      title: source.title || "",
-      url: source.url,
-      state: normalizePullRequestState(source.state),
-      will_close: Boolean(node.willCloseTarget),
-    });
-  }
-  return [...prs.values()].sort(compareLinkedPullRequests);
-}
-
-function compareLinkedPullRequests(left, right) {
-  const stateRank = { open: 0, merged: 1, closed: 2 };
-  const leftRank = stateRank[left.state] ?? 9;
-  const rightRank = stateRank[right.state] ?? 9;
-  if (leftRank !== rightRank) return leftRank - rightRank;
-  return Number(right.number || 0) - Number(left.number || 0);
-}
-
-function normalizePullRequestState(state) {
-  const text = String(state || "").toLowerCase();
-  if (text === "merged") return "merged";
-  if (text === "closed") return "closed";
-  if (text === "open") return "open";
-  return "unknown";
 }
 
 function emptyTriageRepoSnapshot(repo) {
@@ -8596,10 +8406,6 @@ function normalizeTriageIssue(repo, issue) {
       ? issue.assignees.map((assignee) => assignee.login).filter(Boolean)
       : [],
     labels,
-    routing_groups: triageRoutingGroupsForLabels(labels).map((group) => ({
-      id: group.id,
-      title: group.title,
-    })),
   };
 }
 

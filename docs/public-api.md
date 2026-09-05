@@ -56,13 +56,20 @@ The two triage APIs use schema version 2 and expose only a normalized
 view IDs, and static view descriptors with bounded `total_count` and
 `item_limit`. Every compatibility `items` array is empty. Their private
 in-memory GitHub collection may use repository, item, title, URL, query, author,
-assignee, label, linked-item, proof-state, and diagnostic data, but the public
+assignee, label, proof-state, and diagnostic data, but the public
 projector drops those fields before fresh or stale cache serialization. The
 projector runs again on cache reads, including raw legacy cache bodies. Invalid
 or uncertain input returns a fixed incomplete projection with null counts; raw
 diagnostic text is never returned. The unauthenticated triage pages therefore
 have no per-item lists, filters, chips, or links. Those capabilities require a
 separately authenticated operator surface, which does not currently exist.
+
+`/api/triage` derives view membership from labels and counts from GitHub Search
+`total_count`; it does not fetch linked-PR metadata or compute routing groups.
+GraphQL enrichment failures, missing enrichment auth, and enrichment truncation
+therefore do not make valid counts incomplete. Label/Search source failures and
+Search budget exhaustion still contribute to `error_count` and keep `complete`
+false. OpenClaw Bay does not consume this route and needs no corresponding change.
 
 `/api/exact-review-queue` retains closed recovery-reason counts for
 `claim_timeout`, `execution_timeout`, `workflow_cancelled`, and

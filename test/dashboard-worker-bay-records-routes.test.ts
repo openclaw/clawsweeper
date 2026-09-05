@@ -18,8 +18,6 @@ import {
   recentWorkerHealthRunSample,
   workerHealthSectionTimeoutMs,
   summarizeBayJourneyTimings,
-  TRIAGE_ROUTING_GROUPS,
-  triageRoutingGroupsForLabels,
   commandAcknowledgementState,
   ExactReviewLifecycleProjectionStore,
   ExactReviewLifecycleTelemetryStore,
@@ -5853,30 +5851,6 @@ test("Bay queue projection samples normal direct work across stages before hidde
   );
   assert.equal(status.bay_projection.items.filter((item) => item.legacy_batch_path).length, 0);
   assert.equal(status.bay_projection.items.filter((item) => item.stage === "publishing").length, 1);
-});
-
-test("triage routing groups classify impact labels without forcing one primary group", () => {
-  assert.deepEqual(
-    triageRoutingGroupsForLabels([
-      "impact:message-loss",
-      { name: "impact:security" },
-      "clawsweeper:queueable-fix",
-    ]).map((group) => group.id),
-    ["message-delivery", "security"],
-  );
-  assert.deepEqual(
-    triageRoutingGroupsForLabels(["impact:unknown"]).map((group) => group.id),
-    ["unclassified"],
-  );
-  assert.deepEqual(
-    triageRoutingGroupsForLabels(["impact:ux-release-blocker"]).map((group) => group.id),
-    ["user-experience"],
-  );
-  assert.deepEqual(
-    triageRoutingGroupsForLabels([{ name: "impact:ux-friction" }]).map((group) => group.id),
-    ["user-experience"],
-  );
-  assert.equal(TRIAGE_ROUTING_GROUPS.at(-1)?.id, "unclassified");
 });
 
 test("public triage pages expose aggregate counts without identity controls", async () => {

@@ -42,7 +42,6 @@ export const DASHBOARD_STRICT_BASELINE_FILES = Object.freeze([
   "dashboard/review-run-telemetry.ts",
   "dashboard/state-blobs.ts",
   "dashboard/state-writer-coordinator.ts",
-  "dashboard/triage-routing-groups.ts",
 ]);
 
 export function assertDashboardStrictBaseline(
