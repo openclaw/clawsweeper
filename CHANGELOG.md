@@ -19,6 +19,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Honor the configured Codex reasoning effort in sweep planning, event and shard reviews, assist answers, and close-coverage proofs instead of forcing high reasoning.
+
 - Publication reconciliation diagnostics now report the exact acknowledgement-unavailable reason while preserving fail-closed supersede behavior.
 
 - Admit the reviewed mocked marketplace telemetry-redaction and Gateway config CDP-redaction fixtures through exact URI, source-line, path, and decoder bindings without relaxing native scanner checks.

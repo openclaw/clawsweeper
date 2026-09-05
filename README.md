@@ -398,8 +398,9 @@ Review is proposal-only. It never closes items.
   dispatchers can use `shard_count` to bound parallel shards and `batch_size`
   to set the number of items assigned to each worker.
 - Each shard checks out the selected target repository at `main`.
-- Codex reviews with the internal model, high reasoning, the default service tier, and a
-  10-minute per-item timeout.
+- Codex reviews with the internal model and the configured service tier. Sweep planning,
+  reviews, assist answers, and close-coverage proofs honor `CLAWSWEEPER_CODEX_REASONING_EFFORT`
+  (default `high`), matching the repair lane. Reviews have a 10-minute per-item timeout.
 - Each item becomes a flat report under
   `records/<repo-slug>/items/<number>.md` with the decision, evidence,
   Codex `/review`-style PR findings, suggested comment, runtime metadata, and

@@ -242,6 +242,7 @@ env:
   CLAWSWEEPER_IDEA_REVIVAL_REACTIONS: ${{ vars.CLAWSWEEPER_IDEA_REVIVAL_REACTIONS || '5' }}
   CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
   CLAWSWEEPER_MODEL: internal
+  CLAWSWEEPER_CODEX_REASONING_EFFORT: ${{ vars.CLAWSWEEPER_CODEX_REASONING_EFFORT || 'high' }}
   CLAWSWEEPER_RUNNER: ${{ vars.CLAWSWEEPER_RUNNER || 'codex' }}
   CLAWSWEEPER_OPENCLAW_MODEL: ${{ secrets.CLAWSWEEPER_OPENCLAW_MODEL }}
   CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON: ${{ secrets.CLAWSWEEPER_OPENCLAW_PROVIDERS_JSON }}
@@ -1463,7 +1464,7 @@ jobs:
             --batch-size 1 \
             --max-pages 1 \
             --codex-model internal \
-            --codex-reasoning-effort high \
+            --codex-reasoning-effort "$CLAWSWEEPER_CODEX_REASONING_EFFORT" \
             --codex-sandbox read-only \
             --codex-timeout-ms "$codex_timeout_ms" \
             --item-numbers "${{ steps.target.outputs.item_number }}" \
@@ -4663,7 +4664,7 @@ jobs:
             --max-pages "$MAX_PAGES" \
             --shard-count "$SHARD_COUNT" \
             --codex-model internal \
-            --codex-reasoning-effort high \
+            --codex-reasoning-effort "$CLAWSWEEPER_CODEX_REASONING_EFFORT" \
             --codex-sandbox read-only \
             --min-active-shards "$MIN_ACTIVE_SHARDS" \
             --min-backfill-review-age-minutes "$MIN_BACKFILL_REVIEW_AGE_MINUTES" \
@@ -4954,7 +4955,7 @@ jobs:
             --batch-size ${{ needs.plan.outputs.batch_size }} \
             --max-pages ${{ needs.plan.outputs.max_pages }} \
             --codex-model internal \
-            --codex-reasoning-effort high \
+            --codex-reasoning-effort "$CLAWSWEEPER_CODEX_REASONING_EFFORT" \
             --codex-sandbox read-only \
             --codex-timeout-ms ${{ needs.plan.outputs.codex_timeout_ms }} \
             --item-numbers "${{ matrix.item_numbers }}" \
@@ -6313,7 +6314,7 @@ jobs:
             --close-delay-ms 0 \
             --max-runtime-ms 2700000 \
             --codex-model internal \
-            --codex-reasoning-effort high \
+            --codex-reasoning-effort "$CLAWSWEEPER_CODEX_REASONING_EFFORT" \
             --artifact-dir .artifacts/apply-proof \
             --report-path .artifacts/apply-proof/apply-report.json \
             --progress-every 1

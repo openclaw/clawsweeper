@@ -236,7 +236,7 @@ jobs:
           COMMENT_URL: ${{ github.event.client_payload.comment_url || inputs.comment_url || '' }}
           AUTHOR: ${{ github.event.client_payload.author || inputs.author || '' }}
           MODEL: internal
-          REASONING_EFFORT: high
+          REASONING_EFFORT: ${{ vars.CLAWSWEEPER_CODEX_REASONING_EFFORT || 'high' }}
           TIMEOUT_MS: ${{ github.event.client_payload.assist.timeout_ms || github.event.client_payload.timeout_ms || '120000' }}
         run: |
           set -euo pipefail
@@ -317,7 +317,7 @@ jobs:
           COMMENT_ID: ${{ github.event.client_payload.comment_id || inputs.comment_id || '' }}
           COMMENT_URL: ${{ github.event.client_payload.comment_url || inputs.comment_url || '' }}
           AUTHOR: ${{ github.event.client_payload.author || inputs.author || '' }}
-          REASONING_EFFORT: high
+          REASONING_EFFORT: ${{ vars.CLAWSWEEPER_CODEX_REASONING_EFFORT || 'high' }}
           GENERATION_ATTEMPT: ${{ needs.assist.outputs.generation_attempt }}
         run: |
           set -euo pipefail
@@ -357,7 +357,7 @@ jobs:
           COMMENT_ID: ${{ github.event.client_payload.comment_id || inputs.comment_id || '' }}
           COMMENT_URL: ${{ github.event.client_payload.comment_url || inputs.comment_url || '' }}
           AUTHOR: ${{ github.event.client_payload.author || inputs.author || '' }}
-          REASONING_EFFORT: high
+          REASONING_EFFORT: ${{ vars.CLAWSWEEPER_CODEX_REASONING_EFFORT || 'high' }}
           GENERATION_ATTEMPT: ${{ needs.assist.outputs.generation_attempt }}
         run: |
           set -euo pipefail

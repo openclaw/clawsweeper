@@ -51,6 +51,37 @@ function runCommentSyncShell(root: string, commands: string[]): string {
   );
 }
 
+test("sweep commands honor configured reasoning effort with the shared high default", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const commands = Object.values(workflow.jobs).flatMap((job: any) =>
+    (job.steps ?? []).flatMap((step: any) =>
+      (step.run ?? "")
+        .split("\n")
+        .filter((line: string) => line.includes("--codex-reasoning-effort")),
+    ),
+  );
+  assert.equal(commands.length, 4);
+  assert.equal(
+    workflow.env.CLAWSWEEPER_CODEX_REASONING_EFFORT,
+    "${{ vars.CLAWSWEEPER_CODEX_REASONING_EFFORT || 'high' }}",
+  );
+  for (const effort of ["medium", "high"]) {
+    for (const command of commands) {
+      const argv = execFileSync(
+        "bash",
+        ["-c", `printf '%s\\n' ${command.trim().replace(/\\$/, "")}`],
+        {
+          encoding: "utf8",
+          env: { ...process.env, CLAWSWEEPER_CODEX_REASONING_EFFORT: effort },
+        },
+      )
+        .trim()
+        .split("\n");
+      assert.deepEqual(argv, ["--codex-reasoning-effort", effort]);
+    }
+  }
+});
+
 test("queued publication expires only its posted review lease after successful handoff", () => {
   const steps = YAML.parse(readText(".github/workflows/sweep.yml")).jobs["event-review-apply"]
     .steps;
@@ -2687,7 +2718,7 @@ test("apply workflow isolates proof Codex and keeps mutation free of Git recover
   assert.match(proofJob, /uses: \.\/\.github\/actions\/setup-codex/);
   assert.match(proofJob, /--dry-run/);
   assert.match(proofJob, /--codex-model internal/);
-  assert.match(proofJob, /--codex-reasoning-effort high/);
+  assert.match(proofJob, /--codex-reasoning-effort/);
   assert.match(proofJob, /write_coverage_proof_manifest/);
   assert.match(proofJob, /pr-close-coverage-proof\/\*/);
   assert.match(proofJob, /artifact_name: \$\{\{ steps\.proof-artifact\.outputs\.name \}\}/);
