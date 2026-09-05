@@ -1988,6 +1988,7 @@ const PUBLIC_STATUS_COUNT_FIELDS = new Set([
   "admissible_pending",
   "scheduled_interval_minutes",
   "target_rate_per_hour",
+  "max_concurrent",
   "terminal_count",
   "total_count",
   "total_duration_ms",
@@ -5576,6 +5577,8 @@ export function publicExactReviewQueueProjection(
   );
   const scheduledEnqueueReplay =
     scheduledFeed.enqueue_replay === "scheduled_disposition_v1" ? "scheduled_disposition_v1" : null;
+  const scheduledMaxConcurrent = publicQueueCount(scheduledFeed.max_concurrent);
+  const scheduledActive = publicQueueCount(scheduledFeed.active);
   const requiredCounts = [
     source.pending,
     source.ready_pending,
@@ -5680,6 +5683,8 @@ export function publicExactReviewQueueProjection(
         ? {
             target_rate_per_hour: scheduledTargetRate,
             enqueue_replay: scheduledEnqueueReplay,
+            ...(scheduledMaxConcurrent !== null ? { max_concurrent: scheduledMaxConcurrent } : {}),
+            ...(scheduledActive !== null ? { active: scheduledActive } : {}),
           }
         : null,
     lanes: {
@@ -7405,7 +7410,7 @@ async function statusSnapshot(env) {
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
-  const budget = numberFrom(env.WORKER_BUDGET, 128);
+  const budget = numberFrom(env.WORKER_BUDGET, 32);
   const activeRunErrors = [];
   const workflowReadModel = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET)
     ? await githubWebhookReadModelQueuePost(env, "workflows", {

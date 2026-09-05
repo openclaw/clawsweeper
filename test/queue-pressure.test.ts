@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { AUTOMATION_LIMITS, workerLimit, type WorkerLane } from "../dist/limits.js";
+import { workerLimit, type WorkerLane } from "../dist/limits.js";
 import {
   QUEUE_PRESSURE_HARD_AGE_MS,
   QUEUE_PRESSURE_HARD_PENDING,
@@ -218,18 +218,18 @@ test("worker limits scale every background lane and leave priority lanes unchang
     assert.equal(workerLimit(lane, { pressureLevel: "hard" }), workerLimit(lane));
     assert.equal(workerLimit(lane, { pressureLevel: "unknown" }), workerLimit(lane));
   }
-  assert.equal(workerLimit("normal_review"), AUTOMATION_LIMITS.review_shards.normal_default);
+  assert.equal(workerLimit("normal_review"), 8);
 });
 
-test("a publication-critical unavailable probe cannot admit the normal 89-shard background burst", () => {
+test("an unavailable probe reduces the eight-slot background allowance", () => {
   const normal = workerLimit("normal_review", { pressureLevel: "none" });
   const conservative = workerLimit("normal_review", { pressureLevel: "unknown" });
 
-  assert.equal(normal, AUTOMATION_LIMITS.review_shards.normal_default);
+  assert.equal(normal, 8);
   assert.equal(conservative, workerLimit("normal_review", { pressureLevel: "hard" }));
   assert.ok(conservative >= 1);
   assert.ok(conservative < normal);
-  assert.notEqual(conservative, 89);
+  assert.equal(conservative, 1);
   assert.equal(workerLimit("exact_item", { pressureLevel: "unknown" }), 1);
 });
 

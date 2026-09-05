@@ -10238,7 +10238,7 @@ test("exact-review publication capacity backs off on GitHub pressure and recover
       deliveries: {},
       items: { [rateLimited.key]: rateLimited },
     });
-    const queue = new ExactReviewQueue({ storage }, {});
+    const queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "128" });
     const complete = (
       item: ReturnType<typeof leasedExactReviewPublicationItem>,
       outcome: "success" | "failure",
@@ -10336,7 +10336,7 @@ test("exact-review publication retries a state fetch timeout without throttling 
   const storage = new MemoryDurableStorage();
   const item = leasedExactReviewPublicationItem(7801, "78010");
   await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
-  const queue = new ExactReviewQueue({ storage }, {});
+  const queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "128" });
 
   const response = await queue.fetch(
     new Request("https://clawsweeper-exact-review-queue/complete", {
@@ -10426,7 +10426,7 @@ test("exact-review publication gives state contention the transient retry budget
   item.publicationFailureAttempts = 4;
   item.firstFailureAt = Date.now() - 30 * 60_000;
   await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
-  const queue = new ExactReviewQueue({ storage }, {});
+  const queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "128" });
 
   const response = await queue.fetch(
     new Request("https://clawsweeper-exact-review-queue/complete", {
@@ -10497,7 +10497,7 @@ test("exact-review publication defers an active review lease without throttling 
   const item = leasedExactReviewPublicationItem(7802, "78020");
   const retryAt = Date.now() + 12 * 60_000;
   await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
-  const queue = new ExactReviewQueue({ storage }, {});
+  const queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "128" });
 
   const response = await queue.fetch(
     new Request("https://clawsweeper-exact-review-queue/complete", {

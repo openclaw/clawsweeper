@@ -2014,7 +2014,7 @@ const STATUS_NUMBER_FIELDS = new Set([
   "failure_rate_percent", "generated_count", "longest_duration_ms", "maximum_age_ms", "median_ms",
   "oldest_age_seconds", "oldest_dispatching_age_seconds", "oldest_leased_age_seconds",
   "oldest_pending_age_seconds", "omitted_count", "ready_pending", "admissible_pending",
-  "scheduled_interval_minutes", "target_rate_per_hour", "terminal_count", "total_count", "total_duration_ms", "ttl_seconds",
+  "scheduled_interval_minutes", "target_rate_per_hour", "max_concurrent", "terminal_count", "total_count", "total_duration_ms", "ttl_seconds",
   "setting-up", "ready", "backoff", "parked", "oldest_ready_age_seconds",
   "oldest_backoff_age_seconds", "oldest_lease_age_seconds", "enqueued_total", "completed_total",
   "published_total", "superseded_total", "semantic_deduped_total", "retried_total",

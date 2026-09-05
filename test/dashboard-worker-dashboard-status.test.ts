@@ -4619,7 +4619,7 @@ test("dashboard counts active runs that are older than the latest unfiltered pag
     assert.equal(status.fleet.queued_workflow_runs, 1);
     assert.equal(status.fleet.support_workflow_runs, 3);
     assert.equal(status.fleet.support_queued_workflow_runs, 1);
-    assert.equal(status.fleet.worker_budget, 128);
+    assert.equal(status.fleet.worker_budget, 32);
     assert.equal(status.pipeline.length, 3);
     assert.ok(status.pipeline.every((row: { id?: number }) => row.id === undefined));
   } finally {

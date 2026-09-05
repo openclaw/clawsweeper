@@ -6,7 +6,7 @@ import {
   exactReviewQueueUsesLegacyBatchPath,
   isLowPriorityExactReviewDecision,
 } from "./exact-review-decision.ts";
-import { numberFrom } from "./exact-review-queue-shared.ts";
+import { exactReviewScheduledLane, numberFrom } from "./exact-review-queue-shared.ts";
 import type {
   ExactReviewDispatchFailureDetail,
   ExactReviewGithubCredentialCircuit,
@@ -15,7 +15,7 @@ import type {
   ExactReviewReviewRecoveryReason,
 } from "./exact-review-queue.ts";
 
-const DEFAULT_EXACT_REVIEW_QUEUE_MAX_CONCURRENT = 128;
+const DEFAULT_EXACT_REVIEW_QUEUE_MAX_CONCURRENT = 32;
 export const DEFAULT_EXACT_REVIEW_DISPATCH_LEASE_MS = 6 * 60 * 1000;
 export const DEFAULT_EXACT_REVIEW_PUBLICATION_DISPATCH_LEASE_MS = 15 * 60 * 1000;
 export const DEFAULT_EXACT_REVIEW_EXECUTION_LEASE_MS = 130 * 60 * 1000;
@@ -229,8 +229,10 @@ type ExactReviewQueueCensus = {
   publication: ExactReviewQueueLaneCensus;
   all: ExactReviewQueueLaneCensus;
   activeReviews: number;
+  activeScheduledReviews: number;
   activePublishers: number;
   activeReviewWakeAt: number[];
+  activeScheduledReviewWakeAt: number[];
   activePublisherWakeAt: number[];
   activeTargetCounts: Map<string, number>;
   activeTargetWakeAt: Map<string, number>;
@@ -452,8 +454,10 @@ function buildExactReviewQueueCensus(
     publication,
     all,
     activeReviews: 0,
+    activeScheduledReviews: 0,
     activePublishers: 0,
     activeReviewWakeAt: [],
+    activeScheduledReviewWakeAt: [],
     activePublisherWakeAt: [],
     activeTargetCounts: new Map(),
     activeTargetWakeAt: new Map(),
@@ -568,6 +572,14 @@ function buildExactReviewQueueCensus(
       } else {
         census.activeReviews += 1;
         if (leaseExpiresAt && leaseExpiresAt > now) census.activeReviewWakeAt.push(leaseExpiresAt);
+        // A superseding request does not change the running lease's budget owner.
+        const ownerDecision = item.leaseDecision ?? decision;
+        if (ownerDecision && exactReviewScheduledLane(ownerDecision)) {
+          census.activeScheduledReviews += 1;
+          if (leaseExpiresAt && leaseExpiresAt > now) {
+            census.activeScheduledReviewWakeAt.push(leaseExpiresAt);
+          }
+        }
         if (targetRepo !== null) {
           const targetCount = census.activeTargetCounts.get(targetRepo) || 0;
           census.activeTargetCounts.set(targetRepo, targetCount + 1);
@@ -902,6 +914,7 @@ export function exactReviewQueueAdmittedItems(
   uniquePublicationItems = false,
   freshPublicationItemKeys: ReadonlySet<string> = new Set(),
   freshPublicationReserve = 0,
+  scheduledCapacity = Number.POSITIVE_INFINITY,
 ) {
   const dispatcherRetryAt = Number(state.dispatcher?.retryAt || 0);
   if (
@@ -926,6 +939,7 @@ export function exactReviewQueueAdmittedItems(
     uniquePublicationItems,
     freshPublicationItemKeys,
     freshPublicationReserve,
+    scheduledCapacity,
   );
 }
 
@@ -939,6 +953,7 @@ function exactReviewQueueAdmittedItemsFromCensus(
   uniquePublicationItems: boolean,
   freshPublicationItemKeys: ReadonlySet<string>,
   freshPublicationReserve: number,
+  scheduledCapacity: number,
 ) {
   if (census.dispatcherAdmissionPaused) return [];
   const reviewSlots = Math.max(0, capacity - census.activeReviews);
@@ -950,13 +965,17 @@ function exactReviewQueueAdmittedItemsFromCensus(
     freshPublicationReserve,
   );
   const admittedReviews: ExactReviewQueueItem[] = [];
+  let activeScheduledReviews = census.activeScheduledReviews;
   for (const item of census.readyReviews) {
     if (admittedReviews.length >= reviewSlots) break;
+    const scheduled = exactReviewScheduledLane(item.decision) !== null;
+    if (scheduled && activeScheduledReviews >= scheduledCapacity) continue;
     const target = item.decision.targetRepo;
     if (exactReviewTargetAppRetryAt(census, target) > now) continue;
     const active = activeTargets.get(target) || 0;
     if (active >= targetCapacity) continue;
     activeTargets.set(target, active + 1);
+    if (scheduled) activeScheduledReviews += 1;
     admittedReviews.push(item);
   }
 
@@ -1022,6 +1041,7 @@ export function exactReviewQueueStats(
   heartbeatGraceMs = DEFAULT_EXACT_REVIEW_HEARTBEAT_GRACE_MS,
   excludedItemKeys: ReadonlySet<string> = new Set(),
   publicationBlockedUntil: number | null = null,
+  scheduledCapacity = Number.POSITIVE_INFINITY,
 ) {
   const items = Object.values(state.items);
   const census = buildExactReviewQueueCensus(items, {
@@ -1072,6 +1092,7 @@ export function exactReviewQueueStats(
     Number(state.dispatcher?.reviewAdmissionNextAt || 0) > now
       ? Number(state.dispatcher?.reviewAdmissionNextAt)
       : null,
+    scheduledCapacity,
   );
   const lanes = {
     review: exactReviewQueueLaneStatsFromCensus(
@@ -1097,6 +1118,7 @@ export function exactReviewQueueStats(
     false,
     new Set(),
     0,
+    scheduledCapacity,
   );
   let reviewAdmissiblePending = 0;
   for (const item of admissibleItems) {
@@ -1114,6 +1136,14 @@ export function exactReviewQueueStats(
   });
   const stats = {
     generated_at: handoffHealth.observed_at,
+    ...(Number.isFinite(scheduledCapacity)
+      ? {
+          scheduled_feed: {
+            max_concurrent: scheduledCapacity,
+            active: census.activeScheduledReviews,
+          },
+        }
+      : {}),
     pending: lanes.review.pending,
     ready_pending: lanes.review.ready,
     admissible_pending: reviewAdmissiblePending,
@@ -1287,6 +1317,7 @@ export function exactReviewQueueNextWakeAt(
   excludedItemKeys: ReadonlySet<string> = new Set(),
   publicationBlockedUntil: number | null = null,
   reviewAdmissionBlockedUntil: number | null = null,
+  scheduledCapacity = Number.POSITIVE_INFINITY,
 ) {
   const items = Object.values(state.items);
   const census = buildExactReviewQueueCensus(items, {
@@ -1306,6 +1337,7 @@ export function exactReviewQueueNextWakeAt(
     publicationCapacity,
     publicationBlockedUntil,
     reviewAdmissionBlockedUntil,
+    scheduledCapacity,
   );
 }
 
@@ -1318,6 +1350,7 @@ function exactReviewQueueNextWakeAtFromCensus(
   publicationCapacity: number,
   publicationBlockedUntil: number | null,
   reviewAdmissionBlockedUntil: number | null,
+  scheduledCapacity: number,
 ) {
   if (!census.items.length) return null;
   const dispatcherRetryAt = Number(state.dispatcher?.retryAt || 0);
@@ -1358,6 +1391,11 @@ function exactReviewQueueNextWakeAtFromCensus(
       census.activeReviews >= capacity && census.activeReviewWakeAt.length
         ? Math.min(...census.activeReviewWakeAt)
         : null;
+    const scheduledCapacityWakeAt =
+      census.activeScheduledReviews >= scheduledCapacity &&
+      census.activeScheduledReviewWakeAt.length
+        ? Math.min(...census.activeScheduledReviewWakeAt)
+        : null;
     for (const item of census.pendingReviews) {
       const target = item.decision.targetRepo;
       const targetCapacityWakeAt =
@@ -1377,6 +1415,9 @@ function exactReviewQueueNextWakeAtFromCensus(
           reviewAdmissionBlockedUntil ?? item.nextAttemptAt,
           exactReviewTargetAppRetryAt(census, target),
           capacityWakeAt ?? item.nextAttemptAt,
+          exactReviewScheduledLane(item.decision) !== null
+            ? (scheduledCapacityWakeAt ?? item.nextAttemptAt)
+            : item.nextAttemptAt,
         ),
       );
     }

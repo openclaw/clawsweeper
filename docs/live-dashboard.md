@@ -204,8 +204,8 @@ twenty-way fanout and caches error/recovery telemetry for 120 seconds. That leav
 enough distinct completed-item evidence to drive a 20-outcome tide despite
 repeated targets or excluded runs while still bounding telemetry pressure.
 This bounds
-telemetry pressure without exceeding the 128-worker fleet budget. Worker details
-paginate up to 300 jobs per workflow run so 89-shard runs contribute to a
+telemetry pressure without changing the 32-worker fleet budget. Worker details
+paginate up to 300 jobs per workflow run so retained large matrix runs contribute to a
 complete internal census. Titles, job names, raw URLs, opaque target keys, and
 raw errors are removed before the status snapshot is persisted or returned.
 Only the allowlisted canonical repository/item reference tuple and a validated
@@ -362,7 +362,7 @@ Do not move these into the dashboard:
 
 The dashboard Worker owns durable exact-review admission only: it deduplicates
 webhook deliveries, coalesces each repository/item pair, and leases at most
-128 Actions executors, with up to 120 active leases per target repository. It does
+32 Actions executors, with up to 24 active leases per target repository. It does
 not decide review outcomes or perform target repository mutations. For
 command-triggered reviews, the queue retains the bounded review prompt and
 command-status identifiers so the leased GitHub Actions executor can update the
@@ -512,7 +512,7 @@ required count or health value returns an unknown projection with HTTP 503
 instead of a plausible empty queue.
 
 Production overrides publication minimum, base, and maximum capacity to 8, 32,
-and 40, while source fallback values are 4, 24, and 48. The controller records
+and 32, while source fallback values are 4, 24, and 48. The controller records
 failure, cooldown, recovery, and demand telemetry and scales within the
 production range. The private publication state also tracks `batches`, `direct`,
 and adaptive capacity control: production enables up to 8 concurrent size-8

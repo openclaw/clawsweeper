@@ -452,7 +452,7 @@ enqueues a separate durable publication lease, and then releases its review
 lease without checking out or pushing the state repository. The queue retries
 publication independently, so a cancelled publisher does not rerun Codex. The
 source fallback uses adaptive minimum/base/maximum values of 4/24/48; production
-overrides them with 8/32/40 and enables direct
+overrides them with 8/32/32 and enables direct
 publication plus up to 8 concurrent size-8 batches. The Durable Object validates
 each artifact's workflow run, queue tuple,
 target, decision digest, file inventory, sizes, and SHA-256 hashes before a
@@ -734,7 +734,7 @@ source ~/.profile
 corepack enable
 pnpm install
 pnpm run build
-pnpm run plan -- --target-repo openclaw/openclaw --batch-size 5 --shard-count 89 --max-pages 250 --codex-model internal --codex-reasoning-effort high
+pnpm run plan -- --target-repo openclaw/openclaw --batch-size 5 --shard-count 22 --max-pages 250 --codex-model internal --codex-reasoning-effort high
 pnpm run review -- --target-repo openclaw/openclaw --target-dir ../openclaw --batch-size 5 --max-pages 250 --artifact-dir artifacts/reviews --codex-model internal --codex-reasoning-effort high --codex-timeout-ms 600000
 pnpm run apply-artifacts -- --target-repo openclaw/openclaw --artifact-dir artifacts/reviews --skip-dashboard
 pnpm run audit -- --target-repo openclaw/openclaw --max-pages 250 --sample-limit 25 --update-dashboard
@@ -852,13 +852,13 @@ default, subject to the selected repository profile; pass `target_repo`,
 `apply_kind=issue`, or `apply_kind=pull_request` to narrow a manual run.
 
 Scheduled runs cover the configured product profiles. `openclaw/openclaw` runs
-normal backfill every 5 minutes with up to 89 review shards when the system is
-quiet; `openclaw/clawhub` runs on offset review/apply/audit crons so its reports
+normal backfill hourly; scheduled hot intake and normal backfill share an
+eight-worker cap in the durable review queue. `openclaw/clawhub` runs on offset review/apply/audit crons so its reports
 live under `records/openclaw-clawhub/` without colliding with default repo
 records. `openclaw/clawsweeper` has a scheduled read-only audit row and is
 available for manual and event self-review smoke tests. Broad hot-intake sweeps
-cap scheduled fan-out at 44 one-item shards per run when quiet; manual normal
-backfill can use up to 89 shards, while exact event reviews still use one shard.
+use the queue's scheduled admission budget; manual background matrices have at
+most eight slots when quiet, while exact event reviews still use one shard.
 Normal review and hot intake are
 background lanes, so they shrink automatically while repair or exact-item work
 is active. Throughput defaults live in
@@ -867,23 +867,25 @@ is active. Throughput defaults live in
 ### Worker Budget
 
 ClawSweeper has one main capacity knob:
-`config/automation-limits.json` -> `workers.max`. The current value is `128`.
+`config/automation-limits.json` -> `workers.max`. The current value is `32`.
 This is a Codex worker budget, not a GitHub Actions runner limit. Deterministic
 exact-review publishers, comment routers, and lease reconcilers are
-control-plane workflows and do not consume these 128 slots.
-Lane limits are derived from that number: normal review defaults to 89 shards
-for manual/backstop and scheduled runs, hot intake up to 44 shards, and
+control-plane workflows and do not consume these 32 slots.
+Lane limits are derived from that number: manual normal review defaults to 22
+requested shards and hot intake to 11; the interactive and expansion reserves
+reduce both to at most eight slots when quiet. Scheduled work has a separate
+eight-slot admission cap and a 60-review/hour target with a six-item burst. The
 existing repair/issue implementation lanes use 40% of `workers.max`, currently
-51 live workers. Imported gitcrawl cluster repair allows 2 live workers by default.
+12 live workers. Imported gitcrawl cluster repair allows 2 live workers by default.
 Exact-item review, repair, and issue implementation are priority work; normal
 review and hot intake are background work and automatically
 yield when priority work is active. Exact-item runs use a durable Worker queue
-that coalesces item deliveries, leases at most 128 concurrent reviews, and admits
-up to 120 active exact reviews per target repository. Other lanes retain the
-checked-in 128-worker scheduling model. A separate 194-slot exact-review
-Actions budget supports the production maximum of 40 publisher slots, the
-enforced 16-slot control-plane reserve, and 10 additional slots of current
-configuration headroom even when all 128 review leases are active.
+that coalesces item deliveries, leases at most 32 concurrent reviews, and admits
+up to 24 active exact reviews per target repository. Other lanes retain the
+checked-in 32-worker scheduling model. A separate 194-slot exact-review
+Actions budget supports the production maximum of 32 legacy publisher slots, the
+enforced 16-slot control-plane reserve, and additional Actions headroom without
+raising the Codex review ceiling.
 Use `workers.max` first when turning total Codex usage up or down; use
 `lanes.repair.cluster_max_live_runs` to tune the imported legacy cluster-repair
 lane separately, and individual environment overrides only for temporary

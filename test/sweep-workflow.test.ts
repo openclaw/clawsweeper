@@ -6029,7 +6029,7 @@ test("audit target fanout waits in bounded waves without changing cadence or sel
   assert.match(source, /result.status === "completed"/);
 });
 
-test("hot fleet fanout runs every 20 minutes without changing other schedules", () => {
+test("hot fleet fanout stays at twenty minutes while normal backfill is hourly", () => {
   const workflowText = readText(".github/workflows/sweep.yml");
   const workflow = YAML.parse(workflowText) as {
     on: { schedule: Array<{ cron: string }> };
@@ -6044,16 +6044,19 @@ test("hot fleet fanout runs every 20 minutes without changing other schedules", 
   assert.ok(!schedules.includes("4/5 * * * *"));
   assert.ok(schedules.includes("*/5 * * * *"));
   assert.ok(schedules.includes("2/5 * * * *"));
-  assert.ok(schedules.includes("41/10 * * * *"));
+  assert.ok(schedules.includes("41 * * * *"));
+  assert.ok(schedules.includes("1 * * * *"));
+  assert.ok(!schedules.includes("1/5 * * * *"));
+  assert.ok(!schedules.includes("41/10 * * * *"));
   assert.ok(schedules.includes("37 */6 * * *"));
   assert.match(fanoutBlock, /github\.event\.schedule == '4\/20 \* \* \* \*'/);
   assert.match(
     fanoutBlock,
-    /FANOUT_MODE: \$\{\{ github\.event\.schedule == '41\/10 \* \* \* \*' && 'normal-review' \|\| \(github\.event\.schedule == '37 \*\/6 \* \* \*' && 'audit' \|\| 'hot-intake'\) \}\}/,
+    /FANOUT_MODE: \$\{\{ github\.event\.schedule == '41 \* \* \* \*' && 'normal-review' \|\| \(github\.event\.schedule == '37 \*\/6 \* \* \*' && 'audit' \|\| 'hot-intake'\) \}\}/,
   );
   assert.match(
     fanoutBlock,
-    /FANOUT_LIMIT: \$\{\{ github\.event\.schedule == '41\/10 \* \* \* \*' && '12' \|\| \(github\.event\.schedule == '37 \*\/6 \* \* \*' && '12' \|\| '20'\) \}\}/,
+    /FANOUT_LIMIT: \$\{\{ github\.event\.schedule == '41 \* \* \* \*' && '12' \|\| \(github\.event\.schedule == '37 \*\/6 \* \* \*' && '12' \|\| '20'\) \}\}/,
   );
 });
 
@@ -6699,7 +6702,7 @@ test("sweep issue and PR event reviews and target fanout avoid storm amplificati
   assert.match(legacyIntakeBlock, /additionalPrompt: payload\.additional_prompt/);
   assert.match(
     fanoutBlock,
-    /FANOUT_LIMIT: \$\{\{ github\.event\.schedule == '41\/10 \* \* \* \*' && '12' \|\| \(github\.event\.schedule == '37 \*\/6 \* \* \*' && '12' \|\| '20'\) \}\}/,
+    /FANOUT_LIMIT: \$\{\{ github\.event\.schedule == '41 \* \* \* \*' && '12' \|\| \(github\.event\.schedule == '37 \*\/6 \* \* \*' && '12' \|\| '20'\) \}\}/,
   );
   assert.match(fanoutBlock, /Summarize trailing weekly review coverage/);
   assert.match(fanoutBlock, /--cursor-store-url "\$REVIEW_COVERAGE_URL"/);

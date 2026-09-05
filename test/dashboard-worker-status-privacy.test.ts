@@ -1324,6 +1324,8 @@ test("public queue projection retains only closed operational aggregates", () =>
     },
     scheduled_feed: {
       target_rate_per_hour: 300,
+      max_concurrent: 8,
+      active: 3,
       enqueue_replay: "scheduled_disposition_v1",
       burst: 50,
       token_balance: 42,
@@ -1474,6 +1476,8 @@ test("public queue projection retains only closed operational aggregates", () =>
   });
   assert.deepEqual(projected.scheduled_feed, {
     target_rate_per_hour: 300,
+    max_concurrent: 8,
+    active: 3,
     enqueue_replay: "scheduled_disposition_v1",
   });
   assert.deepEqual(projected.bay_projection.activity, {
@@ -1527,6 +1531,8 @@ test("public queue projection retains only closed operational aggregates", () =>
   );
   assert.deepEqual(statusProjected.exact_review_queue.scheduled_feed, {
     target_rate_per_hour: 300,
+    max_concurrent: 8,
+    active: 3,
     enqueue_replay: "scheduled_disposition_v1",
   });
   assert.deepEqual(statusProjected.exact_review_queue.handoff_health.phases, {

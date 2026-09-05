@@ -30,13 +30,13 @@ ClawSweeper has three issue/PR scheduler paths:
 
 The lanes share report storage and apply rules, but they intentionally do not
 share throughput. Event review and hot intake keep new maintainer-visible work
-fast. Scheduled and manual normal backfill keep up to 89 concurrent Codex
-review shards when quiet.
-Normal `openclaw/openclaw` review has an
-active floor of 38 shards for scheduled runs and workflow-dispatch
-continuations: due items win first, and if fewer than 38 items are due, the
-planner fills the floor with the stalest currently-reviewed eligible items so
-review capacity stays warm around the clock.
+fast. Manual normal backfill has a configured ceiling of 22 concurrent Codex
+review shards; reservations reduce its effective quiet allowance to eight.
+Scheduled hot intake and normal backfill share an eight-slot queue cap.
+Manual normal review has an active floor of nine requested shards: due items
+win first, and if fewer than 9 items are due, the planner can fill from older
+eligible reviews. The smaller worker allowance always wins. Scheduled planning
+does not use this floor.
 
 Scheduled reviews can reuse exact unchanged inputs through structural or
 content caches. Changed PR content goes to Codex, including source comments
@@ -181,7 +181,8 @@ retry it. This applies to comment-only sync and close-mode apply. Folder
 reconciliation also defers before mutation when its open-item scan is
 rate-limited; ordinary non-rate-limit failures remain fatal.
 The source fallback publication minimum, base, and maximum are 4, 24, and 48,
-but production overrides them to 8, 32, and 40. The adaptive controller
+but production overrides them to 8, 32, and 32, matching the review ceiling that
+also bounds legacy publication. The adaptive controller
 classifies GitHub pressure:
 a 403/429 or
 explicit rate-limit failure records a 15-minute cooldown, while GitHub 5xx
@@ -230,7 +231,7 @@ cleanup is idempotent and cannot duplicate accounting.
 `openclaw/openclaw`:
 
 - hot intake: `*/5 * * * *`
-- normal backfill: `1/5 * * * *`
+- normal backfill: `1 * * * *`
 - apply: `3,18,33,48 * * * *`
 - audit: `7 */6 * * *`
 
@@ -292,7 +293,7 @@ manual workflow inputs. Scheduled fanout uses:
   intentionally moved this selector from every 15 minutes to every 5 minutes;
   this containment adjusts that current cadence without attributing the
   self-feedback defect to PR #959.
-- normal review: `41/10 * * * *`, 12 target repositories per cursor step
+- normal review: `41 * * * *`, 12 target repositories per cursor step
 - audit: `37 */6 * * *`, 12 target repositories per cursor step
 
 Audit fanout keeps at most 3 target audits in flight using
@@ -496,21 +497,22 @@ Current defaults:
   candidates per selected target and apportions that pool by backlog. Each
   selected item enters the durable exact-review queue, and every admitted item
   receives its own parallel workflow
-- total review admission target: 300 items/hour across the fleet; organic work
+- total review admission target: 60 items/hour across the fleet; organic work
   consumes the budget first and scheduled backfill fills the remainder, split
-  35% hot intake and 65% normal backfill, with a 30-item burst
+  35% hot intake and 65% normal backfill, with a 6-item burst and at most eight
+  scheduled reviews dispatching or leased across both lanes
 - review admission and pressure are computed independently from publication;
   top-level queue health describes reviews while `lanes.publication` retains
   publication backlog, retry, DLQ, and health telemetry
 - fleet fanout: 20 hot targets every 20 minutes as temporary self-feedback
-  containment, and 12 normal targets every 10 minutes;
+  containment, and 12 normal targets hourly;
   each target cycle can offer up to 50 due items to the shared admission budget
-- manual broad hot intake: up to 44 shards when quiet
-- manual normal backfill: defaults to 89 shards, batch size 3, and scans up to
+- manual broad hot intake: configured ceiling of 11 shards, at most eight when quiet
+- manual normal backfill: defaults to 22 requested shards, at most eight when quiet, batch size 3, and scans up to
   250 GitHub pages unless overridden
 
-The hard planner cap is 128 shards. The workflow clamps invalid or larger
-`shard_count` inputs to 128.
+The hard planner cap is 32 shards. The workflow clamps invalid or larger
+`shard_count` inputs to 32.
 
 Broad background review clamps manual `shard_count` input to the current
 lane allowance from `worker-limit`. Pending or planning background sweeps reserve
@@ -538,12 +540,12 @@ shards can fetch current GitHub item state and write review artifacts without
 hydrating historical records. Publish and apply jobs keep full state history
 because they may rebase and push generated records.
 
-Normal backfill runs every 5 minutes for `openclaw/openclaw`. Its planner
+Normal backfill runs hourly for `openclaw/openclaw`. Its planner
 serializes per target repository, selects globally before sharding, and offers
 never-reviewed candidates before the oldest due tracked candidates to the
 durable queue. Queue admission is fleet-wide,
 so overlapping core and fanout cycles fill only the residual of the configured
-300/hour model-spend target after organic review demand.
+60/hour admission target after organic review demand.
 
 The manual quiet-system ceiling is not a promise that every operator run dispatches
 that many shards. The `mode` step checks active repair workers, exact-item sweep
@@ -561,10 +563,10 @@ live Codex count past the global budget.
 
 The manual active floor is not a separate lane and does not change close/apply safety.
 It only changes normal planning when due backlog is below the desired floor:
-after selecting all due candidates, the planner fills up to 38 nonempty shards
+after selecting all due candidates, the planner fills up to nine nonempty shards
 with eligible items whose latest complete review is at least 6 hours old.
 Capacity status reports this as `floor: due backlog below active floor`. If the
-central worker scheduler returns fewer than 38 allowed shards, the smaller
+central worker scheduler returns fewer than nine allowed shards, the smaller
 worker allowance wins.
 
 Scheduled planning does not use the active-floor backfill. It selects only due
@@ -573,8 +575,8 @@ run-summary funnel for selected, attempted, enqueued, deduped, shed, and deferre
 items. The queue exposes the configured rate, burst, and currently available
 token balance under `scheduled_feed` in `GET /api/exact-review-queue`. It also
 exposes backpressure and scheduled-rate shed counts separately so an operator
-can distinguish a full review queue from intentional 300/hour pacing. The
-30-item burst bounds a cold-start cohort to roughly 900 GitHub requests at the
+can distinguish a full review queue from intentional 60/hour pacing. The
+six-item burst bounds a cold-start cohort to roughly 180 GitHub requests at the
 observed planning average of 30 requests per completed review.
 The producer probes that field before its first enqueue and fails closed while
 an older Worker is still deployed, preventing a workflow-first rollout from
@@ -588,25 +590,24 @@ single-attempt.
 Normal fanout ordinarily divides one live queue-advertised candidate-capacity
 budget across the selected repositories; it does not grant 50 candidates to
 each target. If that capacity probe is unavailable, the bounded fallback for a
-10-minute cycle is `50 items/target * 12 targets = 600 items/cycle`. Six cycles
-per hour make that fallback's theoretical pre-filter ceiling 3,600 offers/hour
-before due filtering, planner capacity clamping, dedupe, and Worker admission.
-A direct five-minute schedule for one target also uses live advertised capacity;
-its fallback can offer `50 items/cycle * 12 cycles/hour = 600 items/hour` before
+hourly cycle is `50 items/target * 12 targets = 600 items/cycle`. Its fallback
+therefore offers at most 600 candidates/hour before due filtering, planner
+capacity clamping, dedupe, and Worker admission. The direct hourly normal
+schedule also uses live advertised capacity; its fallback offers 50 items/hour before
 the same bounds. These paths therefore have enough candidates to keep the
 shared token bucket fed despite dedupe or uneven fleet distribution. The queue
-admits at most 300 scheduled reviews/hour, which needs
-about `300 * 4.1 / 60 = 21` concurrent review workers at a 4.1-minute mean
-service time and budgets roughly 9,000 GitHub requests/hour. That leaves about
-6,000 requests in the shared 15,000-request installation allowance for exact
-ingress, routing, apply proof, publication, and support lanes. The target rate
-and burst are GitHub spend dials. The pending soft limit is a separate queue
+admits at most 60 scheduled reviews/hour, which needs
+about `60 * 4.1 / 60 = 4.1` concurrent review workers at a 4.1-minute mean
+service time and budgets roughly 1,800 GitHub requests/hour. The separate
+eight-slot scheduled cap also bounds old queued work and slower reviews while
+organic/manual requests retain admission priority. Rate and burst reduce request
+and inference demand; the pending soft limit remains a separate queue
 backpressure bound and should change only when queue-memory or latency evidence
 requires it, not automatically with the request budget.
 
 On saturated queues, normal planning reads the complete bounded open-item scan
 before selecting candidates. For the current largest repository this is about
-60 REST pages per five-minute normal tick, or roughly 720 installation-token
+60 REST pages per hourly normal tick, or roughly 60 installation-token
 requests per hour; that bounded cost is necessary for oldest-review fairness.
 
 Optional planning-started and in-progress dashboard publishes in the plan job

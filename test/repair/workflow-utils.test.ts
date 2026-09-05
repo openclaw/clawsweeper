@@ -436,13 +436,14 @@ test("worker scheduler lets background lanes yield to active work", () => {
   assert.equal(workerLimit("assist", { activeCritical: WORKER_CONFIG.workers.max - 2 }), 2);
 });
 
-test("worker scheduler keeps 104 slots available for steady background work", () => {
+test("worker scheduler leaves only eight slots for quiet background work", () => {
   const quietBackgroundCapacity =
     WORKER_CONFIG.workers.max -
     WORKER_CONFIG.workers.reserve_for_interactive -
     WORKER_CONFIG.workers.expansion_reserve;
-  assert.equal(quietBackgroundCapacity, 104);
-  assert.ok(quietBackgroundCapacity >= Math.floor(WORKER_CONFIG.workers.max * 0.8));
+  assert.equal(quietBackgroundCapacity, 8);
+  assert.equal(workerLimit("normal_review"), 8);
+  assert.equal(workerLimit("hot_intake"), 8);
 });
 
 test("workflow worker scheduler applies queue pressure only to background lanes", () => {

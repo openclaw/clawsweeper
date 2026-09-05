@@ -45,7 +45,7 @@ PUBLIC_BAY_REPOS = "openclaw/openclaw,openclaw/clawhub,openclaw/clawsweeper,open
 APPLY_TARGET_REPOS = "openclaw/openclaw"
 APPLY_OPTIONAL_TARGET_REPOS = "openclaw/clawhub"
 CLAWSWEEPER_ENABLE_CLAWHUB = "1"
-WORKER_BUDGET = "128"
+WORKER_BUDGET = "32"
 EXACT_REVIEW_ACTIONS_BUDGET = "194"
 WORKER_DETAIL_RUN_LIMIT = "128"
 WORKER_JOB_FETCH_CONCURRENCY = "12"
@@ -56,11 +56,12 @@ AUTOMERGE_CACHE_TTL_SECONDS = "300"
 RECENT_CLOSED_CACHE_TTL_SECONDS = "300"
 CACHE_TTL_SECONDS = "60"
 INCLUDE_CI_STATUS = "1"
-EXACT_REVIEW_QUEUE_MAX_CONCURRENT = "128"
-EXACT_REVIEW_TARGET_MAX_CONCURRENT = "120"
+EXACT_REVIEW_QUEUE_MAX_CONCURRENT = "32"
+EXACT_REVIEW_TARGET_MAX_CONCURRENT = "24"
+EXACT_REVIEW_SCHEDULED_MAX_CONCURRENT = "8"
 EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT = "8"
 EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT = "32"
-EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT = "40"
+EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT = "32"
 EXACT_REVIEW_DISPATCH_LEASE_MS = "360000"
 EXACT_REVIEW_EXECUTION_LEASE_MS = "7800000"
 EXACT_REVIEW_HEARTBEAT_GRACE_MS = "1200000"
@@ -74,13 +75,12 @@ EXACT_REVIEW_PENDING_SOFT_LIMIT = "600"
 # Bay is observer-only; 30 seconds of staleness is acceptable.
 EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "30000"
 # A full review consumes about 30 GitHub requests. Keep scheduled review demand
-# at or below 9,000 requests/hour so the 15,000-request installation bucket has
+# at or below 1,800 requests/hour so the 15,000-request installation bucket has
 # explicit capacity for exact ingress, comment routing, apply proof, publication,
-# and support lanes. A 30-item burst bounds cold-start demand to roughly 900
-# requests instead of allowing a 3,600-request spike before the hourly limiter
-# takes effect. Interactive exact-event reviews keep their independent lane.
-EXACT_REVIEW_TARGET_RATE_PER_HOUR = "300"
-EXACT_REVIEW_TARGET_BURST = "30"
+# and support lanes. A six-item burst bounds cold-start demand to roughly 180
+# requests. Interactive exact-event reviews keep their independent lane.
+EXACT_REVIEW_TARGET_RATE_PER_HOUR = "60"
+EXACT_REVIEW_TARGET_BURST = "6"
 EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED = "1"
 EXACT_REVIEW_DIRECT_PUBLICATION_ENABLED = "1"
 EXACT_REVIEW_STATE_REPO = "openclaw/clawsweeper-state"

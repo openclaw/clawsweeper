@@ -621,7 +621,8 @@ export type DurableObjectNamespace = {
   get: (id: unknown) => DurableObjectStub;
 };
 
-const DEFAULT_EXACT_REVIEW_TARGET_MAX_CONCURRENT = 120;
+const DEFAULT_EXACT_REVIEW_TARGET_MAX_CONCURRENT = 24;
+const DEFAULT_EXACT_REVIEW_SCHEDULED_MAX_CONCURRENT = 8;
 const DEFAULT_EXACT_REVIEW_ACTIONS_BUDGET = 194;
 const DEFAULT_EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT = 4;
 const DEFAULT_EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT = 24;
@@ -645,8 +646,8 @@ const DEFAULT_EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS = 60_000;
 const DEFAULT_EXACT_REVIEW_DISPATCH_DEBOUNCE_MS = 90_000;
 const DEFAULT_EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS = 3 * 60_000;
 const DEFAULT_EXACT_REVIEW_PENDING_SOFT_LIMIT = 300;
-const DEFAULT_EXACT_REVIEW_TARGET_RATE_PER_HOUR = 200;
-const DEFAULT_EXACT_REVIEW_TARGET_BURST = 50;
+const DEFAULT_EXACT_REVIEW_TARGET_RATE_PER_HOUR = 60;
+const DEFAULT_EXACT_REVIEW_TARGET_BURST = 6;
 const EXACT_REVIEW_GITHUB_THROTTLE_ADMISSION_COOLDOWN_MS = 15 * 60 * 1000;
 const EXACT_REVIEW_SCHEDULED_FEED_KEY_PREFIX = "exact-review-scheduled-feed:v1";
 type ExactReviewScheduledBucket = ExactReviewScheduledLane | "global";
@@ -4428,6 +4429,7 @@ export class ExactReviewQueue {
       exactReviewHeartbeatGraceMs(this.env),
       legacyExcludedItemKeys,
       publicationBatches.nextLeaseExpiresAt,
+      exactReviewScheduledCapacity(this.env),
     );
     const publicationHealth = summarizeExactReviewPublicationHealth(
       stats.lanes.publication,
@@ -4552,7 +4554,7 @@ export class ExactReviewQueue {
         },
       },
       delivery_receipts: this.deliveryReceiptCountSync(),
-      scheduled_feed: this.scheduledReviewFeedStatusSync(now),
+      scheduled_feed: { ...stats.scheduled_feed, ...this.scheduledReviewFeedStatusSync(now) },
       reservation_claim_observability: reservationClaimObservability,
       state_writer: { ...stateWriter, coordinator: stateWriterCoordinator },
       storage_schema_version: EXACT_REVIEW_QUEUE_STORAGE_SCHEMA_VERSION,
@@ -4767,6 +4769,10 @@ export class ExactReviewQueue {
       snapshotPublicationCapacity,
       new Set<string>(snapshotBatchOwnership.itemKeys),
       exactReviewPublicationBatchingEnabled(this.env) || snapshotBatchOwnership.itemKeys.length > 0,
+      false,
+      new Set(),
+      0,
+      exactReviewScheduledCapacity(this.env),
     );
     let snapshotBatchDeparture = exactReviewPublicationBatchDeparture(
       this.env,
@@ -4836,6 +4842,10 @@ export class ExactReviewQueue {
         new Set<string>(snapshotBatchOwnership.itemKeys),
         exactReviewPublicationBatchingEnabled(this.env) ||
           snapshotBatchOwnership.itemKeys.length > 0,
+        false,
+        new Set(),
+        0,
+        exactReviewScheduledCapacity(this.env),
       );
       snapshotBatchDeparture = exactReviewPublicationBatchDeparture(
         this.env,
@@ -5010,6 +5020,7 @@ export class ExactReviewQueue {
       false,
       this.freshPublicationItemKeysSync(state, now),
       exactReviewPublicationFreshLaneMaxItems(this.env),
+      exactReviewScheduledCapacity(this.env),
     );
     const reviewAdmissionNextAt = Number(state.dispatcher?.reviewAdmissionNextAt || 0);
     const admission =
@@ -7356,6 +7367,7 @@ export class ExactReviewQueue {
             true, // one durable item path per commit; later events remain FIFO candidates
             freshItemKeys,
             exactReviewPublicationFreshLaneMaxItems(this.env),
+            exactReviewScheduledCapacity(this.env),
           )
             // A direct receipt has already committed its GitHub effect. Its
             // immutable lifecycle plan must return through the fenced legacy
@@ -13115,6 +13127,7 @@ export class ExactReviewQueue {
           Number(state.dispatcher?.reviewAdmissionNextAt || 0) > now
             ? Number(state.dispatcher?.reviewAdmissionNextAt)
             : null,
+          exactReviewScheduledCapacity(this.env),
         );
     const heads = preserveQueueWake ? new Map<string, number>() : this.publicationHeadsSync(state);
     const batchDeparture = preserveQueueWake
@@ -15320,6 +15333,21 @@ function exactReviewTargetCapacity(env) {
       numberFrom(
         env.EXACT_REVIEW_TARGET_MAX_CONCURRENT,
         DEFAULT_EXACT_REVIEW_TARGET_MAX_CONCURRENT,
+      ),
+    ),
+  );
+}
+
+function exactReviewScheduledCapacity(env) {
+  return Math.max(
+    1,
+    Math.min(
+      exactReviewQueueCapacity(env),
+      Math.floor(
+        numberFrom(
+          env.EXACT_REVIEW_SCHEDULED_MAX_CONCURRENT,
+          DEFAULT_EXACT_REVIEW_SCHEDULED_MAX_CONCURRENT,
+        ),
       ),
     ),
   );
