@@ -123,7 +123,10 @@ The receipt artifact is `mantis-request-receipt-<run>-1`, containing
 `receipt.json`. Evidence inventories are scenario-specific:
 
 - Web UI: `mantis-request-web-ui-<run>-1` contains `chat-send.json`,
-  `final-reply.json`, `final-reply.png`.
+  `final-reply.json`, `final-reply.png`, and `observer.json`. The last file is
+  the trusted observer's inventory manifest, authenticated by the whole-archive
+  digest, not a fourth behavioral observation. All four exact paths are required;
+  undeclared files and missing or substituted paths are rejected.
 - Test Server DM: `mantis-request-telegram-<run>-1` contains
   `telegram-send.json`, `provider-request.json`, `telegram-reply.json`.
   Closed hash-only records bind exact source, run, nonce and salted conversation
