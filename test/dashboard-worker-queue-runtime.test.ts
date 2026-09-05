@@ -7893,16 +7893,9 @@ test("exact-review admission requeue_latest resets failures instead of parking a
   assert.equal(state.items[publication.key].parkedReason, undefined);
 });
 
-test("exact-review queue can use the global capacity for one target", async () => {
-  const originalFetch = globalThis.fetch;
-  const storage = new MemoryDurableStorage();
-  const dispatched: Record<string, unknown>[] = [];
-  const { privateKey } = generateKeyPairSync("rsa", {
-    modulusLength: 2048,
-    privateKeyEncoding: { type: "pkcs8", format: "pem" },
-    publicKeyEncoding: { type: "spki", format: "pem" },
-  });
-  globalThis.fetch = async (input, init) => {
+const exactReviewDispatchFetch =
+  (dispatched: Record<string, unknown>[]) =>
+  async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
     if (url.pathname === "/repos/openclaw/clawsweeper/actions/workflows/sweep.yml")
       return jsonResponse({ state: "active" });
@@ -7918,6 +7911,17 @@ test("exact-review queue can use the global capacity for one target", async () =
     }
     throw new Error(`unexpected fetch ${url}`);
   };
+
+test("exact-review queue can use the global capacity for one target", async () => {
+  const originalFetch = globalThis.fetch;
+  const storage = new MemoryDurableStorage();
+  const dispatched: Record<string, unknown>[] = [];
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  globalThis.fetch = exactReviewDispatchFetch(dispatched);
 
   try {
     const queue = new ExactReviewQueue(
@@ -8238,22 +8242,7 @@ test("exact-review queue wakes while target capacity remains", async () => {
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
     publicKeyEncoding: { type: "spki", format: "pem" },
   });
-  globalThis.fetch = async (input, init) => {
-    const url = new URL(String(input));
-    if (url.pathname === "/repos/openclaw/clawsweeper/actions/workflows/sweep.yml")
-      return jsonResponse({ state: "active" });
-    if (/^\/repos\/openclaw\/(?:clawsweeper|gogcli|openclaw)\/installation$/.test(url.pathname))
-      return jsonResponse({ id: 999 });
-    if (/^\/repos\/openclaw\/(?:clawsweeper|gogcli|openclaw)\/issues\/\d+$/.test(url.pathname))
-      return jsonResponse({ state: "open" });
-    if (url.pathname === "/app/installations/999/access_tokens")
-      return jsonResponse({ token: "dispatch-token" });
-    if (url.pathname === "/repos/openclaw/clawsweeper/dispatches") {
-      dispatched.push(JSON.parse(String(init?.body)));
-      return new Response(null, { status: 204 });
-    }
-    throw new Error(`unexpected fetch ${url}`);
-  };
+  globalThis.fetch = exactReviewDispatchFetch(dispatched);
 
   try {
     const queue = new ExactReviewQueue(
@@ -8289,22 +8278,7 @@ test("exact-review queue defers retained backlog until a paused dispatcher retry
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
     publicKeyEncoding: { type: "spki", format: "pem" },
   });
-  globalThis.fetch = async (input, init) => {
-    const url = new URL(String(input));
-    if (url.pathname === "/repos/openclaw/clawsweeper/actions/workflows/sweep.yml")
-      return jsonResponse({ state: "active" });
-    if (/^\/repos\/openclaw\/(?:clawsweeper|gogcli|openclaw)\/installation$/.test(url.pathname))
-      return jsonResponse({ id: 999 });
-    if (/^\/repos\/openclaw\/(?:clawsweeper|gogcli|openclaw)\/issues\/\d+$/.test(url.pathname))
-      return jsonResponse({ state: "open" });
-    if (url.pathname === "/app/installations/999/access_tokens")
-      return jsonResponse({ token: "dispatch-token" });
-    if (url.pathname === "/repos/openclaw/clawsweeper/dispatches") {
-      dispatched.push(JSON.parse(String(init?.body)));
-      return new Response(null, { status: 204 });
-    }
-    throw new Error(`unexpected fetch ${url}`);
-  };
+  globalThis.fetch = exactReviewDispatchFetch(dispatched);
 
   try {
     const queue = new ExactReviewQueue(
