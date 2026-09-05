@@ -19,7 +19,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
-- Honor the configured Codex reasoning effort in sweep planning, event and shard reviews, assist answers, and close-coverage proofs instead of forcing high reasoning.
+- Honor the configured Codex reasoning effort in sweep planning, event and shard reviews, assist answers, and close-coverage proofs instead of forcing high reasoning; assist uses the shared fast service tier.
 
 - Publication reconciliation diagnostics now report the exact acknowledgement-unavailable reason while preserving fail-closed supersede behavior.
 
