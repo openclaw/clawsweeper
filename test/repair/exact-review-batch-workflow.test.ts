@@ -626,7 +626,7 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   );
 });
 
-test("legacy batch proof publications never dispatch the verdict router", () => {
+test("legacy batch proof reviews use the normal verdict router; failure recovery remains review-only", () => {
   const run =
     workflow.jobs.publish!.steps.find(
       (step) => step.name === "Finalize healthy members under a fenced heartbeat",
@@ -663,7 +663,7 @@ test("legacy batch proof publications never dispatch the verdict router", () => 
       { encoding: "utf8", env: { ...process.env, SOURCE_ACTION_CASE: action } },
     );
     assert.equal(result.status, 0, result.stderr);
-    if (action === "legacy_dispatch") {
+    if (action !== "failed_review_shard_recovery") {
       assert.match(result.stdout, /router_called/);
       assert.match(result.stdout, /outcome=durable/);
     } else {
@@ -687,7 +687,7 @@ test("batch publisher gives canonical supersession precedence over artifact term
   assert.ok(supersededTerminal > supersededReceipt && supersededTerminal < staleArtifactPlan);
 });
 
-test("direct proof and failure-recovery publications never dispatch the verdict router", () => {
+test("direct proof reviews use the normal verdict router; failure recovery remains review-only", () => {
   const sweep = YAML.parse(sweepSource) as typeof workflow;
   const run =
     Object.values(sweep.jobs)
@@ -724,7 +724,7 @@ test("direct proof and failure-recovery publications never dispatch the verdict 
     assert.equal(result.status, 0, result.stderr);
     assert.equal(
       result.stdout,
-      action === "legacy_dispatch"
+      action !== "failed_review_shard_recovery"
         ? "router_called\noutcome=durable\nterminal=\n"
         : "outcome=not_required\nterminal=\n",
       action,

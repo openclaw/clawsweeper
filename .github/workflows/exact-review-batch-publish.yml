@@ -275,7 +275,7 @@ jobs:
               continue
             elif [ "$outcome_kind" = "superseded" ]; then
               lifecycle_terminal="superseded"
-            elif [ "$source_action" = "failed_review_shard_recovery" ] || [ "$source_action" = "command_proof_result" ]; then
+            elif [ "$source_action" = "failed_review_shard_recovery" ]; then
               lifecycle_router_outcome="not_required"
             elif jq -e '.disposition.routableSyncExpected == true' "$outcome_path" >/dev/null; then
               github_apply_error="$(mktemp)"

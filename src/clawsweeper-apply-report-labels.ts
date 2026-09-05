@@ -1,4 +1,3 @@
-import { commandProofOnlyReport } from "./command-proof-assessment.js";
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
 import { BULK_FILED_LABEL, GOOD_FIRST_ISSUE_LABEL } from "./clawsweeper-policy.js";
 import type {
@@ -68,16 +67,6 @@ export function syncApplyReportLabels(
   dependencies: ApplyReportLabelDependencies,
   options: ApplyReportLabelOptions,
 ): ApplyReportLabelResult {
-  if (commandProofOnlyReport(options.markdown)) {
-    return {
-      clawSweeperLabelsChanged: options.clawSweeperLabelsChanged,
-      currentClosingPullRequests: options.currentClosingPullRequests,
-      issueAdvisoryLabelsChanged: false,
-      markdown: options.markdown,
-      skipCurrentItem: false,
-      stopApply: false,
-    };
-  }
   const {
     bulkFilerRepositoryPermission,
     closingPullRequestsForIssue,

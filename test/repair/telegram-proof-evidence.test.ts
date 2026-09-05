@@ -29,7 +29,7 @@ test("Telegram normalized exporter derives pass and fail only from a correlated 
       assert.ok(bytes.length <= TELEGRAM_OBSERVATION_MAX_BYTES);
       assert.doesNotMatch(
         bytes.toString("utf8"),
-        /"(?:chat_id|bot_id|user_id|token|authorization|timestamp|sent_at_ms|received_at_ms)"/,
+        /"(?:request_sha256|chat_id|bot_id|user_id|token|authorization|timestamp|sent_at_ms|received_at_ms)"/,
       );
     }
   }
@@ -78,7 +78,7 @@ test("Telegram invalid stimulus/provider/peer binding is inconclusive rather tha
     ["telegram-send.json", { message_id: "0" }],
     ["provider-request.json", { input_nonce: "f".repeat(64) }],
     ["provider-request.json", { response_sha256: "f".repeat(64) }],
-    ["provider-request.json", { request_sha256: "unknown" }],
+    ["provider-request.json", { request_sha256: "f".repeat(64) }],
     ["telegram-reply.json", { message_id: "101" }],
     ["telegram-reply.json", { message_id: "0102" }],
     ["telegram-reply.json", { in_reply_to: "999" }],

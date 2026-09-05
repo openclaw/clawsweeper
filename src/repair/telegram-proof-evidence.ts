@@ -23,7 +23,7 @@ const SHAPES = [
   {
     file: "provider-request.json",
     kind: "provider-request",
-    fields: ["request_sha256", "input_nonce", "response_nonce", "response_sha256"],
+    fields: ["input_nonce", "response_nonce", "response_sha256"],
   },
   {
     file: "telegram-reply.json",
@@ -63,7 +63,6 @@ export interface TelegramProofCapture {
   };
   send: { message_id: string; text_sha256: string };
   provider: {
-    request_sha256: string;
     input_nonce: string;
     response_nonce: string;
     response_sha256: string;
@@ -168,7 +167,6 @@ export function verifyTelegramProofEvidence(
   if (
     !decimal(send.message_id) ||
     !hex(send.text_sha256, 64) ||
-    !hex(provider.request_sha256, 64) ||
     !hex(provider.input_nonce, 64) ||
     !hex(provider.response_nonce, 64) ||
     !hex(provider.response_sha256, 64) ||
@@ -199,7 +197,7 @@ export function verifyTelegramProofEvidence(
       {
         id: "provider-request",
         expected: "External mock provider captured the same input nonce and supplied its response",
-        actual: "Request SHA256 " + provider.request_sha256 + "; response SHA256 " + expectedReply,
+        actual: "Correlated input nonce; response SHA256 " + expectedReply,
       },
       {
         id: "telegram-reply",

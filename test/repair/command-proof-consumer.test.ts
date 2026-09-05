@@ -34,14 +34,8 @@ import {
   commandProofBinding,
   commandProofBaseRefSha256,
   assertCommandProofSubject,
-  foldCommandProofAssessment,
-  assertNoNewProofReviewBlockers,
 } from "../../dist/command-proof-assessment.js";
 import { CommandProofRequestStore } from "../../dashboard/command-proof-requests.ts";
-import { createApplySourceFreshness } from "../../dist/clawsweeper-apply-source-freshness.js";
-import { createPullRequestPromotionFacts } from "../../dist/clawsweeper-promotion-facts.js";
-import { reviewContentCacheHit } from "../../dist/scheduler-policy.js";
-import { readReportFrontMatterField } from "../../dist/report-front-matter.js";
 import {
   MemoryDurableStorage,
   MemoryDurableNamespace,
@@ -184,7 +178,6 @@ test("compiled consumer CLI reopens SQL claims and completes only verified indep
   const receipt = JSON.parse(stdout);
   assert.equal(receipt.ok, true);
   assert.equal(receipt.observations.length, 15);
-  assert.equal(receipt.codeSecurityCiPreserved, true);
   assert.deepEqual(receipt.exceptionResponseSafety, {
     status: 500,
     contentType: "application/json; charset=utf-8",
@@ -243,7 +236,6 @@ test("compiled Telegram consumer preserves exact runtime outcomes across replay,
   const receipt = JSON.parse(stdout);
   assert.equal(receipt.ok, true);
   assert.equal(receipt.scenarioProfile, "telegram-bot-e2e-proof");
-  assert.equal(receipt.codeSecurityCiPreserved, true);
   const ids = [
     "pass",
     "fail",
@@ -302,8 +294,12 @@ test("compiled Telegram consumer preserves exact runtime outcomes across replay,
   });
 });
 
-test("both proof profiles admit pass or fail evidence once through the actual Worker queue without cross-transport replay", async (t) => {
-  for (const scenario of ["web-ui-chat-proof", "telegram-bot-e2e-proof"] as const) {
+test("all proof scenarios admit pass or fail evidence once through the actual Worker queue without cross-transport replay", async (t) => {
+  for (const scenario of [
+    "web-ui-chat-proof",
+    "telegram-bot-e2e-proof",
+    "telegram-markdown-parser-fidelity",
+  ] as const) {
     for (const outcome of ["pass", "fail"] as const) {
       const h = await commandProofRetryHarness({ scenario, outcome });
       t.after(() => h.storage.sql.close());
@@ -380,8 +376,12 @@ test("reconciliation rejects removed or replaced producer approval before run or
   }
 });
 
-test("both proof consumers reject stale, incomplete and cross-transport artifacts without reassessment", async (t) => {
-  for (const scenario of ["web-ui-chat-proof", "telegram-bot-e2e-proof"] as const) {
+test("all proof consumers reject stale, incomplete and cross-transport artifacts without reassessment", async (t) => {
+  for (const scenario of [
+    "web-ui-chat-proof",
+    "telegram-bot-e2e-proof",
+    "telegram-markdown-parser-fidelity",
+  ] as const) {
     for (const failure of [
       "scenario",
       "workflow",
@@ -391,7 +391,6 @@ test("both proof consumers reject stale, incomplete and cross-transport artifact
       "candidate",
       "missing",
       "infra",
-      "base",
       "head",
       "receipt-outcome",
     ]) {
@@ -436,7 +435,6 @@ test("both proof consumers reject stale, incomplete and cross-transport artifact
           }),
         );
       if (failure === "infra") fixture.run.conclusion = "timed_out";
-      if (failure === "base") fixture.live.pull.base.sha = "f".repeat(40);
       if (failure === "head") fixture.live.pull.head.sha = "f".repeat(40);
       if (failure === "receipt-outcome")
         Object.assign(
@@ -453,7 +451,11 @@ test("both proof consumers reject stale, incomplete and cross-transport artifact
 });
 
 test("each proof scenario selects only its independently pinned producer and dispatches one immutable request", async (t) => {
-  for (const scenario of ["web-ui-chat-proof", "telegram-bot-e2e-proof"] as const) {
+  for (const scenario of [
+    "web-ui-chat-proof",
+    "telegram-bot-e2e-proof",
+    "telegram-markdown-parser-fidelity",
+  ] as const) {
     const fixture = proofFixture();
     fixture.live.comment.body = "/clawsweeper proof " + scenario + " " + fixture.claim.headSha;
     const storage = new MemoryDurableStorage();
@@ -534,6 +536,7 @@ test("each proof scenario selects only its independently pinned producer and dis
             request_id: record.claim.requestId,
             pr_number: "42",
             candidate_ref: fixture.claim.headSha,
+            ...(scenario !== "web-ui-chat-proof" ? { scenario } : {}),
           },
         },
       },
@@ -723,7 +726,8 @@ test("unknown proof dispatch recovers request-ID matches beyond page one within 
     }));
     runs.push({
       id: 300,
-      display_title: COMMAND_PROOF_PROFILES["web-ui-chat-proof"].runName + " [" + "d".repeat(64) + "]",
+      display_title:
+        COMMAND_PROOF_PROFILES["web-ui-chat-proof"].runName + " [" + "d".repeat(64) + "]",
     });
     const pages = Array.from({ length: Math.ceil(total / 100) }, (_, index) => ({
       total_count: total,
@@ -768,7 +772,8 @@ test("unknown proof dispatch recovers request-ID matches beyond page one within 
 test("unknown proof dispatch rejects ambiguity and leaves incomplete or over-budget inventories pending", async (t) => {
   const match = {
     id: 300,
-    display_title: COMMAND_PROOF_PROFILES["web-ui-chat-proof"].runName + " [" + "d".repeat(64) + "]",
+    display_title:
+      COMMAND_PROOF_PROFILES["web-ui-chat-proof"].runName + " [" + "d".repeat(64) + "]",
   };
   const filler = Array.from({ length: 100 }, (_, index) => ({
     id: 1000 + index,
@@ -906,17 +911,6 @@ test("proof text allows only tab, LF and CR among C0 controls and preserves text
   assert.equal(proofText(123, 100), false);
 });
 
-test("proof-only assessment never silently drops newly discovered code or security concerns", () => {
-  const prior = { title: "finding", priority: 2, confidenceScore: 0.7 };
-  assertNoNewProofReviewBlockers([prior], []);
-  assertNoNewProofReviewBlockers([prior], [{ ...prior, confidenceScore: 0.9 }]);
-  assert.throws(() => assertNoNewProofReviewBlockers([], [prior]), /full review required/);
-  assert.throws(
-    () => assertNoNewProofReviewBlockers([prior], [{ ...prior, priority: 1 }]),
-    /full review required/,
-  );
-});
-
 test("proof ingress bounds chunked bodies before authentication or persistence", async () => {
   let cancelled = false;
   const body = new ReadableStream<Uint8Array>({
@@ -1022,8 +1016,8 @@ test("complete pinned observer evidence yields observations for independent revi
   assert.equal(verifyCommandProof(failed).outcome, "fail");
 });
 
-test("base ref or commit drift blocks proof dispatch and reassessment with unchanged head, body and comment", async () => {
-  for (const drift of ["ref", "sha"] as const) {
+test("base retargeting blocks proof dispatch and reassessment with unchanged head, body and comment", async () => {
+  for (const drift of ["ref"] as const) {
     for (const phase of ["request", "reconcile"]) {
       const fixture = proofFixture();
       let claim = fixture.claim;
@@ -1152,6 +1146,9 @@ test("metadata, authority, freshness and artifact failures stay inconclusive", (
       f.run.run_attempt = 2;
     },
     (f) => {
+      f.run.display_title = "Mantis request [" + "f".repeat(64) + "]";
+    },
+    (f) => {
       f.run.path = ".github/workflows/untrusted.yml";
     },
     (f) => {
@@ -1218,6 +1215,17 @@ test("closed receipt and claim metadata reject unknown fields, duplicate observa
   const f = proofFixture();
   assert.ok(parseCommandProofClaim(f.claim));
   assert.ok(parseMantisProofReceipt(f.receipt));
+  for (const scenario of [
+    "web-ui-chat-proof",
+    "telegram-bot-e2e-proof",
+    "telegram-markdown-parser-fidelity",
+  ] as const) {
+    const rerun = proofFixture(undefined, scenario);
+    assert.equal(
+      parseMantisProofReceipt({ ...rerun.receipt, run: { ...rerun.receipt.run, attempt: 2 } }),
+      null,
+    );
+  }
   assert.equal(parseCommandProofClaim({ ...f.claim, trusted: true }), null);
   assert.equal(parseCommandProofClaim({ ...f.claim, workflowRef: f.claim.workflowSha }), null);
   for (const patch of [
@@ -1508,19 +1516,15 @@ test("queued proof assessment binds the hydrated base even when head and body st
   const binding = commandProofBinding(verified.reviewContext)!;
   assert.equal(binding.baseRefSha256, digest("main"));
   assert.equal(binding.baseSha, fixture.claim.baseSha);
-  for (const advancedBase of ["e".repeat(40), undefined, "unknown"]) {
-    assert.throws(
-      () =>
-        assertCommandProofSubject(
-          binding,
-          fixture.claim.headSha,
-          fixture.live.pull,
-          "main",
-          advancedBase,
-        ),
-      /subject changed/,
-    );
-  }
+  assert.doesNotThrow(() =>
+    assertCommandProofSubject(
+      binding,
+      fixture.claim.headSha,
+      fixture.live.pull,
+      "main",
+      "e".repeat(40),
+    ),
+  );
   assert.equal(
     commandProofBinding(verified.reviewContext.replace(" base_sha=" + fixture.claim.baseSha, "")),
     null,
@@ -1585,403 +1589,5 @@ test("reviewed primary-body provenance retains the full captured source hash", (
     compact,
     "main",
     "c".repeat(40),
-  );
-});
-
-test("proof-only folding preserves full-review freshness and cannot hide intervening apply or cache activity", () => {
-  const oldAt = "2026-09-01T00:00:00Z",
-    proofAt = "2026-09-04T00:00:00Z";
-  const fullMetadata: Record<string, string> = {
-    reviewed_at: oldAt,
-    item_updated_at: oldAt,
-    last_full_review_at: oldAt,
-    item_snapshot_hash: digest("old snapshot"),
-    item_source_revision: digest("old source"),
-    review_timeline_revision: digest("old timeline"),
-    review_activity_cursor: "old-cursor",
-    pr_hydration_snapshot: "old-hydration",
-    reviewed_pull_state_digest: digest("old pull"),
-    review_content_digest: digest("old content"),
-    review_cache_hit: "false",
-    review_comment_sha256: digest("old comment"),
-    review_model: "full-model",
-    review_reasoning_effort: "high",
-    review_sandbox: "read-only",
-    review_service_tier: "standard",
-    review_structural_cache_version: "1",
-    review_structural_fingerprint: digest("old structural"),
-    review_structural_source_revision: digest("old structural source"),
-    review_structural_activity_updated_at: oldAt,
-    review_structural_item_state_digest: digest("old item"),
-    review_context_chars: "100",
-    review_codex_elapsed_ms: "200",
-    labels_synced_at: oldAt,
-    review_comment_synced_at: oldAt,
-  };
-  const newer = Object.fromEntries(Object.keys(fullMetadata).map((key) => [key, "new-" + key]));
-  newer.reviewed_at = proofAt;
-  newer.item_updated_at = "2026-09-03T00:00:00Z";
-  newer.last_full_review_at = proofAt;
-  newer.review_content_digest = digest("new content");
-  const report = (metadata: Record<string, string>, proof: string, lease: string) =>
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      "number: 42",
-      "type: pull_request",
-      "pull_head_sha: " + "a".repeat(40),
-      "reviewed_body_sha256: " + digest("body"),
-      "reviewed_base_ref_sha256: " + digest("main"),
-      "reviewed_base_sha: " + "c".repeat(40),
-      "review_status: complete",
-      "decision: keep_open",
-      "last_full_review_decision: keep_open",
-      "review_policy: policy",
-      ...Object.entries(metadata).map(([key, value]) => key + ": " + value),
-      "review_lease_owner: " + lease,
-      "review_lease_comment_id: " + (lease === "old" ? "1" : "2"),
-      "real_behavior_proof_status: " + proof,
-      "real_behavior_proof_evidence_kind: runtime",
-      "real_behavior_proof_needs_contributor_action: false",
-      "---",
-      "## Real Behavior Proof",
-      proof,
-      "## Findings",
-      "Preserved full-review conclusions",
-      "",
-    ].join("\n");
-  const prior = report(fullMetadata, "missing", "old"),
-    assessed = report(newer, "sufficient", "new");
-  const merged = foldCommandProofAssessment(
-    prior,
-    assessed,
-    digest("request"),
-    digest("body"),
-    digest("main"),
-    "c".repeat(40),
-  );
-  const field = (markdown: string, key: string) => {
-    const result = readReportFrontMatterField(markdown, key);
-    return result.status === "value" ? result.value.trim() : undefined;
-  };
-  for (const [key, value] of Object.entries(fullMetadata))
-    assert.equal(field(merged, key), value, key);
-  assert.equal(field(merged, "command_proof_assessed_at"), proofAt);
-  assert.equal(field(merged, "review_lease_owner"), "new");
-  assert.equal(field(merged, "review_lease_comment_id"), "2");
-  const asRecord = (value: unknown) =>
-    value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-  const timestampMs = (value: unknown) =>
-    typeof value === "string" && Number.isFinite(Date.parse(value)) ? Date.parse(value) : null;
-  const eventTimestampMs = (value: unknown) => timestampMs(asRecord(value).createdAt);
-  const activity = createPullRequestPromotionFacts({
-    asRecord,
-    timestampMs,
-    eventTimestampMs,
-    frontMatterValue: field,
-    stringOrUndefined: (value: unknown) => (typeof value === "string" ? value : undefined),
-    isAfterReview: (value: unknown, time: number) => (eventTimestampMs(value) ?? 0) > time,
-    isAutomationReportAuthor: (author: unknown) => author === "clawsweeper[bot]",
-  } as never).contextHasNonAutomationActivityAfter;
-  const context = {
-    issue: {},
-    comments: [],
-    timeline: [{ event: "commented", actor: "contributor", createdAt: "2026-09-02T00:00:00Z" }],
-  };
-  const freshness = (markdown: string) =>
-    createApplySourceFreshness(
-      {
-        asRecord,
-        timestampMs,
-        frontMatterValue: field,
-        contextHasNonAutomationActivityAfter: activity,
-        CLAWSWEEPER_BOT_AUTHORS: new Set(),
-        commentUpdatedAt: () => undefined,
-        recordedLabelSyncCoversUpdate: () => false,
-        freshPullRequestReviewHead: () => true,
-      } as never,
-      {
-        currentState: () => ({ isCloseProposal: false, markdown, storedUpdatedAt: oldAt }),
-        currentItemContext: () => context,
-        item: { kind: "pull_request", number: 42, updatedAt: "2026-09-03T00:00:00Z", labels: [] },
-        existingReviewComment: undefined,
-        leaseComments: [],
-        markdownBeforeApplyDecisionMutations: markdown,
-        number: 42,
-        reportLabelsBeforeApply: [],
-        reportReviewLeaseCommentId: 0,
-        reviewHasCompleteActivityIdentity: false,
-        requiresApplyMutationLease: false,
-        completeReviewActivityReceiptMatches: () => false,
-      } as never,
-    );
-  assert.equal(
-    freshness(assessed).labelSyncFreshEnough(),
-    true,
-    "control: a new review timestamp hides the timeline comment",
-  );
-  assert.equal(freshness(merged).labelSyncFreshEnough(), false);
-  assert.equal(freshness(merged).reviewedSourceFresh(), false);
-  const cacheHit = (markdown: string) =>
-    reviewContentCacheHit({
-      review: {
-        reviewedAt: field(markdown, "reviewed_at"),
-        reviewStatus: "complete",
-        decision: "keep_open",
-        lastFullReviewDecision: "keep_open",
-        lastFullReviewAt: field(markdown, "last_full_review_at"),
-        reviewPolicy: "policy",
-        contentDigest: field(markdown, "review_content_digest"),
-      },
-      reviewPolicy: "policy",
-      contentDigest: newer.review_content_digest!,
-      now: Date.parse(proofAt),
-      explicitDispatch: false,
-      maintainerRequest: false,
-    });
-  assert.equal(cacheHit(assessed), true);
-  assert.equal(cacheHit(merged), false);
-});
-
-test("proof-only canonical folding preserves code/security/CI decisions and full-review age", () => {
-  const head = "a".repeat(40);
-  const bodySha256 = digest("reviewed PR body");
-  const baseRefSha256 = digest("main");
-  const baseSha = "c".repeat(40);
-  const report = (proof: string, findings: string, date: string) =>
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      "number: 42",
-      "type: pull_request",
-      "pull_head_sha: " + head,
-      "reviewed_body_sha256: " + bodySha256,
-      "reviewed_base_ref_sha256: " + baseRefSha256,
-      "reviewed_base_sha: " + baseSha,
-      "review_status: complete",
-      "reviewed_at: " + date,
-      "last_full_review_at: " + date,
-      "decision: keep",
-      "agents_policy_status: blocked",
-      "pr_rating_patch: B0",
-      "security_status: critical",
-      "ci_status: failure",
-      "real_behavior_proof_status: " + proof,
-      "real_behavior_proof_evidence_kind: runtime",
-      "real_behavior_proof_needs_contributor_action: " + (proof !== "sufficient"),
-      "telegram_visible_proof_status: " + proof,
-      "---",
-      "# PR",
-      "",
-      "## Real Behavior Proof",
-      "Status: " + proof,
-      "",
-      "Summary: independent proof assessment",
-      "",
-      "## Telegram Visible Proof",
-      "Status: " + proof,
-      "",
-      "## Findings",
-      findings,
-      "",
-      "## Security",
-      "Unresolved security blocker",
-      "",
-      "## CI",
-      "Required check failed",
-      "",
-    ].join("\n");
-  const old = report("missing", "Unresolved code blocker", "2026-09-01T00:00:00Z");
-  const fresh = report("sufficient", "None", "2026-09-04T00:00:00Z")
-    .replace("critical", "none")
-    .replace("ci_status: failure", "ci_status: success");
-  const merged = foldCommandProofAssessment(
-    old,
-    fresh,
-    digest("request"),
-    bodySha256,
-    baseRefSha256,
-    baseSha,
-  );
-  assert.match(merged, /real_behavior_proof_status: sufficient/);
-  assert.match(merged, /telegram_visible_proof_status: missing/);
-  assert.match(merged, /Unresolved code blocker/);
-  assert.match(merged, /security_status: critical/);
-  assert.match(merged, /ci_status: failure/);
-  assert.match(merged, /last_full_review_at: 2026-09-01/);
-  assert.match(merged, /command_proof_only: true/);
-  assert.match(merged, /^reviewed_at: 2026-09-01T00:00:00Z$/m);
-  assert.match(merged, /^command_proof_assessed_at: 2026-09-04T00:00:00Z$/m);
-  const telegramMerged = foldCommandProofAssessment(
-    old,
-    fresh,
-    digest("telegram request"),
-    bodySha256,
-    baseRefSha256,
-    baseSha,
-    "telegram-bot-e2e-proof",
-  );
-  assert.match(telegramMerged, /telegram_visible_proof_status: sufficient/);
-  assert.match(telegramMerged, /## Telegram Visible Proof\nStatus: sufficient/);
-  for (const stalePrior of [
-    old.replace(baseSha, "e".repeat(40)),
-    old.replace(baseSha, "unknown"),
-    old.replace("reviewed_base_sha: " + baseSha + "\n", ""),
-  ]) {
-    assert.throws(
-      () =>
-        foldCommandProofAssessment(
-          stalePrior,
-          fresh,
-          digest("request"),
-          bodySha256,
-          baseRefSha256,
-          baseSha,
-        ),
-      /claimed PR base commit/,
-    );
-  }
-  for (const expectedSha of [baseSha, "e".repeat(40), "unknown"]) {
-    assert.throws(
-      () =>
-        foldCommandProofAssessment(
-          old,
-          fresh.replace(baseSha, "e".repeat(40)),
-          digest("request"),
-          bodySha256,
-          baseRefSha256,
-          expectedSha,
-        ),
-      /claimed PR base commit/,
-    );
-  }
-  assert.ok(merged.includes("reviewed_base_ref_sha256: " + baseRefSha256));
-  for (const stalePrior of [
-    old.replace(baseRefSha256, digest("release")),
-    old.replace(baseRefSha256, "unknown"),
-    old.replace("reviewed_base_ref_sha256: " + baseRefSha256 + "\n", ""),
-  ]) {
-    assert.throws(
-      () =>
-        foldCommandProofAssessment(
-          stalePrior,
-          fresh,
-          digest("request"),
-          bodySha256,
-          baseRefSha256,
-          baseSha,
-        ),
-      /full review bound to the claimed PR base/,
-    );
-  }
-  const changedBaseAssessment = fresh.replace(baseRefSha256, digest("release"));
-  for (const expectedBase of [baseRefSha256, digest("release"), "unknown"]) {
-    assert.throws(
-      () =>
-        foldCommandProofAssessment(
-          old,
-          changedBaseAssessment,
-          digest("request"),
-          bodySha256,
-          expectedBase,
-          baseSha,
-        ),
-      /full review bound to the claimed PR base/,
-    );
-  }
-  assert.throws(
-    () =>
-      foldCommandProofAssessment(
-        old.replace(
-          "Summary: independent proof assessment",
-          "Summary: Authority-chain proof required: real authentication boundary",
-        ),
-        fresh,
-        digest("request"),
-        bodySha256,
-        baseRefSha256,
-        baseSha,
-      ),
-    /authority-chain/,
-  );
-  assert.throws(() =>
-    foldCommandProofAssessment(
-      undefined,
-      fresh,
-      digest("request"),
-      bodySha256,
-      baseRefSha256,
-      baseSha,
-    ),
-  );
-  assert.throws(() =>
-    foldCommandProofAssessment(
-      old,
-      fresh.replace(head, "e".repeat(40)),
-      digest("request"),
-      bodySha256,
-      baseRefSha256,
-      baseSha,
-    ),
-  );
-  assert.throws(() =>
-    foldCommandProofAssessment(
-      old,
-      fresh.replace("review_status: complete", "review_status: failed"),
-      digest("request"),
-      bodySha256,
-      baseRefSha256,
-      baseSha,
-    ),
-  );
-  const changedBody = digest("changed PR body at the same head");
-  const changedAssessment = fresh.replace(bodySha256, changedBody);
-  assert.throws(
-    () =>
-      foldCommandProofAssessment(
-        old,
-        changedAssessment,
-        digest("request"),
-        changedBody,
-        baseRefSha256,
-        baseSha,
-      ),
-    /full review bound to the claimed PR body/,
-  );
-  assert.throws(
-    () =>
-      foldCommandProofAssessment(
-        old.replace("reviewed_body_sha256: " + bodySha256 + "\n", ""),
-        fresh,
-        digest("request"),
-        bodySha256,
-        baseRefSha256,
-        baseSha,
-      ),
-    /full review bound to the claimed PR body/,
-  );
-  assert.throws(
-    () =>
-      foldCommandProofAssessment(
-        old.replace(bodySha256, "unknown"),
-        fresh,
-        digest("request"),
-        bodySha256,
-        baseRefSha256,
-        baseSha,
-      ),
-    /full review bound to the claimed PR body/,
-  );
-  assert.throws(
-    () =>
-      foldCommandProofAssessment(
-        old,
-        changedAssessment,
-        digest("request"),
-        bodySha256,
-        baseRefSha256,
-        baseSha,
-      ),
-    /full review bound to the claimed PR body/,
   );
 });

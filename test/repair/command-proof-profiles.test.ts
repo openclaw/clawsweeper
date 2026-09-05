@@ -4,6 +4,7 @@ import {
   COMMAND_PROOF_PROFILES,
   COMMAND_PROOF_SCENARIO,
   TELEGRAM_PROOF_SCENARIO,
+  TELEGRAM_QA_SCENARIO,
   commandProofProfile,
   commandProofProducerFromEnv,
   commandProofProducersFromEnv,
@@ -24,6 +25,7 @@ test("proof profiles bind distinct workflows, trusted jobs and observation contr
   assert.deepEqual(Object.keys(COMMAND_PROOF_PROFILES), [
     COMMAND_PROOF_SCENARIO,
     TELEGRAM_PROOF_SCENARIO,
+    TELEGRAM_QA_SCENARIO,
   ]);
   assert.equal(commandProofProfile("__proto__"), null);
   assert.equal(commandProofProfile("telegram"), null);
@@ -64,12 +66,14 @@ test("proof producer pins are independently opt-in with no cross-transport fallb
   assert.deepEqual(Object.keys(commandProofProducersFromEnv(webPins)), [COMMAND_PROOF_SCENARIO]);
   assert.deepEqual(Object.keys(commandProofProducersFromEnv(telegramPins)), [
     TELEGRAM_PROOF_SCENARIO,
+    TELEGRAM_QA_SCENARIO,
   ]);
   assert.deepEqual(Object.keys(commandProofProducersFromEnv({ ...webPins, ...telegramPins })), [
     COMMAND_PROOF_SCENARIO,
     TELEGRAM_PROOF_SCENARIO,
+    TELEGRAM_QA_SCENARIO,
   ]);
-  for (const scenario of [COMMAND_PROOF_SCENARIO, TELEGRAM_PROOF_SCENARIO]) {
+  for (const scenario of [COMMAND_PROOF_SCENARIO, TELEGRAM_PROOF_SCENARIO, TELEGRAM_QA_SCENARIO]) {
     const valid = pins(scenario);
     const profile = COMMAND_PROOF_PROFILES[scenario];
     for (const key of Object.keys(valid)) {
@@ -101,7 +105,7 @@ test("proof producer pins are independently opt-in with no cross-transport fallb
 });
 
 test("closed proof claims reject scenario and workflow substitution across transports", () => {
-  for (const scenario of [COMMAND_PROOF_SCENARIO, TELEGRAM_PROOF_SCENARIO]) {
+  for (const scenario of [COMMAND_PROOF_SCENARIO, TELEGRAM_PROOF_SCENARIO, TELEGRAM_QA_SCENARIO]) {
     const claim = {
       requestId: "d".repeat(64),
       repository: "openclaw/openclaw",

@@ -8,9 +8,6 @@ import { createReportParser } from "../dist/clawsweeper-report-parser.js";
 import { createReportHelpers } from "../dist/clawsweeper-report-helpers.js";
 import { createRealBehaviorProofPolicy } from "../dist/clawsweeper-proof-policy.js";
 import { syncApplyPullRequestLabels } from "../dist/clawsweeper-apply-pull-request-labels.js";
-import { syncApplyReportLabels } from "../dist/clawsweeper-apply-report-labels.js";
-import { promoteApplyPullRequest } from "../dist/clawsweeper-apply-pull-request-promotion.js";
-import { commandProofOnlyReport } from "../dist/command-proof-assessment.js";
 import type { RealBehaviorProof } from "../dist/clawsweeper-types.js";
 import {
   featureShowcaseLabelsForTest,
@@ -40,101 +37,6 @@ import {
   realBehaviorProofReportSection,
   reportFrontMatter,
 } from "./helpers.ts";
-
-test("proof-only apply owners preserve labels and readiness without invoking synchronization or promotion", () => {
-  const markdown =
-    "---\ncommand_proof_only: true\nreview_status: complete\n---\nProof evidence update\n";
-  const labels = ["human-owned", "status: 📣 needs proof", "proof: sufficient"];
-  const forbidden = () =>
-    assert.fail("proof-only report must not recompute or mutate non-proof state");
-  for (const staleReviewHead of [null, { liveHeadSha: "f".repeat(40) }]) {
-    const result = syncApplyPullRequestLabels(
-      {} as never,
-      {
-        markdown,
-        item: item({ kind: "pull_request", labels: [...labels] }),
-        number: 42,
-        currentItemContext: forbidden,
-        dryRun: false,
-        labelSyncFreshEnough: forbidden,
-        staleReviewHead,
-        onMutation: forbidden,
-      } as never,
-    );
-    assert.deepEqual(result, { changed: false, currentPrStatusKind: null, labels, markdown });
-  }
-  assert.deepEqual(
-    syncApplyReportLabels(
-      {} as never,
-      {
-        markdown,
-        item: item({ kind: "pull_request", labels: [...labels] }),
-        clawSweeperLabelsChanged: false,
-        currentClosingPullRequests: undefined,
-        state: "open",
-        isCurrentCompleteReport: true,
-        isCurrentLabelSyncReport: true,
-        currentApplyMutationLeaseBlockReason: forbidden,
-        onMutation: forbidden,
-        setMarkdown: forbidden,
-      } as never,
-    ),
-    {
-      clawSweeperLabelsChanged: false,
-      currentClosingPullRequests: undefined,
-      issueAdvisoryLabelsChanged: false,
-      markdown,
-      skipCurrentItem: false,
-      stopApply: false,
-    },
-  );
-  const promotion = promoteApplyPullRequest(
-    {} as never,
-    {
-      markdown,
-      item: item({ kind: "pull_request" }),
-      state: "open",
-      decision: "keep_open",
-      action: "kept_open",
-      isCloseProposal: false,
-      closeReason: "none",
-      storedHash: "old-snapshot",
-      storedUpdatedAt: "old-time",
-    } as never,
-  );
-  assert.deepEqual(promotion, {
-    attempted: false,
-    markdown,
-    isCloseProposal: false,
-    closeReason: "none",
-    storedHash: "old-snapshot",
-    storedUpdatedAt: "old-time",
-  });
-});
-
-test("proof-only authority reads canonical front matter and rejects ambiguous or malformed markers", () => {
-  assert.equal(commandProofOnlyReport("---\nreview_status: complete\n---\nOrdinary report"), false);
-  assert.throws(
-    () => commandProofOnlyReport("---\nreview_status: complete\n---\ncommand_proof_only: true"),
-    /invalid or ambiguous/,
-  );
-  assert.equal(commandProofOnlyReport("---\ncommand_proof_only: false\n---\n"), false);
-  for (const fields of [
-    "command_proof_only: unknown",
-    "command_proof_only: true\ncommand_proof_only: false",
-  ]) {
-    const markdown = "---\n" + fields + "\n---\n";
-    assert.throws(() => commandProofOnlyReport(markdown), /invalid or ambiguous/);
-    assert.throws(
-      () => syncApplyPullRequestLabels({} as never, { markdown } as never),
-      /invalid or ambiguous/,
-    );
-    assert.throws(
-      () => syncApplyReportLabels({} as never, { markdown } as never),
-      /invalid or ambiguous/,
-    );
-  }
-});
 
 for (const proofStatus of ["missing", "not_applicable"] as const) {
   test(`failed ${proofStatus} reports remove positive statuses through apply label sync`, () => {

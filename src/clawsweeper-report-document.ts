@@ -38,9 +38,6 @@ import {
   serializePrHydrationSnapshot,
 } from "./pr-hydration-snapshot.js";
 import { parseNextStep } from "./clawsweeper-next-step.js";
-import { primaryBodySourceSha256 } from "./clawsweeper-primary-body.js";
-import { commandProofBaseRefSha256 } from "./command-proof-assessment.js";
-import { proofRecord, proofSha } from "./command-proof-contract.js";
 
 export function localCheckoutAccessForDecision(
   decision: Pick<Decision, "localCheckoutAccess">,
@@ -562,10 +559,6 @@ export function createReportDocumentRendering(
     const sqliteSchemaChange = sqliteSchemaChangeFromContext(options.item.repo, options.context);
     const prSurfaceFiles = prSurfaceFilesFromContext(options.context);
     const reviewedPullStateDigest = reviewStructuralPullStateFromContext(options.context);
-    const reviewedBaseSha = proofRecord(proofRecord(options.context.pullRequest).base).sha;
-    const reviewedBaseRefSha256 = commandProofBaseRefSha256(
-      proofRecord(proofRecord(options.context.pullRequest).base).ref,
-    );
     const markdown = `---
 number: ${options.item.number}
 repository: ${options.item.repo}
@@ -584,9 +577,6 @@ review_lease_owner: ${options.reviewLeaseOwner ?? "unknown"}
 review_lease_comment_id: ${options.reviewLeaseCommentId ?? "unknown"}
 main_sha: ${options.git.mainSha}
 pull_head_sha: ${pullHeadShaFromContext(options.context) ?? "unknown"}
-reviewed_body_sha256: ${primaryBodySourceSha256(options.context.pullRequest ?? options.context.issue) ?? "unknown"}
-reviewed_base_ref_sha256: ${reviewedBaseRefSha256 ?? "unknown"}
-reviewed_base_sha: ${proofSha(reviewedBaseSha, 40) ? reviewedBaseSha : "unknown"}
 pr_hydration_snapshot: ${serializePrHydrationSnapshot(options.context.prHydrationSnapshot)}
 reviewed_pull_state_digest: ${
       reviewedPullStateDigest

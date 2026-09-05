@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import fs from "node:fs";
-import { readReportFrontMatterField } from "../report-front-matter.js";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { errorFingerprint } from "./error-fingerprint.js";
@@ -161,18 +160,6 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     "--replay-closed-artifacts",
     ...eventRecordDirectoryArgs(options, recordPaths),
   ]);
-
-  const candidatePath = resolve(options.workRoot, recordPaths.itemRecord);
-  if (fs.existsSync(candidatePath)) {
-    const proofOnly = readReportFrontMatterField(
-      fs.readFileSync(candidatePath, "utf8"),
-      "command_proof_only",
-    );
-    if (proofOnly.status === "ambiguous")
-      throw new Error("ambiguous proof-only publication marker");
-    if (proofOnly.status === "value" && proofOnly.value.trim() === "true")
-      options.reviewOnly = true;
-  }
 
   // Preserve the exact artifact candidate before refreshing the state checkout.
   // A stale event must be rejected before apply-decisions can comment, label,
@@ -692,9 +679,7 @@ function eventOptionsFromEnv(): EventOptions {
     itemNumber: envValue("ITEM_NUMBER"),
     closeReasons: process.env.CLOSE_REASONS || process.env.CLAWSWEEPER_AUTO_CLOSE_REASONS || "all",
     minAgeMinutes: process.env.MIN_AGE_MINUTES || "0",
-    reviewOnly:
-      process.env.REVIEW_ONLY === "true" ||
-      process.env.CLAWSWEEPER_GITHUB_SOURCE_ACTION === "command_proof_result",
+    reviewOnly: process.env.REVIEW_ONLY === "true",
     exactEventPublication: process.env.EXACT_EVENT_PUBLICATION === "true",
     artifactDir: join(workRoot, "artifacts/event"),
     reportPath: join(workRoot, ".artifacts/event-apply-report.json"),

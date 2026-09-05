@@ -17,7 +17,7 @@ import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 import { runAgentCheckoutInspection, runAgentProcess } from "../dist/agent-runner.js";
 import { createReviewActionLedger } from "../dist/clawsweeper-review-ledger.js";
 import { readAllSpooledActionEvents } from "../dist/action-ledger.js";
-import { closeDecision } from "./helpers.ts";
+import { closeDecision, reviewFinding } from "./helpers.ts";
 import { AgentInputScanError, agentInputScanFailureExitCode } from "../dist/agent-input-scan.js";
 import { prepareOpenClawCodexSourceForReview } from "../dist/openclaw-codex-source.js";
 import { reviewStatusForDecision } from "../dist/clawsweeper-report-document.js";
@@ -118,7 +118,7 @@ function structuralRecord(
   return record;
 }
 
-test("proof-only workflow boundary requires its trusted source action and complete subject binding", () => {
+test("evidence-triggered full review requires its trusted source action and complete subject binding", () => {
   const fixture = proofFixture();
   const verified = verifyCommandProof(fixture);
   assert.notEqual(verified.outcome, "inconclusive");
@@ -324,7 +324,8 @@ for (const scenario of [
         ? {
             pullRequest: {
               head: { sha: headSha },
-              base: { sha: baseSha },
+              base: { sha: baseSha, ref: "main" },
+              body: "body",
               draft: false,
               mergeable: "MERGEABLE",
               mergeableState: "CLEAN",
@@ -693,13 +694,26 @@ for (const scenario of [
           decision: "keep_open",
           closeReason: null,
           localCheckoutAccess: "verified",
+          ...(invalidProofPrior
+            ? {
+                reviewFindings: [
+                  reviewFinding({
+                    title: "New code blocker",
+                    priority: 1,
+                    file: "value.ts",
+                    lineStart: 1,
+                    lineEnd: 1,
+                  }),
+                ],
+              }
+            : {}),
         });
       },
       attachFixedPullRequest: (decision) => decision,
       verifyRegressionProvenance: (decision) => decision,
       reviewActionForDecision: () => ({ actionTaken: "none" }),
       markdownFor: ({ decision }) =>
-        `---\nreview_status: ${reviewStatusForDecision(decision)}\ndecision: keep_open\n---\nFresh Codex review\n`,
+        `---\nreview_status: ${reviewStatusForDecision(decision)}\ndecision: keep_open\n---\nFresh Codex review\n${decision.reviewFindings.map((finding) => finding.title).join("\n")}\n`,
       selectCandidates: () => ({ candidates: [{ ...item }], scannedPages: 1 }),
       suppliedReviewStartLeaseFromArgs,
       targetRepo: () => REPO,
@@ -737,15 +751,6 @@ for (const scenario of [
           ]),
         );
 
-      if (invalidProofPrior) {
-        assert.throws(execute, /requires a valid prior full review/);
-        assert.equal(generationCalls, 0);
-        assert.equal(hydrationCalls, 0);
-        assert.equal(cachedCompletions, 0);
-        assert.equal(existsSync(join(artifactDir, ITEM_NUMBER + ".md")), false);
-        assert.equal(existsSync(providerCalls), false);
-        return;
-      }
       if (refuseScan) {
         const reason = incompleteSource ? "incomplete_source" : "scanner_failed";
         assert.throws(execute, (error) => {
@@ -883,6 +888,16 @@ for (const scenario of [
         assert.equal(hydrationCalls, 1);
         assert.equal(generationCalls, 1);
         assert.equal(cachedCompletions, 0);
+        if (invalidProofPrior) {
+          assert.doesNotMatch(
+            readFileSync(join(artifactDir, `${ITEM_NUMBER}.md`), "utf8"),
+            /command_proof_only|Cached review/,
+          );
+          assert.match(
+            readFileSync(join(artifactDir, `${ITEM_NUMBER}.md`), "utf8"),
+            /New code blocker/,
+          );
+        }
         assert.match(
           readFileSync(join(artifactDir, `${ITEM_NUMBER}.md`), "utf8"),
           /Fresh Codex review/,

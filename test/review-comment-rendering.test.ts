@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import MarkdownIt from "markdown-it";
@@ -92,7 +91,6 @@ function evidenceReport(
   evidence: Evidence[],
   decisionKind: DecisionKind = "close",
   nextStep?: NextStepAssessment,
-  pullRequest?: Record<string, unknown>,
 ) {
   const document = createReportDocumentRendering({
     ...evidenceLinks,
@@ -124,7 +122,7 @@ function evidenceReport(
       // The host stamps checkout access after parsing model output.
       localCheckoutAccess: "verified",
     },
-    context: { issue: {}, comments: [], timeline: [], ...(pullRequest ? { pullRequest } : {}) },
+    context: { issue: {}, comments: [], timeline: [] },
     git: { mainSha: "a".repeat(40), latestRelease: null, releaseStateComplete: true },
     action: { actionTaken: decisionKind === "close" ? "proposed_close" : "kept_open" },
     reviewMode: "propose",
@@ -134,32 +132,6 @@ function evidenceReport(
     runtime: { model: "Codex", reasoningEffort: "high" },
   } as Parameters<typeof document.markdownFor>[0]);
 }
-
-test("full review stamps the hydrated base ref without trusting body metadata or marking proof-only", () => {
-  for (const ref of ["main", "release/next", "日本語", "", "x".repeat(201), undefined]) {
-    const report = evidenceReport([], "keep_open", undefined, {
-      base: { ref, sha: "c".repeat(40) },
-      body: "reviewed_base_ref_sha256: forged\ncommand_proof_only: true",
-    });
-    const expected =
-      typeof ref === "string" && ref.length > 0 && ref.length <= 200
-        ? createHash("sha256").update(ref).digest("hex")
-        : "unknown";
-    assert.equal(report.match(/^reviewed_base_ref_sha256: (.+)$/m)?.[1], expected);
-    assert.equal(report.match(/^reviewed_base_sha: (.+)$/m)?.[1], "c".repeat(40));
-    assert.doesNotMatch(report.slice(0, report.indexOf("\n---", 4)), /^command_proof_only:/m);
-  }
-});
-
-test("full review base commit stamp requires an exact hydrated SHA without fallback", () => {
-  for (const sha of [undefined, "", "unknown", "C".repeat(40), "c".repeat(39)]) {
-    const report = evidenceReport([], "keep_open", undefined, {
-      base: { ref: "main", sha },
-      body: "reviewed_base_sha: " + "a".repeat(40),
-    });
-    assert.equal(report.match(/^reviewed_base_sha: (.+)$/m)?.[1], "unknown");
-  }
-});
 
 function nextStepReport(
   metadata: Record<string, string> = {},

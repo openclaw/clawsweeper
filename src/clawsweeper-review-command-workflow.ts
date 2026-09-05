@@ -40,15 +40,10 @@ import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-revi
 import { prepareReviewCommand } from "./clawsweeper-review-preparation.js";
 import { parsePrHydrationSnapshot } from "./pr-hydration-snapshot.js";
 import { ReviewSourcePreparationError } from "./review-source-preparation.js";
-import {
-  commandProofBinding,
-  assertCommandProofSubject,
-  foldCommandProofAssessment,
-  assertNoNewProofReviewBlockers,
-} from "./command-proof-assessment.js";
+import { commandProofBinding, assertCommandProofSubject } from "./command-proof-assessment.js";
 import { COMMAND_PROOF_SOURCE_ACTION } from "./command-proof-contract.js";
 
-/** Only the trusted dispatch source may authorize proof-only folding. */
+/** Bind verified evidence to its candidate before an ordinary full review. */
 export function reviewCommandProofBinding(sourceAction: unknown, additionalPrompt: string) {
   const binding = commandProofBinding(additionalPrompt);
   if (sourceAction !== COMMAND_PROOF_SOURCE_ACTION) {
@@ -184,7 +179,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     renderReviewCommentFromReport,
     reportFileName,
     reportReviewFindings,
-    reportSecurityReview,
     restoreTreeModes,
     reviewActionForDecision,
     reviewLeaseStillMatchesContext,
@@ -567,9 +561,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           // Ownership and bulk-filer policy changes require a fresh decision;
           // carrying stale front matter would preserve the wrong safeguards.
           priorReview = null;
-        }
-        if (proofBinding && !priorReview) {
-          throw new UserFacingCommandError("commanded proof reassessment requires a valid prior full review");
         }
         const expectedPreviousReviewDigest = priorReview
           ? previousClawSweeperReviewDigestFromReport(priorReview.markdown)
@@ -1353,7 +1344,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         const action = reviewActionForDecision({ item, decision, git, runtime });
         structuralRecord = refreshStructuralRecordForVerdict();
         const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
-        let reportMarkdown = markdownFor({
+        const reportMarkdown = markdownFor({
             item,
             context,
             decision,
@@ -1372,12 +1363,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 }
               : {}),
         });
-        if (proofBinding) {
-          const previous = priorReview?.markdown ?? "";
-          assertNoNewProofReviewBlockers(reportReviewFindings(previous), decision.reviewFindings);
-          assertNoNewProofReviewBlockers(reportSecurityReview(previous).concerns, decision.securityReview.concerns);
-          reportMarkdown = foldCommandProofAssessment(priorReview?.markdown, reportMarkdown, proofBinding.requestId, proofBinding.bodySha256, proofBinding.baseRefSha256, proofBinding.baseSha, proofBinding.scenario);
-        }
         writeFileSync(reportPath, reportMarkdown, "utf8");
         if (codexFailureError) {
           recordFailureDiagnostics(codexFailureError, codexFailureLogKind(reportMarkdown));

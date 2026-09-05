@@ -1268,7 +1268,6 @@ const { reviewCommand } = createReviewCommandWorkflow({
   repoFromArgs,
   reportFileName,
   reportReviewFindings,
-  reportSecurityReview,
   reviewLeaseStillMatchesContext,
   reviewPolicyHash,
   selectCandidates,

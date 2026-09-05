@@ -277,7 +277,6 @@ export interface CreateReviewCommandWorkflowDependencies {
   repoFromArgs: (args: Args) => RepositoryProfile;
   reportFileName: (repo: string, number: number) => string;
   reportReviewFindings: (markdown: string) => ReviewFinding[];
-  reportSecurityReview: (markdown: string) => Decision["securityReview"];
   resolveReviewCheckout: (options: {
     args: Args;
     artifactDir: string;

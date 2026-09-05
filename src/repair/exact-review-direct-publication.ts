@@ -223,8 +223,7 @@ function directPublicationLifecyclePlanFromOutcome(
   if (typeof guardedOpenAction === "string" && guardedOpenAction.length > 0) {
     return { kind: "guarded_open" };
   }
-  if (sourceAction === "failed_review_shard_recovery" || sourceAction === "command_proof_result")
-    return { kind: "router_not_required" };
+  if (sourceAction === "failed_review_shard_recovery") return { kind: "router_not_required" };
   if (expectedBoolean("routableSyncExpected")) return { kind: "router" };
   if (expectedBoolean("deferredCloseCoverageExpected")) {
     return { kind: "router_deferred_coverage" };

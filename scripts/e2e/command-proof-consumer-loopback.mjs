@@ -6,6 +6,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { parseArgs } from "node:util";
 import {
   worker,
   ExactReviewQueue,
@@ -16,23 +17,31 @@ import {
   proofFixture,
   replaceReceipt,
   replaceProofEvidence,
-  digest,
+  artifactMetadata,
 } from "../../test/helpers/command-proof-fixtures.ts";
-import { foldCommandProofAssessment } from "../../dist/command-proof-assessment.js";
 import {
   commandProofProfile,
   COMMAND_PROOF_SCENARIO,
   TELEGRAM_PROOF_SCENARIO,
 } from "../../dist/command-proof-contract.js";
 import { readProofZip } from "../../dist/repair/proof-zip.js";
-import { createRecordMetadata } from "../../dist/clawsweeper-record-metadata.js";
 
-const requestedScenario =
-  process.argv.length === 2
-    ? COMMAND_PROOF_SCENARIO
-    : process.argv.length === 4 && process.argv[2] === "--scenario"
-      ? process.argv[3]
-      : null;
+const { values } = parseArgs({
+  options: {
+    scenario: { type: "string", default: COMMAND_PROOF_SCENARIO },
+    "producer-root": { type: "string" },
+    "web-ui-observations": { type: "string" },
+    "qa-observations": { type: "string" },
+  },
+});
+const requestedScenario = values.scenario;
+const producer = values["producer-root"]
+  ? await import(
+      pathToFileURL(
+        path.resolve(values["producer-root"], "test/fixtures/mantis-request-producer.mts"),
+      ).href
+    )
+  : null;
 const proofProfile = commandProofProfile(requestedScenario);
 if (!proofProfile) throw new Error("unsupported_loopback_profile");
 const workflowFile = proofProfile.workflowPath.split("/").at(-1);
@@ -128,7 +137,10 @@ const server = http.createServer(async (req, res) => {
         "candidate_ref",
         "pr_number",
         "request_id",
+        ...(proofProfile.scenario !== COMMAND_PROOF_SCENARIO ? ["scenario"] : []),
       ]);
+      if (proofProfile.scenario !== COMMAND_PROOF_SCENARIO)
+        assert.equal(payload.inputs.scenario, proofProfile.scenario);
       assert.equal(req.headers["x-github-api-version"], "2026-03-10");
       dispatches++;
       const bound = proofFixture(payload.inputs.request_id, proofProfile.scenario);
@@ -140,7 +152,45 @@ const server = http.createServer(async (req, res) => {
         evidenceArchive: bound.evidenceArchive,
         evidenceArtifact: bound.evidenceArtifact,
       };
-      f.run.display_title = "Mantis [" + payload.inputs.request_id + "]";
+      f.run.display_title = proofProfile.runName + " [" + payload.inputs.request_id + "]";
+      // The negative QA result remains a declared consumer fixture when only
+      // real passing observations are retained; never fabricate a producer run.
+      if (
+        producer &&
+        !(proofProfile.scenario === "telegram-markdown-parser-fidelity" && scenario === "fail")
+      ) {
+        const identity = Object.fromEntries(
+          [
+            "request_id",
+            "repository",
+            "pull_request",
+            "candidate_sha",
+            "scenario",
+            "workflow",
+            "harness",
+            "run",
+          ].map((key) => [key, bound.receipt[key]]),
+        );
+        const generated = await producer.produceRequestFixture(
+          identity,
+          scenario === "fail" ? "fail" : "pass",
+          proofProfile.scenario === "telegram-markdown-parser-fidelity"
+            ? values["qa-observations"]
+            : values["web-ui-observations"],
+        );
+        f = {
+          ...f,
+          receipt: generated.receipt,
+          evidenceArchive: generated.evidenceArchive,
+          evidenceArtifact: artifactMetadata(
+            400,
+            generated.receipt.evidence.artifact_name,
+            generated.evidenceArchive,
+            f.claim.workflowSha,
+          ),
+        };
+        f = replaceReceipt(f, generated.receipt);
+      }
       return json(res, {
         workflow_run_id: 300,
         run_url: "https://api.github.com" + p + "/actions/runs/300",
@@ -313,7 +363,7 @@ try {
         f.claim.headSha +
         " -->\nProof requested; not sufficient or ready.",
     });
-    if (scenario === "fail") {
+    if (scenario === "fail" && !producer) {
       const failure = proofFixture(id, proofProfile.scenario, "fail");
       f = replaceProofEvidence(f, readProofZip(failure.evidenceArchive), "fail");
     }
@@ -449,133 +499,17 @@ try {
       reviewAdmissionBlocked: queueRejected,
     });
   }
-  const bodySha256 = f.claim.bodySha256;
-  const baseRefSha256 = digest(f.claim.targetBranch);
-  const baseSha = f.claim.baseSha;
-  let before =
-    "---\nrepository: openclaw/openclaw\nnumber: 42\ntype: pull_request\npull_head_sha: " +
-    "a".repeat(40) +
-    "\nreviewed_body_sha256: " +
-    bodySha256 +
-    "\nreviewed_base_ref_sha256: " +
-    baseRefSha256 +
-    "\nreviewed_base_sha: " +
-    baseSha +
-    "\nreview_status: complete\nreviewed_at: 2026-09-01T00:00:00Z\nlast_full_review_at: 2026-09-01T00:00:00Z\nreal_behavior_proof_status: missing\nreal_behavior_proof_evidence_kind: none\nreal_behavior_proof_needs_contributor_action: true\nsecurity_status: blocked\nci_status: failure\n---\n## Real Behavior Proof\nStatus: missing\n\n## Findings\nCode blocker remains.\n";
-  const metadata = createRecordMetadata({
-    reviewLeaseRevisionFromReport: (markdown) =>
-      metadata.frontMatterValue(markdown, "pull_head_sha") ?? null,
-  });
-  const fullReviewFreshness = {
-    reviewed_at: "2026-09-01T00:00:00Z",
-    item_updated_at: "2026-09-01T00:00:00Z",
-    item_snapshot_hash: digest("full-review snapshot"),
-    item_source_revision: digest("full-review source"),
-    review_timeline_revision: digest("full-review timeline"),
-    review_activity_cursor: "full-review-activity",
-    review_content_digest: digest("full-review content"),
-    reviewed_pull_state_digest: digest("full-review pull state"),
-    review_structural_fingerprint: digest("full-review structural input"),
-    review_structural_activity_updated_at: "2026-09-01T00:00:00Z",
-  };
-  for (const [key, value] of Object.entries(fullReviewFreshness)) {
-    before = metadata.replaceFrontMatterValue(before, key, value);
-  }
-  before = metadata.replaceFrontMatterValue(before, "review_lease_owner", "prior-full-review");
-  before = metadata.replaceFrontMatterValue(before, "review_lease_comment_id", "500");
-  let assessed = before
-    .replaceAll("missing", "sufficient")
-    .replace("Code blocker remains.", "None")
-    .replace("security_status: blocked", "security_status: none");
-  for (const key of Object.keys(fullReviewFreshness)) {
-    assessed = metadata.replaceFrontMatterValue(
-      assessed,
-      key,
-      key.endsWith("_at") ? "2026-09-04T00:00:00Z" : "proof-only-" + key,
-    );
-  }
-  assessed = metadata.replaceFrontMatterValue(
-    assessed,
-    "review_lease_owner",
-    "current-proof-publication",
-  );
-  assessed = metadata.replaceFrontMatterValue(assessed, "review_lease_comment_id", "900");
-  const folded = foldCommandProofAssessment(
-    before,
-    assessed,
-    "d".repeat(64),
-    bodySha256,
-    baseRefSha256,
-    baseSha,
-  );
-  for (const [key, value] of Object.entries(fullReviewFreshness)) {
-    assert.equal(metadata.frontMatterValue(folded, key), value, key);
-  }
-  assert.equal(
-    metadata.frontMatterValue(folded, "command_proof_assessed_at"),
-    "2026-09-04T00:00:00Z",
-  );
-  assert.equal(
-    metadata.frontMatterValue(folded, "review_lease_owner"),
-    "current-proof-publication",
-  );
-  assert.equal(metadata.frontMatterValue(folded, "review_lease_comment_id"), "900");
-  assert.deepEqual(metadata.exactEventReviewLeaseDisposition(folded, f.claim.headSha), {
-    status: "current",
-  });
-  const changedBody = digest("same-head changed body");
-  assert.throws(
-    () =>
-      foldCommandProofAssessment(
-        before,
-        assessed.replace(bodySha256, changedBody),
-        "d".repeat(64),
-        changedBody,
-        baseRefSha256,
-        baseSha,
-      ),
-    /full review bound to the claimed PR body/,
-  );
-  assert.throws(
-    () =>
-      foldCommandProofAssessment(
-        before.replace("reviewed_body_sha256: " + bodySha256 + "\n", ""),
-        assessed,
-        "d".repeat(64),
-        bodySha256,
-        baseRefSha256,
-        baseSha,
-      ),
-    /full review bound to the claimed PR body/,
-  );
-  assert.throws(
-    () =>
-      foldCommandProofAssessment(
-        before.replace(baseRefSha256, digest("release")),
-        assessed,
-        "d".repeat(64),
-        bodySha256,
-        baseRefSha256,
-        baseSha,
-      ),
-    /full review bound to the claimed PR base/,
-  );
-  assert.ok(folded.includes("reviewed_base_ref_sha256: " + baseRefSha256));
-  assert.match(folded, /real_behavior_proof_status: sufficient/);
-  assert.match(folded, /Code blocker remains/);
-  assert.match(folded, /security_status: blocked/);
-  assert.match(folded, /ci_status: failure/);
   console.log(
     JSON.stringify(
       {
         ok: true,
         runtime: "compiled CLI + real Worker HTTP routing + file-backed SQLite ExactReviewQueue",
         scenarioProfile: proofProfile.scenario,
+        producerContractExercised: Boolean(producer),
         observations,
-        codeSecurityCiPreserved: true,
         exceptionResponseSafety,
         limits:
-          "GitHub metadata/artifact delivery and the independent model response are controlled fixtures. No live GitHub dispatch, Mantis UI run, semantic model accuracy, public-provider or channel claim. The production verifier, ZIP parser, durable store, queue enqueue, status owner, proof-only fold and exact-event lease tuple check are exercised. This is not end-to-end canonical publication, apply-time GitHub mutation or hosted-deployment proof.",
+          "GitHub metadata/artifact delivery and the independent model response are controlled fixtures. No live GitHub dispatch, Mantis UI run, semantic model accuracy, public-provider or channel claim. The production verifier, ZIP parser, durable store, queue enqueue, status owner and evidence-triggered full-review enqueue are exercised. This is not end-to-end canonical publication, apply-time GitHub mutation or hosted-deployment proof.",
       },
       null,
       2,

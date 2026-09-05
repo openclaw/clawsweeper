@@ -19,7 +19,6 @@ import {
   isSelectableApplyCloseAction,
 } from "../apply-close-actions.js";
 import { repositoryProfileFor, slugForRepo } from "../repository-profiles.js";
-import { commandProofOnlyReport } from "../command-proof-assessment.js";
 
 type ApplyAction = {
   action: string;
@@ -2274,7 +2273,6 @@ function commentSyncCandidates(
     .flatMap((name) => {
       const markdown = fs.readFileSync(path.join(itemsDir, name), "utf8");
       if (repoFor(markdown, name) !== targetRepo) return [];
-      if (commandProofOnlyReport(markdown)) return [];
       const type = frontMatterValue(markdown, "type");
       if (applyKind !== "all" && type !== applyKind) return [];
       const reviewStatus = frontMatterValue(markdown, "review_status");

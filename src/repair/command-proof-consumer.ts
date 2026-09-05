@@ -50,10 +50,12 @@ function producerStillApproved(
   claim: CommandProofClaim,
 ): boolean {
   const producer = configuredProducer(producers, claim.scenario);
-  return !!producer &&
+  return (
+    !!producer &&
     producer.workflowRef === claim.workflowRef &&
     producer.workflowSha === claim.workflowSha &&
-    producer.harnessSha === claim.harnessSha;
+    producer.harnessSha === claim.harnessSha
+  );
 }
 
 export class CommandProofConsumer {
@@ -91,8 +93,7 @@ export class CommandProofConsumer {
     // Flat producer arguments remain compatible with existing WebUI callers,
     // but never supply pins for a different scenario's workflow.
     const producer = configuredProducer(this.producer, profile.scenario);
-    if (!producer)
-      return { status: "inconclusive", reason: "proof_producer_not_configured" };
+    if (!producer) return { status: "inconclusive", reason: "proof_producer_not_configured" };
     if (!proofSha(producer.workflowSha, 40) || !proofSha(producer.harnessSha, 40))
       throw new Error("proof_producer_not_pinned");
     const identity = {
@@ -168,6 +169,7 @@ export class CommandProofConsumer {
               request_id: claim.requestId,
               pr_number: String(claim.pullRequest),
               candidate_ref: claim.headSha,
+              ...(claim.scenario !== "web-ui-chat-proof" ? { scenario: claim.scenario } : {}),
             },
           },
         ),
@@ -211,7 +213,7 @@ export class CommandProofConsumer {
             record.state === "completed"
               ? "Scenario assertion outcome: " +
                 String(proofRecord(record.result).outcome) +
-                ". Independent proof-only review is queued; this is not sufficient proof or merge readiness."
+                ". Independent full re-review with verified evidence is queued; this is not sufficient proof or merge readiness."
               : String(record.reason || "proof_inconclusive") +
                 ". No proof or other blocker was cleared.";
           // Once enqueued, the existing review-status owner owns this marker.

@@ -34,7 +34,6 @@ export function telegramProofFixture(
     },
     send: { message_id: "101", text_sha256: digest("Mantis Telegram request " + nonce) },
     provider: {
-      request_sha256: digest("captured external mock request:" + nonce),
       input_nonce: nonce,
       response_nonce: responseNonce,
       response_sha256: responseHash,

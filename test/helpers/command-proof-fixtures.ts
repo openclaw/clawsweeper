@@ -9,6 +9,7 @@ import {
   type MantisProofReceipt,
 } from "../../src/command-proof-contract.ts";
 import { telegramProofFixture } from "./telegram-proof-fixtures.ts";
+import { telegramQaFiles } from "./telegram-qa-fixtures.ts";
 import {
   proofReceiptArtifactName,
   proofEvidenceArtifactName,
@@ -76,7 +77,7 @@ export function proofFixture(
     head_sha: workflow,
     repository: { id: 123, full_name: claim.repository },
     head_repository: { id: 123 },
-    display_title: "Mantis [" + requestId + "]",
+    display_title: profile.runName + " [" + requestId + "]",
   };
   const observation = Buffer.from(
     JSON.stringify({ finalReply: "fixture final reply", phase: "final" }),
@@ -89,7 +90,10 @@ export function proofFixture(
         )
       : null;
   const sourceFiles = profile.observations.map(([, file]) => file);
-  const evidenceFiles = telegram?.files ?? new Map(sourceFiles.map((name) => [name, observation]));
+  const evidenceFiles =
+    scenario === "telegram-markdown-parser-fidelity"
+      ? telegramQaFiles({ requestId, headSha: head, harnessSha: workflow }, outcome)
+      : (telegram?.files ?? new Map(sourceFiles.map((name) => [name, observation])));
   const evidenceArchive = zip([...evidenceFiles].map(([name, content]) => ({ name, content })));
   const jobs = {
     total_count: 2,

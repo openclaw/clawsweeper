@@ -1842,8 +1842,8 @@ if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
   }
 });
 
-for (const proofOnly of [false, true]) {
-  test(`apply-decisions publication flags allow labels only for ordinary reports (${proofOnly ? "proof-only" : "ordinary"})`, () => {
+for (const sourceAction of ["legacy_dispatch", "command_proof_result"]) {
+  test(`normal full reviews synchronize labels including evidence-triggered reviews (${sourceAction})`, () => {
     const root = mkdtempSync(tmpPrefix);
     try {
       const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
@@ -1862,9 +1862,7 @@ for (const proofOnly of [false, true]) {
           confidence: "high",
           action_taken: "kept_open",
           review_status: "complete",
-          ...(proofOnly
-            ? { command_proof_only: "true", command_proof_request_id: "d".repeat(64) }
-            : {}),
+          review_source_action: sourceAction,
           local_checkout_access: "verified",
           author: "contributor",
           author_association: "CONTRIBUTOR",
@@ -1991,23 +1989,7 @@ if (args[0] === "api" && /\\/issues\\/74478$/.test(path)) {
       assert.equal(calls.filter((args) => args[0] === "posted-comment-body").length, 1);
       const results = JSON.parse(readFileSync(reportPath, "utf8"));
       assert.ok(results.some((result) => result.action === "review_comment_synced"));
-      if (proofOnly) {
-        assert.doesNotMatch(report, /^labels_synced_at:/m);
-        assert.match(report, /^command_proof_only: true$/m);
-        assert.equal(
-          calls.filter(
-            (args) =>
-              args[0] === "label" ||
-              (args[0] === "issue" && args[1] === "edit") ||
-              (args[0] === "api" && /\/labels(?:\/|$)/.test(args[1] ?? "")),
-          ).length,
-          0,
-        );
-        assert.equal(calls.filter((args) => args[0] === "pr" && args[1] === "close").length, 0);
-        const posted = calls.find((args) => args[0] === "posted-comment-body")[1];
-        assert.match(posted, /proof/i);
-        assert.doesNotMatch(posted, /clawsweeper-(?:automerge|autofix)/);
-      } else {
+      {
         assert.match(report, /^labels_synced_at: /m);
         assert.match(report, /^automation_item_updated_at: 2026-05-19T20:00:02Z$/m);
         assert.match(report, /proof: sufficient/);

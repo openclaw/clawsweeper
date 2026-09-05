@@ -3,6 +3,7 @@ export const COMMAND_PROOF_SOURCE_ACTION = "command_proof_result";
 export const COMMAND_PROOF_SCENARIO = "web-ui-chat-proof";
 export const COMMAND_PROOF_WORKFLOW = ".github/workflows/mantis-web-ui-chat-proof.yml";
 export const TELEGRAM_PROOF_SCENARIO = "telegram-bot-e2e-proof";
+export const TELEGRAM_QA_SCENARIO = "telegram-markdown-parser-fidelity";
 export const COMMAND_PROOF_PROFILES = {
   [COMMAND_PROOF_SCENARIO]: {
     scenario: COMMAND_PROOF_SCENARIO,
@@ -33,6 +34,21 @@ export const COMMAND_PROOF_PROFILES = {
     ],
     scopeNotice:
       "This is Telegram bot DM via TelegramTestServer/TDLib with an external mock provider ONLY; not live Telegram, real providers, groups/topics or blanket authority-chain proof.",
+  },
+  [TELEGRAM_QA_SCENARIO]: {
+    scenario: TELEGRAM_QA_SCENARIO,
+    workflowPath: ".github/workflows/mantis-telegram-bot-e2e-proof.yml",
+    runName: "Mantis Telegram request",
+    configPrefix: "CLAWSWEEPER_TELEGRAM_PROOF",
+    observerJob: "Run request-bound Telegram bot proof",
+    evidenceArtifactPrefix: "mantis-request-telegram",
+    observations: [
+      ["qa-execution", "qa-execution.json"],
+      ["qa-result", "qa-result.json"],
+      ["qa-observations", "qa-observations.json"],
+    ],
+    scopeNotice:
+      "Actual candidate Gateway send and Telegram formatter against a Crabline Bot API emulator; no Telegram Test Server, TDLib, live model, or readiness claim. This scenario tests four specific Markdown payload regressions, not general Telegram behavior.",
   },
 } as const;
 export type CommandProofScenario = keyof typeof COMMAND_PROOF_PROFILES;
@@ -256,8 +272,7 @@ export function parseMantisProofReceipt(value: unknown): MantisProofReceipt | nu
     !closed(run, ["id", "attempt"]) ||
     !proofNumericId(run.id) ||
     !Number.isSafeInteger(run.attempt) ||
-    Number(run.attempt) < 1 ||
-    Number(run.attempt) > (r.scenario === TELEGRAM_PROOF_SCENARIO ? 1 : 100) ||
+    run.attempt !== 1 ||
     !["completed", "failed", "cancelled", "timed_out", "skipped"].includes(
       String(r.execution_outcome),
     ) ||
