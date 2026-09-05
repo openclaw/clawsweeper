@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+
+import { assertMatchesJsonSchema } from "../scripts/hosted-review-canary-proof.mjs";
 
 import {
   parseDecision,
@@ -1517,6 +1520,34 @@ test("decision report prose normalizes Unicode line separators before neutralizi
       closeDecision({ summary: `Summary prose.${separator}## Real Behavior Proof` }),
     );
     assert.equal(parsed.summary, "Summary prose.\n\\## Real Behavior Proof");
+  }
+});
+
+test("evidence command generation and parsing agree on physical line boundaries", () => {
+  const schema = JSON.parse(
+    readFileSync(new URL("../schema/clawsweeper-decision.schema.json", import.meta.url), "utf8"),
+  ).properties.evidence.items.properties.command;
+  const parse = (command: unknown) => {
+    const base = closeDecision();
+    return parseDecision({ ...base, evidence: [{ ...base.evidence[0], command }] });
+  };
+  for (const separator of ["\r", "\n", "\u2028", "\u2029"]) {
+    for (const command of [
+      `${separator}git status`,
+      `git${separator}status`,
+      `git status${separator}`,
+    ]) {
+      assert.throws(() => assertMatchesJsonSchema(command, schema), /pattern/);
+      assert.throws(() => parse(command), /command must be a single-line string/);
+    }
+  }
+  for (const command of [null, "", "git\tstatus", " git status ", String.raw`printf '%s\n' ok`]) {
+    assertMatchesJsonSchema(command, schema);
+    assert.equal(parse(command).evidence[0].command, command);
+  }
+  for (const command of [false, 1, [], {}]) {
+    assert.throws(() => assertMatchesJsonSchema(command, schema), /invalid type/);
+    assert.throws(() => parse(command), /command must be a string/);
   }
 });
 

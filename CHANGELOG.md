@@ -86,6 +86,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Align generated evidence commands with the parser's single-line contract so multiline proof commands remain in evidence detail instead of failing completed reviews.
+
 - Terminalize stale command publications after batch expiry without losing shared acknowledgement obligations.
 - Bound GitHub activity hook prompts to one received event and filtered trusted self-authored review chatter before model intake.
 - Replay durable scheduled enqueue dispositions after transient response loss while preserving signed delivery identity, rejecting mismatched bytes, failing closed on legacy ambiguous receipts, and leaving publication post-effects single-attempt.

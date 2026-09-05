@@ -1,0 +1,9 @@
+{
+  "repo": null,
+  "label": "synthetic",
+  "detail": "",
+  "file": null,
+  "line": null,
+  "command": "printf '%s\\n' first\nprintf '%s\\n' second",
+  "sha": null
+}

@@ -53,6 +53,10 @@ the full source commit `sha` when known. Never attach the target's main SHA to
 dependency evidence. Keep unknown locations as text rather than guessing links.
 Split multi-repository evidence into separate entries or use explicit links; bare inline references share the entry's single repository owner.
 
+Keep each evidence `command` on one physical line. If the command actually used
+was multiline, set `command` to `null` and preserve the command and explanation
+in `detail`; do not invent a flattened command.
+
 In particular, OpenClaw Code Mode and Codex Code Mode are separate
 implementations; an OpenClaw Code Mode change does not require sibling
 `../codex` inspection unless one of the affirmative signals above establishes
