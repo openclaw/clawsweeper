@@ -4302,6 +4302,110 @@ test("publication reconciliation preserves and does not transplant an unsafe com
   assert.ok(state.items[command.key]);
 });
 
+test("alarm stale command terminalization fails closed without exact successor ownership", async () => {
+  for (const scenario of [
+    "stale_projection_mismatch",
+    "existing_requeue",
+    "missing_successor",
+    "ambiguous_successor",
+    "successor_projection_missing",
+    "successor_projection_mismatch",
+  ] as const) {
+    const storage = new MemoryDurableStorage();
+    const number = 18030 + scenario.length;
+    const stale = leasedExactReviewPublicationItem(number, `${number}0`);
+    const fresh = leasedExactReviewPublicationItem(number, `${number}1`);
+    const marker = `<!-- clawsweeper-command-status:${number}:re_review:${"e".repeat(40)} -->`;
+    stale.state = "pending";
+    stale.revision = 4;
+    stale.decision.publication!.leaseRevision = 1;
+    Object.assign(stale.decision.publication!.producerDecision, {
+      commandStatusMarker: marker,
+      statusCommentId: number * 10,
+    });
+    fresh.state = "pending";
+    fresh.decision.publication!.leaseRevision = 2;
+    Object.assign(fresh.decision.publication!.producerDecision, {
+      commandStatusMarker: marker,
+      statusCommentId: number * 10,
+    });
+    const items = { [stale.key]: stale, [fresh.key]: fresh };
+    if (scenario === "missing_successor") delete items[fresh.key];
+    if (scenario === "ambiguous_successor") {
+      const duplicate = leasedExactReviewPublicationItem(number, `${number}2`);
+      duplicate.state = "pending";
+      duplicate.decision.publication!.leaseRevision = 2;
+      Object.assign(duplicate.decision.publication!.producerDecision, {
+        commandStatusMarker: marker,
+        statusCommentId: number * 10,
+      });
+      items[duplicate.key] = duplicate;
+    }
+    await storage.put("exact-review-queue", { deliveries: {}, items });
+    const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+    const identity = {
+      canonicalTargetKey: `openclaw/openclaw#${number}`,
+      fenceKey: stale.key,
+      revision: stale.revision,
+    };
+    lifecycle.recordAdmission({
+      ...identity,
+      deliveryId: `automatic-terminal-${scenario}`,
+      sourceAction: "re_review",
+      commandOriginated: true,
+      statusMarker: scenario === "stale_projection_mismatch" ? `${marker}:mismatch` : marker,
+      statusCommentId: number * 10,
+      observedAt: 1,
+    });
+    if (scenario === "existing_requeue") {
+      lifecycle.recordTerminalDisposition({ ...identity, kind: "requeue", observedAt: 2 });
+    }
+    const queue = publicPublicationQueue(storage);
+    if (scenario === "missing_successor") {
+      await queue.fetch(new Request("https://queue/stats"));
+      storage.sql.exec(
+        `INSERT INTO exact_review_publication_heads (target_key, source_revision, updated_at)
+         VALUES (?, 2, ?) ON CONFLICT(target_key) DO UPDATE SET source_revision = 2`,
+        `openclaw/openclaw#${number}`,
+        Date.now(),
+      );
+    } else if (scenario !== "successor_projection_missing") {
+      for (const successor of Object.values(items).filter((item) => item !== stale)) {
+        const producer = successor.decision.publication!.producerDecision;
+        lifecycle.recordAdmission({
+          canonicalTargetKey: `openclaw/openclaw#${number}`,
+          fenceKey: successor.key,
+          revision: successor.revision,
+          deliveryId: `successor-${successor.key}`,
+          sourceAction: producer.sourceAction,
+          commandOriginated: true,
+          statusMarker:
+            scenario === "successor_projection_mismatch" ? `${marker}:mismatch` : marker,
+          statusCommentId: number * 10,
+          observedAt: 3,
+        });
+      }
+    }
+    await queue.alarm();
+    const state = storage.sql.readNormalizedQueue() as {
+      items: Record<string, ExactReviewQueueItem>;
+    };
+    assert.ok(state.items[stale.key]);
+    if (scenario !== "missing_successor") assert.ok(state.items[fresh.key]);
+    assert.equal(
+      lifecycle.read(identity.canonicalTargetKey, identity.fenceKey, identity.revision)
+        ?.terminalDisposition?.kind,
+      scenario === "existing_requeue" ? "requeue" : undefined,
+    );
+    await queue.alarm();
+    assert.ok(
+      (storage.sql.readNormalizedQueue() as { items: Record<string, ExactReviewQueueItem> }).items[
+        stale.key
+      ],
+    );
+  }
+});
+
 test("max-items one does not reclaim an unsampled expired lineage lease", async () => {
   const storage = new MemoryDurableStorage();
   const expired = leasedExactReviewPublicationItem(18021, "180210");
