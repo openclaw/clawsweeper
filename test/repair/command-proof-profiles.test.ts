@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { proofFixture } from "../helpers/command-proof-fixtures.ts";
 import {
   COMMAND_PROOF_PROFILES,
   COMMAND_PROOF_SCENARIO,
@@ -20,6 +21,22 @@ const pins = (scenario: keyof typeof COMMAND_PROOF_PROFILES) => {
     [profile.configPrefix + "_HARNESS_SHA"]: "b".repeat(40),
   };
 };
+
+test("paired proof fixtures preserve the actual candidate identity", () => {
+  const head = "1234567890abcdef1234567890abcdef12345678";
+  for (const scenario of Object.keys(COMMAND_PROOF_PROFILES)) {
+    const fixture = proofFixture(
+      undefined,
+      scenario as keyof typeof COMMAND_PROOF_PROFILES,
+      "pass",
+      head,
+    );
+    assert.equal(fixture.claim.headSha, head);
+    assert.equal(fixture.receipt.candidate_sha, head);
+    assert.equal(fixture.live.pull.head.sha, head);
+    assert.ok(fixture.live.comment.body.endsWith(head));
+  }
+});
 
 test("proof profiles bind distinct workflows, trusted jobs and observation contracts", () => {
   assert.deepEqual(Object.keys(COMMAND_PROOF_PROFILES), [

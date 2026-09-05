@@ -32,9 +32,12 @@ const { values } = parseArgs({
     "producer-root": { type: "string" },
     "web-ui-observations": { type: "string" },
     "qa-observations": { type: "string" },
+    "candidate-sha": { type: "string", default: "a".repeat(40) },
   },
 });
 const requestedScenario = values.scenario;
+const candidateSha = values["candidate-sha"];
+if (!/^[a-f0-9]{40}$/.test(candidateSha)) throw new Error("invalid_fixture_candidate_sha");
 const producer = values["producer-root"]
   ? await import(
       pathToFileURL(
@@ -143,7 +146,12 @@ const server = http.createServer(async (req, res) => {
         assert.equal(payload.inputs.scenario, proofProfile.scenario);
       assert.equal(req.headers["x-github-api-version"], "2026-03-10");
       dispatches++;
-      const bound = proofFixture(payload.inputs.request_id, proofProfile.scenario);
+      const bound = proofFixture(
+        payload.inputs.request_id,
+        proofProfile.scenario,
+        "pass",
+        candidateSha,
+      );
       f = {
         ...f,
         receipt: bound.receipt,
@@ -276,7 +284,7 @@ try {
         ]
       : []),
   ]) {
-    f = proofFixture(undefined, proofProfile.scenario);
+    f = proofFixture(undefined, proofProfile.scenario, "pass", candidateSha);
     comments = [];
     dispatches = 0;
     apiWrites = [];
@@ -364,7 +372,7 @@ try {
         " -->\nProof requested; not sufficient or ready.",
     });
     if (scenario === "fail" && !producer) {
-      const failure = proofFixture(id, proofProfile.scenario, "fail");
+      const failure = proofFixture(id, proofProfile.scenario, "fail", candidateSha);
       f = replaceProofEvidence(f, readProofZip(failure.evidenceArchive), "fail");
     }
     if (scenario === "cross-scenario")

@@ -19,10 +19,10 @@ export function proofFixture(
   requestId = "d".repeat(64),
   scenario: CommandProofScenario = COMMAND_PROOF_SCENARIO,
   outcome: "pass" | "fail" = "pass",
+  head = "a".repeat(40),
 ) {
   const profile = COMMAND_PROOF_PROFILES[scenario];
-  const head = "a".repeat(40),
-    workflow = (scenario === COMMAND_PROOF_SCENARIO ? "b" : "e").repeat(40),
+  const workflow = (scenario === COMMAND_PROOF_SCENARIO ? "b" : "e").repeat(40),
     body =
       scenario === COMMAND_PROOF_SCENARIO
         ? "Change browser chat rendering."
