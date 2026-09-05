@@ -1731,7 +1731,8 @@ export class ExactReviewQueue {
                 (item.state === "pending" || item.state === "parked") &&
                 (!item.terminalFinalization ||
                   exactReviewTerminalFinalizationSharesCommandStatus(item, decision)) &&
-                !activeBatchItemKeys.has(item.key),
+                !activeBatchItemKeys.has(item.key) &&
+                this.publicationSupersedeSafety(item, true).supersede_safe,
             )
             .sort((left, right) => left.item.key.localeCompare(right.item.key))
             .slice(0, EXACT_REVIEW_PUBLICATION_ENQUEUE_SUPERSEDE_LIMIT)) {
@@ -4708,18 +4709,18 @@ export class ExactReviewQueue {
     await this.processBranchAuthorityReservations(startedAt, hostedTargetMetadataToken);
     await this.processSourceAuthorityReservations(startedAt, hostedTargetMetadataToken);
     await this.processCommandIntakes(startedAt, hostedTargetMetadataToken);
-    const pruneBatchItemKeys = new Set<string>(
-      this.batchStore.activeLeaseSnapshot(startedAt).itemKeys,
-    );
+    const batchItemKeys = new Set<string>(this.batchStore.activeLeaseSnapshot(startedAt).itemKeys);
+    let terminalized: ExactReviewLifecycleProjection[] = [];
     let snapshot = this.storage.transactionSync(() => {
       this.pruneDeliveryReceiptsSync(startedAt);
       this.commandIntakeStore.pruneTerminalReceipts(startedAt);
       this.directPublicationStore.pruneTerminalSync(startedAt);
       const current = this.readStateSync();
       this.syncLegacyCompatibilitySync(current);
-      this.pruneStalePublicationsSync(current, pruneBatchItemKeys);
+      terminalized = this.pruneStalePublicationsSync(current, batchItemKeys, startedAt);
       return current;
     });
+    for (const projection of terminalized) this.syncBayLifecycle(projection);
     let snapshotBatchOwnership = this.batchStore.activeLeaseSnapshot(startedAt);
     const reclaimedSnapshot = reclaimExpiredExactReviewLeases(
       snapshot,
@@ -6812,14 +6813,22 @@ export class ExactReviewQueue {
         (left, right) =>
           left.item.createdAt - right.item.createdAt || left.item.key.localeCompare(right.item.key),
       );
-    return { versioned, newestByTarget, stale };
+    const successors = new Map<string, ExactReviewQueueItem | null>();
+    // Command ownership moves only to one exact, durably admitted successor.
+    // Missing or ambiguous ownership must retain the stale row.
+    for (const { item, revision } of versioned) {
+      if (revision.sourceRevision !== newestByTarget.get(revision.targetKey)) continue;
+      successors.set(revision.targetKey, successors.has(revision.targetKey) ? null : item);
+    }
+    return { versioned, newestByTarget, stale, successors };
   }
 
   private pruneStalePublicationsSync(
     state: ExactReviewQueueState,
     activeBatchItemKeys: ReadonlySet<string>,
+    now: number,
   ) {
-    const { stale, newestByTarget } = this.stalePublicationCandidatesSync(
+    const { stale, newestByTarget, successors } = this.stalePublicationCandidatesSync(
       state,
       activeBatchItemKeys,
     );
@@ -6829,15 +6838,14 @@ export class ExactReviewQueue {
     );
     const hasCommand = exactReviewDecisionHasCommandContext;
     let changed = 0;
-    for (const { item, revision } of stale
-      .filter(({ item }) => !hasCommand(item.decision.publication!.producerDecision))
-      .slice(0, limit)) {
+    const terminalized: ExactReviewLifecycleProjection[] = [];
+    for (const { item, revision } of stale) {
+      if (changed >= limit) break;
       const current = state.items[item.key];
       const currentRevision = current ? exactReviewPublicationRevision(current.decision) : null;
       if (
         !current ||
         current.terminalFinalization ||
-        hasCommand(current.decision.publication!.producerDecision) ||
         current.revision !== item.revision ||
         !currentRevision ||
         currentRevision.sourceRevision !== revision.sourceRevision ||
@@ -6848,7 +6856,42 @@ export class ExactReviewQueue {
       ) {
         continue;
       }
-      delete state.items[current.key];
+      const producer = current.decision.publication!.producerDecision;
+      if (hasCommand(producer)) {
+        const successor = successors.get(currentRevision.targetKey);
+        if (
+          this.publicationSupersedeSafety(current).acknowledgement_unavailable_reason !==
+            "terminal_missing" ||
+          !successor
+        )
+          continue;
+        const successorProducer = successor.decision.publication!.producerDecision;
+        const successorAdmission = this.lifecycleProjectionStore.read(
+          `${successorProducer.targetRepo}#${successorProducer.itemNumber}`,
+          successor.key,
+          successor.revision,
+        )?.admission;
+        if (
+          successorAdmission?.commandOriginated !== hasCommand(successorProducer) ||
+          successorAdmission.statusMarker !== (successorProducer.commandStatusMarker ?? null) ||
+          successorAdmission.statusCommentId !== (successorProducer.statusCommentId ?? null)
+        )
+          continue;
+        const requeue = exactReviewCommandObligationSurvives(producer, successorProducer);
+        terminalized.push(
+          this.recordLifecycleTerminalDispositionSync(
+            exactReviewTerminalFinalizationProjection(current, current.revision),
+            requeue ? "requeue" : "superseded",
+            now,
+            state,
+            undefined,
+            false,
+          ).projection,
+        );
+        if (requeue) delete state.items[current.key];
+      } else {
+        delete state.items[current.key];
+      }
       changed += 1;
     }
     if (changed) {
@@ -6858,6 +6901,7 @@ export class ExactReviewQueue {
         publicationSuperseded: changed,
       });
     }
+    return terminalized;
   }
 
   private async reconcilePublicationCandidates(
@@ -9582,30 +9626,15 @@ export class ExactReviewQueue {
     }
     try {
       const now = Date.now();
-      const result = this.storage.transactionSync(() => {
-        const result = this.lifecycleProjectionStore.recordTerminalDispositionSync({
-          ...identity,
+      const result = this.storage.transactionSync(() =>
+        this.recordLifecycleTerminalDispositionSync(
+          identity,
           kind,
-          operationId,
-          observedAt: now,
-        });
-        if (result.duplicate) return result;
-        const state = this.readStateSync();
-        const driverCancelled =
-          kind === "requeue" ? this.cancelTerminalFinalizationDrivers(state, identity) : false;
-        const driverChanged =
-          kind === "requeue"
-            ? false
-            : this.ensureLifecycleTerminalFinalizationDriver({
-                state,
-                projection: result.projection,
-                terminalDisposition: kind,
-                now,
-              });
-        const receiptRemoved = this.removeTerminalizedLifecycleQueueItem(state, identity);
-        if (driverChanged || driverCancelled || receiptRemoved) this.writeStateSync(state);
-        return result;
-      });
+          now,
+          undefined,
+          typeof operationId === "string" ? operationId : undefined,
+        ),
+      );
       this.syncBayLifecycle(result.projection);
       await this.scheduleNext(this.readStateSync(), now);
       return json({
@@ -9621,6 +9650,37 @@ export class ExactReviewQueue {
       }
       return json({ error: "invalid_lifecycle_terminal_disposition" }, 409);
     }
+  }
+
+  private recordLifecycleTerminalDispositionSync(
+    identity: ExactReviewLifecycleProjectionIdentity,
+    kind: LifecycleTerminalDisposition,
+    now: number,
+    state = this.readStateSync(),
+    operationId?: string,
+    persist = true,
+  ) {
+    const result = this.lifecycleProjectionStore.recordTerminalDispositionSync({
+      ...identity,
+      kind,
+      operationId,
+      observedAt: now,
+    });
+    if (result.duplicate) return result;
+    const driverCancelled =
+      kind === "requeue" ? this.cancelTerminalFinalizationDrivers(state, identity) : false;
+    const driverChanged =
+      kind === "requeue"
+        ? false
+        : this.ensureLifecycleTerminalFinalizationDriver({
+            state,
+            projection: result.projection,
+            terminalDisposition: kind,
+            now,
+          });
+    const receiptRemoved = this.removeTerminalizedLifecycleQueueItem(state, identity);
+    if (persist && (driverChanged || driverCancelled || receiptRemoved)) this.writeStateSync(state);
+    return result;
   }
 
   private requeueDirectLifecyclePublicationSync(

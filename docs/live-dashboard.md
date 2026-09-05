@@ -645,8 +645,12 @@ older probes, including across tombstone expiry. Tombstones expire lazily after
 at least 30 minutes; probes outliving retention must retry.
 
 Alarms prune up to `EXACT_REVIEW_STALE_PUBLICATION_PRUNE_LIMIT` stale revisions
-(default 100), oldest first, without GitHub reads. Only pending/parked rows without
-active batch ownership, terminal finalization or command context qualify;
+(default 100), oldest first, without GitHub reads. Pending/parked rows require no
+active batch ownership or terminal finalization. A command row with a missing
+terminal requires one exact authoritative successor and matching lifecycle
+admission: the same marker and comment requeues without a finalizer, while a
+changed address or non-command successor records superseded with an acknowledgement
+driver. Missing, ambiguous, or mismatched successor state stays retained fail-closed;
 duplicate-lineage and legacy terminal cleanup remains operator-owned.
 Successful queue handoff expires the workflow's review-start lease to permit
 another exact-head review; terminal publication still deletes the placeholder.

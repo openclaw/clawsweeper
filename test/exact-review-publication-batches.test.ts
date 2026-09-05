@@ -1240,7 +1240,7 @@ for (const [limit, command] of [
 ] as const) {
   test(
     command === "producer"
-      ? "alarm preserves command acknowledgements after batch expiry while pruning ordinary stale publications"
+      ? "alarm terminalizes a stale producer command after batch expiry while pruning ordinary publications"
       : command === "outer"
         ? "alarm treats outer-only command fields as non-command publication context"
         : `alarm prunes stale publication revisions after batch expiry with limit ${limit}`,
@@ -1265,27 +1265,77 @@ for (const [limit, command] of [
       await h.queue.alarm();
       const after = await h.publicationStats();
       const protectedCommand = command === "producer";
-      assert.deepEqual([after.pending, after.completed_total], limit === 1 ? [3, 1] : [2, 2]);
+      assert.deepEqual(
+        [after.pending, after.completed_total],
+        limit === 1 ? [protectedCommand ? 4 : 3, 1] : [2, 2],
+      );
       const remaining = await h.post("/publications/reconcile");
       assert.equal(remaining.stale_revision_eligible, limit === 1 ? 1 : 0);
       if (limit === 1) {
-        assert.equal(
-          remaining.sample[0].item_key,
-          `openclaw/openclaw#${protectedCommand ? 801 : 802}@publish:${protectedCommand ? 801 : 802}:1`,
-        );
-        if (protectedCommand)
-          assert.equal(
-            (await h.post("/publications/reconcile", { apply: true })).stale_revision_changed,
-            0,
-          );
-        else await h.queue.alarm();
+        assert.equal(remaining.sample[0].item_key, "openclaw/openclaw#802@publish:802:1");
+        await h.queue.alarm();
       }
       const final = await h.publicationStats();
-      assert.deepEqual([final.pending, final.completed_total], protectedCommand ? [3, 1] : [2, 2]);
+      assert.deepEqual([final.pending, final.completed_total], protectedCommand ? [3, 2] : [2, 2]);
       assert.equal(h.networkCalls, 0);
+      if (protectedCommand) {
+        const state = await h.storage.get("exact-review-queue");
+        const staleKey = "openclaw/openclaw#801@publish:801:1";
+        const driverKey = `terminal-finalization:${staleKey}:1`;
+        assert.equal(state.items[staleKey], undefined);
+        assert.equal(state.items[driverKey]?.terminalFinalization?.disposition, "superseded");
+        assert.equal(
+          new ExactReviewLifecycleProjectionStore(h.storage).read(
+            "openclaw/openclaw#801",
+            staleKey,
+            1,
+          )?.terminalDisposition?.kind,
+          "superseded",
+        );
+        await h.queue.alarm();
+        const replay = await h.publicationStats();
+        assert.deepEqual(
+          [replay.pending, replay.completed_total, replay.superseded_total],
+          [final.pending, final.completed_total, final.superseded_total],
+        );
+      }
     },
   );
 }
+
+test("alarm skips ineligible command rows before applying the prune limit", async (t) => {
+  const h = admissionQueue(t, {
+    EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
+    EXACT_REVIEW_STALE_PUBLICATION_PRUNE_LIMIT: "1",
+  });
+  for (const number of [803, 804]) {
+    const body = await publicationRequest(`prune-command-${number}`, number, String(number)).json();
+    body.decision.publication.producerDecision.statusCommentId = number * 10;
+    assert.equal((await h.queue.fetch(batchRequest("/enqueue", body))).status, 202);
+    h.now += 1;
+  }
+  assert.equal((await h.claim()).batch.items.length, 2);
+  for (const number of [803, 804]) await h.enqueue(number, 2);
+  const blockedKey = "openclaw/openclaw#803@publish:803:1";
+  new ExactReviewLifecycleProjectionStore(h.storage).recordTerminalDisposition({
+    canonicalTargetKey: "openclaw/openclaw#803",
+    fenceKey: blockedKey,
+    revision: 1,
+    kind: "requeue",
+    observedAt: h.now,
+  });
+
+  h.now += 60_001;
+  await h.queue.alarm();
+  const state = await h.storage.get("exact-review-queue");
+  const eligibleKey = "openclaw/openclaw#804@publish:804:1";
+  assert.ok(state.items[blockedKey]);
+  assert.equal(state.items[eligibleKey], undefined);
+  assert.equal(
+    state.items[`terminal-finalization:${eligibleKey}:1`]?.terminalFinalization?.disposition,
+    "superseded",
+  );
+});
 
 test("batch claims retain lifecycle identity until canonical routing is durable", async () => {
   const storage = new TestStorage();
@@ -1642,6 +1692,181 @@ test("newer publication revisions supersede unowned pending rows at enqueue", as
   assert.equal(stats.lanes.publication.completed_total, 1);
   assert.equal(stats.lanes.publication.superseded_total, 1);
 });
+
+test("enqueue retains an unacknowledged command for alarm-owned supersession", async (t) => {
+  const h = admissionQueue(t);
+  const stale = await publicationRequest(
+    "delivery-command-revision-1",
+    108704,
+    "2111",
+    "openclaw/openclaw",
+    1,
+  ).json();
+  const marker =
+    "<!-- clawsweeper-command-status:108704:re_review:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->";
+  Object.assign(stale.decision.publication.producerDecision, {
+    commandStatusMarker: marker,
+    statusCommentId: 1087040,
+  });
+  assert.equal((await h.queue.fetch(batchRequest("/enqueue", stale))).status, 202);
+  const response = await (
+    await h.queue.fetch(
+      publicationRequest("delivery-command-revision-2", 108704, "2112", "openclaw/openclaw", 2),
+    )
+  ).json();
+  const staleKey = "openclaw/openclaw#108704@publish:2111:1";
+  const freshKey = "openclaw/openclaw#108704@publish:2112:1";
+  assert.equal(response.superseded_publications, 0);
+  assert.ok((await h.storage.get("exact-review-queue")).items[staleKey]);
+
+  await h.queue.alarm();
+  const state = await h.storage.get("exact-review-queue");
+  assert.equal(state.items[staleKey], undefined);
+  assert.ok(state.items[freshKey]);
+  assert.equal(
+    state.items[`terminal-finalization:${staleKey}:1`]?.terminalFinalization?.disposition,
+    "superseded",
+  );
+  assert.equal(
+    new ExactReviewLifecycleProjectionStore(h.storage).read("openclaw/openclaw#108704", staleKey, 1)
+      ?.terminalDisposition?.kind,
+    "superseded",
+  );
+  const metrics = await h.publicationStats();
+  await h.queue.alarm();
+  assert.deepEqual(await h.publicationStats(), metrics);
+});
+
+test("enqueue supersedes a stale command after its acknowledgement is observed", async (t) => {
+  const h = admissionQueue(t);
+  const number = 108705;
+  const marker =
+    "<!-- clawsweeper-command-status:108705:re_review:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->";
+  const stale = await publicationRequest(
+    "delivery-command-observed-1",
+    number,
+    "2113",
+    "openclaw/openclaw",
+    1,
+  ).json();
+  Object.assign(stale.decision.publication.producerDecision, {
+    commandStatusMarker: marker,
+    statusCommentId: 1087050,
+  });
+  assert.equal((await h.queue.fetch(batchRequest("/enqueue", stale))).status, 202);
+  const identity = {
+    canonicalTargetKey: `openclaw/openclaw#${number}`,
+    fenceKey: `openclaw/openclaw#${number}@publish:2113:1`,
+    revision: 1,
+  };
+  const lifecycle = new ExactReviewLifecycleProjectionStore(h.storage);
+  lifecycle.recordCanonicalReceipt({
+    ...identity,
+    outcome: "accepted",
+    receiptId: "canonical-observed",
+    observedAt: h.now,
+  });
+  lifecycle.recordRouterReceipt({
+    ...identity,
+    outcome: "durable",
+    receiptId: "router-observed",
+    observedAt: h.now,
+  });
+  lifecycle.recordTerminalDisposition({
+    ...identity,
+    kind: "review_completed_routed",
+    observedAt: h.now,
+  });
+  assert.equal(
+    lifecycle.authorizeCommandAcknowledgement({
+      ...identity,
+      statusMarker: marker,
+      statusCommentId: 1087050,
+      observedAt: h.now,
+    }).allowed,
+    true,
+  );
+  lifecycle.observeCommandAcknowledgement({
+    ...identity,
+    statusMarker: marker,
+    statusCommentId: 1087050,
+    commandCommentId: number,
+    completionCommentId: 1087050,
+    observedAt: h.now,
+  });
+
+  const response = await (
+    await h.queue.fetch(
+      publicationRequest("delivery-command-observed-2", number, "2114", "openclaw/openclaw", 2),
+    )
+  ).json();
+  assert.equal(response.superseded_publications, 1);
+  const state = await h.storage.get("exact-review-queue");
+  assert.equal(state.items[identity.fenceKey], undefined);
+  assert.ok(state.items[`openclaw/openclaw#${number}@publish:2114:1`]);
+});
+
+for (const [scenario, successorMarker, successorComment, terminal] of [
+  ["shared exact command", "same", "same", "requeue"],
+  ["same comment with a different marker", "different", "same", "superseded"],
+  ["same marker with a different comment", "same", "different", "superseded"],
+] as const) {
+  test(`alarm terminalizes ${scenario} after batch expiry`, async (t) => {
+    const h = admissionQueue(t, { EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000" });
+    const number = scenario.length + 108710;
+    const marker = `<!-- clawsweeper-command-status:${number}:re_review:${"a".repeat(40)} -->`;
+    const stale = await publicationRequest(
+      `delivery-${number}-1`,
+      number,
+      `${number}1`,
+      "openclaw/openclaw",
+      1,
+    ).json();
+    Object.assign(stale.decision.publication.producerDecision, {
+      commandStatusMarker: marker,
+      statusCommentId: number * 10,
+    });
+    assert.equal((await h.queue.fetch(batchRequest("/enqueue", stale))).status, 202);
+    assert.equal((await h.claim()).batch.items.length, 1);
+    const fresh = await publicationRequest(
+      `delivery-${number}-2`,
+      number,
+      `${number}2`,
+      "openclaw/openclaw",
+      2,
+    ).json();
+    Object.assign(fresh.decision.publication.producerDecision, {
+      commandStatusMarker:
+        successorMarker === "same" ? marker : marker.replace("a".repeat(40), "b".repeat(40)),
+      statusCommentId: successorComment === "same" ? number * 10 : number * 10 + 1,
+    });
+    assert.equal((await h.queue.fetch(batchRequest("/enqueue", fresh))).status, 202);
+    const staleKey = `openclaw/openclaw#${number}@publish:${number}1:1`;
+    await h.queue.alarm();
+    assert.ok((await h.storage.get("exact-review-queue")).items[staleKey]);
+
+    h.now += 60_001;
+    await h.queue.alarm();
+    const state = await h.storage.get("exact-review-queue");
+    assert.equal(state.items[staleKey], undefined);
+    assert.ok(state.items[`openclaw/openclaw#${number}@publish:${number}2:1`]);
+    assert.equal(
+      new ExactReviewLifecycleProjectionStore(h.storage).read(
+        `openclaw/openclaw#${number}`,
+        staleKey,
+        1,
+      )?.terminalDisposition?.kind,
+      terminal,
+    );
+    assert.equal(
+      Boolean(state.items[`terminal-finalization:${staleKey}:1`]),
+      terminal !== "requeue",
+    );
+    const metrics = await h.publicationStats();
+    await h.queue.alarm();
+    assert.deepEqual(await h.publicationStats(), metrics);
+  });
+}
 
 test("semantic lineage dedupe cannot leave obsolete rows eligible for a batch", async (t) => {
   t.mock.method(Date, "now", () => 6_250_000);
