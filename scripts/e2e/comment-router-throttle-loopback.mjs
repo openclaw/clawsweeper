@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -27,6 +28,14 @@ if (fs.existsSync(path.join(sourceRoot, "scripts/comment-router-runner.mjs"))) {
 const runner = fs.existsSync(path.join(root, "scripts/comment-router-runner.mjs"))
   ? path.join(root, "scripts/comment-router-runner.mjs")
   : path.join(root, "dist/repair/comment-router.js");
+if (process.argv[2]) {
+  fs.writeFileSync(
+    runner,
+    execFileSync("git", ["show", `${process.argv[2]}:scripts/comment-router-runner.mjs`], {
+      cwd: sourceRoot,
+    }),
+  );
+}
 const targetRepo = "openclaw/router-throttle-proof";
 const cursorPath = path.join(
   root,
@@ -34,6 +43,26 @@ const cursorPath = path.join(
 );
 const resultPath = path.join(root, "results/comment-router-latest.json");
 const ledgerPath = path.join(root, "results/comment-router.json");
+const eventRoot = path.join(temporary, "events");
+const eventOutput = path.join(temporary, "event-output");
+const producerEnv = {
+  CLAWSWEEPER_ACTION_LEDGER_FORCE: "1",
+  CLAWSWEEPER_ACTION_LEDGER_ROOT: eventRoot,
+  CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: eventOutput,
+  GITHUB_REPOSITORY: "openclaw/clawsweeper",
+  GITHUB_SHA: "a".repeat(40),
+  GITHUB_WORKFLOW: "Comment router loopback proof",
+  GITHUB_JOB: "proof",
+  GITHUB_RUN_ID: "42",
+  GITHUB_RUN_ATTEMPT: "1",
+  GITHUB_RUN_STARTED_AT: "2026-09-05T00:00:00Z",
+  CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE: "2026-09-05",
+  GITHUB_WORKFLOW_REF: "",
+  GITHUB_ACTION: "route",
+  CLAWSWEEPER_ACTION_LEDGER_DISABLED: "0",
+  CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "",
+  CLAWSWEEPER_CRABFLEET_SESSION_ID: "",
+};
 const fakeGh = path.join(temporary, "gh-loopback.mjs");
 const cursor = {
   schema_version: 1,
@@ -66,6 +95,9 @@ const requests = [];
 const server = http.createServer((request, response) => {
   const url = new URL(request.url || "/", "http://loopback.invalid");
   requests.push(`${request.method} ${url.pathname}${url.search}`);
+  if (mode === "before-discovery") {
+    return json(response, 429, { message: "Too Many Requests" });
+  }
   if (url.pathname === "/repos/openclaw/router-throttle-proof/issues/comments/100") {
     return json(response, 200, commandComment());
   }
@@ -144,6 +176,36 @@ try {
   fs.mkdirSync(path.dirname(cursorPath), { recursive: true });
   fs.writeFileSync(cursorPath, `${JSON.stringify(cursor, null, 2)}\n`);
   fs.writeFileSync(ledgerPath, '{"updated_at":null,"commands":[]}\n');
+  fs.mkdirSync(eventRoot);
+  fs.mkdirSync(eventOutput);
+
+  mode = "before-discovery";
+  const ledgerBefore = fs.readFileSync(ledgerPath, "utf8");
+  fs.writeFileSync(
+    resultPath,
+    JSON.stringify({
+      commands_seen: 7,
+      commands: [{ issue_number: 999, status: "ready" }],
+      ledger_changed: 7,
+      routing_cursor_candidate: { ...cursor, updated_at: "2026-08-14T00:00:00.000Z" },
+    }),
+  );
+  for (const broad of [true, false]) {
+    if (!broad) fs.rmSync(resultPath);
+    const early = await runRouter(apiUrl, { broad, receipts: true });
+    assert.equal(early.status, 0, early.stderr || early.stdout);
+    const report = JSON.parse(fs.readFileSync(resultPath, "utf8"));
+    assert.equal(report.commands_seen, 0);
+    assert.deepEqual(report.commands, []);
+    assert.equal(report.ledger_changed, 0);
+    assert.deepEqual(JSON.parse(fs.readFileSync(cursorPath, "utf8")), cursor);
+    assert.equal(fs.readFileSync(ledgerPath, "utf8"), ledgerBefore);
+    const finalized = finalize(report);
+    assert.equal(finalized.status, 0, finalized.stderr);
+    assert.equal(finalized.stdout, "");
+  }
+
+  mode = "throttle";
 
   const throttled = await runRouter(apiUrl);
   assert.equal(throttled.status, 0, throttled.stderr || throttled.stdout);
@@ -154,7 +216,7 @@ try {
   assert.equal(deferred.operator_skip.reason, "github_throttled");
   assert.equal(deferred.routing_cursor.advanced, false);
 
-  const partial = await runRouter(apiUrl, { broad: true, maxComments: 2 });
+  const partial = await runRouter(apiUrl, { broad: true, maxComments: 2, receipts: true });
   assert.equal(partial.status, 0, partial.stderr || partial.stdout);
   const partialReport = JSON.parse(fs.readFileSync(resultPath, "utf8"));
   assert.equal(partialReport.operator_skip.reason, "github_throttled");
@@ -166,6 +228,9 @@ try {
     ],
   );
   assert.deepEqual(JSON.parse(fs.readFileSync(cursorPath, "utf8")), cursor);
+  const partialFinalized = finalize(partialReport);
+  assert.equal(partialFinalized.status, 0, partialFinalized.stderr);
+  assert.ok(JSON.parse(partialFinalized.stdout).event_paths.length > 0);
 
   mode = "abuse";
   const abuse = await runRouter(apiUrl);
@@ -200,6 +265,17 @@ try {
     `${JSON.stringify(
       {
         ok: true,
+        head: execFileSync("git", ["rev-parse", "HEAD"], {
+          cwd: sourceRoot,
+          encoding: "utf8",
+        }).trim(),
+        working_tree_dirty: Boolean(
+          execFileSync("git", ["status", "--porcelain"], {
+            cwd: sourceRoot,
+            encoding: "utf8",
+          }).trim(),
+        ),
+        runner_sha256: createHash("sha256").update(fs.readFileSync(runner)).digest("hex"),
         transport: "loopback HTTP via GITHUB_API_URL",
         assertions: {
           throttle_exit_zero: true,
@@ -210,6 +286,10 @@ try {
           cursor_unchanged: true,
           cursor_resumed_incrementally: true,
           real_error_nonzero: true,
+          stale_report_retired: true,
+          undiscovered_explicit_comment_not_counted: true,
+          empty_finalization_succeeded: true,
+          partial_receipts_finalized: true,
         },
         requests,
       },
@@ -222,7 +302,7 @@ try {
   fs.rmSync(temporary, { recursive: true, force: true });
 }
 
-function runRouter(apiUrl, { broad = false, maxComments = 1 } = {}) {
+function runRouter(apiUrl, { broad = false, maxComments = 1, receipts = false } = {}) {
   const selectionArgs = broad ? [] : ["--comment-ids", "100", "--item-numbers", "1"];
   const child = spawn(
     process.execPath,
@@ -244,6 +324,7 @@ function runRouter(apiUrl, { broad = false, maxComments = 1 } = {}) {
         GH_TOKEN: "loopback-proof-token",
         GITHUB_API_URL: apiUrl,
         CLAWSWEEPER_COMMENT_LOOKUP_CONCURRENCY: "1",
+        ...(receipts ? producerEnv : { CLAWSWEEPER_ACTION_LEDGER_FORCE: "0" }),
       },
     },
   );
@@ -261,6 +342,20 @@ function runRouter(apiUrl, { broad = false, maxComments = 1 } = {}) {
     child.once("error", reject);
     child.once("close", (status, signal) => resolve({ status, signal, stdout, stderr }));
   });
+}
+
+function finalize(report) {
+  return spawnSync(
+    process.execPath,
+    [
+      path.join(root, "dist/repair/action-ledger-cli.js"),
+      "finalize",
+      "--lane",
+      "comment-router",
+      ...(report.commands_seen === 0 ? ["--allow-empty"] : []),
+    ],
+    { cwd: root, encoding: "utf8", env: { ...process.env, ...producerEnv } },
+  );
 }
 
 function commandComment({ id = 100, issueNumber = 1 } = {}) {

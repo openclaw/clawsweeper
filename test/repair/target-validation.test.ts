@@ -3872,25 +3872,18 @@ if (args[0] === "enable") {
     setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
   };
 
-  withCommandOverridesUnset(["corepack", "pnpm"], () =>
-    withPathOnlyPrefix(hostBin, () => {
-      prepareTargetToolchain(cwd, options);
-      assert.deepEqual(runAllowedValidationCommands(["pnpm verify"], cwd, options), [
-        "pnpm verify",
-      ]);
+  withPreparedPnpmToolchain(cwd, hostBin, options, () => {
+    assert.deepEqual(runAllowedValidationCommands(["pnpm verify"], cwd, options), ["pnpm verify"]);
 
-      fs.writeFileSync(path.join(cwd, "check.js"), "process.exit(1);\n");
-      assert.throws(
-        () => runAllowedValidationCommands(["pnpm verify"], cwd, options),
-        /prepared target pnpm toolchain is stale/,
-      );
+    fs.writeFileSync(path.join(cwd, "check.js"), "process.exit(1);\n");
+    assert.throws(
+      () => runAllowedValidationCommands(["pnpm verify"], cwd, options),
+      /prepared target pnpm toolchain is stale/,
+    );
 
-      prepareTargetToolchain(cwd, options);
-      assert.deepEqual(runAllowedValidationCommands(["pnpm verify"], cwd, options), [
-        "pnpm verify",
-      ]);
-    }),
-  );
+    prepareTargetToolchain(cwd, options);
+    assert.deepEqual(runAllowedValidationCommands(["pnpm verify"], cwd, options), ["pnpm verify"]);
+  });
 
   assert.equal(fs.existsSync(hostLog), false, "host pnpm must never run");
   const corepackInvocations = fs.readFileSync(corepackLog, "utf8").trim().split(/\r?\n/);
@@ -4015,14 +4008,17 @@ if (args[0] === "enable") {
       setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
     };
 
-    withCommandOverridesUnset(["corepack", "pnpm"], () =>
-      withPathOnlyPrefix(hostBin, () => {
-        prepareTargetToolchain(cwd, options, ["pnpm check:changed"]);
+    withPreparedPnpmToolchain(
+      cwd,
+      hostBin,
+      options,
+      () => {
         assert.deepEqual(
           runAllowedValidationCommands(["pnpm first", "pnpm second"], cwd, options),
           ["pnpm first", "pnpm second"],
         );
-      }),
+      },
+      ["pnpm check:changed"],
     );
 
     const invocations = fs
@@ -4306,9 +4302,7 @@ if (args[0] === "enable") {
     setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
   };
 
-  withCommandOverridesUnset(["corepack", "pnpm"], () =>
-    withPathOnlyPrefix(hostBin, () => prepareTargetToolchain(cwd, options)),
-  );
+  withPreparedPnpmToolchain(cwd, hostBin, options, () => undefined);
 
   assert.equal(fs.existsSync(maliciousMarker), false);
 });
@@ -4893,23 +4887,7 @@ test("OpenClaw changed-gate rebuilds are disposable and restore existing runtime
       ].join("\n"),
     );
 
-    assert.deepEqual(
-      withPathOnlyPrefix(binDir, () =>
-        runAllowedValidationCommands(
-          ["pnpm check:changed"],
-          cwd,
-          validationOptions("openclaw/openclaw", {
-            pinnedBaseRef: "origin/main",
-            toolchain: {
-              packageManager: "pnpm",
-              baseValidationCommands: [],
-              changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
-            },
-          }),
-        ),
-      ),
-      ["pnpm check:changed"],
-    );
+    assert.deepEqual(runOpenClawChangedGate(cwd, binDir), ["pnpm check:changed"]);
     for (const output of ["dist", "packages/plugin-sdk/dist"]) {
       const generated = path.join(cwd, output, "runtime.js");
       if (existingOutputs) {
@@ -4947,21 +4925,7 @@ test("changed-gate output restoration still rejects unrelated ignored-input pois
   );
 
   assert.throws(
-    () =>
-      withPathOnlyPrefix(binDir, () =>
-        runAllowedValidationCommands(
-          ["pnpm check:changed"],
-          cwd,
-          validationOptions("openclaw/openclaw", {
-            pinnedBaseRef: "origin/main",
-            toolchain: {
-              packageManager: "pnpm",
-              baseValidationCommands: [],
-              changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
-            },
-          }),
-        ),
-      ),
+    () => runOpenClawChangedGate(cwd, binDir),
     /runtimeInputsSha256; changed runtime roots: node_modules$/,
   );
   assert.equal(fs.readFileSync(path.join(dist, "runtime.js"), "utf8"), "trusted original\n");
@@ -4982,21 +4946,7 @@ test("changed-gate output preparation failures preserve the existing compiler ca
   writeNodeCommandShim(binDir, "pnpm", "");
 
   assert.throws(
-    () =>
-      withPathOnlyPrefix(binDir, () =>
-        runAllowedValidationCommands(
-          ["pnpm check:changed"],
-          cwd,
-          validationOptions("openclaw/openclaw", {
-            pinnedBaseRef: "origin/main",
-            toolchain: {
-              packageManager: "pnpm",
-              baseValidationCommands: [],
-              changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
-            },
-          }),
-        ),
-      ),
+    () => runOpenClawChangedGate(cwd, binDir),
     /changed-gate validation has an unsafe existing output: dist/,
   );
   assert.equal(fs.readFileSync(cache, "utf8"), "trusted compiler state\n");
@@ -5030,21 +4980,7 @@ test(
     );
 
     assert.throws(
-      () =>
-        withPathOnlyPrefix(binDir, () =>
-          runAllowedValidationCommands(
-            ["pnpm check:changed"],
-            cwd,
-            validationOptions("openclaw/openclaw", {
-              pinnedBaseRef: "origin/main",
-              toolchain: {
-                packageManager: "pnpm",
-                baseValidationCommands: [],
-                changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
-              },
-            }),
-          ),
-        ),
+      () => runOpenClawChangedGate(cwd, binDir),
       (error: Error) =>
         /validation command failed \(pnpm check:changed\)/.test(error.message) &&
         /changed-gate validation produced an unsafe output: dist/.test(
@@ -5090,23 +5026,7 @@ test("OpenClaw changed-gate compiler cache is disposable and preserves existing 
       ].join("\n"),
     );
 
-    assert.deepEqual(
-      withPathOnlyPrefix(binDir, () =>
-        runAllowedValidationCommands(
-          ["pnpm check:changed"],
-          cwd,
-          validationOptions("openclaw/openclaw", {
-            pinnedBaseRef: "origin/main",
-            toolchain: {
-              packageManager: "pnpm",
-              baseValidationCommands: [],
-              changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
-            },
-          }),
-        ),
-      ),
-      ["pnpm check:changed"],
-    );
+    assert.deepEqual(runOpenClawChangedGate(cwd, binDir), ["pnpm check:changed"]);
     assert.equal(
       fs.readFileSync(path.join(artifacts, "stable.txt"), "utf8"),
       "existing artifact\n",
@@ -5163,21 +5083,7 @@ test("OpenClaw changed-gate caches are disposable without exempting sibling runt
           : []),
       ].join("\n"),
     );
-    const execute = () =>
-      withPathOnlyPrefix(binDir, () =>
-        runAllowedValidationCommands(
-          ["pnpm check:changed"],
-          cwd,
-          validationOptions("openclaw/openclaw", {
-            pinnedBaseRef: "origin/main",
-            toolchain: {
-              packageManager: "pnpm",
-              baseValidationCommands: [],
-              changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
-            },
-          }),
-        ),
-      );
+    const execute = () => runOpenClawChangedGate(cwd, binDir);
 
     if (poisonedPath) {
       assert.throws(execute, /unsafe validation command mutated checkout identity/);
@@ -5220,23 +5126,7 @@ test("OpenClaw validation disables shard timing writes without weakening ignored
       ].join("\n"),
     );
 
-    assert.deepEqual(
-      withPathOnlyPrefix(binDir, () =>
-        runAllowedValidationCommands(
-          ["pnpm check:changed"],
-          cwd,
-          validationOptions("openclaw/openclaw", {
-            pinnedBaseRef: "origin/main",
-            toolchain: {
-              packageManager: "pnpm",
-              baseValidationCommands: [],
-              changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
-            },
-          }),
-        ),
-      ),
-      ["pnpm check:changed"],
-    );
+    assert.deepEqual(runOpenClawChangedGate(cwd, binDir), ["pnpm check:changed"]);
     assert.equal(
       fs.readFileSync(path.join(artifacts, "stable.txt"), "utf8"),
       "existing artifact\n",
@@ -5272,21 +5162,7 @@ test("changed-gate compiler cache isolation still rejects unrelated ignored-inpu
   );
 
   assert.throws(
-    () =>
-      withPathOnlyPrefix(binDir, () =>
-        runAllowedValidationCommands(
-          ["pnpm check:changed"],
-          cwd,
-          validationOptions("openclaw/openclaw", {
-            pinnedBaseRef: "origin/main",
-            toolchain: {
-              packageManager: "pnpm",
-              baseValidationCommands: [],
-              changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
-            },
-          }),
-        ),
-      ),
+    () => runOpenClawChangedGate(cwd, binDir),
     /unsafe validation command mutated checkout identity \(pnpm check:changed\): runtimeInputsSha256; changed runtime roots: \.artifacts/,
   );
   assert.equal(fs.existsSync(path.join(artifacts, "tsgo-cache")), false);
@@ -5318,16 +5194,7 @@ test("runtime root diagnostics identify same-size poisoning even when its timest
   );
 
   assert.throws(
-    () =>
-      withPathOnlyPrefix(binDir, () =>
-        runAllowedValidationCommands(
-          ["pnpm verify"],
-          cwd,
-          validationOptions("steipete/example", {
-            toolchain: { packageManager: "pnpm", baseValidationCommands: [], changedGate: null },
-          }),
-        ),
-      ),
+    () => runStandardPnpmVerify(cwd, binDir),
     /runtimeInputsSha256; changed runtime roots: node_modules/,
   );
 });
@@ -5358,16 +5225,7 @@ test("runtime root diagnostics identify every independently mutated ignored root
   );
 
   assert.throws(
-    () =>
-      withPathOnlyPrefix(binDir, () =>
-        runAllowedValidationCommands(
-          ["pnpm verify"],
-          cwd,
-          validationOptions("steipete/example", {
-            toolchain: { packageManager: "pnpm", baseValidationCommands: [], changedGate: null },
-          }),
-        ),
-      ),
+    () => runStandardPnpmVerify(cwd, binDir),
     /runtimeInputsSha256; changed runtime roots: alpha, node_modules$/,
   );
 });
@@ -5402,16 +5260,7 @@ test(
     );
 
     assert.throws(
-      () =>
-        withPathOnlyPrefix(binDir, () =>
-          runAllowedValidationCommands(
-            ["pnpm verify"],
-            cwd,
-            validationOptions("steipete/example", {
-              toolchain: { packageManager: "pnpm", baseValidationCommands: [], changedGate: null },
-            }),
-          ),
-        ),
+      () => runStandardPnpmVerify(cwd, binDir),
       /runtimeInputsSha256; changed runtime roots: node_modules, runtime-input$/,
     );
   },
@@ -5446,16 +5295,7 @@ test(
     );
 
     assert.throws(
-      () =>
-        withPathOnlyPrefix(binDir, () =>
-          runAllowedValidationCommands(
-            ["pnpm verify"],
-            cwd,
-            validationOptions("steipete/example", {
-              toolchain: { packageManager: "pnpm", baseValidationCommands: [], changedGate: null },
-            }),
-          ),
-        ),
+      () => runStandardPnpmVerify(cwd, binDir),
       /runtimeInputsSha256; changed runtime roots: alpha, node_modules$/,
     );
   },
@@ -5485,16 +5325,7 @@ test(
     writeNodeCommandShim(binDir, "pnpm", 'require("node:fs").unlinkSync("alpha/shared.js");');
 
     assert.throws(
-      () =>
-        withPathOnlyPrefix(binDir, () =>
-          runAllowedValidationCommands(
-            ["pnpm verify"],
-            cwd,
-            validationOptions("steipete/example", {
-              toolchain: { packageManager: "pnpm", baseValidationCommands: [], changedGate: null },
-            }),
-          ),
-        ),
+      () => runStandardPnpmVerify(cwd, binDir),
       /runtimeInputsSha256; changed runtime roots: alpha$/,
     );
   },
@@ -5538,16 +5369,7 @@ test(
     writeNodeCommandShim(binDir, "pnpm", 'require("node:fs").unlinkSync("alpha/shared");');
 
     assert.throws(
-      () =>
-        withPathOnlyPrefix(binDir, () =>
-          runAllowedValidationCommands(
-            ["pnpm verify"],
-            cwd,
-            validationOptions("steipete/example", {
-              toolchain: { packageManager: "pnpm", baseValidationCommands: [], changedGate: null },
-            }),
-          ),
-        ),
+      () => runStandardPnpmVerify(cwd, binDir),
       /runtimeInputsSha256; changed runtime roots: alpha$/,
     );
   },
@@ -5735,16 +5557,7 @@ test("runtime root mutation diagnostics enforce their comparison deadline", () =
   };
   try {
     assert.throws(
-      () =>
-        withPathOnlyPrefix(binDir, () =>
-          runAllowedValidationCommands(
-            ["pnpm verify"],
-            cwd,
-            validationOptions("steipete/example", {
-              toolchain: { packageManager: "pnpm", baseValidationCommands: [], changedGate: null },
-            }),
-          ),
-        ),
+      () => runStandardPnpmVerify(cwd, binDir),
       (error: Error & { cause?: Error }) =>
         /unsafe validation command checkout identity could not be verified/.test(error.message) &&
         /validation identity deadline exhausted during runtime root comparison/.test(
@@ -5788,21 +5601,7 @@ test("runtime root diagnostics ignore safe cache-directory timestamp changes", (
   );
 
   assert.throws(
-    () =>
-      withPathOnlyPrefix(binDir, () =>
-        runAllowedValidationCommands(
-          ["pnpm check:changed"],
-          cwd,
-          validationOptions("openclaw/openclaw", {
-            pinnedBaseRef: "origin/main",
-            toolchain: {
-              packageManager: "pnpm",
-              baseValidationCommands: [],
-              changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
-            },
-          }),
-        ),
-      ),
+    () => runOpenClawChangedGate(cwd, binDir),
     /runtimeInputsSha256; changed runtime roots: node_modules$/,
   );
   assert.equal(fs.readFileSync(path.join(artifacts, "stable.txt"), "utf8"), "trusted artifact\n");
@@ -5838,23 +5637,7 @@ test("changed-gate merge-base fallback also isolates its disposable compiler cac
     ].join("\n"),
   );
 
-  assert.deepEqual(
-    withPathOnlyPrefix(binDir, () =>
-      runAllowedValidationCommands(
-        ["pnpm check:changed"],
-        cwd,
-        validationOptions("openclaw/openclaw", {
-          pinnedBaseRef: "origin/main",
-          toolchain: {
-            packageManager: "pnpm",
-            baseValidationCommands: [],
-            changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
-          },
-        }),
-      ),
-    ),
-    ["pnpm check:changed"],
-  );
+  assert.deepEqual(runOpenClawChangedGate(cwd, binDir), ["pnpm check:changed"]);
   assert.equal(fs.readFileSync(attemptPath, "utf8"), "2");
   assert.equal(fs.readFileSync(path.join(artifacts, "stable.txt"), "utf8"), "existing artifact\n");
   assert.equal(fs.existsSync(path.join(artifacts, "tsgo-cache")), false);
@@ -6324,10 +6107,7 @@ if (args[0] === "enable") {
     };
 
     assert.throws(
-      () =>
-        withCommandOverridesUnset(["corepack", "pnpm"], () =>
-          withPathOnlyPrefix(hostBin, () => prepareTargetToolchain(cwd, options)),
-        ),
+      () => withPreparedPnpmToolchain(cwd, hostBin, options, () => undefined),
       /prepared target pnpm symlink escapes runtime/,
     );
   },
@@ -6397,26 +6177,23 @@ if (args[0] === "enable") {
       setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
     };
 
-    withCommandOverridesUnset(["corepack", "pnpm"], () =>
-      withPathOnlyPrefix(hostBin, () => {
-        prepareTargetToolchain(cwd, options);
-        fs.writeFileSync(
-          corepackLib,
-          `require("node:fs").writeFileSync(${JSON.stringify(maliciousMarker)}, "ran");\n`,
-        );
-        fs.writeFileSync(
-          corepackPackageJson,
-          `${JSON.stringify({
-            name: "corepack",
-            version: "mutated-host-package",
-            exports: { "./package.json": "./package.json" },
-          })}\n`,
-        );
-        assert.deepEqual(runAllowedValidationCommands(["pnpm verify"], cwd, options), [
-          "pnpm verify",
-        ]);
-      }),
-    );
+    withPreparedPnpmToolchain(cwd, hostBin, options, () => {
+      fs.writeFileSync(
+        corepackLib,
+        `require("node:fs").writeFileSync(${JSON.stringify(maliciousMarker)}, "ran");\n`,
+      );
+      fs.writeFileSync(
+        corepackPackageJson,
+        `${JSON.stringify({
+          name: "corepack",
+          version: "mutated-host-package",
+          exports: { "./package.json": "./package.json" },
+        })}\n`,
+      );
+      assert.deepEqual(runAllowedValidationCommands(["pnpm verify"], cwd, options), [
+        "pnpm verify",
+      ]);
+    });
 
     assert.equal(fs.existsSync(maliciousMarker), false);
     assert.deepEqual(fs.readFileSync(logPath, "utf8").trim().split(/\r?\n/), [
@@ -9430,6 +9207,51 @@ function withVirtualDeadlineCommands(t, now, onCommand, callback) {
     clock.mock.restore();
     fs.rmSync(binDir, { recursive: true, force: true });
   }
+}
+
+function runOpenClawChangedGate(cwd: string, binDir: string): string[] {
+  return withPathOnlyPrefix(binDir, () =>
+    runAllowedValidationCommands(
+      ["pnpm check:changed"],
+      cwd,
+      validationOptions("openclaw/openclaw", {
+        pinnedBaseRef: "origin/main",
+        toolchain: {
+          packageManager: "pnpm",
+          baseValidationCommands: [],
+          changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
+        },
+      }),
+    ),
+  );
+}
+
+function runStandardPnpmVerify(cwd: string, binDir: string): string[] {
+  return withPathOnlyPrefix(binDir, () =>
+    runAllowedValidationCommands(
+      ["pnpm verify"],
+      cwd,
+      validationOptions("steipete/example", {
+        toolchain: { packageManager: "pnpm", baseValidationCommands: [], changedGate: null },
+      }),
+    ),
+  );
+}
+
+function withPreparedPnpmToolchain<T>(
+  cwd: string,
+  hostBin: string,
+  options: Parameters<typeof prepareTargetToolchain>[1],
+  callback: () => T,
+  commands?: Parameters<typeof prepareTargetToolchain>[2],
+): T {
+  return withCommandOverridesUnset(["corepack", "pnpm"], () =>
+    withPathOnlyPrefix(hostBin, () => {
+      if (commands === undefined) prepareTargetToolchain(cwd, options);
+      else prepareTargetToolchain(cwd, options, commands);
+      return callback();
+    }),
+  );
 }
 
 function withPackageScriptPnpm(callback, { name = "check:changed", file = "check.js" } = {}) {

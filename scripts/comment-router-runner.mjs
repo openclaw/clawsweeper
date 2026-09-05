@@ -34,6 +34,8 @@ if (cursorBefore) {
   }
 }
 
+// Hydrated reports describe an earlier invocation, not this child's progress.
+fs.rmSync(reportPath, { force: true });
 const child = spawn(
   process.execPath,
   [path.join(root, "dist/repair/comment-router.js"), ...childArgs],
@@ -88,9 +90,7 @@ const deferredReport = {
   status: "deferred",
   generated_at: new Date().toISOString(),
   repo: targetRepo,
-  commands_seen: Number.isInteger(existingReport.commands_seen)
-    ? existingReport.commands_seen
-    : explicitCommentCount(argv),
+  commands_seen: Number.isInteger(existingReport.commands_seen) ? existingReport.commands_seen : 0,
   commands: Array.isArray(existingReport.commands) ? existingReport.commands : [],
   ledger_changed: ledgerChanged ? 1 : Number(existingReport.ledger_changed ?? 0),
   short_circuited: false,
@@ -224,11 +224,6 @@ function flagValue(args, name) {
 function hasAnyFlag(args, names) {
   const flags = new Set(names.map((name) => `--${name}`));
   return args.some((arg) => flags.has(arg));
-}
-
-function explicitCommentCount(args) {
-  const value = flagValue(args, "comment-ids") || flagValue(args, "comment-id");
-  return value ? new Set(value.split(",").filter(Boolean)).size : 0;
 }
 
 function repoSlug(repo) {

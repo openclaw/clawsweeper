@@ -17,6 +17,10 @@ test("comment router defers GitHub throttles without advancing its cursor", asyn
     cursor_unchanged: true,
     cursor_resumed_incrementally: true,
     real_error_nonzero: true,
+    stale_report_retired: true,
+    undiscovered_explicit_comment_not_counted: true,
+    empty_finalization_succeeded: true,
+    partial_receipts_finalized: true,
   });
   assert.equal(receipt.transport, "loopback HTTP via GITHUB_API_URL");
 });

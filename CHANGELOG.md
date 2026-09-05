@@ -87,8 +87,12 @@ checkpoint, and status-only commits are intentionally omitted.
 ### Fixed
 
 - Align generated evidence commands with the parser's single-line contract so multiline proof commands remain in evidence detail instead of failing completed reviews.
+- Retire stale comment-router reports before each invocation so early GitHub throttles do not claim prior commands or fail empty action-ledger finalization.
 
-- Terminalize stale command publications after batch expiry without losing shared acknowledgement obligations.
+- Keep GitHub request deadlines active through response-body reads so stalled responses cannot hold queue operations indefinitely, while preserving HTTP and rate-limit classification.
+
+- Accept compressed Gitcrawl store snapshots in cluster intake and treat empty portable cluster tables as a successful empty import.
+- Terminalize stale command publications after batch expiry without losing shared acknowledgement obligations; thanks @vincentkoc.
 - Bound GitHub activity hook prompts to one received event and filtered trusted self-authored review chatter before model intake.
 - Replay durable scheduled enqueue dispositions after transient response loss while preserving signed delivery identity, rejecting mismatched bytes, failing closed on legacy ambiguous receipts, and leaving publication post-effects single-attempt.
 - Use the producer Actions run URL in failed-review retry receipts so ledger validation no longer prevents dispatch and fails the retry command.

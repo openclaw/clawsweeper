@@ -4,7 +4,10 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { parseDecision } from "../dist/clawsweeper.js";
 import { closeDecision } from "../test/helpers.ts";
-import { assertMatchesJsonSchema } from "./hosted-review-canary-proof.mjs";
+import {
+  assertMatchesJsonSchema,
+  runWithWithheldDiagnostics,
+} from "./hosted-review-canary-proof.mjs";
 
 const [baselinePath, candidatePath, outputPath] = process.argv.slice(2);
 assert.ok(
@@ -13,15 +16,17 @@ assert.ok(
 );
 const schemaText = readFileSync("schema/clawsweeper-decision.schema.json", "utf8");
 const schema = JSON.parse(schemaText).properties.evidence.items;
-const baseline = JSON.parse(readFileSync(baselinePath, "utf8"));
-const candidate = JSON.parse(readFileSync(candidatePath, "utf8"));
-const parse = (evidence) => parseDecision(closeDecision({ evidence: [evidence] }));
-assert.match(baseline.command, /[\r\n\u2028\u2029]/);
-assert.throws(() => parse(baseline), /command must be a single-line string/);
-assertMatchesJsonSchema(candidate, schema);
-assert.equal(candidate.command, null);
-assert.ok(candidate.detail.includes(baseline.command));
-assert.equal(parse(candidate).evidence[0].command, null);
+runWithWithheldDiagnostics("Evidence schema proof failed; captured output withheld.", () => {
+  const baseline = JSON.parse(readFileSync(baselinePath, "utf8"));
+  const candidate = JSON.parse(readFileSync(candidatePath, "utf8"));
+  const parse = (evidence) => parseDecision(closeDecision({ evidence: [evidence] }));
+  assert.match(baseline.command, /[\r\n\u2028\u2029]/);
+  assert.throws(() => parse(baseline), /command must be a single-line string/);
+  assertMatchesJsonSchema(candidate, schema);
+  assert.equal(candidate.command, null);
+  assert.ok(candidate.detail.includes(baseline.command));
+  assert.equal(parse(candidate).evidence[0].command, null);
+});
 const receipt = {
   head: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
   working_tree_dirty: Boolean(

@@ -213,6 +213,12 @@ Keep these boundaries visible from the entry point:
 
 Requires Node 24.
 
+The comment-router wrapper retires its previous latest report before each child
+invocation. A throttle before discovery reports zero current commands, allowing
+the existing empty-ledger guard to apply. Partial reports and event receipts
+from the current invocation are retained; durable command ledgers and scan
+cursors are never cleared by this report reset.
+
 Validation, rendering, dry-run, and artifact-building commands below are local
 development surfaces. Commands that dispatch workflows, pass `--execute`, open
 gates, alter labels, or publish live state are operator-only; use
@@ -244,7 +250,11 @@ pnpm run repair:import-gitcrawl -- --from-gitcrawl --limit 40 --mode autonomous 
 # gitcrawl-store refreshes openclaw/openclaw every 15 minutes; the ClawSweeper
 # intake runs daily, records the processed portable DB SHA in
 # results/cluster-repair-intake/<repo>.json, and skips repeated ticks for the
-# same store snapshot. The selector model compares the candidate batch without
+# same store snapshot. New snapshots are materialized by the store's own
+# portable-artifact helper pinned to a reviewed digest, supporting raw and
+# verified gzip archives. A helper update requires a reviewed digest change. Empty
+# portable cluster tables produce no candidates; intake does not reconstruct
+# clustering omitted by the upstream export. The selector model compares the candidate batch without
 # word lists, scores, or semantic thresholds, and dispatches at most one cluster
 # through the two-worker cluster_repair lane. Clusters with one live candidate
 # and useful closed context remain eligible for model evaluation. Intake appends

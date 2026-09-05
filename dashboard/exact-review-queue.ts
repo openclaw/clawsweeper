@@ -16543,8 +16543,13 @@ async function githubTokenJson({ env = {}, token, path, method = "GET", body, er
   };
   if (body !== undefined) init.body = JSON.stringify(body);
   let response: Response;
+  let text: string;
   try {
     response = await fetch(githubApiUrl(env, path), init);
+    text = await response.text().catch((error) => {
+      if (response.ok) throw error;
+      return "";
+    });
   } catch (error) {
     const timedOut =
       controller.signal.aborted ||
@@ -16558,7 +16563,6 @@ async function githubTokenJson({ env = {}, token, path, method = "GET", body, er
     clearTimeout(timeout);
   }
   if (!response.ok) {
-    const text = await response.text().catch(() => "");
     const rateLimited = githubResponseRateLimited(response, text);
     throw new GitHubRequestError(
       `${errorLabel || "GitHub"} ${response.status}`,
@@ -16570,7 +16574,6 @@ async function githubTokenJson({ env = {}, token, path, method = "GET", body, er
     );
   }
   if (response.status === 204) return {};
-  const text = await response.text();
   return text ? JSON.parse(text) : {};
 }
 

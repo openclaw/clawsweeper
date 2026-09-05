@@ -23,6 +23,7 @@ import {
   stateAppendQueueRequest,
   signedStateAppendRequest,
   createExactReviewAdmissionHarness,
+  withExactReviewAdmissionHarness,
   buildExactReviewQueueRequest,
   exactReviewPublicationOverrides,
   legacyExactReviewPublicationOverrides,
@@ -589,7 +590,7 @@ test("one alarm pass reuses its central metadata token across visibility recheck
       return jsonResponse({ full_name: targetRepo, private: false, visibility: "public" });
     },
   });
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (
         await harness.queue.fetch(
@@ -603,9 +604,7 @@ test("one alarm pass reuses its central metadata token across visibility recheck
     assert.equal(metadataMints, 2);
     assert.equal(targetReadMints, 1);
     assert.equal(harness.dispatched.length, 1);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("metadata quota reset durably defers admission before target credentials", async () => {
@@ -640,7 +639,7 @@ test("metadata quota reset durably defers admission before target credentials", 
           );
     },
   });
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (
         await harness.queue.fetch(
@@ -659,9 +658,7 @@ test("metadata quota reset durably defers admission before target credentials", 
     assert.equal(state.items["openclaw/gogcli#8072"]?.attempts, 0);
     assert.ok((state.items["openclaw/gogcli#8072"]?.nextAttemptAt ?? 0) >= resetAt - 1_000);
     assert.equal(harness.dispatched.length, 0);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("branch and source authority admission precedes durable reservation", async () => {
@@ -808,7 +805,7 @@ test("source authority fallback recovers a trusted receipt before admission", as
       ]);
     },
   });
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     const reservationKey = await reserveDueSourceAuthority(harness, {
       deliveryId: "source-ack-recovery",
       itemNumber: 8_081,
@@ -825,9 +822,7 @@ test("source authority fallback recovers a trusted receipt before admission", as
     );
     assert.equal(harness.storage.rawHas(reservationKey), false);
     assert.equal(commentPosts, 0);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("source authority synchronize recovery never creates a missing receipt", async () => {
@@ -842,7 +837,7 @@ test("source authority synchronize recovery never creates a missing receipt", as
       return jsonResponse([]);
     },
   });
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     const reservationKey = await reserveDueSourceAuthority(harness, {
       deliveryId: "source-sync-ack-recovery",
       itemNumber: 8_086,
@@ -861,9 +856,7 @@ test("source authority synchronize recovery never creates a missing receipt", as
     );
     assert.equal(commentPosts, 0);
     assert.equal(harness.storage.rawHas(reservationKey), false);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("source authority acknowledgement errors remain deferred without enqueue", async () => {
@@ -882,7 +875,7 @@ test("source authority acknowledgement errors remain deferred without enqueue", 
         headers: { "content-type": "application/json" },
       }),
   });
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     const reservationKey = await reserveDueSourceAuthority(harness, {
       deliveryId: "source-ack-error",
       itemNumber: 8_082,
@@ -909,9 +902,7 @@ test("source authority acknowledgement errors remain deferred without enqueue", 
     };
     assert.equal(state.items["openclaw/fs-safe#8082"], undefined);
     assert.equal(sqlCount(harness.storage, "exact_review_queue_deliveries"), 0);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("source authority acknowledgement recovery defers when credentials are missing", async () => {
@@ -990,7 +981,7 @@ test("source authority recovery reuses a receipt after create response loss", as
       throw new Error("simulated response loss");
     },
   });
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     const reservationKey = await reserveDueSourceAuthority(harness, {
       deliveryId: "source-ack-response-loss",
       itemNumber: 8_083,
@@ -1015,9 +1006,7 @@ test("source authority recovery reuses a receipt after create response loss", as
     assert.equal(commentPosts, 1);
     assert.equal(comments.length, 1);
     assert.equal(harness.storage.rawHas(reservationKey), false);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("source authority acknowledgement recovery preserves concurrent receipt and source guards", async () => {
@@ -1065,7 +1054,7 @@ test("source authority acknowledgement recovery preserves concurrent receipt and
         ]);
       },
     });
-    try {
+    await withExactReviewAdmissionHarness(harness, async () => {
       reservationKey = await reserveDueSourceAuthority(harness, {
         deliveryId: `source-ack-concurrent-${concurrentChange}`,
         itemNumber,
@@ -1101,9 +1090,7 @@ test("source authority acknowledgement recovery preserves concurrent receipt and
         assert.equal(pullReads, 1);
         assert.equal(sqlCount(harness.storage, "exact_review_queue_deliveries"), 1);
       }
-    } finally {
-      harness.restore();
-    }
+    });
   }
 });
 
@@ -1136,7 +1123,7 @@ test("authority reservations remain absent while visibility I/O is pending", asy
         return jsonResponse({ token: "target-token" });
       },
     });
-    try {
+    await withExactReviewAdmissionHarness(harness, async () => {
       const decision =
         route === "branch"
           ? {
@@ -1185,9 +1172,7 @@ test("authority reservations remain absent while visibility I/O is pending", asy
       assert.equal(targetTokens, 0);
       assert.equal(sqlCount(harness.storage, "exact_review_queue_deliveries"), 0);
       assert.equal(sqlCount(harness.storage, "exact_review_queue_items"), 0);
-    } finally {
-      harness.restore();
-    }
+    });
   }
 });
 
@@ -1218,7 +1203,7 @@ test("ordinary alarm admission rechecks public targets after item reads", async 
         },
       },
     );
-    try {
+    await withExactReviewAdmissionHarness(harness, async () => {
       assert.equal(
         (
           await harness.queue.fetch(
@@ -1255,9 +1240,7 @@ test("ordinary alarm admission rechecks public targets after item reads", async 
         assert.equal(state.items[itemKey]?.attempts, 0);
         assert.ok(state.items[itemKey]!.nextAttemptAt > Date.now());
       }
-    } finally {
-      harness.restore();
-    }
+    });
   }
 });
 
@@ -1416,7 +1399,7 @@ test("ordinary command admission does not finalize a newer status revision", asy
       return jsonResponse({ token: "queue-token" });
     },
   });
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (
         await harness.queue.fetch(
@@ -1497,9 +1480,7 @@ test("ordinary command admission does not finalize a newer status revision", asy
     assert.equal(Object.keys(terminal.items).length, 0);
     assert.equal(harness.dispatched.length, 0);
     assert.equal(targetTokens, 0);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("private transition retires publication work without erasing durable fences", async () => {
@@ -1517,7 +1498,7 @@ test("private transition retires publication work without erasing durable fences
       return jsonResponse({ token: "queue-token" });
     },
   });
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     const request = () =>
       buildExactReviewQueueRequest(
         "publication-private-transition",
@@ -1578,9 +1559,7 @@ test("private transition retires publication work without erasing durable fences
       items: Record<string, unknown>;
     };
     assert.equal(replayed.items[itemKey], undefined);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("unknown publication visibility defers without spending an attempt", async () => {
@@ -1598,7 +1577,7 @@ test("unknown publication visibility defers without spending an attempt", async 
       return jsonResponse({ token: "queue-token" });
     },
   });
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (
         await harness.queue.fetch(
@@ -1633,9 +1612,7 @@ test("unknown publication visibility defers without spending an attempt", async 
       { attempts: 0, publicationFailureAttempts: undefined, state: "pending" },
     );
     assert.equal(targetTokens, 0);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("single claim terminalizes a target before recording a workflow claim", async () => {
@@ -1950,7 +1927,7 @@ test("exact-review queue resolves a closed item before dispatch", async () => {
       jsonResponse({ state: itemNumber === 113_347 ? "open" : "closed" }),
     { dispatch: () => jsonResponse({ message: "temporary failure" }, { status: 500 }) },
   );
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (await harness.queue.fetch(buildExactReviewQueueRequest("terminal-item", 597, "opened")))
         .status,
@@ -1970,16 +1947,14 @@ test("exact-review queue resolves a closed item before dispatch", async () => {
       items: Record<string, unknown>;
     };
     assert.equal(state.items["openclaw/gogcli#597"], undefined);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("exact-review queue dispatches a closed command item to complete its acknowledgement", async () => {
   const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "closed" }));
   const commandStatusMarker =
     "<!-- clawsweeper-command-status:597:re_review:0123456789abcdef0123456789abcdef01234567 -->";
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (
         await harness.queue.fetch(
@@ -2032,9 +2007,7 @@ test("exact-review queue dispatches a closed command item to complete its acknow
       commandStatusMarker,
     );
     assert.equal(state.items["openclaw/gogcli#597"]?.leaseDecision?.statusCommentId, 9001);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("exact-review queue limits live admission probes to one bounded pass", async () => {
@@ -2148,7 +2121,7 @@ test("exact-review queue throttles partial terminal admission passes", async () 
 test("exact-review queue resolves missing target responses before dispatch", async () => {
   for (const status of [404, 410]) {
     const harness = createExactReviewAdmissionHarness(() => new Response(null, { status }));
-    try {
+    await withExactReviewAdmissionHarness(harness, async () => {
       assert.equal(
         (
           await harness.queue.fetch(
@@ -2166,9 +2139,7 @@ test("exact-review queue resolves missing target responses before dispatch", asy
       assert.equal(harness.dispatched.length, 0);
       assert.equal(stats.pending, 0);
       assert.equal(stats.dispatching, 0);
-    } finally {
-      harness.restore();
-    }
+    });
   }
 });
 
@@ -2181,7 +2152,7 @@ test("exact-review queue terminalizes every admitted ordinary publication before
     },
     { maxConcurrent: "16" },
   );
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     for (let itemNumber = 9211; itemNumber <= 9215; itemNumber += 1) {
       const itemKind = itemNumber === 9215 ? "pull_request" : "issue";
       const publication = exactReviewPublicationOverrides(
@@ -2231,9 +2202,7 @@ test("exact-review queue terminalizes every admitted ordinary publication before
       )
     ).json();
     assert.equal(terminal.items.length, 0);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("terminal publication cleanup does not block review admission in the same alarm", async () => {
@@ -2249,7 +2218,7 @@ test("terminal publication cleanup does not block review admission in the same a
       captureBatchDispatch: true,
     },
   );
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     await harness.queue.fetch(
       buildExactReviewQueueRequest(
         "terminal-publication-ahead-of-review",
@@ -2274,9 +2243,7 @@ test("terminal publication cleanup does not block review admission in the same a
     ).json();
     assert.equal(stats.lanes.publication.completed_total, 1);
     assert.equal(stats.lanes.review.dispatching, 1);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("publication reconcile terminalizes a completed protocol-v1 publication after its target closes", async () => {
@@ -2287,7 +2254,7 @@ test("publication reconcile terminalizes a completed protocol-v1 publication aft
   });
   const itemNumber = 9301;
   const itemKey = `openclaw/gogcli#${itemNumber}@publish:30091560737:1`;
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (
         await harness.queue.fetch(
@@ -2322,9 +2289,7 @@ test("publication reconcile terminalizes a completed protocol-v1 publication aft
       items: Record<string, unknown>;
     };
     assert.equal(state.items[itemKey], undefined);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("publication reconcile dry runs verify terminal legacy rows without deleting them", async () => {
@@ -2336,7 +2301,7 @@ test("publication reconcile dry runs verify terminal legacy rows without deletin
   });
   const itemNumber = 9307;
   const itemKey = `openclaw/gogcli#${itemNumber}@publish:30091560744:1`;
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (
         await harness.queue.fetch(
@@ -2388,9 +2353,7 @@ test("publication reconcile dry runs verify terminal legacy rows without deletin
       items: Record<string, unknown>;
     };
     assert.ok(state.items[itemKey]);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("publication reconcile terminalizes a closed legacy publication after its lease expires", async () => {
@@ -2406,7 +2369,7 @@ test("publication reconcile terminalizes a closed legacy publication after its l
   });
   const itemNumber = 9306;
   const itemKey = `openclaw/gogcli#${itemNumber}@publish:30091560743:1`;
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (
         await harness.queue.fetch(
@@ -2453,9 +2416,7 @@ test("publication reconcile terminalizes a closed legacy publication after its l
       items: Record<string, unknown>;
     };
     assert.equal(after.items[itemKey], undefined);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("publication reconcile terminalizes a legacy row with outer-only command context", async () => {
@@ -2468,7 +2429,7 @@ test("publication reconcile terminalizes a legacy row with outer-only command co
   const itemKey = `openclaw/gogcli#${itemNumber}@publish:30091560738:1`;
   const commandStatusMarker =
     "<!-- clawsweeper-command-status:9302:re_review:0123456789abcdef0123456789abcdef01234567 -->";
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (
         await harness.queue.fetch(
@@ -2504,9 +2465,7 @@ test("publication reconcile terminalizes a legacy row with outer-only command co
       items: Record<string, { decision: { commandStatusMarker?: string } }>;
     };
     assert.equal(state.items[itemKey], undefined);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("publication reconcile preserves a legacy publication owned by an active batch", async () => {
@@ -2520,7 +2479,7 @@ test("publication reconcile preserves a legacy publication owned by an active ba
   );
   const itemNumber = 9303;
   const itemKey = `openclaw/gogcli#${itemNumber}@publish:30091560739:1`;
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (
         await harness.queue.fetch(
@@ -2566,9 +2525,7 @@ test("publication reconcile preserves a legacy publication owned by an active ba
       items: Record<string, unknown>;
     };
     assert.ok(state.items[itemKey]);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("publication reconcile preserves active legacy leases and newer publication authority", async () => {
@@ -2582,7 +2539,7 @@ test("publication reconcile preserves active legacy leases and newer publication
   const leasedItemKey = `openclaw/gogcli#${leasedItemNumber}@publish:30091560740:1`;
   const supersededItemNumber = 9305;
   const supersededItemKey = `openclaw/gogcli#${supersededItemNumber}@publish:30091560741:1`;
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (
         await harness.queue.fetch(
@@ -2666,9 +2623,7 @@ test("publication reconcile preserves active legacy leases and newer publication
     };
     assert.equal(state.items[leasedItemKey]?.state, "leased");
     assert.ok(state.items[supersededItemKey]);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("publication reconcile terminalizes a completed protocol-v2 state-batch publication after its target closes", async () => {
@@ -2706,7 +2661,7 @@ test("publication reconcile terminalizes a completed protocol-v2 state-batch pub
     itemKind: "pull_request",
     sourceEvent: "pull_request",
   };
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (
         await harness.queue.fetch(
@@ -2759,9 +2714,7 @@ test("publication reconcile terminalizes a completed protocol-v2 state-batch pub
       items: Record<string, unknown>;
     };
     assert.equal(state.items[itemKey], undefined);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("publication reconcile terminalizes a protocol-v2 row with outer-only command context", async () => {
@@ -2789,7 +2742,7 @@ test("publication reconcile terminalizes a protocol-v2 row with outer-only comma
   const itemKey = `openclaw/gogcli#${itemNumber}@publish:${producerRunId}:1`;
   const commandStatusMarker =
     "<!-- clawsweeper-command-status:9313:re_review:0123456789abcdef0123456789abcdef01234567 -->";
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (
         await harness.queue.fetch(
@@ -2827,9 +2780,7 @@ test("publication reconcile terminalizes a protocol-v2 row with outer-only comma
       items: Record<string, { decision: { commandStatusMarker?: string } }>;
     };
     assert.equal(state.items[itemKey], undefined);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("publication reconcile preserves protocol-v2 state-batch rows owned by an active batch or lease", async () => {
@@ -2850,7 +2801,7 @@ test("publication reconcile preserves protocol-v2 state-batch rows owned by an a
   );
   const batchItemNumber = 9314;
   const batchItemKey = `openclaw/gogcli#${batchItemNumber}@publish:30091560739:1`;
-  try {
+  await withExactReviewAdmissionHarness(batchHarness, async () => {
     assert.equal(
       (
         await batchHarness.queue.fetch(
@@ -2895,9 +2846,7 @@ test("publication reconcile preserves protocol-v2 state-batch rows owned by an a
       items: Record<string, unknown>;
     };
     assert.ok(batchState.items[batchItemKey]);
-  } finally {
-    batchHarness.restore();
-  }
+  });
 
   let leaseLiveChecks = 0;
   let leaseProducerChecks = 0;
@@ -2915,7 +2864,7 @@ test("publication reconcile preserves protocol-v2 state-batch rows owned by an a
   );
   const leaseItemNumber = 9315;
   const leaseItemKey = `openclaw/gogcli#${leaseItemNumber}@publish:30091560740:1`;
-  try {
+  await withExactReviewAdmissionHarness(leaseHarness, async () => {
     assert.equal(
       (
         await leaseHarness.queue.fetch(
@@ -2962,9 +2911,7 @@ test("publication reconcile preserves protocol-v2 state-batch rows owned by an a
       items: Record<string, { state: string }>;
     };
     assert.equal(leaseState.items[leaseItemKey]?.state, "leased");
-  } finally {
-    leaseHarness.restore();
-  }
+  });
 });
 
 test("publication reconcile leaves a protocol-v2 state-batch row to existing stale-revision handling when a newer head exists", async () => {
@@ -2984,7 +2931,7 @@ test("publication reconcile leaves a protocol-v2 state-batch row to existing sta
   );
   const itemNumber = 9316;
   const itemKey = `openclaw/gogcli#${itemNumber}@publish:30091560741:1`;
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (
         await harness.queue.fetch(
@@ -3026,9 +2973,7 @@ test("publication reconcile leaves a protocol-v2 state-batch row to existing sta
       items: Record<string, unknown>;
     };
     assert.ok(state.items[itemKey]);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("exact-review batch preflight follows the publisher owner selection", async () => {
@@ -3044,7 +2989,7 @@ test("exact-review batch preflight follows the publisher owner selection", async
       captureBatchDispatch: true,
     },
   );
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     for (const [deliveryId, itemNumber, targetRepo] of [
       ["owner-alpha", 9221, "alpha/repo"],
       ["owner-beta-1", 9222, "beta/repo"],
@@ -3089,9 +3034,7 @@ test("exact-review batch preflight follows the publisher owner selection", async
       )
     ).json();
     assert.equal(alphaStatus.items.length, 1);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("exact-review batch terminal probe resets for a later departure", async () => {
@@ -3159,7 +3102,7 @@ test("exact-review batch alarm avoids redundant full queue hydrations", async ()
     publicationBatching: true,
     captureBatchDispatch: true,
   });
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     const enqueue = buildExactReviewQueueRequest(
       "hydration-count",
       9232,
@@ -3183,9 +3126,7 @@ test("exact-review batch alarm avoids redundant full queue hydrations", async ()
 
     assert.equal(harness.batchDispatches, 1);
     assert.equal(fullStateReads, 5);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("exact-review batch claims keep a newer departure fence when an older workflow arrives", async () => {
@@ -3406,7 +3347,7 @@ test("exact-review batch claim retries re-admit each target and return only publ
       return repo === "openclaw/fs-safe" ? "terminal" : "retryable";
     },
   });
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     for (const [index, repo] of [
       "openclaw/gogcli",
       "openclaw/fs-safe",
@@ -3474,9 +3415,7 @@ test("exact-review batch claim retries re-admit each target and return only publ
       await harness.queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
     ).json();
     assert.equal(stats.lanes.publication.dead_letters.open, 0);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("concurrent identical batch claims replay after admission clears the reservation", async () => {
@@ -3500,7 +3439,7 @@ test("concurrent identical batch claims replay after admission clears the reserv
       return "public";
     },
   });
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (
         await harness.queue.fetch(
@@ -3574,9 +3513,7 @@ test("concurrent identical batch claims replay after admission clears the reserv
         claim_generation: item.claim_generation,
       })),
     );
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("exact-review batch retry rereads the membership fence after visibility I/O", async () => {
@@ -3602,7 +3539,7 @@ test("exact-review batch retry rereads the membership fence after visibility I/O
       return "terminal";
     },
   });
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     const enqueue = (deliveryId: string, leaseRevision: number) =>
       harness.queue.fetch(
         buildExactReviewQueueRequest(
@@ -3641,9 +3578,7 @@ test("exact-review batch retry rereads the membership fence after visibility I/O
       items: Record<string, { revision: number }>;
     };
     assert.equal(state.items["openclaw/gogcli#9247@publish:92470:1"]?.revision, 2);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("exact-review batch accepts an in-flight pre-probe rolling-deploy departure", async () => {
@@ -3699,7 +3634,7 @@ test("exact-review queue retains a 404 item when the target repository is inacce
   const harness = createExactReviewAdmissionHarness(() => new Response(null, { status: 404 }), {
     targetRepository: () => new Response(null, { status: 404 }),
   });
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (
         await harness.queue.fetch(
@@ -3718,14 +3653,12 @@ test("exact-review queue retains a 404 item when the target repository is inacce
     assert.equal(state.items["openclaw/gogcli#597"]?.state, "pending");
     assert.equal(state.items["openclaw/gogcli#597"]?.attempts, 1);
     assert.equal(state.items["openclaw/gogcli#597"]?.reviewFailureAttempts, 1);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("exact-review queue dispatches an item that remains open", async () => {
   const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }));
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (await harness.queue.fetch(buildExactReviewQueueRequest("open-item", 597, "opened"))).status,
       202,
@@ -3738,9 +3671,7 @@ test("exact-review queue dispatches an item that remains open", async () => {
       await harness.queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
     ).json();
     assert.equal(stats.dispatching, 1);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("exact-review queue supersedes a stale open pull-request head before dispatch", async () => {
@@ -3749,7 +3680,7 @@ test("exact-review queue supersedes a stale open pull-request head before dispat
   const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
     targetPull: () => jsonResponse({ state: "open", head: { sha: currentHeadSha } }),
   });
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (
         await harness.queue.fetch(
@@ -3823,9 +3754,7 @@ test("exact-review queue supersedes a stale open pull-request head before dispat
     ).json();
     assert.equal(stats.lanes.review.completed_total, 2);
     assert.equal(stats.lanes.review.superseded_total, 2);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("exact-review queue refreshes a stale pull-request command to the current head", async () => {
@@ -3836,7 +3765,7 @@ test("exact-review queue refreshes a stale pull-request command to the current h
   const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
     targetPull: () => jsonResponse({ state: "open", head: { sha: currentHeadSha } }),
   });
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (
         await harness.queue.fetch(
@@ -3908,16 +3837,14 @@ test("exact-review queue refreshes a stale pull-request command to the current h
     assert.equal(dispatched?.attempts, 0);
     assert.equal(dispatched?.leaseDecision?.sourceHeadSha, currentHeadSha);
     assert.equal(dispatched?.leaseDecision?.commandStatusMarker, commandStatusMarker);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("exact-review queue bounds item-specific terminal-state check failures", async () => {
   const harness = createExactReviewAdmissionHarness(
     () => new Response(JSON.stringify({ message: "unprocessable" }), { status: 422 }),
   );
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (await harness.queue.fetch(buildExactReviewQueueRequest("unavailable-item", 597, "opened")))
         .status,
@@ -3938,9 +3865,7 @@ test("exact-review queue bounds item-specific terminal-state check failures", as
     assert.equal(item?.attempts, 1);
     assert.equal(item?.reviewFailureAttempts, 1);
     assert.ok((item?.nextAttemptAt || 0) > Date.now());
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("exact-review admission warnings expose only closed categories and bounded counts", async () => {
@@ -4055,7 +3980,7 @@ test("exact-review operational warnings omit item identity and raw upstream fail
         throw new Error(`${errorMarker}:batch`);
       },
     });
-    try {
+    await withExactReviewAdmissionHarness(batch, async () => {
       const current = cases[0];
       await batch.queue.fetch(
         buildExactReviewQueueRequest(
@@ -4075,14 +4000,12 @@ test("exact-review operational warnings omit item identity and raw upstream fail
       );
       await batch.queue.alarm();
       assert.equal(batch.batchDispatches, 1);
-    } finally {
-      batch.restore();
-    }
+    });
 
     const review = createExactReviewAdmissionHarness(() => {
       throw new Error(`${errorMarker}:review`);
     });
-    try {
+    await withExactReviewAdmissionHarness(review, async () => {
       const current = cases[1];
       await review.queue.fetch(
         buildExactReviewQueueRequest(
@@ -4095,14 +4018,12 @@ test("exact-review operational warnings omit item identity and raw upstream fail
       );
       await review.queue.alarm();
       assert.equal(review.dispatched.length, 0);
-    } finally {
-      review.restore();
-    }
+    });
 
     const publication = createExactReviewAdmissionHarness(() => {
       throw new Error(`${errorMarker}:publication`);
     });
-    try {
+    await withExactReviewAdmissionHarness(publication, async () => {
       const current = cases[2];
       await publication.queue.fetch(
         buildExactReviewQueueRequest(
@@ -4122,14 +4043,12 @@ test("exact-review operational warnings omit item identity and raw upstream fail
       );
       await publication.queue.alarm();
       assert.equal(publication.dispatched.length, 1);
-    } finally {
-      publication.restore();
-    }
+    });
 
     const reconcile = createExactReviewAdmissionHarness(() => {
       throw new Error(`${errorMarker}:reconcile`);
     });
-    try {
+    await withExactReviewAdmissionHarness(reconcile, async () => {
       const current = cases[3];
       await reconcile.queue.fetch(
         buildExactReviewQueueRequest(
@@ -4153,16 +4072,14 @@ test("exact-review operational warnings omit item identity and raw upstream fail
         }),
       );
       assert.equal(response.status, 200);
-    } finally {
-      reconcile.restore();
-    }
+    });
 
     const token = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
       targetInstallation: () => {
         throw new Error(`${errorMarker}:token`);
       },
     });
-    try {
+    await withExactReviewAdmissionHarness(token, async () => {
       const current = cases[4];
       await token.queue.fetch(
         buildExactReviewQueueRequest(
@@ -4187,16 +4104,14 @@ test("exact-review operational warnings omit item identity and raw upstream fail
         }),
       );
       assert.equal(response.status, 200);
-    } finally {
-      token.restore();
-    }
+    });
 
     const producer = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }), {
       producerRun: () => {
         throw new Error(`${errorMarker}:producer`);
       },
     });
-    try {
+    await withExactReviewAdmissionHarness(producer, async () => {
       const current = cases[5];
       await producer.queue.fetch(
         buildExactReviewQueueRequest(
@@ -4221,9 +4136,7 @@ test("exact-review operational warnings omit item identity and raw upstream fail
         }),
       );
       assert.equal(response.status, 200);
-    } finally {
-      producer.restore();
-    }
+    });
   } finally {
     console.warn = originalWarn;
   }
@@ -4364,7 +4277,7 @@ test("exact-review queue parks an item after repeated item-specific target-state
   const harness = createExactReviewAdmissionHarness(
     () => new Response(JSON.stringify({ message: "unprocessable" }), { status: 422 }),
   );
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (
         await harness.queue.fetch(
@@ -4439,9 +4352,7 @@ test("exact-review queue parks an item after repeated item-specific target-state
       unchanged: 0,
     });
     assert.equal(harness.dispatched.length, 0);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("admission failure starts a fresh budget after a retry policy epoch change", async () => {
@@ -4449,7 +4360,7 @@ test("admission failure starts a fresh budget after a retry policy epoch change"
     () => new Response(JSON.stringify({ message: "unprocessable" }), { status: 422 }),
     { retryPolicyEpoch: "2" },
   );
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (
         await harness.queue.fetch(
@@ -4492,16 +4403,14 @@ test("admission failure starts a fresh budget after a retry policy epoch change"
     assert.equal(after.items["openclaw/gogcli#596"].attempts, 1);
     assert.equal(after.items["openclaw/gogcli#596"].reviewFailureAttempts, 1);
     assert.equal(after.items["openclaw/gogcli#596"].reviewRetryPolicyEpoch, "2");
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("exact-review queue globally backs off admission GitHub outages without charging item attempts", async () => {
   const harness = createExactReviewAdmissionHarness(
     () => new Response(JSON.stringify({ message: "unavailable" }), { status: 503 }),
   );
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (await harness.queue.fetch(buildExactReviewQueueRequest("admission-outage", 597, "opened")))
         .status,
@@ -4527,9 +4436,7 @@ test("exact-review queue globally backs off admission GitHub outages without cha
     assert.equal(state.items["openclaw/gogcli#597"]?.state, "pending");
     assert.equal(state.items["openclaw/gogcli#597"]?.attempts, 0);
     assert.equal(state.items["openclaw/gogcli#597"]?.reviewFailureAttempts, undefined);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("exact-review queue globally backs off admission 403 rate limits without charging item attempts", async () => {
@@ -4540,7 +4447,7 @@ test("exact-review queue globally backs off admission 403 rate limits without ch
         headers: { "x-ratelimit-remaining": "0" },
       }),
   );
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (
         await harness.queue.fetch(
@@ -4569,9 +4476,7 @@ test("exact-review queue globally backs off admission 403 rate limits without ch
     assert.equal(state.items["openclaw/gogcli#597"]?.state, "pending");
     assert.equal(state.items["openclaw/gogcli#597"]?.attempts, 0);
     assert.equal(state.items["openclaw/gogcli#597"]?.reviewFailureAttempts, undefined);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("exact-review queue keeps healthy targets moving when one target App access fails", async () => {
@@ -4582,7 +4487,7 @@ test("exact-review queue keeps healthy targets moving when one target App access
         ? new Response(JSON.stringify({ message: "not installed" }), { status: 404 })
         : jsonResponse({ id: 999 }),
   });
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (await harness.queue.fetch(buildExactReviewQueueRequest("target-app-failure", 597, "opened")))
         .status,
@@ -4616,9 +4521,7 @@ test("exact-review queue keeps healthy targets moving when one target App access
     assert.equal(state.items["openclaw/gogcli#597"]?.attempts, 1);
     assert.equal(state.items["openclaw/gogcli#597"]?.reviewFailureAttempts, 1);
     assert.equal(state.items["openclaw/openclaw#598"]?.state, "dispatching");
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("exact-review queue keeps healthy targets moving when one target item read is forbidden", async () => {
@@ -4629,7 +4532,7 @@ test("exact-review queue keeps healthy targets moving when one target item read 
         ? new Response(JSON.stringify({ message: "forbidden" }), { status: 403 })
         : jsonResponse({ state: "open" }),
   });
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (await harness.queue.fetch(buildExactReviewQueueRequest("forbidden-target", 597, "opened")))
         .status,
@@ -4663,9 +4566,7 @@ test("exact-review queue keeps healthy targets moving when one target item read 
     assert.equal(state.items["openclaw/gogcli#597"]?.attempts, 1);
     assert.equal(state.items["openclaw/gogcli#597"]?.reviewFailureAttempts, 1);
     assert.equal(state.items["openclaw/openclaw#598"]?.state, "dispatching");
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("exact-review admission does not restore a publication batch claim reservation", async () => {
@@ -4688,7 +4589,7 @@ test("exact-review admission does not restore a publication batch claim reservat
       dispatch: () => new Response(JSON.stringify({ message: "unavailable" }), { status: 503 }),
     },
   );
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (await harness.queue.fetch(buildExactReviewQueueRequest("batch-claim-race", 597, "opened")))
         .status,
@@ -4744,9 +4645,7 @@ test("exact-review admission does not restore a publication batch claim reservat
       dispatcher?: { publicationBatchDispatchPendingUntil?: number };
     };
     assert.equal(afterAlarm.dispatcher?.publicationBatchDispatchPendingUntil, undefined);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("exact-review terminal admission does not remove a newer queue revision", async () => {
@@ -4763,7 +4662,7 @@ test("exact-review terminal admission does not remove a newer queue revision", a
     await lookupRelease;
     return jsonResponse({ state: "closed" });
   });
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     assert.equal(
       (await harness.queue.fetch(buildExactReviewQueueRequest("stale-terminal", 597, "opened")))
         .status,
@@ -4785,9 +4684,7 @@ test("exact-review terminal admission does not remove a newer queue revision", a
     };
     assert.equal(state.items["openclaw/gogcli#597"]?.state, "pending");
     assert.equal(state.items["openclaw/gogcli#597"]?.revision, 2);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("exact-review queue upgrades flow metrics without losing publication completions", async () => {
@@ -6803,7 +6700,7 @@ test("failed parked terminal check does not block healthy pending review dispatc
 
 test("exact-review queue removes a terminal dispatch rejection after parked recovery is exhausted", async () => {
   const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "closed" }));
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     await harness.queue.fetch(
       buildExactReviewQueueRequest("terminal-exhausted-dispatch-rejection", 113_349, "opened"),
     );
@@ -6828,9 +6725,7 @@ test("exact-review queue removes a terminal dispatch rejection after parked reco
     const reconciled = (await harness.storage.get("exact-review-queue")) as typeof state;
     assert.equal(reconciled.items["openclaw/gogcli#113349"], undefined);
     assert.equal(harness.dispatched.length, 0);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("parked review operator routes paginate, resolve, and recover idempotently within caps", async () => {
