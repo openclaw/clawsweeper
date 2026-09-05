@@ -4464,7 +4464,11 @@ test("credential circuits persist, preserve healthy owners, and defer unattempte
   let now = Date.parse("2026-08-10T14:00:00.000Z");
   t.mock.method(Date, "now", () => now);
   const storage = new TestStorage();
-  let queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" });
+  const env = {
+    EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+    EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "128",
+  };
+  let queue = new ExactReviewQueue({ storage }, env);
   for (let index = 0; index < 52; index += 1) {
     await queue.fetch(
       publicationRequest(`owner-a-${index}`, 201 + index, String(1201 + index), "aaa/repo"),
@@ -4655,7 +4659,7 @@ test("credential circuits persist, preserve healthy owners, and defer unattempte
     1,
   );
   assert.equal(stats.lanes.publication.capacity_control.ceiling, 12);
-  queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" });
+  queue = new ExactReviewQueue({ storage }, env);
   const healthyOwner = await (
     await queue.fetch(
       batchRequest("/publication-batches/claim", {

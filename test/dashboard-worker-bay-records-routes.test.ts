@@ -5310,7 +5310,7 @@ test("dashboard status reads the exact-review handoff model from the durable que
       available_slots: status.lanes.review.available_slots,
       capacity: status.lanes.review.capacity,
     },
-    { pending: 3, ready: 2, backoff: 1, active: 1, available_slots: 127, capacity: 128 },
+    { pending: 3, ready: 2, backoff: 1, active: 1, available_slots: 31, capacity: 32 },
   );
   assert.deepEqual(
     {
