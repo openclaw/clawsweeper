@@ -45,6 +45,16 @@ import {
   worker,
 } from "../dashboard-worker-harness.ts";
 
+test("Web UI evidence rejects authenticated but undeclared archive files", () => {
+  const fixture = proofFixture(undefined, "web-ui-chat-proof");
+  const files = readProofZip(fixture.evidenceArchive);
+  files.set("unexpected.txt", Buffer.from("undeclared payload"));
+  assert.deepEqual(verifyCommandProof(replaceProofEvidence(fixture, files)), {
+    outcome: "inconclusive",
+    reason: "invalid_evidence_inventory",
+  });
+});
+
 async function commandProofRetryHarness(
   options: {
     pages?: unknown[];

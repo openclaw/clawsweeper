@@ -187,6 +187,8 @@ export function verifyCommandProof(options: {
   let reviewObservations = receipt.observations;
   try {
     const files = readProofZip(options.evidenceArchive);
+    if (files.size !== profile.observations.length)
+      return inconclusive("invalid_evidence_inventory");
     if (
       receipt.observations.some(
         (o) => !files.has(o.source_path) || proofDigest(files.get(o.source_path)!) !== o.sha256,
