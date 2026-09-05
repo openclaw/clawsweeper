@@ -84,7 +84,6 @@ test("missing, stale, ambiguous, or untrusted request identity cannot be admitte
     { pullRequest: 0 },
     { pullRequest: 1.5 },
     ...[
-      "proof",
       "proof web-ui-chat-proof HEAD",
       "proof ../scenario " + head,
       "proof " + "a".repeat(81) + " " + head,
@@ -98,6 +97,18 @@ test("missing, stale, ambiguous, or untrusted request identity cannot be admitte
     assert.equal(admission.status, "inconclusive");
     assert.equal(admission.request, undefined, JSON.stringify(change));
   }
+});
+
+test("bare proof and explicit lists resolve the current head without weakening exact SHA overrides", () => {
+  for (const commandText of [
+    "proof",
+    "proof web-ui-chat-proof",
+    "proof web-ui-chat-proof,telegram-bot-e2e-proof",
+    "proof web-ui-chat-proof,telegram-bot-e2e-proof,telegram-markdown-parser-fidelity " + head,
+  ]) {
+    assert.equal(admitProofCommand({ ...input, commandText }).request?.headSha, head);
+  }
+  assert.equal(admitProofCommand({ ...input, commandText: "proof" }).request?.scenarioId, "auto");
 });
 
 test("continuation cannot smuggle evidence or execution instructions into a proof request", () => {

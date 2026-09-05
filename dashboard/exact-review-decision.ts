@@ -1,5 +1,9 @@
 import { stableJson } from "../src/stable-json.ts";
 import {
+  COMMAND_PROOF_BATCH_CONTEXT_MAX,
+  commandProofBatchBinding,
+} from "../src/command-proof-contract.ts";
+import {
   DIRECT_PUBLICATION_LIFECYCLE_KINDS,
   type DirectPublicationLifecyclePlan,
 } from "./exact-review-direct-publication.ts";
@@ -420,7 +424,10 @@ export function exactReviewBaseDecisionFrom(value: unknown): ExactReviewBaseDeci
   if (
     hasAdditionalPrompt &&
     (typeof additionalPrompt !== "string" ||
-      additionalPrompt.length > EXACT_REVIEW_ADDITIONAL_PROMPT_MAX_CHARS ||
+      additionalPrompt.length >
+        (sourceAction === "command_proof_result" && commandProofBatchBinding(additionalPrompt)
+          ? COMMAND_PROOF_BATCH_CONTEXT_MAX
+          : EXACT_REVIEW_ADDITIONAL_PROMPT_MAX_CHARS) ||
       additionalPrompt.includes("\0"))
   ) {
     return null;

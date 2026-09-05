@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { primaryBodySourceSha256 } from "./clawsweeper-primary-body.js";
 import { type CommandProofScenario, proofText } from "./command-proof-contract.js";
+import { commandProofBatchBinding } from "./command-proof-contract.js";
 
 /** Hash the exact bounded ref; never normalize or infer a missing target. */
 export function commandProofBaseRefSha256(ref: unknown): string | null {
@@ -13,8 +14,10 @@ export function commandProofBinding(prompt: string): {
   baseRefSha256: string;
   baseSha: string;
   requestId: string;
-  scenario: CommandProofScenario;
+  scenario: CommandProofScenario | "batch";
 } | null {
+  const batch = commandProofBatchBinding(prompt);
+  if (batch) return batch;
   const match =
     /^<!-- command-proof-assessment-v1 head=([0-9a-f]{40}) body=([0-9a-f]{64}) base=([0-9a-f]{64}) base_sha=([0-9a-f]{40}) request=([0-9a-f]{64}) scenario=(web-ui-chat-proof|telegram-bot-e2e-proof|telegram-markdown-parser-fidelity) -->\n/.exec(
       prompt,

@@ -7,8 +7,14 @@ import {
   type CommandProofClaim,
 } from "../src/command-proof-contract.ts";
 import type { DurableStorage } from "./durable-storage.ts";
+import {
+  parseCommandProofPlan,
+  proofPlanClaimsMatch,
+  type CommandProofBatch,
+} from "../src/command-proof-contract.ts";
 
 export type CommandProofRecord = {
+  batch?: CommandProofBatch;
   claim: CommandProofClaim;
   state: "dispatch_claimed" | "review_pending" | "completed" | "inconclusive";
   createdAt: number;
@@ -39,7 +45,7 @@ export class CommandProofRequestStore {
         " (request_id TEXT PRIMARY KEY, target_key TEXT UNIQUE NOT NULL, record_json TEXT NOT NULL, expires_at INTEGER NOT NULL) STRICT",
     );
   }
-  claim(value: unknown, now: number) {
+  claim(value: unknown, now: number, batch = false) {
     const claim = parseCommandProofClaim(value);
     if (
       !claim ||
@@ -98,6 +104,7 @@ export class CommandProofRequestStore {
       )
         return { accepted: false, reason: "proof_capacity_busy" };
       const record: CommandProofRecord = {
+        ...(batch ? { batch: { claims: [], index: 0, started: false, results: [] } } : {}),
         claim,
         state: "dispatch_claimed",
         createdAt: now,
@@ -166,6 +173,57 @@ export class CommandProofRequestStore {
         return record;
       }
       if (
+        record.batch &&
+        body.operation === "dispatched" &&
+        (body.index !== record.batch.index || !record.batch.started)
+      )
+        return null;
+      if (body.operation === "plan" && record.batch && !record.batch.plan) {
+        const plan = parseCommandProofPlan(body.plan);
+        if (!plan || !proofPlanClaimsMatch(record.claim, body.claims, plan)) return null;
+        record.batch.plan = plan;
+        record.batch.claims = body.claims;
+        if (!plan.scenarios.length) {
+          record.state = "inconclusive";
+          record.reason = "No supported scenario covers this change. " + plan.missingProof;
+        }
+      } else if (body.operation === "batch-start" && record.batch?.plan) {
+        if (
+          record.batch.index !== body.index ||
+          record.batch.started ||
+          !record.batch.claims[record.batch.index]
+        )
+          return null;
+        record.batch.started = true;
+      } else if (body.operation === "batch-result" && record.batch?.plan) {
+        if (
+          record.batch.index !== body.index ||
+          !record.batch.started ||
+          !record.batch.claims[record.batch.index]
+        )
+          return null;
+        const result = proofRecord(body.result);
+        if (result.outcome === "inconclusive") {
+          if (
+            !proofText(result.reason, 2048) ||
+            Object.keys(result).sort().join() !== "outcome,reason"
+          )
+            return null;
+        } else if (!validResult(result)) return null;
+        record.batch.results.push(result as CommandProofBatch["results"][number]);
+        record.batch.index++;
+        record.batch.started = false;
+        delete record.runId;
+        delete record.nextAttemptAt;
+        if (record.batch.index === record.batch.claims.length) record.state = "review_pending";
+      } else if (
+        body.operation === "batch-enqueued" &&
+        record.batch?.plan &&
+        record.state === "review_pending"
+      ) {
+        record.state = "completed";
+        record.notified = true;
+      } else if (
         body.operation === "dispatched" &&
         typeof body.runId === "string" &&
         /^[1-9][0-9]{0,19}$/.test(body.runId)
@@ -177,16 +235,7 @@ export class CommandProofRequestStore {
         record.reason = body.reason;
       } else if (body.operation === "verified") {
         const result = proofRecord(body.result);
-        if (
-          !["pass", "fail"].includes(String(result.outcome)) ||
-          !proofSha(result.digest, 64) ||
-          !proofText(result.reviewContext, 4800) ||
-          typeof result.runId !== "string" ||
-          !/^[1-9][0-9]{0,19}$/.test(result.runId) ||
-          !Number.isSafeInteger(result.runAttempt) ||
-          Number(result.runAttempt) < 1
-        )
-          return null;
+        if (!validResult(result) || record.batch) return null;
         if (record.result && JSON.stringify(record.result) !== JSON.stringify(result)) return null;
         record.result = result as NonNullable<CommandProofRecord["result"]>;
         record.state = "review_pending";
@@ -220,4 +269,17 @@ export class CommandProofRequestStore {
       now - 30 * 24 * 60 * 60_000,
     );
   }
+}
+
+function validResult(result: Record<string, unknown>): boolean {
+  return (
+    Object.keys(result).sort().join() === "digest,outcome,reviewContext,runAttempt,runId" &&
+    ["pass", "fail"].includes(String(result.outcome)) &&
+    proofSha(result.digest, 64) &&
+    proofText(result.reviewContext, 4800) &&
+    typeof result.runId === "string" &&
+    /^[1-9][0-9]{0,19}$/.test(result.runId) &&
+    Number.isSafeInteger(result.runAttempt) &&
+    Number(result.runAttempt) >= 1
+  );
 }

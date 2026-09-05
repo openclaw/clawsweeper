@@ -4,6 +4,7 @@ import { CommandProofConsumer } from "./command-proof-consumer.js";
 import { CommandProofHttpTransport } from "./command-proof-http.js";
 import { proofRecord, commandProofProducersFromEnv } from "../command-proof-contract.js";
 import { parseOptions, runCommandStatusUpdate } from "./update-command-status.js";
+import { planCommandProof } from "./command-proof-planner.js";
 
 try {
   const transport = new CommandProofHttpTransport({
@@ -33,7 +34,11 @@ try {
       );
     },
   });
-  const consumer = new CommandProofConsumer(transport, commandProofProducersFromEnv(process.env));
+  const consumer = new CommandProofConsumer(
+    transport,
+    commandProofProducersFromEnv(process.env),
+    planCommandProof,
+  );
   if (process.argv[2] === "reconcile" && process.argv.length === 3) {
     console.log(JSON.stringify(await consumer.reconcile()));
   } else if (process.argv[2] === "request" && process.argv.length === 4) {

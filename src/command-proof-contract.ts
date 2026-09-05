@@ -105,6 +105,93 @@ export const COMMAND_PROOF_RECEIPT_MAX_BYTES = 64 * 1024;
 export const COMMAND_PROOF_ARCHIVE_MAX_BYTES = 16 * 1024 * 1024;
 export const COMMAND_PROOF_LIFETIME_MS = 60 * 60 * 1000;
 
+export type CommandProofPlan = {
+  scenarios: CommandProofScenario[];
+  reason: string;
+  missingProof: string;
+};
+export type CommandProofResult = {
+  outcome: "pass" | "fail";
+  digest: string;
+  reviewContext: string;
+  runId: string;
+  runAttempt: number;
+};
+export type CommandProofBatch = {
+  // The record's claim is a binding anchor, not an assertion that it ran.
+  plan?: CommandProofPlan;
+  claims: CommandProofClaim[];
+  index: number;
+  started: boolean;
+  results: Array<{ outcome: "inconclusive"; reason: string } | CommandProofResult>;
+};
+export const COMMAND_PROOF_BATCH_CONTEXT_MAX = 18_000;
+
+export function commandProofBatchBinding(prompt: string) {
+  const match =
+    /^<!-- command-proof-batch-v1 head=([0-9a-f]{40}) body=([0-9a-f]{64}) base=([0-9a-f]{64}) base_sha=([0-9a-f]{40}) request=([0-9a-f]{64}) -->\n/.exec(
+      prompt,
+    );
+  return match
+    ? {
+        headSha: match[1]!,
+        bodySha256: match[2]!,
+        baseRefSha256: match[3]!,
+        baseSha: match[4]!,
+        requestId: match[5]!,
+        scenario: "batch" as const,
+      }
+    : null;
+}
+
+export function parseCommandProofPlan(value: unknown): CommandProofPlan | null {
+  const plan = proofRecord(value);
+  if (
+    Object.keys(plan).sort().join() !== "missingProof,reason,scenarios" ||
+    !Array.isArray(plan.scenarios) ||
+    plan.scenarios.length > 3 ||
+    plan.scenarios.some((id) => !commandProofProfile(id)) ||
+    new Set(plan.scenarios).size !== plan.scenarios.length ||
+    !proofText(plan.reason, 800) ||
+    typeof plan.missingProof !== "string" ||
+    plan.missingProof.length > 800 ||
+    (!plan.scenarios.length && !plan.missingProof.trim())
+  )
+    return null;
+  return plan as CommandProofPlan;
+}
+
+export function proofPlanClaimsMatch(
+  anchor: CommandProofClaim,
+  claims: unknown,
+  plan: CommandProofPlan,
+): claims is CommandProofClaim[] {
+  return (
+    Array.isArray(claims) &&
+    claims.length === plan.scenarios.length &&
+    claims.every((value, index) => {
+      const claim = parseCommandProofClaim(value);
+      return (
+        claim &&
+        claim.scenario === plan.scenarios[index] &&
+        [
+          "repository",
+          "repositoryId",
+          "pullRequest",
+          "headSha",
+          "baseSha",
+          "bodySha256",
+          "targetBranch",
+          "sourceCommentId",
+          "sourceCommentUpdatedAt",
+          "sourceCommentBodySha256",
+        ].every((key) => proofRecord(claim)[key] === proofRecord(anchor)[key])
+      );
+    }) &&
+    new Set(claims.map((claim) => claim.requestId)).size === claims.length
+  );
+}
+
 export type CommandProofClaim = {
   requestId: string;
   repository: string;

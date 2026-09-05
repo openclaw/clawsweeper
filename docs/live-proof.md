@@ -25,14 +25,28 @@ work.
 
 ## Explicit command-triggered proof
 
-Use an explicit maintainer comment, for example:
+Comment once as a human maintainer:
 
 ```text
-@clawsweeper proof telegram-markdown-parser-fidelity <40-character-head-sha>
+@clawsweeper proof
 ```
 
-The closed registry selects a trusted scenario, never arbitrary shell, candidate
-YAML, or a messaging target:
+ClawSweeper captures the current PR head automatically. A bounded model judgment
+reads the PR description, changed-file patches and existing review/comment context,
+then selects the smallest useful set of configured scenarios below. It records
+the plan once and runs the selected checks sequentially. It cannot invent shell
+commands, candidate YAML, workflows or messaging targets. Missing patches and
+uncovered behavior remain explicit gaps; no matching scenario means no dispatch.
+
+To override selection, supply one or more comma-separated scenario IDs:
+
+```text
+@clawsweeper proof web-ui-chat-proof,telegram-markdown-parser-fidelity
+```
+
+All three IDs can be supplied together. An optional full 40-character SHA after
+the list requires that exact current head; otherwise ClawSweeper resolves it.
+You never need separate comments for the checks within one request.
 
 | Scenario                            | What it exercises                                                                                               | Limits                                                                                       |
 | ----------------------------------- | --------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
@@ -53,11 +67,26 @@ ordinary advancement of the same base branch does not invalidate an unchanged
 candidate. Retargeting, a changed body/head or edited command needs a new request.
 
 The existing ExactReviewQueue Durable Object persists the immutable claim before
-dispatch, permits one active pilot request and deduplicates delivery. Uncertain
+model selection or dispatch, permits one active pilot request and deduplicates
+delivery. A multi-check request owns that single slot until all selected checks
+finish and one review is queued. Another request while the pilot is busy is
+rejected rather than queued. Retries never select again or move to a newer head.
+Uncertain
 dispatch is reconciled by authoritative run ID or bounded exact request-title
 lookup, never blindly retried. Incomplete work expires as inconclusive.
 Reconciliation belongs to the existing comment router; ordinary review does not
-wait for proof and automatic post-review execution remains retired.
+wait for proof and automatic post-review execution remains retired. Failed or
+inconclusive completed checks are retained while the remaining selected checks
+continue. An unknown dispatch waits for reconciliation, never starts a replacement.
+
+Automatic planning uses the existing scanned, read-only Codex runner, without
+GitHub mutation or queue credentials. It has a two-minute model deadline and
+bounded context (at most 300 changed files and fewer than 100 entries on each
+review/comment endpoint). Over-budget or unavailable context is inconclusive,
+not silently truncated into a confident selection. The hosted router prepares
+its existing Codex setup only for enabled proof producers and executable routing;
+setup failure leaves automatic proof unavailable without blocking other commands.
+A lost planning process is not automatically rerun and expires as inconclusive.
 
 Execution is disabled without an operator-approved workflow/harness pin set:
 
@@ -75,7 +104,9 @@ and ancestry. These settings do not create/protect branches, provision
 credentials, activate other gates or authorize public Telegram traffic.
 
 The consumer sends `candidate_ref`, `request_id`, `pr_number`, and, for
-Telegram, the selected `scenario`. The producer echoes the opaque request ID;
+Telegram, the selected `scenario`. Each selected child has a distinct request ID
+under the frozen parent plan; producers keep their single-scenario contracts.
+The producer echoes the opaque request ID;
 it must not derive a replacement. Titles are `Mantis request [<request_id>]`
 or `Mantis Telegram request [<request_id>]`. Only run attempt 1 is accepted;
 request new evidence instead of rerunning an old workflow run.
@@ -109,7 +140,8 @@ partial, candidate-reported, malformed, stale, unverifiable or infrastructure
 failures remain inconclusive. Media, exit zero and authenticated provenance
 alone do not establish behavioral sufficiency.
 
-Verified evidence queues a **normal full independent re-review**, even without
+After the selected checks finish, the consumer revalidates all verified evidence
+and queues **one normal full independent re-review**, even without
 a usable previous full report. It does not splice proof fields into the old
 report or preserve stale ratings/decisions. The current review may discover new
 code/security concerns and must evaluate current CI and proof applicability.
@@ -117,8 +149,18 @@ Normal publication freshness and mutation gates apply. Existing label owners
 may clear a justified proof blocker and update readiness only if all remaining
 blockers permit it. There is no evidence-granted repair, close or merge
 authority, and no special label-suppression or no-router publication path.
+The combined package includes the plan, uncovered behavior, every complete
+verified child context and explicit inconclusive outcomes. A bounded 18,000-character
+allowance applies only to the batch-proof handoff; normal command prompt limits
+are unchanged. Evidence is never silently truncated to fit.
 
 ### Validation scope
+
+`scripts/e2e/command-proof-batch-loopback.mjs` exercises the compiled request and
+reconciliation CLI over loopback HTTP with the real Worker and file-backed SQLite,
+reopening the store between invocations. `--auto` uses controlled model output
+through the real scanner/runner; `--auto --no-match` verifies no execution for
+uncovered behavior. This fixture proves orchestration, not semantic selection.
 
 `scripts/e2e/command-proof-consumer-loopback.mjs` exercises the compiled
 consumer, Worker HTTP handlers, file-backed SQLite recreation, receipt/archive

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
-export const PROOF_COMMAND_USAGE = "/clawsweeper proof <scenario-id> <40-character-head-sha>";
+export const PROOF_COMMAND_USAGE =
+  "@clawsweeper proof [scenario-id[,scenario-id...]] [40-character-head-sha]";
 
 export interface ProofCommandRequest {
   repository: string;
@@ -33,14 +34,17 @@ export function admitProofCommand(input: {
   if (!input.isPullRequest || !input.isOpen) {
     return inconclusive("Proof requests require an open pull request.");
   }
-  const match = input.commandText.trim().match(/^proof ([a-z0-9][a-z0-9-]{0,79}) ([0-9a-f]{40})$/);
-  if (!match) {
-    return inconclusive(
-      "Use " + PROOF_COMMAND_USAGE + "; no implicit HEAD or arbitrary command is accepted.",
+  const match = input.commandText
+    .trim()
+    .match(
+      /^proof(?: ([a-z0-9][a-z0-9-]{0,79}(?:,[a-z0-9][a-z0-9-]{0,79}){0,2}))?(?: ([0-9a-f]{40}))?$/,
     );
+  if (!match) {
+    return inconclusive("Use " + PROOF_COMMAND_USAGE + "; only supported scenarios are accepted.");
   }
-  const [, scenarioId, headSha] = match;
-  if (!scenarioId || !headSha || headSha !== input.currentHeadSha) {
+  const scenarioId = match[1] ?? "auto";
+  const headSha = match[2] ?? input.currentHeadSha;
+  if (!/^[0-9a-f]{40}$/.test(headSha) || headSha !== input.currentHeadSha) {
     return inconclusive(
       "Requested head is not the current PR head. Submit a new exact-head request.",
     );
@@ -74,7 +78,7 @@ export function renderProofCommandAdmission(admission: ProofCommandAdmission): s
   const request = admission.request;
   return [
     admission.status === "queued"
-      ? "Behavioral proof: **queued for the explicit scenario**."
+      ? "Behavioral proof: **queued for the selected checks**."
       : "Behavioral proof: **inconclusive**.",
     "",
     admission.reason,

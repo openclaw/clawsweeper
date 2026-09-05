@@ -20,6 +20,7 @@ export function proofFixture(
   scenario: CommandProofScenario = COMMAND_PROOF_SCENARIO,
   outcome: "pass" | "fail" = "pass",
   head = "a".repeat(40),
+  runId = 300,
 ) {
   const profile = COMMAND_PROOF_PROFILES[scenario];
   const workflow = (scenario === COMMAND_PROOF_SCENARIO ? "b" : "e").repeat(40),
@@ -68,7 +69,7 @@ export function proofFixture(
     permission: { permission: "maintain" },
   };
   const run = {
-    id: 300,
+    id: runId,
     run_attempt: 1,
     event: "workflow_dispatch",
     status: "completed",
@@ -85,14 +86,17 @@ export function proofFixture(
   const telegram =
     scenario === TELEGRAM_PROOF_SCENARIO
       ? telegramProofFixture(
-          { requestId, headSha: head, harnessSha: workflow, runId: "300", runAttempt: 1 },
+          { requestId, headSha: head, harnessSha: workflow, runId: String(runId), runAttempt: 1 },
           outcome,
         )
       : null;
   const sourceFiles = profile.observations.map(([, file]) => file);
   const evidenceFiles =
     scenario === "telegram-markdown-parser-fidelity"
-      ? telegramQaFiles({ requestId, headSha: head, harnessSha: workflow }, outcome)
+      ? telegramQaFiles(
+          { requestId, headSha: head, harnessSha: workflow, runId: String(runId) },
+          outcome,
+        )
       : (telegram?.files ?? new Map(sourceFiles.map((name) => [name, observation])));
   const evidenceArchive = zip([...evidenceFiles].map(([name, content]) => ({ name, content })));
   const jobs = {
@@ -101,15 +105,16 @@ export function proofFixture(
       name,
       status: "completed",
       conclusion: "success",
-      run_id: 300,
+      run_id: runId,
       head_sha: workflow,
     })),
   };
   const evidenceArtifact = artifactMetadata(
     400,
-    proofEvidenceArtifactName(requestId, "300", 1, scenario),
+    proofEvidenceArtifactName(requestId, String(runId), 1, scenario),
     evidenceArchive,
     workflow,
+    runId,
   );
   const receipt: MantisProofReceipt = {
     schema: "mantis.request-proof.v1",
@@ -120,7 +125,7 @@ export function proofFixture(
     scenario: claim.scenario,
     workflow: { path: claim.workflowPath, sha: workflow },
     harness: { sha: workflow },
-    run: { id: "300", attempt: 1 },
+    run: { id: String(runId), attempt: 1 },
     evidence: {
       artifact_id: "400",
       artifact_name: evidenceArtifact.name,
@@ -150,9 +155,10 @@ export function proofFixture(
   ]);
   const receiptArtifact = artifactMetadata(
     401,
-    proofReceiptArtifactName(requestId, "300", 1),
+    proofReceiptArtifactName(requestId, String(runId), 1),
     receiptArchive,
     workflow,
+    runId,
   );
   return {
     claim,
@@ -196,14 +202,20 @@ export function replaceProofEvidence(
   return { ...replaceReceipt({ ...fixture, evidenceArchive, evidenceArtifact }, receipt), receipt };
 }
 
-export function artifactMetadata(id: number, name: string, bytes: Buffer, sha: string) {
+export function artifactMetadata(
+  id: number,
+  name: string,
+  bytes: Buffer,
+  sha: string,
+  runId = 300,
+) {
   return {
     id,
     name,
     expired: false,
     digest: "sha256:" + digest(bytes),
     size_in_bytes: bytes.length,
-    workflow_run: { id: 300, head_sha: sha, repository_id: 123, head_repository_id: 123 },
+    workflow_run: { id: runId, head_sha: sha, repository_id: 123, head_repository_id: 123 },
   };
 }
 export function replaceReceipt(fixture: ReturnType<typeof proofFixture>, receipt: unknown) {

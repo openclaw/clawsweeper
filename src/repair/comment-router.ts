@@ -166,7 +166,10 @@ import {
 } from "./review-dispatch-coordination.js";
 import { directReReviewIntake } from "./direct-re-review-admission.js";
 import { admitProofCommand } from "./proof-command.js";
-import { commandProofProducerFromEnv } from "../command-proof-contract.js";
+import {
+  commandProofProducerFromEnv,
+  commandProofProducersFromEnv,
+} from "../command-proof-contract.js";
 import { postExactReviewCommandIntakeSync } from "./exact-review-command-queue.js";
 
 const automergeMetricWrites: Promise<boolean>[] = [];
@@ -1006,9 +1009,14 @@ function classifyCommand(command: LooseRecord): JsonValue {
         command.author_type === "User" && !command.trusted_bot && authorization?.allowed === true,
       currentHeadSha: String(target.head_sha ?? ""),
     });
-    const configured = commandProofProducerFromEnv(admission.request?.scenarioId, process.env);
+    const selection = admission.request?.scenarioId;
+    const configured =
+      selection === "auto"
+        ? Object.keys(commandProofProducersFromEnv(process.env)).length > 0
+        : selection?.split(",").every((id) => commandProofProducerFromEnv(id, process.env)) ===
+          true;
     const dispatchProof =
-      configured !== null && admission.request !== undefined && targetRepo === "openclaw/openclaw";
+      configured && admission.request !== undefined && targetRepo === "openclaw/openclaw";
     return {
       ...next,
       status: "ready",
@@ -2111,7 +2119,16 @@ function executeCommand(command: LooseRecord) {
         status: proof.status === "queued" ? "queued" : "inconclusive",
         reason: String(proof.reason || "proof_request_inconclusive"),
         ...(command.proof_admission.request && /^[0-9a-f]{64}$/.test(String(proof.requestId))
-          ? { request: { ...command.proof_admission.request, requestId: proof.requestId } }
+          ? {
+              request: {
+                ...command.proof_admission.request,
+                requestId: proof.requestId,
+                ...(/^[0-9a-f]{40}$/.test(String(proof.headSha)) ? { headSha: proof.headSha } : {}),
+                ...(Array.isArray(proof.scenarios)
+                  ? { scenarioId: proof.scenarios.join(", ") }
+                  : {}),
+              },
+            }
           : {}),
       };
       command.actions = command.actions.map((action: JsonValue) =>

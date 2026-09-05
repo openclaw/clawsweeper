@@ -1,5 +1,5 @@
 export function telegramQaFiles(
-  identity: { requestId: string; headSha: string; harnessSha: string },
+  identity: { requestId: string; headSha: string; harnessSha: string; runId?: string },
   outcome: "pass" | "fail",
 ) {
   const scenario = "telegram-markdown-parser-fidelity";
@@ -27,7 +27,7 @@ export function telegramQaFiles(
         request_id: identity.requestId,
         candidate_sha: identity.headSha,
         harness_sha: identity.harnessSha,
-        run_id: "300",
+        run_id: identity.runId ?? "300",
         run_attempt: 1,
         scenario,
         transport: "Crabline",

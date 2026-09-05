@@ -1036,7 +1036,7 @@ export class ExactReviewQueue {
       const body = objectValue(await request.json().catch(() => null));
       const now = Date.now();
       if (url.pathname === "/command-proof/claim") {
-        const result = this.commandProofStore.claim(body.claim, now);
+        const result = this.commandProofStore.claim(body.claim, now, body.batch === true);
         return json({ ok: true, ...result });
       }
       if (url.pathname === "/command-proof/pending")
