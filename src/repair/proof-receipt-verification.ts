@@ -187,7 +187,11 @@ export function verifyCommandProof(options: {
   let reviewObservations = receipt.observations;
   try {
     const files = readProofZip(options.evidenceArchive);
-    if (files.size !== profile.observations.length)
+    // Web UI archives also carry the trusted observer's inventory manifest;
+    // it is authenticated by the whole-archive digest, not a fourth assertion.
+    const evidencePaths: string[] = profile.observations.map(([, path]) => path);
+    if (claim.scenario === COMMAND_PROOF_SCENARIO) evidencePaths.push("observer.json");
+    if (files.size !== evidencePaths.length || evidencePaths.some((path) => !files.has(path)))
       return inconclusive("invalid_evidence_inventory");
     if (
       receipt.observations.some(

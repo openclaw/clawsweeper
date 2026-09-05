@@ -55,6 +55,27 @@ test("Web UI evidence rejects authenticated but undeclared archive files", () =>
   });
 });
 
+test("Web UI accepts its producer manifest but rejects missing or substituted inventory paths", () => {
+  const fixture = proofFixture(undefined, "web-ui-chat-proof");
+  assert.equal(verifyCommandProof(fixture).outcome, "pass");
+  for (const missing of [
+    "observer.json",
+    "chat-send.json",
+    "final-reply.json",
+    "final-reply.png",
+  ]) {
+    for (const replacement of [false, true]) {
+      const files = readProofZip(fixture.evidenceArchive);
+      files.delete(missing);
+      if (replacement) files.set("unexpected.txt", Buffer.from("replacement"));
+      assert.deepEqual(verifyCommandProof(replaceProofEvidence(fixture, files)), {
+        outcome: "inconclusive",
+        reason: "invalid_evidence_inventory",
+      });
+    }
+  }
+});
+
 async function commandProofRetryHarness(
   options: {
     pages?: unknown[];

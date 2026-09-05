@@ -98,6 +98,19 @@ export function proofFixture(
           outcome,
         )
       : (telegram?.files ?? new Map(sourceFiles.map((name) => [name, observation])));
+  if (scenario === COMMAND_PROOF_SCENARIO)
+    evidenceFiles.set(
+      "observer.json",
+      Buffer.from(
+        JSON.stringify({
+          schema: "mantis.web-ui-observer.v1",
+          inventory: sourceFiles.map((path) => ({
+            path,
+            sha256: digest(evidenceFiles.get(path)!),
+          })),
+        }),
+      ),
+    );
   const evidenceArchive = zip([...evidenceFiles].map(([name, content]) => ({ name, content })));
   const jobs = {
     total_count: 2,
