@@ -629,10 +629,7 @@ export class CommandProofConsumer {
         anchor.pullRequest,
         anchor.sourceCommentId,
       );
-      if (
-        !commandProofTargetIsCurrent(anchor, current) ||
-        proofRecord(proofRecord(current.pull).base).sha !== anchor.baseSha
-      )
+      if (!commandProofTargetIsCurrent(anchor, current))
         return this.terminate(anchor, "target_changed_during_planning");
       const claims: CommandProofClaim[] = [];
       for (const scenario of plan.scenarios) {

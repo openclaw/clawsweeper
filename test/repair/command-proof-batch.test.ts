@@ -49,6 +49,35 @@ test("explicit two-scenario override needs no SHA or model", async () => {
   assert.equal(h.enqueues.length, 1);
 });
 
+for (const drift of ["base-sha", "base-ref", "head", "body", "command", "permission"])
+  test("planning preserves exact-head authority during " + drift + " drift", async () => {
+    const h = proofBatchHarness({
+      planner: async () => {
+        if (drift === "base-sha") h.live.pull.base.sha = "f".repeat(40);
+        if (drift === "base-ref") h.live.pull.base.ref = "other-target";
+        if (drift === "head") h.live.pull.head.sha = "f".repeat(40);
+        if (drift === "body") h.live.pull.body += " changed";
+        if (drift === "command") h.live.comment.body += " edited";
+        if (drift === "permission") h.live.permission.permission = "read";
+        return { scenarios: ["web-ui-chat-proof"], reason: "Chat behavior", missingProof: "" };
+      },
+    });
+    const originalBase = h.live.pull.base.sha;
+    const result = await h.request();
+    if (drift !== "base-sha") {
+      assert.equal(result.status, "inconclusive");
+      assert.equal(h.dispatches.length, 0);
+      assert.equal(h.enqueues.length, 0);
+      return;
+    }
+    assert.equal(result.status, "queued");
+    assert.equal(h.record(result.requestId!)?.claim.baseSha, originalBase);
+    for (let i = 0; i < 3; i++) await h.consumer().reconcile();
+    assert.equal(h.dispatches.length, 1);
+    assert.equal(h.enqueues.length, 1);
+    assert.equal(h.record(result.requestId!)?.state, "completed");
+  });
+
 test("no matching proof explains gap without dispatch or review", async () => {
   const h = proofBatchHarness({
     planner: async () => ({
