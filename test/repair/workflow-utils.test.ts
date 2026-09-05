@@ -2492,6 +2492,7 @@ test("workflow utilities select cursor-based PR comment sync batches", () => {
   });
   writeCommentSyncRecord(root, 40, "issue", "kept_open");
   writeCommentSyncRecord(root, 50, "pull_request", "reviewed");
+  writeCommentSyncRecord(root, 60, "pull_request", "kept_open", { commandProofOnly: true });
 
   assert.deepEqual(
     withCwd(root, () =>
@@ -3445,6 +3446,7 @@ function writeCommentSyncRecord(root, number, type, actionTaken, options = {}) {
   if (options.applyCheckedAt) lines.push(`apply_checked_at: ${options.applyCheckedAt}`);
   if (options.reviewCommentSyncedAt)
     lines.push(`review_comment_synced_at: ${options.reviewCommentSyncedAt}`);
+  if (options.commandProofOnly) lines.push("command_proof_only: true");
   lines.push("---", "");
   write(
     path.join(root, `records/${targetSlug}/items/${targetSlug}-${number}.md`),

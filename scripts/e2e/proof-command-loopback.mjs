@@ -239,7 +239,8 @@ function runRouter(apiUrl) {
       env: {
         PATH: process.env.PATH,
         HOME: temporary,
-        GH_BIN: proxy,
+        GH_BIN: process.execPath,
+        GH_BIN_ARGS: JSON.stringify([proxy]),
         GITHUB_API_URL: apiUrl,
         CLAWSWEEPER_REPO: repository,
         CLAWSWEEPER_COMMENT_LOOKUP_CONCURRENCY: "1",

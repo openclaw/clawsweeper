@@ -35,6 +35,27 @@ export type ProofProducer = {
   harnessSha: string;
 };
 
+function configuredProducer(
+  producers: ProofProducer | CommandProofProducerRegistry,
+  scenario: CommandProofClaim["scenario"],
+): ProofProducer | undefined {
+  const profile = commandProofProfile(scenario);
+  if (!profile) return undefined;
+  const producer = "workflowPath" in producers ? producers : producers[scenario];
+  return producer?.workflowPath === profile.workflowPath ? producer : undefined;
+}
+
+function producerStillApproved(
+  producers: ProofProducer | CommandProofProducerRegistry,
+  claim: CommandProofClaim,
+): boolean {
+  const producer = configuredProducer(producers, claim.scenario);
+  return !!producer &&
+    producer.workflowRef === claim.workflowRef &&
+    producer.workflowSha === claim.workflowSha &&
+    producer.harnessSha === claim.harnessSha;
+}
+
 export class CommandProofConsumer {
   constructor(
     private transport: CommandProofTransport,
@@ -69,9 +90,8 @@ export class CommandProofConsumer {
       return { status: "inconclusive", reason: "unsupported_or_invalid_proof_command" };
     // Flat producer arguments remain compatible with existing WebUI callers,
     // but never supply pins for a different scenario's workflow.
-    const producer =
-      "workflowPath" in this.producer ? this.producer : this.producer[profile.scenario];
-    if (!producer || producer.workflowPath !== profile.workflowPath)
+    const producer = configuredProducer(this.producer, profile.scenario);
+    if (!producer)
       return { status: "inconclusive", reason: "proof_producer_not_configured" };
     if (!proofSha(producer.workflowSha, 40) || !proofSha(producer.harnessSha, 40))
       throw new Error("proof_producer_not_pinned");
@@ -202,6 +222,8 @@ export class CommandProofConsumer {
             requestId: claim.requestId,
           });
           results.push({ requestId: claim.requestId, status: state });
+        } else if (!producerStillApproved(this.producer, claim)) {
+          results.push(await this.terminate(claim, "producer_approval_revoked_or_changed"));
         } else
           results.push(
             await this.reconcileOne(
@@ -233,6 +255,8 @@ export class CommandProofConsumer {
     return results;
   }
   private async reconcileOne(claim: CommandProofClaim, dispatchedRunId?: string) {
+    const profile = commandProofProfile(claim.scenario);
+    if (!profile) return this.terminate(claim, "unsupported_proof_scenario");
     if (
       !commandProofTargetIsCurrent(
         claim,
@@ -300,7 +324,9 @@ export class CommandProofConsumer {
             return pending("partial_producer_run_inventory");
           runs.set(runId, run.display_title);
           // Explicit request correlation only; duplicate pages cannot create a second match.
-          if (run.display_title.includes("[" + claim.requestId + "]")) matches.add(runId);
+          if (run.display_title === profile.runName + " [" + claim.requestId + "]") {
+            matches.add(runId);
+          }
         }
         if (matches.size > 1) return this.terminate(claim, "ambiguous_producer_run_inventory");
         if (page * pageSize >= total) {

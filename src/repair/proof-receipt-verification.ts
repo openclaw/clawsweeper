@@ -225,6 +225,8 @@ export function verifyCommandProof(options: {
       claim.baseSha +
       " request=" +
       claim.requestId +
+      " scenario=" +
+      claim.scenario +
       " -->",
     "Commanded proof: authenticated provenance; independent assessment still required.",
     profile.scopeNotice,
@@ -275,7 +277,7 @@ export function trustedRun(claim: CommandProofClaim, value: unknown): boolean {
     numericId(run.id) !== null &&
     Number.isSafeInteger(run.run_attempt) &&
     Number(run.run_attempt) >= 1 &&
-    Number(run.run_attempt) <= (claim.scenario === TELEGRAM_PROOF_SCENARIO ? 1_000_000 : 100) &&
+    Number(run.run_attempt) <= (claim.scenario === TELEGRAM_PROOF_SCENARIO ? 1 : 100) &&
     run.event === "workflow_dispatch" &&
     run.status === "completed" &&
     ["success", "failure"].includes(String(run.conclusion)) &&

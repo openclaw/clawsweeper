@@ -50,8 +50,15 @@ import { COMMAND_PROOF_SOURCE_ACTION } from "./command-proof-contract.js";
 
 /** Only the trusted dispatch source may authorize proof-only folding. */
 export function reviewCommandProofBinding(sourceAction: unknown, additionalPrompt: string) {
-  if (sourceAction !== COMMAND_PROOF_SOURCE_ACTION) return null;
   const binding = commandProofBinding(additionalPrompt);
+  if (sourceAction !== COMMAND_PROOF_SOURCE_ACTION) {
+    if (binding) {
+      throw new UserFacingCommandError(
+        "commanded proof reassessment lost its trusted source action; full review required",
+      );
+    }
+    return null;
+  }
   if (!binding) {
     throw new UserFacingCommandError(
       "commanded proof reassessment is missing its exact-subject binding",
@@ -1369,7 +1376,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           const previous = priorReview?.markdown ?? "";
           assertNoNewProofReviewBlockers(reportReviewFindings(previous), decision.reviewFindings);
           assertNoNewProofReviewBlockers(reportSecurityReview(previous).concerns, decision.securityReview.concerns);
-          reportMarkdown = foldCommandProofAssessment(priorReview?.markdown, reportMarkdown, proofBinding.requestId, proofBinding.bodySha256, proofBinding.baseRefSha256, proofBinding.baseSha);
+          reportMarkdown = foldCommandProofAssessment(priorReview?.markdown, reportMarkdown, proofBinding.requestId, proofBinding.bodySha256, proofBinding.baseRefSha256, proofBinding.baseSha, proofBinding.scenario);
         }
         writeFileSync(reportPath, reportMarkdown, "utf8");
         if (codexFailureError) {

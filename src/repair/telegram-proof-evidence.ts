@@ -138,7 +138,7 @@ export function verifyTelegramProofEvidence(
       !decimal(value.run_id) ||
       !Number.isSafeInteger(value.run_attempt) ||
       Number(value.run_attempt) < 1 ||
-      Number(value.run_attempt) > 1_000_000 ||
+      Number(value.run_attempt) > 1 ||
       !hex(value.nonce, 64) ||
       !hex(value.conversation_digest, 64)
     )

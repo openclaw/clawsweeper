@@ -58,6 +58,7 @@ async function commandProofRetryHarness(
     loseEnqueueResponse?: boolean;
     scenario?: CommandProofScenario;
     outcome?: "pass" | "fail";
+    producer?: ConstructorParameters<typeof CommandProofConsumer>[1];
   } = {},
 ) {
   const fixture = proofFixture(undefined, options.scenario, options.outcome);
@@ -146,7 +147,7 @@ async function commandProofRetryHarness(
       },
       status: async () => {},
     },
-    {
+    options.producer ?? {
       workflowPath: fixture.claim.workflowPath,
       workflowRef: fixture.claim.workflowRef,
       workflowSha: fixture.claim.workflowSha,
@@ -322,6 +323,7 @@ test("both proof profiles admit pass or fail evidence once through the actual Wo
         baseRefSha256: digest(claim.targetBranch),
         baseSha: claim.baseSha,
         requestId: claim.requestId,
+        scenario,
       });
       assert.deepEqual(await h.consumer.reconcile(), []);
       assert.equal(h.enqueueBodies.length, 1);
@@ -338,6 +340,43 @@ test("both proof profiles admit pass or fail evidence once through the actual Wo
       assert.equal(replay.accepted, false);
       assert.equal(replay.reason, "proof_target_binding_changed");
     }
+  }
+});
+
+test("reconciliation rejects removed or replaced producer approval before run or artifact reads", async (t) => {
+  for (const producer of [
+    {
+      "web-ui-chat-proof": {
+        workflowPath: COMMAND_PROOF_PROFILES["web-ui-chat-proof"].workflowPath,
+        workflowRef: "approved-web-ui",
+        workflowSha: "9".repeat(40),
+        harnessSha: "9".repeat(40),
+      },
+    },
+    {
+      "telegram-bot-e2e-proof": {
+        workflowPath: COMMAND_PROOF_PROFILES["telegram-bot-e2e-proof"].workflowPath,
+        workflowRef: "replacement-telegram",
+        workflowSha: "8".repeat(40),
+        harnessSha: "8".repeat(40),
+      },
+    },
+  ]) {
+    const h = await commandProofRetryHarness({
+      scenario: "telegram-bot-e2e-proof",
+      producer,
+    });
+    t.after(() => h.storage.sql.close());
+    assert.deepEqual(await h.consumer.reconcile(), [
+      {
+        requestId: h.fixture.claim.requestId,
+        status: "inconclusive",
+        reason: "producer_approval_revoked_or_changed",
+      },
+    ]);
+    assert.equal(h.counts.artifactReads, 0);
+    assert.equal(h.enqueueBodies.length, 0);
+    assert.equal(h.githubRequests.length, 0);
   }
 });
 
@@ -682,7 +721,10 @@ test("unknown proof dispatch recovers request-ID matches beyond page one within 
       id: 1000 + index,
       display_title: "other request",
     }));
-    runs.push({ id: 300, display_title: "Mantis [" + "d".repeat(64) + "]" });
+    runs.push({
+      id: 300,
+      display_title: COMMAND_PROOF_PROFILES["web-ui-chat-proof"].runName + " [" + "d".repeat(64) + "]",
+    });
     const pages = Array.from({ length: Math.ceil(total / 100) }, (_, index) => ({
       total_count: total,
       workflow_runs: runs.slice(index * 100, (index + 1) * 100),
@@ -724,7 +766,10 @@ test("unknown proof dispatch recovers request-ID matches beyond page one within 
 });
 
 test("unknown proof dispatch rejects ambiguity and leaves incomplete or over-budget inventories pending", async (t) => {
-  const match = { id: 300, display_title: "Mantis [" + "d".repeat(64) + "]" };
+  const match = {
+    id: 300,
+    display_title: COMMAND_PROOF_PROFILES["web-ui-chat-proof"].runName + " [" + "d".repeat(64) + "]",
+  };
   const filler = Array.from({ length: 100 }, (_, index) => ({
     id: 1000 + index,
     display_title: "other request",
@@ -1534,6 +1579,7 @@ test("reviewed primary-body provenance retains the full captured source hash", (
       baseRefSha256: digest("main"),
       baseSha: "c".repeat(40),
       requestId: digest("proof request"),
+      scenario: "web-ui-chat-proof",
     },
     "a".repeat(40),
     compact,
@@ -1723,6 +1769,7 @@ test("proof-only canonical folding preserves code/security/CI decisions and full
       "real_behavior_proof_status: " + proof,
       "real_behavior_proof_evidence_kind: runtime",
       "real_behavior_proof_needs_contributor_action: " + (proof !== "sufficient"),
+      "telegram_visible_proof_status: " + proof,
       "---",
       "# PR",
       "",
@@ -1730,6 +1777,9 @@ test("proof-only canonical folding preserves code/security/CI decisions and full
       "Status: " + proof,
       "",
       "Summary: independent proof assessment",
+      "",
+      "## Telegram Visible Proof",
+      "Status: " + proof,
       "",
       "## Findings",
       findings,
@@ -1754,6 +1804,7 @@ test("proof-only canonical folding preserves code/security/CI decisions and full
     baseSha,
   );
   assert.match(merged, /real_behavior_proof_status: sufficient/);
+  assert.match(merged, /telegram_visible_proof_status: missing/);
   assert.match(merged, /Unresolved code blocker/);
   assert.match(merged, /security_status: critical/);
   assert.match(merged, /ci_status: failure/);
@@ -1761,6 +1812,17 @@ test("proof-only canonical folding preserves code/security/CI decisions and full
   assert.match(merged, /command_proof_only: true/);
   assert.match(merged, /^reviewed_at: 2026-09-01T00:00:00Z$/m);
   assert.match(merged, /^command_proof_assessed_at: 2026-09-04T00:00:00Z$/m);
+  const telegramMerged = foldCommandProofAssessment(
+    old,
+    fresh,
+    digest("telegram request"),
+    bodySha256,
+    baseRefSha256,
+    baseSha,
+    "telegram-bot-e2e-proof",
+  );
+  assert.match(telegramMerged, /telegram_visible_proof_status: sufficient/);
+  assert.match(telegramMerged, /## Telegram Visible Proof\nStatus: sufficient/);
   for (const stalePrior of [
     old.replace(baseSha, "e".repeat(40)),
     old.replace(baseSha, "unknown"),

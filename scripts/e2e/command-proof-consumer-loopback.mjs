@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   worker,
   ExactReviewQueue,
@@ -600,11 +600,12 @@ function runCli(args, base) {
       env: {
         PATH: process.env.PATH,
         HOME: temporary,
-        GH_BIN: gh,
+        GH_BIN: process.execPath,
+        GH_BIN_ARGS: JSON.stringify([gh]),
         GH_TOKEN: "synthetic-loopback-only",
         QUEUE_URL: base,
         CLAWSWEEPER_WEBHOOK_SECRET: secret,
-        NODE_OPTIONS: "--import=" + fetchShim,
+        NODE_OPTIONS: "--import=" + pathToFileURL(fetchShim).href,
         PROOF_FIXTURE_ENDPOINT: base,
         [proofProfile.configPrefix + "_WORKFLOW_PATH"]: f.claim.workflowPath,
         [proofProfile.configPrefix + "_WORKFLOW_REF"]: f.claim.workflowRef,

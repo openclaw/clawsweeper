@@ -694,7 +694,15 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       examinedItemNumbers.push(number);
       const proofOnlyPublication = commandProofOnlyReport(markdown);
       if (proofOnlyPublication && (!syncCommentsOnly || !suppressAutomationMarkers)) {
-        throw new Error("proof-only publication requires comment-only sync and suppressed automation markers");
+        results.push({
+          number,
+          action: "kept_open",
+          reason: "proof-only publication skipped outside its isolated comment-only sync",
+        });
+        processedCount += 1;
+        maybeLogProgress(`skipped proof-only publication #${number}`);
+        if (processedCount >= processedLimit) break;
+        continue;
       }
       const decision = frontMatterValue(markdown, "decision");
       let closeReason = frontMatterValue(markdown, "close_reason") as CloseReason | undefined;

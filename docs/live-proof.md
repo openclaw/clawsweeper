@@ -108,8 +108,8 @@ Telegram uses the same request-bound receipt envelope and receipt artifact, but
 only its Telegram workflow and the trusted job `Run request-bound Telegram bot proof`
 plus `Finalize request-bound evidence`. Its evidence artifact is
 `mantis-request-telegram-<run>-<attempt>` and its required observations are
-`telegram-send/telegram-send.json`, `provider-request/provider-request.json`, and
-`telegram-reply/telegram-reply.json`. These must describe actual TDLib/TestServer
+`telegram-send.json`, `provider-request.json`, and `telegram-reply.json`. These
+must describe actual TDLib/TestServer
 and external mock-provider observations, not renamed browser files. Wrong
 scenario/workflow/job/artifact/file/schema combinations remain inconclusive.
 

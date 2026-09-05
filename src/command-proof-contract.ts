@@ -7,6 +7,7 @@ export const COMMAND_PROOF_PROFILES = {
   [COMMAND_PROOF_SCENARIO]: {
     scenario: COMMAND_PROOF_SCENARIO,
     workflowPath: COMMAND_PROOF_WORKFLOW,
+    runName: "Mantis request",
     configPrefix: "CLAWSWEEPER_PROOF",
     observerJob: "Run request-bound web chat proof",
     evidenceArtifactPrefix: "mantis-request-web-ui",
@@ -21,6 +22,7 @@ export const COMMAND_PROOF_PROFILES = {
   [TELEGRAM_PROOF_SCENARIO]: {
     scenario: TELEGRAM_PROOF_SCENARIO,
     workflowPath: ".github/workflows/mantis-telegram-bot-e2e-proof.yml",
+    runName: "Mantis Telegram request",
     configPrefix: "CLAWSWEEPER_TELEGRAM_PROOF",
     observerJob: "Run request-bound Telegram bot proof",
     evidenceArtifactPrefix: "mantis-request-telegram",
@@ -255,7 +257,7 @@ export function parseMantisProofReceipt(value: unknown): MantisProofReceipt | nu
     !proofNumericId(run.id) ||
     !Number.isSafeInteger(run.attempt) ||
     Number(run.attempt) < 1 ||
-    Number(run.attempt) > (profile.scenario === TELEGRAM_PROOF_SCENARIO ? 1_000_000 : 100) ||
+    Number(run.attempt) > (r.scenario === TELEGRAM_PROOF_SCENARIO ? 1 : 100) ||
     !["completed", "failed", "cancelled", "timed_out", "skipped"].includes(
       String(r.execution_outcome),
     ) ||
@@ -264,7 +266,7 @@ export function parseMantisProofReceipt(value: unknown): MantisProofReceipt | nu
     r.observations.length > 32 ||
     !Array.isArray(r.limits) ||
     r.limits.length > 16 ||
-    !r.limits.every((limit) => proofText(limit, 512)) ||
+    !r.limits.every((limit) => proofText(limit, 2048)) ||
     (Object.hasOwn(r, "reason") && !proofText(r.reason, 2048))
   )
     return null;
@@ -292,10 +294,10 @@ export function parseMantisProofReceipt(value: unknown): MantisProofReceipt | nu
         "availability",
         "authority",
       ]) ||
-      !proofText(o.id, 80) ||
+      !proofText(o.id, 64) ||
       !/^[a-z0-9][a-z0-9-]*$/.test(o.id) ||
-      !proofText(o.expected, 4096) ||
-      !proofText(o.actual, 4096) ||
+      !proofText(o.expected, 2048) ||
+      !proofText(o.actual, 2048) ||
       !proofSafePath(o.source_path) ||
       !proofSha(o.sha256, 64) ||
       !["present", "missing", "partial"].includes(String(o.availability)) ||

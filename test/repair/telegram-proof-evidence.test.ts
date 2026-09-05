@@ -150,7 +150,7 @@ test("Telegram evidence bounds raw UTF8, duplicate keys, inventory and run attem
   const extra = new Map(files);
   extra.set("gateway-private.log", Buffer.from("not public"));
   assert.equal(verifyTelegramProofEvidence(extra, binding).outcome, "inconclusive");
-  assert.equal(telegramProofFixture({ ...binding, runAttempt: 1_000_000 }).outcome, "pass");
+  assert.equal(telegramProofFixture({ ...binding, runAttempt: 1 }).outcome, "pass");
   assert.throws(
     () => telegramProofFixture({ ...binding, requestId: binding.requestId + "\n" }),
     /invalid_telegram_observation_schema/,
@@ -160,7 +160,7 @@ test("Telegram evidence bounds raw UTF8, duplicate keys, inventory and run attem
     /invalid_telegram_observation_schema/,
   );
   assert.throws(
-    () => telegramProofFixture({ ...binding, runAttempt: 1_000_001 }),
+    () => telegramProofFixture({ ...binding, runAttempt: 2 }),
     /invalid_telegram_observation_schema/,
   );
 });

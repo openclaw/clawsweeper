@@ -1846,7 +1846,7 @@ test("all exact-review recovery paths preserve proof authority and the complete 
         "c".repeat(40) +
         " request=" +
         "d".repeat(64) +
-        " -->\nVerified request-bound observer evidence; preserve this entire context.",
+        " scenario=web-ui-chat-proof -->\nVerified request-bound observer evidence; preserve this entire context.",
     };
     const preserved =
       sourceAction === "command_proof_result" || sourceAction === "failed_review_shard_recovery";

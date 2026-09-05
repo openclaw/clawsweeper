@@ -3,7 +3,12 @@ import { parseReportFrontMatter, readReportFrontMatterField } from "./report-fro
 import { AUTHORITY_CHAIN_PROOF_MARKER } from "./clawsweeper-policy.js";
 import { stableJson } from "./stable-json.js";
 import { primaryBodySourceSha256 } from "./clawsweeper-primary-body.js";
-import { proofText } from "./command-proof-contract.js";
+import {
+  COMMAND_PROOF_SCENARIO,
+  TELEGRAM_PROOF_SCENARIO,
+  type CommandProofScenario,
+  proofText,
+} from "./command-proof-contract.js";
 
 /** A canonical proof-only marker reduces publication authority; malformed markers fail closed. */
 export function commandProofOnlyReport(markdown: string): boolean {
@@ -27,9 +32,10 @@ export function commandProofBinding(prompt: string): {
   baseRefSha256: string;
   baseSha: string;
   requestId: string;
+  scenario: CommandProofScenario;
 } | null {
   const match =
-    /^<!-- command-proof-assessment-v1 head=([0-9a-f]{40}) body=([0-9a-f]{64}) base=([0-9a-f]{64}) base_sha=([0-9a-f]{40}) request=([0-9a-f]{64}) -->\n/.exec(
+    /^<!-- command-proof-assessment-v1 head=([0-9a-f]{40}) body=([0-9a-f]{64}) base=([0-9a-f]{64}) base_sha=([0-9a-f]{40}) request=([0-9a-f]{64}) scenario=(web-ui-chat-proof|telegram-bot-e2e-proof) -->\n/.exec(
       prompt,
     );
   return match
@@ -39,6 +45,7 @@ export function commandProofBinding(prompt: string): {
         baseRefSha256: match[3]!,
         baseSha: match[4]!,
         requestId: match[5]!,
+        scenario: match[6]! as CommandProofScenario,
       }
     : null;
 }
@@ -77,11 +84,12 @@ export function assertNoNewProofReviewBlockers(
   }
 }
 
-const PROOF_FIELDS = [
+const REAL_BEHAVIOR_PROOF_FIELDS = [
   "real_behavior_proof_status",
   "real_behavior_proof_evidence_kind",
   "real_behavior_proof_needs_contributor_action",
 ];
+const TELEGRAM_PROOF_FIELDS = ["telegram_visible_proof_status"];
 // Lease ownership follows the current publication, not full-review freshness.
 const HANDOFF_FIELDS = new Set(["review_lease_owner", "review_lease_comment_id"]);
 const field = (markdown: string, key: string) => {
@@ -97,6 +105,7 @@ export function foldCommandProofAssessment(
   expectedBodySha256: string,
   expectedBaseRefSha256: string,
   expectedBaseSha: string,
+  scenario: CommandProofScenario = COMMAND_PROOF_SCENARIO,
 ): string {
   if (!prior) throw new Error("commanded proof requires an existing full review");
   const old = parseReportFrontMatter(prior),
@@ -146,10 +155,14 @@ export function foldCommandProofAssessment(
     );
   }
   const values = new Map([...old.fields].map(([key, entries]) => [key, entries[0]!]));
+  const proofFields = [
+    ...REAL_BEHAVIOR_PROOF_FIELDS,
+    ...(scenario === TELEGRAM_PROOF_SCENARIO ? TELEGRAM_PROOF_FIELDS : []),
+  ];
   for (const [key, entries] of fresh.fields) {
-    if (PROOF_FIELDS.includes(key) || HANDOFF_FIELDS.has(key)) values.set(key, entries[0]!);
+    if (proofFields.includes(key) || HANDOFF_FIELDS.has(key)) values.set(key, entries[0]!);
   }
-  for (const key of PROOF_FIELDS)
+  for (const key of proofFields)
     if (!fresh.fields.has(key)) throw new Error("incomplete independent proof assessment");
   values.set("command_proof_only", " true");
   values.set("command_proof_assessed_at", " " + (field(assessed, "reviewed_at") || "unknown"));
@@ -157,8 +170,8 @@ export function foldCommandProofAssessment(
   values.set("command_proof_prior_reviewed_at", " " + (field(prior, "reviewed_at") || "unknown"));
   const beforeBody = prior.slice(oldHeader[0].length),
     afterBody = assessed.slice(freshHeader[0].length);
-  const beforeSection = proofSection(beforeBody),
-    afterSection = proofSection(afterBody);
+  const beforeSection = proofSection(beforeBody, "Real Behavior Proof"),
+    afterSection = proofSection(afterBody, "Real Behavior Proof");
   if (
     beforeBody
       .slice(beforeSection.start, beforeSection.end)
@@ -166,17 +179,25 @@ export function foldCommandProofAssessment(
   ) {
     throw new Error("limited commanded proof cannot replace required authority-chain proof");
   }
-  const body =
+  let body =
     beforeBody.slice(0, beforeSection.start) +
     afterBody.slice(afterSection.start, afterSection.end) +
     beforeBody.slice(beforeSection.end);
+  if (scenario === TELEGRAM_PROOF_SCENARIO) {
+    const currentTelegram = proofSection(body, "Telegram Visible Proof"),
+      freshTelegram = proofSection(afterBody, "Telegram Visible Proof");
+    body =
+      body.slice(0, currentTelegram.start) +
+      afterBody.slice(freshTelegram.start, freshTelegram.end) +
+      body.slice(currentTelegram.end);
+  }
   return (
     "---\n" + [...values].map(([key, value]) => key + ":" + value).join("\n") + "\n---\n" + body
   );
 }
-function proofSection(body: string) {
-  const marker = "## Real Behavior Proof\n";
-  const matches = [...body.matchAll(/^## Real Behavior Proof\r?\n/gm)];
+function proofSection(body: string, title: "Real Behavior Proof" | "Telegram Visible Proof") {
+  const marker = "## " + title + "\n";
+  const matches = [...body.matchAll(new RegExp("^## " + title + "\\r?\\n", "gm"))];
   if (matches.length !== 1) throw new Error("ambiguous proof report section");
   const start = matches[0]!.index!;
   const next = body.indexOf("\n## ", start + marker.length);

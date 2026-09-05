@@ -132,14 +132,20 @@ test("proof-only workflow boundary requires its trusted source action and comple
     "internal",
     "scheduled_normal_backfill",
   ]) {
-    assert.equal(reviewCommandProofBinding(sourceAction, prompt), null, String(sourceAction));
+    assert.throws(
+      () => reviewCommandProofBinding(sourceAction, prompt),
+      /lost its trusted source action; full review required/,
+      String(sourceAction),
+    );
   }
+  assert.equal(reviewCommandProofBinding("scheduled_normal_backfill", "ordinary review"), null);
   assert.deepEqual(reviewCommandProofBinding("command_proof_result", prompt), {
     headSha: fixture.claim.headSha,
     bodySha256: fixture.claim.bodySha256,
     baseRefSha256: digest(fixture.claim.targetBranch),
     baseSha: fixture.claim.baseSha,
     requestId: fixture.claim.requestId,
+    scenario: fixture.claim.scenario,
   });
   for (const invalid of [
     "",
@@ -725,7 +731,7 @@ for (const scenario of [
             ...(invalidProofPrior
               ? [
                   "--additional-prompt",
-                  `<!-- command-proof-assessment-v1 head=${headSha} body=${digest("body")} base=${digest("main")} base_sha=${baseSha} request=${digest("request")} -->\nProof assessment`,
+                  `<!-- command-proof-assessment-v1 head=${headSha} body=${digest("body")} base=${digest("main")} base_sha=${baseSha} request=${digest("request")} scenario=web-ui-chat-proof -->\nProof assessment`,
                 ]
               : []),
           ]),
