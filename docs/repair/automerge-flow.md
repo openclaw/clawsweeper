@@ -90,10 +90,10 @@ branch, keep the source PR credited, rebase onto latest `main`, address PR
 comments/review findings/check failures, preserve release-note context in the PR
 body and commit message, and validate. For an `openclaw/openclaw` target, it
 must not add or update `CHANGELOG.md` outside separately authorized release
-work. Other target repositories retain their own release-note policy, including
-an eligible changelog-only mechanical repair. This removes one model round trip
-from every opted-in repair while keeping live evidence, permissions, security
-boundaries, push, review, checks, and merge gating in deterministic code.
+work. The Codex edit worker interprets changelog-only artifacts under the target
+repository's release-note policy. Skipping the planning pass removes one model
+round trip from every opted-in repair while keeping live evidence, permissions,
+security boundaries, push, review, checks, and merge gating in deterministic code.
 
 For automerge, failed exact-head checks are repair scope even when the failing
 file is outside the original PR's changed files. The Codex edit pass should

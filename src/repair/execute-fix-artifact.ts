@@ -90,7 +90,6 @@ import {
   renderFixArtifactForPrompt,
 } from "./fix-prompt-builder.js";
 import { canTreatRebaseAsCompleteRepair } from "./fix-edit-policy.js";
-import { applyMechanicalChangelogFix } from "./mechanical-changelog.js";
 import {
   finalizeExecutionReport,
   pinRepairBase,
@@ -2223,15 +2222,6 @@ function editValidatePrepareMerge({
         current_head: completed.current_head,
       });
     }
-  }
-  if (!producedChanges && !reconcileWithBase) {
-    const mechanicalFix = applyMechanicalChangelogFix({
-      fixArtifact,
-      repo: result.repo,
-      targetDir,
-    });
-    producedChanges = mechanicalFix?.status === "applied";
-    if (producedChanges) logProgress("applied mechanical changelog fix");
   }
   const repositoryContext = buildRepositoryContext({ fixArtifact, targetDir });
   const targetBaseSha = pinRepairBase(() =>

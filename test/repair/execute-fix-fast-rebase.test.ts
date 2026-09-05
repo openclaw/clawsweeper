@@ -6,9 +6,15 @@ import path from "node:path";
 import test from "node:test";
 import { writeFakeScanner } from "../agent-input-scan-helpers.ts";
 
-for (const strategy of ["repair_contributor_branch", "replace_uneditable_branch"]) {
+for (const [strategy, changelogOnly] of [
+  ["repair_contributor_branch", false],
+  ["replace_uneditable_branch", false],
+  ["repair_contributor_branch", true],
+] as const) {
   test(
-    `replacement publication preserves contributor credit via ${strategy}`,
+    changelogOnly
+      ? "changelog-only repair delegates unchanged release notes to the edit worker"
+      : `replacement publication preserves contributor credit via ${strategy}`,
     { skip: process.platform === "win32" },
     () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-fast-rebase-"));
@@ -20,14 +26,26 @@ for (const strategy of ["repair_contributor_branch", "replace_uneditable_branch"
         fs.mkdirSync(bin);
         writeFakeScanner(bin);
         const codex = path.join(bin, "codex");
+        const editTrace = path.join(root, "edits.log");
+        const changelog =
+          "# Changelog\n\n## Unreleased\n\n### Fixes\n\n- Existing release entry.\n";
         fs.writeFileSync(
           codex,
           `#!${process.execPath}
 const fs = require("node:fs");
 const assert = require("node:assert/strict");
 const args = process.argv.slice(2);
+const prompt = fs.readFileSync(0, "utf8");
+if (${changelogOnly}) {
+  assert.ok(!args.includes("--output-schema"), "an edit is expected");
+  assert.ok(args.includes("workspace-write"));
+  assert.equal(fs.readFileSync("CHANGELOG.md", "utf8"), ${JSON.stringify(changelog)});
+  assert.match(prompt, /"changelog_required": true/);
+  fs.appendFileSync(${JSON.stringify(editTrace)}, "edit\\n");
+  fs.writeFileSync(args[args.indexOf("--output-last-message") + 1], "No repair needed.");
+  process.exit(0);
+}
 assert.ok(args.includes("--output-schema"), "only a review is expected");
-fs.readFileSync(0, "utf8");
 fs.writeFileSync(args[args.indexOf("--output-last-message") + 1], JSON.stringify({
   status: "clean", summary: "Fixture review", findings: [], findings_addressed: true, evidence: []
 }));
@@ -41,6 +59,10 @@ fs.writeFileSync(args[args.indexOf("--output-last-message") + 1], JSON.stringify
         git("config", "user.name", "Fixture Author");
         git("config", "user.email", "fixture@example.invalid");
         fs.writeFileSync(path.join(target, "README.md"), "Base.\n");
+        if (changelogOnly) {
+          fs.writeFileSync(path.join(target, "CHANGELOG.md"), changelog);
+          fs.writeFileSync(path.join(target, "AGENTS.md"), "CHANGELOG.md is release-owned.\n");
+        }
         git("add", ".");
         git("commit", "-m", "base");
         git("checkout", "-b", "contributor");
@@ -138,14 +160,14 @@ if (args[0] === "api" && endpoint === "repos/openclaw/fixture/pulls/1") {
               pr_title: "fix: preserve contribution",
               pr_body: "Preserve the contribution on current main.",
               affected_surfaces: ["docs"],
-              likely_files: ["CONTRIBUTING.md"],
+              likely_files: [changelogOnly ? "CHANGELOG.md" : "CONTRIBUTING.md"],
               linked_refs: [sourceUrl],
               validation_commands: ["git diff --check"],
               credit_notes: ["Fixture contribution"],
-              changelog_required: false,
+              changelog_required: changelogOnly,
               repair_strategy: strategy,
               source_prs: [sourceUrl],
-              deterministic_rebase_only: true,
+              deterministic_rebase_only: !changelogOnly,
             },
           }),
         );
@@ -168,7 +190,7 @@ if (args[0] === "api" && endpoint === "repos/openclaw/fixture/pulls/1") {
               GH_BIN: process.execPath,
               GH_BIN_ARGS: JSON.stringify([gh]),
               CODEX_BIN:
-                strategy === "repair_contributor_branch"
+                strategy === "repair_contributor_branch" && !changelogOnly
                   ? path.join(bin, "unexpected-codex")
                   : codex,
               GH_TOKEN: "fixture-token",
@@ -180,10 +202,31 @@ if (args[0] === "api" && endpoint === "repos/openclaw/fixture/pulls/1") {
               CLAWSWEEPER_INSTALL_TARGET_DEPS: "0",
               CLAWSWEEPER_BRANCH_PUSH_SETTLE_SECONDS: "0",
               CLAWSWEEPER_CLOSE_SUPERSEDED_SOURCE_PRS: "0",
+              ...(changelogOnly ? { CLAWSWEEPER_FIX_EDIT_ATTEMPTS: "1" } : {}),
             },
           },
         );
         assert.equal(child.status, 0, child.stdout + child.stderr);
+        if (changelogOnly) {
+          const report = JSON.parse(
+            fs.readFileSync(path.join(root, "fix-execution-report.json"), "utf8"),
+          );
+          assert.equal(report.status, "blocked", JSON.stringify(report));
+          assert.match(report.reason, /no target repo changes after 1 edit attempt/);
+          assert.equal(fs.readFileSync(editTrace, "utf8"), "edit\n");
+          assert.equal(fs.readFileSync(path.join(target, "CHANGELOG.md"), "utf8"), changelog);
+          assert.equal(fs.existsSync(publicationTrace), false);
+          const commands = fs
+            .readFileSync(trace, "utf8")
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line));
+          assert.equal(
+            commands.some((args) => args.includes("push") && !args.includes("--dry-run")),
+            false,
+          );
+          return;
+        }
         if (strategy === "repair_contributor_branch") {
           assert.match(child.stdout, /automerge deterministic rebase validated/);
           assert.match(child.stdout, /repair branch push blocked; publishing prepared repair/);
