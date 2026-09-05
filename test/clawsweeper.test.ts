@@ -2284,7 +2284,7 @@ test("agent workflows install pinned CLI releases and keep runner models secret"
     ".github/workflows/sweep.yml",
   ].map((file) => readText(file));
 
-  assert.match(action, /codex-version:[\s\S]*default: "0\.151\.0"/);
+  assert.match(action, /codex-version:[\s\S]*default: "0\.153\.3"/);
   assert.match(action, /proxy-version:[\s\S]*default: "0\.139\.0"/);
   assert.match(action, /@openai\/codex@\$\{\{ inputs\['codex-version'\] \}\}/);
   assert.match(action, /@openai\/codex-responses-api-proxy@\$\{\{ inputs\['proxy-version'\] \}\}/);

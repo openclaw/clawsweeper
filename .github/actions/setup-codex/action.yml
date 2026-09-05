@@ -3,7 +3,7 @@ description: Cache, install, and authenticate the OpenAI Codex CLI.
 inputs:
   codex-version:
     description: Exact Codex CLI npm package version.
-    default: "0.151.0"
+    default: "0.153.3"
   proxy-version:
     description: Exact Codex Responses proxy npm package version.
     default: "0.139.0"
@@ -155,6 +155,11 @@ runs:
         if [[ "${{ inputs['login-status'] }}" == "true" ]]; then
           codex login status
         fi
+
+    - name: Configure direct API context
+      if: ${{ inputs['auth-mode'] == 'proxy' || inputs['auth-mode'] == 'login' }}
+      shell: bash
+      run: node "${{ github.action_path }}/configure-api-context.mjs" "${{ inputs['codex-version'] }}"
 
     - name: Reject unknown Codex auth mode
       if: ${{ inputs['auth-mode'] != 'proxy' && inputs['auth-mode'] != 'login' && inputs['auth-mode'] != 'clawrouter' }}

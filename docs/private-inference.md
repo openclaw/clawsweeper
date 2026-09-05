@@ -59,3 +59,14 @@ choice uses the repository's current authentication mode.
 The default `proxy` mode and explicit legacy `login` mode retain their existing
 API-key configuration. Changing the authentication-mode variable affects new
 jobs; it does not stop or reconfigure jobs already running.
+
+Those direct API modes use the complete native model catalogue from the exact
+Codex release installed by setup. For supported models with a documented
+1,050,000-token API window and 128,000-token maximum output, setup reserves
+922,000 input tokens and compacts at 700,000 total active tokens. It preserves
+the complete catalogue, including native reviewer models, instructions, tool
+capabilities, and required review behavior. The four supported model entries
+receive the context allowance; all other entries remain unchanged. Missing
+native metadata fails setup; other model selections retain
+their native limits. The private ClawRouter mode continues to use the context
+and safety metadata supplied in its configuration secret.
