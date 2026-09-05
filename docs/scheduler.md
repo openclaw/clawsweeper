@@ -170,6 +170,9 @@ scheduling runs even if the subsequent lifecycle update fails, so persisted
 retries retain their scheduled wake-up.
 
 Review publication and apply/comment sync use separate non-dropping queues.
+Queue and GitHub App requests retain their request deadline through response-body
+consumption. A stalled successful response becomes a typed timeout; an error
+response retains its HTTP status and rate-limit headers even if its body stalls.
 Apply treats a typed GitHub installation or abuse-rate-limit response as a
 bounded yield, not a failed scan. It checkpoints completed item work, records
 the interrupted item as `skipped_runtime_budget`, returns that item to the
