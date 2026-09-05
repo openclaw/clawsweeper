@@ -17,6 +17,7 @@ export function telegramProofFixture(
     runAttempt: 1,
   },
   outcome: "pass" | "fail" = "pass",
+  delivery?: "blocked_before_forward",
 ) {
   const nonce = digest("public test challenge:" + binding.requestId);
   const responseNonce = digest("trusted external mock response:" + binding.requestId);
@@ -45,5 +46,8 @@ export function telegramProofFixture(
       from_sut: true,
     },
   };
+  if (delivery === "blocked_before_forward") {
+    capture.reply = { ...capture.reply, delivery, message_id: null, in_reply_to: null };
+  }
   return { binding, capture, ...exportTelegramProofEvidence(binding, capture) };
 }

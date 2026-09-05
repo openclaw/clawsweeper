@@ -67,7 +67,15 @@ export interface TelegramProofCapture {
     response_nonce: string;
     response_sha256: string;
   };
-  reply: { message_id: string; in_reply_to: string | null; text_sha256: string; from_sut: true };
+  reply:
+    | { message_id: string; in_reply_to: string | null; text_sha256: string; from_sut: true }
+    | {
+        delivery: "blocked_before_forward";
+        message_id: null;
+        in_reply_to: null;
+        text_sha256: string;
+        from_sut: true;
+      };
 }
 type Summary = { id: string; expected: string; actual: string };
 export type TelegramProofVerification =
@@ -121,9 +129,13 @@ export function verifyTelegramProofEvidence(
   const values: Record<string, unknown>[] = [];
   for (const shape of SHAPES) {
     const value = decode(files.get(shape.file));
+    const extra =
+      shape.kind === "telegram-reply" && value?.delivery === "blocked_before_forward"
+        ? ["delivery"]
+        : [];
     if (
       !value ||
-      !closed(value, [...COMMON, "kind", ...shape.fields]) ||
+      !closed(value, [...COMMON, "kind", ...shape.fields, ...extra]) ||
       value.schema !== SCHEMA ||
       value.kind !== shape.kind ||
       value.scenario !== SCENARIO ||
@@ -157,6 +169,7 @@ export function verifyTelegramProofEvidence(
     Record<string, unknown>,
     Record<string, unknown>,
   ];
+  const blocked = reply.delivery === "blocked_before_forward";
   if (
     values.some(
       (value) =>
@@ -170,7 +183,9 @@ export function verifyTelegramProofEvidence(
     !hex(provider.input_nonce, 64) ||
     !hex(provider.response_nonce, 64) ||
     !hex(provider.response_sha256, 64) ||
-    !decimal(reply.message_id) ||
+    (blocked
+      ? reply.message_id !== null || reply.in_reply_to !== null
+      : !decimal(reply.message_id)) ||
     !hex(reply.text_sha256, 64) ||
     reply.from_sut !== true ||
     (reply.in_reply_to !== null && !decimal(reply.in_reply_to))
@@ -182,6 +197,7 @@ export function verifyTelegramProofEvidence(
     send.text_sha256 !== expectedSend ||
     provider.input_nonce !== send.nonce ||
     provider.response_sha256 !== expectedReply ||
+    (blocked && reply.text_sha256 === expectedReply) ||
     reply.message_id === send.message_id ||
     (reply.in_reply_to !== null && reply.in_reply_to !== send.message_id)
   )
@@ -202,7 +218,10 @@ export function verifyTelegramProofEvidence(
       {
         id: "telegram-reply",
         expected: "SUT reply SHA256 " + expectedReply,
-        actual: "SUT reply SHA256 " + reply.text_sha256,
+        actual:
+          (blocked
+            ? "Wrong SUT egress blocked before Telegram forwarding; SHA256 "
+            : "SUT reply SHA256 ") + reply.text_sha256,
       },
     ],
   };

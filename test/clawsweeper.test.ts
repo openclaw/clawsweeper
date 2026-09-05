@@ -2649,7 +2649,7 @@ test("sweep review recovery uses explicit failed shard artifacts", () => {
   assert.equal(typeof reviewOnly, "string");
   for (const [sourceAction, expected] of [
     ["failed_review_shard_recovery", "true"],
-    ["command_proof_result", "true"],
+    ["command_proof_result", "false"],
     ["opened", "false"],
     ["source_drift_requeue", "false"],
   ]) {
@@ -2676,14 +2676,11 @@ test("sweep review recovery uses explicit failed shard artifacts", () => {
   assert.match(eventReviewJob, /Export exact review publication result[\s\S]*REVIEW_ONLY:/);
   assert.match(
     eventReviewJob,
-    /React to target item completion[\s\S]*contains\(fromJSON\('\["failed_review_shard_recovery","command_proof_result"\]'\), fromJSON\(steps\.publication-context\.outputs\.decision\)\.sourceAction\)/,
+    /React to target item completion[\s\S]*sourceAction == 'failed_review_shard_recovery'/,
   );
   assert.match(eventReviewJob, /\[ "\$REVIEW_ONLY" != "true" \]/);
   assert.match(eventReviewJob, /\[ "\$REVIEW_ONLY" = "true" \]/);
-  assert.match(
-    publishEventResult,
-    /reviewOnly:\s+process\.env\.REVIEW_ONLY === "true" \|\|\s+process\.env\.CLAWSWEEPER_GITHUB_SOURCE_ACTION === "command_proof_result"/,
-  );
+  assert.match(publishEventResult, /reviewOnly: process\.env\.REVIEW_ONLY === "true",/);
   assert.match(
     publishEventResult,
     /options\.reviewOnly \? \["--sync-comments-only", "--suppress-automation-markers"\] : \[\]/,

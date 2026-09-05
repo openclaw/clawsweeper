@@ -16,6 +16,42 @@ function changed(files: Map<string, Buffer>, file: string, patch: Record<string,
   return result;
 }
 
+test("trusted blocked Telegram egress is fail, never delivered-message or pass evidence", () => {
+  const fixture = telegramProofFixture(undefined, "fail", "blocked_before_forward");
+  assert.equal(fixture.outcome, "fail");
+  assert.match(fixture.observations[2]!.actual, /blocked before Telegram forwarding/);
+  const reply = JSON.parse(fixture.files.get("telegram-reply.json")!.toString());
+  assert.equal(reply.message_id, null);
+  assert.equal(reply.in_reply_to, null);
+  assert.throws(
+    () => telegramProofFixture(undefined, "pass", "blocked_before_forward"),
+    /binding_mismatch/,
+  );
+  for (const patch of [
+    { delivery: "delivered" },
+    { message_id: "102" },
+    { in_reply_to: "101" },
+    { from_sut: false },
+    { text_sha256: fixture.capture.provider.response_sha256 },
+    { text: "private candidate output" },
+    { request_id: "f".repeat(64) },
+    { conversation_digest: "f".repeat(64) },
+    { capture: "partial" },
+  ]) {
+    assert.equal(
+      verifyTelegramProofEvidence(
+        changed(fixture.files, "telegram-reply.json", patch),
+        fixture.binding,
+      ).outcome,
+      "inconclusive",
+    );
+  }
+  const noDelivery = new Map(fixture.files);
+  delete reply.delivery;
+  noDelivery.set("telegram-reply.json", Buffer.from(JSON.stringify(reply)));
+  assert.equal(verifyTelegramProofEvidence(noDelivery, fixture.binding).outcome, "inconclusive");
+});
+
 test("Telegram normalized exporter derives pass and fail only from a correlated SUT reply hash", () => {
   for (const outcome of ["pass", "fail"] as const) {
     const fixture = telegramProofFixture(undefined, outcome);
