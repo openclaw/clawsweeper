@@ -371,7 +371,10 @@ try {
         f.claim.headSha +
         " -->\nProof requested; not sufficient or ready.",
     });
-    if (scenario === "fail" && !producer) {
+    if (
+      scenario === "fail" &&
+      (!producer || proofProfile.scenario === "telegram-markdown-parser-fidelity")
+    ) {
       const failure = proofFixture(id, proofProfile.scenario, "fail", candidateSha);
       f = replaceProofEvidence(f, readProofZip(failure.evidenceArchive), "fail");
     }
@@ -442,11 +445,15 @@ try {
     );
     assert.equal(queueEnqueues, successfulEvidence || queueRejected ? 1 : 0);
     if (successfulEvidence) {
+      const expectedOutcome = scenario === "fail" ? "fail" : "pass";
+      assert.equal(record.result.outcome, expectedOutcome, "persisted proof outcome");
       const item = JSON.parse(
         [...storage.sql.exec("SELECT item_json FROM exact_review_queue_items")][0].item_json,
       );
       assert.equal(item.decision.sourceAction, "command_proof_result");
       assert.equal(item.decision.sourceHeadSha, f.claim.headSha);
+      const submittedEvidence = JSON.parse(item.decision.additionalPrompt.split("\n").at(-1));
+      assert.equal(submittedEvidence.assertion_outcome, expectedOutcome, "submitted proof outcome");
       assert.match(item.decision.additionalPrompt, /independent assessment still required/);
       assert.ok(item.decision.additionalPrompt.includes(proofProfile.scopeNotice));
       assert.equal(
@@ -489,6 +496,16 @@ try {
     observations.push({
       scenario,
       state: record.state,
+      assertionOutcome: record.result?.outcome ?? null,
+      evidenceSource:
+        dispatches === 0
+          ? "not-produced"
+          : producer &&
+              !(
+                proofProfile.scenario === "telegram-markdown-parser-fidelity" && scenario === "fail"
+              )
+            ? "producer-finalizer"
+            : "controlled-consumer-fixture",
       producerDispatches: dispatches,
       independentReviews: [
         ...storage.sql.exec("SELECT count(*) AS count FROM exact_review_queue_items"),

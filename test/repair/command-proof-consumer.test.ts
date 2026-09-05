@@ -225,6 +225,8 @@ test("compiled consumer CLI reopens SQL claims and completes only verified indep
       ]) => ({
         scenario,
         state,
+        assertionOutcome: state === "inconclusive" ? null : scenario === "fail" ? "fail" : "pass",
+        evidenceSource: producerDispatches === 0 ? "not-produced" : "controlled-consumer-fixture",
         producerDispatches,
         independentReviews,
         reviewEnqueueAttempts,
@@ -285,6 +287,9 @@ test("compiled Telegram consumer preserves exact runtime outcomes across replay,
       return {
         scenario,
         state: admitted ? "completed" : blocked ? "review_pending" : "inconclusive",
+        assertionOutcome: admitted || blocked ? (scenario === "fail" ? "fail" : "pass") : null,
+        evidenceSource:
+          scenario === "ref-lookup-failure" ? "not-produced" : "controlled-consumer-fixture",
         producerDispatches: scenario === "ref-lookup-failure" ? 0 : 1,
         independentReviews: admitted ? 1 : 0,
         reviewEnqueueAttempts: blocked ? 3 : admitted ? 1 : 0,
@@ -348,41 +353,124 @@ test("all proof scenarios admit pass or fail evidence once through the actual Wo
   }
 });
 
-test("reconciliation rejects removed or replaced producer approval before run or artifact reads", async (t) => {
-  for (const producer of [
-    {
-      "web-ui-chat-proof": {
-        workflowPath: COMMAND_PROOF_PROFILES["web-ui-chat-proof"].workflowPath,
-        workflowRef: "approved-web-ui",
-        workflowSha: "9".repeat(40),
-        harnessSha: "9".repeat(40),
-      },
-    },
-    {
-      "telegram-bot-e2e-proof": {
-        workflowPath: COMMAND_PROOF_PROFILES["telegram-bot-e2e-proof"].workflowPath,
-        workflowRef: "replacement-telegram",
-        workflowSha: "8".repeat(40),
-        harnessSha: "8".repeat(40),
-      },
-    },
-  ]) {
-    const h = await commandProofRetryHarness({
-      scenario: "telegram-bot-e2e-proof",
-      producer,
-    });
-    t.after(() => h.storage.sql.close());
-    assert.deepEqual(await h.consumer.reconcile(), [
+test("reconciliation rejects revoked authority in both active states before artifact reads or enqueue", async (t) => {
+  for (const activeState of ["dispatch_claimed", "review_pending"]) {
+    for (const producer of [
+      undefined,
       {
-        requestId: h.fixture.claim.requestId,
-        status: "inconclusive",
-        reason: "producer_approval_revoked_or_changed",
+        "web-ui-chat-proof": {
+          workflowPath: COMMAND_PROOF_PROFILES["web-ui-chat-proof"].workflowPath,
+          workflowRef: "approved-web-ui",
+          workflowSha: "9".repeat(40),
+          harnessSha: "9".repeat(40),
+        },
       },
-    ]);
-    assert.equal(h.counts.artifactReads, 0);
-    assert.equal(h.enqueueBodies.length, 0);
-    assert.equal(h.githubRequests.length, 0);
+      {
+        "telegram-bot-e2e-proof": {
+          workflowPath: COMMAND_PROOF_PROFILES["telegram-bot-e2e-proof"].workflowPath,
+          workflowRef: "replacement-telegram",
+          workflowSha: "8".repeat(40),
+          harnessSha: "8".repeat(40),
+        },
+      },
+    ]) {
+      const h = await commandProofRetryHarness({
+        scenario: "telegram-bot-e2e-proof",
+        producer,
+      });
+      t.after(() => h.storage.sql.close());
+      if (activeState === "review_pending") {
+        const verified = verifyCommandProof(h.fixture);
+        assert.ok(verified.outcome !== "inconclusive");
+        h.store.update(
+          {
+            requestId: h.fixture.claim.requestId,
+            operation: "verified",
+            result: {
+              outcome: verified.outcome,
+              digest: verified.evidenceDigest,
+              reviewContext: verified.reviewContext,
+              runId: "300",
+              runAttempt: 1,
+            },
+          },
+          Date.now(),
+        );
+      }
+      assert.equal(h.store.get(h.fixture.claim.requestId)?.state, activeState);
+      if (!producer) h.fixture.live.permission.permission = "read";
+      assert.deepEqual(await h.consumer.reconcile(), [
+        {
+          requestId: h.fixture.claim.requestId,
+          status: "inconclusive",
+          reason: producer
+            ? "producer_approval_revoked_or_changed"
+            : "stale_or_unauthorized_target",
+        },
+      ]);
+      assert.equal(h.counts.artifactReads, 0);
+      assert.equal(h.enqueueBodies.length, 0);
+      assert.equal(h.counts.dispatches, 0);
+      if (producer) assert.equal(h.githubRequests.length, 0);
+      else
+        assert.equal(
+          h.githubRequests.some((path) => path.includes("/actions/")),
+          false,
+        );
+    }
   }
+});
+
+test("adding the proof schema preserves populated existing queue tables and delivery receipts", async (t) => {
+  const h = await commandProofRetryHarness();
+  t.after(() => h.storage.sql.close());
+  const claim = h.fixture.claim;
+  assert.equal(
+    (
+      await h.post("exact-review/enqueue", {
+        delivery_id: "pre-proof-delivery",
+        decision: {
+          targetRepo: claim.repository,
+          targetBranch: claim.targetBranch,
+          itemNumber: 43,
+          itemKind: "pull_request",
+          sourceEvent: "pull_request",
+          sourceAction: "opened",
+          supersedesInProgress: false,
+          sourceHeadSha: claim.headSha,
+          sourceAuthoritySeq: 1,
+          sourceUpdatedAt: claim.sourceCommentUpdatedAt,
+        },
+      })
+    ).queued,
+    true,
+  );
+  // Model the existing SQL store before this additive table existed, not an
+  // old binary upgrade: all canonical queue schemas and populated rows remain.
+  h.storage.sql.exec("DROP TABLE command_proof_requests_v1");
+  const tables = [
+    ...h.storage.sql.exec(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+    ),
+  ].map((row) => String(row.name));
+  const snapshot = () =>
+    Object.fromEntries(
+      tables.map((name) => [
+        name,
+        [...h.storage.sql.exec('SELECT * FROM "' + name.replaceAll('"', '""') + '"')],
+      ]),
+    );
+  const before = snapshot();
+  assert.ok(before.exact_review_queue_items.length > 0);
+  assert.ok(
+    before.exact_review_queue_deliveries.some((row) => row.delivery_id === "pre-proof-delivery"),
+  );
+  const store = new CommandProofRequestStore(h.storage);
+  store.ensureSchemaSync();
+  store.ensureSchemaSync();
+  assert.equal(store.claim(claim, Date.now()).dispatch, true);
+  assert.deepEqual(snapshot(), before);
+  assert.equal((await h.state()).items[claim.repository + "#43"].decision.itemNumber, 43);
 });
 
 test("all proof consumers reject stale, incomplete and cross-transport artifacts without reassessment", async (t) => {
