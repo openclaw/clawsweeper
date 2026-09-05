@@ -68,6 +68,15 @@ type ExactReviewPublicationAcknowledgementState =
   | "observed"
   | `skipped_${"locked" | "missing_comment"}`
   | "unavailable";
+type ExactReviewPublicationAcknowledgementUnavailableReason =
+  | "projection_missing"
+  | "projection_not_command"
+  | "marker_mismatch"
+  | "comment_mismatch"
+  | "acknowledgement_not_required"
+  | "lifecycle_requeued"
+  | "terminal_missing"
+  | "routed_receipts_incomplete";
 
 export type ExactReviewPublicationReconcileSample = {
   itemKey: string;
@@ -84,6 +93,7 @@ export type ExactReviewPublicationReconcileSample = {
   retainedItemKey: string | null;
   commandContext: boolean;
   acknowledgementState: ExactReviewPublicationAcknowledgementState;
+  acknowledgementUnavailableReason: ExactReviewPublicationAcknowledgementUnavailableReason | null;
   supersedeSafe: boolean;
   producerRunId?: string;
   producerRunAttempt?: number;
@@ -178,6 +188,8 @@ const RECONCILIATION_REASONS = new Set<ExactReviewPublicationReconcileSample["re
   "legacy_terminal",
   "legacy_state_batch_terminal",
 ]);
+const ACKNOWLEDGEMENT_UNAVAILABLE_REASON =
+  /^(projection_missing|projection_not_command|marker_mismatch|comment_mismatch|acknowledgement_not_required|lifecycle_requeued|terminal_missing|routed_receipts_incomplete)$/;
 
 type TransportFailureReason = "network_error" | "timeout" | `HTTP_${number}`;
 
@@ -653,12 +665,28 @@ function parseReconciliationSample(value: unknown): ExactReviewPublicationReconc
   if (!/^(not_required|pending|observed|skipped_(locked|missing_comment)|unavailable)$/.test(ack)) {
     throw new Error("Invalid batch queue sample acknowledgement_state");
   }
+  const hasAckUnavailableReason = Object.hasOwn(sample, "acknowledgement_unavailable_reason");
+  const ackUnavailableReason = !hasAckUnavailableReason
+    ? null
+    : sample.acknowledgement_unavailable_reason === null
+      ? null
+      : stringValue(
+          sample.acknowledgement_unavailable_reason,
+          "sample acknowledgement_unavailable_reason",
+        );
+  if (
+    ackUnavailableReason !== null &&
+    !ACKNOWLEDGEMENT_UNAVAILABLE_REASON.test(ackUnavailableReason)
+  ) {
+    throw new Error("Invalid batch queue sample acknowledgement_unavailable_reason");
+  }
   const commandContext = sample.command_context;
   const staleCandidate = reason === "stale_revision" || reason === "duplicate_lineage";
   if (
     typeof commandContext !== "boolean" ||
     typeof sample.supersede_safe !== "boolean" ||
     commandContext === (ack === "not_required") ||
+    (hasAckUnavailableReason && (ack === "unavailable") !== (ackUnavailableReason !== null)) ||
     sample.supersede_safe !== (staleCandidate && !["pending", "unavailable"].includes(ack))
   ) {
     throw new Error("Invalid batch queue sample supersede safety");
@@ -683,6 +711,8 @@ function parseReconciliationSample(value: unknown): ExactReviewPublicationReconc
     retainedItemKey: nullableStringValue(sample.retained_item_key, "sample retained_item_key"),
     commandContext,
     acknowledgementState: ack as ExactReviewPublicationAcknowledgementState,
+    acknowledgementUnavailableReason:
+      ackUnavailableReason as ExactReviewPublicationAcknowledgementUnavailableReason | null,
     supersedeSafe: sample.supersede_safe,
     ...(producerRunId === undefined
       ? {}

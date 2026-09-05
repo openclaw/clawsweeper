@@ -6741,6 +6741,7 @@ export class ExactReviewQueue {
       return {
         command_context: false,
         acknowledgement_state: "not_required" as const,
+        acknowledgement_unavailable_reason: null,
         supersede_safe: staleRevision,
       };
     }
@@ -6749,18 +6750,36 @@ export class ExactReviewQueue {
       item.key,
       item.revision,
     );
-    const acknowledgementState =
-      projection?.admission.commandOriginated === true &&
-      projection.admission.statusMarker === (producerDecision.commandStatusMarker ?? null) &&
-      projection.admission.statusCommentId === (producerDecision.statusCommentId ?? null) &&
-      projection.acknowledgement.required === true
-        ? commandAcknowledgementState(projection)
-        : ("unavailable" as const);
+    const acknowledgementUnavailableReason = this.publicationAcknowledgementUnavailableReason(
+      projection,
+      producerDecision,
+    );
+    const acknowledgementState = acknowledgementUnavailableReason
+      ? ("unavailable" as const)
+      : commandAcknowledgementState(projection!);
     return {
       command_context: true,
       acknowledgement_state: acknowledgementState,
+      acknowledgement_unavailable_reason: acknowledgementUnavailableReason,
       supersede_safe: staleRevision && !["pending", "unavailable"].includes(acknowledgementState),
     };
+  }
+
+  private publicationAcknowledgementUnavailableReason(
+    projection: ExactReviewLifecycleProjection | null,
+    producerDecision: ExactReviewDecision,
+  ): string | null {
+    if (!projection) return "projection_missing";
+    if (projection.admission.commandOriginated !== true) return "projection_not_command";
+    if (projection.admission.statusMarker !== (producerDecision.commandStatusMarker ?? null))
+      return "marker_mismatch";
+    if (projection.admission.statusCommentId !== (producerDecision.statusCommentId ?? null))
+      return "comment_mismatch";
+    if (projection.acknowledgement.required !== true) return "acknowledgement_not_required";
+    if (commandAcknowledgementState(projection) !== "unavailable") return null;
+    if (projection.terminalDisposition?.kind === "requeue") return "lifecycle_requeued";
+    if (!projection.terminalDisposition) return "terminal_missing";
+    return "routed_receipts_incomplete";
   }
 
   private stalePublicationCandidatesSync(

@@ -1895,6 +1895,7 @@ test("publication reconcile backfills historical duplicate lineages in bounded p
     assert.equal(firstPass.oldest_remaining_age_seconds, 200);
     assert.equal(firstPass.sample[0].item_key, keys[1]);
     assert.equal(firstPass.sample[0].supersede_safe, true);
+    assert.equal(firstPass.sample[0].acknowledgement_unavailable_reason, null);
 
     const afterFirstPass = await (
       await queue.fetch(batchRequest("/publications/list", { limit: 100 }))

@@ -316,6 +316,10 @@ test("publication reconciliation returns a bounded allowlisted sample", async (t
     retained_item_key: null,
     command_context: index % 6 !== 0,
     acknowledgement_state: acknowledgementStates[index % acknowledgementStates.length],
+    acknowledgement_unavailable_reason:
+      acknowledgementStates[index % acknowledgementStates.length] === "unavailable"
+        ? "terminal_missing"
+        : null,
     supersede_safe: !["pending", "unavailable"].includes(
       acknowledgementStates[index % acknowledgementStates.length],
     ),
@@ -369,14 +373,68 @@ test("publication reconciliation returns a bounded allowlisted sample", async (t
     retainedItemKey: null,
     commandContext: false,
     acknowledgementState: "not_required",
+    acknowledgementUnavailableReason: null,
     supersedeSafe: true,
   });
+  assert.deepEqual(
+    result.sample.find((entry) => entry.acknowledgementState === "unavailable"),
+    {
+      itemKey: "openclaw/example#6@publish:7:1",
+      queueRevision: 6,
+      reason: "stale_revision",
+      targetKey: "openclaw/example#6",
+      publicationRevision: 6,
+      supersededByRevision: 7,
+      lineageClaimGeneration: null,
+      retainedItemKey: null,
+      commandContext: true,
+      acknowledgementState: "unavailable",
+      acknowledgementUnavailableReason: "terminal_missing",
+      supersedeSafe: false,
+    },
+  );
   assert.deepEqual(
     [...new Set(result.sample.map((entry) => entry.acknowledgementState))],
     acknowledgementStates,
   );
   assert.equal("private_detail" in result.sample[0]!, false);
   assert.equal("private_response_detail" in result, false);
+});
+
+test("publication reconciliation accepts prior Worker samples without unavailable reason", async (t) => {
+  const { client } = fixture(t, () =>
+    Response.json({
+      apply: false,
+      scanned: 1,
+      eligible: 1,
+      changed: 0,
+      eligible_remaining: 1,
+      protected_batch_items: 0,
+      oldest_eligible_age_seconds: 60,
+      oldest_remaining_age_seconds: 60,
+      sample: [
+        {
+          item_key: "openclaw/example#1@publish:2:1",
+          queue_revision: 1,
+          reason: "stale_revision",
+          target_key: "openclaw/example#1",
+          publication_revision: 1,
+          superseded_by_revision: 2,
+          lineage_claim_generation: null,
+          retained_item_key: null,
+          command_context: false,
+          acknowledgement_state: "not_required",
+          supersede_safe: true,
+        },
+      ],
+    }),
+  );
+
+  assert.equal(
+    (await client.reconcilePublications({ apply: false, maxItems: 1 })).sample[0]!
+      .acknowledgementUnavailableReason,
+    null,
+  );
 });
 
 test("publication reconciliation rejects malformed sample rows", async (t) => {
@@ -402,6 +460,7 @@ test("publication reconciliation rejects malformed sample rows", async (t) => {
           retained_item_key: null,
           command_context: false,
           acknowledgement_state: "not_required",
+          acknowledgement_unavailable_reason: null,
           supersede_safe: false,
         },
       ],
@@ -419,6 +478,7 @@ test("publication reconciliation rejects malformed supersede safety", async (t) 
   let commandContext = true;
   let reason = "stale_revision";
   let supersedeSafe = true;
+  let acknowledgementUnavailableReason: unknown = null;
   let responseApply: unknown = true;
   const { client, calls } = fixture(t, () =>
     Response.json({
@@ -442,6 +502,7 @@ test("publication reconciliation rejects malformed supersede safety", async (t) 
           retained_item_key: null,
           command_context: commandContext,
           acknowledgement_state: acknowledgementState,
+          acknowledgement_unavailable_reason: acknowledgementUnavailableReason,
           supersede_safe: supersedeSafe,
         },
       ],
@@ -457,6 +518,18 @@ test("publication reconciliation rejects malformed supersede safety", async (t) 
     client.reconcilePublications({ apply: true, maxItems: 1 }),
     /supersede safety/,
   );
+  acknowledgementState = "unavailable";
+  supersedeSafe = false;
+  await assert.rejects(
+    client.reconcilePublications({ apply: true, maxItems: 1 }),
+    /supersede safety/,
+  );
+  acknowledgementUnavailableReason = "private_reason";
+  await assert.rejects(
+    client.reconcilePublications({ apply: true, maxItems: 1 }),
+    /acknowledgement_unavailable_reason/,
+  );
+  acknowledgementUnavailableReason = null;
   acknowledgementState = "not_required";
   await assert.rejects(
     client.reconcilePublications({ apply: true, maxItems: 1 }),
@@ -470,6 +543,7 @@ test("publication reconciliation rejects malformed supersede safety", async (t) 
   );
   acknowledgementState = "not_required";
   reason = "legacy_terminal";
+  supersedeSafe = true;
   await assert.rejects(
     client.reconcilePublications({ apply: true, maxItems: 1 }),
     /supersede safety/,
@@ -485,6 +559,6 @@ test("publication reconciliation rejects malformed supersede safety", async (t) 
     client.reconcilePublications({ apply: true, maxItems: 1 }),
     /reconciliation apply/,
   );
-  assert.equal(calls.length, 7);
+  assert.equal(calls.length, 9);
   assert.deepEqual(JSON.parse(calls[0].body), { apply: true, max_items: 1 });
 });

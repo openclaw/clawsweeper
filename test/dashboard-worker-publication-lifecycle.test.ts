@@ -3828,6 +3828,7 @@ test("signed Worker supersedes only an acknowledgement-safe exact stale publicat
     retained_item_key: null,
     command_context: true,
     acknowledgement_state: "pending",
+    acknowledgement_unavailable_reason: null,
     supersede_safe: false,
   });
   const unsafeApply = await (
@@ -3895,19 +3896,181 @@ test("signed Worker supersedes only an acknowledgement-safe exact stale publicat
 
 test("publication reconciliation derives every acknowledgement state from the exact queue revision", async () => {
   const storage = new MemoryDurableStorage();
-  const cases = [
-    ["pending", true, "pending", false],
-    ["not_required", false, "not_required", true],
-    ["observed", true, "observed", true],
-    ["skipped_locked", true, "skipped_locked", true],
-    ["skipped_missing_comment", true, "skipped_missing_comment", true],
-    ["unavailable", true, "unavailable", false],
-    ["missing", true, "unavailable", false],
-    ["mismatch", true, "unavailable", false],
-  ] as const;
+  type AcknowledgementCase = {
+    name: string;
+    producerCommand: boolean;
+    admissionCommand?: boolean;
+    markerMismatch?: boolean;
+    commentMismatch?: boolean;
+    forceAcknowledgementNotRequired?: boolean;
+    terminal?: "review_completed_routed" | "requeue";
+    canonical?: boolean;
+    router?: boolean;
+    acknowledgement?: "observed" | "skipped_locked" | "skipped_missing_comment";
+    requeueAfterAcknowledgement?: boolean;
+    acknowledgementState:
+      | "not_required"
+      | "pending"
+      | "observed"
+      | "skipped_locked"
+      | "skipped_missing_comment"
+      | "unavailable";
+    supersedeSafe: boolean;
+    unavailableReason: string | null;
+  };
+  const cases: AcknowledgementCase[] = [
+    {
+      name: "pending",
+      producerCommand: true,
+      terminal: "review_completed_routed",
+      canonical: true,
+      router: true,
+      acknowledgementState: "pending",
+      supersedeSafe: false,
+      unavailableReason: null,
+    },
+    {
+      name: "not_required",
+      producerCommand: false,
+      acknowledgementState: "not_required",
+      supersedeSafe: true,
+      unavailableReason: null,
+    },
+    {
+      name: "observed",
+      producerCommand: true,
+      terminal: "review_completed_routed",
+      canonical: true,
+      router: true,
+      acknowledgement: "observed",
+      acknowledgementState: "observed",
+      supersedeSafe: true,
+      unavailableReason: null,
+    },
+    {
+      name: "skipped_locked",
+      producerCommand: true,
+      terminal: "review_completed_routed",
+      canonical: true,
+      router: true,
+      acknowledgement: "skipped_locked",
+      acknowledgementState: "skipped_locked",
+      supersedeSafe: true,
+      unavailableReason: null,
+    },
+    {
+      name: "skipped_missing_comment",
+      producerCommand: true,
+      terminal: "review_completed_routed",
+      canonical: true,
+      router: true,
+      acknowledgement: "skipped_missing_comment",
+      acknowledgementState: "skipped_missing_comment",
+      supersedeSafe: true,
+      unavailableReason: null,
+    },
+    {
+      name: "observed_requeued",
+      producerCommand: true,
+      terminal: "review_completed_routed",
+      canonical: true,
+      router: true,
+      acknowledgement: "observed",
+      requeueAfterAcknowledgement: true,
+      acknowledgementState: "observed",
+      supersedeSafe: true,
+      unavailableReason: null,
+    },
+    {
+      name: "skipped_locked_requeued",
+      producerCommand: true,
+      terminal: "review_completed_routed",
+      canonical: true,
+      router: true,
+      acknowledgement: "skipped_locked",
+      requeueAfterAcknowledgement: true,
+      acknowledgementState: "skipped_locked",
+      supersedeSafe: true,
+      unavailableReason: null,
+    },
+    {
+      name: "skipped_missing_comment_requeued",
+      producerCommand: true,
+      terminal: "review_completed_routed",
+      canonical: true,
+      router: true,
+      acknowledgement: "skipped_missing_comment",
+      requeueAfterAcknowledgement: true,
+      acknowledgementState: "skipped_missing_comment",
+      supersedeSafe: true,
+      unavailableReason: null,
+    },
+    {
+      name: "projection_missing",
+      producerCommand: true,
+      acknowledgementState: "unavailable",
+      supersedeSafe: false,
+      unavailableReason: "projection_missing",
+    },
+    {
+      name: "projection_not_command",
+      producerCommand: true,
+      admissionCommand: false,
+      acknowledgementState: "unavailable",
+      supersedeSafe: false,
+      unavailableReason: "projection_not_command",
+    },
+    {
+      name: "marker_mismatch",
+      producerCommand: true,
+      markerMismatch: true,
+      acknowledgementState: "unavailable",
+      supersedeSafe: false,
+      unavailableReason: "marker_mismatch",
+    },
+    {
+      name: "comment_mismatch",
+      producerCommand: true,
+      commentMismatch: true,
+      acknowledgementState: "unavailable",
+      supersedeSafe: false,
+      unavailableReason: "comment_mismatch",
+    },
+    {
+      name: "acknowledgement_not_required",
+      producerCommand: true,
+      forceAcknowledgementNotRequired: true,
+      acknowledgementState: "unavailable",
+      supersedeSafe: false,
+      unavailableReason: "acknowledgement_not_required",
+    },
+    {
+      name: "lifecycle_requeued",
+      producerCommand: true,
+      terminal: "requeue",
+      acknowledgementState: "unavailable",
+      supersedeSafe: false,
+      unavailableReason: "lifecycle_requeued",
+    },
+    {
+      name: "terminal_missing",
+      producerCommand: true,
+      acknowledgementState: "unavailable",
+      supersedeSafe: false,
+      unavailableReason: "terminal_missing",
+    },
+    {
+      name: "routed_receipts_incomplete",
+      producerCommand: true,
+      terminal: "review_completed_routed",
+      acknowledgementState: "unavailable",
+      supersedeSafe: false,
+      unavailableReason: "routed_receipts_incomplete",
+    },
+  ];
   const items: Record<string, ExactReviewQueueItem> = {};
   const staleByName = new Map<string, ExactReviewQueueItem>();
-  for (const [index, [name, commandContext]] of cases.entries()) {
+  for (const [index, entry] of cases.entries()) {
     const number = 18000 + index;
     const stale = leasedExactReviewPublicationItem(number, `${number}0`);
     const fresh = leasedExactReviewPublicationItem(number, `${number}1`);
@@ -3918,7 +4081,7 @@ test("publication reconciliation derives every acknowledgement state from the ex
     fresh.state = "pending";
     fresh.decision.publication!.leaseRevision = 2;
     fresh.leaseDecision!.publication!.leaseRevision = 2;
-    if (commandContext) {
+    if (entry.producerCommand) {
       Object.assign(stale.decision.publication!.producerDecision, {
         commandStatusMarker: `<!-- clawsweeper-command-status:${number}:re_review:${"b".repeat(40)} -->`,
         statusCommentId: number * 10,
@@ -3926,53 +4089,72 @@ test("publication reconciliation derives every acknowledgement state from the ex
     }
     items[stale.key] = stale;
     items[fresh.key] = fresh;
-    staleByName.set(name, stale);
+    staleByName.set(entry.name, stale);
   }
   await storage.put("exact-review-queue", { deliveries: {}, items });
   const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
-  for (const [name, commandContext] of cases) {
-    if (name === "not_required" || name === "missing") continue;
-    const item = staleByName.get(name)!;
+  for (const entry of cases) {
+    if (entry.name === "not_required" || entry.name === "projection_missing") continue;
+    const item = staleByName.get(entry.name)!;
     const source = item.decision.publication!.producerDecision;
     const identity = {
       canonicalTargetKey: `${source.targetRepo}#${source.itemNumber}`,
       fenceKey: item.key,
       revision: item.revision,
     };
-    const projectionMarker =
-      name === "mismatch"
-        ? `<!-- clawsweeper-command-status:${source.itemNumber}:re_review:${"c".repeat(40)} -->`
-        : source.commandStatusMarker!;
+    const projectionMarker = entry.markerMismatch
+      ? `<!-- clawsweeper-command-status:${source.itemNumber}:re_review:${"c".repeat(40)} -->`
+      : source.commandStatusMarker!;
     lifecycle.recordAdmission({
       ...identity,
-      deliveryId: `ack-state-${name}`,
+      deliveryId: `ack-state-${entry.name}`,
       sourceAction: source.sourceAction,
-      commandOriginated: commandContext,
-      statusMarker: commandContext ? projectionMarker : null,
-      statusCommentId: commandContext ? source.statusCommentId! : null,
+      commandOriginated: entry.admissionCommand ?? entry.producerCommand,
+      statusMarker: projectionMarker,
+      statusCommentId: entry.commentMismatch
+        ? source.statusCommentId! + 1
+        : source.statusCommentId!,
       observedAt: 1,
     });
-    if (!["pending", "observed", "skipped_locked", "skipped_missing_comment"].includes(name)) {
-      continue;
+    if (entry.forceAcknowledgementNotRequired) {
+      const projection = lifecycle.read(
+        identity.canonicalTargetKey,
+        identity.fenceKey,
+        identity.revision,
+      )!;
+      projection.acknowledgement.required = false;
+      storage.sql.exec(
+        "UPDATE exact_review_lifecycle_projection_v1 SET projection_json = ? WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?",
+        JSON.stringify(projection),
+        identity.canonicalTargetKey,
+        identity.fenceKey,
+        identity.revision,
+      );
     }
-    lifecycle.recordCanonicalReceipt({
-      ...identity,
-      outcome: "accepted",
-      receiptId: `canonical-${name}`,
-      observedAt: 2,
-    });
-    lifecycle.recordRouterReceipt({
-      ...identity,
-      outcome: "durable",
-      receiptId: `router-${name}`,
-      observedAt: 3,
-    });
-    lifecycle.recordTerminalDisposition({
-      ...identity,
-      kind: "review_completed_routed",
-      observedAt: 4,
-    });
-    if (name === "pending") continue;
+    if (entry.canonical) {
+      lifecycle.recordCanonicalReceipt({
+        ...identity,
+        outcome: "accepted",
+        receiptId: `canonical-${entry.name}`,
+        observedAt: 2,
+      });
+    }
+    if (entry.router) {
+      lifecycle.recordRouterReceipt({
+        ...identity,
+        outcome: "durable",
+        receiptId: `router-${entry.name}`,
+        observedAt: 3,
+      });
+    }
+    if (entry.terminal) {
+      lifecycle.recordTerminalDisposition({
+        ...identity,
+        kind: entry.terminal,
+        observedAt: 4,
+      });
+    }
+    if (!entry.acknowledgement) continue;
     const attempt = lifecycle.authorizeCommandAcknowledgement({
       ...identity,
       statusMarker: source.commandStatusMarker!,
@@ -3980,7 +4162,7 @@ test("publication reconciliation derives every acknowledgement state from the ex
       observedAt: 5,
     });
     assert.equal(attempt.allowed, true);
-    if (name === "observed") {
+    if (entry.acknowledgement === "observed") {
       lifecycle.observeCommandAcknowledgement({
         ...identity,
         statusMarker: source.commandStatusMarker!,
@@ -3995,8 +4177,18 @@ test("publication reconciliation derives every acknowledgement state from the ex
         attemptId: attempt.attemptId!,
         statusMarker: source.commandStatusMarker!,
         statusCommentId: source.statusCommentId!,
-        reason: name === "skipped_locked" ? "locked_conversation" : "missing_status_comment",
+        reason:
+          entry.acknowledgement === "skipped_locked"
+            ? "locked_conversation"
+            : "missing_status_comment",
         observedAt: 6,
+      });
+    }
+    if (entry.requeueAfterAcknowledgement) {
+      lifecycle.recordTerminalDisposition({
+        ...identity,
+        kind: "requeue",
+        observedAt: 7,
       });
     }
   }
@@ -4010,8 +4202,8 @@ test("publication reconciliation derives every acknowledgement state from the ex
     )
   ).json();
   const sampleByTarget = new Map(result.sample.map((entry) => [entry.target_key, entry]));
-  for (const [name, commandContext, acknowledgementState, supersedeSafe] of cases) {
-    const item = staleByName.get(name)!;
+  for (const entry of cases) {
+    const item = staleByName.get(entry.name)!;
     const source = item.decision.publication!.producerDecision;
     const sample = sampleByTarget.get(`${source.targetRepo}#${source.itemNumber}`);
     assert.deepEqual(
@@ -4019,9 +4211,20 @@ test("publication reconciliation derives every acknowledgement state from the ex
         queueRevision: sample.queue_revision,
         commandContext: sample.command_context,
         acknowledgementState: sample.acknowledgement_state,
+        acknowledgementUnavailableReason: sample.acknowledgement_unavailable_reason,
         supersedeSafe: sample.supersede_safe,
       },
-      { queueRevision: 4, commandContext, acknowledgementState, supersedeSafe },
+      {
+        queueRevision: 4,
+        commandContext: entry.producerCommand,
+        acknowledgementState: entry.acknowledgementState,
+        acknowledgementUnavailableReason: entry.unavailableReason,
+        supersedeSafe: entry.supersedeSafe,
+      },
+    );
+    assert.equal(
+      sample.acknowledgement_state === "unavailable",
+      sample.acknowledgement_unavailable_reason !== null,
     );
   }
   const applied = await (
@@ -4035,6 +4238,7 @@ test("publication reconciliation derives every acknowledgement state from the ex
   assert.equal(applied.changed, 0);
   assert.equal(applied.sample[0].target_key, "openclaw/openclaw#18000");
   assert.equal(applied.sample[0].acknowledgement_state, "pending");
+  assert.equal(applied.sample[0].acknowledgement_unavailable_reason, null);
   const state = (await storage.get("exact-review-queue")) as {
     items: Record<string, ExactReviewQueueItem>;
   };
