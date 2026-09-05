@@ -73,9 +73,14 @@ function normalizedMaxFileBytes(value: number | undefined): number {
   return Math.max(TRUNCATION_MARKER.length, normalized);
 }
 
-function normalizedTailBytes(value: number | undefined): number {
+export function normalizedTailBytes(value: number | undefined): number {
   if (value === undefined) return DEFAULT_CODEX_OUTPUT_TAIL_BYTES;
   return Math.max(0, Number.isFinite(value) ? Math.floor(value) : DEFAULT_CODEX_OUTPUT_TAIL_BYTES);
+}
+
+export function normalizedOutputFileBytes(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_CODEX_OUTPUT_FILE_BYTES;
+  return Math.max(0, Number.isFinite(value) ? Math.floor(value) : DEFAULT_CODEX_OUTPUT_FILE_BYTES);
 }
 
 function availableTailBytes(maxFileBytes: number): number {
