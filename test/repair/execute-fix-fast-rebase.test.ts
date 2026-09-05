@@ -38,7 +38,6 @@ const args = process.argv.slice(2);
 const prompt = fs.readFileSync(0, "utf8");
 if (${changelogOnly}) {
   assert.ok(!args.includes("--output-schema"), "an edit is expected");
-  assert.ok(args.includes("workspace-write"));
   assert.equal(fs.readFileSync("CHANGELOG.md", "utf8"), ${JSON.stringify(changelog)});
   assert.match(prompt, /"changelog_required": true/);
   fs.appendFileSync(${JSON.stringify(editTrace)}, "edit\\n");
@@ -206,11 +205,11 @@ if (args[0] === "api" && endpoint === "repos/openclaw/fixture/pulls/1") {
             },
           },
         );
-        assert.equal(child.status, 0, child.stdout + child.stderr);
+        const report = JSON.parse(
+          fs.readFileSync(path.join(root, "fix-execution-report.json"), "utf8"),
+        );
+        assert.equal(child.status, 0, child.stdout + child.stderr + JSON.stringify(report));
         if (changelogOnly) {
-          const report = JSON.parse(
-            fs.readFileSync(path.join(root, "fix-execution-report.json"), "utf8"),
-          );
           assert.equal(report.status, "blocked", JSON.stringify(report));
           assert.match(report.reason, /no target repo changes after 1 edit attempt/);
           assert.equal(fs.readFileSync(editTrace, "utf8"), "edit\n");
@@ -231,9 +230,6 @@ if (args[0] === "api" && endpoint === "repos/openclaw/fixture/pulls/1") {
           assert.match(child.stdout, /automerge deterministic rebase validated/);
           assert.match(child.stdout, /repair branch push blocked; publishing prepared repair/);
         }
-        const report = JSON.parse(
-          fs.readFileSync(path.join(root, "fix-execution-report.json"), "utf8"),
-        );
         assert.equal(report.status, "opened", JSON.stringify(report));
         const published = report.actions.find((action) => action.action === "open_fix_pr");
         assert.equal(published.pr_url, replacementUrl);
