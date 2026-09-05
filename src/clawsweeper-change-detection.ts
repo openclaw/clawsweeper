@@ -226,8 +226,21 @@ function isDataModelCandidatePath(path: string): boolean {
   );
 }
 
+function sqlitePathOwnerRole(path: string): string {
+  return (
+    /(?:^|\/)sqlite(?:[-_.][a-z0-9]+)*[-_.](store|schema|codec|user-version)\.[cm]?[jt]sx?$/i
+      .exec(path)?.[1]
+      ?.toLowerCase() ?? ""
+  );
+}
+
 function isLikelySqliteSchemaPath(path: string): boolean {
-  return /(?:^|\/)(?:migrations?|sqlite)(?:\/|[-_.])|(?:sqlite|memory|database|db)[-_.]?schema|schema[-_.]?sqlite|sqlite[-_.]?store|\.sql$/i.test(
+  const role = sqlitePathOwnerRole(path);
+  if (role === "codec" || role === "user-version") return false;
+  if (role === "store" || role === "schema") return true;
+  // A sqlite directory or standalone owner is evidence; sqlite-prefixed
+  // diagnostic/helper leaves need a schema/store name or actual patch evidence.
+  return /(?:^|\/)migrations?(?:\/|[-_.])|(?:^|\/)sqlite(?:\/|\.[^/.]+$)|(?:sqlite|memory|database|db)[-_.]?schema|schema[-_.]?sqlite|sqlite[-_.]?store|\.sql$/i.test(
     path,
   );
 }
@@ -440,15 +453,24 @@ function dataModelSurfacesFromPatch(
   const surfaces = new Set<string>();
   const add = (surface: string) => surfaces.add(dataModelSurfaceLabel(path, surface));
   const pathHint = dataModelPathHint(path);
-  if (pathHint && dataModelTextMatchesPathHint(text, pathHint)) add(pathHint);
+  if (
+    pathHint &&
+    (dataModelTextMatchesPathHint(text, pathHint) || dataModelTextHasJsonConversion(text))
+  )
+    add(pathHint);
   if (pathHint && dataModelTextLooksLikePersistedShapeField(text, pathHint)) add(pathHint);
-  // Storage context establishes changed fields only within the same hunk.
+  // Storage context establishes changed fields or JSON conversion only within
+  // the same hunk, including formatting/argument edits with no field declaration.
   for (const hunk of (options.patch ?? "").split(/^@@.*$/m)) {
     const changedText = changedPatchLines(hunk)
       .filter((line) => dataModelLineLooksSemantic(line, options))
       .join("\n");
-    for (const surface of dataModelStorageContext(hunk)) {
-      if (dataModelTextLooksLikePersistedShapeField(changedText, surface)) add(surface);
+    for (const surface of dataModelStorageContext(hunk, Boolean(pathHint))) {
+      if (
+        dataModelTextLooksLikePersistedShapeField(changedText, surface) ||
+        dataModelTextHasJsonConversion(changedText)
+      )
+        add(surface);
     }
   }
   if (
@@ -468,7 +490,7 @@ function dataModelSurfacesFromPatch(
   ) {
     add("durable storage schema");
   }
-  if (dataModelTextHasSerialization(text)) {
+  if (dataModelTextHasSerializedStateBoundary(text)) {
     add("serialized state");
   }
   if (dataModelTextHasCacheSchema(text)) add("persistent cache schema");
@@ -484,9 +506,17 @@ function dataModelSurfacesFromPatch(
   return [...surfaces];
 }
 
-function dataModelTextHasSerialization(text: string): boolean {
-  return /\b(?:JSON\.(?:parse|stringify)|readFile|writeFile|localStorage|sessionStorage|indexedDB|IDBObjectStore|workspaceState|globalState|serialized|persisted?|statePath)\b/i.test(
-    text,
+function dataModelTextHasJsonConversion(text: string): boolean {
+  return /\bJSON\.(?:parse|stringify)\b/i.test(text);
+}
+
+function dataModelTextHasSerializedStateBoundary(text: string): boolean {
+  // JSON conversion and a variable named "serialized" also occur in transient
+  // diagnostics and IPC; neither supplies a storage boundary on its own.
+  return (
+    /\b(?:readFile(?:Sync)?|writeFile(?:Sync)?|localStorage|sessionStorage|indexedDB|IDBObjectStore|workspaceState|globalState|persisted?|statePath)\b/i.test(
+      text,
+    ) || /\bserialized\s+(?:data\s+)?(?:format|schema|layout|identity|namespace)\b/i.test(text)
   );
 }
 
@@ -494,7 +524,7 @@ function dataModelTextHasCacheSchema(text: string): boolean {
   return /\bcache[_-]?schema\b|\bcache\s+(?:data\s+)?(?:format|schema|layout)\b/i.test(text);
 }
 
-function dataModelStorageContext(patch: string): string[] {
+function dataModelStorageContext(patch: string, hasPersistenceOwner = false): string[] {
   // Retain nearby storage evidence when only the stored fields change. Hunk
   // headers and comments cannot establish a persistence boundary on their own.
   const text = patch
@@ -504,7 +534,12 @@ function dataModelStorageContext(patch: string): string[] {
     .filter((line) => dataModelLineLooksSemantic(line, { docsOnly: false }))
     .join("\n");
   const surfaces: string[] = [];
-  if (dataModelTextHasSerialization(text)) surfaces.push("serialized state");
+  if (
+    dataModelTextHasSerializedStateBoundary(text) ||
+    (hasPersistenceOwner && dataModelTextHasJsonConversion(text))
+  ) {
+    surfaces.push("serialized state");
+  }
   if (dataModelTextHasCacheSchema(text)) surfaces.push("persistent cache schema");
   if (/\b(?:DurableObject|state\.storage|storage\.(?:get|put|delete|list))\b/i.test(text)) {
     surfaces.push("durable storage schema");
@@ -545,6 +580,9 @@ function isDataModelDocumentationPath(path: string): boolean {
 }
 
 function dataModelPathHint(path: string): string {
+  const sqliteRole = sqlitePathOwnerRole(path);
+  if (sqliteRole === "codec") return "serialized state";
+  if (sqliteRole === "user-version") return "database schema";
   if (/(^|\/)(?:durable-?objects?|storage)(?:\/|[-_.])|durable-?object|state-storage/i.test(path)) {
     return "durable storage schema";
   }

@@ -1,0 +1,17 @@
+{
+  "pullRequest": "https://github.com/openclaw/openclaw/pull/138520",
+  "headSha": "e87dc59f30bfb77dad91d8f9229839a350fad3f7",
+  "reviewComment": "https://github.com/openclaw/openclaw/pull/138520#issuecomment-5545584143",
+  "provenance": "GitHub pull-files API capture at the pinned PR head, verified against the raw commit. The exact unified hunk body is 2090 characters; production compactPullFile retains 2000 characters and appends [truncated 90 chars]. This is API review-context evidence, not archived worker JSON; PR-body and review text are not detector inputs.",
+  "pullFiles": [
+    {
+      "filename": "src/infra/sqlite-readonly-location.worker.ts",
+      "previous_filename": null,
+      "status": "modified",
+      "additions": 4,
+      "deletions": 27,
+      "changes": 31,
+      "patch": "@@ -1,35 +1,11 @@\n-import { coerceErrorMessage, extractErrorCode } from \"@openclaw/normalization-core/error-coercion\";\n-import { isRecord } from \"@openclaw/normalization-core/record-coerce\";\n+import { coerceErrorMessage } from \"@openclaw/normalization-core/error-coercion\";\n+import { formatSqliteErrorCodeSuffix } from \"./sqlite-error-diagnostics.js\";\n import {\n   SQLITE_READONLY_CHILD_ARG,\n   prepareSqliteReadOnlyLocationInProcess,\n   prepareSqliteReadOnlyLocationSyncInProcess,\n } from \"./sqlite-readonly-location.js\";\n \n-function formatWorkerError(error: unknown): string {\n-  const message = coerceErrorMessage(error);\n-  const details = new Set<string>();\n-  // Only allowlisted codes cross this boundary, through at most eight cause nodes.\n-  // Full error formatting would expose cause prose or arbitrary structured data.\n-  for (let depth = 0, current = error; depth < 8 && isRecord(current); depth += 1) {\n-    const code = extractErrorCode(current);\n-    if (code && /^[A-Z0-9_]{1,64}$/u.test(code)) {\n-      details.add(`code=${code}`);\n-    }\n-    const errcode = current.errcode;\n-    if (\n-      typeof errcode === \"number\" &&\n-      Number.isInteger(errcode) &&\n-      errcode >= 0 &&\n-      errcode <= 0x7fff_ffff\n-    ) {\n-      details.add(`errcode=${errcode}`);\n-    }\n-    current = current.cause;\n-  }\n-  return details.size > 0 ? `${message} (${[...details].join(\", \")})` : message;\n-}\n-\n // The sync strategy raw-copies without attaching SQLite to the source, so sync\n // callers stay byte-neutral on the live family; the async strategy holds a read\n // transaction on the source and may update its WAL index.\n@@ -54,7 +30,8 @@ async function runWorker(): Promise<void> {\n     process.stdout.write(JSON.stringify({ ok: true, location: prepared.location }));\n   } catch (error) {\n     process.exitCode = 1;\n-    process.stdout.write(JSON.stringify({ ok: false, message: formatWorkerError(error) }));\n+    const message = `${coerceErrorMessage(error)}${formatSqliteErrorCodeSuffix(error)}`;\n+    process.stdout.write(JSON.stringify({ ok: false, message }));\n   }\n }\n "
+    }
+  ]
+}

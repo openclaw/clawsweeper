@@ -271,6 +271,7 @@ for (const [name, fixturePath, normalizationTruncates] of [
   ["retained image runtime fields", "./fixtures/persistence-classifier-132839.json", true],
   ["worker input layout fields", "./fixtures/persistence-classifier-132839-workers.json", true],
   ["hovercard promise cancellation", "./fixtures/persistence-classifier-136772.json", false],
+  ["SQLite worker diagnostic suffix", "./fixtures/persistence-classifier-138520.json", true],
 ] as const) {
   for (const normalized of [false, true]) {
     test(`${name} creates no stored-data warning or migration gate (${normalized ? "production-normalized" : "full"} patch)`, () => {
@@ -290,11 +291,14 @@ for (const [name, fixturePath, normalizationTruncates] of [
       // Check the contributor-visible consequence before the classification detail.
       assert.doesNotMatch(
         comment,
-        /Persistent data-model change detected|### Stored data model|Confirm migration/,
+        /Persistent data-model change detected|### Stored data model|Confirm migration|SQLite table change|This PR modifies persisted SQLite tables|Add data-model compatibility proof/,
       );
       assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:pass/);
       assert.doesNotMatch(reviewAutomationMarkersFromReport(report), /needs-human|fix-required/);
       assert.match(report, /^data_model_change: false$/m);
+      assert.match(report, /^data_model_surfaces: \[\]$/m);
+      assert.match(report, /^sqlite_schema_change: false$/m);
+      assert.match(report, /^sqlite_schema_files: \[\]$/m);
       assert.match(comment, /clawsweeper-review-state:ready/);
       assert.deepEqual(detection, { change: false, surfaces: [] });
       assert.deepEqual(sqliteSchemaChangeFromPullFilesForTest({ pullFiles }), {
@@ -303,6 +307,157 @@ for (const [name, fixturePath, normalizationTruncates] of [
       });
     });
   }
+}
+
+test("transient JSON and serialized variables do not establish storage or truncated-patch unknowns", () => {
+  for (const filename of [
+    "src/runtime/conversion.ts",
+    "src/infra/sqlite-error-diagnostics.ts",
+    "src/infra/sqlite-readonly-location.worker.ts",
+  ]) {
+    for (const patch of [
+      "@@\n+process.stdout.write(JSON.stringify({ ok: true, message }));",
+      "@@\n+process.stderr.write(JSON.stringify({ ok: false, message }));",
+      "@@\n+process.send(JSON.stringify(payload));",
+      "@@\n+port.postMessage(JSON.stringify(payload));",
+      "@@\n+const payload = JSON.parse(stdout);",
+      "@@\n-const payload = JSON.parse(raw);\n+const payload = JSON.parse(raw, revive);",
+      "@@\n-const raw = JSON.stringify(payload);\n+const raw = JSON.stringify(payload, null, 2);",
+      "@@\n+const serialized = value;\n+return serialized;",
+      "@@\n process.stdout.write(JSON.stringify({\n+  message: detail,\n }));",
+      "@@\n const payload = JSON.parse(raw) as {\n+  detail: string;\n };",
+      "@@\n const serialized = {\n+  detail: message,\n };",
+      "@@\n+  suffix: null,",
+    ]) {
+      for (const evidence of [patch, `${patch}\n\n[truncated 90 chars]`]) {
+        const pullFiles = [{ filename, patch: evidence }];
+        assert.deepEqual(
+          dataModelChangeFromPullFilesForTest({ pullFiles }),
+          { change: false, surfaces: [] },
+          `${filename}: ${evidence}`,
+        );
+        assert.deepEqual(sqliteSchemaChangeFromPullFilesForTest({ pullFiles }), {
+          change: false,
+          files: [],
+        });
+        const report = renderPersistenceReport(pullFiles, "a".repeat(40));
+        const comment = renderReviewCommentFromReport(report, "none");
+        assert.match(report, /^data_model_change: false$/m);
+        assert.match(report, /^sqlite_schema_change: false$/m);
+        assert.doesNotMatch(comment, /SQLite table change|Stored data model|Confirm migration/);
+        assert.match(comment, /clawsweeper-review-state:ready/);
+        assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:pass/);
+      }
+    }
+  }
+});
+
+test("JSON conversion cannot borrow an unchanged storage boundary from another hunk", () => {
+  for (const boundary of [
+    'writeFile("snapshot.json", raw);',
+    'const raw = readFileSync("snapshot.json", "utf8");',
+    'localStorage.setItem("preferences", raw);',
+    'await state.storage.put("snapshot", raw);',
+  ]) {
+    const pullFiles = [
+      {
+        filename: "src/runtime/conversion.ts",
+        patch: `@@ -1,2 +1,2 @@\n ${boundary}\n- refresh();\n+ refresh(true);\n@@ -40,3 +40,4 @@\n-const raw = JSON.stringify(payload);\n+const raw = JSON.stringify(payload, null, 2);\n+const payload = JSON.parse(stdout);\n+  detail: message,`,
+      },
+    ];
+    assert.deepEqual(
+      dataModelChangeFromPullFilesForTest({ pullFiles }),
+      {
+        change: false,
+        surfaces: [],
+      },
+      boundary,
+    );
+    const report = renderPersistenceReport(pullFiles, "a".repeat(40));
+    assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:pass/);
+  }
+});
+
+for (const [filename, surface, tableOwner] of [
+  ["src/boards/sqlite-board-store.ts", "database schema", true],
+  ["src/infra/sqlite-audit-record-store.ts", "database schema", true],
+  ["src/infra/sqlite-index-schema.ts", "database schema", true],
+  ["src/infra/sqlite-user-version.ts", "database schema", false],
+  ["src/boards/sqlite-board-codec.ts", "serialized state", false],
+] as const) {
+  test(`explicit SQLite owner retains compatibility gates: ${filename}`, () => {
+    for (const [kind, patch] of [
+      ["missing", undefined],
+      ["empty", ""],
+      ["truncated", "@@\n+  refresh();\n\n[truncated 99 chars]"],
+      [
+        "fields",
+        tableOwner
+          ? "@@\n+  priority INTEGER,"
+          : surface === "serialized state"
+            ? '@@\n+  kind: "task",'
+            : "@@\n-const schemaVersion = 1;\n+const schemaVersion = 2;",
+      ],
+      [
+        "JSON formatting",
+        "@@\n-const raw = JSON.stringify(payload);\n+const raw = JSON.stringify(payload, null, 2);",
+      ],
+      [
+        "JSON arguments",
+        "@@\n-const value = JSON.parse(raw);\n+const value = JSON.parse(raw, revive);",
+      ],
+      ["JSON fields", "@@\n const raw = JSON.stringify({\n+  payloadVersion: 2,\n });"],
+      ["JSON fields", "@@\n const value = JSON.parse(raw) as {\n+  payloadVersion: number;\n };"],
+    ] as const) {
+      for (const paths of [
+        { filename },
+        { filename: "src/infra/sqlite-error-diagnostics.ts", previous_filename: filename },
+        { filename, previous_filename: "src/infra/sqlite-error-diagnostics.ts" },
+      ]) {
+        const pullFiles = [{ ...paths, patch }];
+        const incomplete = kind === "missing" || kind === "empty" || kind === "truncated";
+        const sqliteChange =
+          tableOwner && (kind === "missing" || kind === "truncated" || kind === "fields");
+        const expectedSurface = incomplete
+          ? "unknown-data-model-change"
+          : kind === "JSON fields"
+            ? "serialized state"
+            : surface;
+        const surfaces = [`${expectedSurface}: ${filename}`];
+        if (kind.startsWith("JSON") && expectedSurface !== "serialized state") {
+          surfaces.push(`serialized state: ${filename}`);
+        }
+        // A schemaVersion edit is direct evidence on both production rename sides.
+        if (patch?.includes("schemaVersion") && paths.previous_filename) {
+          surfaces.push(
+            `database schema: ${paths.filename === filename ? paths.previous_filename : paths.filename}`,
+          );
+        }
+        assert.deepEqual(
+          dataModelChangeFromPullFilesForTest({ pullFiles }),
+          {
+            change: true,
+            surfaces: surfaces.sort(),
+          },
+          `${kind}: ${JSON.stringify(paths)}`,
+        );
+        assert.deepEqual(sqliteSchemaChangeFromPullFilesForTest({ pullFiles }), {
+          change: sqliteChange,
+          files: sqliteChange ? [paths.filename] : [],
+        });
+        const report = renderPersistenceReport(pullFiles, "a".repeat(40));
+        const comment = renderReviewCommentFromReport(report, "none");
+        assert.match(report, /^data_model_change: true$/m);
+        assert.equal(/^sqlite_schema_change: true$/m.test(report), sqliteChange);
+        assert.equal(comment.includes("SQLite table change"), sqliteChange);
+        assert.match(comment, /- \[ \] \*\*Add data-model compatibility proof\*\*/);
+        assert.match(comment, /clawsweeper-review-state:blocked/);
+        const markers = reviewAutomationMarkersFromReport(report);
+        assert.match(markers, /clawsweeper-verdict:needs-human/);
+        assert.doesNotMatch(markers, /clawsweeper-verdict:pass|clawsweeper-action:fix-required/);
+      }
+    }
+  });
 }
 
 test("runtime state names and typed parameters alone do not establish stored data", () => {
@@ -392,6 +547,66 @@ test("generic metadata, cache keys, versions, and TTL do not warn or gate withou
 
 test("storage evidence still warns and gates browser, runtime, and schema changes", () => {
   const cases = [
+    ...["readFile", "readFileSync", "writeFile", "writeFileSync"].flatMap((api) => {
+      const call = api.endsWith("Sync") ? `fs.${api}` : `await fs.promises.${api}`;
+      const boundary = api.startsWith("read")
+        ? `const raw = ${call}(target, "utf8");`
+        : `${call}(target, raw);`;
+      return [
+        `@@\n+${boundary}`,
+        `@@\n ${boundary}\n-const value = JSON.parse(raw);\n+const value = JSON.parse(raw, revive);`,
+        `@@\n-const raw = JSON.stringify(payload);\n+const raw = JSON.stringify(payload, null, 2);\n ${boundary}`,
+        `@@\n ${boundary}\n const value = {\n+  detail: message,\n };`,
+      ].map((patch) => ({
+        filename: "src/infra/sqlite-error-diagnostics.ts",
+        patch,
+        surface: "serialized state",
+      }));
+    }),
+    ...[
+      ["src/persistence/preferences.ts", "serialized state"],
+      ["src/storage/preferences.ts", "durable storage schema"],
+      ["src/cache/schema.ts", "persistent cache schema"],
+      ["src/cache/sqlite.ts", "database schema"],
+    ].flatMap(([filename, surface]) => [
+      {
+        filename,
+        surface,
+        patch:
+          "@@\n-const raw = JSON.stringify(payload);\n+const raw = JSON.stringify(payload, null, 2);",
+      },
+      {
+        filename,
+        surface,
+        patch: "@@\n-const value = JSON.parse(raw);\n+const value = JSON.parse(raw, revive);",
+      },
+    ]),
+    ...["workspaceState", "globalState"].map((store) => ({
+      filename: "src/runtime/preferences.ts",
+      patch: `@@\n ${store}.update("preferences", {\n+  detail: message,\n });`,
+      surface: "serialized state",
+    })),
+    {
+      filename: "src/runtime/conversion.ts",
+      patch:
+        '@@\n-const raw = JSON.stringify(payload);\n+const raw = JSON.stringify(payload, null, 2);\n await state.storage.put("snapshot", raw);',
+      surface: "durable storage schema",
+    },
+    {
+      filename: "src/infra/sqlite-readonly-location.worker.ts",
+      patch:
+        '@@\n+process.stdout.write(JSON.stringify({ ok: true }));\n@@\n await state.storage.put("snapshot", {\n+  detail: message,\n });',
+      surface: "durable storage schema",
+    },
+    ...[
+      "CREATE TABLE events (id TEXT);",
+      "ALTER TABLE events ADD COLUMN detail TEXT;",
+      "DROP TABLE events;",
+    ].map((ddl) => ({
+      filename: "src/infra/sqlite-error-diagnostics.ts",
+      patch: `@@\n+process.stdout.write(JSON.stringify({ ok: true }));\n@@\n+${ddl}`,
+      surface: "database schema",
+    })),
     {
       filename: "ui/src/state.ts",
       patch:
@@ -593,6 +808,10 @@ test("strong persistence evidence remains unknown when production normalization 
     { filename: "ui/src/display.ts", previous_filename: "ui/src/storage/state.ts" },
     { filename: "ui/src/storage/state.ts", previous_filename: "ui/src/display.ts" },
     { filename: "ui/src/display.ts", patch: '@@\n localStorage.getItem("preferences");\n' },
+    ...["readFile", "readFileSync", "writeFile", "writeFileSync"].map((api) => ({
+      filename: "src/runtime/conversion.ts",
+      patch: `@@\n ${api}(target);\n`,
+    })),
     { filename: "src/vector/records.ts" },
     { filename: "src/embedding/records.ts" },
     { filename: "src/embeddings/records.ts" },
@@ -976,6 +1195,11 @@ for (const { name, file, surfaces, pullFilesTruncated, sqliteSchemaChange } of [
   ...[
     { filename: "src/cache/sqlite-store.ts" },
     { filename: "src/cache/sqlite.ts" },
+    { filename: "src/infra/sqlite/methods.ts" },
+    { filename: "src/infra/migrations/002.ts" },
+    { filename: "src/infra/schema.sql" },
+    { filename: "src/infra/sqlite-error-diagnostics.ts", previous_filename: "src/cache/sqlite.ts" },
+    { filename: "src/cache/sqlite.ts", previous_filename: "src/infra/sqlite-error-diagnostics.ts" },
     { filename: "src/runtime/requests.ts", previous_filename: "src/cache/sqlite-schema-v2.ts" },
     { filename: "src/cache/sqlite/store.ts", previous_filename: "src/runtime/requests.ts" },
   ].flatMap((file) =>
@@ -987,10 +1211,23 @@ for (const { name, file, surfaces, pullFilesTruncated, sqliteSchemaChange } of [
       name: `incomplete SQLite cache ${file.previous_filename ? `${file.previous_filename} -> ` : ""}${file.filename} (${patchKind} patch)`,
       file: { ...file, patch },
       surfaces: [
-        `unknown-data-model-change: ${file.filename === "src/runtime/requests.ts" ? file.previous_filename : file.filename}`,
+        `unknown-data-model-change: ${["src/runtime/requests.ts", "src/infra/sqlite-error-diagnostics.ts"].includes(file.filename) ? file.previous_filename : file.filename}`,
       ],
       sqliteSchemaChange: patchKind !== "empty",
     })),
+  ),
+  ...[
+    "src/infra/sqlite-error-diagnostics.ts",
+    "src/infra/sqlite-readonly-location.worker.ts",
+  ].flatMap((filename) =>
+    [undefined, "", "@@\n+  suffix: null,", "@@\n+  suffix: null,\n\n[truncated 99 chars]"].map(
+      (patch) => ({
+        name: `SQLite diagnostic helper ${filename} (${patch === undefined ? "missing" : patch === "" ? "empty" : patch.includes("truncated") ? "truncated" : "complete"} patch)`,
+        file: { filename, previous_filename: "src/infra/sqlite-diagnostics.ts", patch },
+        surfaces: [],
+        sqliteSchemaChange: false,
+      }),
+    ),
   ),
   {
     name: "cache schema with a missing patch",
