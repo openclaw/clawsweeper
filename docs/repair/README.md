@@ -244,7 +244,11 @@ pnpm run repair:import-gitcrawl -- --from-gitcrawl --limit 40 --mode autonomous 
 # gitcrawl-store refreshes openclaw/openclaw every 15 minutes; the ClawSweeper
 # intake runs daily, records the processed portable DB SHA in
 # results/cluster-repair-intake/<repo>.json, and skips repeated ticks for the
-# same store snapshot. The selector model compares the candidate batch without
+# same store snapshot. New snapshots are materialized by the store's own
+# portable-artifact helper pinned to a reviewed digest, supporting raw and
+# verified gzip archives. A helper update requires a reviewed digest change. Empty
+# portable cluster tables produce no candidates; intake does not reconstruct
+# clustering omitted by the upstream export. The selector model compares the candidate batch without
 # word lists, scores, or semantic thresholds, and dispatches at most one cluster
 # through the two-worker cluster_repair lane. Clusters with one live candidate
 # and useful closed context remain eligible for model evaluation. Intake appends
