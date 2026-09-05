@@ -242,15 +242,18 @@ function sqliteSchemaPatchChangesTables(patch: string, changedLines: readonly st
     return true;
   }
 
-  const patchText = patch
-    .split("\n")
-    .filter((line) => !line.startsWith("@@") && !line.startsWith("+++") && !line.startsWith("---"))
-    .map((line) => line.replace(/^[ +-]/, ""))
-    .join("\n");
-  return (
-    /\b(?:CREATE|ALTER)\s+(?:VIRTUAL\s+)?TABLE\b|\bsqliteTable\s*\(/i.test(patchText) &&
-    changedLines.some(sqliteSchemaDeclarationLine)
-  );
+  // Unchanged table context only applies to declarations changed in its hunk.
+  return patch.split(/^@@.*$/m).some((hunk) => {
+    const hunkText = hunk
+      .split("\n")
+      .filter((line) => /^[ +-]/.test(line) && !/^(?:\+\+\+|---)/.test(line))
+      .map((line) => line.slice(1))
+      .join("\n");
+    return (
+      /\b(?:CREATE|ALTER)\s+(?:VIRTUAL\s+)?TABLE\b|\bsqliteTable\s*\(/i.test(hunkText) &&
+      changedPatchLines(hunk).some(sqliteSchemaDeclarationLine)
+    );
+  });
 }
 
 function sqliteSchemaDeclarationLine(line: string): boolean {
@@ -259,9 +262,8 @@ function sqliteSchemaDeclarationLine(line: string): boolean {
     /\b(?:CREATE|ALTER|DROP)\s+(?:VIRTUAL\s+)?TABLE\b|\bRENAME\s+TABLE\b|\bsqliteTable\s*\(/i.test(
       text,
     ) ||
-    /^(?:[`"']?[A-Za-z_][\w$]*[`"']?\s+|[A-Za-z_$][\w$]*\s*:\s*)(?:BLOB|INTEGER|NULL|REAL|TEXT|ANY|blob|integer|numeric|real|text)\b/i.test(
-      text,
-    )
+    /^[`"']?[A-Za-z_][\w$]*[`"']?\s+(?:BLOB|INTEGER|NULL|REAL|TEXT|ANY|NUMERIC)\b/i.test(text) ||
+    /^[A-Za-z_$][\w$]*\s*:\s*(?:blob|integer|numeric|real|text)\s*\(/i.test(text)
   );
 }
 

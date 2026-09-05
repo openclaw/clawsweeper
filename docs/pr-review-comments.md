@@ -232,6 +232,18 @@ generic metadata or identifier filenames. Known storage paths, explicit
 vector/embedding contracts, and same-hunk persistence
 evidence still require review; diagnostic logging does not exempt real storage
 changes in the same patch.
+
+SQLite table detection retains directly changed table DDL and `sqliteTable(...)`
+declarations. Unchanged SQL or ORM table context must share a diff hunk with a
+changed column declaration; context from another hunk cannot establish one.
+Raw SQL columns use whitespace-separated, case-insensitive type keywords,
+including `NULL` and `NUMERIC`. ORM properties require supported column-builder
+calls such as `text(...)` or `integer(...)`; plain `null`, `TEXT`, `INTEGER`, and
+primitive type annotations are not column declarations. Likely-schema path
+uncertainty and approval/compatibility-proof requirements remain unchanged.
+OpenClaw Bay needs no change: the producer's classification is corrected without
+changing observer fields, routes, or controls.
+
 Markdown beside source is still documentation: ordinary
 prose mentioning sessions or metadata is not a stored-format change. Explicit
 storage formats, SQL DDL, and structured storage keys (including frontmatter)

@@ -88,6 +88,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Scoped unchanged SQLite table context to the changed column's diff hunk and stopped treating runtime property values as schema declarations.
 - Align generated evidence commands with the parser's single-line contract so multiline proof commands remain in evidence detail instead of failing completed reviews.
 - Retire stale comment-router reports before each invocation so early GitHub throttles do not claim prior commands or fail empty action-ledger finalization.
 

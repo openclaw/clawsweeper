@@ -1312,6 +1312,172 @@ test("SQLite schema detector finds production table changes and ignores non-sche
   });
 });
 
+for (const [name, patch] of [
+  [
+    "exact cross-hunk runtime null repro",
+    '@@ -1,2 +1,2 @@\n db.exec("CREATE TABLE sessions (id TEXT)");\n- refresh();\n+ refresh(true);\n@@ -40,3 +40,3 @@\n const diagnostic = {\n-  suffix: "none",\n+  suffix: null,\n };',
+  ],
+  ...[
+    "null",
+    "text",
+    "integer",
+    "TEXT",
+    "INTEGER",
+    "numeric",
+    "string",
+    "number",
+    "boolean",
+    "any",
+  ].map((value) => [
+    `same-hunk runtime property ${value}`,
+    `@@\n db.exec("CREATE TABLE sessions (id TEXT)");\n const diagnostic = {\n-  suffix: "none",\n+  suffix: ${value},\n };`,
+  ]),
+  [
+    "same-hunk primitive type annotations beside ORM context",
+    '@@\n const sessions = sqliteTable("sessions", { id: text("id") });\n type Diagnostic = {\n-  suffix: string;\n+  suffix: null;\n+  text: TEXT;\n+  integer: INTEGER;\n+  count: number;\n };',
+  ],
+  ...[
+    [' db.exec("CREATE TABLE sessions (id TEXT)");', "-  suffix TEXT,\n+  suffix INTEGER,"],
+    [
+      ' const sessions = sqliteTable("sessions", { id: text("id") });',
+      '-  suffix: text("old"),\n+  suffix: integer("new"),',
+    ],
+  ].flatMap(([context, declaration], index) =>
+    [false, true].flatMap((bare) =>
+      [false, true].map((reversed) => {
+        const hunks = [`${context}\n- refresh();\n+ refresh(true);`, declaration];
+        if (reversed) hunks.reverse();
+        return [
+          `cross-hunk ${index === 0 ? "SQL column" : "ORM builder"} (${bare ? "bare" : "numbered"}, context ${reversed ? "last" : "first"})`,
+          hunks
+            .map((hunk, i) => `${bare ? "@@" : `@@ -${i * 40 + 1},2 +${i * 40 + 1},2 @@`}\n${hunk}`)
+            .join("\n"),
+        ];
+      }),
+    ),
+  ),
+  [
+    "file and hunk headers cannot supply table context",
+    'diff --git a/controller.ts b/controller.ts\n--- a/CREATE TABLE sessions\n+++ b/sqliteTable("sessions")\n@@ -1 +1 @@ CREATE TABLE sessions\n-  suffix TEXT,\n+  suffix INTEGER,',
+  ],
+] as const) {
+  for (const normalized of [false, true]) {
+    test(`SQLite ignores ${name} (${normalized ? "production-normalized" : "full"} patch)`, () => {
+      const files = [{ filename: "src/runtime/controller.ts", patch }];
+      const pullFiles = normalized
+        ? hydratePrimaryBody("", "pull_request", { pullFiles: files }).context.pullFiles
+        : files;
+      const report = renderPersistenceReport(pullFiles, "a".repeat(40));
+      const comment = renderReviewCommentFromReport(report, "none");
+      assert.doesNotMatch(
+        comment,
+        /SQLite table change|Persistent data-model change detected|### Stored data model|Add data-model compatibility proof|Confirm migration/,
+      );
+      assert.match(report, /^sqlite_schema_change: false$/m);
+      assert.match(report, /^data_model_change: false$/m);
+      assert.match(comment, /clawsweeper-review-state:ready/);
+      const markers = reviewAutomationMarkersFromReport(report);
+      assert.match(markers, /clawsweeper-verdict:pass/);
+      assert.doesNotMatch(markers, /needs-human|fix-required/);
+      assert.deepEqual(sqliteSchemaChangeFromPullFilesForTest({ pullFiles }), {
+        change: false,
+        files: [],
+      });
+      assert.deepEqual(dataModelChangeFromPullFilesForTest({ pullFiles }), {
+        change: false,
+        surfaces: [],
+      });
+    });
+  }
+}
+
+for (const [name, context, declaration] of [
+  ...["blob", "integer", "NULL", "null", "real", "text", "any", "numeric(10, 2)"].map((type) => [
+    `added SQL ${type} column`,
+    " CREATE TABLE sessions (",
+    `+  suffix ${type},`,
+  ]),
+  ["changed SQL column", " create table sessions (", "-  suffix text,\n+  suffix integer,"],
+  ["removed quoted SQL column", " CREATE TABLE sessions (", '-  "suffix" TEXT,'],
+  ["ALTER TABLE column", " ALTER TABLE sessions", "+  suffix text,"],
+  ["virtual table column", " CREATE VIRTUAL TABLE sessions USING fts5 (", "+  suffix text,"],
+  ...["blob", "integer", "numeric", "real", "text"].map((builder) => [
+    `ORM ${builder} builder call`,
+    ' const sessions = sqliteTable("sessions", {',
+    `+  suffix: ${builder}("suffix"),`,
+  ]),
+  [
+    "changed ORM column",
+    ' const sessions = sqliteTable("sessions", {',
+    '-  suffix: text("suffix"),\n+  suffix: integer("suffix"),',
+  ],
+  [
+    "removed ORM column",
+    ' const sessions = sqliteTable("sessions", {',
+    '-  suffix: text("suffix"),',
+  ],
+] as const) {
+  test(`SQLite retains same-hunk ${name} and compatibility proof gates`, () => {
+    for (const header of ["", "@@\n", "@@ -1,3 +1,4 @@\n"]) {
+      for (const normalized of [false, true]) {
+        const files = [
+          { filename: "src/runtime/controller.ts", patch: `${header}${context}\n${declaration}` },
+        ];
+        const pullFiles = normalized
+          ? hydratePrimaryBody("", "pull_request", { pullFiles: files }).context.pullFiles
+          : files;
+        const report = renderPersistenceReport(pullFiles, "a".repeat(40));
+        const comment = renderReviewCommentFromReport(report, "none");
+        assert.match(comment, /SQLite table change/);
+        assert.match(comment, /- \[ \] \*\*Add data-model compatibility proof\*\*/);
+        assert.match(comment, /clawsweeper-review-state:blocked/);
+        assert.match(report, /^sqlite_schema_change: true$/m);
+        assert.match(report, /^data_model_change: true$/m);
+        const markers = reviewAutomationMarkersFromReport(report);
+        assert.match(markers, /clawsweeper-verdict:needs-human/);
+        assert.doesNotMatch(markers, /clawsweeper-verdict:pass|clawsweeper-action:fix-required/);
+        assert.deepEqual(sqliteSchemaChangeFromPullFilesForTest({ pullFiles }), {
+          change: true,
+          files: ["src/runtime/controller.ts"],
+        });
+        assert.deepEqual(dataModelChangeFromPullFilesForTest({ pullFiles }), {
+          change: true,
+          surfaces: ["database schema: src/runtime/controller.ts"],
+        });
+      }
+    }
+  });
+}
+
+test("SQLite retains directly changed table declarations in a separate hunk", () => {
+  for (const declaration of [
+    'db.exec("CREATE TABLE sessions (id TEXT)");',
+    'db.exec("ALTER TABLE sessions ADD COLUMN suffix TEXT");',
+    'db.exec("DROP TABLE sessions");',
+    'db.exec("RENAME TABLE sessions TO previous_sessions");',
+    'const sessions = sqliteTable("sessions", { id: text("id") });',
+  ]) {
+    for (const sign of ["+", "-"]) {
+      const pullFiles = hydratePrimaryBody("", "pull_request", {
+        pullFiles: [
+          {
+            filename: "src/runtime/controller.ts",
+            patch: `@@ -1 +1 @@\n- refresh();\n+ refresh(true);\n@@ -40 +40 @@\n${sign}${declaration}`,
+          },
+        ],
+      }).context.pullFiles;
+      assert.deepEqual(sqliteSchemaChangeFromPullFilesForTest({ pullFiles }), {
+        change: true,
+        files: ["src/runtime/controller.ts"],
+      });
+      assert.match(
+        renderReviewCommentFromReport(renderPersistenceReport(pullFiles, "a".repeat(40)), "none"),
+        /SQLite table change/,
+      );
+    }
+  }
+});
+
 test("production path classification preserves test segment and basename boundaries", () => {
   const cases = [
     ["test/schema.sql", false],
