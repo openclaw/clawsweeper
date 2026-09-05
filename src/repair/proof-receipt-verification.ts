@@ -295,7 +295,9 @@ export function trustedRun(claim: CommandProofClaim, value: unknown): boolean {
     run.event === "workflow_dispatch" &&
     run.status === "completed" &&
     ["success", "failure"].includes(String(run.conclusion)) &&
-    run.path === claim.workflowPath &&
+    // GitHub documents a ref-qualified path as well as the observed plain path.
+    (run.path === claim.workflowPath ||
+      run.path === claim.workflowPath + "@" + claim.workflowRef) &&
     run.display_title ===
       commandProofProfile(claim.scenario)?.runName + " [" + claim.requestId + "]" &&
     run.head_sha === claim.workflowSha &&

@@ -45,6 +45,27 @@ import {
   worker,
 } from "../dashboard-worker-harness.ts";
 
+test("producer run paths accept the pinned ref but reject substituted qualifiers", () => {
+  for (const scenario of Object.keys(COMMAND_PROOF_PROFILES) as CommandProofScenario[]) {
+    const fixture = proofFixture(undefined, scenario);
+    const path = fixture.claim.workflowPath;
+    for (const runPath of [path, path + "@" + fixture.claim.workflowRef]) {
+      assert.equal(
+        verifyCommandProof({ ...fixture, run: { ...fixture.run, path: runPath } }).outcome,
+        "pass",
+        runPath,
+      );
+    }
+    for (const runPath of [path + "@other-ref", path + "@", path + "@" + fixture.claim.headSha]) {
+      assert.deepEqual(
+        verifyCommandProof({ ...fixture, run: { ...fixture.run, path: runPath } }),
+        { outcome: "inconclusive", reason: "untrusted_or_incomplete_producer_run" },
+        runPath,
+      );
+    }
+  }
+});
+
 test("Web UI evidence rejects authenticated but undeclared archive files", () => {
   const fixture = proofFixture(undefined, "web-ui-chat-proof");
   const files = readProofZip(fixture.evidenceArchive);
