@@ -243,10 +243,18 @@ jobs:
             echo "Already processed gitcrawl-store SHA ${store_sha}; skipping intake."
             exit 0
           fi
-          db_path="$(mktemp -d "${RUNNER_TEMP}/cluster-repair-intake.XXXXXX")/${db_name}"
+          intake_dir="$(mktemp -d "${RUNNER_TEMP}/cluster-repair-intake.XXXXXX")"
+          db_path="${intake_dir}/${db_name}"
+          materializer="${intake_dir}/portable-artifact.mjs"
+          # Snapshot publishing must not authorize new code on the runner.
+          install -m 600 gitcrawl-store/scripts/portable-artifact.mjs "$materializer"
+          if ! printf '%s  %s\n' 'd3e7678faa48554e091ea51666692643e97cfab437bb23c44f59c139b7e0ebfa' "$materializer" | sha256sum --check --status; then
+            echo "::error::gitcrawl-store materializer does not match the reviewed digest" >&2
+            exit 1
+          fi
           (
             cd gitcrawl-store
-            node scripts/portable-artifact.mjs "data/${db_name}" "$db_path"
+            node "$materializer" "data/${db_name}" "$db_path"
           )
           {
             echo "db_path=${db_path}"

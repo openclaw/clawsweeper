@@ -41,6 +41,7 @@ try {
   scenario("empty-portable", { compression: false, empty: true });
   if (!baselineRef) {
     scenario("empty-compressed", { compression: true, empty: true });
+    scenario("unreviewed-materializer", { compression: true, corruptMaterializer: true });
     scenario("archive-hash-mismatch", { compression: true, corruptArchiveHash: true });
     scenario("decoded-hash-mismatch", { compression: true, corruptDecodedHash: true });
     scenario("already-processed", { compression: true, processed: true, corruptArchiveHash: true });
@@ -79,7 +80,12 @@ function scenario(name, options) {
   const scriptsDir = path.join(cwd, "gitcrawl-store/scripts");
   const runnerTemp = path.join(cwd, "tmp");
   for (const dir of [dataDir, scriptsDir, runnerTemp]) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(scriptsDir, "portable-artifact.mjs"), materializer);
+  fs.writeFileSync(
+    path.join(scriptsDir, "portable-artifact.mjs"),
+    options.corruptMaterializer
+      ? 'import fs from "node:fs"; fs.writeFileSync("unreviewed-code-ran", "");\n'
+      : materializer,
+  );
   const dbName = "openclaw__fixture.sync.db";
   const dbPath = path.join(dataDir, dbName);
   const database = new DatabaseSync(dbPath);
@@ -154,15 +160,21 @@ function scenario(name, options) {
     : {};
   const rejected = baselineRef
     ? options.compression
-    : !options.processed && (options.corruptArchiveHash || options.corruptDecodedHash);
+    : !options.processed &&
+      (options.corruptMaterializer || options.corruptArchiveHash || options.corruptDecodedHash);
   if (rejected) {
     assert.notEqual(prepared.status, 0, name);
     assert.notEqual(outputs.should_import, "true", name);
     assert.equal(outputs.db_path, undefined, name);
     assert.match(
       prepared.stderr + prepared.stdout,
-      baselineRef ? /Missing gitcrawl-store DB/ : /manifest (?:archiveSha256|sha256) mismatch/,
+      baselineRef
+        ? /Missing gitcrawl-store DB/
+        : options.corruptMaterializer
+          ? /materializer does not match the reviewed digest/
+          : /manifest (?:archiveSha256|sha256) mismatch/,
     );
+    assert.equal(fs.existsSync(path.join(cwd, "gitcrawl-store/unreviewed-code-ran")), false);
     results.push({ name, admission: "rejected", jobs: 0 });
     return;
   }

@@ -8,10 +8,13 @@ fail before the workflow admits an import.
 `run-proof.mjs` executes the actual `Prepare intake` shell from the workflow,
 then the built importer against synthetic SQLite files. Empty cases also run
 the real selector without credentials and assert that no candidate is selected.
-The upstream store owns decompression and archive verification; provide its
+The upstream store owns decompression and archive verification; intake copies its
+materializer into a private temporary directory and checks a reviewed SHA-256
+before execution. A changed publisher-supplied helper fails before import.
+Provide the store's
 `scripts/portable-artifact.mjs` to the proof rather than substituting a decoder.
 
-Run on Node 24+ with Bash 4+, gzip, and dependencies installed, using the
+Run on Node 24+ with Bash 4+, gzip, GNU coreutils, and dependencies installed, using the
 repository's resolved Crabbox provider:
 
 ```sh
@@ -26,7 +29,7 @@ state, workflow and importer hashes, materializer hash, runtime, and each
 scenario's observable outcome. The baseline rejects gzip-only input and fails
 on empty portable tables; the candidate accepts both, preserves raw input and
 forced reimports, skips processed snapshots before decompression, and rejects
-archive/decoded hash mismatches.
+unreviewed materializer code and archive/decoded hash mismatches.
 
 This is controlled runtime proof, not a production intake or inference call.
 It does not restore clusters omitted by an upstream export, verify raw database
