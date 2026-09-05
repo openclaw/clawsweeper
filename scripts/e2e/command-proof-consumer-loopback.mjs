@@ -437,11 +437,7 @@ try {
       scenario === "pass" || scenario === "fail" || scenario === "enqueue-response-lost";
     assert.equal(
       record.state,
-      queueRejected || scenario === "enqueue-response-lost"
-        ? "review_pending"
-        : successfulEvidence
-          ? "completed"
-          : "inconclusive",
+      queueRejected ? "review_pending" : successfulEvidence ? "completed" : "inconclusive",
       JSON.stringify(record),
     );
     assert.equal(queueEnqueues, successfulEvidence || queueRejected ? 1 : 0);
@@ -464,10 +460,7 @@ try {
       assert.doesNotMatch(second + third, /independent_review_queued/);
     }
     assert.equal(dispatches, lookupFailed ? 0 : 1);
-    assert.equal(
-      queueEnqueues,
-      scenario === "enqueue-response-lost" ? 2 : queueRejected ? 3 : successfulEvidence ? 1 : 0,
-    );
+    assert.equal(queueEnqueues, queueRejected ? 3 : successfulEvidence ? 1 : 0);
     record = JSON.parse(
       [
         ...storage.sql.exec(

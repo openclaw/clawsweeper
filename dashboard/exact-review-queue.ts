@@ -1524,6 +1524,8 @@ export class ExactReviewQueue {
           if (!storedDispositionJson) return { deduped: true as const };
           const disposition = exactReviewScheduledDispositionFromJson(storedDispositionJson);
           if (!disposition) return { deduped: true as const };
+          if ("queued" in disposition && disposition.queued === true)
+            this.commandProofStore.completeAdmittedReviewSync(deliveryId, decision);
           return {
             replayed: true as const,
             disposition,
@@ -2145,6 +2147,7 @@ export class ExactReviewQueue {
               superseded_publications: supersededPublications,
             })
           : null;
+        this.commandProofStore.completeAdmittedReviewSync(deliveryId, decision);
         return {
           deduped: false as const,
           key,

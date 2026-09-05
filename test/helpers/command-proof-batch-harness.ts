@@ -26,6 +26,7 @@ export function proofBatchHarness(
     lostStart?: boolean;
     lostDispatch?: boolean;
     lostEnqueue?: boolean;
+    expireAfterEnqueue?: boolean;
     failScenario?: string;
     inconclusiveScenario?: string;
   } = {},
@@ -59,6 +60,17 @@ export function proofBatchHarness(
         CLAWSWEEPER_WEBHOOK_SECRET: secret,
         EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
       });
+      if (
+        response.ok &&
+        options.expireAfterEnqueue &&
+        url.pathname.endsWith("exact-review/enqueue")
+      ) {
+        const store = new CommandProofRequestStore(storage);
+        const id = /^command-proof-([0-9a-f]{64})-/.exec(body.delivery_id)?.[1];
+        const record = id ? store.get(id) : null;
+        assert.ok(record);
+        store.pending(record.expiresAt + 1);
+      }
       if (response.ok && options.lostStart && !lostStart && body.operation === "batch-start") {
         lostStart = true;
         throw new Error("fixture lost start acknowledgement");

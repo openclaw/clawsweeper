@@ -88,8 +88,7 @@ for (const lost of ["lostStart", "lostDispatch", "lostEnqueue"] as const)
     for (let i = 0; i < 12; i++) await h.consumer().reconcile();
     assert.equal(h.dispatches.length, lost === "lostStart" ? 0 : 3);
     assert.equal(h.plans(), 1);
-    assert.equal(h.enqueues.length, lost === "lostStart" ? 0 : lost === "lostEnqueue" ? 2 : 1);
-    if (lost === "lostEnqueue") assert.deepEqual(h.enqueues[0], h.enqueues[1]);
+    assert.equal(h.enqueues.length, lost === "lostStart" ? 0 : 1);
   });
 
 test("failed and inconclusive children stay explicit; remaining checks continue with one review", async () => {
@@ -171,3 +170,22 @@ test("failed model planning does not run or retry a model on command replay", as
   assert.equal(h.plans(), 1);
   assert.equal(h.dispatches.length, 0);
 });
+
+for (const single of [false, true])
+  test(
+    "admitted " +
+      (single ? "single" : "batch") +
+      " review survives deadline and lost acknowledgement",
+    async () => {
+      const h = proofBatchHarness({
+        ...(single ? { command: "@clawsweeper proof web-ui-chat-proof" } : {}),
+        lostEnqueue: true,
+        expireAfterEnqueue: true,
+      });
+      const admitted = await h.request();
+      for (let i = 0; i < 8; i++) await h.consumer().reconcile();
+      assert.equal(h.record(admitted.requestId!)?.state, "completed");
+      assert.equal(h.enqueues.length, 1);
+      assert.equal(h.statuses.length, 0, "normal review retains marker ownership");
+    },
+  );

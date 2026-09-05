@@ -129,6 +129,41 @@ export class CommandProofRequestStore {
     ][0];
     return row ? (JSON.parse(String(row.record_json)) as CommandProofRecord) : null;
   }
+  /** Called inside the exact-review admission transaction, before any response can be lost. */
+  completeAdmittedReviewSync(deliveryId: string, value: unknown) {
+    const match = /^command-proof-([0-9a-f]{64})-([0-9a-f]{64})$/.exec(deliveryId);
+    if (!match) return;
+    const decision = proofRecord(value),
+      record = this.get(match[1]!);
+    if (
+      !record ||
+      decision.sourceAction !== "command_proof_result" ||
+      decision.targetRepo !== record.claim.repository ||
+      decision.itemNumber !== record.claim.pullRequest ||
+      decision.sourceHeadSha !== record.claim.headSha ||
+      decision.targetBranch !== record.claim.targetBranch ||
+      String(decision.sourceCommentId) !== record.claim.sourceCommentId ||
+      decision.sourceCommentUpdatedAt !== record.claim.sourceCommentUpdatedAt ||
+      decision.commandBodyDigest !== record.claim.sourceCommentBodySha256 ||
+      (record.state !== "review_pending" &&
+        !(record.state === "inconclusive" && record.reason === "proof_deadline_expired")) ||
+      (record.batch
+        ? !record.batch.plan ||
+          !record.batch.claims.length ||
+          record.batch.results.length !== record.batch.claims.length
+        : record.result?.digest !== match[2])
+    )
+      return;
+    record.state = "completed";
+    record.notified = true; // Normal review now owns this marker, including across deadline/response loss.
+    delete record.reason;
+    delete record.nextAttemptAt;
+    this.storage.sql.exec(
+      "UPDATE " + TABLE + " SET record_json = ? WHERE request_id = ?",
+      JSON.stringify(record),
+      record.claim.requestId,
+    );
+  }
   pending(now: number): CommandProofRecord[] {
     this.expire(now);
     return [

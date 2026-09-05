@@ -16,6 +16,8 @@ const selected = noMatch
   ? []
   : ["web-ui-chat-proof", "telegram-bot-e2e-proof", "telegram-markdown-parser-fidelity"];
 const h = proofBatchHarness({
+  expireAfterEnqueue: process.argv.includes("--deadline"),
+  lostEnqueue: process.argv.includes("--deadline"),
   database: path.join(temporary, "proof.sqlite"),
   command: automatic ? "@clawsweeper proof" : "@clawsweeper proof " + selected.join(","),
 });

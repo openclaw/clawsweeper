@@ -200,7 +200,7 @@ test("compiled consumer CLI reopens SQL claims and completes only verified indep
       ["queue-rejected", "review_pending", 1, 0, 3, false, false, true],
       ["queue-stale-dedupe", "review_pending", 1, 0, 3, false, false, true],
       ["queue-unscoped-dedupe", "review_pending", 1, 0, 3, false, false, true],
-      ["enqueue-response-lost", "completed", 1, 1, 2, false, true, false],
+      ["enqueue-response-lost", "completed", 1, 1, 1, false, true, false],
       ["ref-lookup-failure", "inconclusive", 0, 0, 0, true, false, false],
     ].map(
       ([
@@ -277,8 +277,7 @@ test("compiled Telegram consumer preserves exact runtime outcomes across replay,
         state: admitted ? "completed" : blocked ? "review_pending" : "inconclusive",
         producerDispatches: scenario === "ref-lookup-failure" ? 0 : 1,
         independentReviews: admitted ? 1 : 0,
-        reviewEnqueueAttempts:
-          scenario === "enqueue-response-lost" ? 2 : blocked ? 3 : admitted ? 1 : 0,
+        reviewEnqueueAttempts: blocked ? 3 : admitted ? 1 : 0,
         reopenedSqliteClaim: true,
         statusOwnerUpdated: !admitted && !blocked,
         reviewStatusOwnerDelegated: admitted,
@@ -636,17 +635,14 @@ test("proof retry waits for queued or leased full reviews and admits one authent
     assert.equal(completion.status, 200);
     assert.equal((await h.state()).items[key], undefined);
     await h.consumer.reconcile(); // Queue admits, but the caller loses the response.
-    assert.equal(h.store.get(claim.requestId)?.state, "review_pending");
+    assert.equal(h.store.get(claim.requestId)?.state, "completed");
     const admitted = (await h.state()).items[key]!;
     assert.equal(admitted.decision.sourceAction, "command_proof_result");
-    assert.deepEqual(await h.consumer.reconcile(), [
-      { requestId: claim.requestId, status: "independent_review_queued", outcome: "pass" },
-    ]);
+    assert.deepEqual(await h.consumer.reconcile(), []);
     assert.equal(h.store.get(claim.requestId)?.state, "completed");
     assert.deepEqual((await h.state()).items[key], admitted);
-    assert.equal(h.enqueueBodies.length, 4);
+    assert.equal(h.enqueueBodies.length, 3);
     for (const body of h.enqueueBodies) assert.deepEqual(body, sent);
-    assert.deepEqual(h.enqueueResponses[2], h.enqueueResponses[3]);
     assert.equal(
       [
         ...h.storage.sql.exec(
@@ -657,7 +653,7 @@ test("proof retry waits for queued or leased full reviews and admits one authent
     );
     assert.ok((await h.state()).deliveries.unrelated);
     assert.deepEqual(await h.consumer.reconcile(), []);
-    assert.equal(h.enqueueBodies.length, 4);
+    assert.equal(h.enqueueBodies.length, 3);
     assert.equal(h.counts.dispatches, 0);
   }
 });
