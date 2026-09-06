@@ -76,7 +76,7 @@ async function fixture(web = false) {
     artifact: async (id) => (id === "400" ? f.evidenceArchive : f.receiptArchive),
     update: async (value) => {
       updates.push(value);
-      return { ok: true };
+      return { ok: true, record: { ...io.record, ...value } };
     },
   };
   return { io, f, updates, pull };
@@ -89,6 +89,46 @@ test("inline executor verifies real receipt ZIP and returns observations, never 
   assert.equal((result.result as any).assertion, "reviewer_must_evaluate");
   assert.equal(Object.keys((result.result as any).observations).length, 3);
 });
+
+for (const dispatch of [true, false]) {
+  for (const fault of ["terminal", "missing", "different", "expired"]) {
+    test(`inline executor fences ${dispatch ? "preparation" : "completion"} acknowledgement (${fault})`, async () => {
+      const { io } = await fixture();
+      io.dispatch = dispatch;
+      if (dispatch) io.record.state = "dispatch_claimed";
+      const original = io.github;
+      let dispatches = 0;
+      io.github = async (path, body) => {
+        if (path.endsWith("/commits/main")) return { sha: "e".repeat(40) };
+        if (body) {
+          dispatches++;
+          return { workflow_run_id: 300 };
+        }
+        return original(path);
+      };
+      io.update = async (patch) => {
+        if (fault === "expired") io.record.expiresAt = Date.now() - 1;
+        return {
+          ok: true,
+          ...(fault === "missing"
+            ? {}
+            : {
+                record: {
+                  ...io.record,
+                  ...patch,
+                  ...(fault === "terminal" ? { state: "inconclusive" } : {}),
+                  ...(fault === "different" ? { requestId: "0".repeat(64) } : {}),
+                },
+              }),
+        };
+      };
+      const result = await executeReviewProof(io);
+      assert.equal(result.state, "inconclusive");
+      assert.equal(result.result, undefined);
+      assert.equal(dispatches, 0);
+    });
+  }
+}
 
 test("inline Web UI verifies fixed recipe JSON, observer manifest and screenshot metadata", async () => {
   const { io } = await fixture(true);

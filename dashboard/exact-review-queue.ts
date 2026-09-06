@@ -1174,55 +1174,57 @@ export class ExactReviewQueue {
       }
       if (url.pathname === "/review-proof/update") {
         if (!record) return json({ error: "review_proof_not_found" }, 404);
-        if (record.state !== "completed" && record.state !== "inconclusive") {
-          if (body.operation === "prepared") {
-            const producer = objectValue(body.producer);
-            if (
-              !producer ||
-              producer.workflowRef !== "main" ||
-              !/^[0-9a-f]{40}$/.test(String(producer.workflowSha || "")) ||
-              producer.workflowSha !== producer.harnessSha ||
-              typeof producer.repositoryId !== "string" ||
-              !/^[1-9][0-9]{0,19}$/.test(String(producer.repositoryId || "")) ||
-              !/^[0-9a-f]{64}$/.test(String(producer.bodySha256 || "")) ||
-              !/^[0-9a-f]{40}$/.test(String(producer.baseSha || "")) ||
-              typeof producer.targetBranch !== "string" ||
-              producer.targetBranch.length > 200 ||
-              ![
-                ".github/workflows/mantis-web-ui-chat-proof.yml",
-                ".github/workflows/mantis-telegram-bot-e2e-proof.yml",
-              ].includes(String(producer.workflowPath))
-            )
-              return json({ error: "invalid_review_proof_producer" }, 400);
-            if (record.producer && stableJson(record.producer) !== stableJson(producer))
-              return json({ error: "review_proof_producer_changed" }, 409);
-            record.producer = producer as ReviewProofRecord["producer"];
-          } else if (
-            body.state === "pending" &&
-            /^[1-9][0-9]{0,19}$/.test(String(body.runId || ""))
-          ) {
-            if (record.runId && record.runId !== body.runId)
-              return json({ error: "review_proof_run_changed" }, 409);
-            record.runId = String(body.runId);
-            record.state = "pending";
-          } else if (
-            body.state === "completed" &&
-            body.result &&
-            typeof body.result === "object" &&
-            !Array.isArray(body.result) &&
-            new TextEncoder().encode(JSON.stringify(body.result)).length <= 256 * 1024
-          ) {
-            record.state = "completed";
-            record.result = body.result as Record<string, unknown>;
-          } else if (
-            body.state === "inconclusive" &&
-            typeof body.reason === "string" &&
-            /^[a-z0-9_]{1,120}$/.test(body.reason)
-          ) {
-            record.state = "inconclusive";
-            record.reason = body.reason;
-          } else return json({ error: "invalid_review_proof_update" }, 400);
+        if (record.state === "completed" || record.state === "inconclusive") {
+          await this.writeState(state);
+          return json({ error: "review_proof_already_terminal", record }, 409);
         }
+        if (body.operation === "prepared") {
+          const producer = objectValue(body.producer);
+          if (
+            !producer ||
+            producer.workflowRef !== "main" ||
+            !/^[0-9a-f]{40}$/.test(String(producer.workflowSha || "")) ||
+            producer.workflowSha !== producer.harnessSha ||
+            typeof producer.repositoryId !== "string" ||
+            !/^[1-9][0-9]{0,19}$/.test(String(producer.repositoryId || "")) ||
+            !/^[0-9a-f]{64}$/.test(String(producer.bodySha256 || "")) ||
+            !/^[0-9a-f]{40}$/.test(String(producer.baseSha || "")) ||
+            typeof producer.targetBranch !== "string" ||
+            producer.targetBranch.length > 200 ||
+            ![
+              ".github/workflows/mantis-web-ui-chat-proof.yml",
+              ".github/workflows/mantis-telegram-bot-e2e-proof.yml",
+            ].includes(String(producer.workflowPath))
+          )
+            return json({ error: "invalid_review_proof_producer" }, 400);
+          if (record.producer && stableJson(record.producer) !== stableJson(producer))
+            return json({ error: "review_proof_producer_changed" }, 409);
+          record.producer = producer as ReviewProofRecord["producer"];
+        } else if (
+          body.state === "pending" &&
+          /^[1-9][0-9]{0,19}$/.test(String(body.runId || ""))
+        ) {
+          if (record.runId && record.runId !== body.runId)
+            return json({ error: "review_proof_run_changed" }, 409);
+          record.runId = String(body.runId);
+          record.state = "pending";
+        } else if (
+          body.state === "completed" &&
+          body.result &&
+          typeof body.result === "object" &&
+          !Array.isArray(body.result) &&
+          new TextEncoder().encode(JSON.stringify(body.result)).length <= 256 * 1024
+        ) {
+          record.state = "completed";
+          record.result = body.result as Record<string, unknown>;
+        } else if (
+          body.state === "inconclusive" &&
+          typeof body.reason === "string" &&
+          /^[a-z0-9_]{1,120}$/.test(body.reason)
+        ) {
+          record.state = "inconclusive";
+          record.reason = body.reason;
+        } else return json({ error: "invalid_review_proof_update" }, 400);
         await this.writeState(state);
         return json({ ok: true, record });
       }

@@ -246,6 +246,37 @@ test("review proof poll cannot dispatch and completion feeds original record onl
   assert.deepEqual(polled.body.record.result, result);
 });
 
+for (const operation of ["prepared", "completed"]) {
+  test(`expired proof rejects ${operation} update and persists the deadline fence`, async () => {
+    const f = await fixture();
+    const admitted = await f.post(f.plan());
+    const requestId = admitted.body.record.requestId;
+    const state = (f.queue as any).readStateSync();
+    state.items[f.lease.itemKey].reviewProofRequests[0].expiresAt = Date.now() - 1;
+    await (f.queue as any).writeState(state);
+    const response = await f.post(
+      {
+        lease: f.lease,
+        requestId,
+        ...(operation === "prepared"
+          ? { operation, producer: {} }
+          : {
+              state: "completed",
+              result: { observations: [] },
+            }),
+      },
+      "/review-proof/update",
+    );
+    assert.equal(response.status, 409);
+    assert.notEqual(response.body.ok, true);
+    const restarted = new ExactReviewQueue({ storage: f.storage }, {});
+    const polled = await f.post({ ...f.plan(), operation: "poll" }, "/review-proof", restarted);
+    assert.equal(polled.body.record.state, "inconclusive");
+    assert.equal(polled.body.record.reason, "proof_deadline_expired");
+    assert.equal(polled.body.record.result, undefined);
+  });
+}
+
 test("producer redemption is same-run idempotent and denies replays and owner loss", async () => {
   const f = await fixture();
   const first = await f.post(f.plan());
