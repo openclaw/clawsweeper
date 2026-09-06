@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { parseBooleanEnv } from "../../dist/repair/env-utils.js";
 
 import {
   shouldCloseSupersededSourcePrs,
@@ -17,6 +18,22 @@ test("superseded source PR closeout defaults on for replacement PRs", () => {
 test("superseded source PR closeout can be explicitly disabled", () => {
   assert.equal(shouldCloseSupersededSourcePrs("0"), false);
   assert.equal(shouldCloseSupersededSourcePrs("false"), false);
+});
+
+test("boolean config coercion preserves tokens without trimming and owner defaults", () => {
+  for (const value of ["1", "TrUe", "YeS", "On", true, 1]) {
+    assert.equal(parseBooleanEnv(value, false), true, String(value));
+    assert.equal(shouldCloseSupersededSourcePrs(value), true, String(value));
+  }
+  for (const value of ["0", "FaLsE", "No", "OfF", false, 0]) {
+    assert.equal(parseBooleanEnv(value, true), false, String(value));
+    assert.equal(shouldCloseSupersededSourcePrs(value), false, String(value));
+  }
+  for (const value of [undefined, null, "", "unknown", " ", " true", "false ", 2]) {
+    assert.equal(parseBooleanEnv(value, false), false, String(value));
+    assert.equal(parseBooleanEnv(value, true), true, String(value));
+    assert.equal(shouldCloseSupersededSourcePrs(value), true, String(value));
+  }
 });
 
 test("only replacement fixes seed the repair branch from a source PR head", () => {

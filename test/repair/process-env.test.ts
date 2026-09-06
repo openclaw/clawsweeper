@@ -11,6 +11,7 @@ import {
   codexModelArgs,
   codexSubprocessEnv,
   internalCodexModel,
+  repairCodexConfigArgs,
   repairCodexReasoningEffort,
   repairCodexServiceTier,
 } from "../../dist/repair/process-env.js";
@@ -359,6 +360,35 @@ test("repair Codex config reserves xhigh for explicit issue-fix execution", () =
   assert.equal(repairCodexServiceTier(undefined), "fast");
   assert.equal(repairCodexServiceTier(""), "fast");
   assert.equal(repairCodexServiceTier("fast"), "fast");
+});
+
+test("repair Codex config preserves caller values, ordered tuples, and call-time login", () => {
+  withEnv({ CLAWSWEEPER_CODEX_LOGIN_METHOD: "api" }, () => {
+    assert.deepEqual(repairCodexConfigArgs("xhigh", ""), [
+      "-c",
+      'approval_policy="never"',
+      "-c",
+      'forced_login_method="api"',
+      "-c",
+      'model_reasoning_effort="xhigh"',
+    ]);
+    process.env.CLAWSWEEPER_CODEX_LOGIN_METHOD = " ChAtGpT ";
+    assert.deepEqual(repairCodexConfigArgs('custom"effort', 'custom"tier'), [
+      "-c",
+      'approval_policy="never"',
+      "-c",
+      'forced_login_method="chatgpt"',
+      "-c",
+      'model_reasoning_effort="custom\\"effort"',
+      "-c",
+      'service_tier="custom\\"tier"',
+    ]);
+    process.env.CLAWSWEEPER_CODEX_LOGIN_METHOD = "invalid";
+    assert.throws(
+      () => repairCodexConfigArgs("high", "fast"),
+      /Invalid CLAWSWEEPER_CODEX_LOGIN_METHOD: invalid/,
+    );
+  });
 });
 
 function withEnv(values: Record<string, string>, callback: () => void) {

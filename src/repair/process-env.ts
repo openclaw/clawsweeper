@@ -66,6 +66,16 @@ export function repairCodexServiceTier(value = process.env.CLAWSWEEPER_CODEX_SER
   return String(value ?? "fast").trim() || "fast";
 }
 
+export function repairCodexConfigArgs(reasoningEffort: string, serviceTier: string) {
+  const configs = [
+    'approval_policy="never"',
+    codexLoginConfig(),
+    `model_reasoning_effort=${JSON.stringify(reasoningEffort)}`,
+  ];
+  if (serviceTier) configs.push(`service_tier=${JSON.stringify(serviceTier)}`);
+  return configs.flatMap((config) => ["-c", config]);
+}
+
 export function clawsweeperGitUserName(): string {
   const configured = String(process.env.CLAWSWEEPER_GIT_USER_NAME ?? "").trim();
   if (!configured || configured === "clawsweeper-repair" || configured === "clawsweeper[bot]") {

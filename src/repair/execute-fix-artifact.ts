@@ -59,7 +59,7 @@ import { parsePullRequestUrl, pullRequestNumberFromUrl, sameRepoSlug } from "./g
 import {
   clawsweeperGitUserEmail,
   clawsweeperGitUserName,
-  codexLoginConfig,
+  repairCodexConfigArgs,
   codexSubprocessEnv as codexEnv,
   codexModelArgs,
   repairCodexReasoningEffort,
@@ -138,6 +138,7 @@ import {
   type TargetValidationOptions,
 } from "./target-validation.js";
 import { uniqueStrings } from "./validation-command-utils.js";
+import { parseBooleanEnv } from "./env-utils.js";
 import {
   changedFilesFromNameOnlyZ,
   enforceRepairContract,
@@ -377,7 +378,7 @@ function runCodexWithHeartbeat({
     "--sandbox",
     sandbox,
     ...codexWorkspaceSandboxConfigArgs(sandbox, networkAccess),
-    ...codexConfigArgs(),
+    ...repairCodexConfigArgs(codexReasoningEffort, codexServiceTier),
     ...(review ? ["--output-schema", review.schemaPath] : []),
     "--output-last-message",
     outputPath,
@@ -2793,26 +2794,9 @@ function stripAnsi(text: string) {
   return out;
 }
 
-function codexConfigArgs() {
-  const configs = [
-    'approval_policy="never"',
-    codexLoginConfig(),
-    `model_reasoning_effort=${JSON.stringify(codexReasoningEffort)}`,
-  ];
-  if (codexServiceTier) configs.push(`service_tier=${JSON.stringify(codexServiceTier)}`);
-  return configs.flatMap((config: JsonValue) => ["-c", config]);
-}
-
 function codexWorkspaceSandboxConfigArgs(sandbox: string, networkAccess: boolean) {
   if (sandbox !== "workspace-write") return [];
   return ["-c", `sandbox_workspace_write.network_access=${networkAccess ? "true" : "false"}`];
-}
-
-function parseBooleanEnv(value: string | undefined, fallback: boolean): boolean {
-  if (value == null || value === "") return fallback;
-  if (/^(1|true|yes|on)$/i.test(String(value))) return true;
-  if (/^(0|false|no|off)$/i.test(String(value))) return false;
-  return fallback;
 }
 
 function validateAndReviewLoop({

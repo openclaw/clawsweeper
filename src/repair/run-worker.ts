@@ -17,7 +17,7 @@ import {
   validateJob,
 } from "./lib.js";
 import {
-  codexLoginConfig,
+  repairCodexConfigArgs,
   codexSubprocessEnv,
   codexModelArgs,
   repairCodexReasoningEffort,
@@ -227,7 +227,7 @@ function runCodex({
     ...codexModelArgs(String(model)),
     "--sandbox",
     codexPlannerSandbox,
-    ...codexConfigArgs(),
+    ...repairCodexConfigArgs(codexReasoningEffort, codexServiceTier),
     "--output-schema",
     path.join(repoRoot(), "schema", "repair", "codex-result.schema.json"),
     "--output-last-message",
@@ -302,16 +302,6 @@ setInterval(() => {
 
 function codexWorkspaceRoot(): string {
   return targetCheckout || repoRoot();
-}
-
-function codexConfigArgs() {
-  const configs = [
-    'approval_policy="never"',
-    codexLoginConfig(),
-    `model_reasoning_effort=${JSON.stringify(codexReasoningEffort)}`,
-  ];
-  if (codexServiceTier) configs.push(`service_tier=${JSON.stringify(codexServiceTier)}`);
-  return configs.flatMap((config: JsonValue) => ["-c", config]);
 }
 
 async function repairResultIfNeeded() {
