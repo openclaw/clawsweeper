@@ -1,4 +1,5 @@
 import { stableJson } from "../src/stable-json.ts";
+import { REVIEW_PROOF_RESULT_MAX_BYTES } from "../src/review-proof-limits.ts";
 import { CommandProofRequestStore } from "./command-proof-requests.ts";
 import {
   parseReviewProofLease,
@@ -1218,7 +1219,8 @@ export class ExactReviewQueue {
           body.result &&
           typeof body.result === "object" &&
           !Array.isArray(body.result) &&
-          new TextEncoder().encode(JSON.stringify(body.result)).length <= 256 * 1024
+          new TextEncoder().encode(JSON.stringify(body.result)).length <=
+            REVIEW_PROOF_RESULT_MAX_BYTES
         ) {
           record.state = "completed";
           record.result = body.result as Record<string, unknown>;

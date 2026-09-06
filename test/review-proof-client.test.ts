@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createServer } from "node:http";
+import { REVIEW_PROOF_RESPONSE_MAX_BYTES } from "../dist/review-proof-limits.js";
 import {
   canonicalProofPlan,
   requestReviewProof,
@@ -84,12 +86,34 @@ test("proof returns complete observations from trusted transport without judging
   assert.deepEqual(result, observation);
   assert.equal(JSON.stringify(result).includes("secret-lease"), false);
 });
+test("proof HTTP response beyond bounded envelope headroom is rejected", async () => {
+  const envelope = { state: "completed", result: { text: "" } };
+  envelope.result.text = "x".repeat(
+    REVIEW_PROOF_RESPONSE_MAX_BYTES + 1 - Buffer.byteLength(JSON.stringify(envelope)),
+  );
+  const wire = JSON.stringify(envelope);
+  assert.equal(Buffer.byteLength(wire), REVIEW_PROOF_RESPONSE_MAX_BYTES + 1);
+  const server = createServer((_request, response) => response.end(wire));
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const capability = reviewProofCapabilityFromEnv("openclaw/openclaw", "a".repeat(40), env)!;
+    capability.queueUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    capability.allowedScenarios = ["telegram-bot-e2e-proof"];
+    const result = await requestReviewProof(capability, plan, new AbortController().signal);
+    assert.equal((result as { status: string }).status, "inconclusive");
+    assert.equal((result as { result?: unknown }).result, undefined);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("rejection, invalid data, oversized evidence and cancellation remain inconclusive", async () => {
   const capability = reviewProofCapabilityFromEnv("openclaw/openclaw", "a".repeat(40), env)!;
   capability.allowedScenarios = ["telegram-bot-e2e-proof"];
   for (const response of [
     new Response("private detail", { status: 409 }),
-    new Response("x".repeat(262145)),
+    new Response("x".repeat(REVIEW_PROOF_RESPONSE_MAX_BYTES + 1)),
     new Response("not json"),
   ]) {
     const result = await requestReviewProof(

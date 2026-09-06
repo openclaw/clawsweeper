@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { executeReviewProof } from "../dashboard/review-proof-execution.ts";
 import { proofFixture } from "./helpers/command-proof-fixtures.ts";
+import { requestReviewProof } from "../dist/review-proof-client.js";
 import { stableJson } from "../src/stable-json.ts";
 import {
   assert,
@@ -67,7 +68,14 @@ async function fixture(allowed?: InlineProofScenario[]) {
   return { storage, queue, lease, plan, post };
 }
 
-for (const change of ["active", "revoked", "reassigned", "scope_revoked", "expired"] as const) {
+for (const change of [
+  "active",
+  "revoked",
+  "reassigned",
+  "scope_revoked",
+  "expired",
+  "max_result",
+] as const) {
   test(
     `cached proof HTTP delivery fences owner changed during verification (${change})`,
     { timeout: 10_000 },
@@ -75,11 +83,27 @@ for (const change of ["active", "revoked", "reassigned", "scope_revoked", "expir
       const f = await fixture();
       const admitted = await f.post(f.plan());
       const evidence = proofFixture(admitted.body.record.requestId, "telegram-bot-e2e-proof");
-      const result = { observations: { private: "synthetic cached observation" } };
+      const result = {
+        observations: { private: "synthetic cached observation" },
+        limits: [] as string[],
+      };
+      if (change === "max_result") {
+        result.observations.private = "x".repeat(192 * 1024 - 100);
+        result.limits = Array(16).fill("x");
+        let remaining = 256 * 1024 - Buffer.byteLength(JSON.stringify(result));
+        for (let index = 0; remaining > 0; index++) {
+          assert.ok(index < 16);
+          const bytes = Math.min(6138, remaining);
+          result.limits[index] += "€".repeat(Math.floor(bytes / 3)) + "x".repeat(bytes % 3);
+          assert.ok(result.limits[index]!.length <= 2048);
+          remaining -= bytes;
+        }
+        assert.equal(Buffer.byteLength(JSON.stringify(result)), 256 * 1024);
+      }
       const state = (f.queue as any).readStateSync();
       const stored = state.items[f.lease.itemKey].reviewProofRequests[0];
       Object.assign(stored, {
-        state: "completed",
+        state: "pending",
         runId: "300",
         result,
         producer: {
@@ -94,6 +118,15 @@ for (const change of ["active", "revoked", "reassigned", "scope_revoked", "expir
         },
       });
       await (f.queue as any).writeState(state);
+      assert.equal(
+        (
+          await f.post(
+            { lease: f.lease, requestId: stored.requestId, state: "completed", result },
+            "/review-proof/update",
+          )
+        ).status,
+        200,
+      );
       let verificationReached!: () => void;
       let resumeVerification!: () => void;
       const reached = new Promise<void>((resolve) => {
@@ -125,7 +158,13 @@ for (const change of ["active", "revoked", "reassigned", "scope_revoked", "expir
                   })
                 ).json(),
             });
-            response.end(JSON.stringify(output));
+            response.end(
+              JSON.stringify({
+                ...output,
+                requestId: stored.requestId,
+                planSha256: stored.planSha256,
+              }),
+            );
           } else if (request.url === "/update") {
             confirmations++;
             const reply = await f.post(
@@ -157,8 +196,15 @@ for (const change of ["active", "revoked", "reassigned", "scope_revoked", "expir
       await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
       const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
       try {
-        const delivery = fetch(`${origin}/cached`).then((response) =>
-          response.json(),
+        const delivery = (
+          change === "max_result"
+            ? requestReviewProof(
+                { queueUrl: origin, lease: f.lease, allowedScenarios: ["telegram-bot-e2e-proof"] },
+                f.plan().proofPlan,
+                new AbortController().signal,
+                async () => fetch(`${origin}/cached`),
+              )
+            : fetch(`${origin}/cached`).then((response) => response.json())
         ) as Promise<any>;
         await reached;
         const current = (f.queue as any).readStateSync();
@@ -173,8 +219,9 @@ for (const change of ["active", "revoked", "reassigned", "scope_revoked", "expir
         await (f.queue as any).writeState(current);
         resumeVerification();
         const output = await delivery;
-        assert.equal(output.state, change === "active" ? "completed" : "inconclusive");
-        assert.deepEqual(output.result, change === "active" ? result : undefined);
+        const allowed = change === "active" || change === "max_result";
+        assert.equal(output.state, allowed ? "completed" : "inconclusive");
+        assert.deepEqual(output.result, allowed ? result : undefined);
         assert.equal(confirmations, 1);
         assert.deepEqual(
           (f.queue as any).readStateSync().items[f.lease.itemKey].reviewProofRequests[0].result,

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { validReviewProofPlan, validFixedWebUiProofPlan } from "./review-proof-plan.js";
+import { REVIEW_PROOF_RESPONSE_MAX_BYTES } from "./review-proof-limits.js";
 
 export interface ReviewProofCapability {
   queueUrl: string;
@@ -230,7 +231,7 @@ export async function requestReviewProof(
         const part = await reader.read();
         if (part.done) break;
         size += part.value.byteLength;
-        if (size > 256 * 1024) {
+        if (size > REVIEW_PROOF_RESPONSE_MAX_BYTES) {
           await reader.cancel();
           throw new Error("oversized evidence");
         }
