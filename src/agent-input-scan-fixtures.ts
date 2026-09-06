@@ -9,6 +9,20 @@ interface ReviewedFixture {
   sources: readonly string[];
 }
 
+export type ScanSourceRole = "base" | "head" | "index" | "tree" | "worktree";
+
+export type ReviewedAttribution = readonly [
+  detectorType: 17 | 895 | 968,
+  detectorName: "URI" | "MongoDB" | "Postgres",
+  decoder: "PLAIN" | "ESCAPED_UNICODE",
+  role: ScanSourceRole,
+  rawSha256: string,
+  rawV2Sha256: string,
+  lineSha256: string,
+  source: string,
+  mode: "100644",
+];
+
 // This is host policy, never an allowlist loaded from the reviewed checkout.
 const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
   {
@@ -156,6 +170,44 @@ const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
   },
 ];
 
+// oxfmt-ignore
+const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  [17, "URI", "ESCAPED_UNICODE", "base", "a460200b4a488bc178d0dac30bc5fe027ff86d9c7c94554f5c9d915580bc4239", "839b16fa1dd892daf47ab10d50f7c1957a16ace282fe9e6df67fefc40f7f06ff", "232cce5bf0c7b495e2f008fdc45cbd2bd9afc5394906576e4466411f6841d260", "src/logging/redact.test.ts", "100644"],
+  [17, "URI", "ESCAPED_UNICODE", "base", "de7dcbd8612764d80691e85407d899f6e3686afd9ab40964943c3874ffe9571c", "198d323e34c2a045b86adbc72b8cd54bb8f9582175c5c25e6c68b4e374d8873f", "8ff8c788b296b7eb81abaf7f2f48bb4be717f6e8bef76200e7c842dbeea8a15c", "src/logging/redact.test.ts", "100644"],
+  [17, "URI", "ESCAPED_UNICODE", "head", "31ff9f3ec446cbcc27e6fc08f3cd96b5d95d8b436b4144f3a098d7c524a863f7", "0d9e27039ed24044fe06ab5145d7b04569ced32d3ff6fe8eb9acf04a75663919", "47171b920ebd0800ac107a92ad80b7279677f0096fad5a367f82fe3b1955c790", "src/logging/redact.test.ts", "100644"],
+  [17, "URI", "ESCAPED_UNICODE", "head", "de7dcbd8612764d80691e85407d899f6e3686afd9ab40964943c3874ffe9571c", "198d323e34c2a045b86adbc72b8cd54bb8f9582175c5c25e6c68b4e374d8873f", "8ff8c788b296b7eb81abaf7f2f48bb4be717f6e8bef76200e7c842dbeea8a15c", "src/logging/redact.test.ts", "100644"],
+  [17, "URI", "PLAIN", "base", "31ff9f3ec446cbcc27e6fc08f3cd96b5d95d8b436b4144f3a098d7c524a863f7", "0d9e27039ed24044fe06ab5145d7b04569ced32d3ff6fe8eb9acf04a75663919", "47171b920ebd0800ac107a92ad80b7279677f0096fad5a367f82fe3b1955c790", "src/logging/redact.test.ts", "100644"],
+  [17, "URI", "PLAIN", "base", "a460200b4a488bc178d0dac30bc5fe027ff86d9c7c94554f5c9d915580bc4239", "839b16fa1dd892daf47ab10d50f7c1957a16ace282fe9e6df67fefc40f7f06ff", "232cce5bf0c7b495e2f008fdc45cbd2bd9afc5394906576e4466411f6841d260", "src/logging/redact.test.ts", "100644"],
+  [17, "URI", "PLAIN", "base", "de7dcbd8612764d80691e85407d899f6e3686afd9ab40964943c3874ffe9571c", "198d323e34c2a045b86adbc72b8cd54bb8f9582175c5c25e6c68b4e374d8873f", "8ff8c788b296b7eb81abaf7f2f48bb4be717f6e8bef76200e7c842dbeea8a15c", "src/logging/redact.test.ts", "100644"],
+  [17, "URI", "PLAIN", "head", "31ff9f3ec446cbcc27e6fc08f3cd96b5d95d8b436b4144f3a098d7c524a863f7", "0d9e27039ed24044fe06ab5145d7b04569ced32d3ff6fe8eb9acf04a75663919", "47171b920ebd0800ac107a92ad80b7279677f0096fad5a367f82fe3b1955c790", "src/logging/redact.test.ts", "100644"],
+  [17, "URI", "PLAIN", "head", "a460200b4a488bc178d0dac30bc5fe027ff86d9c7c94554f5c9d915580bc4239", "839b16fa1dd892daf47ab10d50f7c1957a16ace282fe9e6df67fefc40f7f06ff", "232cce5bf0c7b495e2f008fdc45cbd2bd9afc5394906576e4466411f6841d260", "src/logging/redact.test.ts", "100644"],
+  [17, "URI", "PLAIN", "head", "de7dcbd8612764d80691e85407d899f6e3686afd9ab40964943c3874ffe9571c", "198d323e34c2a045b86adbc72b8cd54bb8f9582175c5c25e6c68b4e374d8873f", "8ff8c788b296b7eb81abaf7f2f48bb4be717f6e8bef76200e7c842dbeea8a15c", "src/logging/redact.test.ts", "100644"],
+  [895, "MongoDB", "ESCAPED_UNICODE", "base", "087c10edd5d21290a4a8695083ff8c42554fc1d1a1becea9053b11c4790b859c", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "0aeba0d1b540784464c2a230b589a48d3f062d0dbbb2d9669450ff4ee2176218", "src/logging/redact.test.ts", "100644"],
+  [895, "MongoDB", "ESCAPED_UNICODE", "head", "087c10edd5d21290a4a8695083ff8c42554fc1d1a1becea9053b11c4790b859c", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "0aeba0d1b540784464c2a230b589a48d3f062d0dbbb2d9669450ff4ee2176218", "src/logging/redact.test.ts", "100644"],
+  [895, "MongoDB", "PLAIN", "base", "087c10edd5d21290a4a8695083ff8c42554fc1d1a1becea9053b11c4790b859c", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "0aeba0d1b540784464c2a230b589a48d3f062d0dbbb2d9669450ff4ee2176218", "src/logging/redact.test.ts", "100644"],
+  [895, "MongoDB", "PLAIN", "head", "087c10edd5d21290a4a8695083ff8c42554fc1d1a1becea9053b11c4790b859c", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "0aeba0d1b540784464c2a230b589a48d3f062d0dbbb2d9669450ff4ee2176218", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "ESCAPED_UNICODE", "base", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "6dc3c292a8c87dd8c203af74bf1fa03f3eb64ae12bafc23dadfff9c3f63c23e6", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "ESCAPED_UNICODE", "base", "39a0315176e45802aaa3c5c40c2a717e2fde14e99567c38b5640fe16138710fa", "39a0315176e45802aaa3c5c40c2a717e2fde14e99567c38b5640fe16138710fa", "4b03f485ba97fd1aea07f64e978e9a961179dbbb766828f20fc8a2401812a858", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "ESCAPED_UNICODE", "base", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "252d197820142c40bc8701a8b1400f28a3224f305f37fd65cd2e6bfbe48d9fb1", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "ESCAPED_UNICODE", "base", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "6a9d1339c87f11af0ba4e7ef89a77ea8eb8e7f7ac48fdec0abb19d9138821d18", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "ESCAPED_UNICODE", "base", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "2020783f7b14c74d2d6960efca4ca82727980494ddef883f15ae9980141662ec", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "ESCAPED_UNICODE", "head", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "6dc3c292a8c87dd8c203af74bf1fa03f3eb64ae12bafc23dadfff9c3f63c23e6", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "ESCAPED_UNICODE", "head", "39a0315176e45802aaa3c5c40c2a717e2fde14e99567c38b5640fe16138710fa", "39a0315176e45802aaa3c5c40c2a717e2fde14e99567c38b5640fe16138710fa", "4b03f485ba97fd1aea07f64e978e9a961179dbbb766828f20fc8a2401812a858", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "ESCAPED_UNICODE", "head", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "252d197820142c40bc8701a8b1400f28a3224f305f37fd65cd2e6bfbe48d9fb1", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "ESCAPED_UNICODE", "head", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "6a9d1339c87f11af0ba4e7ef89a77ea8eb8e7f7ac48fdec0abb19d9138821d18", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "ESCAPED_UNICODE", "head", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "2020783f7b14c74d2d6960efca4ca82727980494ddef883f15ae9980141662ec", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "PLAIN", "base", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "6dc3c292a8c87dd8c203af74bf1fa03f3eb64ae12bafc23dadfff9c3f63c23e6", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "PLAIN", "base", "39a0315176e45802aaa3c5c40c2a717e2fde14e99567c38b5640fe16138710fa", "39a0315176e45802aaa3c5c40c2a717e2fde14e99567c38b5640fe16138710fa", "4b03f485ba97fd1aea07f64e978e9a961179dbbb766828f20fc8a2401812a858", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "PLAIN", "base", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "252d197820142c40bc8701a8b1400f28a3224f305f37fd65cd2e6bfbe48d9fb1", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "PLAIN", "base", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "6a9d1339c87f11af0ba4e7ef89a77ea8eb8e7f7ac48fdec0abb19d9138821d18", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "PLAIN", "base", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "2020783f7b14c74d2d6960efca4ca82727980494ddef883f15ae9980141662ec", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "PLAIN", "head", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "6dc3c292a8c87dd8c203af74bf1fa03f3eb64ae12bafc23dadfff9c3f63c23e6", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "PLAIN", "head", "39a0315176e45802aaa3c5c40c2a717e2fde14e99567c38b5640fe16138710fa", "39a0315176e45802aaa3c5c40c2a717e2fde14e99567c38b5640fe16138710fa", "4b03f485ba97fd1aea07f64e978e9a961179dbbb766828f20fc8a2401812a858", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "PLAIN", "head", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "252d197820142c40bc8701a8b1400f28a3224f305f37fd65cd2e6bfbe48d9fb1", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "PLAIN", "head", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "6a9d1339c87f11af0ba4e7ef89a77ea8eb8e7f7ac48fdec0abb19d9138821d18", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "PLAIN", "head", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "2020783f7b14c74d2d6960efca4ca82727980494ddef883f15ae9980141662ec", "src/logging/redact.test.ts", "100644"],
+];
+
 export function serializeReviewContext(context: object): string {
   return JSON.stringify(
     context,
@@ -192,6 +244,7 @@ export interface ScanSourceReference {
   source: string;
   mode: string;
   revision: string;
+  role: ScanSourceRole;
 }
 
 export type ScanInputOrigin =
@@ -207,7 +260,7 @@ interface ScanMaterialDiagnostic {
   from?: string;
   to?: string;
   referenceCount?: number;
-  references?: { revision: string; pathSha256: string; mode: string }[];
+  references?: { revision: string; pathSha256: string; mode: string; role: ScanSourceRole }[];
 }
 
 export type ScanRefusalDiagnostic =
@@ -229,7 +282,8 @@ export type ScanRefusalDiagnostic =
         | "material_not_reviewed"
         | "source_not_reviewed"
         | "metadata_mismatch"
-        | "literal_mismatch";
+        | "literal_mismatch"
+        | "duplicate_finding";
       findingCount: number;
       findingIndex: number;
       detectorType: number | null;
@@ -258,6 +312,7 @@ interface ClassifiedFinding {
   literalLine: number;
   decoder: string;
   occurrences: number;
+  role?: ScanSourceRole;
 }
 
 function object(value: unknown): Record<string, unknown> | undefined {
@@ -285,6 +340,15 @@ function records(bytes: Buffer): Record<string, unknown>[] | undefined {
   }
 }
 
+function exactStringRecord(value: unknown, keys: readonly string[]): boolean {
+  const record = object(value);
+  return (
+    record !== undefined &&
+    Object.keys(record).sort().join("\0") === [...keys].sort().join("\0") &&
+    keys.every((key) => typeof record[key] === "string" && record[key].length > 0)
+  );
+}
+
 function materialDiagnostic(input: StagedScanInput): ScanMaterialDiagnostic {
   // Only host-staged identities leave the scanner boundary. Bound reference
   // fanout and hash paths; raw finding values and provider strings never leave.
@@ -295,10 +359,11 @@ function materialDiagnostic(input: StagedScanInput): ScanMaterialDiagnostic {
     ...("references" in input
       ? {
           referenceCount: input.references.length,
-          references: input.references.slice(0, 4).map(({ source, mode, revision }) => ({
+          references: input.references.slice(0, 4).map(({ source, mode, revision, role }) => ({
             revision,
             pathSha256: createHash("sha256").update(source).digest("hex"),
             mode,
+            role,
           })),
         }
       : {}),
@@ -311,6 +376,7 @@ export function classifyReviewedFixtureScan(
   stdout: Buffer,
   stderr: Buffer,
   inputs: ReadonlyMap<string, StagedScanInput>,
+  reviewedAttributions: readonly ReviewedAttribution[] = REVIEWED_ATTRIBUTIONS,
 ): { kind: "classified"; notices: ReviewedFixtureNotice[] } | RefusedScan {
   const nativeFailure = (
     reason: Extract<ScanRefusalDiagnostic, { kind: "native_contract" }>["reason"],
@@ -361,8 +427,14 @@ export function classifyReviewedFixtureScan(
   const literalLines = new Map<string, number>();
   const classified = new Map<
     string,
-    { fixtureSha256: string; source: string; findings: Map<string, ClassifiedFinding> }
+    {
+      fixtureSha256: string;
+      source: string;
+      detector: string;
+      findings: Map<string, ClassifiedFinding>;
+    }
   >();
+  const exactFindings = new Set<string>();
   for (const [findingIndex, finding] of findings.entries()) {
     const source = object(object(object(finding.SourceMetadata)?.Data)?.Filesystem);
     const file = source?.file;
@@ -397,6 +469,168 @@ export function classifyReviewedFixtureScan(
         ...(staged ? { material: materialDiagnostic(staged) } : {}),
       },
     });
+    const raw = typeof finding.Raw === "string" ? finding.Raw : undefined;
+    const rawV2 = typeof finding.RawV2 === "string" ? finding.RawV2 : undefined;
+    const rawDigest =
+      raw === undefined ? undefined : createHash("sha256").update(raw).digest("hex");
+    const rawV2Digest =
+      rawV2 === undefined ? undefined : createHash("sha256").update(rawV2).digest("hex");
+    const exactCandidates =
+      rawDigest === undefined || rawV2Digest === undefined
+        ? []
+        : reviewedAttributions.filter(
+            ([, , , , expectedRaw, expectedRawV2]) =>
+              expectedRaw === rawDigest && expectedRawV2 === rawV2Digest,
+          );
+    if (exactCandidates.length > 0) {
+      if (
+        raw === undefined ||
+        rawV2 === undefined ||
+        rawDigest === undefined ||
+        rawV2Digest === undefined
+      )
+        return refuse("finding_not_reviewed");
+      if (
+        finding.SourceType !== 15 ||
+        finding.Verified !== false ||
+        typeof finding.VerificationError !== "string" ||
+        !finding.VerificationError ||
+        finding.StructuredData !== null
+      )
+        return refuse("finding_not_reviewed");
+      const matchingMetadata = exactCandidates.filter(
+        ([detectorType, detectorName, decoder]) =>
+          detectorType === finding.DetectorType &&
+          detectorName === finding.DetectorName &&
+          decoder === finding.DecoderName,
+      );
+      if (matchingMetadata.length === 0) return refuse("finding_not_reviewed");
+      const [detectorType, detectorName, decoder] = matchingMetadata[0]!;
+      if (typeof file !== "string" || scannerLine === null) return refuse("metadata_mismatch");
+      if (staged?.kind !== "blob" || !staged.bytes) return refuse("material_not_reviewed");
+      const parts = object(finding.SecretParts);
+      if (detectorType === 17) {
+        let uri: URL;
+        try {
+          uri = new URL(rawV2);
+        } catch {
+          return refuse("metadata_mismatch");
+        }
+        if (
+          finding.ExtraData !== null ||
+          !parts ||
+          Object.keys(parts).sort().join("\0") !== "host\0password\0username" ||
+          parts.host !== uri.host ||
+          parts.username !== uri.username ||
+          parts.password !== uri.password
+        )
+          return refuse("metadata_mismatch");
+      } else if (detectorType === 895) {
+        if (
+          rawV2 !== "" ||
+          !parts ||
+          Object.keys(parts).join("\0") !== "key" ||
+          parts.key !== raw ||
+          !exactStringRecord(finding.ExtraData, ["database", "host", "rotation_guide", "username"])
+        )
+          return refuse("metadata_mismatch");
+      } else if (
+        raw !== rawV2 ||
+        !parts ||
+        Object.keys(parts).join("\0") !== "connection_string" ||
+        parts.connection_string !== raw ||
+        !exactStringRecord(finding.ExtraData, ["database", "host", "sslmode", "username"])
+      ) {
+        return refuse("metadata_mismatch");
+      }
+      let text: string;
+      try {
+        text = new TextDecoder("utf-8", { fatal: true }).decode(staged.bytes);
+      } catch {
+        return refuse("literal_mismatch");
+      }
+      let lineStart = 0;
+      let lineNumber = 1;
+      let witnessLine: string | undefined;
+      let witnessLineNumber: number | undefined;
+      let literalOccurrences = 0;
+      while (lineStart <= text.length) {
+        const newline = text.indexOf("\n", lineStart);
+        const lineEnd = newline === -1 ? text.length : newline;
+        const line = text.slice(lineStart, lineEnd);
+        if (detectorType === 17 && line.includes(rawV2)) {
+          let occurrence = line.indexOf(rawV2);
+          while (occurrence !== -1) {
+            literalOccurrences++;
+            occurrence = line.indexOf(rawV2, occurrence + rawV2.length);
+          }
+          witnessLine ??= line;
+          witnessLineNumber ??= lineNumber;
+        } else if (detectorType !== 17 && lineNumber === scannerLine) {
+          witnessLine = line;
+          witnessLineNumber = lineNumber;
+        }
+        if (newline === -1) break;
+        lineStart = newline + 1;
+        lineNumber++;
+      }
+      if (
+        witnessLine === undefined ||
+        witnessLineNumber === undefined ||
+        (detectorType === 17 && literalOccurrences !== 1)
+      )
+        return refuse("literal_mismatch");
+      const lineDigest = createHash("sha256").update(witnessLine).digest("hex");
+      if (!matchingMetadata.some(([, , , , , , expectedLine]) => expectedLine === lineDigest))
+        return refuse("literal_mismatch");
+      if (
+        !staged.references.length ||
+        staged.references.some(({ source, mode, role }) =>
+          matchingMetadata.every(
+            ([, , , expectedRole, , , expectedLine, expectedSource, expectedMode]) =>
+              expectedRole !== role ||
+              expectedLine !== lineDigest ||
+              expectedSource !== source ||
+              expectedMode !== mode,
+          ),
+        )
+      )
+        return refuse("source_not_reviewed");
+      const duplicateKey = [
+        file,
+        scannerLine,
+        detectorType,
+        detectorName,
+        decoder,
+        rawDigest,
+        rawV2Digest,
+      ].join("\0");
+      if (exactFindings.has(duplicateKey)) return refuse("duplicate_finding");
+      exactFindings.add(duplicateKey);
+      const fixtureSha256 = detectorType === 17 ? rawV2Digest : rawDigest;
+      const blob = basename(file);
+      for (const { source, role } of staged.references) {
+        const groupKey = `exact:${detectorType}:${fixtureSha256}:${source}`;
+        const group = classified.get(groupKey) ?? {
+          fixtureSha256,
+          source,
+          detector: detectorName,
+          findings: new Map<string, ClassifiedFinding>(),
+        };
+        const key = `${blob}:${scannerLine}:${decoder}:${role}`;
+        const previous = group.findings.get(key);
+        group.findings.set(key, {
+          blob,
+          scannerLine,
+          literalLine: witnessLineNumber,
+          decoder,
+          role,
+          occurrences: (previous?.occurrences ?? 0) + 1,
+        });
+        classified.set(groupKey, group);
+      }
+      continue;
+    }
     if (
       finding.DetectorType !== 17 ||
       finding.DetectorName !== "URI" ||
@@ -413,10 +647,11 @@ export function classifyReviewedFixtureScan(
       return refuse("finding_not_reviewed");
     // URI Raw omits the path; bind both native outputs to the reviewed match.
     const digest = createHash("sha256").update(finding.RawV2).digest("hex");
-    const rawDigest = createHash("sha256").update(finding.Raw).digest("hex");
+    const legacyRawDigest = createHash("sha256").update(finding.Raw).digest("hex");
     const fixture = REVIEWED_FIXTURES.find(
       (entry) =>
-        entry.fixtureSha256 === digest && (entry.rawSha256 ?? entry.fixtureSha256) === rawDigest,
+        entry.fixtureSha256 === digest &&
+        (entry.rawSha256 ?? entry.fixtureSha256) === legacyRawDigest,
     );
     if (!fixture) return refuse("literal_not_reviewed");
     if (!(fixture.decoders ?? ["PLAIN", "HTML"]).some((decoder) => decoder === finding.DecoderName))
@@ -491,6 +726,7 @@ export function classifyReviewedFixtureScan(
       const group = classified.get(groupKey) ?? {
         fixtureSha256: digest,
         source: path,
+        detector: "URI",
         findings: new Map<string, ClassifiedFinding>(),
       };
       const previous = group.findings.get(key);
@@ -511,7 +747,7 @@ export function classifyReviewedFixtureScan(
       .map(([, group]) => ({
         fixtureSha256: group.fixtureSha256,
         source: group.source,
-        detector: "URI",
+        detector: group.detector,
         findings: [...group.findings.entries()]
           .sort(([a], [b]) => a.localeCompare(b))
           .map(([, value]) => value),

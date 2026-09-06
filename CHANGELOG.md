@@ -19,6 +19,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Admit the reviewed OpenClaw logging redaction fixtures through exact detector, native decoder, role, value-hash, source-line, path, mode, and metadata bindings while preserving legacy URI fixture behavior.
+
 - Keep publication reconciliation dry runs from recording terminal lifecycle state or reclaiming expired publication batches.
 
 - Reduce the review ceiling to 32, cap scheduled background reviews at eight, pace scheduled intake at 60 per hour with a six-item burst, and scan normal backlog hourly while retaining manual-review priority and existing leases.

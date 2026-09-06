@@ -621,13 +621,24 @@ The pinned Base64 decoder preserves the rest of a chunk after
 decoding another token, so an unchanged literal can acquire that decoder label
 and win cross-decoder deduplication. Those entries still require the literal in
 its exact original source line; encoded-only content remains blocking.
+
+The OpenClaw [logging redaction fixtures](https://github.com/openclaw/openclaw/blob/fe0367a07a23660ea35007ac69bdb8f54309fc21/src/logging/redact.test.ts)
+use a separate flat attribution table without changing the legacy URI policy
+above. Each row binds the exact detector ID and name, native `PLAIN` or
+`ESCAPED_UNICODE` decoder, base/head role, `Raw`, `RawV2`, and complete source-line
+SHA-256 digests, path, and mode. URI findings require one literal `RawV2` witness
+and derived host, username, and password fields. MongoDB and Postgres findings
+bind the scanner-reported line and their exact native metadata shape. Any emitted
+subset and order may qualify; duplicate exact findings, unknown variants, lossy
+decoder buckets, or an unqualified deduplicated blob reference refuse admission.
+
 One source path may contain multiple independently reviewed fixtures; each
 digest/path/mode tuple must match exactly, so source membership alone never
 qualifies a finding.
-Deduplicated blobs retain every scanned logical endpoint's path and Git mode,
-including mode-only transitions and shared-path aliases. Every captured reference
-must qualify under the same digest's exact path and mode `100644` policy before
-any source is eligible for classification or an audit notice.
+Deduplicated blobs retain every scanned logical endpoint's role, path, and Git
+mode, including mode-only transitions and shared-path aliases. Every captured
+reference must qualify under the same exact attribution policy before any source
+is eligible for classification or an audit notice.
 The policy does not trust checkout ignore rules, domain patterns, fixture words,
 test names, or unchanged-line inference; no nearby fixture is implicitly approved.
 When review evidence quotes an exact reviewed synthetic URI, prompt preparation
@@ -646,9 +657,10 @@ upgrades require requalification. See `src/agent-input-scan-fixtures.ts`.
 After successful cleanup and final source fences, each accepted fixture/source
 pair emits a host-side structured stderr notice with `event`, `fixtureSha256`,
 `source`, `detector`, and `findings` entries containing `blob`, `decoder`, and
-`occurrences`. Each finding retains its reported `scannerLine` and a `literalLine`
-for the first exact literal in the staged blob. This bounded witness establishes
-literal presence; it does not identify which occurrence produced a decoded hit.
+`occurrences`; role-bound findings also include `role`. Each finding retains its
+reported `scannerLine` and a `literalLine` for the first exact literal in the
+staged blob. This bounded witness establishes literal presence; it does not
+identify which occurrence produced a decoded hit.
 Counts are per source: a shared blob can appear in both source
 notices and those counts must not be summed across sources. A refused or drifted
 scan emits no success notice. Raw values and verification diagnostics never

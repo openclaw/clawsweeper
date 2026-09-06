@@ -31,6 +31,12 @@ import {
   captureTargetCheckoutBinding,
   withTargetReviewSnapshot,
 } from "../dist/repair/target-validation.js";
+import {
+  classifyReviewedFixtureScan,
+  type ReviewedAttribution,
+  type ScanSourceRole,
+  type StagedScanInput,
+} from "../dist/agent-input-scan-fixtures.js";
 import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 import { writeExactReviewFailureDiagnostics } from "../dist/clawsweeper-review-failure-diagnostics.js";
 
@@ -538,6 +544,74 @@ test("repair scan binds raw bytes even when normalization leaves the same canoni
   assert.equal(existsSync(f.calls), false);
 });
 
+for (const expectedRole of ["base", "head", "index", "tree"] as const) {
+  test(`scan staging preserves ${expectedRole} blob provenance before provider launch`, (t) => {
+    const f = fixture(t);
+    const markers = {
+      base: "base-role-marker",
+      head: "head-role-marker",
+      index: "index-role-marker",
+      tree: "tree-role-marker",
+    };
+    writeFileSync(join(f.cwd, "a.txt"), `${markers.base}\n`);
+    const baseSha = f.commit();
+    writeFileSync(join(f.cwd, "a.txt"), `${markers.head}\n`);
+    const headSha = f.commit();
+    if (expectedRole === "index" || expectedRole === "tree") {
+      writeFileSync(join(f.cwd, "a.txt"), `${markers.index}\n`);
+      f.git("add", "a.txt");
+      writeFileSync(join(f.cwd, "a.txt"), `${markers.tree}\n`);
+    }
+    const uri = new URL("https://fixture.example.invalid/path");
+    uri.username = "fixture-user";
+    uri.password = "fixture-pass";
+    useFakeScanner(
+      t,
+      String.raw`
+const marker = ${JSON.stringify(markers[expectedRole])};
+const uri = ${JSON.stringify(uri.href)};
+const parsed = new URL(uri);
+const input = inputs.find(({name, bytes}) => /^[a-f0-9]{40}$/.test(name) && bytes.includes(marker));
+assert.ok(input);
+process.stdout.write(JSON.stringify({
+  SourceType: 15, DetectorType: 17, DetectorName: 'URI', DecoderName: 'PLAIN',
+  Verified: false, VerificationError: 'synthetic verification error',
+  Raw: uri, RawV2: uri,
+  SourceMetadata: {Data: {Filesystem: {file: path.join(inputDir, input.name), line: 1}}},
+  SecretParts: {host: parsed.host, username: parsed.username, password: parsed.password},
+  ExtraData: null, StructuredData: null,
+}) + '\n');
+process.stderr.write(JSON.stringify({
+  level: 'info-0', logger: 'trufflehog', msg: 'finished scanning',
+  trufflehog_version: '3.97.1', chunks: 1, bytes: 1,
+  verified_secrets: 0, unverified_secrets: 1,
+}) + '\n');
+process.exit(183);
+`,
+    );
+    const run = () => {
+      if (expectedRole === "base" || expectedRole === "head")
+        return f.run({ kind: "committed", baseSha, headSha });
+      const expected = captureTargetCheckoutBinding(f.cwd);
+      return withTargetReviewSnapshot({ cwd: f.cwd, baseSha, expected, timeoutMs: 30_000 }, f.run);
+    };
+    assert.throws(run, (error) => {
+      assert.ok(error instanceof AgentInputScanError);
+      assert.equal(error.reason, "findings");
+      assert.equal(error.scanDiagnostic?.kind, "unclassified_finding");
+      if (error.scanDiagnostic?.kind === "unclassified_finding") {
+        assert.equal(error.scanDiagnostic.material?.kind, "blob");
+        assert.deepEqual(
+          error.scanDiagnostic.material?.references?.map((reference) => reference.role),
+          [expectedRole],
+        );
+      }
+      return true;
+    });
+    assert.equal(existsSync(f.calls), false);
+  });
+}
+
 const ledgerSource = "test/action-ledger-runtime.test.ts";
 const autoreviewSources = [
   "skills/autoreview/tests/test_autoreview_hardening.py",
@@ -573,6 +647,429 @@ const nativeContractFailures = new Map([
   ["malformed output", "invalid_stdout"],
   ["unexpected successful output", "unexpected_exit"],
 ]);
+
+type ExactDetector = "URI" | "MongoDB" | "Postgres";
+type ExactDecoder = "PLAIN" | "ESCAPED_UNICODE";
+
+interface ExactCase {
+  detectorType: 17 | 895 | 968;
+  detectorName: ExactDetector;
+  decoder: ExactDecoder;
+  role: ScanSourceRole;
+  raw: string;
+  rawV2: string;
+  line: string;
+  secretParts: Record<string, string>;
+  extraData: Record<string, string> | null;
+}
+
+const exactSource = "src/logging/redact.test.ts";
+
+function exactCase(
+  detectorName: ExactDetector,
+  decoder: ExactDecoder,
+  role: ScanSourceRole,
+): ExactCase {
+  if (detectorName === "URI") {
+    const uri = new URL(`https://${decoder.toLowerCase()}.${role}.example.invalid/path`);
+    uri.username = "fixture-user";
+    uri.password = "fixture-pass";
+    const rawV2 = uri.href;
+    const authority = new URL(rawV2);
+    authority.pathname = "";
+    return {
+      detectorType: 17,
+      detectorName,
+      decoder,
+      role,
+      raw: authority.href.slice(0, -1),
+      rawV2,
+      line: `const fixture = ${JSON.stringify(rawV2)};`,
+      secretParts: {
+        host: uri.host,
+        username: uri.username,
+        password: uri.password,
+      },
+      extraData: null,
+    };
+  }
+  const raw = `${detectorName.toLowerCase()}://${decoder.toLowerCase()}.${role}.example.invalid/db`;
+  if (detectorName === "MongoDB") {
+    return {
+      detectorType: 895,
+      detectorName,
+      decoder,
+      role,
+      raw,
+      rawV2: "",
+      line: `const fixture = ${JSON.stringify(raw)};`,
+      secretParts: { key: raw },
+      extraData: {
+        database: "db",
+        host: `${decoder.toLowerCase()}.${role}.example.invalid`,
+        rotation_guide: "reviewed synthetic guidance",
+        username: "fixture-user",
+      },
+    };
+  }
+  return {
+    detectorType: 968,
+    detectorName,
+    decoder,
+    role,
+    raw,
+    rawV2: raw,
+    line: `const fixture = ${JSON.stringify(raw)};`,
+    secretParts: { connection_string: raw },
+    extraData: {
+      database: "db",
+      host: `${decoder.toLowerCase()}.${role}.example.invalid`,
+      sslmode: "require",
+      username: "fixture-user",
+    },
+  };
+}
+
+function exactFixture(cases: readonly ExactCase[]) {
+  const inputs = new Map<string, StagedScanInput>();
+  const findings = cases.map((entry, index) => {
+    const file = `/private/scanner/${index.toString(16).padStart(40, "0")}`;
+    inputs.set(file, {
+      kind: "blob",
+      id: index.toString(16).padStart(40, "0"),
+      bytes: Buffer.from(`// context\n${entry.line}\n`),
+      references: [
+        {
+          source: exactSource,
+          mode: "100644",
+          revision: entry.role === "base" ? "a".repeat(40) : "b".repeat(40),
+          role: entry.role,
+        },
+      ],
+    });
+    return {
+      SourceType: 15,
+      DetectorType: entry.detectorType,
+      DetectorName: entry.detectorName,
+      DecoderName: entry.decoder,
+      Verified: false,
+      VerificationError: "synthetic verification error",
+      Raw: entry.raw,
+      RawV2: entry.rawV2,
+      SourceMetadata: { Data: { Filesystem: { file, line: 2 } } },
+      SecretParts: entry.secretParts,
+      ExtraData: entry.extraData,
+      StructuredData: null,
+    };
+  });
+  const policy = cases.map(
+    (entry): ReviewedAttribution => [
+      entry.detectorType,
+      entry.detectorName,
+      entry.decoder,
+      entry.role,
+      createHash("sha256").update(entry.raw).digest("hex"),
+      createHash("sha256").update(entry.rawV2).digest("hex"),
+      createHash("sha256").update(entry.line).digest("hex"),
+      exactSource,
+      "100644",
+    ],
+  );
+  return { findings, inputs, policy };
+}
+
+function classifyExact(
+  findings: readonly Record<string, unknown>[],
+  inputs: ReadonlyMap<string, StagedScanInput>,
+  policy: readonly ReviewedAttribution[],
+) {
+  return classifyReviewedFixtureScan(
+    183,
+    Buffer.from(`${findings.map((finding) => JSON.stringify(finding)).join("\n")}\n`),
+    Buffer.from(
+      `${JSON.stringify({
+        level: "info-0",
+        logger: "trufflehog",
+        msg: "finished scanning",
+        trufflehog_version: "3.97.1",
+        chunks: 1,
+        bytes: 1,
+        verified_secrets: 0,
+        unverified_secrets: findings.length,
+      })}\n`,
+    ),
+    inputs,
+    policy,
+  );
+}
+
+test("exact reviewed attributions accept emitted detector subsets in any order", () => {
+  const cases = (["base", "head"] as const).flatMap((role) =>
+    (["URI", "MongoDB", "Postgres"] as const).flatMap((detector) =>
+      (["PLAIN", "ESCAPED_UNICODE"] as const).map((decoder) => exactCase(detector, decoder, role)),
+    ),
+  );
+  const fixture = exactFixture(cases);
+  const selections = [
+    cases.map((_, index) => index),
+    cases.map((_, index) => index).reverse(),
+    cases.map((_, index) => index).filter((index) => index % 2 === 0),
+    cases.map((_, index) => index).filter((index) => index % 2 === 1),
+    ...cases.map((_, index) => [index]),
+  ];
+  for (const selection of selections) {
+    const result = classifyExact(
+      selection.map((index) => fixture.findings[index]!),
+      fixture.inputs,
+      fixture.policy,
+    );
+    assert.equal(result.kind, "classified");
+    if (result.kind === "classified" && selection.length === cases.length) {
+      assert.deepEqual([...new Set(result.notices.map((notice) => notice.detector))].sort(), [
+        "MongoDB",
+        "Postgres",
+        "URI",
+      ]);
+      assert.deepEqual(
+        [
+          ...new Set(
+            result.notices.flatMap((notice) => notice.findings.map((finding) => finding.role)),
+          ),
+        ].sort(),
+        ["base", "head"],
+      );
+    }
+  }
+});
+
+test("exact reviewed attributions reject drift, duplicates, and mixed unknown findings", () => {
+  const base = exactFixture([exactCase("URI", "PLAIN", "base")]);
+  const valid = base.findings[0]!;
+  const inputFile = String(
+    (valid.SourceMetadata as { Data: { Filesystem: { file: string } } }).Data.Filesystem.file,
+  );
+  const cases: Array<{
+    name: string;
+    expected: string;
+    mutate: (
+      finding: Record<string, unknown>,
+      inputs: Map<string, StagedScanInput>,
+      policy: ReviewedAttribution[],
+    ) => Record<string, unknown>[];
+  }> = [
+    {
+      name: "raw drift",
+      expected: "literal_not_reviewed",
+      mutate: (finding) => [{ ...finding, Raw: `${finding.Raw}changed` }],
+    },
+    {
+      name: "RawV2 drift",
+      expected: "literal_not_reviewed",
+      mutate: (finding) => [{ ...finding, RawV2: `${finding.RawV2}changed` }],
+    },
+    {
+      name: "wrong detector",
+      expected: "finding_not_reviewed",
+      mutate: (finding) => [{ ...finding, DetectorType: 895 }],
+    },
+    {
+      name: "wrong name",
+      expected: "finding_not_reviewed",
+      mutate: (finding) => [{ ...finding, DetectorName: "Postgres" }],
+    },
+    {
+      name: "wrong decoder",
+      expected: "finding_not_reviewed",
+      mutate: (finding) => [{ ...finding, DecoderName: "HTML" }],
+    },
+    {
+      name: "lossy OTHER decoder",
+      expected: "finding_not_reviewed",
+      mutate: (finding) => [{ ...finding, DecoderName: "OTHER" }],
+    },
+    {
+      name: "swapped hashes",
+      expected: "literal_not_reviewed",
+      mutate: (finding, _inputs, policy) => {
+        const row = policy[0]!;
+        policy[0] = [
+          row[0],
+          row[1],
+          row[2],
+          row[3],
+          row[5],
+          row[4],
+          ...row.slice(6),
+        ] as ReviewedAttribution;
+        return [finding];
+      },
+    },
+    {
+      name: "wrong line",
+      expected: "literal_mismatch",
+      mutate: (finding, inputs) => {
+        const staged = inputs.get(inputFile)!;
+        inputs.set(inputFile, {
+          ...staged,
+          bytes: Buffer.from(`// context changed\n${base.policy[0]![5]}\n`),
+        });
+        return [finding];
+      },
+    },
+    {
+      name: "wrong path",
+      expected: "source_not_reviewed",
+      mutate: (finding, inputs) => {
+        const staged = inputs.get(inputFile)!;
+        inputs.set(inputFile, {
+          ...staged,
+          references: [{ ...staged.references[0]!, source: "other.test.ts" }],
+        });
+        return [finding];
+      },
+    },
+    {
+      name: "wrong mode",
+      expected: "source_not_reviewed",
+      mutate: (finding, inputs) => {
+        const staged = inputs.get(inputFile)!;
+        inputs.set(inputFile, {
+          ...staged,
+          references: [{ ...staged.references[0]!, mode: "100755" }],
+        });
+        return [finding];
+      },
+    },
+    {
+      name: "wrong role",
+      expected: "source_not_reviewed",
+      mutate: (finding, inputs) => {
+        const staged = inputs.get(inputFile)!;
+        inputs.set(inputFile, {
+          ...staged,
+          references: [{ ...staged.references[0]!, role: "index" }],
+        });
+        return [finding];
+      },
+    },
+    {
+      name: "mixed authorized and unauthorized references",
+      expected: "source_not_reviewed",
+      mutate: (finding, inputs) => {
+        const staged = inputs.get(inputFile)!;
+        inputs.set(inputFile, {
+          ...staged,
+          references: [...staged.references, { ...staged.references[0]!, source: "other.test.ts" }],
+        });
+        return [finding];
+      },
+    },
+    {
+      name: "wrong metadata",
+      expected: "metadata_mismatch",
+      mutate: (finding) => [{ ...finding, SecretParts: { host: "mismatch" } }],
+    },
+    {
+      name: "duplicate",
+      expected: "duplicate_finding",
+      mutate: (finding) => [finding, { ...finding }],
+    },
+    {
+      name: "mixed unknown",
+      expected: "literal_not_reviewed",
+      mutate: (finding) => [finding, { ...finding, Raw: "unknown", RawV2: "unknown" }],
+    },
+  ];
+  for (const scenario of cases) {
+    const fixture = exactFixture([exactCase("URI", "PLAIN", "base")]);
+    const finding = structuredClone(fixture.findings[0]!);
+    const inputs = new Map(fixture.inputs);
+    const policy = [...fixture.policy];
+    const result = classifyExact(scenario.mutate(finding, inputs, policy), inputs, policy);
+    assert.equal(result.kind, "refused", scenario.name);
+    if (result.kind === "refused" && result.diagnostic.kind === "unclassified_finding")
+      assert.equal(result.diagnostic.reason, scenario.expected, scenario.name);
+  }
+});
+
+test("exact detector metadata contracts reject malformed MongoDB and Postgres findings", () => {
+  const cases: Array<{
+    detector: "MongoDB" | "Postgres";
+    name: string;
+    mutate: (finding: Record<string, unknown>, policy: ReviewedAttribution[]) => void;
+  }> = [
+    {
+      detector: "MongoDB",
+      name: "nonempty RawV2",
+      mutate: (finding, policy) => {
+        finding.RawV2 = String(finding.Raw);
+        const row = policy[0]!;
+        policy[0] = [
+          ...row.slice(0, 5),
+          createHash("sha256").update(String(finding.RawV2)).digest("hex"),
+          ...row.slice(6),
+        ] as ReviewedAttribution;
+      },
+    },
+    {
+      detector: "MongoDB",
+      name: "wrong key",
+      mutate: (finding) => {
+        finding.SecretParts = { key: `${finding.Raw}changed` };
+      },
+    },
+    {
+      detector: "MongoDB",
+      name: "wrong ExtraData shape",
+      mutate: (finding) => {
+        finding.ExtraData = {
+          ...(finding.ExtraData as Record<string, string>),
+          unexpected: "value",
+        };
+      },
+    },
+    {
+      detector: "Postgres",
+      name: "RawV2 differs",
+      mutate: (finding, policy) => {
+        finding.RawV2 = `${finding.Raw}changed`;
+        const row = policy[0]!;
+        policy[0] = [
+          ...row.slice(0, 5),
+          createHash("sha256").update(String(finding.RawV2)).digest("hex"),
+          ...row.slice(6),
+        ] as ReviewedAttribution;
+      },
+    },
+    {
+      detector: "Postgres",
+      name: "wrong connection string",
+      mutate: (finding) => {
+        finding.SecretParts = { connection_string: `${finding.Raw}changed` };
+      },
+    },
+    {
+      detector: "Postgres",
+      name: "wrong ExtraData shape",
+      mutate: (finding) => {
+        finding.ExtraData = {
+          ...(finding.ExtraData as Record<string, string>),
+          unexpected: "value",
+        };
+      },
+    },
+  ];
+  for (const testCase of cases) {
+    const fixture = exactFixture([exactCase(testCase.detector, "PLAIN", "base")]);
+    const finding = structuredClone(fixture.findings[0]!);
+    const policy = [...fixture.policy];
+    testCase.mutate(finding, policy);
+    const result = classifyExact([finding], fixture.inputs, policy);
+    assert.equal(result.kind, "refused", testCase.name);
+    if (result.kind === "refused" && result.diagnostic.kind === "unclassified_finding")
+      assert.equal(result.diagnostic.reason, "metadata_mismatch", testCase.name);
+  }
+});
 
 for (const scenarioName of [
   "reviewed fixture",
@@ -1363,8 +1860,13 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
                   createHash("sha256").update(files[0]!).digest("hex"),
                 );
                 assert.equal(diagnostic.material.references[0].mode, "100644");
+                assert.equal(
+                  diagnostic.material.references[0].role,
+                  diagnostic.material.references[0].revision === baseSha ? "base" : "head",
+                );
               } else if (kind === "worktree") {
                 assert.equal(diagnostic.material.references[0].revision, headSha);
+                assert.equal(diagnostic.material.references[0].role, "worktree");
                 assert.equal(
                   diagnostic.material.references[0].pathSha256,
                   createHash("sha256").update(files[0]!).digest("hex"),

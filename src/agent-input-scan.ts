@@ -26,6 +26,7 @@ import {
   type ScanInputOrigin,
   type ScanRefusalDiagnostic,
   type ScanSourceReference,
+  type ScanSourceRole,
   type StagedScanInput,
 } from "./agent-input-scan-fixtures.js";
 
@@ -476,7 +477,14 @@ export function scanAgentInput(options: {
             if (oid !== entry.oid)
               stage(bytes, {
                 kind: "worktree",
-                references: [{ source: entry.path, mode: entry.mode, revision: source.headSha }],
+                references: [
+                  {
+                    source: entry.path,
+                    mode: entry.mode,
+                    revision: source.headSha,
+                    role: "worktree",
+                  },
+                ],
               });
           }
         };
@@ -487,9 +495,16 @@ export function scanAgentInput(options: {
         source.kind === "snapshot"
           ? [mergeBase.sha, source.headSha, source.indexTreeSha, source.treeSha]
           : [mergeBase.sha, source.headSha];
+      const endpointRoles =
+        source.kind === "snapshot"
+          ? (["base", "head", "index", "tree"] as const)
+          : (["base", "head"] as const);
       for (let endpoint = 1; endpoint < endpoints.length; endpoint++) {
         const from = endpoints[endpoint - 1]!;
         const to = endpoints[endpoint]!;
+        const fromRole = endpointRoles[endpoint - 1];
+        const toRole = endpointRoles[endpoint];
+        if (!fromRole || !toRole) throw new AgentInputScanError("incomplete_source");
         if (!OBJECT_ID.test(to)) throw new AgentInputScanError("incomplete_source");
         const args = [
           "diff",
@@ -519,17 +534,27 @@ export function scanAgentInput(options: {
           if (!match) throw new AgentInputScanError("incomplete_source");
           if (source.kind === "committed")
             currentFiles.push({ path, mode: match[2]!, oid: match[4]! });
-          for (const [mode, oid, revision] of [
-            [match[1]!, match[3]!, from],
-            [match[2]!, match[4]!, to],
-          ]) {
+          const changedReferences: readonly [string, string, string, ScanSourceRole][] = [
+            [match[1]!, match[3]!, from, fromRole],
+            [match[2]!, match[4]!, to, toRole],
+          ];
+          for (const [mode, oid, revision, role] of changedReferences) {
             if (mode === "000000") continue;
             if (!["100644", "100755", "120000"].includes(mode!))
               throw new AgentInputScanError("unsupported_content");
             if (!OBJECT_ID.test(oid!)) throw new AgentInputScanError("incomplete_source");
             // An OID identifies bytes, not each scanned endpoint's path/mode eligibility.
             const references = blobs.get(oid!) ?? [];
-            references.push({ source: path, mode: mode!, revision: revision! });
+            if (
+              !references.some(
+                (reference) =>
+                  reference.source === path &&
+                  reference.mode === mode &&
+                  reference.revision === revision &&
+                  reference.role === role,
+              )
+            )
+              references.push({ source: path, mode: mode!, revision: revision!, role });
             blobs.set(oid!, references);
           }
         }
