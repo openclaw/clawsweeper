@@ -157,6 +157,17 @@ export function createReportHelpers(dependencies: CreateReportHelpersDependencie
         if (/^\*\*[^*\n]+\*\*:?\s*$/.test(trimmed)) {
           return `${containerPrefix}${content.replace("**", "\\*\\*")}`;
         }
+        // "- **[P0] title:** `file:1`" and "- **[high] title:**" are the review-finding
+        // and security-concern heading grammar the report re-parser trusts; escaping the
+        // bold opener keeps heading-shaped prose from becoming a finding on re-parse.
+        if (/^\*\*\[[^\]\n]+\] [^\n]*:\*\*/.test(trimmed)) {
+          return `${containerPrefix}${content.replace("**", "\\*\\*")}`;
+        }
+        // "- body:", "- late:", and "- confidence:" list items are finding continuation
+        // lines where the last occurrence wins on re-parse; &#58; renders as a colon.
+        if (/-[ \t]+$/.test(containerPrefix) && /^(?:body|late|confidence):/.test(trimmed)) {
+          return `${containerPrefix}${content.replace(":", "&#58;")}`;
+        }
         if (/^(?:```|~~~)/.test(trimmed)) {
           return `${containerPrefix}${content.replace(/[`~]/, "\\$&")}`;
         }
