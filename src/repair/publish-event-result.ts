@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
+import { requiredRawEnv as envValue } from "../required-env.js";
 import { errorFingerprint } from "./error-fingerprint.js";
 import {
   applyEventSnapshot,
@@ -836,12 +837,6 @@ function validateTargetRepo(targetRepo: string): void {
 
 function validateItemNumber(itemNumber: string): void {
   if (!/^[0-9]+$/.test(itemNumber)) throw new Error(`Invalid item number: ${itemNumber}`);
-}
-
-function envValue(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`${name} is required`);
-  return value;
 }
 
 function runClawsweeper(options: EventOptions, args: readonly string[]): void {

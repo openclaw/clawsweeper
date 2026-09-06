@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { requiredRawEnv as env } from "../dist/required-env.js";
 import {
   appendLegacyAvoidedGithubEgressMember,
   recordGithubEgressMember,
@@ -695,12 +696,6 @@ function positiveInteger(value, fallback) {
   if (!Number.isSafeInteger(parsed) || parsed < 1)
     throw new Error("value must be a positive integer");
   return parsed;
-}
-
-function env(name) {
-  const value = process.env[name];
-  if (!value) throw new Error(`${name} is required`);
-  return value;
 }
 
 export function run(command, args, options = {}) {

@@ -3,3 +3,9 @@ export function requiredEnv(name: string, env: NodeJS.ProcessEnv = process.env):
   if (!value) throw new Error(`${name} is required`);
   return value;
 }
+
+export function requiredRawEnv(name: string, env: NodeJS.ProcessEnv = process.env): string {
+  const value = env[name];
+  if (!value) throw new Error(`${name} is required`);
+  return value;
+}

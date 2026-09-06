@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
+import { requiredEnv as env } from "../required-env.js";
 import { ExactReviewBatchQueueClient } from "./exact-review-batch-queue-client.js";
 
 const apply = process.argv.includes("--apply");
@@ -44,11 +45,5 @@ function integerArg(name: string, fallback: number, minimum: number, maximum: nu
   if (!Number.isInteger(value) || value < minimum || value > maximum) {
     throw new Error(`${name} must be an integer from ${minimum} to ${maximum}`);
   }
-  return value;
-}
-
-function env(name: string): string {
-  const value = process.env[name]?.trim();
-  if (!value) throw new Error(`${name} is required`);
   return value;
 }

@@ -27,6 +27,7 @@ import { postDirectPublicationResult } from "./exact-review-direct-publication.j
 import { failureFingerprint } from "./error-fingerprint.js";
 import { StateWriterTelemetryRecorder } from "./state-writer-telemetry-recorder.js";
 import { normalizeRepo, slugForRepo } from "../repository-profiles.js";
+import { requiredEnv as env } from "../required-env.js";
 import type { StateWriterOperation } from "../state-writer-telemetry.js";
 import {
   validatePreparedStateMutationPlans,
@@ -1261,12 +1262,6 @@ function output(name: string, value: string) {
   const path = process.env.GITHUB_OUTPUT;
   if (path) writeFileSync(path, `${name}=${value}\n`, { encoding: "utf8", flag: "a" });
   else console.log(`${name}=${value}`);
-}
-
-function env(name: string): string {
-  const value = process.env[name]?.trim();
-  if (!value) throw new Error(`${name} is required`);
-  return value;
 }
 
 function optionalDispatchTelemetry() {
