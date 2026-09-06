@@ -800,6 +800,218 @@ function classifyExact(
   );
 }
 
+function classifyWithProductionPolicy(
+  findings: readonly Record<string, unknown>[],
+  inputs: ReadonlyMap<string, StagedScanInput>,
+) {
+  return classifyReviewedFixtureScan(
+    183,
+    Buffer.from(`${findings.map((finding) => JSON.stringify(finding)).join("\n")}\n`),
+    Buffer.from(
+      `${JSON.stringify({
+        level: "info-0",
+        logger: "trufflehog",
+        msg: "finished scanning",
+        trufflehog_version: "3.97.1",
+        chunks: 1,
+        bytes: 1,
+        verified_secrets: 0,
+        unverified_secrets: findings.length,
+      })}\n`,
+    ),
+    inputs,
+  );
+}
+
+function crabboxPostgresDocsFixture() {
+  const raw = ["postgresql://crabbox", ":password@db.example.com", ":5432"].join("");
+  const sourceUri = [
+    "postgresql://crabbox",
+    ":password@db.example.com/crabbox",
+    "?sslmode=verify-full&sslrootcert=/run/secrets/postgres-ca.pem",
+  ].join("");
+  const line = ["DATABASE_URL='", sourceUri, "' \\"].join("");
+  const inputs = new Map<string, StagedScanInput>();
+  const blobs = [
+    {
+      id: "4fa440e5879379b16bcb570cc0adc46439f075fd",
+      revision: "b".repeat(40),
+      role: "head",
+    },
+    {
+      id: "75f9bd02e4948b6b214997ab7e3878718740b4d8",
+      revision: "a".repeat(40),
+      role: "base",
+    },
+  ] as const;
+  for (const blob of blobs) {
+    const file = `/private/scanner/${blob.id}`;
+    inputs.set(file, {
+      kind: "blob",
+      id: blob.id,
+      bytes: Buffer.from(`${"\n".repeat(352)}${line}\n`),
+      references: [
+        {
+          source: "docs/operations.md",
+          mode: "100644",
+          revision: blob.revision,
+          role: blob.role,
+        },
+      ],
+    });
+  }
+  const findings = blobs.flatMap((blob) =>
+    (["PLAIN", "HTML"] as const).map((decoder) => ({
+      SourceType: 15,
+      DetectorType: 968,
+      DetectorName: "Postgres",
+      DecoderName: decoder,
+      Verified: false,
+      VerificationError: "lookup db.example.com: no such host",
+      Raw: raw,
+      RawV2: raw,
+      SourceMetadata: {
+        Data: { Filesystem: { file: `/private/scanner/${blob.id}`, line: 353 } },
+      },
+      SecretParts: { connection_string: raw },
+      ExtraData: {
+        database: "crabbox",
+        host: "db.example.com:5432",
+        sslmode: "verify-full",
+        username: "crabbox",
+      },
+      StructuredData: null,
+    })),
+  );
+  return { findings, inputs, raw, line };
+}
+
+test("Crabbox Postgres docs attribution accepts only the observed committed variants", () => {
+  const accepted = crabboxPostgresDocsFixture();
+  assert.equal(
+    createHash("sha256").update(accepted.raw).digest("hex"),
+    "b296b6d2d18690f50a8088d03ce813c6147aaf1642e9f774a88b7c10b4c1948b",
+  );
+  assert.equal(
+    createHash("sha256").update(accepted.line).digest("hex"),
+    "222f928b39fd053a8a3b088b53f703bccbb7d3cd58ede6ae974e985cae4d6406",
+  );
+  for (let mask = 1; mask < 1 << accepted.findings.length; mask++) {
+    const subset = accepted.findings.filter((_, index) => mask & (1 << index));
+    assert.equal(classifyWithProductionPolicy(subset, accepted.inputs).kind, "classified");
+    assert.equal(
+      classifyWithProductionPolicy([...subset].reverse(), accepted.inputs).kind,
+      "classified",
+    );
+  }
+
+  const firstFile = String(
+    (accepted.findings[0]!.SourceMetadata as { Data: { Filesystem: { file: string } } }).Data
+      .Filesystem.file,
+  );
+  const cases: Array<{
+    name: string;
+    expected: string;
+    mutate: (findings: Record<string, unknown>[], inputs: Map<string, StagedScanInput>) => void;
+  }> = [
+    {
+      name: "value",
+      expected: "finding_not_reviewed",
+      mutate: (findings) => {
+        findings[0]!.Raw = `${findings[0]!.Raw}changed`;
+        findings[0]!.RawV2 = findings[0]!.Raw;
+      },
+    },
+    {
+      name: "line",
+      expected: "literal_mismatch",
+      mutate: (_findings, inputs) => {
+        const staged = inputs.get(firstFile)!;
+        inputs.set(firstFile, {
+          ...staged,
+          bytes: Buffer.from(`${staged.bytes!.toString().trimEnd()} # changed\n`),
+        });
+      },
+    },
+    {
+      name: "path",
+      expected: "source_not_reviewed",
+      mutate: (_findings, inputs) => {
+        const staged = inputs.get(firstFile)!;
+        inputs.set(firstFile, {
+          ...staged,
+          references: [{ ...staged.references[0]!, source: "docs/infrastructure.md" }],
+        });
+      },
+    },
+    {
+      name: "mode",
+      expected: "source_not_reviewed",
+      mutate: (_findings, inputs) => {
+        const staged = inputs.get(firstFile)!;
+        inputs.set(firstFile, {
+          ...staged,
+          references: [{ ...staged.references[0]!, mode: "100755" }],
+        });
+      },
+    },
+    {
+      name: "detector",
+      expected: "finding_not_reviewed",
+      mutate: (findings) => {
+        findings[0]!.DetectorType = 895;
+        findings[0]!.DetectorName = "MongoDB";
+      },
+    },
+    {
+      name: "decoder",
+      expected: "finding_not_reviewed",
+      mutate: (findings) => {
+        findings[0]!.DecoderName = "ESCAPED_UNICODE";
+      },
+    },
+    ...(["index", "tree", "worktree"] as const).map((role) => ({
+      name: `${role} role`,
+      expected: "source_not_reviewed",
+      mutate: (_findings: Record<string, unknown>[], inputs: Map<string, StagedScanInput>) => {
+        const staged = inputs.get(firstFile)!;
+        inputs.set(firstFile, {
+          ...staged,
+          references: [{ ...staged.references[0]!, role }],
+        });
+      },
+    })),
+    {
+      name: "duplicate",
+      expected: "duplicate_finding",
+      mutate: (findings) => {
+        findings.splice(1, findings.length - 1, structuredClone(findings[0]!));
+      },
+    },
+    {
+      name: "mixed unknown",
+      expected: "finding_not_reviewed",
+      mutate: (findings) => {
+        findings.push({
+          ...structuredClone(findings[0]!),
+          Raw: "unknown",
+          RawV2: "unknown",
+        });
+      },
+    },
+  ];
+  for (const scenario of cases) {
+    const fixture = crabboxPostgresDocsFixture();
+    const findings = structuredClone(fixture.findings) as Record<string, unknown>[];
+    const inputs = new Map(fixture.inputs);
+    scenario.mutate(findings, inputs);
+    const result = classifyWithProductionPolicy(findings, inputs);
+    assert.equal(result.kind, "refused", scenario.name);
+    if (result.kind === "refused" && result.diagnostic.kind === "unclassified_finding")
+      assert.equal(result.diagnostic.reason, scenario.expected, scenario.name);
+  }
+});
+
 test("exact reviewed attributions accept emitted detector subsets in any order", () => {
   const cases = (["URI", "MongoDB", "Postgres"] as const).flatMap((detector) =>
     (["PLAIN", "ESCAPED_UNICODE"] as const).map((decoder) => exactCase(detector, decoder)),

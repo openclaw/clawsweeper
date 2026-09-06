@@ -623,16 +623,19 @@ and win cross-decoder deduplication. Those entries still require the literal in
 its exact original source line; encoded-only content remains blocking.
 
 The OpenClaw [logging redaction fixtures](https://github.com/openclaw/openclaw/blob/fe0367a07a23660ea35007ac69bdb8f54309fc21/src/logging/redact.test.ts)
-use a separate flat attribution table without changing the legacy URI policy
-above. Each row binds the exact detector ID and name, native `PLAIN` or
-`ESCAPED_UNICODE` decoder, `Raw`, `RawV2`, and complete source-line SHA-256
-digests, path, and mode. These exact attribution rows are role-neutral; every
-logical staged reference must independently match the row and have a committed
-`base` or `head` role. URI findings require one literal `RawV2` witness
-and derived host, username, and password fields. MongoDB and Postgres findings
-bind the scanner-reported line and their exact native metadata shape. Any emitted
-subset and order may qualify; duplicate exact findings, unknown variants, lossy
-decoder buckets, or an unqualified deduplicated blob reference refuse admission.
+and the reviewed Crabbox PostgreSQL operations example use a separate flat
+attribution table without changing the legacy URI policy above. Each row binds
+the exact detector ID and name, observed native decoder, `Raw`, `RawV2`, and
+complete source-line SHA-256 digests, path, and mode. The logging rows permit
+only their observed `PLAIN` or `ESCAPED_UNICODE` variants; the Crabbox
+documentation row permits only its observed `PLAIN` or `HTML` variants. These
+exact attribution rows are role-neutral; every logical staged reference must
+independently match the row and have a committed `base` or `head` role. URI
+findings require one literal `RawV2` witness and derived host, username, and
+password fields. MongoDB and Postgres findings bind the scanner-reported line
+and their exact native metadata shape. Any emitted subset and order may qualify;
+duplicate exact findings, unknown variants, lossy decoder buckets, or an
+unqualified deduplicated blob reference refuse admission.
 
 One source path may contain multiple independently reviewed fixtures; each
 digest/path/mode tuple must match exactly, so source membership alone never

@@ -14,7 +14,7 @@ export type ScanSourceRole = "base" | "head" | "index" | "tree" | "worktree";
 export type ReviewedAttribution = readonly [
   detectorType: 17 | 895 | 968,
   detectorName: "URI" | "MongoDB" | "Postgres",
-  decoder: "PLAIN" | "ESCAPED_UNICODE",
+  decoder: "PLAIN" | "HTML" | "ESCAPED_UNICODE",
   rawSha256: string,
   rawV2Sha256: string,
   lineSha256: string,
@@ -169,6 +169,29 @@ const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
   },
 ];
 
+const CRABBOX_POSTGRES_DOC_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  [
+    968,
+    "Postgres",
+    "HTML",
+    "b296b6d2d18690f50a8088d03ce813c6147aaf1642e9f774a88b7c10b4c1948b",
+    "b296b6d2d18690f50a8088d03ce813c6147aaf1642e9f774a88b7c10b4c1948b",
+    "222f928b39fd053a8a3b088b53f703bccbb7d3cd58ede6ae974e985cae4d6406",
+    "docs/operations.md",
+    "100644",
+  ],
+  [
+    968,
+    "Postgres",
+    "PLAIN",
+    "b296b6d2d18690f50a8088d03ce813c6147aaf1642e9f774a88b7c10b4c1948b",
+    "b296b6d2d18690f50a8088d03ce813c6147aaf1642e9f774a88b7c10b4c1948b",
+    "222f928b39fd053a8a3b088b53f703bccbb7d3cd58ede6ae974e985cae4d6406",
+    "docs/operations.md",
+    "100644",
+  ],
+];
+
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
   [17, "URI", "ESCAPED_UNICODE", "31ff9f3ec446cbcc27e6fc08f3cd96b5d95d8b436b4144f3a098d7c524a863f7", "0d9e27039ed24044fe06ab5145d7b04569ced32d3ff6fe8eb9acf04a75663919", "47171b920ebd0800ac107a92ad80b7279677f0096fad5a367f82fe3b1955c790", "src/logging/redact.test.ts", "100644"],
@@ -189,6 +212,7 @@ const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
   [968, "Postgres", "PLAIN", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "252d197820142c40bc8701a8b1400f28a3224f305f37fd65cd2e6bfbe48d9fb1", "src/logging/redact.test.ts", "100644"],
   [968, "Postgres", "PLAIN", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "6a9d1339c87f11af0ba4e7ef89a77ea8eb8e7f7ac48fdec0abb19d9138821d18", "src/logging/redact.test.ts", "100644"],
   [968, "Postgres", "PLAIN", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "2020783f7b14c74d2d6960efca4ca82727980494ddef883f15ae9980141662ec", "src/logging/redact.test.ts", "100644"],
+  ...CRABBOX_POSTGRES_DOC_ATTRIBUTIONS,
 ];
 
 const sha256Pattern = /^[0-9a-f]{64}$/;
@@ -201,9 +225,15 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
     if (
       row.length !== 8 ||
       detectorNames[detectorType] !== detectorName ||
-      (decoder !== "PLAIN" && decoder !== "ESCAPED_UNICODE") ||
       ![raw, rawV2, line].every((digest) => sha256Pattern.test(digest)) ||
-      source !== "src/logging/redact.test.ts" ||
+      !(
+        (source === "src/logging/redact.test.ts" &&
+          (decoder === "PLAIN" || decoder === "ESCAPED_UNICODE")) ||
+        (source === "docs/operations.md" &&
+          detectorType === 968 &&
+          detectorName === "Postgres" &&
+          (decoder === "PLAIN" || decoder === "HTML"))
+      ) ||
       mode !== "100644"
     ) {
       throw new Error("invalid reviewed attribution policy");
