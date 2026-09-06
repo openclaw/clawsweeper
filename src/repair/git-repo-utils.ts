@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { SpawnSyncReturns } from "node:child_process";
+import { execFileSync, type SpawnSyncReturns } from "node:child_process";
 import { runCommandResult } from "./command-runner.js";
 import { uniqueStrings } from "./validation-command-utils.js";
 
@@ -33,6 +33,14 @@ export type RebaseOntoBaseResult = {
 
 export function currentHead(targetDir: string): string {
   return gitOutput(["rev-parse", "HEAD"], { targetDir }).trim();
+}
+
+export function currentMainHeadSha(cwd: string): string {
+  return execFileSync("git", ["rev-parse", "origin/main"], {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
 }
 
 export function runGitCommand(
