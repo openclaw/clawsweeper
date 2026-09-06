@@ -253,7 +253,7 @@ jobs:
                 '{
                   delivery_id: $delivery_id,
                   decision: ($decision + {
-                    sourceAction: (if $source_action == "failed_review_shard_recovery" then $source_action else "source_drift_requeue" end),
+                    sourceAction: (if $source_action == "failed_review_shard_recovery" or $source_action == "command_proof_result" then $source_action else "source_drift_requeue" end),
                     supersedesInProgress: true
                   })
                 }')"

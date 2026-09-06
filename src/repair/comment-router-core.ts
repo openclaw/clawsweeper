@@ -7,6 +7,7 @@ import {
 } from "./comment-command-text.js";
 import { renderJobIntentFrontmatter } from "./job-intent.js";
 import { compactText } from "./text-utils.js";
+import { renderProofCommandAdmission } from "./proof-command.js";
 import {
   AUTOMERGE_LABEL,
   AUTOFIX_LABEL,
@@ -1777,6 +1778,9 @@ export function parseCommand(body: string) {
   const command = commandFromText(commandLine.trigger, commandLine.commandText);
   if (!commandLine.supportsContinuation) return command;
   const rest = commandLine.rest;
+  if (command.intent === "request_proof" && rest) {
+    command.proof_command_text += "\n" + rest;
+  }
   if (command.intent !== "freeform_assist") {
     if (command.intent === "implement_issue" && rest) {
       return commandFromText(
@@ -2396,6 +2400,9 @@ export function renderResponse(command: LooseRecord, dispatched: LooseRecord) {
     }),
     commandReplyBadge(command, dispatched),
   ].join("\n");
+  if (command.intent === "request_proof" && command.proof_admission) {
+    return [marker, renderProofCommandAdmission(command.proof_admission)].join("\n");
+  }
   if (command.intent === "help") {
     return [
       marker,
@@ -2758,6 +2765,7 @@ function commandFromText(trigger: JsonValue, value: JsonValue) {
   const parsed: LooseRecord = { trigger, command: parsedCommand, intent };
   if (intent === "autoclose") parsed.autoclose_message = autocloseReasonFromCommand(rawCommand);
   if (intent === "freeform_assist") parsed.freeform_prompt = assistPromptFromCommand(rawCommand);
+  if (intent === "request_proof") parsed.proof_command_text = rawText;
   if (intent === "re_review") {
     const prompt = reviewPromptFromClawSweeperCommandText(rawText);
     if (prompt) parsed.freeform_prompt = prompt;
@@ -2854,6 +2862,7 @@ function issueImplementationRestPrefix(command: LooseRecord) {
 
 function normalizeIntent(command: LooseRecord) {
   if (!command || command === "status") return "status";
+  if (command === "proof" || command.startsWith("proof ")) return "request_proof";
   if (["help", "?"].includes(command)) return "help";
   if (["explain", "why"].includes(command)) return "explain";
   if (

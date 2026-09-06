@@ -1685,9 +1685,12 @@ test("direct lifecycle requeue becomes a fresh fenced source-drift revision", as
 async function savedDirectRequeueFixture(
   receipt: "accepted" | "deduped" | "superseded" = "accepted",
   lifecycle = true,
+  decisionOverrides: Partial<ExactReviewQueueItem["decision"]> = {},
 ) {
   const storage = new MemoryDurableStorage();
   const leased = leasedExactReviewQueueItem(705, "7050");
+  Object.assign(leased.decision, decisionOverrides);
+  Object.assign(leased.leaseDecision, decisionOverrides);
   leased.revision = 4;
   leased.leaseRevision = 4;
   leased.claimGeneration = 2;
@@ -1806,6 +1809,154 @@ async function savedDirectRequeueFixture(
   };
   return { storage, queue, leased, post, readState, projection, counters, complete, terminalRun };
 }
+
+test("all exact-review recovery paths preserve proof authority and the complete producer context", async (t) => {
+  for (const sourceAction of [
+    "command_proof_result",
+    "failed_review_shard_recovery",
+    "opened",
+    "command_proof_result_extra",
+  ]) {
+    const producerDecision: ExactReviewQueueItem["decision"] = {
+      targetRepo: "openclaw/openclaw",
+      targetBranch: "main",
+      itemNumber: 705,
+      itemKind: "pull_request",
+      sourceEvent: "pull_request",
+      sourceAction,
+      supersedesInProgress: false,
+      sourceHeadSha: "a".repeat(40),
+      sourceBaseSha: "c".repeat(40),
+      sourceDeliveryId: "command-proof-request",
+      sourceCommentId: 200,
+      sourceCommentUpdatedAt: "2026-09-04T10:00:00Z",
+      commandBodyDigest: "e".repeat(64),
+      commandOrigin: "comment_router",
+      sourceCommentVerified: true,
+      commandStatusMarker:
+        "<!-- clawsweeper-command-status:705:request_proof:" + "d".repeat(64) + " -->",
+      additionalPrompt:
+        "<!-- command-proof-assessment-v1 head=" +
+        "a".repeat(40) +
+        " body=" +
+        "b".repeat(64) +
+        " base=" +
+        createHash("sha256").update("main").digest("hex") +
+        " base_sha=" +
+        "c".repeat(40) +
+        " request=" +
+        "d".repeat(64) +
+        " scenario=web-ui-chat-proof -->\nVerified request-bound observer evidence; preserve this entire context.",
+    };
+    const preserved =
+      sourceAction === "command_proof_result" || sourceAction === "failed_review_shard_recovery";
+    const direct = await savedDirectRequeueFixture("accepted", true, producerDecision);
+    t.after(() => direct.storage.sql.close());
+    assert.deepEqual(await (await direct.post("complete", direct.complete)).json(), {
+      ok: true,
+      requeued: true,
+    });
+    const directItem = (await direct.readState()).items[direct.leased.key]!;
+    assert.deepEqual(directItem.decision, {
+      ...producerDecision,
+      sourceAction: preserved ? sourceAction : "source_drift_requeue",
+      supersedesInProgress: true,
+    });
+    assert.equal(directItem.leaseDecision, undefined);
+    for (const path of ["artifact-refresh", "dead-letter"]) {
+      const storage = new MemoryDurableStorage();
+      t.after(() => storage.sql.close());
+      const item = leasedExactReviewPublicationItem(705, "7050") as ExactReviewQueueItem;
+      Object.assign(item.decision, {
+        itemKind: "pull_request",
+        sourceEvent: "pull_request",
+        sourceHeadSha: producerDecision.sourceHeadSha,
+        sourceBaseSha: producerDecision.sourceBaseSha,
+      });
+      item.decision.publication!.producerDecision = { ...producerDecision };
+      item.leaseDecision = { ...item.decision };
+      item.publicationFailureAttempts = 2;
+      await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+      // A real command publication has admission/claim provenance. Without it,
+      // terminal acknowledgement must retain the original key and recovery waits.
+      const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+      const identity = {
+        canonicalTargetKey: "openclaw/openclaw#705",
+        fenceKey: item.key,
+        revision: item.leaseRevision!,
+      };
+      lifecycle.recordAdmission({
+        ...identity,
+        deliveryId: "fixture-publication-" + path,
+        sourceDeliveryId: producerDecision.sourceDeliveryId,
+        sourceAction,
+        commandOriginated: true,
+        statusMarker: producerDecision.commandStatusMarker!,
+        statusCommentId: null,
+        observedAt: Date.now(),
+      });
+      lifecycle.recordClaim({
+        ...identity,
+        claimGeneration: item.claimGeneration!,
+        runId: item.claimedRunId!,
+        runAttempt: item.claimedRunAttempt!,
+        observedAt: Date.now(),
+      });
+      const queue = publicPublicationQueue(storage);
+      const post = (route: string, body: unknown) =>
+        queue.fetch(
+          new Request("https://queue/" + route, { method: "POST", body: JSON.stringify(body) }),
+        );
+      const completion = await post("complete", {
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        claim_generation: item.claimGeneration,
+        run_id: item.claimedRunId,
+        run_attempt: item.claimedRunAttempt,
+        outcome: path === "artifact-refresh" ? "success" : "failure",
+        completion_kind: path === "artifact-refresh" ? "refresh_required" : "permanent_failure",
+        reason_code: "invalid_artifact",
+      });
+      assert.deepEqual(
+        await completion.json(),
+        path === "dead-letter"
+          ? { ok: true, requeued: false, terminal_finalization: true }
+          : { ok: true, requeued: false },
+      );
+      if (path === "dead-letter") {
+        const listed = await (await post("dead-letters/list", { limit: 10 })).json();
+        assert.equal(listed.dead_letters.length, 1);
+        const recovered = await post("dead-letters/recover-fresh", {
+          ids: [listed.dead_letters[0].dead_letter_id],
+          idempotency_key: "operator:proof-authority:" + sourceAction,
+        });
+        assert.deepEqual(await recovered.json(), {
+          ok: true,
+          recovered: 1,
+          deduped: 0,
+          skipped: 0,
+          unparked: 0,
+        });
+      }
+      const state = (await storage.get("exact-review-queue")) as {
+        items: Record<string, ExactReviewQueueItem>;
+      };
+      assert.equal(state.items[item.key], undefined);
+      const recovered = state.items["openclaw/openclaw#705"]!;
+      assert.equal(recovered.state, "pending");
+      assert.deepEqual(
+        recovered.decision,
+        {
+          ...producerDecision,
+          sourceAction: preserved ? sourceAction : "artifact_retention_recovery",
+          supersedesInProgress: true,
+        },
+        path + ": " + sourceAction,
+      );
+    }
+  }
+});
 
 for (const receipt of ["accepted", "deduped"] as const) {
   for (const delivered of [false, true]) {

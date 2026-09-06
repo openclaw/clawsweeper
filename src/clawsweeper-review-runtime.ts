@@ -56,6 +56,7 @@ import {
   prepareOpenClawCodexSourceForReview,
 } from "./openclaw-codex-source.js";
 import { repositoryProfileFor, type RepositoryProfile } from "./repository-profiles.js";
+import { reviewProofCapabilityFromEnv } from "./review-proof-client.js";
 
 interface ReviewRuntimeDependencies {
   reviewItemPromptPath: string;
@@ -1033,6 +1034,13 @@ ${extra}
         retryable: false,
       });
     }
+    const reviewProof =
+      options.item.kind === "pull_request"
+        ? reviewProofCapabilityFromEnv(
+            options.item.repo,
+            stringOrUndefined(asRecord(pull.head).sha) ?? "",
+          )
+        : undefined;
     const result = runAgentProcess({
       scanSource,
       diagnosticPromptPath: promptPath,
@@ -1060,6 +1068,14 @@ ${extra}
       stderrPath: join(options.workDir, `${options.item.number}.1.codex.stderr.log`),
       stdoutPath: join(options.workDir, `${options.item.number}.1.codex.stdout.log`),
       timeoutMs: remainingMs,
+      ...(reviewProof
+        ? {
+            appServer: {
+              statePath: join(options.workDir, `${options.item.number}.review-thread.json`),
+              reviewProof,
+            },
+          }
+        : {}),
     });
     const dirtyAfter = openclawDirtyStatus(options.openclawDir);
     if (dirtyAfter) {

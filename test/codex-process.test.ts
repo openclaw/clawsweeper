@@ -11,6 +11,8 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test from "node:test";
+import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
 
 import {
   codexProcessCommand,
@@ -20,6 +22,127 @@ import {
 } from "../dist/codex-process.js";
 
 const tmpPrefix = join(tmpdir(), "clawsweeper-codex-process-test-");
+
+test("inline proof returns real HTTP observations to one original app-server turn", async () => {
+  const root = mkdtempSync(tmpPrefix);
+  const script = join(root, "proof-app-server.cjs");
+  const outputPath = join(root, "decision.json");
+  const transcript = join(root, "rpc.jsonl");
+  const server = spawn(
+    process.execPath,
+    [
+      "-e",
+      `
+    const http = require('node:http');
+    const server = http.createServer((req,res) => {
+      let body=''; req.on('data', c => body+=c); req.on('end', () => {
+        const value=JSON.parse(body);
+        if (value.lease.leaseId === 'test-lease' && value.operation === 'capabilities') { res.setHeader('content-type','application/json');res.end(JSON.stringify({ok:true,allowedScenarios:['telegram-bot-e2e-proof']}));return; }
+        if (value.lease.leaseId !== 'test-lease' || value.operation !== 'request') { res.writeHead(409);res.end();return; }
+        res.setHeader('content-type','application/json');
+        res.end(JSON.stringify({state:'completed',expiresAt:Date.now()+20*60000,result:{assertion:'reviewer_must_evaluate',observations:[{text:'Observed help response'}]}}));
+      });
+    });
+    server.listen(0,'127.0.0.1',()=>console.log(server.address().port));
+  `,
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  try {
+    const port = await new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("fixture server did not start")), 5000);
+      const lines = createInterface({ input: server.stdout! });
+      lines.once("line", (line) => {
+        clearTimeout(timer);
+        lines.close();
+        resolve(line);
+      });
+      server.once("error", reject);
+    });
+    writeFileSync(
+      script,
+      `
+      const fs=require('node:fs'), readline=require('node:readline');
+      const send=v=>process.stdout.write(JSON.stringify(v)+'\\n');
+      const plan={claim:'help responds',actions:[{type:'send',atMs:0,text:'/help'}],modelReplies:[],settings:{streaming:'off',nativeCommands:true},maxDurationMs:1000,expectations:['help response']};
+      readline.createInterface({input:process.stdin}).on('line',line=>{
+        const m=JSON.parse(line);fs.appendFileSync(process.env.PROOF_RPC_TRANSCRIPT,line+'\\n');
+        if(m.method==='initialize')send({id:m.id,result:{}});
+        if(m.method==='thread/start')send({id:m.id,result:{thread:{id:'proof-thread'}}});
+        if(m.method==='turn/start'){
+          send({id:m.id,result:{turn:{id:'proof-turn'}}});
+          setTimeout(()=>send({id:'tool-request',method:'item/tool/call',params:{threadId:'proof-thread',turnId:'proof-turn',callId:'proof-call',tool:'request_behavior_proof',arguments:plan}}),20);
+        }
+        if(m.id==='tool-request'){
+          const result=JSON.parse(m.result.contentItems[0].text);
+          if(result.result?.observations?.[0]?.text!=='Observed help response')process.exit(2);
+          send({method:'item/completed',params:{threadId:'proof-thread',turnId:'proof-turn',item:{type:'agentMessage',text:JSON.stringify({decision:'evaluated after observations'})}}});
+          send({method:'turn/completed',params:{threadId:'proof-thread',turn:{id:'proof-turn',status:'completed'}}});
+        }
+      });
+    `,
+    );
+    const bin = join(root, process.platform === "win32" ? "codex.cmd" : "codex");
+    writeFileSync(
+      bin,
+      process.platform === "win32"
+        ? `@echo off\r\nnode "%~dp0proof-app-server.cjs" %*\r\n`
+        : `#!/usr/bin/env node\n${readFileSync(script, "utf8")}`,
+      { mode: 0o755 },
+    );
+    const result = runCodexProcess({
+      args: [
+        "exec",
+        "--cd",
+        root,
+        "--sandbox",
+        "read-only",
+        "--output-last-message",
+        outputPath,
+        "-",
+      ],
+      cwd: root,
+      env: { ...process.env, CODEX_BIN: bin, PROOF_RPC_TRANSCRIPT: transcript },
+      input: "Review using proof if useful.",
+      timeoutMs: 10_000,
+      appServer: {
+        statePath: join(root, "thread.json"),
+        reviewProof: {
+          queueUrl: `http://127.0.0.1:${port}`,
+          lease: {
+            itemKey: "openclaw/openclaw#12",
+            leaseId: "test-lease",
+            leaseRevision: 1,
+            claimGeneration: 1,
+            runId: "100",
+            runAttempt: 1,
+            sourceHeadSha: "a".repeat(40),
+          },
+        },
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.error, undefined);
+    assert.equal(
+      JSON.parse(readFileSync(outputPath, "utf8")).decision,
+      "evaluated after observations",
+    );
+    const messages = readFileSync(transcript, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.equal(messages.filter((m) => m.method === "turn/start").length, 1);
+    assert.equal(messages.filter((m) => m.method === "thread/resume").length, 0);
+    assert.equal(
+      messages.find((m) => m.method === "thread/start").params.dynamicTools[0].name,
+      "request_behavior_proof",
+    );
+    assert.equal(readFileSync(transcript, "utf8").includes("test-lease"), false);
+  } finally {
+    server.kill();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("Codex process resolves command overrides and escaped Windows launchers", () => {
   assert.equal(codexProcessCommand({}), "codex");

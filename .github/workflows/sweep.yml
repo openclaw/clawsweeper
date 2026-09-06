@@ -3330,7 +3330,7 @@ jobs:
             decision: {
               ...decision,
               sourceAction:
-                decision.sourceAction === "failed_review_shard_recovery"
+                ["failed_review_shard_recovery", "command_proof_result"].includes(decision.sourceAction)
                   ? decision.sourceAction
                   : "source_drift_requeue",
               supersedesInProgress: true,

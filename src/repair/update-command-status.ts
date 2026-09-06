@@ -182,7 +182,7 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
   };
 }
 
-async function runCommandStatusUpdate(options: Options) {
+export async function runCommandStatusUpdate(options: Options) {
   let commandError: unknown = null;
   let outcome: CommandStatusUpdateOutcome | null = null;
   let terminalStatusReceipt: TerminalStatusReceipt | undefined;
