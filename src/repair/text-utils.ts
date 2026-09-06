@@ -17,6 +17,15 @@ export function compactText(value: unknown, maxLength: number) {
   return `${text.slice(0, headLength)}${marker}${text.slice(text.length - tailLength)}`;
 }
 
+export function compactCommentText(value: unknown, max: number): string {
+  const text = String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return "";
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max - 1)).trimEnd()}...`;
+}
+
 export function escapeRegExp(value: unknown) {
   return String(value ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

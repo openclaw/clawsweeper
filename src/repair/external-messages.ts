@@ -2,6 +2,7 @@ import { escapeRegExp } from "../clawsweeper-text.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import { randomInt } from "node:crypto";
 import { repairCodexReasoningEffort } from "./process-env.js";
+import { compactCommentText as compactForComment } from "./text-utils.js";
 
 const SIGNATURE = "ClawSweeper 🐠";
 const EVIDENCE_LIMIT = 5;
@@ -381,15 +382,6 @@ function automergeOutcomeActionLines(actions: LooseRecord[], targetPr: JsonValue
     const reason = compactForComment(visibleSelfReference(action?.reason, targetPr), 220);
     return `- \`${name}\` on \`${target}\`: ${status}${reason ? ` - ${reason}` : ""}`;
   });
-}
-
-function compactForComment(value: JsonValue, max: JsonValue) {
-  const text = String(value ?? "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!text) return "";
-  if (text.length <= max) return text;
-  return `${text.slice(0, Math.max(0, max - 1)).trimEnd()}...`;
 }
 
 export function replacementSourceCloseComment({
