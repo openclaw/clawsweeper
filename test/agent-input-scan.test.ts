@@ -655,7 +655,6 @@ interface ExactCase {
   detectorType: 17 | 895 | 968;
   detectorName: ExactDetector;
   decoder: ExactDecoder;
-  role: ScanSourceRole;
   raw: string;
   rawV2: string;
   line: string;
@@ -665,13 +664,9 @@ interface ExactCase {
 
 const exactSource = "src/logging/redact.test.ts";
 
-function exactCase(
-  detectorName: ExactDetector,
-  decoder: ExactDecoder,
-  role: ScanSourceRole,
-): ExactCase {
+function exactCase(detectorName: ExactDetector, decoder: ExactDecoder): ExactCase {
   if (detectorName === "URI") {
-    const uri = new URL(`https://${decoder.toLowerCase()}.${role}.example.invalid/path`);
+    const uri = new URL(`https://${decoder.toLowerCase()}.example.invalid/path`);
     uri.username = "fixture-user";
     uri.password = "fixture-pass";
     const rawV2 = uri.href;
@@ -681,7 +676,6 @@ function exactCase(
       detectorType: 17,
       detectorName,
       decoder,
-      role,
       raw: authority.href.slice(0, -1),
       rawV2,
       line: `const fixture = ${JSON.stringify(rawV2)};`,
@@ -693,20 +687,19 @@ function exactCase(
       extraData: null,
     };
   }
-  const raw = `${detectorName.toLowerCase()}://${decoder.toLowerCase()}.${role}.example.invalid/db`;
+  const raw = `${detectorName.toLowerCase()}://${decoder.toLowerCase()}.example.invalid/db`;
   if (detectorName === "MongoDB") {
     return {
       detectorType: 895,
       detectorName,
       decoder,
-      role,
       raw,
       rawV2: "",
       line: `const fixture = ${JSON.stringify(raw)};`,
       secretParts: { key: raw },
       extraData: {
         database: "db",
-        host: `${decoder.toLowerCase()}.${role}.example.invalid`,
+        host: `${decoder.toLowerCase()}.example.invalid`,
         rotation_guide: "reviewed synthetic guidance",
         username: "fixture-user",
       },
@@ -716,21 +709,23 @@ function exactCase(
     detectorType: 968,
     detectorName,
     decoder,
-    role,
     raw,
     rawV2: raw,
     line: `const fixture = ${JSON.stringify(raw)};`,
     secretParts: { connection_string: raw },
     extraData: {
       database: "db",
-      host: `${decoder.toLowerCase()}.${role}.example.invalid`,
+      host: `${decoder.toLowerCase()}.example.invalid`,
       sslmode: "require",
       username: "fixture-user",
     },
   };
 }
 
-function exactFixture(cases: readonly ExactCase[]) {
+function exactFixture(
+  cases: readonly ExactCase[],
+  roles: readonly (readonly ScanSourceRole[])[] = cases.map(() => ["base"]),
+) {
   const inputs = new Map<string, StagedScanInput>();
   const findings = cases.map((entry, index) => {
     const file = `/private/scanner/${index.toString(16).padStart(40, "0")}`;
@@ -738,14 +733,12 @@ function exactFixture(cases: readonly ExactCase[]) {
       kind: "blob",
       id: index.toString(16).padStart(40, "0"),
       bytes: Buffer.from(`// context\n${entry.line}\n`),
-      references: [
-        {
-          source: exactSource,
-          mode: "100644",
-          revision: entry.role === "base" ? "a".repeat(40) : "b".repeat(40),
-          role: entry.role,
-        },
-      ],
+      references: (roles[index] ?? ["base"]).map((role) => ({
+        source: exactSource,
+        mode: "100644",
+        revision: role === "base" ? "a".repeat(40) : "b".repeat(40),
+        role,
+      })),
     });
     return {
       SourceType: 15,
@@ -762,19 +755,23 @@ function exactFixture(cases: readonly ExactCase[]) {
       StructuredData: null,
     };
   });
-  const policy = cases.map(
-    (entry): ReviewedAttribution => [
-      entry.detectorType,
-      entry.detectorName,
-      entry.decoder,
-      entry.role,
-      createHash("sha256").update(entry.raw).digest("hex"),
-      createHash("sha256").update(entry.rawV2).digest("hex"),
-      createHash("sha256").update(entry.line).digest("hex"),
-      exactSource,
-      "100644",
-    ],
-  );
+  const policy = [
+    ...new Map(
+      cases.map((entry) => {
+        const row: ReviewedAttribution = [
+          entry.detectorType,
+          entry.detectorName,
+          entry.decoder,
+          createHash("sha256").update(entry.raw).digest("hex"),
+          createHash("sha256").update(entry.rawV2).digest("hex"),
+          createHash("sha256").update(entry.line).digest("hex"),
+          exactSource,
+          "100644",
+        ];
+        return [row.join("\0"), row] as const;
+      }),
+    ).values(),
+  ];
   return { findings, inputs, policy };
 }
 
@@ -804,12 +801,13 @@ function classifyExact(
 }
 
 test("exact reviewed attributions accept emitted detector subsets in any order", () => {
-  const cases = (["base", "head"] as const).flatMap((role) =>
-    (["URI", "MongoDB", "Postgres"] as const).flatMap((detector) =>
-      (["PLAIN", "ESCAPED_UNICODE"] as const).map((decoder) => exactCase(detector, decoder, role)),
-    ),
+  const cases = (["URI", "MongoDB", "Postgres"] as const).flatMap((detector) =>
+    (["PLAIN", "ESCAPED_UNICODE"] as const).map((decoder) => exactCase(detector, decoder)),
   );
-  const fixture = exactFixture(cases);
+  const fixture = exactFixture(
+    cases,
+    cases.map(() => ["base", "head"]),
+  );
   const selections = [
     cases.map((_, index) => index),
     cases.map((_, index) => index).reverse(),
@@ -842,8 +840,30 @@ test("exact reviewed attributions accept emitted detector subsets in any order",
   }
 });
 
+test("exact reviewed attributions accept role-neutral tuples from committed references", () => {
+  for (const decoder of ["PLAIN", "ESCAPED_UNICODE"] as const) {
+    const entry = exactCase("URI", decoder);
+    const separate = exactFixture([entry, entry], [["base"], ["head"]]);
+    assert.equal(
+      classifyExact(separate.findings, separate.inputs, separate.policy).kind,
+      "classified",
+    );
+
+    const deduplicated = exactFixture([entry], [["base", "head"]]);
+    const result = classifyExact(deduplicated.findings, deduplicated.inputs, deduplicated.policy);
+    assert.equal(result.kind, "classified");
+    if (result.kind === "classified") {
+      assert.deepEqual(
+        result.notices.flatMap((notice) => notice.findings.map((finding) => finding.role)).sort(),
+        ["base", "head"],
+      );
+    }
+  }
+});
+
 test("exact reviewed attributions reject drift, duplicates, and mixed unknown findings", () => {
-  const base = exactFixture([exactCase("URI", "PLAIN", "base")]);
+  const entry = exactCase("URI", "PLAIN");
+  const base = exactFixture([entry]);
   const valid = base.findings[0]!;
   const inputFile = String(
     (valid.SourceMetadata as { Data: { Filesystem: { file: string } } }).Data.Filesystem.file,
@@ -896,10 +916,9 @@ test("exact reviewed attributions reject drift, duplicates, and mixed unknown fi
           row[0],
           row[1],
           row[2],
-          row[3],
-          row[5],
           row[4],
-          ...row.slice(6),
+          row[3],
+          ...row.slice(5),
         ] as ReviewedAttribution;
         return [finding];
       },
@@ -911,7 +930,7 @@ test("exact reviewed attributions reject drift, duplicates, and mixed unknown fi
         const staged = inputs.get(inputFile)!;
         inputs.set(inputFile, {
           ...staged,
-          bytes: Buffer.from(`// context changed\n${base.policy[0]![5]}\n`),
+          bytes: Buffer.from(`// context\n${entry.line} // changed\n`),
         });
         return [finding];
       },
@@ -941,7 +960,7 @@ test("exact reviewed attributions reject drift, duplicates, and mixed unknown fi
       },
     },
     {
-      name: "wrong role",
+      name: "index reference",
       expected: "source_not_reviewed",
       mutate: (finding, inputs) => {
         const staged = inputs.get(inputFile)!;
@@ -953,13 +972,37 @@ test("exact reviewed attributions reject drift, duplicates, and mixed unknown fi
       },
     },
     {
+      name: "tree reference",
+      expected: "source_not_reviewed",
+      mutate: (finding, inputs) => {
+        const staged = inputs.get(inputFile)!;
+        inputs.set(inputFile, {
+          ...staged,
+          references: [{ ...staged.references[0]!, role: "tree" }],
+        });
+        return [finding];
+      },
+    },
+    {
+      name: "worktree reference",
+      expected: "source_not_reviewed",
+      mutate: (finding, inputs) => {
+        const staged = inputs.get(inputFile)!;
+        inputs.set(inputFile, {
+          ...staged,
+          references: [{ ...staged.references[0]!, role: "worktree" }],
+        });
+        return [finding];
+      },
+    },
+    {
       name: "mixed authorized and unauthorized references",
       expected: "source_not_reviewed",
       mutate: (finding, inputs) => {
         const staged = inputs.get(inputFile)!;
         inputs.set(inputFile, {
           ...staged,
-          references: [...staged.references, { ...staged.references[0]!, source: "other.test.ts" }],
+          references: [...staged.references, { ...staged.references[0]!, role: "index" }],
         });
         return [finding];
       },
@@ -981,7 +1024,7 @@ test("exact reviewed attributions reject drift, duplicates, and mixed unknown fi
     },
   ];
   for (const scenario of cases) {
-    const fixture = exactFixture([exactCase("URI", "PLAIN", "base")]);
+    const fixture = exactFixture([exactCase("URI", "PLAIN")]);
     const finding = structuredClone(fixture.findings[0]!);
     const inputs = new Map(fixture.inputs);
     const policy = [...fixture.policy];
@@ -990,6 +1033,42 @@ test("exact reviewed attributions reject drift, duplicates, and mixed unknown fi
     if (result.kind === "refused" && result.diagnostic.kind === "unclassified_finding")
       assert.equal(result.diagnostic.reason, scenario.expected, scenario.name);
   }
+});
+
+test("exact refusal diagnostics retain the escaped-unicode decoder", () => {
+  const fixture = exactFixture([exactCase("URI", "ESCAPED_UNICODE")], [["index"]]);
+  const result = classifyExact(fixture.findings, fixture.inputs, fixture.policy);
+  assert.equal(result.kind, "refused");
+  if (result.kind === "refused" && result.diagnostic.kind === "unclassified_finding") {
+    assert.equal(result.diagnostic.reason, "source_not_reviewed");
+    assert.equal(result.diagnostic.decoder, "ESCAPED_UNICODE");
+  }
+});
+
+test("exact attribution policy rejects duplicate and malformed rows", () => {
+  const fixture = exactFixture([exactCase("URI", "PLAIN")]);
+  const nativeFailure = classifyReviewedFixtureScan(0, Buffer.alloc(0), Buffer.alloc(0), new Map());
+  assert.deepEqual(nativeFailure, {
+    kind: "refused",
+    reason: "scanner_failed",
+    diagnostic: { kind: "native_contract", reason: "unexpected_exit" },
+  });
+  assert.throws(
+    () =>
+      classifyReviewedFixtureScan(0, Buffer.alloc(0), Buffer.alloc(0), new Map(), [
+        ...fixture.policy,
+        fixture.policy[0]!,
+      ]),
+    /duplicate reviewed attribution policy/,
+  );
+  const row = fixture.policy[0]!;
+  assert.throws(
+    () =>
+      classifyReviewedFixtureScan(0, Buffer.alloc(0), Buffer.alloc(0), new Map(), [
+        [895, row[1], row[2], ...row.slice(3)] as ReviewedAttribution,
+      ]),
+    /invalid reviewed attribution policy/,
+  );
 });
 
 test("exact detector metadata contracts reject malformed MongoDB and Postgres findings", () => {
@@ -1005,9 +1084,9 @@ test("exact detector metadata contracts reject malformed MongoDB and Postgres fi
         finding.RawV2 = String(finding.Raw);
         const row = policy[0]!;
         policy[0] = [
-          ...row.slice(0, 5),
+          ...row.slice(0, 4),
           createHash("sha256").update(String(finding.RawV2)).digest("hex"),
-          ...row.slice(6),
+          ...row.slice(5),
         ] as ReviewedAttribution;
       },
     },
@@ -1035,9 +1114,9 @@ test("exact detector metadata contracts reject malformed MongoDB and Postgres fi
         finding.RawV2 = `${finding.Raw}changed`;
         const row = policy[0]!;
         policy[0] = [
-          ...row.slice(0, 5),
+          ...row.slice(0, 4),
           createHash("sha256").update(String(finding.RawV2)).digest("hex"),
-          ...row.slice(6),
+          ...row.slice(5),
         ] as ReviewedAttribution;
       },
     },
@@ -1060,7 +1139,7 @@ test("exact detector metadata contracts reject malformed MongoDB and Postgres fi
     },
   ];
   for (const testCase of cases) {
-    const fixture = exactFixture([exactCase(testCase.detector, "PLAIN", "base")]);
+    const fixture = exactFixture([exactCase(testCase.detector, "PLAIN")]);
     const finding = structuredClone(fixture.findings[0]!);
     const policy = [...fixture.policy];
     testCase.mutate(finding, policy);

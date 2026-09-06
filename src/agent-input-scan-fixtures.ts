@@ -15,7 +15,6 @@ export type ReviewedAttribution = readonly [
   detectorType: 17 | 895 | 968,
   detectorName: "URI" | "MongoDB" | "Postgres",
   decoder: "PLAIN" | "ESCAPED_UNICODE",
-  role: ScanSourceRole,
   rawSha256: string,
   rawV2Sha256: string,
   lineSha256: string,
@@ -172,41 +171,50 @@ const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
-  [17, "URI", "ESCAPED_UNICODE", "base", "a460200b4a488bc178d0dac30bc5fe027ff86d9c7c94554f5c9d915580bc4239", "839b16fa1dd892daf47ab10d50f7c1957a16ace282fe9e6df67fefc40f7f06ff", "232cce5bf0c7b495e2f008fdc45cbd2bd9afc5394906576e4466411f6841d260", "src/logging/redact.test.ts", "100644"],
-  [17, "URI", "ESCAPED_UNICODE", "base", "de7dcbd8612764d80691e85407d899f6e3686afd9ab40964943c3874ffe9571c", "198d323e34c2a045b86adbc72b8cd54bb8f9582175c5c25e6c68b4e374d8873f", "8ff8c788b296b7eb81abaf7f2f48bb4be717f6e8bef76200e7c842dbeea8a15c", "src/logging/redact.test.ts", "100644"],
-  [17, "URI", "ESCAPED_UNICODE", "head", "31ff9f3ec446cbcc27e6fc08f3cd96b5d95d8b436b4144f3a098d7c524a863f7", "0d9e27039ed24044fe06ab5145d7b04569ced32d3ff6fe8eb9acf04a75663919", "47171b920ebd0800ac107a92ad80b7279677f0096fad5a367f82fe3b1955c790", "src/logging/redact.test.ts", "100644"],
-  [17, "URI", "ESCAPED_UNICODE", "head", "de7dcbd8612764d80691e85407d899f6e3686afd9ab40964943c3874ffe9571c", "198d323e34c2a045b86adbc72b8cd54bb8f9582175c5c25e6c68b4e374d8873f", "8ff8c788b296b7eb81abaf7f2f48bb4be717f6e8bef76200e7c842dbeea8a15c", "src/logging/redact.test.ts", "100644"],
-  [17, "URI", "PLAIN", "base", "31ff9f3ec446cbcc27e6fc08f3cd96b5d95d8b436b4144f3a098d7c524a863f7", "0d9e27039ed24044fe06ab5145d7b04569ced32d3ff6fe8eb9acf04a75663919", "47171b920ebd0800ac107a92ad80b7279677f0096fad5a367f82fe3b1955c790", "src/logging/redact.test.ts", "100644"],
-  [17, "URI", "PLAIN", "base", "a460200b4a488bc178d0dac30bc5fe027ff86d9c7c94554f5c9d915580bc4239", "839b16fa1dd892daf47ab10d50f7c1957a16ace282fe9e6df67fefc40f7f06ff", "232cce5bf0c7b495e2f008fdc45cbd2bd9afc5394906576e4466411f6841d260", "src/logging/redact.test.ts", "100644"],
-  [17, "URI", "PLAIN", "base", "de7dcbd8612764d80691e85407d899f6e3686afd9ab40964943c3874ffe9571c", "198d323e34c2a045b86adbc72b8cd54bb8f9582175c5c25e6c68b4e374d8873f", "8ff8c788b296b7eb81abaf7f2f48bb4be717f6e8bef76200e7c842dbeea8a15c", "src/logging/redact.test.ts", "100644"],
-  [17, "URI", "PLAIN", "head", "31ff9f3ec446cbcc27e6fc08f3cd96b5d95d8b436b4144f3a098d7c524a863f7", "0d9e27039ed24044fe06ab5145d7b04569ced32d3ff6fe8eb9acf04a75663919", "47171b920ebd0800ac107a92ad80b7279677f0096fad5a367f82fe3b1955c790", "src/logging/redact.test.ts", "100644"],
-  [17, "URI", "PLAIN", "head", "a460200b4a488bc178d0dac30bc5fe027ff86d9c7c94554f5c9d915580bc4239", "839b16fa1dd892daf47ab10d50f7c1957a16ace282fe9e6df67fefc40f7f06ff", "232cce5bf0c7b495e2f008fdc45cbd2bd9afc5394906576e4466411f6841d260", "src/logging/redact.test.ts", "100644"],
-  [17, "URI", "PLAIN", "head", "de7dcbd8612764d80691e85407d899f6e3686afd9ab40964943c3874ffe9571c", "198d323e34c2a045b86adbc72b8cd54bb8f9582175c5c25e6c68b4e374d8873f", "8ff8c788b296b7eb81abaf7f2f48bb4be717f6e8bef76200e7c842dbeea8a15c", "src/logging/redact.test.ts", "100644"],
-  [895, "MongoDB", "ESCAPED_UNICODE", "base", "087c10edd5d21290a4a8695083ff8c42554fc1d1a1becea9053b11c4790b859c", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "0aeba0d1b540784464c2a230b589a48d3f062d0dbbb2d9669450ff4ee2176218", "src/logging/redact.test.ts", "100644"],
-  [895, "MongoDB", "ESCAPED_UNICODE", "head", "087c10edd5d21290a4a8695083ff8c42554fc1d1a1becea9053b11c4790b859c", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "0aeba0d1b540784464c2a230b589a48d3f062d0dbbb2d9669450ff4ee2176218", "src/logging/redact.test.ts", "100644"],
-  [895, "MongoDB", "PLAIN", "base", "087c10edd5d21290a4a8695083ff8c42554fc1d1a1becea9053b11c4790b859c", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "0aeba0d1b540784464c2a230b589a48d3f062d0dbbb2d9669450ff4ee2176218", "src/logging/redact.test.ts", "100644"],
-  [895, "MongoDB", "PLAIN", "head", "087c10edd5d21290a4a8695083ff8c42554fc1d1a1becea9053b11c4790b859c", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "0aeba0d1b540784464c2a230b589a48d3f062d0dbbb2d9669450ff4ee2176218", "src/logging/redact.test.ts", "100644"],
-  [968, "Postgres", "ESCAPED_UNICODE", "base", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "6dc3c292a8c87dd8c203af74bf1fa03f3eb64ae12bafc23dadfff9c3f63c23e6", "src/logging/redact.test.ts", "100644"],
-  [968, "Postgres", "ESCAPED_UNICODE", "base", "39a0315176e45802aaa3c5c40c2a717e2fde14e99567c38b5640fe16138710fa", "39a0315176e45802aaa3c5c40c2a717e2fde14e99567c38b5640fe16138710fa", "4b03f485ba97fd1aea07f64e978e9a961179dbbb766828f20fc8a2401812a858", "src/logging/redact.test.ts", "100644"],
-  [968, "Postgres", "ESCAPED_UNICODE", "base", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "252d197820142c40bc8701a8b1400f28a3224f305f37fd65cd2e6bfbe48d9fb1", "src/logging/redact.test.ts", "100644"],
-  [968, "Postgres", "ESCAPED_UNICODE", "base", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "6a9d1339c87f11af0ba4e7ef89a77ea8eb8e7f7ac48fdec0abb19d9138821d18", "src/logging/redact.test.ts", "100644"],
-  [968, "Postgres", "ESCAPED_UNICODE", "base", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "2020783f7b14c74d2d6960efca4ca82727980494ddef883f15ae9980141662ec", "src/logging/redact.test.ts", "100644"],
-  [968, "Postgres", "ESCAPED_UNICODE", "head", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "6dc3c292a8c87dd8c203af74bf1fa03f3eb64ae12bafc23dadfff9c3f63c23e6", "src/logging/redact.test.ts", "100644"],
-  [968, "Postgres", "ESCAPED_UNICODE", "head", "39a0315176e45802aaa3c5c40c2a717e2fde14e99567c38b5640fe16138710fa", "39a0315176e45802aaa3c5c40c2a717e2fde14e99567c38b5640fe16138710fa", "4b03f485ba97fd1aea07f64e978e9a961179dbbb766828f20fc8a2401812a858", "src/logging/redact.test.ts", "100644"],
-  [968, "Postgres", "ESCAPED_UNICODE", "head", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "252d197820142c40bc8701a8b1400f28a3224f305f37fd65cd2e6bfbe48d9fb1", "src/logging/redact.test.ts", "100644"],
-  [968, "Postgres", "ESCAPED_UNICODE", "head", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "6a9d1339c87f11af0ba4e7ef89a77ea8eb8e7f7ac48fdec0abb19d9138821d18", "src/logging/redact.test.ts", "100644"],
-  [968, "Postgres", "ESCAPED_UNICODE", "head", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "2020783f7b14c74d2d6960efca4ca82727980494ddef883f15ae9980141662ec", "src/logging/redact.test.ts", "100644"],
-  [968, "Postgres", "PLAIN", "base", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "6dc3c292a8c87dd8c203af74bf1fa03f3eb64ae12bafc23dadfff9c3f63c23e6", "src/logging/redact.test.ts", "100644"],
-  [968, "Postgres", "PLAIN", "base", "39a0315176e45802aaa3c5c40c2a717e2fde14e99567c38b5640fe16138710fa", "39a0315176e45802aaa3c5c40c2a717e2fde14e99567c38b5640fe16138710fa", "4b03f485ba97fd1aea07f64e978e9a961179dbbb766828f20fc8a2401812a858", "src/logging/redact.test.ts", "100644"],
-  [968, "Postgres", "PLAIN", "base", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "252d197820142c40bc8701a8b1400f28a3224f305f37fd65cd2e6bfbe48d9fb1", "src/logging/redact.test.ts", "100644"],
-  [968, "Postgres", "PLAIN", "base", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "6a9d1339c87f11af0ba4e7ef89a77ea8eb8e7f7ac48fdec0abb19d9138821d18", "src/logging/redact.test.ts", "100644"],
-  [968, "Postgres", "PLAIN", "base", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "2020783f7b14c74d2d6960efca4ca82727980494ddef883f15ae9980141662ec", "src/logging/redact.test.ts", "100644"],
-  [968, "Postgres", "PLAIN", "head", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "6dc3c292a8c87dd8c203af74bf1fa03f3eb64ae12bafc23dadfff9c3f63c23e6", "src/logging/redact.test.ts", "100644"],
-  [968, "Postgres", "PLAIN", "head", "39a0315176e45802aaa3c5c40c2a717e2fde14e99567c38b5640fe16138710fa", "39a0315176e45802aaa3c5c40c2a717e2fde14e99567c38b5640fe16138710fa", "4b03f485ba97fd1aea07f64e978e9a961179dbbb766828f20fc8a2401812a858", "src/logging/redact.test.ts", "100644"],
-  [968, "Postgres", "PLAIN", "head", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "252d197820142c40bc8701a8b1400f28a3224f305f37fd65cd2e6bfbe48d9fb1", "src/logging/redact.test.ts", "100644"],
-  [968, "Postgres", "PLAIN", "head", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "6a9d1339c87f11af0ba4e7ef89a77ea8eb8e7f7ac48fdec0abb19d9138821d18", "src/logging/redact.test.ts", "100644"],
-  [968, "Postgres", "PLAIN", "head", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "2020783f7b14c74d2d6960efca4ca82727980494ddef883f15ae9980141662ec", "src/logging/redact.test.ts", "100644"],
+  [17, "URI", "ESCAPED_UNICODE", "31ff9f3ec446cbcc27e6fc08f3cd96b5d95d8b436b4144f3a098d7c524a863f7", "0d9e27039ed24044fe06ab5145d7b04569ced32d3ff6fe8eb9acf04a75663919", "47171b920ebd0800ac107a92ad80b7279677f0096fad5a367f82fe3b1955c790", "src/logging/redact.test.ts", "100644"],
+  [17, "URI", "ESCAPED_UNICODE", "a460200b4a488bc178d0dac30bc5fe027ff86d9c7c94554f5c9d915580bc4239", "839b16fa1dd892daf47ab10d50f7c1957a16ace282fe9e6df67fefc40f7f06ff", "232cce5bf0c7b495e2f008fdc45cbd2bd9afc5394906576e4466411f6841d260", "src/logging/redact.test.ts", "100644"],
+  [17, "URI", "ESCAPED_UNICODE", "de7dcbd8612764d80691e85407d899f6e3686afd9ab40964943c3874ffe9571c", "198d323e34c2a045b86adbc72b8cd54bb8f9582175c5c25e6c68b4e374d8873f", "8ff8c788b296b7eb81abaf7f2f48bb4be717f6e8bef76200e7c842dbeea8a15c", "src/logging/redact.test.ts", "100644"],
+  [17, "URI", "PLAIN", "31ff9f3ec446cbcc27e6fc08f3cd96b5d95d8b436b4144f3a098d7c524a863f7", "0d9e27039ed24044fe06ab5145d7b04569ced32d3ff6fe8eb9acf04a75663919", "47171b920ebd0800ac107a92ad80b7279677f0096fad5a367f82fe3b1955c790", "src/logging/redact.test.ts", "100644"],
+  [17, "URI", "PLAIN", "a460200b4a488bc178d0dac30bc5fe027ff86d9c7c94554f5c9d915580bc4239", "839b16fa1dd892daf47ab10d50f7c1957a16ace282fe9e6df67fefc40f7f06ff", "232cce5bf0c7b495e2f008fdc45cbd2bd9afc5394906576e4466411f6841d260", "src/logging/redact.test.ts", "100644"],
+  [17, "URI", "PLAIN", "de7dcbd8612764d80691e85407d899f6e3686afd9ab40964943c3874ffe9571c", "198d323e34c2a045b86adbc72b8cd54bb8f9582175c5c25e6c68b4e374d8873f", "8ff8c788b296b7eb81abaf7f2f48bb4be717f6e8bef76200e7c842dbeea8a15c", "src/logging/redact.test.ts", "100644"],
+  [895, "MongoDB", "ESCAPED_UNICODE", "087c10edd5d21290a4a8695083ff8c42554fc1d1a1becea9053b11c4790b859c", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "0aeba0d1b540784464c2a230b589a48d3f062d0dbbb2d9669450ff4ee2176218", "src/logging/redact.test.ts", "100644"],
+  [895, "MongoDB", "PLAIN", "087c10edd5d21290a4a8695083ff8c42554fc1d1a1becea9053b11c4790b859c", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "0aeba0d1b540784464c2a230b589a48d3f062d0dbbb2d9669450ff4ee2176218", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "ESCAPED_UNICODE", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "6dc3c292a8c87dd8c203af74bf1fa03f3eb64ae12bafc23dadfff9c3f63c23e6", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "ESCAPED_UNICODE", "39a0315176e45802aaa3c5c40c2a717e2fde14e99567c38b5640fe16138710fa", "39a0315176e45802aaa3c5c40c2a717e2fde14e99567c38b5640fe16138710fa", "4b03f485ba97fd1aea07f64e978e9a961179dbbb766828f20fc8a2401812a858", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "ESCAPED_UNICODE", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "252d197820142c40bc8701a8b1400f28a3224f305f37fd65cd2e6bfbe48d9fb1", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "ESCAPED_UNICODE", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "6a9d1339c87f11af0ba4e7ef89a77ea8eb8e7f7ac48fdec0abb19d9138821d18", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "ESCAPED_UNICODE", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "2020783f7b14c74d2d6960efca4ca82727980494ddef883f15ae9980141662ec", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "PLAIN", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "6dc3c292a8c87dd8c203af74bf1fa03f3eb64ae12bafc23dadfff9c3f63c23e6", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "PLAIN", "39a0315176e45802aaa3c5c40c2a717e2fde14e99567c38b5640fe16138710fa", "39a0315176e45802aaa3c5c40c2a717e2fde14e99567c38b5640fe16138710fa", "4b03f485ba97fd1aea07f64e978e9a961179dbbb766828f20fc8a2401812a858", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "PLAIN", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "252d197820142c40bc8701a8b1400f28a3224f305f37fd65cd2e6bfbe48d9fb1", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "PLAIN", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "6a9d1339c87f11af0ba4e7ef89a77ea8eb8e7f7ac48fdec0abb19d9138821d18", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "PLAIN", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "2020783f7b14c74d2d6960efca4ca82727980494ddef883f15ae9980141662ec", "src/logging/redact.test.ts", "100644"],
 ];
+
+const sha256Pattern = /^[0-9a-f]{64}$/;
+const detectorNames = { 17: "URI", 895: "MongoDB", 968: "Postgres" } as const;
+
+function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): void {
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const [detectorType, detectorName, decoder, raw, rawV2, line, source, mode] = row;
+    if (
+      row.length !== 8 ||
+      detectorNames[detectorType] !== detectorName ||
+      (decoder !== "PLAIN" && decoder !== "ESCAPED_UNICODE") ||
+      ![raw, rawV2, line].every((digest) => sha256Pattern.test(digest)) ||
+      source !== "src/logging/redact.test.ts" ||
+      mode !== "100644"
+    ) {
+      throw new Error("invalid reviewed attribution policy");
+    }
+    const key = row.join("\0");
+    if (seen.has(key)) throw new Error("duplicate reviewed attribution policy");
+    seen.add(key);
+  }
+}
+
+validateReviewedAttributions(REVIEWED_ATTRIBUTIONS);
 
 export function serializeReviewContext(context: object): string {
   return JSON.stringify(
@@ -287,7 +295,7 @@ export type ScanRefusalDiagnostic =
       findingCount: number;
       findingIndex: number;
       detectorType: number | null;
-      decoder: "PLAIN" | "HTML" | "OTHER";
+      decoder: "PLAIN" | "HTML" | "ESCAPED_UNICODE" | "OTHER";
       verified: boolean | null;
       scannerLine: number | null;
       material?: ScanMaterialDiagnostic;
@@ -378,6 +386,7 @@ export function classifyReviewedFixtureScan(
   inputs: ReadonlyMap<string, StagedScanInput>,
   reviewedAttributions: readonly ReviewedAttribution[] = REVIEWED_ATTRIBUTIONS,
 ): { kind: "classified"; notices: ReviewedFixtureNotice[] } | RefusedScan {
+  validateReviewedAttributions(reviewedAttributions);
   const nativeFailure = (
     reason: Extract<ScanRefusalDiagnostic, { kind: "native_contract" }>["reason"],
   ): RefusedScan => ({
@@ -461,7 +470,9 @@ export function classifyReviewedFixtureScan(
             ? finding.DetectorType
             : null,
         decoder:
-          finding.DecoderName === "PLAIN" || finding.DecoderName === "HTML"
+          finding.DecoderName === "PLAIN" ||
+          finding.DecoderName === "HTML" ||
+          finding.DecoderName === "ESCAPED_UNICODE"
             ? finding.DecoderName
             : "OTHER",
         verified: typeof finding.Verified === "boolean" ? finding.Verified : null,
@@ -479,7 +490,7 @@ export function classifyReviewedFixtureScan(
       rawDigest === undefined || rawV2Digest === undefined
         ? []
         : reviewedAttributions.filter(
-            ([, , , , expectedRaw, expectedRawV2]) =>
+            ([, , , expectedRaw, expectedRawV2]) =>
               expectedRaw === rawDigest && expectedRawV2 === rawV2Digest,
           );
     if (exactCandidates.length > 0) {
@@ -581,18 +592,17 @@ export function classifyReviewedFixtureScan(
       )
         return refuse("literal_mismatch");
       const lineDigest = createHash("sha256").update(witnessLine).digest("hex");
-      if (!matchingMetadata.some(([, , , , , , expectedLine]) => expectedLine === lineDigest))
+      if (!matchingMetadata.some(([, , , , , expectedLine]) => expectedLine === lineDigest))
         return refuse("literal_mismatch");
       if (
         !staged.references.length ||
-        staged.references.some(({ source, mode, role }) =>
-          matchingMetadata.every(
-            ([, , , expectedRole, , , expectedLine, expectedSource, expectedMode]) =>
-              expectedRole !== role ||
-              expectedLine !== lineDigest ||
-              expectedSource !== source ||
-              expectedMode !== mode,
-          ),
+        staged.references.some(
+          ({ source, mode, role }) =>
+            (role !== "base" && role !== "head") ||
+            matchingMetadata.every(
+              ([, , , , , expectedLine, expectedSource, expectedMode]) =>
+                expectedLine !== lineDigest || expectedSource !== source || expectedMode !== mode,
+            ),
         )
       )
         return refuse("source_not_reviewed");
