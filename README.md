@@ -36,8 +36,10 @@ At a high level ClawSweeper:
 - reviews open issues and pull requests on a schedule and on exact GitHub events
 - writes one durable markdown report per item in generated state
 - syncs one marker-backed public review comment per issue or PR, edited in place
+- can request relevant Web UI or Telegram proof within an eligible OpenClaw PR
+  review and evaluate results in that same turn; see [live proof](docs/live-proof.md)
 - preserves validation, rendering, media publication, and retraction for
-  historical live-proof artifacts; new reviews do not generate live proof
+  historical post-review live-proof artifacts
 - closes only unchanged, high-confidence, policy-allowed proposals
 - routes maintainer commands such as `@clawsweeper review`,
   `@clawsweeper fix`, `@clawsweeper autofix`, and `@clawsweeper automerge`

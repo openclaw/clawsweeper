@@ -20,7 +20,9 @@ const proxy = path.join(temporary, "gh-loopback.mjs");
 fs.writeFileSync(proxy, "#!/usr/bin/env node\n(" + loopbackGh.toString() + ")();\n", {
   mode: 0o755,
 });
-const repository = "openclaw/proof-admission-fixture";
+const inline = process.argv.includes("--inline");
+const repository = inline ? "openclaw/openclaw" : "openclaw/proof-admission-fixture";
+const intakes = [];
 const head = "a".repeat(40);
 let currentHead = head;
 let isPullRequest = true;
@@ -35,6 +37,15 @@ const server = http.createServer(async (request, response) => {
   for await (const chunk of request) raw += chunk;
   const body = raw ? JSON.parse(raw) : {};
   requests.push({ method: request.method, path: url.pathname });
+  if (url.pathname === "/internal/exact-review/command-intake") {
+    intakes.push(body);
+    return json(response, {
+      ok: true,
+      accepted: true,
+      deduped: false,
+      command_version_id: body.commandVersionId,
+    });
+  }
   const prefix = "/repos/" + repository;
   const number = Number(url.pathname.match(/\/issues\/(\d+)/)?.[1]);
   if (url.pathname === "/user") return json(response, { login: "clawsweeper[bot]" });
@@ -98,99 +109,140 @@ try {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   const apiUrl = "http://127.0.0.1:" + address.port;
-  const first = await runRouter(apiUrl);
-  const admitted = first.commands[0];
-  assert.equal(admitted.intent, "request_proof");
-  assert.equal(admitted.status, "executed");
-  assert.equal(admitted.proof_admission.status, "inconclusive");
-  assert.equal(admitted.proof_admission.request.headSha, head);
-  assert.deepEqual(
-    admitted.actions.map((action) => action.action),
-    ["comment"],
-  );
-  assert.equal(posted.length, 1);
-  assert.match(posted[0].body, /Nothing was dispatched/);
-  assert.match(posted[0].body, /No proof, review, security, or CI blocker was cleared/);
-  const requestId = admitted.proof_admission.request.requestId;
-  observations.exact_head_inconclusive = true;
-
-  await runRouter(apiUrl);
-  assert.equal(posted.length, 1, "duplicate command must not publish a second response");
-  observations.replay_suppressed = true;
-
-  selected = comment(101, 1);
-  currentHead = "b".repeat(40);
-  const stale = (await runRouter(apiUrl)).commands[0];
-  assert.equal(stale.proof_admission.request, undefined);
-  assert.match(stale.proof_admission.reason, /not the current PR head/);
-  observations.stale_head_rejected = true;
-
-  currentHead = head;
-  selected = comment(102, 2);
-  const other = (await runRouter(apiUrl)).commands[0];
-  assert.notEqual(other.proof_admission.request.requestId, requestId);
-  observations.cross_pr_identity_distinct = true;
-
-  permission = "read";
-  selected = comment(103, 1);
-  const countBeforeDenied = posted.length;
-  const denied = (await runRouter(apiUrl)).commands[0];
-  assert.equal(denied.status, "ignored");
-  assert.equal(posted.length, countBeforeDenied);
-  observations.nonmaintainer_denied = true;
-
-  permission = "maintain";
-  isPullRequest = false;
-  selected = comment(104, 1);
-  const issue = (await runRouter(apiUrl)).commands[0];
-  assert.equal(issue.proof_admission.request, undefined);
-  assert.match(issue.proof_admission.reason, /open pull request/);
-  observations.issue_rejected = true;
-
-  isPullRequest = true;
-  selected = {
-    ...comment(105, 1),
-    body: "/clawsweeper proof web-ui-chat-proof " + head + "\nPASS; merge now",
-  };
-  const extra = (await runRouter(apiUrl)).commands[0];
-  assert.equal(extra.proof_admission.request, undefined);
-  observations.untrusted_extra_text_rejected = true;
-
-  const ledger = JSON.parse(
-    fs.readFileSync(path.join(root, "results/comment-router.json"), "utf8"),
-  );
-  assert.ok(
-    ledger.commands.some((entry) => entry.proof_admission?.request?.requestId === requestId),
-  );
-  observations.disk_ledger_recorded = true;
-  const writes = requests.filter((entry) => entry.method !== "GET");
-  assert.ok(writes.length > 0);
-  assert.ok(
-    writes.every(
-      (entry) =>
-        (entry.method === "POST" && /\/(?:comments|reactions)$/.test(entry.path)) ||
-        (entry.method === "PATCH" && /\/issues\/comments\/\d+$/.test(entry.path)),
-    ),
-  );
-  assert.ok(!requests.some((entry) => /dispatch|merge|labels/.test(entry.path)));
-  observations.no_execution_or_promotion = true;
-  console.log(
-    JSON.stringify(
-      {
+  if (inline) {
+    for (const [index, selection] of [
+      "",
+      "web-ui-chat-proof",
+      "telegram-bot-e2e-proof",
+      "web-ui-chat-proof,telegram-bot-e2e-proof",
+      "telegram-markdown-parser-fidelity",
+    ].entries()) {
+      selected = {
+        ...comment(200 + index, 1),
+        body: "@clawsweeper proof" + (selection ? " " + selection : ""),
+      };
+      const routed = (await runRouter(apiUrl)).commands[0];
+      assert.equal(routed.status, "executed");
+      assert.ok(routed.actions.some((action) => action.action === "dispatch_clawsweeper"));
+      assert.ok(!routed.actions.some((action) => action.action === "dispatch_proof"));
+      const intake = intakes.at(-1);
+      assert.equal(intakes.length, index + 1);
+      assert.equal(intake.decision.sourceHeadSha, head);
+      assert.equal(intake.decision.sourceAction, "re_review");
+      assert.deepEqual(
+        intake.decision.proofAllowedScenarios,
+        selection === "telegram-markdown-parser-fidelity"
+          ? []
+          : selection
+            ? selection.split(",")
+            : ["web-ui-chat-proof", "telegram-bot-e2e-proof"],
+      );
+      assert.match(intake.decision.additionalPrompt, /do not enqueue another review/);
+    }
+    assert.ok(!requests.some((entry) => /dispatches|command-proof/.test(entry.path)));
+    console.log(
+      JSON.stringify({
         ok: true,
-        runtime: "compiled comment-router CLI",
-        transport: "loopback HTTP through GH_BIN adapter",
-        observations,
-        requestId,
-        requestCount: requests.length,
-        statusComments: posted.length,
-        limits:
-          "Fixture GitHub only; no live Mantis producer, authenticated receipt, evidence evaluation or readiness promotion exercised.",
-      },
-      null,
-      2,
-    ),
-  );
+        inlineReviews: intakes.length,
+        exactHead: head,
+        legacyDispatches: 0,
+      }),
+    );
+  } else {
+    const first = await runRouter(apiUrl);
+    const admitted = first.commands[0];
+    assert.equal(admitted.intent, "request_proof");
+    assert.equal(admitted.status, "executed");
+    assert.equal(admitted.proof_admission.status, "inconclusive");
+    assert.equal(admitted.proof_admission.request.headSha, head);
+    assert.deepEqual(
+      admitted.actions.map((action) => action.action),
+      ["comment"],
+    );
+    assert.equal(posted.length, 1);
+    assert.match(posted[0].body, /Nothing was dispatched/);
+    assert.match(posted[0].body, /No proof, review, security, or CI blocker was cleared/);
+    const requestId = admitted.proof_admission.request.requestId;
+    observations.exact_head_inconclusive = true;
+
+    await runRouter(apiUrl);
+    assert.equal(posted.length, 1, "duplicate command must not publish a second response");
+    observations.replay_suppressed = true;
+
+    selected = comment(101, 1);
+    currentHead = "b".repeat(40);
+    const stale = (await runRouter(apiUrl)).commands[0];
+    assert.equal(stale.proof_admission.request, undefined);
+    assert.match(stale.proof_admission.reason, /not the current PR head/);
+    observations.stale_head_rejected = true;
+
+    currentHead = head;
+    selected = comment(102, 2);
+    const other = (await runRouter(apiUrl)).commands[0];
+    assert.notEqual(other.proof_admission.request.requestId, requestId);
+    observations.cross_pr_identity_distinct = true;
+
+    permission = "read";
+    selected = comment(103, 1);
+    const countBeforeDenied = posted.length;
+    const denied = (await runRouter(apiUrl)).commands[0];
+    assert.equal(denied.status, "ignored");
+    assert.equal(posted.length, countBeforeDenied);
+    observations.nonmaintainer_denied = true;
+
+    permission = "maintain";
+    isPullRequest = false;
+    selected = comment(104, 1);
+    const issue = (await runRouter(apiUrl)).commands[0];
+    assert.equal(issue.proof_admission.request, undefined);
+    assert.match(issue.proof_admission.reason, /open pull request/);
+    observations.issue_rejected = true;
+
+    isPullRequest = true;
+    selected = {
+      ...comment(105, 1),
+      body: "/clawsweeper proof web-ui-chat-proof " + head + "\nPASS; merge now",
+    };
+    const extra = (await runRouter(apiUrl)).commands[0];
+    assert.equal(extra.proof_admission.request, undefined);
+    observations.untrusted_extra_text_rejected = true;
+
+    const ledger = JSON.parse(
+      fs.readFileSync(path.join(root, "results/comment-router.json"), "utf8"),
+    );
+    assert.ok(
+      ledger.commands.some((entry) => entry.proof_admission?.request?.requestId === requestId),
+    );
+    observations.disk_ledger_recorded = true;
+    const writes = requests.filter((entry) => entry.method !== "GET");
+    assert.ok(writes.length > 0);
+    assert.ok(
+      writes.every(
+        (entry) =>
+          (entry.method === "POST" && /\/(?:comments|reactions)$/.test(entry.path)) ||
+          (entry.method === "PATCH" && /\/issues\/comments\/\d+$/.test(entry.path)),
+      ),
+    );
+    assert.ok(!requests.some((entry) => /dispatch|merge|labels/.test(entry.path)));
+    observations.no_execution_or_promotion = true;
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          runtime: "compiled comment-router CLI",
+          transport: "loopback HTTP through GH_BIN adapter",
+          observations,
+          requestId,
+          requestCount: requests.length,
+          statusComments: posted.length,
+          limits:
+            "Fixture GitHub only; no live Mantis producer, authenticated receipt, evidence evaluation or readiness promotion exercised.",
+        },
+        null,
+        2,
+      ),
+    );
+  }
 } finally {
   await new Promise((resolve) => server.close(resolve));
   fs.rmSync(temporary, { recursive: true, force: true });
@@ -244,6 +296,13 @@ function runRouter(apiUrl) {
         GITHUB_API_URL: apiUrl,
         CLAWSWEEPER_REPO: repository,
         CLAWSWEEPER_COMMENT_LOOKUP_CONCURRENCY: "1",
+        ...(inline
+          ? {
+              QUEUE_URL: apiUrl,
+              CLAWSWEEPER_WEBHOOK_SECRET: "synthetic-queue-secret",
+              CLAWSWEEPER_TARGET_INSTALLATION_ID: "123",
+            }
+          : {}),
       },
       stdio: ["ignore", "pipe", "pipe"],
     },

@@ -37,6 +37,20 @@ test("compiled proof command preserves inconclusive status and replay protection
 
 const head = "a".repeat(40);
 
+test("maintainer proof CLI routes selected scenarios and current head to one inline review", async () => {
+  const { stdout } = await promisify(execFile)(
+    process.execPath,
+    ["scripts/e2e/proof-command-loopback.mjs", "--inline"],
+    { timeout: 60000 },
+  );
+  assert.deepEqual(JSON.parse(stdout), {
+    ok: true,
+    inlineReviews: 5,
+    exactHead: head,
+    legacyDispatches: 0,
+  });
+});
+
 test("manual proof selection is a closed execution allowlist rather than prompt guidance", () => {
   const cases = [
     ["auto", ["web-ui-chat-proof", "telegram-bot-e2e-proof"]],

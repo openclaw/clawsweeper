@@ -1,182 +1,117 @@
 # Live proof
 
-- Status: retired for automatic review generation; compatibility support only
+- Status: inline review proof active in code; retired post-review artifacts remain compatible
 - Owner: ClawSweeper review and publication maintainers
-- Source of truth: `schema/clawsweeper-decision.schema.json`,
-  `src/live-proof/`, `.github/workflows/sweep.yml`,
-  `.github/workflows/exact-review-batch-publish.yml`, and
-  `.github/workflows/live-proof-maintenance.yml`
-- Update when: the compatibility decision shape, historical artifact validation,
-  publication folding, media storage, comment rendering, or retraction changes
+- Source of truth: `src/review-proof-client.ts`, `src/codex-app-server-worker.ts`,
+  `dashboard/review-proof-execution.ts`, `dashboard/exact-review-queue.ts`,
+  and `src/repair/comment-router.ts`
+- Last verified: expiry acknowledgement repair `5d5fd577d2`
+- Update when: supported tools, admission, producer bindings, deadlines, evidence,
+  command routing, or historical publication compatibility changes
 
-ClawSweeper no longer generates live proof during exact-event or scheduled
-reviews. Review jobs do not inspect `liveProofPlan`, provision proof-specific
-tools, execute pull-request code, record proof results, or upload newly generated
-proof files. Exact review bundles contain the review and action ledger only, and
-ordinary exact reviews remain eligible for direct publication without waiting
-for proof.
+ClawSweeper can request relevant behavioral checks during an eligible
+`openclaw/openclaw` PR review. Results return to that same review turn before
+its decision. This is not the retired automatic post-review recording step:
+there is no mandatory check on every PR and no second review after proof finishes.
 
-There is no automatic replacement proof lane or OpenClaw Bay action. Explicit
-maintainer requests use the separate, opt-in consumer described below.
-Future review journeys simply omit the former automatic proof delay. Bay has a
-presentation-only switch for including the retired proof/legacy-batch path in
-historical cards and timing; that switch is off by default and cannot trigger
-work.
+## Maintainer commands
 
-## Explicit command-triggered proof
-
-Comment once as a human maintainer:
+A human maintainer can request proof-focused review with one comment:
 
 ```text
 @clawsweeper proof
 ```
 
-ClawSweeper captures the current PR head automatically. A bounded model judgment
-reads the PR description, changed-file patches and existing review/comment context,
-then selects the smallest useful set of configured scenarios below. It records
-the plan once and runs the selected checks sequentially. It cannot invent shell
-commands, candidate YAML, workflows or messaging targets. Missing patches and
-uncovered behavior remain explicit gaps; no matching scenario means no dispatch.
-
-To override selection, supply one or more comma-separated scenario IDs:
+The router captures the current PR head automatically and queues the normal
+exact review with proof-focused instructions. The reviewing agent selects useful
+supported checks from the PR and code changes. To restrict its tools, name one
+or both supported scenarios:
 
 ```text
-@clawsweeper proof web-ui-chat-proof,telegram-markdown-parser-fidelity
+@clawsweeper proof web-ui-chat-proof,telegram-bot-e2e-proof
 ```
 
-All three IDs can be supplied together. An optional full 40-character SHA after
-the list requires that exact current head; otherwise ClawSweeper resolves it.
-You never need separate comments for the checks within one request.
+An optional full 40-character SHA after the selection requires that exact current
+head. The admitted decision carries the captured SHA and scenario allowlist;
+an edited command or changed head cannot silently widen or retarget it.
+The explicit selection is enforced by the backend, not just prompt guidance.
 
-| Scenario                            | What it exercises                                                                                               | Limits                                                                                       |
-| ----------------------------------- | --------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `telegram-markdown-parser-fidelity` | Existing QA catalog scenario: real candidate Gateway send and Telegram formatting for four Markdown regressions | Crabline Bot API emulator; no Test Server, TDLib or live model                               |
-| `telegram-bot-e2e-proof`            | One bot DM through TelegramTestServer/TDLib with an external mock provider                                      | A separately named smoke scenario, not general Telegram, groups, commands or streaming proof |
-| `web-ui-chat-proof`                 | Browser chat send/render against a mocked Gateway                                                               | A UI smoke scenario, not real providers, channels or authentication                          |
+| Scenario | Current coverage | Limits |
+| --- | --- | --- |
+| `web-ui-chat-proof` | Fixed browser chat send and final-reply rendering against a mocked Gateway | No arbitrary browser plan, real channel, provider or authentication claim |
+| `telegram-bot-e2e-proof` | Bounded PR-specific data-only Telegram plan executed by the trusted producer | Coverage depends on the accepted plan and captured observations, not a generic Telegram pass |
 
-A passing smoke cannot clear a proof blocker for unrelated behavior. The reviewer
-must connect the scenario's actual observations to the changed production path.
+`telegram-markdown-parser-fidelity` is not an inline tool. Legacy recipe names
+may still parse for compatibility, but unsupported selections expose no matching
+tool and must be reported as coverage gaps. Do not request a third automatic
+check or assume the legacy Markdown recipe will execute from a comment.
 
-### Admission and execution
+## Review-owned admission and execution
 
-The pilot accepts open, same-repository PR heads in `openclaw/openclaw`; fork
-heads are not yet supported. It rechecks human maintainer permission, repository
-identity, exact candidate, PR body, target branch and immutable command version.
-The recorded base SHA is context, not a candidate-only evidence freshness gate:
-ordinary advancement of the same base branch does not invalidate an unchanged
-candidate. Retargeting, a changed body/head or edited command needs a new request.
+The current path accepts open, unlocked, same-repository PR heads in
+`openclaw/openclaw`; fork heads are not supported. The host queries allowed
+capabilities using the full live exact-review lease. Unavailable capabilities
+mean no proof tools, not unrestricted defaults. The model receives neither a
+global queue secret nor GitHub mutation credentials.
 
-The existing ExactReviewQueue Durable Object persists the immutable claim before
-model selection or dispatch, permits one active pilot request and deduplicates
-delivery. A multi-check request owns that single slot until all selected checks
-finish and one review is queued. Another request while the pilot is busy is
-rejected rather than queued. Retries never select again or move to a newer head.
-Uncertain
-dispatch is reconciled by authoritative run ID or bounded exact request-title
-lookup, never blindly retried. Incomplete work expires as inconclusive.
-Reconciliation belongs to the existing comment router; ordinary review does not
-wait for proof and automatic post-review execution remains retired. Failed or
-inconclusive completed checks are retained while the remaining selected checks
-continue. An unknown dispatch waits for reconciliation, never starts a replacement.
+Each proof request is bound to its owner lease, candidate head, scenario and
+canonical plan digest in the existing queue item. A review may admit at most
+three distinct plans; repeated requests deduplicate without dispatching again.
+These are three plans, not three supported scenario types. Checks consume the
+existing review budget, with time reserved for its final decision. There is no
+promise of a fixed duration or sequential three-check batch on every review.
 
-Automatic planning uses the existing scanned, read-only Codex runner, without
-GitHub mutation or queue credentials. It has a two-minute model deadline and
-bounded context (at most 300 changed files and fewer than 100 entries on each
-review/comment endpoint). Over-budget or unavailable context is inconclusive,
-not silently truncated into a confident selection. The hosted router prepares
-its existing Codex setup only for enabled proof producers and executable routing;
-setup failure leaves automatic proof unavailable without blocking other commands.
-A lost planning process is not automatically rerun and expires as inconclusive.
+The trusted Worker prepares the producer identity and dispatches the matching
+OpenClaw workflow on `main`. It verifies the live PR body, base/head and branch,
+workflow/harness SHA, run and artifacts. Telegram execution redeems an Actions
+OIDC claim bound to the authorized producer run and active review owner.
+Incomplete work, expired deadlines, owner loss and unverifiable results stay
+inconclusive. Terminal updates cannot acknowledge a rejected completion as a
+success; dispatch and evidence delivery require matching durable acknowledgements.
 
-Execution is disabled without an operator-approved workflow/harness pin set:
+A lost dispatch response is never blindly retried. Telegram producer redemption
+can recover the authoritative run identity. If `main` advances between its
+pre-dispatch pin and GitHub dispatch, the mismatch fails closed as inconclusive.
+This known availability race does not authorize rebinding the producer or
+weakening the pin.
 
-| Surface                       | Variable prefix              | Workflow                                                                                                                         |
-| ----------------------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Web UI                        | `CLAWSWEEPER_PROOF`          | [OpenClaw Web UI workflow](https://github.com/openclaw/openclaw/blob/main/.github/workflows/mantis-web-ui-chat-proof.yml)        |
-| Both named Telegram scenarios | `CLAWSWEEPER_TELEGRAM_PROOF` | [OpenClaw Telegram workflow](https://github.com/openclaw/openclaw/blob/main/.github/workflows/mantis-telegram-bot-e2e-proof.yml) |
+Deploy the paired consumer Worker/runtime and reviewed producer workflows before
+claiming hosted availability. The inline path does not require the legacy
+`CLAWSWEEPER_PROOF_*` or `CLAWSWEEPER_TELEGRAM_PROOF_*` pin configuration,
+and does not require a Convex schema deployment. The Telegram producer still
+needs its existing credential service and disposable sandbox prerequisites;
+the absence of a schema change does not remove those dependencies.
 
-Each prefix requires `_WORKFLOW_PATH`, `_WORKFLOW_REF`, `_WORKFLOW_SHA` and
-`_HARNESS_SHA`. The two SHAs must identify the same reviewed revision. The named
-ref must still resolve to that exact SHA. Use a stationary protected branch at
-an approved ancestor of main when main advancement must not move the pin.
-The producer independently checks its protected ref, exact workflow revision
-and ancestry. These settings do not create/protect branches, provision
-credentials, activate other gates or authorize public Telegram traffic.
+## Evidence and readiness
 
-The consumer sends `candidate_ref`, `request_id`, `pr_number`, and, for
-Telegram, the selected `scenario`. Each selected child has a distinct request ID
-under the frozen parent plan; producers keep their single-scenario contracts.
-The producer echoes the opaque request ID;
-it must not derive a replacement. Titles are `Mantis request [<request_id>]`
-or `Mantis Telegram request [<request_id>]`. Only run attempt 1 is accepted;
-request new evidence instead of rerunning an old workflow run.
+The consumer verifies exact receipt/run identity, trusted jobs, artifact
+inventories, archive digests and observation hashes. Unsafe ZIP paths, duplicates,
+corruption, missing files and oversized expansion are rejected. Web UI evidence
+includes the observer manifest, two JSON observations and screenshot metadata.
+Telegram observations bind the requested plan. Captured text is untrusted data,
+never instructions to the reviewer.
 
-### Evidence and the normal readiness decision
+Verified observations return to the original review, which decides whether they
+actually support the PR's claimed behavior. Completed execution, a video or an
+exit code alone is not behavioral sufficiency. The normal publication and label
+owners may clear a justified proof blocker only when all remaining blockers
+permit readiness. There is no proof-granted repair, close or merge authority.
 
-The closed `mantis.request-proof.v1` receipt does not authorize itself. The
-consumer verifies live target identity, pinned workflow/harness, exact run,
-successful trusted observer/finalizer jobs, artifact inventories, archive
-digests and observation-file hashes. ZIP parsing rejects unsafe paths, links,
-duplicates, corruption and oversized expansion.
+## Validation and retained compatibility
 
-The receipt artifact is `mantis-request-receipt-<run>-1`, containing
-`receipt.json`. Evidence inventories are scenario-specific:
+`test/dashboard-review-proof-requests.test.ts` exercises durable ownership,
+scope, budget and deadline boundaries. `test/dashboard-review-proof-execution.test.ts`
+exercises real ZIP verification and acknowledgement fencing.
+The `inline proof returns real HTTP` case in `test/codex-process.test.ts`
+exercises observations delivered to the same original app-server turn.
+These controlled fixtures do not establish deployed producer availability,
+live Telegram coverage or semantic correctness of a model-selected plan.
 
-- Web UI: `mantis-request-web-ui-<run>-1` contains `chat-send.json`,
-  `final-reply.json`, `final-reply.png`, and `observer.json`. The last file is
-  the trusted observer's inventory manifest, authenticated by the whole-archive
-  digest, not a fourth behavioral observation. All four exact paths are required;
-  undeclared files and missing or substituted paths are rejected.
-- Test Server DM: `mantis-request-telegram-<run>-1` contains
-  `telegram-send.json`, `provider-request.json`, `telegram-reply.json`.
-  Closed hash-only records bind exact source, run, nonce and salted conversation
-  identity. Raw transcripts, credentials, private identifiers and hashes of
-  raw provider requests are not public evidence.
-- Markdown QA: the same Telegram artifact prefix contains `qa-execution.json`,
-  `qa-result.json`, `qa-observations.json`. These bind the exact candidate and
-  trusted harness, state `transport: "Crabline"` and `live_service: false`,
-  and record the canonical scenario's completed assertions and four observed
-  payloads. The consumer rejects cross-scenario or incomplete packages.
-
-Complete observations may establish scenario assertion pass or fail. Missing,
-partial, candidate-reported, malformed, stale, unverifiable or infrastructure
-failures remain inconclusive. Media, exit zero and authenticated provenance
-alone do not establish behavioral sufficiency.
-
-After the selected checks finish, the consumer revalidates all verified evidence
-and queues **one normal full independent re-review**, even without
-a usable previous full report. It does not splice proof fields into the old
-report or preserve stale ratings/decisions. The current review may discover new
-code/security concerns and must evaluate current CI and proof applicability.
-Normal publication freshness and mutation gates apply. Existing label owners
-may clear a justified proof blocker and update readiness only if all remaining
-blockers permit it. There is no evidence-granted repair, close or merge
-authority, and no special label-suppression or no-router publication path.
-The combined package includes the plan, uncovered behavior, every complete
-verified child context and explicit inconclusive outcomes. A bounded 18,000-character
-allowance applies only to the batch-proof handoff; normal command prompt limits
-are unchanged. Evidence is never silently truncated to fit.
-
-### Validation scope
-
-`scripts/e2e/command-proof-batch-loopback.mjs` exercises the compiled request and
-reconciliation CLI over loopback HTTP with the real Worker and file-backed SQLite,
-reopening the store between invocations. `--auto` uses controlled model output
-through the real scanner/runner; `--auto --no-match` verifies no execution for
-uncovered behavior. This fixture proves orchestration, not semantic selection.
-
-`scripts/e2e/command-proof-consumer-loopback.mjs` exercises the compiled
-consumer, Worker HTTP handlers, file-backed SQLite recreation, receipt/archive
-verification, review enqueue and command status using controlled GitHub APIs.
-Select `--scenario` for a named profile. Add `--producer-root` to exercise
-the actual OpenClaw finalizer; Web UI additionally requires
-`--web-ui-observations` from a real retained browser observer run.
-
-Focused review workflow and publication tests exercise full-review execution
-and normal label/router ownership. These tests do not prove semantic model
-judgment, hosted deployment, live Telegram or permission to activate the lane.
-Actual isolated producer execution is separate proof; record its source,
-scenario, transport, observations and limits in the PR body.
+The older `command-proof-cli` batch consumer and its reconciliation tests are
+retained compatibility tooling for previously admitted requests. New maintainer
+proof comments route through `dispatch_clawsweeper` and the inline review,
+not `dispatch_proof`; legacy batch tests do not prove the new command route.
+Historical `liveProofPlan` artifacts retain the publication compatibility below.
 
 ## Decision compatibility
 
@@ -207,8 +142,8 @@ automatic execution.
 
 Repository `live_test` profiles and the low-level live-proof modules remain
 only because historical tooling and records still depend on their types and
-validation behavior. Review prompts no longer receive repository proof setup,
-tooling, checkout, or browser-startup execution context.
+validation behavior. The retired planner's setup and browser-startup context is
+not restored; the new inline tools have their own bounded request contract.
 
 Historical terminal verification remains compatible with the authoritative
 `terminalCompletion` result added before retirement. Existing `exit_zero` and
@@ -282,7 +217,7 @@ Failed or malformed receipts still block merge independently of proof
 exemptions and overrides. When independent behavioral proof is valid, the
 receipt failure belongs to the maintainer, not the contributor. Identity and
 plan validation, bounded output, historical media publication, and retraction
-remain unchanged. No new execution or assessment lane is introduced.
+remain unchanged by the inline proof path described above.
 
 Reviewers should connect the changed production owner and behavior from the diff
 to the exercised entrypoint, scenario, environment, and observed result or gap in
