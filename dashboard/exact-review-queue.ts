@@ -5664,7 +5664,9 @@ export class ExactReviewQueue {
 
     const checkedAt = Date.now();
     const checkedState = this.readStateSync();
-    const batchOwnership = this.batchStore.activeLeaseSnapshot(checkedAt);
+    const batchOwnership = this.batchStore.activeLeaseSnapshot(checkedAt, {
+      reclaimExpired: options.apply !== false,
+    });
     const checkedBatchItemKeys = new Set<string>(batchOwnership.itemKeys);
     if (options.legacyReconciliation) {
       for (const candidate of liveStates) {
@@ -5713,7 +5715,7 @@ export class ExactReviewQueue {
       ) {
         continue;
       }
-      if (candidate.hostedAdmission?.outcome === "terminal") {
+      if (options.apply !== false && candidate.hostedAdmission?.outcome === "terminal") {
         this.recordHostedTargetTerminal(item, checkedAt);
       }
       delete checkedState.items[item.key];
@@ -6933,7 +6935,11 @@ export class ExactReviewQueue {
     }
 
     const now = Date.now();
-    let activeBatchItemKeys = new Set<string>(this.batchStore.activeLeaseSnapshot(now).itemKeys);
+    // Dry runs classify expiry without terminalizing batch membership. Only the
+    // apply path owns canonical queue, lifecycle, and batch changes.
+    let activeBatchItemKeys = new Set<string>(
+      this.batchStore.activeLeaseSnapshot(now, { reclaimExpired: apply }).itemKeys,
+    );
     let state = this.readStateSync();
     const reclaimed =
       limit > 1 &&

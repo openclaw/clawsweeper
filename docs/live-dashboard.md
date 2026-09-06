@@ -733,6 +733,14 @@ cancellation clears the lease and requeues the item. Finalizer success remains
 provisional because GitHub can still cancel the run or fail a post-action; only
 the signed terminal-run backstop removes the item after GitHub confirms the
 exact attempt succeeded. A newer revision can requeue immediately. A signed
+`POST /internal/exact-review/publications/reconcile` defaults to `apply:false`.
+It classifies stale and legacy publication candidates without reconciliation-driven
+queue, lifecycle, batch, or Bay mutations; expired batches are excluded from active
+ownership without reclaiming their rows. Existing admission-cache revocation,
+request cleanup, and cold-start initialization still run. `apply:true` retains
+normal expiry recovery and terminalization. This is an authenticated operator
+route, not a Bay action.
+
 `POST /internal/exact-review/reconcile` backstop accepts at most 32 exact run IDs
 and intersects them with currently claimed leases. The Worker checks those IDs
 and attempts with an Actions-read GitHub App token and reconciles only runs

@@ -610,6 +610,54 @@ test("publication batches allow a bounded number of disjoint active owners", () 
   });
 });
 
+test("publication batch snapshots can exclude expired leases without reclaiming them", () => {
+  const storage = new TestStorage();
+  const batches = new ExactReviewPublicationBatchStore(storage);
+  batches.ensureSchemaSync();
+  for (const [index, leaseExpiresAt] of [1_999, 2_000, 2_001].entries()) {
+    batches.claim({
+      batchId: `boundary-${index}`,
+      leaseOwner: "worker",
+      leaseExpiresAt,
+      now: 1_000,
+      maxItems: 1,
+      maxConcurrentBatches: 3,
+      candidates: [candidates[index]],
+    });
+  }
+  const snapshot = () =>
+    [
+      "exact_review_publication_batches",
+      "exact_review_publication_batch_items",
+      "exact_review_publication_batch_generations",
+    ].map((table) => Array.from(storage.sql.exec(`SELECT * FROM ${table} ORDER BY rowid`)));
+  const before = snapshot();
+
+  const observed = batches.activeLeaseSnapshot(2_000, { reclaimExpired: false });
+
+  assert.deepEqual(observed, {
+    items: [{ itemKey: candidates[2].itemKey, batchId: "boundary-2" }],
+    itemKeys: [candidates[2].itemKey],
+    activeBatches: 1,
+    nextLeaseExpiresAt: 2_001,
+  });
+  assert.deepEqual(snapshot(), before);
+  assert.deepEqual(batches.activeLeaseSnapshot(2_000), observed);
+  assert.equal(
+    storage.scalar(
+      "SELECT COUNT(*) AS value FROM exact_review_publication_batches WHERE state = 'expired'",
+    ),
+    2,
+  );
+  assert.equal(
+    storage.scalar(
+      "SELECT COUNT(*) AS value FROM exact_review_publication_batch_items WHERE terminal_outcome = 'lease_expired'",
+    ),
+    2,
+  );
+  assert.deepEqual(snapshot()[2], before[2]);
+});
+
 test("batch schema migration derives a safe cap for an active legacy lease", () => {
   const storage = new TestStorage();
   storage.exec(

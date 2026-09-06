@@ -341,10 +341,10 @@ export class ExactReviewPublicationBatchStore {
     });
   }
 
-  activeLeaseSnapshot(now: number) {
+  activeLeaseSnapshot(now: number, options: { reclaimExpired?: boolean } = {}) {
     return this.storage.transactionSync(() => {
-      this.reclaimExpiredSync(now);
-      return this.activeLeaseSnapshotSync();
+      if (options.reclaimExpired !== false) this.reclaimExpiredSync(now);
+      return this.activeLeaseSnapshotSync(now);
     });
   }
 
@@ -569,7 +569,7 @@ export class ExactReviewPublicationBatchStore {
       );
       const counts = new Map(rows.map((row) => [String(row.state), Number(row.count)]));
       const leased = rows.find((row) => row.state === "leased");
-      const activeLease = this.activeLeaseSnapshotSync();
+      const activeLease = this.activeLeaseSnapshotSync(now);
       const reclaimedItemsRetained = Number(
         Array.from(
           this.storage.sql.exec(
@@ -628,15 +628,17 @@ export class ExactReviewPublicationBatchStore {
     }
   }
 
-  private activeLeaseSnapshotSync() {
+  private activeLeaseSnapshotSync(now: number) {
     const rows = Array.from(
       this.storage.sql.exec(
         `SELECT membership.item_key, membership.batch_id, batch.lease_expires_at
            FROM ${EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE} AS membership
            JOIN ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE} AS batch
              ON batch.batch_id = membership.batch_id
-          WHERE batch.state = 'leased' AND membership.terminal_outcome IS NULL
+          WHERE batch.state = 'leased' AND batch.lease_expires_at > ?
+            AND membership.terminal_outcome IS NULL
           ORDER BY membership.item_key`,
+        now,
       ),
     );
     return {

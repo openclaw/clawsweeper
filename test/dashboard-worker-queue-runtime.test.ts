@@ -38,6 +38,7 @@ import {
 } from "../src/hosted-target-admission.ts";
 import { directReReviewIntake } from "../src/repair/direct-re-review-admission.ts";
 import { EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_LIMIT } from "../dashboard/exact-review-decision.ts";
+import { ExactReviewPublicationBatchStore } from "../dashboard/exact-review-publication-batches.ts";
 
 function serializedConsoleCalls(calls: unknown[][]) {
   return calls
@@ -2292,6 +2293,182 @@ test("publication reconcile terminalizes a completed protocol-v1 publication aft
   });
 });
 
+test("publication reconciliation dry runs preserve canonical state after private transitions", async (t) => {
+  const now = Date.parse("2026-09-06T00:00:00Z");
+  t.mock.method(Date, "now", () => now);
+  for (const protocol of [1, 2]) {
+    let admission: HostedPublicTargetProbe = "public";
+    let targetTokens = 0;
+    let producerChecks = 0;
+    const harness = createExactReviewAdmissionHarness(
+      () => {
+        assert.fail("private targets must not be read");
+      },
+      {
+        hostedPublicTargetProbe: async () => admission,
+        targetAccessToken: (_installationId, init) => {
+          const body = JSON.parse(String(init?.body));
+          if (body.permissions?.issues || body.permissions?.pull_requests) targetTokens += 1;
+          return jsonResponse({ token: "queue-token" });
+        },
+        producerRun: (runId, _runAttempt, kind) => {
+          producerChecks += 1;
+          return jsonResponse({
+            id: runId,
+            run_attempt: 1,
+            status: "completed",
+            ...(kind === "attempt" ? { conclusion: "success" } : {}),
+          });
+        },
+      },
+    );
+    await withExactReviewAdmissionHarness(harness, async () => {
+      const itemNumber = 9380 + protocol;
+      const producerRunId = "30091560790";
+      const itemKey = `openclaw/gogcli#${itemNumber}@publish:${producerRunId}:1`;
+      const publication =
+        protocol === 1
+          ? legacyExactReviewPublicationOverrides(itemNumber, producerRunId)
+          : exactReviewPublicationOverrides(itemNumber, producerRunId);
+      assert.equal(
+        (
+          await harness.queue.fetch(
+            buildExactReviewQueueRequest(
+              `private-dry-run-v${protocol}`,
+              itemNumber,
+              "exact_review_artifact_publish",
+              "issue",
+              "openclaw/gogcli",
+              publication,
+            ),
+          )
+        ).status,
+        202,
+      );
+      const batches = new ExactReviewPublicationBatchStore(harness.storage);
+      batches.claim({
+        batchId: "expired-private-publication",
+        leaseOwner: "worker",
+        leaseExpiresAt: now,
+        now: now - 1,
+        maxItems: 1,
+        candidates: [{ itemKey, revision: 1 }],
+      });
+      const tables = Array.from(
+        harness.storage.sql.exec(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'exact_review_%' ORDER BY name",
+        ),
+        (row) => String(row.name),
+      );
+      const snapshot = async () => ({
+        tables: Object.fromEntries(
+          tables.map((table) => [
+            table,
+            Array.from(harness.storage.sql.exec(`SELECT * FROM ${table} ORDER BY rowid`)),
+          ]),
+        ),
+        alarm: await harness.storage.getAlarm(),
+      });
+      const before = await snapshot();
+      admission = "terminal";
+      const reconcile = (apply?: boolean) =>
+        harness.queue.fetch(
+          new Request("https://clawsweeper-exact-review-queue/publications/reconcile", {
+            method: "POST",
+            body: JSON.stringify({ ...(apply === undefined ? {} : { apply }), max_items: 1 }),
+          }),
+        );
+      for (const apply of [false, undefined]) {
+        const response = await reconcile(apply);
+        assert.equal(response.status, 200);
+        const result = await response.json();
+        assert.equal(result.changed, 0);
+        assert.equal(
+          protocol === 1
+            ? result.legacy_terminal_eligible
+            : result.legacy_state_batch_terminal_eligible,
+          1,
+        );
+        assert.deepEqual(await snapshot(), before);
+        assert.equal(targetTokens, 0);
+      }
+      assert.equal(producerChecks, protocol === 2 ? 4 : 0);
+      const applied = await (await reconcile(true)).json();
+      assert.equal(applied.changed, 1);
+      assert.equal(
+        Array.from(
+          harness.storage.sql.exec(
+            "SELECT item_key FROM exact_review_queue_items WHERE item_key = ?",
+            itemKey,
+          ),
+        ).length,
+        0,
+      );
+      assert.equal(
+        new ExactReviewLifecycleProjectionStore(harness.storage).read(
+          `openclaw/gogcli#${itemNumber}`,
+          itemKey,
+          1,
+        )?.terminalDisposition?.kind,
+        "superseded",
+      );
+      assert.equal(
+        Array.from(
+          harness.storage.sql.exec(
+            "SELECT state FROM exact_review_publication_batches WHERE batch_id = 'expired-private-publication'",
+          ),
+        )[0]?.state,
+        "expired",
+      );
+      assert.equal(targetTokens, 0);
+    });
+  }
+});
+
+test("publication reconciliation dry runs preserve expired batches without legacy candidates", async (t) => {
+  const now = Date.parse("2026-09-06T00:00:00Z");
+  t.mock.method(Date, "now", () => now);
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  // Initialize once before taking the raw baseline; cold-start migrations are
+  // independent of the reconciliation operation.
+  await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/publications/reconcile", {
+      method: "POST",
+      body: JSON.stringify({ apply: false, max_items: 1 }),
+    }),
+  );
+  const batches = new ExactReviewPublicationBatchStore(storage);
+  batches.claim({
+    batchId: "expired-without-candidate",
+    leaseOwner: "worker",
+    leaseExpiresAt: now,
+    now: now - 1,
+    maxItems: 1,
+    candidates: [{ itemKey: "openclaw/gogcli#9390@publish:30091560791:1", revision: 1 }],
+  });
+  const snapshot = () =>
+    [
+      "exact_review_queue_items",
+      "exact_review_queue_meta",
+      "exact_review_publication_batches",
+      "exact_review_publication_batch_items",
+      "exact_review_publication_batch_generations",
+    ].map((table) => Array.from(storage.sql.exec(`SELECT * FROM ${table} ORDER BY rowid`)));
+  const before = snapshot();
+  const alarm = await storage.getAlarm();
+  const response = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/publications/reconcile", {
+      method: "POST",
+      body: JSON.stringify({ apply: false, max_items: 1 }),
+    }),
+  );
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).changed, 0);
+  assert.deepEqual(snapshot(), before);
+  assert.equal(await storage.getAlarm(), alarm);
+});
+
 test("publication reconcile dry runs verify terminal legacy rows without deleting them", async () => {
   let terminal = false;
   let liveChecks = 0;
@@ -2400,6 +2577,33 @@ test("publication reconcile terminalizes a closed legacy publication after its l
     });
     await harness.storage.put("exact-review-queue", stored);
 
+    const durableSnapshot = async () => ({
+      tables: [
+        "exact_review_queue_items",
+        "exact_review_queue_meta",
+        "exact_review_lifecycle_projection_v1",
+        "exact_review_publication_batches",
+        "exact_review_publication_batch_items",
+        "exact_review_publication_batch_generations",
+      ].map((table) =>
+        Array.from(harness.storage.sql.exec(`SELECT * FROM ${table} ORDER BY rowid`)),
+      ),
+      alarm: await harness.storage.getAlarm(),
+    });
+    const before = await durableSnapshot();
+    const dryRun = await (
+      await harness.queue.fetch(
+        new Request("https://clawsweeper-exact-review-queue/publications/reconcile", {
+          method: "POST",
+          body: JSON.stringify({ apply: false, max_items: 100 }),
+        }),
+      )
+    ).json();
+    assert.equal(dryRun.changed, 0);
+    assert.equal(dryRun.legacy_terminal_eligible, 1);
+    assert.equal(probeState, "leased");
+    assert.deepEqual(await durableSnapshot(), before);
+
     const reconciled = await (
       await harness.queue.fetch(
         new Request("https://clawsweeper-exact-review-queue/publications/reconcile", {
@@ -2409,7 +2613,7 @@ test("publication reconcile terminalizes a closed legacy publication after its l
       )
     ).json();
 
-    assert.equal(liveChecks, 1);
+    assert.equal(liveChecks, 2);
     assert.equal(probeState, "pending");
     assert.equal(reconciled.changed, 1);
     const after = (await harness.storage.get("exact-review-queue")) as {
