@@ -652,6 +652,7 @@ test("keep-open PR comment carries the previous review as an earlier cycle", () 
     comment,
     /- reviewed 2026-06-20T10:00:00\.000Z sha abc1234def :: needs changes before merge\. :: \[P1\] Drop the stale cache before rebuild/,
   );
+  assert.match(comment, /_Reviewed .+\(Revision 2\)\._/);
 
   const parsed = parseReviewHistory(comment);
   assert.equal(parsed.cycles.length, 1);
@@ -669,6 +670,7 @@ test("re-syncing the same review does not add a duplicate cycle", () => {
   );
 
   assert.doesNotMatch(comment, /clawsweeper-review-history/);
+  assert.doesNotMatch(comment, /\(Revision/);
 });
 
 test("existing ledger cycles survive the next comment sync", () => {
@@ -693,6 +695,7 @@ test("existing ledger cycles survive the next comment sync", () => {
   assert.equal(parsed.totalCompletedCycles, 2);
   assert.equal(parsed.cycles[0]?.sha, "abc1234def");
   assert.equal(parsed.cycles[1]?.sha, CURRENT_REVIEW_HEAD_SHA);
+  assert.match(secondSync, /_Reviewed .+\(Revision 3\)\._/);
 });
 
 test("issue comments never carry a review history ledger", () => {
