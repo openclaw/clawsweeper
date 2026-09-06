@@ -121,7 +121,7 @@ export async function executeReviewProof(io: InlineProofIO): Promise<Record<stri
       try {
         const dispatched = proofRecord(
           await io.github(
-            `${prefix}/actions/workflows/${encodeURIComponent(profile.workflowPath)}/dispatches`,
+            `${prefix}/actions/workflows/${encodeURIComponent(profile.workflowPath.split("/").at(-1)!)}/dispatches`,
             {
               ref: "main",
               inputs: {

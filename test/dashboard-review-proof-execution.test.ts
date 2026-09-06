@@ -129,19 +129,48 @@ test("inline executor never retries uncertain dispatch and prepares trusted pins
   delete io.record.runId;
   const original = io.github;
   let dispatches = 0;
+  let dispatchedBody: unknown;
+  let preparedOperation: unknown;
   io.github = async (path, body) => {
     if (path.endsWith("/commits/main")) return { sha: "e".repeat(40) };
     if (body) {
       dispatches++;
-      assert.deepEqual(Object.keys(body as object).sort(), ["inputs", "ref"]);
-      assert.equal((updates[0] as any).operation, "prepared");
+      dispatchedBody = body;
+      preparedOperation = (updates[0] as any).operation;
       throw new Error("lost response");
     }
     return original(path);
   };
   assert.equal((await executeReviewProof(io)).reason, "dispatch_outcome_unknown_no_retry");
   assert.equal(dispatches, 1);
+  assert.deepEqual(Object.keys(dispatchedBody as object).sort(), ["inputs", "ref"]);
+  assert.equal(preparedOperation, "prepared");
   io.dispatch = false;
   await executeReviewProof(io);
   assert.equal(dispatches, 1);
 });
+
+for (const web of [false, true]) {
+  test(`inline ${web ? "Web UI" : "Telegram"} dispatch uses a workflow filename`, async () => {
+    const { io, f } = await fixture(web);
+    io.dispatch = true;
+    io.record.state = "dispatch_claimed";
+    delete io.record.producer;
+    delete io.record.runId;
+    const original = io.github;
+    let dispatchedPath: string | undefined;
+    io.github = async (path, body) => {
+      if (path.endsWith("/commits/main")) return { sha: "e".repeat(40) };
+      if (body) {
+        dispatchedPath = path;
+        return { id: 300 };
+      }
+      return original(path);
+    };
+    await executeReviewProof(io);
+    assert.equal(
+      dispatchedPath,
+      `repos/${f.claim.repository}/actions/workflows/${f.claim.workflowPath.split("/").at(-1)}/dispatches`,
+    );
+  });
+}
