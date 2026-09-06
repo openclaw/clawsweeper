@@ -57,9 +57,23 @@ global queue secret nor GitHub mutation credentials.
 Each proof request is bound to its owner lease, candidate head, scenario and
 canonical plan digest in the existing queue item. A review may admit at most
 three distinct plans; repeated requests deduplicate without dispatching again.
-These are three plans, not three supported scenario types. Checks consume the
-existing review budget, with time reserved for its final decision. There is no
-promise of a fixed duration or sequential three-check batch on every review.
+These are three plans, not three supported scenario types. All plans share a
+20-minute ceiling starting with the first request, not 20 minutes each. Completed
+checks return immediately; the ceiling is not a mandatory wait. The client uses
+the queue's authoritative expiry and retains the earliest deadline for the same
+review capability; later plans cannot restart the clock. Checks also
+consume the existing review budget, with up to 90 seconds reserved for its final
+decision. With the default 20-minute review timeout, proof can use at most
+18 minutes 30 seconds if requested immediately, and less after review analysis.
+There is no promise of a fixed duration or sequential three-check batch on every
+review. The enclosing review timeout, producer job limit, credential lifetime and
+Crabbox limits are unchanged.
+
+Client timeout or cancellation returns inconclusive and aborts its HTTP wait; it
+does not itself cancel a dispatched workflow or physically reap its box. Existing
+producer admission checks reject expired proof authority or a lost review owner.
+Producer renewal and cleanup retain their own existing boundaries; do not infer
+physical resource cleanup solely from the client returning.
 
 The trusted Worker prepares the producer identity and dispatches the matching
 OpenClaw workflow on `main`. It verifies the live PR body, base/head and branch,

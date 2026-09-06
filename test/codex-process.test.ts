@@ -40,7 +40,7 @@ test("inline proof returns real HTTP observations to one original app-server tur
         if (value.lease.leaseId === 'test-lease' && value.operation === 'capabilities') { res.setHeader('content-type','application/json');res.end(JSON.stringify({ok:true,allowedScenarios:['telegram-bot-e2e-proof']}));return; }
         if (value.lease.leaseId !== 'test-lease' || value.operation !== 'request') { res.writeHead(409);res.end();return; }
         res.setHeader('content-type','application/json');
-        res.end(JSON.stringify({state:'completed',result:{assertion:'reviewer_must_evaluate',observations:[{text:'Observed help response'}]}}));
+        res.end(JSON.stringify({state:'completed',expiresAt:Date.now()+20*60000,result:{assertion:'reviewer_must_evaluate',observations:[{text:'Observed help response'}]}}));
       });
     });
     server.listen(0,'127.0.0.1',()=>console.log(server.address().port));

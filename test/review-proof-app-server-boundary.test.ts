@@ -22,7 +22,7 @@ async function exercise(mode: "boundaries" | "deadline" | "selection") {
         if(JSON.parse(body).operation==='capabilities'){res.setHeader('content-type','application/json');res.end(JSON.stringify({ok:true,allowedScenarios:${JSON.stringify(mode)}==='selection'?['web-ui-chat-proof']:['telegram-bot-e2e-proof']}));return;}
         fs.appendFileSync(${JSON.stringify(requestsPath)},body+'\\n');
         if(${JSON.stringify(mode)}==='deadline')return;
-        setTimeout(()=>{res.setHeader('content-type','application/json');res.end(JSON.stringify({state:'completed',observations:['observed']}));},100);
+        setTimeout(()=>{res.setHeader('content-type','application/json');res.end(JSON.stringify({state:'completed',expiresAt:Date.now()+20*60000,observations:['observed']}));},100);
       });
     });server.listen(0,'127.0.0.1',()=>console.log(server.address().port));
   `,

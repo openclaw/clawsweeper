@@ -5344,6 +5344,7 @@ async function reviewProofRequest(request: Request, env) {
       ...result,
       requestId: admitted.record.requestId,
       planSha256: admitted.record.planSha256,
+      expiresAt: admitted.record.expiresAt,
     });
   } catch {
     await update({ state: "inconclusive", reason: "proof_execution_unavailable" });

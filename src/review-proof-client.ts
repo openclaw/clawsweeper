@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import { validReviewProofPlan, validFixedWebUiProofPlan } from "./review-proof-plan.js";
-import { REVIEW_PROOF_RESPONSE_MAX_BYTES } from "./review-proof-limits.js";
+import {
+  REVIEW_PROOF_LIFETIME_MS,
+  REVIEW_PROOF_RESPONSE_MAX_BYTES,
+} from "./review-proof-limits.js";
 
 export interface ReviewProofCapability {
   queueUrl: string;
@@ -15,6 +18,8 @@ export interface ReviewProofCapability {
     sourceHeadSha: string;
   };
 }
+
+const proofDeadlines = new WeakMap<ReviewProofCapability, { owner: string; expiresAt: number }>();
 
 /** Resolve policy from the owning queue item, never from model-visible prompt text. */
 export async function resolveReviewProofCapability(
@@ -199,14 +204,21 @@ export async function requestReviewProof(
     return { status: "inconclusive", reason: "Invalid or oversized data-only proof plan." };
   }
   const planSha256 = createHash("sha256").update(canonicalProofPlan(proofPlan)).digest("hex");
-  const deadline = Date.now() + 15 * 60_000;
+  const owner = canonicalProofPlan({ queueUrl: capability.queueUrl, lease: capability.lease });
+  const previous = proofDeadlines.get(capability);
+  let deadline =
+    previous?.owner === owner ? previous.expiresAt : Date.now() + REVIEW_PROOF_LIFETIME_MS;
+  proofDeadlines.set(capability, { owner, expiresAt: deadline });
   let operation = "request";
   while (!signal.aborted && Date.now() < deadline) {
     try {
       const response = await fetcher(new URL("/internal/exact-review/proof", capability.queueUrl), {
         method: "POST",
         redirect: "error",
-        signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+        signal: AbortSignal.any([
+          signal,
+          AbortSignal.timeout(Math.max(1, Math.min(30_000, deadline - Date.now()))),
+        ]),
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           lease: capability.lease,
@@ -237,7 +249,15 @@ export async function requestReviewProof(
         }
         chunks.push(part.value);
       }
+      if (signal.aborted || Date.now() >= deadline) throw new Error("proof deadline expired");
       const result = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+      if (["completed", "pending", "dispatch_claimed"].includes(String(result.state))) {
+        if (!Number.isSafeInteger(result.expiresAt) || Number(result.expiresAt) <= 0)
+          throw new Error("missing or invalid proof expiry");
+        deadline = Math.min(deadline, Number(result.expiresAt));
+        proofDeadlines.set(capability, { owner, expiresAt: deadline });
+        if (Date.now() >= deadline) throw new Error("proof deadline expired");
+      }
       if (result.state !== "pending" && result.state !== "dispatch_claimed") return result;
       operation = "poll";
       await new Promise<void>((resolve) => {
@@ -246,8 +266,9 @@ export async function requestReviewProof(
           signal.removeEventListener("abort", done);
           resolve();
         };
-        const timer = setTimeout(done, 3000);
+        const timer = setTimeout(done, Math.max(0, Math.min(3000, deadline - Date.now())));
         signal.addEventListener("abort", done, { once: true });
+        if (signal.aborted) done();
       });
     } catch {
       return {

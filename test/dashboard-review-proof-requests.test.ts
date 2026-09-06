@@ -163,6 +163,7 @@ for (const change of [
                 ...output,
                 requestId: stored.requestId,
                 planSha256: stored.planSha256,
+                expiresAt: stored.expiresAt,
               }),
             );
           } else if (request.url === "/update") {
@@ -367,6 +368,69 @@ test("review proof is durable, plan-bound, at-most-once and limited to three pla
   assert.equal((await f.post(f.plan("two"))).body.dispatch, true);
   assert.equal((await f.post(f.plan("three"))).body.dispatch, true);
   assert.equal((await f.post(f.plan("four"))).body.error, "review_proof_budget_exhausted");
+});
+
+test("all proof plans share twenty minutes and expired producer authority stays fenced", async (t) => {
+  const started = Date.now();
+  t.mock.timers.enable({ apis: ["Date"], now: started });
+  const f = await fixture();
+  const first = await f.post(f.plan());
+  assert.equal(first.body.record.expiresAt, started + 20 * 60_000);
+  const producer = {
+    workflowSha: "b".repeat(40),
+    harnessSha: "b".repeat(40),
+    workflowPath: ".github/workflows/mantis-telegram-bot-e2e-proof.yml",
+    workflowRef: "main",
+    repositoryId: "123",
+    bodySha256: "c".repeat(64),
+    baseSha: "d".repeat(40),
+    targetBranch: "main",
+  };
+  assert.equal(
+    (
+      await f.post(
+        { lease: f.lease, requestId: first.body.record.requestId, operation: "prepared", producer },
+        "/review-proof/update",
+      )
+    ).status,
+    200,
+  );
+  t.mock.timers.tick(16 * 60_000);
+  const redemption = {
+    requestId: first.body.record.requestId,
+    runId: "300",
+    runAttempt: 1,
+    planSha256: f.plan().planSha256,
+  };
+  for (const route of ["/review-proof/producer-record", "/review-proof/redeem"])
+    assert.equal((await f.post(redemption, route)).status, 200);
+  const second = await f.post(f.plan("second"));
+  assert.equal(second.status, 200);
+  assert.equal(second.body.record.expiresAt, first.body.record.expiresAt);
+  assert.equal(second.body.dispatch, true);
+  const stillActive = await f.post({ ...f.plan(), operation: "poll" });
+  assert.equal(stillActive.body.record.state, "dispatch_claimed");
+  assert.equal(stillActive.body.record.runId, "300");
+  t.mock.timers.tick(4 * 60_000);
+  assert.equal((await f.post(f.plan("third"))).body.error, "review_proof_budget_expired");
+  const expired = await f.post({ ...f.plan(), operation: "poll" });
+  assert.equal(expired.body.record.state, "inconclusive");
+  assert.equal(expired.body.record.reason, "proof_deadline_expired");
+  for (const route of ["/review-proof/producer-record", "/review-proof/redeem"])
+    assert.equal(
+      (
+        await f.post(
+          {
+            requestId: first.body.record.requestId,
+            runId: "300",
+            runAttempt: 1,
+            planSha256: f.plan().planSha256,
+          },
+          route,
+        )
+      ).status,
+      409,
+    );
 });
 
 test("review proof rejects every stale owner field and forged plan digest", async () => {

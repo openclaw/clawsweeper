@@ -28,6 +28,138 @@ const env = {
   GITHUB_RUN_ATTEMPT: "1",
   EXACT_REVIEW_SOURCE_HEAD_SHA: "a".repeat(40),
 };
+
+test("a second proof call cannot deliver after the first plan's authoritative expiry", async (t) => {
+  const started = Date.now();
+  t.mock.timers.enable({ apis: ["Date"], now: started });
+  const capability = reviewProofCapabilityFromEnv("openclaw/openclaw", "a".repeat(40), env)!;
+  capability.allowedScenarios = ["telegram-bot-e2e-proof"];
+  const completed = {
+    state: "completed",
+    expiresAt: started + 20 * 60_000,
+    result: { observations: "synthetic" },
+  };
+  assert.deepEqual(
+    await requestReviewProof(capability, plan, new AbortController().signal, async () =>
+      Response.json(completed),
+    ),
+    completed,
+  );
+  t.mock.timers.tick(16 * 60_000);
+  const result = await requestReviewProof(
+    capability,
+    { ...plan, claim: "Second claim" },
+    new AbortController().signal,
+    async () => {
+      t.mock.timers.tick(4 * 60_000);
+      return Response.json(completed);
+    },
+  );
+  assert.equal((result as { status: string }).status, "inconclusive");
+  assert.equal((result as { result?: unknown }).result, undefined);
+});
+
+test("proof expiry is mandatory, safe, and cannot extend earlier queue authority", async (t) => {
+  const started = Date.now();
+  t.mock.timers.enable({ apis: ["Date"], now: started });
+  const capability = reviewProofCapabilityFromEnv("openclaw/openclaw", "a".repeat(40), env)!;
+  capability.allowedScenarios = ["telegram-bot-e2e-proof"];
+  for (const expiresAt of [undefined, null, 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, "later"]) {
+    const result = await requestReviewProof(
+      capability,
+      plan,
+      new AbortController().signal,
+      async () =>
+        Response.json({ state: "completed", expiresAt, result: { observations: "synthetic" } }),
+    );
+    assert.equal((result as { status: string }).status, "inconclusive");
+  }
+  const result = await requestReviewProof(
+    capability,
+    plan,
+    new AbortController().signal,
+    async () => Response.json({ state: "completed", expiresAt: started + 60_000 }),
+  );
+  assert.equal((result as { state: string }).state, "completed");
+  t.mock.timers.tick(60_000);
+  let calls = 0;
+  assert.equal(
+    (
+      (await requestReviewProof(capability, plan, new AbortController().signal, async () => {
+        calls++;
+        return Response.json({ state: "completed", expiresAt: Date.now() + 20 * 60_000 });
+      })) as { status: string }
+    ).status,
+    "inconclusive",
+  );
+  assert.equal(calls, 0);
+  capability.lease = { ...capability.lease, leaseId: "new-owner", claimGeneration: 3 };
+  assert.equal(
+    (
+      (await requestReviewProof(capability, plan, new AbortController().signal, async () =>
+        Response.json({ state: "completed", expiresAt: Date.now() + 20 * 60_000 }),
+      )) as { state: string }
+    ).state,
+    "completed",
+  );
+});
+
+test("pending proof keeps polling after fifteen minutes and returns as soon as completed", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const capability = reviewProofCapabilityFromEnv("openclaw/openclaw", "a".repeat(40), env)!;
+  capability.allowedScenarios = ["telegram-bot-e2e-proof"];
+  let calls = 0;
+  const completed = {
+    state: "completed",
+    expiresAt: Date.now() + 20 * 60_000,
+    result: { observations: "synthetic" },
+  };
+  const result = await requestReviewProof(
+    capability,
+    plan,
+    new AbortController().signal,
+    async () => {
+      calls++;
+      if (calls === 1) {
+        t.mock.timers.tick(16 * 60_000);
+        return Response.json({ state: "pending", expiresAt: completed.expiresAt });
+      }
+      return Response.json(completed);
+    },
+  );
+  assert.equal(calls, 2);
+  assert.deepEqual(result, completed);
+});
+
+for (const elapsed of [0, 16 * 60_000, 20 * 60_000]) {
+  test(`proof completion respects the shared twenty-minute ceiling (${elapsed}ms)`, async (t) => {
+    t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+    const capability = reviewProofCapabilityFromEnv("openclaw/openclaw", "a".repeat(40), env)!;
+    capability.allowedScenarios = ["telegram-bot-e2e-proof"];
+    const response = {
+      state: "completed",
+      expiresAt: Date.now() + 20 * 60_000,
+      result: { observations: "synthetic" },
+    };
+    let calls = 0;
+    const result = await requestReviewProof(
+      capability,
+      plan,
+      new AbortController().signal,
+      async () => {
+        calls++;
+        t.mock.timers.tick(elapsed);
+        return Response.json(response);
+      },
+    );
+    assert.equal(calls, 1);
+    if (elapsed < 20 * 60_000) assert.deepEqual(result, response);
+    else {
+      assert.equal((result as { status: string }).status, "inconclusive");
+      assert.equal((result as { result?: unknown }).result, undefined);
+    }
+  });
+}
 test("inline proof requires existing exact-head review capability, without new configuration", () => {
   assert.ok(reviewProofCapabilityFromEnv("openclaw/openclaw", "a".repeat(40), env));
   for (const key of Object.keys(env))
@@ -69,6 +201,7 @@ test("proof returns complete observations from trusted transport without judging
   capability.allowedScenarios = ["telegram-bot-e2e-proof"];
   const observation = {
     state: "completed",
+    expiresAt: Date.now() + 20 * 60_000,
     result: { observations: { events: [{ text: "help" }] }, assertion: "reviewer_must_evaluate" },
   };
   const result = await requestReviewProof(

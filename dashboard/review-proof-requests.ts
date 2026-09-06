@@ -3,7 +3,7 @@ import { stableJson } from "../src/stable-json.ts";
 import { validReviewProofPlan } from "../src/review-proof-plan.ts";
 import { sha256Hex } from "./exact-review-direct-publication.ts";
 
-export const REVIEW_PROOF_LIFETIME_MS = 15 * 60_000;
+export { REVIEW_PROOF_LIFETIME_MS } from "../src/review-proof-limits.ts";
 export type ReviewProofLease = {
   itemKey: string;
   leaseId: string;
