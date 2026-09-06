@@ -721,13 +721,15 @@ export function mergePendingExactReviewDecision(
   return merged;
 }
 
-export function exactReviewDecisionHasCommandContext(decision: ExactReviewDecision) {
+export function exactReviewDecisionHasCommandContext(
+  decision: Pick<ExactReviewDecision, "commandStatusMarker" | "statusCommentId">,
+) {
   return Boolean(decision.commandStatusMarker || decision.statusCommentId);
 }
 
 export function exactReviewCommandObligationSurvives(
-  current: ExactReviewDecision,
-  incoming: ExactReviewDecision,
+  current: Pick<ExactReviewDecision, "commandStatusMarker" | "statusCommentId">,
+  incoming: Pick<ExactReviewDecision, "commandStatusMarker" | "statusCommentId">,
 ) {
   if (!exactReviewDecisionHasCommandContext(current)) return true;
   if (!exactReviewDecisionHasCommandContext(incoming)) return false;

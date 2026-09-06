@@ -276,6 +276,15 @@ type ExactReviewTerminalFinalization = {
    */
   projection?: ExactReviewLifecycleProjectionIdentity;
 };
+type PublicationSuccessorWitness = {
+  targetKey: string;
+  predecessorQueueRevision: number;
+  predecessorSourceRevision: number;
+  sourceHead: number;
+} & (
+  | { state: "verified"; successorItemKey: string; successorQueueRevision: number }
+  | { state: "blocked" }
+);
 export type ExactReviewQueueItem = {
   key: string;
   decision: ExactReviewDecision;
@@ -314,6 +323,7 @@ export type ExactReviewQueueItem = {
   lastFailureReason?: ExactReviewPublicationReasonCode;
   firstFailureAt?: number;
   publicationFailureAttempts?: number;
+  publicationSuccessorWitness?: PublicationSuccessorWitness;
   reviewFailureAttempts?: number;
   reviewRetryPolicyEpoch?: string;
   reviewRecoveryReason?: ExactReviewReviewRecoveryReason;
@@ -1567,6 +1577,9 @@ export class ExactReviewQueue {
           return { deduped: true as const, crossRoute: true as const, key, state };
         }
         let supersededPublications = 0;
+        const priorPublicationHead = incomingPublicationRevision
+          ? this.publicationHeadRevisionSync(incomingPublicationRevision.targetKey)
+          : 0;
         if (incomingPublicationRevision) {
           const incomingLineage = exactReviewPublicationLineage(decision);
           const matching = Object.values(state.items)
@@ -1701,6 +1714,10 @@ export class ExactReviewQueue {
                 retained.item.updatedAt = now;
               }
               if (semanticIngress) {
+                this.updatePublicationSuccessorWitnesses(
+                  state,
+                  new Set([incomingPublicationRevision.targetKey]),
+                );
                 this.writeStateSync(state);
                 this.incrementQueueMetricsSync({
                   publicationCompleted: semanticDuplicatesRemoved,
@@ -2092,6 +2109,13 @@ export class ExactReviewQueue {
         }
         if (ingressAdmitted && state.items[key]) {
           this.recordLifecycleAdmission(state.items[key], state.items[key].decision, now);
+        }
+        if (incomingPublicationRevision && state.items[key]) {
+          this.updatePublicationSuccessorWitnesses(
+            state,
+            new Set([incomingPublicationRevision.targetKey]),
+            ingressAdmitted ? { itemKey: key, priorHead: priorPublicationHead } : undefined,
+          );
         }
         if (semanticEdited) this.recordEditedSemanticInputSync(semanticEdited, now);
         this.writeStateSync(state);
@@ -3680,6 +3704,10 @@ export class ExactReviewQueue {
           };
           owned.decision = publicationDecision;
           owned.leaseDecision = publicationDecision;
+          this.updatePublicationSuccessorWitnesses(
+            state,
+            new Set([publication.itemKey.toLowerCase()]),
+          );
           // The canonical record is durable, but its router handoff and guarded
           // command-status edit are separate lifecycle post-effects. Keep this
           // converted publication lease recoverable until that finalizer reports
@@ -6815,6 +6843,179 @@ export class ExactReviewQueue {
     return "verified" as const;
   }
 
+  private publicationWitnessTarget(item: ExactReviewQueueItem) {
+    const revision = exactReviewPublicationRevision(item.decision);
+    const producer = item.decision.publication?.producerDecision;
+    const canonicalTargetKey = producer ? `${producer.targetRepo}#${producer.itemNumber}` : "";
+    return revision &&
+      producer &&
+      revision.targetKey ===
+        `${item.decision.targetRepo}#${item.decision.itemNumber}`.toLowerCase() &&
+      revision.targetKey === canonicalTargetKey.toLowerCase()
+      ? { ...revision, canonicalTargetKey }
+      : null;
+  }
+
+  private publicationWitness(item: ExactReviewQueueItem) {
+    if (item.publicationSuccessorWitness === undefined) return undefined;
+    const witness = item.publicationSuccessorWitness;
+    const revision = this.publicationWitnessTarget(item);
+    if (
+      !witness ||
+      !revision ||
+      typeof witness.targetKey !== "string" ||
+      witness.targetKey.toLowerCase() !== revision.targetKey ||
+      witness.predecessorQueueRevision !== item.revision ||
+      witness.predecessorSourceRevision !== revision.sourceRevision ||
+      !Number.isSafeInteger(witness.sourceHead) ||
+      witness.sourceHead <= revision.sourceRevision ||
+      (witness.state !== "blocked" && witness.state !== "verified") ||
+      Object.keys(witness).length !== (witness.state === "verified" ? 7 : 5) ||
+      (witness.state === "verified" &&
+        (typeof witness.successorItemKey !== "string" ||
+          !witness.successorItemKey.toLowerCase().startsWith(`${revision.targetKey}@publish:`) ||
+          !Number.isSafeInteger(witness.successorQueueRevision) ||
+          witness.successorQueueRevision < 1))
+    )
+      return null;
+    return witness;
+  }
+
+  private publicationSuccessorEvidence(
+    item: ExactReviewQueueItem,
+    successor: ExactReviewQueueItem | null | undefined,
+    sourceHead: number,
+  ) {
+    const witness = this.publicationWitness(item);
+    if (witness !== undefined) {
+      // Known ambiguity survives disappearance and redelivery. Never fall back
+      // to a remaining live row when retained authority is blocked or invalid.
+      if (!witness || witness.state === "blocked" || witness.sourceHead !== sourceHead)
+        return { state: "ambiguous" as const, admission: null };
+      const admission = this.lifecycleProjectionStore.read(
+        witness.targetKey,
+        witness.successorItemKey,
+        witness.successorQueueRevision,
+      )?.admission;
+      if (!admission) return { state: "admission_missing" as const, admission: null };
+      if (
+        successor !== undefined &&
+        (!successor ||
+          successor.key !== witness.successorItemKey ||
+          successor.revision !== witness.successorQueueRevision ||
+          this.publicationWitnessTarget(successor)?.canonicalTargetKey !== witness.targetKey)
+      )
+        return { state: "ambiguous" as const, admission: null };
+      if (successor) {
+        const state = this.publicationSuccessorFenceState(successor);
+        if (state !== "verified") return { state, admission: null };
+      }
+      return { state: "verified" as const, admission };
+    }
+    const state = this.publicationSuccessorFenceState(successor);
+    const producer = successor?.decision.publication?.producerDecision;
+    const admission =
+      state === "verified" && successor && producer && this.publicationWitnessTarget(successor)
+        ? (this.lifecycleProjectionStore.read(
+            `${producer.targetRepo}#${producer.itemNumber}`,
+            successor.key,
+            successor.revision,
+          )?.admission ?? null)
+        : null;
+    return {
+      state: state === "verified" && !admission ? ("admission_missing" as const) : state,
+      admission,
+    };
+  }
+
+  private updatePublicationSuccessorWitnesses(
+    state: ExactReviewQueueState,
+    targets: ReadonlySet<string>,
+    admitted?: { itemKey: string; priorHead: number },
+  ) {
+    const heads = new Map(this.publicationHeadsSync(state));
+    const entries = Object.values(state.items).flatMap((item) => {
+      const revision = exactReviewPublicationRevision(item.decision);
+      return !item.terminalFinalization && revision && targets.has(revision.targetKey)
+        ? [{ item, revision }]
+        : [];
+    });
+    const successors = new Map<string, ExactReviewQueueItem | null>();
+    for (const { revision } of entries)
+      heads.set(
+        revision.targetKey,
+        Math.max(heads.get(revision.targetKey) ?? 0, revision.sourceRevision),
+      );
+    for (const { item, revision } of entries) {
+      if (revision.sourceRevision === heads.get(revision.targetKey))
+        successors.set(revision.targetKey, successors.has(revision.targetKey) ? null : item);
+    }
+    for (const { item, revision } of entries) {
+      if (!exactReviewDecisionHasCommandContext(item.decision.publication!.producerDecision))
+        continue;
+      const prior = this.publicationWitness(item);
+      const retainedHead = Number.isSafeInteger(item.publicationSuccessorWitness?.sourceHead)
+        ? item.publicationSuccessorWitness!.sourceHead
+        : 0;
+      const sourceHead = Math.max(heads.get(revision.targetKey) ?? 0, retainedHead);
+      if (sourceHead <= revision.sourceRevision) continue;
+      const successor = successors.get(revision.targetKey);
+      const evidence = this.publicationSuccessorEvidence(item, successor, sourceHead);
+      const priorSuccessor =
+        prior?.state === "verified" ? state.items[prior.successorItemKey] : null;
+      const invalidPrior =
+        prior === null ||
+        (prior?.state === "verified" &&
+          (!this.lifecycleProjectionStore.read(
+            prior.targetKey,
+            prior.successorItemKey,
+            prior.successorQueueRevision,
+          ) ||
+            (priorSuccessor &&
+              priorSuccessor.revision === prior.successorQueueRevision &&
+              (this.publicationWitnessTarget(priorSuccessor)?.canonicalTargetKey !==
+                prior.targetKey ||
+                this.publicationSuccessorFenceState(priorSuccessor) !== "verified"))));
+      const advancing =
+        admitted &&
+        successor?.key === admitted.itemKey &&
+        sourceHead > admitted.priorHead &&
+        sourceHead > retainedHead;
+      const verified =
+        !invalidPrior &&
+        ((advancing &&
+          this.publicationWitnessTarget(successor!) &&
+          this.publicationSuccessorFenceState(successor) === "verified") ||
+          (prior?.state === "verified" && evidence.state === "verified"));
+      // Only a new unique admission may raise authority. Semantic refresh,
+      // direct conversion, and reconciliation can preserve or block it only.
+      const verifiedTuple =
+        verified &&
+        (advancing
+          ? successor
+          : prior?.state === "verified"
+            ? { key: prior.successorItemKey, revision: prior.successorQueueRevision }
+            : null);
+      item.publicationSuccessorWitness = {
+        targetKey: verifiedTuple
+          ? advancing
+            ? `${successor!.decision.publication!.producerDecision.targetRepo}#${successor!.decision.publication!.producerDecision.itemNumber}`
+            : prior!.targetKey
+          : revision.targetKey,
+        predecessorQueueRevision: item.revision,
+        predecessorSourceRevision: revision.sourceRevision,
+        sourceHead,
+        ...(verifiedTuple
+          ? {
+              state: "verified",
+              successorItemKey: verifiedTuple.key,
+              successorQueueRevision: verifiedTuple.revision,
+            }
+          : { state: "blocked" }),
+      };
+    }
+  }
+
   private stalePublicationCandidatesSync(
     state: ExactReviewQueueState,
     activeBatchItemKeys: ReadonlySet<string>,
@@ -6896,9 +7097,16 @@ export class ExactReviewQueue {
           "terminal_missing"
         )
           continue;
-        if (this.publicationSuccessorFenceState(successor) !== "verified" || !successor) continue;
-        const successorProducer = successor.decision.publication!.producerDecision;
-        const requeue = exactReviewCommandObligationSurvives(producer, successorProducer);
+        const evidence = this.publicationSuccessorEvidence(
+          current,
+          successor,
+          newestByTarget.get(currentRevision.targetKey)!,
+        );
+        if (evidence.state !== "verified" || !evidence.admission) continue;
+        const requeue = exactReviewCommandObligationSurvives(producer, {
+          commandStatusMarker: evidence.admission.statusMarker ?? undefined,
+          statusCommentId: evidence.admission.statusCommentId ?? undefined,
+        });
         terminalized.push(
           this.recordLifecycleTerminalDispositionSync(
             exactReviewTerminalFinalizationProjection(current, current.revision),
@@ -7102,6 +7310,7 @@ export class ExactReviewQueue {
     );
     const changedKeys = new Set<string>();
     const changedLineages = new Set<string>();
+    const changedLineageTargets = new Set<string>();
     let staleRevisionChanged = 0;
     let lineageDuplicateChanged = 0;
     let lineageRefreshed = 0;
@@ -7154,6 +7363,7 @@ export class ExactReviewQueue {
           else {
             lineageDuplicateChanged += 1;
             if (candidate.lineageKey) changedLineages.add(candidate.lineageKey);
+            changedLineageTargets.add(candidate.revision.targetKey);
           }
         }
 
@@ -7186,6 +7396,7 @@ export class ExactReviewQueue {
           lineageRefreshed += 1;
         }
         if (changedKeys.size) {
+          this.updatePublicationSuccessorWitnesses(state, changedLineageTargets);
           this.writeStateSync(state);
           this.incrementQueueMetricsSync({
             publicationCompleted: changedKeys.size,
@@ -7302,7 +7513,11 @@ export class ExactReviewQueue {
             successor_fence_state:
               reason === "stale_revision" &&
               safety.acknowledgement_unavailable_reason === "terminal_missing"
-                ? this.publicationSuccessorFenceState(successors.get(revision.targetKey))
+                ? this.publicationSuccessorEvidence(
+                    item,
+                    successors.get(revision.targetKey),
+                    newestByTarget.get(revision.targetKey)!,
+                  ).state
                 : null,
             ...safety,
           };

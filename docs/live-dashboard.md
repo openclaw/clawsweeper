@@ -652,6 +652,15 @@ admission: the same marker and comment requeues without a finalizer, while a
 changed address or non-command successor records superseded with an acknowledgement
 driver. Missing, ambiguous, or mismatched successor state stays retained fail-closed;
 duplicate-lineage and legacy terminal cleanup remains operator-owned.
+New publication admissions retain one predecessor-bound successor witness, so
+the successor's normal completion cannot erase command ownership evidence.
+Same-source conflicts remain blocked through removal, restart, and redelivery;
+only a unique, verified admission beyond both the durable source head and the
+retained conflict can establish newer authority. Direct publication conversion
+can block authority but cannot establish it. Malformed or mismatched evidence
+fails closed. Historical rows whose successor disappeared before evidence was
+retained are not automatically repaired. This private queue state changes no
+Bay response or action contract.
 Authenticated reconciliation samples report `successor_fence_state` only for
 `stale_revision` rows whose acknowledgement is unavailable because the terminal
 disposition is missing. `verified` is diagnostic evidence, never mutation

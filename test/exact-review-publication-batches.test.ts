@@ -1916,6 +1916,652 @@ for (const [scenario, successorMarker, successorComment, terminal] of [
   });
 }
 
+test("alarm supersedes an expired command after its newer publication has completed routing", async (t) => {
+  const h = admissionQueue(t, {
+    EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT: "2",
+    EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
+  });
+  const number = 108740;
+  const canonicalTargetKey = `openclaw/openclaw#${number}`;
+  const lifecycle = new ExactReviewLifecycleProjectionStore(h.storage);
+  const batches = new ExactReviewPublicationBatchStore(h.storage);
+  const enqueue = async (sourceRevision: number, producerRunId: string, markerDigest: string) => {
+    const body = await publicationRequest(
+      `completed-successor-${sourceRevision}`,
+      number,
+      producerRunId,
+      "openclaw/openclaw",
+      sourceRevision,
+    ).json();
+    const command = {
+      commandStatusMarker: `<!-- clawsweeper-command-status:${number}:re_review:${markerDigest.repeat(40)} -->`,
+      statusCommentId: number * 10 + sourceRevision,
+    };
+    Object.assign(body.decision, command);
+    Object.assign(body.decision.publication.producerDecision, command);
+    const response = await h.queue.fetch(batchRequest("/enqueue", body));
+    assert.equal(response.status, 202, JSON.stringify(await response.clone().json()));
+    return response.json();
+  };
+  const claim = (suffix: string, runId: string, runAttempt: number) =>
+    h.claim({
+      claim_id: `completed-successor-${suffix}`,
+      lease_owner: `completed-successor-worker-${suffix}`,
+      max_items: 1,
+      runner_run_id: runId,
+      runner_run_attempt: runAttempt,
+      runner_started_at: new Date(h.now).toISOString(),
+    });
+
+  await enqueue(1, "27401", "a");
+  const claimA = await claim("a", "97401", 1);
+  assert.equal(claimA.claimed, true, JSON.stringify(claimA));
+  assert.equal(claimA.batch.items.length, 1);
+  const memberA = claimA.batch.items[0];
+  const expiryA = Date.parse(claimA.batch.lease_expires_at);
+  assert.ok(expiryA > h.now);
+  h.now += 1;
+  await enqueue(2, "27402", "b");
+  const claimB = await claim("b", "97402", 2);
+  assert.equal(claimB.claimed, true, JSON.stringify(claimB));
+  assert.equal(claimB.batch.items.length, 1);
+  const memberB = claimB.batch.items[0];
+  assert.notEqual(memberA.item_key, memberB.item_key);
+  assert.notEqual(claimA.batch.batch_id, claimB.batch.batch_id);
+  const identityA = () => lifecycle.read(canonicalTargetKey, memberA.item_key, memberA.revision);
+  const identityB = () => lifecycle.read(canonicalTargetKey, memberB.item_key, memberB.revision);
+  const activeA = batches.fetch(claimA.batch.batch_id, "completed-successor-worker-a", h.now);
+  assert.equal(activeA?.state, "leased");
+  assert.equal(activeA.items[0]?.terminalOutcome, null);
+  assert.equal(identityA()?.terminalDisposition, null);
+  assert.equal(identityA()?.admission.commandOriginated, true);
+  assert.equal(identityB()?.admission.commandOriginated, true);
+  assert.notEqual(identityA()?.admission.statusMarker, identityB()?.admission.statusMarker);
+  assert.notEqual(identityA()?.admission.statusCommentId, identityB()?.admission.statusCommentId);
+
+  const publishedResponse = await h.queue.fetch(
+    batchRequest(
+      "/publication-batch-results",
+      directPlan(canonicalTargetKey, memberB.revision, {
+        fenceKey: memberB.item_key,
+        claimGeneration: memberB.claim_generation,
+      }),
+    ),
+  );
+  const published = await publishedResponse.json();
+  assert.equal(publishedResponse.status, 202, JSON.stringify(published));
+  assert.equal(published.accepted, true, JSON.stringify(published));
+  const receiptId = "router-completed-successor:97402:2";
+  const routedResponse = await h.queue.fetch(
+    batchRequest("/lifecycle/router-receipt", {
+      canonical_target_key: canonicalTargetKey,
+      fence_key: memberB.item_key,
+      revision: memberB.revision,
+      receipt_id: receiptId,
+    }),
+  );
+  const routed = await routedResponse.json();
+  assert.equal(routedResponse.status, 200, JSON.stringify(routed));
+  const completedResponse = await h.queue.fetch(
+    batchRequest("/publication-batches/complete", {
+      batch_id: claimB.batch.batch_id,
+      lease_owner: "completed-successor-worker-b",
+      items: [
+        {
+          item_key: memberB.item_key,
+          revision: memberB.revision,
+          claim_generation: memberB.claim_generation,
+          terminal_outcome: "published",
+        },
+      ],
+    }),
+  );
+  const completed = await completedResponse.json();
+  assert.equal(completedResponse.status, 200, JSON.stringify(completed));
+  assert.equal(completed.accepted, 1, JSON.stringify(completed));
+  assert.equal(completed.batch.state, "completed");
+  assert.equal(completed.batch.items[0].terminal_outcome, "published");
+  assert.equal(identityB()?.canonicalReceipts[0]?.outcome, "accepted");
+  assert.equal(identityB()?.routerReceipts[0]?.receiptId, receiptId);
+  assert.equal(identityB()?.routerReceipts[0]?.outcome, "durable");
+  assert.equal(identityB()?.terminalDisposition?.kind, "review_completed_routed");
+  assert.equal((await h.storage.get("exact-review-queue")).items[memberB.item_key], undefined);
+  assert.ok(h.now < expiryA);
+
+  const snapshot = async () => ({
+    lifecycleA: identityA(),
+    metrics: await h.publicationStats(),
+  });
+  await h.queue.alarm();
+  assert.ok((await h.storage.get("exact-review-queue")).items[memberA.item_key]);
+  assert.equal(identityA()?.terminalDisposition, null);
+  assert.equal(
+    batches.fetch(claimA.batch.batch_id, "completed-successor-worker-a", h.now)?.items[0]
+      ?.terminalOutcome,
+    null,
+  );
+  h.now = expiryA + 1;
+  await h.queue.alarm();
+  const afterExpiry = await snapshot();
+  h.restart();
+  await h.queue.alarm();
+  const afterRestart = await snapshot();
+  const laterClaim = await claim("later", "97403", 1);
+  assert.equal(h.networkCalls, 0);
+  assert.equal(
+    (laterClaim.batch?.items ?? []).some(
+      (item: { item_key: string }) => item.item_key === memberA.item_key,
+    ),
+    false,
+  );
+  assert.deepEqual(afterRestart.lifecycleA, afterExpiry.lifecycleA);
+  assert.deepEqual(afterRestart.metrics, afterExpiry.metrics);
+  assert.equal(
+    identityA()?.terminalDisposition?.kind,
+    "superseded",
+    "the expired command must terminalize after its admitted successor completes routing",
+  );
+  const finalState = await h.storage.get("exact-review-queue");
+  assert.equal(finalState.items[memberA.item_key], undefined);
+  const driverKey = `terminal-finalization:${memberA.item_key}:${memberA.revision}`;
+  assert.equal(finalState.items[driverKey]?.terminalFinalization?.disposition, "superseded");
+  assert.equal(
+    Object.keys(finalState.items).filter((key) =>
+      key.startsWith(`terminal-finalization:${memberA.item_key}:`),
+    ).length,
+    1,
+  );
+});
+
+for (const departure of ["after", "before"] as const) {
+  test(`alarm preserves same-source successor ambiguity when B leaves ${departure} C admission`, async (t) => {
+    const h = admissionQueue(t, {
+      EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT: "2",
+      EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
+    });
+    const number = departure === "after" ? 108741 : 108742;
+    const target = `openclaw/openclaw#${number}`;
+    const lifecycle = new ExactReviewLifecycleProjectionStore(h.storage);
+    const enqueue = async (
+      name: string,
+      sourceRevision: number,
+      generation: number,
+      replay = false,
+    ) => {
+      const index = "abcd".indexOf(name) + 1;
+      const body = await publicationRequest(
+        `ambiguous-${departure}-${name}${replay ? "-replay" : ""}`,
+        number,
+        String(number * 10 + index),
+        "openclaw/openclaw",
+        sourceRevision,
+      ).json();
+      const command = {
+        commandStatusMarker: `<!-- clawsweeper-command-status:${number}:re_review:${name.repeat(40)} -->`,
+        statusCommentId: number * 10 + index,
+      };
+      body.decision.publication.claimGeneration = generation;
+      Object.assign(body.decision, command);
+      Object.assign(body.decision.publication.producerDecision, command);
+      const response = await h.queue.fetch(batchRequest("/enqueue", body));
+      const result = await response.json();
+      assert.equal(response.status, 202, JSON.stringify(result));
+      assert.equal(result.queued, true, JSON.stringify(result));
+      const item = (await h.storage.get("exact-review-queue")).items[result.item_key];
+      assert.ok(item, JSON.stringify(result));
+      assert.equal(item.decision.publication.leaseRevision, sourceRevision);
+      assert.equal(item.decision.publication.claimGeneration, generation);
+      const admission = lifecycle.read(target, item.key, item.revision)?.admission;
+      assert.equal(admission?.commandOriginated, true);
+      assert.equal(admission.statusMarker, command.commandStatusMarker);
+      assert.equal(admission.statusCommentId, command.statusCommentId);
+      return { result, key: item.key, revision: item.revision };
+    };
+    const claim = async (name: string, runAttempt: number) => {
+      const result = await h.claim({
+        claim_id: `ambiguous-${departure}-${name}`,
+        lease_owner: `ambiguous-${departure}-worker-${name}`,
+        max_items: 1,
+        runner_run_id: String(number * 10 + runAttempt),
+        runner_run_attempt: runAttempt,
+        runner_started_at: new Date(h.now).toISOString(),
+      });
+      assert.equal(result.claimed, true, JSON.stringify(result));
+      assert.equal(result.batch.items.length, 1);
+      return result.batch;
+    };
+
+    const a = await enqueue("a", 1, 1);
+    const batchA = await claim("a", 1);
+    const memberA = batchA.items[0];
+    assert.equal(memberA.item_key, a.key);
+    assert.equal(memberA.revision, a.revision);
+    const expiryA = Date.parse(batchA.lease_expires_at);
+    h.now += 1;
+    const b = await enqueue("b", 2, 1);
+    const batchB = await claim("b", 2);
+    const memberB = batchB.items[0];
+    assert.equal(memberB.item_key, b.key);
+    assert.equal(memberB.revision, b.revision);
+    let c: Awaited<ReturnType<typeof enqueue>>;
+    if (departure === "after") c = await enqueue("c", 2, 2);
+
+    const publishedResponse = await h.queue.fetch(
+      batchRequest(
+        "/publication-batch-results",
+        directPlan(target, memberB.revision, {
+          fenceKey: memberB.item_key,
+          claimGeneration: memberB.claim_generation,
+        }),
+      ),
+    );
+    const published = await publishedResponse.json();
+    assert.equal(publishedResponse.status, 202, JSON.stringify(published));
+    assert.equal(published.accepted, true, JSON.stringify(published));
+    const receiptId = `router-ambiguous-${departure}-b`;
+    const routedResponse = await h.queue.fetch(
+      batchRequest("/lifecycle/router-receipt", {
+        canonical_target_key: target,
+        fence_key: memberB.item_key,
+        revision: memberB.revision,
+        receipt_id: receiptId,
+      }),
+    );
+    const routed = await routedResponse.json();
+    assert.equal(routedResponse.status, 200, JSON.stringify(routed));
+    const completedResponse = await h.queue.fetch(
+      batchRequest("/publication-batches/complete", {
+        batch_id: batchB.batch_id,
+        lease_owner: `ambiguous-${departure}-worker-b`,
+        items: [
+          {
+            item_key: memberB.item_key,
+            revision: memberB.revision,
+            claim_generation: memberB.claim_generation,
+            terminal_outcome: "published",
+          },
+        ],
+      }),
+    );
+    const completed = await completedResponse.json();
+    assert.equal(completedResponse.status, 200, JSON.stringify(completed));
+    assert.equal(completed.accepted, 1, JSON.stringify(completed));
+    assert.equal(completed.batch.state, "completed");
+    assert.equal(completed.batch.items[0].terminal_outcome, "published");
+    const projectionB = lifecycle.read(target, memberB.item_key, memberB.revision);
+    assert.equal(projectionB?.canonicalReceipts[0]?.outcome, "accepted");
+    assert.equal(projectionB?.routerReceipts[0]?.outcome, "durable");
+    assert.equal(projectionB?.routerReceipts[0]?.receiptId, receiptId);
+    assert.equal(projectionB?.terminalDisposition?.kind, "review_completed_routed");
+    assert.equal((await h.storage.get("exact-review-queue")).items[b.key], undefined);
+    if (departure === "before") c = await enqueue("c", 2, 2);
+    assert.notEqual(b.key, c!.key);
+
+    const snapshot = async () => ({
+      queue: await h.storage.get("exact-review-queue"),
+      lifecycleA: lifecycle.read(target, memberA.item_key, memberA.revision),
+    });
+    assert.ok(h.now < expiryA);
+    await h.queue.alarm();
+    assert.ok((await h.storage.get("exact-review-queue")).items[a.key]);
+    assert.equal(
+      lifecycle.read(target, memberA.item_key, memberA.revision)?.terminalDisposition,
+      null,
+    );
+    assert.equal(
+      new ExactReviewPublicationBatchStore(h.storage).fetch(
+        batchA.batch_id,
+        `ambiguous-${departure}-worker-a`,
+        h.now,
+      )?.items[0]?.terminalOutcome,
+      null,
+    );
+    h.now = expiryA + 1;
+    await h.queue.alarm();
+    const afterExpiry = await snapshot();
+    h.restart();
+    await h.queue.alarm();
+    const afterRestart = await snapshot();
+    await enqueue("c", 2, 2, true);
+    await h.queue.alarm();
+    const afterRedelivery = await snapshot();
+    await enqueue("d", 3, 1);
+    await h.queue.alarm();
+    const afterNewerD = await snapshot();
+    assert.equal(h.networkCalls, 0);
+    for (const [phase, state] of Object.entries({ afterExpiry, afterRestart, afterRedelivery })) {
+      assert.equal(
+        state.lifecycleA?.terminalDisposition,
+        null,
+        `${phase}: losing B must not make conflicting source-revision-2 C authoritative`,
+      );
+      assert.ok(state.queue.items[a.key], `${phase}: retain A while its successor is ambiguous`);
+      assert.equal(
+        Object.keys(state.queue.items).some((key) =>
+          key.startsWith(`terminal-finalization:${a.key}:`),
+        ),
+        false,
+      );
+    }
+    assert.equal(afterNewerD.lifecycleA?.terminalDisposition?.kind, "superseded");
+    assert.equal(afterNewerD.queue.items[a.key], undefined);
+    assert.equal(
+      Object.keys(afterNewerD.queue.items).filter((key) =>
+        key.startsWith(`terminal-finalization:${a.key}:`),
+      ).length,
+      1,
+    );
+  });
+}
+
+async function successorGuardFixture(
+  t: import("node:test").TestContext,
+  number: number,
+  directReview = false,
+  targetRepo = "openclaw/openclaw",
+) {
+  const h = admissionQueue(t, {
+    EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT: "2",
+    EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
+  });
+  const target = `${targetRepo}#${number}`;
+  const lifecycle = new ExactReviewLifecycleProjectionStore(h.storage);
+  const state = () => h.storage.get("exact-review-queue");
+  if (directReview) {
+    for (let revision = 1; revision <= 3; revision++)
+      assert.equal((await h.queue.fetch(reviewRequest(`direct-${revision}`, number))).status, 202);
+  }
+  const enqueue = async (
+    name: string,
+    sourceRevision: number,
+    {
+      address = name,
+      generation = 1,
+      delivery = name,
+    }: {
+      address?: string | null;
+      generation?: number;
+      delivery?: string;
+    } = {},
+  ) => {
+    const body = await publicationRequest(
+      `guard-${number}-${delivery}`,
+      number,
+      `${number}${"abcd".indexOf(name) + 1}`,
+      targetRepo,
+      sourceRevision,
+    ).json();
+    body.decision.publication.claimGeneration = generation;
+    if (address) {
+      const command = {
+        commandStatusMarker: `<!-- clawsweeper-command-status:${number}:re_review:${address.repeat(40)} -->`,
+        statusCommentId: number * 10 + "abcd".indexOf(address) + 1,
+      };
+      Object.assign(body.decision, command);
+      Object.assign(body.decision.publication.producerDecision, command);
+    }
+    const response = await h.queue.fetch(batchRequest("/enqueue", body));
+    const result = await response.json();
+    assert.equal(response.status, 202, JSON.stringify(result));
+    assert.ok(result.queued || result.deduped, JSON.stringify(result));
+    const item = (await state()).items[result.item_key];
+    assert.ok(item, JSON.stringify(result));
+    return item;
+  };
+  const a = await enqueue("a", 1);
+  const batchA = (await h.claim({ claim_id: `guard-${number}-a`, max_items: 1 })).batch;
+  assert.equal(batchA.items[0].item_key, a.key);
+  const expire = async () => {
+    h.now = Date.parse(batchA.lease_expires_at) + 1;
+    await h.queue.alarm();
+  };
+  const projectionA = () => lifecycle.read(target, a.key, a.revision);
+  const assertRetained = async () => {
+    assert.equal(projectionA()?.terminalDisposition, null);
+    assert.ok((await state()).items[a.key]);
+  };
+  const publish = async (item) => {
+    const claim = await h.claim({
+      claim_id: `guard-${number}-publish`,
+      lease_owner: "guard-publisher",
+      max_items: 1,
+      runner_run_id: String(number),
+      runner_run_attempt: 1,
+      runner_started_at: new Date(h.now).toISOString(),
+    });
+    assert.equal(claim.claimed, true);
+    const member = claim.batch.items[0];
+    assert.equal(member.item_key, item.key);
+    const published = await h.post(
+      "/publication-batch-results",
+      directPlan(target, member.revision, {
+        fenceKey: member.item_key,
+        claimGeneration: member.claim_generation,
+      }),
+    );
+    assert.equal(published.accepted, true, JSON.stringify(published));
+    const routed = await h.post("/lifecycle/router-receipt", {
+      canonical_target_key: target,
+      fence_key: member.item_key,
+      revision: member.revision,
+      receipt_id: `guard-router-${number}`,
+    });
+    assert.equal(routed.ok, true);
+    const completed = await h.post("/publication-batches/complete", {
+      batch_id: claim.batch.batch_id,
+      lease_owner: "guard-publisher",
+      items: [{ ...member, terminal_outcome: "published" }],
+    });
+    assert.equal(completed.accepted, 1);
+    assert.equal(completed.batch.items[0].terminal_outcome, "published");
+    assert.equal(
+      lifecycle.read(target, member.item_key, member.revision)?.terminalDisposition?.kind,
+      "review_completed_routed",
+    );
+    assert.equal((await state()).items[item.key], undefined);
+  };
+  t.after(() => assert.equal(h.networkCalls, 0));
+  return { h, target, lifecycle, state, enqueue, a, expire, projectionA, assertRetained, publish };
+}
+
+for (const [address, terminal] of [
+  [null, "superseded"],
+  ["a", "requeue"],
+] as const) {
+  test(`retained successor completion preserves ${address ? "the same command" : "a non-command successor"}`, async (t) => {
+    const f = await successorGuardFixture(t, address ? 108751 : 108750);
+    const b = await f.enqueue("b", 2, { address });
+    await f.publish(b);
+    await f.h.queue.alarm();
+    await f.assertRetained();
+    await f.expire();
+    assert.equal(f.projectionA()?.terminalDisposition?.kind, terminal);
+    assert.equal((await f.state()).items[f.a.key], undefined);
+    assert.equal(
+      Object.keys((await f.state()).items).filter((key) =>
+        key.startsWith(`terminal-finalization:${f.a.key}:`),
+      ).length,
+      terminal === "requeue" ? 0 : 1,
+    );
+  });
+}
+
+for (const corruption of [
+  "malformed",
+  "cross-target",
+  "queue-revision",
+  "source-revision",
+  "admission",
+] as const) {
+  test(`successor witness fails closed for ${corruption} drift before accepting newer authority`, async (t) => {
+    const f = await successorGuardFixture(t, 108760);
+    const b = await f.enqueue("b", 2);
+    const witness = (await f.state()).items[f.a.key].publicationSuccessorWitness;
+    assert.equal(witness.state, "verified");
+    if (corruption === "admission") {
+      const projection = f.lifecycle.read(f.target, b.key, b.revision)!;
+      projection.admission.statusMarker = "mismatched-admission";
+      f.h.storage.run(
+        `UPDATE ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} SET projection_json = ?
+        WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
+        JSON.stringify(projection),
+        f.target,
+        b.key,
+        b.revision,
+      );
+    } else {
+      if (corruption === "malformed") witness.sourceHead = "2";
+      if (corruption === "cross-target") witness.targetKey = "openclaw/other#1";
+      if (corruption === "queue-revision") witness.predecessorQueueRevision += 1;
+      if (corruption === "source-revision") witness.predecessorSourceRevision += 1;
+      f.h.storage.run(
+        `UPDATE exact_review_queue_items
+        SET item_json = json_set(item_json, '$.publicationSuccessorWitness', json(?)) WHERE item_key = ?`,
+        JSON.stringify(witness),
+        f.a.key,
+      );
+    }
+    f.h.restart();
+    if (corruption === "admission") {
+      await f.expire();
+      const diagnostic = await f.h.post("/publications/reconcile", { max_items: 1 });
+      assert.equal(diagnostic.sample[0]?.item_key, f.a.key);
+      assert.equal(diagnostic.sample[0].successor_fence_state, "admission_marker_mismatch");
+    }
+    await f.enqueue("c", 3);
+    assert.equal((await f.state()).items[f.a.key].publicationSuccessorWitness.state, "blocked");
+    await f.expire();
+    await f.assertRetained();
+    await f.enqueue("d", 4);
+    await f.h.queue.alarm();
+    assert.equal(f.projectionA()?.terminalDisposition?.kind, "superseded");
+  });
+}
+
+test("historical missing successor evidence is not reconstructed after completion", async (t) => {
+  const f = await successorGuardFixture(t, 108761);
+  const b = await f.enqueue("b", 2);
+  const legacy = await f.state();
+  delete legacy.items[f.a.key].publicationSuccessorWitness;
+  await f.h.storage.put("exact-review-queue", legacy);
+  f.h.restart();
+  await f.publish(b);
+  await f.expire();
+  await f.assertRetained();
+  const result = await f.h.post("/publications/reconcile", { max_items: 1 });
+  assert.equal(result.sample[0].successor_fence_state, "missing");
+});
+
+test("retained successor resolves the exact mixed-case lifecycle admission target", async (t) => {
+  const f = await successorGuardFixture(t, 108764, false, "openclaw/OpenClaw");
+  const b = await f.enqueue("b", 2);
+  assert.equal((await f.state()).items[f.a.key].publicationSuccessorWitness.targetKey, f.target);
+  await f.publish(b);
+  f.h.restart();
+  await f.expire();
+  assert.equal(f.projectionA()?.terminalDisposition?.kind, "superseded");
+  assert.equal((await f.state()).items[f.a.key], undefined);
+});
+
+test("same-fence redelivery and semantic provenance cannot replace retained successor authority", async (t) => {
+  const f = await successorGuardFixture(t, 108762);
+  const b = await f.enqueue("b", 2);
+  const replay = await f.enqueue("b", 2, { delivery: "b-replay" });
+  assert.ok(replay.revision > b.revision);
+  assert.equal((await f.state()).items[f.a.key].publicationSuccessorWitness.state, "blocked");
+  const refreshed = await f.enqueue("c", 2);
+  assert.equal(refreshed.key, b.key);
+  await f.expire();
+  await f.assertRetained();
+  f.h.restart();
+  await f.h.post("/publications/reconcile", { apply: true, max_items: 10 });
+  await f.assertRetained();
+  assert.equal((await f.state()).items[f.a.key].publicationSuccessorWitness.state, "blocked");
+});
+
+test("same-fence admission at a strictly newer source revision can advance successor authority", async (t) => {
+  const f = await successorGuardFixture(t, 108765);
+  const b = await f.enqueue("b", 2);
+  const newer = await f.enqueue("b", 3, { delivery: "b-newer" });
+  assert.equal(newer.key, b.key);
+  assert.ok(newer.revision > b.revision);
+  const witness = (await f.state()).items[f.a.key].publicationSuccessorWitness;
+  assert.deepEqual(
+    [witness.state, witness.sourceHead, witness.successorQueueRevision],
+    ["verified", 3, newer.revision],
+  );
+  await f.expire();
+  assert.equal(f.projectionA()?.terminalDisposition?.kind, "superseded");
+});
+
+test("direct conversion blocks higher authority without advancing the artifact head", async (t) => {
+  const f = await successorGuardFixture(t, 108763, true);
+  await f.enqueue("b", 2);
+  const review = (await f.state()).items[f.target];
+  assert.equal(review.revision, 3);
+  // Model the already admitted review's live runner lease; only the real
+  // publication endpoint converts it into a successor publication.
+  Object.assign(review, {
+    state: "leased",
+    leaseDecision: review.decision,
+    leaseId: "direct-review",
+    leaseRevision: review.revision,
+    leaseExpiresAt: f.h.now + 60_000,
+    claimedRunId: "98763",
+    claimedRunAttempt: 1,
+    claimGeneration: 1,
+    claimProtocolVersion: 2,
+  });
+  f.h.storage.run(
+    "UPDATE exact_review_queue_items SET item_json = ? WHERE item_key = ?",
+    JSON.stringify(review),
+    review.key,
+  );
+  f.h.restart();
+  const direct = await f.h.post("/publication-results", {
+    ...directPlan(f.target, review.revision, {
+      fenceKey: review.key,
+      claimGeneration: review.claimGeneration,
+    }),
+    sourceSha: "a".repeat(40),
+    lifecycle: { kind: "router" },
+  });
+  assert.equal(direct.accepted, true, JSON.stringify(direct));
+  let witness = (await f.state()).items[f.a.key].publicationSuccessorWitness;
+  assert.deepEqual([witness.state, witness.sourceHead], ["blocked", 3]);
+  const routed = await f.h.post("/lifecycle/router-receipt", {
+    canonical_target_key: f.target,
+    fence_key: review.key,
+    revision: review.revision,
+    receipt_id: "direct-review-router",
+  });
+  assert.equal(routed.ok, true);
+  const completed = await f.h.post("/complete", {
+    lease_id: review.leaseId,
+    item_key: review.key,
+    lease_revision: review.leaseRevision,
+    claim_generation: review.claimGeneration,
+    run_id: review.claimedRunId,
+    run_attempt: review.claimedRunAttempt,
+    outcome: "success",
+    completion_kind: "published",
+    reason_code: "publication_applied",
+  });
+  assert.equal(completed.ok, true, JSON.stringify(completed));
+  assert.equal((await f.state()).items[review.key], undefined);
+  await f.enqueue("c", 2, { generation: 2 });
+  witness = (await f.state()).items[f.a.key].publicationSuccessorWitness;
+  assert.deepEqual([witness.state, witness.sourceHead], ["blocked", 3]);
+  await f.enqueue("d", 3);
+  witness = (await f.state()).items[f.a.key].publicationSuccessorWitness;
+  assert.deepEqual([witness.state, witness.sourceHead], ["blocked", 3]);
+  await f.expire();
+  await f.assertRetained();
+  await f.enqueue("d", 4, { delivery: "d-newer" });
+  await f.h.queue.alarm();
+  assert.equal(f.projectionA()?.terminalDisposition?.kind, "superseded");
+});
+
 test("semantic lineage dedupe cannot leave obsolete rows eligible for a batch", async (t) => {
   t.mock.method(Date, "now", () => 6_250_000);
   const queue = new ExactReviewQueue(
