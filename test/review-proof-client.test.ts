@@ -3,6 +3,8 @@ import test from "node:test";
 import {
   canonicalProofPlan,
   requestReviewProof,
+  resolveReviewProofCapability,
+  reviewProofTools,
   reviewProofCapabilityFromEnv,
 } from "../dist/review-proof-client.js";
 import { validReviewProofPlan } from "../dist/review-proof-plan.js";
@@ -62,6 +64,7 @@ test("plan accepts recorder data and rejects executable DSL and invalid timing",
 });
 test("proof returns complete observations from trusted transport without judging pass", async () => {
   const capability = reviewProofCapabilityFromEnv("openclaw/openclaw", "a".repeat(40), env)!;
+  capability.allowedScenarios = ["telegram-bot-e2e-proof"];
   const observation = {
     state: "completed",
     result: { observations: { events: [{ text: "help" }] }, assertion: "reviewer_must_evaluate" },
@@ -83,6 +86,7 @@ test("proof returns complete observations from trusted transport without judging
 });
 test("rejection, invalid data, oversized evidence and cancellation remain inconclusive", async () => {
   const capability = reviewProofCapabilityFromEnv("openclaw/openclaw", "a".repeat(40), env)!;
+  capability.allowedScenarios = ["telegram-bot-e2e-proof"];
   for (const response of [
     new Response("private detail", { status: 409 }),
     new Response("x".repeat(262145)),
@@ -106,4 +110,42 @@ test("rejection, invalid data, oversized evidence and cancellation remain inconc
     },
   );
   assert.equal((result as { status: string }).status, "inconclusive");
+});
+
+test("proof capabilities fail closed and enforce explicit scenario scope before fetch", async () => {
+  const capability = reviewProofCapabilityFromEnv("openclaw/openclaw", "a".repeat(40), env)!;
+  const signal = new AbortController().signal;
+  assert.deepEqual(reviewProofTools(capability), []);
+  let handshake: unknown;
+  const selected = await resolveReviewProofCapability(capability, signal, async (_url, options) => {
+    handshake = JSON.parse(String(options?.body));
+    return Response.json({ ok: true, allowedScenarios: ["web-ui-chat-proof"] });
+  });
+  assert.deepEqual(handshake, { operation: "capabilities", lease: capability.lease });
+  assert.deepEqual(
+    reviewProofTools(selected).map((tool) => tool.name),
+    ["request_web_ui_chat_proof"],
+  );
+  let fetched = false;
+  const denied = await requestReviewProof(selected, plan, signal, async () => {
+    fetched = true;
+    return Response.json({});
+  });
+  assert.equal(fetched, false);
+  assert.match(JSON.stringify(denied), /not authorized/);
+  for (const value of [
+    null,
+    {},
+    { ok: true, allowedScenarios: ["auto"] },
+    { ok: true, allowedScenarios: [] },
+  ]) {
+    const resolved = await resolveReviewProofCapability(capability, signal, async () =>
+      Response.json(value),
+    );
+    assert.deepEqual(reviewProofTools(resolved), []);
+  }
+  const unavailable = await resolveReviewProofCapability(capability, signal, async () => {
+    throw new Error("unavailable");
+  });
+  assert.deepEqual(reviewProofTools(unavailable), []);
 });

@@ -18,7 +18,8 @@ import {
 import { spawnCodex, terminateCodexProcessTree, waitForCodexProcessExit } from "./codex-spawn.js";
 import {
   requestReviewProof,
-  reviewProofTool,
+  resolveReviewProofCapability,
+  reviewProofTools,
   webUiReviewProofTool,
   type ReviewProofCapability,
 } from "./review-proof-client.js";
@@ -167,6 +168,12 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
 }
 
 try {
+  if (options.appServer.reviewProof) {
+    options.appServer.reviewProof = await resolveReviewProofCapability(
+      options.appServer.reviewProof,
+      proofAbort.signal,
+    );
+  }
   await request("initialize", {
     ...(options.appServer.reviewProof ? { capabilities: { experimentalApi: true } } : {}),
     clientInfo: {
@@ -226,7 +233,7 @@ async function startThread(): Promise<Record<string, unknown>> {
     sandbox: execOptions.sandbox,
     ephemeral: Boolean(options.appServer.reviewProof),
     ...(options.appServer.reviewProof
-      ? { dynamicTools: [reviewProofTool, webUiReviewProofTool] }
+      ? { dynamicTools: reviewProofTools(options.appServer.reviewProof) }
       : {}),
     serviceName: "clawsweeper",
     personality: "pragmatic",
@@ -272,7 +279,7 @@ async function handleRpcMessage(message: RpcMessage): Promise<void> {
       params?.threadId === threadId &&
       params?.turnId === turnId &&
       turnId &&
-      [reviewProofTool.name, webUiReviewProofTool.name].includes(String(params?.tool)) &&
+      reviewProofTools(options.appServer.reviewProof).some((tool) => tool.name === params?.tool) &&
       !params?.namespace &&
       callId &&
       !proofCalls.has(callId) &&

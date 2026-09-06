@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import test from "node:test";
 import {
   admitProofCommand,
+  proofCommandAllowedScenarios,
   proofCommandReviewPrompt,
   renderProofCommandAdmission,
 } from "../../dist/repair/proof-command.js";
@@ -35,6 +36,23 @@ test("compiled proof command preserves inconclusive status and replay protection
 });
 
 const head = "a".repeat(40);
+
+test("manual proof selection is a closed execution allowlist rather than prompt guidance", () => {
+  const cases = [
+    ["auto", ["web-ui-chat-proof", "telegram-bot-e2e-proof"]],
+    ["web-ui-chat-proof", ["web-ui-chat-proof"]],
+    ["telegram-bot-e2e-proof", ["telegram-bot-e2e-proof"]],
+    [
+      "telegram-bot-e2e-proof,web-ui-chat-proof,web-ui-chat-proof",
+      ["web-ui-chat-proof", "telegram-bot-e2e-proof"],
+    ],
+    ["telegram-markdown-parser-fidelity", []],
+    ["auto,web-ui-chat-proof", ["web-ui-chat-proof"]],
+    ["unknown", []],
+  ] as const;
+  for (const [selection, expected] of cases)
+    assert.deepEqual(proofCommandAllowedScenarios(selection), expected, selection);
+});
 const input = {
   commandText: "proof web-ui-chat-proof " + head,
   repository: "openclaw/openclaw",

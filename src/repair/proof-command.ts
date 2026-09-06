@@ -1,7 +1,15 @@
 import { createHash } from "node:crypto";
+import type { InlineProofScenario } from "./direct-re-review-admission.js";
 
 export const PROOF_COMMAND_USAGE =
   "@clawsweeper proof [scenario-id[,scenario-id...]] [40-character-head-sha]";
+
+export function proofCommandAllowedScenarios(selection: string): InlineProofScenario[] {
+  const supported: InlineProofScenario[] = ["web-ui-chat-proof", "telegram-bot-e2e-proof"];
+  if (selection === "auto") return supported;
+  const selected = new Set(selection.split(","));
+  return supported.filter((scenario) => selected.has(scenario));
+}
 
 export interface ProofCommandRequest {
   repository: string;

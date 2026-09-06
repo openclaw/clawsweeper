@@ -3,6 +3,7 @@ import { validReviewProofPlan, validFixedWebUiProofPlan } from "./review-proof-p
 
 export interface ReviewProofCapability {
   queueUrl: string;
+  allowedScenarios?: Array<"telegram-bot-e2e-proof" | "web-ui-chat-proof">;
   lease: {
     itemKey: string;
     leaseId: string;
@@ -12,6 +13,51 @@ export interface ReviewProofCapability {
     runAttempt: number;
     sourceHeadSha: string;
   };
+}
+
+/** Resolve policy from the owning queue item, never from model-visible prompt text. */
+export async function resolveReviewProofCapability(
+  capability: ReviewProofCapability,
+  signal: AbortSignal,
+  fetcher: typeof fetch = fetch,
+): Promise<ReviewProofCapability> {
+  const denied: ReviewProofCapability = { ...capability, allowedScenarios: [] };
+  try {
+    const response = await fetcher(new URL("/internal/exact-review/proof", capability.queueUrl), {
+      method: "POST",
+      redirect: "error",
+      signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ operation: "capabilities", lease: capability.lease }),
+    });
+    if (!response.ok) return denied;
+    const value: unknown = await response.json();
+    if (!value || typeof value !== "object" || Array.isArray(value)) return denied;
+    const result = value as Record<string, unknown>;
+    if (
+      result?.ok !== true ||
+      !Array.isArray(result.allowedScenarios) ||
+      result.allowedScenarios.length > 2 ||
+      !result.allowedScenarios.every(
+        (scenario: unknown) =>
+          scenario === "telegram-bot-e2e-proof" || scenario === "web-ui-chat-proof",
+      )
+    )
+      return denied;
+    return {
+      ...capability,
+      allowedScenarios: [...new Set(result.allowedScenarios)],
+    } as ReviewProofCapability;
+  } catch {
+    return denied;
+  }
+}
+
+export function reviewProofTools(capability: ReviewProofCapability) {
+  return [
+    ...(capability.allowedScenarios?.includes("telegram-bot-e2e-proof") ? [reviewProofTool] : []),
+    ...(capability.allowedScenarios?.includes("web-ui-chat-proof") ? [webUiReviewProofTool] : []),
+  ];
 }
 
 export function reviewProofCapabilityFromEnv(
@@ -140,6 +186,8 @@ export async function requestReviewProof(
   fetcher: typeof fetch = fetch,
   scenario: "telegram-bot-e2e-proof" | "web-ui-chat-proof" = "telegram-bot-e2e-proof",
 ): Promise<unknown> {
+  if (!capability.allowedScenarios?.includes(scenario))
+    return { status: "inconclusive", reason: "Proof scenario is not authorized for this review." };
   const encoded = JSON.stringify(proofPlan);
   if (
     !encoded ||

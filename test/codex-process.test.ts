@@ -37,6 +37,7 @@ test("inline proof returns real HTTP observations to one original app-server tur
     const server = http.createServer((req,res) => {
       let body=''; req.on('data', c => body+=c); req.on('end', () => {
         const value=JSON.parse(body);
+        if (value.lease.leaseId === 'test-lease' && value.operation === 'capabilities') { res.setHeader('content-type','application/json');res.end(JSON.stringify({ok:true,allowedScenarios:['telegram-bot-e2e-proof']}));return; }
         if (value.lease.leaseId !== 'test-lease' || value.operation !== 'request') { res.writeHead(409);res.end();return; }
         res.setHeader('content-type','application/json');
         res.end(JSON.stringify({state:'completed',result:{assertion:'reviewer_must_evaluate',observations:[{text:'Observed help response'}]}}));

@@ -5295,11 +5295,12 @@ async function reviewProofRequest(request: Request, env) {
   const text = await boundedCommandProofBody(request);
   if (text === null) return json({ error: "invalid_review_proof_request" }, 413);
   const body = parseJsonObject(text);
-  if (!body || !["request", "poll"].includes(body.operation))
+  if (!body || !["request", "poll", "capabilities"].includes(body.operation))
     return json({ error: "invalid_review_proof_request" }, 400);
   const admission = await reviewProofQueue(env, "/review-proof", body);
   if (!admission.ok) return admission;
   const admitted = (await admission.json()) as any;
+  if (body.operation === "capabilities") return json(admitted);
   const update = async (patch) => {
     const response = await reviewProofQueue(env, "/review-proof/update", {
       ...patch,

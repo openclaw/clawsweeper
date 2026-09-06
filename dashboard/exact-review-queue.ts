@@ -158,6 +158,7 @@ import {
   exactReviewCommandObligationSurvives,
   exactReviewCommandVersionIsOlder,
   exactReviewDecisionFrom,
+  exactReviewProofAllowedScenarios,
   exactReviewDecisionWithoutSourceAuthority,
   exactReviewEditedSemanticInput,
   exactReviewIngressCanPromoteFallback,
@@ -1073,6 +1074,9 @@ export class ExactReviewQueue {
         item.claimedRunId !== owner.runId ||
         item.claimedRunAttempt !== owner.runAttempt ||
         item.leaseDecision?.sourceHeadSha !== owner.sourceHeadSha ||
+        !exactReviewProofAllowedScenarios(item.leaseDecision).some(
+          (scenario) => scenario === record.scenario,
+        ) ||
         !isLiveExactReviewLease(
           item,
           now,
@@ -1109,9 +1113,15 @@ export class ExactReviewQueue {
       (url.pathname === "/review-proof" || url.pathname === "/review-proof/update")
     ) {
       const body = objectValue(await request.json().catch(() => null));
-      const proof = url.pathname === "/review-proof" ? await parseReviewProofRequest(body) : null;
+      const capabilities = url.pathname === "/review-proof" && body.operation === "capabilities";
+      if (capabilities && Object.keys(body).some((key) => key !== "lease" && key !== "operation"))
+        return json({ error: "invalid_review_proof_request" }, 400);
+      const proof =
+        url.pathname === "/review-proof" && !capabilities
+          ? await parseReviewProofRequest(body)
+          : null;
       const owner = proof?.lease ?? parseReviewProofLease(body.lease);
-      if (!owner || (url.pathname === "/review-proof" && !proof))
+      if (!owner || (url.pathname === "/review-proof" && !capabilities && !proof))
         return json({ error: "invalid_review_proof_request" }, 400);
       // All asynchronous normalization precedes the state read and durable write.
       const requestId = proof ? await reviewProofRequestId(proof) : String(body.requestId || "");
@@ -1141,11 +1151,17 @@ export class ExactReviewQueue {
           exactReviewInputIdentityChanged(decision, item.decision))
       )
         return json({ error: "lease_not_active" }, 409);
+      const allowedScenarios = exactReviewProofAllowedScenarios(decision);
+      if (capabilities) return json({ ok: true, allowedScenarios });
+      if (proof && !allowedScenarios.some((scenario) => scenario === proof.scenario))
+        return json({ error: "review_proof_scenario_not_allowed" }, 403);
       const records = item.reviewProofRequests ?? [];
       // A new owner never inherits evidence or an execution budget from a stale owner.
       if (records.some((record) => !reviewProofOwnersMatch(record.owner, owner)))
         return json({ error: "review_proof_owner_changed" }, 409);
       let record = records.find((entry) => entry.requestId === requestId);
+      if (record && !allowedScenarios.some((scenario) => scenario === record.scenario))
+        return json({ error: "review_proof_scenario_not_allowed" }, 403);
       for (const entry of records) {
         if (
           entry.expiresAt <= now &&
@@ -14651,6 +14667,8 @@ function exactReviewInputIdentityChanged(
     exactReviewFailureSourceFingerprint(priorDecision) !==
       exactReviewFailureSourceFingerprint(nextDecision) ||
     (priorDecision.additionalPrompt ?? null) !== (nextDecision.additionalPrompt ?? null) ||
+    stableJson(exactReviewProofAllowedScenarios(priorDecision)) !==
+      stableJson(exactReviewProofAllowedScenarios(nextDecision)) ||
     commandIdentity(priorDecision) !== commandIdentity(nextDecision)
   );
 }

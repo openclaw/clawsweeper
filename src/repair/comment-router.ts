@@ -165,7 +165,11 @@ import {
   type ReviewDispatchCoordinationDecision,
 } from "./review-dispatch-coordination.js";
 import { directReReviewIntake } from "./direct-re-review-admission.js";
-import { admitProofCommand, proofCommandReviewPrompt } from "./proof-command.js";
+import {
+  admitProofCommand,
+  proofCommandAllowedScenarios,
+  proofCommandReviewPrompt,
+} from "./proof-command.js";
 import { postExactReviewCommandIntakeSync } from "./exact-review-command-queue.js";
 
 const automergeMetricWrites: Promise<boolean>[] = [];
@@ -3481,8 +3485,13 @@ function enqueueClawSweeperReReview(command: LooseRecord): LooseRecord {
     commandOrigin: "comment_router",
     ...(command.status_comment_id ? { statusCommentId: Number(command.status_comment_id) } : {}),
     additionalPrompt: freeformReviewPrompt(command),
-    ...(command.intent === "request_proof" && command.proof_admission?.request?.headSha
-      ? { candidateHeadSha: String(command.proof_admission.request.headSha) }
+    ...(command.intent === "request_proof" && command.proof_admission?.request
+      ? {
+          candidateHeadSha: String(command.proof_admission.request.headSha),
+          proofAllowedScenarios: proofCommandAllowedScenarios(
+            String(command.proof_admission.request.scenarioId),
+          ),
+        }
       : {}),
   });
   command.command_status_revision = intake.commandVersionId;

@@ -1,5 +1,9 @@
 import { stableJson } from "../src/stable-json.ts";
 import {
+  validProofAllowedScenarios,
+  type InlineProofScenario,
+} from "../src/repair/direct-re-review-admission.ts";
+import {
   COMMAND_PROOF_BATCH_CONTEXT_MAX,
   commandProofBatchBinding,
 } from "../src/command-proof-contract.ts";
@@ -52,6 +56,7 @@ export type ExactReviewBaseDecision = {
   statusCommentId?: number;
   reviewAcknowledgementCommentId?: number;
   additionalPrompt?: string;
+  proofAllowedScenarios?: InlineProofScenario[];
   sourceCommentId?: number;
   sourceCommentUpdatedAt?: string;
   commandBodyDigest?: string;
@@ -80,6 +85,15 @@ export type ExactReviewPublication = {
 export type ExactReviewDecision = ExactReviewBaseDecision & {
   publication?: ExactReviewPublication;
 };
+export function exactReviewProofAllowedScenarios(
+  decision: ExactReviewBaseDecision,
+): InlineProofScenario[] {
+  const supported: InlineProofScenario[] = ["web-ui-chat-proof", "telegram-bot-e2e-proof"];
+  if (!Object.hasOwn(decision, "proofAllowedScenarios")) return supported;
+  return validProofAllowedScenarios(decision.proofAllowedScenarios)
+    ? supported.filter((scenario) => decision.proofAllowedScenarios!.includes(scenario))
+    : [];
+}
 export type ExactReviewIngress = {
   route: "direct_webhook" | "target_dispatcher";
   fingerprint: string;
@@ -352,6 +366,9 @@ export function exactReviewBaseDecisionFrom(value: unknown): ExactReviewBaseDeci
     : undefined;
   const hasAdditionalPrompt = Object.hasOwn(decision, "additionalPrompt");
   const additionalPrompt = hasAdditionalPrompt ? decision.additionalPrompt : undefined;
+  const hasProofAllowedScenarios = Object.hasOwn(decision, "proofAllowedScenarios");
+  const proofAllowedScenarios = decision.proofAllowedScenarios;
+  if (hasProofAllowedScenarios && !validProofAllowedScenarios(proofAllowedScenarios)) return null;
   const hasSourceCommentId = Object.hasOwn(decision, "sourceCommentId");
   const sourceCommentId = hasSourceCommentId ? Number(decision.sourceCommentId) : undefined;
   const hasSourceCommentUpdatedAt = Object.hasOwn(decision, "sourceCommentUpdatedAt");
@@ -488,6 +505,9 @@ export function exactReviewBaseDecisionFrom(value: unknown): ExactReviewBaseDeci
     ...(statusCommentId === undefined ? {} : { statusCommentId }),
     ...(reviewAcknowledgementCommentId === undefined ? {} : { reviewAcknowledgementCommentId }),
     ...(typeof additionalPrompt === "string" ? { additionalPrompt } : {}),
+    ...(hasProofAllowedScenarios
+      ? { proofAllowedScenarios: [...(proofAllowedScenarios as InlineProofScenario[])].sort() }
+      : {}),
     ...(sourceCommentId === undefined ? {} : { sourceCommentId }),
     ...(sourceCommentUpdatedAt === undefined ? {} : { sourceCommentUpdatedAt }),
     ...(commandBodyDigest === undefined ? {} : { commandBodyDigest }),
@@ -537,6 +557,7 @@ export async function exactReviewEditedSemanticInput(
         ? decision.statusCommentId
         : null,
       additional_prompt: decision.additionalPrompt || null,
+      proof_allowed_scenarios: exactReviewProofAllowedScenarios(decision),
     },
   });
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(tuple));
