@@ -17,8 +17,8 @@ export interface ProofCommandAdmission {
   request?: ProofCommandRequest;
 }
 
-// Parse admission separately from execution. Only the pinned, durable consumer
-// may turn this into an asynchronous request; never freeform assist or override.
+// Parse admission separately from execution. The trusted router must admit the
+// exact-head review before reporting this request as queued.
 export function admitProofCommand(input: {
   commandText: string;
   repository: string;
@@ -72,6 +72,19 @@ export function admitProofCommand(input: {
       requestId: createHash("sha256").update(JSON.stringify(identity)).digest("hex"),
     },
   };
+}
+
+export function proofCommandReviewPrompt(request: ProofCommandRequest): string {
+  return [
+    "A human maintainer requested behavioral proof during this review.",
+    `Requested selection: ${request.scenarioId}`,
+    `Requested exact head: ${request.headSha}`,
+    request.scenarioId === "auto"
+      ? "Select relevant supported proof checks from the PR details and code. Explain if none can usefully exercise the changed behavior."
+      : "Attempt each explicitly requested supported check before the final decision; do not silently replace this list with automatic selection. Explain each unsupported, unavailable or inconclusive selection.",
+    "web-ui-chat-proof maps to request_web_ui_chat_proof's fixed mocked-Gateway chat smoke. telegram-bot-e2e-proof maps to request_behavior_proof with a PR-specific data-only Telegram plan. Other recipe names have no inline tool; report that limit rather than claiming they ran.",
+    "Use the observations in this review's final decision. Never treat completed execution as proof that the claim passed, and do not enqueue another review.",
+  ].join("\n");
 }
 
 export function renderProofCommandAdmission(admission: ProofCommandAdmission): string {

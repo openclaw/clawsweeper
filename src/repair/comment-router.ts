@@ -165,7 +165,7 @@ import {
   type ReviewDispatchCoordinationDecision,
 } from "./review-dispatch-coordination.js";
 import { directReReviewIntake } from "./direct-re-review-admission.js";
-import { admitProofCommand } from "./proof-command.js";
+import { admitProofCommand, proofCommandReviewPrompt } from "./proof-command.js";
 import { postExactReviewCommandIntakeSync } from "./exact-review-command-queue.js";
 
 const automergeMetricWrites: Promise<boolean>[] = [];
@@ -3607,12 +3607,7 @@ function dispatchClawSweeperAssist(command: LooseRecord): LooseRecord {
 
 function freeformReviewPrompt(command: LooseRecord): string {
   if (command.intent === "request_proof" && command.proof_admission?.request) {
-    return [
-      "A human maintainer requested behavioral proof during this review.",
-      `Requested selection: ${command.proof_admission.request.scenarioId}`,
-      `Requested exact head: ${command.proof_admission.request.headSha}`,
-      "Use available proof tools for relevant behavior before issuing this review's final decision. Explain unsupported or inconclusive checks. Never treat completed execution as proof that the claim passed, and do not enqueue another review.",
-    ].join("\n");
+    return proofCommandReviewPrompt(command.proof_admission.request);
   }
   const prompt = String(command.freeform_prompt ?? "").trim();
   if (!prompt) return "";

@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import test from "node:test";
-import { admitProofCommand, renderProofCommandAdmission } from "../../dist/repair/proof-command.js";
+import {
+  admitProofCommand,
+  proofCommandReviewPrompt,
+  renderProofCommandAdmission,
+} from "../../dist/repair/proof-command.js";
 import {
   isAuthorReadOnlyCommandAllowed,
   parseCommand,
@@ -125,6 +129,24 @@ test("continuation cannot smuggle evidence or execution instructions into a proo
     }),
     false,
   );
+});
+
+test("manual inline proof preserves explicit selections and automatic selection separately", () => {
+  const explicit = admitProofCommand({
+    ...input,
+    commandText: "proof web-ui-chat-proof,telegram-bot-e2e-proof,telegram-markdown-parser-fidelity",
+  }).request!;
+  const prompt = proofCommandReviewPrompt(explicit);
+  assert.ok(prompt.includes(`Requested exact head: ${head}`));
+  assert.ok(prompt.includes(`Requested selection: ${explicit.scenarioId}`));
+  assert.match(prompt, /Attempt each explicitly requested supported check/);
+  assert.match(prompt, /Other recipe names have no inline tool/);
+  assert.match(prompt, /do not enqueue another review/);
+  const automatic = proofCommandReviewPrompt(
+    admitProofCommand({ ...input, commandText: "proof" }).request!,
+  );
+  assert.match(automatic, /Select relevant supported proof checks/);
+  assert.doesNotMatch(automatic, /Attempt each explicitly/);
 });
 
 test("admission renders inconclusive and never implies dispatch or readiness", () => {
