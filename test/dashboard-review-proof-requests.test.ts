@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { createServer } from "node:http";
+import { executeReviewProof } from "../dashboard/review-proof-execution.ts";
+import { proofFixture } from "./helpers/command-proof-fixtures.ts";
 import { stableJson } from "../src/stable-json.ts";
 import {
   assert,
@@ -62,6 +65,128 @@ async function fixture(allowed?: InlineProofScenario[]) {
     return { status: response.status, body: (await response.json()) as any };
   };
   return { storage, queue, lease, plan, post };
+}
+
+for (const change of ["active", "revoked", "reassigned", "scope_revoked", "expired"] as const) {
+  test(
+    `cached proof HTTP delivery fences owner changed during verification (${change})`,
+    { timeout: 10_000 },
+    async () => {
+      const f = await fixture();
+      const admitted = await f.post(f.plan());
+      const evidence = proofFixture(admitted.body.record.requestId, "telegram-bot-e2e-proof");
+      const result = { observations: { private: "synthetic cached observation" } };
+      const state = (f.queue as any).readStateSync();
+      const stored = state.items[f.lease.itemKey].reviewProofRequests[0];
+      Object.assign(stored, {
+        state: "completed",
+        runId: "300",
+        result,
+        producer: {
+          workflowSha: evidence.claim.workflowSha,
+          harnessSha: evidence.claim.harnessSha,
+          workflowPath: evidence.claim.workflowPath,
+          workflowRef: "main",
+          repositoryId: "123",
+          bodySha256: evidence.claim.bodySha256,
+          baseSha: evidence.claim.baseSha,
+          targetBranch: "main",
+        },
+      });
+      await (f.queue as any).writeState(state);
+      let verificationReached!: () => void;
+      let resumeVerification!: () => void;
+      const reached = new Promise<void>((resolve) => {
+        verificationReached = resolve;
+      });
+      const resumed = new Promise<void>((resolve) => {
+        resumeVerification = resolve;
+      });
+      let confirmations = 0;
+      const server = createServer(async (request, response) => {
+        try {
+          const chunks = [];
+          for await (const chunk of request) chunks.push(chunk);
+          if (request.url === "/cached") {
+            const admission = await f.post({ ...f.plan(), operation: "poll" });
+            assert.equal(admission.status, 200);
+            const output = await executeReviewProof({
+              ...admission.body,
+              github: async (path) =>
+                (await fetch(`${origin}/github?path=${encodeURIComponent(path)}`)).json(),
+              artifact: async () => {
+                throw new Error("cached result must not download artifacts");
+              },
+              update: async (patch) =>
+                (
+                  await fetch(`${origin}/update`, {
+                    method: "POST",
+                    body: JSON.stringify({ lease: f.lease, requestId: stored.requestId, ...patch }),
+                  })
+                ).json(),
+            });
+            response.end(JSON.stringify(output));
+          } else if (request.url === "/update") {
+            confirmations++;
+            const reply = await f.post(
+              JSON.parse(Buffer.concat(chunks).toString()),
+              "/review-proof/update",
+            );
+            response.writeHead(reply.status);
+            response.end(JSON.stringify(reply.body));
+          } else {
+            const path = new URL(request.url!, origin).searchParams.get("path")!;
+            if (path.endsWith("/actions/runs/300")) {
+              verificationReached();
+              await resumed;
+              response.end(JSON.stringify(evidence.run));
+            } else {
+              response.end(
+                JSON.stringify({
+                  ...evidence.live.pull,
+                  base: { ...evidence.live.pull.base, repo: evidence.live.repository },
+                }),
+              );
+            }
+          }
+        } catch {
+          response.writeHead(500);
+          response.end("{}");
+        }
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+      try {
+        const delivery = fetch(`${origin}/cached`).then((response) =>
+          response.json(),
+        ) as Promise<any>;
+        await reached;
+        const current = (f.queue as any).readStateSync();
+        const item = current.items[f.lease.itemKey];
+        if (change === "revoked") item.state = "queued";
+        if (change === "reassigned") {
+          item.leaseId = "replacement-owner";
+          item.claimGeneration++;
+        }
+        if (change === "scope_revoked") item.leaseDecision.proofAllowedScenarios = [];
+        if (change === "expired") item.reviewProofRequests[0].expiresAt = Date.now() - 1;
+        await (f.queue as any).writeState(current);
+        resumeVerification();
+        const output = await delivery;
+        assert.equal(output.state, change === "active" ? "completed" : "inconclusive");
+        assert.deepEqual(output.result, change === "active" ? result : undefined);
+        assert.equal(confirmations, 1);
+        assert.deepEqual(
+          (f.queue as any).readStateSync().items[f.lease.itemKey].reviewProofRequests[0].result,
+          result,
+        );
+      } finally {
+        resumeVerification();
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+  );
 }
 
 test("capabilities expose only the active lease allowlist without tokens or budget", async () => {

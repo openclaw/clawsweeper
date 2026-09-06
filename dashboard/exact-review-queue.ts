@@ -1174,6 +1174,11 @@ export class ExactReviewQueue {
       }
       if (url.pathname === "/review-proof/update") {
         if (!record) return json({ error: "review_proof_not_found" }, 404);
+        if (body.operation === "confirm_completed") {
+          if (record.state !== "completed" || record.expiresAt <= now)
+            return json({ error: "review_proof_not_deliverable" }, 409);
+          return json({ ok: true, record });
+        }
         if (record.state === "completed" || record.state === "inconclusive") {
           await this.writeState(state);
           return json({ error: "review_proof_already_terminal", record }, 409);
