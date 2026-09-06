@@ -1,8 +1,9 @@
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { createServer } from "node:http";
 import { executeReviewProof } from "../dashboard/review-proof-execution.ts";
 import { proofFixture } from "./helpers/command-proof-fixtures.ts";
 import { requestReviewProof } from "../dist/review-proof-client.js";
+import { REVIEW_PROOF_PRODUCER_ENDPOINT } from "../dashboard/review-proof-producer-auth.ts";
 import { stableJson } from "../src/stable-json.ts";
 import {
   assert,
@@ -67,6 +68,148 @@ async function fixture(allowed?: InlineProofScenario[]) {
   };
   return { storage, queue, lease, plan, post };
 }
+
+test("producer HTTP authenticates before queue access and preserves durable pin and owner fences", async (t) => {
+  const f = await fixture();
+  const requestId = (await f.post(f.plan())).body.record.requestId;
+  const producer = {
+    repositoryId: "123",
+    workflowPath: ".github/workflows/mantis-telegram-bot-e2e-proof.yml",
+    workflowSha: "c".repeat(40),
+    harnessSha: "c".repeat(40),
+    workflowRef: "main",
+    bodySha256: "d".repeat(64),
+    baseSha: "e".repeat(40),
+    targetBranch: "main",
+  };
+  assert.equal(
+    (
+      await f.post(
+        { lease: f.lease, requestId, operation: "prepared", producer },
+        "/review-proof/update",
+      )
+    ).status,
+    200,
+  );
+  const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const forgedKey = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
+  const now = Math.floor(Date.now() / 1000);
+  const claims = {
+    iss: "https://token.actions.githubusercontent.com",
+    aud: REVIEW_PROOF_PRODUCER_ENDPOINT,
+    repository: "openclaw/openclaw",
+    repository_id: "123",
+    event_name: "workflow_dispatch",
+    ref: "refs/heads/main",
+    sha: producer.workflowSha,
+    workflow_sha: producer.workflowSha,
+    workflow_ref: `openclaw/openclaw/${producer.workflowPath}@refs/heads/main`,
+    run_id: "300",
+    run_attempt: "1",
+    iat: now,
+    nbf: now,
+    exp: now + 300,
+  };
+  const token = (overrides = {}, key = keys.privateKey) => {
+    const data = [
+      { alg: "RS256", kid: "fixture" },
+      { ...claims, ...overrides },
+    ]
+      .map((part) => Buffer.from(JSON.stringify(part)).toString("base64url"))
+      .join(".");
+    return data + "." + sign("RSA-SHA256", Buffer.from(data), key).toString("base64url");
+  };
+  const nativeFetch = globalThis.fetch;
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    if (String(input) === "https://token.actions.githubusercontent.com/.well-known/jwks")
+      return Response.json({
+        keys: [{ ...keys.publicKey.export({ format: "jwk" }), kid: "fixture", alg: "RS256" }],
+      });
+    return nativeFetch(input, init);
+  });
+  const calls: string[] = [];
+  let revoke = false;
+  const env = {
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace({
+      fetch: async (request: Request) => {
+        const route = new URL(request.url).pathname;
+        calls.push(route);
+        const response = await f.queue.fetch(request);
+        if (revoke && route === "/review-proof/producer-record") {
+          const state = (f.queue as any).readStateSync();
+          state.items[f.lease.itemKey].state = "queued";
+          await (f.queue as any).writeState(state);
+        }
+        return response;
+      },
+    } as any),
+  };
+  const server = createServer(async (request, response) => {
+    try {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      const reply = await worker.fetch(
+        new Request(REVIEW_PROOF_PRODUCER_ENDPOINT, {
+          method: "POST",
+          headers: request.headers as Record<string, string>,
+          body: Buffer.concat(chunks),
+        }),
+        env,
+        {},
+      );
+      response.writeHead(reply.status);
+      response.end(await reply.text());
+    } catch {
+      response.writeHead(500);
+      response.end("{}");
+    }
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const send = async (bearer: string) =>
+    nativeFetch(`http://127.0.0.1:${(server.address() as { port: number }).port}`, {
+      method: "POST",
+      headers: bearer ? { authorization: `Bearer ${bearer}` } : {},
+      body: JSON.stringify({
+        requestId,
+        runId: "300",
+        runAttempt: 1,
+        planSha256: f.plan().planSha256,
+      }),
+    });
+  try {
+    for (const bearer of [
+      "",
+      "malformed",
+      token({}, forgedKey),
+      token({ repository: "other/repo" }),
+      token({ run_id: "301" }),
+      token({ workflow_ref: "openclaw/openclaw/.github/workflows/other.yml@refs/heads/main" }),
+    ]) {
+      calls.length = 0;
+      assert.equal((await send(bearer)).status, 403);
+      assert.deepEqual(calls, []);
+    }
+    const accepted = await send(token());
+    assert.equal(accepted.status, 200);
+    assert.equal(((await accepted.json()) as any).ok, true);
+    assert.deepEqual(calls, ["/review-proof/producer-record", "/review-proof/redeem"]);
+    const state = (f.queue as any).readStateSync();
+    state.items[f.lease.itemKey].reviewProofRequests[0].producer.workflowSha = "b".repeat(40);
+    await (f.queue as any).writeState(state);
+    calls.length = 0;
+    assert.equal((await send(token())).status, 403);
+    assert.deepEqual(calls, ["/review-proof/producer-record"]);
+    state.items[f.lease.itemKey].reviewProofRequests[0].producer.workflowSha = producer.workflowSha;
+    await (f.queue as any).writeState(state);
+    revoke = true;
+    calls.length = 0;
+    assert.equal((await send(token())).status, 409);
+    assert.deepEqual(calls, ["/review-proof/producer-record", "/review-proof/redeem"]);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
 
 for (const change of [
   "active",

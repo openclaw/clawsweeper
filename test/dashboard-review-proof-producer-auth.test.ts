@@ -61,6 +61,11 @@ test("producer OIDC verifies GitHub signature and exact workflow/run identity", 
     { workflow_sha: "b".repeat(40) },
     { ref: "refs/heads/candidate" },
     { event_name: "pull_request" },
+    { job_workflow_ref: "openclaw/openclaw/.github/workflows/other.yml@refs/heads/main" },
+    { job_workflow_sha: "b".repeat(40) },
+    { iat: Math.floor(now / 1000) - 601 },
+    { nbf: Math.floor(now / 1000) + 31 },
+    { exp: Math.floor(now / 1000) + 601 },
     { exp: Math.floor(now / 1000) - 1 },
   ]) {
     assert.equal(

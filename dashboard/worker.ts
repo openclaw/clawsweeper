@@ -4,7 +4,10 @@ import {
   isClawSweeperReReviewCommandText,
   reReviewContextFromClawSweeperComment,
 } from "../src/repair/comment-command-text.ts";
-import { verifyReviewProofProducerToken } from "./review-proof-producer-auth.ts";
+import {
+  authenticateReviewProofProducerToken,
+  reviewProofProducerMatches,
+} from "./review-proof-producer-auth.ts";
 import { legacyCommandCommentId } from "../src/repair/command-ack-convergence.ts";
 import { directReReviewIntake } from "../src/repair/direct-re-review-admission.ts";
 import { isExactReviewCloseGuardLabel } from "../src/repair/exact-review-guard-labels.ts";
@@ -5362,16 +5365,19 @@ async function reviewProofProducerRequest(request: Request, env) {
     body.runAttempt !== 1
   )
     return json({ error: "invalid_producer_request" }, 400);
+  const identity = await authenticateReviewProofProducerToken(bearerToken(request));
+  if (!identity || identity.runId !== body.runId || identity.runAttempt !== body.runAttempt)
+    return json({ error: "producer_not_authorized" }, 403);
   const response = await reviewProofQueue(env, "/review-proof/producer-record", body);
   if (!response.ok) return json({ error: "proof_not_active" }, 409);
   const { record } = (await response.json()) as any;
   if (
     body.planSha256 !== record.planSha256 ||
-    !(await verifyReviewProofProducerToken(bearerToken(request), {
+    !reviewProofProducerMatches(identity, {
       ...record.producer,
       runId: body.runId,
       runAttempt: body.runAttempt,
-    }))
+    })
   )
     return json({ error: "producer_not_authorized" }, 403);
   // OIDC pins the workflow/run; this final durable check also fences owner loss during verification.
