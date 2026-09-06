@@ -250,6 +250,51 @@ test("model request uses structured comparative selection without scores", async
   }
 });
 
+test("model request passes a 120s AbortSignal to the OpenAI cluster-selection fetch", async (t) => {
+  const previousKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key";
+  const previousTimeout = AbortSignal.timeout;
+  const seenTimeouts: number[] = [];
+  t.mock.method(AbortSignal, "timeout", (ms: number) => {
+    seenTimeouts.push(ms);
+    return previousTimeout(ms);
+  });
+  const candidate = {
+    path: "jobs/openclaw/inbox/gitcrawl-1-a.md",
+    cluster_id: "gitcrawl-1-a",
+    members: [],
+  };
+  let requestSignal: AbortSignal | undefined;
+  try {
+    await selectClusterCandidateWithModel({
+      repo: "openclaw/openclaw",
+      evidence: [candidate],
+      model: "internal",
+      request: async (_input, init) => {
+        requestSignal = init?.signal ?? undefined;
+        return new Response(
+          JSON.stringify({
+            output_text: JSON.stringify({
+              selected_path: null,
+              rationale: "The evidence does not establish useful work.",
+              assessments: [
+                { path: candidate.path, decision: "rejected", rationale: "Not actionable." },
+              ],
+            }),
+          }),
+          { status: 200 },
+        );
+      },
+    });
+    assert.ok(requestSignal instanceof AbortSignal);
+    assert.equal(requestSignal.aborted, false);
+    assert.deepEqual(seenTimeouts, [120_000]);
+  } finally {
+    if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousKey;
+  }
+});
+
 test("cluster selection source contains no semantic word lists, thresholds, or scoring", () => {
   const sources = [
     fs.readFileSync("src/repair/select-cluster-candidate.ts", "utf8"),
@@ -258,4 +303,12 @@ test("cluster selection source contains no semantic word lists, thresholds, or s
   assert.doesNotMatch(sources, /STOP_WORDS|BUG_WORDS|FEATURE_WORDS|DECISION_WORDS/);
   assert.doesNotMatch(sources, /DECISION_LABELS|FEATURE_LABELS|BUG_LABELS/);
   assert.doesNotMatch(sources, /selection score|title cohesion|closedPercent|maxAgeDays/);
+});
+
+test("cluster selection source times out OpenAI fetch and default GitHub reads", () => {
+  const src = fs.readFileSync("src/repair/select-cluster-candidate.ts", "utf8");
+  assert.match(src, /AbortSignal\.timeout\(/);
+  assert.match(src, /from "\.\/github-cli\.js"/);
+  assert.match(src, /ghJson\(/);
+  assert.doesNotMatch(src, /execFileSync\(\s*["']gh["']/);
 });
