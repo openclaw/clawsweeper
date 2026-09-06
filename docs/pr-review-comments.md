@@ -275,8 +275,13 @@ SQLite codecs such as `sqlite-board-codec.ts` own serialized state, while
 JSON-edit, and incomplete-patch warnings without implying table ownership.
 Actual DDL remains evidence at any production filename, including diagnostic
 helpers. Ordinary validation fields in a `schema` file alone do not establish
-persisted database columns. The warning requests review; it does not prove a
-persisted contract changed. This classification does not change the separate
+persisted database columns. A suffix such as `users-schema.ts` is only a domain
+hint: missing patches, JSON conversion, and local `table`, `column`, or `index`
+variables do not establish storage ownership. Explicit schema directories and
+storage owners keep their incomplete-patch warnings. Database API signals and
+column changes beside `sqliteTable`, `pgTable`, or `mysqlTable` calls in the same
+hunk remain evidence, including optional calls and typed calls. The warning
+requests review; it does not prove a persisted contract changed. This classification does not change the separate
 `docs/` exemption for contributor behavior proof.
 
 ## Evidence Repository Identity
