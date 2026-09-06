@@ -518,6 +518,7 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
       try {
         response = await this.request(`${this.baseUrl}${path}`, {
           method: "POST",
+          redirect: "error",
           headers: {
             "content-type": "application/json",
             "x-clawsweeper-exact-review-signature": signature,

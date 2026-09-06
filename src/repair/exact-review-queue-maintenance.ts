@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import { ExactReviewBatchQueueClient } from "./exact-review-batch-queue-client.js";
 
 const apply = process.argv.includes("--apply");
@@ -15,7 +16,27 @@ if (requestedPasses > 1) {
   );
 }
 const result = await client.reconcilePublications({ apply, maxItems });
-console.log(JSON.stringify({ ok: true, requestedPasses, effectivePasses: 1, ...result }));
+console.log(
+  JSON.stringify({
+    ok: true,
+    requestedPasses,
+    effectivePasses: 1,
+    ...result,
+    // Retain stable row correlation without logging target or producer identities.
+    sample: result.sample.map((sample) => ({
+      identity_hash: createHash("sha256").update(sample.itemKey).digest("hex"),
+      queueRevision: sample.queueRevision,
+      reason: sample.reason,
+      publicationRevision: sample.publicationRevision,
+      supersededByRevision: sample.supersededByRevision,
+      commandContext: sample.commandContext,
+      acknowledgementState: sample.acknowledgementState,
+      acknowledgementUnavailableReason: sample.acknowledgementUnavailableReason,
+      supersedeSafe: sample.supersedeSafe,
+      successorFenceState: sample.successorFenceState,
+    })),
+  }),
+);
 
 function integerArg(name: string, fallback: number, minimum: number, maximum: number): number {
   const index = process.argv.indexOf(name);

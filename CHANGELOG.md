@@ -30,6 +30,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 - Authenticated publication reconciliation now diagnoses missing, ambiguous, and mismatched successor fences without changing supersede behavior.
 - Exact-review maintenance clients now expose and strictly validate successor-fence diagnostics after the Worker-first rollout.
+- Redact publication identities in maintenance output with stable row fingerprints and refuse redirects for signed queue requests.
 - Publication reconciliation diagnostics now report the exact acknowledgement-unavailable reason while preserving fail-closed supersede behavior.
 
 - Admit the reviewed mocked marketplace telemetry-redaction and Gateway config CDP-redaction fixtures through exact URI, source-line, path, and decoder bindings without relaxing native scanner checks.

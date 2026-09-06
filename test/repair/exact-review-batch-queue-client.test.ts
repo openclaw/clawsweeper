@@ -34,6 +34,7 @@ function fixture(t, respond) {
     baseUrl: "https://queue.example.test",
     webhookSecret: "synthetic-test-secret",
     fetch: async (url, init) => {
+      assert.equal(init.redirect, "error");
       calls.push({ url, ...init, at: Date.now() });
       return respond(calls.length, init);
     },
@@ -375,6 +376,7 @@ test("publication reconciliation returns a bounded allowlisted sample", async (t
   assert.equal(result.apply, true);
   assert.equal(calls.length, 1);
   assert.deepEqual(JSON.parse(calls[0].body), { apply: true, max_items: 1 });
+  assert.equal(calls[0].redirect, "error");
   assert.equal(result.sample.length, 20);
   assert.deepEqual(result.sample[0], {
     itemKey: "openclaw/example#1@publish:2:1",

@@ -659,6 +659,10 @@ permission; other rows report `null`. The maintenance client exposes this field
 as `successorFenceState` and rejects missing, unknown, or incoherent values.
 If the Worker must roll back below `e4d0e82050300cafb9459a6d9cf8a2041f4e62cb`,
 roll back the strict client first so it never reads a response without this field.
+CLI samples omit target, item, retained-item, and producer identities. Their
+`identity_hash` is SHA-256 of the unmodified UTF-8 item key, without a newline,
+so operators can correlate a row without logging its key. A different hash or
+an empty sample does not establish what happened to a previously observed row.
 Successful queue handoff expires the workflow's review-start lease to permit
 another exact-head review; terminal publication still deletes the placeholder.
 
