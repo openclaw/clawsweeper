@@ -625,6 +625,7 @@ const browserToolSource = "extensions/browser/src/browser-tool.test.ts";
 const browserCdpHelpersSource = "extensions/browser/src/browser/cdp.helpers.test.ts";
 const browserMcpSource = "extensions/browser/src/browser/chrome-mcp.test.ts";
 const browserProfilesSource = "extensions/browser/src/browser/server-context.list-profiles.test.ts";
+const firecrawlSource = "extensions/firecrawl/src/firecrawl-client.test.ts";
 const macDashboardSource = "apps/macos/Tests/OpenClawIPCTests/DashboardWindowSmokeTests.swift";
 const mcpAppsSource = "src/config/config-misc.test.ts";
 const marketplaceFeedSource = "src/cli/plugins-cli.marketplace-refresh.test.ts";
@@ -1370,6 +1371,7 @@ for (const scenarioName of [
   "browser local server mismatch",
   "browser docs fixture",
   "browser page URL fixture",
+  "firecrawl target URL fixture",
   "browser CDP relay fixture",
   "browser CDP relay shifted HTML without companion",
   "browser CDP encoded fixture",
@@ -1551,6 +1553,7 @@ for (const scenarioName of [
     const browserCdpFixture = scenario.startsWith("browser CDP ");
     const browserMcpFixture = scenario.startsWith("browser MCP ");
     const browserExactFixture = browserCdpFixture || browserMcpFixture;
+    const firecrawlFixture = scenario === "firecrawl target URL fixture";
     const encodedCdpFixture = browserCdpFixture && scenario.includes("encoded");
     // Preserve the literal witnesses captured from the native OpenClaw scan.
     const literalLine = gatewayConfigFixture
@@ -1622,6 +1625,12 @@ for (const scenarioName of [
       if (scenario === "mattermost changed host") url.hostname = "other.example.com";
       if (scenario === "mattermost changed path") url.pathname = "/changed";
       uri = url.href;
+    }
+    if (firecrawlFixture) {
+      const url = new URL("http://127.0.0.1");
+      url.username = "user";
+      url.password = "pass";
+      uri = url.href.slice(0, -1);
     }
     if (macDashboardFixture) {
       // Native 3.97.1 witness from OpenClaw 9ba01d6c7b1c, line 273.
@@ -1743,6 +1752,7 @@ for (const scenarioName of [
       files = [scenario === "other file" ? "other.test.ts" : gatewayConfigSource];
     if (browserProfilesFixture)
       files = [scenario === "other file" ? "other.test.ts" : browserProfilesSource];
+    if (firecrawlFixture) files = [firecrawlSource];
     const value =
       scenario === "decoded only" || scenario.endsWith("encoded-only")
         ? primaryDecoder === "BASE64"
@@ -1974,6 +1984,7 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
         "browser remote server fixture",
         "browser docs fixture",
         "browser page URL fixture",
+        "firecrawl target URL fixture",
         "browser CDP relay fixture",
         "browser CDP relay shifted HTML without companion",
         "browser CDP encoded fixture",
