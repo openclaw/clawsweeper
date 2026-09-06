@@ -1,3 +1,4 @@
+import { escapeRegExp as escapeRegex } from "../clawsweeper-text.js";
 import { isRecord } from "../value-coerce.js";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { parseSimpleYaml, validateJob } from "./lib.js";
@@ -1339,8 +1340,4 @@ function isoDate(value: unknown, label: string): string {
   if (!text || !Number.isFinite(Date.parse(text)))
     throw new Error(`invalid cluster intake ${label}`);
   return text;
-}
-
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
