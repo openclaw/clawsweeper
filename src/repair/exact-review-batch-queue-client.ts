@@ -77,6 +77,14 @@ type ExactReviewPublicationAcknowledgementUnavailableReason =
   | "lifecycle_requeued"
   | "terminal_missing"
   | "routed_receipts_incomplete";
+type ExactReviewPublicationSuccessorFenceState =
+  | "verified"
+  | "missing"
+  | "ambiguous"
+  | "admission_missing"
+  | "admission_command_mismatch"
+  | "admission_marker_mismatch"
+  | "admission_comment_mismatch";
 
 export type ExactReviewPublicationReconcileSample = {
   itemKey: string;
@@ -94,6 +102,7 @@ export type ExactReviewPublicationReconcileSample = {
   commandContext: boolean;
   acknowledgementState: ExactReviewPublicationAcknowledgementState;
   acknowledgementUnavailableReason: ExactReviewPublicationAcknowledgementUnavailableReason | null;
+  successorFenceState: ExactReviewPublicationSuccessorFenceState | null;
   supersedeSafe: boolean;
   producerRunId?: string;
   producerRunAttempt?: number;
@@ -190,6 +199,8 @@ const RECONCILIATION_REASONS = new Set<ExactReviewPublicationReconcileSample["re
 ]);
 const ACKNOWLEDGEMENT_UNAVAILABLE_REASON =
   /^(projection_missing|projection_not_command|marker_mismatch|comment_mismatch|acknowledgement_not_required|lifecycle_requeued|terminal_missing|routed_receipts_incomplete)$/;
+const SUCCESSOR_FENCE_STATE =
+  /^(verified|missing|ambiguous|admission_missing|admission_command_mismatch|admission_marker_mismatch|admission_comment_mismatch)$/;
 
 type TransportFailureReason = "network_error" | "timeout" | `HTTP_${number}`;
 
@@ -680,13 +691,26 @@ function parseReconciliationSample(value: unknown): ExactReviewPublicationReconc
   ) {
     throw new Error("Invalid batch queue sample acknowledgement_unavailable_reason");
   }
+  if (!Object.hasOwn(sample, "successor_fence_state")) {
+    throw new Error("Invalid batch queue sample successor_fence_state");
+  }
+  const successorFenceState =
+    sample.successor_fence_state === null
+      ? null
+      : stringValue(sample.successor_fence_state, "sample successor_fence_state");
+  if (successorFenceState !== null && !SUCCESSOR_FENCE_STATE.test(successorFenceState)) {
+    throw new Error("Invalid batch queue sample successor_fence_state");
+  }
   const commandContext = sample.command_context;
   const staleCandidate = reason === "stale_revision" || reason === "duplicate_lineage";
+  const successorFenceApplicable =
+    reason === "stale_revision" && ackUnavailableReason === "terminal_missing";
   if (
     typeof commandContext !== "boolean" ||
     typeof sample.supersede_safe !== "boolean" ||
     commandContext === (ack === "not_required") ||
     (hasAckUnavailableReason && (ack === "unavailable") !== (ackUnavailableReason !== null)) ||
+    successorFenceApplicable === (successorFenceState === null) ||
     sample.supersede_safe !== (staleCandidate && !["pending", "unavailable"].includes(ack))
   ) {
     throw new Error("Invalid batch queue sample supersede safety");
@@ -713,6 +737,7 @@ function parseReconciliationSample(value: unknown): ExactReviewPublicationReconc
     acknowledgementState: ack as ExactReviewPublicationAcknowledgementState,
     acknowledgementUnavailableReason:
       ackUnavailableReason as ExactReviewPublicationAcknowledgementUnavailableReason | null,
+    successorFenceState: successorFenceState as ExactReviewPublicationSuccessorFenceState | null,
     supersedeSafe: sample.supersede_safe,
     ...(producerRunId === undefined
       ? {}

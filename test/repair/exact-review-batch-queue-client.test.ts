@@ -305,26 +305,40 @@ test("publication reconciliation returns a bounded allowlisted sample", async (t
     "skipped_missing_comment",
     "unavailable",
   ];
-  const sample = Array.from({ length: 21 }, (_, index) => ({
-    item_key: `openclaw/example#${index + 1}@publish:${index + 2}:1`,
-    queue_revision: String(index + 1),
-    reason: "stale_revision",
-    target_key: `openclaw/example#${index + 1}`,
-    publication_revision: String(index + 1),
-    superseded_by_revision: String(index + 2),
-    lineage_claim_generation: null,
-    retained_item_key: null,
-    command_context: index % 6 !== 0,
-    acknowledgement_state: acknowledgementStates[index % acknowledgementStates.length],
-    acknowledgement_unavailable_reason:
-      acknowledgementStates[index % acknowledgementStates.length] === "unavailable"
-        ? "terminal_missing"
-        : null,
-    supersede_safe: !["pending", "unavailable"].includes(
-      acknowledgementStates[index % acknowledgementStates.length],
-    ),
-    private_detail: `must-not-escape-${index}`,
-  }));
+  const successorFenceStates = [
+    "verified",
+    "missing",
+    "ambiguous",
+    "admission_missing",
+    "admission_command_mismatch",
+    "admission_marker_mismatch",
+    "admission_comment_mismatch",
+  ];
+  const sample = Array.from({ length: 21 }, (_, index) => {
+    const successorFenceState = index >= 13 ? successorFenceStates[index - 13] : null;
+    const acknowledgementState =
+      successorFenceState === null
+        ? acknowledgementStates[index % acknowledgementStates.length]
+        : "unavailable";
+    return {
+      item_key: `openclaw/example#${index + 1}@publish:${index + 2}:1`,
+      queue_revision: String(index + 1),
+      reason: "stale_revision",
+      target_key: `openclaw/example#${index + 1}`,
+      publication_revision: String(index + 1),
+      superseded_by_revision: String(index + 2),
+      lineage_claim_generation: null,
+      retained_item_key: null,
+      command_context: successorFenceState !== null || index % 6 !== 0,
+      acknowledgement_state: acknowledgementState,
+      acknowledgement_unavailable_reason:
+        acknowledgementState === "unavailable" ? "terminal_missing" : null,
+      successor_fence_state:
+        acknowledgementState === "unavailable" ? (successorFenceState ?? "verified") : null,
+      supersede_safe: !["pending", "unavailable"].includes(acknowledgementState),
+      private_detail: `must-not-escape-${index}`,
+    };
+  });
   const { client, calls } = fixture(t, (_attempt, init) =>
     Response.json({
       apply: JSON.parse(init.body).apply,
@@ -374,6 +388,7 @@ test("publication reconciliation returns a bounded allowlisted sample", async (t
     commandContext: false,
     acknowledgementState: "not_required",
     acknowledgementUnavailableReason: null,
+    successorFenceState: null,
     supersedeSafe: true,
   });
   assert.deepEqual(
@@ -390,6 +405,7 @@ test("publication reconciliation returns a bounded allowlisted sample", async (t
       commandContext: true,
       acknowledgementState: "unavailable",
       acknowledgementUnavailableReason: "terminal_missing",
+      successorFenceState: "verified",
       supersedeSafe: false,
     },
   );
@@ -397,11 +413,15 @@ test("publication reconciliation returns a bounded allowlisted sample", async (t
     [...new Set(result.sample.map((entry) => entry.acknowledgementState))],
     acknowledgementStates,
   );
+  assert.deepEqual(
+    [...new Set(result.sample.map((entry) => entry.successorFenceState).filter(Boolean))],
+    successorFenceStates,
+  );
   assert.equal("private_detail" in result.sample[0]!, false);
   assert.equal("private_response_detail" in result, false);
 });
 
-test("publication reconciliation accepts prior Worker samples without unavailable reason", async (t) => {
+test("publication reconciliation treats an omitted inapplicable unavailable reason as null", async (t) => {
   const { client } = fixture(t, () =>
     Response.json({
       apply: false,
@@ -424,6 +444,7 @@ test("publication reconciliation accepts prior Worker samples without unavailabl
           retained_item_key: null,
           command_context: false,
           acknowledgement_state: "not_required",
+          successor_fence_state: null,
           supersede_safe: true,
         },
       ],
@@ -461,6 +482,7 @@ test("publication reconciliation rejects malformed sample rows", async (t) => {
           command_context: false,
           acknowledgement_state: "not_required",
           acknowledgement_unavailable_reason: null,
+          successor_fence_state: null,
           supersede_safe: false,
         },
       ],
@@ -479,6 +501,7 @@ test("publication reconciliation rejects malformed supersede safety", async (t) 
   let reason = "stale_revision";
   let supersedeSafe = true;
   let acknowledgementUnavailableReason: unknown = null;
+  let successorFenceState: unknown = null;
   let responseApply: unknown = true;
   const { client, calls } = fixture(t, () =>
     Response.json({
@@ -503,6 +526,7 @@ test("publication reconciliation rejects malformed supersede safety", async (t) 
           command_context: commandContext,
           acknowledgement_state: acknowledgementState,
           acknowledgement_unavailable_reason: acknowledgementUnavailableReason,
+          successor_fence_state: successorFenceState,
           supersede_safe: supersedeSafe,
         },
       ],
@@ -561,4 +585,57 @@ test("publication reconciliation rejects malformed supersede safety", async (t) 
   );
   assert.equal(calls.length, 9);
   assert.deepEqual(JSON.parse(calls[0].body), { apply: true, max_items: 1 });
+});
+
+test("publication reconciliation requires a coherent successor fence diagnostic", async (t) => {
+  const sample: Record<string, unknown> = {
+    item_key: "openclaw/example#1@publish:2:1",
+    queue_revision: 1,
+    reason: "stale_revision",
+    target_key: "openclaw/example#1",
+    publication_revision: 1,
+    superseded_by_revision: 2,
+    lineage_claim_generation: null,
+    retained_item_key: null,
+    command_context: true,
+    acknowledgement_state: "unavailable",
+    acknowledgement_unavailable_reason: "terminal_missing",
+    successor_fence_state: "verified",
+    supersede_safe: false,
+  };
+  const { client } = fixture(t, () =>
+    Response.json({
+      apply: false,
+      scanned: 1,
+      eligible: 1,
+      changed: 0,
+      eligible_remaining: 1,
+      protected_batch_items: 0,
+      oldest_eligible_age_seconds: 60,
+      oldest_remaining_age_seconds: 60,
+      sample: [sample],
+    }),
+  );
+
+  delete sample.successor_fence_state;
+  await assert.rejects(
+    client.reconcilePublications({ apply: false, maxItems: 1 }),
+    /successor_fence_state/,
+  );
+  sample.successor_fence_state = "private_state";
+  await assert.rejects(
+    client.reconcilePublications({ apply: false, maxItems: 1 }),
+    /successor_fence_state/,
+  );
+  sample.successor_fence_state = null;
+  await assert.rejects(
+    client.reconcilePublications({ apply: false, maxItems: 1 }),
+    /supersede safety/,
+  );
+  sample.successor_fence_state = "verified";
+  sample.acknowledgement_unavailable_reason = "routed_receipts_incomplete";
+  await assert.rejects(
+    client.reconcilePublications({ apply: false, maxItems: 1 }),
+    /supersede safety/,
+  );
 });

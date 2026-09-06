@@ -655,7 +655,10 @@ duplicate-lineage and legacy terminal cleanup remains operator-owned.
 Authenticated reconciliation samples report `successor_fence_state` only for
 `stale_revision` rows whose acknowledgement is unavailable because the terminal
 disposition is missing. `verified` is diagnostic evidence, never mutation
-permission; other rows report `null`.
+permission; other rows report `null`. The maintenance client exposes this field
+as `successorFenceState` and rejects missing, unknown, or incoherent values.
+If the Worker must roll back below `e4d0e82050300cafb9459a6d9cf8a2041f4e62cb`,
+roll back the strict client first so it never reads a response without this field.
 Successful queue handoff expires the workflow's review-start lease to permit
 another exact-head review; terminal publication still deletes the placeholder.
 
