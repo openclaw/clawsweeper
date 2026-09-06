@@ -166,10 +166,6 @@ import {
 } from "./review-dispatch-coordination.js";
 import { directReReviewIntake } from "./direct-re-review-admission.js";
 import { admitProofCommand } from "./proof-command.js";
-import {
-  commandProofProducerFromEnv,
-  commandProofProducersFromEnv,
-} from "../command-proof-contract.js";
 import { postExactReviewCommandIntakeSync } from "./exact-review-command-queue.js";
 
 const automergeMetricWrites: Promise<boolean>[] = [];
@@ -1009,21 +1005,20 @@ function classifyCommand(command: LooseRecord): JsonValue {
         command.author_type === "User" && !command.trusted_bot && authorization?.allowed === true,
       currentHeadSha: String(target.head_sha ?? ""),
     });
-    const selection = admission.request?.scenarioId;
-    const configured =
-      selection === "auto"
-        ? Object.keys(commandProofProducersFromEnv(process.env)).length > 0
-        : selection?.split(",").every((id) => commandProofProducerFromEnv(id, process.env)) ===
-          true;
-    const dispatchProof =
-      configured && admission.request !== undefined && targetRepo === "openclaw/openclaw";
+    const dispatchProof = admission.request !== undefined && targetRepo === "openclaw/openclaw";
     return {
       ...next,
       status: "ready",
       proof_admission: admission,
       actions: [
         ...(dispatchProof
-          ? [{ action: "dispatch_proof", status: execute ? "pending" : "planned" }]
+          ? [
+              {
+                action: "dispatch_clawsweeper",
+                workflow: reviewWorkflow,
+                status: execute ? "pending" : "planned",
+              },
+            ]
           : []),
         { action: "comment", status: execute ? "pending" : "planned" },
       ],
@@ -2313,8 +2308,20 @@ function executeCommand(command: LooseRecord) {
         return;
       }
     }
-    if (command.intent === "re_review" && command.issue_number && shouldDispatchClawSweeper) {
+    if (
+      ["re_review", "request_proof"].includes(command.intent) &&
+      command.issue_number &&
+      shouldDispatchClawSweeper
+    ) {
       const clawsweeper = dispatchClawSweeperReview(command);
+      if (command.intent === "request_proof") {
+        command.proof_admission = {
+          ...command.proof_admission,
+          status: "queued",
+          reason:
+            "Queued one review with requested proof focus. The reviewer selects relevant supported checks and uses their observations before its final decision; no separate follow-up review is scheduled.",
+        };
+      }
       dispatched = { ...dispatched, clawsweeper };
       command.actions = command.actions.map((action: JsonValue) => {
         if (action.action === "dispatch_clawsweeper") {
@@ -3326,7 +3333,8 @@ function trustedAutomationPullReviewLeaseBlockReason(
 }
 
 function dispatchClawSweeperReview(command: LooseRecord): LooseRecord {
-  if (command.intent === "re_review") return enqueueClawSweeperReReview(command);
+  if (["re_review", "request_proof"].includes(command.intent))
+    return enqueueClawSweeperReReview(command);
   const requiresCommandStatus = ["autofix", "automerge"].includes(String(command.intent ?? ""));
   let dispatchKey = dispatchReceiptKey(command);
   const expectedTitle = [
@@ -3473,6 +3481,9 @@ function enqueueClawSweeperReReview(command: LooseRecord): LooseRecord {
     commandOrigin: "comment_router",
     ...(command.status_comment_id ? { statusCommentId: Number(command.status_comment_id) } : {}),
     additionalPrompt: freeformReviewPrompt(command),
+    ...(command.intent === "request_proof" && command.proof_admission?.request?.headSha
+      ? { candidateHeadSha: String(command.proof_admission.request.headSha) }
+      : {}),
   });
   command.command_status_revision = intake.commandVersionId;
   const secret = process.env.CLAWSWEEPER_WEBHOOK_SECRET || "";
@@ -3595,6 +3606,14 @@ function dispatchClawSweeperAssist(command: LooseRecord): LooseRecord {
 }
 
 function freeformReviewPrompt(command: LooseRecord): string {
+  if (command.intent === "request_proof" && command.proof_admission?.request) {
+    return [
+      "A human maintainer requested behavioral proof during this review.",
+      `Requested selection: ${command.proof_admission.request.scenarioId}`,
+      `Requested exact head: ${command.proof_admission.request.headSha}`,
+      "Use available proof tools for relevant behavior before issuing this review's final decision. Explain unsupported or inconclusive checks. Never treat completed execution as proof that the claim passed, and do not enqueue another review.",
+    ].join("\n");
+  }
   const prompt = String(command.freeform_prompt ?? "").trim();
   if (!prompt) return "";
   if (command.intent === "re_review") {

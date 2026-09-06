@@ -836,11 +836,17 @@ test("untrusted Codex processes cannot inherit action-ledger producer authority"
     CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: "/tmp/privileged-ledger",
     CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "review-0",
     GH_TOKEN: "ambient",
+    EXACT_REVIEW_LEASE_ID: "private-review-capability",
+    EXACT_REVIEW_CLAIM_GENERATION: "2",
+    EXACT_REVIEW_SOURCE_HEAD_SHA: "a".repeat(40),
   });
   assert.equal(env.CLAWSWEEPER_ACTION_LEDGER_FORCE, undefined);
   assert.equal(env.CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT, undefined);
   assert.equal(env.CLAWSWEEPER_ACTION_LEDGER_INVOCATION, undefined);
   assert.equal(env.GH_TOKEN, undefined);
+  assert.equal(env.EXACT_REVIEW_LEASE_ID, undefined);
+  assert.equal(env.EXACT_REVIEW_CLAIM_GENERATION, undefined);
+  assert.equal(env.EXACT_REVIEW_SOURCE_HEAD_SHA, undefined);
 });
 
 test("apply failure finalization survives report publication errors", () => {

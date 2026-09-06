@@ -286,7 +286,17 @@ function numericId(value: unknown): string | null {
   const id = typeof value === "number" && Number.isSafeInteger(value) ? String(value) : value;
   return proofNumericId(id) ? id : null;
 }
-export function trustedRun(claim: CommandProofClaim, value: unknown): boolean {
+export type ProofProducerIdentity = Pick<
+  CommandProofClaim,
+  | "requestId"
+  | "repository"
+  | "repositoryId"
+  | "scenario"
+  | "workflowPath"
+  | "workflowRef"
+  | "workflowSha"
+>;
+export function trustedRun(claim: ProofProducerIdentity, value: unknown): boolean {
   const run = proofRecord(value);
   return (
     numericId(run.id) !== null &&
@@ -306,10 +316,10 @@ export function trustedRun(claim: CommandProofClaim, value: unknown): boolean {
     numericId(proofRecord(run.head_repository).id) === claim.repositoryId
   );
 }
-function trustedArtifact(
+export function trustedArtifact(
   value: unknown,
   bytes: Buffer,
-  claim: CommandProofClaim,
+  claim: ProofProducerIdentity,
   run: Record<string, unknown>,
   name: string,
 ) {
