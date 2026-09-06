@@ -23,7 +23,10 @@ import type {
   LiveProofTerminalStep,
   MediaProofCommandRunner,
 } from "../clawsweeper-types.js";
-import { mediaProofSpawnDetail } from "../clawsweeper-media-proof.js";
+import {
+  mediaProofSpawnDetail,
+  requireMediaProofCommandSuccess as requireSuccess,
+} from "../clawsweeper-media-proof.js";
 import type { LiveProofDriveStatus } from "./manifest.js";
 
 interface LiveProofBaseStepLogEntry {
@@ -1857,15 +1860,6 @@ function driveStatus(
 ): LiveProofDriveStatus {
   if (status === 0 && steps.every((step) => step.status === "completed")) return "completed";
   return steps.some((step) => step.status === "completed") ? "partial" : "failed";
-}
-
-function requireSuccess(
-  command: string,
-  args: readonly string[],
-  result: ReturnType<MediaProofCommandRunner>,
-): void {
-  if (result.status === 0) return;
-  throw new Error(`${command} ${args.join(" ")} failed: ${mediaProofSpawnDetail(result)}`);
 }
 
 export function liveProofStepActions(steps: readonly LiveProofStep[]): string[] {

@@ -1,3 +1,4 @@
+import { trimTrailingUrlPunctuation } from "../clawsweeper-text.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 
 const DEFAULT_ADAPTIVE_CODEX_TIMEOUT_MS = 600_000;
@@ -75,16 +76,6 @@ function videoProofUrlsFromText(text: string) {
     if (urls.length >= MAX_MEDIA_PROOF_URLS) break;
   }
   return urls;
-}
-
-function trimTrailingUrlPunctuation(raw: string): string {
-  let end = raw.length;
-  while (end > 0) {
-    const char = raw.charCodeAt(end - 1);
-    if (char !== 44 && char !== 46 && char !== 58 && char !== 59) break;
-    end -= 1;
-  }
-  return raw.slice(0, end);
 }
 
 function nonNegativeInteger(value: JsonValue) {

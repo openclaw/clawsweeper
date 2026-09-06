@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
-import { trimMiddle } from "./clawsweeper-text.js";
+import { trimMiddle, trimTrailingUrlPunctuation } from "./clawsweeper-text.js";
 import type {
   ItemContext,
   MediaProofCommandRunner,
@@ -33,14 +33,13 @@ export function mediaProofCommandRunner(
   });
 }
 
-function trimTrailingUrlPunctuation(raw: string): string {
-  let end = raw.length;
-  while (end > 0) {
-    const char = raw.charCodeAt(end - 1);
-    if (char !== 44 && char !== 46 && char !== 58 && char !== 59) break;
-    end -= 1;
-  }
-  return raw.slice(0, end);
+export function requireMediaProofCommandSuccess(
+  command: string,
+  args: readonly string[],
+  result: ReturnType<MediaProofCommandRunner>,
+): void {
+  if (result.status === 0) return;
+  throw new Error(`${command} ${args.join(" ")} failed: ${mediaProofSpawnDetail(result)}`);
 }
 
 function proofMediaUrlsFromContext(context: ItemContext): string[] {

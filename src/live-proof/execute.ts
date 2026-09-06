@@ -15,6 +15,7 @@ import {
   createVideoContactSheet,
   mediaProofCommandRunner,
   mediaProofSpawnDetail,
+  requireMediaProofCommandSuccess as requireSuccess,
 } from "../clawsweeper-media-proof.js";
 import type { LiveProofPlan, MediaProofCommandRunner } from "../clawsweeper-types.js";
 import type { RepositoryProfile } from "../repository-profiles.js";
@@ -609,13 +610,4 @@ function stopBackgroundServer(
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
-}
-
-function requireSuccess(
-  command: string,
-  args: readonly string[],
-  result: ReturnType<MediaProofCommandRunner>,
-): void {
-  if (result.status === 0) return;
-  throw new Error(`${command} ${args.join(" ")} failed: ${mediaProofSpawnDetail(result)}`);
 }
