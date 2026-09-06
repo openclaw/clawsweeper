@@ -60,7 +60,7 @@ function statusCheckTimestamp(check: LooseRecord) {
   return isPendingStatusCheck(check) ? Number.MAX_SAFE_INTEGER : 0;
 }
 
-function isPendingStatusCheck(check: LooseRecord) {
+export function isPendingStatusCheck(check: LooseRecord) {
   const status = String(check.status ?? check.state ?? "").toUpperCase();
   const conclusion = String(check.conclusion ?? "").toUpperCase();
   return !conclusion && Boolean(status) && !["COMPLETED", "SUCCESS"].includes(status);
