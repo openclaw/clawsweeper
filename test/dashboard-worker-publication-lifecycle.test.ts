@@ -3826,6 +3826,7 @@ test("signed Worker supersedes only an acknowledgement-safe exact stale publicat
     superseded_by_revision: 2,
     lineage_claim_generation: 1,
     retained_item_key: null,
+    successor_fence_state: null,
     command_context: true,
     acknowledgement_state: "pending",
     acknowledgement_unavailable_reason: null,
@@ -4212,6 +4213,7 @@ test("publication reconciliation derives every acknowledgement state from the ex
         commandContext: sample.command_context,
         acknowledgementState: sample.acknowledgement_state,
         acknowledgementUnavailableReason: sample.acknowledgement_unavailable_reason,
+        successorFenceState: sample.successor_fence_state,
         supersedeSafe: sample.supersede_safe,
       },
       {
@@ -4219,6 +4221,7 @@ test("publication reconciliation derives every acknowledgement state from the ex
         commandContext: entry.producerCommand,
         acknowledgementState: entry.acknowledgementState,
         acknowledgementUnavailableReason: entry.unavailableReason,
+        successorFenceState: entry.name === "terminal_missing" ? "admission_missing" : null,
         supersedeSafe: entry.supersedeSafe,
       },
     );
@@ -4302,17 +4305,21 @@ test("publication reconciliation preserves and does not transplant an unsafe com
   assert.ok(state.items[command.key]);
 });
 
-test("alarm stale command terminalization fails closed without exact successor ownership", async () => {
-  for (const scenario of [
-    "stale_projection_mismatch",
-    "existing_requeue",
-    "missing_successor",
-    "ambiguous_successor",
-    "successor_projection_missing",
-    "successor_projection_mismatch",
-  ] as const) {
+test("stale command successor diagnostics match the alarm ownership fence", async () => {
+  const scenarios = [
+    ["stale_projection_mismatch", null],
+    ["existing_requeue", null],
+    ["missing_successor", "missing"],
+    ["ambiguous_successor", "ambiguous"],
+    ["successor_projection_missing", "admission_missing"],
+    ["successor_command_mismatch", "admission_command_mismatch"],
+    ["successor_marker_mismatch", "admission_marker_mismatch"],
+    ["successor_comment_mismatch", "admission_comment_mismatch"],
+    ["verified", "verified"],
+  ] as const;
+  for (const [index, [scenario, expectedFenceState]] of scenarios.entries()) {
     const storage = new MemoryDurableStorage();
-    const number = 18030 + scenario.length;
+    const number = 18030 + index;
     const stale = leasedExactReviewPublicationItem(number, `${number}0`);
     const fresh = leasedExactReviewPublicationItem(number, `${number}1`);
     const marker = `<!-- clawsweeper-command-status:${number}:re_review:${"e".repeat(40)} -->`;
@@ -4378,31 +4385,42 @@ test("alarm stale command terminalization fails closed without exact successor o
           revision: successor.revision,
           deliveryId: `successor-${successor.key}`,
           sourceAction: producer.sourceAction,
-          commandOriginated: true,
-          statusMarker:
-            scenario === "successor_projection_mismatch" ? `${marker}:mismatch` : marker,
-          statusCommentId: number * 10,
+          commandOriginated: scenario !== "successor_command_mismatch",
+          statusMarker: scenario === "successor_marker_mismatch" ? `${marker}:mismatch` : marker,
+          statusCommentId:
+            scenario === "successor_comment_mismatch" ? number * 10 + 1 : number * 10,
           observedAt: 3,
         });
       }
     }
+    const reconciled = await (
+      await queue.fetch(
+        new Request("https://queue/publications/reconcile", {
+          method: "POST",
+          body: JSON.stringify({ max_items: 1 }),
+        }),
+      )
+    ).json();
+    assert.equal(reconciled.changed, 0);
+    assert.equal(reconciled.sample[0].successor_fence_state, expectedFenceState);
     await queue.alarm();
     const state = storage.sql.readNormalizedQueue() as {
       items: Record<string, ExactReviewQueueItem>;
     };
-    assert.ok(state.items[stale.key]);
+    if (scenario === "verified") assert.equal(state.items[stale.key], undefined);
+    else assert.ok(state.items[stale.key]);
     if (scenario !== "missing_successor") assert.ok(state.items[fresh.key]);
     assert.equal(
       lifecycle.read(identity.canonicalTargetKey, identity.fenceKey, identity.revision)
         ?.terminalDisposition?.kind,
-      scenario === "existing_requeue" ? "requeue" : undefined,
+      scenario === "existing_requeue" || scenario === "verified" ? "requeue" : undefined,
     );
     await queue.alarm();
-    assert.ok(
-      (storage.sql.readNormalizedQueue() as { items: Record<string, ExactReviewQueueItem> }).items[
-        stale.key
-      ],
-    );
+    const replayed = storage.sql.readNormalizedQueue() as {
+      items: Record<string, ExactReviewQueueItem>;
+    };
+    if (scenario === "verified") assert.equal(replayed.items[stale.key], undefined);
+    else assert.ok(replayed.items[stale.key]);
   }
 });
 

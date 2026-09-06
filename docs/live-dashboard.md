@@ -652,6 +652,10 @@ admission: the same marker and comment requeues without a finalizer, while a
 changed address or non-command successor records superseded with an acknowledgement
 driver. Missing, ambiguous, or mismatched successor state stays retained fail-closed;
 duplicate-lineage and legacy terminal cleanup remains operator-owned.
+Authenticated reconciliation samples report `successor_fence_state` only for
+`stale_revision` rows whose acknowledgement is unavailable because the terminal
+disposition is missing. `verified` is diagnostic evidence, never mutation
+permission; other rows report `null`.
 Successful queue handoff expires the workflow's review-start lease to permit
 another exact-head review; terminal publication still deletes the placeholder.
 

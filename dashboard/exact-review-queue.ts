@@ -6796,6 +6796,25 @@ export class ExactReviewQueue {
     return "routed_receipts_incomplete";
   }
 
+  private publicationSuccessorFenceState(successor: ExactReviewQueueItem | null | undefined) {
+    if (successor === undefined) return "missing" as const;
+    if (successor === null) return "ambiguous" as const;
+    const producer = successor.decision.publication!.producerDecision;
+    const admission = this.lifecycleProjectionStore.read(
+      `${producer.targetRepo}#${producer.itemNumber}`,
+      successor.key,
+      successor.revision,
+    )?.admission;
+    if (!admission) return "admission_missing" as const;
+    if (admission.commandOriginated !== exactReviewDecisionHasCommandContext(producer))
+      return "admission_command_mismatch" as const;
+    if (admission.statusMarker !== (producer.commandStatusMarker ?? null))
+      return "admission_marker_mismatch" as const;
+    if (admission.statusCommentId !== (producer.statusCommentId ?? null))
+      return "admission_comment_mismatch" as const;
+    return "verified" as const;
+  }
+
   private stalePublicationCandidatesSync(
     state: ExactReviewQueueState,
     activeBatchItemKeys: ReadonlySet<string>,
@@ -6874,22 +6893,11 @@ export class ExactReviewQueue {
         const successor = successors.get(currentRevision.targetKey);
         if (
           this.publicationSupersedeSafety(current).acknowledgement_unavailable_reason !==
-            "terminal_missing" ||
-          !successor
+          "terminal_missing"
         )
           continue;
+        if (this.publicationSuccessorFenceState(successor) !== "verified" || !successor) continue;
         const successorProducer = successor.decision.publication!.producerDecision;
-        const successorAdmission = this.lifecycleProjectionStore.read(
-          `${successorProducer.targetRepo}#${successorProducer.itemNumber}`,
-          successor.key,
-          successor.revision,
-        )?.admission;
-        if (
-          successorAdmission?.commandOriginated !== hasCommand(successorProducer) ||
-          successorAdmission.statusMarker !== (successorProducer.commandStatusMarker ?? null) ||
-          successorAdmission.statusCommentId !== (successorProducer.statusCommentId ?? null)
-        )
-          continue;
         const requeue = exactReviewCommandObligationSurvives(producer, successorProducer);
         terminalized.push(
           this.recordLifecycleTerminalDispositionSync(
@@ -6971,7 +6979,7 @@ export class ExactReviewQueue {
           exactReviewLegacyTerminalPublicationCandidate(item, legacyAuthorityByTarget),
       )
       .sort((left, right) => left.createdAt - right.createdAt || left.key.localeCompare(right.key));
-    const { versioned, newestByTarget, stale } = this.stalePublicationCandidatesSync(
+    const { versioned, newestByTarget, stale, successors } = this.stalePublicationCandidatesSync(
       state,
       activeBatchItemKeys,
     );
@@ -7280,17 +7288,25 @@ export class ExactReviewQueue {
         ...remainingLegacyStateBatchTerminal.map((item) => ({ item })),
       ]),
       sample: [
-        ...selected.map(({ item, revision, reason, lineage, retainedKey }) => ({
-          item_key: item.key,
-          queue_revision: item.revision,
-          reason,
-          target_key: revision.targetKey,
-          publication_revision: revision.sourceRevision,
-          superseded_by_revision: newestByTarget.get(revision.targetKey),
-          lineage_claim_generation: lineage?.claimGeneration ?? null,
-          retained_item_key: retainedKey ?? null,
-          ...this.publicationSupersedeSafety(item, true),
-        })),
+        ...selected.map(({ item, revision, reason, lineage, retainedKey }) => {
+          const safety = this.publicationSupersedeSafety(item, true);
+          return {
+            item_key: item.key,
+            queue_revision: item.revision,
+            reason,
+            target_key: revision.targetKey,
+            publication_revision: revision.sourceRevision,
+            superseded_by_revision: newestByTarget.get(revision.targetKey),
+            lineage_claim_generation: lineage?.claimGeneration ?? null,
+            retained_item_key: retainedKey ?? null,
+            successor_fence_state:
+              reason === "stale_revision" &&
+              safety.acknowledgement_unavailable_reason === "terminal_missing"
+                ? this.publicationSuccessorFenceState(successors.get(revision.targetKey))
+                : null,
+            ...safety,
+          };
+        }),
         ...legacyTerminalEligible.map((item) => ({
           item_key: item.key,
           queue_revision: item.revision,
@@ -7300,6 +7316,7 @@ export class ExactReviewQueue {
           superseded_by_revision: null,
           lineage_claim_generation: null,
           retained_item_key: null,
+          successor_fence_state: null,
           ...this.publicationSupersedeSafety(item),
         })),
         ...legacyStateBatchTerminalEligible.map((item) => ({
@@ -7313,6 +7330,7 @@ export class ExactReviewQueue {
           ),
           lineage_claim_generation: item.decision.publication!.claimGeneration,
           retained_item_key: null,
+          successor_fence_state: null,
           producer_run_id: item.decision.publication!.producerRunId,
           producer_run_attempt: item.decision.publication!.producerRunAttempt,
           ...this.publicationSupersedeSafety(item),

@@ -24,6 +24,7 @@ checkpoint, and status-only commits are intentionally omitted.
 - Reduce the review ceiling to 32, cap scheduled background reviews at eight, pace scheduled intake at 60 per hour with a six-item burst, and scan normal backlog hourly while retaining manual-review priority and existing leases.
 - Honor the configured Codex reasoning effort in sweep planning, event and shard reviews, assist answers, and close-coverage proofs instead of forcing high reasoning; assist uses the shared fast service tier.
 
+- Authenticated publication reconciliation now diagnoses missing, ambiguous, and mismatched successor fences without changing supersede behavior.
 - Publication reconciliation diagnostics now report the exact acknowledgement-unavailable reason while preserving fail-closed supersede behavior.
 
 - Admit the reviewed mocked marketplace telemetry-redaction and Gateway config CDP-redaction fixtures through exact URI, source-line, path, and decoder bindings without relaxing native scanner checks.
