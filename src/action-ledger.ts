@@ -3,6 +3,7 @@ import { isIP } from "node:net";
 import path from "node:path";
 
 import {
+  isNotFoundError,
   prepareSafeReadTarget,
   prepareSafeReadRoot,
   prepareSafeWriteTarget,
@@ -2646,7 +2647,7 @@ function hasUnpairedSurrogate(value: string): boolean {
   return false;
 }
 
-function strictUtcCalendarDate(year: number, month: number, day: number): Date {
+export function strictUtcCalendarDate(year: number, month: number, day: number): Date {
   const calendar = new Date(0);
   calendar.setUTCHours(0, 0, 0, 0);
   calendar.setUTCFullYear(year, month - 1, day);
@@ -2737,11 +2738,5 @@ function privateHost(value: string): boolean {
     (first === 169 && second === 254) ||
     (first === 192 && second === 168) ||
     (first === 172 && second >= 16 && second <= 31)
-  );
-}
-
-function isNotFoundError(error: unknown): boolean {
-  return (
-    error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT"
   );
 }

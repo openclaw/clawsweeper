@@ -3,6 +3,7 @@ import path from "node:path";
 import { sha256 } from "./content-hash.js";
 
 import {
+  isNotFoundError,
   prepareSafeReadRoot,
   prepareSafeReadTarget,
   prepareSafeWriteTarget,
@@ -40,6 +41,7 @@ import {
   readAllSpooledActionEvents,
   sortActionEventsCausally,
   splitActionEventShardEvents,
+  strictUtcCalendarDate,
   validateActionEvent,
   writeActionEvent,
   writeActionEventShards,
@@ -2330,13 +2332,6 @@ function workflowPathFromRef(workflowRef: string): string {
   return delimiter === -1 ? workflowRef : workflowRef.slice(0, delimiter);
 }
 
-function strictUtcCalendarDate(year: number, month: number, day: number): Date {
-  const calendar = new Date(0);
-  calendar.setUTCHours(0, 0, 0, 0);
-  calendar.setUTCFullYear(year, month - 1, day);
-  return calendar;
-}
-
 function requiredEnv(env: NodeJS.ProcessEnv, name: string): string {
   const value = String(env[name] ?? "").trim();
   if (!value) throw new Error(`${name} is required for action event telemetry`);
@@ -2496,10 +2491,4 @@ async function cancelResponseBody(response: Response): Promise<void> {
   } catch {
     throw new Error("CrabFleet action event response cleanup failed");
   }
-}
-
-function isNotFoundError(error: unknown): boolean {
-  return (
-    error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT"
-  );
 }
