@@ -225,6 +225,18 @@ export type GitHubRateLimitObservationV2 = {
   telemetryComplete: boolean;
 };
 
+export function resetAuthorityCandidate(
+  headers: GitHubRateLimitHeadersV2,
+): GitHubRateLimitObservationV2["resetAuthorityCandidate"] {
+  if (headers.retryAfterPresent) {
+    return headers.retryAfterSeconds === null ? "invalid" : "retry_after";
+  }
+  if (headers.resetPresent) {
+    return headers.resetEpochSeconds === null ? "invalid" : "rate_limit_reset";
+  }
+  return "absent";
+}
+
 export function githubEgressSourceAction(value: string | undefined): GitHubEgressSourceAction {
   const normalized = String(value || "")
     .trim()

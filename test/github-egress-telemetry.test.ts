@@ -103,6 +103,23 @@ test("GH_DEBUG observation counts paginated wire attempts and strips unsafe diag
     ]) {
       assert.equal(persisted.includes(sentinel), false, sentinel);
     }
+    observeGitHubDebugStderr(
+      Buffer.from(
+        debugFrame({ page: null, status: 429, at: "2026-08-12T11:59:59.000Z" }).replace(
+          "< X-Ratelimit-Reset:",
+          "< Retry-After: invalid\n< X-Ratelimit-Reset:",
+        ),
+      ),
+      ["api", "repos/private-owner/private-repo/issues/991/comments"],
+      env,
+      NOW,
+    );
+    const invalidRetry = jsonLines(rateLimitPath).at(-1);
+    assert.equal(invalidRetry?.resetAuthorityCandidate, "invalid");
+    assert.equal(
+      (invalidRetry?.headers as Record<string, unknown>).resetEpochSeconds,
+      1_786_533_900,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
