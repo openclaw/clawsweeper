@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import type { JsonValue, LooseRecord } from "./json-types.js";
+import { repositoryManagedPullRequestCloseReason } from "../repository-profiles.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -2126,6 +2127,14 @@ function closeSupersededSourcePr({
   }
   if (view.state === "CLOSED") {
     return { ...base, status: "skipped", reason: "already closed" };
+  }
+
+  const managedPullRequestReason = repositoryManagedPullRequestCloseReason(
+    { repo: result.repo, kind: "pull_request", author: String(view.author?.login ?? "") },
+    () => fetchPullRequest(result.repo, parsed.number),
+  );
+  if (managedPullRequestReason) {
+    return { ...base, status: "skipped", reason: managedPullRequestReason };
   }
 
   const comment = replacementSourceCloseComment({

@@ -6,17 +6,22 @@ import path from "node:path";
 import test from "node:test";
 import { writeFakeScanner } from "../agent-input-scan-helpers.ts";
 
-for (const [strategy, changelogOnly] of [
+for (const [strategy, changelogOnly, closeSource = false, managedLocale = false] of [
   ["repair_contributor_branch", false],
   ["replace_uneditable_branch", false],
   ["repair_contributor_branch", true],
+  ["replace_uneditable_branch", false, true, false],
+  ["replace_uneditable_branch", false, true, true],
 ] as const) {
   test(
-    changelogOnly
-      ? "changelog-only repair delegates unchanged release notes to the edit worker"
-      : `replacement publication preserves contributor credit via ${strategy}`,
+    closeSource
+      ? `replacement publication ${managedLocale ? "preserves managed locale" : "closes ordinary superseded"} source PR`
+      : changelogOnly
+        ? "changelog-only repair delegates unchanged release notes to the edit worker"
+        : `replacement publication preserves contributor credit via ${strategy}`,
     { skip: process.platform === "win32" },
     () => {
+      const targetRepo = managedLocale ? "openclaw/openclaw" : "openclaw/fixture";
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-fast-rebase-"));
       try {
         const target = path.join(root, "target");
@@ -97,14 +102,14 @@ if (args.includes("push") && args.includes("https://github.com/contributor/fixtu
   console.error("refusing to allow a GitHub App to create or update workflow .github/workflows/test.yml without workflows permission");
   process.exit(1);
 }
-const localArgs = args.map(arg => arg === "https://github.com/openclaw/fixture.git" ? ${JSON.stringify(remote)} : arg);
+const localArgs = args.map(arg => arg === ${JSON.stringify(`https://github.com/${targetRepo}.git`)} ? ${JSON.stringify(remote)} : arg);
 if (localArgs.some(arg => /^https?:/.test(arg))) throw new Error("unexpected network Git command");
 const child = spawnSync(${JSON.stringify(realGit)}, localArgs, { stdio: "inherit", env: process.env });
 process.exit(child.status ?? 1);
 `,
         );
-        const sourceUrl = "https://github.com/openclaw/fixture/pull/1";
-        const replacementUrl = "https://github.com/openclaw/fixture/pull/2";
+        const sourceUrl = `https://github.com/${targetRepo}/pull/1`;
+        const replacementUrl = `https://github.com/${targetRepo}/pull/2`;
         const gh = path.join(bin, "gh.cjs");
         const publicationTrace = path.join(root, "publication.jsonl");
         fs.writeFileSync(
@@ -113,8 +118,8 @@ process.exit(child.status ?? 1);
 const args = process.argv.slice(2);
 const fs = require("node:fs");
 const endpoint = args[1] || "";
-if (args[0] === "api" && endpoint === "repos/openclaw/fixture/pulls/1") {
-  console.log(JSON.stringify({ state: "open", maintainer_can_modify: true, labels: [], head: { sha: ${JSON.stringify(sourceHead)}, ref: "contributor", repo: { full_name: "contributor/fixture" } }, base: { ref: "main", sha: ${JSON.stringify(baseSha)} } }));
+if (args[0] === "api" && endpoint === ${JSON.stringify(`repos/${targetRepo}/pulls/1`)}) {
+  console.log(JSON.stringify({ state: "open", user: { login: ${JSON.stringify(managedLocale ? "openclaw-mantis[bot]" : "octocat")} }, maintainer_can_modify: true, labels: [], head: { sha: ${JSON.stringify(sourceHead)}, ref: ${JSON.stringify(managedLocale ? "automation/native-app-locale-refresh" : "contributor")}, repo: { full_name: ${JSON.stringify(managedLocale ? targetRepo : "contributor/fixture")} } }, base: { ref: "main", sha: ${JSON.stringify(baseSha)}, repo: { full_name: ${JSON.stringify(targetRepo)} } } }));
 } else if (args[0] === "api" && endpoint.includes("/git/ref/")) {
   console.error("Not Found (HTTP 404)"); process.exit(1);
 } else if (args[0] === "api" && endpoint === "graphql") {
@@ -124,7 +129,7 @@ if (args[0] === "api" && endpoint === "repos/openclaw/fixture/pulls/1") {
 } else if (args[0] === "api" && endpoint === "users/octocat") {
   console.log(JSON.stringify({ id: 1, login: "octocat", name: "Mona Octocat" }));
 } else if (args[0] === "pr" && args[1] === "view") {
-  console.log(JSON.stringify({ state: "OPEN", mergedAt: null, author: { login: "octocat", is_bot: false }, title: "Contribution", url: args[2] === "1" ? ${JSON.stringify(sourceUrl)} : ${JSON.stringify(replacementUrl)}, body: "", headRefOid: ${JSON.stringify(sourceHead)}, statusCheckRollup: [] }));
+  console.log(JSON.stringify({ state: "OPEN", mergedAt: null, author: { login: ${JSON.stringify(managedLocale ? "app/openclaw-mantis" : "octocat")}, is_bot: ${managedLocale} }, title: "Contribution", url: args[2] === "1" ? ${JSON.stringify(sourceUrl)} : ${JSON.stringify(replacementUrl)}, body: "", headRefOid: ${JSON.stringify(sourceHead)}, statusCheckRollup: [] }));
 } else if (args[0] === "pr" && args[1] === "list") {
   console.log(args.includes("--jq") ? "" : "[]");
 } else if (args[0] === "pr" && args[1] === "create") {
@@ -132,6 +137,8 @@ if (args[0] === "api" && endpoint === "repos/openclaw/fixture/pulls/1") {
   console.log(${JSON.stringify(replacementUrl)});
 } else if (args[0] === "pr" && args[1] === "comment") {
   fs.appendFileSync(${JSON.stringify(publicationTrace)}, JSON.stringify({ kind: "comment", number: args[2], body: args[args.indexOf("--body") + 1] }) + "\\n");
+} else if (args[0] === "pr" && args[1] === "close") {
+  fs.appendFileSync(${JSON.stringify(publicationTrace)}, JSON.stringify({ kind: "close", number: args[2] }) + "\\n");
 } else if (args[0] === "label" || (args[0] === "issue" && args[1] === "edit") || (args[0] === "pr" && args[1] === "edit")) {
   console.log("");
 } else {
@@ -143,12 +150,12 @@ if (args[0] === "api" && endpoint === "repos/openclaw/fixture/pulls/1") {
         const result = path.join(root, "result.json");
         fs.writeFileSync(
           job,
-          "---\nrepo: openclaw/fixture\ncluster_id: automerge-fixture-1\nmode: autonomous\nsource: pr_automerge\nallowed_actions: [fix, raise_pr]\nallow_fix_pr: true\ncandidates: ['#1']\ncanonical: ['#1']\n---\nFixture\n",
+          `---\nrepo: ${targetRepo}\ncluster_id: automerge-fixture-1\nmode: autonomous\nsource: pr_automerge\nallowed_actions: [fix, raise_pr]\nallow_fix_pr: true\ncandidates: ['#1']\ncanonical: ['#1']\n---\nFixture\n`,
         );
         fs.writeFileSync(
           result,
           JSON.stringify({
-            repo: "openclaw/fixture",
+            repo: targetRepo,
             cluster_id: "automerge-fixture-1",
             mode: "autonomous",
             canonical_pr: sourceUrl,
@@ -200,7 +207,7 @@ if (args[0] === "api" && endpoint === "repos/openclaw/fixture/pulls/1") {
               CLAWSWEEPER_MODEL: "fixture-model",
               CLAWSWEEPER_INSTALL_TARGET_DEPS: "0",
               CLAWSWEEPER_BRANCH_PUSH_SETTLE_SECONDS: "0",
-              CLAWSWEEPER_CLOSE_SUPERSEDED_SOURCE_PRS: "0",
+              CLAWSWEEPER_CLOSE_SUPERSEDED_SOURCE_PRS: closeSource ? "1" : "0",
               ...(changelogOnly ? { CLAWSWEEPER_FIX_EDIT_ATTEMPTS: "1" } : {}),
             },
           },
@@ -247,6 +254,23 @@ if (args[0] === "api" && endpoint === "repos/openclaw/fixture/pulls/1") {
           .trim()
           .split("\n")
           .map((line) => JSON.parse(line));
+        if (closeSource) {
+          const closeout = published.superseded_source_actions[0];
+          assert.equal(closeout.status, managedLocale ? "skipped" : "executed");
+          assert.match(
+            closeout.reason,
+            managedLocale ? /repository-managed locale PR/ : /closed in favor/,
+          );
+          assert.equal(
+            publications.filter((entry) => entry.kind === "close").length,
+            managedLocale ? 0 : 1,
+          );
+          assert.equal(
+            publications.filter((entry) => entry.kind === "comment").length,
+            managedLocale ? 0 : 1,
+          );
+          return;
+        }
         assert.match(
           publications.find((entry) => entry.kind === "pr").body,
           /Original contributor: @octocat\./,

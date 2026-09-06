@@ -20,6 +20,7 @@ checkpoint, and status-only commits are intentionally omitted.
 ### Changed
 
 - Admit the reviewed OpenClaw logging redaction fixtures through exact detector, native decoder, role, value-hash, source-line, path, mode, and metadata bindings while preserving legacy URI fixture behavior.
+- Keep canonical OpenClaw locale refresh PRs open across apply and repair close paths so their publisher can reconcile and auto-merge them after normal checks.
 
 - Keep publication reconciliation dry runs from recording terminal lifecycle state or reclaiming expired publication batches.
 

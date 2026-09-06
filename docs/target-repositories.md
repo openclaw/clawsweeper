@@ -35,6 +35,18 @@ profile alone supplies its release-owned `CHANGELOG.md` review restriction.
 policies; being a non-core target does not grant contributors or workers
 permission to edit release-owned files.
 
+OpenClaw’s generated locale PRs are publisher-owned. Automatic apply and repair
+close paths leave PRs open when live GitHub metadata identifies
+`openclaw-mantis[bot]` as author, both head and base repositories as
+`openclaw/openclaw`, base branch `main`, and head branch
+`automation/native-app-locale-refresh` or `automation/control-ui-locale-refresh`.
+GraphQL reports the same App author as `app/openclaw-mantis`. Titles and labels
+do not grant this exemption, nor do matching branches in forks. The publisher
+owns freshness reconciliation and auto-merge; this close guard grants no merge
+authority and preserves normal review and CI requirements. Existing kept-open,
+blocked, and skipped outcomes explain the decision, with no Bay schema or
+control changes.
+
 Toolchain and setup ownership is also per repository. The explicit
 `openclaw/crabbox` profile selects npm and installs its nested worker package
 with `npm ci --prefix worker` from the target root. It retains the generic

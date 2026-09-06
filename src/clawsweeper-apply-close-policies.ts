@@ -1,6 +1,7 @@
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
 import { STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS } from "./clawsweeper-policy.js";
 import type { ApplyKind, AuthorPrBudgetApplyGate, CloseReason, Item } from "./clawsweeper-types.js";
+import { repositoryManagedPullRequestCloseReason } from "./repository-profiles.js";
 
 type ApplyClosePolicyDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
@@ -8,6 +9,7 @@ type ApplyClosePolicyDependencies = Pick<
   | "applyAuthorPrBudgetStateToReport"
   | "closeReasonEnabled"
   | "frontMatterValue"
+  | "ghJson"
   | "issueRecentHumanCommentBlockReasonSafe"
   | "stalledUnprovenPrApplyBlockReasonSafe"
   | "unconfirmedProductDirectionApplyBlockReasonSafe"
@@ -84,6 +86,11 @@ export function evaluateApplyClosePolicy(
   ) {
     return allowed();
   }
+
+  const managedPullRequestReason = repositoryManagedPullRequestCloseReason(item, () =>
+    dependencies.ghJson(["api", `repos/${item.repo}/pulls/${item.number}`]),
+  );
+  if (managedPullRequestReason) return blocked(managedPullRequestReason);
 
   if (phase === "before-canonical") {
     switch (closeReason) {

@@ -61,6 +61,8 @@ not split reports into issue/PR subtrees.
 - For apply-path repros, copy one report into a temp `items/` dir and pass
   `--skip-dashboard`, `--item-number`, and a temp `--closed-dir`.
 - Treat maintainer-authored and protected-label items as non-closeable.
+- Leave canonical OpenClaw Mantis locale PRs open; their generated-PR publisher
+  owns freshness and auto-merge. See `docs/target-repositories.md` for identity scope.
 - Snapshot or `updated_at` drift blocks apply unless the only change is the
   existing ClawSweeper review comment.
 - Open-but-locked issues can exist when stale automation locked a closed issue

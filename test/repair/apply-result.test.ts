@@ -10,6 +10,61 @@ import { writeFakeScanner } from "../agent-input-scan-helpers.ts";
 
 const repoRoot = process.cwd();
 
+for (const branch of [
+  "automation/native-app-locale-refresh",
+  "automation/control-ui-locale-refresh",
+]) {
+  test(`repair apply preserves publisher-owned locale PR on ${branch}`, () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-locale-"));
+    try {
+      const paths = writeApplyFixture(tmp, {
+        action: "close_duplicate",
+        classification: "duplicate",
+        canonical: "#202",
+      });
+      writeFakeGh(paths.binDir, {
+        issues: {
+          101: {
+            ...issue({ number: 101, title: "Locale refresh", pullRequest: true }),
+            user: { login: "openclaw-mantis[bot]" },
+          },
+          202: issue({
+            number: 202,
+            title: "Replacement",
+            pullRequest: true,
+            labels: ["proof: sufficient"],
+          }),
+        },
+        pulls: {
+          101: {
+            ...pull({ number: 101, title: "Locale refresh" }),
+            user: { login: "openclaw-mantis[bot]" },
+            head: { ref: branch, repo: { full_name: "openclaw/openclaw" } },
+            base: { ref: "main", repo: { full_name: "openclaw/openclaw" } },
+          },
+          202: pull({ number: 202, title: "Replacement" }),
+        },
+        comments: {},
+        logPath: paths.ghLogPath,
+      });
+      writeFakeCodex(paths.binDir);
+      runApplyResult(paths, { proofDecision: "covered" });
+
+      const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
+      assert.equal(report.actions[0].status, "blocked");
+      assert.match(report.actions[0].reason, /repository-managed locale PR/);
+      assert.equal(report.actions[0].live_state, "open");
+      assert.equal(hasPrCloseCall(paths.ghLogPath), false);
+      assert.equal(
+        ghCalls(paths.ghLogPath).some(({ args }) => args.includes("POST") || args[1] === "comment"),
+        false,
+      );
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+}
+
 test("repair apply blocks PR duplicate close when coverage proof keeps the source open", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
   try {

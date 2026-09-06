@@ -533,6 +533,8 @@ export function promotionGhMock(options: {
   itemUpdatedAtAfterProof?: string;
   itemUpdatedAtAfterProofLogPath?: string;
   headSha?: string;
+  headRef?: string;
+  headRepository?: string;
   changedFiles?: number;
   sourceFiles?: Array<string | { filename: string; status: string }>;
   issueCommentCount?: number;
@@ -817,7 +819,7 @@ export function promotionGhMock(options: {
     body: "Stale PR body.",
     requested_reviewers: ${JSON.stringify(options.requestedReviewers ?? [])},
     requested_teams: ${JSON.stringify(options.requestedTeams ?? [])},
-    head: { sha: ${JSON.stringify(options.headSha ?? "head-sha")}, ref: "branch", repo: { id: 123, full_name: "fork/openclaw" } },
+    head: { sha: ${JSON.stringify(options.headSha ?? "head-sha")}, ref: ${JSON.stringify(options.headRef ?? "branch")}, repo: { id: 123, full_name: ${JSON.stringify(options.headRepository ?? "fork/openclaw")} } },
     base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/openclaw" } },
     user: { login: authorLogin }
   }));
