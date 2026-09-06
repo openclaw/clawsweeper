@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { sha256 } from "../content-hash.js";
+import { normalizeAuthorAssociation } from "../clawsweeper-item-policy.js";
 import { repositoryManagedPullRequestCloseReason } from "../repository-profiles.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
@@ -1705,10 +1706,6 @@ function writePayload(name: string, value: JsonValue) {
   const file = path.join(dir, `${name}-${Date.now()}.json`);
   fs.writeFileSync(file, JSON.stringify(value), "utf8");
   return file;
-}
-
-function normalizeAuthorAssociation(value: JsonValue) {
-  return typeof value === "string" && value.trim() ? value.trim().toUpperCase() : "NONE";
 }
 
 function stringFromUnknown(value: JsonValue) {

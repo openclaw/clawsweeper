@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { normalizeAuthorAssociation } from "../clawsweeper-item-policy.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -650,10 +651,6 @@ function isReviewBotComment(comment: LooseRecord) {
   const author = String(comment.author ?? "");
   const body = String(comment.body ?? comment.body_excerpt ?? "");
   return REVIEW_BOT_PATTERN.test(author) || REVIEW_BOT_PATTERN.test(body);
-}
-
-function normalizeAuthorAssociation(value: JsonValue) {
-  return typeof value === "string" && value.trim() ? value.trim().toUpperCase() : "NONE";
 }
 
 function refsFromText(defaultRepo: string, text: string) {
