@@ -76,6 +76,8 @@ export function agentInputScanFailureExitCode(error: unknown): number | null {
 }
 
 export const MAX_SCAN_BYTES = 256 * 1024 * 1024;
+const MAX_BATCH_OBJECTS = 160;
+const MAX_BATCH_BYTES = 8 * 1024 * 1024;
 const OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const hostRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REVIEW_TOOL_BOOTSTRAP_ENV = [
@@ -295,12 +297,14 @@ export function scanAgentInput(options: {
         args: string[],
         maxBytes = MAX_SCAN_BYTES - staged,
         configuration?: ReviewGitReadOptions["configuration"],
+        input?: Buffer,
       ) => {
         remaining();
         const bytes = readReviewGit(cwd, args, {
           ...readOptions,
           maxBytes: Math.max(1, maxBytes),
           ...(configuration ? { configuration } : {}),
+          ...(input ? { input } : {}),
         });
         if (bytes === null) throw new AgentInputScanError("incomplete_source");
         return bytes;
@@ -567,19 +571,73 @@ export function scanAgentInput(options: {
       // Only live committed checkouts need normalized raw files staged here;
       // snapshot objects were already captured and fenced before preparation.
       if (source.kind === "committed") assertCurrent();
-      for (const [oid, references] of blobs) {
-        const size = Number(git(["cat-file", "-s", oid], 100).toString().trim());
-        if (!Number.isSafeInteger(size) || size < 0)
+      const objects = [...blobs].map(([oid, references]) => ({ oid, references, size: 0 }));
+      let contentBytes = 0;
+      // Preflight the complete content budget before allocating any blob batch.
+      for (let offset = 0; offset < objects.length; offset += MAX_BATCH_OBJECTS) {
+        const batch = objects.slice(offset, offset + MAX_BATCH_OBJECTS);
+        const metadata = git(
+          ["cat-file", "--batch-check"],
+          batch.length * 100,
+          undefined,
+          Buffer.from(batch.map(({ oid }) => `${oid}\n`).join("")),
+        ).toString();
+        const lines = metadata.split("\n");
+        if (lines.pop() !== "" || lines.length !== batch.length)
           throw new AgentInputScanError("incomplete_source");
-        if (size > MAX_SCAN_BYTES - staged) throw new AgentInputScanError("staging_limit");
-        const bytes = git(["cat-file", "blob", oid], Math.max(1, size));
-        if (bytes.length !== size) throw new AgentInputScanError("incomplete_source");
-        if (
-          bytes.subarray(0, 128).toString().startsWith("version https://git-lfs.github.com/spec/v1")
-        )
-          throw new AgentInputScanError("unsupported_content");
-        // OID names preserve multiline bytes and make symlinks ordinary scan files.
-        stage(bytes, { kind: "blob", references }, oid);
+        for (const [index, object] of batch.entries()) {
+          const match = /^([0-9a-f]+) blob (0|[1-9][0-9]*)$/.exec(lines[index]!);
+          if (!match || match[1] !== object.oid) throw new AgentInputScanError("incomplete_source");
+          const size = Number(match[2]);
+          if (!Number.isSafeInteger(size)) throw new AgentInputScanError("incomplete_source");
+          if (size > MAX_SCAN_BYTES - staged - contentBytes)
+            throw new AgentInputScanError("staging_limit");
+          object.size = size;
+          contentBytes += size;
+        }
+      }
+      for (let offset = 0; offset < objects.length;) {
+        const batch = [];
+        let batchBytes = 0;
+        while (offset < objects.length && batch.length < MAX_BATCH_OBJECTS) {
+          const object = objects[offset]!;
+          if (batch.length && batchBytes + object.size > MAX_BATCH_BYTES) break;
+          batch.push(object);
+          batchBytes += object.size;
+          offset++;
+        }
+        // A larger individual blob retains the existing content allowance.
+        // Protocol headers/delimiters bound capture, but never consume that allowance.
+        const headers = batch.map(({ oid, size }) => Buffer.from(`${oid} blob ${size}\n`));
+        const framedBytes =
+          batchBytes + headers.reduce((sum, header) => sum + header.length + 1, 0);
+        const output = git(
+          ["cat-file", "--batch"],
+          framedBytes,
+          undefined,
+          Buffer.from(batch.map(({ oid }) => `${oid}\n`).join("")),
+        );
+        if (output.length !== framedBytes) throw new AgentInputScanError("incomplete_source");
+        let position = 0;
+        for (const [index, { oid, references, size }] of batch.entries()) {
+          const header = headers[index]!;
+          if (!output.subarray(position, position + header.length).equals(header))
+            throw new AgentInputScanError("incomplete_source");
+          position += header.length;
+          const bytes = output.subarray(position, position + size);
+          position += size;
+          if (bytes.length !== size || output[position++] !== 10)
+            throw new AgentInputScanError("incomplete_source");
+          if (
+            bytes
+              .subarray(0, 128)
+              .toString()
+              .startsWith("version https://git-lfs.github.com/spec/v1")
+          )
+            throw new AgentInputScanError("unsupported_content");
+          // OID names preserve multiline bytes and make symlinks ordinary scan files.
+          stage(bytes, { kind: "blob", references }, oid);
+        }
       }
     }
     const result = spawnSync(

@@ -221,6 +221,10 @@ function writeMetadataGit(harness: string): string {
     `import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 const args = process.argv.slice(2);
+if (!args.includes("--numstat") && !args.includes("--name-status")) {
+  const result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: "inherit", env: process.env });
+  process.exit(result.status ?? 1);
+}
 const result = spawnSync(${JSON.stringify(realGit)}, args, { encoding: "utf8", env: process.env });
 if (result.status !== 0) process.exit(result.status ?? 1);
 let output = result.stdout;

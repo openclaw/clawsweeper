@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import childProcess, { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -15,6 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { syncBuiltinESMExports } from "node:module";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { runAgentProcess, runAgentCheckoutInspection } from "../dist/agent-runner.js";
@@ -122,6 +123,166 @@ function disableManagedScanner(t: test.TestContext) {
     else process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR = previous;
   });
 }
+
+test("scanner bounds Git process growth while preserving complete binary inputs in both scans", (t) => {
+  const f = fixture(t);
+  const expected = new Map<string, string>();
+  const receipt = join(f.root, "staged-inputs");
+  useFakeScanner(
+    t,
+    `fs.appendFileSync(${JSON.stringify(receipt)}, JSON.stringify(inputs.map(({name, bytes}) => [name, bytes.toString('base64')])) + '\\n');`,
+  );
+  const content = (i: number, version: string) =>
+    i === 0 && version === "before"
+      ? Buffer.alloc(0)
+      : Buffer.concat([
+          Buffer.from(`${version} ${i}\n${"f".repeat(40)} blob 42\n`),
+          Buffer.from([0, 255, 10, 13, 128]),
+        ]);
+  for (let i = 0; i < 81; i++) {
+    writeFileSync(join(f.cwd, `${i}.bin`), content(i, "before"));
+  }
+  const baseSha = f.commit();
+  for (let i = 0; i < 81; i++) {
+    writeFileSync(join(f.cwd, `${i}.bin`), content(i, "after"));
+  }
+  const headSha = f.commit();
+  for (const [revision, version] of [
+    [baseSha, "before"],
+    [headSha, "after"],
+  ]) {
+    for (let i = 0; i < 81; i++)
+      expected.set(
+        f.git("rev-parse", `${revision}:${i}.bin`),
+        content(i, version!).toString("base64"),
+      );
+  }
+  const nativeSpawn = childProcess.spawnSync;
+  const commands: string[][] = [];
+  t.mock.method(childProcess, "spawnSync", (...args: Parameters<typeof nativeSpawn>) => {
+    if (args[1]?.includes("cat-file")) commands.push([...args[1]]);
+    return nativeSpawn(...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  for (let scan = 0; scan < 2; scan++)
+    scanAgentInput({
+      cwd: f.cwd,
+      prompt: "Review binary changes.",
+      source: { kind: "committed", baseSha, headSha },
+      timeoutMs: 120_000,
+    });
+  const scans = readFileSync(receipt, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => new Map<string, string>(JSON.parse(line)));
+  assert.equal(scans.length, 2, "each admission boundary must scan independently");
+  assert.deepEqual(scans[0], scans[1]);
+  for (const [oid, bytes] of expected) assert.equal(scans[0]!.get(oid), bytes);
+  assert.equal(scans[0]!.size, expected.size + 3, "prompt, complete raw diff and binary patch");
+  assert.ok(
+    commands.length <= 8,
+    `162 unique blobs across two scans must use bounded batches, observed ${commands.length} Git children`,
+  );
+});
+
+test("scanner refuses malformed batch metadata and binary frames before provider dispatch", (t) => {
+  const f = fixture(t);
+  const receipt = join(f.root, "unexpected-scan");
+  useFakeScanner(t, `fs.writeFileSync(${JSON.stringify(receipt)}, 'called');`);
+  writeFileSync(join(f.cwd, "a"), Buffer.from([0, 10, 255]));
+  const baseSha = f.commit();
+  writeFileSync(join(f.cwd, "a"), Buffer.from([0, 10, 255, 13]));
+  const headSha = f.commit();
+  const source = { kind: "committed" as const, baseSha, headSha };
+  const nativeSpawn = childProcess.spawnSync;
+  let fault = "";
+  let contentReads = 0;
+  let injected = false;
+  t.mock.method(childProcess, "spawnSync", (...args: Parameters<typeof nativeSpawn>) => {
+    const result = nativeSpawn(...args);
+    const command = args[1] ?? [];
+    const metadata = command.includes("--batch-check");
+    const content = command.includes("--batch");
+    if (content) contentReads++;
+    if (!metadata && !content) return result;
+    const output = Buffer.from(result.stdout);
+    const headerEnd = output.indexOf(10);
+    let changed: Buffer | undefined;
+    if (metadata && fault.startsWith("metadata/")) {
+      const lines = output.toString().trimEnd().split("\n");
+      const fields = lines[0]!.split(" ");
+      if (fault === "metadata/missing") lines[0] = `${fields[0]} missing`;
+      if (fault === "metadata/type") fields[1] = "tree";
+      if (fault === "metadata/identity") fields[0] = "0".repeat(40);
+      if (fault === "metadata/negative") fields[2] = "-1";
+      if (fault === "metadata/nondecimal") fields[2] = "1e2";
+      if (fault === "metadata/unsafe-integer") fields[2] = "9007199254740992";
+      if (fault !== "metadata/missing") lines[0] = fields.join(" ");
+      if (fault === "metadata/count") lines.pop();
+      if (fault === "metadata/aggregate")
+        for (let i = 0; i < lines.length; i++)
+          lines[i] = lines[i]!.replace(/\d+$/, String(128 * 1024 * 1024));
+      changed = Buffer.from(lines.join("\n") + "\n");
+      if (fault === "metadata/unterminated") changed = changed.subarray(0, -1);
+    } else if (content && fault.startsWith("content/")) {
+      changed = Buffer.from(output);
+      if (fault === "content/identity") changed[0] = changed[0] === 97 ? 98 : 97;
+      if (fault === "content/size") changed[headerEnd - 1] = 57;
+      if (fault === "content/delimiter") changed[headerEnd + 1 + 3] = 0;
+      if (fault === "content/truncated") changed = changed.subarray(0, -1);
+      if (fault === "content/trailing") changed = Buffer.concat([changed, Buffer.from("\n")]);
+      if (fault === "content/header-newline") changed[headerEnd] = 0;
+    }
+    if (!changed) return result;
+    injected = true;
+    return { ...result, stdout: changed };
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  for (fault of [
+    "metadata/missing",
+    "metadata/type",
+    "metadata/identity",
+    "metadata/negative",
+    "metadata/nondecimal",
+    "metadata/unsafe-integer",
+    "metadata/count",
+    "metadata/aggregate",
+    "metadata/unterminated",
+    "content/identity",
+    "content/size",
+    "content/delimiter",
+    "content/truncated",
+    "content/trailing",
+    "content/header-newline",
+  ]) {
+    contentReads = 0;
+    injected = false;
+    assert.throws(
+      () => f.run(source),
+      (error) => {
+        assert.ok(error instanceof AgentInputScanError);
+        assert.equal(
+          error.reason,
+          fault === "metadata/aggregate" ? "staging_limit" : "incomplete_source",
+          fault,
+        );
+        return true;
+      },
+    );
+    assert.ok(injected, fault);
+    if (fault.startsWith("metadata/")) assert.equal(contentReads, 0, fault);
+    assert.equal(existsSync(receipt), false, fault);
+    assert.equal(existsSync(f.calls), false, fault);
+  }
+});
 
 for (const scenario of ["deletion", "multiline", "past-display-limits", "comment-only"]) {
   test(`raw admission catches ${scenario} input before dispatch`, (t) => {
