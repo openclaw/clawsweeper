@@ -137,7 +137,7 @@ function fixture() {
         headers: { location: "https://blob.example.test/private-signed-url-sentinel" },
       });
     }
-    if (String(url).startsWith("https://blob.example.test/")) {
+    if (String(url) === "https://blob.example.test/private-signed-url-sentinel") {
       assert.equal(new Headers(options?.headers).get("authorization"), null);
       return new Response(archive);
     }
@@ -350,22 +350,30 @@ test("bounded manifest-only parser rejects unsafe and malformed archives", async
 test("unsigned archive download refuses insecure or looping redirects", async () => {
   for (const location of [
     "http://blob.example.test/private",
-    "https://user:password@blob.example.test/",
+    "https://fixture-user:***@blob.example.test/",
   ]) {
     const f = fixture();
+    let rejectedDestinationRequests = 0;
     await assert.rejects(
-      prepareClosedPublicationRetirement(f.input, "token-sentinel", async (url, options) =>
-        String(url).endsWith("/zip")
+      prepareClosedPublicationRetirement(f.input, "token-sentinel", async (url, options) => {
+        if (String(url) === location) rejectedDestinationRequests += 1;
+        return String(url).endsWith("/zip")
           ? new Response(null, { status: 302, headers: { location } })
-          : f.request(url, options),
-      ),
+          : f.request(url, options);
+      }),
+      { message: "invalid closed publication retirement evidence" },
     );
+    assert.equal(rejectedDestinationRequests, 0);
   }
   const f = fixture();
   let requests = 0;
   await assert.rejects(
     prepareClosedPublicationRetirement(f.input, "token-sentinel", async (url, options) => {
-      if (String(url).endsWith("/zip") || String(url).startsWith("https://blob.example.test")) {
+      if (
+        String(url) ===
+          "https://api.github.com/repos/openclaw/clawsweeper/actions/artifacts/9001/zip" ||
+        String(url) === "https://blob.example.test/loop"
+      ) {
         requests += 1;
         return new Response(null, {
           status: 302,
