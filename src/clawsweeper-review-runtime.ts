@@ -15,6 +15,7 @@ import {
   serializeReviewContext,
 } from "./agent-input-scan-fixtures.js";
 import { stringArg, type Args } from "./clawsweeper-args.js";
+import { ReviewGitError } from "./clawsweeper-review-blobs.js";
 import {
   mediaProofRuntimeHints,
   mediaProofRuntimePrompt,
@@ -103,22 +104,28 @@ export function createReviewRuntime({
     const targetBranch = options.targetBranch ?? reviewTargetBranch(openclawDir);
     requireSafeGitBranchName(targetBranch, "target branch");
     const shallow = run("git", ["rev-parse", "--is-shallow-repository"], { cwd: openclawDir });
-    run(
-      "git",
-      [
-        "fetch",
-        "--filter=blob:none",
-        "--no-tags",
-        "--recurse-submodules=no",
-        ...(shallow === "true" ? ["--unshallow"] : []),
-        "origin",
-        `refs/heads/${targetBranch}:refs/remotes/origin/${targetBranch}`,
-      ],
-      {
-        cwd: openclawDir,
-        timeoutMs: 30_000,
-      },
-    );
+    try {
+      run(
+        "git",
+        [
+          "fetch",
+          "--filter=blob:none",
+          "--no-tags",
+          "--recurse-submodules=no",
+          ...(shallow === "true" ? ["--unshallow"] : []),
+          "origin",
+          `refs/heads/${targetBranch}:refs/remotes/origin/${targetBranch}`,
+        ],
+        {
+          cwd: openclawDir,
+          timeoutMs: 30_000,
+        },
+      );
+    } catch (error) {
+      if (!options.classifyFetchFailure || !(error instanceof Error)) throw error;
+      // runText preserves execFileSync's native spawn result, including timeout evidence.
+      throw new ReviewGitError("review_commit_fetch_failed", error);
+    }
     const mainSha = run("git", ["rev-parse", `refs/remotes/origin/${targetBranch}`], {
       cwd: openclawDir,
     });

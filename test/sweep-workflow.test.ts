@@ -1147,6 +1147,10 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(step(reviewer, "Review exact event item").run ?? "", /claim_generation/);
   assert.match(step(reviewer, "Review exact event item").run ?? "", /run_attempt/);
   assert.match(step(reviewer, "Review exact event item").run ?? "", /source_head_sha/);
+  assert.equal(
+    step(reviewer, "Review exact event item").env?.EXACT_REVIEW_ITEM_KIND,
+    "${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).itemKind }}",
+  );
   assert.match(
     step(reviewer, "Review exact event item").run ?? "",
     /review_exit_code.*-eq 78[\s\S]*failure_reason=incomplete_source/,

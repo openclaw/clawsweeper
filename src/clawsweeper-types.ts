@@ -1224,6 +1224,7 @@ export interface ExistingReviewIndex {
 
 export type ReviewGitInfoOptions = {
   targetBranch?: string;
+  classifyFetchFailure?: boolean;
 };
 
 export type LocalPullMetadata = {
