@@ -228,6 +228,7 @@ test("Bay lifecycle metrics include every durable ingress source and only final 
 
   const first = telemetry.baySnapshot(now + 120_000);
   assert.equal(first.collection.state, "complete");
+  assert.equal(first.timings?.window_ended_at, new Date(now + 120_000).toISOString());
   assert.deepEqual(first.timings?.overall, {
     average_ms: 60_000,
     median_ms: 60_000,
@@ -2746,6 +2747,8 @@ test("public Bay status uses the authoritative lifecycle metrics route without l
     assert.equal(status.bay.timings.sample_kind, "completed_review_journeys");
     assert.equal(status.bay.timings.source, "durable_exact_review_lifecycles");
     assert.equal(status.bay.timings.completion_source, "verified_final_review_receipts");
+    assert.ok(Number.isFinite(Date.parse(status.bay.timings.window_ended_at)));
+    assert.ok(Date.parse(status.bay.timings.window_ended_at) >= Date.parse(status.generated_at));
     assert.deepEqual(status.bay.timings.overall, {
       average_ms: 30_000,
       median_ms: 30_000,
@@ -6211,7 +6214,8 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.doesNotMatch(body, /Recent durable events/);
   assert.doesNotMatch(body, /function bayRecentPublicationEvents/);
   assert.match(body, /id="durable-lifecycle-kanban"/);
-  assert.match(body, /Durable lifecycle/);
+  assert.match(body, /Retained lifecycle records/);
+  assert.match(body, /<details class="telemetry" id="bay-lifecycle-details">/);
   assert.match(body, /Live shoreline/);
   assert.match(body, /class="active-duration"/);
   assert.match(body, /This queue record has been waiting about/);

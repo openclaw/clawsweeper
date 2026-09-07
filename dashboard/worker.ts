@@ -1871,6 +1871,7 @@ const PUBLIC_STATUS_TIME_FIELDS = new Set([
   "next_wake_at",
   "last_tide_at",
   "timing_coverage_started_at",
+  "window_ended_at",
   "received_at",
   "since",
   "started_at",
@@ -6501,6 +6502,7 @@ async function exactReviewBayLifecycleMetricsSnapshot(env) {
     timing_coverage_complete: timingComplete,
     metrics_state: timingComplete ? "complete" : "warming",
     timings: {
+      window_ended_at: publicQueueTimestamp(timings.window_ended_at),
       window_minutes: windowMinutes,
       // `sample_kind` is a v1 public enum. Preserve its established spelling for
       // strict clients, and expose end-to-end final-review provenance additively.

@@ -195,7 +195,14 @@ is absent or a cache event lands in another Cloudflare colo.
   current durable queue snapshot
 - normal direct-review journeys in the Bay Kanban and one-hour timing metric by
   default, with a presentation-only switch to include the retired automatic
-  proof/legacy-batch path for historical comparison
+  proof/legacy-batch path for historical comparison. Modern inline proof stays
+  within normal end-to-end review timing; the legacy toggle is not a proof-used
+  filter. The chart has a rolling-hour UTC axis, minutes scale, and bucket-wide
+  hover/focus/tap detail; missing buckets remain gaps
+- collapsed retained lifecycle inventory below queue telemetry: latest recorded
+  state of all retained records, not live backlog, event totals or a day/week
+  view. Beach/time filters do not apply; records and target revisions are
+  distinct units, and at most 24 records are sampled across lanes
 
 The Worker fetches job details only for the bounded active-run set, limits that
 GitHub fanout to 12 concurrent requests, and caches each run's jobs for 60

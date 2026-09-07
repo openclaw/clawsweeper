@@ -1,0 +1,156 @@
+{
+  "checks": [
+    "fixed rolling hour, readable minute ticks and partial bucket",
+    "pointer anywhere in the bucket reveals exact interval/median/mean/count",
+    "keyboard focus and native activation preserve equivalent bucket detail",
+    "missing data is not reported as zero and real zero stays a sample",
+    "lifecycle starts collapsed, opens with keyboard and keeps records distinct",
+    "legacy and repository filters do not alter lifecycle inventory",
+    "responsive plot/labels remain contained and touch activates whole bucket",
+    "single and empty histories keep the full hour and no invented observations",
+    "server snapshot anchors stale and browser-clock-skewed windows",
+    "timing announcements retain their live-region node and missing clock fails closed",
+    "delayed status collection uses the later timing query boundary"
+  ],
+  "errors": [],
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/bay"
+    },
+    {
+      "method": "GET",
+      "path": "/bay-assets/bay-background.webp?v=2"
+    },
+    {
+      "method": "GET",
+      "path": "/api/status"
+    },
+    {
+      "method": "GET",
+      "path": "/api/durable-lifecycle-bay"
+    },
+    {
+      "method": "GET",
+      "path": "/bay-assets/master-sweeper.webp"
+    },
+    {
+      "method": "GET",
+      "path": "/api/github-egress-observability?hours=6"
+    },
+    {
+      "method": "GET",
+      "path": "/api/health-history?range=6h"
+    },
+    {
+      "method": "GET",
+      "path": "/bay-assets/crustaceans-atlas.webp"
+    },
+    {
+      "method": "GET",
+      "path": "/bay-assets/bay-background-portrait.webp?v=1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/status"
+    },
+    {
+      "method": "GET",
+      "path": "/api/durable-lifecycle-bay"
+    },
+    {
+      "method": "GET",
+      "path": "/api/status"
+    },
+    {
+      "method": "GET",
+      "path": "/api/durable-lifecycle-bay"
+    },
+    {
+      "method": "GET",
+      "path": "/api/status"
+    },
+    {
+      "method": "GET",
+      "path": "/api/durable-lifecycle-bay"
+    },
+    {
+      "method": "GET",
+      "path": "/api/github-egress-observability?hours=6"
+    },
+    {
+      "method": "GET",
+      "path": "/api/health-history?range=6h"
+    },
+    {
+      "method": "GET",
+      "path": "/api/status"
+    },
+    {
+      "method": "GET",
+      "path": "/api/durable-lifecycle-bay"
+    },
+    {
+      "method": "GET",
+      "path": "/api/status"
+    },
+    {
+      "method": "GET",
+      "path": "/api/durable-lifecycle-bay"
+    },
+    {
+      "method": "GET",
+      "path": "/api/status"
+    },
+    {
+      "method": "GET",
+      "path": "/api/durable-lifecycle-bay"
+    },
+    {
+      "method": "GET",
+      "path": "/api/github-egress-observability?hours=6"
+    },
+    {
+      "method": "GET",
+      "path": "/api/health-history?range=6h"
+    },
+    {
+      "method": "GET",
+      "path": "/api/status"
+    },
+    {
+      "method": "GET",
+      "path": "/api/durable-lifecycle-bay"
+    },
+    {
+      "method": "GET",
+      "path": "/api/github-egress-observability?hours=6"
+    },
+    {
+      "method": "GET",
+      "path": "/api/health-history?range=6h"
+    },
+    {
+      "method": "GET",
+      "path": "/api/status"
+    },
+    {
+      "method": "GET",
+      "path": "/api/durable-lifecycle-bay"
+    },
+    {
+      "method": "GET",
+      "path": "/api/status"
+    },
+    {
+      "method": "GET",
+      "path": "/api/durable-lifecycle-bay"
+    }
+  ],
+  "blockedExternalRequests": [],
+  "sourceSha": "f633c1e10228f0a337d8852c93a7af33c4c11aac",
+  "pageSha256": "7ad630c4d40c7b6bd3b27c586e4c4d174647f67f4dff76bbfca9e28c733453ae",
+  "browser": "152.0.7977.82",
+  "node": "v24.20.0",
+  "limits": "Production HTML/CSS/script with controlled same-origin API data; unrelated APIs/assets return 404, external fonts blocked; no live backend or modern proof telemetry claim."
+}
