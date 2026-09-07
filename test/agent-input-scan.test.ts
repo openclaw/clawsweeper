@@ -804,6 +804,7 @@ function classifyWithProductionPolicy(
   findings: readonly Record<string, unknown>[],
   inputs: ReadonlyMap<string, StagedScanInput>,
 ) {
+  const verifiedCount = findings.filter((finding) => finding.Verified === true).length;
   return classifyReviewedFixtureScan(
     183,
     Buffer.from(`${findings.map((finding) => JSON.stringify(finding)).join("\n")}\n`),
@@ -815,13 +816,96 @@ function classifyWithProductionPolicy(
         trufflehog_version: "3.97.1",
         chunks: 1,
         bytes: 1,
-        verified_secrets: 0,
-        unverified_secrets: findings.length,
+        verified_secrets: verifiedCount,
+        unverified_secrets: findings.length - verifiedCount,
       })}\n`,
     ),
     inputs,
   );
 }
+
+test("reviewed Signal fixtures preserve exact source, line, decoder, and verification bindings", () => {
+  const sources = [
+    "extensions/signal/src/client.test.ts",
+    "extensions/signal/src/client-container.test.ts",
+  ];
+  for (const [index, host] of ["127.0.0.1", "localhost"].entries()) {
+    const url = new URL(`http://${host}:8080`);
+    url.username = "user";
+    url.password = "pass";
+    const raw = url.href.slice(0, -1);
+    const line =
+      index === 0
+        ? `        baseUrl: "${raw}",`
+        : `    await expect(containerCheck("${raw}")).rejects.toThrow(`;
+    const file = `/private/scanner/${String(index).repeat(40)}`;
+    const input: StagedScanInput = {
+      kind: "blob",
+      id: String(index).repeat(40),
+      bytes: Buffer.from(`${line}\n`),
+      references: [
+        { source: sources[index]!, mode: "100644", revision: "a".repeat(40), role: "head" },
+      ],
+    };
+    const finding = {
+      SourceType: 15,
+      DetectorType: 17,
+      DetectorName: "URI",
+      DecoderName: "PLAIN",
+      Verified: false,
+      VerificationError: "synthetic verification error",
+      Raw: raw,
+      RawV2: raw,
+      SourceMetadata: { Data: { Filesystem: { file, line: 1 } } },
+      SecretParts: { host: url.host, username: url.username, password: url.password },
+      ExtraData: null,
+      StructuredData: null,
+    };
+    for (const decoder of ["PLAIN", "HTML"]) {
+      const result = classifyWithProductionPolicy(
+        [{ ...finding, DecoderName: decoder }],
+        new Map([[file, input]]),
+      );
+      assert.equal(result.kind, "classified", `${host}: ${decoder}`);
+      if (result.kind === "classified") {
+        assert.equal(result.notices.length, 1);
+        assert.equal(result.notices[0]!.source, sources[index]);
+        assert.equal(result.notices[0]!.findings[0]!.decoder, decoder);
+      }
+    }
+    const otherSource: StagedScanInput = {
+      ...input,
+      references: [{ ...input.references[0]!, source: sources[1 - index]! }],
+    };
+    for (const [name, changedFinding, changedInput, reason] of [
+      ["other approved path", finding, otherSource, "source_not_reviewed"],
+      [
+        "changed source line",
+        finding,
+        { ...input, bytes: Buffer.from(`${line} // changed\n`) },
+        "literal_mismatch",
+      ],
+      [
+        "duplicate literal",
+        finding,
+        { ...input, bytes: Buffer.from(`${line}\n${line}\n`) },
+        "literal_mismatch",
+      ],
+      ["unapproved decoder", { ...finding, DecoderName: "BASE64" }, input, "finding_not_reviewed"],
+      ["verified finding", { ...finding, Verified: true }, input, "finding_not_reviewed"],
+    ] as const) {
+      const result = classifyWithProductionPolicy(
+        [changedFinding],
+        new Map([[file, changedInput]]),
+      );
+      assert.equal(result.kind, "refused", `${host}: ${name}`);
+      if (result.kind === "refused") {
+        assert.equal(result.diagnostic.kind, "unclassified_finding", `${host}: ${name}`);
+        assert.equal(result.diagnostic.reason, reason, `${host}: ${name}`);
+      }
+    }
+  }
+});
 
 function crabboxPostgresDocsFixture() {
   const raw = ["postgresql://crabbox", ":password@db.example.com", ":5432"].join("");

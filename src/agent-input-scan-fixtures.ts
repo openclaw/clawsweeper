@@ -25,6 +25,21 @@ export type ReviewedAttribution = readonly [
 // This is host policy, never an allowlist loaded from the reviewed checkout.
 const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
   {
+    // Approved Signal URL-rejection fixture; retain the complete source-line witness.
+    fixtureSha256: "c9c820a05b2d035eb65422d1a50e58c5fa52e4d7a087ad3791de23bdd4efeabd",
+    rawSha256: "c9c820a05b2d035eb65422d1a50e58c5fa52e4d7a087ad3791de23bdd4efeabd",
+    lineSha256s: ["f4646625b141392982b168ff4591bf66dd208316f1f21ad712efb4ee30a8a339"],
+    decoders: ["PLAIN", "HTML"],
+    sources: ["extensions/signal/src/client.test.ts"],
+  },
+  {
+    fixtureSha256: "7849c0ac39a4f42a5cd5cb1b029c7132193f270454865f2f4a49a83da3444665",
+    rawSha256: "7849c0ac39a4f42a5cd5cb1b029c7132193f270454865f2f4a49a83da3444665",
+    lineSha256s: ["281f664b2e7f36e82ef38d0a36bb791ec8a70b4a4afca470847d4699573b338d"],
+    decoders: ["PLAIN", "HTML"],
+    sources: ["extensions/signal/src/client-container.test.ts"],
+  },
+  {
     // Maintainer-reviewed malformed-config fixture introduced by d68b1861172120fc.
     fixtureSha256: "a728de5dbbef23b8aa5ef2d99060835f4f2fb5a0fa2abb9fe249d08aa09bd09e",
     sources: ["test/action-ledger-runtime.test.ts"],
