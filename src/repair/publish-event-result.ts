@@ -193,6 +193,8 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     assertManualPublicationAuthority(markdown, options.targetRepo, Number(options.itemNumber));
     options.reviewOnly = true;
   }
+  // Snapshot helpers use relative record paths, not the caller's code directory.
+  process.chdir(options.workRoot);
   const recordStore = {
     targetRepo: options.targetRepo,
     itemNumber: options.itemNumber,
@@ -762,7 +764,9 @@ function eventOptionsFromEnv(): EventOptions {
     ),
     reportPath: join(workRoot, ".artifacts/event-apply-report.json"),
     snapshotDir: join(workRoot, ".artifacts/event-record-snapshot"),
-    batchMutationOutput: process.env.EXACT_REVIEW_BATCH_MUTATION_OUTPUT || null,
+    batchMutationOutput: process.env.EXACT_REVIEW_BATCH_MUTATION_OUTPUT
+      ? resolve(workRoot, process.env.EXACT_REVIEW_BATCH_MUTATION_OUTPUT)
+      : null,
   };
 }
 

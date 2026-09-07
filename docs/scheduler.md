@@ -67,8 +67,12 @@ dead letters instead of starting another model review.
 Direct producers publish from the existing exact bundle's `review/` directory,
 not raw `artifacts/event` output. `EXACT_REVIEW_PUBLICATION_ARTIFACT_DIR` selects
 that input relative to `EXACT_REVIEW_WORK_ROOT`; other callers retain the
-`artifacts/event` default. Producer `selection.json`, `codex/`, `review-trees/`,
-and sibling reports stay outside the selected bundle. The importer still rejects
+`artifacts/event` default. Snapshot capture and application use that same work
+root even when the publisher is invoked from a separate code checkout. Relative
+`EXACT_REVIEW_BATCH_MUTATION_OUTPUT` paths also resolve under the work root,
+including refusals that happen before publication authority is accepted.
+Producer `selection.json`, `codex/`, `review-trees/`, and sibling reports stay
+outside the selected bundle. The importer still rejects
 unexpected files, symlinks, and directories in its publication input.
 
 The receiver workflow is `.github/workflows/sweep.yml`.

@@ -112,6 +112,105 @@ for (const artifactDir of ["artifacts/event", ".artifacts/exact-review-bundle/re
   });
 }
 
+test("publisher snapshots the selected work root instead of the caller directory", () => {
+  const root = mkdtempSync(join(tmpdir(), "publication-work-root-"));
+  try {
+    const work = join(root, "work");
+    const caller = join(root, "caller");
+    const code = join(root, "code");
+    const artifacts = join(work, ".artifacts/exact-review-bundle/review");
+    mkdirSync(artifacts, { recursive: true });
+    mkdirSync(caller);
+    mkdirSync(join(code, "dist"), { recursive: true });
+    const report =
+      "---\nnumber: 74\nrepository: openclaw/openclaw\ntype: issue\nreviewed_at: 2026-09-07T00:00:00Z\ndecision: keep_open\n---\nReport\n";
+    writeFileSync(join(artifacts, "74.md"), report);
+    writeFileSync(
+      join(code, "dist/clawsweeper.js"),
+      `
+const fs = require("node:fs");
+const path = require("node:path");
+const [command, ...args] = process.argv.slice(2);
+const value = (name) => args[args.indexOf(name) + 1];
+if (command === "apply-artifacts") {
+  fs.mkdirSync(value("--items-dir"), { recursive: true });
+  fs.copyFileSync(path.join(value("--artifact-dir"), "74.md"), path.join(value("--items-dir"), "74.md"));
+} else {
+  console.error("scoped apply reached");
+  process.exitCode = 23;
+}
+`,
+    );
+    const result = spawnSync(process.execPath, [resolve("dist/repair/publish-event-result.js")], {
+      cwd: caller,
+      env: {
+        PATH: process.env.PATH,
+        TARGET_REPO: "openclaw/openclaw",
+        ITEM_NUMBER: "74",
+        EXACT_REVIEW_WORK_ROOT: work,
+        CLAWSWEEPER_CODE_ROOT: code,
+        EXACT_REVIEW_PUBLICATION_ARTIFACT_DIR: ".artifacts/exact-review-bundle/review",
+        EXACT_REVIEW_BATCH_MUTATION_OUTPUT: ".artifacts/result.json",
+      },
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stderr, /scoped apply reached/);
+    assert.doesNotMatch(result.stdout, /event produced no record tuple/);
+    assert.equal(
+      readFileSync(join(work, ".artifacts/event-record-snapshot/candidate/items/74.md"), "utf8"),
+      report,
+    );
+    assert.equal(existsSync(join(caller, "records")), false);
+    assert.equal(existsSync(join(work, ".artifacts/result.json")), true);
+    assert.equal(existsSync(join(caller, ".artifacts")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("pre-authority refusal output stays inside the selected work root", () => {
+  const root = mkdtempSync(join(tmpdir(), "publication-refusal-root-"));
+  try {
+    const work = join(root, "work");
+    const caller = join(root, "caller");
+    mkdirSync(join(work, "artifacts/event"), { recursive: true });
+    mkdirSync(caller);
+    writeFileSync(
+      join(work, "artifacts/event/74.md"),
+      "---\npublication_policy: record_comment_only\n---\nReport\n",
+    );
+    const result = spawnSync(process.execPath, [resolve("dist/repair/publish-event-result.js")], {
+      cwd: caller,
+      env: {
+        PATH: process.env.PATH,
+        TARGET_REPO: "openclaw/openclaw",
+        ITEM_NUMBER: "74",
+        EXACT_REVIEW_WORK_ROOT: work,
+        CLAWSWEEPER_CODE_ROOT: process.cwd(),
+        EXACT_REVIEW_BATCH_MUTATION_OUTPUT: ".artifacts/refusal.json",
+        EXACT_REVIEW_DECISION: JSON.stringify({
+          sourceAction: "manual_explicit_review",
+          publicationPolicy: "record_comment_only",
+        }),
+      },
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /manual publication requires/);
+    assert.equal(
+      JSON.parse(readFileSync(join(work, ".artifacts/refusal.json"), "utf8")).kind,
+      "permanent_failure",
+    );
+    assert.equal(existsSync(join(caller, ".artifacts")), false);
+    assert.equal(existsSync(join(work, "records")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("absent event report preserves ordinary terminal behavior and refuses restricted hydrated reuse", () => {
   for (const restricted of [false, true]) {
     const root = mkdtempSync(join(tmpdir(), "missing-publication-"));
