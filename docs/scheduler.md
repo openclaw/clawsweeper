@@ -52,7 +52,9 @@ item; the CLI reports failed members and continues the requested tail. Retries
 of the same workflow run reuse its run ID and item number, excluding attempt.
 Changed payloads conflict rather than borrowing an earlier delivery receipt.
 Admission preserves the resolved operator-selected `target_branch`; it discovers
-the repository default only when no resolved branch was supplied.
+the repository default only when no resolved branch was supplied. Ordinary item
+events may refresh a pending manual review's source facts but cannot replace its
+selected branch; a new explicit manual request may select a different branch.
 
 The queue advertises `manual_publication.policy=record_comment_only` and an
 explicit enabled bit. Admission defaults off until

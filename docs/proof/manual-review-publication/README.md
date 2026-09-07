@@ -11,8 +11,12 @@
 
 The driver executes the checked-in manual admission shell step with a non-default
 `release/proof` branch, then verifies that both resulting coordinator claims and
-bundle contexts preserve it. It executes the checked-in direct-publication shell
-step with `EXACT_REVIEW_WORK_ROOT` separate from the command working directory.
+bundle contexts preserve it. A synthetic dispatch outage leaves those requests
+pending under the real coordinator's backoff while a newer ordinary issue event
+for `main` coalesces; the claimed revision must retain `release/proof` and the
+fresh issue facts after dispatch recovers. It executes the
+checked-in direct-publication shell step with `EXACT_REVIEW_WORK_ROOT` separate
+from the command working directory.
 
 Raw producer fixtures include `selection.json`, metrics, `codex/`, `review-trees/`,
 and an unselected sibling report. Publication reads only the already-created
@@ -25,8 +29,10 @@ Authority-service HTTP 503 cases cover the initial authority check, apply-child
 entry, the mutation boundary, and batch preparation. Each must retain
 `retryable_failure` / `state_contention`, make no comment write, and avoid
 GitHub inline retries; restoring the service must permit the same completed
-review to continue. Focused regressions additionally cover curl timeouts,
-connection failures, HTTP 429, sanitized errors, and nonretryable ownership or
+review to continue. Mutation-failure cleanup makes one additional guarded
+authority read before deleting its owned review lease; that read must also fail
+without a write during the outage. Focused regressions additionally cover curl
+timeouts, connection failures, HTTP 429, sanitized errors, and nonretryable ownership or
 authentication rejection without changing the established retry budgets.
 
 Current execution evidence belongs in the PR's main body with its exact head and

@@ -196,6 +196,8 @@ process.once("SIGINT", onInterrupt);
 process.once("SIGTERM", onTerminate);
 let canonicalFailure = false;
 let authorityOutage = null;
+let initialDispatchOutage = true;
+let initialDispatchFailures = 0;
 const server = createServer(async (req, res) => {
   try {
     const chunks = [];
@@ -311,6 +313,10 @@ const server = createServer(async (req, res) => {
     if (path === `/repos/${producerRepo}/dispatches` && req.method === "POST") {
       assert.equal(body.event_type, "clawsweeper_item");
       assert.ok([71, 72, 73, 74, 75, 76].includes(body.client_payload.item_number));
+      if (initialDispatchOutage) {
+        initialDispatchFailures++;
+        return send({ message: "synthetic dispatch outage" }, 503);
+      }
       dispatches.push(body.client_payload);
       return send({}, 204);
     }
@@ -703,7 +709,43 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
   const admission = await command("bash", ["-c", admissionStep.run], admissionEnv, admissionWork);
   assert.equal(JSON.parse(admission.stdout).accepted, 2);
   await command("bash", ["-c", admissionStep.run], admissionEnv, admissionWork);
-  for (let i = 0; i < 60 && dispatches.length < 2; i++) await wait(1000);
+  let beforeCoalescing;
+  for (let i = 0; i < 60; i++) {
+    beforeCoalescing = await fetch(`${baseUrl}/queue/api/exact-review-queue`).then((r) => r.json());
+    if (
+      initialDispatchFailures > 0 &&
+      beforeCoalescing.lanes.review.pending === 2 &&
+      beforeCoalescing.lanes.review.dispatching === 0
+    )
+      break;
+    await wait(250);
+  }
+  assert.ok(initialDispatchFailures > 0);
+  assert.equal(beforeCoalescing.lanes.review.pending, 2);
+  assert.equal(beforeCoalescing.lanes.review.dispatching, 0);
+  assert.equal(
+    dispatches.length,
+    0,
+    "ordinary refresh must arrive while manual reviews are pending",
+  );
+  const coalescedSourceUpdatedAt = new Date().toISOString();
+  items.get(71).body = "Updated synthetic issue facts before the selected manual review.";
+  items.get(71).updated_at = coalescedSourceUpdatedAt;
+  await post("exact-review/enqueue", {
+    delivery_id: "ordinary-refresh-during-manual-review",
+    decision: {
+      targetRepo: repo,
+      targetBranch: "main",
+      itemNumber: 71,
+      itemKind: "issue",
+      sourceEvent: "issues",
+      sourceAction: "edited",
+      sourceUpdatedAt: coalescedSourceUpdatedAt,
+      supersedesInProgress: false,
+    },
+  });
+  initialDispatchOutage = false;
+  for (let i = 0; i < 120 && dispatches.length < 2; i++) await wait(1000);
   assert.equal(dispatches.length, 2, workerLog);
   const records = [];
   const extraRecords = [];
@@ -762,6 +804,17 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
         number,
         requestedBranch: selectedBranch,
         claimedBranch: claimDecision.targetBranch,
+      });
+    }
+    if (number === 71) {
+      assert.equal(claimDecision.sourceUpdatedAt, coalescedSourceUpdatedAt);
+      assert.ok(tuple.lease_revision > 1);
+      observations.push({
+        scenario: "ordinary refresh preserves pending manual branch and updates source facts",
+        targetBranch: claimDecision.targetBranch,
+        sourceUpdatedAt: claimDecision.sourceUpdatedAt,
+        revision: tuple.lease_revision,
+        initialDispatchFailures,
       });
     }
     const work = join(root, repeatRunId ? `${number}-${runId}` : String(number));
@@ -1030,15 +1083,20 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
         assert.equal(outcome.reasonCode, "state_contention");
         assert.equal(Object.hasOwn(outcome, "rateLimitScope"), false);
         assert.match(readFileSync(githubOutput, "utf8"), /^reason_code=state_contention$/m);
+        const guardedCleanup = allowedChecks === 2;
+        if (guardedCleanup)
+          assert.match(unavailable.stderr, /could not delete owned review lease comment/);
         assert.equal(
           outage.rejectedChecks,
-          1,
-          "authority outages must not use GitHub inline retries",
+          guardedCleanup ? 2 : 1,
+          "only the failed operation and its guarded lease cleanup may recheck authority",
         );
         assert.equal(commentWrites(), writesBefore);
         observations.push({
           scenario: "authority-service outage retains coordinator retry classification",
           allowedChecks,
+          rejectedChecks: outage.rejectedChecks,
+          guardedCleanup,
           reasonCode: outcome.reasonCode,
           completionKind: outcome.kind,
           commentWrites: 0,
@@ -1956,6 +2014,11 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
   const repeated = observations.find(
     (entry) => entry.scenario === "repeated authorized manual request after completion",
   );
+  const coalesced = observations.find(
+    (entry) =>
+      entry.scenario ===
+      "ordinary refresh preserves pending manual branch and updates source facts",
+  );
   writeFileSync(
     join(output, "summary.json"),
     JSON.stringify(
@@ -1978,6 +2041,12 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
         reviewCounts: Object.fromEntries(reviewCounts),
         requestReviewCounts: Object.fromEntries(requestReviewCounts),
         repeatedRequestRevision: repeated?.current.lease_revision,
+        coalescedManualBranch: coalesced && {
+          targetBranch: coalesced.targetBranch,
+          sourceUpdatedAt: coalesced.sourceUpdatedAt,
+          revision: coalesced.revision,
+          initialDispatchFailures: coalesced.initialDispatchFailures,
+        },
         manualBranchSelections: observations
           .filter(
             (entry) =>
@@ -1999,7 +2068,13 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
           )
           .map((entry) => ({
             stage: entry.scenario.startsWith("batch") ? "batch" : "direct",
-            ...(entry.allowedChecks === undefined ? {} : { allowedChecks: entry.allowedChecks }),
+            ...(entry.allowedChecks === undefined
+              ? {}
+              : {
+                  allowedChecks: entry.allowedChecks,
+                  rejectedChecks: entry.rejectedChecks,
+                  guardedCleanup: entry.guardedCleanup,
+                }),
             completionKind: entry.completionKind,
             reasonCode: entry.reasonCode,
             commentWrites: entry.commentWrites,

@@ -47,7 +47,7 @@ import {
 test("manual queue policy cannot be widened by coalescing or ambiguous decision fields", async () => {
   const decision = {
     targetRepo: "openclaw/gogcli",
-    targetBranch: "main",
+    targetBranch: "release/proof",
     itemNumber: 71,
     itemKind: "issue" as const,
     sourceEvent: "issues" as const,
@@ -55,7 +55,12 @@ test("manual queue policy cannot be widened by coalescing or ambiguous decision 
     supersedesInProgress: false,
     publicationPolicy: "record_comment_only" as const,
   };
-  const ordinary = { ...decision, sourceAction: "opened" } as Record<string, unknown>;
+  const ordinary = {
+    ...decision,
+    targetBranch: "main",
+    sourceAction: "opened",
+    sourceUpdatedAt: "2026-09-07T12:00:00Z",
+  } as Record<string, unknown>;
   delete ordinary.publicationPolicy;
   assert.equal(
     mergePendingExactReviewDecision(decision, exactReviewDecisionFrom(ordinary)!).publicationPolicy,
@@ -64,6 +69,14 @@ test("manual queue policy cannot be widened by coalescing or ambiguous decision 
   assert.equal(
     mergePendingExactReviewDecision(decision, exactReviewDecisionFrom(ordinary)!).sourceAction,
     "manual_explicit_review",
+  );
+  const merged = mergePendingExactReviewDecision(decision, exactReviewDecisionFrom(ordinary)!);
+  assert.equal(merged.targetBranch, "release/proof");
+  assert.equal(merged.sourceUpdatedAt, ordinary.sourceUpdatedAt);
+  assert.equal(
+    mergePendingExactReviewDecision(decision, { ...decision, targetBranch: "release/next" })
+      .targetBranch,
+    "release/next",
   );
   for (const invalid of [
     { ...decision, publicationPolicy: undefined },
@@ -109,11 +122,23 @@ test("manual queue policy cannot be widened by coalescing or ambiguous decision 
     202,
   );
   assert.equal(
-    (await enabled.fetch(buildExactReviewQueueRequest("normal-71", 71, "opened"))).status,
+    (
+      await enabled.fetch(
+        buildExactReviewQueueRequest(
+          "normal-71",
+          71,
+          "opened",
+          "issue",
+          decision.targetRepo,
+          ordinary,
+        ),
+      )
+    ).status,
     202,
   );
   const state = await storage.get("exact-review-queue");
   assert.equal(state.items["openclaw/gogcli#71"].decision.publicationPolicy, "record_comment_only");
+  assert.equal(state.items["openclaw/gogcli#71"].decision.targetBranch, "release/proof");
 });
 
 function manualArtifactAdmissionFixture() {

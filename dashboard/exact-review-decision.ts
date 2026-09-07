@@ -755,6 +755,9 @@ export function mergePendingExactReviewDecision(
   if (retainedPolicy) {
     merged.publicationPolicy = retainedPolicy;
     merged.sourceAction = current.sourceAction;
+    // Only another explicit manual request may replace the selected branch.
+    if (next.sourceAction !== MANUAL_REVIEW_SOURCE_ACTION || !decisionPublicationPolicy(next))
+      merged.targetBranch = current.targetBranch;
   }
   const commandMarkerChanged =
     Object.hasOwn(next, "commandStatusMarker") &&
