@@ -19,6 +19,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Add reviewed-plan retirement of one merged-target publication through the existing maintenance workflow, keeping signing credentials confined to its execution step.
 - Admit the two approved Signal URL-rejection fixtures through exact URI, source-line, path, and native decoder bindings while retaining all scanner and verification checks.
 - Admit the reviewed Crabbox PostgreSQL operations example through exact Postgres detector, observed `PLAIN`/`HTML` decoder, value-hash, source-line, path, mode, metadata, and committed base/head bindings.
 - Admit the reviewed OpenClaw logging redaction fixtures through exact detector, native decoder, role, value-hash, source-line, path, mode, and metadata bindings while preserving legacy URI fixture behavior.

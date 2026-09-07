@@ -11,10 +11,16 @@ importers:
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
+      yauzl:
+        specifier: 3.4.0
+        version: 3.4.0
     devDependencies:
       '@types/node':
         specifier: ^24.13.3
         version: 24.13.3
+      '@types/yauzl':
+        specifier: 3.4.0
+        version: 3.4.0
       markdown-it:
         specifier: ^15.0.0
         version: 15.0.0
@@ -313,6 +319,9 @@ packages:
   '@types/node@24.13.3':
     resolution: {integrity: sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==}
 
+  '@types/yauzl@3.4.0':
+    resolution: {integrity: sha512-NRPn5w6h8dhcnmx3YIRQcqMywY/+nND/uOkJessedcrowO3C0AssHp3tMJpxKAwOhFOo0OV1y9VtsC5hbKKBAw==}
+
   '@typescript/typescript-aix-ppc64@7.0.2':
     resolution: {integrity: sha512-MTKKkWB7p/0E9xi1d1tHtZ5PiLkGEMIq88pK2CubZjOsLtYTLqhgIgi6zepFa+9GHZ6h05NMCkQxGKiPXMxXtQ==}
     engines: {node: '>=16.20.0'}
@@ -480,6 +489,9 @@ packages:
       vite-plus:
         optional: true
 
+  pend@1.2.0:
+    resolution: {integrity: sha512-F3asv42UuXchdzt+xXqfW1OGlVBe+mxa2mqI0pg5yAHZPvFmY3Y6drSf/GQ1A86WgWEN9Kzh/WrgKa6iGcHXLg==}
+
   playwright-core@1.62.1:
     resolution: {integrity: sha512-wPYSwEBJY9GHraISXqyqtx0na0LpO3XEX7jNDhntbex7tzUS7kLnZsOlFruFJB4Hi/rhDMjXGqHewDZ68nYZVw==}
     engines: {node: '>=20'}
@@ -508,6 +520,10 @@ packages:
     resolution: {integrity: sha512-2AvhNX3mb8zd6Zy7INTtSpl1F15HW6Wnqj0srWlkKLcpYl/gMIMJiyuGq2KeI2YFxUPjdlB+3Lc10seMLtL4cA==}
     engines: {node: '>= 14.6'}
     hasBin: true
+
+  yauzl@3.4.0:
+    resolution: {integrity: sha512-jIH9yLR9wqr0wOS0TpBvo/g/2UgZH5qePVbjgRliiF0BYvOZyaBknKsF+x9Iht0O6sqgnB93rCICdOZFecJuDw==}
+    engines: {node: '>=12'}
 
 snapshots:
 
@@ -647,6 +663,10 @@ snapshots:
     dependencies:
       undici-types: 7.18.2
 
+  '@types/yauzl@3.4.0':
+    dependencies:
+      '@types/node': 24.13.3
+
   '@typescript/typescript-aix-ppc64@7.0.2':
     optional: true
 
@@ -782,6 +802,8 @@ snapshots:
       '@oxlint/binding-win32-x64-msvc': 1.73.0
       oxlint-tsgolint: 0.24.0
 
+  pend@1.2.0: {}
+
   playwright-core@1.62.1: {}
 
   punycode.js@2.3.1: {}
@@ -816,3 +838,7 @@ snapshots:
   undici-types@7.18.2: {}
 
   yaml@2.9.0: {}
+
+  yauzl@3.4.0:
+    dependencies:
+      pend: 1.2.0

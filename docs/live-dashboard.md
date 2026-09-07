@@ -761,6 +761,52 @@ request cleanup, and cold-start initialization still run. `apply:true` retains
 normal expiry recovery and terminalization. This is an authenticated operator
 route, not a Bay action.
 
+### Retire One Closed-Target Publication
+
+Active operator runbook. Owner: exact-review maintainers. Owning sources:
+`.github/workflows/exact-review-queue-maintenance.yml`,
+`src/repair/closed-publication-retirement.ts`, and
+`dashboard/exact-review-queue.ts`. Last source verification: `ff0156fb` plus
+the retirement maintenance route. Update this section when artifact provenance,
+plan fields, terminal disposition, or acknowledgement ownership changes.
+
+Use **Maintain exact review queue** on `main`, mode
+`retire-closed-publication`, only for an explicitly approved publication whose
+public target PR is merged. Supply its exact producer run ID, artifact ID,
+publication-key SHA256, and publication queue revision. The source-review
+revision in the artifact is not the publication queue revision.
+
+1. Leave `execute` false. Preview fetches the exact artifact and attempt
+   metadata, verifies the archive digest, reads only its bounded root manifest,
+   and checks the public merged target. It neither constructs a Worker client
+   nor requests a Worker route. An expired artifact or absent GitHub archive
+   digest fails closed.
+2. Review the emitted plan SHA256 and numeric tuple against the approved
+   publication. The plan also binds the immutable workflow SHA, historical
+   producer source SHA, archive identity, and merged PR identity. Raw target
+   keys, command identities, artifact contents, and signed URLs stay private.
+3. Run the same inputs with `execute` true and `reviewed_plan_sha256` set to
+   that reviewed hash. Preparation remains secretless with respect to the
+   Worker signing credential. Only the final assertion step receives it.
+   A changed workflow SHA or evidence requires a new preview and review.
+
+Execution records one **new operator `target_closed` fact** through the existing
+terminal-disposition route. It is not a replay of a historical completion.
+This is deliberately not an ownership CAS: concurrent active or newer queue
+ownership does not reject the assertion. The normal owner removes only a
+matching pending or parked publication revision and uses the original
+admission's command marker for acknowledgement. It does not retire another
+publication, reject a concurrent owner, or publish a stale review verdict.
+
+The normal finalizer must observe the original command acknowledgement as
+`Complete`, with detail `The item is closed; no stale verdict was published.`,
+and record its verified receipt. HTTP success or `acknowledgementState: pending`
+is not completion proof. Check the exact original receipt, available matching
+queue cleanup evidence, and preservation of later commands. Do not force a
+driver dispatch. On timeout, redirect, malformed response, or error, stop and
+inspect the exact operation; never blindly retry or substitute a new operation
+ID. Bay remains observer-only and uses the unchanged lifecycle projections.
+
 `POST /internal/exact-review/reconcile` backstop accepts at most 32 exact run IDs
 and intersects them with currently claimed leases. The Worker checks those IDs
 and attempts with an Actions-read GitHub App token and reconciles only runs

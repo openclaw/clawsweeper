@@ -276,7 +276,7 @@ function validateContext(value: ExactReviewBundleContext): ExactReviewBundleCont
   return { ...value };
 }
 
-function validateManifest(value: unknown): ExactReviewBundleManifest {
+export function validateManifest(value: unknown): ExactReviewBundleManifest {
   const manifest = record(value, "manifest");
   exactKeys(manifest, [
     "schema_version",
