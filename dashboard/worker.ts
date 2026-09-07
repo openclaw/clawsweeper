@@ -22,6 +22,7 @@ import {
   githubEtagCacheKey,
   githubEtagCacheRequestBody,
 } from "../src/github-etag-cache-contract.ts";
+import { inlineProofParticipation, publicInlineProofCohorts } from "./inline-proof-telemetry.ts";
 import { bayHtml } from "./bay-page.ts";
 import {
   dashboardHtml,
@@ -2101,6 +2102,10 @@ const PUBLIC_STATUS_CONTAINER_FIELDS = new Set([
   "points",
   "overall",
   "including_legacy_batch",
+  "inline_proof",
+  "requested",
+  "not_requested",
+  "unknown",
   "terminal_buffer",
   "recently_washed",
   "cluster_repair",
@@ -3208,7 +3213,35 @@ export function publicStatusProjection(
     const stage = publicWorkerBayStage(worker);
     return { ...objectValue(worker), ...(stage ? { stage } : {}) };
   });
-  const sourceBay = objectValue(source.bay);
+  const rawSourceBay = objectValue(source.bay);
+  const rawTimings = objectValue(rawSourceBay.timings);
+  const rawAllTimings = objectValue(rawTimings.including_legacy_batch);
+  const withInlineProof = (timing) => ({
+    ...timing,
+    ...(timing.inline_proof === undefined
+      ? {}
+      : {
+          inline_proof: publicInlineProofCohorts(
+            timing.inline_proof,
+            objectValue(timing.overall).samples,
+          ),
+        }),
+  });
+  const sourceBay = {
+    ...rawSourceBay,
+    ...(rawSourceBay.timings === undefined
+      ? {}
+      : {
+          timings: {
+            ...withInlineProof(rawTimings),
+            ...(rawTimings.including_legacy_batch === undefined
+              ? {}
+              : {
+                  including_legacy_batch: withInlineProof(rawAllTimings),
+                }),
+          },
+        }),
+  };
   const derivedActiveTargets = publicBayActiveTargets(
     sourceWorkers || [],
     sourceBay.active_census_complete === true,
@@ -3235,6 +3268,7 @@ export function publicStatusProjection(
   const projectionSource = {
     ...source,
     public_projection_complete: true,
+    ...(source.bay ? { bay: sourceBay } : {}),
     ...(projectedWorkers ? { workers: projectedWorkers } : {}),
     ...(sourceWorkers || Object.prototype.hasOwnProperty.call(sourceBay, "active_stages")
       ? {
@@ -6193,6 +6227,7 @@ function publicDurableLifecycleBaySnapshot(
             lane,
             state,
             current_revision: card.current_revision,
+            inline_proof: inlineProofParticipation(objectValue(card.facts).inline_proof),
             updated_at: updatedAt,
           },
         ];
@@ -6524,9 +6559,11 @@ async function exactReviewBayLifecycleMetricsSnapshot(env) {
       completion_source: "verified_final_review_receipts",
       sample_limit: sampleLimit,
       overall: { average_ms: average, median_ms: median, samples },
+      inline_proof: publicInlineProofCohorts(timings.inline_proof, samples),
       history,
       including_legacy_batch: {
         overall: { average_ms: allAverage, median_ms: allMedian, samples: allSamples },
+        inline_proof: publicInlineProofCohorts(includingLegacyBatch.inline_proof, allSamples),
         history: includingLegacyBatchHistory,
       },
     },

@@ -24,6 +24,7 @@ let freshnessState = "fresh";
 let metricsState = "complete";
 let snapshotAt = at;
 let timingEndedAt = at;
+let failStatusTransport = false;
 function timing(rows, legacy = false) {
   return {
     overall: {
@@ -163,6 +164,7 @@ const server = createServer((request, response) => {
   response.setHeader("content-type", "application/json");
   if (request.url === "/api/status") {
     statusReads++;
+    if (failStatusTransport) { response.destroy();return; }
     response.end(JSON.stringify(status()));
     return;
   }
@@ -218,246 +220,215 @@ async function refresh() {
 try {
   await page.goto(origin + "/bay");
   await page.waitForSelector(".journey-chart");
-  await check("fixed rolling hour, readable minute ticks and partial bucket", async () => {
-    const chart = page.locator(".journey-chart");
-    assert.equal(await chart.getAttribute("data-window-start"), "2026-09-07T17:12:32.000Z");
-    assert.equal(await chart.getAttribute("data-window-end"), "2026-09-07T18:12:32.000Z");
+  const plot = page.locator(".journey-plot");
+  const tooltip = page.locator("#journey-tooltip");
+  async function hoverBucket(bucket, fraction = 0.5) {
+    const r = await bucket.boundingBox();
+    await page.mouse.move(r.x + Math.max(0.1, r.width * fraction), r.y + r.height / 2);
+  }
+  async function tapBucket(bucket) {
+    const r = await bucket.boundingBox();
+    await page.touchscreen.tap(r.x + r.width / 2, r.y + r.height / 2);
+  }
+  async function containedTooltip() {
+    const r = await tooltip.boundingBox();
+    const viewport = page.viewportSize();
+    assert.ok(r && r.x >= 0 && r.y >= 0 && r.x + r.width <= viewport.width + 1 && r.y + r.height <= viewport.height + 1, JSON.stringify(r));
+  }
+  await check("fixed rolling hour, readable axes and partial/missing bucket geometry", async () => {
+    assert.equal(await page.locator(".journey-chart").getAttribute("data-window-start"), "2026-09-07T17:12:32.000Z");
+    assert.equal(await page.locator(".journey-chart").getAttribute("data-window-end"), "2026-09-07T18:12:32.000Z");
     assert.deepEqual(await page.locator(".journey-y-axis span").allTextContents(), ["4", "2", "0"]);
     assert.equal(await page.locator(".journey-bucket").count(), 13);
     assert.equal(await page.locator(".journey-bucket.missing").count(), 9);
-    assert.equal(
-      (await page.locator(".journey-timing-chart .line").getAttribute("d")).match(/M/g).length,
-      2,
-    );
-    assert.match(
-      await page.locator(".journey-bucket").last().getAttribute("aria-label"),
-      /18:10:00–18:12:32 UTC \(partial bucket\)/,
-    );
+    assert.equal((await page.locator(".journey-timing-chart .line").getAttribute("d")).match(/M/g).length, 2);
+    assert.match(await page.locator(".journey-bucket").last().getAttribute("data-journey-description"), /18:10:00–18:12:32 UTC \(partial bucket\)/);
   });
   const populated = page.locator(".journey-bucket:not(.missing)").first();
-  await check(
-    "pointer anywhere in the bucket reveals exact interval/median/mean/count",
-    async () => {
-      const box = await populated.boundingBox();
-      for (const x of [box.x + 1, box.x + box.width - 1]) {
-        await page.mouse.move(x, box.y + 3);
-        assert.match(
-          await page.locator("#journey-bucket-detail").textContent(),
-          /17:15:00–17:20:00 UTC · median 2 min · mean 3 min · 3 samples/,
-        );
-      }
-    },
-  );
-  await page.screenshot({ path: output + "/desktop.png", fullPage: true });
-  await page.locator("#overall-average").screenshot({ path: output + "/chart-desktop.png" });
-  await check(
-    "keyboard focus and native activation preserve equivalent bucket detail",
-    async () => {
-      await populated.focus();
-      await page.keyboard.press("Enter");
-      assert.match(await page.locator("#journey-bucket-detail").textContent(), /median 2 min/);
-      await page.keyboard.press("Tab");
-      assert.match(await page.locator("#journey-bucket-detail").textContent(), /median 4 min/);
-      const key = await page.locator(":focus").getAttribute("data-journey-bucket");
-      await refresh();
-      assert.equal(await page.locator(":focus").getAttribute("data-journey-bucket"), key);
-    },
-  );
-  await check("missing data is not reported as zero and real zero stays a sample", async () => {
-    await page.locator(".journey-bucket.missing").nth(2).click();
-    assert.match(
-      await page.locator("#journey-bucket-detail").textContent(),
-      /No bucket data.*samples unavailable/,
-    );
-    await page.locator('.journey-bucket[aria-label*="median 0 min"]').click();
-    assert.match(
-      await page.locator("#journey-bucket-detail").textContent(),
-      /median 0 min · mean 0.5 min · 3 samples/,
-    );
+  await check("chart dropdown and permanent detail row are gone; cohort selector remains", async () => {
+    assert.equal(await page.locator("#journey-interval-select,.journey-interval-choice,#journey-bucket-detail,.journey-bucket-detail").count(), 0);
+    assert.equal(await page.locator(".journey-chart select,.journey-bucket[tabindex],button.journey-bucket").count(), 0);
+    assert.equal(await page.locator("#inline-proof-filter").count(), 1);
+    assert.equal(await plot.getAttribute("role"), "slider");
+    assert.equal(await plot.getAttribute("tabindex"), "0");
+    assert.equal(await tooltip.isVisible(), false);
   });
-  await check(
-    "lifecycle starts collapsed, opens with keyboard and keeps records distinct",
-    async () => {
-      const details = page.locator("#bay-lifecycle-details");
-      assert.equal(await details.getAttribute("open"), null);
-      await details.locator("summary").focus();
-      await page.keyboard.press("Enter");
-      await page.waitForSelector(".lane-summary");
-      assert.equal(
-        await page.locator(".lane-summary").textContent(),
-        "100 records · 60 target revisions · 20 unique targets",
-      );
-      assert.deepEqual(await page.locator(".lane-count").allTextContents(), [
-        "35",
-        "1",
-        "40",
-        "10",
-        "10",
-        "4",
-      ]);
-      assert.equal(await page.locator(".lane-card").count(), 2);
-      assert.equal(await page.locator(".tag.current").count(), 1);
-      await page.screenshot({ path: output + "/lifecycle.png", fullPage: true });
-    },
-  );
-  await check("legacy and repository filters do not alter lifecycle inventory", async () => {
+  await check("hover and scrubbing expose compact equivalent details; tooltip is hoverable and Escape-dismissable", async () => {
+    for (const fraction of [0.08, 0.92]) {
+      await hoverBucket(populated, fraction);
+      assert.match(await tooltip.textContent(), /17:15:00–17:20:00 UTC · median 2 min · mean 3 min · 3 samples/);
+      assert.equal(await tooltip.isVisible(), true);
+      assert.equal(await page.locator(".journey-bucket.selected").count(), 1);
+    }
+    await containedTooltip();
+    const r = await tooltip.boundingBox();
+    await page.mouse.move(r.x + r.width / 2, r.y + r.height / 2);
+    await page.clock.runFor(300);
+    assert.equal(await tooltip.isVisible(), true);
+    await page.keyboard.press("Escape");
+    assert.equal(await tooltip.isVisible(), false);
+    await page.mouse.move(1, 1);await hoverBucket(populated);
+    assert.equal(await tooltip.isVisible(), true);
+  });
+  await page.screenshot({ path: output + "/desktop.png", fullPage: true });
+  await page.screenshot({ path: output + "/chart-desktop.png" });
+  await check("one large keyboard surface supports arrows/Home/End and preserves DOM focus and bucket identity on refresh", async () => {
+    await plot.focus();await page.keyboard.press("Home");
+    assert.equal(await plot.getAttribute("aria-valuenow"), "0");
+    assert.match(await plot.getAttribute("aria-valuetext"), /partial bucket.*No bucket data/);
+    await page.keyboard.press("ArrowRight");
+    assert.match(await tooltip.textContent(), /median 2 min/);
+    await page.keyboard.press("ArrowRight");
+    assert.match(await tooltip.textContent(), /median 4 min/);
+    await page.keyboard.press("ArrowLeft");
+    const key = await plot.getAttribute("data-journey-bucket");
+    await plot.evaluate((node) => { window.proofPlotNode = node; });
+    await refresh();
+    assert.equal(await plot.evaluate((node) => node === window.proofPlotNode && document.activeElement === node), true);
+    assert.equal(await plot.getAttribute("data-journey-bucket"), key);
+    assert.equal(await plot.getAttribute("aria-valuetext"), await tooltip.textContent());
+    await page.keyboard.press("End");
+    assert.equal(await plot.getAttribute("aria-valuenow"), "12");
+    assert.match(await tooltip.textContent(), /18:10:00–18:12:32 UTC/);
+    await page.keyboard.press("Escape");assert.equal(await tooltip.isVisible(), false);
+    await refresh();assert.equal(await tooltip.isVisible(), false);
+    assert.equal(await plot.evaluate((node) => document.activeElement === node), true);
+  });
+  await check("pending hover dismissal cannot hide keyboard details; leaving focus dismisses", async () => {
+    await plot.press("Tab");await hoverBucket(populated);await page.mouse.move(1, 1);
+    await plot.focus();await page.clock.runFor(250);
+    assert.equal(await tooltip.isVisible(), true);
+    await plot.press("Tab");await page.clock.runFor(250);
+    assert.equal(await tooltip.isVisible(), false);
+  });
+  await check("missing data stays unavailable and a real zero stays a sample", async () => {
+    await plot.press("Home");assert.match(await tooltip.textContent(), /No bucket data.*samples unavailable/);
+    await hoverBucket(page.locator('.journey-bucket[data-journey-description*="median 0 min"]'));
+    assert.match(await tooltip.textContent(), /median 0 min · mean 0.5 min · 3 samples/);
+  });
+  await page.clock.setSystemTime(at);
+  await check("retained lifecycle remains collapsed and keeps records distinct", async () => {
+    const details = page.locator("#bay-lifecycle-details");
+    assert.equal(await details.getAttribute("open"), null);
+    await details.locator("summary").focus();await page.keyboard.press("Enter");
+    await page.waitForSelector(".lane-summary");
+    assert.equal(await page.locator(".lane-summary").textContent(), "100 records · 60 target revisions · 20 unique targets");
+    assert.deepEqual(await page.locator(".lane-count").allTextContents(), ["35", "1", "40", "10", "10", "4"]);
+    assert.equal(await page.locator(".lane-card").count(), 2);
+    assert.equal(await page.locator(".tag.current").count(), 1);
+  });
+  await check("legacy and repository filters remain independent from lifecycle inventory", async () => {
     const before = await page.locator("#durable-lifecycle-kanban").innerHTML();
     await page.locator('[data-repo="openclaw/clawsweeper"]').click();
     await page.locator("#legacy-proof-toggle").click();
     assert.equal(await page.locator("#legacy-proof-toggle").getAttribute("aria-pressed"), "true");
-    assert.match(
-      await page.locator("#overall-average .stat-sub").textContent(),
-      /incl. retired proof\/batch/,
-    );
+    assert.match(await page.locator("#overall-average .stat-sub").textContent(), /incl. retired proof\/batch/);
     assert.equal(await page.locator("#durable-lifecycle-kanban").innerHTML(), before);
     await page.locator("#legacy-proof-toggle").click();
-    assert.equal(await page.locator("#legacy-proof-toggle").getAttribute("aria-pressed"), "false");
   });
-  await check(
-    "responsive plot/labels remain contained and touch activates whole bucket",
-    async () => {
-      await page.setViewportSize({ width: 360, height: 800 });
-      await page.locator("#overall-average").scrollIntoViewIfNeeded();
-      const geometry = await page.locator(".journey-chart").evaluate((chart) => {
-        const outer = chart.getBoundingClientRect();
-        return {
-          right: outer.right,
-          left: outer.left,
-          overflow: [...chart.querySelectorAll(".journey-x-axis span,.journey-bucket")].some(
-            (node) => {
-              const r = node.getBoundingClientRect();
-              return r.right > outer.right + 1 || r.left < outer.left - 1;
-            },
-          ),
-        };
-      });
-      assert.ok(
-        geometry.left >= 0 && geometry.right <= 360 && !geometry.overflow,
-        JSON.stringify(geometry),
-      );
-      const picker = page.locator("#journey-interval-select");
-      const pickerBox = await picker.boundingBox();
-      assert.ok(pickerBox.width >= 44 && pickerBox.height >= 44);
-      assert.equal(await picker.locator("option").count(), 14);
-      await picker.tap();
-      await page.keyboard.press("Escape");
-      const missingKey = await page
-        .locator(".journey-bucket.missing")
-        .nth(2)
-        .getAttribute("data-journey-bucket");
-      await picker.selectOption(missingKey);
-      assert.match(await page.locator("#journey-bucket-detail").textContent(), /No bucket data/);
-      const populatedKey = await page
-        .locator(".journey-bucket:not(.missing)")
-        .first()
-        .getAttribute("data-journey-bucket");
-      await picker.selectOption(populatedKey);
-      assert.match(await page.locator("#journey-bucket-detail").textContent(), /median 2 min/);
-      await picker.focus();
-      await picker.evaluate((node) => {
-        window.proofPickerNode = node;
-      });
-      await refresh();
-      assert.equal(await picker.evaluate((node) => node === window.proofPickerNode), true);
-      metricsState = "unavailable";
-      await refresh();
-      assert.equal(await picker.evaluate((node) => node === window.proofPickerNode), true);
-      assert.match(
-        await page.locator("#overall-average .stat-label").textContent(),
-        /Prior snapshot.*unavailable/,
-      );
-      await picker.press("Tab");
-      await page.waitForTimeout(50);
-      assert.equal(await page.locator(".journey-chart").count(), 0);
-      assert.match(await page.locator("#overall-average .stat-value").textContent(), /Unavailable/);
-      metricsState = "complete";
-      await refresh();
-      const button = page.locator(".journey-bucket:not(.missing)").first();
-      await button.tap();
-      assert.match(await page.locator("#journey-bucket-detail").textContent(), /median 2 min/);
-      await page.screenshot({ path: output + "/mobile.png", fullPage: true });
-      await page.locator("#overall-average").screenshot({ path: output + "/chart-mobile.png" });
-      await page.locator("#bay-lifecycle-details summary").tap();
-      assert.equal(await page.locator("#bay-lifecycle-details").getAttribute("open"), null);
-    },
-  );
-  await check(
-    "single and empty histories keep the full hour and no invented observations",
-    async () => {
-      points = [point("18:10:00")];
-      await refresh();
-      await page.waitForFunction(
-        () => document.querySelectorAll(".journey-timing-chart .dot").length === 1,
-      );
-      points = [];
-      await refresh();
-      await page.waitForFunction(
-        () => document.querySelectorAll(".journey-timing-chart .dot").length === 0,
-      );
-      assert.match(
-        await page.locator("#overall-average .stat-value").textContent(),
-        /No completed reviews/,
-      );
-      assert.equal(await page.locator(".journey-bucket").count(), 13);
-      assert.equal(await page.locator(".journey-bucket.missing").count(), 13);
-    },
-  );
-  await check("server snapshot anchors stale and browser-clock-skewed windows", async () => {
-    freshnessState = "stale";
-    await page.clock.setSystemTime(at + 2 * 3600000);
+  await check("mobile touch target and floating tooltip fit; tap and drag scrub equivalent details", async () => {
+    await page.setViewportSize({ width: 360, height: 800 });
+    await plot.scrollIntoViewIfNeeded();
+    const r = await plot.boundingBox();assert.ok(r.width >= 44 && r.height >= 44);
+    assert.equal(await plot.evaluate((node) => getComputedStyle(node).touchAction), "pan-y");
+    const cohortBox = await page.locator("#inline-proof-filter").boundingBox();
+    assert.ok(cohortBox.height >= 44 && cohortBox.width >= 44 && cohortBox.x >= 0 && cohortBox.x + cohortBox.width <= 360, JSON.stringify(cohortBox));
+    const geometry = await page.locator(".journey-chart").evaluate((chart) => {
+      const outer = chart.getBoundingClientRect();
+      return { left: outer.left, right: outer.right, overflow: [...chart.querySelectorAll(".journey-x-axis span,.journey-bucket")].some((node) => { const b = node.getBoundingClientRect();return b.left < outer.left - 1 || b.right > outer.right + 1; }) };
+    });
+    assert.ok(geometry.left >= 0 && geometry.right <= 360 && !geometry.overflow, JSON.stringify(geometry));
+    await tapBucket(populated);assert.match(await tooltip.textContent(), /median 2 min/);await containedTooltip();
+    const cdp = await context.newCDPSession(page);
+    const first = await populated.boundingBox(), last = await page.locator(".journey-bucket").last().boundingBox();
+    const y = first.y + first.height / 2, x = first.x + first.width / 2;
+    await plot.evaluate((node) => { window.proofPlotNode = node;node.addEventListener("pointerdown", (event) => { window.proofPointer = event.pointerId; }, { once: true }); });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+    const key = await plot.getAttribute("data-journey-bucket");
+    points = sparse.map((p, i) => i === 0 ? { ...p, median_ms: 540000 } : p);
     await refresh();
-    assert.equal(
-      await page.locator(".journey-chart").getAttribute("data-window-end"),
-      "2026-09-07T18:12:32.000Z",
-    );
-    assert.equal(
-      await page.locator(".journey-chart").getAttribute("data-window-start"),
-      "2026-09-07T17:12:32.000Z",
-    );
+    assert.equal(await plot.evaluate((node) => node === window.proofPlotNode && document.activeElement === node && node.hasPointerCapture(window.proofPointer)), true);
+    assert.equal(await plot.getAttribute("data-journey-bucket"), key);
+    assert.match(await tooltip.textContent(), /median 9 min/);
+    for (let step = 1; step <= 5; step++) {
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: x + (last.x + last.width / 2 - x) * step / 5, y }] });
+      // Native pointer events may be frame-coalesced; inspect after their frame settles.
+      await page.waitForTimeout(25);
+    }
+    assert.match(await tooltip.textContent(), /18:10:00–18:12:32 UTC/);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await cdp.detach();await containedTooltip();
+    await page.screenshot({ path: output + "/mobile.png", fullPage: true });
+    await page.screenshot({ path: output + "/chart-mobile.png" });
+    await plot.press("Escape");assert.equal(await tooltip.isVisible(), false);
+    await tapBucket(populated);assert.equal(await tooltip.isVisible(), true);
+    points = sparse;
+  });
+  await check("rolling refresh preserves the navigation node and clamps an aged-out logical interval", async () => {
+    await plot.focus();await plot.press("Home");
+    const oldKey = await plot.getAttribute("data-journey-bucket");
+    timingEndedAt = at + 5 * 60000;snapshotAt = timingEndedAt;
+    await refresh();
+    assert.equal(await plot.evaluate((node) => node === window.proofPlotNode && document.activeElement === node), true);
+    assert.notEqual(await plot.getAttribute("data-journey-bucket"), oldKey);
+    assert.equal(await plot.getAttribute("aria-valuenow"), "0");
+    assert.match(await tooltip.textContent(), /17:17:32–17:20:00 UTC/);
+    timingEndedAt = at;snapshotAt = at;
+  });
+  await check("unavailable refresh immediately removes stale interaction and moves focus to status", async () => {
+    metricsState = "unavailable";await refresh();
+    assert.equal(await page.locator(".journey-chart,#journey-tooltip").count(), 0);
+    assert.equal(await page.locator(":focus").getAttribute("id"), "overall-average");
+    assert.match(await page.locator("#overall-average .stat-value").textContent(), /Unavailable/);
+    metricsState = "complete";await refresh();
+    assert.equal(await page.locator("#inline-proof-filter").count(), 1);
+  });
+  await check("transport failure removes stale tooltip/chart and retains safe focus", async () => {
+    await plot.focus();await plot.press("Home");
+    failStatusTransport = true;
+    const failedRequest = page.waitForEvent("requestfailed", (request) => request.url() === origin + "/api/status");
+    await page.clock.runFor(20000);await failedRequest;await page.waitForTimeout(50);
+    assert.equal(await page.locator(".journey-chart,#journey-tooltip").count(), 0);
+    assert.equal(await page.locator(":focus").getAttribute("id"), "overall-average");
+    assert.match(await page.locator("#overall-average .stat-value").textContent(), /Unavailable/);
+    failStatusTransport = false;await refresh();
+  });
+  await check("single and empty histories retain the hour with no invented observations", async () => {
+    points = [point("18:10:00")];await refresh();
+    assert.equal(await page.locator(".journey-timing-chart .dot").count(), 1);
+    points = [];await refresh();
+    assert.equal(await page.locator(".journey-timing-chart .dot").count(), 0);
+    assert.match(await page.locator("#overall-average .stat-value").textContent(), /No completed reviews/);
+    assert.equal(await page.locator(".journey-bucket.missing").count(), 13);
+    await plot.focus();await plot.press("Home");assert.match(await tooltip.textContent(), /samples unavailable/);
+  });
+  await check("stale and browser-clock-skewed windows remain bound to the query cutoff", async () => {
+    freshnessState = "stale";await page.clock.setSystemTime(at + 2 * 3600000);await refresh();
+    assert.equal(await page.locator(".journey-chart").getAttribute("data-window-end"), "2026-09-07T18:12:32.000Z");
+    assert.equal(await page.locator(".journey-chart").getAttribute("data-window-start"), "2026-09-07T17:12:32.000Z");
     assert.match(await page.locator(".journey-chart-note").textContent(), /stale/);
     assert.match(await page.locator("#overall-average .stat-label").textContent(), /snapshot hour/);
+    assert.match(await tooltip.textContent(), /Stale snapshot/);
   });
-  await check(
-    "timing announcements retain their live-region node and missing clock fails closed",
-    async () => {
-      await page.locator(".journey-summary").evaluate((node) => {
-        window.proofSummaryNode = node;
-      });
-      freshnessState = "unavailable";
-      timingEndedAt = null;
-      await refresh();
-      assert.equal(
-        await page.locator(".journey-summary").evaluate((node) => node === window.proofSummaryNode),
-        true,
-      );
-      assert.equal(await page.locator(".journey-summary").getAttribute("aria-live"), "polite");
-      assert.equal(await page.locator(".journey-summary").getAttribute("aria-atomic"), "true");
-      assert.equal(await page.locator(".journey-chart").count(), 0);
-      assert.match(
-        await page.locator(".journey-chart-note").textContent(),
-        /snapshot time missing/,
-      );
-    },
-  );
-  await check("delayed status collection uses the later timing query boundary", async () => {
-    freshnessState = "stale";
-    snapshotAt = at - 5 * 60000;
-    timingEndedAt = at;
-    points = sparse;
-    await refresh();
-    assert.equal(
-      await page.locator(".journey-chart").getAttribute("data-window-end"),
-      new Date(at).toISOString(),
-    );
+  await check("live-region identity survives refresh and missing source clock fails closed", async () => {
+    await page.locator(".journey-summary").evaluate((node) => { window.proofSummaryNode = node; });
+    freshnessState = "unavailable";timingEndedAt = null;await refresh();
+    assert.equal(await page.locator(".journey-summary").evaluate((node) => node === window.proofSummaryNode), true);
+    assert.equal(await page.locator(".journey-summary").getAttribute("aria-live"), "polite");
+    assert.equal(await page.locator(".journey-summary").getAttribute("aria-atomic"), "true");
+    assert.equal(await page.locator(".journey-chart,#journey-tooltip").count(), 0);
+    assert.match(await page.locator(".journey-chart-note").textContent(), /snapshot time missing/);
+  });
+  await check("delayed status collection cannot replace the later timing query boundary", async () => {
+    freshnessState = "stale";snapshotAt = at - 5 * 60000;timingEndedAt = at;points = sparse;await refresh();
+    assert.equal(await page.locator(".journey-chart").getAttribute("data-window-end"), new Date(at).toISOString());
     assert.equal(await page.locator(".journey-timing-chart .dot").count(), 4);
-    assert.match(
-      await page.locator(".journey-bucket").last().getAttribute("aria-label"),
-      /18:10:00–18:12:32 UTC/,
-    );
+    assert.match(await page.locator(".journey-bucket").last().getAttribute("data-journey-description"), /18:10:00–18:12:32 UTC/);
   });
   assert.deepEqual(errors, []);
   assert.ok(requests.every((request) => request.method === "GET"));
   assert.ok(!blocked.some((url) => /github\.com|api\.github/.test(url)));
+
 } finally {
   await context.tracing.stop({ path: output + "/trace.zip" });
   await writeFile(

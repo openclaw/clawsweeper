@@ -1,3 +1,7 @@
+import {
+  inlineProofParticipation,
+  type InlineProofParticipation,
+} from "./inline-proof-telemetry.ts";
 import type { DurableStorage } from "./durable-storage.ts";
 
 export const EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE = "exact_review_lifecycle_projection_v1";
@@ -101,6 +105,7 @@ export type DurableLifecycleBayCard = {
   current_revision: boolean;
   facts: {
     admission: "recorded";
+    inline_proof?: InlineProofParticipation;
     claim_count: number;
     review_result: "completed" | "failed" | "cancelled" | null;
     github_effect_recorded: boolean;
@@ -166,6 +171,8 @@ export type LifecycleProducerLineage = {
 
 export type ExactReviewLifecycleProjection = {
   version: 1;
+  /** Accepted request participation, not execution or evidence. Absent on historical rows. */
+  inlineProof?: "requested" | "not_requested";
   canonicalTargetKey: string;
   fenceKey: string;
   revision: number;
@@ -249,6 +256,7 @@ type ProjectionIdentity = {
 };
 type LifecycleAdmissionInput = ProjectionIdentity & {
   producerLineage?: LifecycleProducerLineage;
+  inlineProofTracked?: true;
   deliveryId: string;
   sourceDeliveryId?: string;
   bayJourneyDeliveryId?: string;
@@ -295,6 +303,22 @@ export class ExactReviewLifecycleProjectionStore {
            CHECK (bay_telemetry_pending IN (0, 1))`,
       );
     }
+    // The timing reader rejects competing children with an exact indexed lookup.
+    // A partial index preserves fail-closed reads of malformed legacy JSON.
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_projection_producer_lineage_v1
+         ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} (
+           canonical_target_key,
+           json_extract(projection_json, '$.producerLineage.fenceKey'),
+           json_extract(projection_json, '$.producerLineage.revision'),
+           json_extract(projection_json, '$.producerLineage.claimGeneration')
+         ) WHERE json_valid(projection_json)`,
+    );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_projection_malformed_target_v1
+         ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} (canonical_target_key)
+         WHERE NOT json_valid(projection_json)`,
+    );
     this.storage.sql.exec(
       `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_projection_fence
           ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} (fence_key, revision)`,
@@ -382,6 +406,7 @@ export class ExactReviewLifecycleProjectionStore {
     }
     const projection: ExactReviewLifecycleProjection = {
       version: 1,
+      ...(input.inlineProofTracked ? { inlineProof: "not_requested" as const } : {}),
       canonicalTargetKey: input.canonicalTargetKey,
       fenceKey: input.fenceKey,
       revision: input.revision,
@@ -412,6 +437,24 @@ export class ExactReviewLifecycleProjectionStore {
     };
     this.writeSync(projection);
     return projection;
+  }
+
+  recordInlineProofRequestSync(input: ProjectionIdentity & { observedAt: number }) {
+    this.validateIdentity(input);
+    const existing = this.read(input.canonicalTargetKey, input.fenceKey, input.revision);
+    if (existing) {
+      this.assertIdentity(existing, input);
+      if (existing.inlineProof === "requested") return existing;
+    }
+    return this.mutateSync<ExactReviewLifecycleProjection | null>(
+      input,
+      (projection) => {
+        projection.inlineProof = "requested";
+        return projection;
+      },
+      true,
+      () => null,
+    );
   }
 
   recordClaim(
@@ -1667,6 +1710,7 @@ function durableLifecycleBayCard(
       state !== "requeue",
     facts: {
       admission: "recorded",
+      inline_proof: inlineProofParticipation(projection.inlineProof),
       claim_count: projection.claims.length,
       review_result: latestReviewResult?.outcome ?? null,
       github_effect_recorded: result.githubEffect !== null,
@@ -1740,6 +1784,7 @@ function auditRecordFromRow(value: string): DurableLifecycleBayCard {
     current_revision: parsed.current_revision,
     facts: {
       admission: "recorded",
+      inline_proof: inlineProofParticipation(parsed.facts.inline_proof),
       claim_count: parsed.facts.claim_count,
       review_result: parsed.facts.review_result,
       github_effect_recorded: parsed.facts.github_effect_recorded,
@@ -2005,6 +2050,25 @@ function commandAcknowledgementTerminalSkip(projection: ExactReviewLifecycleProj
     [...projection.acknowledgement.attempts].reverse().find((attempt) => attempt.terminalSkip)
       ?.terminalSkip ?? null
   );
+}
+
+/** Validate observed JSON and its physical row identity without mutating storage. */
+export function validLifecycleProjectionJson(
+  value: unknown,
+  identity: ProjectionIdentity,
+): ExactReviewLifecycleProjection | null {
+  if (typeof value !== "string") return null;
+  try {
+    const projection = projectionFromRow(value);
+    return validDurableLifecycleBayProjection(projection) &&
+      projection.canonicalTargetKey === identity.canonicalTargetKey &&
+      projection.fenceKey === identity.fenceKey &&
+      projection.revision === identity.revision
+      ? projection
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function projectionFromRow(value: string): ExactReviewLifecycleProjection {

@@ -2,9 +2,11 @@ import {
   EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE,
   commandAcknowledgementState,
   lifecycleState,
+  validLifecycleProjectionJson,
   type ExactReviewLifecycleProjection,
   type LifecycleTerminalDisposition,
 } from "./exact-review-lifecycle.ts";
+import { inlineProofParticipation, type InlineProofCohorts } from "./inline-proof-telemetry.ts";
 import { sqlColumnNames, type DurableStorage } from "./durable-storage.ts";
 
 export const EXACT_REVIEW_LIFECYCLE_TELEMETRY_DIRECT_TABLE =
@@ -171,7 +173,9 @@ export type ExactReviewBayLifecycleSnapshot = {
     sample_limit: number;
     overall: { average_ms: number | null; median_ms: number | null; samples: number | null };
     history: { bucket_minutes: number; points: BayTimingHistoryPoint[] };
+    inline_proof?: InlineProofCohorts;
     including_legacy_batch: {
+      inline_proof?: InlineProofCohorts;
       overall: { average_ms: number | null; median_ms: number | null; samples: number | null };
       history: { bucket_minutes: number; points: BayTimingHistoryPoint[] };
     };
@@ -955,6 +959,49 @@ export class ExactReviewLifecycleTelemetryStore {
         now - EXACT_REVIEW_LIFECYCLE_BAY_TIMING_WINDOW_MS,
         allowedRepositories ? coverageStartedAt : globalTideCoverageStart(coverageStartedAt),
       );
+      const hasInlineProofSource = sqlColumnNames(
+        this.storage,
+        EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE,
+      ).has("projection_json");
+      // Validate each producer/revision sibling set once. The shared row budget
+      // bounds even corrupt or unusually large retained lineage history.
+      let siblingBudget = EXACT_REVIEW_LIFECYCLE_BAY_SCAN_LIMIT;
+      const siblingValidity = new Map<string, boolean>();
+      const validSiblings = (projection: ExactReviewLifecycleProjection): boolean => {
+        const link = projection.producerLineage;
+        if (!link) return true;
+        const key = JSON.stringify([projection.canonicalTargetKey, link.fenceKey, link.revision]);
+        if (siblingValidity.has(key)) return siblingValidity.get(key)!;
+        let valid = siblingBudget > 0;
+        if (valid) {
+          for (const sibling of this.storage.sql.exec(
+            `SELECT canonical_target_key, fence_key, revision, projection_json
+               FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+              WHERE json_valid(projection_json) AND canonical_target_key = ?
+                AND json_extract(projection_json, '$.producerLineage.fenceKey') = ?
+                AND json_extract(projection_json, '$.producerLineage.revision') = ?
+              LIMIT ?`,
+            projection.canonicalTargetKey,
+            link.fenceKey,
+            link.revision,
+            siblingBudget + 1,
+          )) {
+            if (
+              siblingBudget-- <= 0 ||
+              !validLifecycleProjectionJson(sibling.projection_json, {
+                canonicalTargetKey: String(sibling.canonical_target_key),
+                fenceKey: String(sibling.fence_key),
+                revision: Number(sibling.revision),
+              })
+            ) {
+              valid = false;
+              break;
+            }
+          }
+        }
+        siblingValidity.set(key, valid);
+        return valid;
+      };
       const rows = Array.from(
         this.storage.sql.exec(
           `SELECT
@@ -963,8 +1010,24 @@ export class ExactReviewLifecycleTelemetryStore {
              events.outcome,
              events.triggered_at,
              events.completed_at,
-             events.legacy_batch_path
+             events.legacy_batch_path,
+             events.fence_key, events.revision,
+             ${hasInlineProofSource ? "projection.projection_json" : "NULL"} AS participation_projection,
+             ${hasInlineProofSource ? "producer.projection_json" : "NULL"} AS participation_producer,
+             ${hasInlineProofSource ? inlineProofTimingSql() : "NULL"} AS inline_proof
              FROM ${EXACT_REVIEW_LIFECYCLE_BAY_EVENT_TABLE} AS events
+             ${
+               hasInlineProofSource
+                 ? `LEFT JOIN ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} AS projection
+               ON projection.canonical_target_key = events.canonical_target_key
+              AND projection.fence_key = events.fence_key
+              AND projection.revision = events.revision
+             LEFT JOIN ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} AS producer
+               ON producer.canonical_target_key = events.canonical_target_key
+              AND producer.fence_key = json_extract(${safeLifecycleJsonSql("projection.projection_json")}, '$.producerLineage.fenceKey')
+              AND producer.revision = json_extract(${safeLifecycleJsonSql("projection.projection_json")}, '$.producerLineage.revision')`
+                 : ""
+             }
             WHERE events.completed_at >= ? AND events.completed_at <= ?
               AND (? = 0 OR events.triggered_at >= ?)
               ${repositoryFilter.where}
@@ -976,6 +1039,36 @@ export class ExactReviewLifecycleTelemetryStore {
           ...repositoryFilter.bindings,
           EXACT_REVIEW_LIFECYCLE_BAY_SCAN_LIMIT + 1,
         ),
+        (row) => {
+          // Validate one cursor row at a time; never retain full lifecycle JSON
+          // in the timing sample or allow it into a public response.
+          const identity = {
+            canonicalTargetKey: String(row.canonical_target_key),
+            fenceKey: String(row.fence_key),
+            revision: Number(row.revision),
+          };
+          const projection = validLifecycleProjectionJson(row.participation_projection, identity);
+          const link = projection?.producerLineage;
+          const producerValid =
+            !link ||
+            validLifecycleProjectionJson(row.participation_producer, {
+              ...identity,
+              fenceKey: link.fenceKey,
+              revision: link.revision,
+            }) !== null;
+          return {
+            event_id: row.event_id,
+            canonical_target_key: row.canonical_target_key,
+            outcome: row.outcome,
+            triggered_at: row.triggered_at,
+            completed_at: row.completed_at,
+            legacy_batch_path: row.legacy_batch_path,
+            inline_proof:
+              projection && producerValid && validSiblings(projection)
+                ? inlineProofParticipation(row.inline_proof)
+                : "unknown",
+          };
+        },
       );
       if (rows.length > EXACT_REVIEW_LIFECYCLE_BAY_SCAN_LIMIT)
         return unknownBaySnapshot("over_cap");
@@ -1006,6 +1099,26 @@ export class ExactReviewLifecycleTelemetryStore {
       const bufferRows = this.tideBufferRowsSync(tideScope, "terminal");
       const washedRows = this.tideBufferRowsSync(tideScope, "washed");
       if (bufferRows.length !== terminalCount) return unknownBaySnapshot("unavailable");
+      const proofCohorts = (includeLegacy: boolean): InlineProofCohorts => {
+        const cohorts = {} as InlineProofCohorts;
+        for (const participation of ["requested", "not_requested", "unknown"] as const) {
+          const selected = rows
+            .filter(
+              (row) =>
+                (includeLegacy || Number(row.legacy_batch_path) === 0) &&
+                inlineProofParticipation(row.inline_proof) === participation,
+            )
+            .map((row) => ({
+              completedAt: Number(row.completed_at),
+              duration: Number(row.completed_at) - Number(row.triggered_at),
+            }));
+          cohorts[participation] = {
+            overall: bayTimingAggregate(selected.map((row) => row.duration)),
+            history: { bucket_minutes: 5, points: bayTimingHistory(selected) },
+          };
+        }
+        return cohorts;
+      };
       const aggregate = bayTimingAggregate(durations);
       const allAggregate = bayTimingAggregate(allDurations);
       return {
@@ -1021,12 +1134,14 @@ export class ExactReviewLifecycleTelemetryStore {
           sample_kind: "completed_final_review_journeys",
           sample_limit: EXACT_REVIEW_LIFECYCLE_BAY_SCAN_LIMIT,
           overall: aggregate,
+          inline_proof: proofCohorts(false),
           history: {
             bucket_minutes: 5,
             points: bayTimingHistory(timingRows),
           },
           including_legacy_batch: {
             overall: allAggregate,
+            inline_proof: proofCohorts(true),
             history: {
               bucket_minutes: 5,
               points: bayTimingHistory(allTimingRows),
@@ -2282,6 +2397,62 @@ function bayLifecycleEvent(projection: ExactReviewLifecycleProjection): BayLifec
           ))
       ),
   };
+}
+
+// Keep the join indexed and the selected result closed: no lifecycle JSON or
+// producer identity leaves the DO. A publication can use only the completed
+// producer generation it was immutably linked to at admission.
+function safeLifecycleJsonSql(value: string) {
+  return "CASE WHEN json_valid(" + value + ") THEN " + value + " ELSE '{}' END";
+}
+
+function inlineProofTimingSql() {
+  const generation =
+    "json_extract(projection.projection_json, '$.producerLineage.claimGeneration')";
+  return [
+    "CASE WHEN json_type(projection.projection_json, '$.producerLineage') IS NULL",
+    "THEN json_extract(projection.projection_json, '$.inlineProof')",
+    "WHEN json_type(projection.projection_json, '$.producerLineage') = 'object'",
+    "AND json_type(projection.projection_json, '$.producerLineage.revision') = 'integer'",
+    "AND json_extract(projection.projection_json, '$.producerLineage.revision') > 0",
+    "AND producer.fence_key != projection.fence_key",
+    "AND json_type(projection.projection_json, '$.producerLineage.claimGeneration') = 'integer'",
+    "AND " + generation + " > 0",
+    "AND producer.fence_key = producer.canonical_target_key",
+    "AND json_extract(producer.projection_json, '$.terminalDisposition') IS NULL",
+    "AND json_type(producer.projection_json, '$.claims') = 'array'",
+    "AND json_type(producer.projection_json, '$.reviewResults') = 'array'",
+    "AND NOT EXISTS (SELECT 1 FROM json_each(producer.projection_json, '$.claims') AS entry WHERE entry.type != 'object')",
+    "AND NOT EXISTS (SELECT 1 FROM json_each(producer.projection_json, '$.reviewResults') AS entry WHERE entry.type != 'object')",
+    "AND json_extract(producer.projection_json, '$.admission.commandOriginated') IS json_extract(projection.projection_json, '$.admission.commandOriginated')",
+    "AND json_extract(producer.projection_json, '$.admission.statusMarker') IS json_extract(projection.projection_json, '$.admission.statusMarker')",
+    "AND json_extract(producer.projection_json, '$.admission.statusCommentId') IS json_extract(projection.projection_json, '$.admission.statusCommentId')",
+    "AND EXISTS (SELECT 1 FROM json_each(producer.projection_json, '$.reviewResults') AS result",
+    "WHERE json_extract(result.value, '$.fenceKey') = producer.fence_key",
+    "AND json_extract(result.value, '$.claimGeneration') = " + generation,
+    "AND json_extract(result.value, '$.outcome') = 'completed')",
+    "AND NOT EXISTS (SELECT 1 FROM json_each(producer.projection_json, '$.claims') AS claim",
+    "WHERE json_extract(claim.value, '$.claimGeneration') > " + generation + ")",
+    "AND NOT EXISTS (SELECT 1 FROM json_each(producer.projection_json, '$.reviewResults') AS result",
+    "WHERE json_extract(result.value, '$.claimGeneration') > " + generation + ")",
+    "AND NOT EXISTS (SELECT 1 FROM " + EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE + " AS malformed",
+    "WHERE NOT json_valid(malformed.projection_json)",
+    "AND malformed.canonical_target_key = projection.canonical_target_key)",
+    "AND NOT EXISTS (SELECT 1 FROM " + EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE + " AS sibling",
+    "WHERE json_valid(sibling.projection_json)",
+    "AND sibling.canonical_target_key = projection.canonical_target_key",
+    "AND json_extract(sibling.projection_json, '$.producerLineage.fenceKey') = producer.fence_key",
+    "AND json_extract(sibling.projection_json, '$.producerLineage.revision') = producer.revision",
+    "AND json_extract(sibling.projection_json, '$.producerLineage.claimGeneration') = " +
+      generation,
+    "AND (sibling.fence_key != projection.fence_key OR sibling.revision != projection.revision))",
+    "THEN json_extract(producer.projection_json, '$.inlineProof') ELSE NULL END",
+  ]
+    .join(" ")
+    .replaceAll("projection.projection_json", safeLifecycleJsonSql("projection.projection_json"))
+    .replaceAll("producer.projection_json", safeLifecycleJsonSql("producer.projection_json"))
+    .replaceAll("result.value", safeLifecycleJsonSql("result.value"))
+    .replaceAll("claim.value", safeLifecycleJsonSql("claim.value"));
 }
 
 function bayTimingHistory(

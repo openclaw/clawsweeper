@@ -1,0 +1,198 @@
+{
+  "status": "executed working-tree proof; exact-head rerun belongs in PR body",
+  "base": "4a857127405ce35d505a3ae1688d3b0922acf5d5",
+  "provider": "local-container",
+  "runtime": "podman",
+  "image": "docker.io/library/node:24-bookworm",
+  "lease": "cbx_521a951843c7",
+  "run": "run_2be7bf065625",
+  "focusedTests": {
+    "passed": 151,
+    "failed": 0
+  },
+  "checks": [
+    "real DO admission, stale-owner rejection, request dedupe, durable classification after item removal/reconstruction",
+    "real public Worker API reports exact full-duration cohort count/median/mean and no private proof material",
+    "actual browser all/requested/known-without/unknown selection and orthogonal legacy filter, without mutation requests"
+  ],
+  "timings": {
+    "window_minutes": 60,
+    "sample_kind": "completed_review_journeys",
+    "source": "durable_exact_review_lifecycles",
+    "completion_source": "verified_final_review_receipts",
+    "sample_limit": 10000,
+    "overall": {
+      "average_ms": 255000,
+      "median_ms": 180000,
+      "samples": 4
+    },
+    "inline_proof": {
+      "requested": {
+        "overall": {
+          "samples": 2,
+          "average_ms": 180000,
+          "median_ms": 180000
+        },
+        "history": {
+          "bucket_minutes": 5,
+          "points": [
+            {
+              "ended_at": "2026-09-07T19:05:00.000Z",
+              "samples": 2,
+              "average_ms": 180000,
+              "median_ms": 180000
+            }
+          ]
+        }
+      },
+      "not_requested": {
+        "overall": {
+          "samples": 1,
+          "average_ms": 60000,
+          "median_ms": 60000
+        },
+        "history": {
+          "bucket_minutes": 5,
+          "points": [
+            {
+              "ended_at": "2026-09-07T19:05:00.000Z",
+              "samples": 1,
+              "average_ms": 60000,
+              "median_ms": 60000
+            }
+          ]
+        }
+      },
+      "unknown": {
+        "overall": {
+          "samples": 1,
+          "average_ms": 600000,
+          "median_ms": 600000
+        },
+        "history": {
+          "bucket_minutes": 5,
+          "points": [
+            {
+              "ended_at": "2026-09-07T19:05:00.000Z",
+              "samples": 1,
+              "average_ms": 600000,
+              "median_ms": 600000
+            }
+          ]
+        }
+      }
+    },
+    "history": {
+      "bucket_minutes": 5,
+      "points": [
+        {
+          "ended_at": "2026-09-07T19:05:00.000Z",
+          "average_ms": 255000,
+          "median_ms": 180000,
+          "samples": 4
+        }
+      ]
+    },
+    "including_legacy_batch": {
+      "overall": {
+        "average_ms": 384000,
+        "median_ms": 240000,
+        "samples": 5
+      },
+      "inline_proof": {
+        "requested": {
+          "overall": {
+            "samples": 2,
+            "average_ms": 180000,
+            "median_ms": 180000
+          },
+          "history": {
+            "bucket_minutes": 5,
+            "points": [
+              {
+                "ended_at": "2026-09-07T19:05:00.000Z",
+                "samples": 2,
+                "average_ms": 180000,
+                "median_ms": 180000
+              }
+            ]
+          }
+        },
+        "not_requested": {
+          "overall": {
+            "samples": 1,
+            "average_ms": 60000,
+            "median_ms": 60000
+          },
+          "history": {
+            "bucket_minutes": 5,
+            "points": [
+              {
+                "ended_at": "2026-09-07T19:05:00.000Z",
+                "samples": 1,
+                "average_ms": 60000,
+                "median_ms": 60000
+              }
+            ]
+          }
+        },
+        "unknown": {
+          "overall": {
+            "samples": 2,
+            "average_ms": 750000,
+            "median_ms": 750000
+          },
+          "history": {
+            "bucket_minutes": 5,
+            "points": [
+              {
+                "ended_at": "2026-09-07T19:05:00.000Z",
+                "samples": 2,
+                "average_ms": 750000,
+                "median_ms": 750000
+              }
+            ]
+          }
+        }
+      },
+      "history": {
+        "bucket_minutes": 5,
+        "points": [
+          {
+            "ended_at": "2026-09-07T19:05:00.000Z",
+            "average_ms": 384000,
+            "median_ms": 240000,
+            "samples": 5
+          }
+        ]
+      }
+    }
+  },
+  "artifacts": [
+    {
+      "name": "public-status.json",
+      "sha256": "c237db5722de177da6ce9023052c549f349f56b6a5a7af71bd38ebe74ea8a7b4"
+    },
+    {
+      "name": "public-lifecycles.json",
+      "sha256": "632f6f7dc90bbbee1067027f83f8b2532df6106f40a97a5a81dea711685abbbd"
+    },
+    {
+      "name": "all.png",
+      "sha256": "cbe453e08100d70bf84bb1bcb6672501fcc49de946b45180dcf6202c6954604a"
+    },
+    {
+      "name": "requested.png",
+      "sha256": "2283fb5eacea4de4cce29071f6b6c9711d721b37f33b797af1500c7acc0a2a8a"
+    },
+    {
+      "name": "unknown-with-legacy.png",
+      "sha256": "b7f4ad038161a20d5407ed82ea9322e8b46976c8d53c1c7a80de2d407194d4c6"
+    },
+    {
+      "name": "browser-trace.zip",
+      "sha256": "e100f1db7909e57c5dfd1acb198c36644b9a9b287cbe6f7f285a46f4e3b7a0c2"
+    }
+  ],
+  "limits": "Local SQLite/workerd with controlled leases, final receipts and historical coverage clock. No live producer execution, credentials, dispatch or deploy."
+}

@@ -464,6 +464,7 @@ test("linked producer2/publication1 survives reconstruction and never completes 
   assert.equal(current[0]!.state, "completed");
   assert.deepEqual(current[0]!.facts, {
     admission: "recorded",
+    inline_proof: "unknown",
     claim_count: 0,
     review_result: "completed",
     github_effect_recorded: true,
