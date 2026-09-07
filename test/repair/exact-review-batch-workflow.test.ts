@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
+import { runInNewContext } from "node:vm";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -44,6 +53,38 @@ test("manual publication proof driver parses as a complete executable module", (
   );
   assert.equal(result.status, 0, result.stderr);
 });
+
+test(
+  "manual admission proof workspace executes its real CLI entry point",
+  { skip: process.platform === "win32" },
+  () => {
+    const driver = readFileSync("scripts/e2e/manual-review-publication.mjs", "utf8");
+    const start = driver.indexOf("  const admissionWork = ");
+    const end = driver.indexOf("  const admissionEnv = ", start);
+    assert.ok(start >= 0 && end > start);
+    const root = mkdtempSync(join(tmpdir(), "manual-admission-workspace-"));
+    try {
+      const work = runInNewContext(`${driver.slice(start, end)}\nadmissionWork`, {
+        root,
+        source: process.cwd(),
+        join,
+        mkdirSync,
+        cpSync,
+        symlinkSync,
+      });
+      const result = spawnSync(process.execPath, ["dist/repair/manual-review-enqueue.js"], {
+        cwd: work,
+        env: { PATH: process.env.PATH },
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /--target-repo is required/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
 
 test("manual publication stays queue-owned and excludes router and implementation hooks", () => {
   assert.match(sweepSource, /name: Admit explicit manual reviews/);

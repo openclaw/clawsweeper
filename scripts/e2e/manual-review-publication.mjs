@@ -678,7 +678,9 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
   const selectedBranch = "release/proof";
   const admissionWork = join(root, "manual-admission");
   mkdirSync(join(admissionWork, ".artifacts"), { recursive: true });
-  symlinkSync(join(source, "dist"), join(admissionWork, "dist"));
+  cpSync(join(source, "dist"), join(admissionWork, "dist"), { recursive: true });
+  for (const name of ["config", "node_modules"])
+    symlinkSync(join(source, name), join(admissionWork, name));
   const admissionEnv = {
     TARGET_REPO: repo,
     TARGET_BRANCH: selectedBranch,
