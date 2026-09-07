@@ -45,6 +45,24 @@ and runtime packaging rules.
 
 ## Workflow
 
+Explicit `workflow_dispatch` `item_number`/`item_numbers` selections, excluding
+`apply_existing`, use `src/repair/manual-review-enqueue.ts` before review. They
+do not fall back to matrix publication. Admission is independently durable per
+item; the CLI reports failed members and continues the requested tail. Retries
+of the same workflow run reuse its run ID and item number, excluding attempt.
+Changed payloads conflict rather than borrowing an earlier delivery receipt.
+
+The queue advertises `manual_publication.policy=record_comment_only` and an
+explicit enabled bit. Admission defaults off until
+`EXACT_REVIEW_MANUAL_PUBLICATION_ENABLED=1` is configured after the consumer
+rollout described in [repair operations](repair/operations.md#manual-publication-rollout).
+Manual decisions carry `sourceAction=manual_explicit_review` and immutable
+`publicationPolicy=record_comment_only`. Their completed artifacts use existing
+direct and batch publication capacity, fences, and retries. Source drift ends
+as superseded; unusable artifacts exhaust publication retries into existing
+dead letters instead of starting another model review.
+
+
 The receiver workflow is `.github/workflows/sweep.yml`.
 
 Important source files:

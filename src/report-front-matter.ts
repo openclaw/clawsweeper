@@ -1,4 +1,4 @@
-import { markdownFenceStateAfterLine } from "./clawsweeper-markdown.js";
+import { markdownFenceStateAfterLine } from "./clawsweeper-markdown.ts";
 
 export type FrontMatterField =
   | { status: "absent" }

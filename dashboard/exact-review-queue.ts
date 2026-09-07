@@ -9,6 +9,13 @@ import {
   REVIEW_PROOF_LIFETIME_MS,
   type ReviewProofRecord,
 } from "./review-proof-requests.ts";
+import {
+  assertReportPublicationPolicy,
+  decisionPublicationPolicy,
+  MANUAL_REVIEW_SOURCE_ACTION,
+  manualPublicationOwnerFrom,
+  reportPublicationPolicy,
+} from "../src/manual-publication-policy.ts";
 import { parseAuditWaveState, type AuditWaveState } from "../src/audit-wave-state.ts";
 import {
   HOSTED_TARGET_ELIGIBILITY_HEADER,
@@ -1690,9 +1697,16 @@ export class ExactReviewQueue {
         return json({ error: "reserved_delivery_id" }, 400);
       }
       if (!decision) return json({ error: "invalid_exact_review_item" }, 400);
+      const manualAdmission = decision.sourceAction === MANUAL_REVIEW_SOURCE_ACTION;
+      if (
+        manualAdmission &&
+        String(this.env.EXACT_REVIEW_MANUAL_PUBLICATION_ENABLED ?? "") !== "1"
+      ) {
+        return json({ error: "manual_publication_admission_disabled" }, 409);
+      }
       const scheduledLane = exactReviewScheduledLane(decision);
       const storesAdmissionReceipt = Boolean(
-        scheduledLane || decision.sourceAction === "command_proof_result",
+        scheduledLane || manualAdmission || decision.sourceAction === "command_proof_result",
       );
       const bodyFingerprintHeader = request.headers.get(
         EXACT_REVIEW_AUTHENTICATED_BODY_FINGERPRINT_HEADER,
@@ -1777,6 +1791,48 @@ export class ExactReviewQueue {
             disposition,
             dispositionJson: storedDispositionJson,
           };
+        }
+        if (decision.publication) {
+          const publication = decision.publication;
+          const state = this.readStateSync();
+          const producer = state.items[publication.itemKey];
+          const retained = Object.values(state.items).find((item) => {
+            const other = item.decision.publication;
+            return (
+              other?.itemKey === publication.itemKey &&
+              other.leaseRevision === publication.leaseRevision &&
+              other.claimGeneration === publication.claimGeneration &&
+              other.producerRunId === publication.producerRunId &&
+              other.producerRunAttempt === publication.producerRunAttempt &&
+              other.sourceSha === publication.sourceSha &&
+              other.protocolVersion === publication.protocolVersion
+            );
+          });
+          const authority =
+            retained?.decision.publication?.producerDecision ?? producer?.leaseDecision;
+          if (
+            decisionPublicationPolicy(decision) ||
+            (authority && decisionPublicationPolicy(authority))
+          ) {
+            if (
+              !authority ||
+              decisionPublicationPolicy(authority) !== decisionPublicationPolicy(decision) ||
+              (!retained &&
+                (!producer ||
+                  producer.leaseRevision !== publication.leaseRevision ||
+                  producer.claimGeneration !== publication.claimGeneration ||
+                  producer.claimedRunId !== publication.producerRunId ||
+                  producer.claimedRunAttempt !== publication.producerRunAttempt ||
+                  !isLiveExactReviewLease(
+                    producer,
+                    now,
+                    exactReviewPublicationDispatchLeaseMs(this.env),
+                    exactReviewHeartbeatGraceMs(this.env),
+                  )))
+            ) {
+              return { conflict: true as const };
+            }
+          }
         }
         this.storage.sql.exec(
           `INSERT INTO ${EXACT_REVIEW_QUEUE_DELIVERY_TABLE}
@@ -3802,6 +3858,38 @@ export class ExactReviewQueue {
       }
     }
 
+    if (request.method === "POST" && url.pathname === "/publication-authority") {
+      const body = objectValue(await request.json().catch(() => null));
+      try {
+        body.owner = manualPublicationOwnerFrom(body.owner);
+      } catch {
+        return json({ error: "invalid_publication_authority" }, 400);
+      }
+      const identity = objectValue(body.identity);
+      if (
+        typeof body.canonicalTargetKey !== "string" ||
+        typeof body.fenceKey !== "string" ||
+        !Number.isSafeInteger(body.revision) ||
+        Number(body.revision) < 1 ||
+        !Number.isSafeInteger(identity.claimGeneration) ||
+        Number(identity.claimGeneration) < 1 ||
+        identity.fenceKey !== body.fenceKey ||
+        identity.canonicalTargetKey !== body.canonicalTargetKey ||
+        identity.revision !== body.revision
+      ) {
+        return json({ error: "invalid_publication_authority" }, 400);
+      }
+      const ownership = this.directPublicationFenceSnapshot(
+        body as unknown as CanonicalDirectPublicationPlan,
+        true,
+        Date.now(),
+      );
+      if (!ownership.validFence || ownership.staleBatchFence || !ownership.owned)
+        return json({ error: "publication_fence_not_active" }, 409);
+      const decision = ownership.owned.leaseDecision ?? ownership.owned.decision;
+      return json({ ok: true, decision: decision.publication?.producerDecision ?? decision });
+    }
+
     if (
       request.method === "POST" &&
       (url.pathname === "/publication-results" || url.pathname === "/publication-batch-results")
@@ -3843,7 +3931,7 @@ export class ExactReviewQueue {
         if (staleBatchFence) {
           return directPublicationSupersededResponse(validated);
         }
-        if (!validFence && !existing) {
+        if (!validFence && (ownership.requiresOwner || !existing)) {
           if (!deferredBatchCompletion) {
             this.recordLifecycleTelemetryDirect({
               validated,
@@ -3878,7 +3966,7 @@ export class ExactReviewQueue {
         if (staleBatchFence) {
           return directPublicationSupersededResponse(validated);
         }
-        if (!validFence && !existing) {
+        if (!validFence && (ownership.requiresOwner || !existing)) {
           if (!deferredBatchCompletion) {
             this.recordLifecycleTelemetryDirect({
               validated,
@@ -3895,6 +3983,33 @@ export class ExactReviewQueue {
           return directPublicationSupersededResponse(validated);
         }
         if (admission.outcome === "retryable") return hostedTargetProbeResponse(admission);
+        const authorityDecision = owned?.leaseDecision ?? owned?.decision;
+        if (authorityDecision) {
+          const policy = decisionPublicationPolicy(authorityDecision);
+          for (const operation of validated.operations) {
+            if (
+              (operation.section === "items" || operation.section === "closed") &&
+              operation.content !== null
+            ) {
+              assertReportPublicationPolicy(operation.content, policy);
+              if (policy && operation.section === "closed")
+                throw new Error("manual publication cannot archive a report");
+            }
+          }
+          if (
+            policy &&
+            validated.lifecycle &&
+            ![
+              "router_not_required",
+              "target_missing",
+              "target_closed",
+              "guarded_open",
+              "policy_noop",
+            ].includes(validated.lifecycle.kind)
+          ) {
+            throw new Error("manual publication cannot route or requeue review");
+          }
+        }
         // Batch publication retries rerun guarded GitHub apply before they reach
         // this endpoint. That can refresh apply-only report fields after the
         // canonical tuple was already accepted, so the regenerated bytes are
@@ -4853,6 +4968,10 @@ export class ExactReviewQueue {
         },
       },
       delivery_receipts: this.deliveryReceiptCountSync(),
+      manual_publication: {
+        policy: "record_comment_only",
+        enabled: String(this.env.EXACT_REVIEW_MANUAL_PUBLICATION_ENABLED ?? "") === "1",
+      },
       scheduled_feed: { ...stats.scheduled_feed, ...this.scheduledReviewFeedStatusSync(now) },
       reservation_claim_observability: reservationClaimObservability,
       state_writer: { ...stateWriter, coordinator: stateWriterCoordinator },
@@ -9044,6 +9163,45 @@ export class ExactReviewQueue {
     const targetMatchesFence =
       owned &&
       `${owned.decision.targetRepo}#${owned.decision.itemNumber}` === validated.canonicalTargetKey;
+    const requiresOwner = Boolean(
+      validated.owner ||
+      (owned && decisionPublicationPolicy(owned.leaseDecision ?? owned.decision)) ||
+      validated.operations?.some(
+        (operation) =>
+          (operation.section === "items" || operation.section === "closed") &&
+          operation.content !== null &&
+          reportPublicationPolicy(operation.content),
+      ),
+    );
+    const owner = validated.owner;
+    const directOwnerMatches = Boolean(
+      owner &&
+      "leaseId" in owner &&
+      owned &&
+      owner.leaseId === owned.leaseId &&
+      owned.leaseRevision === validated.revision &&
+      owner.runId === owned.claimedRunId &&
+      owner.runAttempt === owned.claimedRunAttempt,
+    );
+    const batch =
+      owner && "batchId" in owner
+        ? this.batchStore.fetch(owner.batchId, owner.leaseOwner, now)
+        : null;
+    const batchOwnerMatches = Boolean(
+      batch &&
+      owner &&
+      batch.state === "leased" &&
+      batch.leaseExpiresAt > now &&
+      batch.runnerRunId === owner.runId &&
+      batch.runnerRunAttempt === owner.runAttempt &&
+      batch.items.some(
+        (member) =>
+          member.itemKey === validated.fenceKey &&
+          member.revision === validated.revision &&
+          member.claimGeneration === validated.identity.claimGeneration &&
+          member.terminalOutcome === null,
+      ),
+    );
     const directlyOwned =
       targetMatchesFence &&
       owned.revision === validated.revision &&
@@ -9052,11 +9210,21 @@ export class ExactReviewQueue {
       validated.identity.fenceKey === validated.fenceKey &&
       validated.identity.revision === validated.revision &&
       (owned.state === "leased" ||
-        (owned.state === "parked" && owned.parkedReason === "direct_publication"));
+        (owned.state === "parked" && owned.parkedReason === "direct_publication")) &&
+      (!requiresOwner ||
+        (directOwnerMatches &&
+          owned.state === "leased" &&
+          isLiveExactReviewLease(
+            owned,
+            now,
+            exactReviewPublicationDispatchLeaseMs(this.env),
+            exactReviewHeartbeatGraceMs(this.env),
+          )));
     const batchOwned =
       deferredBatchCompletion &&
       targetMatchesFence &&
       owned.revision === validated.revision &&
+      (!requiresOwner || batchOwnerMatches) &&
       this.batchStore.ownsActiveFence(
         {
           itemKey: validated.fenceKey,
@@ -9075,6 +9243,7 @@ export class ExactReviewQueue {
       state,
       owned,
       existing,
+      requiresOwner,
       batchOwned,
       validFence: Boolean(directlyOwned || batchOwned),
       staleBatchFence: Boolean(staleBatchFence),
@@ -9537,6 +9706,11 @@ export class ExactReviewQueue {
           identity.fenceKey,
           identity.revision,
         );
+        if (
+          existing?.admission.sourceAction === MANUAL_REVIEW_SOURCE_ACTION &&
+          outcome !== "not_required"
+        )
+          throw new Error("manual publication router is not required");
         const receipt = existing?.routerReceipts.find((entry) => entry.receiptId === receiptId);
         const terminal = existing?.terminalDisposition;
         const result = this.lifecycleProjectionStore.recordRouterReceiptSync({
@@ -10213,6 +10387,16 @@ export class ExactReviewQueue {
     const publication = item.leaseDecision?.publication;
     if (publication?.directLifecycle?.plan.kind !== "requeue") {
       throw new Error("direct lifecycle requeue requires an exact direct receipt");
+    }
+    if (decisionPublicationPolicy(publication.producerDecision)) {
+      delete state.items[item.key];
+      return {
+        requeued: false,
+        retried: false,
+        refreshed: false,
+        parked: false,
+        deadLetter: undefined,
+      };
     }
     const completedRevision = item.revision;
     const decision: ExactReviewDecision = {
@@ -14272,6 +14456,7 @@ function exactReviewFreshRecoveryFromPublicationItem(
   item: ExactReviewDeadLetterItem,
 ): { decision: ExactReviewDecision; key: string } | null {
   if (!exactReviewQueueIsPublication(item) || !item.decision.publication) return null;
+  if (decisionPublicationPolicy(item.decision)) return null;
   const decision = exactReviewDecisionFrom({
     ...item.decision.publication.producerDecision,
     sourceAction:
@@ -14558,17 +14743,14 @@ function finishExactReviewPublicationQueueItem({
     completion.kind === "refresh_required" ||
     (completion.reasonCode === "artifact_unavailable" &&
       attempt >= EXACT_REVIEW_PUBLICATION_ARTIFACT_RETRY_LIMIT);
-  if (artifactRefresh) {
+  if (artifactRefresh && !decisionPublicationPolicy(item.decision)) {
     refreshExactReviewPublicationItem(state, item, now, env);
     return { requeued: false, retried: false, refreshed: true, parked: false };
   }
 
-  const retryExhausted = exactReviewPublicationRetryExhausted(
-    completion,
-    attempt,
-    firstFailureAt,
-    now,
-  );
+  const retryExhausted =
+    artifactRefresh ||
+    exactReviewPublicationRetryExhausted(completion, attempt, firstFailureAt, now);
   if (retryExhausted) {
     const deadLetter = exactReviewDeadLetterInsert(
       item,
@@ -15213,6 +15395,9 @@ export function exactReviewJitteredDelayMs(delayMs: number, random: () => number
 function expireExactReviewPublicationItems(state: ExactReviewQueueState, now: number, env) {
   let changed = false;
   for (const item of Object.values(state.items)) {
+    // Restricted artifacts retain publication ownership until the existing
+    // bounded artifact failure path records their dead letter.
+    if (decisionPublicationPolicy(item.decision)) continue;
     const publication = item.decision.publication;
     if (
       item.state !== "pending" ||
@@ -15234,6 +15419,8 @@ function refreshExactReviewPublicationItem(
   now: number,
   env,
 ) {
+  if (decisionPublicationPolicy(item.decision))
+    throw new Error("manual publication cannot request model recovery");
   const publication = item.decision.publication;
   if (!publication) throw new Error(`publication metadata missing for ${item.key}`);
   delete state.items[item.key];

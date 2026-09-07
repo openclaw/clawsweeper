@@ -1,5 +1,9 @@
 import { requireRecord as record } from "../value-coerce.js";
 import { sha256 } from "../content-hash.js";
+import {
+  assertReportPublicationPolicy,
+  type PublicationPolicy,
+} from "../manual-publication-policy.js";
 
 import fs from "node:fs";
 import path from "node:path";
@@ -19,6 +23,7 @@ const FILE_PATH_PATTERN =
   /^(?:review\/[1-9]\d*\.md|action-ledger\/ledger\/[A-Za-z0-9_./-]+|live-proof\/[1-9]\d*\/(?:live-verification\.json|live-proof-manifest\.json|live-proof\.mp4|poster\.jpg))$/;
 
 export interface ExactReviewBundleContext {
+  publicationPolicy?: PublicationPolicy;
   repository: string;
   sourceSha: string;
   runId: string;
@@ -106,6 +111,10 @@ export function createExactReviewBundle(
 
   let artifactPresent = false;
   if (options.reviewPath && fs.existsSync(options.reviewPath)) {
+    assertReportPublicationPolicy(
+      fs.readFileSync(options.reviewPath, "utf8"),
+      context.publicationPolicy,
+    );
     const reviewDestination = path.join(bundleDir, "review", `${context.itemNumber}.md`);
     copyRegularFile(options.reviewPath, reviewDestination);
     artifactPresent = true;
@@ -189,6 +198,11 @@ export function validateExactReviewBundle(
   }
   const expectedReviewPath = `review/${context.itemNumber}.md`;
   const hasReview = actualFiles.some((file) => file.path === expectedReviewPath);
+  if (hasReview)
+    assertReportPublicationPolicy(
+      fs.readFileSync(path.join(bundleDir, expectedReviewPath), "utf8"),
+      context.publicationPolicy,
+    );
   if (hasReview !== manifest.review.artifact_present) {
     throw new Error("exact review bundle review artifact presence does not match its manifest");
   }
@@ -219,7 +233,8 @@ function assertExpectedManifest(
     liveTerminalMissing: manifest.review.live_terminal_missing,
     liveGuardedOpen: manifest.review.live_guarded_open,
   } satisfies ExactReviewBundleContext;
-  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+  const { publicationPolicy: _policy, ...boundContext } = expected;
+  if (JSON.stringify(actual) !== JSON.stringify(boundContext)) {
     throw new Error("exact review bundle does not match the trusted workflow context");
   }
 }

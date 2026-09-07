@@ -1,4 +1,5 @@
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
+import { reportAllowsAutomation } from "./manual-publication-policy.js";
 import type {
   AuthorPrBudgetApplyGate,
   CloseReason,
@@ -73,6 +74,7 @@ export function promoteApplyPullRequest(
   } = options;
   let { closeReason, isCloseProposal, markdown, storedHash, storedUpdatedAt } = options;
   const eligible =
+    reportAllowsAutomation(markdown) &&
     state === "open" &&
     !isCloseProposal &&
     item.kind === "pull_request" &&

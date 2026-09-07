@@ -8,6 +8,11 @@ import {
   commandProofBatchBinding,
 } from "../src/command-proof-contract.ts";
 import {
+  decisionPublicationPolicy,
+  MANUAL_REVIEW_SOURCE_ACTION,
+  type PublicationPolicy,
+} from "../src/manual-publication-policy.ts";
+import {
   DIRECT_PUBLICATION_LIFECYCLE_KINDS,
   type DirectPublicationLifecyclePlan,
 } from "./exact-review-direct-publication.ts";
@@ -40,6 +45,7 @@ export type ExactReviewBaseDecision = {
   itemKind: "issue" | "pull_request";
   sourceEvent: "issues" | "pull_request";
   sourceAction: string;
+  publicationPolicy?: PublicationPolicy;
   supersedesInProgress: boolean;
   sourceHeadSha?: string;
   sourceBaseSha?: string;
@@ -135,6 +141,11 @@ export type ExactReviewTargetItemState =
   | { state: "unavailable" };
 
 export function exactReviewDecisionFrom(value: unknown): ExactReviewDecision | null {
+  try {
+    decisionPublicationPolicy(value);
+  } catch {
+    return null;
+  }
   const base = exactReviewBaseDecisionFrom(value);
   if (!base) return null;
   const decision = objectValue(value);
@@ -314,6 +325,12 @@ export function exactReviewIngressCanPromoteFallback(
 }
 
 export function exactReviewBaseDecisionFrom(value: unknown): ExactReviewBaseDecision | null {
+  let publicationPolicy: PublicationPolicy | undefined;
+  try {
+    publicationPolicy = decisionPublicationPolicy(value);
+  } catch {
+    return null;
+  }
   const decision = objectValue(value);
   const targetRepo = String(decision.targetRepo || "").trim();
   const targetBranch = String(decision.targetBranch || "").trim();
@@ -481,6 +498,7 @@ export function exactReviewBaseDecisionFrom(value: unknown): ExactReviewBaseDeci
     itemKind,
     sourceEvent,
     sourceAction,
+    ...(publicationPolicy ? { publicationPolicy } : {}),
     supersedesInProgress: Boolean(decision.supersedesInProgress),
     ...(sourceHeadSha === undefined ? {} : { sourceHeadSha }),
     ...(sourceBaseSha === undefined ? {} : { sourceBaseSha }),
@@ -731,6 +749,13 @@ export function mergePendingExactReviewDecision(
   next: ExactReviewDecision,
 ): ExactReviewDecision {
   const merged = { ...current, ...next };
+  // Coalescing cannot widen an admitted manual revision. A separately claimed
+  // successor may review normally; it cannot lend authority to these bytes.
+  const retainedPolicy = decisionPublicationPolicy(current);
+  if (retainedPolicy) {
+    merged.publicationPolicy = retainedPolicy;
+    merged.sourceAction = current.sourceAction;
+  }
   const commandMarkerChanged =
     Object.hasOwn(next, "commandStatusMarker") &&
     next.commandStatusMarker !== current.commandStatusMarker;
@@ -921,6 +946,7 @@ export function isImmediateExactReviewDecision(
 ) {
   return Boolean(
     decision.commandStatusMarker ||
+    decision.sourceAction === MANUAL_REVIEW_SOURCE_ACTION ||
     decision.publication ||
     exactReviewScheduledLane(decision) ||
     (isFirstEvent &&

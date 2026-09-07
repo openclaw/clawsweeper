@@ -77,6 +77,40 @@ function addHistoricalLiveProof(bundleDir: string, itemNumber: number, sourceDir
   fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
+test("manual bundle policy is bound to the producer decision and original report time", () => {
+  const value = fixture();
+  const reviewedAt = "2026-08-01T01:02:03.000Z";
+  const markdown = `---\npublication_policy: record_comment_only\nreviewed_at: ${reviewedAt}\n---\nReview\n`;
+  fs.writeFileSync(value.report, markdown);
+  const context = { ...value.context, publicationPolicy: "record_comment_only" as const };
+  createExactReviewBundle({
+    bundleDir: value.bundleDir,
+    reviewPath: value.report,
+    createdAt: "2026-09-01T00:00:00Z",
+    context,
+  });
+  validateExactReviewBundle(value.bundleDir, context);
+  assert.equal(fs.readFileSync(path.join(value.bundleDir, "review/42.md"), "utf8"), markdown);
+  assert.throws(() => validateExactReviewBundle(value.bundleDir, value.context), /policy differs/);
+  for (const policy of [
+    "future_policy",
+    "record_comment_only\npublication_policy: record_comment_only",
+    "record_comment_only\npublicationPolicy: record_comment_only",
+  ]) {
+    fs.writeFileSync(value.report, `---\npublication_policy: ${policy}\n---\nReview\n`);
+    assert.throws(
+      () =>
+        createExactReviewBundle({
+          bundleDir: value.bundleDir,
+          reviewPath: value.report,
+          createdAt: "2026-09-01T00:00:00Z",
+          context,
+        }),
+      /publication policy/,
+    );
+  }
+});
+
 test("historical proof-bearing exact review bundles still validate", () => {
   const value = fixture();
   createExactReviewBundle({

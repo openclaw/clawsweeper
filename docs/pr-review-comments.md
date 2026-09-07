@@ -31,6 +31,28 @@ Each synced comment includes the durable identity marker:
 ClawSweeper edits that comment in place instead of posting repeated comments.
 Report front matter stores the synced comment id, URL, hash, and sync time.
 
+Explicit manual reports carry `publication_policy: record_comment_only`. Their
+publisher permits the selected durable comment and canonical report/plan/packet
+tuple, plus owned coordination. It suppresses automation action markers and
+label synchronization, closes, paired-item writes, repair, and implementation.
+The completion identity/version and original `reviewed_at` remain intact after
+an accepted comment write. Retrying publication does not make the review newer;
+unknown acknowledgements still require the exact trusted read-back described
+below. The coordinator checks current publication authority without extending
+expired claims, and records router disposition as `not_required`.
+It checks the actual lease/run/attempt or active batch owner at each comment
+mutation attempt, including lease cleanup, and checks ownership again before
+canonical acceptance after asynchronous admission. These checks do not make
+GitHub and the coordinator one atomic transaction: an accepted comment may
+precede a rejected canonical handoff if ownership changes between services.
+An absent new restricted report fails as `missing_record_tuple`; hydrated old
+canonical content cannot supply the missing review authority. Ordinary absent
+reports keep their terminal missing disposition. Cached reports are reusable only
+under a matching publication policy; an incompatible cache requires a fresh
+review rather than relabeling the cached provenance. Marker-suppressed comments
+that exceed 60 KiB are refused before any write, so the ordinary oversized
+fallback cannot introduce automation markers or a replacement completion claim.
+
 Publication requires a trusted author, positive server comment ID, and the exact
 submitted body. A PATCH must return the targeted ID. An unusable acknowledgement
 can be recovered by one fresh scoped comment read; equivalent prose or different

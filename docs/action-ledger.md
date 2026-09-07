@@ -5,6 +5,12 @@ store. Mutable comments, dashboard rows, CrabFleet sessions, router ledgers,
 and latest-report files are projections of that history, not the source of
 truth.
 
+Explicit manual publication uses the same owned coordination and comment-write
+receipts, with record/comment-only policy retained in queue decision JSON and
+canonical reports. Publication attempts do not authorize label, close, repair,
+implementation, or router actions. Artifact retention is evidence, not a
+completion receipt or authority to adopt a historical producer lease.
+
 Writers first spool individual events locally:
 
 ```text

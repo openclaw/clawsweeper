@@ -1246,6 +1246,11 @@ export default {
     if (url.pathname === "/internal/exact-review/publication-results" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/publication-results");
     if (
+      url.pathname === "/internal/exact-review/publication-authority" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/publication-authority");
+    if (
       url.pathname === "/internal/exact-review/publication-batch-results" &&
       request.method === "POST"
     )
@@ -2142,6 +2147,7 @@ const PUBLIC_STATUS_CONTAINER_FIELDS = new Set([
   "leased",
   "pressure",
   "scheduled_feed",
+  "manual_publication",
   "bay_projection",
   "activity",
   "queue_stages",
@@ -5852,6 +5858,13 @@ export function publicExactReviewQueueProjection(
     handoff_health: projectedHandoff,
     pressure: projectedPressure,
     review_failure_health: projectedReviewFailureHealth.value,
+    manual_publication:
+      objectValue(source.manual_publication).policy === "record_comment_only"
+        ? {
+            policy: "record_comment_only",
+            enabled: objectValue(source.manual_publication).enabled === true,
+          }
+        : null,
     scheduled_feed:
       scheduledTargetRate !== null && scheduledTargetRate > 0 && scheduledEnqueueReplay
         ? {

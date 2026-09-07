@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { escapeRegExp } from "../clawsweeper-text.js";
+import { reportAllowsAutomation } from "../manual-publication-policy.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import { asJsonObject as asRecord } from "./json-types.js";
 import crypto from "node:crypto";
@@ -122,6 +123,16 @@ function prepare() {
     stringArg("report-url", stringArg("report_url", "")) ||
     `https://github.com/${reportRepo}/blob/${reportBranch(reportRepo)}/${reportPath}`;
   const reportMarkdown = readReport({ reportRepo, reportPath });
+  if (!reportAllowsAutomation(reportMarkdown)) {
+    console.log(
+      JSON.stringify({
+        status: "publication_policy_blocked",
+        shouldRepair: false,
+        reason: "report publication policy forbids implementation",
+      }),
+    );
+    return;
+  }
   const report = parseReviewReport(reportMarkdown);
   const live = truthy(enabled)
     ? liveIssueContext({
@@ -573,6 +584,13 @@ function eligibilityDecision({
 }): IntakeDecision {
   if (!truthy(enabled)) {
     return decision("disabled", false, "issue implementation intake disabled");
+  }
+  if (!reportAllowsAutomation(reportMarkdown)) {
+    return decision(
+      "publication_policy_blocked",
+      false,
+      "report publication policy forbids implementation",
+    );
   }
   // Match execution's owner policy before creating durable jobs.
   if (!isAllowedRepairOwner(targetRepo, allowedOwner)) {

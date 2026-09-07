@@ -38,6 +38,28 @@ function createApplyDirectories(root: string) {
   return { itemsDir, closedDir, plansDir, reportPath };
 }
 
+test("background apply leaves restricted reports untouched with labels and close mode enabled", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const dirs = createApplyDirectories(root);
+    const markdown = workPlanCandidateReport({
+      publication_policy: "record_comment_only",
+      decision: "close",
+      action_taken: "proposed_close",
+      close_reason: "implemented_on_main",
+    });
+    const report = join(dirs.itemsDir, "321.md");
+    writeFileSync(report, markdown);
+    withMockGh(root, 'throw new Error("restricted report made an upstream request");', () => {
+      runApplyDecisionsForTest({ ...dirs, extraArgs: ["--item-number", "321"] });
+    });
+    assert.equal(readFileSync(report, "utf8"), markdown);
+    assert.equal(existsSync(join(dirs.closedDir, "321.md")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("apply-time implementation provenance keeps incomplete PR closeout metadata open", () => {
   const incomplete = `repository: openclaw/openclaw
 fixed_pr_url: unknown

@@ -318,7 +318,30 @@ publication enabled for queued and direct-publication fallback items. Treat that
 as an active recovery path: do not remove or bypass it without a separately
 approved retirement plan, an empty-queue observation window, and rollback proof.
 
+## Manual publication rollout
+
+Deploy supporting queue, publishers, apply, report renderers, and implementation
+consumers before enabling `EXACT_REVIEW_MANUAL_PUBLICATION_ENABLED`. Keep manual
+admission disabled while older live consumer jobs finish naturally; do not cancel
+or pause them. Confirm that no old publisher/apply/implementation job remains
+capable of consuming a newly restricted record. Verify the runtime capability
+and the isolated [manual publication proof](../proof/manual-review-publication/README.md),
+then enable admission through the owner-controlled configuration process.
+
+Disabling admission stops new manual work. It does not remove restrictions from
+already admitted decisions or canonical reports. Rolling publishers or consumers
+back to versions that ignore `publication_policy` is unsafe while restricted
+records remain; retain compatible consumers during rollback. This change does
+not authorize a storage migration, historical artifact adoption, or production
+configuration mutation. Missing policy is the named compatibility boundary for
+pre-existing ordinary reports only.
+
+OpenClaw Bay needs no schema or UI change. Existing pending, retry, superseded,
+terminal, and dead-letter projections remain applicable, with truthful
+`not_required` router receipts. Bay remains public and observer-only.
+
 ## Maintainer Comment Routing
+
 
 `pnpm run repair:comment-router` scans recent issue and PR comments in the target repo.
 Target repositories can also forward matching `issue_comment` events as

@@ -177,7 +177,14 @@ async function controller() {
       const status = await run(
         process.execPath,
         [process.argv[1], "worker", itemPath, root, workspace],
-        { timeoutMs: Math.min(itemTimeoutMs, remainingTimeout(deadline)) },
+        {
+          timeoutMs: Math.min(itemTimeoutMs, remainingTimeout(deadline)),
+          env: {
+            ...process.env,
+            EXACT_REVIEW_BATCH_ID: manifest.batchId,
+            EXACT_REVIEW_BATCH_LEASE_OWNER: manifest.leaseOwner,
+          },
+        },
       );
       const acquisition = readWorkerAcquisition(root);
       if (acquisition.cacheHit) cacheHits += 1;
@@ -475,8 +482,12 @@ async function worker(itemPath, root, workspace) {
         EXACT_REVIEW_WORK_ROOT: root,
         TARGET_REPO: targetRepo,
         ITEM_NUMBER: itemNumber,
+        EXACT_REVIEW_DECISION: JSON.stringify(producer),
         MIN_AGE_MINUTES: "0",
-        REVIEW_ONLY: String(producer.sourceAction === "failed_review_shard_recovery"),
+        REVIEW_ONLY: String(
+          producer.publicationPolicy === "record_comment_only" ||
+            producer.sourceAction === "failed_review_shard_recovery",
+        ),
         EXACT_EVENT_PUBLICATION: "true",
         EXACT_REVIEW_CLOSE_COVERAGE_DEFERRED: "true",
         EXACT_REVIEW_BATCH_ITEM_KEY: String(item.itemKey),

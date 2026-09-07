@@ -519,6 +519,7 @@ async function publishCanonicalBatch(
         webhookSecret: env("CLAWSWEEPER_WEBHOOK_SECRET"),
         path: "/internal/exact-review/publication-batch-results",
         payload: {
+          ...(plan.owner ? { owner: plan.owner } : {}),
           canonicalTargetKey: publication.canonicalTargetKey,
           fenceKey: publication.fenceKey,
           revision: plan.identity.revision,

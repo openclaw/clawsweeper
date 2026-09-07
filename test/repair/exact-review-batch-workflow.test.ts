@@ -34,6 +34,16 @@ const workflow = YAML.parse(source) as {
   >;
 };
 
+test("manual publication stays queue-owned and excludes router and implementation hooks", () => {
+  assert.match(sweepSource, /name: Admit explicit manual reviews/);
+  assert.match(sweepSource, /manual-review-enqueue\.js/);
+  assert.match(sweepSource, /apply_existing != 'true'.*inputs\.item_number != ''/);
+  assert.match(sweepSource, /manual_explicit.*true.*queue_feed=true/);
+  assert.match(prepareSource, /EXACT_REVIEW_DECISION: JSON\.stringify\(producer\)/);
+  assert.match(source, /publication_policy.*record_comment_only.*failed_review_shard_recovery/);
+  assert.match(source, /AUTO_IMPLEMENT_ISSUES.*\n\s*\[ -z "\$publication_policy" \]/);
+});
+
 test("terminal batch lifecycle payload carries a stable run-attempt-fence operation id", () => {
   const builder = source.match(
     /export LIFECYCLE_TERMINAL="\$lifecycle_terminal"\s+lifecycle_payload="\$\(node -e '([\s\S]*?)'\)"/,

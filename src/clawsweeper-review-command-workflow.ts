@@ -1,5 +1,9 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  decisionPublicationPolicy,
+  reportMatchesPublicationPolicy,
+} from "./manual-publication-policy.js";
 import { ACTION_EVENT_REASON_CODES, ACTION_EVENT_STATUSES } from "./action-ledger.js";
 import { AgentInputScanError, agentInputScanFailureExitCode } from "./agent-input-scan.js";
 import { serializeReviewContext } from "./agent-input-scan-fixtures.js";
@@ -195,6 +199,13 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
   } = dependencies;
 
   function reviewCommand(args: Args): void {
+    const publicationPolicy = process.env.EXACT_REVIEW_DECISION
+      ? decisionPublicationPolicy(JSON.parse(process.env.EXACT_REVIEW_DECISION))
+      : undefined;
+    const hostReport = (markdown: string): string =>
+      publicationPolicy
+        ? replaceFrontMatterValue(markdown, "publication_policy", publicationPolicy)
+        : markdown;
     const preparation = prepareReviewCommand(args, dependencies);
     const {
       localRange,
@@ -562,6 +573,12 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           // carrying stale front matter would preserve the wrong safeguards.
           priorReview = null;
         }
+        // Policy changes require fresh review bytes, not restamped cached provenance.
+        // Keep the prior report and history available to the normal review path.
+        const cacheEligibleReview =
+          priorReview && reportMatchesPublicationPolicy(priorReview.markdown, publicationPolicy)
+            ? priorReview
+            : null;
         const expectedPreviousReviewDigest = priorReview
           ? previousClawSweeperReviewDigestFromReport(priorReview.markdown)
           : null;
@@ -605,7 +622,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         if (!localRangeData) {
           structuralCacheChecks += 1;
           const structuralProbeDecision = reviewStructuralCacheProbeDecision({
-            review: priorReview,
+            review: cacheEligibleReview,
             reviewPolicy,
             reviewModel: PUBLIC_CODEX_MODEL,
             explicitDispatch,
@@ -854,7 +871,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 carried = updateBulkFilerDetectedFrontMatter(carried, bulkFilerDetection);
                 carried = updateReviewStructuralFrontMatter(carried, structuralRecord, true);
                 carried = withRunnerPreflightProvenance(carried, replaceFrontMatterValue);
-                writeFileSync(reportPath, carried, "utf8");
+                writeFileSync(reportPath, hostReport(carried), "utf8");
                 finishReviewActionLedgerItem({
                   ledger: reviewLedger,
                   item,
@@ -1166,7 +1183,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           !git.releaseStateComplete ||
           (item.kind === "pull_request" && !completePullChecksContext(context.pullChecks))
             ? null
-            : priorReview;
+            : cacheEligibleReview;
         const contentCacheHit = reviewContentCacheHit({
             review: contentCacheReview,
             reviewPolicy,
@@ -1208,7 +1225,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             ? updateReviewStructuralFrontMatter(carried, structuralRecord, false)
             : replaceFrontMatterValue(carried, "review_structural_cache_hit", "false");
           carried = withRunnerPreflightProvenance(carried, replaceFrontMatterValue);
-          writeFileSync(reportPath, carried, "utf8");
+          writeFileSync(reportPath, hostReport(carried), "utf8");
           finishReviewActionLedgerItem({
             ledger: reviewLedger,
             item,
@@ -1344,7 +1361,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         const action = reviewActionForDecision({ item, decision, git, runtime });
         structuralRecord = refreshStructuralRecordForVerdict();
         const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
-        const reportMarkdown = markdownFor({
+        const reportMarkdown = hostReport(markdownFor({
             item,
             context,
             decision,
@@ -1362,7 +1379,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                   reviewLeaseCommentId: acquiredReviewLease.commentId,
                 }
               : {}),
-        });
+        }));
         writeFileSync(reportPath, reportMarkdown, "utf8");
         if (codexFailureError) {
           recordFailureDiagnostics(codexFailureError, codexFailureLogKind(reportMarkdown));

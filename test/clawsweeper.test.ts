@@ -2644,17 +2644,22 @@ test("sweep review recovery uses explicit failed shard artifacts", () => {
     (entry: { id?: string }) => entry.id === "prepare-direct-exact-review-publication",
   )?.env?.REVIEW_ONLY;
   assert.equal(typeof reviewOnly, "string");
-  for (const [sourceAction, expected] of [
-    ["failed_review_shard_recovery", "true"],
-    ["command_proof_result", "false"],
-    ["opened", "false"],
-    ["source_drift_requeue", "false"],
+  for (const [sourceAction, publicationPolicy, expected] of [
+    ["failed_review_shard_recovery", "", "true"],
+    ["command_proof_result", "", "false"],
+    ["opened", "", "false"],
+    ["source_drift_requeue", "", "false"],
+    ["manual_explicit_review", "record_comment_only", "true"],
   ]) {
     const expression = reviewOnly
       .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
       .replace(
         "fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceAction",
         JSON.stringify(sourceAction),
+      )
+      .replace(
+        "fromJSON(steps.claim-exact-review-queue.outputs.decision).publicationPolicy",
+        JSON.stringify(publicationPolicy),
       );
     assert.equal(
       Function(

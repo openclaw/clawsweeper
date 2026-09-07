@@ -2,6 +2,15 @@
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
+import {
+  assertReportPublicationPolicy,
+  decisionPublicationPolicy,
+  reportPublicationPolicy,
+} from "../manual-publication-policy.js";
+import {
+  assertManualPublicationAuthority,
+  manualPublicationOwnerFromEnv,
+} from "../manual-publication-authority.js";
 import { errorFingerprint } from "./error-fingerprint.js";
 import {
   applyEventSnapshot,
@@ -140,6 +149,50 @@ try {
 async function publishEventResult(options: EventOptions): Promise<void> {
   validateTargetRepo(options.targetRepo);
   validateItemNumber(options.itemNumber);
+  const artifact = join(options.artifactDir, `${options.itemNumber}.md`);
+  const claimedPolicy = process.env.EXACT_REVIEW_DECISION
+    ? decisionPublicationPolicy(JSON.parse(process.env.EXACT_REVIEW_DECISION))
+    : undefined;
+  if (!fs.existsSync(artifact)) {
+    // Hydrated canonical state is a base, never a newly produced review.
+    if (claimedPolicy)
+      throw new PublicationResultError(
+        "missing_record_tuple",
+        "Manual publication report is absent",
+      );
+    fs.rmSync(options.reportPath, { force: true });
+    writeSummary({
+      targetRepo: options.targetRepo,
+      itemNumber: options.itemNumber,
+      syncedCount: 0,
+      closedCount: 0,
+      missingCount: 0,
+      closeReasons: options.closeReasons,
+    });
+    writeStaleEventDispositionOutputs(staleEventDisposition("missing"));
+    if (options.batchMutationOutput)
+      writeBatchMutationResult(options.batchMutationOutput, {
+        kind: "superseded",
+        disposition: { requeueLatestExpected: false },
+      });
+    return;
+  }
+  const markdown = fs.readFileSync(artifact, "utf8");
+  const policy = reportPublicationPolicy(markdown);
+  if (process.env.EXACT_REVIEW_DECISION) assertReportPublicationPolicy(markdown, claimedPolicy);
+  if (policy) {
+    const allowedArtifacts = new Set([`${options.itemNumber}.md`, "review-cache-metrics.json"]);
+    if (
+      fs
+        .readdirSync(options.artifactDir, { withFileTypes: true })
+        .some((entry) => !entry.isFile() || !allowedArtifacts.has(entry.name))
+    )
+      throw new Error(
+        "manual publication artifact directory must contain only the selected report and review cache metadata",
+      );
+    assertManualPublicationAuthority(markdown, options.targetRepo, Number(options.itemNumber));
+    options.reviewOnly = true;
+  }
   const recordStore = {
     targetRepo: options.targetRepo,
     itemNumber: options.itemNumber,
@@ -175,7 +228,10 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     preflightResult === "remote-newer" ||
     preflightResult === "missing"
   ) {
-    const disposition = staleEventDisposition(preflightResult);
+    const disposition = {
+      ...staleEventDisposition(preflightResult),
+      ...(policy ? { requeueLatest: false } : {}),
+    };
     console.log(
       `Skipping stale event apply for ${options.targetRepo}#${options.itemNumber}: ${disposition.detail}`,
     );
@@ -229,6 +285,15 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     exactEventPublication: options.exactEventPublication,
     legacyTuplelessReviewLease,
   });
+  if (policy && requeueLatestExpected) {
+    if (options.batchMutationOutput)
+      writeBatchMutationResult(options.batchMutationOutput, {
+        kind: "superseded",
+        disposition: { requeueLatestExpected: false },
+      });
+    writePublicationCompletionOutputs("superseded", "remote_newer_tuple");
+    return;
+  }
   const rateLimitYield = exactActions.find(
     (action) =>
       action.action === "skipped_runtime_budget" &&
@@ -437,11 +502,21 @@ function prepareTupleMutationPlan(
   if (!operations.length) {
     throw new Error(`${label} mutation for ${paths.targetSlug} is empty`);
   }
-  return prepareStateMutationPlan({
+  const plan = prepareStateMutationPlan({
     identity,
     ...(publication ? { publication } : {}),
     operations,
   });
+  if (
+    operations.some(
+      (operation) =>
+        "content" in operation &&
+        operation.path === paths.itemRecord &&
+        reportPublicationPolicy(String(operation.content)),
+    )
+  )
+    plan.owner = manualPublicationOwnerFromEnv();
+  return plan;
 }
 
 function runApplyDecisions(options: EventOptions, paths: EventRecordPaths): void {
