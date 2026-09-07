@@ -1123,8 +1123,6 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
   assert.match(prReceipt, /^superseded=false$/m);
   assert.match(prReceipt, /^fallback=false$/m);
   // Execute the checked-in workflow's lifecycle step; do not fabricate its receipt.
-  const { parse: parseYaml } = await import("yaml");
-  const sweep = parseYaml(readFileSync(join(source, ".github/workflows/sweep.yml"), "utf8"));
   const lifecycleSteps = Object.values(sweep.jobs)
     .flatMap((job) => job.steps || [])
     .filter((step) => step.id === "finalize-direct-exact-review-lifecycle");

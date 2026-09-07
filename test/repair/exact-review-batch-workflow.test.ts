@@ -34,6 +34,17 @@ const workflow = YAML.parse(source) as {
   >;
 };
 
+test("manual publication proof driver parses as a complete executable module", () => {
+  const result = spawnSync(
+    process.execPath,
+    ["--check", "scripts/e2e/manual-review-publication.mjs"],
+    {
+      encoding: "utf8",
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("manual publication stays queue-owned and excludes router and implementation hooks", () => {
   assert.match(sweepSource, /name: Admit explicit manual reviews/);
   assert.match(sweepSource, /manual-review-enqueue\.js/);
