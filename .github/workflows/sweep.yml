@@ -2921,7 +2921,7 @@ jobs:
         if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.validate-exact-review-bundle.outcome == 'success' && hashFiles('.artifacts/exact-review-bundle/live-proof/*/live-proof-manifest.json') != '' }}
         run: |
           sudo apt-get update
-          sudo apt-get install --yes ffmpeg
+          sudo apt-get install --yes --no-install-recommends ffmpeg
 
       - name: Fold exact live proof into the review artifact
         id: fold-exact-live-proof
@@ -5222,7 +5222,7 @@ jobs:
         if: ${{ steps.download-review-artifacts.outcome == 'success' && hashFiles('artifacts/live-proof/*/live-proof-manifest.json') != '' }}
         run: |
           sudo apt-get update
-          sudo apt-get install --yes ffmpeg
+          sudo apt-get install --yes --no-install-recommends ffmpeg
 
       - name: Fold live proofs into review artifacts
         if: ${{ steps.download-review-artifacts.outcome == 'success' }}

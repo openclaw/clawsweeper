@@ -119,7 +119,7 @@ jobs:
         if: ${{ steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
         run: |
           sudo apt-get update
-          sudo apt-get install --yes ffmpeg
+          sudo apt-get install --yes --no-install-recommends ffmpeg
 
       - name: Prepare each item independently
         if: ${{ steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
