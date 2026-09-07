@@ -70,6 +70,7 @@ for (const scenario of [
   { name: "HTTP 500", http: 500, exit: 22, reason: "HTTP_500" },
   { name: "curl timeout", http: 0, exit: 28, reason: "timeout" },
   { name: "connection failure", http: 0, exit: 7, reason: "network_error" },
+  { name: "HTTP/2 connection failure", http: 0, exit: 16, reason: "network_error" },
   { name: "expired owner", http: 409, exit: 22 },
   { name: "unauthorized caller", http: 401, exit: 22 },
   { name: "forbidden caller", http: 403, exit: 22 },
@@ -132,6 +133,7 @@ for (const after of [0, 1]) {
   for (const scenario of [
     { name: "HTTP 503", http: 503, exit: 22, retryable: true },
     { name: "timeout", http: 0, exit: 28, retryable: true },
+    { name: "HTTP/2 connection failure", http: 0, exit: 16, retryable: true },
     { name: "expired ownership", http: 409, exit: 22, retryable: false },
   ]) {
     test(

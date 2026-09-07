@@ -107,7 +107,7 @@ export function assertManualPublicationAuthority(
   )
     throw new ManualPublicationAuthorityTransportError("timeout");
   if (result.error) throw new Error("manual publication fence is unavailable or expired");
-  if ([5, 6, 7, 18, 35, 52, 55, 56, 92].includes(result.status ?? -1))
+  if ([5, 6, 7, 16, 18, 35, 52, 55, 56, 92].includes(result.status ?? -1))
     throw new ManualPublicationAuthorityTransportError("network_error");
   if (
     (result.status === 0 || result.status === 22) &&
