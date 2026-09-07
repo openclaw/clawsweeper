@@ -856,7 +856,8 @@ jobs:
           live_locked="$(jq -r '.locked == true' <<< "$live_item")"
           item_kind="$(jq -r 'if .pull_request then "pull_request" else "issue" end' <<< "$live_item")"
           echo "item_kind=$item_kind" >> "$GITHUB_OUTPUT"
-          if [ "$live_state" = "open" ] && [ "$live_locked" != "true" ]; then
+          if [ "$live_state" = "open" ] && [ "$live_locked" != "true" ] &&
+            jq -e '.sourceAction == "scheduled_hot_intake"' <<< "$CLAIM_DECISION" >/dev/null; then
             live_head_sha=""
             if [ "$item_kind" = "pull_request" ]; then
               if ! live_head_sha="$(gh api "repos/$TARGET_REPO/pulls/$ITEM_NUMBER" --jq '.head.sha')"; then
