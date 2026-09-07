@@ -36,6 +36,7 @@ checkpoint, and status-only commits are intentionally omitted.
 - Explicit manual item reviews now enter the durable exact-review queue independently and retain record/comment-only publication policy through retries, without enabling labels, closes, routing, or issue implementation. Restricted comment and canonical publication require the actual current producer or batch owner; retained receipts cannot revive stale authority. Repeated authorized requests remain publishable after earlier completion, and absent new reports cannot borrow hydrated review authority. Isolated proof status and deployment limits are recorded in `docs/proof/manual-review-publication/README.md`.
 
 - Keep exact-review imports and snapshot validation in the selected publication workspace when invoked from a separate code checkout.
+- Preserve temporary publication-authority outages as coordinator retries instead of exhausting the shorter unknown-failure budget; ownership rejection remains fail-closed and separate from GitHub throttling.
 - Publication reconciliation diagnostics now report the exact acknowledgement-unavailable reason while preserving fail-closed supersede behavior.
 
 - Admit the reviewed mocked marketplace telemetry-redaction and Gateway config CDP-redaction fixtures through exact URI, source-line, path, and decoder bindings without relaxing native scanner checks.

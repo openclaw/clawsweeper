@@ -15,13 +15,13 @@ import { parseArgs } from "node:util";
 import type { ExactReviewBatchCompletion } from "./exact-review-batch-publisher.js";
 import {
   ExactReviewBatchQueueClient,
-  ExactReviewBatchQueueTransportError,
   type ExactReviewBatchLease,
   type ExactReviewGithubRateLimitObservation,
   type ExactReviewGithubRequestMetric,
   type ExactReviewBatchQueueItem,
   type ExactReviewBatchPostEffectRoute,
 } from "./exact-review-batch-queue-client.js";
+import { ExactReviewBatchQueueTransportError } from "./exact-review-queue-transport-error.js";
 import { exactReviewBatchStateWriterProgressReporter } from "./exact-review-batch-state-writer-progress.js";
 import { postDirectPublicationResult } from "./exact-review-direct-publication.js";
 import { failureFingerprint } from "./error-fingerprint.js";

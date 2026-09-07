@@ -1,4 +1,8 @@
 import { createHmac } from "node:crypto";
+import {
+  ExactReviewBatchQueueTransportError,
+  type TransportFailureReason,
+} from "./exact-review-queue-transport-error.js";
 
 import type {
   ExactReviewBatchCompletion,
@@ -201,17 +205,6 @@ const ACKNOWLEDGEMENT_UNAVAILABLE_REASON =
   /^(projection_missing|projection_not_command|marker_mismatch|comment_mismatch|acknowledgement_not_required|lifecycle_requeued|terminal_missing|routed_receipts_incomplete)$/;
 const SUCCESSOR_FENCE_STATE =
   /^(verified|missing|ambiguous|admission_missing|admission_command_mismatch|admission_marker_mismatch|admission_comment_mismatch)$/;
-
-type TransportFailureReason = "network_error" | "timeout" | `HTTP_${number}`;
-
-export class ExactReviewBatchQueueTransportError extends Error {
-  constructor(
-    readonly reason: TransportFailureReason,
-    message: string,
-  ) {
-    super(message);
-  }
-}
 
 export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
   private readonly baseUrl: string;

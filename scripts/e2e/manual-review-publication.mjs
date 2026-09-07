@@ -195,6 +195,7 @@ const onTerminate = () => interrupt("SIGTERM");
 process.once("SIGINT", onInterrupt);
 process.once("SIGTERM", onTerminate);
 let canonicalFailure = false;
+let authorityOutage = null;
 const server = createServer(async (req, res) => {
   try {
     const chunks = [];
@@ -224,6 +225,13 @@ const server = createServer(async (req, res) => {
           : body,
     });
     if (path.startsWith("/queue/")) {
+      if (authorityOutage && path.endsWith("/publication-authority")) {
+        if (authorityOutage.allowedChecks > 0) authorityOutage.allowedChecks--;
+        else {
+          authorityOutage.rejectedChecks++;
+          return send({ error: "synthetic_authority_unavailable" }, 503);
+        }
+      }
       if (canonicalFailure && /publication-(?:batch-)?results$/.test(path))
         return send({ error: "synthetic_state_contention" }, 503);
       const response = await fetch(`http://127.0.0.1:${workerPort}${path.slice(6)}${url.search}`, {
@@ -1003,6 +1011,39 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
         rmSync(unexpected, { recursive: true });
         observations.push({ scenario: `staged publication rejects ${name}`, commentWrites: 0 });
       }
+      for (const allowedChecks of [0, 1, 2]) {
+        const outage = { allowedChecks, rejectedChecks: 0 };
+        const writesBefore = commentWrites();
+        const githubOutput = join(work, `authority-outage-${allowedChecks}.output`);
+        authorityOutage = outage;
+        const unavailable = await command(
+          "bash",
+          ["-c", directStep.run],
+          { ...env, GITHUB_OUTPUT: githubOutput },
+          source,
+          true,
+        );
+        authorityOutage = null;
+        assert.equal(unavailable.code, 1, unavailable.stderr + unavailable.stdout);
+        const outcome = JSON.parse(readFileSync(env.EXACT_REVIEW_BATCH_MUTATION_OUTPUT, "utf8"));
+        assert.equal(outcome.kind, "retryable_failure");
+        assert.equal(outcome.reasonCode, "state_contention");
+        assert.equal(Object.hasOwn(outcome, "rateLimitScope"), false);
+        assert.match(readFileSync(githubOutput, "utf8"), /^reason_code=state_contention$/m);
+        assert.equal(
+          outage.rejectedChecks,
+          1,
+          "authority outages must not use GitHub inline retries",
+        );
+        assert.equal(commentWrites(), writesBefore);
+        observations.push({
+          scenario: "authority-service outage retains coordinator retry classification",
+          allowedChecks,
+          reasonCode: outcome.reasonCode,
+          completionKind: outcome.kind,
+          commentWrites: 0,
+        });
+      }
     }
     if (number === 72) lostAcknowledgement = 72;
     const direct = await command("bash", ["-c", directStep.run], env, source, true);
@@ -1319,6 +1360,29 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
     workspace,
   );
   assert.ok(existsSync(manifestPath), "coordinator did not grant batch claim");
+  const batchOutage = { allowedChecks: 0, rejectedChecks: 0 };
+  const writesBeforeBatchOutage = commentWrites();
+  authorityOutage = batchOutage;
+  await command(
+    process.execPath,
+    [join(source, "scripts/prepare-exact-review-batch.mjs")],
+    batchEnv,
+    workspace,
+  );
+  authorityOutage = null;
+  const outageManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  assert.equal(outageManifest.items.length, 1);
+  const outageOutcome = JSON.parse(readFileSync(outageManifest.items[0].outcomePath, "utf8"));
+  assert.equal(outageOutcome.kind, "retryable_failure");
+  assert.equal(outageOutcome.reasonCode, "state_contention");
+  assert.equal(batchOutage.rejectedChecks, 1);
+  assert.equal(commentWrites(), writesBeforeBatchOutage);
+  observations.push({
+    scenario: "batch authority outage preserves coordinator retry classification",
+    completionKind: outageOutcome.kind,
+    reasonCode: outageOutcome.reasonCode,
+    commentWrites: 0,
+  });
   await command(
     process.execPath,
     [join(source, "scripts/prepare-exact-review-batch.mjs")],
@@ -1928,6 +1992,18 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
           (entry) =>
             entry.scenario === "selected bundles and producer diagnostics remain unchanged",
         )?.bundles,
+        authorityOutageClassifications: observations
+          .filter(
+            (entry) =>
+              entry.reasonCode === "state_contention" && entry.scenario.includes("authority"),
+          )
+          .map((entry) => ({
+            stage: entry.scenario.startsWith("batch") ? "batch" : "direct",
+            ...(entry.allowedChecks === undefined ? {} : { allowedChecks: entry.allowedChecks }),
+            completionKind: entry.completionKind,
+            reasonCode: entry.reasonCode,
+            commentWrites: entry.commentWrites,
+          })),
         currentHeadPrCompletion: currentPr && {
           number: currentPr.number,
           canonicalAccepted: currentPr.canonicalAccepted,

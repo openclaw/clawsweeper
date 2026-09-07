@@ -10,6 +10,8 @@ import {
 import {
   assertManualPublicationAuthority,
   manualPublicationOwnerFromEnv,
+  ManualPublicationAuthorityTransportError,
+  manualPublicationAuthorityTransportErrorFromStderr,
 } from "../manual-publication-authority.js";
 import { errorFingerprint } from "./error-fingerprint.js";
 import {
@@ -105,13 +107,16 @@ const options = eventOptionsFromEnv();
 try {
   await publishEventResult(options);
 } catch (error) {
+  const authorityUnavailable = error instanceof ManualPublicationAuthorityTransportError;
   const retryableFailure =
+    authorityUnavailable ||
     error instanceof GitHubRateLimitError ||
     ghRetryKind(error) === "transient" ||
     (error instanceof PublicationResultError && error.reasonCode === "state_contention");
   const completionKind = retryableFailure ? "retryable_failure" : "permanent_failure";
-  const reasonCode =
-    error instanceof GitHubRateLimitError
+  const reasonCode = authorityUnavailable
+    ? "state_contention"
+    : error instanceof GitHubRateLimitError
       ? "github_rate_limit"
       : ghRetryKind(error) === "transient"
         ? "github_transient"
@@ -939,6 +944,8 @@ function runClawsweeper(options: EventOptions, args: readonly string[]): void {
   if (stderr) process.stderr.write(stderr);
   if (child.error) throw Object.assign(child.error, { stderr });
   if (child.status !== 0) {
+    const authorityError = manualPublicationAuthorityTransportErrorFromStderr(stderr);
+    if (authorityError) throw authorityError;
     const error = Object.assign(
       new Error(`${process.execPath} ${cli} ${args.join(" ")} exited ${child.status}`),
       { stderr },

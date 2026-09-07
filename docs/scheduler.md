@@ -62,7 +62,11 @@ Manual decisions carry `sourceAction=manual_explicit_review` and immutable
 `publicationPolicy=record_comment_only`. Their completed artifacts use existing
 direct and batch publication capacity, fences, and retries. Source drift ends
 as superseded; unusable artifacts exhaust publication retries into existing
-dead letters instead of starting another model review.
+dead letters instead of starting another model review. Temporary authority-service
+transport failures and HTTP 429/5xx responses use the existing
+`retryable_failure` / `state_contention` disposition and coordinator retry budget.
+They never authorize a write, revive a lease, or enter GitHub's inline retry loop;
+actual ownership/authentication rejection remains fail-closed.
 
 Direct producers publish from the existing exact bundle's `review/` directory,
 not raw `artifacts/event` output. `EXACT_REVIEW_PUBLICATION_ARTIFACT_DIR` selects

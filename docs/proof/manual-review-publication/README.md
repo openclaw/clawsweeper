@@ -21,6 +21,14 @@ rejects raw producer inventory and extra sibling files, directories, and symlink
 inside the selected publication input. It also checks that every bundle's manifest
 and selected report remain byte-identical after publication scenarios.
 
+Authority-service HTTP 503 cases cover the initial authority check, apply-child
+entry, the mutation boundary, and batch preparation. Each must retain
+`retryable_failure` / `state_contention`, make no comment write, and avoid
+GitHub inline retries; restoring the service must permit the same completed
+review to continue. Focused regressions additionally cover curl timeouts,
+connection failures, HTTP 429, sanitized errors, and nonretryable ownership or
+authentication rejection without changing the established retry budgets.
+
 Current execution evidence belongs in the PR's main body with its exact head and
 source hash. The historical receipts below predate these added integration cases;
 they do not establish that the expanded current driver passed.
