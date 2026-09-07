@@ -474,6 +474,16 @@ original `generated_at`. Only completed work enters the memo; disabling it
 resets pending work so an older computation cannot restore the cache. The stats
 memo retains its separate write-invalidation rules for admission diagnostics.
 
+Producer and publication fences have independent revision counters. For newly
+admitted protocol-v2 publications, the lifecycle projection keeps an immutable
+producer fence/revision/generation link in its existing JSON. Audit and Bay use
+that exact link to display publication completion on the corresponding producer
+journey after the queue item is removed. Missing or conflicting lineage fails
+closed; an older publication cannot complete a later producer revision. Physical
+receipts and terminal telemetry remain on the publication fence, so replay does
+not emit a second producer completion. The private link is not serialized by the
+public endpoint; Bay's public fields and observer-only controls remain unchanged.
+
 The outer `/api/durable-lifecycle-bay` route caches the sanitized response for
 30 seconds at the edge, keyed by origin and verified-public repository scope.
 After expiry it serves a stale copy while coalescing one background refresh per

@@ -1704,7 +1704,28 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
       JSON.stringify(current),
     );
   }
-  observations.push({ scenario: "actual lifecycle and Bay projection", lifecycle });
+  const coalescedJourney = inventory.page.records.filter(
+    (entry) => entry.target.number === 71 && entry.revision === first.tuple.lease_revision,
+  );
+  assert.ok(coalescedJourney.length > 0);
+  assert.ok(
+    coalescedJourney.every((entry) => entry.current_revision && entry.state === "completed"),
+  );
+  const bayResponse = await fetch(`${baseUrl}/queue/api/durable-lifecycle-bay`);
+  assert.equal(bayResponse.status, 200);
+  const bay = (await bayResponse.json()).durable_lifecycle_bay;
+  assert.equal(bay.collection.state, "complete", JSON.stringify(bay));
+  for (const number of [71, 72, 76]) {
+    assert.ok(
+      bay.sample.cards.some(
+        (card) =>
+          card.item_number === number && card.current_revision && card.state === "completed",
+      ),
+      JSON.stringify(bay),
+    );
+  }
+  assert.doesNotMatch(JSON.stringify(bay), /producerLineage|fenceKey|claimGeneration|leaseOwner/);
+  observations.push({ scenario: "actual lifecycle and Bay projection", lifecycle, bay });
 
   await admit(75);
   const lostArtifact = await reviewedRecord(75);
@@ -1816,6 +1837,21 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
     repeated.tuple.lease_revision > prior.tuple.lease_revision,
     "the existing publication head must advance a request after successful publication",
   );
+  const laterJourney = (
+    await post("exact-review/lifecycle-audit/inventory", { page_size: 100 })
+  ).exact_review_lifecycle_audit_inventory.page.records.filter(
+    (entry) => entry.target.number === 72 && entry.current_revision,
+  );
+  assert.ok(laterJourney.length > 0);
+  assert.ok(
+    laterJourney.every(
+      (entry) => entry.revision === repeated.tuple.lease_revision && entry.state === "pending",
+    ),
+  );
+  observations.push({
+    scenario: "prior publication cannot complete a later producer journey",
+    laterJourney,
+  });
   const { prepareDirectPublicationPayload } = await import(
     pathToFileURL(join(source, "dist/repair/exact-review-direct-publication.js"))
   );
@@ -2041,6 +2077,15 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
         reviewCounts: Object.fromEntries(reviewCounts),
         requestReviewCounts: Object.fromEntries(requestReviewCounts),
         repeatedRequestRevision: repeated?.current.lease_revision,
+        completedCurrentJourneys: observations
+          .find((entry) => entry.scenario === "actual lifecycle and Bay projection")
+          ?.lifecycle.exact_review_lifecycle_audit_inventory.page.records.filter(
+            (entry) => entry.current_revision && entry.state === "completed",
+          )
+          .map(({ target, revision }) => ({ number: target.number, revision })),
+        publicBayCompletedCards: observations
+          .find((entry) => entry.scenario === "actual lifecycle and Bay projection")
+          ?.bay.sample.cards.filter((card) => card.current_revision && card.state === "completed"),
         coalescedManualBranch: coalesced && {
           targetBranch: coalesced.targetBranch,
           sourceUpdatedAt: coalesced.sourceUpdatedAt,

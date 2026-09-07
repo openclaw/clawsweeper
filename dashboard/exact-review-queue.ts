@@ -112,6 +112,7 @@ import {
   ExactReviewLifecycleProjectionStore,
   lifecycleState,
   parseDurableLifecycleAuditCursor,
+  sameLifecycleProducerLineage,
   type ExactReviewLifecycleProjection,
   type LifecycleTerminalDisposition,
 } from "./exact-review-lifecycle.ts";
@@ -8971,12 +8972,30 @@ export class ExactReviewQueue {
             : sourceDecision.sourceUpdatedAt || sourceDecision.sourceCommentUpdatedAt || "",
       ),
     );
+    const lineage = exactReviewPublicationLineage(decision);
+    const producerLineage =
+      lineage && decision.publication!.itemKey !== item.key
+        ? {
+            fenceKey: decision.publication!.itemKey,
+            revision: lineage.sourceRevision,
+            claimGeneration: lineage.claimGeneration,
+          }
+        : undefined;
     const existing = this.lifecycleProjectionStore.read(canonicalTargetKey, item.key, revision);
-    if (existing) return existing;
+    if (existing) {
+      if (
+        existing.producerLineage &&
+        !sameLifecycleProducerLineage(existing.producerLineage, producerLineage)
+      )
+        throw new Error("conflicting lifecycle producer lineage");
+      // Old admissions remain unlinked; later provenance cannot backfill authority.
+      return existing;
+    }
     return this.lifecycleProjectionStore.recordAdmissionSync({
       canonicalTargetKey,
       fenceKey: item.key,
       revision,
+      ...(producerLineage ? { producerLineage } : {}),
       deliveryId:
         sourceDecision.sourceDeliveryId ||
         item.admissionDeliveryId ||
@@ -9059,14 +9078,17 @@ export class ExactReviewQueue {
       return;
     }
     const revision = item.leaseRevision ?? item.revision;
-    const sourceDecision =
-      item.decision.publication?.producerDecision ?? item.leaseDecision ?? item.decision;
     const identity = {
       canonicalTargetKey: `${item.decision.targetRepo}#${item.decision.itemNumber}`,
       fenceKey: item.key,
       revision,
     };
-    const existing = this.recordLifecycleAdmission(item, sourceDecision, now, revision);
+    const existing = this.recordLifecycleAdmission(
+      item,
+      item.leaseDecision ?? item.decision,
+      now,
+      revision,
+    );
     if (existing && existing.fenceKey !== identity.fenceKey) {
       throw new Error("conflicting lifecycle projection identity");
     }
@@ -9093,14 +9115,17 @@ export class ExactReviewQueue {
       if (!item || !exactReviewQueueIsPublication(item) || item.revision !== membership.revision) {
         continue;
       }
-      const sourceDecision =
-        item.decision.publication?.producerDecision ?? item.leaseDecision ?? item.decision;
       const identity = {
         canonicalTargetKey: `${item.decision.targetRepo}#${item.decision.itemNumber}`,
         fenceKey: item.key,
         revision: membership.revision,
       };
-      this.recordLifecycleAdmission(item, sourceDecision, now, membership.revision);
+      this.recordLifecycleAdmission(
+        item,
+        item.leaseDecision ?? item.decision,
+        now,
+        membership.revision,
+      );
       if (!hasRunner) continue;
       this.lifecycleProjectionStore.recordClaim({
         ...identity,

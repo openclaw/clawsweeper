@@ -30,6 +30,16 @@ manual request's revision. Direct retries still require the same accepted plan;
 active reclaimed batches retain their existing receipt convergence behavior.
 No receipt replacement, counter change, or historical claim adoption is added.
 
+Publication lifecycle projections retain an immutable producer-lineage reference
+(fence, revision, and claim generation) from the admitted protocol-v2 publication
+in existing `projection_json`. Producer and publication revision counters are
+independent: the reference, never their numerical coincidence, connects the two
+journeys after queue-item deletion. Audit and Bay share that observational
+resolution; physical receipts and terminal telemetry remain on the publication
+fence. A missing or conflicting link cannot complete another producer revision.
+This approved JSON extension adds no SQL table or column, grants no publication
+authority, and does not infer links for historical tupleless reports.
+
 Report readers share one anchored leading-front-matter parser. A unique header
 value remains authoritative when report prose or a valid fenced example quotes
 the same key. Duplicate header keys and competing unfenced metadata blocks

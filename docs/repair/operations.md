@@ -343,8 +343,12 @@ not authorize a storage migration, historical artifact adoption, or production
 configuration mutation. Missing policy is the named compatibility boundary for
 pre-existing ordinary reports only.
 
-OpenClaw Bay needs no schema or UI change. Existing pending, retry, superseded,
-terminal, and dead-letter projections remain applicable, with truthful
+OpenClaw Bay's public fields and UI remain unchanged. Its data projection and
+operator audit use the approved immutable producer lineage in existing lifecycle
+JSON, rather than comparing unrelated producer/publication revision counters.
+Publication remains the physical receipt and terminal telemetry owner; missing or
+conflicting lineage cannot complete another journey. Existing pending, retry,
+superseded, terminal, and dead-letter states remain applicable, with truthful
 `not_required` router receipts. Bay remains public and observer-only.
 
 ## Maintainer Comment Routing
