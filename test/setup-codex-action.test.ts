@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 
@@ -149,7 +149,13 @@ echo "${proxy ? "Usage: codex-responses-api-proxy [OPTIONS]" : `codex-cli ${vers
   return { pkg, native, launcher, nativePackage, prefix };
 }
 
-function installStep(home: string, mode: string, npmBody = "exit 89", source = action) {
+function installStep(
+  home: string,
+  mode: string,
+  npmBody = "exit 89",
+  source = action,
+  sourcePath = actionPath,
+) {
   const bin = join(home, "tools");
   mkdirSync(bin, { recursive: true });
   writeFileSync(
@@ -169,7 +175,6 @@ ${npmBody}
     [
       "-c",
       script.replace(/\$\{\{\s*([^}]+?)\s*\}\}/g, (_, key) => {
-        if (key === "github.action_path") return actionPath;
         const input = /^inputs\['([^']+)'\]$/.exec(key)?.[1];
         if (input === "auth-mode") return mode;
         assert.ok(input && source.inputs[input], `unknown expression ${key}`);
@@ -183,6 +188,7 @@ ${npmBody}
         HOME: home,
         PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin`,
         GITHUB_PATH: join(home, "github-path"),
+        GITHUB_ACTION_PATH: sourcePath,
         OPENAI_API_KEY: "fixture-only",
         CODEX_API_KEY: "fixture-only",
         PROXY_API_KEY: "fixture-only",
@@ -193,6 +199,77 @@ ${npmBody}
     },
   );
 }
+
+test(
+  "install step preserves literal action paths in validator arguments",
+  { skip: process.platform === "win32" },
+  () => {
+    const home = mkdtempSync(join(tmpdir(), "codex-action-path-test-"));
+    try {
+      const bin = join(home, "tools");
+      const trace = join(home, "node-argv");
+      const marker = join(home, "marker");
+      mkdirSync(bin);
+      for (const folder of [
+        "checkout with spaces",
+        `checkout$(touch "${marker}")`,
+        "checkout \"double\" 'single'",
+      ]) {
+        for (const repair of [false, true]) {
+          const sourcePath = join(home, folder, ".github/actions/setup-codex");
+          const label = `${folder}, repair=${repair}`;
+          writeFileSync(trace, "");
+          rmSync(join(home, "npm-calls"), { force: true });
+          writeFileSync(
+            join(bin, "node"),
+            `#!${process.execPath}
+const fs = require("node:fs");
+const trace = process.env.HOME + "/node-argv";
+const args = process.argv.slice(2);
+const calls = fs.readFileSync(trace, "utf8").trim().split("\\n").filter(Boolean).map((line) => JSON.parse(line));
+fs.appendFileSync(trace, JSON.stringify(args) + "\\n");
+if (${repair} && !calls.some((call) => call[1] === args[1])) process.exit(1);
+`,
+            { mode: 0o755 },
+          );
+          const result = installStep(home, "proxy", "exit 0", action, sourcePath);
+          assert.equal(result.status, 0, `${label}: ${result.stderr}`);
+          assert.equal(existsSync(marker), false, label);
+          const codexArgs = [join(sourcePath, "validate-install.mjs"), "codex", version];
+          const proxyArgs = [
+            join(sourcePath, "validate-install.mjs"),
+            "codex-responses-api-proxy",
+            proxyVersion,
+          ];
+          assert.deepEqual(
+            readFileSync(trace, "utf8")
+              .trim()
+              .split("\n")
+              .map((line) => JSON.parse(line)),
+            repair ? [codexArgs, codexArgs, proxyArgs, proxyArgs] : [codexArgs, proxyArgs],
+            label,
+          );
+          assert.deepEqual(
+            existsSync(join(home, "npm-calls"))
+              ? readFileSync(join(home, "npm-calls"), "utf8").trim().split("\n")
+              : [],
+            repair
+              ? [
+                  `config set prefix ${join(home, ".clawsweeper-repair/codex")}`,
+                  `config set cache ${join(home, ".npm")}`,
+                  `install -g @openai/codex@${version} --prefer-online --no-audit --no-fund --ignore-scripts`,
+                  `install -g @openai/codex-responses-api-proxy@${proxyVersion} --prefer-online --no-audit --no-fund --ignore-scripts`,
+                ]
+              : [],
+            label,
+          );
+        }
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  },
+);
 
 test(
   "warm managed pins reuse working launchers without invoking npm",
@@ -491,16 +568,38 @@ test(
     for (const aliasState of [
       "valid",
       "outside empty directory",
+      "outside empty directory link",
+      "outside alias directory",
+      "outside alias directory link",
+      "outside non-directory link",
       "missing",
       "wrong",
       "self-linked",
     ]) {
       const home = mkdtempSync(join(tmpdir(), "codex-vendor-test-"));
       try {
-        const { pkg, nativePackage } = fixture(home);
+        const { pkg, nativePackage, native } = fixture(home);
+        const trace = join(home, "native-trace");
+        const bytes = readFileSync(native, "utf8");
+        writeFileSync(native, `${bytes}printf 'local-vendor\\n' >> ${JSON.stringify(trace)}\n`);
+        if (aliasState.startsWith("outside")) {
+          const linked = aliasState.endsWith("link");
+          const directory = join(home, linked ? "shared-node-modules" : "node_modules");
+          if (aliasState === "outside non-directory link") writeFileSync(directory, "");
+          else mkdirSync(directory);
+          if (aliasState.startsWith("outside alias")) {
+            const outside = join(directory, `@openai/codex-${process.platform}-${process.arch}`);
+            mkdirSync(dirname(outside));
+            cpSync(nativePackage, outside, { recursive: true });
+            writeFileSync(
+              join(outside, "vendor", triple, "bin/codex"),
+              `${bytes}printf 'outside-alias\\n' >> ${JSON.stringify(trace)}\n`,
+            );
+          }
+          if (linked) symlinkSync(directory, join(home, "node_modules"));
+        }
         renameSync(join(nativePackage, "vendor"), join(pkg, "vendor"));
         rmSync(nativePackage, { recursive: true });
-        if (aliasState === "outside empty directory") mkdirSync(join(home, "node_modules"));
         if (aliasState === "self-linked") symlinkSync("../..", nativePackage);
         if (aliasState === "missing" || aliasState === "wrong") {
           const manifest = join(pkg, "package.json");
@@ -514,9 +613,15 @@ test(
           writeFileSync(manifest, JSON.stringify(data));
         }
         const result = installStep(home, "login", "exit 0");
-        const valid = aliasState === "valid" || aliasState === "outside empty directory";
-        assert.equal(result.status, valid ? 0 : 1, result.stderr);
-        assert.equal(existsSync(join(home, "npm-calls")), !valid);
+        const valid = aliasState === "valid" || aliasState.startsWith("outside empty directory");
+        const status = valid ? 0 : aliasState.startsWith("outside") ? 2 : 1;
+        assert.equal(result.status, status, `${aliasState}: ${result.stderr}`);
+        assert.deepEqual(
+          existsSync(trace) ? readFileSync(trace, "utf8").trim().split("\n") : [],
+          valid ? ["local-vendor", "local-vendor"] : [],
+          aliasState,
+        );
+        assert.equal(existsSync(join(home, "npm-calls")), status === 1, aliasState);
       } finally {
         rmSync(home, { recursive: true, force: true });
       }
@@ -563,23 +668,121 @@ test(
   "chained directory links cannot hide an escaping native target",
   { skip: process.platform === "win32" },
   () => {
-    for (const escaping of [false, true]) {
+    const cases = [
+      { variant: "chained-contained", proxy: false, absolute: true, status: 0 },
+      { variant: "chained-escape", proxy: false, absolute: true, status: 2 },
+    ];
+    for (const proxy of [false, true])
+      for (const absolute of [false, true])
+        for (const variant of ["compound-contained", "compound-live", "compound-missing"])
+          cases.push({
+            variant,
+            proxy,
+            absolute,
+            status: variant === "compound-contained" ? 0 : 2,
+          });
+    for (const [variant, status] of [
+      ["missing-parent", 1],
+      ["missing-caller", 1],
+      ["missing-escape", 2],
+      ["missing-manifest-escape", 2],
+      ["file-parent", 1],
+      ["file-dot", 1],
+      ["file-slash", 1],
+      ["directory-suffix", 0],
+      ["depth-32", 0],
+      ["depth-33", 2],
+    ] as const)
+      cases.push({ variant, proxy: false, absolute: true, status });
+    for (const { variant, proxy, absolute, status } of cases) {
       const home = realpathSync(mkdtempSync(join(tmpdir(), "codex-chain-test-")));
       try {
-        const { native, prefix } = fixture(home);
-        const bytes = readFileSync(native);
-        rmSync(dirname(native), { recursive: true });
+        if (proxy) fixture(home);
+        const { native, prefix, pkg } = fixture(home, proxy);
+        const bytes = readFileSync(native, "utf8");
+        const trace = join(home, "payload-trace");
+        const payload = (path: string, label: string) =>
+          writeFileSync(path, `${bytes}printf '${label}\\n' >> ${JSON.stringify(trace)}\n`, {
+            mode: 0o755,
+          });
         mkdirSync(join(prefix, "deep"));
         mkdirSync(join(prefix, "flat"));
-        symlinkSync("../flat", join(prefix, "deep/link"));
-        symlinkSync(join(prefix, "deep/link"), dirname(native));
-        const target = join(escaping ? dirname(prefix) : prefix, "payload");
-        writeFileSync(target, bytes, { mode: 0o755 });
-        symlinkSync(escaping ? "../../payload" : "../payload", join(prefix, "flat/codex"));
-        const result = installStep(home, "login");
-        assert.equal(result.status, escaping ? 2 : 0, result.stderr);
-        assert.equal(existsSync(join(home, "npm-calls")), false);
-        assert.ok(existsSync(target));
+        if (variant.startsWith("chained-")) {
+          const escaping = variant === "chained-escape";
+          rmSync(dirname(native), { recursive: true });
+          symlinkSync("../flat", join(prefix, "deep/link"));
+          symlinkSync(join(prefix, "deep/link"), dirname(native));
+          const target = join(escaping ? dirname(prefix) : prefix, "payload");
+          payload(target, escaping ? "outside" : "intended");
+          symlinkSync(escaping ? "../../payload" : "../payload", join(prefix, "flat/codex"));
+        } else if (variant.startsWith("compound-") || variant === "missing-manifest-escape") {
+          const contained = variant === "compound-contained";
+          const anchor = contained ? join(prefix, "flat") : prefix;
+          symlinkSync(anchor, join(prefix, "deep/link"));
+          rmSync(native);
+          const start = absolute ? prefix : relative(dirname(native), prefix);
+          symlinkSync(`${start}/deep/link/../payload`, native);
+          payload(join(prefix, "deep/payload"), "decoy");
+          if (variant !== "compound-missing")
+            payload(
+              join(contained ? prefix : dirname(prefix), "payload"),
+              contained ? "intended" : "outside",
+            );
+          if (variant === "missing-manifest-escape") rmSync(join(pkg, "package.json"));
+        } else if (variant === "missing-caller" || variant === "directory-suffix") {
+          rmSync(dirname(native), { recursive: true });
+          symlinkSync(
+            `${prefix}/${variant === "missing-caller" ? "missing/.." : "flat/./"}`,
+            dirname(native),
+          );
+          if (variant === "missing-caller")
+            symlinkSync(join(home, "outside-missing"), join(prefix, "codex"));
+          else payload(join(prefix, "flat/codex"), "intended");
+        } else {
+          rmSync(native);
+          payload(join(prefix, "payload"), "intended");
+          if (variant.startsWith("depth-")) {
+            const count = Number(variant.slice(6));
+            for (let hop = 1; hop < count; hop++)
+              symlinkSync(
+                hop === count - 1 ? "payload" : `hop-${hop + 1}`,
+                join(prefix, `hop-${hop}`),
+              );
+            symlinkSync(join(prefix, "hop-1"), native);
+          } else {
+            writeFileSync(join(prefix, "file"), "");
+            const suffixes: Record<string, string> = {
+              "missing-parent": "missing/../payload",
+              "missing-escape": "missing/../../payload",
+              "file-parent": "file/../payload",
+              "file-dot": "file/.",
+              "file-slash": "file/",
+            };
+            const suffix = suffixes[variant];
+            assert.ok(suffix);
+            symlinkSync(`${prefix}/${suffix}`, native);
+          }
+        }
+        const label = `${variant}, proxy=${proxy}, absolute=${absolute}`;
+        const result = installStep(home, proxy ? "proxy" : "login", "exit 0");
+        assert.equal(result.status, status, `${label}: ${result.stderr}`);
+        assert.deepEqual(
+          existsSync(trace) ? readFileSync(trace, "utf8").trim().split("\n") : [],
+          status === 0 ? ["intended", "intended"] : [],
+          label,
+        );
+        const calls = existsSync(join(home, "npm-calls"))
+          ? readFileSync(join(home, "npm-calls"), "utf8").trim().split("\n")
+          : [];
+        if (status === 1)
+          assert.deepEqual(
+            calls.filter((line) => line.startsWith("install ")),
+            [
+              `install -g @openai/codex@${version} --prefer-online --no-audit --no-fund --ignore-scripts`,
+            ],
+            label,
+          );
+        else assert.deepEqual(calls, [], label);
       } finally {
         rmSync(home, { recursive: true, force: true });
       }

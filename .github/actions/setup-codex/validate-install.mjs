@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 
 class UnsafePath extends Error {}
 
@@ -25,26 +25,61 @@ function inside(root, path) {
 
 // Check even dangling links before deciding whether npm may repair a partial cache.
 function contained(root, path, depth = 0) {
-  inside(root, path);
-  if (depth > 32) throw new UnsafePath("managed installation has a symlink cycle");
+  if (path !== root && !path.startsWith(`${root}${sep}`))
+    throw new UnsafePath("managed installation path escapes its owner");
   let current = root;
-  const parts = relative(root, path).split(sep).filter(Boolean);
-  for (let index = 0; index < parts.length; index++) {
-    current = join(current, parts[index]);
-    let info;
-    try {
-      info = lstatSync(current);
-    } catch (error) {
-      if (error.code === "ENOENT" || error.code === "ENOTDIR")
-        return join(current, ...parts.slice(index + 1));
-      throw error;
+  let directory = true;
+  let anchored = true;
+  let unresolved;
+  function walk(raw, level) {
+    if (level > 32) throw new UnsafePath("managed installation has a symlink cycle");
+    if (isAbsolute(raw)) {
+      current = sep;
+      directory = true;
+      anchored = false;
+      raw = raw.slice(1);
     }
-    if (info.isSymbolicLink()) {
-      const target = resolve(dirname(current), readlinkSync(current));
-      current = contained(root, target, depth + 1);
+    for (const part of raw.split(sep)) {
+      // Missing or non-directory traversal stays failed, including across a link's caller suffix.
+      if (unresolved !== undefined) unresolved += `${sep}${part}`;
+      else if (!directory) unresolved = `${current}${sep}${part}`;
+      const next =
+        part === ".."
+          ? dirname(current)
+          : part === "." || part === ""
+            ? current
+            : join(current, part);
+      const owned = next === root || next.startsWith(`${root}${sep}`);
+      // Absolute targets may reanchor through owner ancestors, never unrelated outside branches.
+      if (!owned && (anchored || (next !== sep && !root.startsWith(`${next}${sep}`))))
+        throw new UnsafePath("managed installation path escapes its owner");
+      anchored ||= owned;
+      if (part === "." || part === "" || part === "..") {
+        current = next;
+        if (part === "..") directory = true;
+        continue;
+      }
+      let info;
+      if (unresolved === undefined) {
+        try {
+          info = lstatSync(next);
+        } catch (error) {
+          if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
+          unresolved = next;
+        }
+      }
+      if (info?.isSymbolicLink()) {
+        // Expand relative targets from the resolved parent before consuming the caller suffix.
+        walk(readlinkSync(next), level + 1);
+        inside(root, current);
+      } else {
+        current = next;
+        directory = info?.isDirectory() ?? false;
+      }
     }
   }
-  return current;
+  walk(path.slice(root.length + 1), depth);
+  return unresolved ?? current;
 }
 
 // A dangling search-directory link is visited invalid state, not an absent alias.
@@ -61,7 +96,20 @@ function aliasPresent(root, path) {
       }
       throw error;
     }
-    if (info.isSymbolicLink()) statSync(contained(root, current));
+    if (info.isSymbolicLink()) {
+      if (current === root || current.startsWith(`${root}${sep}`)) {
+        statSync(contained(root, current));
+      } else {
+        // An unused outside directory may establish absence, not authorize a dependency.
+        try {
+          info = statSync(current);
+        } catch (error) {
+          throw new UnsafePath("unusable outside alias search directory", { cause: error });
+        }
+        if (!info.isDirectory())
+          throw new UnsafePath("outside alias search path is not a directory");
+      }
+    }
     return current === path;
   }
 }

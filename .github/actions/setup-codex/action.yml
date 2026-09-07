@@ -49,7 +49,7 @@ runs:
         npm_configured=false
         ensure_installed() {
           local name="$1" version="$2" status
-          if "${install_env[@]}" node "${{ github.action_path }}/validate-install.mjs" "$name" "$version"; then
+          if "${install_env[@]}" node "$GITHUB_ACTION_PATH/validate-install.mjs" "$name" "$version"; then
             return
           else
             status=$?
@@ -63,7 +63,7 @@ runs:
           fi
           "${install_env[@]}" npm install -g "@openai/$name@$version" \
             --prefer-online --no-audit --no-fund --ignore-scripts
-          "${install_env[@]}" node "${{ github.action_path }}/validate-install.mjs" "$name" "$version"
+          "${install_env[@]}" node "$GITHUB_ACTION_PATH/validate-install.mjs" "$name" "$version"
         }
         ensure_installed codex "${{ inputs['codex-version'] }}"
         if [[ "${{ inputs['auth-mode'] }}" == "proxy" ]]; then

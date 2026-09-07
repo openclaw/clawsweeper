@@ -137,6 +137,7 @@ function environment(home, offline = false) {
     HOME: home,
     PATH: `${tools}:${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`,
     GITHUB_PATH: join(home, "github-path"),
+    GITHUB_ACTION_PATH: actionPath,
     PROOF_NPM_TRACE: join(home, "npm-trace.jsonl"),
     npm_config_userconfig: join(home, ".npmrc"),
     npm_config_globalconfig: join(root, "empty-npmrc"),
@@ -200,7 +201,6 @@ function run(command, args, env, timeout = 120_000) {
 function render(action, mode) {
   const step = action.runs.steps.find((entry) => entry.name === "Install Codex CLI");
   return step.run.replace(/\$\{\{\s*([^}]+?)\s*\}\}/g, (_, expression) => {
-    if (expression === "github.action_path") return actionPath;
     const key = /^inputs\['([^']+)'\]$/.exec(expression)?.[1];
     if (key === "auth-mode") return mode;
     assert.ok(key && action.inputs[key], `unexpected expression ${expression}`);
@@ -338,6 +338,36 @@ try {
   const warmResult = await install("warm-offline", warm, { offline: true });
   assert.deepEqual(warmResult.calls, []);
   assert.deepEqual(warmResult.deniedRequests, []);
+  const fallback = makeHome("outside-empty-link-fallback", cold);
+  const fallbackPaths = paths(fallback);
+  renameSync(join(fallbackPaths.nativeRoot, "vendor"), join(fallbackPaths.pkg, "vendor"));
+  rmSync(fallbackPaths.nativeRoot, { recursive: true });
+  const emptyDirectory = join(fallback, "empty-node-modules");
+  mkdirSync(emptyDirectory);
+  symlinkSync(emptyDirectory, join(fallback, "node_modules"));
+  const fallbackResolution = await run(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+assert.throws(() => createRequire(process.argv[1]).resolve(process.argv[2]), { code: "MODULE_NOT_FOUND" });`,
+      fallbackPaths.launcher,
+      `@openai/codex-linux-${process.arch}/package.json`,
+    ],
+    environment(fallback, true),
+    5_000,
+  );
+  assert.equal(fallbackResolution.status, 0, fallbackResolution.output);
+  const fallbackResult = await install("outside-empty-link-fallback", fallback, {
+    mode: "login",
+    offline: true,
+  });
+  assert.equal(fallbackResult.output.trim(), `codex-cli ${version}`);
+  assert.deepEqual(fallbackResult.calls, []);
+  assert.deepEqual(fallbackResult.deniedRequests, []);
+  rmSync(fallback, { recursive: true });
   for (const mutation of ["shadowed-malformed-alias", "unused-vendor-escape"]) {
     const home = makeHome(mutation, cold);
     const item = paths(home);
@@ -440,6 +470,37 @@ try {
   assert.deepEqual(unsafe.calls, []);
   assert.equal(existsSync(marker), false);
   assert.ok(existsSync(external));
+
+  for (const name of ["codex", "codex-responses-api-proxy"]) {
+    for (const variant of ["contained", "live-escape", "missing-escape"]) {
+      const label = `${name}-compound-${variant}`;
+      const home = makeHome(label, cold);
+      const item = paths(home, name);
+      const deep = join(item.prefix, "path-order-deep");
+      const flat = join(item.prefix, "path-order-flat");
+      const contained = variant === "contained";
+      const filename = `${name}-payload`;
+      const payload = join(contained ? item.prefix : dirname(item.prefix), filename);
+      const executed = join(home, "unexpected-payload");
+      const banner =
+        name === "codex" ? `codex-cli ${version}` : "Usage: codex-responses-api-proxy [OPTIONS]";
+      const decoy = `#!/bin/sh\ntouch ${JSON.stringify(executed)}\nprintf '%s\\n' ${JSON.stringify(banner)}\n`;
+      mkdirSync(deep);
+      mkdirSync(flat);
+      symlinkSync(contained ? flat : item.prefix, join(deep, "link"));
+      if (contained) renameSync(item.native, payload);
+      else rmSync(item.native);
+      if (variant === "live-escape") writeFileSync(payload, decoy, { mode: 0o755 });
+      writeFileSync(join(deep, filename), decoy, { mode: 0o755 });
+      symlinkSync(`${deep}/link/../${filename}`, item.native);
+      const record = await install(label, home, { offline: true, expected: contained ? 0 : 2 });
+      assert.deepEqual(record.calls, []);
+      assert.deepEqual(record.deniedRequests, []);
+      assert.equal(existsSync(executed), false);
+      assert.equal(existsSync(payload), variant !== "missing-escape");
+      rmSync(home, { recursive: true });
+    }
+  }
 
   for (let index = 0; index < repetitions; index++) {
     const order = index % 2 === 0 ? ["before", "after"] : ["after", "before"];
