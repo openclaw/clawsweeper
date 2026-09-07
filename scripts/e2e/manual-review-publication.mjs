@@ -530,6 +530,10 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
   chmodSync(join(bin, "curl"), 0o755);
   runtimeEnv = {
     PATH: `${bin}:${process.env.PATH}`,
+    HOME: process.env.HOME,
+    XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+    XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
+    CI: "true",
     TMPDIR: root,
     GH_CONFIG_DIR: join(root, "gh-config"),
     GH_HOST: "proof.invalid",
@@ -991,7 +995,10 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
         create(unexpected);
         const rejected = await command("bash", ["-c", directStep.run], env, source, true);
         assert.equal(rejected.code, 1);
-        assert.match(rejected.stderr, /artifact directory must contain only the selected report/);
+        assert.match(
+          rejected.stderr + rejected.stdout,
+          /artifact directory must contain only the selected report/,
+        );
         assert.equal(commentWrites(), writesBefore);
         rmSync(unexpected, { recursive: true });
         observations.push({ scenario: `staged publication rejects ${name}`, commentWrites: 0 });

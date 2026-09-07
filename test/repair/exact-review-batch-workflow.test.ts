@@ -86,6 +86,37 @@ test(
   },
 );
 
+test("manual publication proof preserves isolated toolchain settings without inherited credentials", () => {
+  const driver = readFileSync("scripts/e2e/manual-review-publication.mjs", "utf8");
+  const start = driver.indexOf("  runtimeEnv = {");
+  const end = driver.indexOf("\n  };", start);
+  assert.ok(start >= 0 && end > start);
+  const toolchain = {
+    PATH: "/installed/bin",
+    HOME: "/isolated-home",
+    XDG_CONFIG_HOME: "/isolated-home/.config",
+    XDG_CACHE_HOME: "/isolated-home/.cache",
+    OPENAI_API_KEY: "must-not-forward",
+    GITHUB_TOKEN: "must-not-forward",
+  };
+  const env = runInNewContext(`${driver.slice(start, end + 5)}\nruntimeEnv`, {
+    process: { env: toolchain },
+    bin: "/fixture/bin",
+    root: "/fixture/state",
+    transport: "/fixture/transport.mjs",
+    baseUrl: "http://127.0.0.1:1",
+    secret: "synthetic-coordinator-secret",
+    producerRepo: "example/source",
+    base: "a".repeat(40),
+    join,
+  });
+  for (const name of ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"] as const)
+    assert.equal(env[name], toolchain[name]);
+  assert.equal(env.CI, "true");
+  assert.equal(Object.hasOwn(env, "OPENAI_API_KEY"), false);
+  assert.equal(Object.hasOwn(env, "GITHUB_TOKEN"), false);
+});
+
 test("manual publication stays queue-owned and excludes router and implementation hooks", () => {
   assert.match(sweepSource, /name: Admit explicit manual reviews/);
   assert.match(sweepSource, /manual-review-enqueue\.js/);
