@@ -315,6 +315,14 @@ export class ExactReviewLifecycleProjectionStore {
             revision DESC
           )`,
     );
+    // Keep v2 for older readers that explicitly select it during rollback.
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_projection_bay_repository_journey
+         ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} (
+           LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)),
+           canonical_target_key, fence_key, revision
+         )`,
+    );
     this.storage.sql.exec(
       `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_projection_bay_telemetry_pending
          ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
@@ -959,7 +967,7 @@ export class ExactReviewLifecycleProjectionStore {
         for (const repository of repositories ?? [null]) {
           const bindings = repository === null ? [] : [repository];
           const source = `${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-            ${repository === null ? "" : "WHERE LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)) = ?"}`;
+            ${repository === null ? "" : "INDEXED BY exact_review_lifecycle_projection_bay_repository_journey WHERE LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)) = ?"}`;
           const counts = Array.from(
             this.storage.sql.exec(
               `SELECT COUNT(*) AS lifecycle_records,
@@ -979,7 +987,7 @@ export class ExactReviewLifecycleProjectionStore {
           for (const row of this.storage.sql.exec(
             `SELECT projection_json, canonical_target_key, fence_key, revision
                FROM ${source}
-              ORDER BY canonical_target_key ASC, fence_key ASC, revision DESC`,
+              ORDER BY canonical_target_key ASC, fence_key ASC, revision ASC`,
             ...bindings,
           )) {
             let projection: ExactReviewLifecycleProjection;

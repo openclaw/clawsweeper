@@ -498,8 +498,12 @@ still reach the object; its TTL memo absorbs those reads. Bay's public field
 set, freshness contract, and observer-only boundary are unchanged.
 
 An uncached Bay build still scans every retained projection in the requested
-repositories (all repositories for an unscoped internal request). It has no
-seven-day cutoff: seven-day telemetry retention and 30-day Bay event retention
+repositories (all repositories for an unscoped internal request). A derived index
+on the existing repository/target/fence/revision fields streams each repository
+in journey order without sorting retained projection JSON; the primary identity
+index serves unscoped reads. The older v2 index remains available for readers
+that explicitly select it during rollback. No stored record or authority fields
+change. The scan has no seven-day cutoff: seven-day telemetry retention and 30-day Bay event retention
 belong to separate telemetry tables. Each row's full `projection_json` passes
 through the existing parser and integrity validation, without a per-row
 parsed-object cache. This preserves malformed-data handling and avoids the

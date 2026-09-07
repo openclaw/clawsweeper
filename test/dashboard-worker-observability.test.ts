@@ -176,32 +176,6 @@ test("durable lifecycle Bay is a pure, bounded public-reference reducer snapshot
   );
   const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
   lifecycle.ensureSchemaSync();
-  for (const repository of ["openclaw/openclaw", "openclaw/clawsweeper"]) {
-    const publicRepositoryPlan = Array.from(
-      storage.sql.exec(
-        `EXPLAIN QUERY PLAN
-         SELECT projection_json, canonical_target_key, fence_key, revision
-         FROM exact_review_lifecycle_projection_v1
-         INDEXED BY exact_review_lifecycle_projection_bay_repository_v2
-         WHERE LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)) = ?
-         ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC`,
-        repository,
-      ),
-    );
-    assert.ok(
-      publicRepositoryPlan.some((row) =>
-        String(row.detail || "").includes("exact_review_lifecycle_projection_bay_repository_v2"),
-      ),
-      "each public repository read must seek through the repository-leading index",
-    );
-    assert.equal(
-      publicRepositoryPlan.some((row) =>
-        /SCAN exact_review_lifecycle_projection_v1|USE TEMP B-TREE/i.test(String(row.detail || "")),
-      ),
-      false,
-      "each public repository read must avoid unrelated scans and unbounded sorting",
-    );
-  }
   const record = ({
     number,
     revision = 1,
@@ -217,7 +191,7 @@ test("durable lifecycle Bay is a pure, bounded public-reference reducer snapshot
   }) => {
     const identity = {
       canonicalTargetKey: `${repository}#${number}`,
-      fenceKey: `fence-secret-${number}-${revision}`,
+      fenceKey: `fence-secret-${number}`,
       revision,
     };
     lifecycle.recordAdmission({
@@ -283,12 +257,7 @@ test("durable lifecycle Bay is a pure, bounded public-reference reducer snapshot
     queries.push(query);
     queryBindings.push(bindings);
     assert.match(query, /FROM exact_review_lifecycle_projection_v1/);
-    if (/MAX\(revision\) AS max_revision/.test(query)) {
-      assert.match(query, /WHERE canonical_target_key IN \(SELECT value FROM json_each\(\?\)\)/);
-      assert.ok(JSON.parse(String(bindings[0])).length <= 24);
-    } else {
-      assert.match(query, /WHERE LOWER\(SUBSTR\(canonical_target_key/);
-    }
+    assert.match(query, /WHERE LOWER\(SUBSTR\(canonical_target_key/);
     return exec(query, ...bindings);
   };
 
@@ -317,7 +286,26 @@ test("durable lifecycle Bay is a pure, bounded public-reference reducer snapshot
   assert.equal(response.headers.get("cache-control"), "no-store");
   assert.equal(initialized, 1, "constructor must provision only the Bay read schema");
   assert.equal(storage.sql.hasNormalizedQueue(), false);
-  assert.equal(queries.filter((query) => /MAX\(revision\) AS max_revision/.test(query)).length, 1);
+  assert.equal(queries.length, 4, "one count and one projection scan per public repository");
+  for (const [index, query] of queries.entries()) {
+    if (!/^\s*SELECT projection_json/.test(query)) continue;
+    const plan = Array.from(exec(`EXPLAIN QUERY PLAN ${query}`, ...queryBindings[index]!));
+    assert.ok(
+      plan.some((row) =>
+        String(row.detail || "").includes(
+          "exact_review_lifecycle_projection_bay_repository_journey",
+        ),
+      ),
+      "the actual reader must seek through its repository-leading journey index",
+    );
+    assert.equal(
+      plan.some((row) =>
+        /SCAN exact_review_lifecycle_projection_v1|USE TEMP B-TREE/i.test(String(row.detail || "")),
+      ),
+      false,
+      "the actual projection scan must avoid unrelated rows and unbounded sorting",
+    );
+  }
   assert.deepEqual(queryBindings.slice(0, 4), [
     ["openclaw/clawsweeper"],
     ["openclaw/clawsweeper"],
@@ -338,6 +326,16 @@ test("durable lifecycle Bay is a pure, bounded public-reference reducer snapshot
   assert.equal(snapshot.sample?.returned, 7);
   assert.equal(snapshot.sample?.omitted, 0);
   assert.equal(snapshot.sample?.cards.length, 7);
+  assert.deepEqual(
+    snapshot
+      .sample!.cards.filter((card) => card.item_number === 910)
+      .map((card) => [card.state, card.current_revision])
+      .sort(),
+    [
+      ["pending", true],
+      ["superseded", false],
+    ],
+  );
   for (const card of snapshot.sample?.cards || []) {
     assert.deepEqual(Object.keys(card).sort(), [
       "current_revision",

@@ -6888,7 +6888,7 @@ test("sweep exact event reviews consume only the immutable claimed decision", ()
   assert.match(resolveBlock, /Math\.min\(480_000, mediaValue\)/);
   assert.match(
     resolveBlock,
-    /codex_timeout_ms: Math\.min\(\s*maxExactReviewCodexTimeoutMs,\s*Math\.max\(configuredTimeout, adaptiveTimeout\)/,
+    /codex_timeout_ms: Math\.min\(\s*maxExactReviewCodexTimeoutMs,\s*requestedTimeout/,
   );
   assert.match(resolveBlock, /media_proof_timeout_ms: mediaTimeout/);
   assert.doesNotMatch(resolveBlock, /github\.event\.client_payload/);
@@ -7086,7 +7086,7 @@ test("sweep exact event reviews cap the configured fallback within the lease and
   );
   assert.match(
     resolveBlock,
-    /codex_timeout_ms: Math\.min\(\s*maxExactReviewCodexTimeoutMs,\s*Math\.max\(configuredTimeout, adaptiveTimeout\)/,
+    /codex_timeout_ms: Math\.min\(\s*maxExactReviewCodexTimeoutMs,\s*requestedTimeout/,
   );
 });
 

@@ -48,11 +48,13 @@ test("manual review timeouts survive queue resolution within the existing exact-
   const script = steps
     .find((step: { id?: string }) => step.id === "target")
     .run.match(/node <<'NODE'\n([\s\S]*?)\nNODE/)[1];
-  for (const [sourceAction, codexTimeoutMs, expected] of [
-    ["manual_explicit_review", 300_000, 300_000],
-    ["manual_explicit_review", 2_400_000, 2_400_000],
-    ["manual_explicit_review", 3_600_000, 2_700_000],
-    ["opened", 2_400_000, 1_800_000],
+  for (const [sourceAction, codexTimeoutMs, configuredTimeoutMs, expected] of [
+    ["manual_explicit_review", 300_000, 1_200_000, 300_000],
+    ["manual_explicit_review", 2_400_000, 1_200_000, 2_400_000],
+    ["manual_explicit_review", 3_600_000, 1_200_000, 2_700_000],
+    ["opened", 2_400_000, 1_200_000, 1_800_000],
+    ["opened", 2_400_000, 3_600_000, 2_700_000],
+    ["opened", -1, -1, 1_200_000],
   ]) {
     let output = "";
     runInNewContext(script, {
@@ -71,7 +73,7 @@ test("manual review timeouts survive queue resolution within the existing exact-
             publicationPolicy:
               sourceAction === "manual_explicit_review" ? "record_comment_only" : undefined,
           }),
-          CONFIGURED_CODEX_TIMEOUT_MS: "1200000",
+          CONFIGURED_CODEX_TIMEOUT_MS: String(configuredTimeoutMs),
         },
       },
     });

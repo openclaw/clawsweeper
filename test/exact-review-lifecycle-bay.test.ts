@@ -324,7 +324,21 @@ test("streamed Bay materialization equals full audit materialization on mixed li
     "fence:19",
   );
   const full = lifecycle.createAuditInventorySnapshot(100, now);
+  const exec = storage.sql.exec.bind(storage.sql);
+  const projectionPlans: string[] = [];
+  storage.sql.exec = (query, ...bindings) => {
+    if (/^\s*SELECT projection_json/.test(query)) {
+      projectionPlans.push(
+        Array.from(exec(`EXPLAIN QUERY PLAN ${query}`, ...bindings))
+          .map((row) => String(row.detail))
+          .join("\n"),
+      );
+    }
+    return exec(query, ...bindings);
+  };
   const bay = lifecycle.readBaySnapshot(now);
+  assert.equal(projectionPlans.length, 1);
+  assert.doesNotMatch(projectionPlans[0]!, /USE TEMP B-TREE/i);
   assert.equal(full.collection.state, "complete");
   assert.equal(bay.collection.state, "complete");
   const key = (card: { target: { number: number }; revision: number }) =>
