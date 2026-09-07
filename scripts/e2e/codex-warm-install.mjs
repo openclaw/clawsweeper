@@ -367,6 +367,15 @@ assert.throws(() => createRequire(process.argv[1]).resolve(process.argv[2]), { c
   assert.equal(fallbackResult.output.trim(), `codex-cli ${version}`);
   assert.deepEqual(fallbackResult.calls, []);
   assert.deepEqual(fallbackResult.deniedRequests, []);
+  rmSync(join(fallback, "node_modules"));
+  writeFileSync(join(fallback, "node_modules"), "");
+  const outsideFile = await install("outside-file-refusal", fallback, {
+    mode: "login",
+    offline: true,
+    expected: 2,
+  });
+  assert.deepEqual(outsideFile.calls, []);
+  assert.deepEqual(outsideFile.deniedRequests, []);
   rmSync(fallback, { recursive: true });
   for (const mutation of ["shadowed-malformed-alias", "unused-vendor-escape"]) {
     const home = makeHome(mutation, cold);

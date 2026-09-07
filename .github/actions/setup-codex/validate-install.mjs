@@ -94,6 +94,7 @@ function aliasPresent(root, path) {
         current = dirname(current);
         continue;
       }
+      contained(root, current);
       throw error;
     }
     if (info.isSymbolicLink()) {

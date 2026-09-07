@@ -572,6 +572,9 @@ test(
       "outside alias directory",
       "outside alias directory link",
       "outside non-directory link",
+      "outside regular file",
+      "contained regular file",
+      "contained scope link to outside file",
       "missing",
       "wrong",
       "self-linked",
@@ -585,7 +588,8 @@ test(
         if (aliasState.startsWith("outside")) {
           const linked = aliasState.endsWith("link");
           const directory = join(home, linked ? "shared-node-modules" : "node_modules");
-          if (aliasState === "outside non-directory link") writeFileSync(directory, "");
+          if (aliasState === "outside non-directory link" || aliasState === "outside regular file")
+            writeFileSync(directory, "");
           else mkdirSync(directory);
           if (aliasState.startsWith("outside alias")) {
             const outside = join(directory, `@openai/codex-${process.platform}-${process.arch}`);
@@ -600,6 +604,18 @@ test(
         }
         renameSync(join(nativePackage, "vendor"), join(pkg, "vendor"));
         rmSync(nativePackage, { recursive: true });
+        if (aliasState === "contained regular file") {
+          const directory = join(pkg, "node_modules");
+          rmSync(directory, { recursive: true });
+          writeFileSync(directory, "");
+        }
+        if (aliasState === "contained scope link to outside file") {
+          const scope = join(pkg, "node_modules/@openai");
+          const outside = join(home, "outside-file");
+          rmSync(scope, { recursive: true });
+          writeFileSync(outside, "");
+          symlinkSync(outside, scope);
+        }
         if (aliasState === "self-linked") symlinkSync("../..", nativePackage);
         if (aliasState === "missing" || aliasState === "wrong") {
           const manifest = join(pkg, "package.json");
@@ -614,7 +630,9 @@ test(
         }
         const result = installStep(home, "login", "exit 0");
         const valid = aliasState === "valid" || aliasState.startsWith("outside empty directory");
-        const status = valid ? 0 : aliasState.startsWith("outside") ? 2 : 1;
+        const unsafe =
+          aliasState.startsWith("outside") || aliasState === "contained scope link to outside file";
+        const status = valid ? 0 : unsafe ? 2 : 1;
         assert.equal(result.status, status, `${aliasState}: ${result.stderr}`);
         assert.deepEqual(
           existsSync(trace) ? readFileSync(trace, "utf8").trim().split("\n") : [],
