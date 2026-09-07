@@ -141,11 +141,6 @@ export type ExactReviewTargetItemState =
   | { state: "unavailable" };
 
 export function exactReviewDecisionFrom(value: unknown): ExactReviewDecision | null {
-  try {
-    decisionPublicationPolicy(value);
-  } catch {
-    return null;
-  }
   const base = exactReviewBaseDecisionFrom(value);
   if (!base) return null;
   const decision = objectValue(value);

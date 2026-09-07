@@ -1051,7 +1051,10 @@ test("batch commit publishes every prepared tuple to canonical Worker state", ()
   assert.match(cliSource, /fenceKey/);
   assert.match(cliSource, /postDirectPublicationResult/);
   assert.match(cliSource, /publication-batch-results/);
-  assert.match(cliSource, /plan\.operations\.map\(\(operation\) => \(\{ \.\.\.operation \}\)\)/);
+  assert.match(
+    cliSource,
+    /payload: prepareDirectPublicationPayload\(\{ revision: plan\.identity\.revision, plan \}\)/,
+  );
   assert.doesNotMatch(cliSource, /runGit|targetOid/);
   assert.doesNotMatch(cliSource, /commitPreparedStateBatch/);
   assert.doesNotMatch(cliSource, /state-publication-batch/);

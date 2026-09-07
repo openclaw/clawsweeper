@@ -107,24 +107,23 @@ const options = eventOptionsFromEnv();
 try {
   await publishEventResult(options);
 } catch (error) {
-  const authorityUnavailable = error instanceof ManualPublicationAuthorityTransportError;
-  const retryableFailure =
-    authorityUnavailable ||
-    error instanceof GitHubRateLimitError ||
-    ghRetryKind(error) === "transient" ||
-    (error instanceof PublicationResultError && error.reasonCode === "state_contention");
-  const completionKind = retryableFailure ? "retryable_failure" : "permanent_failure";
-  const reasonCode = authorityUnavailable
-    ? "state_contention"
-    : error instanceof GitHubRateLimitError
-      ? "github_rate_limit"
-      : ghRetryKind(error) === "transient"
-        ? "github_transient"
-        : error instanceof PublicationResultError
-          ? error.reasonCode
-          : error instanceof RecordTupleError
-            ? "tuple_protocol_invalid"
-            : "unknown_failure";
+  const reasonCode =
+    error instanceof ManualPublicationAuthorityTransportError
+      ? "state_contention"
+      : error instanceof GitHubRateLimitError
+        ? "github_rate_limit"
+        : ghRetryKind(error) === "transient"
+          ? "github_transient"
+          : error instanceof PublicationResultError
+            ? error.reasonCode
+            : error instanceof RecordTupleError
+              ? "tuple_protocol_invalid"
+              : "unknown_failure";
+  const completionKind = ["state_contention", "github_rate_limit", "github_transient"].includes(
+    reasonCode,
+  )
+    ? "retryable_failure"
+    : "permanent_failure";
   const fingerprint = errorFingerprint(error);
   if (options.batchMutationOutput) {
     writeBatchMutationResult(options.batchMutationOutput, {
@@ -462,7 +461,6 @@ function prepareBatchMutation({
       canonicalTargetKey: `${options.targetRepo}#${options.itemNumber}`,
       fenceKey: envValue("EXACT_REVIEW_BATCH_ITEM_KEY"),
     },
-    "Batch",
   );
   // These expectations are emitted with the plan so the batch workflow can run
   // post-commit routing without re-running GitHub mutations.
@@ -486,7 +484,6 @@ function prepareTupleMutationPlan(
   contentRoot: string,
   identity: StateMutationIdentity,
   publication: PreparedStateMutationPlan["publication"] | undefined,
-  label: string,
 ): PreparedStateMutationPlan {
   const commitPaths = [
     paths.itemRecord,
@@ -505,9 +502,6 @@ function prepareTupleMutationPlan(
       path,
       content: fs.readFileSync(contentPath),
     });
-  }
-  if (!operations.length) {
-    throw new Error(`${label} mutation for ${paths.targetSlug} is empty`);
   }
   const plan = prepareStateMutationPlan({
     identity,
@@ -715,7 +709,6 @@ async function publishSnapshot({
         canonicalTargetKey: `${options.targetRepo}#${options.itemNumber}`,
         fenceKey: itemKey,
       },
-      "Exact event",
     );
     const publication = await postDirectPublicationResult({
       baseUrl: envValue("EXACT_REVIEW_QUEUE_URL"),
