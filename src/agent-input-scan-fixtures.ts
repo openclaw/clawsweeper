@@ -82,6 +82,11 @@ const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
     sources: ["extensions/browser/src/browser-tool.test.ts"],
   },
   {
+    // OpenClaw Firecrawl blocked-host credential fixture introduced by d1b80794b651.
+    fixtureSha256: "fe30fb721f4e8b1d50f281ae338da254a0e34dba6804776c231b8666d5856055",
+    sources: ["extensions/firecrawl/src/firecrawl-client.test.ts"],
+  },
+  {
     // Decoding a neighboring Basic-auth token can label these unchanged CDP
     // literals BASE64. Each match still requires its exact original source line.
     fixtureSha256: "24bd2ee9856630ff773868d946a3b3159e1bb04b297adf4d42b916218a0195d7",
