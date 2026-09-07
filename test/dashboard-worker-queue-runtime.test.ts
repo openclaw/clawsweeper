@@ -48,6 +48,8 @@ test("manual queue policy cannot be widened by coalescing or ambiguous decision 
   const decision = {
     targetRepo: "openclaw/gogcli",
     targetBranch: "release/proof",
+    codexTimeoutMs: 2_400_000,
+    additionalPrompt: "Only inspect the selected behavior.",
     itemNumber: 71,
     itemKind: "issue" as const,
     sourceEvent: "issues" as const,
@@ -58,6 +60,8 @@ test("manual queue policy cannot be widened by coalescing or ambiguous decision 
   const ordinary = {
     ...decision,
     targetBranch: "main",
+    codexTimeoutMs: 600_000,
+    additionalPrompt: "Ordinary event instructions.",
     sourceAction: "opened",
     sourceUpdatedAt: "2026-09-07T12:00:00Z",
   } as Record<string, unknown>;
@@ -72,7 +76,16 @@ test("manual queue policy cannot be widened by coalescing or ambiguous decision 
   );
   const merged = mergePendingExactReviewDecision(decision, exactReviewDecisionFrom(ordinary)!);
   assert.equal(merged.targetBranch, "release/proof");
+  assert.equal(merged.codexTimeoutMs, decision.codexTimeoutMs);
+  assert.equal(merged.additionalPrompt, decision.additionalPrompt);
   assert.equal(merged.sourceUpdatedAt, ordinary.sourceUpdatedAt);
+  const nextManual = mergePendingExactReviewDecision(decision, {
+    ...decision,
+    codexTimeoutMs: 300_000,
+    additionalPrompt: "",
+  });
+  assert.equal(nextManual.codexTimeoutMs, 300_000);
+  assert.equal(nextManual.additionalPrompt, "");
   assert.equal(
     mergePendingExactReviewDecision(decision, { ...decision, targetBranch: "release/next" })
       .targetBranch,

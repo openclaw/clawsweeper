@@ -694,6 +694,8 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
   const publicationArtifactDir = directStep.env.EXACT_REVIEW_PUBLICATION_ARTIFACT_DIR;
   assert.equal(publicationArtifactDir, ".artifacts/exact-review-bundle/review");
   const selectedBranch = "release/proof";
+  const selectedTimeoutMs = 2_400_000;
+  const selectedPrompt = "-- Inspect only the selected behavior.\nKeep publication restricted.";
   const admissionWork = join(root, "manual-admission");
   mkdirSync(join(admissionWork, ".artifacts"), { recursive: true });
   cpSync(join(source, "dist"), join(admissionWork, "dist"), { recursive: true });
@@ -702,6 +704,8 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
   const admissionEnv = {
     TARGET_REPO: repo,
     TARGET_BRANCH: selectedBranch,
+    CODEX_TIMEOUT_MS: String(selectedTimeoutMs),
+    ADDITIONAL_PROMPT: selectedPrompt,
     ITEM_NUMBER: "71",
     ITEM_NUMBERS: "72",
     GITHUB_RUN_ID: "1000",
@@ -740,6 +744,8 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
       itemKind: "issue",
       sourceEvent: "issues",
       sourceAction: "edited",
+      codexTimeoutMs: 600_000,
+      additionalPrompt: "Ordinary event instructions must not replace the manual request.",
       sourceUpdatedAt: coalescedSourceUpdatedAt,
       supersedesInProgress: false,
     },
@@ -761,6 +767,8 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
       String(number),
       "--request-id",
       requestId,
+      "--codex-timeout-ms",
+      "1200000",
       "--queue-url",
       "https://manual-queue.invalid",
     ]);
@@ -799,11 +807,25 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
     assert.equal(claimDecision.publicationPolicy, "record_comment_only");
     if ([71, 72].includes(number) && !repeatRunId) {
       assert.equal(claimDecision.targetBranch, selectedBranch);
+      assert.equal(claimDecision.codexTimeoutMs, selectedTimeoutMs);
+      assert.equal(claimDecision.additionalPrompt, selectedPrompt);
+      const targetOutput = join(output, `manual-target-${number}.txt`);
+      const targetStep = sweep.jobs["event-review-apply"].steps.find(
+        (step) => step.id === "target",
+      );
+      await command("bash", ["-c", targetStep.run], {
+        CLAIM_DECISION: JSON.stringify(claimDecision),
+        CONFIGURED_CODEX_TIMEOUT_MS: "1200000",
+        GITHUB_OUTPUT: targetOutput,
+      });
+      assert.match(readFileSync(targetOutput, "utf8"), /^codex_timeout_ms=2400000$/m);
       observations.push({
         scenario: "manual workflow preserves the selected non-default branch",
         number,
         requestedBranch: selectedBranch,
         claimedBranch: claimDecision.targetBranch,
+        codexTimeoutMs: claimDecision.codexTimeoutMs,
+        additionalPromptSha256: digest(claimDecision.additionalPrompt),
       });
     }
     if (number === 71) {

@@ -8,6 +8,8 @@ import { parseArgs } from "./lib.js";
 export async function enqueueManualReviews(options: {
   targetRepo: string;
   targetBranch: string;
+  codexTimeoutMs: number;
+  additionalPrompt?: string;
   itemNumbers: number[];
   requestId: string;
   queueUrl: string;
@@ -19,6 +21,8 @@ export async function enqueueManualReviews(options: {
     !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(options.targetRepo) ||
     !/^[A-Za-z0-9_./-]+$/.test(options.targetBranch) ||
     options.targetBranch.includes("..") ||
+    !Number.isSafeInteger(options.codexTimeoutMs) ||
+    options.codexTimeoutMs < 1 ||
     !/^[A-Za-z0-9_.:-]{1,150}$/.test(options.requestId) ||
     !options.itemNumbers.length ||
     options.itemNumbers.some((n) => !Number.isSafeInteger(n) || n < 1)
@@ -57,6 +61,8 @@ export async function enqueueManualReviews(options: {
           decision: {
             targetRepo: options.targetRepo,
             targetBranch: options.targetBranch,
+            codexTimeoutMs: options.codexTimeoutMs,
+            additionalPrompt: options.additionalPrompt ?? "",
             itemNumber: number,
             itemKind,
             sourceEvent: itemKind === "issue" ? "issues" : "pull_request",
@@ -96,6 +102,8 @@ async function main() {
   const result = await enqueueManualReviews({
     targetRepo,
     targetBranch: required("target-branch"),
+    codexTimeoutMs: Number(required("codex-timeout-ms")),
+    additionalPrompt: process.env.ADDITIONAL_PROMPT || "",
     itemNumbers: required("item-numbers").split(",").map(Number),
     requestId: required("request-id"),
     queueUrl: required("queue-url"),

@@ -23,7 +23,9 @@ The runtime scenarios exercise:
 
 - Checked-in manual admission with `release/proof`; a dispatch outage leaves
   requests pending while an ordinary `main`-branch event refreshes source facts.
-  The eventual claim must preserve the manual branch and advance its revision.
+  The eventual claim must preserve the manual branch, requested timeout, and
+  one-off instructions, and advance its revision. The checked-in event-payload
+  resolver must retain the requested 40-minute timeout instead of the default.
 - Checked-in direct-publication and lifecycle shell steps. Selected bundle input,
   imported records, snapshots, and early refusal output stay in the chosen work
   root, even when the caller runs from another checkout. Raw producer diagnostics

@@ -10,6 +10,8 @@ test("manual admission reports partial failure, attempts the tail, and retries s
   const options = {
     targetRepo: "openclaw/gogcli",
     targetBranch: "main",
+    codexTimeoutMs: 2_400_000,
+    additionalPrompt: "Keep the operator's one-off instructions.\nDo not broaden scope.",
     itemNumbers: [1, 2, 3],
     requestId: "1234",
     queueUrl: "https://queue.example",
@@ -36,11 +38,22 @@ test("manual admission reports partial failure, attempts the tail, and retries s
     first.items.map((item) => item.accepted),
     [true, false, true],
   );
+  for (const payload of payloads) {
+    const decision = JSON.parse(payload).decision;
+    assert.equal(decision.codexTimeoutMs, options.codexTimeoutMs);
+    assert.equal(decision.additionalPrompt, options.additionalPrompt);
+  }
   await enqueueManualReviews(options);
   assert.deepEqual(payloads.slice(0, 3), payloads.slice(3));
   assert.ok(
     payloads.every((p) => JSON.parse(p).decision.publicationPolicy === "record_comment_only"),
   );
+  for (const codexTimeoutMs of [0, -1, 1.5, Number.POSITIVE_INFINITY]) {
+    await assert.rejects(
+      enqueueManualReviews({ ...options, codexTimeoutMs }),
+      /invalid explicit manual/,
+    );
+  }
 });
 
 test("manual admission refuses unavailable policy capability before resolving items", async () => {
@@ -49,6 +62,7 @@ test("manual admission refuses unavailable policy capability before resolving it
     enqueueManualReviews({
       targetRepo: "openclaw/gogcli",
       targetBranch: "main",
+      codexTimeoutMs: 1_200_000,
       itemNumbers: [1],
       requestId: "1234",
       queueUrl: "https://queue.example",

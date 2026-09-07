@@ -52,9 +52,13 @@ item; the CLI reports failed members and continues the requested tail. Retries
 of the same workflow run reuse its run ID and item number, excluding attempt.
 Changed payloads conflict rather than borrowing an earlier delivery receipt.
 Admission preserves the resolved operator-selected `target_branch`; it discovers
-the repository default only when no resolved branch was supplied. Ordinary item
-events may refresh a pending manual review's source facts but cannot replace its
-selected branch; a new explicit manual request may select a different branch.
+the repository default only when no resolved branch was supplied. The resolved
+`codex_timeout_ms` and one-off `additional_prompt` travel with that decision.
+Manual timeouts honor the requested positive duration up to the existing exact-review
+45-minute cap; ordinary adaptive timeout behavior is unchanged. Ordinary item
+events may refresh source facts but cannot replace the selected branch, timeout,
+or instructions. A new explicit manual request may replace those options or clear
+its one-off instructions.
 
 The queue advertises `manual_publication.policy=record_comment_only` and an
 explicit enabled bit. Admission defaults off until

@@ -43,6 +43,42 @@ const workflow = YAML.parse(source) as {
   >;
 };
 
+test("manual review timeouts survive queue resolution within the existing exact-review cap", () => {
+  const steps = YAML.parse(sweepSource).jobs["event-review-apply"].steps;
+  const script = steps
+    .find((step: { id?: string }) => step.id === "target")
+    .run.match(/node <<'NODE'\n([\s\S]*?)\nNODE/)[1];
+  for (const [sourceAction, codexTimeoutMs, expected] of [
+    ["manual_explicit_review", 300_000, 300_000],
+    ["manual_explicit_review", 2_400_000, 2_400_000],
+    ["manual_explicit_review", 3_600_000, 2_700_000],
+    ["opened", 2_400_000, 1_800_000],
+  ]) {
+    let output = "";
+    runInNewContext(script, {
+      require: () => ({
+        appendFileSync: (_path: string, value: string) => {
+          output += value;
+        },
+      }),
+      process: {
+        env: {
+          CLAIM_DECISION: JSON.stringify({
+            targetRepo: "openclaw/openclaw",
+            itemNumber: 71,
+            sourceAction,
+            codexTimeoutMs,
+            publicationPolicy:
+              sourceAction === "manual_explicit_review" ? "record_comment_only" : undefined,
+          }),
+          CONFIGURED_CODEX_TIMEOUT_MS: "1200000",
+        },
+      },
+    });
+    assert.match(output, new RegExp(`^codex_timeout_ms=${expected}$`, "m"));
+  }
+});
+
 test("manual publication proof driver parses as a complete executable module", () => {
   const result = spawnSync(
     process.execPath,
@@ -153,6 +189,8 @@ ${admission.run}`,
               PATH: process.env.PATH,
               TARGET_REPO: "example/repo",
               TARGET_BRANCH: targetBranch,
+              CODEX_TIMEOUT_MS: "2400000",
+              ADDITIONAL_PROMPT: "Preserve selected instructions.",
               ITEM_NUMBER: "71",
               ITEM_NUMBERS: "72",
               GITHUB_RUN_ID: "1000",
@@ -169,6 +207,12 @@ ${admission.run}`,
         assert.equal(args[args.indexOf("--target-branch") + 1], targetBranch || "trunk");
         assert.equal(existsSync(join(root, "lookups")), !targetBranch);
         assert.equal(admission.env.TARGET_BRANCH, "${{ steps.target.outputs.target_branch }}");
+        assert.equal(admission.env.CODEX_TIMEOUT_MS, "${{ steps.mode.outputs.codex_timeout_ms }}");
+        assert.equal(
+          admission.env.ADDITIONAL_PROMPT,
+          "${{ github.event.inputs.additional_prompt || '' }}",
+        );
+        assert.equal(args[args.indexOf("--codex-timeout-ms") + 1], "2400000");
       } finally {
         rmSync(root, { recursive: true, force: true });
       }

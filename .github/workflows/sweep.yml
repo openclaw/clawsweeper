@@ -712,6 +712,12 @@ jobs:
             Number.isInteger(adaptiveValue) && adaptiveValue > 0
               ? Math.min(1_800_000, Math.max(600_000, adaptiveValue))
               : 0;
+          const requestedTimeout =
+            decision.sourceAction === "manual_explicit_review" &&
+            decision.publicationPolicy === "record_comment_only" &&
+            Number.isInteger(adaptiveValue) && adaptiveValue > 0
+              ? adaptiveValue
+              : Math.max(configuredTimeout, adaptiveTimeout);
           const mediaValue = Number(decision.mediaProofTimeoutMs);
           const mediaTimeout =
             Number.isInteger(mediaValue) && mediaValue > 0 ? Math.min(480_000, mediaValue) : 0;
@@ -730,7 +736,7 @@ jobs:
             item_number: itemNumber,
             codex_timeout_ms: Math.min(
               maxExactReviewCodexTimeoutMs,
-              Math.max(configuredTimeout, adaptiveTimeout),
+              requestedTimeout,
             ),
             media_proof_timeout_ms: mediaTimeout,
             has_command_context: hasCommandContext,
@@ -4702,6 +4708,8 @@ jobs:
           TARGET_BRANCH: ${{ steps.target.outputs.target_branch }}
           ITEM_NUMBER: ${{ github.event.inputs.item_number }}
           ITEM_NUMBERS: ${{ github.event.inputs.item_numbers }}
+          CODEX_TIMEOUT_MS: ${{ steps.mode.outputs.codex_timeout_ms }}
+          ADDITIONAL_PROMPT: ${{ github.event.inputs.additional_prompt || '' }}
         run: |
           set -euo pipefail
           target_branch="$TARGET_BRANCH"
@@ -4713,6 +4721,7 @@ jobs:
           node dist/repair/manual-review-enqueue.js \
             --target-repo "$TARGET_REPO" --target-branch "$target_branch" \
             --item-numbers "$selected" --request-id "$GITHUB_RUN_ID" \
+            --codex-timeout-ms "$CODEX_TIMEOUT_MS" \
             --queue-url "$QUEUE_URL" | tee .artifacts/manual-review-admission.json
 
       - name: Enqueue scheduled review candidates

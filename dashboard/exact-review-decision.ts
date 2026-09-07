@@ -750,9 +750,14 @@ export function mergePendingExactReviewDecision(
   if (retainedPolicy) {
     merged.publicationPolicy = retainedPolicy;
     merged.sourceAction = current.sourceAction;
-    // Only another explicit manual request may replace the selected branch.
-    if (next.sourceAction !== MANUAL_REVIEW_SOURCE_ACTION || !decisionPublicationPolicy(next))
+    // Only another explicit manual request may replace the operator's options.
+    if (next.sourceAction !== MANUAL_REVIEW_SOURCE_ACTION || !decisionPublicationPolicy(next)) {
       merged.targetBranch = current.targetBranch;
+      if (current.codexTimeoutMs === undefined) delete merged.codexTimeoutMs;
+      else merged.codexTimeoutMs = current.codexTimeoutMs;
+      if (current.additionalPrompt === undefined) delete merged.additionalPrompt;
+      else merged.additionalPrompt = current.additionalPrompt;
+    }
   }
   const commandMarkerChanged =
     Object.hasOwn(next, "commandStatusMarker") &&
