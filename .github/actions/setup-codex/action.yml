@@ -42,19 +42,33 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        npm config set prefix "$HOME/.clawsweeper-repair/codex"
-        npm config set cache "$HOME/.npm"
         echo "$HOME/.clawsweeper-repair/codex/bin" >> "$GITHUB_PATH"
         export PATH="$HOME/.clawsweeper-repair/codex/bin:$PATH"
 
         install_env=(env -u OPENAI_API_KEY -u CODEX_API_KEY -u PROXY_API_KEY -u CLAWSWEEPER_INTERNAL_MODEL -u CLAWSWEEPER_CLAWROUTER_CONFIG)
-        "${install_env[@]}" npm install -g "@openai/codex@${{ inputs['codex-version'] }}" \
-          --prefer-online --no-audit --no-fund --ignore-scripts
-        if [[ "${{ inputs['auth-mode'] }}" == "proxy" ]]; then
-          "${install_env[@]}" npm install -g "@openai/codex-responses-api-proxy@${{ inputs['proxy-version'] }}" \
+        npm_configured=false
+        ensure_installed() {
+          local name="$1" version="$2" status
+          if "${install_env[@]}" node "${{ github.action_path }}/validate-install.mjs" "$name" "$version"; then
+            return
+          else
+            status=$?
+          fi
+          # Only an absent or unusable contained installation may be repaired.
+          if [[ "$status" != 1 ]]; then return "$status"; fi
+          if [[ "$npm_configured" == false ]]; then
+            "${install_env[@]}" npm config set prefix "$HOME/.clawsweeper-repair/codex"
+            "${install_env[@]}" npm config set cache "$HOME/.npm"
+            npm_configured=true
+          fi
+          "${install_env[@]}" npm install -g "@openai/$name@$version" \
             --prefer-online --no-audit --no-fund --ignore-scripts
+          "${install_env[@]}" node "${{ github.action_path }}/validate-install.mjs" "$name" "$version"
+        }
+        ensure_installed codex "${{ inputs['codex-version'] }}"
+        if [[ "${{ inputs['auth-mode'] }}" == "proxy" ]]; then
+          ensure_installed codex-responses-api-proxy "${{ inputs['proxy-version'] }}"
         fi
-        codex --version
 
     - name: Enable Linux user namespaces for bubblewrap
       if: ${{ runner.os == 'Linux' && runner.environment == 'github-hosted' }}

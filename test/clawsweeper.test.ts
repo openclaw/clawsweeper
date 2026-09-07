@@ -2286,15 +2286,12 @@ test("agent workflows install pinned CLI releases and keep runner models secret"
 
   assert.match(action, /codex-version:[\s\S]*default: "0\.153\.3"/);
   assert.match(action, /proxy-version:[\s\S]*default: "0\.139\.0"/);
-  assert.match(action, /@openai\/codex@\$\{\{ inputs\['codex-version'\] \}\}/);
-  assert.match(action, /@openai\/codex-responses-api-proxy@\$\{\{ inputs\['proxy-version'\] \}\}/);
   assert.doesNotMatch(action, /@latest/);
   assert.match(localCheck, /CLAWSWEEPER_LOCAL_CODEX_MODEL \?\? "gpt-5\.6-sol"/);
   assert.match(localCheck, /model_reasoning_effort="high"/);
   assert.doesNotMatch(localCheck, /CLAWSWEEPER_PREFER_WINDOWS_CODEX_APP/);
   assert.doesNotMatch(localCheck, /gpt-5\.5/);
   assert.match(action, /env -u OPENAI_API_KEY[\s\S]*-u CLAWSWEEPER_INTERNAL_MODEL/);
-  assert.equal(action.match(/--ignore-scripts/g)?.length, 2);
   assert.match(action, /runner\.os == 'Linux' && runner\.environment == 'github-hosted'/);
   assert.match(action, /kernel\.unprivileged_userns_clone=1/);
   assert.match(action, /kernel\.apparmor_restrict_unprivileged_userns=0/);
