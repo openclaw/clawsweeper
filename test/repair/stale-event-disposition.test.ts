@@ -60,48 +60,57 @@ test("publish-event-result exits terminally on a stale preflight instead of thro
   assert.ok(!preflightBlock.includes("throw new Error"));
 });
 
-test("manual artifact scope permits regular producer metrics but rejects sibling reports and directories", () => {
-  for (const extra of ["metrics", "sibling", "directory"] as const) {
-    const root = mkdtempSync(join(tmpdir(), "manual-artifact-scope-"));
-    try {
-      const artifacts = join(root, "artifacts/event");
-      mkdirSync(artifacts, { recursive: true });
-      writeFileSync(
-        join(artifacts, "74.md"),
-        "---\npublication_policy: record_comment_only\n---\nReport\n",
-      );
-      if (extra === "directory") mkdirSync(join(artifacts, "review-cache-metrics.json"));
-      else
+for (const artifactDir of ["artifacts/event", ".artifacts/exact-review-bundle/review"]) {
+  test(`manual artifact scope remains narrow in ${artifactDir}`, () => {
+    for (const extra of ["metrics", "sibling", "directory"] as const) {
+      const root = mkdtempSync(join(tmpdir(), "manual-artifact-scope-"));
+      try {
+        const artifacts = join(root, artifactDir);
+        mkdirSync(artifacts, { recursive: true });
         writeFileSync(
-          join(artifacts, extra === "metrics" ? "review-cache-metrics.json" : "75.md"),
-          "{}",
+          join(artifacts, "74.md"),
+          "---\npublication_policy: record_comment_only\n---\nReport\n",
         );
-      const result = spawnSync(process.execPath, [resolve("dist/repair/publish-event-result.js")], {
-        env: {
-          PATH: process.env.PATH,
-          TARGET_REPO: "openclaw/openclaw",
-          ITEM_NUMBER: "74",
-          EXACT_REVIEW_WORK_ROOT: root,
-          CLAWSWEEPER_CODE_ROOT: process.cwd(),
-          EXACT_REVIEW_DECISION: JSON.stringify({
-            sourceAction: "manual_explicit_review",
-            publicationPolicy: "record_comment_only",
-          }),
-        },
-        encoding: "utf8",
-      });
-      assert.equal(result.status, 1);
-      if (extra === "metrics") {
-        assert.doesNotMatch(result.stderr, /artifact directory must contain only/);
-        assert.match(result.stderr, /manual publication requires/);
-      } else {
-        assert.match(result.stderr, /artifact directory must contain only/);
+        if (extra === "directory") mkdirSync(join(artifacts, "review-cache-metrics.json"));
+        else
+          writeFileSync(
+            join(artifacts, extra === "metrics" ? "review-cache-metrics.json" : "75.md"),
+            "{}",
+          );
+        const result = spawnSync(
+          process.execPath,
+          [resolve("dist/repair/publish-event-result.js")],
+          {
+            env: {
+              PATH: process.env.PATH,
+              TARGET_REPO: "openclaw/openclaw",
+              ITEM_NUMBER: "74",
+              EXACT_REVIEW_WORK_ROOT: root,
+              ...(artifactDir === "artifacts/event"
+                ? {}
+                : { EXACT_REVIEW_PUBLICATION_ARTIFACT_DIR: artifactDir }),
+              CLAWSWEEPER_CODE_ROOT: process.cwd(),
+              EXACT_REVIEW_DECISION: JSON.stringify({
+                sourceAction: "manual_explicit_review",
+                publicationPolicy: "record_comment_only",
+              }),
+            },
+            encoding: "utf8",
+          },
+        );
+        assert.equal(result.status, 1);
+        if (extra === "metrics") {
+          assert.doesNotMatch(result.stderr, /artifact directory must contain only/);
+          assert.match(result.stderr, /manual publication requires/);
+        } else {
+          assert.match(result.stderr, /artifact directory must contain only/);
+        }
+      } finally {
+        rmSync(root, { recursive: true, force: true });
       }
-    } finally {
-      rmSync(root, { recursive: true, force: true });
     }
-  }
-});
+  });
+}
 
 test("absent event report preserves ordinary terminal behavior and refuses restricted hydrated reuse", () => {
   for (const restricted of [false, true]) {

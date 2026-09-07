@@ -111,6 +111,39 @@ test("manual bundle policy is bound to the producer decision and original report
   }
 });
 
+test("selected bundle staging leaves normal producer diagnostics and sibling reports untouched", () => {
+  const value = fixture();
+  try {
+    fs.writeFileSync(path.join(value.root, "selection.json"), '{"selected":[42]}\n');
+    fs.writeFileSync(path.join(value.root, "review-cache-metrics.json"), "{}\n");
+    fs.writeFileSync(path.join(value.root, "99.md"), "Unselected report\n");
+    for (const directory of ["codex", "review-trees"]) {
+      fs.mkdirSync(path.join(value.root, directory));
+      fs.writeFileSync(path.join(value.root, directory, "diagnostic.txt"), "diagnostic\n");
+    }
+    const original = fs.readFileSync(value.report, "utf8");
+    createExactReviewBundle({
+      bundleDir: value.bundleDir,
+      reviewPath: value.report,
+      createdAt: "2026-09-07T00:00:00Z",
+      context: value.context,
+    });
+    validateExactReviewBundle(value.bundleDir, value.context);
+    assert.deepEqual(fs.readdirSync(path.join(value.bundleDir, "review")), ["42.md"]);
+    assert.equal(fs.readFileSync(path.join(value.bundleDir, "review/42.md"), "utf8"), original);
+    assert.equal(fs.readFileSync(value.report, "utf8"), original);
+    assert.equal(fs.readFileSync(path.join(value.root, "99.md"), "utf8"), "Unselected report\n");
+    for (const directory of ["codex", "review-trees"]) {
+      assert.equal(
+        fs.readFileSync(path.join(value.root, directory, "diagnostic.txt"), "utf8"),
+        "diagnostic\n",
+      );
+    }
+  } finally {
+    fs.rmSync(value.root, { recursive: true, force: true });
+  }
+});
+
 test("historical proof-bearing exact review bundles still validate", () => {
   const value = fixture();
   createExactReviewBundle({

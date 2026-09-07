@@ -1,13 +1,31 @@
 # Explicit manual publication proof
 
-- Status: controlled Linux local-container runtime proof and full gate passed; runtime/test changes are independently scoped-clean at P0–P2
+- Status: active proof recipe; execution results below are historical
 - Owner: ClawSweeper queue and publication maintainers
 - Source of truth: [driver](../../../scripts/e2e/manual-review-publication.mjs)
   and [entry script](../../../scripts/e2e/manual-review-publication-crabbox.sh)
-- Base: `a9ed9b5ba7eb12357da7cc2360d87cc5397c3c36`
-- Update when: policy, admission, publication ownership, retry, or consumer behavior changes
+- Historical base: `a9ed9b5ba7eb12357da7cc2360d87cc5397c3c36`
+- Update when: policy, admission/branch selection, producer inventory, publication ownership, retry, or consumer behavior changes
 
-## Controlled Linux result
+## Current workflow integration scenarios
+
+The driver executes the checked-in manual admission shell step with a non-default
+`release/proof` branch, then verifies that both resulting coordinator claims and
+bundle contexts preserve it. It executes the checked-in direct-publication shell
+step with `EXACT_REVIEW_WORK_ROOT` separate from the command working directory.
+
+Raw producer fixtures include `selection.json`, metrics, `codex/`, `review-trees/`,
+and an unselected sibling report. Publication reads only the already-created
+bundle's selected `review/<number>.md`; raw diagnostics remain intact. The proof
+rejects raw producer inventory and extra sibling files, directories, and symlinks
+inside the selected publication input. It also checks that every bundle's manifest
+and selected report remain byte-identical after publication scenarios.
+
+Current execution evidence belongs in the PR's main body with its exact head and
+source hash. The historical receipts below predate these added integration cases;
+they do not establish that the expanded current driver passed.
+
+## Historical controlled Linux result
 
 The operator explicitly approved `local-container` after two AWS coordinator
 creation failures (`HTTP 500 / 1101`); both attempted AWS leases were released.

@@ -51,6 +51,8 @@ do not fall back to matrix publication. Admission is independently durable per
 item; the CLI reports failed members and continues the requested tail. Retries
 of the same workflow run reuse its run ID and item number, excluding attempt.
 Changed payloads conflict rather than borrowing an earlier delivery receipt.
+Admission preserves the resolved operator-selected `target_branch`; it discovers
+the repository default only when no resolved branch was supplied.
 
 The queue advertises `manual_publication.policy=record_comment_only` and an
 explicit enabled bit. Admission defaults off until
@@ -62,6 +64,12 @@ direct and batch publication capacity, fences, and retries. Source drift ends
 as superseded; unusable artifacts exhaust publication retries into existing
 dead letters instead of starting another model review.
 
+Direct producers publish from the existing exact bundle's `review/` directory,
+not raw `artifacts/event` output. `EXACT_REVIEW_PUBLICATION_ARTIFACT_DIR` selects
+that input relative to `EXACT_REVIEW_WORK_ROOT`; other callers retain the
+`artifacts/event` default. Producer `selection.json`, `codex/`, `review-trees/`,
+and sibling reports stay outside the selected bundle. The importer still rejects
+unexpected files, symlinks, and directories in its publication input.
 
 The receiver workflow is `.github/workflows/sweep.yml`.
 

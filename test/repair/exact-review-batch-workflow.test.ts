@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -43,6 +43,55 @@ test("manual publication stays queue-owned and excludes router and implementatio
   assert.match(source, /publication_policy.*record_comment_only.*failed_review_shard_recovery/);
   assert.match(source, /AUTO_IMPLEMENT_ISSUES.*\n\s*\[ -z "\$publication_policy" \]/);
 });
+
+for (const targetBranch of ["release/proof", ""]) {
+  test(
+    `manual admission preserves branch selection ${targetBranch || "(default lookup)"}`,
+    { skip: process.platform === "win32" },
+    () => {
+      const sweep = YAML.parse(sweepSource);
+      const admission = sweep.jobs.plan.steps.find(
+        (step: { name?: string }) => step.name === "Admit explicit manual reviews",
+      );
+      const root = mkdtempSync(join(tmpdir(), "manual-admission-branch-"));
+      try {
+        mkdirSync(join(root, ".artifacts"));
+        const result = spawnSync(
+          "bash",
+          [
+            "-c",
+            `gh() { printf 'lookup\\n' >> "$LOOKUPS"; printf 'trunk\\n'; }
+node() { printf '%s\\0' "$@" > "$ARGUMENTS"; }
+${admission.run}`,
+          ],
+          {
+            cwd: root,
+            env: {
+              PATH: process.env.PATH,
+              TARGET_REPO: "example/repo",
+              TARGET_BRANCH: targetBranch,
+              ITEM_NUMBER: "71",
+              ITEM_NUMBERS: "72",
+              GITHUB_RUN_ID: "1000",
+              QUEUE_URL: "https://queue.invalid",
+              LOOKUPS: join(root, "lookups"),
+              ARGUMENTS: join(root, "arguments"),
+            },
+            encoding: "utf8",
+            timeout: 10_000,
+          },
+        );
+        assert.equal(result.status, 0, result.stderr);
+        const args = readFileSync(join(root, "arguments"), "utf8").split("\0");
+        assert.equal(args[args.indexOf("--target-branch") + 1], targetBranch || "trunk");
+        assert.equal(existsSync(join(root, "lookups")), !targetBranch);
+        assert.equal(admission.env.TARGET_BRANCH, "${{ steps.target.outputs.target_branch }}");
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+}
 
 test("terminal batch lifecycle payload carries a stable run-attempt-fence operation id", () => {
   const builder = source.match(
@@ -765,6 +814,27 @@ test("exact-review producer uses direct publication with bounded legacy fallback
   );
   assert.match(sweepSource, /internal\/exact-review\/enqueue/);
   assert.match(source, /name: Claim one durable publication batch/);
+});
+
+test("direct publication reads the existing selected bundle instead of producer diagnostics", () => {
+  const sweep = YAML.parse(sweepSource) as {
+    jobs: Record<string, { steps?: Array<{ name?: string; env?: Record<string, string> }> }>;
+  };
+  const configured = Object.values(sweep.jobs)
+    .flatMap((job) => job.steps ?? [])
+    .filter((step) => step.env?.EXACT_REVIEW_PUBLICATION_ARTIFACT_DIR !== undefined);
+  assert.equal(configured.length, 1);
+  const [direct] = configured;
+  assert.ok(direct);
+  assert.equal(direct.name, "Deliver GitHub effects and prepare direct state mutation");
+  assert.equal(
+    direct.env?.EXACT_REVIEW_PUBLICATION_ARTIFACT_DIR,
+    ".artifacts/exact-review-bundle/review",
+  );
+  assert.match(
+    publisherSource,
+    /artifactDir: resolve\(\s*workRoot,\s*process\.env\.EXACT_REVIEW_PUBLICATION_ARTIFACT_DIR \|\| "artifacts\/event",?\s*\)/,
+  );
 });
 
 test("batch workflow uses owner-scoped mutation credentials and canonical Worker hydration", () => {

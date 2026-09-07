@@ -328,8 +328,15 @@ capable of consuming a newly restricted record. Verify the runtime capability
 and the isolated [manual publication proof](../proof/manual-review-publication/README.md),
 then enable admission through the owner-controlled configuration process.
 
-Disabling admission stops new manual work. It does not remove restrictions from
-already admitted decisions or canonical reports. Rolling publishers or consumers
+While admission is disabled, explicit manual item dispatches fail closed before
+review; they do not resume the legacy matrix path. Scheduled/event review,
+comment-command re-review, and `apply_existing` keep their existing routing.
+This deliberate availability trade-off prevents newly restricted records from
+reaching incompatible consumers. Landing the code is not permission to enable
+admission or bypass this rollout gate.
+
+Disabling admission stops new explicit manual dispatch work. It does not remove
+restrictions from already admitted decisions or canonical reports. Rolling publishers or consumers
 back to versions that ignore `publication_policy` is unsafe while restricted
 records remain; retain compatible consumers during rollback. This change does
 not authorize a storage migration, historical artifact adoption, or production

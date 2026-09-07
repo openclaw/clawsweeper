@@ -1751,6 +1751,7 @@ jobs:
           EXACT_REVIEW_BATCH_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
           EXACT_REVIEW_BATCH_CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
           EXACT_REVIEW_BATCH_MUTATION_OUTPUT: .artifacts/direct-publication-outcome.json
+          EXACT_REVIEW_PUBLICATION_ARTIFACT_DIR: .artifacts/exact-review-bundle/review
           EXACT_REVIEW_LEASE_ID: ${{ steps.claim-exact-review-queue.outputs.lease_id }}
         run: pnpm run --silent repair:publish-event-result
 
@@ -4698,11 +4699,15 @@ jobs:
           GH_TOKEN: ${{ steps.target-read-token.outputs.token || github.token }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          TARGET_BRANCH: ${{ steps.target.outputs.target_branch }}
           ITEM_NUMBER: ${{ github.event.inputs.item_number }}
           ITEM_NUMBERS: ${{ github.event.inputs.item_numbers }}
         run: |
           set -euo pipefail
-          target_branch="$(gh api "repos/$TARGET_REPO" --jq '.default_branch')"
+          target_branch="$TARGET_BRANCH"
+          if [ -z "$target_branch" ]; then
+            target_branch="$(gh api "repos/$TARGET_REPO" --jq '.default_branch')"
+          fi
           selected="$ITEM_NUMBERS"
           if [ -n "$ITEM_NUMBER" ]; then selected="${selected:+$selected,}$ITEM_NUMBER"; fi
           node dist/repair/manual-review-enqueue.js \

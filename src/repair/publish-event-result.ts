@@ -756,7 +756,10 @@ function eventOptionsFromEnv(): EventOptions {
     minAgeMinutes: process.env.MIN_AGE_MINUTES || "0",
     reviewOnly: process.env.REVIEW_ONLY === "true",
     exactEventPublication: process.env.EXACT_EVENT_PUBLICATION === "true",
-    artifactDir: join(workRoot, "artifacts/event"),
+    artifactDir: resolve(
+      workRoot,
+      process.env.EXACT_REVIEW_PUBLICATION_ARTIFACT_DIR || "artifacts/event",
+    ),
     reportPath: join(workRoot, ".artifacts/event-apply-report.json"),
     snapshotDir: join(workRoot, ".artifacts/event-record-snapshot"),
     batchMutationOutput: process.env.EXACT_REVIEW_BATCH_MUTATION_OUTPUT || null,

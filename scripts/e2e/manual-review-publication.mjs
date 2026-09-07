@@ -10,6 +10,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -663,33 +664,31 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
     await wait(1000);
   }
   assert.ok(ready, redact(workerLog));
-  const admission = await command(process.execPath, [
-    join(source, "dist/repair/manual-review-enqueue.js"),
-    "--target-repo",
-    repo,
-    "--target-branch",
-    "main",
-    "--item-numbers",
-    "71,72",
-    "--request-id",
-    "1000",
-    "--queue-url",
-    "https://manual-queue.invalid",
-  ]);
+  const { default: YAML } = await import("yaml");
+  const sweep = YAML.parse(readFileSync(join(source, ".github/workflows/sweep.yml"), "utf8"));
+  const admissionStep = sweep.jobs.plan.steps.find(
+    (step) => step.name === "Admit explicit manual reviews",
+  );
+  const directStep = Object.values(sweep.jobs)
+    .flatMap((job) => job.steps || [])
+    .find((step) => step.name === "Deliver GitHub effects and prepare direct state mutation");
+  assert.equal(admissionStep.env.TARGET_BRANCH, "${{ steps.target.outputs.target_branch }}");
+  const publicationArtifactDir = directStep.env.EXACT_REVIEW_PUBLICATION_ARTIFACT_DIR;
+  assert.equal(publicationArtifactDir, ".artifacts/exact-review-bundle/review");
+  const selectedBranch = "release/proof";
+  const admissionWork = join(root, "manual-admission");
+  mkdirSync(join(admissionWork, ".artifacts"), { recursive: true });
+  symlinkSync(join(source, "dist"), join(admissionWork, "dist"));
+  const admissionEnv = {
+    TARGET_REPO: repo,
+    TARGET_BRANCH: selectedBranch,
+    ITEM_NUMBER: "71",
+    ITEM_NUMBERS: "72",
+    GITHUB_RUN_ID: "1000",
+  };
+  const admission = await command("bash", ["-c", admissionStep.run], admissionEnv, admissionWork);
   assert.equal(JSON.parse(admission.stdout).accepted, 2);
-  await command(process.execPath, [
-    join(source, "dist/repair/manual-review-enqueue.js"),
-    "--target-repo",
-    repo,
-    "--target-branch",
-    "main",
-    "--item-numbers",
-    "71,72",
-    "--request-id",
-    "1000",
-    "--queue-url",
-    "https://manual-queue.invalid",
-  ]);
+  await command("bash", ["-c", admissionStep.run], admissionEnv, admissionWork);
   for (let i = 0; i < 60 && dispatches.length < 2; i++) await wait(1000);
   assert.equal(dispatches.length, 2, workerLog);
   const records = [];
@@ -742,6 +741,15 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
     tuple.claim_generation = claim.claim_generation;
     const claimDecision = claim.decision;
     assert.equal(claimDecision.publicationPolicy, "record_comment_only");
+    if ([71, 72].includes(number) && !repeatRunId) {
+      assert.equal(claimDecision.targetBranch, selectedBranch);
+      observations.push({
+        scenario: "manual workflow preserves the selected non-default branch",
+        number,
+        requestedBranch: selectedBranch,
+        claimedBranch: claimDecision.targetBranch,
+      });
+    }
     const work = join(root, repeatRunId ? `${number}-${runId}` : String(number));
     mkdirSync(join(work, "artifacts/event"), { recursive: true });
     const env = {
@@ -859,6 +867,18 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
       JSON.stringify({ structural_cache_hits: 0, content_cache_hits: 0 }),
     );
     writeFileSync(
+      join(work, "artifacts/event/selection.json"),
+      JSON.stringify({ selected: [number] }),
+    );
+    for (const directory of ["codex", "review-trees"]) {
+      mkdirSync(join(work, "artifacts/event", directory));
+      writeFileSync(
+        join(work, "artifacts/event", directory, "synthetic.txt"),
+        "producer diagnostic\n",
+      );
+    }
+    if (number === 71) writeFileSync(join(work, "artifacts/event/99.md"), "Unselected report\n");
+    writeFileSync(
       join(output, repeatRunId ? `review-${number}-${runId}.md` : `review-${number}.md`),
       report,
     );
@@ -895,8 +915,20 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
         observations.push({ scenario, rejected: true, commentWrites: 0 });
       }
       writeFileSync(reportPath, report);
+      const writesBefore = commentWrites();
+      const rawRejected = await command(
+        process.execPath,
+        [join(source, "dist/repair/publish-event-result.js")],
+        env,
+        work,
+        true,
+      );
+      assert.equal(rawRejected.code, 1);
+      assert.match(rawRejected.stderr, /artifact directory must contain only the selected report/);
+      assert.equal(commentWrites(), writesBefore);
+      observations.push({ scenario: "raw producer inventory remains rejected", commentWrites: 0 });
     }
-    const bundleDir = join(work, "bundle");
+    const bundleDir = join(work, ".artifacts/exact-review-bundle");
     await command(
       process.execPath,
       [join(source, "dist/repair/exact-review-bundle-cli.js"), "create"],
@@ -908,7 +940,7 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
         EXACT_REVIEW_PRODUCER_JOB: "event-review-apply",
         EXACT_REVIEW_PROTOCOL_VERSION: "2",
         EXACT_REVIEW_TARGET_REPO: repo,
-        EXACT_REVIEW_TARGET_BRANCH: "main",
+        EXACT_REVIEW_TARGET_BRANCH: claimDecision.targetBranch,
         EXACT_REVIEW_ITEM_NUMBER: String(number),
         EXACT_REVIEW_ITEM_KIND: claimDecision.itemKind,
         EXACT_REVIEW_LIVE_PROCEEDED: "true",
@@ -925,10 +957,14 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
       zip,
     ]);
     bundles.set(runId, readFileSync(zip));
+    assert.deepEqual(readdirSync(join(bundleDir, "review")), [`${number}.md`]);
+    env.EXACT_REVIEW_PUBLICATION_ARTIFACT_DIR = publicationArtifactDir;
     return {
       number,
       runId,
       tuple,
+      bundleDir,
+      bundleManifestSha256: digest(readFileSync(join(bundleDir, "manifest.json"))),
       env,
       work,
       report,
@@ -942,14 +978,25 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
   for (const number of [71, 72]) {
     const record = await reviewedRecord(number);
     const { env, work, tuple, claimDecision } = record;
+    if (number === 71) {
+      for (const [name, create] of [
+        ["99.md", (path) => writeFileSync(path, "Unselected report\n")],
+        ["diagnostics", (path) => mkdirSync(path)],
+        ["linked.md", (path) => symlinkSync(record.reportPath, path)],
+      ]) {
+        const unexpected = join(work, publicationArtifactDir, name);
+        const writesBefore = commentWrites();
+        create(unexpected);
+        const rejected = await command("bash", ["-c", directStep.run], env, source, true);
+        assert.equal(rejected.code, 1);
+        assert.match(rejected.stderr, /artifact directory must contain only the selected report/);
+        assert.equal(commentWrites(), writesBefore);
+        rmSync(unexpected, { recursive: true });
+        observations.push({ scenario: `staged publication rejects ${name}`, commentWrites: 0 });
+      }
+    }
     if (number === 72) lostAcknowledgement = 72;
-    const direct = await command(
-      process.execPath,
-      [join(source, "dist/repair/publish-event-result.js")],
-      env,
-      work,
-      true,
-    );
+    const direct = await command("bash", ["-c", directStep.run], env, source, true);
     assert.equal(direct.code, number === 71 ? 1 : 0, direct.stderr);
     records.push(record);
     if (number === 71) {
@@ -1711,6 +1758,30 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
     reviewedAt: repeated.reviewedAt,
     requestReviewCounts: Object.fromEntries(requestReviewCounts),
   });
+  const produced = [...records, ...extraRecords, repeated];
+  for (const record of produced) {
+    assert.deepEqual(readdirSync(join(record.bundleDir, "review")), [`${record.number}.md`]);
+    assert.equal(
+      readFileSync(join(record.bundleDir, "review", `${record.number}.md`), "utf8"),
+      record.report,
+    );
+    assert.equal(
+      digest(readFileSync(join(record.bundleDir, "manifest.json"))),
+      record.bundleManifestSha256,
+    );
+    assert.ok(existsSync(join(record.work, "artifacts/event/selection.json")));
+    for (const directory of ["codex", "review-trees"]) {
+      assert.equal(
+        readFileSync(join(record.work, "artifacts/event", directory, "synthetic.txt"), "utf8"),
+        "producer diagnostic\n",
+      );
+    }
+  }
+  observations.push({
+    scenario: "selected bundles and producer diagnostics remain unchanged",
+    bundles: produced.length,
+    publicationArtifactDir,
+  });
   assert.equal(sourceIdentity().candidateSourceSha256, expected);
   writeFileSync(
     join(output, "proof.json"),
@@ -1836,6 +1907,20 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
         reviewCounts: Object.fromEntries(reviewCounts),
         requestReviewCounts: Object.fromEntries(requestReviewCounts),
         repeatedRequestRevision: repeated?.current.lease_revision,
+        manualBranchSelections: observations
+          .filter(
+            (entry) =>
+              entry.scenario === "manual workflow preserves the selected non-default branch",
+          )
+          .map(({ number, requestedBranch, claimedBranch }) => ({
+            number,
+            requestedBranch,
+            claimedBranch,
+          })),
+        preservedProducerBundles: observations.find(
+          (entry) =>
+            entry.scenario === "selected bundles and producer diagnostics remain unchanged",
+        )?.bundles,
         currentHeadPrCompletion: currentPr && {
           number: currentPr.number,
           canonicalAccepted: currentPr.canonicalAccepted,
