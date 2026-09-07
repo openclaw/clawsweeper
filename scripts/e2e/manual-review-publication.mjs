@@ -439,7 +439,10 @@ const server = createServer(async (req, res) => {
     throw new Error(`unsupported synthetic upstream read: ${path}`);
   } catch (error) {
     trace.push({ forbidden: error.message, cause: error.cause?.message });
-    res.writeHead(500);
+    res.writeHead(500, {
+      "content-type": "application/json; charset=utf-8",
+      "x-content-type-options": "nosniff",
+    });
     res.end(JSON.stringify({ message: error.message }));
   }
 });
