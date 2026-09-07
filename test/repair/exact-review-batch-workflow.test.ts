@@ -9,6 +9,7 @@ import YAML from "yaml";
 
 import { createGitHubExecution } from "../../dist/clawsweeper-github-execution.js";
 import { createGitHubRuntime } from "../../dist/clawsweeper-github-runtime.js";
+import { runCopyProof } from "../../scripts/e2e/exact-review-selected-tuple-copy.mjs";
 
 const path = ".github/workflows/exact-review-batch-publish.yml";
 const source = readFileSync(path, "utf8");
@@ -674,7 +675,6 @@ test("batch workflow uses owner-scoped mutation credentials and canonical Worker
   assert.match(source, /hydrate-state-blobs: "false"/);
   assert.match(cliSource, /slugForRepo\(normalizeRepo\(target\)\)/);
   assert.doesNotMatch(source, /permissions:\n(?:.*\n)*?\s+issues: write/);
-  assert.match(prepareSource, /cpSync\(recordsSource, join\(root, "records"\)/);
   assert.doesNotMatch(prepareSource, /stateClone|CLAWSWEEPER_STATE_DIR|"clone"/);
   assert.match(prepareSource, /CLAWSWEEPER_CODE_ROOT: workspace/);
   assert.match(prepareSource, /EXACT_REVIEW_WORK_ROOT: root/);
@@ -696,6 +696,32 @@ test("batch workflow uses owner-scoped mutation credentials and canonical Worker
   assert.match(publisherSource, /"--record-root",\s*options\.workRoot/);
   assert.doesNotMatch(publisherSource, /runStreaming\("pnpm"/);
 });
+
+test("batch preparation copies only canonical selected tuples and preserves publisher bases", () => {
+  const proof = runCopyProof();
+  assert.equal(proof.copiedFiles, 12);
+  assert.equal(proof.publisherCount, 8);
+});
+
+for (const mode of ["missing-source", "file-source", "heartbeat", "circuit"]) {
+  test(`batch preparation retains ${mode} no-mutation outcomes`, () => {
+    runCopyProof({ mode, unrelatedRecords: 0 });
+  });
+}
+
+for (const invalidDecision of [
+  { targetRepo: "../outside" },
+  { targetRepo: "owner/repo/extra" },
+  { itemNumber: "../../outside" },
+  { itemNumber: 0 },
+  { itemNumber: -1 },
+  { itemNumber: 1.5 },
+  { itemNumber: Number.MAX_SAFE_INTEGER + 1 },
+]) {
+  test(`batch preparation rejects ${JSON.stringify(invalidDecision)} before canonical reads`, () => {
+    runCopyProof({ mode: "copy", unrelatedRecords: 0, invalidDecision });
+  });
+}
 
 test("batch preparation is bounded, heartbeat-fenced, and deterministically aggregated", () => {
   assert.match(prepareSource, /const MAX_CONCURRENCY = 4/);
