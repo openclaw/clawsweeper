@@ -111,6 +111,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Preserve validated publication outcome counts and window timestamps through composed status and its caches, and retain displayed counts and window labels through dashboard refreshes and reloads. Malformed or previously stripped values remain unknown.
+
 - Prepare GitHub user-attachment and legacy repository asset proof locally, resolving image/video types after download and reserving bounded preprocessing time for attachments.
 
 - Avoid stored-data warnings for validation-only schema helpers by separating ambiguous schema filenames from explicit storage owners, while preserving database operations and incomplete-patch warnings on storage paths.

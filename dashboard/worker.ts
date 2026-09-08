@@ -3295,6 +3295,11 @@ export function publicStatusProjection(
     documentQueue.bay_projection = publicBayProjection;
     document.exact_review_queue = documentQueue;
   }
+  if (Object.hasOwn(source, "recent_durable_publication_events")) {
+    document.recent_durable_publication_events = publicRecentDurablePublicationEventsProjection(
+      source.recent_durable_publication_events,
+    );
+  }
   return document;
 }
 
