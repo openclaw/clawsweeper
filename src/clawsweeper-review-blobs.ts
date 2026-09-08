@@ -8,16 +8,24 @@ import { ReviewSourcePreparationError } from "./review-source-preparation.js";
 const MAX_BLOB_SIZE_OBJECTS = 160;
 const MAX_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;
 const MAX_REVIEW_TREE_LIST_BYTES = 64 * 1024 * 1024;
+const MAX_REVIEW_ATTRIBUTE_OUTPUT_BYTES = 16 * 1024 * 1024;
+const REVIEW_ATTRIBUTE_PATH_BATCH_SIZE = 1024;
 const GIT_OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
 export const REVIEW_TREE_MAX_FILES = 200_000;
 export const REVIEW_TREE_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 export const REVIEW_TREE_DISK_RESERVE_BYTES = 1024 * 1024 * 1024;
+export const REVIEW_TREE_WORKING_COPY_EXPANSION_FACTOR = 2;
 
 export interface ReviewTreeMaterializationBudget {
   maxFiles: number;
   maxBytes: number;
   diskReserveBytes: number;
   availableBytes?: number;
+}
+
+export interface ReviewTreeMetadata {
+  paths: string[];
+  blobBytes: bigint;
 }
 
 interface ReviewTreeMaterializationOptions {
@@ -219,15 +227,18 @@ function reviewTreeBudgetError(headSha: string, detail: string): ReviewSourcePre
   return error;
 }
 
-function reviewTreeTrackedPathCount(targetDir: string, headSha: string): number {
-  const result = spawnSync("git", ["ls-tree", "-r", "-z", "--name-only", headSha], {
+function reviewTreeMetadata(targetDir: string, headSha: string): ReviewTreeMetadata {
+  const result = spawnSync("git", ["ls-tree", "-r", "-l", "-z", "--full-tree", headSha], {
     cwd: targetDir,
     env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
     encoding: "utf8",
     maxBuffer: MAX_REVIEW_TREE_LIST_BYTES,
   });
   const output = checkedReviewGit(result, "review_git_inspection_failed");
-  if (!output) return 0;
+  if (!output) return { paths: [], blobBytes: 0n };
+  if (output.includes("\uFFFD")) {
+    throw reviewTreeBudgetError(headSha, "Git returned non-UTF-8 checkout metadata");
+  }
   if (!output.endsWith("\0")) {
     throw new ReviewGitError("review_git_inspection_failed", {
       ...result,
@@ -235,7 +246,77 @@ function reviewTreeTrackedPathCount(targetDir: string, headSha: string): number 
       stderr: "git ls-tree returned an incomplete path list",
     });
   }
-  return output.split("\0").length - 1;
+  const entries = output.slice(0, -1).split("\0");
+  const paths: string[] = [];
+  let blobBytes = 0n;
+  for (const entry of entries) {
+    const match =
+      /^([0-7]{6}) (blob|commit) ([0-9a-f]{40}(?:[0-9a-f]{24})?) +(-|\d+)\t([\s\S]+)$/.exec(entry);
+    if (!match) {
+      throw reviewTreeBudgetError(headSha, "Git returned malformed checkout size metadata");
+    }
+    paths.push(match[5]!);
+    if (match[2] !== "blob") continue;
+    if (match[4] === "-") {
+      throw reviewTreeBudgetError(
+        headSha,
+        `blob size metadata is unavailable for ${JSON.stringify(match[5])}`,
+      );
+    }
+    blobBytes += BigInt(match[4]!);
+  }
+  return { paths, blobBytes };
+}
+
+function assertReviewTreeHasBoundedTransforms(
+  targetDir: string,
+  headSha: string,
+  paths: readonly string[],
+): void {
+  for (let offset = 0; offset < paths.length; offset += REVIEW_ATTRIBUTE_PATH_BATCH_SIZE) {
+    const batch = paths.slice(offset, offset + REVIEW_ATTRIBUTE_PATH_BATCH_SIZE);
+    const result = spawnSync(
+      "git",
+      [
+        "check-attr",
+        `--source=${headSha}`,
+        "--stdin",
+        "-z",
+        "filter",
+        "working-tree-encoding",
+        "ident",
+      ],
+      {
+        cwd: targetDir,
+        env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
+        encoding: "utf8",
+        input: `${batch.join("\0")}\0`,
+        maxBuffer: MAX_REVIEW_ATTRIBUTE_OUTPUT_BYTES,
+      },
+    );
+    const output = checkedReviewGit(result, "review_git_inspection_failed");
+    if (output.includes("\uFFFD")) {
+      throw reviewTreeBudgetError(headSha, "Git returned non-UTF-8 checkout attribute metadata");
+    }
+    if (!output.endsWith("\0")) {
+      throw reviewTreeBudgetError(headSha, "Git returned incomplete checkout attribute metadata");
+    }
+    const fields = output.slice(0, -1).split("\0");
+    if (fields.length !== batch.length * 9) {
+      throw reviewTreeBudgetError(headSha, "Git returned malformed checkout attribute metadata");
+    }
+    for (let index = 0; index < fields.length; index += 3) {
+      const path = fields[index]!;
+      const attribute = fields[index + 1]!;
+      const value = fields[index + 2]!;
+      if (value !== "unspecified" && value !== "unset") {
+        throw reviewTreeBudgetError(
+          headSha,
+          `${JSON.stringify(path)} enables unbounded ${attribute}=${JSON.stringify(value)} checkout transformation`,
+        );
+      }
+    }
+  }
 }
 
 function reviewTreeTotals(
@@ -271,32 +352,50 @@ function reviewTreeTotals(
 function materializePullRequestReviewTreeWithBudget(
   { targetDir, worktreeDir, itemNumber, headSha }: ReviewTreeMaterializationOptions,
   budget: ReviewTreeMaterializationBudget,
+  metadataOverride?: ReviewTreeMetadata,
 ): boolean {
   if (!ensurePullRequestReviewHead({ targetDir, itemNumber, headSha })) return false;
   if (existsSync(worktreeDir)) return false;
-  const trackedPaths = reviewTreeTrackedPathCount(targetDir, headSha);
-  if (trackedPaths > budget.maxFiles) {
+  const metadata = metadataOverride ?? reviewTreeMetadata(targetDir, headSha);
+  if (metadata.paths.length > budget.maxFiles) {
     throw reviewTreeBudgetError(
       headSha,
-      `${trackedPaths} tracked paths exceed the ${budget.maxFiles}-file limit`,
+      `${metadata.paths.length} tracked paths exceed the ${budget.maxFiles}-file limit`,
     );
   }
+  const projectedBytes = metadata.blobBytes * BigInt(REVIEW_TREE_WORKING_COPY_EXPANSION_FACTOR);
+  if (projectedBytes > BigInt(budget.maxBytes)) {
+    throw reviewTreeBudgetError(
+      headSha,
+      `${projectedBytes} conservatively projected bytes exceed the ${budget.maxBytes}-byte limit`,
+    );
+  }
+  assertReviewTreeHasBoundedTransforms(targetDir, headSha, metadata.paths);
   const availableBytes =
     budget.availableBytes ??
     (() => {
       const fileSystem = statfsSync(dirname(worktreeDir));
       return fileSystem.bavail * fileSystem.bsize;
     })();
-  const requiredBytes = budget.maxBytes + budget.diskReserveBytes;
-  if (availableBytes < requiredBytes) {
+  const requiredBytes = projectedBytes + BigInt(budget.diskReserveBytes);
+  if (BigInt(availableBytes) < requiredBytes) {
     throw reviewTreeBudgetError(
       headSha,
-      `${availableBytes} available bytes cannot admit the ${budget.maxBytes}-byte checkout limit plus ${budget.diskReserveBytes}-byte reserve`,
+      `${availableBytes} available bytes cannot admit ${projectedBytes} projected checkout bytes plus the ${budget.diskReserveBytes}-byte reserve`,
     );
   }
   const worktree = spawnSync(
     "git",
-    ["worktree", "add", "--detach", "--force", worktreeDir, headSha],
+    [
+      "-c",
+      "core.hooksPath=/dev/null",
+      "worktree",
+      "add",
+      "--detach",
+      "--force",
+      worktreeDir,
+      headSha,
+    ],
     {
       cwd: targetDir,
       env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
@@ -329,8 +428,9 @@ export function materializePullRequestReviewTree(
 export function materializePullRequestReviewTreeForTest(
   options: ReviewTreeMaterializationOptions,
   budget: ReviewTreeMaterializationBudget,
+  metadataOverride?: ReviewTreeMetadata,
 ): boolean {
-  return materializePullRequestReviewTreeWithBudget(options, budget);
+  return materializePullRequestReviewTreeWithBudget(options, budget, metadataOverride);
 }
 
 export function removePullRequestReviewTree({

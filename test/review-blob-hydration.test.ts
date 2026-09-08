@@ -186,6 +186,24 @@ function objectExistsOffline(cwd: string, sha: string): boolean {
   );
 }
 
+function populateFixtureHeadBlobs(source: string, target: string, headSha: string): void {
+  const entries = git(
+    source,
+    "ls-tree",
+    "-r",
+    "--format=%(objectmode) %(objectname)",
+    headSha,
+  ).split("\n");
+  for (const entry of entries) {
+    const [mode, objectId] = entry.split(" ");
+    if (!["100644", "100755", "120000"].includes(mode ?? "") || !objectId) continue;
+    execFileSync("git", ["cat-file", "blob", objectId], {
+      cwd: target,
+      stdio: "ignore",
+    });
+  }
+}
+
 // Shallow fixtures must acquire complete ancestry without truncating history
 // already retained behind the pinned base.
 function reviewHistoryFixture({
@@ -691,6 +709,7 @@ test("restricted review materializes the exact pull request head before model ex
     assert.equal(objectExistsOffline(fixture.target, fixture.headSha), false);
     assert.equal(git(fixture.target, "rev-parse", "HEAD"), fixture.baseSha);
     assert.equal(readFileSync(join(fixture.target, "changed.txt"), "utf8"), "before\n");
+    populateFixtureHeadBlobs(fixture.source, fixture.target, fixture.headSha);
 
     assert.equal(
       materializePullRequestReviewTree({
@@ -723,56 +742,112 @@ test("restricted review materializes the exact pull request head before model ex
   }
 });
 
-test("restricted review admits file count and disk before checkout, then removes byte-limit breaches", () => {
+test("restricted review rejects one tracked 2.5 GiB blob before worktree materialization", () => {
   const fixture = partialCloneFixture({ prefetchHead: false });
+  const reviewTree = join(fixture.root, "oversized-tree");
   try {
-    const attempt = (
-      name: string,
-      budget: {
-        maxFiles: number;
-        maxBytes: number;
-        diskReserveBytes: number;
-        availableBytes: number;
-      },
-    ) => {
-      const reviewTree = join(fixture.root, name);
-      assert.throws(
-        () =>
-          materializePullRequestReviewTreeForTest(
-            {
-              targetDir: fixture.target,
-              worktreeDir: reviewTree,
-              itemNumber: 982,
-              headSha: fixture.headSha,
-            },
-            budget,
-          ),
-        (error) =>
-          error instanceof ReviewSourcePreparationError &&
-          error.diagnosticReason === "review_checkout_unavailable",
-      );
-      assert.equal(existsSync(reviewTree), false);
-    };
-
-    attempt("file-limit", {
-      maxFiles: 1,
-      maxBytes: 1024,
-      diskReserveBytes: 0,
-      availableBytes: 1024,
-    });
-    attempt("disk-admission", {
-      maxFiles: 100,
-      maxBytes: 1024,
-      diskReserveBytes: 1024,
-      availableBytes: 2047,
-    });
-    attempt("byte-limit", {
-      maxFiles: 100,
-      maxBytes: 1,
-      diskReserveBytes: 0,
-      availableBytes: 1,
-    });
+    const worktreesBefore = git(fixture.target, "worktree", "list", "--porcelain");
+    assert.throws(
+      () =>
+        materializePullRequestReviewTreeForTest(
+          {
+            targetDir: fixture.target,
+            worktreeDir: reviewTree,
+            itemNumber: 982,
+            headSha: fixture.headSha,
+          },
+          {
+            maxFiles: 200_000,
+            maxBytes: 2 * 1024 * 1024 * 1024,
+            diskReserveBytes: 1024 * 1024 * 1024,
+            availableBytes: 3 * 1024 * 1024 * 1024,
+          },
+          {
+            paths: ["oversized.bin"],
+            blobBytes: BigInt(2.5 * 1024 * 1024 * 1024),
+          },
+        ),
+      (error) =>
+        error instanceof ReviewSourcePreparationError &&
+        error.diagnosticReason === "review_checkout_unavailable" &&
+        /conservatively projected bytes/.test(error.message),
+    );
+    assert.equal(existsSync(reviewTree), false);
+    assert.equal(git(fixture.target, "worktree", "list", "--porcelain"), worktreesBefore);
   } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("restricted review refuses unbounded filters and admits bounded EOL expansion", () => {
+  const fixture = partialCloneFixture();
+  const rejectedTree = join(fixture.root, "filtered-tree");
+  const admittedTree = join(fixture.root, "eol-tree");
+  const filterMarker = join(fixture.root, "filter-ran");
+  const hookMarker = join(fixture.root, "hook-ran");
+  try {
+    git(
+      fixture.source,
+      "config",
+      "filter.inflate.smudge",
+      `/usr/bin/touch ${filterMarker}; /bin/cat`,
+    );
+    writeFileSync(join(fixture.source, ".gitattributes"), "*.txt filter=inflate\n");
+    git(fixture.source, "add", ".gitattributes");
+    git(fixture.source, "commit", "-qm", "configure checkout filter");
+    const filteredHead = git(fixture.source, "rev-parse", "HEAD");
+    assert.throws(
+      () =>
+        materializePullRequestReviewTreeForTest(
+          {
+            targetDir: fixture.source,
+            worktreeDir: rejectedTree,
+            itemNumber: 982,
+            headSha: filteredHead,
+          },
+          {
+            maxFiles: 100,
+            maxBytes: 1024 * 1024,
+            diskReserveBytes: 0,
+            availableBytes: 1024 * 1024,
+          },
+        ),
+      (error) =>
+        error instanceof ReviewSourcePreparationError &&
+        error.diagnosticReason === "review_checkout_unavailable" &&
+        /unbounded filter/.test(error.message),
+    );
+    assert.equal(existsSync(rejectedTree), false);
+    assert.equal(existsSync(filterMarker), false);
+
+    writeFileSync(join(fixture.source, ".gitattributes"), "*.txt text eol=crlf\n");
+    git(fixture.source, "add", ".gitattributes");
+    git(fixture.source, "commit", "-qm", "use bounded EOL conversion");
+    const eolHead = git(fixture.source, "rev-parse", "HEAD");
+    const postCheckoutHook = join(fixture.source, ".git", "hooks", "post-checkout");
+    writeFileSync(postCheckoutHook, `#!/bin/sh\n/usr/bin/touch ${hookMarker}\n`);
+    chmodSync(postCheckoutHook, 0o755);
+    assert.equal(
+      materializePullRequestReviewTreeForTest(
+        {
+          targetDir: fixture.source,
+          worktreeDir: admittedTree,
+          itemNumber: 982,
+          headSha: eolHead,
+        },
+        {
+          maxFiles: 100,
+          maxBytes: 1024 * 1024,
+          diskReserveBytes: 0,
+          availableBytes: 1024 * 1024,
+        },
+      ),
+      true,
+    );
+    assert.match(readFileSync(join(admittedTree, "changed.txt"), "utf8"), /\r\n$/);
+    assert.equal(existsSync(hookMarker), false);
+  } finally {
+    removePullRequestReviewTree({ targetDir: fixture.source, worktreeDir: admittedTree });
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });

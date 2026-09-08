@@ -54,11 +54,13 @@ valid JSON result with a nullable artifact path. Summary destinations are
 exclusive to the current invocation. Transient output is capped at 96 MiB/256
 files and debug output at 1 GiB/4,096 files, with at most 128 selected items per
 invocation. Required PR checkouts are isolated from retained output in private
-run scratch. ClawSweeper admits at most 200,000 tracked paths and requires room
-for a 2 GiB checkout plus a 1 GiB disk reserve before materialization, then
-checks actual usage against the 200,000-file/2 GiB cap. Per-item media downloads
-share 64 MiB; generated metadata and contact sheets share 16 MiB. ClawSweeper
-does not prune older or unrelated retained runs.
+run scratch. Before materialization, ClawSweeper admits at most 200,000 tracked
+paths and conservatively doubles complete Git blob-size metadata for bounded EOL
+expansion. It refuses active filters, working-tree encodings, and ident expansion,
+disables checkout hooks, then requires the projected bytes plus a 1 GiB disk
+reserve. Projected and actual usage must stay within 200,000 files/2 GiB.
+Per-item media downloads share 64 MiB; generated metadata and contact sheets
+share 16 MiB. ClawSweeper does not prune older or unrelated retained runs.
 
 For `review --local-range`, per-file line counts come from complete Git numstat
 metadata for the resolved merge-base-to-HEAD range, independently of bounded
