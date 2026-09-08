@@ -543,6 +543,19 @@ test("review candidates start lazily and deferred items cannot remain active", (
   assert.ok(contextCollection >= 0);
   assert.ok(sourceAvailabilityGate > contextCollection);
   assert.ok(modelReview > sourceAvailabilityGate);
+  const logPublication = source.indexOf("recordReviewLogPublication({", modelReview);
+  const itemCompletion = source.indexOf("finishReviewActionLedgerItem({", logPublication);
+  const liveOutputBudget = source.indexOf("assertCurrentOutputBudget()", itemCompletion);
+  const itemPruning = source.indexOf("pruneItemOutput(reportPath)", itemCompletion);
+  assert.ok(logPublication > modelReview);
+  assert.ok(itemCompletion > logPublication);
+  assert.ok(liveOutputBudget > itemCompletion);
+  assert.ok(itemPruning > liveOutputBudget);
+  const failureSummary = source.slice(
+    source.indexOf("if (codexFailures > 0) {", itemPruning),
+    source.indexOf("finishReviewActionLedger({", itemPruning),
+  );
+  assert.doesNotMatch(failureSummary, /readFileSync\(reportPath/);
   const reviewCatchStart = source.indexOf(
     "} catch (error) {\n      commandError = error;",
     reviewCommandStart,

@@ -28,7 +28,10 @@ checkpoint, and status-only commits are intentionally omitted.
   artifact route explicitly selects debug retention. Required PR checkouts now
   use a separately admitted private workspace with conservative Git metadata
   sizing and unbounded filter refusal, and media producers share run-owned byte
-  pools before writing. Ordinary and caught-failure cleanup remains automatic;
+  pools before writing. Managed local sources stay checkout-free until the
+  admitted exact-head materializer runs, Git 2.39-compatible attribute checks
+  use a bounded private index, and non-debug batches prune each item's engine
+  files after ledger evidence is hashed. Ordinary and caught-failure cleanup remains automatic;
   operating-system signals keep default termination semantics and may leave
   bounded private scratch. Checkout and Git object-store capacity are admitted
   separately unless both destinations share a filesystem.

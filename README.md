@@ -812,10 +812,14 @@ artifact tree. An explicit legacy `--artifact-dir` still selects debug
 retention. Summary destinations are created exclusively for one invocation.
 Transient output is capped at 96 MiB/256 files; debug output is capped at
 1 GiB/4,096 files with per-item allocations and at most 128 selected items per
-invocation. Required pull-request checkouts use a separate private run workspace:
+invocation. None and summary batches hash each item's report and stream evidence
+into the canonical ledger before pruning that item's run-owned engine files;
+summary retains only the reports. Required pull-request checkouts use a separate private run workspace:
 tracked paths and Git blob sizes are admitted before materialization, with a 2x
 allowance for bounded EOL expansion. Active filters, working-tree encodings, and
-ident expansion are refused, and checkout hooks are disabled. Projected and
+ident expansion are refused through a bounded private Git index compatible with
+Git 2.39. That index reserves at most two files/128 MiB plus the workspace disk
+reserve before creation and is removed after inspection. Checkout hooks are disabled. Projected and
 actual checkout usage is capped at 200,000 files/2 GiB, and 1 GiB remains
 reserved on each filesystem used for checkout materialization or missing Git
 object acquisition; a shared filesystem is charged once. Media proof downloads
@@ -852,11 +856,12 @@ This mode withholds GitHub token variables, points `gh` at an empty config
 directory inside private run scratch, disables Codex web search, skips host-side
 URL/media preprocessing, and makes no GitHub reads or writes. It is not
 air-gapped: the Codex model invocation still uses its configured network
-service. Retained local reviews preserve the latest local result in the same
-bounded review-history format used by hosted review. The next run receives the
-previous findings and dispositions so it can verify fixes and avoid re-raising
-resolved findings. Exact-item history stays in the selected artifact directory.
-Committed-range history stays under `.git/clawsweeper/reviews/` and is reused
+service. Debug local reviews preserve the latest local result in the same
+bounded review-history format used by hosted review. The next debug run receives
+the previous findings and dispositions so it can verify fixes and avoid
+re-raising resolved findings. Summary retention keeps only the current reports.
+In debug mode, exact-item history stays in the selected artifact directory.
+Committed-range debug history stays under `.git/clawsweeper/reviews/` and is reused
 only for the same target repository and resolved base when its reviewed commit
 is an ancestor of the current `HEAD`; changing the base or switching to an
 unrelated branch starts a fresh history.

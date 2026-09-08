@@ -376,7 +376,7 @@ export function createReviewRuntime({
       ensureGitOriginRemote(targetDir, remoteUrl);
     }
 
-    const branch = `clawsweeper/pr-${itemNumber}`;
+    const cacheRef = `refs/clawsweeper/review-cache/head-${itemNumber}`;
     if (verbose) {
       console.error(
         `[review] ${new Date().toISOString()} local-checkout=managed target=${targetDir} pr=#${itemNumber} base=${baseBranch}`,
@@ -394,12 +394,11 @@ export function createReviewRuntime({
         "fetch",
         "--force",
         "origin",
-        `refs/pull/${itemNumber}/head`,
+        `refs/pull/${itemNumber}/head:${cacheRef}`,
         ...(unshallow === "true" ? ["--unshallow"] : []),
       ],
       { cwd: targetDir, timeoutMs: 30_000 },
     );
-    run("git", ["checkout", "-f", "-B", branch, "FETCH_HEAD"], { cwd: targetDir });
   }
 
   function isGitWorkTree(dir: string): boolean {

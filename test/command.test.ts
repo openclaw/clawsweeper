@@ -936,11 +936,12 @@ process.stdout.write("200");
   }
 });
 
-test("managed local review checkout preserves base ancestry for a merged pull request", () => {
+test("managed local review source stays checkout-free while preserving pull request ancestry", () => {
   const root = mkdtempSync(join(tmpdir(), "cmd-"));
   const origin = join(root, "origin.git");
   const source = join(root, "source");
   const targetDir = join(root, "artifacts", "local-review-357", "target");
+  const filterMarker = join(root, "managed-filter-ran");
   try {
     execFileSync("git", ["init", "--bare", origin], { stdio: "ignore" });
     execFileSync("git", ["init", source], { stdio: "ignore" });
@@ -983,6 +984,12 @@ test("managed local review checkout preserves base ancestry for a merged pull re
       cwd: source,
       stdio: "ignore",
     });
+    writeFileSync(join(source, ".gitattributes"), "feature.txt filter=inflate\n");
+    execFileSync("git", ["add", ".gitattributes"], { cwd: source });
+    execFileSync("git", ["commit", "-m", "configure feature filter"], {
+      cwd: source,
+      stdio: "ignore",
+    });
     const pullSha = execFileSync("git", ["rev-parse", "HEAD"], {
       cwd: source,
       encoding: "utf8",
@@ -1000,6 +1007,11 @@ test("managed local review checkout preserves base ancestry for a merged pull re
       cwd: targetDir,
       stdio: "ignore",
     });
+    execFileSync(
+      "git",
+      ["config", "filter.inflate.smudge", `/usr/bin/touch ${filterMarker}; /bin/cat`],
+      { cwd: targetDir },
+    );
     assert.equal(
       execFileSync("git", ["rev-parse", "--is-shallow-repository"], {
         cwd: targetDir,
@@ -1022,12 +1034,21 @@ test("managed local review checkout preserves base ancestry for a merged pull re
         cwd: targetDir,
         encoding: "utf8",
       }).trim(),
-      "clawsweeper/pr-357",
+      "main",
     );
     assert.equal(
       execFileSync("git", ["rev-parse", "HEAD"], { cwd: targetDir, encoding: "utf8" }).trim(),
+      baseSha,
+    );
+    assert.equal(
+      execFileSync("git", ["rev-parse", "refs/clawsweeper/review-cache/head-357"], {
+        cwd: targetDir,
+        encoding: "utf8",
+      }).trim(),
       pullSha,
     );
+    assert.equal(existsSync(join(targetDir, "feature.txt")), false);
+    assert.equal(existsSync(filterMarker), false);
     assert.equal(
       Number(
         execFileSync("git", ["rev-list", "--count", baseSha], {
@@ -1045,8 +1066,6 @@ test("managed local review checkout preserves base ancestry for a merged pull re
       }).trim(),
       "false",
     );
-    assert.ok(existsSync(join(targetDir, "feature.txt")));
-    assert.equal(normalizeLf(readFileSync(join(targetDir, "feature.txt"), "utf8")), "feature 59\n");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -1341,7 +1360,3 @@ process.stdin.on("end", () => process.exit(1));
     rmSync(root, { recursive: true, force: true });
   }
 });
-
-function normalizeLf(value: string): string {
-  return value.replace(/\r\n/g, "\n");
-}

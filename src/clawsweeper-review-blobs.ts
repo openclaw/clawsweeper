@@ -1,5 +1,16 @@
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { existsSync, lstatSync, readdirSync, realpathSync, statfsSync, statSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  statfsSync,
+  statSync,
+} from "node:fs";
+import { devNull } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { readReviewGit, reviewMergeBase } from "./pr-review-evidence.js";
 import { AgentInputScanError, MAX_SCAN_BYTES } from "./agent-input-scan.js";
@@ -12,7 +23,10 @@ const MAX_REVIEW_ATTRIBUTE_OUTPUT_BYTES = 16 * 1024 * 1024;
 const REVIEW_ATTRIBUTE_PATH_BATCH_SIZE = 1024;
 const REVIEW_ATTRIBUTE_BLOB_MAX_FILES = 1024;
 const REVIEW_ATTRIBUTE_BLOB_MAX_BYTES = 16 * 1024 * 1024;
+const REVIEW_ATTRIBUTE_INDEX_MAX_FILES = 2;
+const REVIEW_ATTRIBUTE_INDEX_MAX_BYTES = 128 * 1024 * 1024;
 const REVIEW_TREE_METADATA_DEADLINE_MS = 30_000;
+const GIT_NULL_DEVICE = process.platform === "win32" ? "NUL" : devNull;
 const GIT_OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
 export const REVIEW_TREE_MAX_FILES = 200_000;
 export const REVIEW_TREE_MAX_BYTES = 2 * 1024 * 1024 * 1024;
@@ -241,6 +255,7 @@ function reviewTreeBudgetError(headSha: string, detail: string): ReviewSourcePre
 
 interface ReviewTreeDiskCapacity {
   availableBytes: bigint;
+  availableFiles: bigint | null;
   device: number;
 }
 
@@ -254,6 +269,8 @@ function reviewTreeDiskCapacity(path: string, headSha: string): ReviewTreeDiskCa
     const fileSystem = statfsSync(realPath);
     return {
       availableBytes: BigInt(fileSystem.bavail) * BigInt(fileSystem.bsize),
+      availableFiles:
+        fileSystem.files === 0 && fileSystem.ffree === 0 ? null : BigInt(fileSystem.ffree),
       device: metadata.dev,
     };
   } catch {
@@ -323,6 +340,7 @@ function assertReviewTreeDiskAdmission(
 function reviewTreeMetadata(
   targetDir: string,
   headSha: string,
+  reviewWorkspaceDir: string,
   resolveBlobSizes?: (
     objectIds: readonly string[],
     timeoutMs: number,
@@ -491,7 +509,7 @@ function reviewTreeMetadata(
     );
     fetchMissingReviewTreeBlobs(targetDir, headSha, missingAttributeBlobs, deadlineAt);
   }
-  assertReviewTreeHasBoundedTransforms(targetDir, headSha, paths);
+  assertReviewTreeHasBoundedTransforms(targetDir, headSha, paths, reviewWorkspaceDir);
 
   const remainingMissing = [...missing].filter((objectId) => !attributeObjectIds.has(objectId));
   resolveMissingSizes(remainingMissing);
@@ -576,50 +594,127 @@ function assertReviewTreeHasBoundedTransforms(
   targetDir: string,
   headSha: string,
   paths: readonly string[],
+  reviewWorkspaceDir: string,
 ): void {
-  for (let offset = 0; offset < paths.length; offset += REVIEW_ATTRIBUTE_PATH_BATCH_SIZE) {
-    const batch = paths.slice(offset, offset + REVIEW_ATTRIBUTE_PATH_BATCH_SIZE);
-    const result = spawnSync(
-      "git",
-      [
-        "check-attr",
-        `--source=${headSha}`,
-        "--stdin",
-        "-z",
-        "filter",
-        "working-tree-encoding",
-        "ident",
-      ],
-      {
-        cwd: targetDir,
-        env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
-        encoding: "utf8",
-        input: `${batch.join("\0")}\0`,
-        maxBuffer: MAX_REVIEW_ATTRIBUTE_OUTPUT_BYTES,
-      },
+  const workspace = reviewTreeDiskCapacity(reviewWorkspaceDir, headSha);
+  assertReviewTreeDiskAdmission(
+    headSha,
+    BigInt(REVIEW_ATTRIBUTE_INDEX_MAX_BYTES),
+    0n,
+    BigInt(REVIEW_TREE_DISK_RESERVE_BYTES),
+    {
+      workspaceAvailableBytes: workspace.availableBytes,
+      objectStoreAvailableBytes: workspace.availableBytes,
+      sameFileSystem: true,
+    },
+  );
+  if (
+    workspace.availableFiles !== null &&
+    workspace.availableFiles < BigInt(REVIEW_ATTRIBUTE_INDEX_MAX_FILES)
+  ) {
+    throw reviewTreeBudgetError(
+      headSha,
+      `${workspace.availableFiles} workspace files cannot admit the ${REVIEW_ATTRIBUTE_INDEX_MAX_FILES}-file attribute index`,
     );
-    const output = checkedReviewGit(result, "review_git_inspection_failed");
-    if (output.includes("\uFFFD")) {
-      throw reviewTreeBudgetError(headSha, "Git returned non-UTF-8 checkout attribute metadata");
-    }
-    if (!output.endsWith("\0")) {
-      throw reviewTreeBudgetError(headSha, "Git returned incomplete checkout attribute metadata");
-    }
-    const fields = output.slice(0, -1).split("\0");
-    if (fields.length !== batch.length * 9) {
-      throw reviewTreeBudgetError(headSha, "Git returned malformed checkout attribute metadata");
-    }
-    for (let index = 0; index < fields.length; index += 3) {
-      const path = fields[index]!;
-      const attribute = fields[index + 1]!;
-      const value = fields[index + 2]!;
-      if (value !== "unspecified" && value !== "unset") {
-        throw reviewTreeBudgetError(
+  }
+  const indexDir = mkdtempSync(join(reviewWorkspaceDir, ".clawsweeper-attributes-"));
+  chmodSync(indexDir, 0o700);
+  const indexPath = join(indexDir, "index");
+  const env = {
+    ...process.env,
+    GIT_INDEX_FILE: indexPath,
+    GIT_NO_LAZY_FETCH: "1",
+    GIT_OPTIONAL_LOCKS: "0",
+  };
+  try {
+    checkedReviewGit(
+      spawnSync(
+        "git",
+        [
+          "-c",
+          `core.hooksPath=${GIT_NULL_DEVICE}`,
+          "-c",
+          "core.fsmonitor=false",
+          "-c",
+          "core.splitIndex=false",
+          "read-tree",
           headSha,
-          `${JSON.stringify(path)} enables unbounded ${attribute}=${JSON.stringify(value)} checkout transformation`,
-        );
+        ],
+        {
+          cwd: targetDir,
+          env,
+          encoding: "utf8",
+          maxBuffer: MAX_GIT_OUTPUT_BYTES,
+        },
+      ),
+      "review_git_inspection_failed",
+    );
+    const totals = reviewTreeTotals(indexDir, {
+      maxFiles: REVIEW_ATTRIBUTE_INDEX_MAX_FILES,
+      maxBytes: REVIEW_ATTRIBUTE_INDEX_MAX_BYTES,
+      diskReserveBytes: 0,
+    });
+    if (
+      totals.files > REVIEW_ATTRIBUTE_INDEX_MAX_FILES ||
+      totals.bytes > REVIEW_ATTRIBUTE_INDEX_MAX_BYTES
+    ) {
+      throw reviewTreeBudgetError(
+        headSha,
+        `attribute index exceeds the ${REVIEW_ATTRIBUTE_INDEX_MAX_FILES}-file or ${REVIEW_ATTRIBUTE_INDEX_MAX_BYTES}-byte limit`,
+      );
+    }
+    for (let offset = 0; offset < paths.length; offset += REVIEW_ATTRIBUTE_PATH_BATCH_SIZE) {
+      const batch = paths.slice(offset, offset + REVIEW_ATTRIBUTE_PATH_BATCH_SIZE);
+      const result = spawnSync(
+        "git",
+        [
+          "-c",
+          `core.hooksPath=${GIT_NULL_DEVICE}`,
+          "-c",
+          "core.fsmonitor=false",
+          "-c",
+          "core.splitIndex=false",
+          "check-attr",
+          "--cached",
+          "--stdin",
+          "-z",
+          "filter",
+          "working-tree-encoding",
+          "ident",
+        ],
+        {
+          cwd: targetDir,
+          env,
+          encoding: "utf8",
+          input: `${batch.join("\0")}\0`,
+          maxBuffer: MAX_REVIEW_ATTRIBUTE_OUTPUT_BYTES,
+        },
+      );
+      const output = checkedReviewGit(result, "review_git_inspection_failed");
+      if (output.includes("\uFFFD")) {
+        throw reviewTreeBudgetError(headSha, "Git returned non-UTF-8 checkout attribute metadata");
+      }
+      if (!output.endsWith("\0")) {
+        throw reviewTreeBudgetError(headSha, "Git returned incomplete checkout attribute metadata");
+      }
+      const fields = output.slice(0, -1).split("\0");
+      if (fields.length !== batch.length * 9) {
+        throw reviewTreeBudgetError(headSha, "Git returned malformed checkout attribute metadata");
+      }
+      for (let index = 0; index < fields.length; index += 3) {
+        const path = fields[index]!;
+        const attribute = fields[index + 1]!;
+        const value = fields[index + 2]!;
+        if (value !== "unspecified" && value !== "unset") {
+          throw reviewTreeBudgetError(
+            headSha,
+            `${JSON.stringify(path)} enables unbounded ${attribute}=${JSON.stringify(value)} checkout transformation`,
+          );
+        }
       }
     }
+  } finally {
+    rmSync(indexDir, { recursive: true, force: true });
   }
 }
 
@@ -666,7 +761,9 @@ function materializePullRequestReviewTreeWithBudget(
 ): boolean {
   if (!ensurePullRequestReviewHead({ targetDir, itemNumber, headSha })) return false;
   if (existsSync(worktreeDir)) return false;
-  const metadata = metadataOverride ?? reviewTreeMetadata(targetDir, headSha, resolveBlobSizes);
+  const metadata =
+    metadataOverride ??
+    reviewTreeMetadata(targetDir, headSha, dirname(worktreeDir), resolveBlobSizes);
   if (metadata.paths.length > budget.maxFiles) {
     throw reviewTreeBudgetError(
       headSha,

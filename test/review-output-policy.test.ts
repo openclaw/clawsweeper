@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -27,7 +28,9 @@ import {
   emitReviewOutput,
   finalizeSummaryReviewOutput,
   prepareRetainedReviewOutput,
+  pruneReviewOutputItem,
   readBoundedReviewResult,
+  reviewOutputFilePeak,
   reviewOutputItemBudget,
   reviewOutputSelection,
 } from "../dist/review-output-policy.js";
@@ -236,6 +239,70 @@ test("per-item budgets stay within their aggregate pools", () => {
   assert.throws(() => reviewOutputItemBudget("debug", 129), /1-128 items/);
 });
 
+test("64-item none, summary, and debug runs respect live file peaks and preserve evidence hashes", () => {
+  const parent = mkdtempSync(join(tmpdir(), "clawsweeper-output-peak-"));
+  try {
+    for (const retention of ["none", "summary", "debug"] as const) {
+      const root = join(parent, retention);
+      if (retention === "summary") prepareRetainedReviewOutput(root, "summary");
+      else mkdirSync(root);
+      for (let index = 0; index < 7; index += 1) {
+        writeFileSync(join(root, `global-${index}.json`), "{}");
+      }
+      const evidence: string[] = [];
+      let observedPeak = 0;
+      for (let itemNumber = 1; itemNumber <= 64; itemNumber += 1) {
+        const reportPath = join(root, `report-${itemNumber}.md`);
+        const codexWorkDir = join(root, "codex");
+        const proofScratchDir = join(codexWorkDir, "proof-scratch", String(itemNumber));
+        mkdirSync(proofScratchDir, { recursive: true });
+        writeFileSync(reportPath, `report ${itemNumber}\n`);
+        for (const suffix of [
+          "prompt.md",
+          "json",
+          "1.codex.stdout.log",
+          "1.codex.stderr.log",
+          "review-thread.json",
+        ]) {
+          writeFileSync(join(codexWorkDir, `${itemNumber}.${suffix}`), `${suffix}\n`);
+        }
+        for (let proof = 0; proof < 14; proof += 1) {
+          writeFileSync(join(proofScratchDir, `proof-${proof}`), `${proof}\n`);
+        }
+        if (retention === "debug") {
+          writeFileSync(join(root, `local-review-history-${itemNumber}.md`), "history\n");
+        }
+        for (const path of [
+          reportPath,
+          join(codexWorkDir, `${itemNumber}.1.codex.stdout.log`),
+          join(codexWorkDir, `${itemNumber}.1.codex.stderr.log`),
+        ]) {
+          evidence.push(createHash("sha256").update(readFileSync(path)).digest("hex"));
+        }
+        observedPeak = Math.max(observedPeak, countFiles(root));
+        pruneReviewOutputItem({
+          artifactDir: root,
+          codexWorkDir,
+          proofScratchDir,
+          reportPath,
+          itemNumber,
+          retention,
+        });
+      }
+      assert.equal(observedPeak, reviewOutputFilePeak(retention, 64));
+      assert.equal(evidence.length, 64 * 3);
+      assert.ok(evidence.every((digest) => /^[0-9a-f]{64}$/.test(digest)));
+      assert.equal(
+        countFiles(root),
+        retention === "none" ? 7 : retention === "summary" ? 7 + 1 + 64 : 7 + 64 * 21,
+      );
+      if (retention !== "debug") assert.equal(existsSync(join(root, "codex")), false);
+    }
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
 test("review result files are rejected before an oversized read", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-result-budget-"));
   try {
@@ -250,6 +317,21 @@ test("review result files are rejected before an oversized read", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+function countFiles(root: string): number {
+  let files = 0;
+  const pending = [root];
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    for (const name of readdirSync(directory)) {
+      const path = join(directory, name);
+      const metadata = lstatSync(path);
+      if (metadata.isDirectory()) pending.push(path);
+      else files += 1;
+    }
+  }
+  return files;
+}
 
 test("retained output rejects a symlink destination", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-output-link-"));

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import fs from "node:fs";
 import {
   chmodSync,
   existsSync,
@@ -10,8 +11,9 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import test from "node:test";
 
 import {
@@ -1011,6 +1013,147 @@ test("restricted review refuses unbounded filters and admits bounded EOL expansi
     assert.equal(existsSync(hookMarker), false);
   } finally {
     removePullRequestReviewTree({ targetDir: fixture.source, worktreeDir: admittedTree });
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("restricted review uses a private Git 2.39-compatible attribute index and cleans it", () => {
+  const fixture = partialCloneFixture();
+  const reviewTreesDir = join(fixture.root, "review-trees");
+  const reviewTree = join(reviewTreesDir, "filtered-tree");
+  const binDir = join(fixture.root, "bin");
+  const commandLog = join(fixture.root, "git-commands.log");
+  const indexLog = join(fixture.root, "git-indexes.log");
+  const hookMarker = join(fixture.root, "post-index-change-ran");
+  const fsmonitorMarker = join(fixture.root, "fsmonitor-ran");
+  const previousPath = process.env.PATH;
+  try {
+    writeFileSync(join(fixture.source, ".gitattributes"), "*.txt filter=inflate\n");
+    git(fixture.source, "add", ".gitattributes");
+    git(fixture.source, "commit", "-qm", "configure checkout filter");
+    const filteredHead = git(fixture.source, "rev-parse", "HEAD");
+    const hooksDir = join(fixture.root, "hooks");
+    mkdirSync(hooksDir);
+    writeFileSync(
+      join(hooksDir, "post-index-change"),
+      `#!/bin/sh\n/usr/bin/touch ${JSON.stringify(hookMarker)}\n`,
+    );
+    chmodSync(join(hooksDir, "post-index-change"), 0o755);
+    git(fixture.source, "config", "core.hooksPath", hooksDir);
+    const fsmonitor = join(fixture.root, "fsmonitor");
+    writeFileSync(
+      fsmonitor,
+      `#!/bin/sh\n/usr/bin/touch ${JSON.stringify(fsmonitorMarker)}\nprintf 'builtin:fake\\n'\n`,
+    );
+    chmodSync(fsmonitor, 0o755);
+    git(fixture.source, "config", "core.fsmonitor", fsmonitor);
+    mkdirSync(reviewTreesDir);
+    mkdirSync(binDir);
+    const shim = join(binDir, "git");
+    writeFileSync(
+      shim,
+      `#!/bin/sh
+printf '%s\n' "$*" >> ${JSON.stringify(commandLog)}
+for arg in "$@"; do
+  case "$arg" in
+    --source=*) exit 97 ;;
+  esac
+done
+case "$*" in
+  *" read-tree "*|*" check-attr "*)
+    printf '%s\n' "$GIT_INDEX_FILE" >> ${JSON.stringify(indexLog)}
+    ;;
+esac
+exec /usr/bin/git "$@"
+`,
+    );
+    chmodSync(shim, 0o755);
+    process.env.PATH = `${binDir}${delimiter}${previousPath ?? ""}`;
+
+    assert.throws(
+      () =>
+        materializePullRequestReviewTreeForTest(
+          {
+            targetDir: fixture.source,
+            worktreeDir: reviewTree,
+            itemNumber: 982,
+            headSha: filteredHead,
+          },
+          {
+            maxFiles: 100,
+            maxBytes: 1024 * 1024,
+            diskReserveBytes: 0,
+            diskCapacity: {
+              workspaceAvailableBytes: 1024 * 1024,
+              objectStoreAvailableBytes: 1024 * 1024,
+              sameFileSystem: true,
+            },
+          },
+        ),
+      /unbounded filter/,
+    );
+    const commands = readFileSync(commandLog, "utf8");
+    assert.match(
+      commands,
+      /-c core\.hooksPath=\S+ -c core\.fsmonitor=false -c core\.splitIndex=false read-tree/,
+    );
+    assert.match(
+      commands,
+      /-c core\.hooksPath=\S+ -c core\.fsmonitor=false -c core\.splitIndex=false check-attr --cached/,
+    );
+    assert.doesNotMatch(commands, /--source=/);
+    assert.equal(existsSync(hookMarker), false);
+    assert.equal(existsSync(fsmonitorMarker), false);
+    const indexPaths = readFileSync(indexLog, "utf8").trim().split("\n");
+    assert.ok(indexPaths.length >= 2);
+    for (const indexPath of indexPaths) {
+      assert.ok(indexPath.startsWith(`${reviewTreesDir}/.clawsweeper-attributes-`));
+      assert.equal(existsSync(indexPath), false);
+      assert.equal(existsSync(join(indexPath, "..")), false);
+    }
+    assert.equal(existsSync(reviewTree), false);
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("restricted review treats zero inode statistics as unavailable", () => {
+  const fixture = partialCloneFixture();
+  const reviewTree = join(fixture.root, "zero-inode-tree");
+  const originalStatfsSync = fs.statfsSync;
+  try {
+    fs.statfsSync = ((path, options) => {
+      const result = originalStatfsSync(path, options as never);
+      return { ...result, files: 0, ffree: 0 };
+    }) as typeof fs.statfsSync;
+    syncBuiltinESMExports();
+    assert.equal(
+      materializePullRequestReviewTreeForTest(
+        {
+          targetDir: fixture.source,
+          worktreeDir: reviewTree,
+          itemNumber: 982,
+          headSha: fixture.headSha,
+        },
+        {
+          maxFiles: 100,
+          maxBytes: 1024 * 1024,
+          diskReserveBytes: 0,
+          diskCapacity: {
+            workspaceAvailableBytes: 1024 * 1024,
+            objectStoreAvailableBytes: 1024 * 1024,
+            sameFileSystem: true,
+          },
+        },
+      ),
+      true,
+    );
+  } finally {
+    fs.statfsSync = originalStatfsSync;
+    syncBuiltinESMExports();
+    removePullRequestReviewTree({ targetDir: fixture.source, worktreeDir: reviewTree });
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });

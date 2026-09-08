@@ -63,6 +63,10 @@ const DEBUG_REVIEW_RESULT_POOL_BYTES = 64 * 1024 * 1024;
 const DEBUG_REVIEW_REPORTS_MAX_BYTES = 64 * 1024 * 1024;
 const PRIVATE_REVIEW_STREAM_POOL_BYTES = 56 * 1024 * 1024;
 const PRIVATE_REVIEW_RESULT_POOL_BYTES = 12 * 1024 * 1024;
+const REVIEW_OUTPUT_GLOBAL_MAX_FILES = 7;
+const REVIEW_OUTPUT_SUMMARY_OWNER_FILES = 1;
+const REVIEW_OUTPUT_PRIVATE_ITEM_MAX_FILES = 20;
+const REVIEW_OUTPUT_DEBUG_ITEM_MAX_FILES = 21;
 
 export function reviewOutputSelection(
   args: Args,
@@ -293,6 +297,70 @@ export function reviewOutputItemBudget(
   };
 }
 
+export function reviewOutputFilePeak(retention: ReviewOutputRetention, itemCount: number): number {
+  if (!Number.isInteger(itemCount) || itemCount < 1 || itemCount > REVIEW_OUTPUT_MAX_ITEMS) {
+    throw new UserFacingCommandError(
+      `Review output budgets support 1-${REVIEW_OUTPUT_MAX_ITEMS} items per invocation.`,
+    );
+  }
+  if (retention === "debug") {
+    return REVIEW_OUTPUT_GLOBAL_MAX_FILES + REVIEW_OUTPUT_DEBUG_ITEM_MAX_FILES * itemCount;
+  }
+  if (retention === "summary") {
+    return (
+      REVIEW_OUTPUT_GLOBAL_MAX_FILES +
+      REVIEW_OUTPUT_SUMMARY_OWNER_FILES +
+      REVIEW_OUTPUT_PRIVATE_ITEM_MAX_FILES +
+      itemCount -
+      1
+    );
+  }
+  return REVIEW_OUTPUT_GLOBAL_MAX_FILES + REVIEW_OUTPUT_PRIVATE_ITEM_MAX_FILES;
+}
+
+export function assertReviewOutputFilePeak(
+  retention: ReviewOutputRetention,
+  itemCount: number,
+): void {
+  const peak = reviewOutputFilePeak(retention, itemCount);
+  const maxFiles =
+    retention === "debug" ? DEBUG_REVIEW_OUTPUT_MAX_FILES : TRANSIENT_REVIEW_OUTPUT_MAX_FILES;
+  if (peak > maxFiles) {
+    throw new UserFacingCommandError(
+      `${retention === "debug" ? "Debug" : "Transient"} review output can require ${peak} live files, exceeding its ${maxFiles}-file limit.`,
+    );
+  }
+}
+
+export function pruneReviewOutputItem(options: {
+  artifactDir: string;
+  codexWorkDir: string;
+  proofScratchDir: string;
+  reportPath: string;
+  itemNumber: number;
+  retention: ReviewOutputRetention;
+}): void {
+  if (options.retention === "debug") return;
+  const artifactDir = resolve(options.artifactDir);
+  const codexWorkDir = assertOwnedOutputPath(artifactDir, options.codexWorkDir);
+  const proofScratchDir = assertOwnedOutputPath(artifactDir, options.proofScratchDir);
+  const reportPath = assertOwnedOutputPath(artifactDir, options.reportPath);
+  const itemPrefix = join(codexWorkDir, String(options.itemNumber));
+  for (const path of [
+    `${itemPrefix}.prompt.md`,
+    `${itemPrefix}.json`,
+    `${itemPrefix}.1.codex.stdout.log`,
+    `${itemPrefix}.1.codex.stderr.log`,
+    `${itemPrefix}.review-thread.json`,
+  ]) {
+    rmSync(path, { force: true });
+  }
+  rmSync(proofScratchDir, { recursive: true, force: true });
+  if (options.retention === "none") rmSync(reportPath, { force: true });
+  removeDirectoryIfEmpty(dirname(proofScratchDir));
+  removeDirectoryIfEmpty(codexWorkDir);
+}
+
 export function assertActiveReviewOutputBudget(output: RetainedReviewOutput): void {
   const totals = reviewOutputTotals(output.path, {
     maxFiles:
@@ -393,6 +461,18 @@ function removeEmptyParents(retained: ReadonlySet<string>, root: string): void {
   for (const path of [...parents].sort((left, right) => right.length - left.length)) {
     if (existsSync(path) && readdirSync(path).length === 0) rmSync(path, { recursive: true });
   }
+}
+
+function assertOwnedOutputPath(root: string, path: string): string {
+  const candidate = resolve(path);
+  if (candidate === root || !candidate.startsWith(`${root}${sep}`)) {
+    throw new UserFacingCommandError("Review output cleanup refused a path outside its run.");
+  }
+  return candidate;
+}
+
+function removeDirectoryIfEmpty(path: string): void {
+  if (existsSync(path) && readdirSync(path).length === 0) rmdirSync(path);
 }
 
 function assertSummaryOutputOwner(output: RetainedReviewOutput): void {

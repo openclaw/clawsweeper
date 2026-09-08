@@ -50,10 +50,12 @@ import { commandProofBinding, assertCommandProofSubject } from "./command-proof-
 import { COMMAND_PROOF_SOURCE_ACTION } from "./command-proof-contract.js";
 import {
   assertActiveReviewOutputBudget,
+  assertReviewOutputFilePeak,
   assertReviewReportsBudget,
   assertTransientReviewOutputBudget,
   emitReviewOutput,
   finalizeSummaryReviewOutput,
+  pruneReviewOutputItem,
   reviewOutputItemBudget,
   type ReviewOutputResult,
 } from "./review-output-policy.js";
@@ -356,10 +358,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       proofBinding = reviewCommandProofBinding(args.review_source_action, additionalPrompt);
       if (readonlyOpenclaw) makeTreeReadOnly(openclawDir, readonlyModeSnapshots);
       assertCurrentOutputBudget();
-      let itemOutputBudget = reviewOutputItemBudget(
-        outputSelection.retention,
-        Math.max(1, itemNumbers?.length ?? (itemNumber ? 1 : batchSize)),
-      );
       const selectionOptions: Parameters<typeof selectCandidates>[0] = {
         batchSize,
         maxPages,
@@ -379,10 +377,11 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       const { candidates, scannedPages } = localRangeData
         ? { candidates: [localRangeData.item], scannedPages: 0 }
         : selectCandidates(selectionOptions);
-      itemOutputBudget = reviewOutputItemBudget(
+      const itemOutputBudget = reviewOutputItemBudget(
         outputSelection.retention,
         Math.max(1, candidates.length),
       );
+      assertReviewOutputFilePeak(outputSelection.retention, Math.max(1, candidates.length));
       if (suppliedReviewLease && candidates.length !== 1) {
         throw new UserFacingCommandError(
           "A supplied review lease requires exactly one selected item.",
@@ -432,7 +431,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       const bulkFilerWindowNow = Date.now();
       const structuralCacheReasons = new Map<string, number>();
       const structuralCacheRevalidationReasons = new Map<string, number>();
-      const codexFailureReports: string[] = [];
+      const codexFailureReports: Array<{ path: string | null; kind: string }> = [];
       const leaseAcquisitionFailureDetails: string[] = [];
       const reviewTreeCleanupFailures: string[] = [];
       // oxfmt-ignore
@@ -443,6 +442,17 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         let pullRequestReviewTreeSha: string | null = null;
         let diagnosticPrompt = "";
         let diagnosticSourceSha = process.env.EXACT_REVIEW_SOURCE_HEAD_SHA;
+        const codexWorkDir = join(artifactDir, "codex");
+        const proofScratchDir = join(codexWorkDir, "proof-scratch", String(item.number));
+        const pruneItemOutput = (reportPath: string): void =>
+          pruneReviewOutputItem({
+            artifactDir,
+            codexWorkDir,
+            proofScratchDir,
+            reportPath,
+            itemNumber: item.number,
+            retention: outputSelection.retention,
+          });
         const recordFailureDiagnostics = (error: unknown, classification = "codex_execution") => {
           if (!process.env.EXACT_REVIEW_ITEM_KEY) return;
           try {
@@ -570,8 +580,10 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           );
         }
         const itemLocalReviewHistoryPath = localRangeData
-          ? localReviewHistoryPath
-          : localOnly
+          ? outputSelection.retention === "debug"
+            ? localReviewHistoryPath
+            : null
+          : localOnly && outputSelection.retention === "debug"
             ? localExactReviewHistoryPath(artifactDir, item.repo, item.number)
             : null;
         let previousLocalReviewCommentBody =
@@ -968,12 +980,16 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 if (humanLocalReview) {
                   console.error("");
                   console.error("Structural review cache hit; GitHub context unchanged");
-                  console.error(`  report: ${displayPath(reportPath)}`);
+                  if (outputSelection.retention !== "none") {
+                    console.error(`  report: ${displayPath(reportPath)}`);
+                  }
                 } else {
                   console.error(
                     `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} cache-hit structural-unchanged skip-hydration-model #${item.number} (${completed}/${candidates.length})`,
                   );
                 }
+                assertCurrentOutputBudget();
+                pruneItemOutput(reportPath);
                 continue;
                 }
               }
@@ -1314,19 +1330,21 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           if (humanLocalReview) {
             console.error("");
             console.error("Review cache hit; content unchanged since the last review");
-            console.error(`  report: ${displayPath(reportPath)}`);
+            if (outputSelection.retention !== "none") {
+              console.error(`  report: ${displayPath(reportPath)}`);
+            }
           } else {
             console.error(
               `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} cache-hit content-unchanged skip-model #${item.number} (${completed}/${candidates.length})`,
             );
           }
+          assertCurrentOutputBudget();
+          pruneItemOutput(reportPath);
           continue;
         }
         if (proofBinding) {
           assertCommandProofSubject(proofBinding, pullHeadShaFromContext(context), context.pullRequest ?? context.issue, asRecord(asRecord(context.pullRequest).base).ref, asRecord(asRecord(context.pullRequest).base).sha);
         }
-        const codexWorkDir = join(artifactDir, "codex");
-        const proofScratchDir = join(codexWorkDir, "proof-scratch", String(item.number));
         // --local-range is a pre-PR LOCAL code review — it has no telegram-visible-proof to
         // capture, and prepareMediaProofArtifacts would host-side download media URLs and transcode
         // videos in the synthetic body (commit message / --body-file). Skip it entirely for
@@ -1502,7 +1520,12 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         });
         activeReviewItem = null;
         completed += 1;
-        if (codexFailed) codexFailureReports.push(reportPath);
+        if (codexFailed) {
+          codexFailureReports.push({
+            path: outputSelection.retention === "none" ? null : reportPath,
+            kind: codexFailureLogKind(reportMarkdown),
+          });
+        }
         if (humanLocalReview) {
           console.error("");
           console.error(codexFailed ? "Codex review failed" : "Review complete");
@@ -1518,6 +1541,8 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} done #${item.number} (${completed}/${candidates.length}) decision=${decision.decision} confidence=${decision.confidence} action=${action.actionTaken}`,
           );
         }
+        assertCurrentOutputBudget();
+        pruneItemOutput(reportPath);
         } catch (error) {
           reviewItemFailed = true;
           if (error instanceof AgentInputScanError || error instanceof ReviewSourcePreparationError) {
@@ -1624,17 +1649,16 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         throw new Error(reviewTreeCleanupFailures.join("; "));
       }
       if (codexFailures > 0) {
-        for (const reportPath of codexFailureReports) {
-          const failureKind = codexFailureLogKind(readFileSync(reportPath, "utf8"));
+        for (const failure of codexFailureReports) {
           console.error(
-            `[review] ${new Date().toISOString()} codex-failure classification=${failureKind} report=${displayPath(reportPath)}`,
+            `[review] ${new Date().toISOString()} codex-failure classification=${failure.kind}${failure.path ? ` report=${displayPath(failure.path)}` : ""}`,
           );
         }
         emitLocalOutput("failed");
         const retainedFailureReports =
           outputSelection.retention !== "none" && codexFailureReports.length > 0
             ? ` Report${codexFailureReports.length === 1 ? "" : "s"}: ${codexFailureReports
-                .map(displayPath)
+                .flatMap((failure) => (failure.path ? [displayPath(failure.path)] : []))
                 .join(", ")}`
             : "";
         const message = `Codex failed for ${codexFailures} item${
