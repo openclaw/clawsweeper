@@ -86,6 +86,13 @@ function reviewStartLeaseCommentUpdatedAt(
   return undefined;
 }
 
+export function localReviewOutputHasPayload(
+  status: "completed" | "failed",
+  resultCount: number,
+): boolean {
+  return status === "completed" || resultCount > 0;
+}
+
 export function withRunnerPreflightProvenance(
   markdown: string,
   replaceFrontMatterValue: (markdown: string, key: string, value: string) => string,
@@ -277,7 +284,8 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       assertReviewReportsBudget(localOutputResults, outputSelection.retention);
     };
     const emitLocalOutput = (status: "completed" | "failed"): void => {
-      if (!localOnly || outputEmitted || localOutputResults.length === 0) return;
+      if (!localOnly || outputEmitted) return;
+      if (!localReviewOutputHasPayload(status, localOutputResults.length)) return;
       emitReviewOutput(outputSelection, status, localOutputResults);
       outputEmitted = true;
     };

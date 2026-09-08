@@ -14,6 +14,7 @@ import {
   assertActiveReviewOutputBudget,
   assertTransientReviewOutputBudget,
   createTransientReviewOutput,
+  discardOwnedSummaryOutput,
   emitReviewFailureJson,
   emitReviewOutput,
   finalizeSummaryReviewOutput,
@@ -403,6 +404,8 @@ function localReviewCommand(args: Args): void {
   const reportDir = transientOutput?.path
     ? dirname(transientOutput.path)
     : resolve(argString(args, "report_dir", join(homedir(), ".clawsweeper-local-reviews")));
+  let retainedReviewOutput: ReturnType<typeof prepareRetainedReviewOutput> | null = null;
+  let retainedOutputFinalized = false;
 
   try {
     // Spec: genuinely offline — withhold every GitHub credential from the review engine.
@@ -447,7 +450,7 @@ function localReviewCommand(args: Args): void {
     const runDir =
       transientOutput?.path ??
       join(reportDir, `run-${headSha.slice(0, 8)}-${Date.now()}-${process.pid}`);
-    const retainedReviewOutput = transientOutput
+    retainedReviewOutput = transientOutput
       ? null
       : prepareRetainedReviewOutput(runDir, outputSelection.retention as "summary" | "debug");
     const itemOutputBudget = reviewOutputItemBudget(outputSelection.retention, 1);
@@ -489,6 +492,7 @@ function localReviewCommand(args: Args): void {
     writeFileSync(outputPath, markdown.endsWith("\n") ? markdown : `${markdown}\n`, "utf8");
     if (outputSelection.retention === "summary") {
       finalizeSummaryReviewOutput(retainedReviewOutput!, [outputPath]);
+      retainedOutputFinalized = true;
     } else if (retainedReviewOutput) {
       assertActiveReviewOutputBudget(retainedReviewOutput);
     } else {
@@ -509,6 +513,13 @@ function localReviewCommand(args: Args): void {
     );
   } finally {
     transientOutput?.cleanup();
+    if (
+      retainedReviewOutput?.retention === "summary" &&
+      !retainedOutputFinalized &&
+      existsSync(retainedReviewOutput.path)
+    ) {
+      discardOwnedSummaryOutput(retainedReviewOutput);
+    }
   }
 }
 

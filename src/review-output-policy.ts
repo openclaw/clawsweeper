@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  rmdirSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -239,7 +240,7 @@ export function finalizeSummaryReviewOutput(
   removeEmptyParents(retained, destination);
   rmSync(join(destination, SUMMARY_OWNER_FILE), { force: true });
   if (existsSync(destination) && readdirSync(destination).length === 0) {
-    rmSync(destination);
+    rmdirSync(destination);
   }
 }
 

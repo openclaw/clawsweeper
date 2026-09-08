@@ -10,6 +10,9 @@ const MAX_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;
 const MAX_REVIEW_TREE_LIST_BYTES = 64 * 1024 * 1024;
 const MAX_REVIEW_ATTRIBUTE_OUTPUT_BYTES = 16 * 1024 * 1024;
 const REVIEW_ATTRIBUTE_PATH_BATCH_SIZE = 1024;
+const REVIEW_ATTRIBUTE_BLOB_MAX_FILES = 1024;
+const REVIEW_ATTRIBUTE_BLOB_MAX_BYTES = 16 * 1024 * 1024;
+const REVIEW_TREE_METADATA_DEADLINE_MS = 30_000;
 const GIT_OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
 export const REVIEW_TREE_MAX_FILES = 200_000;
 export const REVIEW_TREE_MAX_BYTES = 2 * 1024 * 1024 * 1024;
@@ -26,13 +29,18 @@ export interface ReviewTreeMaterializationBudget {
 export interface ReviewTreeMetadata {
   paths: string[];
   blobBytes: bigint;
+  missingBlobs?: ReadonlyArray<{ objectId: string; bytes: number }>;
 }
 
-interface ReviewTreeMaterializationOptions {
+export interface ReviewTreeMaterializationOptions {
   targetDir: string;
   worktreeDir: string;
   itemNumber: number;
   headSha: string;
+  resolveBlobSizes?: (
+    objectIds: readonly string[],
+    timeoutMs: number,
+  ) => ReadonlyMap<string, number>;
 }
 
 type ReviewGitFailureReason =
@@ -227,8 +235,16 @@ function reviewTreeBudgetError(headSha: string, detail: string): ReviewSourcePre
   return error;
 }
 
-function reviewTreeMetadata(targetDir: string, headSha: string): ReviewTreeMetadata {
-  const result = spawnSync("git", ["ls-tree", "-r", "-l", "-z", "--full-tree", headSha], {
+function reviewTreeMetadata(
+  targetDir: string,
+  headSha: string,
+  resolveBlobSizes?: (
+    objectIds: readonly string[],
+    timeoutMs: number,
+  ) => ReadonlyMap<string, number>,
+): ReviewTreeMetadata {
+  const deadlineAt = Date.now() + REVIEW_TREE_METADATA_DEADLINE_MS;
+  const result = spawnSync("git", ["ls-tree", "-r", "-z", "--full-tree", headSha], {
     cwd: targetDir,
     env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
     encoding: "utf8",
@@ -248,24 +264,223 @@ function reviewTreeMetadata(targetDir: string, headSha: string): ReviewTreeMetad
   }
   const entries = output.slice(0, -1).split("\0");
   const paths: string[] = [];
-  let blobBytes = 0n;
+  const blobObjectIds: string[] = [];
+  const attributeObjectIds = new Set<string>();
   for (const entry of entries) {
-    const match =
-      /^([0-7]{6}) (blob|commit) ([0-9a-f]{40}(?:[0-9a-f]{24})?) +(-|\d+)\t([\s\S]+)$/.exec(entry);
+    const match = /^([0-7]{6}) (blob|commit) ([0-9a-f]{40}(?:[0-9a-f]{24})?)\t([\s\S]+)$/.exec(
+      entry,
+    );
     if (!match) {
       throw reviewTreeBudgetError(headSha, "Git returned malformed checkout size metadata");
     }
-    paths.push(match[5]!);
+    paths.push(match[4]!);
     if (match[2] !== "blob") continue;
-    if (match[4] === "-") {
+    blobObjectIds.push(match[3]!);
+    if (match[4] === ".gitattributes" || match[4]!.endsWith("/.gitattributes")) {
+      attributeObjectIds.add(match[3]!);
+    }
+  }
+  if (paths.length > REVIEW_TREE_MAX_FILES) {
+    throw reviewTreeBudgetError(
+      headSha,
+      `${paths.length} tracked paths exceed the ${REVIEW_TREE_MAX_FILES}-file limit`,
+    );
+  }
+
+  const objectIds = [...new Set(blobObjectIds)];
+  const availability = spawnSync(
+    "git",
+    ["rev-list", "--objects", "--missing=print", `${headSha}^{tree}`],
+    {
+      cwd: targetDir,
+      env: {
+        ...process.env,
+        GIT_NO_LAZY_FETCH: "1",
+        GIT_OPTIONAL_LOCKS: "0",
+        GIT_NO_REPLACE_OBJECTS: "1",
+      },
+      encoding: "utf8",
+      maxBuffer: MAX_REVIEW_TREE_LIST_BYTES,
+    },
+  );
+  const availabilityOutput = checkedReviewGit(availability, "review_git_inspection_failed");
+  const observed = new Set<string>();
+  const missing = new Set<string>();
+  const expected = new Set(objectIds);
+  for (const line of availabilityOutput.split("\n")) {
+    const match = /^(\??)([0-9a-f]{40}(?:[0-9a-f]{24})?)(?: |$)/i.exec(line);
+    if (!match || !expected.has(match[2]!)) continue;
+    observed.add(match[2]!);
+    if (match[1] === "?") missing.add(match[2]!);
+  }
+  if (observed.size !== expected.size) {
+    throw reviewTreeBudgetError(headSha, "Git returned incomplete checkout object metadata");
+  }
+
+  const sizes = new Map<string, number>();
+  const localObjectIds = objectIds.filter((objectId) => !missing.has(objectId));
+  if (localObjectIds.length > 0) {
+    const local = spawnSync(
+      "git",
+      ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+      {
+        cwd: targetDir,
+        env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
+        encoding: "utf8",
+        input: `${localObjectIds.join("\n")}\n`,
+        maxBuffer: MAX_REVIEW_TREE_LIST_BYTES,
+      },
+    );
+    const localOutput = checkedReviewGit(local, "review_git_inspection_failed").trim();
+    const lines = localOutput ? localOutput.split("\n") : [];
+    if (lines.length !== localObjectIds.length) {
+      throw reviewTreeBudgetError(headSha, "Git returned incomplete local blob size metadata");
+    }
+    for (const line of lines) {
+      const match = /^([0-9a-f]{40}(?:[0-9a-f]{24})?) blob (\d+)$/.exec(line);
+      if (!match || !expected.has(match[1]!)) {
+        throw reviewTreeBudgetError(headSha, "Git returned malformed local blob size metadata");
+      }
+      sizes.set(match[1]!, Number(match[2]));
+    }
+  }
+
+  const resolveMissingSizes = (objectIds: readonly string[]): void => {
+    if (objectIds.length === 0) return;
+    if (!resolveBlobSizes) {
+      throw reviewTreeBudgetError(headSha, "remote blob size metadata is unavailable");
+    }
+    const timeoutMs = deadlineAt - Date.now();
+    if (timeoutMs <= 0) throw new AgentInputScanError("deadline");
+    let remoteSizes: ReadonlyMap<string, number>;
+    try {
+      remoteSizes = resolveBlobSizes(objectIds, timeoutMs);
+    } catch (error) {
+      if (error instanceof AgentInputScanError || error instanceof ReviewSourcePreparationError) {
+        throw error;
+      }
+      throw reviewTreeBudgetError(headSha, "remote blob size metadata is unavailable");
+    }
+    for (const objectId of objectIds) {
+      const bytes = remoteSizes.get(objectId);
+      if (bytes === undefined || !Number.isSafeInteger(bytes) || bytes < 0) {
+        throw reviewTreeBudgetError(headSha, "remote blob size metadata is incomplete");
+      }
+      sizes.set(objectId, bytes);
+    }
+  };
+
+  const missingAttributeBlobs = [...attributeObjectIds]
+    .filter((objectId) => missing.has(objectId))
+    .map((objectId) => ({ objectId, bytes: 0 }));
+  if (missingAttributeBlobs.length > REVIEW_ATTRIBUTE_BLOB_MAX_FILES) {
+    throw reviewTreeBudgetError(
+      headSha,
+      `${missingAttributeBlobs.length} missing attribute blobs exceed the ${REVIEW_ATTRIBUTE_BLOB_MAX_FILES}-file limit`,
+    );
+  }
+  resolveMissingSizes(missingAttributeBlobs.map(({ objectId }) => objectId));
+  let attributeBytes = 0;
+  for (const blob of missingAttributeBlobs) {
+    blob.bytes = sizes.get(blob.objectId)!;
+    attributeBytes += blob.bytes;
+  }
+  if (attributeBytes > REVIEW_ATTRIBUTE_BLOB_MAX_BYTES) {
+    throw reviewTreeBudgetError(
+      headSha,
+      `${attributeBytes} missing attribute bytes exceed the ${REVIEW_ATTRIBUTE_BLOB_MAX_BYTES}-byte limit`,
+    );
+  }
+  if (missingAttributeBlobs.length > 0) {
+    const fileSystem = statfsSync(targetDir);
+    const availableBytes = fileSystem.bavail * fileSystem.bsize;
+    if (availableBytes < attributeBytes + REVIEW_TREE_DISK_RESERVE_BYTES) {
       throw reviewTreeBudgetError(
         headSha,
-        `blob size metadata is unavailable for ${JSON.stringify(match[5])}`,
+        `${availableBytes} available bytes cannot admit ${attributeBytes} attribute bytes plus the ${REVIEW_TREE_DISK_RESERVE_BYTES}-byte reserve`,
       );
     }
-    blobBytes += BigInt(match[4]!);
+    fetchMissingReviewTreeBlobs(targetDir, headSha, missingAttributeBlobs, deadlineAt);
   }
-  return { paths, blobBytes };
+  assertReviewTreeHasBoundedTransforms(targetDir, headSha, paths);
+
+  const remainingMissing = [...missing].filter((objectId) => !attributeObjectIds.has(objectId));
+  resolveMissingSizes(remainingMissing);
+
+  let blobBytes = 0n;
+  for (const objectId of blobObjectIds) {
+    const bytes = sizes.get(objectId);
+    if (bytes === undefined) {
+      throw reviewTreeBudgetError(headSha, "checkout blob size metadata is incomplete");
+    }
+    blobBytes += BigInt(bytes);
+  }
+  return {
+    paths,
+    blobBytes,
+    missingBlobs: remainingMissing.map((objectId) => ({
+      objectId,
+      bytes: sizes.get(objectId)!,
+    })),
+  };
+}
+
+function fetchMissingReviewTreeBlobs(
+  targetDir: string,
+  headSha: string,
+  missingBlobs: ReadonlyArray<{ objectId: string; bytes: number }>,
+  deadlineAt = Date.now() + REVIEW_TREE_METADATA_DEADLINE_MS,
+): void {
+  if (missingBlobs.length === 0) return;
+  const timeoutMs = deadlineAt - Date.now();
+  if (timeoutMs <= 0) throw new AgentInputScanError("deadline");
+  const fetched = spawnSync(
+    "git",
+    [
+      "-c",
+      "fetch.negotiationAlgorithm=noop",
+      "fetch",
+      "origin",
+      "--no-tags",
+      "--no-write-fetch-head",
+      "--recurse-submodules=no",
+      "--filter=blob:none",
+      "--stdin",
+    ],
+    {
+      cwd: targetDir,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      encoding: "utf8",
+      input: `${missingBlobs.map(({ objectId }) => objectId).join("\n")}\n`,
+      timeout: timeoutMs,
+      maxBuffer: MAX_GIT_OUTPUT_BYTES,
+    },
+  );
+  checkedReviewGit(fetched, "review_blobs_unavailable");
+
+  const inspected = spawnSync(
+    "git",
+    ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+    {
+      cwd: targetDir,
+      env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
+      encoding: "utf8",
+      input: `${missingBlobs.map(({ objectId }) => objectId).join("\n")}\n`,
+      maxBuffer: MAX_REVIEW_TREE_LIST_BYTES,
+    },
+  );
+  const output = checkedReviewGit(inspected, "review_git_inspection_failed").trim();
+  const expected = new Map(missingBlobs.map(({ objectId, bytes }) => [objectId, bytes]));
+  const lines = output ? output.split("\n") : [];
+  if (lines.length !== missingBlobs.length) {
+    throw reviewTreeBudgetError(headSha, "fetched blob metadata is incomplete");
+  }
+  for (const line of lines) {
+    const match = /^([0-9a-f]{40}(?:[0-9a-f]{24})?) blob (\d+)$/.exec(line);
+    if (!match || expected.get(match[1]!) !== Number(match[2])) {
+      throw reviewTreeBudgetError(headSha, "fetched blob size did not match admitted metadata");
+    }
+  }
 }
 
 function assertReviewTreeHasBoundedTransforms(
@@ -350,13 +565,19 @@ function reviewTreeTotals(
 }
 
 function materializePullRequestReviewTreeWithBudget(
-  { targetDir, worktreeDir, itemNumber, headSha }: ReviewTreeMaterializationOptions,
+  {
+    targetDir,
+    worktreeDir,
+    itemNumber,
+    headSha,
+    resolveBlobSizes,
+  }: ReviewTreeMaterializationOptions,
   budget: ReviewTreeMaterializationBudget,
   metadataOverride?: ReviewTreeMetadata,
 ): boolean {
   if (!ensurePullRequestReviewHead({ targetDir, itemNumber, headSha })) return false;
   if (existsSync(worktreeDir)) return false;
-  const metadata = metadataOverride ?? reviewTreeMetadata(targetDir, headSha);
+  const metadata = metadataOverride ?? reviewTreeMetadata(targetDir, headSha, resolveBlobSizes);
   if (metadata.paths.length > budget.maxFiles) {
     throw reviewTreeBudgetError(
       headSha,
@@ -370,20 +591,24 @@ function materializePullRequestReviewTreeWithBudget(
       `${projectedBytes} conservatively projected bytes exceed the ${budget.maxBytes}-byte limit`,
     );
   }
-  assertReviewTreeHasBoundedTransforms(targetDir, headSha, metadata.paths);
   const availableBytes =
     budget.availableBytes ??
     (() => {
       const fileSystem = statfsSync(dirname(worktreeDir));
       return fileSystem.bavail * fileSystem.bsize;
     })();
-  const requiredBytes = projectedBytes + BigInt(budget.diskReserveBytes);
+  const acquisitionBytes = (metadata.missingBlobs ?? []).reduce(
+    (total, blob) => total + BigInt(blob.bytes),
+    0n,
+  );
+  const requiredBytes = projectedBytes + acquisitionBytes + BigInt(budget.diskReserveBytes);
   if (BigInt(availableBytes) < requiredBytes) {
     throw reviewTreeBudgetError(
       headSha,
-      `${availableBytes} available bytes cannot admit ${projectedBytes} projected checkout bytes plus the ${budget.diskReserveBytes}-byte reserve`,
+      `${availableBytes} available bytes cannot admit ${projectedBytes} projected checkout bytes, ${acquisitionBytes} missing blob bytes, and the ${budget.diskReserveBytes}-byte reserve`,
     );
   }
+  fetchMissingReviewTreeBlobs(targetDir, headSha, metadata.missingBlobs ?? []);
   const worktree = spawnSync(
     "git",
     [
@@ -398,7 +623,7 @@ function materializePullRequestReviewTreeWithBudget(
     ],
     {
       cwd: targetDir,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
       encoding: "utf8",
       maxBuffer: MAX_GIT_OUTPUT_BYTES,
     },
@@ -643,6 +868,57 @@ function throwBlobMetadataUnavailable(): never {
     "review_blob_metadata_unavailable",
     "Could not obtain complete review blob size metadata.",
   );
+}
+
+export function githubReviewTreeBlobSizes({
+  repository,
+  headSha,
+  request,
+}: {
+  repository: string;
+  headSha: string;
+  request: (path: string) => unknown;
+}): ReadonlyMap<string, number> {
+  const match = repository.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
+  if (
+    !match ||
+    match[1] === "." ||
+    match[1] === ".." ||
+    match[2] === "." ||
+    match[2] === ".." ||
+    !GIT_OBJECT_ID.test(headSha)
+  ) {
+    throw new Error("invalid bounded review tree metadata request");
+  }
+  const response = request(`repos/${match[1]}/${match[2]}/git/trees/${headSha}?recursive=1`) as {
+    truncated?: unknown;
+    tree?: unknown;
+  };
+  if (response.truncated !== false || !Array.isArray(response.tree)) {
+    throw new Error("incomplete bounded review tree metadata response");
+  }
+  if (response.tree.length > REVIEW_TREE_MAX_FILES) {
+    throw new Error("bounded review tree metadata response exceeded its entry limit");
+  }
+  const sizes = new Map<string, number>();
+  for (const value of response.tree) {
+    if (!value || typeof value !== "object") {
+      throw new Error("invalid bounded review tree metadata entry");
+    }
+    const entry = value as { type?: unknown; sha?: unknown; size?: unknown };
+    if (entry.type !== "blob") continue;
+    if (
+      typeof entry.sha !== "string" ||
+      !GIT_OBJECT_ID.test(entry.sha) ||
+      typeof entry.size !== "number" ||
+      !Number.isSafeInteger(entry.size) ||
+      entry.size < 0
+    ) {
+      throw new Error("invalid bounded review tree blob metadata");
+    }
+    sizes.set(entry.sha, entry.size);
+  }
+  return sizes;
 }
 
 export function githubReviewBlobSizes({

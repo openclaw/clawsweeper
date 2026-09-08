@@ -544,7 +544,7 @@ test("review candidates start lazily and deferred items cannot remain active", (
   assert.ok(sourceAvailabilityGate > contextCollection);
   assert.ok(modelReview > sourceAvailabilityGate);
   const reviewCatchStart = source.indexOf(
-    "} catch (error) {\n      if (reviewLedger) {",
+    "} catch (error) {\n      commandError = error;",
     reviewCommandStart,
   );
   const reviewCatch = source.slice(

@@ -18,6 +18,7 @@ import {
   ensurePullRequestReviewHead,
   ensureReviewTreeCommit,
   githubReviewBlobSizes,
+  githubReviewTreeBlobSizes,
   hydratePullRequestReviewBlobs,
   hydratePullRequestReviewHistory,
   materializePullRequestReviewTree,
@@ -717,6 +718,7 @@ test("restricted review materializes the exact pull request head before model ex
         worktreeDir: reviewTree,
         itemNumber: 982,
         headSha: fixture.headSha,
+        resolveBlobSizes: resolveFixtureBlobSizes(fixture.source),
       }),
       true,
     );
@@ -774,6 +776,73 @@ test("restricted review rejects one tracked 2.5 GiB blob before worktree materia
     );
     assert.equal(existsSync(reviewTree), false);
     assert.equal(git(fixture.target, "worktree", "list", "--porcelain"), worktreesBefore);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("restricted review rejects oversized remote blob metadata before fetching or checkout", () => {
+  const fixture = partialCloneFixture({ prefetchHead: false });
+  const reviewTree = join(fixture.root, "oversized-remote-tree");
+  try {
+    assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), false);
+    const worktreesBefore = git(fixture.target, "worktree", "list", "--porcelain");
+    assert.throws(
+      () =>
+        materializePullRequestReviewTree({
+          targetDir: fixture.target,
+          worktreeDir: reviewTree,
+          itemNumber: 982,
+          headSha: fixture.headSha,
+          resolveBlobSizes: (objectIds) =>
+            new Map(objectIds.map((objectId) => [objectId, 2.5 * 1024 * 1024 * 1024])),
+        }),
+      (error) =>
+        error instanceof ReviewSourcePreparationError &&
+        error.diagnosticReason === "review_checkout_unavailable" &&
+        /conservatively projected bytes/.test(error.message),
+    );
+    assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), false);
+    assert.equal(existsSync(reviewTree), false);
+    assert.equal(git(fixture.target, "worktree", "list", "--porcelain"), worktreesBefore);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("restricted review hydrates only bounded attributes before rejecting a remote filter", () => {
+  const fixture = partialCloneFixture({ prefetchHead: false });
+  const reviewTree = join(fixture.root, "filtered-remote-tree");
+  try {
+    writeFileSync(join(fixture.source, ".gitattributes"), "*.txt filter=inflate\n");
+    git(fixture.source, "add", ".gitattributes");
+    git(fixture.source, "commit", "-qm", "configure remote checkout filter");
+    const headSha = git(fixture.source, "rev-parse", "HEAD");
+    git(fixture.source, "push", "-q", "--force", "origin", "HEAD:refs/pull/982/head");
+    const requested: string[][] = [];
+    assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), false);
+
+    assert.throws(
+      () =>
+        materializePullRequestReviewTree({
+          targetDir: fixture.target,
+          worktreeDir: reviewTree,
+          itemNumber: 982,
+          headSha,
+          resolveBlobSizes: (objectIds) => {
+            requested.push([...objectIds]);
+            return resolveFixtureBlobSizes(fixture.source)(objectIds);
+          },
+        }),
+      (error) =>
+        error instanceof ReviewSourcePreparationError &&
+        error.diagnosticReason === "review_checkout_unavailable" &&
+        /unbounded filter/.test(error.message),
+    );
+    assert.equal(requested.length, 1);
+    assert.equal(requested[0]!.length, 1);
+    assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), false);
+    assert.equal(existsSync(reviewTree), false);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
@@ -1195,6 +1264,45 @@ test("review blob sizes use one bounded GraphQL metadata request", () => {
   );
 });
 
+test("review tree blob sizes use one bounded recursive-tree request", () => {
+  const headSha = "a".repeat(40);
+  let requests = 0;
+  const result = githubReviewTreeBlobSizes({
+    repository: "openclaw/clawsweeper",
+    headSha,
+    request: (path) => {
+      requests += 1;
+      assert.equal(path, `repos/openclaw/clawsweeper/git/trees/${headSha}?recursive=1`);
+      return {
+        truncated: false,
+        tree: [
+          { type: "tree", sha: "b".repeat(40) },
+          { type: "blob", sha: "c".repeat(40), size: 12 },
+          { type: "blob", sha: "d".repeat(40), size: 34 },
+        ],
+      };
+    },
+  });
+
+  assert.equal(requests, 1);
+  assert.deepEqual(
+    [...result],
+    [
+      ["c".repeat(40), 12],
+      ["d".repeat(40), 34],
+    ],
+  );
+  assert.throws(
+    () =>
+      githubReviewTreeBlobSizes({
+        repository: "openclaw/clawsweeper",
+        headSha,
+        request: () => ({ truncated: true, tree: [] }),
+      }),
+    /incomplete bounded review tree metadata response/,
+  );
+});
+
 test("large pinned deltas hydrate historical blobs after head checkout and produce the full offline binary patch", (t) => {
   const fixture = partialCloneFixture({
     extraFiles: 170,
@@ -1210,6 +1318,7 @@ test("large pinned deltas hydrate historical blobs after head checkout and produ
         worktreeDir: reviewTree,
         itemNumber: 982,
         headSha: fixture.headSha,
+        resolveBlobSizes: resolveFixtureBlobSizes(fixture.source),
       }),
       true,
     );

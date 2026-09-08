@@ -31,6 +31,7 @@ import {
   reviewOutputItemBudget,
   reviewOutputSelection,
 } from "../dist/review-output-policy.js";
+import { localReviewOutputHasPayload } from "../dist/clawsweeper-review-command-workflow.js";
 
 test("local review output defaults to none and preserves explicit-path compatibility", () => {
   assert.deepEqual(reviewOutputSelection(parseArgs([]), { destinationFlag: "artifact_dir" }), {
@@ -163,6 +164,18 @@ test("summary retention removes debug files and keeps private bounded reports", 
   }
 });
 
+test("empty summary finalization removes only its exclusively owned empty directory", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-summary-empty-"));
+  const destination = join(root, "summary");
+  try {
+    const output = prepareRetainedReviewOutput(destination, "summary");
+    finalizeSummaryReviewOutput(output, []);
+    assert.equal(existsSync(destination), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("summary output requires an exclusive destination and its original owner token", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-summary-owner-"));
   const existing = join(root, "existing");
@@ -267,6 +280,12 @@ test("JSON result output keeps artifact paths nullable", () => {
     retention: "none",
     reports: [{ item_number: 42, artifact_path: null, report: "review" }],
   });
+});
+
+test("successful empty local selections emit JSON while empty failures defer to the CLI catch", () => {
+  assert.equal(localReviewOutputHasPayload("completed", 0), true);
+  assert.equal(localReviewOutputHasPayload("failed", 0), false);
+  assert.equal(localReviewOutputHasPayload("failed", 1), true);
 });
 
 test("new retained modes print the review while legacy explicit paths still print the path", () => {

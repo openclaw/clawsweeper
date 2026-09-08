@@ -15,6 +15,7 @@ import {
   ensurePullRequestReviewHead,
   ensureReviewTreeCommit,
   githubReviewBlobSizes,
+  githubReviewTreeBlobSizes,
   hydratePullRequestReviewBlobs,
   hydratePullRequestReviewHistory,
   materializePullRequestReviewTree,
@@ -1059,7 +1060,27 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     sameAuthorCounterpartApplyReason,
     hydratePullRequestReviewSource,
     ensurePullRequestReviewHead,
-    materializePullRequestReviewTree,
+    materializePullRequestReviewTree: (
+      options: Parameters<typeof materializePullRequestReviewTree>[0],
+    ) => {
+      let remoteTreeSizes: ReadonlyMap<string, number> | null = null;
+      return materializePullRequestReviewTree({
+        ...options,
+        resolveBlobSizes: (objectIds, timeoutMs) => {
+          remoteTreeSizes ??= githubReviewTreeBlobSizes({
+            repository: targetRepo(),
+            headSha: options.headSha,
+            request: (path) => ghJsonOnce(["api", path], timeoutMs),
+          });
+          return new Map(
+            objectIds.flatMap((objectId) => {
+              const bytes = remoteTreeSizes!.get(objectId);
+              return bytes === undefined ? [] : [[objectId, bytes]];
+            }),
+          );
+        },
+      });
+    },
     removePullRequestReviewTree,
     staleVersionBugCloseEnabled,
     structuralExternalRelationSensitivity,

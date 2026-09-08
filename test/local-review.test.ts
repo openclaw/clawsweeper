@@ -250,6 +250,64 @@ fs.writeFileSync(
   },
 );
 
+test(
+  "local-review summary failure removes its owned output and returns one JSON envelope",
+  { skip: process.platform === "win32" },
+  (t) => {
+    const dir = initRepo();
+    const harness = mkdtempSync(join(tmpdir(), "lr-summary-failure-"));
+    const reportDir = join(harness, "reports");
+    useFakeScanner(t);
+    try {
+      git(dir, "branch", "local-base");
+      git(dir, "commit", "-q", "--allow-empty", "-m", "test: oversized review output");
+      const fakeCodex = join(harness, "codex");
+      writeFileSync(
+        fakeCodex,
+        `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+const output = args[args.indexOf("--output-last-message") + 1];
+fs.writeFileSync(output, "");
+fs.truncateSync(output, 4 * 1024 * 1024 + 1);
+`,
+        { mode: 0o755 },
+      );
+
+      const result = runLocalReview(
+        dir,
+        [
+          "--target-repo",
+          "openclaw/clawsweeper",
+          "--base",
+          "local-base",
+          "--output-retention",
+          "summary",
+          "--report-dir",
+          reportDir,
+          "--result-format",
+          "json",
+        ],
+        { CODEX_BIN: fakeCodex },
+      );
+
+      assert.equal(result.status, 1, result.out);
+      assert.deepEqual(JSON.parse(result.stdout), {
+        status: "failed",
+        retention: "summary",
+        reports: [],
+        error: {
+          message: "Review result output exceeded its 4194304-byte limit.",
+        },
+      });
+      assert.deepEqual(readdirSync(reportDir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(harness, { recursive: true, force: true });
+    }
+  },
+);
+
 test("local-review refuses a dirty working tree", () => {
   const dir = initRepo();
   try {

@@ -228,6 +228,10 @@ export interface CreateReviewCommandWorkflowDependencies {
     worktreeDir: string;
     itemNumber: number;
     headSha: string;
+    resolveBlobSizes?: (
+      objectIds: readonly string[],
+      timeoutMs: number,
+    ) => ReadonlyMap<string, number>;
   }) => boolean;
   markdownFor: (options: {
     item: Item;
