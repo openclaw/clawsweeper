@@ -34,6 +34,17 @@ locks, and post-review human activity. The linked issue has its own mutation
 lease and ledger record; it is archived before the parent PR, so an interrupted
 parent close cannot erase an independently completed issue record.
 
+The current close-reason policy and known same-author counterpart eligibility
+are refreshed before the closeout note and again at the close mutation boundary,
+bypassing candidate and generation caches. A counterpart that locks, reopens,
+changes identity, or cannot be refreshed keeps the current item open. A prior
+closed snapshot does not exempt a reopened counterpart from these checks.
+
+These checks do not form a remote two-item transaction: GitHub can change after
+the last read, and a later mutation can fail independently. The implementation
+provenance path retains its issue-first ordering and independent issue archive.
+General same-author pairs retain their existing processing order.
+
 OpenClaw Bay is unaffected. Bay remains an observer-only projection of durable
 workflow state: this policy changes neither Bay's public schema nor its ability
 to initiate GitHub or apply actions.

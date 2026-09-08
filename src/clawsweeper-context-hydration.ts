@@ -870,15 +870,41 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
     item: Pick<Item, "number" | "kind" | "author">,
     relatedItems: readonly unknown[],
     canPairClose?: (number: number, kind: ItemKind) => boolean,
+    refreshCounterpart?: (number: number) => {
+      item: Pick<Item, "number" | "kind" | "author" | "title">;
+      state: string;
+    },
   ): string | null {
     const itemAuthor = normalizeAuthorLogin(item.author);
     if (!itemAuthor) return null;
+    const checked = new Set<number>();
     for (const relatedItem of relatedItems) {
       const related = relatedCounterpartInfo(relatedItem);
       if (related.number === null || related.number === item.number) continue;
       if (!related.kind || related.kind === item.kind) continue;
-      if (related.state !== "open") continue;
       if (related.author !== itemAuthor) continue;
+      if (refreshCounterpart) {
+        if (checked.has(related.number)) continue;
+        checked.add(related.number);
+        try {
+          const refreshed = refreshCounterpart(related.number);
+          if (
+            refreshed.item.number !== related.number ||
+            refreshed.item.kind !== related.kind ||
+            normalizeAuthorLogin(refreshed.item.author) !== itemAuthor
+          ) {
+            return `same-author pair #${related.number} could not be revalidated: counterpart identity changed`;
+          }
+          related.state = refreshed.state;
+          related.title = refreshed.item.title;
+        } catch (error) {
+          return `same-author pair #${related.number} could not be revalidated: ${error instanceof Error ? error.message : String(error)}`;
+        }
+        if (related.state !== "open" && related.state !== "closed") {
+          return `same-author pair #${related.number} could not be revalidated: state is ${related.state || "unknown"}`;
+        }
+      }
+      if (related.state !== "open") continue;
       if (canPairClose?.(related.number, related.kind)) continue;
       return `open ${itemKindLabel(related.kind)} #${related.number}${related.title ? ` (${related.title})` : ""} by the same author is paired with this ${itemKindLabel(item.kind)}`;
     }
