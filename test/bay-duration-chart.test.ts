@@ -77,12 +77,18 @@ test("missing snapshot time does not fall back to the browser clock", () => {
   assert.ok(script.includes('snapshotAt=Date.parse(timings.window_ended_at||"")'));
 });
 
-test("every bucket has an equivalent large native interval choice", () => {
+test("one plot-wide slider replaces tiny bucket controls and permanent detail UI", () => {
   const result = render([point("18:10:00")]);
-  assert.equal((result.match(/<option value="[0-9]+"/g) || []).length, 13);
-  assert.ok(result.includes("Choose interval (touch or keyboard)"));
-  assert.match(html, /min-height:44px/);
-  assert.ok(script.includes('event.target.id!=="journey-interval-select"'));
+  assert.equal((result.match(/role="slider"/g) || []).length, 1);
+  assert.match(result, /tabindex="0"/);
+  assert.match(result, /aria-valuemax="12"/);
+  assert.equal((result.match(/<span aria-hidden="true" class="journey-bucket/g) || []).length, 13);
+  assert.doesNotMatch(result, /<button|<select|journey-bucket-detail|journey-interval-choice/);
+  assert.match(result, /id="journey-tooltip" role="tooltip" hidden/);
+  assert.match(html, /touch-action:pan-y/);
+  assert.ok(script.includes('event.key==="Home"'));
+  assert.ok(script.includes('event.key==="End"'));
+  assert.ok(script.includes('event.key==="Escape"'));
 });
 
 test("off-window points neither stretch the time axis nor inflate the minutes scale", () => {

@@ -1273,7 +1273,17 @@ export class ExactReviewQueue {
         item.reviewProofRequests = records;
         dispatch = true;
       }
-      await this.writeState(state);
+      this.storage.transactionSync(() => {
+        // Persist only participation, atomically with the accepted request. The
+        // immutable lease revision, not a newer pending head, owns this fact.
+        this.lifecycleProjectionStore.recordInlineProofRequestSync({
+          canonicalTargetKey: `${decision.targetRepo}#${decision.itemNumber}`,
+          fenceKey: owner.itemKey,
+          revision: owner.leaseRevision,
+          observedAt: now,
+        });
+        this.writeStateSync(state);
+      });
       return json({
         ok: true,
         dispatch,
@@ -2414,7 +2424,7 @@ export class ExactReviewQueue {
               ? { sourceAuthorityWatermark: exactReviewSourceAuthorityWatermark(decision)! }
               : {}),
           };
-          this.recordLifecycleAdmission(state.items[key], decision, now);
+          this.recordLifecycleAdmission(state.items[key], decision, now, undefined, true);
           ingressAdmitted = true;
         }
         if (
@@ -2433,7 +2443,13 @@ export class ExactReviewQueue {
           }
         }
         if (ingressAdmitted && state.items[key]) {
-          this.recordLifecycleAdmission(state.items[key], state.items[key].decision, now);
+          this.recordLifecycleAdmission(
+            state.items[key],
+            state.items[key].decision,
+            now,
+            undefined,
+            true,
+          );
         }
         if (incomingPublicationRevision && state.items[key]) {
           this.updatePublicationSuccessorWitnesses(
@@ -8953,6 +8969,7 @@ export class ExactReviewQueue {
     decision: ExactReviewDecision,
     now: number,
     revision = item.revision,
+    trackInlineProof = false,
   ) {
     const sourceDecision = decision.publication?.producerDecision ?? decision;
     const canonicalTargetKey = `${sourceDecision.targetRepo}#${sourceDecision.itemNumber}`;
@@ -8992,6 +9009,7 @@ export class ExactReviewQueue {
       return existing;
     }
     return this.lifecycleProjectionStore.recordAdmissionSync({
+      ...(trackInlineProof && !decision.publication ? { inlineProofTracked: true as const } : {}),
       canonicalTargetKey,
       fenceKey: item.key,
       revision,
@@ -9069,7 +9087,7 @@ export class ExactReviewQueue {
     item.decision = decision;
     item.updatedAt = now;
     state.items[item.key] = item;
-    this.recordLifecycleAdmission(item, decision, now);
+    this.recordLifecycleAdmission(item, decision, now, undefined, true);
     return { item, terminal };
   }
 

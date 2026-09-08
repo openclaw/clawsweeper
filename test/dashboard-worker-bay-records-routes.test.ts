@@ -6352,6 +6352,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
         lane: "pending",
         state: "pending",
         current_revision: true,
+        inline_proof: "unknown",
         updated_at: new Date(generatedAt).toISOString(),
       },
       {
@@ -6360,6 +6361,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
         lane: "completed",
         state: "completed",
         current_revision: true,
+        inline_proof: "unknown",
         updated_at: new Date(generatedAt).toISOString(),
       },
     ],
