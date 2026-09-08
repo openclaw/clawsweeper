@@ -2626,7 +2626,7 @@ test("sweep review recovery uses explicit failed shard artifacts", () => {
   );
   assert.match(recoveryJob, /Recovery skipped because the target is disabled/);
   assert.match(recoveryJob, /Recovery shed by exact-review queue backpressure/);
-  assert.match(recoveryJob, /control_plane_curl/);
+  assert.match(recoveryJob, /for attempt in 1 2 3/);
   assert.match(recoveryJob, /failed_recovery_dispatches/);
   assert.match(
     recoveryJob,

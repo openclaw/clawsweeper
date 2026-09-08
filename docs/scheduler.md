@@ -67,23 +67,6 @@ content caches. Changed PR content goes to Codex, including source comments
 and formatting. See [Review Cache](review-cache.md) for admission, freshness,
 and runtime packaging rules.
 
-### Control-plane workflow retries
-
-Shell calls to the control plane in `sweep.yml`, `exact-review-reconcile-run.yml`,
-and `exact-review-dead-letter-reconcile.yml` use
-`scripts/control-plane-curl.sh`. Each request retries connection failures and
-HTTP 5xx up to four attempts. A valid `Retry-After` delay (seconds or HTTP-date)
-is capped at 60 seconds; otherwise the waits are 2, 4, and 8 seconds. Each
-attempt emits a notice. The helper preserves the caller's final curl exit code,
-HTTP status output, and body handling. HTTP 4xx responses are not retried;
-callers retain their explicit lease-conflict, supersession, and deployment-skew handling.
-This includes enqueue, claims, review/status heartbeats, completion, lifecycle
-receipts, terminal-finalization operations, reconciliation, and the DLQ health
-probe. Existing typed batch clients retain their separate lease-aware retry
-policy. Fence and reservation failures are attributed to the existing
-`queue_completion_failure` infrastructure category, including a review that
-never starts because its status fence is unavailable.
-
 ## Workflow
 
 Explicit `workflow_dispatch` `item_number`/`item_numbers` selections, excluding

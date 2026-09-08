@@ -4142,7 +4142,6 @@ async function githubWebhook(request, env, ctx) {
       ingress,
     });
     if (!queued) return json({ error: "exact_review_queue_not_configured" }, 503);
-    if (queued instanceof Response) return queued;
     if (sourceAuthoritySeq !== null) {
       await completeExactReviewSourceAuthority(
         env,
@@ -7184,13 +7183,7 @@ async function enqueueExactReview({
       body: JSON.stringify({ delivery_id: deliveryId, decision, ...(ingress ? { ingress } : {}) }),
     }),
   );
-  const body = objectValue(
-    await response
-      .clone()
-      .json()
-      .catch(() => null),
-  );
-  if (response.status >= 500 && body.retryable === true) return response;
+  const body = objectValue(await response.json().catch(() => null));
   if (!response.ok) throw new Error(String(body.error || "exact review queue rejected item"));
   return body;
 }

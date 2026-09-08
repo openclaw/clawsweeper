@@ -1563,7 +1563,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     /direct-exact-review-publication\.outputs\.accepted != 'true' \|\| steps\.finalize-direct-exact-review-lifecycle\.outcome != 'success'/,
   );
   assert.equal(upload.with?.["retention-days"], 90);
-  assert.match(queuePublication.run ?? "", /control_plane_curl/);
+  assert.match(queuePublication.run ?? "", /for attempt in 1 2 3/);
   assert.match(queuePublication.run ?? "", /\.queued == true or \.deduped == true/);
   assert.equal(queuePublication.env?.CLAIM_DECISION, "${{ steps.live-item.outputs.decision }}");
   assert.equal(
@@ -1806,7 +1806,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     "${{ steps.publication-context.outputs.item_number }}",
   );
   const publisherCheckout = publisher.steps.find(
-    (candidate) => candidate.uses === "actions/checkout@v7" && candidate.if,
+    (candidate) => candidate.uses === "actions/checkout@v7",
   );
   assert.ok(publisherCheckout);
   assert.equal(publisherCheckout.with?.ref, "main");
@@ -2306,8 +2306,8 @@ test("exact event publication derives lifecycle receipt and final command acknow
   assert.doesNotMatch(complete.run ?? "", /outcome !== "success"\s*\?\s*"failure"/);
   assert.match(complete.run ?? "", /completionKind === "permanent_failure"\s*\? "failure"/);
   const finalizer = workflow.jobs["event-review-terminal-finalization"]!;
-  const finalizationCheckout = finalizer.steps.find(
-    (candidate) => candidate.uses?.startsWith("actions/checkout@") && candidate.if,
+  const finalizationCheckout = finalizer.steps.find((candidate) =>
+    candidate.uses?.startsWith("actions/checkout@"),
   );
   assert.equal(finalizationCheckout?.with?.filter, undefined);
   assert.equal(finalizationCheckout?.with?.["fetch-depth"], 1);
@@ -2562,7 +2562,7 @@ test("exact-review lease competition skips only known conflicts and gates both o
     ["event-review-apply", "claim-exact-review-queue"],
     ["event-review-publish", "publication-context"],
   ]) {
-    const steps = workflow.jobs[jobName]!.steps.slice(1);
+    const steps = workflow.jobs[jobName]!.steps;
     const claim = steps[0]!;
     const claimRun = claim.run ?? "";
     const gate = `steps.${claimId}.outputs.claimed == 'true'`;
@@ -6407,7 +6407,7 @@ test("failed review recovery waits for durable exact-review queue acknowledgemen
   assert.match(recoveryBlock, /Recovery shed by exact-review queue backpressure/);
   assert.doesNotMatch(recoveryBlock, /workflow run sweep\.yml/);
   assert.doesNotMatch(recoveryBlock, /repos\/\$GITHUB_REPOSITORY\/dispatches/);
-  assert.match(recoveryBlock, /control_plane_curl/);
+  assert.match(recoveryBlock, /for attempt in 1 2 3/);
 });
 
 test("target sweep dispatches preserve disabled ClawHub guard", () => {
@@ -7476,28 +7476,4 @@ test("apply job requeues drift-blocked close reviews only for default cursor run
   assert.match(step, /event_type: "clawsweeper_item"/);
   assert.match(step, /source_action: "source_drift_requeue"/);
   assert.match(step, /supersedes_in_progress: false/);
-});
-
-test("all workflow control-plane curls use the shared helper after checkout", () => {
-  for (const file of [
-    "sweep.yml",
-    "exact-review-reconcile-run.yml",
-    "exact-review-dead-letter-reconcile.yml",
-  ]) {
-    const workflow = YAML.parse(readText(`.github/workflows/${file}`));
-    for (const [jobName, job] of Object.entries(workflow.jobs) as [string, any][]) {
-      let checkedOut = false;
-      for (const step of job.steps ?? []) {
-        if (step.uses?.startsWith("actions/checkout@")) checkedOut = true;
-        const run = step.run ?? "";
-        assert.doesNotMatch(run, /\bcurl --/, `${file}: ${step.name}`);
-        if (!run.includes("control_plane_curl")) continue;
-        assert.ok(checkedOut, `${file}: ${jobName} has the helper before its first call`);
-        assert.match(run, /source scripts\/control-plane-curl.sh/);
-        assert.doesNotMatch(run, /for attempt in 1 2 3; do/);
-        const syntax = spawnSync("bash", ["-n"], { input: run, encoding: "utf8" });
-        assert.equal(syntax.status, 0, `${step.name}: ${syntax.stderr}`);
-      }
-    }
-  }
 });

@@ -59,7 +59,7 @@ for (const [status, body, success] of [
         assert.match(result, status === 409 ? /allowed=false/ : /allowed=true/);
         if (status === 409) assert.match(result, /acknowledgement_state=unavailable/);
       } else await assert.rejects(run);
-      assert.equal(requests, status >= 500 ? 4 : 1);
+      assert.equal(requests, 1);
       assert.match(
         job.steps.find((step) => step.id === "update-final-command-status").if,
         /terminal-acknowledgement.outputs.allowed == .true./,

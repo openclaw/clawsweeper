@@ -186,11 +186,7 @@ process.stdout.write(args.includes('--jq') ? (pr ? 'pull_request' : 'issue') : J
       entry.uses?.endsWith("/.github/actions/setup-state"),
     ),
   );
-  assert.ok(
-    workflow.jobs["legacy-event-queue-intake"].steps.every(
-      (entry: Step) => !entry.uses || entry.name === "Check out control-plane retry helper",
-    ),
-  );
+  assert.ok(workflow.jobs["legacy-event-queue-intake"].steps.every((entry: Step) => !entry.uses));
   const envelopes: Envelope[] = rows(enqueue);
   assert.equal(envelopes.length, 5);
   for (const [index, envelope] of envelopes.entries()) {

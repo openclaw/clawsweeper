@@ -41,11 +41,9 @@ test("automatic status fences distinguish stale handoffs from operational failur
   const outputPath = join(root, "outputs");
   const generationPath = join(root, "generation");
   const fixture = [
-    "sleep() { :; }",
     "curl() {",
     '  while [ "$#" -gt 0 ]; do',
     '    if [ "$1" = "--output" ]; then shift; printf "%s" "$MOCK_BODY" > "$1"; fi',
-    '    if [ "$1" = "--dump-header" ]; then shift; printf "HTTP/1.1 %s\\r\\n\\r\\n" "$MOCK_STATUS" > "$1"; fi',
     "    shift",
     "  done",
     '  printf "%s" "$MOCK_STATUS"',
@@ -163,11 +161,9 @@ test("completion-fence outages fail the workflow without changing successful que
   const root = mkdtempSync(join(tmpdir(), "completion-status-fence-"));
   const outputPath = join(root, "outputs");
   const fixture = [
-    "sleep() { :; }",
     "curl() {",
     '  while [ "$#" -gt 0 ]; do',
     '    if [ "$1" = "--output" ]; then shift; printf "%s" "$MOCK_BODY" > "$1"; fi',
-    '    if [ "$1" = "--dump-header" ]; then shift; printf "HTTP/1.1 %s\\r\\n\\r\\n" "$MOCK_STATUS" > "$1"; fi',
     "    shift",
     "  done",
     '  printf "%s" "$MOCK_STATUS"',
@@ -220,7 +216,10 @@ test("completion-fence outages fail the workflow without changing successful que
       };
       assert.equal(evaluate(failure.if, values), scenario.failed);
       if (scenario.failed) {
-        assert.equal(evaluate(failure.env.CLASSIFICATION, values), "queue_completion_failure");
+        assert.equal(
+          evaluate(failure.env.CLASSIFICATION, values),
+          "review_status_delivery_failure",
+        );
       }
     }
   } finally {
@@ -235,27 +234,4 @@ test("a new revision during completion status blocks the obsolete artifact and p
   assert.equal(result.generation_outcome, "success");
   assert.equal(result.requeue_latest, false);
   assert.equal(result.blocked_steps.length, 8);
-});
-
-test("failed reservation and review fences retain infrastructure attribution when review is skipped", () => {
-  const steps = YAML.parse(readFileSync(".github/workflows/sweep.yml", "utf8")).jobs[
-    "event-review-apply"
-  ].steps;
-  const failure = steps.find((step) => step.name === "Fail unsuccessful exact review generation");
-  for (const step of [
-    "reserve-exact-review-lease",
-    "review-status-fence",
-    "release-review-status-fence",
-    "review-complete-status-fence",
-    "release-review-complete-status-fence",
-  ]) {
-    const values = {
-      "claim-exact-review-queue.claimed": "true",
-      "exact-review-generation-result.outcome": "failure",
-      "review-exact-event-item.outcome": "skipped",
-      [`${step}.outcome`]: "failure",
-    };
-    assert.equal(evaluate(failure.if, values), true, step);
-    assert.equal(evaluate(failure.env.CLASSIFICATION, values), "queue_completion_failure", step);
-  }
 });

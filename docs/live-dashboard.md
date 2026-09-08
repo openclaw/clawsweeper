@@ -667,16 +667,6 @@ still-valid subset of the key/revision pairs checked before departure. Fresh
 arrivals wait for the next departure; changed or removed members are skipped.
 An empty subset retires that reservation and requests another preflight.
 
-The Worker preserves structured retryable Durable Object 5xx responses, including
-`503 {error: "target_visibility_unverified", retryable: true}`, through both
-`/github/webhook` item enqueue and the `/internal/exact-review/*` proxies. The
-status, JSON body, and optional `Retry-After` header reach the caller unchanged;
-unexpected exceptions still produce 500 and the structured server-response
-telemetry remains intact. Visibility admission precedes delivery persistence,
-so a refused admission does not consume its enqueue delivery ID. Credential-bearing
-paths continue to require live visibility probes. Workflow shell retries are
-documented in [the scheduler](scheduler.md#control-plane-workflow-retries).
-
 Only signed intake (`/enqueue`, `/command-intake`, `/branch-authority`,
 `/source-authority`) may reuse durable KV public-admission observations;
 credential-bearing paths require live probes. `EXACT_REVIEW_HOSTED_TARGET_ADMISSION_FRESH_MS`

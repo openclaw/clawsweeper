@@ -106,9 +106,8 @@ jobs:
       - name: Verify live recovery guards
         run: |
           set -euo pipefail
-          source scripts/control-plane-curl.sh
           expected_deploy_sha="$(git rev-parse HEAD)"
-          live_deploy_sha="$(control_plane_curl --fail --silent --show-error "$EXACT_REVIEW_QUEUE_URL/api/health" | jq -er '.deployment_sha')"
+          live_deploy_sha="$(curl --fail --silent --show-error "$EXACT_REVIEW_QUEUE_URL/api/health" | jq -er '.deployment_sha')"
           if [[ "$live_deploy_sha" != "$expected_deploy_sha" ]]; then
             if ! [[ "$live_deploy_sha" =~ ^[0-9a-f]{40}$ ]]; then
               echo "Live Worker returned an invalid deployment revision; refusing unguarded reconciliation" >&2

@@ -108,14 +108,9 @@ test("every workflow job that runs the main bundle directly obtains it", () => {
       );
 
       // The main build reads tsconfig.json, so a curated checkout has to carry it.
-      const buildIndex = steps.findIndex(
-        (step) =>
-          String(step.uses ?? "").includes("actions/setup-pnpm") &&
-          buildScriptEmitsMainBundle(String(step.with?.["build-script"] ?? "")),
+      const checkout = steps.find((step) =>
+        String(step.uses ?? "").startsWith("actions/checkout@"),
       );
-      const checkout = steps
-        .slice(0, buildIndex)
-        .findLast((step) => String(step.uses ?? "").startsWith("actions/checkout@"));
       const sparseCheckout = checkout?.with?.["sparse-checkout"];
       if (typeof sparseCheckout === "string") {
         const entries = sparseCheckout
