@@ -2401,45 +2401,56 @@ jobs:
           error_file="$(mktemp)"
           trap 'rm -f "$response_file" "$error_file"' EXIT
           for attempt in 1 2 3; do
-            : > "$response_file"
-            : > "$error_file"
-            if status="$(curl --silent --show-error --connect-timeout 5 --max-time 20 \
-              --output "$response_file" \
-              --write-out '%{http_code}' \
-              --request POST \
-              --header "content-type: application/json" \
-              --data "$payload" \
-              "$queue_url/internal/exact-review/complete" 2>"$error_file")"; then
-              response="$(<"$response_file")"
-              if [[ "$status" == 2* ]]; then
-                exit 0
-              fi
-              # Only this completion-specific conflict is emitted after the
-              # durable queue verifies that this exact v2 lease tuple was fenced
-              # by a newer source revision. Every generic ownership conflict
-              # stays visible so a malformed or mismatched callback cannot turn
-              # a failed completion into a green workflow.
-              if [ "$status" = "409" ]; then
-                conflict_reason="$(RESPONSE="$response" node <<'NODE'
-                  const response = JSON.parse(process.env.RESPONSE || "{}");
-                  const safeConflicts = new Set(["lease_superseded"]);
-                  if (!safeConflicts.has(response.error)) process.exit(1);
-                  process.stdout.write(response.error);
+            while true; do
+              : > "$response_file"
+              : > "$error_file"
+              if status="$(curl --silent --show-error --connect-timeout 5 --max-time 20 \
+                --output "$response_file" \
+                --write-out '%{http_code}' \
+                --request POST \
+                --header "content-type: application/json" \
+                --data "$payload" \
+                "$queue_url/internal/exact-review/complete" 2>"$error_file")"; then
+                response="$(<"$response_file")"
+                if [[ "$status" == 2* ]]; then
+                  exit 0
+                fi
+                if [ "$status" = "400" ] &&
+                  jq -e '.error == "invalid_review_failure_reason"' "$response_file" >/dev/null 2>&1 &&
+                  jq -e 'has("review_failure_reason")' <<< "$payload" >/dev/null; then
+                  # Status is valid only alongside a terminal reason; retain diagnostic detail.
+                  payload="$(jq -c 'del(.review_failure_reason, .review_failure_status)' <<< "$payload")"
+                  echo "::warning::Exact-review completion detected Worker/workflow deploy skew (invalid_review_failure_reason); retrying once without terminal reason/status, retaining review_failure detail."
+                  continue
+                fi
+                # Only this completion-specific conflict is emitted after the
+                # durable queue verifies that this exact v2 lease tuple was fenced
+                # by a newer source revision. Every generic ownership conflict
+                # stays visible so a malformed or mismatched callback cannot turn
+                # a failed completion into a green workflow.
+                if [ "$status" = "409" ]; then
+                  conflict_reason="$(RESPONSE="$response" node <<'NODE'
+                    const response = JSON.parse(process.env.RESPONSE || "{}");
+                    const safeConflicts = new Set(["lease_superseded"]);
+                    if (!safeConflicts.has(response.error)) process.exit(1);
+                    process.stdout.write(response.error);
           NODE
-                )" || {
-                  echo "Unexpected exact-review completion conflict: $response" >&2
+                  )" || {
+                    echo "Unexpected exact-review completion conflict: $response" >&2
+                    exit 1
+                  }
+                  echo "::notice::Exact-review completion skipped because its lease was superseded: $conflict_reason"
+                  exit 0
+                fi
+                echo "Exact-review completion returned HTTP $status: $response" >&2
+                if [[ "$status" != 5* ]]; then
                   exit 1
-                }
-                echo "::notice::Exact-review completion skipped because its lease was superseded: $conflict_reason"
-                exit 0
+                fi
+              else
+                cat "$error_file" >&2
               fi
-              echo "Exact-review completion returned HTTP $status: $response" >&2
-              if [[ "$status" != 5* ]]; then
-                exit 1
-              fi
-            else
-              cat "$error_file" >&2
-            fi
+              break
+            done
             if [ "$attempt" -lt 3 ]; then
               sleep "$((attempt * 5))"
             fi

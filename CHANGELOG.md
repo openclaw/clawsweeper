@@ -124,6 +124,8 @@ checkpoint, and status-only commits are intentionally omitted.
 - Mask credentialed URLs in supplementary review context and ignore foreign timeline issue numbers; thanks @yetval.
 - Bound app-server CrabFleet status updates so a stalled endpoint cannot block the review turn indefinitely; thanks @Yigtwxx.
 - Accept direct local `.sh` validation through shared guarded Bash normalization for command strings and resolved arguments; thanks @Jhacarreiro.
+- Complete exact-review leases during Worker/workflow deploy skew by retrying rejected terminal reasons once without the reason/status, preserving diagnostics and warning operators.
+
 - Stop exact-review retries for every non-retryable scanner refusal, including scan deadlines, and retain terminal guidance for the unchanged revision.
 
 - Prepare GitHub user-attachment and legacy repository asset proof locally, resolving image/video types after download and reserving bounded preprocessing time for attachments.

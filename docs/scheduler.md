@@ -32,7 +32,13 @@ The shared allowlist lives in `src/exact-review-failure-reason.ts`. Exit codes
 78 and 79 still identify `incomplete_source` and `findings` without a manifest.
 A matching non-retryable `review_failure` detail is accepted; retryable or
 mismatched detail is rejected. Diagnostic detail alone does not suppress retry:
-without `review_failure_reason`, failed completion still retries. A terminal
+without `review_failure_reason`, failed completion still retries. During Worker/workflow deploy skew, an HTTP 400
+`invalid_review_failure_reason` response triggers one immediate compatibility
+retry without the terminal reason or its dependent status receipt, preserving
+`review_failure` diagnostic detail and emitting a workflow warning. An older
+Worker can then complete the lease under its existing retry policy; compatible
+Workers receive the terminal reason on the first request. Other errors retain
+the existing failure and retry handling. A terminal
 reason removes the unchanged queue revision while allowing an already queued
 newer revision to proceed; it does not turn the failed workflow green.
 
