@@ -589,7 +589,7 @@ pnpm run apply-decisions -- --target-repo openclaw/openclaw --sync-comments-only
 
 ### Reviewer network boundary
 
-Hosted issue/PR review tools use the `clawsweeper-review` permission profile in
+Hosted Codex issue/PR review tools use the `clawsweeper-review` permission profile in
 `.github/actions/setup-codex/review-permissions.toml`, owned by ClawSweeper
 maintainers and verified with Codex 0.153.3. Update this guidance when the pinned
 CLI, profile, credential handling, or setup smoke changes. The active profile
@@ -606,3 +606,16 @@ thread/turn path overrides that profile with a legacy sandbox policy. Setup
 fails before publication if allowed HTTPS fails, unlisted HTTPS is not rejected
 by the proxy, or a checkout write succeeds. Non-review callers and offline local
 reviews keep their existing sandbox settings.
+
+Capability text follows the active `CLAWSWEEPER_RUNNER` before the Codex sandbox
+argument. OpenClaw reviews have network access through gateway execution with
+sandbox mode off; they do not use the Codex allowlisted proxy, and must treat the
+checkout as read-only by instruction. Their child environment receives no GitHub
+token. Other Codex sandbox selections retain the no-review-tool-network statement.
+This reporting does not change either runner's execution policy.
+
+The required-style `review-network-smoke` CI job runs on every PR using
+`ubuntu-24.04`, Node 24, and the Codex version pin read from setup-codex. It installs
+into a temporary prefix without secrets, creates an isolated Codex home, applies
+the same hosted Linux user-namespace prerequisites, and runs the configuration
+writer and enforcement smoke unchanged. Any smoke failure fails the job.

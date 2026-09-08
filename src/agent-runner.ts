@@ -38,6 +38,14 @@ export function agentRunner(env: NodeJS.ProcessEnv = process.env): AgentRunner {
   throw new Error(`Invalid CLAWSWEEPER_RUNNER: ${value}. Expected "codex" or "openclaw".`);
 }
 
+export function reviewNetworkCapability(
+  sandboxMode: string,
+  env: NodeJS.ProcessEnv = process.env,
+): "allowlisted-proxy" | "unrestricted" | "none" {
+  if (agentRunner(env) === "openclaw") return "unrestricted";
+  return sandboxMode === "clawsweeper-review" ? "allowlisted-proxy" : "none";
+}
+
 export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessResult {
   if (options.diagnosticPromptPath) rmSync(options.diagnosticPromptPath, { force: true });
   const runner = agentRunner(options.env);

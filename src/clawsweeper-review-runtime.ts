@@ -8,7 +8,11 @@ import {
   unlinkSync,
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { runAgentCheckoutInspection, runAgentProcess } from "./agent-runner.js";
+import {
+  reviewNetworkCapability,
+  runAgentCheckoutInspection,
+  runAgentProcess,
+} from "./agent-runner.js";
 import { AgentInputScanError, type AgentScanSource } from "./agent-input-scan.js";
 import {
   omitReviewedFixtureReferences,
@@ -512,6 +516,12 @@ export function createReviewRuntime({
 ${additionalPrompt.trim()}
 `
       : "";
+    const networkDescription =
+      runtimeHints.networkCapability === "allowlisted-proxy"
+        ? "Network egress uses a managed proxy limited to allowlisted GitHub, npm, Node, MDN, and OpenClaw documentation hosts; other hosts are blocked. A blocked request is not evidence about the PR."
+        : runtimeHints.networkCapability === "unrestricted"
+          ? "Network access is available through OpenClaw gateway execution; the Codex managed allowlisted proxy does not apply. An inaccessible request is not evidence about the PR."
+          : "No review-tool network access is configured; use the pre-fetched context. An inaccessible request is not evidence about the PR.";
     const text = `${prompt}
 
 ## Repository State
@@ -531,9 +541,9 @@ ${additionalPrompt.trim()}
 
 ## Runtime Capabilities
 
-- ${runtimeHints.allowlistedNetwork ? "Network egress uses a managed proxy limited to allowlisted GitHub, npm, Node, MDN, and OpenClaw documentation hosts; other hosts are blocked. A blocked request is not evidence about the PR." : "No review-tool network access is configured; use the pre-fetched context. An inaccessible request is not evidence about the PR."}
-- There is no GitHub token in the sandbox; use public endpoints or pre-fetched context. Linked screenshots and videos are downloaded before review into the media proof manifest; read those files rather than re-fetching.
-- The target checkout is read-only. Use ${proofScratchDir ? `\`${proofScratchDir}\`` : "the proof scratch directory"} for evidence and generated video stills/contact sheets.
+- ${networkDescription}
+- No GitHub token is supplied to the review process; use public endpoints or pre-fetched context. Linked screenshots and videos are downloaded before review into the media proof manifest; read those files rather than re-fetching.
+- ${runtimeHints.networkCapability === "unrestricted" ? "Treat the target checkout as read-only; OpenClaw gateway execution does not enforce the Codex filesystem sandbox." : "The target checkout is read-only."} Use ${proofScratchDir ? `\`${proofScratchDir}\`` : "the proof scratch directory"} for evidence and generated video stills/contact sheets.
 ${mediaProofPrompt}
 ${introductionEvidence}
 
@@ -982,16 +992,16 @@ ${extra}
       : prepareMediaProofArtifacts(options.context, proofScratchDir);
     const outputPath = join(options.workDir, `${options.item.number}.json`);
     if (existsSync(outputPath)) unlinkSync(outputPath);
+    const codexEnv = untrustedCodexEnv({
+      preserveCodexAuth: options.preserveCodexAuth,
+    });
     const prompt =
       options.prompt ??
       buildReviewPrompt(options.item, options.context, options.git, options.additionalPrompt, {
         ...mediaProofRuntimeHints(proofScratchDir, preparedMediaProof),
         targetDir: options.openclawDir,
-        allowlistedNetwork: options.sandboxMode === "clawsweeper-review",
+        networkCapability: reviewNetworkCapability(options.sandboxMode, codexEnv),
       }).text;
-    const codexEnv = untrustedCodexEnv({
-      preserveCodexAuth: options.preserveCodexAuth,
-    });
     const pull = asRecord(options.context.pullRequest);
     const scanSource: AgentScanSource =
       options.item.kind === "pull_request"

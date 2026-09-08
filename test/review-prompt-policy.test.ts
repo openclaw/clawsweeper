@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import test from "node:test";
+import { reviewNetworkCapability } from "../dist/agent-runner.js";
 
 import {
   isGitHubLabelCapacityErrorForTest,
@@ -783,30 +784,49 @@ test("media preparation kills a timed-out probe even when it ignores SIGTERM", (
 });
 
 test("runtime capabilities describe the configured network and credential boundary", () => {
-  for (const allowlistedNetwork of [true, false]) {
+  for (const [runner, sandboxMode, expected] of [
+    ["codex", "clawsweeper-review", "allowlisted-proxy"],
+    ["openclaw", "clawsweeper-review", "unrestricted"],
+    ["openclaw", "read-only", "unrestricted"],
+    ["codex", "read-only", "none"],
+  ]) {
     const prompt = reviewPromptForTest(
       item({ kind: "pull_request" }),
       { issue: {}, comments: [], timeline: [] },
       { mainSha: "abc123", latestRelease: null },
       "",
-      { allowlistedNetwork },
+      { networkCapability: reviewNetworkCapability(sandboxMode, { CLAWSWEEPER_RUNNER: runner }) },
     );
-    assert.match(prompt, /There is no GitHub token in the sandbox/);
+    assert.match(prompt, /No GitHub token is supplied to the review process/);
     assert.match(prompt, /read those files rather than re-fetching/);
-    assert.match(prompt, /The target checkout is read-only/);
     assert.doesNotMatch(prompt, /available network and read-only GitHub token/);
-    if (allowlistedNetwork) {
+    if (expected === "allowlisted-proxy") {
       assert.match(
         prompt,
         /managed proxy limited to allowlisted GitHub, npm, Node, MDN, and OpenClaw/,
       );
       assert.match(prompt, /other hosts are blocked/);
       assert.match(prompt, /A blocked request is not evidence about the PR/);
+      assert.match(prompt, /The target checkout is read-only/);
+      assert.doesNotMatch(prompt, /Network access is available through OpenClaw/);
+    } else if (expected === "unrestricted") {
+      assert.match(prompt, /Network access is available through OpenClaw gateway execution/);
+      assert.match(prompt, /the Codex managed allowlisted proxy does not apply/);
+      assert.match(prompt, /Treat the target checkout as read-only/);
+      assert.doesNotMatch(prompt, /The target checkout is read-only/);
+      assert.doesNotMatch(prompt, /other hosts are blocked|No review-tool network access/);
     } else {
       assert.match(prompt, /No review-tool network access is configured/);
+      assert.match(prompt, /The target checkout is read-only/);
       assert.doesNotMatch(prompt, /Network egress uses a managed proxy/);
     }
   }
+  const defaultPrompt = reviewPromptForTest(
+    item(),
+    { issue: {}, comments: [], timeline: [] },
+    { mainSha: "abc123", latestRelease: null },
+  );
+  assert.match(defaultPrompt, /No review-tool network access is configured/);
 });
 
 test("runtime prompt tells Codex to inspect local media artifacts before browser fallback", () => {

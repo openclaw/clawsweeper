@@ -9,6 +9,7 @@ import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 import {
   agentRunner,
   codexAgentArgs,
+  reviewNetworkCapability,
   runAgentCheckoutInspection,
   runAgentProcess,
 } from "../dist/agent-runner.js";
@@ -20,6 +21,27 @@ test("agent runner defaults to Codex and fails closed on unknown values", () => 
   assert.throws(
     () => agentRunner({ CLAWSWEEPER_RUNNER: "claude" }),
     /Invalid CLAWSWEEPER_RUNNER.*codex.*openclaw/,
+  );
+});
+
+test("review network capability follows the selected runner before the Codex sandbox", () => {
+  assert.equal(reviewNetworkCapability("clawsweeper-review", {}), "allowlisted-proxy");
+  assert.equal(
+    reviewNetworkCapability("clawsweeper-review", { CLAWSWEEPER_RUNNER: " codex " }),
+    "allowlisted-proxy",
+  );
+  for (const sandboxMode of ["clawsweeper-review", "read-only", "workspace-write"]) {
+    assert.equal(
+      reviewNetworkCapability(sandboxMode, { CLAWSWEEPER_RUNNER: " openclaw " }),
+      "unrestricted",
+    );
+  }
+  for (const sandboxMode of ["read-only", "workspace-write", "danger-full-access", ""]) {
+    assert.equal(reviewNetworkCapability(sandboxMode, { CLAWSWEEPER_RUNNER: "codex" }), "none");
+  }
+  assert.throws(
+    () => reviewNetworkCapability("clawsweeper-review", { CLAWSWEEPER_RUNNER: "unknown" }),
+    /Invalid CLAWSWEEPER_RUNNER/,
   );
 });
 
