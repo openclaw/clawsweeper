@@ -7478,7 +7478,7 @@ test("apply job requeues drift-blocked close reviews only for default cursor run
   assert.match(step, /supersedes_in_progress: false/);
 });
 
-test("all workflow control-plane curls use the shared helper after checkout", () => {
+test("all workflow control-plane curls use the shared helper after download or full checkout", () => {
   for (const file of [
     "sweep.yml",
     "exact-review-reconcile-run.yml",
@@ -7487,17 +7487,71 @@ test("all workflow control-plane curls use the shared helper after checkout", ()
     const workflow = YAML.parse(readText(`.github/workflows/${file}`));
     for (const [jobName, job] of Object.entries(workflow.jobs) as [string, any][]) {
       let checkedOut = false;
+      let downloaded = false;
       for (const step of job.steps ?? []) {
         if (step.uses?.startsWith("actions/checkout@")) checkedOut = true;
         const run = step.run ?? "";
         assert.doesNotMatch(run, /\bcurl --/, `${file}: ${step.name}`);
+        if (step.name === "Fetch control-plane retry helper") {
+          assert.match(
+            run,
+            /curl -fsSL --retry 3 "https:\/\/raw\.githubusercontent\.com\/\$\{GITHUB_REPOSITORY\}\/\$\{GITHUB_SHA\}\/scripts\/control-plane-curl\.sh"/,
+          );
+          assert.match(run, /test -s "\$RUNNER_TEMP\/control-plane-curl\.sh"/);
+          assert.match(run, /declare -F control_plane_curl/);
+          downloaded = true;
+          continue;
+        }
         if (!run.includes("control_plane_curl")) continue;
-        assert.ok(checkedOut, `${file}: ${jobName} has the helper before its first call`);
-        assert.match(run, /source scripts\/control-plane-curl.sh/);
+        assert.ok(
+          checkedOut || downloaded,
+          `${file}: ${jobName} has the helper before its first call`,
+        );
+        assert.match(
+          run,
+          checkedOut
+            ? /source scripts\/control-plane-curl.sh/
+            : /source "\$RUNNER_TEMP\/control-plane-curl.sh"/,
+        );
         assert.doesNotMatch(run, /for attempt in 1 2 3; do/);
         const syntax = spawnSync("bash", ["-n"], { input: run, encoding: "utf8" });
         assert.equal(syntax.status, 0, `${step.name}: ${syntax.stderr}`);
       }
     }
+  }
+});
+
+test("pre-checkout helper bootstrap fails on download errors, empty files, and missing functions", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const bootstrap = workflow.jobs["event-review-apply"].steps.find(
+    (step: any) => step.name === "Fetch control-plane retry helper",
+  ).run;
+  const root = mkdtempSync(`${tmpPrefix}helper-bootstrap-`);
+  try {
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    for (const [fixture, expected] of [
+      ["exit 22", 22],
+      ['while [ "$1" != "-o" ]; do shift; done; : > "$2"', 1],
+      ['while [ "$1" != "-o" ]; do shift; done; echo ":" > "$2"', 1],
+      ['while [ "$1" != "-o" ]; do shift; done; echo "control_plane_curl() { :; }" > "$2"', 0],
+    ] as const) {
+      writeFileSync(join(bin, "curl"), `#!/usr/bin/env bash\n${fixture}\n`, { mode: 0o755 });
+      const result = spawnSync("bash", ["-c", bootstrap], {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${bin}${delimiter}${process.env.PATH}`,
+          RUNNER_TEMP: root,
+          GITHUB_REPOSITORY: "openclaw/clawsweeper",
+          GITHUB_SHA: "synthetic-commit",
+        },
+      });
+      assert.equal(result.status, expected, `${fixture}: ${result.stderr}`);
+      assert.equal(existsSync(join(root, ".git")), false);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

@@ -38,12 +38,14 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Check out control-plane retry helper
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-          sparse-checkout-cone-mode: false
-          sparse-checkout: scripts/control-plane-curl.sh
+      - name: Fetch control-plane retry helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/scripts/control-plane-curl.sh" -o "$RUNNER_TEMP/control-plane-curl.sh"
+          test -s "$RUNNER_TEMP/control-plane-curl.sh"
+          source "$RUNNER_TEMP/control-plane-curl.sh"
+          declare -F control_plane_curl > /dev/null
       - name: Reconcile terminal run
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
@@ -52,7 +54,7 @@ jobs:
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           set -euo pipefail
-          source scripts/control-plane-curl.sh
+          source "$RUNNER_TEMP/control-plane-curl.sh"
           test -n "$CLAWSWEEPER_WEBHOOK_SECRET"
           queue_url="${QUEUE_URL%/}"
           payload="$(node -e '

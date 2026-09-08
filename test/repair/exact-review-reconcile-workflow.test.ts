@@ -155,6 +155,10 @@ test("guard CLI and workflow clients preserve cooldown and the scheduled termina
     const endpoint = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`;
     const bin = join(root, "bin");
     mkdirSync(bin);
+    writeFileSync(
+      join(root, "control-plane-curl.sh"),
+      readFileSync("scripts/control-plane-curl.sh"),
+    );
     const fixture = join(root, "history.json");
     writeFileSync(
       join(bin, "gh"),
@@ -178,6 +182,7 @@ else process.exit(2);
       ...process.env,
       PATH: `${bin}:${process.env.PATH}`,
       PROOF_HISTORY: fixture,
+      RUNNER_TEMP: root,
       GITHUB_REPOSITORY: "synthetic/reviews",
       GITHUB_RUN_ID: "99",
       GH_TOKEN: "synthetic",
@@ -219,7 +224,13 @@ else process.exit(2);
       if (admitted)
         await run(
           "bash",
-          ["-e", "-c", eventWorkflow.jobs.reconcile.steps.find((step) => step.run)?.run],
+          [
+            "-e",
+            "-c",
+            eventWorkflow.jobs.reconcile.steps.find(
+              (step) => step.name === "Reconcile terminal run",
+            )?.run,
+          ],
           { env },
         );
       assert.equal(requests.length - before, admitted ? 1 : 0);

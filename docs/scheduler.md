@@ -84,6 +84,14 @@ policy. Fence and reservation failures are attributed to the existing
 `queue_completion_failure` infrastructure category, including a review that
 never starts because its status fence is unavailable.
 
+Before a job's source checkout, the workflow downloads this single helper from
+`raw.githubusercontent.com`, pinned to `GITHUB_REPOSITORY` and `GITHUB_SHA`,
+with three curl retries into `RUNNER_TEMP`. The bootstrap fails if the download
+fails, is empty, or does not define `control_plane_curl`. These steps source the
+temporary copy; after the full checkout, steps source the repository copy.
+The bootstrap never changes workspace Git configuration: an early sparse
+checkout can otherwise leave later checkouts sparse and omit local actions.
+
 ## Workflow
 
 Explicit `workflow_dispatch` `item_number`/`item_numbers` selections, excluding
