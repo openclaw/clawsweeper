@@ -1,4 +1,5 @@
 import { stableJson } from "./stable-json.js";
+import { primaryBodySourceSha256 } from "./clawsweeper-primary-body.js";
 import { reviewPullChecksDigestParts } from "./review-checks-digest.js";
 import { reviewStructuralItemStateDigest } from "./review-structural-cache.js";
 import {
@@ -167,6 +168,9 @@ export function createSourceRevisionTools({
           author: entry.author ?? null,
           authorAssociation: entry.authorAssociation ?? null,
           body: entry.body ?? null,
+          ...(Object.hasOwn(entry, "bodyCoverage")
+            ? { sourceBodySha256: primaryBodySourceSha256(entry) }
+            : {}),
         };
       });
   }

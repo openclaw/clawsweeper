@@ -424,6 +424,8 @@ end-exclusive UTF-16 ranges, omitted units, and incomplete coverage. The
 opening, excerpts, JSON escaping, and coverage metadata share the existing
 12,000-unit allocation. Candidate overflow, oversized blocks, and unrecognized
 layouts can still omit evidence; anchors are navigation, not proof validation.
+Inline-comment cache fingerprints include the full-source hash when coverage
+is incomplete, so edits in excerpts or omitted text invalidate prior verdicts.
 
 Reviewers must inspect supplied evidence with existing authorized read-only
 capabilities before a negative proof claim, preserve the captured source

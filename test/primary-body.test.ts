@@ -8,6 +8,7 @@ import {
   hydratePrimaryBody,
   inertTrace,
   longProofBody,
+  sourceTools,
 } from "./primary-body-fixture.ts";
 
 for (const value of [null, undefined, "", "x".repeat(11999), "x".repeat(12000)]) {
@@ -105,6 +106,39 @@ test("long discussion comments retain late proof with explicit incomplete covera
   assertBodyCoverage(body, comment);
   assert.ok(comment.bodyCoverage?.excerpts.some(({ text }) => text.includes(inertTrace)));
   assert.equal(comment.bodyCoverage?.complete, false);
+});
+
+test("inline evidence edits outside the prefix invalidate both review cache paths", () => {
+  const body = longProofBody();
+  const capture = (text: string) =>
+    hydratePrimaryBody("Issue description", "pull_request", {
+      pullReviewComments: [{ id: 19, body: text, user: { login: "reporter" } }],
+    });
+  const original = capture(body);
+  const originalComment = original.context.pullReviewComments![0] as ReturnType<
+    typeof compactPrimaryBody
+  >;
+  for (const offset of [body.indexOf("queued"), body.length - 1]) {
+    const edited = capture(body.slice(0, offset) + "!" + body.slice(offset + 1));
+    assert.equal(
+      (edited.context.pullReviewComments![0] as { body: string }).body,
+      originalComment.body,
+    );
+    assert.notEqual(
+      edited.context.pullReviewCommentsRevision,
+      original.context.pullReviewCommentsRevision,
+    );
+    assert.notEqual(
+      sourceTools.itemContentDigest(edited.target, edited.context),
+      sourceTools.itemContentDigest(original.target, original.context),
+    );
+    const { pullReviewCommentsRevision: _originalRevision, ...originalFallback } = original.context;
+    const { pullReviewCommentsRevision: _editedRevision, ...editedFallback } = edited.context;
+    assert.notEqual(
+      sourceTools.itemContentDigest(edited.target, editedFallback),
+      sourceTools.itemContentDigest(original.target, originalFallback),
+    );
+  }
 });
 
 test("generic compactors keep related body, list, commit and patch budgets", () => {

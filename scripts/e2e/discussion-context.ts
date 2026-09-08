@@ -4,11 +4,13 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { reviewPromptForTest } from "../../dist/clawsweeper.js";
 import { truncateText } from "../../dist/clawsweeper-text.js";
+import { reviewContentCacheHit } from "../../dist/scheduler-policy.js";
 import {
   hydratePrimaryBody,
   inertTrace,
   longProofBody,
   sha256,
+  sourceTools,
 } from "../../test/primary-body-fixture.ts";
 
 const git = { mainSha: "a".repeat(40), releaseStateComplete: true, latestRelease: null };
@@ -79,6 +81,38 @@ if (process.argv.includes("--live")) {
     "Live input must exercise the old cutoff",
   );
 }
+const inlineBody = longProofBody();
+const inline = (body: string) =>
+  hydratePrimaryBody("Inline evidence", "pull_request", {
+    pullReviewComments: [{ id: 19, body, user: { login: "reporter" } }],
+  });
+const original = inline(inlineBody);
+const originalDigest = sourceTools.itemContentDigest(original.target, original.context);
+const now = Date.now();
+const cachedReview = {
+  reviewStatus: "complete" as const,
+  reviewPolicy: "discussion-proof",
+  decision: "keep_open" as const,
+  contentDigest: originalDigest,
+  lastFullReviewAt: new Date(now).toISOString(),
+  lastFullReviewDecision: "keep_open" as const,
+};
+const cacheHit = (contentDigest: string) =>
+  reviewContentCacheHit({
+    review: cachedReview,
+    reviewPolicy: "discussion-proof",
+    contentDigest,
+    now,
+    explicitDispatch: false,
+    maintainerRequest: false,
+  });
+assert.equal(cacheHit(originalDigest), true);
+const cacheInvalidation = [inlineBody.indexOf("queued"), inlineBody.length - 1].map((offset) => {
+  const edited = inline(inlineBody.slice(0, offset) + "!" + inlineBody.slice(offset + 1));
+  const digest = sourceTools.itemContentDigest(edited.target, edited.context);
+  assert.equal(cacheHit(digest), false);
+  return { offset, cacheHit: false, originalDigest, editedDigest: digest };
+});
 console.log(
   JSON.stringify(
     {
@@ -86,6 +120,7 @@ console.log(
       node: process.version,
       proof: "compiled hydration and final prompt; no model, scan or publication invoked",
       receipts,
+      cacheInvalidation,
     },
     null,
     2,
