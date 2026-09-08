@@ -217,7 +217,11 @@ else process.exit(2);
       assert.equal(admitted, scenario !== "recent");
       const before = requests.length;
       if (admitted)
-        await run("bash", ["-e", "-c", eventWorkflow.jobs.reconcile.steps[0].run], { env });
+        await run(
+          "bash",
+          ["-e", "-c", eventWorkflow.jobs.reconcile.steps.find((step) => step.run)?.run],
+          { env },
+        );
       assert.equal(requests.length - before, admitted ? 1 : 0);
       results.push({ scenario, admitted, queueWrites: requests.length - before });
     }

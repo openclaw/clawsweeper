@@ -318,3 +318,101 @@ test("exact-review Worker preserves intentional non-JSON 4xx responses", async (
   assert.equal(response.headers.get("content-type"), "text/plain");
   assert.equal(await response.text(), "intentional conflict");
 });
+
+test("webhook and internal enqueue preserve retryable admission responses before delivery deduplication", async (t) => {
+  const { signedGithubWebhookRequest } = await import("./dashboard-worker-harness.ts");
+  const secret = "synthetic-admission-secret";
+  const errors: unknown[][] = [];
+  t.mock.method(console, "error", (...values: unknown[]) => errors.push(values));
+  for (const route of ["webhook", "internal"]) {
+    const storage = new MemoryDurableStorage();
+    const queue = new ExactReviewQueue(
+      { storage },
+      {
+        hostedTargetPredicate: () => true,
+        hostedPublicTargetProbe: async () => ({
+          outcome: "retryable" as const,
+          retryAt: Date.now() + 30_000,
+        }),
+      },
+    );
+    const body = JSON.stringify({
+      delivery_id: "synthetic-admission",
+      decision: {
+        targetRepo: "openclaw/gogcli",
+        targetBranch: "main",
+        supersedesInProgress: false,
+        itemNumber: 42,
+        itemKind: "issue",
+        sourceEvent: "issues",
+        sourceAction: "opened",
+      },
+    });
+    const request = () =>
+      route === "webhook"
+        ? signedGithubWebhookRequest({
+            event: "issues",
+            secret,
+            payload: {
+              action: "opened",
+              repository: { full_name: "openclaw/gogcli", default_branch: "main", private: false },
+              issue: { number: 42 },
+              installation: { id: 123 },
+            },
+          })
+        : new Request("https://clawsweeper.openclaw.ai/internal/exact-review/enqueue", {
+            method: "POST",
+            body,
+            headers: {
+              "x-clawsweeper-exact-review-signature": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
+            },
+          });
+    const env = {
+      CLAWSWEEPER_WEBHOOK_SECRET: secret,
+      hostedTargetPredicate: () => true,
+      hostedPublicTargetProbe: async () => "public" as const,
+      EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+    };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await worker.fetch(request(), env);
+      assert.equal(response.status, 503, route);
+      assert.match(response.headers.get("retry-after") ?? "", /^\d+$/);
+      assert.deepEqual(await response.json(), {
+        error: "target_visibility_unverified",
+        retryable: true,
+      });
+    }
+    assert.equal(
+      Number(
+        Array.from(
+          storage.sql.exec("SELECT COUNT(*) AS count FROM exact_review_queue_deliveries"),
+        )[0]?.count,
+      ),
+      0,
+    );
+    assert.ok(
+      errors.some(
+        ([event, metadata]) =>
+          event === "exact_review_queue_structured_server_response" &&
+          (metadata as Record<string, unknown>).endpoint === "enqueue",
+      ),
+    );
+    const failingEnv = {
+      ...env,
+      EXACT_REVIEW_QUEUE: new MemoryDurableNamespace({
+        async fetch() {
+          throw new Error("unexpected fixture exception");
+        },
+      }),
+    };
+    if (route === "webhook") {
+      // workerd maps the unhandled exception to HTTP 500, rather than a retryable response.
+      await assert.rejects(worker.fetch(request(), failingEnv), /unexpected fixture exception/);
+    } else {
+      const response = await worker.fetch(request(), failingEnv);
+      assert.equal(response.status, 500);
+      assert.equal(response.headers.get("retry-after"), null);
+      assert.deepEqual(await response.json(), { error: "exact_review_queue_unavailable" });
+    }
+  }
+});
