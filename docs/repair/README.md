@@ -431,6 +431,10 @@ The workflow needs:
   clones default to three minutes. Both honor the same environment overrides
   and report child-process timeout failures. A timed-out dispatch keeps its
   durable claim for observation/recovery rather than immediately dispatching again.
+  Cluster-selector evidence and final-open checks use these shared GitHub CLI
+  budgets. Its Responses API request has a two-minute deadline covering both
+  response headers and body delivery; a timeout fails selection without publishing
+  a selected candidate.
 - optional `CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS` and `CLAWSWEEPER_RESOLVE_REVIEW_THREADS` variables for agentic merge-prep review loops; the review attempt default is `4`, with the last failed internal review converted into one final Codex review-fix pass when changed-surface validation can still prove the branch safe to push for exact-head review
 - optional `CLAWSWEEPER_MAX_REPAIRS_PER_PR` and
   `CLAWSWEEPER_MAX_REPAIRS_PER_HEAD` variables for trusted
