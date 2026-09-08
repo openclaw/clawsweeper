@@ -43,7 +43,9 @@ same boundaries complete before optional blob I/O is released.
 
 Additional cases cover ordinary success, optional HTTP failure, empty artifacts,
 primary failure, cancellation, exact manifest replay, a wrong producer job,
-and conflicting canonical bytes. The canonical importer tests additionally
+and conflicting canonical bytes. Publisher artifact retention fails open with
+an explicit warning and summary; the proof executes that reporting command.
+The canonical importer tests additionally
 cover incomplete numbered sets, bounded prior attempts, provenance, and causal
 bindings.
 

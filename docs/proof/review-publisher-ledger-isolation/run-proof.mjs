@@ -467,7 +467,23 @@ async function scenario(kind) {
       for (const job of Object.values(workflow.jobs)) {
         assert.ok(![job.needs].flat().includes("publish-review-action-ledger"));
       }
+      assert.equal(
+        step(workflow.jobs.publish, "Retain publisher action events")["continue-on-error"],
+        true,
+      );
       await critical();
+      if (kind === "failed") {
+        const summary = join(root, "retention-summary.md");
+        const report = await commandBlock(
+          root,
+          step(workflow.jobs.publish, "Report publisher ledger retention failure"),
+          { ...env, RETENTION_OUTCOME: "failure", GITHUB_STEP_SUMMARY: summary },
+        ).done;
+        assert.equal(report.code, 0, report.stderr);
+        assert.match(report.stdout, /::warning::.*retention: failure/);
+        assert.match(readFileSync(summary, "utf8"), /retention: failure/);
+        mark("retention-failure-visible");
+      }
       const publishing = publish();
       if (hold) {
         await Promise.race([

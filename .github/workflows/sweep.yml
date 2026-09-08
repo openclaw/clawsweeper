@@ -5661,7 +5661,9 @@ jobs:
       # Each production CLI seals its producer on exit. Keep those exact shards
       # even when a later primary step fails; required receipt uploads stay above.
       - name: Retain publisher action events
+        id: retain-publisher-action-events
         if: always()
+        continue-on-error: true
         timeout-minutes: 2
         uses: actions/upload-artifact@v7
         with:
@@ -5670,6 +5672,15 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Report publisher ledger retention failure
+        if: ${{ always() && steps.retain-publisher-action-events.outcome != 'success' }}
+        continue-on-error: true
+        env:
+          RETENTION_OUTCOME: ${{ steps.retain-publisher-action-events.outcome || 'not_started' }}
+        run: |
+          echo "::warning::Optional publisher action-event retention: $RETENTION_OUTCOME."
+          echo "Optional publisher action-event retention: $RETENTION_OUTCOME. Primary completion receipts are unchanged." >> "$GITHUB_STEP_SUMMARY"
 
   publish-review-action-ledger:
     name: Publish optional action ledger

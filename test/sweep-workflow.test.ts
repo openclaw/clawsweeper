@@ -602,7 +602,12 @@ test("review and apply primary boundaries ignore ledger-only failures", () => {
   );
   const publisherArtifact = step("publish", "Retain publisher action events");
   assert.equal(publisherArtifact.if, "always()");
+  assert.equal(publisherArtifact["continue-on-error"], true);
   assert.equal(publisherArtifact.with?.["include-hidden-files"], true);
+  assert.match(
+    step("publish", "Report publisher ledger retention failure").if ?? "",
+    /always\(\).*steps\.retain-publisher-action-events\.outcome != 'success'/,
+  );
   for (const producerJob of ["review", "publish"]) {
     assert.match(
       step("publish-review-action-ledger", "Import immutable action events").run ?? "",
