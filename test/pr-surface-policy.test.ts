@@ -272,6 +272,11 @@ for (const [name, fixturePath, normalizationTruncates] of [
   ["worker input layout fields", "./fixtures/persistence-classifier-132839-workers.json", true],
   ["hovercard promise cancellation", "./fixtures/persistence-classifier-136772.json", false],
   ["SQLite worker diagnostic suffix", "./fixtures/persistence-classifier-138520.json", true],
+  [
+    "JSON Schema value validation",
+    "./fixtures/persistence-classifier-131624-json-schema.json",
+    true,
+  ],
 ] as const) {
   for (const normalized of [false, true]) {
     test(`${name} creates no stored-data warning or migration gate (${normalized ? "production-normalized" : "full"} patch)`, () => {
@@ -1244,6 +1249,50 @@ for (const { name, file, surfaces, pullFilesTruncated, sqliteSchemaChange } of [
     file: { filename: "src/cache/helpers.ts" },
     pullFilesTruncated: true,
     surfaces: ["unknown-truncated-pull-files"],
+  },
+  ...[
+    ["missing", undefined],
+    ["truncated", "@@\n+  refresh();\n\n[truncated 99 chars]"],
+    ["bare index variable", "@@\n-const index = Number(key);\n+const index = Number(key) + 1;"],
+    [
+      "JSON conversion",
+      "@@\n-const raw = JSON.stringify(value);\n+const raw = JSON.stringify(value, null, 2);",
+    ],
+  ].map(([kind, patch]) => ({
+    name: `weak schema filename with ${kind} evidence`,
+    file: { filename: "src/runtime/users-schema.ts", patch },
+    surfaces: [],
+    sqliteSchemaChange: false,
+  })),
+  ...["pgTable", "mysqlTable"].flatMap((table) =>
+    ["src/runtime/users-schema.ts", "src/runtime/records.ts"].map((filename) => ({
+      name: `${table} same-hunk field change in ${filename}`,
+      file: {
+        filename,
+        patch: `@@\n const users = ${table}("users", {\n-  name: text("old_name"),\n+  name: text("new_name"),\n });`,
+      },
+      surfaces: [`database schema: ${filename}`],
+      sqliteSchemaChange: false,
+    })),
+  ),
+  {
+    name: "weak schema filename retains optional createTable calls",
+    file: {
+      filename: "src/runtime/users-schema.ts",
+      patch: '@@\n-schema.createTable?.("old");\n+schema.createTable?.("new");',
+    },
+    surfaces: ["database schema: src/runtime/users-schema.ts"],
+    sqliteSchemaChange: false,
+  },
+  {
+    name: "optional pgTable with multiline type arguments retains same-hunk fields",
+    file: {
+      filename: "src/runtime/records.ts",
+      patch:
+        '@@\n const users = pgTable?.<\n   "users"\n >("users", {\n-  name: text("old_name"),\n+  name: text("new_name"),\n });',
+    },
+    surfaces: ["database schema: src/runtime/records.ts"],
+    sqliteSchemaChange: false,
   },
   {
     name: "plain form-validation schema fields",

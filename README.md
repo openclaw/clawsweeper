@@ -36,8 +36,10 @@ At a high level ClawSweeper:
 - reviews open issues and pull requests on a schedule and on exact GitHub events
 - writes one durable markdown report per item in generated state
 - syncs one marker-backed public review comment per issue or PR, edited in place
+- can request relevant Web UI or Telegram proof within an eligible OpenClaw PR
+  review and evaluate results in that same turn; see [live proof](docs/live-proof.md)
 - preserves validation, rendering, media publication, and retraction for
-  historical live-proof artifacts; new reviews do not generate live proof
+  historical post-review live-proof artifacts
 - closes only unchanged, high-confidence, policy-allowed proposals
 - routes maintainer commands such as `@clawsweeper review`,
   `@clawsweeper fix`, `@clawsweeper autofix`, and `@clawsweeper automerge`
@@ -71,6 +73,12 @@ forward exact issue/PR events with `repository_dispatch` for low-latency
 one-item reviews. Each review writes
 `records/<repo-slug>/items/<number>.md` with the decision, evidence, proposed
 maintainer-facing comment, runtime metadata, and GitHub snapshot hash.
+
+Media proof preparation recognizes image/video filename extensions and GitHub
+attachment URLs, including legacy repository asset links. Attachments are fetched
+with GET and classified by the response content type; images are saved locally
+and videos are probed and converted to contact sheets. PR patches and supplemental
+body excerpts never supply host download URLs.
 
 ClawSweeper syncs one marker-backed public review comment per item and edits it
 in place instead of posting repeated comments. If a review starts before a
@@ -597,13 +605,15 @@ the [Mattermost slash-error sanitization fixtures](https://github.com/openclaw/o
 the [MCP Apps sandbox-origin rejection fixture](https://github.com/openclaw/openclaw/blob/f3971bbd56e4aadea0f8b0c1434f6860f953cbbd/src/config/config-misc.test.ts),
 the [Gateway config CDP-redaction fixture](https://github.com/openclaw/openclaw/blob/4b5987829d0f82ea44ae50f2f418ffe5ea445e7f/src/gateway/server.config-patch.test.ts),
 the [mocked marketplace telemetry-redaction fixture](https://github.com/openclaw/openclaw/blob/9c5ee4676d0732e72ee9a939ae4918dc89bcaab8/src/cli/plugins-cli.marketplace-refresh.test.ts),
+the Signal URL-rejection fixtures in [client tests](https://github.com/openclaw/openclaw/blob/75d633a7b97240280ebf13e121a1960eb2ec2765/extensions/signal/src/client.test.ts#L172)
+and [container tests](https://github.com/openclaw/openclaw/blob/41dd2e04897b9bdbde971cad8c6ff21ecccd38b7/extensions/signal/src/client-container.test.ts#L1461),
 and the OpenClaw config [URL-redaction](https://github.com/openclaw/openclaw/blob/5fe22a7d88919f260e7999fc775733feff3cb1fa/src/config/redact-snapshot.test.ts)
 and [restoration fixtures](https://github.com/openclaw/openclaw/blob/5fe22a7d88919f260e7999fc775733feff3cb1fa/src/config/redact-snapshot.restore.test.ts)
 after a complete scan. Static host policy associates each
 exact detector-matched URI SHA-256 with only its approved source paths and exact
 scanner `Raw` digest, including when `Raw` omits a path retained by `RawV2`. The
 matched value must be a literal in a host-staged Git blob from mode `100644`.
-The three guarded-CDP/MCP entries, Crabbox fixture, Mac dashboard entry, MCP Apps entry, marketplace telemetry entry, Gateway config entry, and four Mattermost entries also bind complete
+The three guarded-CDP/MCP entries, Crabbox fixture, Mac dashboard entry, MCP Apps entry, marketplace telemetry entry, Gateway config entry, two Signal entries, and four Mattermost entries also bind complete
 reviewed source lines, including surrounding query text that TruffleHog's URI
 detector does not match. Changes to those lines or additional literal occurrences
 refuse classification. These witnesses do not expand native query detection.
@@ -621,13 +631,29 @@ The pinned Base64 decoder preserves the rest of a chunk after
 decoding another token, so an unchanged literal can acquire that decoder label
 and win cross-decoder deduplication. Those entries still require the literal in
 its exact original source line; encoded-only content remains blocking.
+
+The OpenClaw [logging redaction fixtures](https://github.com/openclaw/openclaw/blob/fe0367a07a23660ea35007ac69bdb8f54309fc21/src/logging/redact.test.ts)
+and the reviewed Crabbox PostgreSQL operations example use a separate flat
+attribution table without changing the legacy URI policy above. Each row binds
+the exact detector ID and name, observed native decoder, `Raw`, `RawV2`, and
+complete source-line SHA-256 digests, path, and mode. The logging rows permit
+only their observed `PLAIN` or `ESCAPED_UNICODE` variants; the Crabbox
+documentation row permits only its observed `PLAIN` or `HTML` variants. These
+exact attribution rows are role-neutral; every logical staged reference must
+independently match the row and have a committed `base` or `head` role. URI
+findings require one literal `RawV2` witness and derived host, username, and
+password fields. MongoDB and Postgres findings bind the scanner-reported line
+and their exact native metadata shape. Any emitted subset and order may qualify;
+duplicate exact findings, unknown variants, lossy decoder buckets, or an
+unqualified deduplicated blob reference refuse admission.
+
 One source path may contain multiple independently reviewed fixtures; each
 digest/path/mode tuple must match exactly, so source membership alone never
 qualifies a finding.
-Deduplicated blobs retain every scanned logical endpoint's path and Git mode,
-including mode-only transitions and shared-path aliases. Every captured reference
-must qualify under the same digest's exact path and mode `100644` policy before
-any source is eligible for classification or an audit notice.
+Deduplicated blobs retain every scanned logical endpoint's role, path, and Git
+mode, including mode-only transitions and shared-path aliases. Every captured
+reference must qualify under the same exact attribution policy before any source
+is eligible for classification or an audit notice.
 The policy does not trust checkout ignore rules, domain patterns, fixture words,
 test names, or unchanged-line inference; no nearby fixture is implicitly approved.
 When review evidence quotes an exact reviewed synthetic URI, prompt preparation
@@ -646,9 +672,10 @@ upgrades require requalification. See `src/agent-input-scan-fixtures.ts`.
 After successful cleanup and final source fences, each accepted fixture/source
 pair emits a host-side structured stderr notice with `event`, `fixtureSha256`,
 `source`, `detector`, and `findings` entries containing `blob`, `decoder`, and
-`occurrences`. Each finding retains its reported `scannerLine` and a `literalLine`
-for the first exact literal in the staged blob. This bounded witness establishes
-literal presence; it does not identify which occurrence produced a decoded hit.
+`occurrences`; role-bound findings also include `role`. Each finding retains its
+reported `scannerLine` and a `literalLine` for the first exact literal in the
+staged blob. This bounded witness establishes literal presence; it does not
+identify which occurrence produced a decoded hit.
 Counts are per source: a shared blob can appear in both source
 notices and those counts must not be summed across sources. A refused or drifted
 scan emits no success notice. Raw values and verification diagnostics never
@@ -696,7 +723,24 @@ publication, and queue lifecycle.
   Codex exits.
 - The retired hosted commit-review lane no longer mints target credentials;
   `pnpm local-review` operates on the local branch range without GitHub writes.
-- CI makes the target checkout read-only for reviews.
+- CI keeps the target checkout read-only and gives Codex issue/PR reviewers a managed
+  network proxy restricted to the hosts in
+  [the review permission profile](.github/actions/setup-codex/review-permissions.toml):
+  GitHub, npm, Node, MDN, and OpenClaw documentation. Limited mode inspects HTTPS
+  and permits only GET/HEAD/OPTIONS; other hosts are blocked. When supplied by the
+  review job, Codex tools receive the target repository's read-only GitHub App token
+  only as `GH_TOKEN` (contents, issues, and pull requests read; expires within the
+  hour). Use authenticated GitHub reads to avoid public rate limits; never put
+  the token in a URL, log it, or send it to a non-GitHub host. Without a token,
+  use public endpoints and pre-fetched context. Read downloaded media through
+  the local proof manifest. A blocked request is not evidence against a PR.
+  Setup must prove allowed HTTPS, denied unlisted HTTPS, and denied checkout
+  writes before reviews can publish. Offline local reviews retain their existing
+  network restriction. The `review-network-smoke` PR CI job proves the same
+  enforcement on Ubuntu without secrets. Capability text follows the active
+  runner: OpenClaw uses gateway network execution without the Codex proxy or
+  filesystem sandbox, strips GitHub tokens through its final child environment
+  allowlist, and must keep the checkout read-only by instruction.
 - Reviews fail if Codex leaves tracked or untracked changes behind.
 - Snapshot changes block apply unless the only change is the bot’s own review
   comment.

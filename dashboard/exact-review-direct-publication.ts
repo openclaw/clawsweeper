@@ -1,5 +1,9 @@
 import { EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES } from "../src/exact-review-publication-limits.ts";
 import { sqlColumnNames, type DurableStorage } from "./durable-storage.ts";
+import {
+  manualPublicationOwnerFrom,
+  type ManualPublicationOwner,
+} from "../src/manual-publication-policy.ts";
 
 export { EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES };
 
@@ -61,6 +65,7 @@ export type DirectPublicationLifecyclePlan = {
 };
 
 export type DirectPublicationPlan = {
+  owner?: ManualPublicationOwner;
   canonicalTargetKey: string;
   fenceKey: string;
   revision: number;
@@ -1874,6 +1879,7 @@ export async function validateDirectPublicationPlan(
     canonicalTargetKey,
     fenceKey,
     revision: plan.revision,
+    ...(plan.owner === undefined ? {} : { owner: manualPublicationOwnerFrom(plan.owner) }),
     ...(sourceSha === undefined ? {} : { sourceSha }),
     identity: {
       canonicalTargetKey,

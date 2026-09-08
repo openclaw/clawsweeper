@@ -4,6 +4,10 @@ import {
   isClawSweeperReReviewCommandText,
   reReviewContextFromClawSweeperComment,
 } from "../src/repair/comment-command-text.ts";
+import {
+  authenticateReviewProofProducerToken,
+  reviewProofProducerMatches,
+} from "./review-proof-producer-auth.ts";
 import { legacyCommandCommentId } from "../src/repair/command-ack-convergence.ts";
 import { directReReviewIntake } from "../src/repair/direct-re-review-admission.ts";
 import { isExactReviewCloseGuardLabel } from "../src/repair/exact-review-guard-labels.ts";
@@ -1054,6 +1058,24 @@ export default {
       return json({ ok: true, service: "clawsweeper-github-webhook" });
     if (url.pathname === "/github/webhook" && request.method === "POST")
       return githubWebhook(request, env, ctx);
+    if (url.pathname === "/internal/exact-review/proof" && request.method === "POST")
+      return reviewProofRequest(request, env);
+    if (url.pathname === "/internal/exact-review/proof/producer" && request.method === "POST")
+      return reviewProofProducerRequest(request, env);
+    if (
+      /^\/internal\/command-proof\/(claim|pending|get|update)$/.test(url.pathname) &&
+      request.method === "POST"
+    ) {
+      const declared = Number(request.headers.get("content-length") || "0");
+      if (declared > 128 * 1024) return json({ error: "proof_request_too_large" }, 413);
+      const body = await boundedCommandProofBody(request);
+      if (body === null) return json({ error: "proof_request_too_large_or_invalid" }, 413);
+      return authenticatedExactReviewQueueRequest(
+        new Request(request, { method: "POST", body }),
+        env,
+        url.pathname.slice("/internal".length),
+      );
+    }
     if (url.pathname === "/internal/exact-review/command-intake" && request.method === "POST")
       return authenticatedHostedTargetQueueRequest(request, env, "/command-intake");
     if (url.pathname === "/internal/exact-review/enqueue" && request.method === "POST")
@@ -1223,6 +1245,11 @@ export default {
       return authenticatedExactReviewQueueRequest(request, env, "/publications/reconcile");
     if (url.pathname === "/internal/exact-review/publication-results" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/publication-results");
+    if (
+      url.pathname === "/internal/exact-review/publication-authority" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/publication-authority");
     if (
       url.pathname === "/internal/exact-review/publication-batch-results" &&
       request.method === "POST"
@@ -1849,6 +1876,7 @@ const PUBLIC_STATUS_TIME_FIELDS = new Set([
   "next_wake_at",
   "last_tide_at",
   "timing_coverage_started_at",
+  "window_ended_at",
   "received_at",
   "since",
   "started_at",
@@ -2120,6 +2148,7 @@ const PUBLIC_STATUS_CONTAINER_FIELDS = new Set([
   "leased",
   "pressure",
   "scheduled_feed",
+  "manual_publication",
   "bay_projection",
   "activity",
   "queue_stages",
@@ -3405,6 +3434,7 @@ function refreshStatus(request, env) {
   const key = [
     new URL(request.url).origin,
     env.CLAWSWEEPER_REPO || "openclaw/clawsweeper",
+    dashboardWorkflowSource(env),
     env.TARGET_REPOS || "openclaw/openclaw",
     env.PUBLIC_BAY_REPOS || "",
     env.CLAWSWEEPER_STATE_REPO || CLAWSWEEPER_STATE_REPO,
@@ -4313,6 +4343,12 @@ async function githubWebhookReadModelQueuePost(
   );
   if (!response.ok) return null;
   return objectValue(await response.json().catch(() => null));
+}
+
+function dashboardWorkflowSource(env: DashboardEnv): "poll" | "webhook" {
+  // The shared signing secret also serves unrelated queue and ingress routes.
+  // Its presence does not mean this dashboard consumes workflow webhooks.
+  return stringEnv(env.CLAWSWEEPER_DASHBOARD_WORKFLOW_SOURCE) === "poll" ? "poll" : "webhook";
 }
 
 function githubWebhookReadModelWorkflowObject(
@@ -5264,6 +5300,158 @@ async function exactReviewQueueRequest(env, path, request?: Request) {
   }
 }
 
+async function reviewProofQueue(env, path: string, body: unknown) {
+  return exactReviewQueueRequest(
+    env,
+    path,
+    new Request("https://queue" + path, { method: "POST", body: JSON.stringify(body) }),
+  );
+}
+
+async function reviewProofRequest(request: Request, env) {
+  const text = await boundedCommandProofBody(request);
+  if (text === null) return json({ error: "invalid_review_proof_request" }, 413);
+  const body = parseJsonObject(text);
+  if (!body || !["request", "poll", "capabilities"].includes(body.operation))
+    return json({ error: "invalid_review_proof_request" }, 400);
+  const admission = await reviewProofQueue(env, "/review-proof", body);
+  if (!admission.ok) return admission;
+  const admitted = (await admission.json()) as any;
+  if (body.operation === "capabilities") return json(admitted);
+  const update = async (patch) => {
+    const response = await reviewProofQueue(env, "/review-proof/update", {
+      ...patch,
+      lease: body.lease,
+      requestId: admitted.record.requestId,
+    });
+    return response.json();
+  };
+  try {
+    const credentials = githubAppCredentials(env);
+    if (!credentials) throw new Error("github_app_not_configured");
+    const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
+    // Never broaden the general read-only dashboard token or return this token to the reviewer.
+    const token = await createGithubAppTokenFor({
+      env,
+      appJwt,
+      installationId: await githubAppInstallationId(appJwt, "openclaw/openclaw", env),
+      label: "review-proof",
+      repositories: ["openclaw"],
+      permissions: { actions: "write", contents: "read", pull_requests: "read" },
+    });
+    const { executeReviewProof } = await import("./review-proof-execution.ts");
+    const result = await executeReviewProof({
+      record: admitted.record,
+      target: admitted.target,
+      dispatch: admitted.dispatch === true,
+      github: (path, value) =>
+        githubTokenJson({
+          env,
+          token,
+          path: "/" + path,
+          method: value === undefined ? "GET" : "POST",
+          body: value,
+          errorLabel: "Proof GitHub",
+          apiVersion: "2026-03-10",
+        }),
+      artifact: (id) => reviewProofArtifact(env, token, id),
+      update,
+    });
+    return json({
+      ...result,
+      requestId: admitted.record.requestId,
+      planSha256: admitted.record.planSha256,
+      expiresAt: admitted.record.expiresAt,
+    });
+  } catch {
+    await update({ state: "inconclusive", reason: "proof_execution_unavailable" });
+    return json({ state: "inconclusive", reason: "proof_execution_unavailable" });
+  }
+}
+
+async function reviewProofProducerRequest(request: Request, env) {
+  const text = await boundedCommandProofBody(request);
+  const body = text === null ? null : parseJsonObject(text);
+  if (
+    !body ||
+    !/^[0-9a-f]{64}$/.test(body.requestId || "") ||
+    !/^[1-9][0-9]{0,19}$/.test(body.runId || "") ||
+    body.runAttempt !== 1
+  )
+    return json({ error: "invalid_producer_request" }, 400);
+  const identity = await authenticateReviewProofProducerToken(bearerToken(request));
+  if (!identity || identity.runId !== body.runId || identity.runAttempt !== body.runAttempt)
+    return json({ error: "producer_not_authorized" }, 403);
+  const response = await reviewProofQueue(env, "/review-proof/producer-record", body);
+  if (!response.ok) return json({ error: "proof_not_active" }, 409);
+  const { record } = (await response.json()) as any;
+  if (
+    body.planSha256 !== record.planSha256 ||
+    !reviewProofProducerMatches(identity, {
+      ...record.producer,
+      runId: body.runId,
+      runAttempt: body.runAttempt,
+    })
+  )
+    return json({ error: "producer_not_authorized" }, 403);
+  // OIDC pins the workflow/run; this final durable check also fences owner loss during verification.
+  const redeemed = await reviewProofQueue(env, "/review-proof/redeem", body);
+  if (!redeemed.ok) return json({ error: "proof_not_active" }, 409);
+  return json({ ok: true, expiresAt: record.expiresAt });
+}
+
+async function reviewProofArtifact(env, token: string, id: string): Promise<Uint8Array> {
+  if (!/^[1-9][0-9]{0,19}$/.test(id)) throw new Error("invalid_artifact_id");
+  let response = await fetch(
+    githubApiUrl(env, `/repos/openclaw/openclaw/actions/artifacts/${id}/zip`),
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "User-Agent": "clawsweeper-review-proof",
+      },
+      redirect: "manual",
+      signal: AbortSignal.timeout(20_000),
+    },
+  );
+  if (response.status === 302) {
+    const target = new URL(response.headers.get("location") || "");
+    await response.body?.cancel();
+    if (
+      target.protocol !== "https:" ||
+      target.username ||
+      target.password ||
+      ![".blob.core.windows.net", ".actions.githubusercontent.com"].some((suffix) =>
+        target.hostname.endsWith(suffix),
+      )
+    )
+      throw new Error("invalid_artifact_redirect");
+    response = await fetch(target, { redirect: "error", signal: AbortSignal.timeout(30_000) });
+  }
+  if (!response.ok) throw new Error("artifact_unavailable");
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("artifact_unavailable");
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    total += chunk.value.length;
+    if (total > 16 * 1024 * 1024) {
+      await reader.cancel();
+      throw new Error("artifact_too_large");
+    }
+    chunks.push(chunk.value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return bytes;
+}
+
 const PUBLIC_QUEUE_COUNT_LIMIT = 1_000_000;
 const PUBLIC_SCHEDULED_FEED_RATE_LIMIT = 2_000;
 const PUBLIC_QUEUE_TOTAL_LIMIT = 1_000_000_000_000;
@@ -5678,6 +5866,13 @@ export function publicExactReviewQueueProjection(
     handoff_health: projectedHandoff,
     pressure: projectedPressure,
     review_failure_health: projectedReviewFailureHealth.value,
+    manual_publication:
+      objectValue(source.manual_publication).policy === "record_comment_only"
+        ? {
+            policy: "record_comment_only",
+            enabled: objectValue(source.manual_publication).enabled === true,
+          }
+        : null,
     scheduled_feed:
       scheduledTargetRate !== null && scheduledTargetRate > 0 && scheduledEnqueueReplay
         ? {
@@ -6327,6 +6522,7 @@ async function exactReviewBayLifecycleMetricsSnapshot(env) {
     timing_coverage_complete: timingComplete,
     metrics_state: timingComplete ? "complete" : "warming",
     timings: {
+      window_ended_at: publicQueueTimestamp(timings.window_ended_at),
       window_minutes: windowMinutes,
       // `sample_kind` is a v1 public enum. Preserve its established spelling for
       // strict clients, and expose end-to-end final-review provenance additively.
@@ -6408,6 +6604,34 @@ function bayLifecycleTimingHistory(value) {
     result.push({ ended_at: endedAt, average_ms: average, median_ms: median, samples });
   }
   return { bucket_minutes: 5, points: result };
+}
+
+async function boundedCommandProofBody(request: Request): Promise<string | null> {
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const result = await reader.read();
+      if (result.done) break;
+      size += result.value.byteLength;
+      if (size > 128 * 1024) return null;
+      chunks.push(result.value);
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return null;
+  } finally {
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
 }
 
 async function authenticatedExactReviewQueueRequest(
@@ -7294,7 +7518,15 @@ async function sha256Text(value) {
   return hexEncode(new Uint8Array(digest));
 }
 
-async function githubTokenJson({ env = {}, token, path, method = "GET", body, errorLabel }) {
+async function githubTokenJson({
+  env = {},
+  token,
+  path,
+  method = "GET",
+  body,
+  errorLabel,
+  apiVersion = "",
+}) {
   const init: RequestInit = {
     method,
     signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
@@ -7303,6 +7535,7 @@ async function githubTokenJson({ env = {}, token, path, method = "GET", body, er
       "Content-Type": "application/json",
       "User-Agent": "openclaw-clawsweeper-webhook",
       Authorization: `Bearer ${token}`,
+      ...(apiVersion ? { "X-GitHub-Api-Version": apiVersion } : {}),
     },
   };
   if (body !== undefined) init.body = JSON.stringify(body);
@@ -7412,13 +7645,17 @@ async function statusSnapshot(env) {
     .filter(Boolean);
   const budget = numberFrom(env.WORKER_BUDGET, 32);
   const activeRunErrors = [];
-  const workflowReadModel = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET)
-    ? await githubWebhookReadModelQueuePost(env, "workflows", {
-        repository: repo,
-      }).catch(() => null)
-    : null;
+  const useWorkflowReadModel = dashboardWorkflowSource(env) === "webhook";
+  const workflowReadModel =
+    useWorkflowReadModel && stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET)
+      ? await githubWebhookReadModelQueuePost(env, "workflows", {
+          repository: repo,
+        }).catch(() => null)
+      : null;
   const workflowReadModelUsable = workflowReadModel?.usable === true;
-  if (!workflowReadModelUsable) reportGithubReadModelDashboardFallback(workflowReadModel);
+  if (useWorkflowReadModel && !workflowReadModelUsable) {
+    reportGithubReadModelDashboardFallback(workflowReadModel);
+  }
   let runs;
   let completedRuns;
   let activeRunCandidates;
@@ -7467,7 +7704,11 @@ async function statusSnapshot(env) {
     ...activeRunCandidates.filter((run) => isActiveWorkflowRun(run)),
     ...workflowRuns.filter((run) => isActiveWorkflowRun(run)),
   ]).sort(newestWorkflowRunFirst);
-  if (!workflowReadModelUsable && stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET)) {
+  if (
+    useWorkflowReadModel &&
+    !workflowReadModelUsable &&
+    stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET)
+  ) {
     const objects = uniqueWorkflowRuns([
       ...workflowRuns,
       ...completedWorkflowRuns,
@@ -10057,7 +10298,11 @@ export async function workflowJobsForRunSnapshot(
     const object = githubWebhookReadModelWorkflowObject(repo, "workflow_job", job);
     return object ? [object] : [];
   });
-  if ((repairObjects.length > 0 || census.complete) && stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET)) {
+  if (
+    dashboardWorkflowSource(env) === "webhook" &&
+    (repairObjects.length > 0 || census.complete) &&
+    stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET)
+  ) {
     await githubWebhookReadModelQueuePost(env, "repair", {
       repository: repo,
       repair_kind: "workflows",

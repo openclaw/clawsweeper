@@ -10,7 +10,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-router-throttle-"));
+// Ledger roots must be canonical even when macOS exposes tmpdir through /var.
+const temporary = fs.realpathSync.native(
+  fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-router-throttle-")),
+);
 const root = path.join(temporary, "runtime");
 fs.mkdirSync(path.join(root, "scripts"), { recursive: true });
 fs.cpSync(path.join(sourceRoot, "dist"), path.join(root, "dist"), { recursive: true });

@@ -1,5 +1,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { reportPublicationPolicy } from "./manual-publication-policy.js";
+import { assertManualPublicationAuthority } from "./manual-publication-authority.js";
 import { createApplyCandidateGuards } from "./clawsweeper-apply-candidate-guards.js";
 import { executeApplyClose } from "./clawsweeper-apply-close-execution.js";
 import {
@@ -215,6 +217,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     );
     const syncCommentsOnly = boolArg(args.sync_comments_only);
     const suppressAutomationMarkers = boolArg(args.suppress_automation_markers);
+    const requestedSyncCommentsOnly = syncCommentsOnly;
+    const requestedSuppressAutomationMarkers = suppressAutomationMarkers;
     const emitEventApplyProof = boolArg(args.event_apply_proof);
     const exactEventPublication = boolArg(args.exact_event_publication);
     const commentSyncMinAgeDays = numberArg(args.comment_sync_min_age_days, 0);
@@ -507,6 +511,13 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         return;
       }
       let markdown = entry.markdown;
+      const restrictedPublication = Boolean(reportPublicationPolicy(markdown));
+      // Background apply has no publication claim. Canonical restrictions outlive
+      // queue completion, so only the exact publisher can sync this report.
+      if (restrictedPublication && !exactEventPublication) continue;
+      if (restrictedPublication) assertManualPublicationAuthority(markdown, entry.repo, entry.number);
+      const syncCommentsOnly = restrictedPublication || requestedSyncCommentsOnly;
+      const suppressAutomationMarkers = restrictedPublication || requestedSuppressAutomationMarkers;
       const repo = entry.repo;
       const number = entry.number;
       let mutationLedgerEntry: ReportEntry = entry;
@@ -640,6 +651,12 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         didMutate?: ((result: T) => boolean) | undefined;
         knownNoMutation?: ((error: unknown) => boolean) | undefined;
       }): T => {
+        if (restrictedPublication) {
+          if (!options.identity.startsWith(`review_comment_upsert:${number}:`) && !options.identity.startsWith("review_lease_")) {
+            throw new Error("manual publication forbids this mutation");
+          }
+          assertManualPublicationAuthority(markdown, repo, number);
+        }
         if (dryRun) return options.operation();
         const attempt = startApplyMutationAttempt(
           applyLedger,
@@ -769,6 +786,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       const pairedIssueCanonicalProvenanceBlock = (issueNumber: number): string | null => {
         const pairedEntry = openReportEntry(issueNumber);
         if (!pairedEntry) return "implemented-on-main paired closeout requires an independently reviewed linked issue report";
+        if (reportPublicationPolicy(pairedEntry.markdown)) return "linked issue publication policy forbids paired closeout";
         const parentFixedPrNumber = frontMatterValue(markdown, "fixed_pr_number");
         const parentFixedPrUrl = frontMatterValue(markdown, "fixed_pr_url");
         const pairedFixedPrNumber = frontMatterValue(pairedEntry.markdown, "fixed_pr_number");
@@ -1684,13 +1702,13 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           continue;
         }
       }
-      if (state === "open" && exactEventPublication && !dryRun) {
+      if (!restrictedPublication && state === "open" && exactEventPublication && !dryRun) {
         beginIssueLabelMutationBatch(number);
         issueLabelBatchActive = true;
         preserveGuardReadCacheAfterMutation = true;
         resetMutationGuardBoundary();
       }
-      if (state === "open" && item.kind === "pull_request") {
+      if (!restrictedPublication && state === "open" && item.kind === "pull_request") {
         const pullRequestLabels = syncApplyPullRequestLabels(dependencies, {
           currentItemContext,
           dryRun,
@@ -1876,7 +1894,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           break;
         continue;
       }
-      const labelsCanSync = !lockedMetadataOnly && !stalePrReviewHead && labelSyncFreshEnough();
+      const labelsCanSync = !restrictedPublication && !lockedMetadataOnly && !stalePrReviewHead && labelSyncFreshEnough();
       const complete = frontMatterValue(markdown, "review_status") === "complete" && labelsCanSync;
       const reportLabelSync = syncApplyReportLabels(dependencies, {
         bulkFilerRepositoryPermissionCache,
@@ -2214,6 +2232,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
                 number,
                 markedReviewComment,
                 existingReviewComment,
+                undefined,
+                { suppressAutomationMarkers },
               );
               rememberSelfMutationUpdatedAt();
               deferredSelfMutationReceipt = false;

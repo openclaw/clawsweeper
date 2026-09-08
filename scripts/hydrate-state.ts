@@ -4,6 +4,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs as parseNodeArgs } from "node:util";
 
+import { requiredCliValue } from "../src/clawsweeper-args.ts";
 import { materializeStateBlobs } from "./worker-blobs.ts";
 import {
   discoverWorkerRecordRepoSlugs,
@@ -151,7 +152,7 @@ function parseArgs(argv: string[]): Args {
         "--records-repo-slugs",
       ].includes(arg)
     ) {
-      normalized.push(`${arg}=${requiredValue(argv, ++index, arg)}`);
+      normalized.push(`${arg}=${requiredCliValue(argv, ++index, arg)}`);
     } else if (arg === "--skip-state-blobs" || arg === "--skip-git-state") normalized.push(arg);
     else throw new Error(`Unknown argument: ${arg}`);
   }
@@ -190,12 +191,6 @@ function parseArgs(argv: string[]): Args {
 function parseRepoSlugs(value: string | undefined) {
   if (value === undefined || value.trim() === "") return undefined;
   return [...new Set(value.split(/[\s,]+/).filter(Boolean))].sort();
-}
-
-function requiredValue(argv: string[], index: number, flag: string): string {
-  const value = argv[index];
-  if (!value || value.startsWith("--")) throw new Error(`${flag} requires a value`);
-  return value;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {

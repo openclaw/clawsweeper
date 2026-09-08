@@ -544,6 +544,9 @@ export function appendLedger(current: LooseRecord, entries: LooseRecord[]) {
         trigger: entry.trigger,
         command: entry.command,
         intent: entry.intent,
+        ...(entry.intent === "request_proof" && entry.proof_admission
+          ? { proof_admission: entry.proof_admission }
+          : {}),
         trusted_bot: Boolean(entry.trusted_bot),
         trusted_bot_author: entry.trusted_bot_author ?? null,
         automation_source: entry.automation_source ?? null,

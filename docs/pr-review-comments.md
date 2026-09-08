@@ -31,6 +31,28 @@ Each synced comment includes the durable identity marker:
 ClawSweeper edits that comment in place instead of posting repeated comments.
 Report front matter stores the synced comment id, URL, hash, and sync time.
 
+Explicit manual reports carry `publication_policy: record_comment_only`. Their
+publisher permits the selected durable comment and canonical report/plan/packet
+tuple, plus owned coordination. It suppresses automation action markers and
+label synchronization, closes, paired-item writes, repair, and implementation.
+The completion identity/version and original `reviewed_at` remain intact after
+an accepted comment write. Retrying publication does not make the review newer;
+unknown acknowledgements still require the exact trusted read-back described
+below. The coordinator checks current publication authority without extending
+expired claims, and records router disposition as `not_required`.
+It checks the actual lease/run/attempt or active batch owner at each comment
+mutation attempt, including lease cleanup, and checks ownership again before
+canonical acceptance after asynchronous admission. These checks do not make
+GitHub and the coordinator one atomic transaction: an accepted comment may
+precede a rejected canonical handoff if ownership changes between services.
+An absent new restricted report fails as `missing_record_tuple`; hydrated old
+canonical content cannot supply the missing review authority. Ordinary absent
+reports keep their terminal missing disposition. Cached reports are reusable only
+under a matching publication policy; an incompatible cache requires a fresh
+review rather than relabeling the cached provenance. Marker-suppressed comments
+that exceed 60 KiB are refused before any write, so the ordinary oversized
+fallback cannot introduce automation markers or a replacement completion claim.
+
 Publication requires a trusted author, positive server comment ID, and the exact
 submitted body. A PATCH must return the targeted ID. An unusable acknowledgement
 can be recovered by one fresh scoped comment read; equivalent prose or different
@@ -275,8 +297,13 @@ SQLite codecs such as `sqlite-board-codec.ts` own serialized state, while
 JSON-edit, and incomplete-patch warnings without implying table ownership.
 Actual DDL remains evidence at any production filename, including diagnostic
 helpers. Ordinary validation fields in a `schema` file alone do not establish
-persisted database columns. The warning requests review; it does not prove a
-persisted contract changed. This classification does not change the separate
+persisted database columns. A suffix such as `users-schema.ts` is only a domain
+hint: missing patches, JSON conversion, and local `table`, `column`, or `index`
+variables do not establish storage ownership. Explicit schema directories and
+storage owners keep their incomplete-patch warnings. Database API signals and
+column changes beside `sqliteTable`, `pgTable`, or `mysqlTable` calls in the same
+hunk remain evidence, including optional calls and typed calls. The warning
+requests review; it does not prove a persisted contract changed. This classification does not change the separate
 `docs/` exemption for contributor behavior proof.
 
 ## Evidence Repository Identity
@@ -559,3 +586,47 @@ pnpm run apply-decisions -- --target-repo openclaw/openclaw --sync-comments-only
 ```
 
 - Normal review/apply workflows also refresh missing or stale durable comments.
+
+### Reviewer network boundary
+
+Hosted Codex issue/PR review tools use the `clawsweeper-review` permission profile in
+`.github/actions/setup-codex/review-permissions.toml`, owned by ClawSweeper
+maintainers and verified with Codex 0.153.3. Update this guidance when the pinned
+CLI, profile, credential handling, or setup smoke changes. The active profile
+extends read-only filesystem access and enables the managed proxy in limited
+mode for its explicit GitHub, npm, Node, MDN, and OpenClaw documentation hosts.
+Other hosts are blocked; blocked access is not evidence against the PR. The
+sandbox receives the target repository's read-only GitHub App token only as
+`GH_TOKEN` when the review job supplies it (contents, issues, and pull requests
+read; expires within the hour). Use `gh api` or other authenticated GitHub reads
+to avoid public rate limits; the token cannot write. Never put it in a URL, log
+it, or send it to a non-GitHub host. Without a token, use public endpoints or
+pre-fetched GitHub context. Read downloaded screenshots/videos through the media
+proof manifest. The allowlist is not a credential containment boundary: a
+prompt-injected reviewer could leak the token in a GET query string to an
+allowlisted third-party host. Its read-only, single-repository, one-hour scope
+limits the impact.
+
+Review setup opts in with `review-network: "true"`; review commands select
+`--codex-sandbox clawsweeper-review`, translated to Codex configuration
+`default_permissions="clawsweeper-review"`. Neither exec nor the app-server
+thread/turn path overrides that profile with a legacy sandbox policy. Setup
+fails before publication if allowed HTTPS fails, unlisted HTTPS is not rejected
+by the proxy, or a checkout write succeeds. Non-review callers and offline local
+reviews keep their existing sandbox settings.
+
+Capability text follows the active `CLAWSWEEPER_RUNNER` before the Codex sandbox
+argument. OpenClaw reviews have network access through gateway execution with
+sandbox mode off; they do not use the Codex allowlisted proxy, and must treat the
+checkout as read-only by instruction. Their final child environment allowlist
+strips GitHub tokens, so OpenClaw prompts retain the no-token guidance even when
+an inspection token was supplied to the parent. Token capability text accounts
+for that runner-specific filter as well as the sanitized Codex environment. Other Codex sandbox
+selections retain the no-review-tool-network statement.
+This reporting does not change either runner's execution policy.
+
+The required-style `review-network-smoke` CI job runs on every PR using
+`ubuntu-24.04`, Node 24, and the Codex version pin read from setup-codex. It installs
+into a temporary prefix without secrets, creates an isolated Codex home, applies
+the same hosted Linux user-namespace prerequisites, and runs the configuration
+writer and enforcement smoke unchanged. Any smoke failure fails the job.

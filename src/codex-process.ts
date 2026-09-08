@@ -8,6 +8,7 @@ import {
   DEFAULT_CODEX_OUTPUT_TAIL_BYTES,
 } from "./codex-output-capture.js";
 import { codexProcessCommand } from "./codex-spawn.js";
+import type { ReviewProofCapability } from "./review-proof-client.js";
 
 export { codexProcessCommand, codexSpawnInvocation } from "./codex-spawn.js";
 
@@ -39,6 +40,7 @@ const CODEX_APP_SERVER_WORKER_PATH = fileURLToPath(
 
 export interface CodexAppServerProcessOptions {
   statePath: string;
+  reviewProof?: ReviewProofCapability;
   label?: string;
   runnerPtyUrl?: string;
   workStateUrl?: string;

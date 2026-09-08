@@ -245,6 +245,7 @@ test("exact event review exposes the token-only signal before runtime setup", ()
     uses?: string;
     id?: string;
     "continue-on-error"?: boolean;
+    "timeout-minutes"?: number;
   };
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
     jobs: Record<string, { steps: Step[] }>;
@@ -507,6 +508,7 @@ test("review and apply primary boundaries ignore ledger-only failures", () => {
     if?: string;
     needs?: string | string[];
     outputs?: Record<string, string>;
+    "timeout-minutes"?: number;
     steps: WorkflowStep[];
   };
 
@@ -584,16 +586,33 @@ test("review and apply primary boundaries ignore ledger-only failures", () => {
     false,
   );
 
-  const ledgerDownload = job("publish").steps.find(
-    (candidate) => candidate.id === "download-review-action-ledger",
+  const optionalLedger = job("publish-review-action-ledger");
+  assert.deepEqual(optionalLedger.needs, ["review", "publish"]);
+  assert.match(optionalLedger.if ?? "", /always\(\)/);
+  assert.match(optionalLedger.if ?? "", /needs\.publish\.result != 'skipped'/);
+  assert.equal("concurrency" in optionalLedger, false);
+  assert.equal(optionalLedger["timeout-minutes"], 15);
+  for (const value of Object.values(workflow.jobs)) {
+    assert.ok(![value.needs].flat().includes("publish-review-action-ledger"));
+  }
+  assert.ok(!job("publish").steps.some((value) => value.id === "import-review-action-ledger"));
+  assert.equal(
+    step("publish-review-action-ledger", "Publish immutable action ledger")["timeout-minutes"],
+    5,
   );
-  assert.ok(ledgerDownload);
-  assert.equal(ledgerDownload["continue-on-error"], true);
-  for (const name of [
-    "Import immutable review action events",
-    "Publish immutable review action ledger",
-  ]) {
-    assert.equal(step("publish", name)["continue-on-error"], true, `${name} must fail open`);
+  const publisherArtifact = step("publish", "Retain publisher action events");
+  assert.equal(publisherArtifact.if, "always()");
+  assert.equal(publisherArtifact["continue-on-error"], true);
+  assert.equal(publisherArtifact.with?.["include-hidden-files"], true);
+  assert.match(
+    step("publish", "Report publisher ledger retention failure").if ?? "",
+    /always\(\).*steps\.retain-publisher-action-events\.outcome != 'success'/,
+  );
+  for (const producerJob of ["review", "publish"]) {
+    assert.match(
+      step("publish-review-action-ledger", "Import immutable action events").run ?? "",
+      new RegExp(`--expected-producer-job ${producerJob}`),
+    );
   }
   const artifactApply = step("publish", "Apply review artifacts");
   assert.match(artifactApply.if ?? "", /setup-publish-state\.outcome == 'success'/);
@@ -751,9 +770,9 @@ test("review workflow gives Codex a read-only inspection token", () => {
   assert.match(exactReviewStep, /Exact review produced no artifact for open item/);
   assert.match(reviewJob, /uses: \.\/clawsweeper\/\.github\/actions\/setup-codex/);
   assert.doesNotMatch(reviewJob, /uses: \.\/\.github\/actions\/setup-codex/);
-  assert.match(exactReviewStep, /--codex-sandbox read-only/);
+  assert.match(exactReviewStep, /--codex-sandbox clawsweeper-review/);
   assert.match(exactReviewStep, /--skip-start-comment/);
-  assert.match(reviewJob, /--codex-sandbox read-only/);
+  assert.match(reviewJob, /--codex-sandbox clawsweeper-review/);
   assert.doesNotMatch(workflow, /--codex-sandbox danger-full-access/);
 });
 
@@ -1147,6 +1166,10 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(step(reviewer, "Review exact event item").run ?? "", /claim_generation/);
   assert.match(step(reviewer, "Review exact event item").run ?? "", /run_attempt/);
   assert.match(step(reviewer, "Review exact event item").run ?? "", /source_head_sha/);
+  assert.equal(
+    step(reviewer, "Review exact event item").env?.EXACT_REVIEW_ITEM_KIND,
+    "${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).itemKind }}",
+  );
   assert.match(
     step(reviewer, "Review exact event item").run ?? "",
     /review_exit_code.*-eq 78[\s\S]*failure_reason=incomplete_source/,
@@ -1752,7 +1775,37 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(drift.if ?? "", /legacy-exact-artifact\.outputs\.legacy_tupleless == 'true'/);
   assert.match(drift.run ?? "", /x-clawsweeper-exact-review-signature/);
   assert.match(drift.run ?? "", /internal\/exact-review\/enqueue/);
-  assert.match(drift.run ?? "", /decision\.sourceAction === "failed_review_shard_recovery"/);
+  const driftPayloadBuilder = (drift.run ?? "").match(
+    /node <<'NODE'\r?\n([\s\S]*?)\r?\n\s*NODE/,
+  )?.[1];
+  assert.ok(driftPayloadBuilder, "missing owning source-drift payload builder");
+  for (const [sourceAction, expectedAction] of [
+    ["failed_review_shard_recovery", "failed_review_shard_recovery"],
+    ["command_proof_result", "command_proof_result"],
+    ["opened", "source_drift_requeue"],
+    ["synchronize", "source_drift_requeue"],
+  ]) {
+    const decision = {
+      sourceAction,
+      targetRepo: "openclaw/openclaw",
+      itemNumber: 42,
+      additionalPrompt: "preserve context",
+    };
+    const payload = JSON.parse(
+      execFileSync(process.execPath, ["-e", driftPayloadBuilder], {
+        encoding: "utf8",
+        env: {
+          CLAIM_DECISION: JSON.stringify(decision),
+          PRODUCER_RUN_ID: "900",
+          PRODUCER_RUN_ATTEMPT: "1",
+        },
+      }),
+    );
+    assert.deepEqual(payload, {
+      delivery_id: "publisher-source-drift:900:1",
+      decision: { ...decision, sourceAction: expectedAction, supersedesInProgress: true },
+    });
+  }
   assert.match(drift.run ?? "", /\.queued == true or \.deduped == true or \.shed == true/);
   assert.match(drift.run ?? "", /Source-drift recovery shed by exact-review queue backpressure/);
   const reaction = step(publisher, "React to target item completion");
@@ -1978,13 +2031,21 @@ test("scheduled review shards retire automatic live proof without removing histo
   const metrics = reviewSteps.find((candidate) => candidate.name === "Record shard metrics");
   assert.ok(metrics);
   assert.doesNotMatch(JSON.stringify(metrics), /live[_-]proof/i);
-  const upload = reviewSteps.find(
+  const uploads = reviewSteps.filter(
     (candidate) => candidate.with?.name === "review-shard-${{ matrix.shard }}",
   );
-  assert.ok(upload);
-  assert.match(upload.if ?? "", /review-shard\.outcome/);
-  assert.match(String(upload.with?.path), /review-artifacts\/shard-/);
-  assert.doesNotMatch(String(upload.with?.path), /live-proof/);
+  assert.equal(uploads.length, 2);
+  for (const upload of uploads) {
+    assert.match(upload.if ?? "", /review-shard\.outcome/);
+    assert.doesNotMatch(String(upload.with?.path), /live-proof/);
+  }
+  const completed = uploads.find((upload) => upload.if?.includes("== 'failure'"))!;
+  const successful = uploads.find(
+    (upload) => upload.if?.includes("== 'success'") && !upload.if?.includes("== 'failure'"),
+  )!;
+  assert.match(String(successful.with?.path), /review-artifacts\/shard-/);
+  assert.match(String(completed.with?.path), /review-artifacts\/completed-.*\/\*\.md$/);
+  assert.match(completed.if!, /completed-prefix\.outcome == 'success'/);
 
   assert.ok(
     workflow.jobs.publish!.steps.some(
@@ -6854,7 +6915,7 @@ test("sweep exact event reviews consume only the immutable claimed decision", ()
   assert.match(resolveBlock, /Math\.min\(480_000, mediaValue\)/);
   assert.match(
     resolveBlock,
-    /codex_timeout_ms: Math\.min\(\s*maxExactReviewCodexTimeoutMs,\s*Math\.max\(configuredTimeout, adaptiveTimeout\)/,
+    /codex_timeout_ms: Math\.min\(\s*maxExactReviewCodexTimeoutMs,\s*requestedTimeout/,
   );
   assert.match(resolveBlock, /media_proof_timeout_ms: mediaTimeout/);
   assert.doesNotMatch(resolveBlock, /github\.event\.client_payload/);
@@ -6897,6 +6958,37 @@ test("review finalizers recover start-only ledger attempts after hard timeout", 
     );
   }
 });
+
+for (const jobId of ["publish-review-action-ledger", "recover-review-failures"]) {
+  test(`${jobId} is never presented as model review or review publication in Bay`, async () => {
+    const { publicStatusProjection } = await import("../dashboard/worker.ts");
+    const job = YAML.parse(readText(".github/workflows/sweep.yml")).jobs[jobId];
+    const projected = publicStatusProjection({
+      schema_version: 1,
+      generated_at: "2026-09-08T08:00:00.000Z",
+      source: { target_repository_count: 0 },
+      fleet: {},
+      workers: job.steps.map((entry: { name?: string; uses?: string }) => ({
+        name: job.name,
+        status: "in_progress",
+        current_step: entry.name ?? entry.uses,
+        steps: job.steps.map((step: { name?: string; uses?: string }) => ({
+          name: step.name ?? step.uses,
+        })),
+      })),
+      automatic_work: [],
+      pipeline: [],
+      bay: {},
+      recent: {},
+      diagnostics: { errors: [], error_count: 0 },
+    });
+    assert.equal(projected.workers.length, job.steps.length);
+    for (const worker of projected.workers) {
+      assert.ok(!["reviewing", "publishing"].includes(worker.stage));
+      assert.equal(worker.status, "in_progress");
+    }
+  });
+}
 
 test("every action-ledger publication authenticates the expected producer job", () => {
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
@@ -6943,9 +7035,8 @@ test("every action-ledger publication authenticates the expected producer job", 
       const occurrences = countOccurrences(line);
       if (occurrences === 0) continue;
       assert.equal(occurrences, 1, "publisher lines must contain one invocation");
-      assert.equal(
-        line.trimStart(),
-        commandStart,
+      assert.ok(
+        [commandStart, `node dist/clawsweeper.js ${invocation} \\`].includes(line.trimStart()),
         "publisher invocations must use the standalone canonical command form",
       );
 
@@ -7018,7 +7109,7 @@ test("every action-ledger publication authenticates the expected producer job", 
     assert.throws(() => commandsFromScript(malformed));
   }
   assert.equal(commands.length, 7);
-  const expectedProducerJobs = new Set(['"$GITHUB_JOB"', "apply-proof", "review"]);
+  const expectedProducerJobs = new Set(['"$GITHUB_JOB"', "apply-proof", "review", "publish"]);
   assert.ok(
     commands.every((command) =>
       expectedProducerJobs.has(command.get("--expected-producer-job") ?? ""),
@@ -7052,7 +7143,7 @@ test("sweep exact event reviews cap the configured fallback within the lease and
   );
   assert.match(
     resolveBlock,
-    /codex_timeout_ms: Math\.min\(\s*maxExactReviewCodexTimeoutMs,\s*Math\.max\(configuredTimeout, adaptiveTimeout\)/,
+    /codex_timeout_ms: Math\.min\(\s*maxExactReviewCodexTimeoutMs,\s*requestedTimeout/,
   );
 });
 

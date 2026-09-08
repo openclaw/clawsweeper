@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { sha256 } from "../content-hash.js";
+import { repositoryManagedPullRequestCloseReason } from "../repository-profiles.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -399,6 +400,16 @@ function applyCloseAction({
 
   let live = fetchIssue(result.repo, target);
   const kind = live.pull_request ? "pull_request" : "issue";
+  const managedPullRequestReason =
+    live.state === "open"
+      ? repositoryManagedPullRequestCloseReason(
+          { repo: result.repo, kind, author: String(live.user?.login ?? "") },
+          () => fetchPullRequest(result.repo, target),
+        )
+      : null;
+  if (managedPullRequestReason) {
+    return { ...base, status: "blocked", reason: managedPullRequestReason, live_state: live.state };
+  }
   const authorAssociation = normalizeAuthorAssociation(live.author_association);
   if (hasSecuritySignal(live)) {
     return {

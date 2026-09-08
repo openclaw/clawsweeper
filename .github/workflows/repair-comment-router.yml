@@ -77,6 +77,14 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
+  CLAWSWEEPER_PROOF_WORKFLOW_PATH: ${{ vars.CLAWSWEEPER_PROOF_WORKFLOW_PATH }}
+  CLAWSWEEPER_PROOF_WORKFLOW_REF: ${{ vars.CLAWSWEEPER_PROOF_WORKFLOW_REF }}
+  CLAWSWEEPER_PROOF_WORKFLOW_SHA: ${{ vars.CLAWSWEEPER_PROOF_WORKFLOW_SHA }}
+  CLAWSWEEPER_PROOF_HARNESS_SHA: ${{ vars.CLAWSWEEPER_PROOF_HARNESS_SHA }}
+  CLAWSWEEPER_TELEGRAM_PROOF_WORKFLOW_PATH: ${{ vars.CLAWSWEEPER_TELEGRAM_PROOF_WORKFLOW_PATH }}
+  CLAWSWEEPER_TELEGRAM_PROOF_WORKFLOW_REF: ${{ vars.CLAWSWEEPER_TELEGRAM_PROOF_WORKFLOW_REF }}
+  CLAWSWEEPER_TELEGRAM_PROOF_WORKFLOW_SHA: ${{ vars.CLAWSWEEPER_TELEGRAM_PROOF_WORKFLOW_SHA }}
+  CLAWSWEEPER_TELEGRAM_PROOF_HARNESS_SHA: ${{ vars.CLAWSWEEPER_TELEGRAM_PROOF_HARNESS_SHA }}
   CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED || 'false' }}
   CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED || 'false' }}
 
@@ -204,6 +212,17 @@ jobs:
           # dashboard leg the job never runs.
           build-script: build:node
 
+      - name: Prepare bounded proof planner
+        if: ${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && (vars.CLAWSWEEPER_PROOF_WORKFLOW_SHA != '' || vars.CLAWSWEEPER_TELEGRAM_PROOF_WORKFLOW_SHA != '') && (github.event_name == 'repository_dispatch' || (github.event_name == 'workflow_dispatch' && inputs.execute) || (github.event_name == 'schedule' && vars.CLAWSWEEPER_COMMENT_ROUTER_EXECUTE == '1')) }}
+        continue-on-error: true
+        uses: ./.github/actions/setup-codex
+        env:
+          OPENAI_API_KEY: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.OPENAI_API_KEY || '' }}
+          CLAWSWEEPER_INTERNAL_MODEL: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.CLAWSWEEPER_MODEL || '' }}
+          CLAWSWEEPER_CLAWROUTER_CONFIG: ${{ secrets.CLAWSWEEPER_CLAWROUTER_CONFIG }}
+        with:
+          auth-mode: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE || 'proxy' }}
+
       - name: Route ClawSweeper comments
         id: route-comments
         env:
@@ -321,6 +340,15 @@ jobs:
             args+=(--execute)
           fi
           pnpm run repair:comment-router -- "${args[@]}"
+
+      - name: Reconcile explicitly requested behavioral proof
+        if: ${{ success() && steps.target.outputs.target_repo == 'openclaw/openclaw' && (github.event_name == 'repository_dispatch' || (github.event_name == 'workflow_dispatch' && inputs.execute) || (github.event_name == 'schedule' && vars.CLAWSWEEPER_COMMENT_ROUTER_EXECUTE == '1')) }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+        run: node dist/repair/command-proof-cli.js reconcile
 
       - name: Commit comment router ledger
         if: always()

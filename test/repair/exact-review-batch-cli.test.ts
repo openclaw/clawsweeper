@@ -80,6 +80,12 @@ test("batch commit records an invalid member permanently while publishing its he
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-batch-cli-"));
   try {
     const healthy = batchMember("openclaw/openclaw#801@publish:8010:1", 801);
+    const owner = {
+      batchId: "batch-cli-proof",
+      leaseOwner: "proof-worker",
+      runId: "8010",
+      runAttempt: 1,
+    };
     const invalid = batchMember("openclaw/openclaw#802@publish:8020:1", 802);
     const healthyOutcome = join(root, "healthy.json");
     const invalidOutcome = join(root, "invalid.json");
@@ -88,7 +94,7 @@ test("batch commit records an invalid member permanently while publishing its he
     const postsPath = join(root, "posts.json");
     writeFileSync(
       healthyOutcome,
-      JSON.stringify({ kind: "eligible", plan: mutationPlan(healthy) }),
+      JSON.stringify({ kind: "eligible", plan: { ...mutationPlan(healthy), owner } }),
     );
     writeFileSync(
       invalidOutcome,
@@ -190,6 +196,7 @@ globalThis.fetch = async (url, init) => {
     ]);
     assert.deepEqual(JSON.parse(readFileSync(postsPath, "utf8")), [
       {
+        owner,
         canonicalTargetKey: "openclaw/openclaw#801",
         fenceKey: healthy.itemKey,
         revision: 1,

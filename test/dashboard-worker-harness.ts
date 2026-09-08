@@ -152,7 +152,13 @@ class MemorySqlCursor<T extends Record<string, unknown>> implements Iterable<T> 
 }
 
 class MemorySqlStorage {
-  private readonly database = new DatabaseSync(":memory:");
+  private readonly database: DatabaseSync;
+  constructor(filename = ":memory:") {
+    this.database = new DatabaseSync(filename);
+  }
+  close() {
+    this.database.close();
+  }
   private failure: { pattern: RegExp; error: Error } | undefined;
   private bindingLimit = Number.POSITIVE_INFINITY;
   private queryHistory: Array<{ query: string; bindings: unknown[] }> | null = null;
@@ -301,7 +307,10 @@ class MemoryDurableStorage {
   private putFailure: { key: string; error: Error } | undefined;
   private deleteFailure: { key: string; error: Error } | undefined;
   private alarmAt: number | null = null;
-  readonly sql = new MemorySqlStorage();
+  readonly sql: MemorySqlStorage;
+  constructor(filename = ":memory:") {
+    this.sql = new MemorySqlStorage(filename);
+  }
   readonly kv = {
     get: (key: string) => this.values.get(key),
     put: (key: string, value: unknown) => this.putRawSync(key, value),

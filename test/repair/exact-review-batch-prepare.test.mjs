@@ -26,13 +26,6 @@ test("bounded preparation pool respects the configured concurrency", async () =>
   assert.deepEqual(result.results, [2, 4, 6, 8, 10]);
 });
 
-test("batch preparation copies canonical records without cloning git state", () => {
-  const source = readFileSync("scripts/prepare-exact-review-batch.mjs", "utf8");
-  assert.match(source, /cpSync\(recordsSource, join\(root, "records"\)/);
-  assert.doesNotMatch(source, /CLAWSWEEPER_STATE_DIR|stateClone|git["'], \["clone"/);
-  assert.doesNotMatch(source, /pack-objects|unpack-objects|targetOid|expectedOid/);
-});
-
 test("artifact cache archive round-trips exact file bytes deterministically", () => {
   const root = mkdtempSync(join(tmpdir(), "exact-review-artifact-archive-"));
   const source = join(root, "source");

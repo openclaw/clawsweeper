@@ -4,6 +4,7 @@ import path from "node:path";
 import { parseArgs as parseNodeArgs } from "node:util";
 
 import { importActionEventShards } from "../action-ledger-runtime.js";
+import { requiredCliValue } from "../clawsweeper-args.js";
 import {
   finalizeCommandActionLedgerManifest,
   parseCommandActionLedgerManifest,
@@ -63,7 +64,7 @@ function parseArgs(argv: readonly string[]) {
     const arg = argv[index];
     if (!arg) throw new Error(`unknown argument: ${arg}`);
     if (["--lane", "--manifest", "--source-root", "--state-root"].includes(arg)) {
-      normalized.push(`${arg}=${requiredValue(argv, ++index, arg)}`);
+      normalized.push(`${arg}=${requiredCliValue(argv, ++index, arg)}`);
     } else if (arg === "--allow-empty") normalized.push(arg);
     else throw new Error(`unknown argument: ${arg}`);
   }
@@ -84,12 +85,6 @@ function parseArgs(argv: readonly string[]) {
     stateRoot: values["state-root"],
     allowEmpty: values["allow-empty"],
   };
-}
-
-function requiredValue(argv: readonly string[], index: number, flag: string): string {
-  const value = argv[index];
-  if (!value || value.startsWith("--")) throw new Error(`${flag} requires a value`);
-  return value;
 }
 
 function requiredArg(value: string | undefined, flag: string): string {

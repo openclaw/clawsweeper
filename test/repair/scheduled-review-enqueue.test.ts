@@ -3,6 +3,80 @@ import { createHash, createHmac } from "node:crypto";
 import test from "node:test";
 
 import { enqueueScheduledReviewPlan } from "../../dist/repair/scheduled-review-enqueue.js";
+import { enqueueManualReviews } from "../../dist/repair/manual-review-enqueue.js";
+
+test("manual admission reports partial failure, attempts the tail, and retries stable per-item identities", async () => {
+  const payloads: string[] = [];
+  const options = {
+    targetRepo: "openclaw/gogcli",
+    targetBranch: "main",
+    codexTimeoutMs: 2_400_000,
+    additionalPrompt: "Keep the operator's one-off instructions.\nDo not broaden scope.",
+    itemNumbers: [1, 2, 3],
+    requestId: "1234",
+    queueUrl: "https://queue.example",
+    secret: "synthetic",
+    itemKind: async () => "issue" as const,
+    fetch: async (_url: unknown, init?: RequestInit) => {
+      if (!init?.method)
+        return Response.json({
+          manual_publication: { enabled: true, policy: "record_comment_only" },
+        });
+      payloads.push(String(init.body));
+      const body = JSON.parse(String(init.body));
+      return Response.json(
+        body.decision.itemNumber === 2 ? { error: "unavailable" } : { ok: true, queued: true },
+        { status: body.decision.itemNumber === 2 ? 400 : 202 },
+      );
+    },
+  };
+  const first = await enqueueManualReviews(options);
+  assert.equal(first.ok, false);
+  assert.equal(first.selected, 3);
+  assert.equal(first.accepted, 2);
+  assert.deepEqual(
+    first.items.map((item) => item.accepted),
+    [true, false, true],
+  );
+  for (const payload of payloads) {
+    const decision = JSON.parse(payload).decision;
+    assert.equal(decision.codexTimeoutMs, options.codexTimeoutMs);
+    assert.equal(decision.additionalPrompt, options.additionalPrompt);
+  }
+  await enqueueManualReviews(options);
+  assert.deepEqual(payloads.slice(0, 3), payloads.slice(3));
+  assert.ok(
+    payloads.every((p) => JSON.parse(p).decision.publicationPolicy === "record_comment_only"),
+  );
+  for (const codexTimeoutMs of [0, -1, 1.5, Number.POSITIVE_INFINITY]) {
+    await assert.rejects(
+      enqueueManualReviews({ ...options, codexTimeoutMs }),
+      /invalid explicit manual/,
+    );
+  }
+});
+
+test("manual admission refuses unavailable policy capability before resolving items", async () => {
+  let reads = 0;
+  await assert.rejects(
+    enqueueManualReviews({
+      targetRepo: "openclaw/gogcli",
+      targetBranch: "main",
+      codexTimeoutMs: 1_200_000,
+      itemNumbers: [1],
+      requestId: "1234",
+      queueUrl: "https://queue.example",
+      secret: "synthetic",
+      itemKind: async () => {
+        reads++;
+        return "issue";
+      },
+      fetch: async () => Response.json({}),
+    }),
+    /does not advertise/,
+  );
+  assert.equal(reads, 0);
+});
 import { selectDueCandidates } from "../../dist/scheduler-policy.js";
 import {
   buildExactReviewQueueRequest,

@@ -164,6 +164,8 @@ export type ExactReviewBayLifecycleSnapshot = {
     timing_complete: boolean;
   } | null;
   timings: {
+    /** Exact clock used for the rolling timing query, not outer status collection. */
+    window_ended_at?: string;
     window_minutes: number;
     sample_kind: "completed_final_review_journeys";
     sample_limit: number;
@@ -1014,6 +1016,7 @@ export class ExactReviewLifecycleTelemetryStore {
           timing_complete: now - coverageStartedAt >= EXACT_REVIEW_LIFECYCLE_BAY_TIMING_WINDOW_MS,
         },
         timings: {
+          window_ended_at: new Date(now).toISOString(),
           window_minutes: EXACT_REVIEW_LIFECYCLE_BAY_TIMING_WINDOW_MS / 60_000,
           sample_kind: "completed_final_review_journeys",
           sample_limit: EXACT_REVIEW_LIFECYCLE_BAY_SCAN_LIMIT,

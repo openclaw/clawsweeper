@@ -1,4 +1,5 @@
 import { maintainerDecisionFromReport } from "./decision-packets.js";
+import { reportAllowsAutomation } from "./manual-publication-policy.js";
 import { validReviewLeaseIdentity } from "./review-comment-markers.js";
 import { AUTOFIX_LABEL, AUTOMERGE_LABEL } from "./repair/exact-review-guard-labels.js";
 import type { ReviewCommentWorkflowDependencies } from "./clawsweeper-review-comment-dependencies.js";
@@ -61,6 +62,7 @@ export function createReviewCommentAutomation(
     markdown: string,
     precomputedReadiness?: PullRequestReviewReadiness,
   ): string {
+    if (!reportAllowsAutomation(markdown)) return "";
     const itemKind = frontMatterValue(markdown, "type");
     if (itemKind === "issue") {
       const decision = frontMatterValue(markdown, "decision");

@@ -3,6 +3,12 @@ name: Maintain exact review queue
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: "Reconcile lineages or retire one verified closed publication"
+        required: true
+        type: choice
+        options: [reconcile, retire-closed-publication]
+        default: reconcile
       execute:
         description: "Apply one bounded pass (false runs a dry-run)"
         required: true
@@ -18,6 +24,21 @@ on:
         required: true
         type: number
         default: 1
+      producer_run_id:
+        description: "Retirement only: exact producer run ID"
+        type: string
+      artifact_id:
+        description: "Retirement only: exact producer artifact ID"
+        type: string
+      publication_key_sha256:
+        description: "Retirement only: approved publication-key SHA256"
+        type: string
+      queue_revision:
+        description: "Retirement only: approved publication queue revision"
+        type: string
+      reviewed_plan_sha256:
+        description: "Retirement execute requires the reviewed preview plan SHA256"
+        type: string
 
 concurrency:
   group: exact-review-queue-maintenance
@@ -28,11 +49,11 @@ permissions:
 
 jobs:
   reconcile:
+    if: ${{ inputs.mode == 'reconcile' || inputs.mode == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
       EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-      CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -47,6 +68,7 @@ jobs:
 
       - name: Preview or reconcile historical publication lineages
         env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           EXECUTE: ${{ inputs.execute }}
           PASSES: ${{ inputs.passes }}
           MAX_ITEMS: ${{ inputs.max_items }}
@@ -57,3 +79,49 @@ jobs:
           fi
           args+=(--passes "$PASSES")
           pnpm run --silent repair:exact-review-queue-maintenance -- "${args[@]}"
+
+  retire-closed-publication:
+    if: ${{ inputs.mode == 'retire-closed-publication' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          filter: blob:none
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-pnpm
+        with:
+          build-script: build:repair
+
+      - name: Prepare closed publication retirement
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCER_RUN_ID: ${{ inputs.producer_run_id }}
+          ARTIFACT_ID: ${{ inputs.artifact_id }}
+          PUBLICATION_KEY_SHA256: ${{ inputs.publication_key_sha256 }}
+          QUEUE_REVISION: ${{ inputs.queue_revision }}
+        run: |
+          pnpm run --silent repair:exact-review-queue-maintenance retire-closed-publication \
+            --producer-run-id "$PRODUCER_RUN_ID" \
+            --artifact-id "$ARTIFACT_ID" \
+            --publication-key-sha256 "$PUBLICATION_KEY_SHA256" \
+            --queue-revision "$QUEUE_REVISION" \
+            --plan-file "$RUNNER_TEMP/closed-publication-retirement.json"
+
+      - name: Assert reviewed closed publication retirement
+        if: ${{ inputs.execute }}
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          REVIEWED_PLAN_SHA256: ${{ inputs.reviewed_plan_sha256 }}
+        run: |
+          pnpm run --silent repair:exact-review-queue-maintenance retire-closed-publication \
+            --apply \
+            --reviewed-plan-sha256 "$REVIEWED_PLAN_SHA256" \
+            --plan-file "$RUNNER_TEMP/closed-publication-retirement.json"
