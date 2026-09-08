@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  truncateSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -17,7 +24,10 @@ import {
   renderReviewCommentFromReport,
   reviewPromptForTest,
 } from "../dist/clawsweeper.js";
-import { mediaProofCommandRunner } from "../dist/clawsweeper-media-proof.js";
+import {
+  MEDIA_PROOF_MAX_DOWNLOAD_BYTES,
+  mediaProofCommandRunner,
+} from "../dist/clawsweeper-media-proof.js";
 import { LIVE_VERIFICATION_MARKER } from "../dist/clawsweeper-policy.js";
 import type { LiveProofPlan } from "../dist/clawsweeper-types.js";
 import {
@@ -660,6 +670,36 @@ test("media proof preparation surfaces a failed screenshot download as a failed 
     assert.equal(prepared.artifacts[0]?.status, "failed");
     assert.equal(prepared.artifacts[0]?.downloadedPath, null);
     assert.match(prepared.artifacts[0]?.detail ?? "", /download failed/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("media proof rejects an oversized download within the declared curl budget", () => {
+  const dir = mkdtempSync(join(tmpdir(), "clawsweeper-media-proof-budget-"));
+  try {
+    const url = "https://example.com/proof.png";
+    const prepared = prepareMediaProofArtifactsForTest(
+      {
+        issue: {},
+        comments: [{ body: url }],
+        timeline: [],
+      },
+      dir,
+      (command, args) => {
+        assert.equal(command, "curl");
+        const maxIndex = args.indexOf("--max-filesize");
+        assert.equal(args[maxIndex + 1], String(MEDIA_PROOF_MAX_DOWNLOAD_BYTES));
+        const path = String(args[args.indexOf("--output") + 1]);
+        writeFileSync(path, "");
+        truncateSync(path, MEDIA_PROOF_MAX_DOWNLOAD_BYTES + 1);
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    );
+    assert.equal(prepared.artifacts[0]?.status, "failed");
+    assert.match(prepared.artifacts[0]?.detail ?? "", /download exceeded/);
+    assert.equal(prepared.artifacts[0]?.downloadedPath, null);
+    assert.equal(existsSync(join(dir, "proof-image-1.png")), false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

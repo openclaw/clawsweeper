@@ -48,8 +48,12 @@ import { ReviewSourcePreparationError } from "./review-source-preparation.js";
 import { commandProofBinding, assertCommandProofSubject } from "./command-proof-assessment.js";
 import { COMMAND_PROOF_SOURCE_ACTION } from "./command-proof-contract.js";
 import {
+  assertActiveReviewOutputBudget,
+  assertReviewReportsBudget,
+  assertTransientReviewOutputBudget,
   emitReviewOutput,
   finalizeSummaryReviewOutput,
+  reviewOutputItemBudget,
   type ReviewOutputResult,
 } from "./review-output-policy.js";
 
@@ -249,6 +253,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       maintainerRequest,
       additionalPrompt,
       outputSelection,
+      retainedReviewOutput,
       cleanupReviewOutput,
     } = preparation;
     const localOutputResults: ReviewOutputResult[] = [];
@@ -268,11 +273,19 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       );
       if (prior >= 0) localOutputResults[prior] = result;
       else localOutputResults.push(result);
+      assertReviewReportsBudget(localOutputResults, outputSelection.retention);
     };
     const emitLocalOutput = (status: "completed" | "failed"): void => {
       if (!localOnly || outputEmitted || localOutputResults.length === 0) return;
       emitReviewOutput(outputSelection, status, localOutputResults);
       outputEmitted = true;
+    };
+    const assertCurrentOutputBudget = (): void => {
+      if (outputSelection.retention === "none") {
+        assertTransientReviewOutputBudget(artifactDir);
+      } else if (retainedReviewOutput) {
+        assertActiveReviewOutputBudget(retainedReviewOutput);
+      }
     };
     const proofBinding = reviewCommandProofBinding(args.review_source_action, additionalPrompt);
     let { git } = preparation;
@@ -330,6 +343,11 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     let completed = 0;
     let cacheHits = 0;
     try {
+      assertCurrentOutputBudget();
+      let itemOutputBudget = reviewOutputItemBudget(
+        outputSelection.retention,
+        Math.max(1, itemNumbers?.length ?? (itemNumber ? 1 : batchSize)),
+      );
       const selectionOptions: Parameters<typeof selectCandidates>[0] = {
         batchSize,
         maxPages,
@@ -349,6 +367,10 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       const { candidates, scannedPages } = localRangeData
         ? { candidates: [localRangeData.item], scannedPages: 0 }
         : selectCandidates(selectionOptions);
+      itemOutputBudget = reviewOutputItemBudget(
+        outputSelection.retention,
+        Math.max(1, candidates.length),
+      );
       if (suppliedReviewLease && candidates.length !== 1) {
         throw new UserFacingCommandError(
           "A supplied review lease requires exactly one selected item.",
@@ -903,8 +925,8 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 carried = updateBulkFilerDetectedFrontMatter(carried, bulkFilerDetection);
                 carried = updateReviewStructuralFrontMatter(carried, structuralRecord, true);
                 carried = withRunnerPreflightProvenance(carried, replaceFrontMatterValue);
-                writeFileSync(reportPath, hostReport(carried), "utf8");
                 captureLocalOutput(item, reportPath, hostReport(carried));
+                writeFileSync(reportPath, hostReport(carried), "utf8");
                 finishReviewActionLedgerItem({
                   ledger: reviewLedger,
                   item,
@@ -1258,8 +1280,8 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             ? updateReviewStructuralFrontMatter(carried, structuralRecord, false)
             : replaceFrontMatterValue(carried, "review_structural_cache_hit", "false");
           carried = withRunnerPreflightProvenance(carried, replaceFrontMatterValue);
-          writeFileSync(reportPath, hostReport(carried), "utf8");
           captureLocalOutput(item, reportPath, hostReport(carried));
+          writeFileSync(reportPath, hostReport(carried), "utf8");
           finishReviewActionLedgerItem({
             ledger: reviewLedger,
             item,
@@ -1355,6 +1377,9 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             proofScratchDir,
             prompt: prompt.text,
             reviewEnv,
+            promptFileBytes: itemOutputBudget.promptFileBytes,
+            resultFileBytes: itemOutputBudget.resultFileBytes,
+            streamFileBytes: itemOutputBudget.streamFileBytes,
             quietLogs: humanLocalReview,
             ...(localRange ? { extraCodexConfig: [LOCAL_REVIEW_WEB_SEARCH_CONFIG] } : {}),
           });
@@ -1424,8 +1449,8 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 }
               : {}),
         }));
-        writeFileSync(reportPath, reportMarkdown, "utf8");
         captureLocalOutput(item, reportPath, reportMarkdown);
+        writeFileSync(reportPath, reportMarkdown, "utf8");
         if (codexFailureError) {
           recordFailureDiagnostics(codexFailureError, codexFailureLogKind(reportMarkdown));
         }
@@ -1527,6 +1552,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 reviewTreeCleanupFailures.push(detail);
                 console.error(`[review] ${new Date().toISOString()} ${detail}`);
               }
+              if (!reviewItemFailed) assertCurrentOutputBudget();
             }
           }
         }
@@ -1611,6 +1637,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         cacheHits,
       });
       reviewCompleted = true;
+      assertCurrentOutputBudget();
     } catch (error) {
       commandError = error;
       emitLocalOutput("failed");
@@ -1647,7 +1674,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         restoreTreeModes(readonlyModeSnapshots);
         if (outputSelection.retention === "summary") {
           finalizeSummaryReviewOutput(
-            artifactDir,
+            retainedReviewOutput!,
             localOutputResults.flatMap((result) => (result.path ? [result.path] : [])),
           );
         }

@@ -21,6 +21,7 @@ import { writeExactReviewFailureDiagnostics } from "./clawsweeper-review-failure
 import { ReviewSourcePreparationError } from "./review-source-preparation.js";
 import {
   createTransientReviewOutput,
+  discardOwnedSummaryOutput,
   prepareRetainedReviewOutput,
   reviewOutputSelection,
 } from "./review-output-policy.js";
@@ -70,6 +71,14 @@ export function prepareReviewCommand(
     outputSelection.retention === "none"
       ? createTransientReviewOutput("clawsweeper-review-")
       : null;
+  const transientCheckout =
+    localOnly &&
+    !localRange &&
+    !stringArg(args.target_dir, "").trim() &&
+    outputSelection.retention !== "debug"
+      ? createTransientReviewOutput("clawsweeper-review-checkout-", transientOutput ?? undefined)
+      : null;
+  let retainedReviewOutput: ReturnType<typeof prepareRetainedReviewOutput> | null = null;
   try {
     const verbose = boolArg(args.verbose);
     const itemNumber = numberArg(args.item_number, 0) || undefined;
@@ -90,11 +99,12 @@ export function prepareReviewCommand(
     const humanLocalReview = localExactItem && !verbose;
     const defaultArtifactDir = defaultReviewArtifactDir(localOnly, itemNumber, itemNumbers);
     const requestedArtifactDir = stringArg(args.artifact_dir, "");
+    const requestedOrDefaultArtifactDir = resolve(requestedArtifactDir || defaultArtifactDir);
     const checkoutArtifactDir =
-      transientOutput?.path ?? resolve(requestedArtifactDir || defaultArtifactDir);
+      transientCheckout?.path ?? transientOutput?.path ?? requestedOrDefaultArtifactDir;
     if (!transientOutput && !localRange) {
-      prepareRetainedReviewOutput(
-        checkoutArtifactDir,
+      retainedReviewOutput = prepareRetainedReviewOutput(
+        requestedOrDefaultArtifactDir,
         outputSelection.retention as "summary" | "debug",
       );
     }
@@ -121,9 +131,12 @@ export function prepareReviewCommand(
         ? resolve(requestedArtifactDir)
         : localRange
           ? defaultLocalRangeArtifactDir(openclawDir)
-          : checkoutArtifactDir);
+          : requestedOrDefaultArtifactDir);
     if (!transientOutput && localRange) {
-      prepareRetainedReviewOutput(artifactDir, outputSelection.retention as "summary" | "debug");
+      retainedReviewOutput = prepareRetainedReviewOutput(
+        artifactDir,
+        outputSelection.retention as "summary" | "debug",
+      );
     }
     const itemsDir = resolve(stringArg(args.items_dir, defaultItemsDir()));
     const batchSize = numberArg(args.batch_size, DEFAULT_PLAN_BATCH_SIZE);
@@ -295,9 +308,23 @@ export function prepareReviewCommand(
       explicitDispatch,
       maintainerRequest,
       outputSelection,
-      cleanupReviewOutput: transientOutput?.cleanup ?? (() => {}),
+      retainedReviewOutput,
+      cleanupReviewOutput: () => {
+        transientCheckout?.cleanup();
+        transientOutput?.cleanup();
+      },
     };
   } catch (error) {
+    try {
+      discardOwnedSummaryOutput(retainedReviewOutput);
+    } catch (cleanupError) {
+      console.error(
+        `[review] summary output cleanup failed during preparation: ${
+          cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+        }`,
+      );
+    }
+    transientCheckout?.cleanup();
     transientOutput?.cleanup();
     throw error;
   }

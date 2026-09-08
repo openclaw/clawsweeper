@@ -62,6 +62,7 @@ import {
 } from "./openclaw-codex-source.js";
 import { repositoryProfileFor, type RepositoryProfile } from "./repository-profiles.js";
 import { reviewProofCapabilityFromEnv } from "./review-proof-client.js";
+import { readBoundedReviewResult } from "./review-output-policy.js";
 
 interface ReviewRuntimeDependencies {
   reviewItemPromptPath: string;
@@ -984,6 +985,9 @@ ${extra}
     proofScratchDir?: string;
     prompt?: string;
     reviewEnv?: NodeJS.ProcessEnv;
+    promptFileBytes?: number;
+    resultFileBytes?: number;
+    streamFileBytes?: number;
     quietLogs?: boolean;
     extraCodexConfig?: string[];
   }): Decision {
@@ -1012,6 +1016,15 @@ ${extra}
         targetDir: options.openclawDir,
         ...reviewNetworkCapability(options.sandboxMode, codexEnv),
       }).text;
+    if (
+      options.promptFileBytes !== undefined &&
+      options.promptFileBytes > 0 &&
+      Buffer.byteLength(prompt) > options.promptFileBytes
+    ) {
+      throw new UserFacingCommandError(
+        `Review prompt exceeded its ${options.promptFileBytes}-byte output budget.`,
+      );
+    }
     const pull = asRecord(options.context.pullRequest);
     const scanSource: AgentScanSource =
       options.item.kind === "pull_request"
@@ -1074,7 +1087,7 @@ ${extra}
         : undefined;
     const result = runAgentProcess({
       scanSource,
-      diagnosticPromptPath: promptPath,
+      ...(options.promptFileBytes === 0 ? {} : { diagnosticPromptPath: promptPath }),
       label: `review-${options.item.number}-attempt-1`,
       prompt,
       model: options.model,
@@ -1097,6 +1110,9 @@ ${extra}
       env: { ...codexEnv, CLAWSWEEPER_PROOF_SCRATCH_DIR: proofScratchDir },
       stderrPath: join(options.workDir, `${options.item.number}.1.codex.stderr.log`),
       stdoutPath: join(options.workDir, `${options.item.number}.1.codex.stdout.log`),
+      ...(options.streamFileBytes === undefined
+        ? {}
+        : { outputFileBytes: options.streamFileBytes }),
       timeoutMs: remainingMs,
       ...(reviewProof
         ? {
@@ -1124,7 +1140,12 @@ ${extra}
     if (!result.error && hasOutput) {
       try {
         const decision = parseDecision(
-          JSON.parse(readFileSync(outputPath, "utf8").trim()),
+          JSON.parse(
+            (options.resultFileBytes === undefined
+              ? readFileSync(outputPath, "utf8")
+              : readBoundedReviewResult(outputPath, options.resultFileBytes)
+            ).trim(),
+          ),
           options.item,
         );
         if (result.status !== 0) {

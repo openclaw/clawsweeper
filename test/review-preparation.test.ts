@@ -278,3 +278,37 @@ test("default local-range preparation owns private transient output and retains 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("summary preparation uses separate checkout scratch and removes owned output on failure", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-summary-preparation-"));
+  const output = join(root, "summary");
+  let checkoutScratch = "";
+  try {
+    assert.throws(
+      () =>
+        prepareReviewCommand(parseArgs(["--local-only", "--output-retention", "summary"]), {
+          DEFAULT_PLAN_BATCH_SIZE: 3,
+          repoFromArgs: () => repositoryProfileFor("openclaw/openclaw"),
+          targetRepo: () => "openclaw/openclaw",
+          localExactReviewItem: () => false,
+          defaultReviewArtifactDir: () => output,
+          defaultItemsDir: () => join(root, "items"),
+          resolveReviewCheckout: ({ artifactDir }: { artifactDir: string }) => {
+            checkoutScratch = artifactDir;
+            assert.notEqual(artifactDir, output);
+            assert.match(artifactDir, /clawsweeper-review-checkout-/);
+            throw new Error("synthetic checkout failure");
+          },
+          ensureDir: () => {},
+          suppliedReviewStartLeaseFromArgs: () => null,
+          reviewCodexForcedLoginMethod: () => "chatgpt",
+          reviewPolicyHash: () => "fixture-policy",
+        } as unknown as Parameters<typeof prepareReviewCommand>[1]),
+      /synthetic checkout failure/,
+    );
+    assert.equal(existsSync(output), false);
+    assert.equal(existsSync(checkoutScratch), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

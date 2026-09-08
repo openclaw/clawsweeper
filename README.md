@@ -806,7 +806,11 @@ uses private run-owned scratch, prints the result, and removes scratch after
 handled completion or failure. Use `--output-retention summary` for the report
 without raw prompt/stream files, or `--output-retention debug` for the existing
 artifact tree. An explicit legacy `--artifact-dir` still selects debug
-retention. `--result-format json` returns the same result as valid JSON.
+retention. Summary destinations are created exclusively for one invocation.
+Transient output is capped at 96 MiB/256 files; debug output is capped at
+1 GiB/4,096 files with per-item allocations and at most 128 selected items per
+invocation. Existing or unrelated retained runs are never pruned automatically.
+`--result-format json` returns the same result as valid JSON.
 
 ```bash
 pnpm run review -- --local-only \

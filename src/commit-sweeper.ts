@@ -11,11 +11,15 @@ import { codexProcessErrorCode } from "./codex-process.js";
 import { isUserFacingCommandError, runText, UserFacingCommandError } from "./command.js";
 import { configuredRepositoryProfileFor } from "./repository-profiles.js";
 import {
+  assertActiveReviewOutputBudget,
+  assertTransientReviewOutputBudget,
   createTransientReviewOutput,
   emitReviewFailureJson,
   emitReviewOutput,
   finalizeSummaryReviewOutput,
   prepareRetainedReviewOutput,
+  readBoundedReviewResult,
+  reviewOutputItemBudget,
   reviewOutputSelection,
 } from "./review-output-policy.js";
 
@@ -274,6 +278,8 @@ function runCodex(options: {
   workDir: string;
   additionalPrompt: string;
   extraCodexConfig?: readonly string[];
+  resultFileBytes?: number;
+  streamFileBytes?: number;
 }): string {
   ensureDir(options.workDir);
   rmSync(join(options.workDir, `${options.sha}.prompt.md`), { force: true });
@@ -303,6 +309,7 @@ function runCodex(options: {
     cwd: options.targetDir,
     env: codexEnv({ ghToken: process.env.COMMIT_SWEEPER_TARGET_GH_TOKEN }),
     timeoutMs: options.timeoutMs,
+    ...(options.streamFileBytes === undefined ? {} : { outputFileBytes: options.streamFileBytes }),
   });
   if (result.error || result.status !== 0 || !existsSync(outputPath)) {
     const timeout = codexProcessErrorCode(result.error) === "ETIMEDOUT";
@@ -321,7 +328,11 @@ function runCodex(options: {
       timeout,
     });
   }
-  return stripMarkdownFence(readFileSync(outputPath, "utf8"));
+  return stripMarkdownFence(
+    options.resultFileBytes === undefined
+      ? readFileSync(outputPath, "utf8")
+      : readBoundedReviewResult(outputPath, options.resultFileBytes),
+  );
 }
 
 // GitHub credential env vars scrubbed before the offline local-review engine runs.
@@ -436,9 +447,10 @@ function localReviewCommand(args: Args): void {
     const runDir =
       transientOutput?.path ??
       join(reportDir, `run-${headSha.slice(0, 8)}-${Date.now()}-${process.pid}`);
-    if (!transientOutput) {
-      prepareRetainedReviewOutput(runDir, outputSelection.retention as "summary" | "debug");
-    }
+    const retainedReviewOutput = transientOutput
+      ? null
+      : prepareRetainedReviewOutput(runDir, outputSelection.retention as "summary" | "debug");
+    const itemOutputBudget = reviewOutputItemBudget(outputSelection.retention, 1);
 
     // Spec: hard-enforce no GitHub access. The review prompt suggests `gh` for issue
     // refs, and `gh` uses its own configured auth (token-env deletion can't stop it),
@@ -467,6 +479,8 @@ function localReviewCommand(args: Args): void {
         workDir: runDir,
         additionalPrompt,
         extraCodexConfig: [LOCAL_REVIEW_WEB_SEARCH_CONFIG],
+        resultFileBytes: itemOutputBudget.resultFileBytes,
+        streamFileBytes: itemOutputBudget.streamFileBytes,
       }),
       metadata,
     );
@@ -474,7 +488,11 @@ function localReviewCommand(args: Args): void {
     const outputPath = join(runDir, "local-review.md");
     writeFileSync(outputPath, markdown.endsWith("\n") ? markdown : `${markdown}\n`, "utf8");
     if (outputSelection.retention === "summary") {
-      finalizeSummaryReviewOutput(runDir, [outputPath]);
+      finalizeSummaryReviewOutput(retainedReviewOutput!, [outputPath]);
+    } else if (retainedReviewOutput) {
+      assertActiveReviewOutputBudget(retainedReviewOutput);
+    } else {
+      assertTransientReviewOutputBudget(runDir);
     }
     if (outputSelection.retention !== "none") {
       console.error(`[local-review] report written to ${outputPath}`);

@@ -335,6 +335,9 @@ export interface CreateReviewCommandWorkflowDependencies {
     proofScratchDir?: string;
     prompt?: string;
     reviewEnv?: NodeJS.ProcessEnv;
+    promptFileBytes?: number;
+    resultFileBytes?: number;
+    streamFileBytes?: number;
     quietLogs?: boolean;
     extraCodexConfig?: string[];
   }) => Decision;

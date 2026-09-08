@@ -50,7 +50,10 @@ profile are rejected (no foreign-profile fallback). It never writes to GitHub.
 Use `--output-retention summary` to retain only `local-review.md`, or
 `--output-retention debug` for the existing per-run engine output. An explicit
 legacy `--report-dir` remains debug-compatible. `--result-format json` emits a
-valid JSON result with a nullable artifact path.
+valid JSON result with a nullable artifact path. Summary destinations are
+exclusive to the current invocation. Transient output is capped at 96 MiB/256
+files and debug output at 1 GiB/4,096 files, with at most 128 selected items per
+invocation. ClawSweeper does not prune older or unrelated retained runs.
 
 For `review --local-range`, per-file line counts come from complete Git numstat
 metadata for the resolved merge-base-to-HEAD range, independently of bounded

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { trimMiddle } from "./clawsweeper-text.js";
@@ -17,6 +17,7 @@ const MEDIA_PROOF_MANIFEST_FILE = "media-proof-manifest.json";
 const MEDIA_PROOF_SUMMARY_FILE = "media-proof-summary.md";
 const MAX_MEDIA_PROOF_URLS = 4;
 const MEDIA_PROOF_TIMEOUT_MS = 120_000;
+export const MEDIA_PROOF_MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024;
 
 export function mediaProofCommandRunner(
   command: string,
@@ -212,6 +213,8 @@ export function prepareMediaProofArtifacts(
       "--show-error",
       "--max-time",
       "90",
+      "--max-filesize",
+      String(MEDIA_PROOF_MAX_DOWNLOAD_BYTES),
       "--output",
       downloadedPath,
       ...(kind === "attachment" ? ["-w", "%{content_type}\n%{url_effective}"] : []),
@@ -226,6 +229,19 @@ export function prepareMediaProofArtifacts(
         contactSheetPath: null,
         status: "failed",
         detail: `download failed: ${mediaProofSpawnDetail(kind === "attachment" ? { ...download, stdout: "" } : download)}`,
+      });
+      continue;
+    }
+    if (statSync(downloadedPath).size > MEDIA_PROOF_MAX_DOWNLOAD_BYTES) {
+      rmSync(downloadedPath, { force: true });
+      artifacts.push({
+        kind,
+        url,
+        downloadedPath: null,
+        metadataPath: null,
+        contactSheetPath: null,
+        status: "failed",
+        detail: `download exceeded ${MEDIA_PROOF_MAX_DOWNLOAD_BYTES} bytes`,
       });
       continue;
     }

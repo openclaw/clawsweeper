@@ -12,6 +12,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,11 +20,15 @@ import { join } from "node:path";
 import test from "node:test";
 import { parseArgs } from "../dist/clawsweeper-args.js";
 import {
+  assertActiveReviewOutputBudget,
+  assertTransientReviewOutputBudget,
   createTransientReviewOutput,
   emitReviewFailureJson,
   emitReviewOutput,
   finalizeSummaryReviewOutput,
   prepareRetainedReviewOutput,
+  readBoundedReviewResult,
+  reviewOutputItemBudget,
   reviewOutputSelection,
 } from "../dist/review-output-policy.js";
 
@@ -142,17 +147,84 @@ test("summary retention removes debug files and keeps private bounded reports", 
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-summary-test-"));
   rmSync(root, { recursive: true });
   try {
-    prepareRetainedReviewOutput(root, "summary");
+    const output = prepareRetainedReviewOutput(root, "summary");
     const report = join(root, "42.md");
     const debug = join(root, "codex", "42.stdout.log");
     mkdirSync(join(root, "codex"));
     writeFileSync(report, "summary\n");
     writeFileSync(debug, "debug\n");
     chmodSync(report, 0o644);
-    finalizeSummaryReviewOutput(root, [report]);
+    finalizeSummaryReviewOutput(output, [report]);
     assert.deepEqual(readdirSync(root), ["42.md"]);
     assert.equal(readFileSync(report, "utf8"), "summary\n");
     assert.equal(statSync(report).mode & 0o777, 0o600);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("summary output requires an exclusive destination and its original owner token", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-summary-owner-"));
+  const existing = join(root, "existing");
+  const owned = join(root, "owned");
+  try {
+    mkdirSync(existing);
+    assert.throws(() => prepareRetainedReviewOutput(existing, "summary"), /must not already exist/);
+    const output = prepareRetainedReviewOutput(owned, "summary");
+    const marker = readdirSync(owned).find((name) => name.startsWith(".clawsweeper-output-owner"));
+    assert.ok(marker);
+    writeFileSync(join(owned, marker), "replaced-owner");
+    const report = join(owned, "report.md");
+    writeFileSync(report, "summary\n");
+    assert.throws(() => finalizeSummaryReviewOutput(output, [report]), /ownership changed/);
+    assert.equal(readFileSync(report, "utf8"), "summary\n");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("transient and debug output enforce aggregate file and byte budgets", () => {
+  const transient = createTransientReviewOutput("clawsweeper-budget-test-");
+  const debugRoot = join(tmpdir(), `clawsweeper-debug-budget-${process.pid}-${Date.now()}`);
+  try {
+    const tooLarge = join(transient.path, "too-large.log");
+    writeFileSync(tooLarge, "");
+    truncateSync(tooLarge, 96 * 1024 * 1024 + 1);
+    assert.throws(() => assertTransientReviewOutputBudget(transient.path), /byte limit/);
+
+    const debug = prepareRetainedReviewOutput(debugRoot, "debug");
+    const debugLarge = join(debugRoot, "too-large.log");
+    writeFileSync(debugLarge, "");
+    truncateSync(debugLarge, 1024 * 1024 * 1024 + 1);
+    assert.throws(() => assertActiveReviewOutputBudget(debug), /byte limit/);
+  } finally {
+    transient.cleanup();
+    rmSync(debugRoot, { recursive: true, force: true });
+  }
+});
+
+test("per-item budgets stay within their aggregate pools", () => {
+  const debug = reviewOutputItemBudget("debug", 5);
+  assert.ok(debug.streamFileBytes * 2 * 5 <= 480 * 1024 * 1024);
+  assert.ok(debug.promptFileBytes * 5 <= 256 * 1024 * 1024);
+  assert.ok(debug.resultFileBytes * 5 <= 64 * 1024 * 1024);
+  const transient = reviewOutputItemBudget("none", 5);
+  assert.equal(transient.promptFileBytes, 0);
+  assert.ok(transient.streamFileBytes * 2 * 5 <= 56 * 1024 * 1024);
+  assert.ok(transient.resultFileBytes * 5 <= 12 * 1024 * 1024);
+  assert.throws(() => reviewOutputItemBudget("debug", 129), /1-128 items/);
+});
+
+test("review result files are rejected before an oversized read", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-result-budget-"));
+  try {
+    const result = join(root, "result.json");
+    writeFileSync(result, "");
+    truncateSync(result, 4 * 1024 * 1024 + 1);
+    assert.throws(
+      () => readBoundedReviewResult(result, 4 * 1024 * 1024),
+      /exceeded its .*byte limit/,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
