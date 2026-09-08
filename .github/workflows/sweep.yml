@@ -5772,7 +5772,7 @@ jobs:
             echo "### Optional immutable action ledger"
             echo "Import: $IMPORT_OUTCOME; upload: $UPLOAD_OUTCOME; empty: $EMPTY."
             echo "Primary records and comments have separate completion receipts."
-            echo "Producer artifacts remain attached to this run for recovery."
+            echo "Available producer artifacts remain attached to this run for recovery."
           } >> "$GITHUB_STEP_SUMMARY"
 
   recover-review-failures:
