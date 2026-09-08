@@ -614,6 +614,44 @@ test("media proof preparation extracts browser-unplayable ffmpeg-decodeable vide
   }
 });
 
+test("media proof records missing contact sheets and continues later artifacts", () => {
+  const dir = mkdtempSync(join(tmpdir(), "clawsweeper-media-proof-"));
+  try {
+    let item = 0;
+    const prepared = prepareMediaProofArtifactsForTest(
+      {
+        issue: {},
+        comments: [{ body: "https://example.com/1.mov\nhttps://example.com/2.mov" }],
+        timeline: [],
+      },
+      dir,
+      (command, args) => {
+        if (command === "curl") {
+          item += 1;
+          writeFileSync(String(args[args.indexOf("--output") + 1]), "fake video");
+          return { status: 0, stdout: "", stderr: "" };
+        }
+        if (command === "ffprobe") {
+          return { status: 0, stdout: '{"streams":[{"codec_name":"h264"}]}', stderr: "" };
+        }
+        if (item === 2) writeFileSync(String(args.at(-1)), "fake contact sheet");
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    );
+
+    assert.equal(prepared.artifacts.length, 2);
+    assert.equal(prepared.artifacts[0]?.status, "failed");
+    assert.match(prepared.artifacts[0]?.detail ?? "", /did not produce a contact sheet/);
+    assert.ok(prepared.artifacts[0]?.downloadedPath);
+    assert.ok(prepared.artifacts[0]?.metadataPath);
+    assert.equal(prepared.artifacts[0]?.contactSheetPath, null);
+    assert.equal(prepared.artifacts[1]?.status, "prepared");
+    assert.ok(prepared.artifacts[1]?.contactSheetPath);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("media proof preparation downloads screenshot proof without video processing", () => {
   const dir = mkdtempSync(join(tmpdir(), "clawsweeper-media-proof-"));
   try {

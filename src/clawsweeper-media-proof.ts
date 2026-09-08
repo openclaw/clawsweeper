@@ -366,7 +366,22 @@ export function prepareMediaProofArtifacts(
       });
       continue;
     }
-    const contactSheetBytes = statSync(contactSheetPath).size;
+    let contactSheetBytes: number;
+    try {
+      contactSheetBytes = statSync(contactSheetPath).size;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      artifacts.push({
+        kind,
+        url,
+        downloadedPath,
+        metadataPath,
+        contactSheetPath: null,
+        status: "failed",
+        detail: "ffmpeg reported success but did not produce a contact sheet",
+      });
+      continue;
+    }
     if (contactSheetBytes > contactSheetBudget) {
       rmSync(contactSheetPath, { force: true });
       artifacts.push({
