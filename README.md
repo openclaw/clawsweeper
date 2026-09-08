@@ -74,6 +74,12 @@ one-item reviews. Each review writes
 `records/<repo-slug>/items/<number>.md` with the decision, evidence, proposed
 maintainer-facing comment, runtime metadata, and GitHub snapshot hash.
 
+Media proof preparation recognizes image/video filename extensions and GitHub
+attachment URLs, including legacy repository asset links. Attachments are fetched
+with GET and classified by the response content type; images are saved locally
+and videos are probed and converted to contact sheets. PR patches and supplemental
+body excerpts never supply host download URLs.
+
 ClawSweeper syncs one marker-backed public review comment per item and edits it
 in place instead of posting repeated comments. If a review starts before a
 completed comment exists, it first posts a short status placeholder, then

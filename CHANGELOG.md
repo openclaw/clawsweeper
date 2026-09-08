@@ -107,6 +107,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Prepare GitHub user-attachment and legacy repository asset proof locally, resolving image/video types after download and reserving bounded preprocessing time for attachments.
+
 - Avoid stored-data warnings for validation-only schema helpers by separating ambiguous schema filenames from explicit storage owners, while preserving database operations and incomplete-patch warnings on storage paths.
 - Stop transient JSON diagnostics and SQLite helper filenames from creating false stored-data and migration-proof blockers, while retaining compatibility gates for real persistence owners and stored-shape changes.
 - Scoped unchanged SQLite table context to the changed column's diff hunk and stopped treating runtime property values as schema declarations.

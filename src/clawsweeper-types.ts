@@ -746,7 +746,7 @@ export interface ReviewPromptBuild {
 }
 
 export interface PreparedMediaProofArtifact {
-  kind: "image" | "video";
+  kind: "image" | "video" | "attachment";
   url: string;
   downloadedPath: string | null;
   metadataPath: string | null;
