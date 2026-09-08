@@ -2,6 +2,7 @@ import { stringOrEmpty as stringValue } from "./value-coerce.js";
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { AgentInputScanError } from "./agent-input-scan.js";
+import { agentInputScanFailureReason } from "./exact-review-failure-reason.js";
 import { codexJsonlFailureDetail } from "./codex-transient.js";
 
 const FILE_LIMITS = { "error.txt": 4096, "stdout.error.txt": 4096, "stderr.tail.txt": 12_288 };
@@ -48,10 +49,7 @@ export function writeExactReviewFailureDiagnostics(options: {
     ? "agent_input_scan"
     : safeCode(error.diagnosticStage, /^source_preparation$/);
   const diagnosticReason = scanFailure
-    ? safeCode(
-        error.reason,
-        /^(?:scanner_unavailable|scanner_failed|findings|deadline|staging_limit|incomplete_source|source_drift|unsafe_path|unsupported_content)$/,
-      )
+    ? agentInputScanFailureReason(error.reason)
     : diagnosticStage
       ? safeCode(
           error.diagnosticReason,

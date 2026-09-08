@@ -73,19 +73,20 @@ export function createApplyCandidateGuards(
     prCloseCoverageProofStartedAtMs: null,
   };
 
-  const currentStaleVersionBugBlockReason = (): string | null => {
+  const candidateStaleVersionBugBlockReason = (): string | null => {
     if (cachedStaleVersionBugBlockReason === undefined) {
       cachedStaleVersionBugBlockReason = staleVersionBugApplyBlockReasonSafe(number, item);
     }
     return cachedStaleVersionBugBlockReason;
   };
-  const currentObsoleteFixPrBlockReason = (): string | null => {
+  const candidateObsoleteFixPrBlockReason = (): string | null => {
     if (cachedObsoleteFixPrBlockReason === undefined) {
       cachedObsoleteFixPrBlockReason = obsoleteFixPrApplyBlockReasonSafe(number, item);
     }
     return cachedObsoleteFixPrBlockReason;
   };
-  const currentAuthorPrBudgetApplyGate = (): AuthorPrBudgetApplyGate => {
+  const currentAuthorPrBudgetApplyGate = (refresh = false): AuthorPrBudgetApplyGate => {
+    if (refresh) cachedAuthorPrBudgetApplyGate = undefined;
     const authorKey = item.author.trim().toLowerCase();
     const closedForAuthor = authorPrBudgetClosesThisRun.get(authorKey) ?? 0;
     const maxCloses = authorPrBudgetMaxClosesPerRun();
@@ -189,9 +190,9 @@ export function createApplyCandidateGuards(
   return {
     coverageProofState,
     currentAuthorPrBudgetApplyGate,
-    currentObsoleteFixPrBlockReason,
+    candidateObsoleteFixPrBlockReason,
     currentPrCloseCoverageProofGateBlock,
-    currentStaleVersionBugBlockReason,
+    candidateStaleVersionBugBlockReason,
     resetCoverageProof: () => {
       coverageProofState.cachedPrCloseCoverageProofGateResult = undefined;
     },

@@ -32,6 +32,7 @@ import {
   unclaimedExactReviewQueueItem,
 } from "./dashboard-worker-harness.ts";
 import type { HostedPublicTargetProbe } from "../dashboard/exact-review-queue.ts";
+import { AGENT_INPUT_SCAN_FAILURE_REASONS } from "../src/exact-review-failure-reason.ts";
 import {
   HOSTED_TARGET_ELIGIBILITY_HEADER,
   isHostedTargetEligible,
@@ -13060,6 +13061,46 @@ test("exact-review queue terminates deterministic refusals only for the unchange
   assert.equal(sourceState.items["openclaw/openclaw#714"].revision, 2);
 });
 
+test("exact-review queue terminates every scanner refusal and retries missing terminal reasons", async () => {
+  for (const reason of [...AGENT_INPUT_SCAN_FAILURE_REASONS, undefined]) {
+    const storage = new MemoryDurableStorage();
+    const item = leasedExactReviewQueueItem(718, "7180");
+    await storage.put("exact-review-queue", { deliveries: {}, items: { [item.key]: item } });
+    const queue = new ExactReviewQueue({ storage }, {});
+    const response = await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/complete", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: item.leaseId,
+          item_key: item.key,
+          lease_revision: 1,
+          claim_generation: 1,
+          run_id: "7180",
+          run_attempt: 1,
+          outcome: "failure",
+          ...(reason ? { review_failure_reason: reason } : {}),
+          review_failure: {
+            stage: "agent_input_scan",
+            reason_code: reason ?? "deadline",
+            retryable: false,
+          },
+        }),
+      }),
+    );
+    assert.equal(response.status, 200, reason);
+    assert.deepEqual(await response.json(), { ok: true, requeued: reason === undefined });
+    const state = (await storage.get("exact-review-queue")) as {
+      items: Record<string, { state: string; reviewFailureAttempts: number }>;
+    };
+    if (reason) {
+      assert.equal(state.items[item.key], undefined, reason);
+    } else {
+      assert.equal(state.items[item.key].state, "pending");
+      assert.equal(state.items[item.key].reviewFailureAttempts, 1);
+    }
+  }
+});
+
 test("terminal PR refusals retain a verified explanation receipt without retrying", async () => {
   const storage = new MemoryDurableStorage();
   const item = leasedExactReviewQueueItem(718, "7180");
@@ -13127,7 +13168,7 @@ test("exact-review queue validates terminal review failure reasons", async () =>
   const queue = new ExactReviewQueue({ storage: new MemoryDurableStorage() }, {});
   for (const [body, error] of [
     [
-      { outcome: "failure", review_failure_reason: "scanner_failed" },
+      { outcome: "failure", review_failure_reason: "unknown_scanner_reason" },
       "invalid_review_failure_reason",
     ],
     [
@@ -13164,10 +13205,10 @@ test("exact-review queue validates terminal review failure reasons", async () =>
     [
       {
         outcome: "failure",
-        review_failure_reason: "findings",
+        review_failure_reason: "deadline",
         review_failure: {
           stage: "agent_input_scan",
-          reason_code: "findings",
+          reason_code: "deadline",
           retryable: true,
         },
       },

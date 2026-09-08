@@ -28,6 +28,80 @@ const REPAIR_RUNTIME_PATHS = [
 const MAIN_BUNDLE = "dist/clawsweeper.js";
 const RUNTIME_DIST_ARTIFACT = "clawsweeper-runtime-dist";
 
+type CheckoutAuditStep = { uses?: string; with?: Record<string, unknown> };
+
+function assertNoInheritedSparseCheckout(steps: CheckoutAuditStep[], site: string): void {
+  const checkouts = steps.filter((step) => step.uses?.startsWith("actions/checkout@"));
+  for (const checkout of checkouts.slice(0, -1)) {
+    assert.equal(
+      checkout.with?.["sparse-checkout"],
+      undefined,
+      `${site}: a sparse checkout before another checkout can leave inherited sparse configuration`,
+    );
+  }
+}
+
+test("workflow jobs never run a sparse checkout before another checkout", () => {
+  for (const workflowPath of fs.globSync(".github/workflows/*.yml").sort()) {
+    const workflow = parse(readText(workflowPath)) as {
+      jobs?: Record<string, { steps?: CheckoutAuditStep[] }>;
+    };
+    for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
+      assertNoInheritedSparseCheckout(job.steps ?? [], `${workflowPath}:${jobName}`);
+    }
+  }
+});
+
+test("checkout audit rejects the early helper sparse checkout from the reverted landing", () => {
+  assert.throws(
+    () =>
+      assertNoInheritedSparseCheckout(
+        [
+          {
+            uses: "actions/checkout@v7",
+            with: {
+              "sparse-checkout": "scripts/control-plane-curl.sh",
+              "sparse-checkout-cone-mode": false,
+            },
+          },
+          { uses: "actions/checkout@v7" },
+          { uses: "./.github/actions/setup-pnpm" },
+        ],
+        "reverted sweep job",
+      ),
+    /inherited sparse configuration/,
+  );
+});
+
+test("every sweep setup-pnpm step follows a full checkout at its action path", () => {
+  const workflow = parse(readText(".github/workflows/sweep.yml")) as {
+    jobs: Record<string, { steps?: CheckoutAuditStep[] }>;
+  };
+  let audited = 0;
+  for (const [jobName, job] of Object.entries(workflow.jobs)) {
+    const steps = job.steps ?? [];
+    for (const [index, step] of steps.entries()) {
+      const actionPath = step.uses?.match(/^\.\/(.*)\.github\/actions\/setup-pnpm$/)?.[1];
+      if (actionPath === undefined) continue;
+      audited++;
+      const checkout = steps
+        .slice(0, index)
+        .findLast(
+          (candidate) =>
+            candidate.uses?.startsWith("actions/checkout@") &&
+            String(candidate.with?.path ?? "").replace(/\/$/, "") === actionPath.replace(/\/$/, ""),
+        );
+      assert.ok(checkout, `${jobName}: setup-pnpm requires a preceding source checkout`);
+      assert.equal(
+        checkout.with?.["sparse-checkout"],
+        undefined,
+        `${jobName}: setup-pnpm requires a full checkout`,
+      );
+    }
+  }
+  assert.ok(audited > 0, "must audit sweep setup-pnpm consumers");
+});
+
 test("repair planning and execution use a Node runtime accepted by current OpenClaw", () => {
   const workflow = parse(
     fs.readFileSync(".github/workflows/repair-cluster-worker.yml", "utf8"),
@@ -108,9 +182,14 @@ test("every workflow job that runs the main bundle directly obtains it", () => {
       );
 
       // The main build reads tsconfig.json, so a curated checkout has to carry it.
-      const checkout = steps.find((step) =>
-        String(step.uses ?? "").startsWith("actions/checkout@"),
+      const buildIndex = steps.findIndex(
+        (step) =>
+          String(step.uses ?? "").includes("actions/setup-pnpm") &&
+          buildScriptEmitsMainBundle(String(step.with?.["build-script"] ?? "")),
       );
+      const checkout = steps
+        .slice(0, buildIndex)
+        .findLast((step) => String(step.uses ?? "").startsWith("actions/checkout@"));
       const sparseCheckout = checkout?.with?.["sparse-checkout"];
       if (typeof sparseCheckout === "string") {
         const entries = sparseCheckout

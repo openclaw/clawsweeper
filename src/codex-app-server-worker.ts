@@ -77,6 +77,10 @@ interface RpcMessage {
   };
 }
 
+// Matches ACTION_SESSION_FETCH_TIMEOUT_MS in src/repair/action-session.ts so a hung
+// CrabFleet host cannot stall the Codex turn or accumulate heartbeat requests.
+const WORK_STATE_FETCH_TIMEOUT_MS = 15_000;
+
 const optionsPath = process.argv[2] ?? "";
 const options = JSON.parse(readFileSync(optionsPath, "utf8")) as WorkerOptions;
 // The child shares this UID: owner-only permissions do not hide a capability
@@ -480,6 +484,7 @@ async function updateWorkState(state: string, phase: string, summary: string): P
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
       },
+      signal: AbortSignal.timeout(WORK_STATE_FETCH_TIMEOUT_MS),
       body: JSON.stringify({
         state,
         phase,

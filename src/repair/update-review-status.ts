@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 import { appendFileSync } from "node:fs";
 import { ghJsonWithRetry, ghText } from "./github-cli.js";
-import type { JsonValue, LooseRecord } from "./json-types.js";
+import type { LooseRecord } from "./json-types.js";
+import {
+  terminalReviewFailureReason,
+  type TerminalReviewFailureReason,
+} from "../exact-review-failure-reason.js";
 import { repoRoot } from "./paths.js";
 import { DEFAULT_TRUSTED_BOTS } from "./config.js";
 import {
@@ -14,7 +18,7 @@ import {
 const REVIEW_PROGRESS_START = "<!-- clawsweeper-review-progress:start -->";
 const REVIEW_PROGRESS_END = "<!-- clawsweeper-review-progress:end -->";
 
-export type TerminalReviewFailureReason = "findings" | "incomplete_source" | "source_incompatible";
+export type { TerminalReviewFailureReason } from "../exact-review-failure-reason.js";
 
 type Options = {
   repo: string;
@@ -46,6 +50,11 @@ export function terminalReviewStatusCopy(reason: TerminalReviewFailureReason) {
     case "incomplete_source":
       return {
         reason: "ClawSweeper could not verify the complete source for this revision.",
+        next: "No contributor action is requested. Maintainers should inspect the linked workflow run.",
+      };
+    default:
+      return {
+        reason: "The input-safety check could not safely complete for this revision.",
         next: "No contributor action is requested. Maintainers should inspect the linked workflow run.",
       };
   }
@@ -233,10 +242,4 @@ export function parseOptions(argv: string[]): Options {
     failureReason,
     runUrl,
   };
-}
-
-function terminalReviewFailureReason(value: JsonValue): TerminalReviewFailureReason | null {
-  return value === "findings" || value === "incomplete_source" || value === "source_incompatible"
-    ? value
-    : null;
 }

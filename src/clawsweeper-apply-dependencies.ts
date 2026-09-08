@@ -245,6 +245,10 @@ export interface CreateApplyDecisionWorkflowDependencies {
     },
   ) => IssueAdvisoryLabelState;
   issueRecentHumanCommentBlockReasonSafe: (number: number, days: number) => string | null;
+  issueRecentHumanCommentBlockReasonFromComments: (
+    comments: readonly unknown[],
+    days: number,
+  ) => string | null;
   issueReviewComment: (
     number: number,
     fallbackBodies?: readonly string[],
@@ -440,6 +444,10 @@ export interface CreateApplyDecisionWorkflowDependencies {
     item: Pick<Item, "number" | "kind" | "author">,
     relatedItems: readonly unknown[],
     canPairClose?: (number: number, kind: ItemKind) => boolean,
+    refreshCounterpart?: (number: number) => {
+      item: Pick<Item, "number" | "kind" | "author" | "title">;
+      state: string;
+    },
   ) => string | null;
   sha256: (text: string) => string;
   shouldPreserveReviewStartLease: (options: {

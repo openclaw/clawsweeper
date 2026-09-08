@@ -376,12 +376,16 @@ function ghRunTimeoutMs(options: GhRunOptions, env: NodeJS.ProcessEnv): number {
   ) {
     return Math.max(1, Math.floor(options.timeoutMs));
   }
+  return githubCommandTimeoutMs(env);
+}
+
+export function githubCommandTimeoutMs(env: NodeJS.ProcessEnv, fallbackMs = 120_000): number {
   const configured = Number(
     env.CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS ?? env.CLAWSWEEPER_NETWORK_COMMAND_TIMEOUT_MS,
   );
   return Number.isFinite(configured) && configured > 0
     ? Math.max(30_000, Math.floor(configured))
-    : 120_000;
+    : fallbackMs;
 }
 
 function resolveRetryOptions(options: GhRetryOptions | number): GhRetryOptions {

@@ -1,0 +1,144 @@
+{
+  "source_head": "4c1e8a7004b0917fb9fbf8e6acf58139a0b34960",
+  "source_diff_sha256": "4a7a387b8614f05c666b866a75bcbbf4c8792b9d49022d1abbbd82a1b5c6d155",
+  "node": "v24.20.0",
+  "verified_at": "2026-09-08T01:12:26.946Z",
+  "runtime": "real local workerd Durable Object SQLite / production HTTP routes / Chromium",
+  "results": [
+    {
+      "scenario": "claimed finalizer survives Worker restart",
+      "owner_and_producer_retained": true
+    },
+    {
+      "scenario": "marker missing_status_comment",
+      "retired_after_receipt": true,
+      "no_review_restart": true
+    },
+    {
+      "scenario": "comment locked_conversation",
+      "retired_after_receipt": true,
+      "no_review_restart": true
+    },
+    {
+      "scenario": "failed then observed receipt and replay",
+      "retired_after_receipt": true,
+      "idempotent": true
+    },
+    {
+      "scenario": "CLI lookup takeover fenced before PATCH",
+      "writes": 0
+    },
+    {
+      "scenario": "CLI fenced PATCH and verified receipt",
+      "writes": 1
+    },
+    {
+      "scenario": "open/restart",
+      "retained_exhausted": true
+    },
+    {
+      "scenario": "reopen-before-ack",
+      "producer_preserved": true
+    },
+    {
+      "scenario": "reopen-after-authorization invalidates durable closure",
+      "late_receipt_refused_after_restart": true,
+      "producer_preserved": true,
+      "lifecycle_retains_failure_not_requeue": true
+    },
+    {
+      "scenario": "reclose without webhook after cancelled closure",
+      "fresh_lifecycle_revision": true,
+      "old_receipt_rejected": true,
+      "exhausted_budget_preserved": true
+    },
+    {
+      "scenario": "new-revision",
+      "old_ack_refused": true
+    },
+    {
+      "scenario": "repository eligibility lost",
+      "obligation_retained": true,
+      "no_dispatch": true
+    },
+    {
+      "scenario": "workflow eligibility before target write credentials",
+      "target_write_credentials": false,
+      "denied_before_token_step": true
+    },
+    {
+      "scenario": "pending driver survives eligibility loss and retains exhausted Bay card",
+      "resumed_fenced": true,
+      "producer_retired_after_skip": true
+    },
+    {
+      "scenario": "failed writer retry releases a new-source successor",
+      "owned_deferral_released": true,
+      "new_source_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "scenario": "real-browser-mixed-sample",
+      "truthful_labels": true,
+      "drawer_and_mobile": true,
+      "stale_and_unavailable": true,
+      "no_browser_github": true
+    }
+  ],
+  "dispatches": 13,
+  "limits": "Synthetic fixture seeding and external GitHub responses; not a deployed Worker or hosted Actions job",
+  "scope": "Precommit follow-up base plus verified working-tree diff. Committed-head verification is recorded separately in the PR body.",
+  "diff_git_abbrev": 8,
+  "provider": "local-container",
+  "lease": "cbx_eb9d14ea5efd",
+  "run": "run_f9c74b987b54",
+  "image": "node:24-bookworm",
+  "engine": "Podman 5.7.0",
+  "validation": {
+    "command": "pnpm run check",
+    "tests": 5531,
+    "passed": 5513,
+    "skipped": 18,
+    "failed": 0
+  },
+  "input_manifest_excludes": [
+    "docs/proof/parked-command-finalization/summary.json",
+    "docs/proof/parked-command-finalization/desktop.png",
+    "docs/proof/parked-command-finalization/mobile.png"
+  ],
+  "input_sha256": {
+    ".github/workflows/sweep.yml": "815e29b092d055ec632561c967fc1ed6369ce7016c7c8c99b517ea94f1ca7dc3",
+    "dashboard/bay-page.ts": "e9998f779560f5d4bc47260fe9725b7d720e027359e889f21ef852ea05be042f",
+    "dashboard/exact-review-lifecycle.ts": "1eba2f3dbcb04e68dc880900f8e79d7ff087a4bee86cc0f16a4d8f0b0c012307",
+    "dashboard/exact-review-queue.ts": "6ab9de82d14e78c075e48f1a9a35592c2fe9d42a7ceabe8d02aecd70ed5fd6f0",
+    "dashboard/exact-review-read-model.ts": "1c444f564ec6de5a665c7b1a7dd4c27fce968e912021b873a12ed5ccbaa43413",
+    "dashboard/worker.ts": "9e2dc78cf4e0bab48f58c44ce1c8d344f365e2b975dc475e5fa6c62ad87fdb62",
+    "docs/live-dashboard.md": "b1e887188f26a69a89fb07ab92016b633f76edc38f5ca397f246600852b3f98e",
+    "docs/proof/parked-command-finalization/README.md": "055b02abea5c22f00874ab2af6bca8c77fa053e89c15cd247d2f4b38ba0b2c06",
+    "docs/proof/parked-command-finalization/gh-fixture.mjs": "a1143004676d4c05cb364de6d8853cbf6863540d2e84cdd51c164adbf778f305",
+    "docs/proof/parked-command-finalization/run-proof.mjs": "5e754892616d25624f56f8321ac5c60ec17d2d7904a4406689090f3412cfde56",
+    "docs/proof/parked-command-finalization/worker.ts": "2dbf80568dd0f45481b7f1bd1b52d5bc063fec18a4e8228ff01794aa56bd022b",
+    "docs/proof/parked-command-finalization/wrangler.toml": "51ed316f33b0f0e3773f7e7bf291ae13d3caf7cdcd05b156bae4a1cd6d0a2312",
+    "scripts/exact-review-dead-letter-operator.mjs": "8f95757086eceb81aa71a1fed6d9c54ef2b60a25673fd91de5fe6214f2710bf9",
+    "src/repair/terminal-command-status-fence.ts": "b92c05a4098095819c70e68b70db2f3c1c04e97432a54a6d6652830715f4befb",
+    "src/repair/update-command-status.ts": "582557708656dda9746599d7d66f34aca5b343d2eabc9a0ca0660a5d4b8ee17e",
+    "test/bay-queue-disposition.test.ts": "ab2ee31bbc4dca5234c7db242a00022e89942a1e7eff30594b74837bdb5de077",
+    "test/dashboard-worker-bay-records-routes.test.ts": "1fed5c94ff4356fea4a8dbb3470967646775984cb2643c95ddaeb76de1f6bad0",
+    "test/exact-review-dead-letter-operator.test.ts": "be526c6f844a1de6fbb098c0834d523340c92beb5f0665b33575d79c3eaf37c9",
+    "test/parked-command-finalization.test.ts": "5602a480ddec49cddd2fb7235ad88e3d0c9148d6aa23efa1c08a167db1d43d0e",
+    "test/repair/command-ops-action-ledger.test.ts": "0c3c5b441bc7e990f970c8ab64d1ce7053a7ae3f582d0daa8bf8ef3a8e37eaf8",
+    "test/repair/terminal-command-status-fence.test.ts": "e31a61fc60e3b25c0fc18f986f28c479a7557d5c91ed9e36831e62c19ffcca9e",
+    "test/sweep-workflow.test.ts": "6c0fc78d945146558069f2d094e2918dc93f215066ea52de6c897c57a4c3e2f1",
+    "test/terminal-finalization-cancellation-workflow.test.ts": "1b13b7a1e8d7c33b4851c137420e34cc4db3bd8d8fa33dbfe59e616000353ee3"
+  },
+  "screenshots": {
+    "desktop.png": {
+      "sha256": "d868b17cb297c41b24915717879f0e1db9c1328f34dff4eefb33c15456f8a896",
+      "bytes": 1488090
+    },
+    "mobile.png": {
+      "sha256": "82dd71339aa14881fb4cab1c853bf69811d33a5baa3f928fc28a0a01517109b4",
+      "bytes": 713114
+    }
+  },
+  "visual_limits": "Chromium DOM/interaction/layout assertions exercised the real renderer. Assistant PNG visual inspection was unavailable under the local media policy."
+}

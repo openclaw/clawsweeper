@@ -112,6 +112,7 @@ export function hydratePrimaryBody(
     pullBody?: string;
     closingBodies?: string[];
     comments?: unknown[];
+    pullReviewComments?: unknown[];
     pullFiles?: unknown[];
   } = {},
 ) {
@@ -138,7 +139,7 @@ export function hydratePrimaryBody(
     base: { ref: "main", sha: "c".repeat(40) },
     changed_files: options.pullFiles?.length ?? 0,
     commits: 0,
-    review_comments: 0,
+    review_comments: options.pullReviewComments?.length ?? 0,
   };
   const window = (items: unknown[]) => ({
     items,
@@ -164,7 +165,9 @@ export function hydratePrimaryBody(
         ? (options.comments ?? [])
         : path.endsWith(`/pulls/${target.number}/files`)
           ? (options.pullFiles ?? [])
-          : [];
+          : path.endsWith(`/pulls/${target.number}/comments`)
+            ? (options.pullReviewComments ?? [])
+            : [];
       return window(items) as {
         items: T[];
         total: number;

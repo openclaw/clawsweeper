@@ -551,6 +551,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       const applyItemResultStart = results.length;
       let applyItemFailed = false;
       let currentApplyMutationGuard: (() => string | null) | null = null;
+      let currentCloseMutationPolicyGuard: ((mutationNumber: number) => string | null) | null = null;
       let recordApplyMutationGuardReason: ((reason: string) => boolean) | null = null;
       let issueLabelBatchActive = false;
       let preserveGuardReadCacheAfterMutation = false;
@@ -674,7 +675,19 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           options.identity,
           options.idempotencyIdentity,
         );
-        if (!attempt) return options.operation();
+        const finalClosePolicyGuard = (): void => {
+          if (!options.identity.startsWith("item_close:")) return;
+          const reason = currentCloseMutationPolicyGuard?.(Number(options.identity.split(":")[1]));
+          if (reason) throw new ApplyMutationReviewGuardError(reason);
+        };
+        if (!attempt) {
+          if (options.identity.startsWith("item_close:")) {
+            const reason = currentApplyMutationGuard?.();
+            if (reason) throw new ApplyMutationReviewGuardError(reason);
+            finalClosePolicyGuard();
+          }
+          return options.operation();
+        }
         try {
           if (!options.identity.startsWith("review_lease_")) {
             const mutationGuardReason = currentApplyMutationGuard?.();
@@ -682,6 +695,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
               throw new ApplyMutationReviewGuardError(mutationGuardReason);
             }
           }
+          finalClosePolicyGuard();
           const result = options.operation();
           const mutated = options.didMutate?.(result) ?? true;
           const outcomeEventId = finishApplyMutationAttempt({
@@ -1363,10 +1377,12 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       const {
         coverageProofState,
         currentAuthorPrBudgetApplyGate,
-        currentObsoleteFixPrBlockReason,
+        candidateObsoleteFixPrBlockReason,
         currentPrCloseCoverageProofGateBlock,
-        currentStaleVersionBugBlockReason,
+        candidateStaleVersionBugBlockReason,
       } = candidateGuards;
+      const currentObsoleteFixPrBlockReason = () => dependencies.obsoleteFixPrApplyBlockReasonSafe(number, item);
+      const currentStaleVersionBugBlockReason = () => dependencies.staleVersionBugApplyBlockReasonSafe(number, item);
       const recordRuntimeBudgetYield = (reason: string): void => {
         discardIssueLabelBatch();
         if (clawSweeperLabelsChanged && !dryRun && !issueLabelBatchActive) {
@@ -1384,7 +1400,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         canClosePairCounterpartInThisRun,
         closedDir,
         commentSyncMinAgeDays,
-        currentAuthorPrBudgetApplyGate,
+        currentAuthorPrBudgetApplyGate: () => currentAuthorPrBudgetApplyGate(true),
         currentCloseState: () => ({
           closedCount,
           closeReason,
@@ -1532,8 +1548,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           applyKind,
           closeReason,
           currentAuthorPrBudgetApplyGate,
-          currentObsoleteFixPrBlockReason,
-          currentStaleVersionBugBlockReason,
+          currentObsoleteFixPrBlockReason: candidateObsoleteFixPrBlockReason,
+          currentStaleVersionBugBlockReason: candidateStaleVersionBugBlockReason,
           isCloseProposal,
           item,
           markdown,
@@ -2118,10 +2134,23 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           }
         }
       }
+      const knownPairRelatedItems = isCloseProposal ? currentItemContext().relatedItems ?? [] : [];
+      const currentSameAuthorPairBlockReason = (): string | null => {
+        try {
+          return sameAuthorCounterpartApplyReason(
+            item,
+            [...knownPairRelatedItems, ...(currentItemContext().relatedItems ?? [])],
+            (counterpartNumber, counterpartKind) => canStartSameAuthorPairCloseInThisRun(counterpartNumber, counterpartKind),
+            (counterpartNumber) => fetchApplyItem(counterpartNumber, { bypassGenerationCache: true }),
+          );
+        } catch (error) {
+          return `same-author pair could not be revalidated: ${mutationErrorMessage(error)}`;
+        }
+      };
       if (isCloseProposal) {
         const sameAuthorCounterpartReason = sameAuthorCounterpartApplyReason(
           item,
-          currentItemContext().relatedItems ?? [],
+          knownPairRelatedItems,
           (counterpartNumber, counterpartKind) =>
             canClosePairCounterpartInThisRun(counterpartNumber) ||
             canStartSameAuthorPairCloseInThisRun(counterpartNumber, counterpartKind),
@@ -2650,8 +2679,17 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         closeReason: appliedCloseReason,
         closedDir,
         currentApplyMutationLeaseBlockReason: currentApplyMutationBoundaryBlockReason,
-        currentAuthorPrBudgetApplyGate,
+        currentAuthorPrBudgetApplyGate: () => currentAuthorPrBudgetApplyGate(true),
         currentObsoleteFixPrBlockReason,
+        currentSameAuthorPairBlockReason,
+        setCloseMutationPolicyGuard: (guard) => {
+          currentCloseMutationPolicyGuard = (mutationNumber) => {
+            const block = guard(mutationNumber);
+            if (!block) return null;
+            recordApplyMutationGuardReason = () => markApplySkipped(block.actionTaken, block.reason);
+            return block.reason;
+          };
+        },
         currentPrCloseCoverageProofGateBlock,
         currentStaleVersionBugBlockReason,
         currentDurableReviewCommentUpdatedAt: () =>

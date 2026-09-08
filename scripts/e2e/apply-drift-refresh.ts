@@ -25,7 +25,10 @@ export async function proveApplyDriftRefresh() {
   const artifacts = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-drift-refresh-"));
   const bin = path.join(artifacts, "bin");
   fs.mkdirSync(bin);
-  fs.symlinkSync(path.join(sourceRoot, "scripts"), path.join(artifacts, "scripts"));
+  fs.copyFileSync(
+    path.join(sourceRoot, "scripts/control-plane-curl.sh"),
+    path.join(artifacts, "control-plane-curl.sh"),
+  );
   const workflow = YAML.parse(
     fs.readFileSync(path.join(sourceRoot, ".github/workflows/sweep.yml"), "utf8"),
   );
@@ -101,6 +104,7 @@ process.stdout.write(args.includes('--jq') ? (pr ? 'pull_request' : 'issue') : J
   fs.symlinkSync(process.execPath, path.join(bin, "node"));
   const env = {
     PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+    RUNNER_TEMP: artifacts,
     TRACE: requests,
     DISPATCHES: dispatches,
     ENQUEUE: enqueue,

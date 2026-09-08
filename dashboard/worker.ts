@@ -22,6 +22,7 @@ import {
   githubEtagCacheKey,
   githubEtagCacheRequestBody,
 } from "../src/github-etag-cache-contract.ts";
+import { inlineProofParticipation, publicInlineProofCohorts } from "./inline-proof-telemetry.ts";
 import { bayHtml } from "./bay-page.ts";
 import {
   dashboardHtml,
@@ -2101,6 +2102,10 @@ const PUBLIC_STATUS_CONTAINER_FIELDS = new Set([
   "points",
   "overall",
   "including_legacy_batch",
+  "inline_proof",
+  "requested",
+  "not_requested",
+  "unknown",
   "terminal_buffer",
   "recently_washed",
   "cluster_repair",
@@ -2268,6 +2273,7 @@ type PublicBayAction = {
   job_id?: number;
 };
 type PublicBayReference = {
+  queue_disposition?: "parked_exhausted" | "parked" | "retry_scheduled";
   repository: string;
   item_number: number;
   stage: (typeof PUBLIC_BAY_STAGES)[number];
@@ -2509,6 +2515,11 @@ function publicBayReference(
   const canonicalRepository = repository.toLowerCase();
   if (!allowedRepositories.has(canonicalRepository)) return undefined;
   const action = publicBayProjectedAction(source.action, allowedRepositories);
+  const disposition =
+    referenceSource === "queue" &&
+    ["parked_exhausted", "parked", "retry_scheduled"].includes(source.queue_disposition)
+      ? (source.queue_disposition as PublicBayReference["queue_disposition"])
+      : undefined;
   const projectedTiming = objectValue(source.timing);
   const explicitTimingKind = String(projectedTiming.kind || "");
   const explicitTimingStartedAt = publicTimestamp(projectedTiming.started_at);
@@ -2530,6 +2541,7 @@ function publicBayReference(
     item_number: itemNumber,
     stage: stage as (typeof PUBLIC_BAY_STAGES)[number],
     source: referenceSource,
+    ...(disposition ? { queue_disposition: disposition } : {}),
     legacy_batch_path: legacyBatchPath === true,
     ...(timing ? { timing } : {}),
     ...(action ? { action } : {}),
@@ -3208,7 +3220,35 @@ export function publicStatusProjection(
     const stage = publicWorkerBayStage(worker);
     return { ...objectValue(worker), ...(stage ? { stage } : {}) };
   });
-  const sourceBay = objectValue(source.bay);
+  const rawSourceBay = objectValue(source.bay);
+  const rawTimings = objectValue(rawSourceBay.timings);
+  const rawAllTimings = objectValue(rawTimings.including_legacy_batch);
+  const withInlineProof = (timing) => ({
+    ...timing,
+    ...(timing.inline_proof === undefined
+      ? {}
+      : {
+          inline_proof: publicInlineProofCohorts(
+            timing.inline_proof,
+            objectValue(timing.overall).samples,
+          ),
+        }),
+  });
+  const sourceBay = {
+    ...rawSourceBay,
+    ...(rawSourceBay.timings === undefined
+      ? {}
+      : {
+          timings: {
+            ...withInlineProof(rawTimings),
+            ...(rawTimings.including_legacy_batch === undefined
+              ? {}
+              : {
+                  including_legacy_batch: withInlineProof(rawAllTimings),
+                }),
+          },
+        }),
+  };
   const derivedActiveTargets = publicBayActiveTargets(
     sourceWorkers || [],
     sourceBay.active_census_complete === true,
@@ -3235,6 +3275,7 @@ export function publicStatusProjection(
   const projectionSource = {
     ...source,
     public_projection_complete: true,
+    ...(source.bay ? { bay: sourceBay } : {}),
     ...(projectedWorkers ? { workers: projectedWorkers } : {}),
     ...(sourceWorkers || Object.prototype.hasOwnProperty.call(sourceBay, "active_stages")
       ? {
@@ -4101,6 +4142,7 @@ async function githubWebhook(request, env, ctx) {
       ingress,
     });
     if (!queued) return json({ error: "exact_review_queue_not_configured" }, 503);
+    if (queued instanceof Response) return queued;
     if (sourceAuthoritySeq !== null) {
       await completeExactReviewSourceAuthority(
         env,
@@ -6200,6 +6242,7 @@ function publicDurableLifecycleBaySnapshot(
             lane,
             state,
             current_revision: card.current_revision,
+            inline_proof: inlineProofParticipation(objectValue(card.facts).inline_proof),
             updated_at: updatedAt,
           },
         ];
@@ -6531,9 +6574,11 @@ async function exactReviewBayLifecycleMetricsSnapshot(env) {
       completion_source: "verified_final_review_receipts",
       sample_limit: sampleLimit,
       overall: { average_ms: average, median_ms: median, samples },
+      inline_proof: publicInlineProofCohorts(timings.inline_proof, samples),
       history,
       including_legacy_batch: {
         overall: { average_ms: allAverage, median_ms: allMedian, samples: allSamples },
+        inline_proof: publicInlineProofCohorts(includingLegacyBatch.inline_proof, allSamples),
         history: includingLegacyBatchHistory,
       },
     },
@@ -7139,7 +7184,13 @@ async function enqueueExactReview({
       body: JSON.stringify({ delivery_id: deliveryId, decision, ...(ingress ? { ingress } : {}) }),
     }),
   );
-  const body = objectValue(await response.json().catch(() => null));
+  const body = objectValue(
+    await response
+      .clone()
+      .json()
+      .catch(() => null),
+  );
+  if (response.status >= 500 && body.retryable === true) return response;
   if (!response.ok) throw new Error(String(body.error || "exact review queue rejected item"));
   return body;
 }

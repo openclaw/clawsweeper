@@ -339,6 +339,7 @@ test("durable lifecycle Bay is a pure, bounded public-reference reducer snapshot
   for (const card of snapshot.sample?.cards || []) {
     assert.deepEqual(Object.keys(card).sort(), [
       "current_revision",
+      "inline_proof",
       "item_number",
       "lane",
       "repository",
@@ -1138,6 +1139,7 @@ test("durable lifecycle Bay fail-closes unknown snapshots without partial cards 
     lane: "pending",
     state: "pending",
     current_revision: true,
+    inline_proof: "unknown",
     updated_at: allowlistedBody.durable_lifecycle_bay.sample.cards[0]?.updated_at,
   });
   const sampled = await worker.fetch(

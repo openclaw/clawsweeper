@@ -22,6 +22,12 @@ The review prompt still requires a conservative canonical-search pass before
 using `duplicate_or_superseded`. The related context is a starting point, not a
 standalone duplicate verdict.
 
+Supplementary bodies mask scanner-recognized credentialed HTTP(S) URL userinfo
+before entering the prompt. The complete prompt still passes the normal input
+scan; primary review input does not receive this supplementary redaction.
+Timeline source issues from another repository are not looked up by their bare
+number in the target repository.
+
 ## Root-Cause Assessment
 
 Each new review records a typed `rootCauseCluster` assessment separately from

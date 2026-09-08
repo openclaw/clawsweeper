@@ -1565,3 +1565,49 @@ test("stalled PR close reasons gate apply on item age", () => {
   );
   assert.equal(abandonedPrAgeSkipReason({ createdAt: created }, oldNow), null);
 });
+
+test("terminal same-author checks revalidate closed and unreadable counterpart identities", () => {
+  const parent = item({ number: 42, kind: "pull_request", author: "alice" });
+  const related = [
+    { issue: { number: 43, author: "alice", state: "closed", title: "Paired issue" } },
+  ];
+  const current = item({ number: 43, kind: "issue", author: "alice" });
+  assert.match(
+    sameAuthorCounterpartApplyReason(
+      parent,
+      related,
+      () => false,
+      () => ({ item: current, state: "open" }),
+    ) ?? "",
+    /open issue #43/,
+  );
+  assert.match(
+    sameAuthorCounterpartApplyReason(
+      parent,
+      related,
+      () => true,
+      () => {
+        throw new Error("fresh read failed");
+      },
+    ) ?? "",
+    /same-author pair #43 could not be revalidated: fresh read failed/,
+  );
+  assert.equal(
+    sameAuthorCounterpartApplyReason(
+      parent,
+      related,
+      () => false,
+      () => ({ item: current, state: "closed" }),
+    ),
+    null,
+  );
+  assert.match(
+    sameAuthorCounterpartApplyReason(
+      parent,
+      related,
+      () => true,
+      () => ({ item: { ...current, author: "bob" }, state: "open" }),
+    ) ?? "",
+    /identity changed/,
+  );
+});

@@ -152,11 +152,15 @@ last-hour X-axis in UTC anchored to `bay.timings.window_ended_at`, captured
 by the same query that computes the timing aggregate. It does not use the
 browser clock or the earlier outer status-collection timestamp. Stale
 status snapshots are labeled and missing timing-window timestamps
-makes the chart unavailable rather than shifting the data. Full-height bucket controls reveal interval, median,
-mean and sample count on hover, keyboard focus or tap. A full-width native
-interval picker with a 44-pixel minimum height provides an equivalent control
-for narrow/mobile buckets without stretching their time-axis geometry. Missing buckets are
-hatched gaps, never zero-duration samples; partial hour-edge buckets are labeled.
+make the chart unavailable rather than shifting the data. One plot-wide focusable
+slider reveals interval, median, mean and sample count in a compact floating
+tooltip. Hover or scrub across the plot, tap/drag on touch, or use arrow keys and
+Home/End on the keyboard; Escape dismisses details. There is no chart interval
+dropdown or permanent detail panel. The separate inline-proof cohort selector
+remains. Valid refresh preserves the navigation node, focus and logical interval;
+unavailable data removes stale chart interaction and returns focus to status.
+Missing buckets are hatched gaps, never zero-duration samples; partial hour-edge
+buckets are labeled.
 The existing API returns at most 12 aligned five-minute buckets, so a rolling
 hour that intersects 13 can have an unrepresented edge bucket. This remains
 explicitly missing rather than being inferred from the overall aggregate.
@@ -194,6 +198,37 @@ new fixed aggregate object. Unknown, stale, malformed, mixed, or over-cap state
 produces an unavailable projection with no inventory, lane, or sample payload.
 This boundary preserves useful private operations state without making it a
 public or cache-serializable identity surface.
+
+## Inline Proof Timing Comparison
+
+The last-hour timing control defaults to all reviews in the selected publication-path
+view. It can compare **inline proof requested**, **no inline proof requested (known)**,
+and **inline proof unknown**. These are full request-to-final durations: inline
+proof time is already included and is never subtracted. The legacy publication-path
+filter remains independent; selecting Waters filters the beach, not this metric.
+
+“Requested” means the original review lease successfully admitted at least one
+inline-proof request. It does not mean a producer ran, evidence returned, a check
+passed, or a reviewer judged proof sufficient. A bounded durable enum belongs to
+the admitted review revision and survives lease cleanup and retries. A new head
+or admission revision does not inherit it. Linked publication timing follows only
+the exact producer fence/revision and completed claim generation; missing, stale,
+cancelled, or command-mismatched lineage remains unknown. No plans, observations, request IDs,
+lease capabilities, or credentials are exposed.
+
+“No request” is known only when tracking began at original admission. Historical,
+reconstructed, missing, and malformed participation remains unknown rather than
+being inferred from command wording, selected scenarios, or the legacy batch flag.
+The timing population is still the existing bounded last-hour final-receipt set;
+missing cohort data does not invalidate the all-reviews metric or invent a no-proof
+cohort. Lifecycle cards display the same closed participation fact (while pending,
+“not requested yet”). Each selected cohort reports its own sample count, median,
+mean, and history.
+
+This additive contract was exercised on September 7, 2026 using the local Worker,
+SQLite Durable Object and Chromium fixture in
+[`proof/bay-inline-proof`](proof/bay-inline-proof/README.md). Exact-head evidence
+belongs in the accompanying PR body; this fixture does not exercise live producers.
 
 ## Data And GitHub API Load
 

@@ -22,6 +22,30 @@ still override live-worker caps, but when they do not, `repair:dispatch` derives
 the priority lane from `job_intent` instead of relying on workflow-specific
 defaults.
 
+Exact-review completion sends `review_failure_reason` for every diagnostics
+manifest with `failure.stage: agent_input_scan` and `retryable: false`, using
+`failure.reason_code` verbatim. The accepted scanner reasons are
+`scanner_unavailable`, `scanner_failed`, `findings`, `deadline`, `staging_limit`,
+`incomplete_source`, `source_drift`, `unsafe_path`, and `unsupported_content`;
+`source_incompatible` remains a separate terminal source-preparation reason.
+The shared allowlist lives in `src/exact-review-failure-reason.ts`. Exit codes
+78 and 79 still identify `incomplete_source` and `findings` without a manifest.
+A matching non-retryable `review_failure` detail is accepted; retryable or
+mismatched detail is rejected. Diagnostic detail alone does not suppress retry:
+without `review_failure_reason`, failed completion still retries. During Worker/workflow deploy skew, an HTTP 400
+`invalid_review_failure_reason` response triggers one immediate compatibility
+retry without the terminal reason or its dependent status receipt, preserving
+`review_failure` diagnostic detail and emitting a workflow warning. An older
+Worker can then complete the lease under its existing retry policy; compatible
+Workers receive the terminal reason on the first request. Other errors retain
+the existing failure and retry handling. A terminal
+reason removes the unchanged queue revision while allowing an already queued
+newer revision to proceed; it does not turn the failed workflow green.
+
+Scheduled and manual explicit queue admissions use the same exact-event review
+step. Aggregate shard recovery uses its per-item terminal ledger instead of
+producing a queue-level `failure_reason` from the shard's process exit.
+
 ClawSweeper has three issue/PR scheduler paths:
 
 - exact event review for one target issue or pull request
@@ -42,6 +66,34 @@ Scheduled reviews can reuse exact unchanged inputs through structural or
 content caches. Changed PR content goes to Codex, including source comments
 and formatting. See [Review Cache](review-cache.md) for admission, freshness,
 and runtime packaging rules.
+
+### Control-plane workflow retries
+
+Shell calls to the control plane in `sweep.yml`, `exact-review-reconcile-run.yml`,
+and `exact-review-dead-letter-reconcile.yml` use
+`scripts/control-plane-curl.sh`. Each request retries connection failures and
+HTTP 5xx up to four attempts. A valid `Retry-After` delay (seconds or HTTP-date)
+is capped at 60 seconds; otherwise the waits are 2, 4, and 8 seconds. Each
+attempt emits a notice. The helper preserves the caller's final curl exit code,
+HTTP status output, and body handling. HTTP 4xx responses are not retried;
+callers retain their explicit lease-conflict, supersession, and deployment-skew handling.
+This includes enqueue, claims, review/status heartbeats, completion, lifecycle
+receipts, terminal-finalization operations, reconciliation, and the DLQ health
+probe. Existing typed batch clients retain their separate lease-aware retry
+policy. Fence and reservation failures are attributed to the existing
+`queue_completion_failure` infrastructure category, including a review that
+never starts because its status fence is unavailable.
+
+Before a job's source checkout, the workflow downloads this single helper from
+`raw.githubusercontent.com`, pinned to `GITHUB_REPOSITORY` and `GITHUB_SHA`,
+with three curl retries into `RUNNER_TEMP`. The bootstrap fails if the download
+fails, is empty, or does not define `control_plane_curl`. These steps source the
+temporary copy; after the full checkout, steps source the repository copy.
+Claimed-lease completion and terminal retry steps select the repository copy
+only when the source checkout succeeded. They use the validated temporary copy
+when checkout failed or was skipped, including direct-lifecycle recovery.
+The bootstrap never changes workspace Git configuration: an early sparse
+checkout can otherwise leave later checkouts sparse and omit local actions.
 
 ## Workflow
 

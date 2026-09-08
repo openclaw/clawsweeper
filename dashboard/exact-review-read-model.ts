@@ -1,6 +1,5 @@
 import { projectExactReviewHandoff, summarizeExactReviewPressure } from "./exact-review-health.ts";
 import {
-  exactReviewQueueHasCommandContext,
   exactReviewQueueIsBatchablePublication,
   exactReviewQueueIsPublication,
   exactReviewQueueUsesLegacyBatchPath,
@@ -104,7 +103,7 @@ export function exactReviewParkedOperatorEligible(item: ExactReviewQueueItem) {
 }
 
 export function exactReviewParkedTerminalCheckAt(item: ExactReviewQueueItem) {
-  if (!exactReviewParkedOperatorEligible(item) || exactReviewQueueHasCommandContext(item)) {
+  if (!exactReviewParkedOperatorEligible(item)) {
     return null;
   }
   return Number(item.parkedTerminalCheckedAt || 0) + EXACT_REVIEW_PARKED_TERMINAL_CHECK_INTERVAL_MS;
@@ -185,6 +184,7 @@ type ExactReviewBayProjectionItem = {
   item_number: number;
   stage: ExactReviewBayStage;
   queue_state: ExactReviewQueueItem["state"];
+  queue_disposition?: "parked_exhausted" | "parked" | "retry_scheduled";
   created_at: string;
   updated_at: string;
   next_attempt_at: string;
@@ -654,6 +654,10 @@ function observeExactReviewBayCandidate(
   ) {
     return false;
   }
+  // This auxiliary driver owns acknowledgement delivery, not another review.
+  // Its newer timestamp must not replace the retained exhausted producer card.
+  // Live workflow activity remains independently visible in the live overlay.
+  if (item.terminalFinalization?.parkedCommand) return true;
   const canonicalRepository = repository.toLowerCase();
   const itemKey = `${canonicalRepository}#${itemNumber}`;
   const updatedAt = item.updatedAt;
@@ -777,6 +781,21 @@ function exactReviewQueueBayProjectionFromCensus(
       item_number: selected.itemNumber,
       stage: selectedStage,
       queue_state: selected.item.state,
+      ...(selected.item.state === "parked"
+        ? {
+            queue_disposition:
+              exactReviewParkedRecoveryAt(selected.item) !== null
+                ? ("retry_scheduled" as const)
+                : exactReviewParkedOperatorEligible(selected.item)
+                  ? ("parked_exhausted" as const)
+                  : ("parked" as const),
+          }
+        : selected.item.state === "pending" &&
+            ["review_retry", "publication_retry", "coordination_retry", "throttle_retry"].includes(
+              selected.item.backoffReason || "",
+            )
+          ? { queue_disposition: "retry_scheduled" as const }
+          : {}),
       created_at: new Date(selected.item.createdAt).toISOString(),
       updated_at: new Date(selected.item.updatedAt).toISOString(),
       next_attempt_at: new Date(selected.item.nextAttemptAt).toISOString(),
