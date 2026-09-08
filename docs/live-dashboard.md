@@ -141,6 +141,17 @@ pipeline rows. Production also enables a bounded live fallback for the first
 few active PR rows so visible rows do not remain on workflow-only status when KV
 is absent or a cache event lands in another Cloudflare colo.
 
+### Workflow health source
+
+The deployment sets `CLAWSWEEPER_DASHBOARD_WORKFLOW_SOURCE=poll` to collect
+workflow health through the existing bounded GitHub run/job polls. It skips
+workflow read-model reads, repairs, and missing-subscription warnings even when
+the shared webhook signing secret is configured. Unset or `webhook` retains
+the existing webhook-first behavior. Snapshot and job-cache TTLs, pagination,
+freshness, genuine GitHub errors, and the public Bay contract are unchanged.
+Changing source does not flush persisted snapshots; normal expiry refreshes
+them. Concurrent refreshes with different resolved sources do not coalesce.
+
 ## What It Shows
 
 - bounded active-work counts and closed workflow, worker, status, stage, and

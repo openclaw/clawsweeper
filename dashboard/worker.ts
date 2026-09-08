@@ -3434,6 +3434,7 @@ function refreshStatus(request, env) {
   const key = [
     new URL(request.url).origin,
     env.CLAWSWEEPER_REPO || "openclaw/clawsweeper",
+    dashboardWorkflowSource(env),
     env.TARGET_REPOS || "openclaw/openclaw",
     env.PUBLIC_BAY_REPOS || "",
     env.CLAWSWEEPER_STATE_REPO || CLAWSWEEPER_STATE_REPO,
@@ -4342,6 +4343,12 @@ async function githubWebhookReadModelQueuePost(
   );
   if (!response.ok) return null;
   return objectValue(await response.json().catch(() => null));
+}
+
+function dashboardWorkflowSource(env: DashboardEnv): "poll" | "webhook" {
+  // The shared signing secret also serves unrelated queue and ingress routes.
+  // Its presence does not mean this dashboard consumes workflow webhooks.
+  return stringEnv(env.CLAWSWEEPER_DASHBOARD_WORKFLOW_SOURCE) === "poll" ? "poll" : "webhook";
 }
 
 function githubWebhookReadModelWorkflowObject(
@@ -7638,13 +7645,17 @@ async function statusSnapshot(env) {
     .filter(Boolean);
   const budget = numberFrom(env.WORKER_BUDGET, 32);
   const activeRunErrors = [];
-  const workflowReadModel = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET)
-    ? await githubWebhookReadModelQueuePost(env, "workflows", {
-        repository: repo,
-      }).catch(() => null)
-    : null;
+  const useWorkflowReadModel = dashboardWorkflowSource(env) === "webhook";
+  const workflowReadModel =
+    useWorkflowReadModel && stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET)
+      ? await githubWebhookReadModelQueuePost(env, "workflows", {
+          repository: repo,
+        }).catch(() => null)
+      : null;
   const workflowReadModelUsable = workflowReadModel?.usable === true;
-  if (!workflowReadModelUsable) reportGithubReadModelDashboardFallback(workflowReadModel);
+  if (useWorkflowReadModel && !workflowReadModelUsable) {
+    reportGithubReadModelDashboardFallback(workflowReadModel);
+  }
   let runs;
   let completedRuns;
   let activeRunCandidates;
@@ -7693,7 +7704,11 @@ async function statusSnapshot(env) {
     ...activeRunCandidates.filter((run) => isActiveWorkflowRun(run)),
     ...workflowRuns.filter((run) => isActiveWorkflowRun(run)),
   ]).sort(newestWorkflowRunFirst);
-  if (!workflowReadModelUsable && stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET)) {
+  if (
+    useWorkflowReadModel &&
+    !workflowReadModelUsable &&
+    stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET)
+  ) {
     const objects = uniqueWorkflowRuns([
       ...workflowRuns,
       ...completedWorkflowRuns,
@@ -10283,7 +10298,11 @@ export async function workflowJobsForRunSnapshot(
     const object = githubWebhookReadModelWorkflowObject(repo, "workflow_job", job);
     return object ? [object] : [];
   });
-  if ((repairObjects.length > 0 || census.complete) && stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET)) {
+  if (
+    dashboardWorkflowSource(env) === "webhook" &&
+    (repairObjects.length > 0 || census.complete) &&
+    stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET)
+  ) {
     await githubWebhookReadModelQueuePost(env, "repair", {
       repository: repo,
       repair_kind: "workflows",

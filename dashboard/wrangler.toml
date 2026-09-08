@@ -36,6 +36,7 @@ custom_domain = true
 
 [vars]
 CLAWSWEEPER_REPO = "openclaw/clawsweeper"
+CLAWSWEEPER_DASHBOARD_WORKFLOW_SOURCE = "poll"
 CLAWSWEEPER_APP_CLIENT_ID = "Iv23liOECG0slfuhz093"
 CLAWSWEEPER_CRABFLEET_URL = "https://crabfleet.openclaw.ai"
 TARGET_REPOS = "openclaw/openclaw,openclaw/clawhub,openclaw/clawsweeper,openclaw/fs-safe"
