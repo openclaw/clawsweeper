@@ -6,12 +6,23 @@ import { createServer } from "node:net";
 import { spawn, execFileSync } from "node:child_process";
 import { once } from "node:events";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { terminateCodexProcessTree } from "../../../dist/codex-spawn.js";
 import { intent, receiptSecret } from "./intent.mjs";
 import { mergeClusterIntakeLedger } from "../../../dist/repair/cluster-intake-state.js";
 
+if (process.platform === "win32") {
+  throw new Error("This process-group/SIGTERM proof requires POSIX; run target-checkout.test.ts for native Windows deadline coverage.");
+}
 const root = process.cwd();
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-deadline-proof-"));
 const gh = process.argv[2] || "/opt/homebrew/bin/gh";
+const processTrace = path.join(dir, "git-processes.json");
+function cleanupCloneTree() {
+  if (fs.existsSync(processTrace)) {
+    const { parent } = JSON.parse(fs.readFileSync(processTrace, "utf8"));
+    terminateCodexProcessTree({ pid: parent }, "SIGKILL");
+  }
+}
 const sockets = new Set();
 let connections = 0;
 // Accept CONNECT but never answer it. gh must wait on a real network transport.
@@ -64,7 +75,10 @@ async function run(args, overrides = {}, cancelWhen) {
         }
       }, 20)
     : undefined;
-  const watchdog = setTimeout(() => child.kill("SIGKILL"), 45_000);
+  const watchdog = setTimeout(() => {
+    cleanupCloneTree();
+    child.kill("SIGKILL");
+  }, 45_000);
   try {
     const [code, signal] = await once(child, "close");
     return { code, signal, elapsedMs: Math.round(performance.now() - start), stdout, stderr };
@@ -192,7 +206,6 @@ const target=await prepareTargetCheckout({frontmatter:{repo:'openclaw/clawsweepe
     trackedFile: "synthetic checkout",
   });
   const stalledAdapter = path.join(dir, "stalled-git.cjs");
-  const processTrace = path.join(dir, "git-processes.json");
   fs.writeFileSync(
     stalledAdapter,
     `const {spawn}=require('node:child_process');
@@ -278,6 +291,7 @@ await prepareTargetCheckout({frontmatter:{repo:'openclaw/clawsweeper'}});`,
     ),
   );
 } finally {
+  cleanupCloneTree();
   for (const socket of sockets) socket.destroy();
   server.close();
   if (workerRun)

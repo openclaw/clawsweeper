@@ -5,6 +5,7 @@ import { execFileSync, spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { terminateCodexProcessTree } from "../../dist/codex-spawn.js";
 import { prepareTargetCheckout } from "../../dist/repair/target-checkout.js";
 
 const job = { frontmatter: { repo: "openclaw/clawsweeper" } };
@@ -26,8 +27,18 @@ test("target checkout selection avoids cloning supplied or current checkouts", a
 
 test("target clone honors budgets and kills stalled descendants before cleanup", async (t) => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-clone-child-"));
-  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const trace = path.join(tmp, "trace.json");
+  const cleanupFixture = () => {
+    if (!fs.existsSync(trace)) return;
+    const { parent, target } = JSON.parse(fs.readFileSync(trace, "utf8"));
+    terminateCodexProcessTree({ pid: parent } as ReturnType<typeof spawn>, "SIGKILL");
+    fs.rmSync(path.dirname(target), { recursive: true, force: true });
+    fs.rmSync(trace);
+  };
+  t.after(() => {
+    cleanupFixture();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
   const script = path.join(tmp, "clone.cjs");
   fs.writeFileSync(
     script,
@@ -104,32 +115,44 @@ if (process.env.STALL) {
   let { pid, target } = JSON.parse(fs.readFileSync(trace, "utf8"));
   const descendantPids = [pid];
   assert.equal(fs.existsSync(path.dirname(target)), false);
-  fs.rmSync(trace);
-  const caller = spawn(
-    process.execPath,
-    [
-      "--input-type=module",
-      "-e",
-      `import {prepareTargetCheckout} from ${JSON.stringify(new URL("../../dist/repair/target-checkout.js", import.meta.url).href)};
+  await t.test(
+    "worker signal cancellation cleans up on POSIX",
+    {
+      skip: process.platform === "win32" ? "Windows SIGTERM bypasses JavaScript handlers" : false,
+      timeout: 10_000,
+    },
+    async (t) => {
+      fs.rmSync(trace);
+      const caller = spawn(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          `import {prepareTargetCheckout} from ${JSON.stringify(new URL("../../dist/repair/target-checkout.js", import.meta.url).href)};
 await prepareTargetCheckout({frontmatter:{repo:'openclaw/clawsweeper'}});`,
-    ],
-    { env: { ...base, STALL: "1", TRACE: trace }, stdio: ["ignore", "ignore", "pipe"] },
+        ],
+        { env: { ...base, STALL: "1", TRACE: trace }, stdio: ["ignore", "ignore", "pipe"] },
+      );
+      t.after(() => {
+        cleanupFixture();
+        caller.kill("SIGKILL");
+      });
+      let errorText = "";
+      caller.stderr.on("data", (chunk) => (errorText += chunk));
+      const ended = once(caller, "close");
+      const deadline = Date.now() + 5_000;
+      while (!fs.existsSync(trace) && Date.now() < deadline)
+        await new Promise((resolve) => nativeTimeout(resolve, 20));
+      assert.ok(fs.existsSync(trace), "clone subprocess started");
+      caller.kill("SIGTERM");
+      const [code] = await ended;
+      assert.equal(code, 1);
+      assert.match(errorText, /interrupted by SIGTERM/);
+      ({ pid, target } = JSON.parse(fs.readFileSync(trace, "utf8")));
+      descendantPids.push(pid);
+      assert.equal(fs.existsSync(path.dirname(target)), false);
+    },
   );
-  t.after(() => caller.kill("SIGTERM"));
-  let errorText = "";
-  caller.stderr.on("data", (chunk) => (errorText += chunk));
-  const ended = once(caller, "close");
-  const deadline = Date.now() + 5_000;
-  while (!fs.existsSync(trace) && Date.now() < deadline)
-    await new Promise((resolve) => nativeTimeout(resolve, 20));
-  assert.ok(fs.existsSync(trace), "clone subprocess started");
-  caller.kill("SIGTERM");
-  const [code] = await ended;
-  assert.equal(code, 1);
-  assert.match(errorText, /interrupted by SIGTERM/);
-  ({ pid, target } = JSON.parse(fs.readFileSync(trace, "utf8")));
-  descendantPids.push(pid);
-  assert.equal(fs.existsSync(path.dirname(target)), false);
   if (process.platform !== "win32") {
     // A just-killed child may briefly remain a zombie until its reaper runs.
     await new Promise((resolve) => nativeTimeout(resolve, 100));

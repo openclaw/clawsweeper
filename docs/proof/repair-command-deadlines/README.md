@@ -7,7 +7,11 @@ Run from the repository root after `pnpm run build:node`:
 node docs/proof/repair-command-deadlines/run-proof.mjs /opt/homebrew/bin/gh
 ```
 
-The default binary path is for macOS; pass the native GitHub CLI path on another host.
+The executable proof requires POSIX process-group and signal semantics. The default
+binary path is for macOS; pass the native GitHub CLI path on another POSIX host.
+Native Windows deadline, override and cleanup coverage runs through
+`node --test test/repair/target-checkout.test.ts` in CI; its POSIX cancellation
+subtest is explicitly skipped because Windows SIGTERM bypasses JavaScript handlers.
 The proof starts a local stalled CONNECT proxy and runs the compiled dispatch
 owner and worker CLI with native gh children. Synthetic credentials and the
 mandatory proxy prevent GitHub mutations. Both children must return ETIMEDOUT
