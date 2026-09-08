@@ -7,7 +7,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
-**Highlights:** Preserve later review evidence, keep quoted report prose from forging findings, and prevent stalled status updates from blocking review starts.
+**Highlights:** Preserve later review evidence, reject forged report findings, bound stalled repair calls, and recheck paired-close eligibility before mutations.
 
 ### Removed
 
@@ -119,6 +119,10 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Recheck current close policies and known same-author counterparts before close mutations, keeping the parent open when a counterpart locks, reopens, or cannot be refreshed; thanks @vincentkoc.
+- Bound cluster dispatch and target cloning with operator-configured deadlines, useful timeout errors, and clone process-tree cleanup; thanks @SebTardif.
+- Bound cluster-selector model and GitHub requests through response completion, failing without new selection output on stalled transports; thanks @SebTardif.
+- Show later PR review revisions beside the freshness timestamp while preserving same-review resyncs and lifetime history counts; thanks @elijahfriedman.
 - Prevent quoted finding and security-concern prose from adding findings or replacing confidence when durable reviews are parsed again; thanks @Yigtwxx.
 - Preserve later discussion evidence and invalidate cached reviews when omitted inline-comment text changes instead of silently dropping comment tails; thanks @TommyLei666.
 - Mask credentialed URLs in supplementary review context and ignore foreign timeline issue numbers; thanks @yetval.
