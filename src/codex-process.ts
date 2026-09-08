@@ -1,5 +1,13 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -78,6 +86,8 @@ export function runCodexProcess(options: {
   timeoutMs: number;
   tailBytes?: number;
   outputFileBytes?: number;
+  outputLastMessagePath?: string;
+  outputLastMessageBytes?: number;
   stdoutPath?: string;
   stderrPath?: string;
   appServer?: CodexAppServerProcessOptions;
@@ -88,6 +98,10 @@ export function runCodexProcess(options: {
   const stdoutPath = options.stdoutPath ?? join(workDir, "stdout.log");
   const stderrPath = options.stderrPath ?? join(workDir, "stderr.log");
   try {
+    const outputLastMessageBytes = normalizedOutputLastMessageBytes(
+      options.outputLastMessageBytes,
+      options.outputLastMessagePath,
+    );
     writeFileSync(
       optionsPath,
       JSON.stringify({
@@ -99,6 +113,12 @@ export function runCodexProcess(options: {
         stderrPath,
         tailBytes: normalizedTailBytes(options.tailBytes),
         maxOutputFileBytes: normalizedOutputFileBytes(options.outputFileBytes),
+        ...(outputLastMessageBytes === undefined
+          ? {}
+          : {
+              outputLastMessageBytes,
+              outputLastMessagePath: options.outputLastMessagePath,
+            }),
         ...(options.appServer ? { appServer: options.appServer } : {}),
       }),
       { encoding: "utf8", mode: 0o600 },
@@ -112,7 +132,35 @@ export function runCodexProcess(options: {
       timeout: options.timeoutMs + 10_000,
     });
     if (existsSync(resultPath)) {
+      const resultBytes = statSync(resultPath).size;
+      const maxResultBytes = workerResultMaxBytes(normalizedTailBytes(options.tailBytes));
+      if (resultBytes > maxResultBytes) {
+        return failedProcessResult(
+          new Error(`Codex process worker result exceeded its ${maxResultBytes}-byte limit.`),
+          worker.status,
+          worker.signal,
+        );
+      }
       const result = deserializeProcessResult(JSON.parse(readFileSync(resultPath, "utf8")));
+      if (outputLastMessageBytes !== undefined && options.outputLastMessagePath) {
+        try {
+          const metadata = lstatSync(options.outputLastMessagePath);
+          if (!metadata.isFile()) {
+            throw new Error("Managed Codex result was not a regular file.");
+          }
+          if (metadata.size > outputLastMessageBytes) {
+            throw new Error(`Codex result exceeded its ${outputLastMessageBytes}-byte limit.`);
+          }
+        } catch (error) {
+          if (result.error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+            return result;
+          }
+          return {
+            ...result,
+            error: error instanceof Error ? error : new Error(String(error)),
+          };
+        }
+      }
       if (
         worker.error &&
         !(result.status === 0 && codexProcessErrorCode(worker.error) === "EPIPE")
@@ -150,6 +198,23 @@ function normalizedTailBytes(value: number | undefined): number {
 function normalizedOutputFileBytes(value: number | undefined): number {
   if (value === undefined) return DEFAULT_CODEX_OUTPUT_FILE_BYTES;
   return Math.max(0, Number.isFinite(value) ? Math.floor(value) : DEFAULT_CODEX_OUTPUT_FILE_BYTES);
+}
+
+function normalizedOutputLastMessageBytes(
+  value: number | undefined,
+  path: string | undefined,
+): number | undefined {
+  if (value === undefined && path === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || value! <= 0 || !path) {
+    throw new Error(
+      "outputLastMessageBytes and outputLastMessagePath must be supplied together with a positive byte limit.",
+    );
+  }
+  return value;
+}
+
+function workerResultMaxBytes(tailBytes: number): number {
+  return 64 * 1024 + 12 * tailBytes;
 }
 
 function failedProcessResult(

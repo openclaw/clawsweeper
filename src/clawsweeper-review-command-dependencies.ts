@@ -340,7 +340,7 @@ export interface CreateReviewCommandWorkflowDependencies {
     prompt?: string;
     reviewEnv?: NodeJS.ProcessEnv;
     promptFileBytes?: number;
-    resultFileBytes?: number;
+    resultFileBytes: number;
     streamFileBytes?: number;
     quietLogs?: boolean;
     extraCodexConfig?: string[];

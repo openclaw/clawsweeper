@@ -52,3 +52,38 @@ test(
     }
   },
 );
+
+test(
+  "readReviewGit budgets stdout independently from ignored diagnostics",
+  { skip: process.platform === "win32" ? "POSIX executable fixture" : false },
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-review-git-budget-"));
+    const executable = join(root, "bounded-git");
+    try {
+      writeFileSync(
+        executable,
+        `#!${process.execPath}
+process.stdout.write("x".repeat(Number(process.env.TEST_STDOUT_BYTES)));
+process.stderr.write("diagnostic".repeat(16));
+process.exitCode = Number(process.env.TEST_EXIT_STATUS);
+`,
+        { mode: 0o755 },
+      );
+      const run = (stdoutBytes: number, exitStatus: number) =>
+        readReviewGit(root, [], {
+          executable,
+          maxBytes: 19,
+          objectEnv: {
+            TEST_STDOUT_BYTES: String(stdoutBytes),
+            TEST_EXIT_STATUS: String(exitStatus),
+          },
+        });
+
+      assert.equal(run(19, 0)?.toString("utf8"), "x".repeat(19));
+      assert.equal(run(20, 0), null);
+      assert.equal(run(19, 7), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);

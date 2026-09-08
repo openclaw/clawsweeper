@@ -12,6 +12,7 @@ import { isUserFacingCommandError, runText, UserFacingCommandError } from "./com
 import { configuredRepositoryProfileFor } from "./repository-profiles.js";
 import {
   assertActiveReviewOutputBudget,
+  assertReviewReportsBudget,
   assertTransientReviewOutputBudget,
   createTransientReviewOutput,
   discardOwnedSummaryOutput,
@@ -279,9 +280,12 @@ function runCodex(options: {
   workDir: string;
   additionalPrompt: string;
   extraCodexConfig?: readonly string[];
-  resultFileBytes?: number;
+  resultFileBytes: number;
   streamFileBytes?: number;
 }): string {
+  if (!Number.isSafeInteger(options.resultFileBytes) || options.resultFileBytes <= 0) {
+    throw new UserFacingCommandError("Local review result output requires a positive byte limit.");
+  }
   ensureDir(options.workDir);
   rmSync(join(options.workDir, `${options.sha}.prompt.md`), { force: true });
   const outputPath = join(options.workDir, `${options.sha}.md`);
@@ -305,12 +309,14 @@ function runCodex(options: {
       outputPath,
       "--sandbox",
       options.sandboxMode,
+      "--json",
       "-",
     ],
     cwd: options.targetDir,
     env: codexEnv({ ghToken: process.env.COMMIT_SWEEPER_TARGET_GH_TOKEN }),
     timeoutMs: options.timeoutMs,
     ...(options.streamFileBytes === undefined ? {} : { outputFileBytes: options.streamFileBytes }),
+    outputLastMessageBytes: options.resultFileBytes,
   });
   if (result.error || result.status !== 0 || !existsSync(outputPath)) {
     const timeout = codexProcessErrorCode(result.error) === "ETIMEDOUT";
@@ -329,11 +335,7 @@ function runCodex(options: {
       timeout,
     });
   }
-  return stripMarkdownFence(
-    options.resultFileBytes === undefined
-      ? readFileSync(outputPath, "utf8")
-      : readBoundedReviewResult(outputPath, options.resultFileBytes),
-  );
+  return stripMarkdownFence(readBoundedReviewResult(outputPath, options.resultFileBytes));
 }
 
 // GitHub credential env vars scrubbed before the offline local-review engine runs.
@@ -489,7 +491,9 @@ function localReviewCommand(args: Args): void {
     );
 
     const outputPath = join(runDir, "local-review.md");
-    writeFileSync(outputPath, markdown.endsWith("\n") ? markdown : `${markdown}\n`, "utf8");
+    const report = markdown.endsWith("\n") ? markdown : `${markdown}\n`;
+    assertReviewReportsBudget([{ path: outputPath, markdown: report }], outputSelection.retention);
+    writeFileSync(outputPath, report, "utf8");
     if (outputSelection.retention === "summary") {
       finalizeSummaryReviewOutput(retainedReviewOutput!, [outputPath]);
       retainedOutputFinalized = true;

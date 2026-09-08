@@ -92,7 +92,6 @@ ${admission === "invalid-output" ? "process.exit(183);" : ""}
           `#!/usr/bin/env node
 const fs = require("node:fs");
 const args = process.argv.slice(2);
-const output = args[args.indexOf("--output-last-message") + 1];
 const tokens = [
   "GH_TOKEN",
   "GITHUB_TOKEN",
@@ -107,7 +106,14 @@ fs.writeFileSync(process.env.LOCAL_REVIEW_PROOF_CAPTURE, JSON.stringify({
   ghConfigDir: process.env.GH_CONFIG_DIR,
   prompt: fs.readFileSync(0, "utf8"),
 }));
-fs.writeFileSync(output, "---\\nresult: success\\n---\\n\\nOffline local review completed.\\n");
+if (args.includes("--output-last-message")) process.exit(2);
+process.stdout.write(JSON.stringify({
+  type: "item.completed",
+  item: {
+    type: "agent_message",
+    text: "---\\nresult: success\\n---\\n\\nOffline local review completed.\\n",
+  },
+}) + "\\n");
 `,
         );
         chmodSync(fakeCodex, 0o755);
@@ -204,10 +210,13 @@ test(
 const fs = require("node:fs");
 const args = process.argv.slice(2);
 fs.writeFileSync(process.env.LOCAL_REVIEW_PROOF_CAPTURE, process.env.GH_CONFIG_DIR);
-fs.writeFileSync(
-  args[args.indexOf("--output-last-message") + 1],
-  "---\\nresult: success\\n---\\n\\nTransient local review completed.\\n",
-);
+process.stdout.write(JSON.stringify({
+  type: "item.completed",
+  item: {
+    type: "agent_message",
+    text: "---\\nresult: success\\n---\\n\\nTransient local review completed.\\n",
+  },
+}) + "\\n");
 `,
       );
       chmodSync(fakeCodex, 0o755);
@@ -251,7 +260,7 @@ fs.writeFileSync(
 );
 
 test(
-  "local-review summary failure removes its owned output and returns one JSON envelope",
+  "local-review turns an oversized managed result into a bounded summary report",
   { skip: process.platform === "win32" },
   (t) => {
     const dir = initRepo();
@@ -266,10 +275,10 @@ test(
         fakeCodex,
         `#!/usr/bin/env node
 const fs = require("node:fs");
-const args = process.argv.slice(2);
-const output = args[args.indexOf("--output-last-message") + 1];
-fs.writeFileSync(output, "");
-fs.truncateSync(output, 4 * 1024 * 1024 + 1);
+process.stdout.write(JSON.stringify({
+  type: "item.completed",
+  item: { type: "agent_message", text: "x".repeat(4 * 1024 * 1024 + 1) },
+}) + "\\n");
 `,
         { mode: 0o755 },
       );
@@ -291,16 +300,14 @@ fs.truncateSync(output, 4 * 1024 * 1024 + 1);
         { CODEX_BIN: fakeCodex },
       );
 
-      assert.equal(result.status, 1, result.out);
-      assert.deepEqual(JSON.parse(result.stdout), {
-        status: "failed",
-        retention: "summary",
-        reports: [],
-        error: {
-          message: "Review result output exceeded its 4194304-byte limit.",
-        },
-      });
-      assert.deepEqual(readdirSync(reportDir), []);
+      assert.equal(result.status, 0, result.out);
+      const output = JSON.parse(result.stdout);
+      assert.equal(output.status, "failed");
+      assert.equal(output.retention, "summary");
+      assert.equal(output.reports.length, 1);
+      assert.match(output.reports[0].report, /^result: failed$/m);
+      assert.match(output.reports[0].report, /Codex result exceeded its 4194304-byte limit/);
+      assert.equal(existsSync(output.reports[0].artifact_path), true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
       rmSync(harness, { recursive: true, force: true });

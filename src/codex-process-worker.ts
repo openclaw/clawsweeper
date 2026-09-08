@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { lstatSync, readFileSync, writeFileSync } from "node:fs";
 import { pipeline } from "node:stream";
 import {
   appendCodexOutputCapture,
@@ -6,6 +6,7 @@ import {
   codexOutputTail,
   openCodexOutputCapture,
 } from "./codex-output-capture.js";
+import { OutputLastMessageParser } from "./codex-output-last-message.js";
 import { spawnCodex, terminateCodexProcessTree } from "./codex-spawn.js";
 
 interface WorkerOptions {
@@ -17,6 +18,8 @@ interface WorkerOptions {
   stderrPath: string;
   tailBytes: number;
   maxOutputFileBytes: number;
+  outputLastMessageBytes?: number;
+  outputLastMessagePath?: string;
 }
 
 const options = JSON.parse(readFileSync(process.argv[2] ?? "", "utf8")) as WorkerOptions;
@@ -28,6 +31,9 @@ const stderr = openCodexOutputCapture(options.stderrPath, {
   maxFileBytes: options.maxOutputFileBytes,
   tailBytes: options.tailBytes,
 });
+const outputLastMessage = options.outputLastMessageBytes
+  ? new OutputLastMessageParser(options.outputLastMessageBytes)
+  : null;
 process.env.CODEX_BIN = options.command;
 const child = spawnCodex(options.args, { cwd: process.cwd(), env: process.env });
 let spawnError: Error | undefined;
@@ -42,6 +48,7 @@ const timeout = setTimeout(() => {
 }, options.timeoutMs);
 
 child.stdout.on("data", (chunk: Buffer) => {
+  outputLastMessage?.append(chunk);
   appendCodexOutputCapture(stdout, chunk);
 });
 child.stderr.on("data", (chunk: Buffer) => {
@@ -60,12 +67,35 @@ child.once("close", (status, signal) => {
   clearTimeout(timeout);
   closeCodexOutputCapture(stdout);
   closeCodexOutputCapture(stderr);
+  const finalMessage = outputLastMessage?.finish();
+  let outputLastMessageError = finalMessage?.error;
+  if (
+    !outputLastMessageError &&
+    finalMessage?.text !== undefined &&
+    options.outputLastMessagePath
+  ) {
+    try {
+      const bytes = Buffer.byteLength(finalMessage.text);
+      writeFileSync(options.outputLastMessagePath, finalMessage.text, {
+        encoding: "utf8",
+        flag: "wx",
+        mode: 0o600,
+      });
+      const metadata = lstatSync(options.outputLastMessagePath);
+      if (!metadata.isFile() || metadata.size !== bytes) {
+        throw new Error("managed Codex result is not an exact regular file");
+      }
+    } catch (error) {
+      outputLastMessageError = error instanceof Error ? error : new Error(String(error));
+    }
+  }
   const processError =
     timeoutError ??
     spawnError ??
     (status === 0 && (stdinError as NodeJS.ErrnoException | undefined)?.code === "EPIPE"
       ? undefined
-      : stdinError);
+      : stdinError) ??
+    outputLastMessageError;
   writeFileSync(
     options.resultPath,
     JSON.stringify({

@@ -881,7 +881,6 @@ if (args[0] === "sandbox") {
   process.stderr.write(result.stderr ?? "");
   process.exit(result.status ?? 1);
 }
-const outputPath = args[args.indexOf("--output-last-message") + 1];
 const prompt = fs.readFileSync(0, "utf8");
 const captures = fs.existsSync(process.env.LOCAL_REVIEW_CAPTURE)
   ? JSON.parse(fs.readFileSync(process.env.LOCAL_REVIEW_CAPTURE, "utf8"))
@@ -896,7 +895,13 @@ if (process.env.LOCAL_REVIEW_FAIL === "1") {
   process.stderr.write("deterministic local review failure\\n");
   process.exit(1);
 }
-fs.writeFileSync(outputPath, fs.readFileSync(process.env.LOCAL_REVIEW_DECISION));
+process.stdout.write(JSON.stringify({
+  type: "item.completed",
+  item: {
+    type: "agent_message",
+    text: fs.readFileSync(process.env.LOCAL_REVIEW_DECISION, "utf8"),
+  },
+}) + "\\n");
 process.stdout.write(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1 } }) + "\\n");
 `,
   );

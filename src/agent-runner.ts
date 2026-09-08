@@ -26,6 +26,7 @@ export interface RunAgentProcessOptions {
   timeoutMs: number;
   tailBytes?: number;
   outputFileBytes?: number;
+  outputLastMessageBytes?: number;
   stdoutPath?: string;
   stderrPath?: string;
   appServer?: CodexAppServerProcessOptions;
@@ -64,6 +65,15 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
   if (runner === "openclaw") openclawModel(options.env);
   const startedAt = Date.now();
   const outputPath = codexOutputLastMessagePath(options.codexExtraArgs);
+  if (
+    options.outputLastMessageBytes !== undefined &&
+    (!Number.isSafeInteger(options.outputLastMessageBytes) || options.outputLastMessageBytes <= 0)
+  ) {
+    throw new Error("outputLastMessageBytes must be a positive safe integer.");
+  }
+  if (options.outputLastMessageBytes !== undefined && !outputPath) {
+    throw new Error("outputLastMessageBytes requires --output-last-message.");
+  }
   if (outputPath) rmSync(outputPath, { force: true });
   const schemaIndex = options.codexExtraArgs?.lastIndexOf("--output-schema") ?? -1;
   const schemaPath = schemaIndex >= 0 ? options.codexExtraArgs?.[schemaIndex + 1] : undefined;
@@ -83,8 +93,10 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
     throw new AgentInputScanError("deadline");
   }
   if (runner === "codex") {
+    const args = codexAgentArgs(options);
+    const managedOutput = options.outputLastMessageBytes !== undefined && outputPath !== undefined;
     return runCodexProcess({
-      args: codexAgentArgs(options),
+      args: managedOutput && !options.appServer ? withoutOutputLastMessage(args) : args,
       cwd: options.cwd,
       env: options.env,
       input: options.prompt,
@@ -93,6 +105,12 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
       ...(options.outputFileBytes === undefined
         ? {}
         : { outputFileBytes: options.outputFileBytes }),
+      ...(managedOutput
+        ? {
+            outputLastMessagePath: outputPath,
+            outputLastMessageBytes: options.outputLastMessageBytes,
+          }
+        : {}),
       ...(options.stdoutPath ? { stdoutPath: options.stdoutPath } : {}),
       ...(options.stderrPath ? { stderrPath: options.stderrPath } : {}),
       ...(options.appServer ? { appServer: options.appServer } : {}),
@@ -115,7 +133,24 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
   });
   const result = redactOpenclawFailure(rawResult, model);
   if (!result.error && result.status === 0 && outputPath) {
-    writeFileSync(outputPath, result.stdout, "utf8");
+    if (
+      options.outputLastMessageBytes !== undefined &&
+      Buffer.byteLength(result.stdout) > options.outputLastMessageBytes
+    ) {
+      return {
+        ...result,
+        error: new Error(
+          `OpenClaw result exceeded its ${options.outputLastMessageBytes}-byte limit.`,
+        ),
+      };
+    }
+    writeFileSync(
+      outputPath,
+      result.stdout,
+      options.outputLastMessageBytes === undefined
+        ? "utf8"
+        : { encoding: "utf8", flag: "wx", mode: 0o600 },
+    );
   }
   if (!options.appServer) return result;
   const note =
@@ -373,4 +408,10 @@ function codexOutputLastMessagePath(args: readonly string[] | undefined): string
   const index = args.lastIndexOf("--output-last-message");
   const value = index === -1 ? undefined : args[index + 1];
   return value?.trim() || undefined;
+}
+
+function withoutOutputLastMessage(args: readonly string[]): string[] {
+  const index = args.lastIndexOf("--output-last-message");
+  if (index < 0) return [...args];
+  return [...args.slice(0, index), ...args.slice(index + 2)];
 }

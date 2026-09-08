@@ -21,6 +21,12 @@ export const MEDIA_PROOF_MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024;
 export const MEDIA_PROOF_MAX_TOTAL_DOWNLOAD_BYTES = 64 * 1024 * 1024;
 export const MEDIA_PROOF_MAX_DERIVED_BYTES = 16 * 1024 * 1024;
 
+export interface MediaProofLimits {
+  downloadBytes: number;
+  derivedBytes: number;
+  metadataBytes?: number;
+}
+
 export function mediaProofCommandRunner(
   command: string,
   args: readonly string[],
@@ -187,7 +193,16 @@ export function prepareMediaProofArtifacts(
   context: ItemContext,
   proofScratchDir: string,
   runner: MediaProofCommandRunner = mediaProofCommandRunner,
+  limits: MediaProofLimits = {
+    downloadBytes: MEDIA_PROOF_MAX_TOTAL_DOWNLOAD_BYTES,
+    derivedBytes: MEDIA_PROOF_MAX_DERIVED_BYTES,
+  },
 ): PreparedMediaProof {
+  for (const [name, value] of Object.entries(limits)) {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`Media proof ${name} must be a non-negative safe integer.`);
+    }
+  }
   const urls = proofMediaUrlsFromContext(context);
   if (urls.length === 0) return { manifestPath: null, summaryPath: null, artifacts: [] };
   mkdirSync(proofScratchDir, { recursive: true });
@@ -212,7 +227,7 @@ export function prepareMediaProofArtifacts(
     );
     const metadataPath = join(proofScratchDir, `proof-video-${ordinal}.ffprobe.json`);
     const contactSheetPath = join(proofScratchDir, `proof-video-${ordinal}.contact-sheet.jpg`);
-    const remainingDownloadBytes = MEDIA_PROOF_MAX_TOTAL_DOWNLOAD_BYTES - downloadedBytes;
+    const remainingDownloadBytes = limits.downloadBytes - downloadedBytes;
     if (remainingDownloadBytes <= 0) {
       artifacts.push({
         kind,
@@ -221,7 +236,7 @@ export function prepareMediaProofArtifacts(
         metadataPath: null,
         contactSheetPath: null,
         status: "failed",
-        detail: `shared download budget exhausted at ${MEDIA_PROOF_MAX_TOTAL_DOWNLOAD_BYTES} bytes`,
+        detail: `shared download budget exhausted at ${limits.downloadBytes} bytes`,
       });
       continue;
     }
@@ -319,7 +334,7 @@ export function prepareMediaProofArtifacts(
     }
     const metadataText = String(metadata.stdout ?? "{}");
     const metadataBytes = Buffer.byteLength(metadataText);
-    const remainingDerivedBytes = MEDIA_PROOF_MAX_DERIVED_BYTES - derivedBytes;
+    const remainingDerivedBytes = limits.derivedBytes - derivedBytes;
     if (metadataBytes > remainingDerivedBytes) {
       artifacts.push({
         kind,
@@ -334,7 +349,7 @@ export function prepareMediaProofArtifacts(
     }
     writeFileSync(metadataPath, metadataText, "utf8");
     derivedBytes += metadataBytes;
-    const contactSheetBudget = MEDIA_PROOF_MAX_DERIVED_BYTES - derivedBytes;
+    const contactSheetBudget = limits.derivedBytes - derivedBytes;
     if (contactSheetBudget <= 0) {
       artifacts.push({
         kind,
@@ -343,7 +358,7 @@ export function prepareMediaProofArtifacts(
         metadataPath,
         contactSheetPath: null,
         status: "failed",
-        detail: `derived-artifact budget exhausted at ${MEDIA_PROOF_MAX_DERIVED_BYTES} bytes`,
+        detail: `derived-artifact budget exhausted at ${limits.derivedBytes} bytes`,
       });
       continue;
     }
@@ -409,8 +424,16 @@ export function prepareMediaProofArtifacts(
   const manifestPath = join(proofScratchDir, MEDIA_PROOF_MANIFEST_FILE);
   const summaryPath = join(proofScratchDir, MEDIA_PROOF_SUMMARY_FILE);
   const prepared: PreparedMediaProof = { manifestPath, summaryPath, artifacts };
-  writeFileSync(manifestPath, JSON.stringify(prepared, null, 2), "utf8");
-  writeFileSync(summaryPath, mediaProofSummaryMarkdown(prepared), "utf8");
+  const manifest = JSON.stringify(prepared, null, 2);
+  const summary = mediaProofSummaryMarkdown(prepared);
+  if (
+    limits.metadataBytes !== undefined &&
+    Buffer.byteLength(manifest) + Buffer.byteLength(summary) > limits.metadataBytes
+  ) {
+    throw new Error(`Media proof metadata exceeded its ${limits.metadataBytes}-byte limit.`);
+  }
+  writeFileSync(manifestPath, manifest, "utf8");
+  writeFileSync(summaryPath, summary, "utf8");
   return prepared;
 }
 
@@ -464,6 +487,7 @@ export function prepareMediaProofArtifactsForTest(
   context: ItemContext,
   proofScratchDir: string,
   runner: MediaProofCommandRunner,
+  limits?: MediaProofLimits,
 ): PreparedMediaProof {
-  return prepareMediaProofArtifacts(context, proofScratchDir, runner);
+  return prepareMediaProofArtifacts(context, proofScratchDir, runner, limits);
 }

@@ -53,10 +53,12 @@ import {
   assertReviewOutputFilePeak,
   assertReviewReportsBudget,
   assertTransientReviewOutputBudget,
+  createReviewOutputMetadataBudget,
   emitReviewOutput,
   finalizeSummaryReviewOutput,
   pruneReviewOutputItem,
   reviewOutputItemBudget,
+  writeReviewOutputMetadata,
   type ReviewOutputResult,
 } from "./review-output-policy.js";
 
@@ -382,6 +384,14 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         Math.max(1, candidates.length),
       );
       assertReviewOutputFilePeak(outputSelection.retention, Math.max(1, candidates.length));
+      const metadataBudget =
+        outputSelection.retention === "debug"
+          ? null
+          : createReviewOutputMetadataBudget(artifactDir, itemOutputBudget.metadataBytes);
+      const writeOutputMetadata = (path: string, content: string): void => {
+        if (metadataBudget) writeReviewOutputMetadata(metadataBudget, path, content);
+        else writeFileSync(path, content, "utf8");
+      };
       if (suppliedReviewLease && candidates.length !== 1) {
         throw new UserFacingCommandError(
           "A supplied review lease requires exactly one selected item.",
@@ -403,7 +413,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} selected=${candidates.length} scanned_pages=${scannedPages}`,
         );
       }
-      writeFileSync(
+      writeOutputMetadata(
         join(artifactDir, "selection.json"),
         JSON.stringify({ shardIndex, shardCount, scannedPages, candidates, reviewPolicy }, null, 2),
       );
@@ -1351,7 +1361,18 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         // local-range: no host download or transcode of body-supplied URLs.
         const preparedMediaProof: PreparedMediaProof = localRangeData
           ? { manifestPath: null, summaryPath: null, artifacts: [] }
-          : prepareMediaProofArtifacts(context, proofScratchDir);
+          : prepareMediaProofArtifacts(
+              context,
+              proofScratchDir,
+              undefined,
+              outputSelection.retention === "debug"
+                ? undefined
+                : {
+                    downloadBytes: itemOutputBudget.mediaDownloadBytes,
+                    derivedBytes: itemOutputBudget.mediaDerivedBytes,
+                    metadataBytes: itemOutputBudget.metadataBytes - (metadataBudget?.bytes ?? 0),
+                  },
+            );
         const reviewEnv = reviewEnvironment(localOnly);
         const prompt = buildReviewPrompt(
           item,
@@ -1595,10 +1616,9 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         }
       }
       if (coordinationHeldRetryAt) {
-        writeFileSync(
+        writeOutputMetadata(
           coordinationHeldPath,
           JSON.stringify({ retry_at: coordinationHeldRetryAt }, null, 2) + "\n",
-          "utf8",
         );
       }
       if (!humanLocalReview) {
@@ -1606,7 +1626,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           `[review] ${new Date().toISOString()} shard=${shardIndex}/${shardCount} complete reviewed=${completed} cache_hits=${cacheHits} structural_cache_checks=${structuralCacheChecks} structural_cache_hits=${structuralCacheHits} structural_cache_revalidations=${structuralCacheRevalidations} content_cache_hits=${contentCacheHits} hydrations=${hydrationRuns}`,
         );
       }
-      writeFileSync(
+      writeOutputMetadata(
         join(artifactDir, "review-cache-metrics.json"),
         JSON.stringify(
           {
@@ -1636,7 +1656,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           null,
           2,
         ) + "\n",
-        "utf8",
       );
       if (leaseAcquisitionFailures > 0) {
         throw new Error(
@@ -1701,7 +1720,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       }
       if (outputEmitted && outputSelection.resultFormat === "json") {
         console.error(error instanceof Error ? error.message : String(error));
-        process.exitCode = 1;
+        process.exitCode = agentInputScanFailureExitCode(error) ?? 1;
         return;
       }
       throw error;

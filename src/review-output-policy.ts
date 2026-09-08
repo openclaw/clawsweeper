@@ -61,8 +61,11 @@ const DEBUG_REVIEW_STREAM_POOL_BYTES = 480 * 1024 * 1024;
 const DEBUG_REVIEW_PROMPT_POOL_BYTES = 256 * 1024 * 1024;
 const DEBUG_REVIEW_RESULT_POOL_BYTES = 64 * 1024 * 1024;
 const DEBUG_REVIEW_REPORTS_MAX_BYTES = 64 * 1024 * 1024;
-const PRIVATE_REVIEW_STREAM_POOL_BYTES = 56 * 1024 * 1024;
-const PRIVATE_REVIEW_RESULT_POOL_BYTES = 12 * 1024 * 1024;
+const PRIVATE_REVIEW_STREAM_POOL_BYTES = 32 * 1024 * 1024;
+const PRIVATE_REVIEW_RESULT_POOL_BYTES = 4 * 1024 * 1024;
+const PRIVATE_REVIEW_MEDIA_DOWNLOAD_BYTES = 32 * 1024 * 1024;
+const PRIVATE_REVIEW_MEDIA_DERIVED_BYTES = 8 * 1024 * 1024;
+const PRIVATE_REVIEW_METADATA_BYTES = 4 * 1024 * 1024;
 const REVIEW_OUTPUT_GLOBAL_MAX_FILES = 7;
 const REVIEW_OUTPUT_SUMMARY_OWNER_FILES = 1;
 const REVIEW_OUTPUT_PRIVATE_ITEM_MAX_FILES = 20;
@@ -268,7 +271,15 @@ export function assertReviewReportsBudget(
 export function reviewOutputItemBudget(
   retention: ReviewOutputRetention,
   itemCount: number,
-): { promptFileBytes: number; resultFileBytes: number; streamFileBytes: number } {
+): {
+  promptFileBytes: number;
+  resultFileBytes: number;
+  streamFileBytes: number;
+  mediaDownloadBytes: number;
+  mediaDerivedBytes: number;
+  metadataBytes: number;
+  reportsBytes: number;
+} {
   if (!Number.isInteger(itemCount) || itemCount < 1 || itemCount > REVIEW_OUTPUT_MAX_ITEMS) {
     throw new UserFacingCommandError(
       `Review output budgets support 1-${REVIEW_OUTPUT_MAX_ITEMS} items per invocation.`,
@@ -282,19 +293,70 @@ export function reviewOutputItemBudget(
         128 * 1024 * 1024,
         Math.floor(DEBUG_REVIEW_STREAM_POOL_BYTES / (itemCount * 2)),
       ),
+      mediaDownloadBytes: 64 * 1024 * 1024,
+      mediaDerivedBytes: 16 * 1024 * 1024,
+      metadataBytes: DEBUG_REVIEW_OUTPUT_MAX_BYTES,
+      reportsBytes: DEBUG_REVIEW_REPORTS_MAX_BYTES,
     };
   }
-  return {
+  const budget = {
     promptFileBytes: 0,
-    resultFileBytes: Math.min(
-      TRANSIENT_REVIEW_RESULT_MAX_BYTES,
-      Math.floor(PRIVATE_REVIEW_RESULT_POOL_BYTES / itemCount),
-    ),
-    streamFileBytes: Math.min(
-      TRANSIENT_REVIEW_STREAM_MAX_BYTES,
-      Math.floor(PRIVATE_REVIEW_STREAM_POOL_BYTES / (itemCount * 2)),
-    ),
+    resultFileBytes: PRIVATE_REVIEW_RESULT_POOL_BYTES,
+    streamFileBytes: PRIVATE_REVIEW_STREAM_POOL_BYTES / 2,
+    mediaDownloadBytes: PRIVATE_REVIEW_MEDIA_DOWNLOAD_BYTES,
+    mediaDerivedBytes: PRIVATE_REVIEW_MEDIA_DERIVED_BYTES,
+    metadataBytes: PRIVATE_REVIEW_METADATA_BYTES,
+    reportsBytes: TRANSIENT_REVIEW_REPORTS_MAX_BYTES,
   };
+  const allocatedBytes =
+    budget.streamFileBytes * 2 +
+    budget.resultFileBytes +
+    budget.reportsBytes +
+    budget.mediaDownloadBytes +
+    budget.mediaDerivedBytes +
+    budget.metadataBytes;
+  if (allocatedBytes !== TRANSIENT_REVIEW_OUTPUT_MAX_BYTES) {
+    throw new Error("Transient review output component budgets do not match the run limit.");
+  }
+  return budget;
+}
+
+export interface ReviewOutputMetadataBudget {
+  readonly root: string;
+  readonly maxBytes: number;
+  bytes: number;
+}
+
+export function createReviewOutputMetadataBudget(
+  root: string,
+  maxBytes: number,
+): ReviewOutputMetadataBudget {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+    throw new UserFacingCommandError("Review metadata requires a positive byte limit.");
+  }
+  const resolved = resolve(root);
+  const bytes = reviewOutputTotals(resolved).bytes;
+  if (bytes > maxBytes) {
+    throw new UserFacingCommandError(`Review metadata exceeded its ${maxBytes}-byte limit.`);
+  }
+  return { root: resolved, maxBytes, bytes };
+}
+
+export function writeReviewOutputMetadata(
+  budget: ReviewOutputMetadataBudget,
+  path: string,
+  content: string,
+): void {
+  const destination = assertOwnedOutputPath(budget.root, path);
+  if (existsSync(destination)) {
+    throw new UserFacingCommandError(`Review metadata destination already exists: ${destination}`);
+  }
+  const bytes = Buffer.byteLength(content);
+  if (bytes > budget.maxBytes - budget.bytes) {
+    throw new UserFacingCommandError(`Review metadata exceeded its ${budget.maxBytes}-byte limit.`);
+  }
+  writeFileSync(destination, content, { encoding: "utf8", flag: "wx", mode: 0o600 });
+  budget.bytes += bytes;
 }
 
 export function reviewOutputFilePeak(retention: ReviewOutputRetention, itemCount: number): number {

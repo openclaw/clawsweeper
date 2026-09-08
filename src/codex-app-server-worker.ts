@@ -42,6 +42,7 @@ interface WorkerOptions {
   stderrPath: string;
   tailBytes: number;
   maxOutputFileBytes: number;
+  outputLastMessageBytes?: number;
   appServer: AppServerOptions;
 }
 
@@ -370,8 +371,25 @@ async function handleRpcMessage(message: RpcMessage): Promise<void> {
   turnStatus = typeof turn?.status === "string" ? turn.status : "";
   const failed = turnStatus !== "completed";
   if (execOptions.outputLastMessagePath && finalMessage) {
+    if (
+      options.outputLastMessageBytes !== undefined &&
+      Buffer.byteLength(finalMessage) > options.outputLastMessageBytes
+    ) {
+      await finish(
+        1,
+        null,
+        new Error(`Codex result exceeded its ${options.outputLastMessageBytes}-byte limit.`),
+      );
+      return;
+    }
     mkdirSync(dirname(execOptions.outputLastMessagePath), { recursive: true });
-    writeFileSync(execOptions.outputLastMessagePath, finalMessage, "utf8");
+    writeFileSync(
+      execOptions.outputLastMessagePath,
+      finalMessage,
+      options.outputLastMessageBytes === undefined
+        ? "utf8"
+        : { encoding: "utf8", flag: "wx", mode: 0o600 },
+    );
   }
   terminalWrite(
     `\r\n\r\n[ClawSweeper] Codex turn ${turnStatus || "finished"}. Deterministic repair gates continue in GitHub Actions.\r\n`,

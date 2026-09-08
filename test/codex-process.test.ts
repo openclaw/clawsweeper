@@ -10,10 +10,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import test from "node:test";
-import { spawn } from "node:child_process";
+import test, { type TestContext } from "node:test";
+import { spawn, spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import { codexEnv } from "../dist/codex-env.js";
+import { fileURLToPath } from "node:url";
 
 import {
   codexProcessCommand,
@@ -23,6 +24,199 @@ import {
 } from "../dist/codex-process.js";
 
 const tmpPrefix = join(tmpdir(), "clawsweeper-codex-process-test-");
+
+function managedAgentMessage(text: string): string {
+  return JSON.stringify({
+    type: "item.completed",
+    item: { type: "agent_message", text },
+  });
+}
+
+function runManagedOutputFixture(
+  t: TestContext,
+  options: {
+    payload?: string;
+    mode?: "payload" | "oversized-line";
+    cap: number;
+    status?: number;
+    outputFileBytes?: number;
+    tailBytes?: number;
+  },
+) {
+  const root = mkdtempSync(tmpPrefix);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const binary = join(root, "codex");
+  const outputPath = join(root, "last-message.txt");
+  const stdoutPath = join(root, "stdout.log");
+  writeFileSync(
+    binary,
+    `#!/usr/bin/env node
+if (process.env.CODEX_TEST_MODE === "oversized-line") {
+  process.stdout.write(JSON.stringify({ type: "diagnostic", text: "x".repeat(Number(process.env.CODEX_TEST_LINE_BYTES)) }));
+} else {
+  process.stdout.write(Buffer.from(process.env.CODEX_TEST_PAYLOAD_BASE64 || "", "base64"));
+}
+process.exitCode = Number(process.env.CODEX_TEST_STATUS || "0");
+`,
+    { mode: 0o755 },
+  );
+  const result = runCodexProcess({
+    args: ["exec", "--json", "-"],
+    cwd: root,
+    env: {
+      ...process.env,
+      CODEX_BIN: binary,
+      CODEX_TEST_MODE: options.mode ?? "payload",
+      CODEX_TEST_LINE_BYTES: String(options.cap * 6 + 64 * 1024 + 1),
+      CODEX_TEST_PAYLOAD_BASE64: Buffer.from(options.payload ?? "").toString("base64"),
+      CODEX_TEST_STATUS: String(options.status ?? 0),
+    },
+    input: "",
+    timeoutMs: 10_000,
+    outputLastMessagePath: outputPath,
+    outputLastMessageBytes: options.cap,
+    ...(options.outputFileBytes === undefined
+      ? {}
+      : { outputFileBytes: options.outputFileBytes, stdoutPath }),
+    ...(options.tailBytes === undefined ? {} : { tailBytes: options.tailBytes }),
+  });
+  return { outputPath, result, stdoutPath };
+}
+
+test("managed Codex result enforces exact UTF-8 bytes and rejects cap plus one", (t) => {
+  const exact = runManagedOutputFixture(t, {
+    payload: `${managedAgentMessage("🦊")}\n`,
+    cap: 4,
+  });
+  assert.equal(exact.result.error, undefined);
+  assert.equal(readFileSync(exact.outputPath, "utf8"), "🦊");
+
+  const oversized = runManagedOutputFixture(t, {
+    payload: `${managedAgentMessage("a🦊")}\n`,
+    cap: 4,
+  });
+  assert.match(oversized.result.error?.message ?? "", /exceeded its 4-byte limit/);
+  assert.equal(existsSync(oversized.outputPath), false);
+});
+
+test("managed Codex result uses the last top-level agent message and ignores nested lookalikes", (t) => {
+  const nested = {
+    type: "diagnostic",
+    payload: JSON.parse(managedAgentMessage("nested fake")),
+  };
+  const fixture = runManagedOutputFixture(t, {
+    payload: [
+      JSON.stringify(nested),
+      managedAgentMessage("first"),
+      JSON.stringify({ type: "item.completed", item: { type: "command_execution" } }),
+      managedAgentMessage("last"),
+      "",
+    ].join("\n"),
+    cap: 64,
+  });
+  assert.equal(fixture.result.error, undefined);
+  assert.equal(readFileSync(fixture.outputPath, "utf8"), "last");
+});
+
+for (const failure of [
+  {
+    name: "malformed JSONL",
+    options: { payload: "{not-json}\n", cap: 64 },
+    message: /malformed line/,
+  },
+  {
+    name: "partial JSONL",
+    options: { payload: managedAgentMessage("partial"), cap: 64 },
+    message: /partial line/,
+  },
+  {
+    name: "missing agent message",
+    options: { payload: `${JSON.stringify({ type: "turn.completed" })}\n`, cap: 64 },
+    message: /did not contain a final agent message/,
+  },
+  {
+    name: "oversized JSONL line",
+    options: { mode: "oversized-line" as const, cap: 64 },
+    message: /JSONL line exceeded/,
+  },
+]) {
+  test(`managed Codex result fails closed for ${failure.name}`, (t) => {
+    const fixture = runManagedOutputFixture(t, failure.options);
+    assert.match(fixture.result.error?.message ?? "", failure.message);
+    assert.equal(existsSync(fixture.outputPath), false);
+  });
+}
+
+test("managed Codex result survives diagnostic capture truncation", (t) => {
+  const fixture = runManagedOutputFixture(t, {
+    payload: [
+      JSON.stringify({ type: "diagnostic", text: "x".repeat(4096) }),
+      managedAgentMessage("final result"),
+      "",
+    ].join("\n"),
+    cap: 64,
+    outputFileBytes: 128,
+    tailBytes: 32,
+  });
+  assert.equal(fixture.result.error, undefined);
+  assert.equal(readFileSync(fixture.outputPath, "utf8"), "final result");
+  assert.equal(readFileSync(fixture.stdoutPath).length, 128);
+  assert.match(readFileSync(fixture.stdoutPath, "utf8"), /Codex output truncated/);
+});
+
+test("managed Codex result remains available after a non-zero child exit", (t) => {
+  const fixture = runManagedOutputFixture(t, {
+    payload: `${managedAgentMessage("usable result")}\n`,
+    cap: 64,
+    status: 7,
+  });
+  assert.equal(fixture.result.status, 7);
+  assert.equal(fixture.result.error, undefined);
+  assert.equal(readFileSync(fixture.outputPath, "utf8"), "usable result");
+});
+
+test("Codex worker writes one managed result without duplicating it into the IPC receipt", (t) => {
+  const root = mkdtempSync(tmpPrefix);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const binary = join(root, "codex");
+  const optionsPath = join(root, "options.json");
+  const resultPath = join(root, "result.json");
+  const outputPath = join(root, "last-message.txt");
+  const marker = String.raw`quoted "result" with \\ escapes`;
+  writeFileSync(
+    binary,
+    `#!/usr/bin/env node
+process.stdout.write(${JSON.stringify(`${managedAgentMessage(marker)}\n`)});
+`,
+    { mode: 0o755 },
+  );
+  writeFileSync(
+    optionsPath,
+    JSON.stringify({
+      args: [],
+      command: binary,
+      timeoutMs: 10_000,
+      resultPath,
+      stdoutPath: join(root, "stdout.log"),
+      stderrPath: join(root, "stderr.log"),
+      tailBytes: 0,
+      maxOutputFileBytes: 1024,
+      outputLastMessageBytes: 128,
+      outputLastMessagePath: outputPath,
+    }),
+  );
+
+  const worker = spawnSync(
+    process.execPath,
+    [fileURLToPath(new URL("../dist/codex-process-worker.js", import.meta.url)), optionsPath],
+    { cwd: root, input: "", encoding: "utf8" },
+  );
+  assert.equal(worker.status, 0, worker.stderr);
+  assert.equal(readFileSync(outputPath, "utf8"), marker);
+  const receipt = readFileSync(resultPath, "utf8");
+  assert.equal(receipt.includes(marker), false);
+  assert.equal(Object.hasOwn(JSON.parse(receipt), "outputLastMessage"), false);
+});
 
 test("inline proof returns real HTTP observations to one original app-server turn", async () => {
   const root = mkdtempSync(tmpPrefix);
@@ -594,6 +788,8 @@ rl.on("line", (line) => {
 
     try {
       for (let attempt = 0; attempt < 2; attempt += 1) {
+        rmSync(outputPath, { force: true });
+        const exactResultBytes = Buffer.byteLength('{"status":"planned"}');
         const result = runCodexProcess({
           args: [
             "exec",
@@ -615,8 +811,15 @@ rl.on("line", (line) => {
           env,
           input: "Plan the repair.",
           timeoutMs: 10_000,
+          outputLastMessagePath: outputPath,
+          outputLastMessageBytes: exactResultBytes - attempt,
           appServer: { statePath, label: "test worker" },
         });
+        if (attempt === 1) {
+          assert.match(result.error?.message ?? "", /exceeded its 19-byte limit/);
+          assert.equal(existsSync(outputPath), false);
+          continue;
+        }
         assert.equal(result.status, 0, result.stderr);
         assert.equal(result.error, undefined);
         assert.equal(readFileSync(outputPath, "utf8"), '{"status":"planned"}');

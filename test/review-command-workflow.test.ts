@@ -249,6 +249,9 @@ const scheduledScenarios = [
   "changed-pr-clean",
   "changed-pr-proof-invalid-cursor",
   "changed-pr-proof-maintainer-change",
+  "changed-pr-partial-json-findings",
+  "changed-pr-partial-json-incomplete-source",
+  "changed-pr-partial-json-generic",
   "content-clean",
   "fresh-refusal",
 ];
@@ -274,6 +277,9 @@ function testScheduledCacheScenario(scenario: string, publicationCase?: Publicat
     const nativeCheckoutFailure = scenario.endsWith("native-checkout-failure");
     const checkoutUnavailable = scenario.endsWith("checkout-unavailable");
     const cacheRecovery = scenario === "structural-pr-checkout-recovery";
+    const partialJsonFailure = scenario.startsWith("changed-pr-partial-json-")
+      ? scenario.slice("changed-pr-partial-json-".length)
+      : null;
     const changedPr = scenario.startsWith("changed-pr-");
     const isPullRequest = changedPr || cacheRecovery;
     const fresh = scenario === "fresh-refusal" || changedPr;
@@ -612,11 +618,11 @@ function testScheduledCacheScenario(scenario: string, publicationCase?: Publicat
         if (checkoutUnavailable || (cacheRecovery && reviewTreeAttempts === 1)) return false;
         if (cacheRecovery) assert.equal(hydrationCalls, 1);
         if (nativeCheckoutFailure) {
-          const parent = join(root, "blocked-parent");
-          writeFileSync(parent, "a file cannot contain a worktree");
+          const commonGitDir = git("rev-parse", "--path-format=absolute", "--git-common-dir");
+          writeFileSync(join(commonGitDir, "worktrees"), "block Git worktree bookkeeping");
           return materializePullRequestReviewTree({
             targetDir: target,
-            worktreeDir: join(parent, "review-tree"),
+            worktreeDir,
             itemNumber: ITEM_NUMBER,
             headSha,
           });
@@ -685,7 +691,7 @@ function testScheduledCacheScenario(scenario: string, publicationCase?: Publicat
           });
         throw new Error("scan refusal must not become a decision");
       },
-      runCodex: ({ openclawDir, reviewEnv }) => {
+      runCodex: ({ item: reviewItem, openclawDir, reviewEnv }) => {
         assert.equal(reviewEnv.GH_TOKEN, "synthetic-inspection-token");
         generationCalls += 1;
         if (cacheRecovery) {
@@ -722,6 +728,13 @@ function testScheduledCacheScenario(scenario: string, publicationCase?: Publicat
             env: { ...process.env, CODEX_BIN: provider },
             timeoutMs: 30_000,
           });
+        if (partialJsonFailure && reviewItem.number === ITEM_NUMBER + 1) {
+          if (partialJsonFailure === "findings") throw new AgentInputScanError("findings");
+          if (partialJsonFailure === "incomplete-source") {
+            throw new AgentInputScanError("incomplete_source");
+          }
+          throw new Error("generic second-item failure");
+        }
         assert.ok(
           isPullRequest || publicationCacheMiss,
           "compatible unchanged input must use the cache",
@@ -753,7 +766,19 @@ function testScheduledCacheScenario(scenario: string, publicationCase?: Publicat
       reviewActionForDecision: () => ({ actionTaken: "none" }),
       markdownFor: ({ decision }) =>
         `---\nreview_status: ${reviewStatusForDecision(decision)}\ndecision: keep_open\n---\nFresh Codex review\n${decision.reviewFindings.map((finding) => finding.title).join("\n")}\n`,
-      selectCandidates: () => ({ candidates: [{ ...item }], scannedPages: 1 }),
+      selectCandidates: () => ({
+        candidates: partialJsonFailure
+          ? [
+              { ...item },
+              {
+                ...item,
+                number: ITEM_NUMBER + 1,
+                url: `https://github.com/${REPO}/pull/${ITEM_NUMBER + 1}`,
+              },
+            ]
+          : [{ ...item }],
+        scannedPages: 1,
+      }),
       suppliedReviewStartLeaseFromArgs,
       targetRepo: () => REPO,
       updateBulkFilerDetectedFrontMatter: (markdown: string) => markdown,
@@ -762,33 +787,79 @@ function testScheduledCacheScenario(scenario: string, publicationCase?: Publicat
 
     try {
       const { reviewCommand } = createReviewCommandWorkflow(dependencies);
-      const execute = () =>
+      const execute = () => {
+        const commonArgs = [
+          "--target-repo",
+          REPO,
+          "--items-dir",
+          itemsDir,
+          "--item-numbers",
+          partialJsonFailure ? `${ITEM_NUMBER},${ITEM_NUMBER + 1}` : String(ITEM_NUMBER),
+          "--readonly-openclaw",
+        ];
         reviewCommand(
-          parseArgs([
-            "--target-repo",
-            REPO,
-            "--artifact-dir",
-            artifactDir,
-            "--items-dir",
-            itemsDir,
-            "--item-numbers",
-            String(ITEM_NUMBER),
-            "--readonly-openclaw",
-            "--skip-start-comment",
-            "--review-lease-owner",
-            LEASE_OWNER,
-            "--review-lease-comment-id",
-            String(LEASE_COMMENT_ID),
-            "--review-source-action",
-            invalidProofPrior ? "command_proof_result" : "scheduled_normal_backfill",
-            ...(invalidProofPrior
-              ? [
-                  "--additional-prompt",
-                  `<!-- command-proof-assessment-v1 head=${headSha} body=${digest("body")} base=${digest("main")} base_sha=${baseSha} request=${digest("request")} scenario=web-ui-chat-proof -->\nProof assessment`,
-                ]
-              : []),
-          ]),
+          parseArgs(
+            partialJsonFailure
+              ? [...commonArgs, "--local-only", "--result-format", "json"]
+              : [
+                  ...commonArgs,
+                  "--artifact-dir",
+                  artifactDir,
+                  "--skip-start-comment",
+                  "--review-lease-owner",
+                  LEASE_OWNER,
+                  "--review-lease-comment-id",
+                  String(LEASE_COMMENT_ID),
+                  "--review-source-action",
+                  invalidProofPrior ? "command_proof_result" : "scheduled_normal_backfill",
+                  ...(invalidProofPrior
+                    ? [
+                        "--additional-prompt",
+                        `<!-- command-proof-assessment-v1 head=${headSha} body=${digest("body")} base=${digest("main")} base_sha=${baseSha} request=${digest("request")} scenario=web-ui-chat-proof -->\nProof assessment`,
+                      ]
+                    : []),
+                ],
+          ),
         );
+      };
+
+      if (partialJsonFailure) {
+        const stdout: string[] = [];
+        const stderr: string[] = [];
+        const priorLog = console.log;
+        const priorError = console.error;
+        const priorExitCode = process.exitCode;
+        console.log = (value?: unknown) => stdout.push(String(value));
+        console.error = (value?: unknown) => stderr.push(String(value));
+        process.exitCode = undefined;
+        try {
+          execute();
+          const expectedExit =
+            partialJsonFailure === "findings"
+              ? 79
+              : partialJsonFailure === "incomplete-source"
+                ? 78
+                : 1;
+          assert.equal(process.exitCode, expectedExit);
+          assert.equal(stdout.length, 1, stdout.join("\n"));
+          const result = JSON.parse(stdout[0]!);
+          assert.equal(result.status, "failed");
+          assert.equal(result.retention, "none");
+          assert.match(
+            result.reports.find(
+              (report: { item_number?: number }) => report.item_number === ITEM_NUMBER,
+            )?.report ?? "",
+            /Fresh Codex review/,
+          );
+          assert.equal(stdout[0]!.includes("[review]"), false);
+          assert.ok(stderr.length > 0);
+        } finally {
+          console.log = priorLog;
+          console.error = priorError;
+          process.exitCode = priorExitCode;
+        }
+        return;
+      }
 
       if (refuseScan) {
         const reason = incompleteSource ? "incomplete_source" : "scanner_failed";
@@ -877,7 +948,8 @@ function testScheduledCacheScenario(scenario: string, publicationCase?: Publicat
         if (nativeFailure) {
           assert.ok(Number.isInteger(manifest.process.status) && manifest.process.status > 0);
           const detail = readFileSync(join(output, "stderr.tail.txt"), "utf8");
-          assert.match(detail, /REDACTED_PATH/);
+          if (fetchFailure) assert.match(detail, /REDACTED_PATH/);
+          else assert.match(detail, /\.git\/worktrees\/1052.*Not a directory/s);
           assert.equal(detail.includes(root), false);
         } else {
           assert.equal(manifest.process.status, null);

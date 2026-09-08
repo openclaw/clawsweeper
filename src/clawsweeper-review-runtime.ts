@@ -985,11 +985,14 @@ ${extra}
     prompt?: string;
     reviewEnv?: NodeJS.ProcessEnv;
     promptFileBytes?: number;
-    resultFileBytes?: number;
+    resultFileBytes: number;
     streamFileBytes?: number;
     quietLogs?: boolean;
     extraCodexConfig?: string[];
   }): Decision {
+    if (!Number.isSafeInteger(options.resultFileBytes) || options.resultFileBytes <= 0) {
+      throw new UserFacingCommandError("Review result output requires a positive byte limit.");
+    }
     const startedAt = Date.now();
     prepareOpenClawCodexSourceForReview({
       targetRepo: options.item.repo,
@@ -1112,6 +1115,7 @@ ${extra}
       ...(options.streamFileBytes === undefined
         ? {}
         : { outputFileBytes: options.streamFileBytes }),
+      outputLastMessageBytes: options.resultFileBytes,
       timeoutMs: remainingMs,
       ...(reviewProof
         ? {
@@ -1139,12 +1143,7 @@ ${extra}
     if (!result.error && hasOutput) {
       try {
         const decision = parseDecision(
-          JSON.parse(
-            (options.resultFileBytes === undefined
-              ? readFileSync(outputPath, "utf8")
-              : readBoundedReviewResult(outputPath, options.resultFileBytes)
-            ).trim(),
-          ),
+          JSON.parse(readBoundedReviewResult(outputPath, options.resultFileBytes).trim()),
           options.item,
         );
         if (result.status !== 0) {

@@ -94,6 +94,7 @@ export function readReviewGit(
       ? undefined
       : (options.deadlineAt ?? Date.now() + 5_000) - Date.now();
   if (timeout !== undefined && timeout <= 0) return null;
+  const maxBytes = options.maxBytes ?? 1024 * 1024;
   const result = spawnSync(
     options.executable ?? "git",
     [
@@ -136,12 +137,14 @@ export function readReviewGit(
         GIT_TERMINAL_PROMPT: "0",
         GIT_LFS_SKIP_SMUDGE: "1",
       },
-      maxBuffer: options.maxBytes ?? 1024 * 1024,
+      stdio: ["pipe", "pipe", "ignore"],
+      maxBuffer: maxBytes,
       timeout,
       killSignal: "SIGKILL",
     },
   );
-  return result.error || result.signal || result.status !== 0 ? null : result.stdout;
+  if (result.error || result.signal || result.status !== 0) return null;
+  return result.stdout.length > maxBytes ? null : result.stdout;
 }
 
 // Git consumes LF-delimited parent records only immediately after the tree.

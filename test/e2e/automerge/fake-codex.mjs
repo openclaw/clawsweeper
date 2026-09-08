@@ -9,8 +9,7 @@ const args = process.argv.slice(2);
 const outputPath = optionValue("--output-last-message");
 const schemaPath = optionValue("--output-schema");
 const prompt = fs.readFileSync(0, "utf8");
-
-if (!outputPath) fail("fake Codex requires --output-last-message");
+const reviewSchema = schemaPath && path.basename(schemaPath) === "codex-review.schema.json";
 
 const scanReceipt = path.join(
   path.dirname(process.env.CLAWSWEEPER_E2E_GITHUB_STATE),
@@ -25,19 +24,30 @@ assert.equal(
 );
 fs.unlinkSync(scanReceipt);
 
-fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-if (schemaPath && path.basename(schemaPath) === "codex-review.schema.json") {
-  fs.writeFileSync(
-    outputPath,
+if (reviewSchema) {
+  const decision = JSON.stringify({
+    status: "clean",
+    summary: "The deterministic E2E repair is clean.",
+    findings: [],
+    findings_addressed: true,
+    evidence: ["Hermetic Codex simulator reviewed the repaired checkout."],
+  });
+  process.stdout.write(
     `${JSON.stringify({
-      status: "clean",
-      summary: "The deterministic E2E repair is clean.",
-      findings: [],
-      findings_addressed: true,
-      evidence: ["Hermetic Codex simulator reviewed the repaired checkout."],
+      type: "item.completed",
+      item: {
+        type: "agent_message",
+        text: decision,
+      },
     })}\n`,
   );
+  if (outputPath) {
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+    fs.writeFileSync(outputPath, `${decision}\n`);
+  }
 } else {
+  if (!outputPath) fail("fake Codex repair requires --output-last-message");
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   const fixturePath = fixtureEditPath();
   if (!fs.existsSync(fixturePath)) {
     fail(`fake Codex target is missing: ${fixturePath}`);

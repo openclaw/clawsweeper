@@ -25,12 +25,28 @@ import { writeFakeScanner } from "./agent-input-scan-helpers.ts";
 
 const trackedCheckoutContent = "tracked checkout content\n";
 const trackedCheckoutFingerprint = "8b9382c9009cdc46cb69d59eb0078522d45023b2";
+const reviewResultBytes = 4 * 1024 * 1024;
 const fakeCodexSandboxPass = `if (process.argv[2] === "sandbox") {
   process.stdout.write(${JSON.stringify(trackedCheckoutFingerprint)} + "\\n");
   process.exit(0);
 }
 // Like the real CLI, consume the prompt before a review result or early exit.
 require("node:fs").readFileSync(0, "utf8");`;
+const fakeManagedDecision = `process.stdout.write(JSON.stringify({
+  type: "item.completed",
+  item: { type: "agent_message", text: process.env.CODEX_DECISION_JSON },
+}) + "\\n");`;
+
+function runBoundedCodexForTest(
+  options: Omit<Parameters<typeof runCodexForTest>[0], "resultFileBytes"> & {
+    resultFileBytes?: number;
+  },
+) {
+  return runCodexForTest({
+    ...options,
+    resultFileBytes: options.resultFileBytes ?? reviewResultBytes,
+  });
+}
 
 function initTrackedRepo(dir: string, trackedPath = "tracked.txt"): void {
   writeFakeScanner(join(dirname(dir), "bin"));
@@ -63,7 +79,8 @@ for (const scanner of ["missing", "error", "finding", "unexpected-output"]) {
 const fs = require('node:fs');
 fs.appendFileSync(${JSON.stringify(calls)}, 'called\\n');
 ${fakeCodexSandboxPass}
-fs.writeFileSync(process.argv[process.argv.indexOf('--output-last-message') + 1], ${JSON.stringify(JSON.stringify(closeDecision()))});
+if (process.argv.includes("--output-last-message")) process.exit(2);
+${fakeManagedDecision}
 `,
       { mode: 0o755 },
     );
@@ -80,7 +97,7 @@ fs.writeFileSync(process.argv[process.argv.indexOf('--output-last-message') + 1]
     try {
       assert.throws(
         () =>
-          runCodexForTest({
+          runBoundedCodexForTest({
             item: item({ number: 42 }),
             context: { issue: {}, comments: [], timeline: [] },
             git: { mainSha: "abc123", latestRelease: null },
@@ -164,10 +181,7 @@ test("runCodex accepts valid structured output after non-zero Codex exit", () =>
     codexPath,
     `#!/usr/bin/env node
 ${fakeCodexSandboxPass}
-const fs = require("node:fs");
-const outputIndex = process.argv.indexOf("--output-last-message");
-if (outputIndex === -1) process.exit(2);
-fs.writeFileSync(process.argv[outputIndex + 1], process.env.CODEX_DECISION_JSON);
+${fakeManagedDecision}
 process.stderr.write("wrote structured output before shutdown failure\\n");
 process.exit(1);
 `,
@@ -188,7 +202,7 @@ process.exit(1);
     }),
   );
   try {
-    const decision = runCodexForTest({
+    const decision = runBoundedCodexForTest({
       item: item({ number: 83393 }),
       context: { issue: {}, comments: [], timeline: [] },
       git: { mainSha: "abc123", latestRelease: null },
@@ -200,6 +214,7 @@ process.exit(1);
       timeoutMs: 10_000,
       workDir,
       prompt: "Return a review decision.",
+      resultFileBytes: Buffer.byteLength(process.env.CODEX_DECISION_JSON!),
     });
 
     assert.equal(decision.decision, "keep_open");
@@ -248,7 +263,7 @@ process.exit(0);
   process.env.CODEX_INVOCATIONS_PATH = invocationsPath;
   try {
     assert.throws(() =>
-      runCodexForTest({
+      runBoundedCodexForTest({
         item: item({ number: 83396 }),
         context: { issue: {}, comments: [], timeline: [] },
         git: { mainSha: "abc123", latestRelease: null },
@@ -301,8 +316,7 @@ test("runCodex supports whitespace and Unicode in regular tracked paths", () => 
 const fs = require("node:fs");
 fs.appendFileSync(process.env.CODEX_ARGS_PATH, JSON.stringify(process.argv.slice(2)) + "\\n");
 ${fakeCodexSandboxPass}
-const outputIndex = process.argv.indexOf("--output-last-message");
-fs.writeFileSync(process.argv[outputIndex + 1], process.env.CODEX_DECISION_JSON);
+${fakeManagedDecision}
 `,
   );
   chmodSync(codexPath, 0o755);
@@ -315,7 +329,7 @@ fs.writeFileSync(process.argv[outputIndex + 1], process.env.CODEX_DECISION_JSON)
   process.env.CODEX_ARGS_PATH = argsPath;
   process.env.CODEX_DECISION_JSON = JSON.stringify(closeDecision({ decision: "keep_open" }));
   try {
-    const decision = runCodexForTest({
+    const decision = runBoundedCodexForTest({
       item: item({ number: 83401 }),
       context: { issue: {}, comments: [], timeline: [] },
       git: { mainSha: "abc123", latestRelease: null },
@@ -360,8 +374,7 @@ test("runCodex supports newlines in regular tracked paths", () => {
 const fs = require("node:fs");
 fs.appendFileSync(process.env.CODEX_ARGS_PATH, JSON.stringify(process.argv.slice(2)) + "\\n");
 ${fakeCodexSandboxPass}
-const outputIndex = process.argv.indexOf("--output-last-message");
-fs.writeFileSync(process.argv[outputIndex + 1], process.env.CODEX_DECISION_JSON);
+${fakeManagedDecision}
 `,
   );
   chmodSync(codexPath, 0o755);
@@ -374,7 +387,7 @@ fs.writeFileSync(process.argv[outputIndex + 1], process.env.CODEX_DECISION_JSON)
   process.env.CODEX_ARGS_PATH = argsPath;
   process.env.CODEX_DECISION_JSON = JSON.stringify(closeDecision({ decision: "keep_open" }));
   try {
-    const decision = runCodexForTest({
+    const decision = runBoundedCodexForTest({
       item: item({ number: 83402 }),
       context: { issue: {}, comments: [], timeline: [] },
       git: { mainSha: "abc123", latestRelease: null },
@@ -445,7 +458,7 @@ process.exit(0);
     process.env.CODEX_INVOCATIONS_PATH = invocationsPath;
     try {
       assert.throws(() =>
-        runCodexForTest({
+        runBoundedCodexForTest({
           item: item({ number: 83400 }),
           context: { issue: {}, comments: [], timeline: [] },
           git: { mainSha: "abc123", latestRelease: null },
@@ -490,9 +503,8 @@ if (process.argv[2] === "sandbox") {
   }, 400);
 } else {
   fs.readFileSync(0, "utf8");
-  const outputIndex = process.argv.indexOf("--output-last-message");
   setTimeout(() => {
-    fs.writeFileSync(process.argv[outputIndex + 1], process.env.CODEX_DECISION_JSON);
+    ${fakeManagedDecision}
   }, 400);
 }
 `,
@@ -508,7 +520,7 @@ if (process.argv[2] === "sandbox") {
   process.env.CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS = "1";
   try {
     assert.throws(() =>
-      runCodexForTest({
+      runBoundedCodexForTest({
         item: item({ number: 83399 }),
         context: { issue: {}, comments: [], timeline: [] },
         git: { mainSha: "abc123", latestRelease: null },
@@ -574,7 +586,7 @@ process.stdout.write(JSON.stringify({ payloads: [{ text }], meta: { stopReason: 
   try {
     assert.throws(
       () =>
-        runCodexForTest({
+        runBoundedCodexForTest({
           item: item({ number: 83397 }),
           context: { issue: {}, comments: [], timeline: [] },
           git: { mainSha: "abc123", latestRelease: null },
@@ -655,7 +667,7 @@ if (count > 0) {
   process.env.CODEX_BIN = join(root, "missing-codex");
   process.env.OPENCLAW_TEST_INVOCATIONS_PATH = invocationsPath;
   try {
-    const decision = runCodexForTest({
+    const decision = runBoundedCodexForTest({
       item: item({ number: 83396 }),
       context: { issue: {}, comments: [], timeline: [] },
       git: { mainSha: "abc123", latestRelease: null },
@@ -697,9 +709,8 @@ const fs = require("node:fs");
 if (process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN || process.env.GITHUB_TOKEN) process.exit(3);
 fs.writeFileSync(process.env.CODEX_ARGS_PATH + ".env", JSON.stringify({ GH_TOKEN: process.env.GH_TOKEN }));
 fs.writeFileSync(process.env.CODEX_ARGS_PATH, JSON.stringify(process.argv.slice(2)));
-const outputIndex = process.argv.indexOf("--output-last-message");
-if (outputIndex === -1) process.exit(2);
-fs.writeFileSync(process.argv[outputIndex + 1], process.env.CODEX_DECISION_JSON);
+if (process.argv.includes("--output-last-message")) process.exit(2);
+${fakeManagedDecision}
 `,
   );
   chmodSync(codexPath, 0o755);
@@ -727,7 +738,7 @@ fs.writeFileSync(process.argv[outputIndex + 1], process.env.CODEX_DECISION_JSON)
   );
 
   const runAndReadArgs = (preserveCodexAuth: boolean, sandboxMode = "read-only"): string[] => {
-    const decision = runCodexForTest({
+    const decision = runBoundedCodexForTest({
       item: item({ number: 83395 }),
       context: { issue: {}, comments: [], timeline: [] },
       git: { mainSha: "abc123", latestRelease: null },
@@ -775,8 +786,6 @@ fs.writeFileSync(process.argv[outputIndex + 1], process.env.CODEX_DECISION_JSON)
       openclawDir,
       "--output-schema",
       join(process.cwd(), "schema", "clawsweeper-decision.schema.json"),
-      "--output-last-message",
-      join(workDir, "83395.json"),
       "--json",
       "--sandbox",
       "read-only",
@@ -824,7 +833,7 @@ process.exit(1);
   try {
     assert.throws(
       () =>
-        runCodexForTest({
+        runBoundedCodexForTest({
           item: item({ number: 83394 }),
           context: { issue: {}, comments: [], timeline: [] },
           git: { mainSha: "abc123", latestRelease: null },
@@ -866,7 +875,7 @@ process.exit(1);
   }
 });
 
-test("runCodex accepts structured output after more than 128 MiB of process output", () => {
+test("runCodex keeps its managed decision when diagnostic capture truncates", () => {
   const root = mkdtempSync(tmpPrefix);
   const openclawDir = join(root, "openclaw");
   const workDir = join(root, "codex-work");
@@ -880,10 +889,13 @@ test("runCodex accepts structured output after more than 128 MiB of process outp
     `#!/usr/bin/env node
 ${fakeCodexSandboxPass}
 const fs = require("node:fs");
-const chunk = Buffer.alloc(1024 * 1024, "x");
-for (let index = 0; index < 129; index += 1) fs.writeSync(1, chunk);
-const outputIndex = process.argv.indexOf("--output-last-message");
-fs.writeFileSync(process.argv[outputIndex + 1], process.env.CODEX_DECISION_JSON);
+for (let index = 0; index < 32; index += 1) {
+  fs.writeSync(
+    1,
+    JSON.stringify({ type: "diagnostic", text: "x".repeat(64) }) + "\\n",
+  );
+}
+${fakeManagedDecision}
 `,
   );
   chmodSync(codexPath, 0o755);
@@ -902,7 +914,7 @@ fs.writeFileSync(process.argv[outputIndex + 1], process.env.CODEX_DECISION_JSON)
     }),
   );
   try {
-    const decision = runCodexForTest({
+    const decision = runBoundedCodexForTest({
       item: item({ number: 83395 }),
       context: { issue: {}, comments: [], timeline: [] },
       git: { mainSha: "abc123", latestRelease: null },
@@ -911,13 +923,14 @@ fs.writeFileSync(process.argv[outputIndex + 1], process.env.CODEX_DECISION_JSON)
       reasoningEffort: "high",
       sandboxMode: "read-only",
       serviceTier: "",
-      timeoutMs: 20_000,
+      timeoutMs: 10_000,
       workDir,
       prompt: "Return a review decision.",
+      streamFileBytes: 128,
     });
 
     assert.equal(decision.summary, "Review survived verbose Codex output.");
-    assert.equal(statSync(join(workDir, "83395.1.codex.stdout.log")).size, 128 * 1024 * 1024);
+    assert.equal(statSync(join(workDir, "83395.1.codex.stdout.log")).size, 128);
   } finally {
     if (originalPath === undefined) delete process.env.PATH;
     else process.env.PATH = originalPath;
@@ -1074,8 +1087,7 @@ if (attempt === 1) {
   }) + "\\n");
   process.exit(1);
 }
-const outputIndex = process.argv.indexOf("--output-last-message");
-fs.writeFileSync(process.argv[outputIndex + 1], process.env.CODEX_DECISION_JSON);
+${fakeManagedDecision}
 `,
   );
   chmodSync(codexPath, 0o755);
@@ -1106,7 +1118,7 @@ fs.writeFileSync(process.argv[outputIndex + 1], process.env.CODEX_DECISION_JSON)
   try {
     assert.throws(
       () =>
-        runCodexForTest({
+        runBoundedCodexForTest({
           item: item({ number: 83394 }),
           context: { issue: {}, comments: [], timeline: [] },
           git: { mainSha: "abc123", latestRelease: null },
@@ -1173,7 +1185,7 @@ process.exit(1);
   try {
     assert.throws(
       () =>
-        runCodexForTest({
+        runBoundedCodexForTest({
           item: item({ number: 89041 }),
           context: { issue: {}, comments: [], timeline: [] },
           git: { mainSha: "abc123", latestRelease: null },

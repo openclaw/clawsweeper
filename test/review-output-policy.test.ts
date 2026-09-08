@@ -23,6 +23,7 @@ import { parseArgs } from "../dist/clawsweeper-args.js";
 import {
   assertActiveReviewOutputBudget,
   assertTransientReviewOutputBudget,
+  createReviewOutputMetadataBudget,
   createTransientReviewOutput,
   emitReviewFailureJson,
   emitReviewOutput,
@@ -33,6 +34,7 @@ import {
   reviewOutputFilePeak,
   reviewOutputItemBudget,
   reviewOutputSelection,
+  writeReviewOutputMetadata,
 } from "../dist/review-output-policy.js";
 import { localReviewOutputHasPayload } from "../dist/clawsweeper-review-command-workflow.js";
 
@@ -232,11 +234,43 @@ test("per-item budgets stay within their aggregate pools", () => {
   assert.ok(debug.streamFileBytes * 2 * 5 <= 480 * 1024 * 1024);
   assert.ok(debug.promptFileBytes * 5 <= 256 * 1024 * 1024);
   assert.ok(debug.resultFileBytes * 5 <= 64 * 1024 * 1024);
-  const transient = reviewOutputItemBudget("none", 5);
-  assert.equal(transient.promptFileBytes, 0);
-  assert.ok(transient.streamFileBytes * 2 * 5 <= 56 * 1024 * 1024);
-  assert.ok(transient.resultFileBytes * 5 <= 12 * 1024 * 1024);
+  for (const retention of ["none", "summary"] as const) {
+    const transient = reviewOutputItemBudget(retention, 64);
+    assert.deepEqual(transient, {
+      promptFileBytes: 0,
+      resultFileBytes: 4 * 1024 * 1024,
+      streamFileBytes: 16 * 1024 * 1024,
+      mediaDownloadBytes: 32 * 1024 * 1024,
+      mediaDerivedBytes: 8 * 1024 * 1024,
+      metadataBytes: 4 * 1024 * 1024,
+      reportsBytes: 16 * 1024 * 1024,
+    });
+    assert.equal(
+      transient.streamFileBytes * 2 +
+        transient.resultFileBytes +
+        transient.reportsBytes +
+        transient.mediaDownloadBytes +
+        transient.mediaDerivedBytes +
+        transient.metadataBytes,
+      96 * 1024 * 1024,
+    );
+  }
   assert.throws(() => reviewOutputItemBudget("debug", 129), /1-128 items/);
+});
+
+test("review metadata rejects an over-budget producer before creating its file", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-metadata-budget-"));
+  try {
+    const output = join(root, "metadata.json");
+    const budget = createReviewOutputMetadataBudget(root, 4);
+    assert.throws(
+      () => writeReviewOutputMetadata(budget, output, "12345"),
+      /exceeded its 4-byte limit/,
+    );
+    assert.equal(existsSync(output), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("64-item none, summary, and debug runs respect live file peaks and preserve evidence hashes", () => {
