@@ -103,9 +103,11 @@ export interface CreateReviewCommandWorkflowDependencies {
     readonly retryable: boolean;
   };
   codexReviewFailureRetryable: (error: unknown) => boolean;
+  ghJson: <T>(args: string[]) => T;
   collectItemContext: (
     item: Item,
     options?: {
+      pullRequestPayload?: unknown;
       fullTimelineForRelations?: boolean;
       reviewCacheDigest?: boolean;
       reviewCacheGitDir?: string;

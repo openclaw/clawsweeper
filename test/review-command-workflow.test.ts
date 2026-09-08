@@ -466,6 +466,7 @@ function testScheduledCacheScenario(scenario: string, publicationCase?: Publicat
     );
 
     const dependencies = {
+      ghJson: () => ({}),
       get activeReviewMutationRunner() {
         return activeReviewMutationRunner;
       },

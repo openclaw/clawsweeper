@@ -1,3 +1,9 @@
+import { REVIEW_SECTIONS } from "./clawsweeper-policy.js";
+import {
+  oversizedPrCloseEnabled,
+  parseOversizedPullRequestEvidence,
+  oversizedPullRequestContext,
+} from "./clawsweeper-oversized-pr-policy.js";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { reportPublicationPolicy } from "./manual-publication-policy.js";
@@ -729,6 +735,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         isRetryablePrCloseCoverageProofReport(markdown) ||
         isRetryableKeptOpenCloseReport(markdown) ||
         isPairBlockedCloseReport(markdown);
+      const oversizedMetadataDecision = closeReason === "oversized_pull_request" &&
+        parseOversizedPullRequestEvidence(frontMatterValue(markdown, "oversized_pull_request")) !== null;
       const verifiedLocalCheckout = hasVerifiedLocalCheckoutAccess(markdown);
       const canClosePairCounterpartInThisRun = (
         counterpartNumber: number,
@@ -913,7 +921,12 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         if (processedCount >= processedLimit) break;
         continue;
       }
-      if (!verifiedLocalCheckout && !shouldProbeClosedState) {
+      if (closeReason === "oversized_pull_request" &&
+          (dryRun || syncCommentsOnly || !oversizedPrCloseEnabled() || !closeReasonEnabled(closeReason, applyCloseReasons))) {
+        if (recordApplySkipped("kept_open", dryRun ? "dry-run: oversized PR close proposal retained" : "oversized PR close gate is disabled")) break;
+        continue;
+      }
+      if (!verifiedLocalCheckout && !oversizedMetadataDecision && !shouldProbeClosedState) {
         if (markApplySkipped("kept_open", "review lacks verified local checkout access")) break;
         continue;
       }
@@ -1025,6 +1038,10 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         deferredSelfMutationReceipt = false;
       };
       const currentItemContext = (): ItemContext => {
+        if (oversizedMetadataDecision) {
+          currentContext ??= liveReadGeneration.bind(oversizedPullRequestContext(dependencies.asRecord(ghJson(["api", `repos/${repo}/pulls/${number}`]))));
+          return liveReadGeneration.value(currentContext);
+        }
         currentContext ??= liveReadGeneration.bind(
           collectApplyItemContext(item, {
             fullTimelineForRelations: true,
@@ -1080,7 +1097,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             ) === "equal")
         );
       };
-      const currentReviewActivityBlock = createApplyReviewActivityGuard(dependencies, {
+      const currentReviewActivityBlock = oversizedMetadataDecision ? () => null : createApplyReviewActivityGuard(dependencies, {
         expectedCursor: expectedReviewActivityCursor,
         itemKind: item.kind,
         number,
@@ -1108,7 +1125,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         item.kind === "pull_request"
           ? (pullHeadShaFromContext(currentItemContext()) ?? "")
           : liveIssueSourceRevision(number, { liveReadGeneration });
-      if (state === "open" && exactEventPublication) {
+      if (state === "open" && exactEventPublication && !oversizedMetadataDecision) {
         const exactLeaseDisposition = exactEventReviewLeaseDisposition(
           markdownBeforeApplyDecisionMutations,
           initialReviewHeadSha,
@@ -1248,6 +1265,9 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           "automation_item_updated_at",
           automationItemUpdatedAt,
         );
+        // Metadata-only admission has no source-review receipt to refresh.
+        // The close writer revalidates its recorded size and head immediately before close.
+        if (oversizedMetadataDecision) return false;
         // A post-mutation item timestamp is not operation-specific. Admit it
         // into this apply run only when an immediate structural receipt still
         // matches the reviewed source, PR head, and review-activity cursor. The
@@ -1390,7 +1410,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         if (processedCount >= processedLimit) break;
         continue;
       }
-      if (state === "open" && !verifiedLocalCheckout && !staleCanonicalCommentSyncPending) {
+      if (state === "open" && !verifiedLocalCheckout && !oversizedMetadataDecision && !staleCanonicalCommentSyncPending) {
         if (isCloseProposal) {
           if (markApplySkipped("kept_open", "review lacks verified local checkout access")) break;
         }
@@ -1416,7 +1436,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         const reviewedAuthorAssociation = normalizeAuthorAssociation(storedAuthorAssociation);
         const maintainerReason =
           action === "skipped_maintainer_authored" &&
-          !isVerifiedFixedCloseReason(closeReason) &&
+          closeReason !== "oversized_pull_request" &&
+        !isVerifiedFixedCloseReason(closeReason) &&
           (isMaintainerAuthorAssociation(currentAuthorAssociation) ||
             isMaintainerAuthorAssociation(reviewedAuthorAssociation))
             ? `author association is ${
@@ -1708,7 +1729,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         preserveGuardReadCacheAfterMutation = true;
         resetMutationGuardBoundary();
       }
-      if (!restrictedPublication && state === "open" && item.kind === "pull_request") {
+      if (!oversizedMetadataDecision && !restrictedPublication && state === "open" && item.kind === "pull_request") {
         const pullRequestLabels = syncApplyPullRequestLabels(dependencies, {
           currentItemContext,
           dryRun,
@@ -1748,6 +1769,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       const reviewedAuthorAssociation = normalizeAuthorAssociation(storedAuthorAssociation);
       if (
         isCloseProposal &&
+        closeReason !== "oversized_pull_request" &&
         !isVerifiedFixedCloseReason(closeReason) &&
         (isMaintainerAuthorAssociation(currentAuthorAssociation) ||
           isMaintainerAuthorAssociation(reviewedAuthorAssociation))
@@ -1894,7 +1916,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           break;
         continue;
       }
-      const labelsCanSync = !restrictedPublication && !lockedMetadataOnly && !stalePrReviewHead && labelSyncFreshEnough();
+      const labelsCanSync = !oversizedMetadataDecision && !restrictedPublication && !lockedMetadataOnly && !stalePrReviewHead && labelSyncFreshEnough();
       const complete = frontMatterValue(markdown, "review_status") === "complete" && labelsCanSync;
       const reportLabelSync = syncApplyReportLabels(dependencies, {
         bulkFilerRepositoryPermissionCache,
@@ -2653,6 +2675,22 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             });
           }
           return processedCount >= processedLimit;
+        },
+        onOversizedClosed: () => {
+          try {
+          const liveComment = withGuardReadOptions({ bypassGenerationCache: true }, () => issueReviewComment(number));
+          // Finish only our pending notice; never replace a newer canonical review.
+          if (!liveComment || !commentBodyMatches(liveComment, markedReviewComment)) return;
+          const completedBody = markedReviewCommentForApply(renderReviewCommentFromReport(markdown, "oversized_pull_request", renderOptions));
+          const completedComment = upsertReviewComment(number, completedBody, liveComment, undefined, { suppressAutomationMarkers });
+          markdown = updateReviewCommentMetadata(markdown, completedComment, completedBody);
+          markdown = dependencies.replaceSectionValue(markdown, REVIEW_SECTIONS.closeComment, completedBody);
+          markdown = replaceFrontMatterValue(markdown, "close_comment_sha256", dependencies.sha256(completedBody));
+          writeReportMarkdown(join(closedDir, file), markdown);
+          } catch (error) {
+            // Closing already succeeded; a notice failure must not recreate an open record.
+            console.error(`[apply] #${number} closed; size-policy notice update failed: ${error instanceof Error ? error.message : String(error)}`);
+          }
         },
         pairedIssueCanonicalProvenanceBlock,
         pairedIssueCloseCapacityAvailable:

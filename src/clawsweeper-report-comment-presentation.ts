@@ -496,6 +496,14 @@ export function createReportCommentPresentation(
     reason: CloseReason,
     options: ReviewCommentRenderOptions = {},
   ): string {
+    if (reason === "oversized_pull_request") {
+      return [
+        renderCloseCommentFromReport(markdown, reason),
+        reviewVersionMarkerFromReport(markdown),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+    }
     const decision = frontMatterValue(markdown, "decision");
     const reviewReadiness =
       frontMatterValue(markdown, "type") === "pull_request"

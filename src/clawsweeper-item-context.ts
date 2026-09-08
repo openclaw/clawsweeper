@@ -136,6 +136,7 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
   function collectItemContext(
     item: Item,
     options: {
+      pullRequestPayload?: unknown;
       fullTimelineForRelations?: boolean;
       reviewCacheDigest?: boolean;
       reviewCacheGitDir?: string;
@@ -281,7 +282,9 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
       }
     }
     if (item.kind === "pull_request") {
-      pullRequest = readJson<unknown>(["api", `repos/${targetRepo()}/pulls/${item.number}`]);
+      pullRequest =
+        options.pullRequestPayload ??
+        readJson<unknown>(["api", `repos/${targetRepo()}/pulls/${item.number}`]);
       const pullRecord = asRecord(pullRequest);
       const pullUpdatedAt = stringOrUndefined(pullRecord.updated_at);
       const pullHeadSha = stringOrUndefined(asRecord(pullRecord.head).sha);

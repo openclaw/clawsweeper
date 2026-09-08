@@ -1237,6 +1237,7 @@ const {
 } = commandOperations;
 
 const { reviewCommand } = createReviewCommandWorkflow({
+  ghJson,
   ...reviewActionLedger,
   get activeReviewMutationRunner() {
     return githubExecution.activeReviewMutationRunner;

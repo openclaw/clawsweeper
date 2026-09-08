@@ -8,6 +8,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -260,7 +261,7 @@ function ghAdapter(args) {
         : kind === "issue"
           ? config.issue
           : kind === "head"
-            ? { head: { sha: config.head } }
+            ? { ...config.issue, head: { sha: config.head } }
             : Array.isArray(config.comments)
               ? Array.from({ length: pages }, (_, i) =>
                   config.comments.slice(i * 100, (i + 1) * 100),
@@ -279,6 +280,7 @@ function ghAdapter(args) {
 function execute(snapshot, scenario) {
   const temp = mkdtempSync(join(tmpdir(), "exact-review-read-scope-"));
   try {
+    symlinkSync(join(root, "dist"), join(temp, "dist"), "junction");
     mkdirSync(join(temp, "bin"));
     mkdirSync(join(temp, "scripts"));
     writeFileSync(join(temp, classifierPath), snapshot.classifier);
@@ -359,6 +361,8 @@ function execute(snapshot, scenario) {
 
 function admission(outputs) {
   const outcome = { ...outputs };
+  delete outcome.pr_admission_file;
+  delete outcome.oversized;
   delete outcome.scheduled_noop;
   delete outcome.scheduled_noop_reason;
   return outcome;
@@ -405,7 +409,7 @@ export function runReadScopeProof({
     const after = execute(candidate, scenario);
     const isHot = scenario.decision.sourceAction === hotAction;
     const hydration = after.trace.filter((event) =>
-      ["head", "comments", "classifier"].includes(event.kind),
+      ["comments", "classifier"].includes(event.kind),
     );
     if (!isHot)
       assert.equal(
@@ -413,6 +417,16 @@ export function runReadScopeProof({
         0,
         `${scenario.name}: wasted non-hot no-op reads/classification`,
       );
+    if (
+      after.outputs.item_kind === "pull_request" &&
+      (scenario.live || (scenario.issue.state === "open" && !scenario.issue.locked))
+    ) {
+      assert.equal(
+        after.trace.filter((event) => event.kind === "head").length,
+        1,
+        `${scenario.name}: PR size admission reads metadata exactly once`,
+      );
+    }
     if (before) {
       if (scenario.live) {
         assert.equal(before.outputs.scheduled_noop_reason, "not_scheduled_hot");
@@ -432,10 +446,10 @@ export function runReadScopeProof({
         admission(before.outputs),
         `${scenario.name}: admission drift`,
       );
-      if (isHot) assert.deepEqual(after, before, `${scenario.name}: hot path drift`);
+      if (isHot) assert.deepEqual(after.trace, before.trace, `${scenario.name}: hot path drift`);
       else
         assert.deepEqual(
-          after.trace,
+          after.trace.filter((event) => !["head", "comments", "classifier"].includes(event.kind)),
           before.trace.filter((event) => !["head", "comments", "classifier"].includes(event.kind)),
           `${scenario.name}: required reads changed`,
         );

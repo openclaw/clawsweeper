@@ -1,6 +1,7 @@
 export const AUTOMERGE_LABEL = "clawsweeper:automerge";
 export const AUTOFIX_LABEL = "clawsweeper:autofix";
 export const HUMAN_REVIEW_LABEL = "clawsweeper:human-review";
+export const ACCEPTED_LARGE_LABEL = "size: accepted-large";
 export const MANUAL_ONLY_LABEL = "clawsweeper:manual-only";
 
 export const CLOSE_PROTECTED_LABEL_NAMES = [
@@ -30,6 +31,7 @@ export const PR_AUTO_CLOSE_EXEMPT_LABEL_NAMES = [
 ] as const;
 
 export const EXACT_REVIEW_CLOSE_GUARD_LABELS = [
+  ACCEPTED_LARGE_LABEL,
   ...CLOSE_PROTECTED_LABEL_NAMES,
   ...PR_AUTO_CLOSE_EXEMPT_LABEL_NAMES,
 ] as const;

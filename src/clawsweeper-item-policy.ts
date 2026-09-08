@@ -100,7 +100,8 @@ export function applyBlockingProtectedLabels(
         (APPLY_PROTECTED_LABELS.has(label) || label.includes("security")) &&
         normalized.indexOf(label) === index,
     );
-  if (!isVerifiedFixedCloseReason(closeReason)) return blocked;
+  if (!isVerifiedFixedCloseReason(closeReason) && closeReason !== "oversized_pull_request")
+    return blocked;
   return blocked.filter((label) => label !== "maintainer");
 }
 

@@ -188,6 +188,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Added
 
+- Propose closing pull requests above 30,000 changed lines before hydration, scanning, or model review, with a configurable threshold, maintainer size exemption, and live-revalidated gated apply.
+
 - Enabled browser live proof for ClawSweeper with a self-contained local OpenClaw Bay launcher and seeded lifecycle/workflow demo data.
 - Added an opt-in live-proof lane that records typed browser or terminal plans in a secretless PR-head job, validates and uploads media from a separate trusted job, and attaches only trusted R2 URLs to the durable review comment.
 - Status dashboard facelift: an at-a-glance subsystem health strip in the hero (review handoff, work execution, incidents, apply lane, coverage) and a new Fleet Review Coverage section backed by a public `/api/review-coverage` endpoint that summarizes trailing-7-day review coverage per fleet (coverage %, stale/failed/pending counts) from canonical Durable Object item records.

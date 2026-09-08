@@ -154,6 +154,7 @@ poster or WebP over accumulated before/after sets.
   — proposed; maintainer decision required before any enforcement
 - [Author PR budget policy](author-pr-budget-close-policy.md) — active
 - [Stalled PR policies](stalled-pr-close-policies.md) — active
+- [Oversized PR policy](oversized-pr-close-policy.md) — active
 
 ## Security and special-purpose surfaces
 

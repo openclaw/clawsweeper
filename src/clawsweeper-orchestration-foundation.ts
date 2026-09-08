@@ -52,6 +52,8 @@ export function createReportOrchestrationFoundation(
 
   function closeIntro(reason: CloseReason): string {
     switch (reason) {
+      case "oversized_pull_request":
+        return "Pull request exceeds the review size limit.";
       case "implemented_on_main":
         return "Thanks for the context here. I did a careful shell check against current `main`, and this is already implemented.";
       case "mostly_implemented_on_main":

@@ -1,5 +1,6 @@
 import { PUBLIC_CODEX_MODEL } from "./codex-env.js";
 import {
+  ACCEPTED_LARGE_LABEL,
   CLOSE_PROTECTED_LABEL_NAMES,
   PR_AUTO_CLOSE_EXEMPT_LABEL_NAMES,
 } from "./repair/exact-review-guard-labels.js";
@@ -85,6 +86,11 @@ export const DEFAULT_REVIEW_CODEX_TIMEOUT_MS = 1_200_000;
 export const REVIEW_POLICY_VERSION = "2026-08-28-policy-v25";
 export const REVIEW_COMMENT_MARKER_PREFIX = "<!-- clawsweeper-review";
 export const REVIEW_START_STATUS_MARKER_PREFIX = "<!-- clawsweeper-review-status";
+export const ACCEPTED_LARGE_LABEL_DEFINITION = {
+  name: ACCEPTED_LARGE_LABEL,
+  color: "5319E7",
+  description: "Maintainer accepts this pull request exceeding the review size limit.",
+};
 export const MERGE_READY_LABEL = "clawsweeper:merge-ready";
 export const PR_AUTO_CLOSE_EXEMPT_LABELS = new Set<string>(PR_AUTO_CLOSE_EXEMPT_LABEL_NAMES);
 export const WAITING_ON_AUTHOR_LABEL = "status: ⏳ waiting on author";
@@ -525,6 +531,7 @@ export const ALLOWED_REASONS = new Set<CloseReason>([
   "clawhub",
   "duplicate_or_superseded",
   "low_signal_unmergeable_pr",
+  "oversized_pull_request",
   "stalled_unproven_pr",
   "abandoned_pr",
   "unconfirmed_product_direction",

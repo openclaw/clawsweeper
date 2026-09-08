@@ -536,14 +536,20 @@ export function promotionGhMock(options: {
   headRef?: string;
   headRepository?: string;
   changedFiles?: number;
+  additions?: number;
+  deletions?: number;
+  pullAfterCommentWrite?: Record<string, unknown>;
+  commandLogPath?: string;
   sourceFiles?: Array<string | { filename: string; status: string }>;
   issueCommentCount?: number;
   comment: string;
   commentWriteLogPath?: string;
   commentWriteError?: string;
+  commentWriteErrorAfterClose?: string;
   closeAppliedBodyLogPath?: string;
   closeCommandLogPath?: string;
   closeCommandDelayMs?: number;
+  closeCommandError?: string;
   comments?: unknown[];
   commentsAfterFirstRead?: unknown[];
   commentsAfterCommentWrite?: unknown[];
@@ -602,6 +608,7 @@ export function promotionGhMock(options: {
 	const { appendFileSync, existsSync, readFileSync, writeFileSync } = require("fs");
 	const { join } = require("path");
 	const rawArgs = process.argv.slice(2);
+  if (${JSON.stringify(options.commandLogPath ?? "")}) appendFileSync(${JSON.stringify(options.commandLogPath ?? "")}, JSON.stringify(rawArgs) + "\\n");
 	const args = rawArgs[0] === "--repo" ? rawArgs.slice(2) : rawArgs;
 	const path = args[1] || "";
 	const slurp = args.includes("--slurp");
@@ -748,6 +755,7 @@ export function promotionGhMock(options: {
 	  console.log("HTTP/2 200\\n\\n" + JSON.stringify(timeline));
 	} else if (args[0] === "api" && new RegExp("/issues/" + number + "/comments$").test(path) && args.includes("--method")) {
 	  if (commentWriteLogPath) appendFileSync(commentWriteLogPath, args.join(" ") + "\\n");
+	  if (${JSON.stringify(options.commentWriteErrorAfterClose ?? "")} && closeCommandLogPath && existsSync(closeCommandLogPath) && readFileSync(closeCommandLogPath, "utf8").includes("pr close")) { console.error(${JSON.stringify(options.commentWriteErrorAfterClose ?? "")}); process.exit(1); }
 	  if (commentWriteError) {
 	    console.error(commentWriteError);
 	    process.exit(1);
@@ -762,6 +770,7 @@ export function promotionGhMock(options: {
 	  console.log("");
 	} else if (args[0] === "api" && new RegExp("/issues/comments/\\\\d+$").test(path) && args.includes("--method")) {
 	  if (commentWriteLogPath) appendFileSync(commentWriteLogPath, args.join(" ") + "\\n");
+	  if (${JSON.stringify(options.commentWriteErrorAfterClose ?? "")} && closeCommandLogPath && existsSync(closeCommandLogPath) && readFileSync(closeCommandLogPath, "utf8").includes("pr close")) { console.error(${JSON.stringify(options.commentWriteErrorAfterClose ?? "")}); process.exit(1); }
 	  if (commentWriteError) {
 	    console.error(commentWriteError);
 	    process.exit(1);
@@ -814,6 +823,10 @@ export function promotionGhMock(options: {
     mergeable,
     mergeable_state: mergeableState,
     changed_files: changedFiles,
+    labels,
+    locked: false,
+    additions: ${options.additions ?? 0},
+    deletions: ${options.deletions ?? 0},
     commits: 1,
     review_comments: 0,
     body: "Stale PR body.",
@@ -821,7 +834,8 @@ export function promotionGhMock(options: {
     requested_teams: ${JSON.stringify(options.requestedTeams ?? [])},
     head: { sha: ${JSON.stringify(options.headSha ?? "head-sha")}, ref: ${JSON.stringify(options.headRef ?? "branch")}, repo: { id: 123, full_name: ${JSON.stringify(options.headRepository ?? "fork/openclaw")} } },
     base: { sha: "base-sha", ref: "main", repo: { full_name: "openclaw/openclaw" } },
-    user: { login: authorLogin }
+    user: { login: authorLogin },
+    ...(existsSync(commentStatePath) ? ${JSON.stringify(options.pullAfterCommentWrite ?? {})} : {})
   }));
 	} else if (args[0] === "api" && /\\/actions\\/runs\\?/.test(path)) {
 	  console.log(JSON.stringify({
@@ -938,6 +952,7 @@ export function promotionGhMock(options: {
   console.log(JSON.stringify([[]]));
 } else if (args[0] === "pr" && args[1] === "close" && args[2] === String(number)) {
   if (closeCommandLogPath) appendFileSync(closeCommandLogPath, args.join(" ") + "\\n");
+  if (${JSON.stringify(options.closeCommandError ?? "")}) { console.error(${JSON.stringify(options.closeCommandError ?? "")}); process.exit(1); }
   if (closeCommandDelayMs > 0) setTimeout(() => console.log(""), closeCommandDelayMs);
   else console.log("");
 	} else if (args[0] === "issue" && args[1] === "edit") {

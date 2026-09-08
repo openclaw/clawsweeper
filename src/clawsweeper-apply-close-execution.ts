@@ -1,3 +1,7 @@
+import {
+  oversizedPullRequestLiveBlockReason,
+  parseOversizedPullRequestEvidence,
+} from "./clawsweeper-oversized-pr-policy.js";
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
 import { closeReasonText } from "./clawsweeper-close-reasons.js";
 import { linkedIssueNumbersForImplementationProvenance } from "./clawsweeper-status-context.js";
@@ -136,6 +140,7 @@ interface ApplyCloseExecutionOptions {
   minAgeDescription: string;
   minAgeMs: number;
   number: number;
+  onOversizedClosed?: () => void;
   onClosed: (result: ApplyResult, dryRun: boolean) => boolean;
   onPairedIssueClosed: (result: ApplyResult, dryRun: boolean) => boolean;
   postProofCoveringPrFreshnessBlock: () => PrCloseCoverageProofGateBlock | null;
@@ -575,7 +580,7 @@ export function executeApplyClose(
       return skip("kept_open", finalImplementationProvenanceBlock);
     }
     closeAppliedCommentReason =
-      item.kind === "pull_request"
+      item.kind === "pull_request" && closeReason !== "oversized_pull_request"
         ? ensureCloseAppliedComment({
             number,
             closeReason,
@@ -617,7 +622,7 @@ export function executeApplyClose(
   ensureRuntimeDelayFits(closeDelayMs, "before close");
   try {
     closeAppliedCommentReason =
-      item.kind === "pull_request"
+      item.kind === "pull_request" && closeReason !== "oversized_pull_request"
         ? ensureCloseAppliedComment({
             number,
             closeReason,
@@ -945,6 +950,20 @@ export function executeApplyClose(
       if (finalParentMutationLeaseBlockReason) {
         finalParentGuardFlow = skipLease(finalParentMutationLeaseBlockReason);
       } else {
+        if (closeReason === "oversized_pull_request") {
+          let block: string | null;
+          try {
+            block = oversizedPullRequestLiveBlockReason(
+              parseOversizedPullRequestEvidence(
+                frontMatterValue(getMarkdown(), "oversized_pull_request"),
+              ),
+              ghJson(["api", `repos/${repo}/pulls/${number}`]),
+            );
+          } catch (error) {
+            block = `oversized PR final revalidation failed: ${error instanceof Error ? error.message : String(error)}`;
+          }
+          if (block) return skip("kept_open", block);
+        }
         closeItem({ number, kind: item.kind, reason: closeReason });
         let markdown = replaceSectionValue(
           getMarkdown(),
@@ -968,6 +987,7 @@ export function executeApplyClose(
           },
           false,
         );
+        if (closeReason === "oversized_pull_request") options.onOversizedClosed?.();
       }
     }
   }

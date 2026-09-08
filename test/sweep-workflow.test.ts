@@ -9,6 +9,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
@@ -239,7 +240,7 @@ test("sweep keeps optional media tooling out of review startup", () => {
   assert.doesNotMatch(workflow, /setup-media-proof-tools/);
 });
 
-test("exact event review exposes the token-only signal before runtime setup", () => {
+test("exact event review builds the admission predicate before signals and target runtime setup", () => {
   type Step = {
     name?: string;
     uses?: string;
@@ -257,6 +258,7 @@ test("exact event review exposes the token-only signal before runtime setup", ()
     return value;
   };
   const ordered = [
+    ["pnpm build", index((step) => step.uses === "./.github/actions/setup-pnpm", "pnpm")],
     [
       "claim-time no-op revalidation",
       index((step) => step.name === "Check live target item state", "live item"),
@@ -269,7 +271,6 @@ test("exact event review exposes the token-only signal before runtime setup", ()
       "eyes reaction",
       index((step) => step.name === "React to target item review start", "reaction"),
     ],
-    ["pnpm build", index((step) => step.uses === "./.github/actions/setup-pnpm", "pnpm")],
     [
       "target checkout",
       index((step) => step.name === "Check out target repository", "target checkout"),
@@ -1148,7 +1149,8 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(targetToken?.if ?? "", /scheduled_semantic_noop != 'true'/);
   assert.doesNotMatch(targetToken?.if ?? "", /outputs\.proceed == 'true'/);
   const setupPnpm = reviewer.steps.find((step) => step.id === "setup-pnpm");
-  assert.match(setupPnpm?.if ?? "", /scheduled_semantic_noop != 'true'/);
+  assert.match(setupPnpm?.if ?? "", /target_enabled == 'true'/);
+  assert.ok(reviewer.steps.indexOf(setupPnpm!) < reviewer.steps.indexOf(liveItem));
   const bundle = reviewer.steps.find((step) => step.id === "create-exact-review-bundle");
   assert.match(bundle?.if ?? "", /scheduled_semantic_noop != 'true'/);
   const semanticNoopResult = reviewer.steps.find(
@@ -7289,4 +7291,97 @@ test("apply job requeues drift-blocked close reviews only for default cursor run
   assert.match(step, /event_type: "clawsweeper_item"/);
   assert.match(step, /source_action: "source_drift_requeue"/);
   assert.match(step, /supersedes_in_progress: false/);
+});
+
+test("exact oversized PR admission uses the built predicate before reactions, reservation and target setup", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const steps = workflow.jobs["event-review-apply"].steps;
+  const live = steps.find((step: any) => step.id === "live-item");
+  const review = steps.find((step: any) => step.id === "review-exact-event-item");
+  assert.match(live.run, /dist\/clawsweeper-oversized-pr-policy\.js/);
+  assert.match(review.run, /--pr-admission-file/);
+  assert.match(review.if, /outputs\.oversized == 'true'/);
+  for (const step of steps.filter(
+    (step: any) =>
+      step.name === "React to target item review start" ||
+      step.name === "Reserve exact review lease" ||
+      step.name === "Check out target repository" ||
+      [
+        "./.github/actions/setup-openclaw-codex-source",
+        "./.github/actions/setup-codex",
+        "./.github/actions/setup-openclaw",
+      ].includes(step.uses),
+  )) {
+    assert.match(step.if, /outputs\.oversized != 'true'/, step.name ?? step.uses);
+  }
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    symlinkSync(join(process.cwd(), "dist"), join(root, "dist"), "dir");
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    const gh = join(bin, "gh");
+    const calls = join(root, "calls");
+    writeFileSync(
+      gh,
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "$MOCK_CALLS"
+case "$2" in
+  */branches/main) echo '{}' ;;
+  */issues/141913) echo '{"state":"open","locked":false,"pull_request":{}}' ;;
+  */pulls/141913) cat "$MOCK_PULL" ;;
+  *) echo 'unexpected GitHub call' >&2; exit 91 ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    for (const [total, labels, expected] of [
+      [30000, [], "false"],
+      [30001, [], "true"],
+      [166686, ["size: accepted-large"], "false"],
+      [undefined, [], "false"],
+    ] as const) {
+      const fixture = join(root, "pull.json");
+      writeFileSync(
+        fixture,
+        JSON.stringify({
+          number: 141913,
+          state: "open",
+          locked: false,
+          additions: total,
+          deletions: 0,
+          changed_files: 2747,
+          head: { sha: "b".repeat(40) },
+          labels,
+        }),
+      );
+      const output = join(root, `output-${expected}-${total}`);
+      execFileSync("bash", ["-c", live.run], {
+        cwd: root,
+        env: {
+          ...process.env,
+          PATH: `${bin}${delimiter}${process.env.PATH}`,
+          GH_TOKEN: "synthetic",
+          CLAIM_DECISION: "{}",
+          CLAIM_TARGET_BRANCH: "main",
+          GITHUB_OUTPUT: output,
+          TARGET_REPO: "openclaw/openclaw",
+          ITEM_NUMBER: "141913",
+          MOCK_CALLS: calls,
+          MOCK_PULL: fixture,
+        },
+      });
+      assert.match(readText(output), new RegExp(`oversized=${expected}`));
+      assert.match(readText(output), /proceed=true/);
+    }
+    assert.equal(
+      readText(calls)
+        .split("\n")
+        .filter((line) => line.includes("/pulls/141913")).length,
+      4,
+    );
+    assert.doesNotMatch(readText(calls), /POST|PATCH|DELETE|comments|files/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

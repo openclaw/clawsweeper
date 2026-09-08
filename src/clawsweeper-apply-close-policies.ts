@@ -1,3 +1,8 @@
+import {
+  oversizedPrCloseEnabled,
+  oversizedPullRequestLiveBlockReason,
+  parseOversizedPullRequestEvidence,
+} from "./clawsweeper-oversized-pr-policy.js";
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
 import { STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS } from "./clawsweeper-policy.js";
 import type { ApplyKind, AuthorPrBudgetApplyGate, CloseReason, Item } from "./clawsweeper-types.js";
@@ -94,6 +99,22 @@ export function evaluateApplyClosePolicy(
 
   if (phase === "before-canonical") {
     switch (closeReason) {
+      case "oversized_pull_request": {
+        if (!oversizedPrCloseEnabled())
+          return blocked("oversized PR close policy is disabled", true);
+        try {
+          const reason = oversizedPullRequestLiveBlockReason(
+            parseOversizedPullRequestEvidence(frontMatterValue(markdown, "oversized_pull_request")),
+            dependencies.ghJson(["api", `repos/${item.repo}/pulls/${number}`]),
+          );
+          return reason ? blocked(reason, true) : allowed();
+        } catch (error) {
+          return blocked(
+            `oversized PR live revalidation failed: ${error instanceof Error ? error.message : String(error)}`,
+            true,
+          );
+        }
+      }
       case "author_pr_budget_exceeded": {
         const gate = currentAuthorPrBudgetApplyGate();
         if (!gate.allowed) return blocked(gate.reason);
