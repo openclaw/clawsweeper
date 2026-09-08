@@ -34,9 +34,16 @@ jobs:
     needs: cooldown
     if: ${{ needs.cooldown.outputs.reconcile == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions: {}
+    timeout-minutes: 12
+    permissions:
+      contents: read
     steps:
+      - name: Check out control-plane retry helper
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: scripts/control-plane-curl.sh
       - name: Reconcile terminal run
         env:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
@@ -45,6 +52,7 @@ jobs:
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           set -euo pipefail
+          source scripts/control-plane-curl.sh
           test -n "$CLAWSWEEPER_WEBHOOK_SECRET"
           queue_url="${QUEUE_URL%/}"
           payload="$(node -e '
@@ -59,17 +67,12 @@ jobs:
             }));
           ')"
           signature="$(PAYLOAD="$payload" node -e 'const crypto=require("node:crypto"); process.stdout.write(`sha256=${crypto.createHmac("sha256", process.env.CLAWSWEEPER_WEBHOOK_SECRET).update(process.env.PAYLOAD).digest("hex")}`)')"
-          for attempt in 1 2 3; do
-            if curl --fail --silent --show-error --connect-timeout 5 --max-time 120 \
-              --request POST \
-              --header "content-type: application/json" \
-              --header "x-clawsweeper-exact-review-signature: $signature" \
-              --data-binary "$payload" \
-              "$queue_url/internal/exact-review/reconcile" >/dev/null; then
-              exit 0
-            fi
-            if [ "$attempt" -lt 3 ]; then
-              sleep "$((attempt * 5))"
-            fi
-          done
+          if control_plane_curl --fail --silent --show-error --connect-timeout 5 --max-time 120 \
+            --request POST \
+            --header "content-type: application/json" \
+            --header "x-clawsweeper-exact-review-signature: $signature" \
+            --data-binary "$payload" \
+            "$queue_url/internal/exact-review/reconcile" >/dev/null; then
+            exit 0
+          fi
           exit 1

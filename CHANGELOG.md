@@ -127,6 +127,7 @@ checkpoint, and status-only commits are intentionally omitted.
 - Complete exact-review leases during Worker/workflow deploy skew by retrying rejected terminal reasons once without the reason/status, preserving diagnostics and warning operators.
 
 - Stop exact-review retries for every non-retryable scanner refusal, including scan deadlines, and retain terminal guidance for the unchanged revision.
+- Retry transient control-plane failures across exact-review workflow calls, preserve retryable admission 503 responses and Retry-After headers through webhook/internal ingress, and attribute failed fences and reservations to queue infrastructure.
 
 - Prepare GitHub user-attachment and legacy repository asset proof locally, resolving image/video types after download and reserving bounded preprocessing time for attachments.
 
