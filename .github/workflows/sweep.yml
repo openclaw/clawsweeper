@@ -5257,14 +5257,6 @@ jobs:
           path: review-metrics
           merge-multiple: true
 
-      - uses: actions/download-artifact@v8
-        id: download-review-action-ledger
-        continue-on-error: true
-        with:
-          pattern: action-ledger-review-*
-          path: .clawsweeper-repair/action-ledger-download
-          merge-multiple: true
-
       - name: Install review live-proof media validators
         if: ${{ steps.download-review-artifacts.outcome == 'success' && hashFiles('artifacts/live-proof/*/live-proof-manifest.json') != '' }}
         run: |
@@ -5280,41 +5272,6 @@ jobs:
           CLAWSWEEPER_LIVE_PROOF_BUCKET: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_BUCKET }}
           CLAWSWEEPER_LIVE_PROOF_BASE_URL: ${{ secrets.CLAWSWEEPER_LIVE_PROOF_BASE_URL }}
         run: node dist/clawsweeper.js live-proof-publish-artifacts --artifact-dir artifacts
-
-      - name: Import immutable review action events
-        id: import-review-action-ledger
-        if: ${{ always() && steps.setup-publish-state.outcome == 'success' && steps.setup-publish-pnpm.outcome == 'success' && steps.download-review-action-ledger.outcome == 'success' }}
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          mkdir -p .artifacts
-          : > .artifacts/action-ledger-paths.txt
-          pnpm run --silent publish-action-events -- \
-            --source-root .clawsweeper-repair/action-ledger-download \
-            --state-root . \
-            --expected-producer-job review \
-            --expected-producer-max-run-attempt "$GITHUB_RUN_ATTEMPT" |
-            jq -r '.paths[]?' >> .artifacts/action-ledger-paths.txt
-          pnpm run --silent publish-action-events -- \
-            --source-root "$CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT" \
-            --state-root . \
-            --expected-producer-job "$GITHUB_JOB" |
-            jq -r '.paths[]?' >> .artifacts/action-ledger-paths.txt
-          sort -u -o .artifacts/action-ledger-paths.txt .artifacts/action-ledger-paths.txt
-
-      - name: Publish immutable review action ledger
-        if: ${{ always() && steps.import-review-action-ledger.outcome == 'success' }}
-        continue-on-error: true
-        env:
-          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
-          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-        run: |
-          if [ ! -s .artifacts/action-ledger-paths.txt ]; then
-            echo "No immutable review action events to publish."
-            exit 0
-          fi
-          node dist/clawsweeper.js publish-action-event-paths \
-            --paths-file .artifacts/action-ledger-paths.txt
 
       - name: Apply review artifacts
         id: apply-review-artifacts
@@ -5700,6 +5657,112 @@ jobs:
             sleep "$((attempt * 10))"
           done
           echo "::warning::Unable to dispatch the next sweep after three attempts; the scheduled backstop will pick it up."
+
+      # Each production CLI seals its producer on exit. Keep those exact shards
+      # even when a later primary step fails; required receipt uploads stay above.
+      - name: Retain publisher action events
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v7
+        with:
+          name: action-ledger-publisher-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/clawsweeper-action-ledger/${{ github.run_id }}/${{ github.run_attempt }}/${{ github.job }}/**
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
+  publish-review-action-ledger:
+    name: Publish optional action ledger
+    needs: [review, publish]
+    if: ${{ always() && needs.publish.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+    # Deliberately outside the target publisher lock and all primary dependencies.
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          filter: blob:none
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: clawsweeper-runtime-dist
+          path: .artifacts
+
+      - name: Extract action ledger runtime
+        run: tar -xzf .artifacts/review-runtime.tar.gz
+
+      - name: Download shard action events
+        uses: actions/download-artifact@v8
+        with:
+          pattern: action-ledger-review-*
+          path: .clawsweeper-repair/action-ledger-download
+          merge-multiple: true
+
+      - name: Download publisher action events
+        uses: actions/download-artifact@v8
+        with:
+          pattern: action-ledger-publisher-*
+          path: .clawsweeper-repair/action-ledger-publisher
+          merge-multiple: true
+
+      - name: Import immutable action events
+        id: import-action-ledger
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          mkdir -p .artifacts
+          : > .artifacts/action-ledger-paths.txt
+          node dist/clawsweeper.js publish-action-events \
+            --source-root .clawsweeper-repair/action-ledger-download \
+            --state-root . \
+            --expected-producer-job review \
+            --expected-producer-max-run-attempt "$GITHUB_RUN_ATTEMPT" |
+            jq -r '.paths[]?' >> .artifacts/action-ledger-paths.txt
+          node dist/clawsweeper.js publish-action-events \
+            --source-root .clawsweeper-repair/action-ledger-publisher \
+            --state-root . \
+            --expected-producer-job publish \
+            --expected-producer-max-run-attempt "$GITHUB_RUN_ATTEMPT" |
+            jq -r '.paths[]?' >> .artifacts/action-ledger-paths.txt
+          sort -u -o .artifacts/action-ledger-paths.txt .artifacts/action-ledger-paths.txt
+
+      - name: Publish immutable action ledger
+        id: publish-action-ledger
+        timeout-minutes: 5
+        env:
+          CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+        run: |
+          set -euo pipefail
+          if [ ! -s .artifacts/action-ledger-paths.txt ]; then
+            echo "No immutable action events to publish."
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          node dist/clawsweeper.js publish-action-event-paths \
+            --paths-file .artifacts/action-ledger-paths.txt
+
+      - name: Report optional ledger outcome
+        if: always()
+        env:
+          IMPORT_OUTCOME: ${{ steps.import-action-ledger.outcome || 'not_started' }}
+          UPLOAD_OUTCOME: ${{ steps.publish-action-ledger.outcome || 'not_started' }}
+          EMPTY: ${{ steps.publish-action-ledger.outputs.empty || 'false' }}
+        run: |
+          {
+            echo "### Optional immutable action ledger"
+            echo "Import: $IMPORT_OUTCOME; upload: $UPLOAD_OUTCOME; empty: $EMPTY."
+            echo "Primary records and comments have separate completion receipts."
+            echo "Producer artifacts remain attached to this run for recovery."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   recover-review-failures:
     name: Recover failed review shards

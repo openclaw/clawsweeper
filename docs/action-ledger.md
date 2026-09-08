@@ -376,6 +376,14 @@ privacy-checked.
 
 ## Projections
 
+Aggregate review uploads run in the bounded `publish-review-action-ledger` job
+after the primary publisher, outside its target concurrency lock. Review and
+publisher artifacts retain their distinct producer identities; imports publish
+the complete canonical event and binding manifests. Optional upload failure is
+reported separately and does not delay primary artifact application, record
+publication, selected comments, or recovery. The primary artifact and comment
+receipt publication phases remain in the publisher.
+
 Consumers fold immutable events into purpose-specific views:
 
 - the marker-backed GitHub review comment shows a bounded review history;
