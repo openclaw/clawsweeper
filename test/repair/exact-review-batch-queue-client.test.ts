@@ -228,6 +228,16 @@ test("post-effect stops reading error bodies at 512 bytes and cancels the stream
   assert.equal(cancelled, true);
 });
 
+test("batch diagnostics retain codes outside the command-intake allowlist", async (t) => {
+  const { client, calls } = fixture(t, () =>
+    Response.json({ error: "batch_lease_expired" }, { status: 409 }),
+  );
+  await assert.rejects(client.postEffect("enqueue", payload), {
+    message: "Batch queue /internal/exact-review/enqueue failed (HTTP 409): batch_lease_expired",
+  });
+  assert.equal(calls.length, 1);
+});
+
 test("heartbeat retries 500 with unchanged signed bytes and returns the renewed expiry", async (t) => {
   const batch = {
     batch_id: heartbeat.batchId,

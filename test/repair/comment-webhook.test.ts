@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import http from "node:http";
 import test from "node:test";
+import { startIntakeFixture } from "../helpers/command-intake-fixture.mjs";
 
 import {
   adaptiveCodexTimeoutMsForTest,
@@ -1491,6 +1492,34 @@ test("webhook GitHub requests have a deadline through the response body", async 
       }
     });
   }
+});
+
+test("standalone HTTP webhook preserves intake failure classification", async (t) => {
+  const fixture = await startIntakeFixture(true);
+  t.after(() => fixture.close());
+  for (const status of [429, 503, 422]) {
+    await fixture.setResponse(status, {
+      error: "target_visibility_unverified",
+      message: "synthetic-private-sentinel",
+    });
+    const response = await fixture.webhook();
+    assert.equal(response.status, status === 422 ? 400 : 503);
+    assert.deepEqual(
+      await response.json(),
+      status === 422
+        ? {
+            ok: false,
+            error: "exact-review command intake failed (HTTP 422): target_visibility_unverified",
+          }
+        : { ok: false, retryable: true },
+    );
+    const requests = await fixture.requests();
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].path, "/internal/exact-review/command-intake");
+    assert.equal(requests[0].method, "POST");
+    assert.equal(requests[0].signed, true);
+  }
+  assert.doesNotMatch(fixture.stderr(), /synthetic-private-sentinel/);
 });
 
 function commandWebhookPayload(commandBody: string, targetRepo = "openclaw/openclaw") {
