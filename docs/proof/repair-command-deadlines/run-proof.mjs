@@ -27,6 +27,9 @@ const env = {
   PATH: process.env.PATH,
   TMPDIR: process.env.TMPDIR,
   SystemRoot: process.env.SystemRoot,
+  XDG_STATE_HOME: path.join(dir, "state"),
+  GIT_CONFIG_NOSYSTEM: "1",
+  GIT_CONFIG_GLOBAL: path.join(dir, "gitconfig"),
   GH_BIN: gh,
   GH_CONFIG_DIR: path.join(dir, "gh"),
   GH_TOKEN: "synthetic-proof-token",
@@ -40,8 +43,9 @@ const env = {
   CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS: "30000",
   CLAWSWEEPER_WEBHOOK_SECRET: receiptSecret,
 };
+fs.writeFileSync(env.GIT_CONFIG_GLOBAL, "");
 const traces = [];
-async function run(args, overrides = {}) {
+async function run(args, overrides = {}, cancelWhen) {
   const start = performance.now();
   const child = spawn(process.execPath, args, {
     cwd: root,
@@ -52,12 +56,21 @@ async function run(args, overrides = {}) {
     stderr = "";
   child.stdout.on("data", (b) => (stdout += b));
   child.stderr.on("data", (b) => (stderr += b));
+  const cancellation = cancelWhen
+    ? setInterval(() => {
+        if (cancelWhen()) {
+          child.kill("SIGTERM");
+          clearInterval(cancellation);
+        }
+      }, 20)
+    : undefined;
   const watchdog = setTimeout(() => child.kill("SIGKILL"), 45_000);
   try {
     const [code, signal] = await once(child, "close");
     return { code, signal, elapsedMs: Math.round(performance.now() - start), stdout, stderr };
   } finally {
     clearTimeout(watchdog);
+    clearInterval(cancellation);
   }
 }
 const value = intent();
@@ -219,6 +232,42 @@ await prepareTargetCheckout({frontmatter:{repo:'openclaw/clawsweeper'}});`,
     scenario: "real-git-transport-stall-via-gh-adapter",
     elapsedMs: stalledGit.elapsedMs,
     error: "ETIMEDOUT",
+    liveDescendants: 0,
+  });
+  fs.rmSync(processTrace);
+  const cancellationConnections = connections;
+  const cancelled = await run(
+    [
+      "--input-type=module",
+      "-e",
+      `import {prepareTargetCheckout} from ${JSON.stringify(checkoutUrl)};
+await prepareTargetCheckout({frontmatter:{repo:'openclaw/clawsweeper'}});`,
+    ],
+    {
+      GH_BIN: process.execPath,
+      GH_BIN_ARGS: JSON.stringify([stalledAdapter]),
+      PROCESS_TRACE: processTrace,
+    },
+    () => fs.existsSync(processTrace) && connections > cancellationConnections,
+  );
+  assert.equal(cancelled.code, 1);
+  assert.match(cancelled.stderr, /interrupted by SIGTERM/);
+  assert.ok(cancelled.elapsedMs < 10_000);
+  const cancelledProcesses = JSON.parse(fs.readFileSync(processTrace));
+  if (process.platform !== "win32") {
+    const liveGroup = execFileSync("ps", ["-axo", "pgid=,stat="], { encoding: "utf8" })
+      .trim()
+      .split("\n")
+      .map((line) => line.trim().split(/\s+/))
+      .filter(
+        ([pgid, state]) => Number(pgid) === cancelledProcesses.parent && !state.startsWith("Z"),
+      );
+    assert.deepEqual(liveGroup, []);
+  }
+  traces.push({
+    scenario: "cancel-stalled-git-clone",
+    elapsedMs: cancelled.elapsedMs,
+    error: "interrupted by SIGTERM",
     liveDescendants: 0,
   });
   console.log(

@@ -16,7 +16,9 @@ wait/no-duplicate behavior, observed recovery, and absence of a planner artifact
 after clone failure. A successful real local Git clone runs through a small gh
 argument adapter, with no remote repository access. Another adapter launches a
 real Git HTTPS clone against the stalled proxy and verifies the entire clone
-process group is gone after timeout, covering descendants beyond gh itself.
+process group is gone after timeout and worker SIGTERM cancellation, covering
+descendants beyond gh itself. SIGINT, SIGTERM and SIGHUP clean up the clone;
+uncatchable process or host termination remains outside this JavaScript guarantee.
 
 The JSON trace is the observable proof artifact. Fast regression tests separately
 cover default budgets, override precedence, invalid values, longer clone budgets,

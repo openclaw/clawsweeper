@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { execFileSync } from "node:child_process";
+import { once } from "node:events";
+import { execFileSync, spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -37,9 +38,12 @@ require('node:assert/strict').deepEqual(args.slice(4), ['--','--depth=1']);
 fs.mkdirSync(args[3]); fs.writeFileSync(require('node:path').join(args[3], 'marker'), 'cloned');
 if (process.env.STALL) {
  const child = spawn(process.execPath, ['-e', 'process.on("SIGTERM",()=>{});setInterval(()=>{},1000)'], {stdio:'inherit'});
- fs.writeFileSync(process.env.TRACE, JSON.stringify({pid:child.pid,target:args[3]}));
+ fs.writeFileSync(process.env.TRACE, JSON.stringify({parent:process.pid,pid:child.pid,target:args[3]}));
  process.on('SIGTERM',()=>{}); setInterval(()=>{},1000);
 }`,
+  );
+  const listenerCounts = ["SIGINT", "SIGTERM", "SIGHUP", "exit"].map((signal) =>
+    process.listenerCount(signal),
   );
   let expected = 180_000;
   const nativeTimeout = setTimeout;
@@ -93,7 +97,38 @@ if (process.env.STALL) {
     prepareTargetCheckout(job, { ...base, STALL: "1", TRACE: trace }),
     /ETIMEDOUT after 180000ms/,
   );
-  const { pid, target } = JSON.parse(fs.readFileSync(trace, "utf8"));
+  assert.deepEqual(
+    ["SIGINT", "SIGTERM", "SIGHUP", "exit"].map((signal) => process.listenerCount(signal)),
+    listenerCounts,
+  );
+  let { pid, target } = JSON.parse(fs.readFileSync(trace, "utf8"));
+  const descendantPids = [pid];
+  assert.equal(fs.existsSync(path.dirname(target)), false);
+  fs.rmSync(trace);
+  const caller = spawn(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `import {prepareTargetCheckout} from ${JSON.stringify(new URL("../../dist/repair/target-checkout.js", import.meta.url).href)};
+await prepareTargetCheckout({frontmatter:{repo:'openclaw/clawsweeper'}});`,
+    ],
+    { env: { ...base, STALL: "1", TRACE: trace }, stdio: ["ignore", "ignore", "pipe"] },
+  );
+  t.after(() => caller.kill("SIGTERM"));
+  let errorText = "";
+  caller.stderr.on("data", (chunk) => (errorText += chunk));
+  const ended = once(caller, "close");
+  const deadline = Date.now() + 5_000;
+  while (!fs.existsSync(trace) && Date.now() < deadline)
+    await new Promise((resolve) => nativeTimeout(resolve, 20));
+  assert.ok(fs.existsSync(trace), "clone subprocess started");
+  caller.kill("SIGTERM");
+  const [code] = await ended;
+  assert.equal(code, 1);
+  assert.match(errorText, /interrupted by SIGTERM/);
+  ({ pid, target } = JSON.parse(fs.readFileSync(trace, "utf8")));
+  descendantPids.push(pid);
   assert.equal(fs.existsSync(path.dirname(target)), false);
   if (process.platform !== "win32") {
     // A just-killed child may briefly remain a zombie until its reaper runs.
@@ -102,7 +137,7 @@ if (process.env.STALL) {
       .trim()
       .split("\n")
       .map((line) => line.trim().split(/\s+/))
-      .filter(([id, state]) => Number(id) === pid && !state.startsWith("Z"));
+      .filter(([id, state]) => descendantPids.includes(Number(id)) && !state.startsWith("Z"));
     assert.deepEqual(states, []);
   }
 });

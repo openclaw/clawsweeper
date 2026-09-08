@@ -62,6 +62,14 @@ async function cloneTarget(
       // gh delegates to git; kill the whole group/tree before removing its checkout.
       killTimer = terminateCodexProcessTree(child, "SIGKILL", 0);
     };
+    const shutdown = {
+      SIGINT: () => stop("interrupted by SIGINT"),
+      SIGTERM: () => stop("interrupted by SIGTERM"),
+      SIGHUP: () => stop("interrupted by SIGHUP"),
+    };
+    const onExit = () => stop("worker exited during clone");
+    for (const [signal, handler] of Object.entries(shutdown)) process.once(signal, handler);
+    process.once("exit", onExit);
     const timer = setTimeout(() => stop(`ETIMEDOUT after ${timeoutMs}ms`), timeoutMs);
     const capture = (chunk: Buffer) => {
       bytes += chunk.length;
@@ -74,6 +82,8 @@ async function cloneTarget(
       failure ||= error.message;
     });
     child.on("close", (code, signal) => {
+      for (const [signal, handler] of Object.entries(shutdown)) process.off(signal, handler);
+      process.off("exit", onExit);
       clearTimeout(timer);
       clearTimeout(killTimer);
       if (failure || code !== 0)
