@@ -410,9 +410,13 @@ report representation; older unmarked attribution cannot regain verified status
 when comments are rendered. Stored reports and live comments are not rewritten by
 this reader change. OpenClaw Bay needs no change: no observer API or controls change.
 
-## Primary Body Coverage
+## Primary Body and Discussion Coverage
 
-Hosted primary issue and PR bodies up to 12,000 UTF-16 units remain intact.
+Hosted primary issue and PR bodies and retained discussion comments up to
+12,000 UTF-16 units remain intact. This includes inline PR review comments;
+the existing 24 discussion-comment and 40 inline-comment windows still apply.
+This replaces the former 6,000-unit discussion prefix, which could omit a
+contributor's later correction without reporting body coverage.
 Longer bodies retain an opening plus at most three source-ordered verbatim
 excerpts around proof and trace/output anchors, including inside details.
 The sibling `bodyCoverage` records the full-source SHA-256, original length,
@@ -438,7 +442,7 @@ retain curl's 90-second limit.
 Assist preserves coverage alongside the body. The report context ledger counts
 each primary record as one entry and includes its coverage in character totals;
 its list hydration counters do not describe body completeness. Related items,
-comments, patch content, local body overrides, proof statuses, and mutation gates
+patch content, local body overrides, proof statuses, and mutation gates
 are unchanged. This is reviewer input only: OpenClaw Bay needs no change because
 no observer API, public data contract, or action surface changes.
 

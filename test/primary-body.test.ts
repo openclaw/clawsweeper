@@ -5,6 +5,7 @@ import { truncateText } from "../dist/clawsweeper-text.js";
 import {
   assertBodyCoverage,
   hydration,
+  hydratePrimaryBody,
   inertTrace,
   longProofBody,
 } from "./primary-body-fixture.ts";
@@ -80,7 +81,33 @@ test("surrogate pairs at prefix and supplemental cuts remain whole", () => {
   }
 });
 
-test("generic compactors keep related body, comment, list, commit and patch budgets", () => {
+test("discussion evidence after 6,000 units survives item hydration", () => {
+  const body =
+    "Context before the correction.\n".padEnd(6500, ".") +
+    "\n## Evidence\nExpected: the accepted review is published.\nActual: no publication receipt.\n" +
+    "Additional details.\n".repeat(200);
+  assert.ok(body.length > 6000 && body.length < 12000);
+  for (const kind of ["issue", "pull_request"] as const) {
+    const { context } = hydratePrimaryBody("Issue description", kind, {
+      comments: [{ id: 17, body, user: { login: "reporter" } }],
+    });
+    const comment = context.comments[0] as { body: string; bodyCoverage?: unknown };
+    assert.equal(comment.body, body);
+    assert.equal(comment.bodyCoverage, undefined);
+  }
+});
+
+test("long discussion comments retain late proof with explicit incomplete coverage", () => {
+  const body = longProofBody();
+  const comment = hydration.compactComment({ id: 17, body }) as ReturnType<
+    typeof compactPrimaryBody
+  >;
+  assertBodyCoverage(body, comment);
+  assert.ok(comment.bodyCoverage?.excerpts.some(({ text }) => text.includes(inertTrace)));
+  assert.equal(comment.bodyCoverage?.complete, false);
+});
+
+test("generic compactors keep related body, list, commit and patch budgets", () => {
   const body = longProofBody();
   for (const compact of [
     hydration.compactIssue({ body }),
@@ -89,10 +116,6 @@ test("generic compactors keep related body, comment, list, commit and patch budg
     assert.equal((compact as { body: string }).body, truncateText(body, 12000));
     assert.equal("bodyCoverage" in (compact as object), false);
   }
-  assert.equal(
-    (hydration.compactComment({ body }) as { body: string }).body,
-    truncateText(body, 6000),
-  );
   for (const cap of [24, 40, 80]) {
     const values = Array.from({ length: 100 }, (_, id) => ({ id }));
     const retained = hydration.compactMappedWindow(values, 100, cap, (value) => value);
