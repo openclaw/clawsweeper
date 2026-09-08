@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "../dist/clawsweeper-args.js";
@@ -25,7 +33,7 @@ test("body-file keeps its authoritative precedence over compact hosted context",
     writeFileSync(bodyFile, provided);
     const { target, context } = hydratePrimaryBody(longProofBody(), "pull_request");
     const prepared = prepareReviewCommand(
-      parseArgs(["--body-file", bodyFile, "--artifact-dir", dir]),
+      parseArgs(["--body-file", bodyFile, "--artifact-dir", dir, "--output-retention", "debug"]),
       {
         DEFAULT_PLAN_BATCH_SIZE: 3,
         repoFromArgs: () => repositoryProfileFor(target.repo),
@@ -165,7 +173,10 @@ test("initial fetch timeout retains native evidence before any review work", () 
         }) as unknown as Parameters<typeof createReviewCommandWorkflow>[0],
       );
       assert.throws(
-        () => workflow.reviewCommand(parseArgs(["--artifact-dir", dir, ...scenario.args])),
+        () =>
+          workflow.reviewCommand(
+            parseArgs(["--artifact-dir", dir, "--output-retention", "debug", ...scenario.args]),
+          ),
         (error) => error === (scenario.expected ? failure : nativeError),
       );
       assert.deepEqual(unexpectedCalls, []);
@@ -225,6 +236,44 @@ test("local-range preparation remains offline even with a claimed exact item in 
     assert.equal(prepared.git.releaseStateComplete, true);
     assert.equal(existsSync(join(root, "failure-diagnostics")), false);
   } finally {
+    process.env = oldEnv;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("default local-range preparation owns private transient output and retains no history", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-local-range-default-"));
+  const oldEnv = process.env;
+  let prepared: ReturnType<typeof prepareReviewCommand> | undefined;
+  try {
+    process.env = { ...oldEnv };
+    prepared = prepareReviewCommand(parseArgs(["--local-range"]), {
+      DEFAULT_PLAN_BATCH_SIZE: 3,
+      repoFromArgs: () => repositoryProfileFor("openclaw/openclaw"),
+      targetRepo: () => "openclaw/openclaw",
+      localExactReviewItem: () => false,
+      defaultReviewArtifactDir: () => join(root, "generated-artifacts"),
+      defaultItemsDir: () => join(root, "items"),
+      defaultLocalRangeHistoryPath: () => {
+        assert.fail("no-retention local range must not create history");
+      },
+      resolveReviewCheckout: () => ({ openclawDir: root }),
+      ensureDir: () => {},
+      suppliedReviewStartLeaseFromArgs: () => null,
+      reviewCodexForcedLoginMethod: () => "chatgpt",
+      buildLocalRangeReview: () => ({ baseSha: "b".repeat(40), headSha: "c".repeat(40) }),
+      gitInfo: () => {
+        assert.fail("local-range must not fetch Git metadata");
+      },
+      reviewPolicyHash: () => "fixture-policy",
+    } as unknown as Parameters<typeof prepareReviewCommand>[1]);
+    assert.equal(prepared.outputSelection.retention, "none");
+    assert.equal(prepared.localReviewHistoryPath, null);
+    assert.equal(statSync(prepared.artifactDir).mode & 0o777, 0o700);
+    assert.equal(existsSync(join(root, "generated-artifacts")), false);
+  } finally {
+    prepared?.cleanupReviewOutput();
+    if (prepared) assert.equal(existsSync(prepared.artifactDir), false);
     process.env = oldEnv;
     rmSync(root, { recursive: true, force: true });
   }

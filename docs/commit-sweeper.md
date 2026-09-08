@@ -35,20 +35,22 @@ for refused inputs, the 256 MiB staging cap, deadline, and coverage limits.
 pnpm run build
 pnpm local-review -- --base main
 # reviews merge-base(<base>, HEAD)..HEAD as one unit
-# writes ~/.clawsweeper-local-reviews/run-<sha>-<ts>-<pid>/local-review.md
+# prints the review and retains no ClawSweeper output by default
 ```
 
 It is GitHub-isolated by contract, not air-gapped: it still calls the configured
 Codex model service and requires model authentication and network connectivity.
 On first use without a trusted host scanner, it also fetches the one pinned
 scanner release into the documented local cache before review admission. The
-review requires a clean checkout, uses a unique per-run output directory,
+review requires a clean checkout, uses private run-owned scratch,
 withholds all GitHub token env vars, skips `gh` API commit-metadata hydration,
 points `GH_CONFIG_DIR` at an empty directory, disables Codex web search, and
 forbids other review-time network lookups. Repositories without a configured
-profile are rejected (no foreign-profile fallback). It never writes to GitHub;
-after its scanner cache is provisioned, the local Markdown report is the only
-review output.
+profile are rejected (no foreign-profile fallback). It never writes to GitHub.
+Use `--output-retention summary` to retain only `local-review.md`, or
+`--output-retention debug` for the existing per-run engine output. An explicit
+legacy `--report-dir` remains debug-compatible. `--result-format json` emits a
+valid JSON result with a nullable artifact path.
 
 For `review --local-range`, per-file line counts come from complete Git numstat
 metadata for the resolved merge-base-to-HEAD range, independently of bounded

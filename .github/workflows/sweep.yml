@@ -1471,6 +1471,7 @@ jobs:
             --target-repo "${{ steps.target.outputs.target_repo }}" \
             --target-dir "${{ steps.target.outputs.target_checkout_dir }}" \
             --artifact-dir artifacts/event \
+            --output-retention debug \
             --batch-size 1 \
             --max-pages 1 \
             --codex-model internal \
@@ -5001,6 +5002,7 @@ jobs:
             --target-repo "${{ needs.plan.outputs.target_repo }}" \
             --target-dir "../${{ needs.plan.outputs.target_checkout_dir }}" \
             --artifact-dir ../review-artifacts/shard-${{ matrix.shard }} \
+            --output-retention debug \
             --batch-size ${{ needs.plan.outputs.batch_size }} \
             --max-pages ${{ needs.plan.outputs.max_pages }} \
             --codex-model internal \

@@ -22,7 +22,10 @@ checkpoint, and status-only commits are intentionally omitted.
 - Give Codex reviewers the existing short-lived, read-only target-repository GitHub App token as `GH_TOKEN` for authenticated reads, and describe token availability from the actual reviewer environment, including OpenClaw's credential filter.
 - Give hosted issue/PR reviewers allowlisted public research access through a managed proxy while keeping the checkout read-only; describe token, blocked-host, and downloaded-media capabilities accurately and fail setup when sandbox enforcement regresses.
 - Describe review capabilities from the active runner so OpenClaw gateway execution is not mistaken for the Codex allowlisted sandbox; prove Linux review sandbox enforcement in credential-free PR CI.
-
+- Made persistent local review output opt-in: ordinary local reviews now use
+  private transient scratch by default, explicit summary/debug modes retain
+  bounded output, and hosted review refuses before execution unless its required
+  artifact route explicitly selects debug retention.
 - Add reviewed-plan retirement of one merged-target publication through the existing maintenance workflow, keeping signing credentials confined to its execution step.
 - Admit the two approved Signal URL-rejection fixtures through exact URI, source-line, path, and native decoder bindings while retaining all scanner and verification checks.
 - Admit the reviewed Crabbox PostgreSQL operations example through exact Postgres detector, observed `PLAIN`/`HTML` decoder, value-hash, source-line, path, mode, metadata, and committed base/head bindings.

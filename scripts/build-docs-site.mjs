@@ -596,7 +596,7 @@ function landingBody() {
           </div>
           <pre class="snippet" aria-hidden="true"><code><span class="prompt">$</span> pnpm run plan -- --target-repo openclaw/openclaw --shard-count 100
 <span class="comment"># exact item numbers selected for review shards</span>
-<span class="prompt">$</span> pnpm run review -- --target-repo openclaw/openclaw --artifact-dir artifacts/reviews
+<span class="prompt">$</span> pnpm run review -- --target-repo openclaw/openclaw --artifact-dir artifacts/reviews --output-retention debug
 <span class="comment"># records/openclaw-openclaw/items/812.md</span>
 <span class="comment"># durable comment marker: clawsweeper:review</span>
 <span class="prompt">$</span> pnpm run apply-decisions -- --target-repo openclaw/openclaw --limit 40
