@@ -1,6 +1,6 @@
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { existsSync, lstatSync, readdirSync, statfsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, lstatSync, readdirSync, realpathSync, statfsSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
 import { readReviewGit, reviewMergeBase } from "./pr-review-evidence.js";
 import { AgentInputScanError, MAX_SCAN_BYTES } from "./agent-input-scan.js";
 import { ReviewSourcePreparationError } from "./review-source-preparation.js";
@@ -23,7 +23,11 @@ export interface ReviewTreeMaterializationBudget {
   maxFiles: number;
   maxBytes: number;
   diskReserveBytes: number;
-  availableBytes?: number;
+  diskCapacity?: {
+    workspaceAvailableBytes: number;
+    objectStoreAvailableBytes: number;
+    sameFileSystem: boolean;
+  };
 }
 
 export interface ReviewTreeMetadata {
@@ -235,6 +239,87 @@ function reviewTreeBudgetError(headSha: string, detail: string): ReviewSourcePre
   return error;
 }
 
+interface ReviewTreeDiskCapacity {
+  availableBytes: bigint;
+  device: number;
+}
+
+function reviewTreeDiskCapacity(path: string, headSha: string): ReviewTreeDiskCapacity {
+  try {
+    const realPath = realpathSync(path);
+    const metadata = statSync(realPath);
+    if (!metadata.isDirectory()) {
+      throw new Error("disk admission path is not a directory");
+    }
+    const fileSystem = statfsSync(realPath);
+    return {
+      availableBytes: BigInt(fileSystem.bavail) * BigInt(fileSystem.bsize),
+      device: metadata.dev,
+    };
+  } catch {
+    throw reviewTreeBudgetError(headSha, "required filesystem capacity is unavailable");
+  }
+}
+
+function reviewTreeObjectStoreCapacity(targetDir: string, headSha: string): ReviewTreeDiskCapacity {
+  const result = spawnSync(
+    "git",
+    ["rev-parse", "--path-format=absolute", "--git-path", "objects"],
+    {
+      cwd: targetDir,
+      env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
+      encoding: "utf8",
+      maxBuffer: MAX_GIT_OUTPUT_BYTES,
+    },
+  );
+  const objectPath = checkedReviewGit(result, "review_git_inspection_failed").trim();
+  if (!objectPath || objectPath.includes("\n") || !isAbsolute(objectPath)) {
+    throw reviewTreeBudgetError(headSha, "Git returned an invalid object-store path");
+  }
+  return reviewTreeDiskCapacity(objectPath, headSha);
+}
+
+function assertReviewTreeDiskAdmission(
+  headSha: string,
+  projectedBytes: bigint,
+  acquisitionBytes: bigint,
+  reserveBytes: bigint,
+  capacities: {
+    workspaceAvailableBytes: bigint;
+    objectStoreAvailableBytes: bigint;
+    sameFileSystem: boolean;
+  },
+): void {
+  if (capacities.sameFileSystem) {
+    const availableBytes =
+      capacities.workspaceAvailableBytes < capacities.objectStoreAvailableBytes
+        ? capacities.workspaceAvailableBytes
+        : capacities.objectStoreAvailableBytes;
+    const requiredBytes = projectedBytes + acquisitionBytes + reserveBytes;
+    if (availableBytes < requiredBytes) {
+      throw reviewTreeBudgetError(
+        headSha,
+        `${availableBytes} shared-filesystem bytes cannot admit ${projectedBytes} projected checkout bytes, ${acquisitionBytes} missing blob bytes, and the ${reserveBytes}-byte reserve`,
+      );
+    }
+    return;
+  }
+  const workspaceRequiredBytes = projectedBytes + reserveBytes;
+  if (capacities.workspaceAvailableBytes < workspaceRequiredBytes) {
+    throw reviewTreeBudgetError(
+      headSha,
+      `${capacities.workspaceAvailableBytes} workspace bytes cannot admit ${projectedBytes} projected checkout bytes and the ${reserveBytes}-byte reserve`,
+    );
+  }
+  const objectStoreRequiredBytes = acquisitionBytes + reserveBytes;
+  if (capacities.objectStoreAvailableBytes < objectStoreRequiredBytes) {
+    throw reviewTreeBudgetError(
+      headSha,
+      `${capacities.objectStoreAvailableBytes} object-store bytes cannot admit ${acquisitionBytes} missing blob bytes and the ${reserveBytes}-byte reserve`,
+    );
+  }
+}
+
 function reviewTreeMetadata(
   targetDir: string,
   headSha: string,
@@ -392,14 +477,18 @@ function reviewTreeMetadata(
     );
   }
   if (missingAttributeBlobs.length > 0) {
-    const fileSystem = statfsSync(targetDir);
-    const availableBytes = fileSystem.bavail * fileSystem.bsize;
-    if (availableBytes < attributeBytes + REVIEW_TREE_DISK_RESERVE_BYTES) {
-      throw reviewTreeBudgetError(
-        headSha,
-        `${availableBytes} available bytes cannot admit ${attributeBytes} attribute bytes plus the ${REVIEW_TREE_DISK_RESERVE_BYTES}-byte reserve`,
-      );
-    }
+    const objectStore = reviewTreeObjectStoreCapacity(targetDir, headSha);
+    assertReviewTreeDiskAdmission(
+      headSha,
+      0n,
+      BigInt(attributeBytes),
+      BigInt(REVIEW_TREE_DISK_RESERVE_BYTES),
+      {
+        workspaceAvailableBytes: objectStore.availableBytes,
+        objectStoreAvailableBytes: objectStore.availableBytes,
+        sameFileSystem: true,
+      },
+    );
     fetchMissingReviewTreeBlobs(targetDir, headSha, missingAttributeBlobs, deadlineAt);
   }
   assertReviewTreeHasBoundedTransforms(targetDir, headSha, paths);
@@ -591,23 +680,45 @@ function materializePullRequestReviewTreeWithBudget(
       `${projectedBytes} conservatively projected bytes exceed the ${budget.maxBytes}-byte limit`,
     );
   }
-  const availableBytes =
-    budget.availableBytes ??
-    (() => {
-      const fileSystem = statfsSync(dirname(worktreeDir));
-      return fileSystem.bavail * fileSystem.bsize;
-    })();
   const acquisitionBytes = (metadata.missingBlobs ?? []).reduce(
     (total, blob) => total + BigInt(blob.bytes),
     0n,
   );
-  const requiredBytes = projectedBytes + acquisitionBytes + BigInt(budget.diskReserveBytes);
-  if (BigInt(availableBytes) < requiredBytes) {
-    throw reviewTreeBudgetError(
-      headSha,
-      `${availableBytes} available bytes cannot admit ${projectedBytes} projected checkout bytes, ${acquisitionBytes} missing blob bytes, and the ${budget.diskReserveBytes}-byte reserve`,
-    );
+  let capacities: {
+    workspaceAvailableBytes: bigint;
+    objectStoreAvailableBytes: bigint;
+    sameFileSystem: boolean;
+  };
+  if (budget.diskCapacity) {
+    if (
+      !Number.isSafeInteger(budget.diskCapacity.workspaceAvailableBytes) ||
+      budget.diskCapacity.workspaceAvailableBytes < 0 ||
+      !Number.isSafeInteger(budget.diskCapacity.objectStoreAvailableBytes) ||
+      budget.diskCapacity.objectStoreAvailableBytes < 0
+    ) {
+      throw reviewTreeBudgetError(headSha, "filesystem capacity metadata is invalid");
+    }
+    capacities = {
+      workspaceAvailableBytes: BigInt(budget.diskCapacity.workspaceAvailableBytes),
+      objectStoreAvailableBytes: BigInt(budget.diskCapacity.objectStoreAvailableBytes),
+      sameFileSystem: budget.diskCapacity.sameFileSystem,
+    };
+  } else {
+    const workspace = reviewTreeDiskCapacity(dirname(worktreeDir), headSha);
+    const objectStore = reviewTreeObjectStoreCapacity(targetDir, headSha);
+    capacities = {
+      workspaceAvailableBytes: workspace.availableBytes,
+      objectStoreAvailableBytes: objectStore.availableBytes,
+      sameFileSystem: workspace.device === objectStore.device,
+    };
   }
+  assertReviewTreeDiskAdmission(
+    headSha,
+    projectedBytes,
+    acquisitionBytes,
+    BigInt(budget.diskReserveBytes),
+    capacities,
+  );
   fetchMissingReviewTreeBlobs(targetDir, headSha, metadata.missingBlobs ?? []);
   const worktree = spawnSync(
     "git",

@@ -803,7 +803,10 @@ advisory local run: it skips the review-start placeholder comment, defaults the
 Codex service tier to `fast` for local CLI compatibility, and preserves local
 Codex auth. Persistent output is opt-in. The default `--output-retention none`
 uses private run-owned scratch, prints the result, and removes scratch after
-handled completion or failure. Use `--output-retention summary` for the report
+ordinary completion or a caught failure. Operating-system termination keeps its
+default behavior so cancellation is not delayed by synchronous review work; an
+unhandled signal or `SIGKILL` can leave the bounded private scratch behind. Use
+`--output-retention summary` for the report
 without raw prompt/stream files, or `--output-retention debug` for the existing
 artifact tree. An explicit legacy `--artifact-dir` still selects debug
 retention. Summary destinations are created exclusively for one invocation.
@@ -814,7 +817,9 @@ tracked paths and Git blob sizes are admitted before materialization, with a 2x
 allowance for bounded EOL expansion. Active filters, working-tree encodings, and
 ident expansion are refused, and checkout hooks are disabled. Projected and
 actual checkout usage is capped at 200,000 files/2 GiB, and 1 GiB remains
-reserved. Media proof downloads share 64 MiB per item and derived
+reserved on each filesystem used for checkout materialization or missing Git
+object acquisition; a shared filesystem is charged once. Media proof downloads
+share 64 MiB per item and derived
 metadata/contact sheets share 16 MiB. Existing or unrelated retained runs are
 never pruned automatically.
 `--result-format json` returns the same result as valid JSON.

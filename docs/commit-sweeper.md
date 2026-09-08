@@ -47,6 +47,9 @@ withholds all GitHub token env vars, skips `gh` API commit-metadata hydration,
 points `GH_CONFIG_DIR` at an empty directory, disables Codex web search, and
 forbids other review-time network lookups. Repositories without a configured
 profile are rejected (no foreign-profile fallback). It never writes to GitHub.
+Ordinary completion and caught failures remove the run-owned scratch. Signals
+retain their default operating-system termination behavior, so an unhandled
+signal or `SIGKILL` can leave that bounded private scratch behind.
 Use `--output-retention summary` to retain only `local-review.md`, or
 `--output-retention debug` for the existing per-run engine output. An explicit
 legacy `--report-dir` remains debug-compatible. `--result-format json` emits a
@@ -58,7 +61,10 @@ run scratch. Before materialization, ClawSweeper admits at most 200,000 tracked
 paths and conservatively doubles complete Git blob-size metadata for bounded EOL
 expansion. It refuses active filters, working-tree encodings, and ident expansion,
 disables checkout hooks, then requires the projected bytes plus a 1 GiB disk
-reserve. Projected and actual usage must stay within 200,000 files/2 GiB.
+reserve. Missing-object acquisition is admitted against the real Git object
+store; checkout materialization is admitted against its workspace filesystem.
+When they share a filesystem, the combined requirement reserves space once.
+Projected and actual usage must stay within 200,000 files/2 GiB.
 Per-item media downloads share 64 MiB; generated metadata and contact sheets
 share 16 MiB. ClawSweeper does not prune older or unrelated retained runs.
 

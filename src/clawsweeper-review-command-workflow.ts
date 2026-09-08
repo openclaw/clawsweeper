@@ -19,6 +19,7 @@ import type {
   BulkFilerCountCache,
   BulkFilerRepositoryPermissionCache,
   Decision,
+  FileModeSnapshot,
   Item,
   ItemContext,
   PreparedMediaProof,
@@ -296,9 +297,9 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         assertActiveReviewOutputBudget(retainedReviewOutput);
       }
     };
-    const proofBinding = reviewCommandProofBinding(args.review_source_action, additionalPrompt);
+    let proofBinding: ReturnType<typeof reviewCommandProofBinding> = null;
     let { git } = preparation;
-    const readonlyModeSnapshots = readonlyOpenclaw ? makeTreeReadOnly(openclawDir) : [];
+    const readonlyModeSnapshots: FileModeSnapshot[] = [];
     const acquiredReviewLeases: Array<{ itemNumber: number; lease: AcquiredReviewStartLease }> = [];
     const releaseOwnedReviewLease = (
       itemNumber: number,
@@ -352,6 +353,8 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     let completed = 0;
     let cacheHits = 0;
     try {
+      proofBinding = reviewCommandProofBinding(args.review_source_action, additionalPrompt);
+      if (readonlyOpenclaw) makeTreeReadOnly(openclawDir, readonlyModeSnapshots);
       assertCurrentOutputBudget();
       let itemOutputBudget = reviewOutputItemBudget(
         outputSelection.retention,
@@ -1696,7 +1699,19 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             }`,
           );
       } finally {
-        cleanupReviewOutput();
+        try {
+          cleanupReviewOutput();
+        } catch (error) {
+          if (commandError === undefined && finalizationError === undefined) {
+            finalizationError = error;
+          } else {
+            console.error(
+              `[review] private output cleanup failed after an earlier failure: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+        }
       }
     }
     if (finalizationError !== undefined) throw finalizationError;

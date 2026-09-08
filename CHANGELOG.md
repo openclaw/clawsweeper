@@ -28,7 +28,10 @@ checkpoint, and status-only commits are intentionally omitted.
   artifact route explicitly selects debug retention. Required PR checkouts now
   use a separately admitted private workspace with conservative Git metadata
   sizing and unbounded filter refusal, and media producers share run-owned byte
-  pools before writing.
+  pools before writing. Ordinary and caught-failure cleanup remains automatic;
+  operating-system signals keep default termination semantics and may leave
+  bounded private scratch. Checkout and Git object-store capacity are admitted
+  separately unless both destinations share a filesystem.
 - Add reviewed-plan retirement of one merged-target publication through the existing maintenance workflow, keeping signing credentials confined to its execution step.
 - Admit the two approved Signal URL-rejection fixtures through exact URI, source-line, path, and native decoder bindings while retaining all scanner and verification checks.
 - Admit the reviewed Crabbox PostgreSQL operations example through exact Postgres detector, observed `PLAIN`/`HTML` decoder, value-hash, source-line, path, mode, metadata, and committed base/head bindings.

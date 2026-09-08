@@ -762,7 +762,11 @@ test("restricted review rejects one tracked 2.5 GiB blob before worktree materia
             maxFiles: 200_000,
             maxBytes: 2 * 1024 * 1024 * 1024,
             diskReserveBytes: 1024 * 1024 * 1024,
-            availableBytes: 3 * 1024 * 1024 * 1024,
+            diskCapacity: {
+              workspaceAvailableBytes: 3 * 1024 * 1024 * 1024,
+              objectStoreAvailableBytes: 3 * 1024 * 1024 * 1024,
+              sameFileSystem: true,
+            },
           },
           {
             paths: ["oversized.bin"],
@@ -775,6 +779,88 @@ test("restricted review rejects one tracked 2.5 GiB blob before worktree materia
         /conservatively projected bytes/.test(error.message),
     );
     assert.equal(existsSync(reviewTree), false);
+    assert.equal(git(fixture.target, "worktree", "list", "--porcelain"), worktreesBefore);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("restricted review admits shared and separate filesystem budgets independently", () => {
+  const fixture = partialCloneFixture({ prefetchHead: false });
+  const worktreesBefore = git(fixture.target, "worktree", "list", "--porcelain");
+  const missingBlob = "a".repeat(40);
+  const scenarios = [
+    {
+      name: "shared",
+      worktreeDir: join(fixture.root, "shared-capacity-tree"),
+      blobBytes: 40n,
+      missingBytes: 30,
+      reserveBytes: 10,
+      capacity: {
+        workspaceAvailableBytes: 100,
+        objectStoreAvailableBytes: 100,
+        sameFileSystem: true,
+      },
+      message: /shared-filesystem bytes/,
+    },
+    {
+      name: "workspace",
+      worktreeDir: join(fixture.root, "workspace-capacity-tree"),
+      blobBytes: 50n,
+      missingBytes: 1,
+      reserveBytes: 10,
+      capacity: {
+        workspaceAvailableBytes: 109,
+        objectStoreAvailableBytes: 1_000,
+        sameFileSystem: false,
+      },
+      message: /workspace bytes/,
+    },
+    {
+      name: "object store",
+      worktreeDir: join(fixture.root, "object-capacity-tree"),
+      blobBytes: 1n,
+      missingBytes: 100,
+      reserveBytes: 10,
+      capacity: {
+        workspaceAvailableBytes: 1_000,
+        objectStoreAvailableBytes: 109,
+        sameFileSystem: false,
+      },
+      message: /object-store bytes/,
+    },
+  ] as const;
+  try {
+    for (const scenario of scenarios) {
+      assert.throws(
+        () =>
+          materializePullRequestReviewTreeForTest(
+            {
+              targetDir: fixture.target,
+              worktreeDir: scenario.worktreeDir,
+              itemNumber: 982,
+              headSha: fixture.headSha,
+            },
+            {
+              maxFiles: 100,
+              maxBytes: 1_000,
+              diskReserveBytes: scenario.reserveBytes,
+              diskCapacity: scenario.capacity,
+            },
+            {
+              paths: ["fixture.txt"],
+              blobBytes: scenario.blobBytes,
+              missingBlobs: [{ objectId: missingBlob, bytes: scenario.missingBytes }],
+            },
+          ),
+        (error) =>
+          error instanceof ReviewSourcePreparationError &&
+          error.diagnosticReason === "review_checkout_unavailable" &&
+          scenario.message.test(error.message),
+        scenario.name,
+      );
+      assert.equal(existsSync(scenario.worktreeDir), false, scenario.name);
+    }
     assert.equal(git(fixture.target, "worktree", "list", "--porcelain"), worktreesBefore);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
@@ -878,7 +964,11 @@ test("restricted review refuses unbounded filters and admits bounded EOL expansi
             maxFiles: 100,
             maxBytes: 1024 * 1024,
             diskReserveBytes: 0,
-            availableBytes: 1024 * 1024,
+            diskCapacity: {
+              workspaceAvailableBytes: 1024 * 1024,
+              objectStoreAvailableBytes: 1024 * 1024,
+              sameFileSystem: true,
+            },
           },
         ),
       (error) =>
@@ -908,7 +998,11 @@ test("restricted review refuses unbounded filters and admits bounded EOL expansi
           maxFiles: 100,
           maxBytes: 1024 * 1024,
           diskReserveBytes: 0,
-          availableBytes: 1024 * 1024,
+          diskCapacity: {
+            workspaceAvailableBytes: 1024 * 1024,
+            objectStoreAvailableBytes: 1024 * 1024,
+            sameFileSystem: true,
+          },
         },
       ),
       true,

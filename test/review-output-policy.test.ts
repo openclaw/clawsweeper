@@ -110,7 +110,7 @@ test("transient review output is private and removed by its owner cleanup", () =
 });
 
 test(
-  "transient review output is removed on a handled termination signal",
+  "transient review output does not swallow default termination during synchronous work",
   { skip: process.platform === "win32" },
   async () => {
     const child = spawn(
@@ -119,10 +119,12 @@ test(
         "--input-type=module",
         "-e",
         [
+          `import { spawnSync } from "node:child_process";`,
           `import { createTransientReviewOutput } from ${JSON.stringify(new URL("../dist/review-output-policy.js", import.meta.url).href)};`,
           `const output = createTransientReviewOutput("clawsweeper-signal-test-");`,
           `console.log(output.path);`,
-          `setInterval(() => {}, 1000);`,
+          `spawnSync(process.execPath, ["-e", "setTimeout(() => {}, 1000)"]);`,
+          `console.log("unexpected completion");`,
         ].join("\n"),
       ],
       { stdio: ["ignore", "pipe", "pipe"] },
@@ -136,11 +138,17 @@ test(
     const path = stdout.trim();
     assert.equal(existsSync(path), true);
     const exited = once(child, "exit");
+    const startedAt = Date.now();
     child.kill("SIGTERM");
     const [status, signal] = (await exited) as [number | null, NodeJS.Signals | null];
     assert.equal(status, null);
     assert.equal(signal, "SIGTERM");
-    assert.equal(existsSync(path), false);
+    assert.ok(
+      Date.now() - startedAt < 750,
+      "default termination must not wait for synchronous work",
+    );
+    assert.doesNotMatch(stdout, /unexpected completion/);
+    rmSync(path, { recursive: true, force: true });
   },
 );
 

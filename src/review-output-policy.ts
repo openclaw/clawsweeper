@@ -122,26 +122,13 @@ export function createTransientReviewOutput(
   chmodSync(path, 0o700);
   let cleaned = false;
   const ownedCleanups: Array<() => void> = [];
-  const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
-  const handlers = new Map<NodeJS.Signals, () => void>();
   const cleanup = () => {
     if (cleaned) return;
     cleaned = true;
-    for (const [signal, handler] of handlers) process.removeListener(signal, handler);
     for (const ownedCleanup of ownedCleanups.splice(0).reverse()) ownedCleanup();
     rmSync(path, { recursive: true, force: true });
   };
   if (owner) owner.addCleanup(cleanup);
-  else {
-    for (const signal of signals) {
-      const handler = () => {
-        cleanup();
-        process.kill(process.pid, signal);
-      };
-      handlers.set(signal, handler);
-      process.once(signal, handler);
-    }
-  }
   return {
     path,
     cleanup,

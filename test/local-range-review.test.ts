@@ -10,6 +10,7 @@ import {
   renameSync,
   readFileSync,
   realpathSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -732,6 +733,54 @@ test("--local-range failure emits one JSON result and removes default scratch", 
     assert.equal(git(dir, "status", "--porcelain"), "");
   } finally {
     rmSync(codexDir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("--local-range proof-binding refusal removes all run-owned scratch", () => {
+  const dir = initRepo();
+  const scratch = mkdtempSync(join(tmpdir(), "lrr-proof-binding-scratch-"));
+  try {
+    writeFileSync(join(dir, "a.txt"), "base\n");
+    git(dir, "add", "a.txt");
+    git(dir, "commit", "-q", "-m", "init");
+    git(dir, "branch", "base-ref");
+    writeFileSync(join(dir, "a.txt"), "base\nfeature\n");
+    git(dir, "add", "a.txt");
+    git(dir, "commit", "-q", "-m", "feat: local range");
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        CLI,
+        "review",
+        "--local-range",
+        "--base",
+        "base-ref",
+        "--target-repo",
+        "openclaw/clawsweeper",
+        "--review-source-action",
+        "command_proof_result",
+        "--result-format",
+        "json",
+      ],
+      {
+        cwd: dir,
+        encoding: "utf8",
+        env: { ...process.env, TMPDIR: scratch },
+        timeout: 30_000,
+      },
+    );
+
+    assert.notEqual(result.status, 0);
+    assert.match(
+      result.stdout,
+      /commanded proof reassessment is missing its exact-subject binding/,
+    );
+    assert.deepEqual(readdirSync(scratch), []);
+    assert.equal(git(dir, "status", "--porcelain"), "");
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });
   }
 });
