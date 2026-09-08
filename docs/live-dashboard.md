@@ -847,3 +847,57 @@ v1 Worker. Keep this mixed-version coverage until every in-flight v1 dispatch
 has drained naturally. The dashboard deployment smoke test must still observe
 HTTP 401 from an unsigned reconciliation request; HTTP 404 means the old Worker
 is serving that route.
+
+## Exhausted command review records in Bay
+
+Repair Cove counts retained exception records, not running repair workers. Its
+public references may carry the bounded `queue_disposition` values
+`parked_exhausted`, `parked`, or `retry_scheduled`. Both the server and browser
+sanitizers retain only these values, and only for queue references. Exhausted
+records show operator attention instead of an increasing queued-worker clock;
+the sampled header separates live references from queue/attention records.
+This remains an observer-only surface with the existing public repository
+allowlist and sampling/freshness limits.
+
+The queue's globally bounded parked-terminal check also observes exhausted
+command producers. An explicit closed GitHub item, observed twice with the same
+node/head/closure identity, may create a separate acknowledgement-only driver.
+The producer remains parked until its own receipt is observed or its trusted
+receipt is explicitly missing/locked. The driver rechecks the live closed
+identity and current producer revision/decision before authorizing a status
+write. Reopened, superseded, unknown, and still-open work is not restarted;
+operator bulk resolution/recovery still refuses command-context records.
+Closed failed commands retain a failure acknowledgement, not a fabricated
+successful review. Ordinary reconciliation now includes command exclusions
+in its bounded skip-reason accounting.
+
+The local Worker/SQLite/HTTP and Chromium proof is documented in
+`docs/proof/parked-command-finalization/README.md`.
+
+Parked-command finalizers reserve status-write ownership while their receipt is
+looked up, then re-fence immediately before the status PATCH. A successor may be
+recorded but cannot dispatch through that owned write window; ownership is
+released after a successful bounded PATCH or expires under the acknowledgement
+lease. The opted-in finalizer does not prune duplicate comments during lookup.
+When only the live-activity census is unavailable, Bay still retains verified
+queue dispositions from its bounded queue projection and labels the live count
+as unavailable rather than zero.
+
+When a parked-command target reopens after acknowledgement authorization, the
+queue atomically cancels the unobserved closure plan in its existing terminal
+operation ledger before deleting the driver. The producer remains exhausted.
+Cancellation retains a failed/attention lifecycle state, not a requeue claim;
+no new review is scheduled by canceling a closure plan.
+That cancelled revision cannot accept a late receipt or recreate an unfenced
+closure finalizer after a later webhook or Worker restart; a genuinely new
+command/source revision retains its separate acknowledgement ownership.
+Losing hosted/public repository eligibility also leaves exhausted command
+obligations parked: it is neither a verified receipt nor a missing/locked
+comment skip, and does not authorize generic deletion or finalizer dispatch.
+An already-planned parked-command driver is deferred with its original fence
+rather than superseded or discarded, so eligibility can recover safely. Such
+auxiliary drivers never replace their exhausted producer in the canonical Bay
+queue projection; actual workflow activity remains a separate live overlay.
+Claimed parked-command writes also re-probe hosted/public eligibility before
+target credentials and after the target read. Revocation defers the original
+fenced driver; it cannot authorize a status PATCH on a now-ineligible target.

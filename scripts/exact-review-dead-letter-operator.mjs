@@ -1242,6 +1242,7 @@ async function reconcileParkedReviews({
   for (const [index, row] of selectedRows.entries()) {
     if (row.excluded_reason) {
       summary.skipped_targets += 1;
+      recordSkipReasonCount(summary, row.excluded_reason, 1);
       continue;
     }
     if (parkedReconcileDeadlineReached(deadlineAt)) {

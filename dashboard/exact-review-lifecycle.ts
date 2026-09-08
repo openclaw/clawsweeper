@@ -628,6 +628,32 @@ export class ExactReviewLifecycleProjectionStore {
     });
   }
 
+  cancelParkedCommandClosureSync(input: ProjectionIdentity & { observedAt: number }) {
+    this.validateIdentity(input);
+    return this.mutateIdempotentlySync(input, (projection) => {
+      if (parkedCommandClosureCancelled(projection)) return true;
+      if (
+        !projection.admission.commandOriginated ||
+        projection.acknowledgement.observed ||
+        (projection.terminalDisposition &&
+          !["target_closed", "requeue"].includes(projection.terminalDisposition.kind))
+      ) {
+        throw new Error("invalid parked command closure cancellation");
+      }
+      // The producer is still exhausted. Cancellation revokes acknowledgement
+      // authority, but does not schedule another review or report a requeue.
+      const terminal = { kind: "failure" as const, observedAt: input.observedAt };
+      projection.terminalDispositions.push(terminal);
+      projection.terminalDisposition = terminal;
+      projection.terminalOperationIds.push({
+        operationId: PARKED_COMMAND_CLOSURE_CANCEL_OPERATION,
+        kind: "failure",
+      });
+      projection.bayTelemetryPending = true;
+      return false;
+    });
+  }
+
   authorizeCommandAcknowledgement(
     input: ProjectionIdentity & {
       statusMarker: string | null;
@@ -832,7 +858,13 @@ export class ExactReviewLifecycleProjectionStore {
                 input.statusMarker !== null &&
                 attempt.statusMarker === input.statusMarker)),
         );
-        if (attempted && projection.acknowledgement.required) matchedProjections.push(projection);
+        if (
+          attempted &&
+          projection.acknowledgement.required &&
+          !parkedCommandClosureCancelled(projection)
+        ) {
+          matchedProjections.push(projection);
+        }
       }
       const exactStatusCommentMatches =
         input.fenceKey === undefined && matchedProjections.length > 1
@@ -1514,11 +1546,24 @@ export function lifecycleState(projection: ExactReviewLifecycleProjection): Life
   }
 }
 
+// An exhausted command closure plan can be invalidated by a live reopen.
+// Reuse the durable terminal-operation ledger instead of inventing a receipt.
+export const PARKED_COMMAND_CLOSURE_CANCEL_OPERATION = "parked-command-closure-cancelled:v1";
+
+export function parkedCommandClosureCancelled(projection: ExactReviewLifecycleProjection) {
+  return projection.terminalOperationIds.some(
+    (operation) =>
+      operation.operationId === PARKED_COMMAND_CLOSURE_CANCEL_OPERATION &&
+      (operation.kind === "failure" || operation.kind === "requeue"),
+  );
+}
+
 export function commandAcknowledgementState(
   projection: ExactReviewLifecycleProjection,
 ): CommandAcknowledgementState {
   if (!projection.acknowledgement.required) return "not_required";
   if (projection.acknowledgement.observed) return "observed";
+  if (parkedCommandClosureCancelled(projection)) return "unavailable";
   const terminalSkip = commandAcknowledgementTerminalSkip(projection);
   if (terminalSkip) {
     return terminalSkip.reason === "missing_status_comment"

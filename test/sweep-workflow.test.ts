@@ -5508,7 +5508,11 @@ test("event re-review status distinguishes lease deferral from interruptions", (
   assert.match(block, /state="Waiting"/);
   assert.match(block, /Another exact-head review is already active/);
   assert.match(block, /state="Interrupted"/);
-  assert.match(block, /The durable queue will retry it/);
+  assert.match(
+    block,
+    /will determine whether this revision can retry or has exhausted its retry budget/,
+  );
+  assert.doesNotMatch(block, /The durable queue will retry it/);
   assert.doesNotMatch(block, /CAPACITY_OUTCOME/);
   assert.doesNotMatch(block, /state="Superseded"/);
 });

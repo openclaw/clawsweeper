@@ -2268,6 +2268,7 @@ type PublicBayAction = {
   job_id?: number;
 };
 type PublicBayReference = {
+  queue_disposition?: "parked_exhausted" | "parked" | "retry_scheduled";
   repository: string;
   item_number: number;
   stage: (typeof PUBLIC_BAY_STAGES)[number];
@@ -2509,6 +2510,11 @@ function publicBayReference(
   const canonicalRepository = repository.toLowerCase();
   if (!allowedRepositories.has(canonicalRepository)) return undefined;
   const action = publicBayProjectedAction(source.action, allowedRepositories);
+  const disposition =
+    referenceSource === "queue" &&
+    ["parked_exhausted", "parked", "retry_scheduled"].includes(source.queue_disposition)
+      ? (source.queue_disposition as PublicBayReference["queue_disposition"])
+      : undefined;
   const projectedTiming = objectValue(source.timing);
   const explicitTimingKind = String(projectedTiming.kind || "");
   const explicitTimingStartedAt = publicTimestamp(projectedTiming.started_at);
@@ -2530,6 +2536,7 @@ function publicBayReference(
     item_number: itemNumber,
     stage: stage as (typeof PUBLIC_BAY_STAGES)[number],
     source: referenceSource,
+    ...(disposition ? { queue_disposition: disposition } : {}),
     legacy_batch_path: legacyBatchPath === true,
     ...(timing ? { timing } : {}),
     ...(action ? { action } : {}),

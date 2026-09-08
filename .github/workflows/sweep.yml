@@ -2059,7 +2059,7 @@ jobs:
           CLAWSWEEPER_ACTION_LEDGER_DISABLED: "1"
         run: |
           state="Failed"
-          detail="The exact review did not produce a publishable artifact. The durable queue will retry it."
+          detail="The exact review did not produce a publishable artifact. The durable queue will determine whether this revision can retry or has exhausted its retry budget."
           if [ "$REVIEW_FAILURE_REASON" = "incomplete_source" ]; then
             detail="The exact review could not verify the complete source. The durable queue will not retry this unchanged revision."
           elif [ "$REVIEW_FAILURE_REASON" = "findings" ]; then
@@ -2071,10 +2071,10 @@ jobs:
             detail="A newer exact-review queue owner superseded this run. This run completed as a no-op."
           elif [ "$RESERVATION_STATUS" = "held" ]; then
             state="Waiting"
-            detail="Another exact-head review is already active. The durable queue will retry after its lease expires."
+            detail="Another exact-head review is already active. This attempt is deferred; the durable queue owns the next eligible attempt."
           elif [ "$REVIEW_OUTCOME" = "cancelled" ] || [ -n "$RETRY_AT" ]; then
             state="Interrupted"
-            detail="The exact review was interrupted. The durable queue will retry it."
+            detail="The exact review was interrupted. The durable queue will determine the next disposition; another attempt is not guaranteed."
           fi
           pnpm run repair:update-command-status -- \
             --repo "$TARGET_REPO" \
@@ -3860,6 +3860,7 @@ jobs:
             claim_generation: claimGeneration,
             status_state: finalization.statusState,
             status_detail: finalization.statusDetail,
+            parked_command_finalization: Boolean(finalization.parkedCommand),
           };
           fs.appendFileSync(process.env.GITHUB_OUTPUT, "claimed=true\n");
           for (const [key, value] of Object.entries(values)) {
@@ -3879,22 +3880,9 @@ jobs:
         with:
           build-script: build:repair
 
-      - name: Create target write token
-        id: target-write-token
-        if: ${{ steps.finalization-context.outputs.claimed == 'true' }}
-        continue-on-error: true
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
-          owner: ${{ steps.finalization-context.outputs.target_repo_owner }}
-          repositories: ${{ steps.finalization-context.outputs.target_repo_name }}
-          permission-issues: write
-          permission-pull-requests: write
-
       - name: Begin fenced terminal acknowledgement
         id: terminal-acknowledgement
-        if: ${{ steps.finalization-context.outputs.claimed == 'true' && steps.target-write-token.outcome == 'success' }}
+        if: ${{ steps.finalization-context.outputs.claimed == 'true' }}
         env:
           ITEM_KEY: ${{ steps.finalization-context.outputs.item_key }}
           QUEUE_LEASE_ID: ${{ github.event.client_payload.queue_lease_id }}
@@ -3923,17 +3911,46 @@ jobs:
               ...(statusCommentId === null ? {} : { status_comment_id: statusCommentId }),
             }));
           ')"
-          response="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 20 \
+          response_file="$(mktemp)"
+          trap 'rm -f "$response_file"' EXIT
+          response_status="$(curl --silent --show-error --connect-timeout 5 --max-time 20 \
+            --output "$response_file" --write-out '%{http_code}' \
             --request POST --header "content-type: application/json" --data "$payload" \
             "${QUEUE_URL%/}/internal/exact-review/terminal-finalization/attempt")"
+          response="$(cat "$response_file")"
+          if [ "$response_status" = "409" ]; then
+            case "$(jq -r '.error // empty' "$response_file")" in
+              parked_command_target_changed|parked_command_superseded|lease_not_active)
+                echo "allowed=false" >> "$GITHUB_OUTPUT"
+                echo "acknowledgement_state=unavailable" >> "$GITHUB_OUTPUT"
+                echo "::notice::Terminal acknowledgement owner or target changed; no status write is authorized."
+                exit 0
+                ;;
+              *) echo "Unexpected terminal acknowledgement conflict." >&2; exit 1 ;;
+            esac
+          fi
+          test "$response_status" = "200"
           jq -e '.ok == true' <<< "$response" >/dev/null
           echo "allowed=$(jq -r '.allowed == true' <<< "$response")" >> "$GITHUB_OUTPUT"
           echo "acknowledgement_state=$(jq -r '.acknowledgement_state // empty' <<< "$response")" >> "$GITHUB_OUTPUT"
           echo "attempt_id=$(jq -r '.attempt_id // empty' <<< "$response")" >> "$GITHUB_OUTPUT"
 
+      - name: Create target write token
+        id: target-write-token
+        if: ${{ steps.finalization-context.outputs.claimed == 'true' && steps.terminal-acknowledgement.outputs.allowed == 'true' }}
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
+          owner: ${{ steps.finalization-context.outputs.target_repo_owner }}
+          repositories: ${{ steps.finalization-context.outputs.target_repo_name }}
+          permission-issues: write
+          permission-pull-requests: write
+
       - name: Update final command status once
         id: update-final-command-status
-        if: ${{ steps.terminal-acknowledgement.outputs.allowed == 'true' }}
+        if: ${{ steps.terminal-acknowledgement.outputs.allowed == 'true' && steps.target-write-token.outcome == 'success' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -3947,6 +3964,11 @@ jobs:
           FENCE_KEY: ${{ steps.finalization-context.outputs.lifecycle_fence_key }}
           REVISION: ${{ steps.finalization-context.outputs.lifecycle_revision }}
           ATTEMPT_ID: ${{ steps.terminal-acknowledgement.outputs.attempt_id }}
+          COMMAND_STATUS_REQUIRE_TERMINAL_FENCE: ${{ steps.finalization-context.outputs.parked_command_finalization }}
+          TERMINAL_FINALIZATION_ITEM_KEY: ${{ steps.finalization-context.outputs.item_key }}
+          TERMINAL_FINALIZATION_LEASE_ID: ${{ github.event.client_payload.queue_lease_id }}
+          TERMINAL_FINALIZATION_LEASE_REVISION: ${{ steps.finalization-context.outputs.lease_revision }}
+          TERMINAL_FINALIZATION_CLAIM_GENERATION: ${{ steps.finalization-context.outputs.claim_generation }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
         run: |

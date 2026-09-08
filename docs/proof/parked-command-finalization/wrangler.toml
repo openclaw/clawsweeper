@@ -1,0 +1,25 @@
+name = "parked-command-local-proof"
+main = "worker.ts"
+compatibility_date = "2026-05-11"
+
+[[durable_objects.bindings]]
+name = "EXACT_REVIEW_QUEUE"
+class_name = "ExactReviewQueue"
+
+[[durable_objects.bindings]]
+name = "STATUS_STORE"
+class_name = "StatusStore"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ExactReviewQueue", "StatusStore"]
+
+[vars]
+GITHUB_API_URL = "http://127.0.0.1:8897"
+CLAWSWEEPER_APP_CLIENT_ID = "synthetic-parked-proof"
+CLAWSWEEPER_WEBHOOK_SECRET = "synthetic-parked-proof"
+EXACT_REVIEW_OPERATOR_SECRET = "synthetic-parked-proof"
+PUBLIC_BAY_REPOS = "openclaw/gogcli,openclaw/clawsweeper"
+TARGET_REPOS = "openclaw/gogcli,openclaw/clawsweeper"
+EXACT_REVIEW_DISPATCH_DEBOUNCE_MS = "0"
+EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS = "0"
