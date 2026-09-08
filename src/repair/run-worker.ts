@@ -398,7 +398,7 @@ function prepareTargetCheckout(job: LooseRecord): string {
 
   const targetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-target-"));
   const targetDir = path.join(targetRoot, targetRepo.replace(/[^A-Za-z0-9_.-]+/g, "-"));
-  runCommand("gh", ["repo", "clone", targetRepo, targetDir, "--", "--depth=1"]);
+  runCommand("gh", ["repo", "clone", targetRepo, targetDir, "--", "--depth=1"], 180_000);
   return targetDir;
 }
 
@@ -406,11 +406,12 @@ function stringValue(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function runCommand(command: string, commandArgs: string[]) {
+function runCommand(command: string, commandArgs: string[], timeoutMs = 120_000) {
   const result = spawnSync(command, commandArgs, {
     cwd: repoRoot(),
     encoding: "utf8",
     env: process.env,
+    timeout: timeoutMs,
   });
   if (result.status !== 0) {
     throw new Error(

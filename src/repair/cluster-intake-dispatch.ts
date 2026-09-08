@@ -38,6 +38,15 @@ export type ClusterDispatchObserver = (
   env: NodeJS.ProcessEnv,
 ) => ClusterDispatchObservation;
 
+export function clusterIntakeSpawnTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number(
+    env.CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS ?? env.CLAWSWEEPER_NETWORK_COMMAND_TIMEOUT_MS,
+  );
+  return Number.isFinite(configured) && configured > 0
+    ? Math.max(30_000, Math.floor(configured))
+    : 120_000;
+}
+
 export type ClusterCapacity = (options: Record<string, unknown>) => {
   active: number;
   max_live_workers: number;
@@ -299,6 +308,7 @@ function dispatchClusterLedger(
       encoding: "utf8",
       env,
       stdio: "pipe",
+      timeout: clusterIntakeSpawnTimeoutMs(env),
       ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
     });
     if (result.status !== 0) {

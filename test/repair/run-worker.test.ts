@@ -220,3 +220,13 @@ ${admission === "invalid-output" ? "process.exit(183);" : admission === "dry-run
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+test("run-worker command runner and target clone use finite spawn timeouts", () => {
+  const source = fs.readFileSync(path.join(repoRoot, "src/repair/run-worker.ts"), "utf8");
+  assert.match(source, /function runCommand\([^)]*timeoutMs\s*=\s*120_000/);
+  assert.match(source, /timeout:\s*timeoutMs/);
+  assert.match(
+    source,
+    /runCommand\(\s*"gh",\s*\["repo",\s*"clone",\s*targetRepo,\s*targetDir,\s*"--",\s*"--depth=1"\s*\],\s*(1[89]\d_?\d{3}|2\d{2}_?\d{3}|300_000)\s*\)/,
+  );
+});

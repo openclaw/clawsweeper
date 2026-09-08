@@ -20,6 +20,7 @@ import {
   verifyClusterLedgerEntryAcceptedIntent,
 } from "../../dist/repair/cluster-intake-state.js";
 import {
+  clusterIntakeSpawnTimeoutMs,
   dispatchClusterIntakes,
   observeClusterDispatch,
   recoverPendingClusterIntakes,
@@ -1235,6 +1236,32 @@ test("v2 cluster intake ledgers reject unvalidated JSON shapes", () => {
     mutate(malformed);
     assert.throws(() => clusterIntakeLedger(malformed));
   }
+});
+
+test("cluster intake workflow dispatch uses a finite gh spawn timeout", () => {
+  assert.equal(clusterIntakeSpawnTimeoutMs({}), 120_000);
+  assert.equal(clusterIntakeSpawnTimeoutMs({ CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS: "45000" }), 45_000);
+  assert.equal(clusterIntakeSpawnTimeoutMs({ CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS: "10" }), 30_000);
+  assert.equal(
+    clusterIntakeSpawnTimeoutMs({ CLAWSWEEPER_NETWORK_COMMAND_TIMEOUT_MS: "60000" }),
+    60_000,
+  );
+  assert.equal(
+    clusterIntakeSpawnTimeoutMs({
+      CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS: "45000",
+      CLAWSWEEPER_NETWORK_COMMAND_TIMEOUT_MS: "60000",
+    }),
+    45_000,
+  );
+  for (const value of ["", "invalid", "0", "-1", "Infinity"]) {
+    assert.equal(
+      clusterIntakeSpawnTimeoutMs({ CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS: value }),
+      120_000,
+    );
+  }
+  const source = fs.readFileSync("src/repair/cluster-intake-dispatch.ts", "utf8");
+  assert.match(source, /timeout:\s*clusterIntakeSpawnTimeoutMs\(env\)/);
+  assert.match(source, /windowsVerbatimArguments:\s*true/);
 });
 
 test("selector decision sidecars reject unvalidated persisted shapes", () => {
