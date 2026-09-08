@@ -20,12 +20,16 @@ export class ReviewGitError extends ReviewSourcePreparationError {
   readonly errorCode: string | null;
   readonly stderr: string;
 
-  constructor(diagnosticReason: ReviewGitFailureReason, result: SpawnSyncReturns<string>) {
+  constructor(
+    diagnosticReason: ReviewGitFailureReason,
+    result: SpawnSyncReturns<string> | (Error & Partial<SpawnSyncReturns<string>>),
+  ) {
     // Public errors omit process output; the diagnostic writer owns its redaction.
     super(diagnosticReason, "Review source preparation failed.");
     this.name = "ReviewGitError";
-    this.status = result.status;
-    this.signal = result.signal;
+    this.cause = result instanceof Error ? result : result.error;
+    this.status = result.status ?? null;
+    this.signal = result.signal ?? null;
     this.errorCode = (result.error as NodeJS.ErrnoException | undefined)?.code ?? null;
     this.stderr = result.stderr ?? "";
   }

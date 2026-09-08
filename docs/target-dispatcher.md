@@ -516,7 +516,7 @@ token for acknowledgement/comment reactions, mints the `openclaw/clawsweeper`
 installation token for repository dispatch, and queues exact
 `clawsweeper_comment` or `clawsweeper_item` work. Re-review commands take the
 direct durable command-intake route described above. The durable Worker queue
-dispatches at most 128 leased exact-review executors, with up to 120 active
+dispatches at most 32 leased exact-review executors, with up to 24 active
 reviews per target repository. Keep the Actions
 dispatcher installed as a compatibility fallback; its legacy dispatch is
 bridged into the same queue before Codex starts.

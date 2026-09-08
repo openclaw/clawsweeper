@@ -226,8 +226,21 @@ function isDataModelCandidatePath(path: string): boolean {
   );
 }
 
+function sqlitePathOwnerRole(path: string): string {
+  return (
+    /(?:^|\/)sqlite(?:[-_.][a-z0-9]+)*[-_.](store|schema|codec|user-version)\.[cm]?[jt]sx?$/i
+      .exec(path)?.[1]
+      ?.toLowerCase() ?? ""
+  );
+}
+
 function isLikelySqliteSchemaPath(path: string): boolean {
-  return /(?:^|\/)(?:migrations?|sqlite)(?:\/|[-_.])|(?:sqlite|memory|database|db)[-_.]?schema|schema[-_.]?sqlite|sqlite[-_.]?store|\.sql$/i.test(
+  const role = sqlitePathOwnerRole(path);
+  if (role === "codec" || role === "user-version") return false;
+  if (role === "store" || role === "schema") return true;
+  // A sqlite directory or standalone owner is evidence; sqlite-prefixed
+  // diagnostic/helper leaves need a schema/store name or actual patch evidence.
+  return /(?:^|\/)migrations?(?:\/|[-_.])|(?:^|\/)sqlite(?:\/|\.[^/.]+$)|(?:sqlite|memory|database|db)[-_.]?schema|schema[-_.]?sqlite|sqlite[-_.]?store|\.sql$/i.test(
     path,
   );
 }
@@ -242,15 +255,18 @@ function sqliteSchemaPatchChangesTables(patch: string, changedLines: readonly st
     return true;
   }
 
-  const patchText = patch
-    .split("\n")
-    .filter((line) => !line.startsWith("@@") && !line.startsWith("+++") && !line.startsWith("---"))
-    .map((line) => line.replace(/^[ +-]/, ""))
-    .join("\n");
-  return (
-    /\b(?:CREATE|ALTER)\s+(?:VIRTUAL\s+)?TABLE\b|\bsqliteTable\s*\(/i.test(patchText) &&
-    changedLines.some(sqliteSchemaDeclarationLine)
-  );
+  // Unchanged table context only applies to declarations changed in its hunk.
+  return patch.split(/^@@.*$/m).some((hunk) => {
+    const hunkText = hunk
+      .split("\n")
+      .filter((line) => /^[ +-]/.test(line) && !/^(?:\+\+\+|---)/.test(line))
+      .map((line) => line.slice(1))
+      .join("\n");
+    return (
+      /\b(?:CREATE|ALTER)\s+(?:VIRTUAL\s+)?TABLE\b|\bsqliteTable\s*\(/i.test(hunkText) &&
+      changedPatchLines(hunk).some(sqliteSchemaDeclarationLine)
+    );
+  });
 }
 
 function sqliteSchemaDeclarationLine(line: string): boolean {
@@ -259,9 +275,8 @@ function sqliteSchemaDeclarationLine(line: string): boolean {
     /\b(?:CREATE|ALTER|DROP)\s+(?:VIRTUAL\s+)?TABLE\b|\bRENAME\s+TABLE\b|\bsqliteTable\s*\(/i.test(
       text,
     ) ||
-    /^(?:[`"']?[A-Za-z_][\w$]*[`"']?\s+|[A-Za-z_$][\w$]*\s*:\s*)(?:BLOB|INTEGER|NULL|REAL|TEXT|ANY|blob|integer|numeric|real|text)\b/i.test(
-      text,
-    )
+    /^[`"']?[A-Za-z_][\w$]*[`"']?\s+(?:BLOB|INTEGER|NULL|REAL|TEXT|ANY|NUMERIC)\b/i.test(text) ||
+    /^[A-Za-z_$][\w$]*\s*:\s*(?:blob|integer|numeric|real|text)\s*\(/i.test(text)
   );
 }
 
@@ -437,16 +452,27 @@ function dataModelSurfacesFromPatch(
 
   const surfaces = new Set<string>();
   const add = (surface: string) => surfaces.add(dataModelSurfaceLabel(path, surface));
-  const pathHint = dataModelPathHint(path);
-  if (pathHint && dataModelTextMatchesPathHint(text, pathHint)) add(pathHint);
+  const pathOwner = dataModelPathOwner(path);
+  const pathHint = pathOwner?.surface ?? "";
+  if (
+    pathHint &&
+    (dataModelTextMatchesPathHint(text, pathHint) ||
+      (pathOwner?.strong && dataModelTextHasJsonConversion(text)))
+  )
+    add(pathHint);
   if (pathHint && dataModelTextLooksLikePersistedShapeField(text, pathHint)) add(pathHint);
-  // Storage context establishes changed fields only within the same hunk.
+  // Storage context establishes changed fields or JSON conversion only within
+  // the same hunk, including formatting/argument edits with no field declaration.
   for (const hunk of (options.patch ?? "").split(/^@@.*$/m)) {
     const changedText = changedPatchLines(hunk)
       .filter((line) => dataModelLineLooksSemantic(line, options))
       .join("\n");
-    for (const surface of dataModelStorageContext(hunk)) {
-      if (dataModelTextLooksLikePersistedShapeField(changedText, surface)) add(surface);
+    for (const surface of dataModelStorageContext(hunk, pathOwner?.strong ?? false)) {
+      if (
+        dataModelTextLooksLikePersistedShapeField(changedText, surface) ||
+        dataModelTextHasJsonConversion(changedText)
+      )
+        add(surface);
     }
   }
   if (
@@ -466,7 +492,7 @@ function dataModelSurfacesFromPatch(
   ) {
     add("durable storage schema");
   }
-  if (dataModelTextHasSerialization(text)) {
+  if (dataModelTextHasSerializedStateBoundary(text)) {
     add("serialized state");
   }
   if (dataModelTextHasCacheSchema(text)) add("persistent cache schema");
@@ -482,9 +508,17 @@ function dataModelSurfacesFromPatch(
   return [...surfaces];
 }
 
-function dataModelTextHasSerialization(text: string): boolean {
-  return /\b(?:JSON\.(?:parse|stringify)|readFile|writeFile|localStorage|sessionStorage|indexedDB|IDBObjectStore|workspaceState|globalState|serialized|persisted?|statePath)\b/i.test(
-    text,
+function dataModelTextHasJsonConversion(text: string): boolean {
+  return /\bJSON\.(?:parse|stringify)\b/i.test(text);
+}
+
+function dataModelTextHasSerializedStateBoundary(text: string): boolean {
+  // JSON conversion and a variable named "serialized" also occur in transient
+  // diagnostics and IPC; neither supplies a storage boundary on its own.
+  return (
+    /\b(?:readFile(?:Sync)?|writeFile(?:Sync)?|localStorage|sessionStorage|indexedDB|IDBObjectStore|workspaceState|globalState|persisted?|statePath)\b/i.test(
+      text,
+    ) || /\bserialized\s+(?:data\s+)?(?:format|schema|layout|identity|namespace)\b/i.test(text)
   );
 }
 
@@ -492,7 +526,7 @@ function dataModelTextHasCacheSchema(text: string): boolean {
   return /\bcache[_-]?schema\b|\bcache\s+(?:data\s+)?(?:format|schema|layout)\b/i.test(text);
 }
 
-function dataModelStorageContext(patch: string): string[] {
+function dataModelStorageContext(patch: string, hasPersistenceOwner = false): string[] {
   // Retain nearby storage evidence when only the stored fields change. Hunk
   // headers and comments cannot establish a persistence boundary on their own.
   const text = patch
@@ -502,12 +536,21 @@ function dataModelStorageContext(patch: string): string[] {
     .filter((line) => dataModelLineLooksSemantic(line, { docsOnly: false }))
     .join("\n");
   const surfaces: string[] = [];
-  if (dataModelTextHasSerialization(text)) surfaces.push("serialized state");
+  if (
+    dataModelTextHasSerializedStateBoundary(text) ||
+    (hasPersistenceOwner && dataModelTextHasJsonConversion(text))
+  ) {
+    surfaces.push("serialized state");
+  }
   if (dataModelTextHasCacheSchema(text)) surfaces.push("persistent cache schema");
   if (/\b(?:DurableObject|state\.storage|storage\.(?:get|put|delete|list))\b/i.test(text)) {
     surfaces.push("durable storage schema");
   }
-  if (/\b(?:CREATE|ALTER)\s+(?:VIRTUAL\s+)?TABLE\b|\bsqliteTable\s*\(/i.test(text)) {
+  if (
+    /\b(?:CREATE|ALTER)\s+(?:VIRTUAL\s+)?TABLE\b|\b(?:sqliteTable|pgTable|mysqlTable)\s*(?:\?\.\s*)?(?:<[^;]*>\s*)?\(/i.test(
+      text,
+    )
+  ) {
     surfaces.push("database schema");
   }
   return surfaces;
@@ -535,42 +578,49 @@ function dataModelLineLooksSemantic(line: string, options: { docsOnly: boolean }
 function isLikelyOpenClawDataModelPath(path: string): boolean {
   if (!path || isDocsPath(path)) return false;
   if (isMarkdownConfigSurfacePath(path)) return /(?:^|\/)HOOK\.md$/.test(path);
-  return Boolean(dataModelPathHint(path)) || /\.(?:sql|sqlite|db|prisma)$/.test(path);
+  return Boolean(dataModelPathOwner(path)?.strong) || /\.(?:sql|sqlite|db|prisma)$/.test(path);
 }
 
 function isDataModelDocumentationPath(path: string): boolean {
   return isDocsPath(path) || isMarkdownConfigSurfacePath(path);
 }
 
-function dataModelPathHint(path: string): string {
+function dataModelPathOwner(path: string): { surface: string; strong: boolean } | undefined {
+  const sqliteRole = sqlitePathOwnerRole(path);
+  if (sqliteRole === "codec") return { surface: "serialized state", strong: true };
+  if (sqliteRole === "user-version") return { surface: "database schema", strong: true };
   if (/(^|\/)(?:durable-?objects?|storage)(?:\/|[-_.])|durable-?object|state-storage/i.test(path)) {
-    return "durable storage schema";
+    return { surface: "durable storage schema", strong: true };
   }
   if (/(?:^|\/)caches?\/schema(?:\/|[-_.])|cache[-_.]schema/i.test(path)) {
-    return "persistent cache schema";
+    return { surface: "persistent cache schema", strong: true };
   }
   if (/(^|\/)persistence(?:\/|[-_.])|(?:serialized|persisted?)[-_.]?(?:state|json)/i.test(path)) {
-    return "serialized state";
+    return { surface: "serialized state", strong: true };
   }
   if (/vector|embedding|(?:^|\/)memory(?:\/|[-_.])/i.test(path)) {
-    return "vector/embedding metadata";
+    return { surface: "vector/embedding metadata", strong: true };
   }
   if (
     /(^|\/)(?:migrations?|backfill|doctor|repair|upgrade)(?:\/|[-_.])|(?:migration|backfill|doctor|repair|upgrade)\.(?:ts|js)$/i.test(
       path,
     )
   ) {
-    return "migration/backfill/repair";
+    return { surface: "migration/backfill/repair", strong: true };
   }
   if (
     isLikelySqliteSchemaPath(path) ||
-    /(^|\/)(?:migrations?|schema|database|db|sql)(?:\/|[-_.])|(?:schema|migration|ddl|prisma)\.(?:ts|js|sql|prisma)$/i.test(
+    /(^|\/)(?:migrations?|schema|database|db|sql)(?:\/|[-_.])|(?:migration|ddl|prisma)\.(?:ts|js|sql|prisma)$/i.test(
       path,
     )
   ) {
-    return "database schema";
+    return { surface: "database schema", strong: true };
   }
-  return "";
+  // A schema suffix also names validators and wire formats. It is a domain
+  // hint, not an owner that can make missing input or JSON conversion persistent.
+  if (/schema\.(?:ts|js|sql|prisma)$/i.test(path))
+    return { surface: "database schema", strong: false };
+  return undefined;
 }
 
 function dataModelTextMatchesPathHint(text: string, pathHint: string): boolean {
@@ -578,7 +628,7 @@ function dataModelTextMatchesPathHint(text: string, pathHint: string): boolean {
     case "database schema":
       return (
         /\b(?:migration|migrate|schema[_-]?version|user_version|CREATE|ALTER|DROP)\b/i.test(text) ||
-        /\b(?:sqliteTable|pgTable|mysqlTable|defineTable|createTable|createIndex|table|column|index|primaryKey|foreignKey|uniqueIndex)\b/i.test(
+        /\b(?:sqliteTable|pgTable|mysqlTable|defineTable|createTable|createIndex|primaryKey|foreignKey|uniqueIndex)\b|\b(?:table|column|index)\s*(?:\?\.\s*)?(?:<[^;]*>\s*)?\(/i.test(
           text,
         )
       );

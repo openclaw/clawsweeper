@@ -14,6 +14,7 @@ import {
   signedGithubWebhookRequest,
   signedGithubWebhookBodyRequest,
   createExactReviewAdmissionHarness,
+  withExactReviewAdmissionHarness,
   buildExactReviewQueueRequest,
   leasedExactReviewQueueItem,
 } from "./dashboard-worker-harness.ts";
@@ -1541,7 +1542,7 @@ test("exact-review queue drops a delayed matching ingress after the first review
     jsonResponse({ state: "open", head: { sha: sourceHeadSha } }),
   );
 
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     const direct = await harness.queue.fetch(
       buildExactReviewQueueRequest(
         "completed-direct-ingress",
@@ -1618,9 +1619,7 @@ test("exact-review queue drops a delayed matching ingress after the first review
       items: Record<string, unknown>;
     };
     assert.equal(afterFallback.items["openclaw/fs-safe#601"], undefined);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("exact-review queue upgrades ingress receipts with admission tracking", async () => {
@@ -1730,7 +1729,7 @@ test("unadmitted fallback receipts do not suppress a later verified direct event
     jsonResponse({ state: "open", head: { sha: firstHeadSha } }),
   );
 
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     await harness.queue.fetch(
       buildExactReviewQueueRequest(
         "verified-first",
@@ -1823,9 +1822,7 @@ test("unadmitted fallback receipts do not suppress a later verified direct event
     };
     assert.equal(afterDirect.items["openclaw/fs-safe#602"].decision.sourceAction, "edited");
     assert.equal(afterDirect.items["openclaw/fs-safe#602"].decision.sourceHeadSha, secondHeadSha);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("a delayed counterpart cannot replace a newer admitted fallback", async () => {
@@ -1834,7 +1831,7 @@ test("a delayed counterpart cannot replace a newer admitted fallback", async () 
   const firstHeadSha = "c".repeat(40);
   const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }));
 
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     await harness.queue.fetch(
       buildExactReviewQueueRequest(
         "fallback-first-complete",
@@ -1918,9 +1915,7 @@ test("a delayed counterpart cannot replace a newer admitted fallback", async () 
       items: Record<string, { decision: { sourceAction: string } }>;
     };
     assert.equal(afterDelayed.items["openclaw/fs-safe#603"].decision.sourceAction, "edited");
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("a delayed direct ingress cannot promote across a newer legacy-only update", async () => {
@@ -1929,7 +1924,7 @@ test("a delayed direct ingress cannot promote across a newer legacy-only update"
   const secondHeadSha = "f".repeat(40);
   const harness = createExactReviewAdmissionHarness(() => jsonResponse({ state: "open" }));
 
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     const fallback = await harness.queue.fetch(
       buildExactReviewQueueRequest(
         "fallback-before-legacy-update",
@@ -1987,9 +1982,7 @@ test("a delayed direct ingress cannot promote across a newer legacy-only update"
     };
     assert.equal(afterDelayed.items["openclaw/fs-safe#604"].decision.sourceAction, "edited");
     assert.equal(afterDelayed.items["openclaw/fs-safe#604"].ingressFingerprint, undefined);
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("exact-review queue coalesces matching ingress and promotes verified direct authority", async () => {

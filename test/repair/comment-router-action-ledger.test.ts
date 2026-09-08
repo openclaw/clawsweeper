@@ -1,7 +1,24 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { parse as parseYaml } from "yaml";
 
 import { readText } from "../helpers.ts";
+
+function routerWorkflowSteps(source: string) {
+  const workflow = parseYaml(source) as {
+    jobs: Record<
+      string,
+      {
+        steps?: Array<{
+          name?: string;
+          run?: string;
+          env?: Record<string, string>;
+        }>;
+      }
+    >;
+  };
+  return Object.values(workflow.jobs).flatMap((job) => job.steps ?? []);
+}
 
 test("comment router records receipts after durable command boundaries", () => {
   const source = readText("src/repair/comment-router.ts");
@@ -104,7 +121,38 @@ test("comment router isolates public target reads from its GitHub App mutation i
   );
   assert.equal(
     workflow.match(/GH_TOKEN: \$\{\{ steps\.app_token\.outputs\.token \}\}/g)?.length,
-    2,
+    3,
+  );
+  const steps = routerWorkflowSteps(workflow);
+  assert.deepEqual(
+    steps
+      .filter((step) => step.env?.GH_TOKEN === "${{ steps.app_token.outputs.token }}")
+      .map((step) => step.name),
+    [
+      "Route ClawSweeper comments",
+      "Reconcile explicitly requested behavioral proof",
+      "Retry waiting repair dispatches",
+    ],
+  );
+  assert.deepEqual(
+    steps
+      .filter((step) => step.env?.CLAWSWEEPER_PUBLIC_GH_TOKEN === "${{ github.token }}")
+      .map((step) => step.name),
+    ["Route ClawSweeper comments", "Retry waiting repair dispatches"],
+  );
+  const proof = steps.find(
+    (step) => step.name === "Reconcile explicitly requested behavioral proof",
+  );
+  assert.ok(proof);
+  assert.equal(proof.run, "node dist/repair/command-proof-cli.js reconcile");
+  assert.equal(proof.env?.GH_TOKEN, "${{ steps.app_token.outputs.token }}");
+  assert.equal(proof.env?.CLAWSWEEPER_PUBLIC_GH_TOKEN, undefined);
+  assert.equal(proof.env?.CLAWSWEEPER_WEBHOOK_SECRET, "${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}");
+  // Proof metadata/permission reads remain authenticated with the App identity,
+  // rather than borrowing the router's optional public-read token.
+  assert.match(
+    readText("src/repair/command-proof-cli.ts"),
+    /githubToken: process\.env\.GH_TOKEN \?\? ""/,
   );
   assert.match(source, /process\.env\.CLAWSWEEPER_PUBLIC_GH_TOKEN\?\.trim\(\)/);
   assert.match(source, /Object\.hasOwn\(overrides, "GH_TOKEN"\)/);
@@ -128,7 +176,23 @@ test("re-review recovery signs with the Worker-accepted webhook secret", () => {
   assert.equal(
     workflow.match(/CLAWSWEEPER_WEBHOOK_SECRET: \$\{\{ secrets\.CLAWSWEEPER_WEBHOOK_SECRET \}\}/g)
       ?.length,
-    5,
+    6,
+  );
+  assert.deepEqual(
+    routerWorkflowSteps(workflow)
+      .filter(
+        (step) =>
+          step.env?.CLAWSWEEPER_WEBHOOK_SECRET === "${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}",
+      )
+      .map((step) => step.name),
+    [
+      "Route ClawSweeper comments",
+      "Reconcile explicitly requested behavioral proof",
+      "Commit comment router ledger",
+      "Retry waiting repair dispatches",
+      "Commit comment router retry ledger",
+      "Publish immutable command action ledger",
+    ],
   );
 });
 

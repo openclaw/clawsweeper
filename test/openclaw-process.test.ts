@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 
-import { runAgentProcess } from "../dist/agent-runner.js";
+import { reviewNetworkCapability, runAgentProcess } from "../dist/agent-runner.js";
 import { parseOpenclawJsonEnvelope, runOpenclawProcess } from "../dist/openclaw-process.js";
 import { codexProcessErrorCode } from "../dist/codex-process.js";
 
@@ -546,27 +546,34 @@ test("OpenClaw subprocess env strips workflow credentials and keeps provider key
   const recordPath = join(root, "record.json");
   const binary = fakeOpenclaw(root);
   try {
+    const env = {
+      ...process.env,
+      CLAWSWEEPER_OPENCLAW_BIN: binary,
+      OPENCLAW_TEST_RECORD: recordPath,
+      GITHUB_TOKEN: "workflow-github",
+      GH_TOKEN: "workflow-gh",
+      CLAWSWEEPER_WEBHOOK_SECRET: "workflow-webhook",
+      CLAWSWEEPER_APP_PRIVATE_KEY: "workflow-app",
+      KIMI_API_KEY: "provider-kimi",
+    };
+    const capability = reviewNetworkCapability("clawsweeper-review", {
+      ...env,
+      CLAWSWEEPER_RUNNER: "openclaw",
+    });
     const result = runOpenclawProcess({
       label: "env-allowlist",
-      prompt: "hi",
+      prompt: JSON.stringify(capability),
       model: "kimi/k3",
       cwd: root,
-      env: {
-        ...process.env,
-        CLAWSWEEPER_OPENCLAW_BIN: binary,
-        OPENCLAW_TEST_RECORD: recordPath,
-        GITHUB_TOKEN: "workflow-github",
-        GH_TOKEN: "workflow-gh",
-        CLAWSWEEPER_WEBHOOK_SECRET: "workflow-webhook",
-        CLAWSWEEPER_APP_PRIVATE_KEY: "workflow-app",
-        KIMI_API_KEY: "provider-kimi",
-      },
+      env,
       timeoutMs: 60_000,
     });
     assert.equal(result.status, 0, result.stderr);
     const record = JSON.parse(readFileSync(recordPath, "utf8"));
     assert.equal(record.env.GITHUB_TOKEN, null);
     assert.equal(record.env.GH_TOKEN, null);
+    assert.equal(capability.hasGitHubToken, Boolean(record.env.GH_TOKEN));
+    assert.deepEqual(JSON.parse(record.prompt), capability);
     assert.equal(record.env.CLAWSWEEPER_WEBHOOK_SECRET, null);
     assert.equal(record.env.CLAWSWEEPER_APP_PRIVATE_KEY, null);
     assert.equal(record.env.KIMI_API_KEY, "provider-kimi");

@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { readFileSync, rmSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
+import { runInNewContext } from "node:vm";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,6 +18,7 @@ import YAML from "yaml";
 
 import { createGitHubExecution } from "../../dist/clawsweeper-github-execution.js";
 import { createGitHubRuntime } from "../../dist/clawsweeper-github-runtime.js";
+import { runCopyProof } from "../../scripts/e2e/exact-review-selected-tuple-copy.mjs";
 
 const path = ".github/workflows/exact-review-batch-publish.yml";
 const source = readFileSync(path, "utf8");
@@ -32,6 +42,185 @@ const workflow = YAML.parse(source) as {
     }
   >;
 };
+
+test("manual review timeouts survive queue resolution within the existing exact-review cap", () => {
+  const steps = YAML.parse(sweepSource).jobs["event-review-apply"].steps;
+  const script = steps
+    .find((step: { id?: string }) => step.id === "target")
+    .run.match(/node <<'NODE'\n([\s\S]*?)\nNODE/)[1];
+  for (const [sourceAction, codexTimeoutMs, configuredTimeoutMs, expected] of [
+    ["manual_explicit_review", 300_000, 1_200_000, 300_000],
+    ["manual_explicit_review", 2_400_000, 1_200_000, 2_400_000],
+    ["manual_explicit_review", 3_600_000, 1_200_000, 2_700_000],
+    ["opened", 2_400_000, 1_200_000, 1_800_000],
+    ["opened", 2_400_000, 3_600_000, 2_700_000],
+    ["opened", -1, -1, 1_200_000],
+  ]) {
+    let output = "";
+    runInNewContext(script, {
+      require: () => ({
+        appendFileSync: (_path: string, value: string) => {
+          output += value;
+        },
+      }),
+      process: {
+        env: {
+          CLAIM_DECISION: JSON.stringify({
+            targetRepo: "openclaw/openclaw",
+            itemNumber: 71,
+            sourceAction,
+            codexTimeoutMs,
+            publicationPolicy:
+              sourceAction === "manual_explicit_review" ? "record_comment_only" : undefined,
+          }),
+          CONFIGURED_CODEX_TIMEOUT_MS: String(configuredTimeoutMs),
+        },
+      },
+    });
+    assert.match(output, new RegExp(`^codex_timeout_ms=${expected}$`, "m"));
+  }
+});
+
+test("manual publication proof driver parses as a complete executable module", () => {
+  const result = spawnSync(
+    process.execPath,
+    ["--check", "scripts/e2e/manual-review-publication.mjs"],
+    {
+      encoding: "utf8",
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test(
+  "manual admission proof workspace executes its real CLI entry point",
+  { skip: process.platform === "win32" },
+  () => {
+    const driver = readFileSync("scripts/e2e/manual-review-publication.mjs", "utf8");
+    const start = driver.indexOf("  const admissionWork = ");
+    const end = driver.indexOf("  const admissionEnv = ", start);
+    assert.ok(start >= 0 && end > start);
+    const root = mkdtempSync(join(tmpdir(), "manual-admission-workspace-"));
+    try {
+      const work = runInNewContext(`${driver.slice(start, end)}\nadmissionWork`, {
+        root,
+        source: process.cwd(),
+        join,
+        mkdirSync,
+        cpSync,
+        symlinkSync,
+      });
+      const result = spawnSync(process.execPath, ["dist/repair/manual-review-enqueue.js"], {
+        cwd: work,
+        env: { PATH: process.env.PATH },
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /--target-repo is required/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test("manual publication proof preserves isolated toolchain settings without inherited credentials", () => {
+  const driver = readFileSync("scripts/e2e/manual-review-publication.mjs", "utf8");
+  const start = driver.indexOf("  runtimeEnv = {");
+  const end = driver.indexOf("\n  };", start);
+  assert.ok(start >= 0 && end > start);
+  const toolchain = {
+    PATH: "/installed/bin",
+    HOME: "/isolated-home",
+    XDG_CONFIG_HOME: "/isolated-home/.config",
+    XDG_CACHE_HOME: "/isolated-home/.cache",
+    OPENAI_API_KEY: "must-not-forward",
+    GITHUB_TOKEN: "must-not-forward",
+  };
+  const env = runInNewContext(`${driver.slice(start, end + 5)}\nruntimeEnv`, {
+    process: { env: toolchain },
+    bin: "/fixture/bin",
+    root: "/fixture/state",
+    transport: "/fixture/transport.mjs",
+    baseUrl: "http://127.0.0.1:1",
+    secret: "synthetic-coordinator-secret",
+    producerRepo: "example/source",
+    base: "a".repeat(40),
+    join,
+  });
+  for (const name of ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"] as const)
+    assert.equal(env[name], toolchain[name]);
+  assert.equal(env.CI, "true");
+  assert.equal(Object.hasOwn(env, "OPENAI_API_KEY"), false);
+  assert.equal(Object.hasOwn(env, "GITHUB_TOKEN"), false);
+});
+
+test("manual publication stays queue-owned and excludes router and implementation hooks", () => {
+  assert.match(sweepSource, /name: Admit explicit manual reviews/);
+  assert.match(sweepSource, /manual-review-enqueue\.js/);
+  assert.match(sweepSource, /apply_existing != 'true'.*inputs\.item_number != ''/);
+  assert.match(sweepSource, /manual_explicit.*true.*queue_feed=true/);
+  assert.match(prepareSource, /EXACT_REVIEW_DECISION: JSON\.stringify\(producer\)/);
+  assert.match(source, /publication_policy.*record_comment_only.*failed_review_shard_recovery/);
+  assert.match(source, /AUTO_IMPLEMENT_ISSUES.*\n\s*\[ -z "\$publication_policy" \]/);
+});
+
+for (const targetBranch of ["release/proof", ""]) {
+  test(
+    `manual admission preserves branch selection ${targetBranch || "(default lookup)"}`,
+    { skip: process.platform === "win32" },
+    () => {
+      const sweep = YAML.parse(sweepSource);
+      const admission = sweep.jobs.plan.steps.find(
+        (step: { name?: string }) => step.name === "Admit explicit manual reviews",
+      );
+      const root = mkdtempSync(join(tmpdir(), "manual-admission-branch-"));
+      try {
+        mkdirSync(join(root, ".artifacts"));
+        const result = spawnSync(
+          "bash",
+          [
+            "-c",
+            `gh() { printf 'lookup\\n' >> "$LOOKUPS"; printf 'trunk\\n'; }
+node() { printf '%s\\0' "$@" > "$ARGUMENTS"; }
+${admission.run}`,
+          ],
+          {
+            cwd: root,
+            env: {
+              PATH: process.env.PATH,
+              TARGET_REPO: "example/repo",
+              TARGET_BRANCH: targetBranch,
+              CODEX_TIMEOUT_MS: "2400000",
+              ADDITIONAL_PROMPT: "Preserve selected instructions.",
+              ITEM_NUMBER: "71",
+              ITEM_NUMBERS: "72",
+              GITHUB_RUN_ID: "1000",
+              QUEUE_URL: "https://queue.invalid",
+              LOOKUPS: join(root, "lookups"),
+              ARGUMENTS: join(root, "arguments"),
+            },
+            encoding: "utf8",
+            timeout: 10_000,
+          },
+        );
+        assert.equal(result.status, 0, result.stderr);
+        const args = readFileSync(join(root, "arguments"), "utf8").split("\0");
+        assert.equal(args[args.indexOf("--target-branch") + 1], targetBranch || "trunk");
+        assert.equal(existsSync(join(root, "lookups")), !targetBranch);
+        assert.equal(admission.env.TARGET_BRANCH, "${{ steps.target.outputs.target_branch }}");
+        assert.equal(admission.env.CODEX_TIMEOUT_MS, "${{ steps.mode.outputs.codex_timeout_ms }}");
+        assert.equal(
+          admission.env.ADDITIONAL_PROMPT,
+          "${{ github.event.inputs.additional_prompt || '' }}",
+        );
+        assert.equal(args[args.indexOf("--codex-timeout-ms") + 1], "2400000");
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+}
 
 test("terminal batch lifecycle payload carries a stable run-attempt-fence operation id", () => {
   const builder = source.match(
@@ -626,6 +815,53 @@ test("batch workflow signs queue ownership, isolates item failures, and commits 
   );
 });
 
+test("legacy batch proof reviews use the normal verdict router; failure recovery remains review-only", () => {
+  const run =
+    workflow.jobs.publish!.steps.find(
+      (step) => step.name === "Finalize healthy members under a fenced heartbeat",
+    )?.run ?? "";
+  const start = run.indexOf('if [ "$receipt_outcome" = "superseded" ]; then');
+  const end = run.indexOf(
+    'if [ -n "$lifecycle_router_outcome" ] || [ -n "$lifecycle_terminal" ]; then',
+    start,
+  );
+  assert.ok(start >= 0 && end > start);
+  const branch = run.slice(start, end);
+  for (const action of [
+    "command_proof_result",
+    "failed_review_shard_recovery",
+    "legacy_dispatch",
+  ]) {
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        [
+          'source_action="$SOURCE_ACTION_CASE"',
+          "receipt_outcome=accepted; outcome_kind=eligible; outcome_path=fixture.json",
+          "lifecycle_router_outcome=; lifecycle_terminal=",
+          'jq() { [ "$1" = "-e" ] && [ "$2" = ".disposition.routableSyncExpected == true" ]; }',
+          'gh() { printf "router_called\\n"; }',
+          "pnpm() { :; }",
+          "for once in only; do",
+          branch,
+          "done",
+          'printf "outcome=%s\\n" "$lifecycle_router_outcome"',
+        ].join("\n"),
+      ],
+      { encoding: "utf8", env: { ...process.env, SOURCE_ACTION_CASE: action } },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    if (action !== "failed_review_shard_recovery") {
+      assert.match(result.stdout, /router_called/);
+      assert.match(result.stdout, /outcome=durable/);
+    } else {
+      assert.doesNotMatch(result.stdout, /router_called/);
+      assert.match(result.stdout, /outcome=not_required/);
+    }
+  }
+});
+
 test("batch publisher gives canonical supersession precedence over artifact terminal plans", () => {
   const healthyMembers = workflow.jobs.publish!.steps.find(
     (step) => step.name === "Finalize healthy members under a fenced heartbeat",
@@ -638,6 +874,51 @@ test("batch publisher gives canonical supersession precedence over artifact term
   assert.ok(supersededReceipt >= 0);
   assert.ok(staleArtifactPlan > supersededReceipt);
   assert.ok(supersededTerminal > supersededReceipt && supersededTerminal < staleArtifactPlan);
+});
+
+test("direct proof reviews use the normal verdict router; failure recovery remains review-only", () => {
+  const sweep = YAML.parse(sweepSource) as typeof workflow;
+  const run =
+    Object.values(sweep.jobs)
+      .flatMap((job) => job.steps ?? [])
+      .find((step) => step.name === "Finalize direct exact review lifecycle")?.run ?? "";
+  const start = run.indexOf('if [ "${DIRECT_PUBLICATION_SUPERSEDED:-false}" != "true" ]; then');
+  const end = run.indexOf('if [ -n "$lifecycle_router_outcome" ]; then', start);
+  assert.ok(start >= 0 && end > start);
+  const branch = run.slice(start, end);
+  for (const action of [
+    "command_proof_result",
+    "failed_review_shard_recovery",
+    "legacy_dispatch",
+  ]) {
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        [
+          'source_action="$SOURCE_ACTION_CASE"',
+          "DIRECT_PUBLICATION_SUPERSEDED=false; DIRECT_OUTCOME=fixture.json",
+          "lifecycle_router_outcome=; lifecycle_terminal=",
+          'jq() { [ "$1" = "-e" ] && [ "$2" = ".disposition.routableSyncExpected == true" ]; }',
+          'gh() { printf "router_called\n"; }',
+          branch,
+          'printf "outcome=%s\nterminal=%s\n" "$lifecycle_router_outcome" "$lifecycle_terminal"',
+        ].join("\n"),
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, SOURCE_ACTION_CASE: action },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      result.stdout,
+      action !== "failed_review_shard_recovery"
+        ? "router_called\noutcome=durable\nterminal=\n"
+        : "outcome=not_required\nterminal=\n",
+      action,
+    );
+  }
 });
 
 test("exact-review producer uses direct publication with bounded legacy fallback", () => {
@@ -664,6 +945,27 @@ test("exact-review producer uses direct publication with bounded legacy fallback
   assert.match(source, /name: Claim one durable publication batch/);
 });
 
+test("direct publication reads the existing selected bundle instead of producer diagnostics", () => {
+  const sweep = YAML.parse(sweepSource) as {
+    jobs: Record<string, { steps?: Array<{ name?: string; env?: Record<string, string> }> }>;
+  };
+  const configured = Object.values(sweep.jobs)
+    .flatMap((job) => job.steps ?? [])
+    .filter((step) => step.env?.EXACT_REVIEW_PUBLICATION_ARTIFACT_DIR !== undefined);
+  assert.equal(configured.length, 1);
+  const [direct] = configured;
+  assert.ok(direct);
+  assert.equal(direct.name, "Deliver GitHub effects and prepare direct state mutation");
+  assert.equal(
+    direct.env?.EXACT_REVIEW_PUBLICATION_ARTIFACT_DIR,
+    ".artifacts/exact-review-bundle/review",
+  );
+  assert.match(
+    publisherSource,
+    /artifactDir: resolve\(\s*workRoot,\s*process\.env\.EXACT_REVIEW_PUBLICATION_ARTIFACT_DIR \|\| "artifacts\/event",?\s*\)/,
+  );
+});
+
 test("batch workflow uses owner-scoped mutation credentials and canonical Worker hydration", () => {
   assert.match(source, /owner: \$\{\{ steps\.batch\.outputs\.target_owner \}\}/);
   assert.match(source, /repositories: \$\{\{ steps\.batch\.outputs\.target_repositories \}\}/);
@@ -674,7 +976,6 @@ test("batch workflow uses owner-scoped mutation credentials and canonical Worker
   assert.match(source, /hydrate-state-blobs: "false"/);
   assert.match(cliSource, /slugForRepo\(normalizeRepo\(target\)\)/);
   assert.doesNotMatch(source, /permissions:\n(?:.*\n)*?\s+issues: write/);
-  assert.match(prepareSource, /cpSync\(recordsSource, join\(root, "records"\)/);
   assert.doesNotMatch(prepareSource, /stateClone|CLAWSWEEPER_STATE_DIR|"clone"/);
   assert.match(prepareSource, /CLAWSWEEPER_CODE_ROOT: workspace/);
   assert.match(prepareSource, /EXACT_REVIEW_WORK_ROOT: root/);
@@ -696,6 +997,32 @@ test("batch workflow uses owner-scoped mutation credentials and canonical Worker
   assert.match(publisherSource, /"--record-root",\s*options\.workRoot/);
   assert.doesNotMatch(publisherSource, /runStreaming\("pnpm"/);
 });
+
+test("batch preparation copies only canonical selected tuples and preserves publisher bases", () => {
+  const proof = runCopyProof();
+  assert.equal(proof.copiedFiles, 12);
+  assert.equal(proof.publisherCount, 8);
+});
+
+for (const mode of ["missing-source", "file-source", "heartbeat", "circuit"]) {
+  test(`batch preparation retains ${mode} no-mutation outcomes`, () => {
+    runCopyProof({ mode, unrelatedRecords: 0 });
+  });
+}
+
+for (const invalidDecision of [
+  { targetRepo: "../outside" },
+  { targetRepo: "owner/repo/extra" },
+  { itemNumber: "../../outside" },
+  { itemNumber: 0 },
+  { itemNumber: -1 },
+  { itemNumber: 1.5 },
+  { itemNumber: Number.MAX_SAFE_INTEGER + 1 },
+]) {
+  test(`batch preparation rejects ${JSON.stringify(invalidDecision)} before canonical reads`, () => {
+    runCopyProof({ mode: "copy", unrelatedRecords: 0, invalidDecision });
+  });
+}
 
 test("batch preparation is bounded, heartbeat-fenced, and deterministically aggregated", () => {
   assert.match(prepareSource, /const MAX_CONCURRENCY = 4/);
@@ -770,7 +1097,10 @@ test("batch commit publishes every prepared tuple to canonical Worker state", ()
   assert.match(cliSource, /fenceKey/);
   assert.match(cliSource, /postDirectPublicationResult/);
   assert.match(cliSource, /publication-batch-results/);
-  assert.match(cliSource, /plan\.operations\.map\(\(operation\) => \(\{ \.\.\.operation \}\)\)/);
+  assert.match(
+    cliSource,
+    /payload: prepareDirectPublicationPayload\(\{ revision: plan\.identity\.revision, plan \}\)/,
+  );
   assert.doesNotMatch(cliSource, /runGit|targetOid/);
   assert.doesNotMatch(cliSource, /commitPreparedStateBatch/);
   assert.doesNotMatch(cliSource, /state-publication-batch/);

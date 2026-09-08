@@ -251,10 +251,16 @@ export function createReviewCommentPublication(
     body: string,
     existing = issueReviewComment(number, [body]),
     mutationIdentity?: string,
+    options: { suppressAutomationMarkers?: boolean } = {},
   ): Record<string, unknown> {
     const markedBody = markedReviewCommentBody(number, body);
     const bodyBytes = Buffer.byteLength(markedBody, "utf8");
     const oversized = bodyBytes > DURABLE_REVIEW_COMMENT_MAX_BYTES;
+    if (oversized && options.suppressAutomationMarkers) {
+      throw new Error(
+        `durable review comment for #${number} exceeds ${DURABLE_REVIEW_COMMENT_MAX_BYTES} bytes; marker-suppressed publication cannot emit a fallback`,
+      );
+    }
     const publicationBody = oversized
       ? oversizedReviewCommentFallback(number, markedBody, bodyBytes)
       : markedBody;

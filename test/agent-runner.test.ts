@@ -9,6 +9,7 @@ import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 import {
   agentRunner,
   codexAgentArgs,
+  reviewNetworkCapability,
   runAgentCheckoutInspection,
   runAgentProcess,
 } from "../dist/agent-runner.js";
@@ -21,6 +22,52 @@ test("agent runner defaults to Codex and fails closed on unknown values", () => 
     () => agentRunner({ CLAWSWEEPER_RUNNER: "claude" }),
     /Invalid CLAWSWEEPER_RUNNER.*codex.*openclaw/,
   );
+});
+
+test("review network capability follows the selected runner before the Codex sandbox", () => {
+  assert.equal(
+    reviewNetworkCapability("clawsweeper-review", {}).networkCapability,
+    "allowlisted-proxy",
+  );
+  assert.equal(
+    reviewNetworkCapability("clawsweeper-review", { CLAWSWEEPER_RUNNER: " codex " })
+      .networkCapability,
+    "allowlisted-proxy",
+  );
+  for (const sandboxMode of ["clawsweeper-review", "read-only", "workspace-write"]) {
+    assert.equal(
+      reviewNetworkCapability(sandboxMode, { CLAWSWEEPER_RUNNER: " openclaw " }).networkCapability,
+      "unrestricted",
+    );
+  }
+  for (const sandboxMode of ["read-only", "workspace-write", "danger-full-access", ""]) {
+    assert.equal(
+      reviewNetworkCapability(sandboxMode, { CLAWSWEEPER_RUNNER: "codex" }).networkCapability,
+      "none",
+    );
+  }
+  assert.throws(
+    () => reviewNetworkCapability("clawsweeper-review", { CLAWSWEEPER_RUNNER: "unknown" }),
+    /Invalid CLAWSWEEPER_RUNNER/,
+  );
+});
+
+test("review token capability uses only the supplied child GH_TOKEN", () => {
+  for (const runner of ["codex", "openclaw"]) {
+    for (const sandboxMode of ["clawsweeper-review", "read-only"]) {
+      for (const token of [undefined, "", "   ", "synthetic-inspection-token"]) {
+        assert.equal(
+          reviewNetworkCapability(sandboxMode, {
+            CLAWSWEEPER_RUNNER: runner,
+            GH_TOKEN: token,
+            GITHUB_TOKEN: "synthetic-ambient-token",
+            CLAWSWEEPER_PROOF_INSPECTION_TOKEN: "synthetic-source-token",
+          }).hasGitHubToken,
+          runner === "codex" && Boolean(token?.trim()),
+        );
+      }
+    }
+  }
 });
 
 test("agent runner preserves review-style Codex argument composition", () => {

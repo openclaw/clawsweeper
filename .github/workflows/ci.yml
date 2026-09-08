@@ -29,6 +29,50 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  review-network-smoke:
+    name: review-network-smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Install pinned Codex and prove Linux review sandbox
+        shell: bash
+        run: |
+          set -euo pipefail
+          codex_version="$(node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const action = readFileSync(".github/actions/setup-codex/action.yml", "utf8");
+            const version = action.match(/^  codex-version:\n(?:    [^\n]*\n)*?    default: "(\d+\.\d+\.\d+)"$/m)?.[1];
+            if (!version) throw new Error("Missing exact setup-codex version pin");
+            process.stdout.write(version);
+          ')"
+          codex_prefix="$(mktemp -d "$RUNNER_TEMP/review-codex.XXXXXX")"
+          npm install --global --prefix "$codex_prefix" "@openai/codex@$codex_version" \
+            --no-audit --no-fund --ignore-scripts
+          export PATH="$codex_prefix/bin:$PATH"
+
+          # Match setup-codex's hosted Linux bubblewrap prerequisites.
+          current_userns="$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || true)"
+          if [[ -n "$current_userns" && "$current_userns" != "1" ]]; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+          current_apparmor="$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)"
+          if [[ -n "$current_apparmor" && "$current_apparmor" != "0" ]]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+          CODEX_HOME="$(mktemp -d "$RUNNER_TEMP/review-codex-home.XXXXXX")"
+          export CODEX_HOME
+          printf 'model = "gpt-5.4"\n' > "$CODEX_HOME/config.toml"
+          export GITHUB_WORKSPACE="$PWD"
+          node .github/actions/setup-codex/configure-review-network.mjs
+          bash .github/actions/setup-codex/smoke-review-network.sh
+
   hosted-review-scan:
     name: Hosted native review scan smoke
     if: github.event_name == 'workflow_dispatch'

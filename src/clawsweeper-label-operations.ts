@@ -157,33 +157,34 @@ export function createLabelSyncOperations(
     if (added) syncedLabels.push(labelToAdd);
     return { labels: syncedLabels, changed: labelsToRemove.length > 0 || added };
   }
-  function syncImpactLabels(options: {
+  function syncOwnedLabels<LabelName extends string>(options: {
     number: number;
     labels: readonly string[];
-    impactLabels: readonly ImpactLabelName[];
+    nextLabels: string[];
+    ownedLabelNames: ReadonlySet<string>;
     dryRun: boolean;
     onMutation?: () => void;
+    ensureLabel: (label: LabelName, onMutation?: () => void) => void;
   }): { labels: string[]; changed: boolean } {
-    const nextLabels = nextImpactLabels(options.labels, options.impactLabels);
     const currentLabelKeys = new Set(options.labels.map((label) => label.toLowerCase()));
-    const nextLabelKeys = new Set(nextLabels.map((label) => label.toLowerCase()));
-    const labelsToAdd = nextLabels.filter(
-      (label): label is ImpactLabelName =>
-        IMPACT_LABEL_NAMES.has(label) && !currentLabelKeys.has(label.toLowerCase()),
+    const nextLabelKeys = new Set(options.nextLabels.map((label) => label.toLowerCase()));
+    const labelsToAdd = options.nextLabels.filter(
+      (label): label is LabelName =>
+        options.ownedLabelNames.has(label) && !currentLabelKeys.has(label.toLowerCase()),
     );
     const labelsToRemove = options.labels.filter(
-      (label) => IMPACT_LABEL_NAMES.has(label) && !nextLabelKeys.has(label.toLowerCase()),
+      (label) => options.ownedLabelNames.has(label) && !nextLabelKeys.has(label.toLowerCase()),
     );
     const changed = labelsToAdd.length > 0 || labelsToRemove.length > 0;
-    if (!changed) return { labels: nextLabels, changed };
-    if (options.dryRun) return { labels: nextLabels, changed };
+    if (!changed) return { labels: options.nextLabels, changed };
+    if (options.dryRun) return { labels: options.nextLabels, changed };
     for (const label of labelsToRemove) {
       removeIssueLabel(options.number, label, options.onMutation);
     }
     const syncedLabels = options.labels.filter((label) => !labelsToRemove.includes(label));
     let added = false;
     for (const label of labelsToAdd) {
-      ensureImpactLabel(label, options.onMutation);
+      options.ensureLabel(label, options.onMutation);
       if (
         tryAddOptionalLabel({
           number: options.number,
@@ -197,6 +198,20 @@ export function createLabelSyncOperations(
       }
     }
     return { labels: syncedLabels, changed: labelsToRemove.length > 0 || added };
+  }
+  function syncImpactLabels(options: {
+    number: number;
+    labels: readonly string[];
+    impactLabels: readonly ImpactLabelName[];
+    dryRun: boolean;
+    onMutation?: () => void;
+  }): { labels: string[]; changed: boolean } {
+    return syncOwnedLabels<ImpactLabelName>({
+      ...options,
+      nextLabels: nextImpactLabels(options.labels, options.impactLabels),
+      ownedLabelNames: IMPACT_LABEL_NAMES,
+      ensureLabel: ensureImpactLabel,
+    });
   }
   function syncMaturityLabels(options: {
     number: number;
@@ -205,39 +220,12 @@ export function createLabelSyncOperations(
     dryRun: boolean;
     onMutation?: () => void;
   }): { labels: string[]; changed: boolean } {
-    const nextLabels = nextMaturityLabels(options.labels, options.maturityLabels);
-    const currentLabelKeys = new Set(options.labels.map((label) => label.toLowerCase()));
-    const nextLabelKeys = new Set(nextLabels.map((label) => label.toLowerCase()));
-    const labelsToAdd = nextLabels.filter(
-      (label): label is MaturityLabelName =>
-        MATURITY_LABEL_NAMES.has(label) && !currentLabelKeys.has(label.toLowerCase()),
-    );
-    const labelsToRemove = options.labels.filter(
-      (label) => MATURITY_LABEL_NAMES.has(label) && !nextLabelKeys.has(label.toLowerCase()),
-    );
-    const changed = labelsToAdd.length > 0 || labelsToRemove.length > 0;
-    if (!changed) return { labels: nextLabels, changed };
-    if (options.dryRun) return { labels: nextLabels, changed };
-    for (const label of labelsToRemove) {
-      removeIssueLabel(options.number, label, options.onMutation);
-    }
-    const syncedLabels = options.labels.filter((label) => !labelsToRemove.includes(label));
-    let added = false;
-    for (const label of labelsToAdd) {
-      ensureMaturityLabel(label, options.onMutation);
-      if (
-        tryAddOptionalLabel({
-          number: options.number,
-          label,
-          currentLabels: syncedLabels,
-          onMutation: options.onMutation,
-        })
-      ) {
-        syncedLabels.push(label);
-        added = true;
-      }
-    }
-    return { labels: syncedLabels, changed: labelsToRemove.length > 0 || added };
+    return syncOwnedLabels<MaturityLabelName>({
+      ...options,
+      nextLabels: nextMaturityLabels(options.labels, options.maturityLabels),
+      ownedLabelNames: MATURITY_LABEL_NAMES,
+      ensureLabel: ensureMaturityLabel,
+    });
   }
   function syncMergeRiskLabels(options: {
     number: number;
@@ -246,39 +234,12 @@ export function createLabelSyncOperations(
     dryRun: boolean;
     onMutation?: () => void;
   }): { labels: string[]; changed: boolean } {
-    const nextLabels = nextMergeRiskLabels(options.labels, options.mergeRiskLabels);
-    const currentLabelKeys = new Set(options.labels.map((label) => label.toLowerCase()));
-    const nextLabelKeys = new Set(nextLabels.map((label) => label.toLowerCase()));
-    const labelsToAdd = nextLabels.filter(
-      (label): label is MergeRiskLabelName =>
-        MERGE_RISK_LABEL_NAMES.has(label) && !currentLabelKeys.has(label.toLowerCase()),
-    );
-    const labelsToRemove = options.labels.filter(
-      (label) => MERGE_RISK_LABEL_NAMES.has(label) && !nextLabelKeys.has(label.toLowerCase()),
-    );
-    const changed = labelsToAdd.length > 0 || labelsToRemove.length > 0;
-    if (!changed) return { labels: nextLabels, changed };
-    if (options.dryRun) return { labels: nextLabels, changed };
-    for (const label of labelsToRemove) {
-      removeIssueLabel(options.number, label, options.onMutation);
-    }
-    const syncedLabels = options.labels.filter((label) => !labelsToRemove.includes(label));
-    let added = false;
-    for (const label of labelsToAdd) {
-      ensureMergeRiskLabel(label, options.onMutation);
-      if (
-        tryAddOptionalLabel({
-          number: options.number,
-          label,
-          currentLabels: syncedLabels,
-          onMutation: options.onMutation,
-        })
-      ) {
-        syncedLabels.push(label);
-        added = true;
-      }
-    }
-    return { labels: syncedLabels, changed: labelsToRemove.length > 0 || added };
+    return syncOwnedLabels<MergeRiskLabelName>({
+      ...options,
+      nextLabels: nextMergeRiskLabels(options.labels, options.mergeRiskLabels),
+      ownedLabelNames: MERGE_RISK_LABEL_NAMES,
+      ensureLabel: ensureMergeRiskLabel,
+    });
   }
   function syncIssueAdvisoryLabels(options: {
     number: number;

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { requiredEnv } from "../required-env.js";
+import { decisionPublicationPolicy } from "../manual-publication-policy.js";
 import {
   createExactReviewBundle,
   exactReviewDecisionSha256,
@@ -31,11 +32,15 @@ if (command === "create") {
 }
 
 function contextFromEnv(env: NodeJS.ProcessEnv): ExactReviewBundleContext {
+  const publicationPolicy = decisionPublicationPolicy(
+    JSON.parse(requiredEnv("EXACT_REVIEW_DECISION", env)),
+  );
   const protocolVersion = positiveIntegerEnv(env, "EXACT_REVIEW_PROTOCOL_VERSION");
   if (protocolVersion !== 1 && protocolVersion !== 2) {
     throw new Error("EXACT_REVIEW_PROTOCOL_VERSION must be 1 or 2");
   }
   return {
+    ...(publicationPolicy ? { publicationPolicy } : {}),
     repository: requiredEnv("GITHUB_REPOSITORY", env),
     sourceSha: optionalEnv(env, "EXACT_REVIEW_SOURCE_SHA") || requiredEnv("GITHUB_SHA", env),
     runId: optionalEnv(env, "EXACT_REVIEW_PRODUCER_RUN_ID") || requiredEnv("GITHUB_RUN_ID", env),

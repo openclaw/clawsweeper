@@ -11,6 +11,35 @@ literal. For example, `OpenClaw/Some.Repo_Debug` uses
 `records/openclaw-some.repo_debug/`. Apply selection and cursor reads use the same
 slug as record publication and hydration; existing records need no migration.
 
+Explicit manual reviews persist `publication_policy: record_comment_only` in
+host-owned report front matter and the matching `publicationPolicy` in existing
+queue decision JSON. There are no new tables, columns, or stores. The bundle's
+decision digest and current publication fence bind the report to its producer.
+Missing policy on pre-existing ordinary records retains existing behavior;
+unknown values, duplicate fields, and mismatches fail closed. Coalescing cannot
+widen a manual revision. Background apply skips these reports, and implementation
+discovery rejects them after queue completion.
+
+Restricted publication also supplies transient authenticated owner metadata:
+the actual queue lease ID and claimed run/attempt, or the active batch ID,
+lease owner, runner run/attempt, and exact member generation. These reuse the
+coordinator's existing owner fields; they add no persisted ownership schema.
+A retained canonical receipt never authorizes an expired or different owner.
+After successful publication, the existing publication head advances the next
+manual request's revision. Direct retries still require the same accepted plan;
+active reclaimed batches retain their existing receipt convergence behavior.
+No receipt replacement, counter change, or historical claim adoption is added.
+
+Publication lifecycle projections retain an immutable producer-lineage reference
+(fence, revision, and claim generation) from the admitted protocol-v2 publication
+in existing `projection_json`. Producer and publication revision counters are
+independent: the reference, never their numerical coincidence, connects the two
+journeys after queue-item deletion. Audit and Bay share that observational
+resolution; physical receipts and terminal telemetry remain on the publication
+fence. A missing or conflicting link cannot complete another producer revision.
+This approved JSON extension adds no SQL table or column, grants no publication
+authority, and does not infer links for historical tupleless reports.
+
 Report readers share one anchored leading-front-matter parser. A unique header
 value remains authoritative when report prose or a valid fenced example quotes
 the same key. Duplicate header keys and competing unfenced metadata blocks

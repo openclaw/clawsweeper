@@ -217,17 +217,11 @@ jobs:
           db_name="${TARGET_REPO,,}"
           db_name="${db_name//\//__}.sync.db"
           manifest_path="gitcrawl-store/data/${db_name}.manifest.json"
-          db_path="gitcrawl-store/data/${db_name}"
           ledger_path="results/cluster-repair-intake/${repo_slug}.json"
           if [ ! -f "$manifest_path" ]; then
             echo "::error::Missing gitcrawl-store manifest: ${manifest_path}"
             exit 1
           fi
-          if [ ! -f "$db_path" ]; then
-            echo "::error::Missing gitcrawl-store DB: ${db_path}"
-            exit 1
-          fi
-
           store_sha="$(node -e "const fs=require('fs'); const m=JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); console.log(m.sha256 || '')" "$manifest_path")"
           exported_at="$(node -e "const fs=require('fs'); const m=JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); console.log(m.exportedAt || '')" "$manifest_path")"
           previous_sha=""
@@ -238,7 +232,6 @@ jobs:
           {
             echo "target_repo=${TARGET_REPO}"
             echo "repo_slug=${repo_slug}"
-            echo "db_path=${db_path}"
             echo "manifest_path=${manifest_path}"
             echo "ledger_path=${ledger_path}"
             echo "store_sha=${store_sha}"
@@ -250,7 +243,23 @@ jobs:
             echo "Already processed gitcrawl-store SHA ${store_sha}; skipping intake."
             exit 0
           fi
-          echo "should_import=true" >> "$GITHUB_OUTPUT"
+          intake_dir="$(mktemp -d "${RUNNER_TEMP}/cluster-repair-intake.XXXXXX")"
+          db_path="${intake_dir}/${db_name}"
+          materializer="${intake_dir}/portable-artifact.mjs"
+          # Snapshot publishing must not authorize new code on the runner.
+          install -m 600 gitcrawl-store/scripts/portable-artifact.mjs "$materializer"
+          if ! printf '%s  %s\n' 'd3e7678faa48554e091ea51666692643e97cfab437bb23c44f59c139b7e0ebfa' "$materializer" | sha256sum --check --status; then
+            echo "::error::gitcrawl-store materializer does not match the reviewed digest" >&2
+            exit 1
+          fi
+          (
+            cd gitcrawl-store
+            node "$materializer" "data/${db_name}" "$db_path"
+          )
+          {
+            echo "db_path=${db_path}"
+            echo "should_import=true"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Prepare unprocessed cluster candidates
         if: ${{ steps.prepare.outputs.should_import == 'true' }}

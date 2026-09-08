@@ -7,6 +7,7 @@ import type {
   ReviewCommentRenderOptions,
 } from "./clawsweeper-types.js";
 import { isGitHubRequiresAuthenticationError } from "./github-retry.js";
+import { reportAllowsAutomation } from "./manual-publication-policy.js";
 
 type ApplyReportLabelDependencies = Pick<
   CreateApplyDecisionWorkflowDependencies,
@@ -123,6 +124,7 @@ export function syncApplyReportLabels(
     setMarkdown(markdown);
     return result(true, recordReviewLeaseSkip(blockReason, false));
   };
+  if (!reportAllowsAutomation(markdown)) return result();
   const skipLabelAuth = (kind: string): ApplyReportLabelResult => {
     setMarkdown(markdown);
     return result(true, markLabelSyncAuthSkipped(kind));

@@ -17,6 +17,8 @@ import {
 import type { Args } from "./clawsweeper-args.js";
 import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-review-command-dependencies.js";
 import { parsePrCommentActivityRevisionMap } from "./pr-hydration-snapshot.js";
+import { writeExactReviewFailureDiagnostics } from "./clawsweeper-review-failure-diagnostics.js";
+import { ReviewSourcePreparationError } from "./review-source-preparation.js";
 
 const AUTOMATIC_REVIEW_SOURCE_ACTIONS = new Set([
   "scheduled_hot_intake",
@@ -172,13 +174,54 @@ export function prepareReviewCommand(
     );
   }
   const forcedLoginMethod = reviewCodexForcedLoginMethod(args);
+  const exactItemNumber = itemNumbers
+    ? itemNumber === undefined && itemNumbers.length === 1
+      ? itemNumbers[0]
+      : undefined
+    : itemNumber;
+  const itemKind = process.env.EXACT_REVIEW_ITEM_KIND;
+  // No hydrated item exists yet. Only the matching workflow claim can identify this failure.
+  const exactReviewIdentity =
+    !localOnly &&
+    exactItemNumber !== undefined &&
+    (itemKind === "issue" || itemKind === "pull_request") &&
+    process.env.EXACT_REVIEW_ITEM_KEY?.toLowerCase() ===
+      `${targetRepo()}#${exactItemNumber}`.toLowerCase()
+      ? ({ repo: targetRepo(), itemKind, itemNumber: exactItemNumber } as const)
+      : null;
   const loadReviewGitInfo = (): GitInfo =>
-    checkout.gitTargetBranch
-      ? gitInfo(openclawDir, { targetBranch: checkout.gitTargetBranch })
-      : gitInfo(openclawDir);
-  let git: GitInfo = localRangeData
-    ? { mainSha: localRangeData.baseSha, releaseStateComplete: true, latestRelease: null }
-    : loadReviewGitInfo();
+    gitInfo(openclawDir, {
+      ...(checkout.gitTargetBranch ? { targetBranch: checkout.gitTargetBranch } : {}),
+      ...(exactReviewIdentity ? { classifyFetchFailure: true } : {}),
+    });
+  let git: GitInfo;
+  try {
+    git = localRangeData
+      ? { mainSha: localRangeData.baseSha, releaseStateComplete: true, latestRelease: null }
+      : loadReviewGitInfo();
+  } catch (error) {
+    if (error instanceof ReviewSourcePreparationError && exactReviewIdentity) {
+      try {
+        writeExactReviewFailureDiagnostics({
+          artifactDir,
+          error,
+          prompt: additionalPrompt,
+          model,
+          classification: "source_preparation",
+          ...exactReviewIdentity,
+          sourceSha:
+            exactReviewIdentity.itemKind === "pull_request"
+              ? process.env.EXACT_REVIEW_SOURCE_HEAD_SHA
+              : null,
+          retryable: dependencies.codexReviewFailureRetryable(error),
+          workflowExit: 1,
+        });
+      } catch {
+        console.error("[review] exact-review failure diagnostics could not be written.");
+      }
+    }
+    throw error;
+  }
   const reviewPolicy = reviewPolicyHash({ model, reasoningEffort, sandboxMode, serviceTier });
   const explicitDispatch = isExplicitReviewDispatch(
     args,

@@ -121,10 +121,12 @@
     "repair:pr-intake": "node dist/repair/pr-repair-intake.js"
   },
   "dependencies": {
-    "yaml": "^2.9.0"
+    "yaml": "^2.9.0",
+    "yauzl": "3.4.0"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
+    "@types/yauzl": "3.4.0",
     "markdown-it": "^15.0.0",
     "oxfmt": "^0.58.0",
     "oxlint": "^1.73.0",

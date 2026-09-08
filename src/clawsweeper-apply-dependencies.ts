@@ -660,6 +660,7 @@ export interface CreateApplyDecisionWorkflowDependencies {
     body: string,
     existing?: Record<string, unknown>,
     mutationIdentity?: string,
+    options?: { suppressAutomationMarkers?: boolean },
   ) => Record<string, unknown>;
   validateCloseDecision: (
     item: Pick<Item, "kind" | "labels"> & Partial<Pick<Item, "repo" | "authorAssociation">>,

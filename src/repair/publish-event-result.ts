@@ -2,6 +2,17 @@
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
+import {
+  assertReportPublicationPolicy,
+  decisionPublicationPolicy,
+  reportPublicationPolicy,
+} from "../manual-publication-policy.js";
+import {
+  assertManualPublicationAuthority,
+  manualPublicationOwnerFromEnv,
+  ManualPublicationAuthorityTransportError,
+  manualPublicationAuthorityTransportErrorFromStderr,
+} from "../manual-publication-authority.js";
 import { errorFingerprint } from "./error-fingerprint.js";
 import {
   applyEventSnapshot,
@@ -96,21 +107,23 @@ const options = eventOptionsFromEnv();
 try {
   await publishEventResult(options);
 } catch (error) {
-  const retryableFailure =
-    error instanceof GitHubRateLimitError ||
-    ghRetryKind(error) === "transient" ||
-    (error instanceof PublicationResultError && error.reasonCode === "state_contention");
-  const completionKind = retryableFailure ? "retryable_failure" : "permanent_failure";
   const reasonCode =
-    error instanceof GitHubRateLimitError
-      ? "github_rate_limit"
-      : ghRetryKind(error) === "transient"
-        ? "github_transient"
-        : error instanceof PublicationResultError
-          ? error.reasonCode
-          : error instanceof RecordTupleError
-            ? "tuple_protocol_invalid"
-            : "unknown_failure";
+    error instanceof ManualPublicationAuthorityTransportError
+      ? "state_contention"
+      : error instanceof GitHubRateLimitError
+        ? "github_rate_limit"
+        : ghRetryKind(error) === "transient"
+          ? "github_transient"
+          : error instanceof PublicationResultError
+            ? error.reasonCode
+            : error instanceof RecordTupleError
+              ? "tuple_protocol_invalid"
+              : "unknown_failure";
+  const completionKind = ["state_contention", "github_rate_limit", "github_transient"].includes(
+    reasonCode,
+  )
+    ? "retryable_failure"
+    : "permanent_failure";
   const fingerprint = errorFingerprint(error);
   if (options.batchMutationOutput) {
     writeBatchMutationResult(options.batchMutationOutput, {
@@ -140,6 +153,52 @@ try {
 async function publishEventResult(options: EventOptions): Promise<void> {
   validateTargetRepo(options.targetRepo);
   validateItemNumber(options.itemNumber);
+  const artifact = join(options.artifactDir, `${options.itemNumber}.md`);
+  const claimedPolicy = process.env.EXACT_REVIEW_DECISION
+    ? decisionPublicationPolicy(JSON.parse(process.env.EXACT_REVIEW_DECISION))
+    : undefined;
+  if (!fs.existsSync(artifact)) {
+    // Hydrated canonical state is a base, never a newly produced review.
+    if (claimedPolicy)
+      throw new PublicationResultError(
+        "missing_record_tuple",
+        "Manual publication report is absent",
+      );
+    fs.rmSync(options.reportPath, { force: true });
+    writeSummary({
+      targetRepo: options.targetRepo,
+      itemNumber: options.itemNumber,
+      syncedCount: 0,
+      closedCount: 0,
+      missingCount: 0,
+      closeReasons: options.closeReasons,
+    });
+    writeStaleEventDispositionOutputs(staleEventDisposition("missing"));
+    if (options.batchMutationOutput)
+      writeBatchMutationResult(options.batchMutationOutput, {
+        kind: "superseded",
+        disposition: { requeueLatestExpected: false },
+      });
+    return;
+  }
+  const markdown = fs.readFileSync(artifact, "utf8");
+  const policy = reportPublicationPolicy(markdown);
+  if (process.env.EXACT_REVIEW_DECISION) assertReportPublicationPolicy(markdown, claimedPolicy);
+  if (policy) {
+    const allowedArtifacts = new Set([`${options.itemNumber}.md`, "review-cache-metrics.json"]);
+    if (
+      fs
+        .readdirSync(options.artifactDir, { withFileTypes: true })
+        .some((entry) => !entry.isFile() || !allowedArtifacts.has(entry.name))
+    )
+      throw new Error(
+        "manual publication artifact directory must contain only the selected report and review cache metadata",
+      );
+    assertManualPublicationAuthority(markdown, options.targetRepo, Number(options.itemNumber));
+    options.reviewOnly = true;
+  }
+  // Snapshot helpers use relative record paths, not the caller's code directory.
+  process.chdir(options.workRoot);
   const recordStore = {
     targetRepo: options.targetRepo,
     itemNumber: options.itemNumber,
@@ -175,7 +234,10 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     preflightResult === "remote-newer" ||
     preflightResult === "missing"
   ) {
-    const disposition = staleEventDisposition(preflightResult);
+    const disposition = {
+      ...staleEventDisposition(preflightResult),
+      ...(policy ? { requeueLatest: false } : {}),
+    };
     console.log(
       `Skipping stale event apply for ${options.targetRepo}#${options.itemNumber}: ${disposition.detail}`,
     );
@@ -229,6 +291,15 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     exactEventPublication: options.exactEventPublication,
     legacyTuplelessReviewLease,
   });
+  if (policy && requeueLatestExpected) {
+    if (options.batchMutationOutput)
+      writeBatchMutationResult(options.batchMutationOutput, {
+        kind: "superseded",
+        disposition: { requeueLatestExpected: false },
+      });
+    writePublicationCompletionOutputs("superseded", "remote_newer_tuple");
+    return;
+  }
   const rateLimitYield = exactActions.find(
     (action) =>
       action.action === "skipped_runtime_budget" &&
@@ -390,7 +461,6 @@ function prepareBatchMutation({
       canonicalTargetKey: `${options.targetRepo}#${options.itemNumber}`,
       fenceKey: envValue("EXACT_REVIEW_BATCH_ITEM_KEY"),
     },
-    "Batch",
   );
   // These expectations are emitted with the plan so the batch workflow can run
   // post-commit routing without re-running GitHub mutations.
@@ -414,7 +484,6 @@ function prepareTupleMutationPlan(
   contentRoot: string,
   identity: StateMutationIdentity,
   publication: PreparedStateMutationPlan["publication"] | undefined,
-  label: string,
 ): PreparedStateMutationPlan {
   const commitPaths = [
     paths.itemRecord,
@@ -434,14 +503,21 @@ function prepareTupleMutationPlan(
       content: fs.readFileSync(contentPath),
     });
   }
-  if (!operations.length) {
-    throw new Error(`${label} mutation for ${paths.targetSlug} is empty`);
-  }
-  return prepareStateMutationPlan({
+  const plan = prepareStateMutationPlan({
     identity,
     ...(publication ? { publication } : {}),
     operations,
   });
+  if (
+    operations.some(
+      (operation) =>
+        "content" in operation &&
+        operation.path === paths.itemRecord &&
+        reportPublicationPolicy(String(operation.content)),
+    )
+  )
+    plan.owner = manualPublicationOwnerFromEnv();
+  return plan;
 }
 
 function runApplyDecisions(options: EventOptions, paths: EventRecordPaths): void {
@@ -633,7 +709,6 @@ async function publishSnapshot({
         canonicalTargetKey: `${options.targetRepo}#${options.itemNumber}`,
         fenceKey: itemKey,
       },
-      "Exact event",
     );
     const publication = await postDirectPublicationResult({
       baseUrl: envValue("EXACT_REVIEW_QUEUE_URL"),
@@ -681,10 +756,15 @@ function eventOptionsFromEnv(): EventOptions {
     minAgeMinutes: process.env.MIN_AGE_MINUTES || "0",
     reviewOnly: process.env.REVIEW_ONLY === "true",
     exactEventPublication: process.env.EXACT_EVENT_PUBLICATION === "true",
-    artifactDir: join(workRoot, "artifacts/event"),
+    artifactDir: resolve(
+      workRoot,
+      process.env.EXACT_REVIEW_PUBLICATION_ARTIFACT_DIR || "artifacts/event",
+    ),
     reportPath: join(workRoot, ".artifacts/event-apply-report.json"),
     snapshotDir: join(workRoot, ".artifacts/event-record-snapshot"),
-    batchMutationOutput: process.env.EXACT_REVIEW_BATCH_MUTATION_OUTPUT || null,
+    batchMutationOutput: process.env.EXACT_REVIEW_BATCH_MUTATION_OUTPUT
+      ? resolve(workRoot, process.env.EXACT_REVIEW_BATCH_MUTATION_OUTPUT)
+      : null,
   };
 }
 
@@ -857,6 +937,8 @@ function runClawsweeper(options: EventOptions, args: readonly string[]): void {
   if (stderr) process.stderr.write(stderr);
   if (child.error) throw Object.assign(child.error, { stderr });
   if (child.status !== 0) {
+    const authorityError = manualPublicationAuthorityTransportErrorFromStderr(stderr);
+    if (authorityError) throw authorityError;
     const error = Object.assign(
       new Error(`${process.execPath} ${cli} ${args.join(" ")} exited ${child.status}`),
       { stderr },

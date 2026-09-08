@@ -18,8 +18,6 @@ import {
   recentWorkerHealthRunSample,
   workerHealthSectionTimeoutMs,
   summarizeBayJourneyTimings,
-  TRIAGE_ROUTING_GROUPS,
-  triageRoutingGroupsForLabels,
   commandAcknowledgementState,
   ExactReviewLifecycleProjectionStore,
   ExactReviewLifecycleTelemetryStore,
@@ -33,6 +31,7 @@ import {
   stateAppendQueueRequest,
   signedStateAppendRequest,
   createExactReviewAdmissionHarness,
+  withExactReviewAdmissionHarness,
   buildExactReviewQueueRequest,
   completedReviewRun,
   exactReviewPublicationOverrides,
@@ -229,6 +228,7 @@ test("Bay lifecycle metrics include every durable ingress source and only final 
 
   const first = telemetry.baySnapshot(now + 120_000);
   assert.equal(first.collection.state, "complete");
+  assert.equal(first.timings?.window_ended_at, new Date(now + 120_000).toISOString());
   assert.deepEqual(first.timings?.overall, {
     average_ms: 60_000,
     median_ms: 60_000,
@@ -2747,6 +2747,8 @@ test("public Bay status uses the authoritative lifecycle metrics route without l
     assert.equal(status.bay.timings.sample_kind, "completed_review_journeys");
     assert.equal(status.bay.timings.source, "durable_exact_review_lifecycles");
     assert.equal(status.bay.timings.completion_source, "verified_final_review_receipts");
+    assert.ok(Number.isFinite(Date.parse(status.bay.timings.window_ended_at)));
+    assert.ok(Date.parse(status.bay.timings.window_ended_at) >= Date.parse(status.generated_at));
     assert.deepEqual(status.bay.timings.overall, {
       average_ms: 30_000,
       median_ms: 30_000,
@@ -4586,7 +4588,7 @@ test("runnerless batch completion preserves terminal command acknowledgement dur
     publicationBatchSize: "1",
     captureBatchDispatch: true,
   });
-  try {
+  await withExactReviewAdmissionHarness(harness, async () => {
     const itemNumber = 783;
     const marker = "<!-- clawsweeper-command-status:783:re_review:batch-terminal -->";
     const publication = exactReviewPublicationOverrides(itemNumber, "7830");
@@ -4682,9 +4684,7 @@ test("runnerless batch completion preserves terminal command acknowledgement dur
       harness.dispatched[0]?.client_payload?.source_action,
       "exact_review_command_acknowledgement",
     );
-  } finally {
-    harness.restore();
-  }
+  });
 });
 
 test("canonical commit records and tuples export with one monotonic revision", async () => {
@@ -5313,7 +5313,7 @@ test("dashboard status reads the exact-review handoff model from the durable que
       available_slots: status.lanes.review.available_slots,
       capacity: status.lanes.review.capacity,
     },
-    { pending: 3, ready: 2, backoff: 1, active: 1, available_slots: 127, capacity: 128 },
+    { pending: 3, ready: 2, backoff: 1, active: 1, available_slots: 31, capacity: 32 },
   );
   assert.deepEqual(
     {
@@ -5855,30 +5855,6 @@ test("Bay queue projection samples normal direct work across stages before hidde
   assert.equal(status.bay_projection.items.filter((item) => item.stage === "publishing").length, 1);
 });
 
-test("triage routing groups classify impact labels without forcing one primary group", () => {
-  assert.deepEqual(
-    triageRoutingGroupsForLabels([
-      "impact:message-loss",
-      { name: "impact:security" },
-      "clawsweeper:queueable-fix",
-    ]).map((group) => group.id),
-    ["message-delivery", "security"],
-  );
-  assert.deepEqual(
-    triageRoutingGroupsForLabels(["impact:unknown"]).map((group) => group.id),
-    ["unclassified"],
-  );
-  assert.deepEqual(
-    triageRoutingGroupsForLabels(["impact:ux-release-blocker"]).map((group) => group.id),
-    ["user-experience"],
-  );
-  assert.deepEqual(
-    triageRoutingGroupsForLabels([{ name: "impact:ux-friction" }]).map((group) => group.id),
-    ["user-experience"],
-  );
-  assert.equal(TRIAGE_ROUTING_GROUPS.at(-1)?.id, "unclassified");
-});
-
 test("public triage pages expose aggregate counts without identity controls", async () => {
   const issuePage = await worker.fetch(new Request("https://clawsweeper.openclaw.ai/triage"), {});
   const proofPage = await worker.fetch(
@@ -6238,7 +6214,8 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.doesNotMatch(body, /Recent durable events/);
   assert.doesNotMatch(body, /function bayRecentPublicationEvents/);
   assert.match(body, /id="durable-lifecycle-kanban"/);
-  assert.match(body, /Durable lifecycle/);
+  assert.match(body, /Retained lifecycle records/);
+  assert.match(body, /<details class="telemetry" id="bay-lifecycle-details">/);
   assert.match(body, /Live shoreline/);
   assert.match(body, /class="active-duration"/);
   assert.match(body, /This queue record has been waiting about/);

@@ -141,6 +141,7 @@ export async function githubAppJson(
 ) {
   const signal = AbortSignal.timeout(GITHUB_APP_TIMEOUT_MS);
   let response: Response;
+  let text: string;
   try {
     response = await fetch(githubApiUrl(env, path), {
       method: options.method || "GET",
@@ -156,6 +157,10 @@ export async function githubAppJson(
       },
       ...(options.body === undefined ? {} : { body: options.body }),
     });
+    text = await response.text().catch((error) => {
+      if (response.ok) throw error;
+      return "";
+    });
   } catch (error) {
     const timedOut =
       signal.aborted ||
@@ -169,7 +174,6 @@ export async function githubAppJson(
     throw requestError;
   }
   if (!response.ok) {
-    const text = await response.text().catch(() => "");
     const rateLimited = githubResponseRateLimited(response, text);
     throw new GitHubRequestError(
       `${options.errorLabel || "GitHub App"} ${response.status}`,
@@ -180,7 +184,7 @@ export async function githubAppJson(
       rateLimited ? githubResponseRateLimitHint(response, Date.now()) : undefined,
     );
   }
-  return response.json();
+  return JSON.parse(text);
 }
 
 export async function createGithubAppTokenFor({

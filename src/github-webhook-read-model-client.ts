@@ -216,28 +216,6 @@ export function githubReadModelCommentObject(
   };
 }
 
-export function githubReadModelWorkflowObject(
-  repository: string,
-  kind: "workflow_run" | "workflow_job" | "check_run" | "check_suite",
-  value: JsonRecord,
-): JsonRecord | null {
-  const id = positiveInteger(value.id);
-  const updatedAt =
-    timestamp(value.updated_at) ??
-    timestamp(value.completed_at) ??
-    timestamp(value.started_at) ??
-    timestamp(value.created_at);
-  if (!validRepository(repository) || !id || !updatedAt) return null;
-  return {
-    kind,
-    repository: repository.toLowerCase(),
-    id,
-    runId: kind === "workflow_run" ? id : positiveInteger(value.run_id),
-    sourceUpdatedAt: updatedAt,
-    snapshot: value,
-  };
-}
-
 function githubReadModelConfig(env: GithubReadModelEnvironment): {
   baseUrl: string;
   secret: string;

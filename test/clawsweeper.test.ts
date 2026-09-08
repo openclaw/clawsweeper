@@ -2284,17 +2284,14 @@ test("agent workflows install pinned CLI releases and keep runner models secret"
     ".github/workflows/sweep.yml",
   ].map((file) => readText(file));
 
-  assert.match(action, /codex-version:[\s\S]*default: "0\.151\.0"/);
+  assert.match(action, /codex-version:[\s\S]*default: "0\.153\.3"/);
   assert.match(action, /proxy-version:[\s\S]*default: "0\.139\.0"/);
-  assert.match(action, /@openai\/codex@\$\{\{ inputs\['codex-version'\] \}\}/);
-  assert.match(action, /@openai\/codex-responses-api-proxy@\$\{\{ inputs\['proxy-version'\] \}\}/);
   assert.doesNotMatch(action, /@latest/);
   assert.match(localCheck, /CLAWSWEEPER_LOCAL_CODEX_MODEL \?\? "gpt-5\.6-sol"/);
   assert.match(localCheck, /model_reasoning_effort="high"/);
   assert.doesNotMatch(localCheck, /CLAWSWEEPER_PREFER_WINDOWS_CODEX_APP/);
   assert.doesNotMatch(localCheck, /gpt-5\.5/);
   assert.match(action, /env -u OPENAI_API_KEY[\s\S]*-u CLAWSWEEPER_INTERNAL_MODEL/);
-  assert.equal(action.match(/--ignore-scripts/g)?.length, 2);
   assert.match(action, /runner\.os == 'Linux' && runner\.environment == 'github-hosted'/);
   assert.match(action, /kernel\.unprivileged_userns_clone=1/);
   assert.match(action, /kernel\.apparmor_restrict_unprivileged_userns=0/);
@@ -2643,10 +2640,37 @@ test("sweep review recovery uses explicit failed shard artifacts", () => {
   assert.match(eventReviewJob, /CLAIM_TARGET_BRANCH:/);
   assert.match(eventReviewJob, /target_branch="\$CLAIM_TARGET_BRANCH"/);
   assert.match(eventReviewJob, /REVIEW_ONLY:/);
-  assert.match(
-    eventReviewJob,
-    /sourceAction == 'failed_review_shard_recovery' && 'true' \|\| 'false'/,
-  );
+  const reviewOnly = parseYaml(workflow).jobs["event-review-apply"].steps.find(
+    (entry: { id?: string }) => entry.id === "prepare-direct-exact-review-publication",
+  )?.env?.REVIEW_ONLY;
+  assert.equal(typeof reviewOnly, "string");
+  for (const [sourceAction, publicationPolicy, expected] of [
+    ["failed_review_shard_recovery", "", "true"],
+    ["command_proof_result", "", "false"],
+    ["opened", "", "false"],
+    ["source_drift_requeue", "", "false"],
+    ["manual_explicit_review", "record_comment_only", "true"],
+  ]) {
+    const expression = reviewOnly
+      .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
+      .replace(
+        "fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceAction",
+        JSON.stringify(sourceAction),
+      )
+      .replace(
+        "fromJSON(steps.claim-exact-review-queue.outputs.decision).publicationPolicy",
+        JSON.stringify(publicationPolicy),
+      );
+    assert.equal(
+      Function(
+        "contains",
+        "fromJSON",
+        "return (" + expression + ");",
+      )((values: string[], value: string) => values.includes(value), JSON.parse),
+      expected,
+      sourceAction,
+    );
+  }
   assert.match(
     eventReviewJob,
     /Queue deferred exact verdict router[\s\S]*sourceAction != 'failed_review_shard_recovery'/,
@@ -2658,7 +2682,7 @@ test("sweep review recovery uses explicit failed shard artifacts", () => {
   );
   assert.match(eventReviewJob, /\[ "\$REVIEW_ONLY" != "true" \]/);
   assert.match(eventReviewJob, /\[ "\$REVIEW_ONLY" = "true" \]/);
-  assert.match(publishEventResult, /reviewOnly: process\.env\.REVIEW_ONLY === "true"/);
+  assert.match(publishEventResult, /reviewOnly: process\.env\.REVIEW_ONLY === "true",/);
   assert.match(
     publishEventResult,
     /options\.reviewOnly \? \["--sync-comments-only", "--suppress-automation-markers"\] : \[\]/,

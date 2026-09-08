@@ -38,6 +38,28 @@ function createApplyDirectories(root: string) {
   return { itemsDir, closedDir, plansDir, reportPath };
 }
 
+test("background apply leaves restricted reports untouched with labels and close mode enabled", () => {
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const dirs = createApplyDirectories(root);
+    const markdown = workPlanCandidateReport({
+      publication_policy: "record_comment_only",
+      decision: "close",
+      action_taken: "proposed_close",
+      close_reason: "implemented_on_main",
+    });
+    const report = join(dirs.itemsDir, "321.md");
+    writeFileSync(report, markdown);
+    withMockGh(root, 'throw new Error("restricted report made an upstream request");', () => {
+      runApplyDecisionsForTest({ ...dirs, extraArgs: ["--item-number", "321"] });
+    });
+    assert.equal(readFileSync(report, "utf8"), markdown);
+    assert.equal(existsSync(join(dirs.closedDir, "321.md")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("apply-time implementation provenance keeps incomplete PR closeout metadata open", () => {
   const incomplete = `repository: openclaw/openclaw
 fixed_pr_url: unknown
@@ -1842,35 +1864,37 @@ if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
   }
 });
 
-test("apply-decisions records PR label sync as ClawSweeper-owned churn", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
-    const logPath = join(root, "gh.log");
-    const itemPath = join(itemsDir, "74478.md");
-    writeFileSync(
-      itemPath,
-      `${reportFrontMatter({
-        repository: "openclaw/clawsweeper",
-        type: "pull_request",
-        number: "74478",
-        title: "Record PR label churn",
-        url: "https://github.com/openclaw/clawsweeper/pull/74478",
-        decision: "keep_open",
-        close_reason: "none",
-        confidence: "high",
-        action_taken: "kept_open",
-        review_status: "complete",
-        local_checkout_access: "verified",
-        author: "contributor",
-        author_association: "CONTRIBUTOR",
-        labels: JSON.stringify([]),
-        item_category: "feature",
-        requires_new_feature: "true",
-        item_snapshot_hash: "snapshot-a",
-        item_updated_at: "2026-05-19T20:00:00Z",
-        pull_head_sha: "abc123def456",
-      })}
+for (const sourceAction of ["legacy_dispatch", "command_proof_result"]) {
+  test(`normal full reviews synchronize labels including evidence-triggered reviews (${sourceAction})`, () => {
+    const root = mkdtempSync(tmpPrefix);
+    try {
+      const { itemsDir, closedDir, plansDir, reportPath } = createApplyDirectories(root);
+      const logPath = join(root, "gh.log");
+      const itemPath = join(itemsDir, "74478.md");
+      writeFileSync(
+        itemPath,
+        `${reportFrontMatter({
+          repository: "openclaw/clawsweeper",
+          type: "pull_request",
+          number: "74478",
+          title: "Record PR label churn",
+          url: "https://github.com/openclaw/clawsweeper/pull/74478",
+          decision: "keep_open",
+          close_reason: "none",
+          confidence: "high",
+          action_taken: "kept_open",
+          review_status: "complete",
+          review_source_action: sourceAction,
+          local_checkout_access: "verified",
+          author: "contributor",
+          author_association: "CONTRIBUTOR",
+          labels: JSON.stringify([]),
+          item_category: "feature",
+          requires_new_feature: "true",
+          item_snapshot_hash: "snapshot-a",
+          item_updated_at: "2026-05-19T20:00:00Z",
+          pull_head_sha: "abc123def456",
+        })}
 
 ## Summary
 
@@ -1896,10 +1920,10 @@ Full review comments:
 
 - none
 `,
-      "utf8",
-    );
+        "utf8",
+      );
 
-    const ghMock = `
+      const ghMock = `
 const { appendFileSync, readFileSync } = require("fs");
 const logPath = ${JSON.stringify(logPath)};
 const rawArgs = process.argv.slice(2);
@@ -1964,45 +1988,57 @@ if (args[0] === "api" && /\\/issues\\/74478$/.test(path)) {
   process.exit(1);
 }
 `;
-    withMockGh(root, ghMock, () => {
-      runApplyDecisionsForTest({
-        itemsDir,
-        closedDir,
-        plansDir,
-        reportPath,
-        extraArgs: ["--sync-comments-only", "--item-numbers", "74478"],
+      withMockGh(root, ghMock, () => {
+        runApplyDecisionsForTest({
+          itemsDir,
+          closedDir,
+          plansDir,
+          reportPath,
+          extraArgs: [
+            "--sync-comments-only",
+            "--suppress-automation-markers",
+            "--item-numbers",
+            "74478",
+          ],
+        });
       });
-    });
 
-    const report = readFileSync(itemPath, "utf8");
-    assert.match(report, /^labels_synced_at: /m);
-    assert.match(report, /^automation_item_updated_at: 2026-05-19T20:00:02Z$/m);
-    assert.match(report, /proof: sufficient/);
-    assert.match(report, /proof: 📸 screenshot/);
-    assert.match(report, /rating: 🦞 diamond lobster/);
-    assert.match(report, /feature: ✨ showcase/);
-    const calls = readFileSync(logPath, "utf8")
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line));
-    assert(
-      calls.some(
-        (args) => args[0] === "label" && args[1] === "create" && args[2] === "feature: ✨ showcase",
-      ),
-    );
-    assert(
-      calls.some(
-        (args) =>
-          args[0] === "issue" &&
-          args[1] === "edit" &&
-          args.includes("--add-label") &&
-          args.includes("feature: ✨ showcase"),
-      ),
-    );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
+      const report = readFileSync(itemPath, "utf8");
+      const calls = readFileSync(logPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      assert.equal(calls.filter((args) => args[0] === "posted-comment-body").length, 1);
+      const results = JSON.parse(readFileSync(reportPath, "utf8"));
+      assert.ok(results.some((result) => result.action === "review_comment_synced"));
+      {
+        assert.match(report, /^labels_synced_at: /m);
+        assert.match(report, /^automation_item_updated_at: 2026-05-19T20:00:02Z$/m);
+        assert.match(report, /proof: sufficient/);
+        assert.match(report, /proof: 📸 screenshot/);
+        assert.match(report, /rating: 🦞 diamond lobster/);
+        assert.match(report, /feature: ✨ showcase/);
+        assert(
+          calls.some(
+            (args) =>
+              args[0] === "label" && args[1] === "create" && args[2] === "feature: ✨ showcase",
+          ),
+        );
+        assert(
+          calls.some(
+            (args) =>
+              args[0] === "issue" &&
+              args[1] === "edit" &&
+              args.includes("--add-label") &&
+              args.includes("feature: ✨ showcase"),
+          ),
+        );
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
 
 test("apply-decisions clears stale PR review labels when live head changed", () => {
   const root = mkdtempSync(tmpPrefix);

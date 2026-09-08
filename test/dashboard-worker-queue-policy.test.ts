@@ -60,8 +60,8 @@ test("exact-review retry jitter stays within every parked recovery ladder band",
   }
 });
 
-test("exact-review queue defaults to all 128 global workers", () => {
-  assert.equal(exactReviewQueueCapacity({}), 128);
+test("exact-review queue defaults to the reduced 32-worker ceiling", () => {
+  assert.equal(exactReviewQueueCapacity({}), 32);
   assert.equal(exactReviewQueueCapacity({ EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "32" }), 32);
   assert.equal(exactReviewQueueCapacity({ EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "100" }), 100);
   assert.equal(
@@ -258,20 +258,21 @@ test("live activity fails closed for stale, mixed, unavailable, and over-bound s
   );
 });
 
-test("production doubles exact review claims and canonical publication batches", () => {
+test("production bounds review demand and preserves canonical publication batches", () => {
   const wrangler = fs.readFileSync("dashboard/wrangler.toml", "utf8");
   assert.match(wrangler, /CLAWSWEEPER_ENABLE_CLAWHUB = "1"/);
-  assert.match(wrangler, /EXACT_REVIEW_QUEUE_MAX_CONCURRENT = "128"/);
-  assert.match(wrangler, /EXACT_REVIEW_TARGET_MAX_CONCURRENT = "120"/);
+  assert.match(wrangler, /EXACT_REVIEW_QUEUE_MAX_CONCURRENT = "32"/);
+  assert.match(wrangler, /EXACT_REVIEW_TARGET_MAX_CONCURRENT = "24"/);
+  assert.match(wrangler, /EXACT_REVIEW_SCHEDULED_MAX_CONCURRENT = "8"/);
   assert.match(wrangler, /EXACT_REVIEW_ACTIONS_BUDGET = "194"/);
   assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_BATCH_SIZE = "8"/);
   assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT = "8"/);
   assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_BATCH_DISPATCH_COOLDOWN_MS = "5000"/);
   assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT = "8"/);
   assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT = "32"/);
-  assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT = "40"/);
-  assert.match(wrangler, /EXACT_REVIEW_TARGET_RATE_PER_HOUR = "300"/);
-  assert.match(wrangler, /EXACT_REVIEW_TARGET_BURST = "30"/);
+  assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT = "32"/);
+  assert.match(wrangler, /EXACT_REVIEW_TARGET_RATE_PER_HOUR = "60"/);
+  assert.match(wrangler, /EXACT_REVIEW_TARGET_BURST = "6"/);
   assert.match(wrangler, /EXACT_REVIEW_PENDING_SOFT_LIMIT = "600"/);
   assert.match(wrangler, /EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "30000"/);
 });
@@ -960,6 +961,7 @@ test("full review admission does not inflate staged publication capacity", () =>
     exactReviewPublicationCapacityForState(
       {
         EXACT_REVIEW_ACTIONS_BUDGET: "194",
+        EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "128",
         EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT: "8",
         EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT: "32",
         EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT: "40",
@@ -1701,19 +1703,21 @@ test("automerge reliability summarizes failures, recovery, duration, and stalled
 });
 
 test("exact-review publication scales bounded capacity with ready backlog", () => {
+  const env = { EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "128" };
   assert.equal(exactReviewPublicationCapacity({}), 24);
-  assert.equal(exactReviewPublicationCapacity({}, 99), 24);
-  assert.equal(exactReviewPublicationCapacity({}, 100), 32);
-  assert.equal(exactReviewPublicationCapacity({}, 249), 32);
-  assert.equal(exactReviewPublicationCapacity({}, 250), 40);
-  assert.equal(exactReviewPublicationCapacity({}, 400), 48);
-  assert.equal(exactReviewPublicationCapacity({}, 2_000), 48);
-  assert.equal(exactReviewPublicationCapacity({}, 0, 40), 40);
-  assert.equal(exactReviewPublicationCapacity({}, 400, 0, 32), 32);
-  assert.equal(exactReviewPublicationCapacity({}, 400, 0, 8), 8);
-  assert.equal(exactReviewPublicationCapacity({}, 400, 40, 24), 40);
-  assert.equal(exactReviewPublicationCapacity({}, 0, 0, 48, 60 * 60_000), 32);
-  assert.equal(exactReviewPublicationCapacity({}, 50, 0, 48, 0, 0), 32);
+  assert.equal(exactReviewPublicationCapacity({}, 400), 32);
+  assert.equal(exactReviewPublicationCapacity(env, 99), 24);
+  assert.equal(exactReviewPublicationCapacity(env, 100), 32);
+  assert.equal(exactReviewPublicationCapacity(env, 249), 32);
+  assert.equal(exactReviewPublicationCapacity(env, 250), 40);
+  assert.equal(exactReviewPublicationCapacity(env, 400), 48);
+  assert.equal(exactReviewPublicationCapacity(env, 2_000), 48);
+  assert.equal(exactReviewPublicationCapacity(env, 0, 40), 40);
+  assert.equal(exactReviewPublicationCapacity(env, 400, 0, 32), 32);
+  assert.equal(exactReviewPublicationCapacity(env, 400, 0, 8), 8);
+  assert.equal(exactReviewPublicationCapacity(env, 400, 40, 24), 40);
+  assert.equal(exactReviewPublicationCapacity(env, 0, 0, 48, 60 * 60_000), 32);
+  assert.equal(exactReviewPublicationCapacity(env, 50, 0, 48, 0, 0), 32);
   assert.equal(
     exactReviewPublicationCapacity({ EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT: "12" }),
     12,
@@ -1756,7 +1760,7 @@ test("exact-review publication admission applies the hysteresis controller deman
   Date.now = () => now;
   try {
     const storage = new MemoryDurableStorage();
-    const queue = new ExactReviewQueue({ storage }, {});
+    const queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "128" });
     for (let index = 0; index < 50; index += 1) {
       const number = 10_000 + index;
       const response = await queue.fetch(
@@ -1821,6 +1825,7 @@ test("exact-review publication controller adopts the staged base after a fixed-p
     const queue = new ExactReviewQueue(
       { storage },
       {
+        EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "128",
         EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT: "8",
         EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT: "32",
         EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT: "40",
@@ -3538,6 +3543,8 @@ test("scheduled review feed is lane-paced and exposes its configured target", as
   assert.equal(stats.pending, 2);
   assert.equal(stats.shed_since_reset, 2);
   assert.deepEqual(stats.scheduled_feed, {
+    max_concurrent: 8,
+    active: 0,
     target_rate_per_hour: 2,
     enqueue_replay: "scheduled_disposition_v1",
     burst: 2,
@@ -3565,6 +3572,7 @@ test("scheduled untracked reviews are ready and claimable within one tick when 1
       EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "128",
       EXACT_REVIEW_TARGET_MAX_CONCURRENT: "120",
       EXACT_REVIEW_TARGET_RATE_PER_HOUR: "600",
+      EXACT_REVIEW_SCHEDULED_MAX_CONCURRENT: "128",
       EXACT_REVIEW_TARGET_BURST: "120",
       EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "90000",
       EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS: "180000",
