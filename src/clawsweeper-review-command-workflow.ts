@@ -1,3 +1,4 @@
+import { oversizedPrSourceSnapshot } from "./clawsweeper-oversized-pr-freshness.js";
 import {
   oversizedPullRequestAdmission,
   oversizedPullRequestContext,
@@ -489,6 +490,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         try {
         startReviewActionLedgerItem(reviewLedger, item);
         dependencies.activeReviewMutationRunner = reviewMutationRunner(reviewLedger, item);
+        const pullObservedAt = prAdmissionInput ? prAdmissionInput.observedAt : new Date().toISOString();
         const pullRequestPayload = item.kind === "pull_request" && !localRangeData
           ? prAdmissionInput?.pull ?? asRecord(dependencies.ghJson(["api", `repos/${item.repo}/pulls/${item.number}`]))
           : undefined;
@@ -498,7 +500,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             item.labels = labelNames(pullRequestPayload.labels);
             item.updatedAt = stringOrUndefined(pullRequestPayload.updated_at) ?? item.updatedAt;
             const context = oversizedPullRequestContext(pullRequestPayload);
-            const decision = oversizedPullRequestDecision(admission.decision);
+            const decision = oversizedPullRequestDecision(admission.decision, oversizedPrSourceSnapshot(pullRequestPayload, pullObservedAt));
             const runtime = { model: "none", reasoningEffort: "none", contextElapsedMs: 0, codexElapsedMs: 0 };
             const action = reviewActionForDecision({ item, decision, git, runtime });
             const reportPath = join(artifactDir, reportFileName(item.repo, item.number));

@@ -31,5 +31,9 @@ export function readPrAdmissionInput(path: string, repo: string, numbers: readon
     labels,
     locked: pull.locked === true,
   };
-  return { item, pull, admission: oversizedPullRequestAdmission(pull) };
+  const observedAt =
+    typeof input.observedAt === "string" && Number.isFinite(Date.parse(input.observedAt))
+      ? input.observedAt
+      : undefined;
+  return { item, pull, observedAt, admission: oversizedPullRequestAdmission(pull) };
 }

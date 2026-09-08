@@ -1,3 +1,4 @@
+import type { OversizedPrSourceSnapshot } from "./clawsweeper-oversized-pr-freshness.js";
 import { applyBlockingProtectedLabels, labelNames } from "./clawsweeper-item-policy.js";
 import { emptyMaintainerDecision } from "./decision-packets.js";
 import {
@@ -123,7 +124,10 @@ export function oversizedPullRequestContext(pull: Record<string, unknown>): Item
   };
 }
 
-export function oversizedPullRequestDecision(size: OversizedPullRequestEvidence): Decision {
+export function oversizedPullRequestDecision(
+  size: OversizedPullRequestEvidence,
+  source?: OversizedPrSourceSnapshot | null,
+): Decision {
   const unassessed =
     "Not assessed: deterministic metadata-only size admission; no hydration, scanner, or model run.";
   return {
@@ -131,6 +135,7 @@ export function oversizedPullRequestDecision(size: OversizedPullRequestEvidence)
     closeReason: "oversized_pull_request",
     confidence: "high",
     oversizedPullRequest: size,
+    ...(source ? { oversizedPullRequestSource: source } : {}),
     summary: `Pull request changes ${size.additions + size.deletions} lines, exceeding the ${size.threshold}-line review limit.`,
     changeSummary: unassessed,
     systemContext: "",

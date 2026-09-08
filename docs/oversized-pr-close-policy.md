@@ -39,10 +39,28 @@ close-reason filter includes this reason when
 `CLAWSWEEPER_AUTO_CLOSE_REASONS=all`. Dry-run, comment-only publication, or a
 closed policy/reason gate leaves the proposal in `records/<slug>/items/<n>.md`
 with `decision: close` and its additions, deletions, changedFiles, threshold,
-and head evidence. No scanner or model provenance is asserted.
+and head evidence. The report also records a metadata source fingerprint and
+comment counts. No scanner or model provenance is asserted.
 
 Apply requires complete recorded metadata and repeats the live PR size,
 head, open-state, lock, and exemption checks immediately before closing.
+Changed metadata or unreadable live state blocks the close. The source record also carries the observation time taken before the PR metadata
+read; initial activity at that second or within the one-second clock margin is
+ambiguous and keeps the proposal open. Missing handoff observation times fall
+back conservatively to the PR update timestamp. Submitted reviews expose no
+edit timestamp, so a PR update timestamp in that observation window also blocks
+initial receipt creation when reviews exist. Before comment
+publication, apply captures bounded issue-comment, timeline, inline-comment,
+and review metadata, with a maximum of three 100-entry pages per stream.
+Incomplete reads keep the proposal open. The receipt excludes only the exact
+owned review-comment ID and verifies that comment against its write response;
+all other activity remains fingerprinted. The baseline is persisted before
+publication, and the exact owned write identity is persisted before any
+post-publication read, including when subsequent validation fails. Forced checks before closing catch
+body edits and same-second human comments after publication, and persisted
+receipts preserve that protection across retries. PR files, commits, blobs,
+scanner work, and model review are not hydrated by this guard.
+
 Changed metadata or unreadable live state blocks the close. The public notice
 uses proposal wording until GitHub confirms the close, so an aborted close never
 claims success. After closing, apply updates that same comment to the template
@@ -62,3 +80,14 @@ The public comment is:
 > `main` containing only the intended change, or split it into focused pull
 > requests. A maintainer can apply `size: accepted-large` to exempt a deliberately
 > large change.
+
+## Reproducible proof
+
+`node scripts/proof-oversized-pr-close.mjs` exercises metadata admission and
+dry-run retention, with a 29,999-line control.
+`node scripts/proof-oversized-pr-close-effects.mjs` drives the built CLI through
+a loopback HTTP GitHub adapter and inspects service state plus items/closed
+records for eligible closing, protected-label refusal, and late exemption, body,
+and human-comment changes. This uses synthetic data and transport; it does not
+close a live GitHub PR. The workflow test also executes a HTTP-409 finalization
+branch and verifies that supersession prevents publication.

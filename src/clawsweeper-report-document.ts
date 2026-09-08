@@ -669,6 +669,7 @@ review_comment_id: unknown
 review_comment_url: unknown
 decision: ${options.decision.decision}
 close_reason: ${options.decision.closeReason}
+${options.decision.oversizedPullRequestSource ? `oversized_pr_source: ${JSON.stringify(options.decision.oversizedPullRequestSource)}\n` : ""}
 ${options.decision.oversizedPullRequest ? `oversized_pull_request: ${JSON.stringify(options.decision.oversizedPullRequest)}\n` : ""}
 confidence: ${options.decision.confidence}
 action_taken: ${options.action.actionTaken}

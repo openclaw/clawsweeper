@@ -23,6 +23,9 @@ else { console.error('CONTROL_REACHED_NORMAL_HYDRATION'); process.exit(91); }
 const pull = {
   number: 141913,
   title: "Synthetic oversized PR",
+  body: "Synthetic oversized PR body",
+  comments: 0,
+  review_comments: 0,
   state: "open",
   locked: false,
   additions: 45791,

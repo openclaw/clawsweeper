@@ -22,6 +22,10 @@ for (const source of [
       const candidate = item({ kind: "pull_request", authorAssociation: "OWNER" });
       const rawPull = {
         number: candidate.number,
+        title: candidate.title,
+        body: "Synthetic admission body",
+        comments: 0,
+        review_comments: 0,
         state: "open",
         labels: [],
         additions: total,

@@ -1,3 +1,7 @@
+import {
+  createOversizedPrFreshnessGuard,
+  parseOversizedPrSourceSnapshot,
+} from "./clawsweeper-oversized-pr-freshness.js";
 import { REVIEW_SECTIONS } from "./clawsweeper-policy.js";
 import {
   oversizedPrCloseEnabled,
@@ -737,6 +741,13 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         isPairBlockedCloseReport(markdown);
       const oversizedMetadataDecision = closeReason === "oversized_pull_request" &&
         parseOversizedPullRequestEvidence(frontMatterValue(markdown, "oversized_pull_request")) !== null;
+      let oversizedActivityGuard: ReturnType<typeof createOversizedPrFreshnessGuard> | undefined;
+      const persistOversizedActivityReceipt = (): void => {
+        const receipt = oversizedActivityGuard?.receipt();
+        if (!receipt || dryRun || frontMatterValue(markdown, "action_taken") === "closed" || !existsSync(path)) return;
+        markdown = replaceFrontMatterValue(markdown, "oversized_activity_receipt", JSON.stringify(receipt));
+        writeReportMarkdown(path, markdown);
+      };
       const verifiedLocalCheckout = hasVerifiedLocalCheckoutAccess(markdown);
       const canClosePairCounterpartInThisRun = (
         counterpartNumber: number,
@@ -1097,7 +1108,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             ) === "equal")
         );
       };
-      const currentReviewActivityBlock = oversizedMetadataDecision ? () => null : createApplyReviewActivityGuard(dependencies, {
+      const currentReviewActivityBlock = oversizedMetadataDecision ? () => oversizedActivityGuard?.check(liveReadGeneration.id) ?? null : createApplyReviewActivityGuard(dependencies, {
         expectedCursor: expectedReviewActivityCursor,
         itemKind: item.kind,
         number,
@@ -1267,7 +1278,10 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         );
         // Metadata-only admission has no source-review receipt to refresh.
         // The close writer revalidates its recorded size and head immediately before close.
-        if (oversizedMetadataDecision) return false;
+        if (oversizedMetadataDecision) {
+          const block = oversizedActivityGuard ? oversizedActivityGuard.check(liveReadGeneration.id, true) : "missing metadata activity receipt";
+          return !block;
+        }
         // A post-mutation item timestamp is not operation-specific. Admit it
         // into this apply run only when an immediate structural receipt still
         // matches the reviewed source, PR head, and review-activity cursor. The
@@ -1824,6 +1838,17 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         reviewComment = renderCurrentReviewComment();
       }
       let markedReviewComment = markedReviewCommentForApply(reviewComment);
+      if (oversizedMetadataDecision && state === "open") {
+        oversizedActivityGuard = createOversizedPrFreshnessGuard({
+          repo, number, source: parseOversizedPrSourceSnapshot(frontMatterValue(markdown, "oversized_pr_source")),
+          priorReceipt: frontMatterValue(markdown, "oversized_activity_receipt"),
+          ...(existingReviewComment && commentBodyMatches(existingReviewComment, markedReviewComment) ? { ownedComment: existingReviewComment } : {}),
+          ghJson,
+        });
+        const block = oversizedActivityGuard.check(liveReadGeneration.id, true);
+        if (block) { if (markApplySkipped("kept_open", block)) break; continue; }
+        persistOversizedActivityReceipt();
+      }
       const { postProofCoveringPrFreshnessBlock, postProofFreshnessBlock } =
         createApplyProofFreshnessGuards({
           ...applyReadDependencies,
@@ -2257,6 +2282,12 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
                 undefined,
                 { suppressAutomationMarkers },
               );
+              oversizedActivityGuard?.recordOwnComment(syncedComment);
+              if (oversizedActivityGuard) {
+                markdown = updateReviewCommentMetadata(markdown, syncedComment, markedReviewComment);
+                // Persist the original baseline and exact write identity before any further reads.
+                persistOversizedActivityReceipt();
+              }
               rememberSelfMutationUpdatedAt();
               deferredSelfMutationReceipt = false;
               syncReasons.push("updated durable Codex review comment");
@@ -2676,7 +2707,9 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           }
           return processedCount >= processedLimit;
         },
+        oversizedActivityBlock: () => oversizedActivityGuard ? oversizedActivityGuard.check(liveReadGeneration.id, true) : "missing metadata activity receipt",
         onOversizedClosed: () => {
+          oversizedActivityGuard?.markClosed();
           try {
           const liveComment = withGuardReadOptions({ bypassGenerationCache: true }, () => issueReviewComment(number));
           // Finish only our pending notice; never replace a newer canonical review.

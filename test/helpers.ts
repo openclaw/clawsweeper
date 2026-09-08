@@ -525,6 +525,9 @@ export function lowSignalCloseReport(overrides = {}) {
 export function promotionGhMock(options: {
   number: number;
   title?: string;
+  body?: string;
+  draft?: boolean;
+  trackCommentActivity?: boolean;
   labels?: string[];
   itemCreatedAt?: string;
   itemUpdatedAt?: string;
@@ -798,9 +801,9 @@ export function promotionGhMock(options: {
     number,
     title,
     html_url: "https://github.com/openclaw/openclaw/pull/" + number,
-    body: "Stale PR body.",
+    body: ${JSON.stringify(options.body ?? "Stale PR body.")},
     created_at: itemCreatedAt,
-    updated_at: liveUpdatedAt,
+    updated_at: ${options.trackCommentActivity ? 'existsSync(commentStatePath) ? JSON.parse(readFileSync(commentStatePath, "utf8")).updated_at : liveUpdatedAt' : "liveUpdatedAt"},
     closed_at: null,
     state: "open",
     locked: false,
@@ -809,7 +812,7 @@ export function promotionGhMock(options: {
     user: { login: authorLogin },
     labels,
     assignees: ${JSON.stringify(options.assignees ?? [])},
-    comments: issueCommentCount,
+    comments: ${options.trackCommentActivity ? "liveComments().length" : "issueCommentCount"},
     pull_request: { url: "https://api.github.com/repos/openclaw/openclaw/pulls/" + number }
   }));
 } else if (args[0] === "api" && new RegExp("/pulls/" + number + "$").test(path)) {
@@ -819,7 +822,7 @@ export function promotionGhMock(options: {
     html_url: "https://github.com/openclaw/openclaw/pull/" + number,
     state: "open",
     created_at: itemCreatedAt,
-    updated_at: liveUpdatedAt,
+    updated_at: ${options.trackCommentActivity ? 'existsSync(commentStatePath) ? JSON.parse(readFileSync(commentStatePath, "utf8")).updated_at : liveUpdatedAt' : "liveUpdatedAt"},
     mergeable,
     mergeable_state: mergeableState,
     changed_files: changedFiles,
@@ -829,7 +832,9 @@ export function promotionGhMock(options: {
     deletions: ${options.deletions ?? 0},
     commits: 1,
     review_comments: 0,
-    body: "Stale PR body.",
+    comments: ${options.trackCommentActivity ? "liveComments().length" : "issueCommentCount"},
+    draft: ${options.draft ?? false},
+    body: ${JSON.stringify(options.body ?? "Stale PR body.")},
     requested_reviewers: ${JSON.stringify(options.requestedReviewers ?? [])},
     requested_teams: ${JSON.stringify(options.requestedTeams ?? [])},
     head: { sha: ${JSON.stringify(options.headSha ?? "head-sha")}, ref: ${JSON.stringify(options.headRef ?? "branch")}, repo: { id: 123, full_name: ${JSON.stringify(options.headRepository ?? "fork/openclaw")} } },

@@ -7385,3 +7385,57 @@ esac
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("oversized exact-event finalization propagates a revoked queue generation", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const steps = workflow.jobs["event-review-apply"].steps;
+  const run = steps.find((step: any) => step.id === "review-exact-event-item").run as string;
+  const finalize = run.slice(
+    run.indexOf("mark_finalizing() {"),
+    run.indexOf("trap cleanup_heartbeat EXIT"),
+  );
+  const branch = run
+    .slice(run.indexOf('if [ "$OVERSIZED_PR" = "true" ]; then'), run.indexOf('codex_timeout_ms="'))
+    .replaceAll("${{ steps.target.outputs.target_repo }}", "example/project")
+    .replaceAll("${{ steps.target.outputs.item_number }}", "1");
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    const output = join(root, "output");
+    execFileSync(
+      "bash",
+      [
+        "-e",
+        "-c",
+        `
+      pnpm() { return 0; }
+      start_heartbeat() { return 0; }
+      cleanup_heartbeat() { return 0; }
+      curl() { printf 409; }
+      heartbeat_payload='{}'
+      superseded_marker="$TEST_ROOT/superseded"
+      admission_args=()
+      ${finalize}
+      ${branch}
+      exit 91
+    `,
+      ],
+      {
+        env: {
+          ...process.env,
+          TEST_ROOT: root,
+          OVERSIZED_PR: "true",
+          GITHUB_OUTPUT: output,
+          QUEUE_URL: "http://127.0.0.1",
+        },
+      },
+    );
+    assert.match(readText(output), /^superseded=true$/m);
+    assert.match(readText(output), /^exit_code=0$/m);
+    assert.match(
+      steps.find((step: any) => step.id === "create-exact-review-bundle").if,
+      /review-exact-event-item\.outputs\.superseded != 'true'/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

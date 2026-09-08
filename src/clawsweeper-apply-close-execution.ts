@@ -141,6 +141,7 @@ interface ApplyCloseExecutionOptions {
   minAgeMs: number;
   number: number;
   onOversizedClosed?: () => void;
+  oversizedActivityBlock?: () => string | null;
   onClosed: (result: ApplyResult, dryRun: boolean) => boolean;
   onPairedIssueClosed: (result: ApplyResult, dryRun: boolean) => boolean;
   postProofCoveringPrFreshnessBlock: () => PrCloseCoverageProofGateBlock | null;
@@ -963,6 +964,10 @@ export function executeApplyClose(
             block = `oversized PR final revalidation failed: ${error instanceof Error ? error.message : String(error)}`;
           }
           if (block) return skip("kept_open", block);
+          const activityBlock = options.oversizedActivityBlock
+            ? options.oversizedActivityBlock()
+            : "missing metadata activity receipt";
+          if (activityBlock) return skip("kept_open", activityBlock);
         }
         closeItem({ number, kind: item.kind, reason: closeReason });
         let markdown = replaceSectionValue(

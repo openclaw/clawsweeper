@@ -563,6 +563,7 @@ export interface ReviewCommentRenderOptions {
 }
 
 export interface Decision {
+  oversizedPullRequestSource?: import("./clawsweeper-oversized-pr-freshness.js").OversizedPrSourceSnapshot;
   /** Runner-owned GitHub metadata; never populated from model output. */
   oversizedPullRequest?: import("./clawsweeper-oversized-pr-policy.js").OversizedPullRequestEvidence;
   decision: DecisionKind;

@@ -60,7 +60,11 @@ not split reports into issue/PR subtrees.
 - Do not run live apply/close commands unless Peter explicitly asks.
 - For apply-path repros, copy one report into a temp `items/` dir and pass
   `--skip-dashboard`, `--item-number`, and a temp `--closed-dir`.
-- Treat maintainer-authored and protected-label items as non-closeable.
+- Treat maintainer-authored and protected-label items as non-closeable, except
+  for the maintainer-approved metadata-only `oversized_pull_request` policy:
+  drafts, maintainer authorship, and the `maintainer` label do not exempt that
+  reason. Its explicit PR exemption labels, `size: accepted-large`, other
+  protected labels, live freshness checks, and apply gates still apply.
 - Leave canonical OpenClaw Mantis locale PRs open; their generated-PR publisher
   owns freshness and auto-merge. See `docs/target-repositories.md` for identity scope.
 - Snapshot or `updated_at` drift blocks apply unless the only change is the

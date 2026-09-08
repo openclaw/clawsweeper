@@ -33,6 +33,9 @@ const size = {
 const pull = {
   number: 141913,
   title: "Synthetic size policy PR",
+  body: "Synthetic size policy body",
+  comments: 0,
+  review_comments: 0,
   state: "open",
   locked: false,
   additions: size.additions,
@@ -112,6 +115,8 @@ for (const scenario of [
   "head-drift",
   "late-under-limit",
   "late-exempt",
+  "late-body",
+  "late-human-comment",
   "close-error",
   "notice-error",
 ] as const) {
@@ -156,8 +161,24 @@ for (const scenario of [
         assert.match(markdown, /oversized_pull_request: /);
         const mock = promotionGhMock({
           number: pull.number,
+          title: pull.title,
+          body: pull.body,
+          draft: pull.draft,
+          trackCommentActivity: true,
           comment: "",
           comments: [],
+          commentsAfterCommentWrite:
+            scenario === "late-human-comment"
+              ? [
+                  {
+                    id: 777,
+                    body: "Human follow-up",
+                    user: { login: "human" },
+                    created_at: "2026-05-01T02:00:00Z",
+                    updated_at: "2026-05-01T02:00:00Z",
+                  },
+                ]
+              : undefined,
           labels: scenario === "exempt" ? ["size: accepted-large"] : [],
           authorAssociation: "OWNER",
           headSha: scenario === "head-drift" ? "c".repeat(40) : size.head,
@@ -165,11 +186,13 @@ for (const scenario of [
           additions: scenario === "under-limit" ? 29999 : size.additions,
           deletions: scenario === "under-limit" ? 0 : size.deletions,
           pullAfterCommentWrite:
-            scenario === "late-under-limit"
-              ? { additions: 29999, deletions: 0 }
-              : scenario === "late-exempt"
-                ? { labels: ["size: accepted-large"] }
-                : {},
+            scenario === "late-body"
+              ? { body: "Human edited the PR body" }
+              : scenario === "late-under-limit"
+                ? { additions: 29999, deletions: 0 }
+                : scenario === "late-exempt"
+                  ? { labels: ["size: accepted-large"] }
+                  : {},
           commandLogPath: commandLog,
           commentWriteLogPath: calls,
           commentWriteErrorAfterClose:
@@ -200,7 +223,7 @@ for (const scenario of [
         if (existsSync(commandLog))
           assert.doesNotMatch(
             readFileSync(commandLog, "utf8"),
-            /\/pulls\/141913\/(files|commits|reviews|comments)|check-runs|git\/blobs/,
+            /\/pulls\/141913\/(files|commits)|check-runs|git\/blobs/,
           );
         const mutations = existsSync(calls) ? readFileSync(calls, "utf8") : "";
         if (scenario === "close" || scenario === "exact-close" || scenario === "notice-error") {
@@ -235,6 +258,7 @@ for (const scenario of [
           assert.ok(existsSync(report), JSON.stringify(result));
           assert.equal(existsSync(join(workspace.closedDir, `${pull.number}.md`)), false);
           if (scenario.startsWith("late-") || scenario === "close-error") {
+            assert.match(readFileSync(report, "utf8"), /oversized_activity_receipt: /);
             assert.equal(
               mutations
                 .split("\n")

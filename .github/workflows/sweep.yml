@@ -872,10 +872,11 @@ jobs:
           echo "item_kind=$item_kind" >> "$GITHUB_OUTPUT"
           live_head_sha=""
           if [ "$live_state" = "open" ] && [ "$live_locked" != "true" ] && [ "$item_kind" = "pull_request" ]; then
+            pull_observed_at="$(node -e 'process.stdout.write(new Date().toISOString())')"
             if live_pull="$(gh api "repos/$TARGET_REPO/pulls/$ITEM_NUMBER")"; then
             live_head_sha="$(jq -r '.head.sha // empty' <<< "$live_pull")"
             mkdir -p .artifacts
-            jq -n --arg repo "$TARGET_REPO" --argjson pull "$live_pull" '{repo: $repo, pull: $pull}' > .artifacts/exact-pr-admission.json
+            jq -n --arg repo "$TARGET_REPO" --arg observedAt "$pull_observed_at" --argjson pull "$live_pull" '{repo: $repo, pull: $pull, observedAt: $observedAt}' > .artifacts/exact-pr-admission.json
             oversized="$(node --input-type=module <<'NODE'
           import { readFileSync } from "node:fs";
           import { oversizedPullRequestAdmission } from "./dist/clawsweeper-oversized-pr-policy.js";
@@ -1489,6 +1490,12 @@ jobs:
             start_heartbeat
             cleanup_heartbeat
             mark_finalizing
+            if [ -f "$superseded_marker" ]; then
+              echo "superseded=true" >> "$GITHUB_OUTPUT"
+              echo "exit_code=0" >> "$GITHUB_OUTPUT"
+              echo "::notice::Oversized review generation lost queue authority; skipping publication."
+              exit 0
+            fi
             echo "exit_code=0" >> "$GITHUB_OUTPUT"
             exit 0
           fi
