@@ -1,5 +1,5 @@
 # Reviewers inspect untrusted contributor PRs: never make them an open egress
-# channel. No credentials belong in the sandbox; use public, allowlisted hosts.
+# channel. Only the target repository's short-lived read-only token is supplied.
 approval_policy = "never"
 default_permissions = "clawsweeper-review"
 [features]

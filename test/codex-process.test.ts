@@ -13,6 +13,7 @@ import { delimiter, join } from "node:path";
 import test from "node:test";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { codexEnv } from "../dist/codex-env.js";
 
 import {
   codexProcessCommand,
@@ -542,6 +543,9 @@ for (const configuredProfile of [false, true]) {
 const fs = require("node:fs");
 const readline = require("node:readline");
 const requestsPath = process.env.CODEX_TEST_REQUESTS_PATH;
+require("node:assert/strict").equal(process.env.GH_TOKEN, "synthetic-inspection-token");
+require("node:assert/strict").equal(process.env.GITHUB_TOKEN, undefined);
+require("node:assert/strict").equal(process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN, undefined);
 fs.writeFileSync(process.env.CODEX_TEST_ARGS_PATH, JSON.stringify(process.argv.slice(2)));
 const rl = readline.createInterface({ input: process.stdin });
 function send(value) { process.stdout.write(JSON.stringify(value) + "\\n"); }
@@ -582,7 +586,7 @@ rl.on("line", (line) => {
       });
     }
     const env = {
-      ...process.env,
+      ...codexEnv({ ghToken: "synthetic-inspection-token" }),
       CODEX_BIN: codexPath,
       CODEX_TEST_ARGS_PATH: argsPath,
       CODEX_TEST_REQUESTS_PATH: requestsPath,

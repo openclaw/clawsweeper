@@ -522,6 +522,9 @@ ${additionalPrompt.trim()}
         : runtimeHints.networkCapability === "unrestricted"
           ? "Network access is available through OpenClaw gateway execution; the Codex managed allowlisted proxy does not apply. An inaccessible request is not evidence about the PR."
           : "No review-tool network access is configured; use the pre-fetched context. An inaccessible request is not evidence about the PR.";
+    const tokenDescription = runtimeHints.hasGitHubToken
+      ? "A read-only GitHub App token for the target repository is available as `GH_TOKEN` (contents, issues, and pull requests read; expires within the hour); use it for `gh api`/authenticated GitHub reads so public rate limits do not apply; it cannot write. Never place it in a URL, log it, or send it to any non-GitHub host."
+      : "No GitHub token is supplied to the review process; use public endpoints or pre-fetched context.";
     const text = `${prompt}
 
 ## Repository State
@@ -542,7 +545,8 @@ ${additionalPrompt.trim()}
 ## Runtime Capabilities
 
 - ${networkDescription}
-- No GitHub token is supplied to the review process; use public endpoints or pre-fetched context. Linked screenshots and videos are downloaded before review into the media proof manifest; read those files rather than re-fetching.
+- ${tokenDescription}
+- Linked screenshots and videos are downloaded before review into the media proof manifest; read those files rather than re-fetching.
 - ${runtimeHints.networkCapability === "unrestricted" ? "Treat the target checkout as read-only; OpenClaw gateway execution does not enforce the Codex filesystem sandbox." : "The target checkout is read-only."} Use ${proofScratchDir ? `\`${proofScratchDir}\`` : "the proof scratch directory"} for evidence and generated video stills/contact sheets.
 ${mediaProofPrompt}
 ${introductionEvidence}
@@ -956,6 +960,13 @@ ${extra}
     });
   }
 
+  function reviewEnvironment(preserveCodexAuth?: boolean): NodeJS.ProcessEnv {
+    return untrustedCodexEnv({
+      ghToken: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
+      preserveCodexAuth,
+    });
+  }
+
   function runCodex(options: {
     item: Item;
     context: ItemContext;
@@ -972,6 +983,7 @@ ${extra}
     additionalPrompt?: string;
     proofScratchDir?: string;
     prompt?: string;
+    reviewEnv?: NodeJS.ProcessEnv;
     quietLogs?: boolean;
     extraCodexConfig?: string[];
   }): Decision {
@@ -992,15 +1004,13 @@ ${extra}
       : prepareMediaProofArtifacts(options.context, proofScratchDir);
     const outputPath = join(options.workDir, `${options.item.number}.json`);
     if (existsSync(outputPath)) unlinkSync(outputPath);
-    const codexEnv = untrustedCodexEnv({
-      preserveCodexAuth: options.preserveCodexAuth,
-    });
+    const codexEnv = options.reviewEnv ?? reviewEnvironment(options.preserveCodexAuth);
     const prompt =
       options.prompt ??
       buildReviewPrompt(options.item, options.context, options.git, options.additionalPrompt, {
         ...mediaProofRuntimeHints(proofScratchDir, preparedMediaProof),
         targetDir: options.openclawDir,
-        networkCapability: reviewNetworkCapability(options.sandboxMode, codexEnv),
+        ...reviewNetworkCapability(options.sandboxMode, codexEnv),
       }).text;
     const pull = asRecord(options.context.pullRequest);
     const scanSource: AgentScanSource =
@@ -1186,6 +1196,7 @@ ${extra}
     runCodexForTest,
     CodexReviewError,
     buildReviewPrompt,
+    reviewEnvironment,
     codexFailureDecision,
     codexFailureLogKind,
     codexFailureReason,

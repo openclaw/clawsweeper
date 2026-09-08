@@ -662,7 +662,9 @@ function testScheduledCacheScenario(scenario: string, publicationCase?: Publicat
         return { status: 0, signal: null, stdout: "", stderr: "" };
       },
       prepareMediaProofArtifacts: () => ({ manifestPath: null, summaryPath: null, artifacts: [] }),
-      buildReviewPrompt: (_item, reviewContext) => {
+      reviewEnvironment: () => ({ GH_TOKEN: "synthetic-inspection-token" }),
+      buildReviewPrompt: (_item, reviewContext, _git, _additionalPrompt, runtimeHints) => {
+        assert.equal(runtimeHints.hasGitHubToken, true);
         if (publicationCacheMiss)
           assert.deepEqual(reviewContext.previousClawSweeperReview, {
             verdictDigest: digest("previous"),
@@ -683,7 +685,8 @@ function testScheduledCacheScenario(scenario: string, publicationCase?: Publicat
           });
         throw new Error("scan refusal must not become a decision");
       },
-      runCodex: ({ openclawDir }) => {
+      runCodex: ({ openclawDir, reviewEnv }) => {
+        assert.equal(reviewEnv.GH_TOKEN, "synthetic-inspection-token");
         generationCalls += 1;
         if (cacheRecovery) {
           assert.equal(

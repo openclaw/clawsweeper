@@ -137,6 +137,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     verifyRegressionProvenance,
     authorIssueCountInBulkFilerWindow,
     buildReviewPrompt,
+    reviewEnvironment,
     bulkFilerPolicyInvalidatesCachedReview,
     bulkFilerRepositoryPermission,
     codexFailureDecision,
@@ -1267,6 +1268,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         const preparedMediaProof: PreparedMediaProof = localRangeData
           ? { manifestPath: null, summaryPath: null, artifacts: [] }
           : prepareMediaProofArtifacts(context, proofScratchDir);
+        const reviewEnv = reviewEnvironment(localOnly);
         const prompt = buildReviewPrompt(
           item,
           context,
@@ -1275,7 +1277,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           {
             ...mediaProofRuntimeHints(proofScratchDir, preparedMediaProof),
             targetDir: reviewOpenclawDir,
-            networkCapability: reviewNetworkCapability(sandboxMode),
+            ...reviewNetworkCapability(sandboxMode, reviewEnv),
           },
         );
         diagnosticPrompt = prompt.text;
@@ -1316,6 +1318,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             additionalPrompt,
             proofScratchDir,
             prompt: prompt.text,
+            reviewEnv,
             quietLogs: humanLocalReview,
             ...(localRange ? { extraCodexConfig: [LOCAL_REVIEW_WEB_SEARCH_CONFIG] } : {}),
           });

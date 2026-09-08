@@ -727,16 +727,20 @@ publication, and queue lifecycle.
   network proxy restricted to the hosts in
   [the review permission profile](.github/actions/setup-codex/review-permissions.toml):
   GitHub, npm, Node, MDN, and OpenClaw documentation. Limited mode inspects HTTPS
-  and permits only GET/HEAD/OPTIONS; other hosts are blocked. Review tools have
-  no GitHub token, so they use public endpoints and pre-fetched context, including
-  the local media proof manifest. A blocked request is not evidence against a PR.
+  and permits only GET/HEAD/OPTIONS; other hosts are blocked. When supplied by the
+  review job, tools receive the target repository's read-only GitHub App token
+  only as `GH_TOKEN` (contents, issues, and pull requests read; expires within the
+  hour). Use authenticated GitHub reads to avoid public rate limits; never put
+  the token in a URL, log it, or send it to a non-GitHub host. Without a token,
+  use public endpoints and pre-fetched context. Read downloaded media through
+  the local proof manifest. A blocked request is not evidence against a PR.
   Setup must prove allowed HTTPS, denied unlisted HTTPS, and denied checkout
   writes before reviews can publish. Offline local reviews retain their existing
   network restriction. The `review-network-smoke` PR CI job proves the same
   enforcement on Ubuntu without secrets. Capability text follows the active
   runner: OpenClaw uses gateway network execution without the Codex proxy or
-  filesystem sandbox, receives no GitHub token, and must keep the checkout
-  read-only by instruction.
+  filesystem sandbox, receives the same read-only token when supplied, and must
+  keep the checkout read-only by instruction.
 - Reviews fail if Codex leaves tracked or untracked changes behind.
 - Snapshot changes block apply unless the only change is the bot’s own review
   comment.

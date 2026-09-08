@@ -773,6 +773,7 @@ export interface ReviewContextLedgerEntry {
 
 export interface ReviewPromptRuntimeHints {
   networkCapability?: "allowlisted-proxy" | "unrestricted" | "none";
+  hasGitHubToken?: boolean;
   targetDir?: string;
   proofScratchDir?: string;
   mediaProofManifestPath?: string;

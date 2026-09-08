@@ -41,9 +41,19 @@ export function agentRunner(env: NodeJS.ProcessEnv = process.env): AgentRunner {
 export function reviewNetworkCapability(
   sandboxMode: string,
   env: NodeJS.ProcessEnv = process.env,
-): "allowlisted-proxy" | "unrestricted" | "none" {
-  if (agentRunner(env) === "openclaw") return "unrestricted";
-  return sandboxMode === "clawsweeper-review" ? "allowlisted-proxy" : "none";
+): {
+  networkCapability: "allowlisted-proxy" | "unrestricted" | "none";
+  hasGitHubToken: boolean;
+} {
+  return {
+    networkCapability:
+      agentRunner(env) === "openclaw"
+        ? "unrestricted"
+        : sandboxMode === "clawsweeper-review"
+          ? "allowlisted-proxy"
+          : "none",
+    hasGitHubToken: Boolean(env.GH_TOKEN?.trim()),
+  };
 }
 
 export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessResult {
