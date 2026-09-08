@@ -1,0 +1,291 @@
+import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { writeFakeScanner } from "../agent-input-scan-helpers.ts";
+
+for (const [strategy, changelogOnly, closeSource = false, managedLocale = false] of [
+  ["repair_contributor_branch", false],
+  ["replace_uneditable_branch", false],
+  ["repair_contributor_branch", true],
+  ["replace_uneditable_branch", false, true, false],
+  ["replace_uneditable_branch", false, true, true],
+] as const) {
+  test(
+    closeSource
+      ? `replacement publication ${managedLocale ? "preserves managed locale" : "closes ordinary superseded"} source PR`
+      : changelogOnly
+        ? "changelog-only repair delegates unchanged release notes to the edit worker"
+        : `replacement publication preserves contributor credit via ${strategy}`,
+    { skip: process.platform === "win32" },
+    () => {
+      const targetRepo = managedLocale ? "openclaw/openclaw" : "openclaw/fixture";
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-fast-rebase-"));
+      try {
+        const target = path.join(root, "target");
+        const remote = path.join(root, "remote.git");
+        const bin = path.join(root, "bin");
+        fs.mkdirSync(target);
+        fs.mkdirSync(bin);
+        writeFakeScanner(bin);
+        const codex = path.join(bin, "codex");
+        const editTrace = path.join(root, "edits.log");
+        const changelog =
+          "# Changelog\n\n## Unreleased\n\n### Fixes\n\n- Existing release entry.\n";
+        fs.writeFileSync(
+          codex,
+          `#!${process.execPath}
+const fs = require("node:fs");
+const assert = require("node:assert/strict");
+const args = process.argv.slice(2);
+const prompt = fs.readFileSync(0, "utf8");
+if (${changelogOnly}) {
+  assert.ok(!args.includes("--output-schema"), "an edit is expected");
+  assert.equal(fs.readFileSync("CHANGELOG.md", "utf8"), ${JSON.stringify(changelog)});
+  assert.match(prompt, /"changelog_required": true/);
+  fs.appendFileSync(${JSON.stringify(editTrace)}, "edit\\n");
+  fs.writeFileSync(args[args.indexOf("--output-last-message") + 1], "No repair needed.");
+  process.exit(0);
+}
+assert.ok(args.includes("--output-schema"), "only a review is expected");
+fs.writeFileSync(args[args.indexOf("--output-last-message") + 1], JSON.stringify({
+  status: "clean", summary: "Fixture review", findings: [], findings_addressed: true, evidence: []
+}));
+`,
+          { mode: 0o755 },
+        );
+        const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+        const git = (...args: string[]) =>
+          execFileSync(realGit, args, { cwd: target, encoding: "utf8" }).trim();
+        git("init", "-b", "main");
+        git("config", "user.name", "Fixture Author");
+        git("config", "user.email", "fixture@example.invalid");
+        fs.writeFileSync(path.join(target, "README.md"), "Base.\n");
+        if (changelogOnly) {
+          fs.writeFileSync(path.join(target, "CHANGELOG.md"), changelog);
+          fs.writeFileSync(path.join(target, "AGENTS.md"), "CHANGELOG.md is release-owned.\n");
+        }
+        git("add", ".");
+        git("commit", "-m", "base");
+        git("checkout", "-b", "contributor");
+        fs.writeFileSync(path.join(target, "CONTRIBUTING.md"), "Contribution.\n");
+        git("add", ".");
+        git("commit", "-m", "contributor change");
+        fs.appendFileSync(path.join(target, "CONTRIBUTING.md"), "Follow-up.\n");
+        git("commit", "-am", "contributor follow-up");
+        const sourceHead = git("rev-parse", "HEAD");
+        git("checkout", "main");
+        fs.appendFileSync(path.join(target, "README.md"), "New base.\n");
+        git("commit", "-am", "advance base");
+        const baseSha = git("rev-parse", "HEAD");
+        git("clone", "--bare", target, remote);
+        git("--git-dir", remote, "update-ref", "refs/pull/1/head", sourceHead);
+        git("remote", "add", "origin", remote);
+        git("fetch", "origin");
+        const trace = path.join(root, "commands.jsonl");
+        fs.writeFileSync(
+          path.join(bin, "git"),
+          `#!/bin/sh\nexec '${process.execPath}' '${path.join(bin, "git.cjs")}' "$@"\n`,
+          { mode: 0o755 },
+        );
+        fs.writeFileSync(
+          path.join(bin, "git.cjs"),
+          `
+const { spawnSync } = require("node:child_process");
+const { appendFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(trace)}, JSON.stringify(args) + "\\n");
+if (args.includes("push") && args.includes("https://github.com/contributor/fixture.git")) {
+  if (args.includes("--dry-run")) process.exit(0);
+  console.error("refusing to allow a GitHub App to create or update workflow .github/workflows/test.yml without workflows permission");
+  process.exit(1);
+}
+const localArgs = args.map(arg => arg === ${JSON.stringify(`https://github.com/${targetRepo}.git`)} ? ${JSON.stringify(remote)} : arg);
+if (localArgs.some(arg => /^https?:/.test(arg))) throw new Error("unexpected network Git command");
+const child = spawnSync(${JSON.stringify(realGit)}, localArgs, { stdio: "inherit", env: process.env });
+process.exit(child.status ?? 1);
+`,
+        );
+        const sourceUrl = `https://github.com/${targetRepo}/pull/1`;
+        const replacementUrl = `https://github.com/${targetRepo}/pull/2`;
+        const gh = path.join(bin, "gh.cjs");
+        const publicationTrace = path.join(root, "publication.jsonl");
+        fs.writeFileSync(
+          gh,
+          `
+const args = process.argv.slice(2);
+const fs = require("node:fs");
+const endpoint = args[1] || "";
+if (args[0] === "api" && endpoint === ${JSON.stringify(`repos/${targetRepo}/pulls/1`)}) {
+  console.log(JSON.stringify({ state: "open", user: { login: ${JSON.stringify(managedLocale ? "openclaw-mantis[bot]" : "octocat")} }, maintainer_can_modify: true, labels: [], head: { sha: ${JSON.stringify(sourceHead)}, ref: ${JSON.stringify(managedLocale ? "automation/native-app-locale-refresh" : "contributor")}, repo: { full_name: ${JSON.stringify(managedLocale ? targetRepo : "contributor/fixture")} } }, base: { ref: "main", sha: ${JSON.stringify(baseSha)}, repo: { full_name: ${JSON.stringify(targetRepo)} } } }));
+} else if (args[0] === "api" && endpoint.includes("/git/ref/")) {
+  console.error("Not Found (HTTP 404)"); process.exit(1);
+} else if (args[0] === "api" && endpoint === "graphql") {
+  console.log(JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }));
+} else if (args[0] === "api" && endpoint.includes("/comments")) {
+  console.log("[]");
+} else if (args[0] === "api" && endpoint === "users/octocat") {
+  console.log(JSON.stringify({ id: 1, login: "octocat", name: "Mona Octocat" }));
+} else if (args[0] === "pr" && args[1] === "view") {
+  console.log(JSON.stringify({ state: "OPEN", mergedAt: null, author: { login: ${JSON.stringify(managedLocale ? "app/openclaw-mantis" : "octocat")}, is_bot: ${managedLocale} }, title: "Contribution", url: args[2] === "1" ? ${JSON.stringify(sourceUrl)} : ${JSON.stringify(replacementUrl)}, body: "", headRefOid: ${JSON.stringify(sourceHead)}, statusCheckRollup: [] }));
+} else if (args[0] === "pr" && args[1] === "list") {
+  console.log(args.includes("--jq") ? "" : "[]");
+} else if (args[0] === "pr" && args[1] === "create") {
+  fs.appendFileSync(${JSON.stringify(publicationTrace)}, JSON.stringify({ kind: "pr", body: fs.readFileSync(args[args.indexOf("--body-file") + 1], "utf8") }) + "\\n");
+  console.log(${JSON.stringify(replacementUrl)});
+} else if (args[0] === "pr" && args[1] === "comment") {
+  fs.appendFileSync(${JSON.stringify(publicationTrace)}, JSON.stringify({ kind: "comment", number: args[2], body: args[args.indexOf("--body") + 1] }) + "\\n");
+} else if (args[0] === "pr" && args[1] === "close") {
+  fs.appendFileSync(${JSON.stringify(publicationTrace)}, JSON.stringify({ kind: "close", number: args[2] }) + "\\n");
+} else if (args[0] === "label" || (args[0] === "issue" && args[1] === "edit") || (args[0] === "pr" && args[1] === "edit")) {
+  console.log("");
+} else {
+  console.error("unexpected gh command", JSON.stringify(args)); process.exit(1);
+}
+`,
+        );
+        const job = path.join(root, "job.md");
+        const result = path.join(root, "result.json");
+        fs.writeFileSync(
+          job,
+          `---\nrepo: ${targetRepo}\ncluster_id: automerge-fixture-1\nmode: autonomous\nsource: pr_automerge\nallowed_actions: [fix, raise_pr]\nallow_fix_pr: true\ncandidates: ['#1']\ncanonical: ['#1']\n---\nFixture\n`,
+        );
+        fs.writeFileSync(
+          result,
+          JSON.stringify({
+            repo: targetRepo,
+            cluster_id: "automerge-fixture-1",
+            mode: "autonomous",
+            canonical_pr: sourceUrl,
+            reviewed_sha: sourceHead,
+            actions: [{ action: "fix_needed", target: sourceUrl, status: "planned" }],
+            fix_artifact: {
+              summary: "Rebase contribution",
+              pr_title: "fix: preserve contribution",
+              pr_body: "Preserve the contribution on current main.",
+              affected_surfaces: ["docs"],
+              likely_files: [changelogOnly ? "CHANGELOG.md" : "CONTRIBUTING.md"],
+              linked_refs: [sourceUrl],
+              validation_commands: ["git diff --check"],
+              credit_notes: ["Fixture contribution"],
+              changelog_required: changelogOnly,
+              repair_strategy: strategy,
+              source_prs: [sourceUrl],
+              deterministic_rebase_only: !changelogOnly,
+            },
+          }),
+        );
+        const child = spawnSync(
+          process.execPath,
+          [
+            path.resolve("dist/repair/execute-fix-artifact.js"),
+            job,
+            result,
+            "--target-dir",
+            target,
+            "--defer-publication",
+          ],
+          {
+            encoding: "utf8",
+            timeout: 120_000,
+            env: {
+              ...process.env,
+              PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+              GH_BIN: process.execPath,
+              GH_BIN_ARGS: JSON.stringify([gh]),
+              CODEX_BIN:
+                strategy === "repair_contributor_branch" && !changelogOnly
+                  ? path.join(bin, "unexpected-codex")
+                  : codex,
+              GH_TOKEN: "fixture-token",
+              GITHUB_TOKEN: "",
+              CLAWSWEEPER_ALLOW_EXECUTE: "1",
+              CLAWSWEEPER_ALLOW_FIX_PR: "1",
+              CLAWSWEEPER_ALLOWED_OWNER: "openclaw",
+              CLAWSWEEPER_MODEL: "fixture-model",
+              CLAWSWEEPER_INSTALL_TARGET_DEPS: "0",
+              CLAWSWEEPER_BRANCH_PUSH_SETTLE_SECONDS: "0",
+              CLAWSWEEPER_CLOSE_SUPERSEDED_SOURCE_PRS: closeSource ? "1" : "0",
+              ...(changelogOnly ? { CLAWSWEEPER_FIX_EDIT_ATTEMPTS: "1" } : {}),
+            },
+          },
+        );
+        const report = JSON.parse(
+          fs.readFileSync(path.join(root, "fix-execution-report.json"), "utf8"),
+        );
+        assert.equal(child.status, 0, child.stdout + child.stderr + JSON.stringify(report));
+        if (changelogOnly) {
+          assert.equal(report.status, "blocked", JSON.stringify(report));
+          assert.match(report.reason, /no target repo changes after 1 edit attempt/);
+          assert.equal(fs.readFileSync(editTrace, "utf8"), "edit\n");
+          assert.equal(fs.readFileSync(path.join(target, "CHANGELOG.md"), "utf8"), changelog);
+          assert.equal(fs.existsSync(publicationTrace), false);
+          const commands = fs
+            .readFileSync(trace, "utf8")
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line));
+          assert.equal(
+            commands.some((args) => args.includes("push") && !args.includes("--dry-run")),
+            false,
+          );
+          return;
+        }
+        if (strategy === "repair_contributor_branch") {
+          assert.match(child.stdout, /automerge deterministic rebase validated/);
+          assert.match(child.stdout, /repair branch push blocked; publishing prepared repair/);
+        }
+        assert.equal(report.status, "opened", JSON.stringify(report));
+        const published = report.actions.find((action) => action.action === "open_fix_pr");
+        assert.equal(published.pr_url, replacementUrl);
+        assert.equal(git("rev-parse", `${published.commit}^`), baseSha);
+        assert.equal(
+          git("--git-dir", remote, "rev-parse", "refs/heads/clawsweeper/automerge-fixture-1"),
+          published.commit,
+        );
+        assert.equal(
+          git("show", `${published.commit}:CONTRIBUTING.md`),
+          "Contribution.\nFollow-up.",
+        );
+        const publications = fs
+          .readFileSync(publicationTrace, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line));
+        if (closeSource) {
+          const closeout = published.superseded_source_actions[0];
+          assert.equal(closeout.status, managedLocale ? "skipped" : "executed");
+          assert.match(
+            closeout.reason,
+            managedLocale ? /repository-managed locale PR/ : /closed in favor/,
+          );
+          assert.equal(
+            publications.filter((entry) => entry.kind === "close").length,
+            managedLocale ? 0 : 1,
+          );
+          assert.equal(
+            publications.filter((entry) => entry.kind === "comment").length,
+            managedLocale ? 0 : 1,
+          );
+          return;
+        }
+        assert.match(
+          publications.find((entry) => entry.kind === "pr").body,
+          /Original contributor: @octocat\./,
+        );
+        const comments = publications.filter((entry) => entry.kind === "comment");
+        assert.equal(comments.length, 1);
+        assert.equal(comments[0].number, "1");
+        assert.match(comments[0].body, /Source PR status: left open/);
+        assert.match(
+          comments[0].body,
+          /@octocat: Co-authored-by: Mona Octocat <1\+octocat@users\.noreply\.github\.com>/,
+        );
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+}

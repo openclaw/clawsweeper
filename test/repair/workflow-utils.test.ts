@@ -28,6 +28,7 @@ import {
   writeApplyCursor,
   writeCommentSyncCursor,
 } from "../../dist/repair/workflow-utils.js";
+import { repositoryProfileFor } from "../../dist/repository-profiles.js";
 import {
   AUTOMATION_LIMITS,
   WORKER_CONFIG,
@@ -338,6 +339,10 @@ test("apply continuation blocker CLI emits workflow fields", () => {
 
 test("workflow utilities expose automation limits", () => {
   assert.equal(
+    automationLimit("audit.max_parallel_targets"),
+    AUTOMATION_LIMITS.audit.max_parallel_targets,
+  );
+  assert.equal(
     automationLimit("exact_review.concurrent_max"),
     AUTOMATION_LIMITS.exact_review.concurrent_max,
   );
@@ -431,13 +436,14 @@ test("worker scheduler lets background lanes yield to active work", () => {
   assert.equal(workerLimit("assist", { activeCritical: WORKER_CONFIG.workers.max - 2 }), 2);
 });
 
-test("worker scheduler keeps 104 slots available for steady background work", () => {
+test("worker scheduler leaves only eight slots for quiet background work", () => {
   const quietBackgroundCapacity =
     WORKER_CONFIG.workers.max -
     WORKER_CONFIG.workers.reserve_for_interactive -
     WORKER_CONFIG.workers.expansion_reserve;
-  assert.equal(quietBackgroundCapacity, 104);
-  assert.ok(quietBackgroundCapacity >= Math.floor(WORKER_CONFIG.workers.max * 0.8));
+  assert.equal(quietBackgroundCapacity, 8);
+  assert.equal(workerLimit("normal_review"), 8);
+  assert.equal(workerLimit("hot_intake"), 8);
 });
 
 test("workflow worker scheduler applies queue pressure only to background lanes", () => {
@@ -461,12 +467,13 @@ test("workflow worker scheduler applies queue pressure only to background lanes"
   }
 });
 
-test("worker config defaults imported cluster repair capacity for older configs", () => {
+test("worker config defaults omitted per-lane overrides", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-limits-"));
   const configPath = path.join(root, "automation-limits.json");
   write(
     configPath,
     JSON.stringify({
+      audit: { max_parallel_targets: 3 },
       workers: {
         max: 55,
         reserve_for_interactive: 8,
@@ -1277,459 +1284,76 @@ test("workflow utilities cap adaptive apply scan and reset on productive or unsa
 test("workflow utilities select eligible proposed close records", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
   const oldDate = "2024-01-01T00:00:00Z";
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-5.md"),
+  for (const [number, type, action, reason, createdAt = oldDate] of [
+    [5, "issue", "proposed_close", "implemented_on_main"],
+    [9, "pull_request", "proposed_close", "stale_insufficient_info"],
+    [12, "pull_request", "proposed_close", "mostly_implemented_on_main"],
+    [13, "issue", "proposed_close", "mostly_implemented_on_main"],
+    [14, "pull_request", "proposed_close", "mostly_implemented_on_main", new Date().toISOString()],
+    [15, "pull_request", "proposed_close", "low_signal_unmergeable_pr"],
+    [16, "issue", "proposed_close", "low_signal_unmergeable_pr"],
+    [17, "pull_request", "retry_pr_close_coverage_proof", "duplicate_or_superseded"],
+    [18, "pull_request", "kept_open", "duplicate_or_superseded"],
+    [19, "pull_request", "skipped_pr_close_coverage_proof", "duplicate_or_superseded"],
+    [26, "pull_request", "skipped_same_author_pair", "duplicate_or_superseded"],
+    [27, "issue", "skipped_open_closing_pr", "implemented_on_main"],
+    [28, "pull_request", "skipped_invalid_decision", "duplicate_or_superseded"],
+    [29, "pull_request", "skipped_maintainer_authored", "duplicate_or_superseded"],
+    [30, "issue", "skipped_invalid_decision", "implemented_on_main"],
+    [31, "issue", "skipped_maintainer_authored", "implemented_on_main"],
+    [36, "pull_request", "skipped_low_signal_live_guard", "low_signal_unmergeable_pr"],
+    [37, "issue", "skipped_protected_label", "implemented_on_main"],
+    [38, "pull_request", "skipped_close_exempt_label", "stalled_unproven_pr"],
+    [39, "issue", "skipped_locked_conversation", "clawhub"],
+  ] satisfies [number, string, string, string, string?][]) {
+    writeProposedRecord(root, number, type, action, reason, createdAt);
+  }
+  for (const [number, fields, createdAt = oldDate] of [
+    [20, []],
     [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: issue",
-      "decision: close",
-      "confidence: high",
-      "action_taken: proposed_close",
-      "close_reason: implemented_on_main",
-      `item_created_at: ${oldDate}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-9.md"),
+      21,
+      [
+        `work_cluster_refs: ${JSON.stringify(["Superseded by https://github.com/openclaw/openclaw/pull/400"])}`,
+      ],
+    ],
+    [22, ["pr_rating_overall: F", "pr_rating_proof: F"]],
+    [24, [`work_cluster_refs: ${JSON.stringify(["Superseded by openclaw/openclaw#400"])}`]],
+    [25, [`work_cluster_refs: ${JSON.stringify(["Superseded by #400"])}`]],
+    [23, ["pr_rating_overall: F"], new Date().toISOString()],
     [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: pull_request",
-      "decision: close",
-      "confidence: high",
-      "action_taken: proposed_close",
-      "close_reason: stale_insufficient_info",
-      `item_created_at: ${oldDate}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-12.md"),
+      32,
+      [
+        "pr_rating_overall: F",
+        "pr_rating_proof: F",
+        `work_cluster_refs: ${JSON.stringify(["Superseded by #400"])}`,
+      ],
+    ],
+    [33, ["pr_rating_overall: B", "pr_rating_proof: F", "real_behavior_proof_status: missing"]],
+    [34, ["pr_rating_overall: F", "pr_rating_proof: A", "real_behavior_proof_status: sufficient"]],
     [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: pull_request",
-      "decision: close",
-      "confidence: high",
-      "action_taken: proposed_close",
-      "close_reason: mostly_implemented_on_main",
-      `item_created_at: ${oldDate}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-13.md"),
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: issue",
-      "decision: close",
-      "confidence: high",
-      "action_taken: proposed_close",
-      "close_reason: mostly_implemented_on_main",
-      `item_created_at: ${oldDate}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-14.md"),
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: pull_request",
-      "decision: close",
-      "confidence: high",
-      "action_taken: proposed_close",
-      "close_reason: mostly_implemented_on_main",
-      `item_created_at: ${new Date().toISOString()}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-15.md"),
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: pull_request",
-      "decision: close",
-      "confidence: high",
-      "action_taken: proposed_close",
-      "close_reason: low_signal_unmergeable_pr",
-      `item_created_at: ${oldDate}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-16.md"),
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: issue",
-      "decision: close",
-      "confidence: high",
-      "action_taken: proposed_close",
-      "close_reason: low_signal_unmergeable_pr",
-      `item_created_at: ${oldDate}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-17.md"),
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: pull_request",
-      "decision: close",
-      "confidence: high",
-      "action_taken: retry_pr_close_coverage_proof",
-      "close_reason: duplicate_or_superseded",
-      `item_created_at: ${oldDate}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-18.md"),
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: pull_request",
-      "decision: close",
-      "confidence: high",
-      "action_taken: kept_open",
-      "close_reason: duplicate_or_superseded",
-      `item_created_at: ${oldDate}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-19.md"),
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: pull_request",
-      "decision: close",
-      "confidence: high",
-      "action_taken: skipped_pr_close_coverage_proof",
-      "close_reason: duplicate_or_superseded",
-      `item_created_at: ${oldDate}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-20.md"),
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: pull_request",
-      "decision: keep_open",
-      "review_status: complete",
-      "local_checkout_access: verified",
-      "local_checkout_access_source: runner_preflight_v1",
-      "action_taken: kept_open",
-      "close_reason: none",
-      `item_created_at: ${oldDate}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-21.md"),
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: pull_request",
-      "decision: keep_open",
-      "review_status: complete",
-      "local_checkout_access: verified",
-      "local_checkout_access_source: runner_preflight_v1",
-      "action_taken: kept_open",
-      "close_reason: none",
-      `item_created_at: ${oldDate}`,
-      `work_cluster_refs: ${JSON.stringify(["Superseded by https://github.com/openclaw/openclaw/pull/400"])}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-22.md"),
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: pull_request",
-      "decision: keep_open",
-      "review_status: complete",
-      "local_checkout_access: verified",
-      "local_checkout_access_source: runner_preflight_v1",
-      "action_taken: kept_open",
-      "close_reason: none",
-      "pr_rating_overall: F",
-      "pr_rating_proof: F",
-      `item_created_at: ${oldDate}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-24.md"),
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: pull_request",
-      "decision: keep_open",
-      "review_status: complete",
-      "local_checkout_access: verified",
-      "local_checkout_access_source: runner_preflight_v1",
-      "action_taken: kept_open",
-      "close_reason: none",
-      `item_created_at: ${oldDate}`,
-      `work_cluster_refs: ${JSON.stringify(["Superseded by openclaw/openclaw#400"])}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-25.md"),
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: pull_request",
-      "decision: keep_open",
-      "review_status: complete",
-      "local_checkout_access: verified",
-      "local_checkout_access_source: runner_preflight_v1",
-      "action_taken: kept_open",
-      "close_reason: none",
-      `item_created_at: ${oldDate}`,
-      `work_cluster_refs: ${JSON.stringify(["Superseded by #400"])}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-23.md"),
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: pull_request",
-      "decision: keep_open",
-      "review_status: complete",
-      "local_checkout_access: verified",
-      "local_checkout_access_source: runner_preflight_v1",
-      "action_taken: kept_open",
-      "close_reason: none",
-      "pr_rating_overall: F",
-      `item_created_at: ${new Date().toISOString()}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-26.md"),
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: pull_request",
-      "decision: close",
-      "confidence: high",
-      "action_taken: skipped_same_author_pair",
-      "close_reason: duplicate_or_superseded",
-      `item_created_at: ${oldDate}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-27.md"),
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: issue",
-      "decision: close",
-      "confidence: high",
-      "action_taken: skipped_open_closing_pr",
-      "close_reason: implemented_on_main",
-      `item_created_at: ${oldDate}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-28.md"),
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: pull_request",
-      "decision: close",
-      "confidence: high",
-      "action_taken: skipped_invalid_decision",
-      "close_reason: duplicate_or_superseded",
-      `item_created_at: ${oldDate}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-29.md"),
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: pull_request",
-      "decision: close",
-      "confidence: high",
-      "action_taken: skipped_maintainer_authored",
-      "close_reason: duplicate_or_superseded",
-      `item_created_at: ${oldDate}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-30.md"),
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: issue",
-      "decision: close",
-      "confidence: high",
-      "action_taken: skipped_invalid_decision",
-      "close_reason: implemented_on_main",
-      `item_created_at: ${oldDate}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-31.md"),
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: issue",
-      "decision: close",
-      "confidence: high",
-      "action_taken: skipped_maintainer_authored",
-      "close_reason: implemented_on_main",
-      `item_created_at: ${oldDate}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-32.md"),
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: pull_request",
-      "decision: keep_open",
-      "review_status: complete",
-      "local_checkout_access: verified",
-      "local_checkout_access_source: runner_preflight_v1",
-      "action_taken: kept_open",
-      "close_reason: none",
-      "pr_rating_overall: F",
-      "pr_rating_proof: F",
-      `item_created_at: ${oldDate}`,
-      `work_cluster_refs: ${JSON.stringify(["Superseded by #400"])}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-33.md"),
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: pull_request",
-      "decision: keep_open",
-      "review_status: complete",
-      "local_checkout_access: verified",
-      "local_checkout_access_source: runner_preflight_v1",
-      "action_taken: kept_open",
-      "close_reason: none",
-      "pr_rating_overall: B",
-      "pr_rating_proof: F",
-      "real_behavior_proof_status: missing",
-      `item_created_at: ${oldDate}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-34.md"),
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: pull_request",
-      "decision: keep_open",
-      "review_status: complete",
-      "local_checkout_access: verified",
-      "local_checkout_access_source: runner_preflight_v1",
-      "action_taken: kept_open",
-      "close_reason: none",
-      "pr_rating_overall: F",
-      "pr_rating_proof: A",
-      "real_behavior_proof_status: sufficient",
-      `item_created_at: ${oldDate}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-35.md"),
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: pull_request",
-      "decision: keep_open",
-      "review_status: complete",
-      "local_checkout_access: verified",
-      "local_checkout_access_source: runner_preflight_v1",
-      "action_taken: kept_open",
-      "close_reason: none",
-      "pr_rating_overall: F",
-      "pr_rating_proof: A",
-      "real_behavior_proof_status: insufficient",
-      `item_created_at: ${oldDate}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  write(
-    path.join(root, "records/openclaw-openclaw/items/openclaw-openclaw-36.md"),
-    [
-      "---",
-      "repository: openclaw/openclaw",
-      "type: pull_request",
-      "decision: close",
-      "confidence: high",
-      "action_taken: skipped_low_signal_live_guard",
-      "close_reason: low_signal_unmergeable_pr",
-      `item_created_at: ${oldDate}`,
-      "---",
-      "",
-    ].join("\n"),
-  );
-  writeProposedRecord(root, 37, "issue", "skipped_protected_label", "implemented_on_main", oldDate);
-  writeProposedRecord(
-    root,
-    38,
-    "pull_request",
-    "skipped_close_exempt_label",
-    "stalled_unproven_pr",
-    oldDate,
-  );
-  writeProposedRecord(root, 39, "issue", "skipped_locked_conversation", "clawhub", oldDate);
+      35,
+      ["pr_rating_overall: F", "pr_rating_proof: A", "real_behavior_proof_status: insufficient"],
+    ],
+  ] satisfies [number, string[], string?][]) {
+    write(
+      path.join(root, `records/openclaw-openclaw/items/openclaw-openclaw-${number}.md`),
+      [
+        "---",
+        "repository: openclaw/openclaw",
+        "type: pull_request",
+        "decision: keep_open",
+        "review_status: complete",
+        "local_checkout_access: verified",
+        "local_checkout_access_source: runner_preflight_v1",
+        "action_taken: kept_open",
+        "close_reason: none",
+        `item_created_at: ${createdAt}`,
+        ...fields,
+        "---",
+        "",
+      ].join("\n"),
+    );
+  }
 
   const selected = withCwd(root, () =>
     proposedItemNumbers({
@@ -3647,36 +3271,82 @@ test("manual all-item cursors still include recently synchronized issues", () =>
   }
 });
 
-test("comment synchronization preserves canonical dotted and underscored repository slugs", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));
-  const targetRepo = "steipete/tool.v2_debug";
-  const targetSlug = "steipete-tool.v2_debug";
-  const cursorPath = path.join(root, `results/comment-sync-cursors/${targetSlug}.json`);
-  const reportPath = path.join(root, `records/${targetSlug}/items/${targetSlug}-41.md`);
-  try {
+for (const [input, expectedSlug] of [
+  ["openclaw/some.repo", "openclaw-some.repo"],
+  ["openclaw/some_repo", "openclaw-some_repo"],
+  ["OpenClaw/Some.Repo_Debug", "openclaw-some.repo_debug"],
+  ["openclaw/some-repo", "openclaw-some-repo"],
+  ["openclaw/some--repo", "openclaw-some--repo"],
+  ["openclaw/-some-", "openclaw--some-"],
+] as const) {
+  test(`workflow record lookup preserves the writer slug for ${input}`, (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-slug-"));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const profile = repositoryProfileFor(input);
+    assert.equal(profile.slug, expectedSlug);
+    const checkedAt = "2026-01-02T00:00:00Z";
+    const record = [
+      "---",
+      `repository: ${profile.targetRepo}`,
+      "type: issue",
+      "review_status: complete",
+      "item_snapshot_hash: abc123",
+      "decision: close",
+      "confidence: high",
+      "action_taken: proposed_close",
+      "close_reason: implemented_on_main",
+      "item_created_at: 2024-01-01T00:00:00Z",
+      `apply_checked_at: ${checkedAt}`,
+      "---",
+      "",
+    ].join("\n");
+    const repoRoot = path.join(root, "records", profile.slug);
+    const item = path.join(repoRoot, "items", "41.md");
+    write(item, record);
     write(
-      reportPath,
-      [
-        "---",
-        `repository: ${targetRepo}`,
-        "type: issue",
-        "review_status: complete",
-        "item_snapshot_hash: abc123",
-        "action_taken: kept_open",
-        "---",
-        "",
-      ].join("\n"),
+      path.join(repoRoot, "items", "42.md"),
+      record.replace("confidence: high", "confidence: low"),
     );
-    const result = withCwd(root, () =>
-      commentSyncBatchOutput({ targetRepo, applyKind: "all", batchSize: 40, cursorPath }),
-    );
-
-    assert.equal(result.item_numbers, "41");
-    assert.equal(result.next_cursor, "41");
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
+    const options = {
+      targetRepo: profile.targetRepo,
+      applyKind: "all",
+      applyCloseReasons: "all",
+      staleMinAgeDays: 60,
+      minAgeDays: 0,
+      minAgeMinutes: null,
+    };
+    withCwd(root, () => {
+      assert.deepEqual(proposedItemNumbers(options), [41]);
+      const inventory = proposedItemInventory(options);
+      assert.equal(inventory.eligible_total, 1);
+      assert.equal(inventory.inconsistent_or_stale, 1);
+      assert.equal(
+        commentSyncBatchOutput({
+          targetRepo: profile.targetRepo,
+          applyKind: "all",
+          batchSize: 40,
+          cursorPath: path.join(root, "comment-cursor.json"),
+        }).item_numbers,
+        "41,42",
+      );
+      const report = path.join(root, "apply-report.json");
+      const cursor = path.join(root, "apply-cursor.json");
+      write(report, JSON.stringify([{ number: 41, action: "kept_open" }]));
+      for (const section of ["items", "closed"]) {
+        if (section === "closed") {
+          fs.mkdirSync(path.join(repoRoot, section));
+          fs.renameSync(item, path.join(repoRoot, section, "41.md"));
+        }
+        writeApplyCursor(cursor, report, input);
+        assert.equal(
+          JSON.parse(fs.readFileSync(cursor, "utf8")).next_after_apply_checked_at,
+          checkedAt,
+          section,
+        );
+      }
+    });
+  });
+}
 
 test("fresh review priority crosses an existing maintenance cursor", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-workflow-"));

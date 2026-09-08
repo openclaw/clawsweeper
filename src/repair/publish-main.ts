@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { sha256 } from "../content-hash.js";
+import { requiredCliValue } from "../clawsweeper-args.js";
 import { createHash } from "node:crypto";
 import {
   appendFileSync,
@@ -796,10 +798,6 @@ function collectRecordFiles(root: string, relativePath: string, files: Map<strin
   }
 }
 
-function sha256(content: string): string {
-  return createHash("sha256").update(content).digest("hex");
-}
-
 function readContainedRegularFile(root: string, path: string): string {
   const realRoot = realpathSync(root);
   const candidate = resolve(realRoot, path);
@@ -844,7 +842,7 @@ function parseArgs(argv: readonly string[]): Args {
         "--rebase-strategy",
       ].includes(arg)
     ) {
-      normalized.push(`${arg}=${requiredValue(argv, ++index, arg)}`);
+      normalized.push(`${arg}=${requiredCliValue(argv, ++index, arg)}`);
     } else throw new Error(`Unknown argument: ${arg}`);
   }
   const { values } = parseNodeArgs({
@@ -875,12 +873,6 @@ function parseArgs(argv: readonly string[]): Args {
   if (!parsed.message) throw new Error("--message is required");
   if (parsed.paths.length === 0) throw new Error("At least one --path is required");
   return parsed;
-}
-
-function requiredValue(argv: readonly string[], index: number, flag: string): string {
-  const value = argv[index];
-  if (!value || value.startsWith("--")) throw new Error(`${flag} requires a value`);
-  return value;
 }
 
 function parsePositiveInt(value: string, flag: string): number {

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { summarizeExactReviewHandoff } from "../dashboard/exact-review-health.ts";
 import {
   exactReviewPrioritizePublicationItems,
   exactReviewQueueActivePublicationCount,
@@ -42,6 +43,76 @@ function queueStatsInvariants(stats: ReturnType<typeof exactReviewQueueStats>) {
   const { bay_projection: bayProjection, ...invariants } = stats;
   return { ...invariants, bay_projection: bayProjectionInvariants(bayProjection) };
 }
+
+test("handoff public entries preserve Date.now call counts", (t) => {
+  let calls = 0;
+  t.mock.method(Date, "now", () => {
+    calls += 1;
+    return NOW;
+  });
+  const count = (run: () => unknown) => {
+    calls = 0;
+    run();
+    return calls;
+  };
+  const summarize = (now?: number) =>
+    summarizeExactReviewHandoff({
+      items: [],
+      ...(now === undefined ? {} : { now }),
+      capacity: 1,
+      dispatchLeaseMs: 600_000,
+      executionLeaseMs: 7_800_000,
+    });
+  const state: ExactReviewQueueState = { items: {} };
+
+  assert.deepEqual(
+    {
+      summarize: {
+        finite: count(() => summarize(NOW)),
+        invalid: count(() => summarize(Number.NaN)),
+        omitted: count(() => summarize()),
+      },
+      readModel: {
+        finite: count(() => exactReviewQueueStats(state, NOW)),
+        invalid: count(() => exactReviewQueueStats(state, Number.NaN)),
+        omitted: count(() => exactReviewQueueStats(state)),
+      },
+    },
+    {
+      summarize: { finite: 1, invalid: 1, omitted: 2 },
+      readModel: { finite: 2, invalid: 2, omitted: 3 },
+    },
+  );
+});
+
+test("single-census handoff preserves its advancing-clock sequence", (t) => {
+  const ticks = [Date.parse("2026-08-11T18:00:01.000Z"), Date.parse("2026-08-11T18:00:02.000Z")];
+  let tick = 0;
+  t.mock.method(Date, "now", () => ticks[Math.min(tick++, ticks.length - 1)]!);
+  const state: ExactReviewQueueState = {
+    items: {
+      "openclaw/openclaw#1": {
+        key: "openclaw/openclaw#1",
+        state: "pending",
+        createdAt: Number.NaN,
+        updatedAt: Number.NaN,
+        nextAttemptAt: ticks[1]! + 60_000,
+        decision: {
+          targetRepo: "openclaw/openclaw",
+          itemNumber: 0,
+        },
+      },
+    },
+  };
+
+  tick = 0;
+  const newStats = exactReviewQueueStats(state, Number.NaN);
+
+  assert.equal(newStats.handoff_health.phases.pending.oldest_at, new Date(ticks[0]!).toISOString());
+  assert.equal(newStats.handoff_health.phases.pending.oldest_age_seconds, 1);
+  assert.equal(newStats.handoff_health.observed_at, new Date(ticks[1]!).toISOString());
+  assert.equal(tick, 2);
+});
 
 test("single-census read model is property-equivalent to the extracted implementation", () => {
   for (const seed of SEEDS) {

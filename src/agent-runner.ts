@@ -38,6 +38,26 @@ export function agentRunner(env: NodeJS.ProcessEnv = process.env): AgentRunner {
   throw new Error(`Invalid CLAWSWEEPER_RUNNER: ${value}. Expected "codex" or "openclaw".`);
 }
 
+export function reviewNetworkCapability(
+  sandboxMode: string,
+  env: NodeJS.ProcessEnv = process.env,
+): {
+  networkCapability: "allowlisted-proxy" | "unrestricted" | "none";
+  hasGitHubToken: boolean;
+} {
+  const runner = agentRunner(env);
+  return {
+    networkCapability:
+      runner === "openclaw"
+        ? "unrestricted"
+        : sandboxMode === "clawsweeper-review"
+          ? "allowlisted-proxy"
+          : "none",
+    // OpenClaw's final child allowlist strips workflow credentials, including GH_TOKEN.
+    hasGitHubToken: runner === "codex" && Boolean(env.GH_TOKEN?.trim()),
+  };
+}
+
 export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessResult {
   if (options.diagnosticPromptPath) rmSync(options.diagnosticPromptPath, { force: true });
   const runner = agentRunner(options.env);

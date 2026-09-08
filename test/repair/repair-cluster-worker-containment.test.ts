@@ -106,14 +106,17 @@ test("issue PR execution is pinned to sol xhigh without changing planning", () =
   const executeJob = workflow.slice(executeJobIndex);
 
   assert.ok(executeJobIndex >= 0);
-  assert.match(planningJob, /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ secrets\.CLAWSWEEPER_MODEL \}\}/);
+  assert.match(
+    planningJob,
+    /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ vars\.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets\.CLAWSWEEPER_MODEL \|\| '' \}\}/,
+  );
   assert.match(
     executeJob,
     /CLAWSWEEPER_CODEX_REASONING_EFFORT: \$\{\{ contains\(inputs\.job, '\/inbox\/issue-'\) && \(vars\.CLAWSWEEPER_FIX_PR_REASONING_EFFORT \|\| 'xhigh'\)/,
   );
   assert.match(
     executeJob,
-    /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ contains\(inputs\.job, '\/inbox\/issue-'\) && \(vars\.CLAWSWEEPER_FIX_PR_MODEL \|\| 'gpt-5\.6-sol'\) \|\| secrets\.CLAWSWEEPER_MODEL \}\}/,
+    /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ vars\.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && \(contains\(inputs\.job, '\/inbox\/issue-'\) && \(vars\.CLAWSWEEPER_FIX_PR_MODEL \|\| 'gpt-5\.6-sol'\) \|\| secrets\.CLAWSWEEPER_MODEL\) \|\| '' \}\}/,
   );
   assert.match(
     executeJob,

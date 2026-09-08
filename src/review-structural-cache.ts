@@ -1,4 +1,6 @@
-import { createHash } from "node:crypto";
+import { recordOrEmpty as asRecord } from "./value-coerce.js";
+import { sha256 } from "./content-hash.js";
+import { escapeRegExp } from "./clawsweeper-text.js";
 
 import { REVIEW_CACHE_MAX_AGE_DAYS } from "./scheduler-policy.js";
 import { stableJsonCodeUnit as stableJson } from "./stable-json.js";
@@ -331,12 +333,6 @@ export function reviewStructuralQuery(kind: ReviewStructuralKind): string {
   `;
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
 function stringOrUndefined(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
@@ -478,10 +474,6 @@ function relatedItemReference(value: unknown, repo: string, currentNumber: numbe
     if (Number.isInteger(number) && number > 0 && number !== currentNumber) return true;
   }
   return false;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function commentRelationSensitivity(
@@ -730,10 +722,6 @@ export function reviewStructuralRecordFromGraphql(
     reviewPolicy: options.reviewPolicy,
     reviewModel: options.reviewModel,
   });
-}
-
-function sha256(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
 }
 
 function compareCodeUnits(left: string, right: string): number {

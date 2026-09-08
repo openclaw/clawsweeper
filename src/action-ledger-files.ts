@@ -156,17 +156,8 @@ export function readDirectoryEntriesNoFollow(
 }
 
 export function writeUtf8FileExclusiveNoFollow(target: SafeWriteTarget, content: string): void {
-  writeUtf8FileExclusiveNoFollowWithIdentity(target, content, false);
-}
-
-function writeUtf8FileExclusiveNoFollowWithIdentity(
-  target: SafeWriteTarget,
-  content: string,
-  cleanupOnFailure: boolean,
-): FileIdentity {
   const parentChain = captureSafeParentChain(target, true);
   let descriptor: number | undefined;
-  let createdIdentity: FileIdentity | undefined;
   try {
     assertStableParentChain(target, parentChain);
     descriptor = fs.openSync(
@@ -174,43 +165,16 @@ function writeUtf8FileExclusiveNoFollowWithIdentity(
       fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | NO_FOLLOW,
       0o600,
     );
-    createdIdentity = descriptorIdentity(descriptor, target.label);
+    const createdIdentity = descriptorIdentity(descriptor, target.label);
     assertStableParentChain(target, parentChain);
     assertPathMatchesIdentity(target.path, createdIdentity, target.label);
     fs.writeFileSync(descriptor, content, "utf8");
     fs.fsyncSync(descriptor);
     assertStableParentChain(target, parentChain);
     assertPathMatchesIdentity(target.path, createdIdentity, target.label);
-  } catch (error) {
-    if (descriptor !== undefined) {
-      if (createdIdentity === undefined) {
-        try {
-          createdIdentity = descriptorIdentity(descriptor, target.label);
-        } catch {
-          // Preserve the original failure; cleanup below remains best effort.
-        }
-      }
-      fs.closeSync(descriptor);
-      descriptor = undefined;
-    }
-    if (cleanupOnFailure && createdIdentity !== undefined) {
-      try {
-        removeFileNoFollow(target, createdIdentity);
-      } catch (cleanupError) {
-        if (!isNotFoundError(cleanupError)) {
-          // oxlint-disable-next-line preserve-caught-error -- AggregateError retains both failures.
-          throw new AggregateError(
-            [error, cleanupError],
-            `failed to clean up ${target.label} after lock creation failure`,
-          );
-        }
-      }
-    }
-    throw error;
   } finally {
     if (descriptor !== undefined) fs.closeSync(descriptor);
   }
-  return createdIdentity!;
 }
 
 export function tryAcquireUtf8FileLockNoFollow(
@@ -311,7 +275,6 @@ function claimAndRemoveUtf8FileNoFollow(
     `${path.basename(target.path)}.${process.pid}.${randomUUID()}.reclaim`,
   );
   let descriptor: number | undefined;
-  let removed = false;
   try {
     assertStableParentChain(target, parentChain);
     const pathIdentity = fileIdentity(target.path, `${target.label} stale lock`);
@@ -343,11 +306,11 @@ function claimAndRemoveUtf8FileNoFollow(
     assertStableParentChain(target, parentChain);
     const claimedIdentity = fileIdentity(claimed.path, `${target.label} stale lock claim`);
     if (!fileIdentitiesEqual(claimedIdentity, openedIdentity)) {
-      restoreClaimedFileNoFollow(claimed, target, claimedIdentity);
+      linkFileExclusiveNoFollow(claimed, target);
+      removeFileNoFollow(claimed, claimedIdentity);
       return "replaced";
     }
     removeFileNoFollow(claimed, openedIdentity);
-    removed = true;
   } catch (error) {
     if (isNotFoundError(error)) return "missing";
     if (error instanceof FileIdentityMismatchError) return "replaced";
@@ -355,7 +318,6 @@ function claimAndRemoveUtf8FileNoFollow(
   } finally {
     if (descriptor !== undefined) fs.closeSync(descriptor);
   }
-  if (!removed) return "replaced";
   try {
     fileIdentity(target.path, `${target.label} successor lock`);
     return "replaced";
@@ -363,15 +325,6 @@ function claimAndRemoveUtf8FileNoFollow(
     if (isNotFoundError(error)) return "removed";
     throw error;
   }
-}
-
-function restoreClaimedFileNoFollow(
-  claimed: SafeWriteTarget,
-  target: SafeWriteTarget,
-  identity: FileIdentity,
-): void {
-  linkFileExclusiveNoFollow(claimed, target);
-  removeFileNoFollow(claimed, identity);
 }
 
 export function processIncarnationIdentitySha256(

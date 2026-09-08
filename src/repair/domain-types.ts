@@ -1,15 +1,6 @@
-import type { JsonArray, JsonObject, JsonValue } from "./json-types.js";
+import type { JsonArray, JsonObject } from "./json-types.js";
 
-export type RepairMode = "plan" | "execute" | "autonomous";
-
-export type RepairActionStatus =
-  | "blocked"
-  | "executed"
-  | "failed"
-  | "opened"
-  | "planned"
-  | "pushed"
-  | "skipped";
+type RepairMode = "plan" | "execute" | "autonomous";
 
 export type RepairJobFrontmatter = JsonObject & {
   allowed_actions: JsonArray;
@@ -32,20 +23,6 @@ export type RepairJobFrontmatter = JsonObject & {
   require_fix_before_close?: boolean;
   require_human_for?: JsonArray;
   security_sensitive?: boolean;
-};
-
-export type RepairAction = JsonObject & {
-  action?: string;
-  reason?: string;
-  status?: RepairActionStatus | string;
-  target?: JsonValue;
-};
-
-export type RepairResult = JsonObject & {
-  actions?: RepairAction[];
-  cluster_id?: string;
-  mode?: RepairMode;
-  repo?: string;
 };
 
 export function isRepairMode(value: unknown): value is RepairMode {

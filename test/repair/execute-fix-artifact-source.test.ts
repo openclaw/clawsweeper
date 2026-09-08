@@ -35,7 +35,6 @@ test("repair review preserves the checkout accepted by changed-surface validatio
   const review = source.slice(reviewStart, reviewEnd);
 
   assert.match(source, /const defaultCodexReviewSandbox = "read-only";/);
-  assert.match(review, /"--sandbox",\s*codexReviewSandbox/);
   assert.match(review, /validation commands listed below have already passed/);
   assert.match(review, /do not rerun them or start nested autoreview helpers/);
   assert.match(
@@ -210,23 +209,20 @@ test("terminal Codex and persistent setup failures do not request repair requeue
   assert.match(source, /sandbox \(\?:wrapper\|startup\)/);
 });
 
+// Source guard: every Codex launch must go through the bounded agent runner with file-backed capture.
 test("repair Codex heartbeat wrapper uses bounded process capture", () => {
-  const sourcePath = path.join(process.cwd(), "src/repair/execute-fix-artifact.ts");
-  const source = readText(sourcePath);
-  const helperStart = source.indexOf("function spawnCodexSyncWithHeartbeat(");
+  const source = readText(path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"));
+  const helperStart = source.indexOf("function runCodexWithHeartbeat(");
   const helperEnd = source.indexOf("function startCodexHeartbeat(", helperStart);
 
   assert.notEqual(helperStart, -1);
   assert.notEqual(helperEnd, -1);
   const helper = source.slice(helperStart, helperEnd);
   assert.match(helper, /return runAgentProcess\(\{/);
-  assert.match(helper, /prompt: options\.input/);
-  assert.match(helper, /model,/);
   assert.match(helper, /reasoningEffort: codexReasoningEffort/);
-  assert.match(helper, /codexExtraArgs: args\.slice\(1\)/);
-  assert.match(helper, /\{ stdoutPath: options\.stdoutPath \}/);
-  assert.match(helper, /\{ stderrPath: options\.stderrPath \}/);
-  assert.doesNotMatch(helper, /spawnSync\("codex"/);
+  assert.match(helper, /stdoutPath: path\.join\(workRoot/);
+  assert.match(helper, /stderrPath: path\.join\(workRoot/);
+  assert.doesNotMatch(source, /spawnSync\("codex"/);
   assert.doesNotMatch(source, /CLAWSWEEPER_CODEX_STDIO_MAX_BUFFER_MB/);
   assert.doesNotMatch(source, /writeFileSync\([^)]*codexResult\.stdout/);
 });

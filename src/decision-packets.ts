@@ -1,3 +1,9 @@
+import { escapeRegExp } from "./clawsweeper-text.js";
+import {
+  requireRecord as objectValue,
+  requireString as stringValue,
+  rejectUnexpectedKeys,
+} from "./value-coerce.js";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, relative } from "node:path";
@@ -354,27 +360,6 @@ function parseMaintainerDecisionOwner(value: unknown, path: string): MaintainerD
   };
 }
 
-function objectValue(value: unknown, path: string): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${path} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
-function rejectUnexpectedKeys(
-  record: Record<string, unknown>,
-  allowed: ReadonlySet<string>,
-  path: string,
-): void {
-  const unexpected = Object.keys(record).filter((key) => !allowed.has(key));
-  if (unexpected.length) throw new Error(`${path} has unexpected keys: ${unexpected.join(", ")}`);
-}
-
-function stringValue(value: unknown, path: string): string {
-  if (typeof value !== "string") throw new Error(`${path} must be a string`);
-  return value;
-}
-
 function booleanValue(value: unknown, path: string): boolean {
   if (typeof value !== "boolean") throw new Error(`${path} must be a boolean`);
   return value;
@@ -484,8 +469,4 @@ function repoRelativePath(repoRoot: string, path: string): string {
 function reportNumberFromPath(reportPath: string): number | null {
   const match = basename(reportPath).match(/(?:^|-)([1-9]\d*)\.md$/);
   return numberValue(match?.[1]);
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

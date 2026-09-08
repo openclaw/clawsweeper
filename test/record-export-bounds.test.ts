@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import path from "node:path";
 import test from "node:test";
+
+import { exportWorkerRecords } from "../scripts/worker-records.ts";
 
 import {
   EXACT_REVIEW_CANONICAL_CHUNK_BYTES,
@@ -27,7 +30,7 @@ const EXPORT_PATH = "/internal/state/records/export";
 const REPO_SLUG = "openclaw-openclaw";
 const SECRET = "bounded-record-export-secret";
 const EXPECTED_SOURCE_BYTE_BUDGET = 2 * 1024 * 1024;
-const EXPECTED_RECORD_WORK_BUDGET = 50;
+const EXPECTED_RECORD_WORK_BUDGET = 200;
 const proofPath = process.env.RECORD_EXPORT_PROOF_PATH;
 const behaviorProof: {
   claim: string;
@@ -41,6 +44,7 @@ const behaviorProof: {
     reconstructionQueries: number;
   }>;
   manifestParity: boolean;
+  hydration: { records: number; requests: number; pageSizes: number[]; limits: number[] } | null;
   expectedManifest: Array<{ path: string; digest: string }>;
   materializedManifest: Array<{ path: string; digest: string }>;
   oversizedFirst: {
@@ -66,6 +70,7 @@ const behaviorProof: {
   limits: "local controlled fixture; no production Cloudflare CPU claim",
   pages: [],
   manifestParity: false,
+  hydration: null,
   expectedManifest: [],
   materializedManifest: [],
   oversizedFirst: null,
@@ -104,6 +109,7 @@ async function exportHarness() {
     env,
   );
   assert.equal(initialized.status, 200);
+  storage.sql.setBindingLimit(100);
   storage.sql.resetQueryHistory();
   return { env, storage };
 }
@@ -216,15 +222,32 @@ function reconstructedRecords(
   storage: MemoryDurableStorage,
   recordsByIdentity: ReadonlyMap<string, FixtureRecord>,
 ) {
-  const queries = storage.sql.queriesMatching(
-    /SELECT content, (?:digest, )?byte_length, chunk_count(?:, deleted, revision, updated_at)?\s+FROM (?:exact_review_canonical_records|exact_review_record_backfill)/,
+  assert.equal(
+    storage.sql.queriesMatching(
+      /SELECT content, (?:digest, )?byte_length, chunk_count(?:, deleted, revision, updated_at)?\s+FROM (?:exact_review_canonical_records|exact_review_record_backfill)/,
+    ).length,
+    0,
+    "export must not perform per-record source reads",
   );
-  return queries.map(({ bindings }) => {
-    const identity = `${String(bindings[1])}/${String(bindings[2])}`;
-    const record = recordsByIdentity.get(identity);
-    assert.ok(record, `unexpected reconstruction query for ${identity}`);
-    return record;
+  const queries = sourceBatchQueries(storage);
+  assert.equal(queries.length, 1);
+  return queries.flatMap(({ bindings }) => {
+    const identities = [1, 3].flatMap(
+      (index) => JSON.parse(String(bindings[index])) as Array<[string, string | number]>,
+    );
+    return identities.map(([section, id]) => {
+      const identity = `${section}/${id}`;
+      const record = recordsByIdentity.get(identity);
+      assert.ok(record, `unexpected reconstruction query for ${identity}`);
+      return record;
+    });
   });
+}
+
+function sourceBatchQueries(storage: MemoryDurableStorage) {
+  return storage.sql.queriesMatching(
+    /SELECT section, CAST\(item_id AS TEXT\) AS record_id, content/,
+  );
 }
 
 function exportResponse(
@@ -261,10 +284,97 @@ async function exportPage(
   }>;
 }
 
+test("client hydrates 800 records through signed HTTP and SQLite in four requests", async (t) => {
+  const { env, storage } = await exportHarness();
+  const fixtures = Array.from({ length: 800 }, (_, index) =>
+    fixtureRecord({
+      source: "canonical",
+      section: "items",
+      id: String(index + 1),
+      content: `record-${index + 1}`,
+      storeRevision: index + 1,
+    }),
+  );
+  for (const record of fixtures) seedFixtureRecord(storage, record);
+  const pages: Array<{
+    cursor: number;
+    limit: number;
+    records: number;
+    nextCursor: number | null;
+  }> = [];
+  const server = createServer(async (incoming, outgoing) => {
+    try {
+      const chunks: Buffer[] = [];
+      for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
+      const body = Buffer.concat(chunks).toString("utf8");
+      const headers = new Headers();
+      for (const [key, value] of Object.entries(incoming.headers)) {
+        if (value !== undefined) headers.set(key, Array.isArray(value) ? value.join(", ") : value);
+      }
+      const response = await worker.fetch(
+        new Request(`http://localhost${incoming.url}`, {
+          method: incoming.method,
+          headers,
+          body,
+        }),
+        env,
+      );
+      const text = await response.text();
+      const page = JSON.parse(text);
+      const request = JSON.parse(body);
+      pages.push({
+        cursor: request.cursor,
+        limit: request.limit,
+        records: page.records?.length ?? 0,
+        nextCursor: page.nextCursor,
+      });
+      outgoing.writeHead(response.status, Object.fromEntries(response.headers));
+      outgoing.end(text);
+    } catch (error) {
+      outgoing.writeHead(500);
+      outgoing.end(String(error));
+    }
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(
+    () =>
+      new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      ),
+  );
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const snapshot = await exportWorkerRecords({
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    webhookSecret: SECRET,
+    repoSlug: REPO_SLUG,
+  });
+  assert.equal(snapshot.revision, 800);
+  assert.deepEqual(
+    snapshot.records
+      .toSorted((a, b) => Number(a.id) - Number(b.id))
+      .map(({ id, content, digest }) => ({ id, content, digest })),
+    fixtures.map(({ id, content, digest }) => ({ id, content, digest })),
+  );
+  assert.deepEqual(pages, [
+    { cursor: 0, limit: 200, records: 200, nextCursor: 200 },
+    { cursor: 200, limit: 200, records: 200, nextCursor: 400 },
+    { cursor: 400, limit: 200, records: 200, nextCursor: 600 },
+    { cursor: 600, limit: 200, records: 200, nextCursor: null },
+  ]);
+  assert.equal(sourceBatchQueries(storage).length, 4);
+  behaviorProof.hydration = {
+    records: snapshot.records.length,
+    requests: pages.length,
+    pageSizes: pages.map((page) => page.records),
+    limits: pages.map((page) => page.limit),
+  };
+});
+
 test("signed record export bounds reconstruction work and source bytes while paginating exactly", async () => {
   const { env, storage } = await exportHarness();
   const fixtures: FixtureRecord[] = [];
-  for (let index = 1; index <= 55; index += 1) {
+  for (let index = 1; index <= 205; index += 1) {
     const canonical = index % 2 === 1;
     fixtures.push(
       fixtureRecord({
@@ -276,13 +386,13 @@ test("signed record export bounds reconstruction work and source bytes while pag
       }),
     );
   }
-  for (let index = 56; index <= 58; index += 1) {
+  for (let index = 206; index <= 208; index += 1) {
     fixtures.push(
       fixtureRecord({
         source: index % 2 === 0 ? "canonical" : "backfill",
         section: index % 2 === 0 ? "items" : "commits",
         id: index % 2 === 0 ? String(index) : index.toString(16).padStart(40, "0"),
-        content: String.fromCharCode(65 + index).repeat(1_600_000),
+        content: String.fromCharCode(65 + (index % 26)).repeat(1_600_000),
         storeRevision: index,
       }),
     );
@@ -314,7 +424,7 @@ test("signed record export bounds reconstruction work and source bytes while pag
       nextCursor: page.nextCursor,
       records: page.records.length,
       sourceBytes: reconstructedBytes,
-      reconstructionQueries: reconstructed.length,
+      reconstructionQueries: sourceBatchQueries(storage).length,
     });
     for (const record of page.records) {
       assert.equal(record.deleted, false);
@@ -326,7 +436,7 @@ test("signed record export bounds reconstruction work and source bytes while pag
     nextCursor = page.nextCursor;
   }
 
-  assert.deepEqual(pageSizes, [50, 6, 1, 1]);
+  assert.deepEqual(pageSizes, [200, 6, 1, 1]);
   assert.deepEqual(
     received.map(({ section, id, digest }) => ({ section, id, digest })),
     fixtures.map(({ section, id, digest }) => ({ section, id, digest })),
@@ -356,7 +466,7 @@ test("signed record export does not advertise an empty page at the record bounda
     );
   }
 
-  for (let index = EXPECTED_RECORD_WORK_BUDGET + 1; index <= 150; index += 1) {
+  for (let index = EXPECTED_RECORD_WORK_BUDGET + 1; index <= 300; index += 1) {
     seedFixtureRecord(
       storage,
       fixtureRecord({
@@ -393,6 +503,34 @@ test("signed record export does not advertise an empty page at the record bounda
     (row) => String(row.detail),
   ).join("\n");
   assert.match(plan, /exact_review_record_export_by_repo_section_revision/);
+  const batch = sourceBatchQueries(storage)[0]!;
+  const sourcePlan = Array.from(
+    storage.sql.exec(`EXPLAIN QUERY PLAN ${batch.query}`, ...batch.bindings),
+    (row) => String(row.detail),
+  ).join("\n");
+  assert.match(
+    sourcePlan,
+    /SEARCH exact_review_canonical_records .*\(repo_slug=\? AND section=\? AND item_id=\?\)/,
+  );
+  assert.match(
+    sourcePlan,
+    /SEARCH exact_review_record_backfill .*\(repo_slug=\? AND section=\? AND record_id=\?\)/,
+  );
+
+  const defaultResponse = await worker.fetch(
+    signedStateAppendRequest(EXPORT_PATH, { repoSlug: REPO_SLUG, sections: ["items"] }, SECRET),
+    env,
+  );
+  assert.equal(defaultResponse.status, 200);
+  const defaultPage = (await defaultResponse.json()) as {
+    records: unknown[];
+    nextCursor: number | null;
+    limit: number;
+  };
+  assert.equal(defaultPage.limit, 200);
+  assert.equal(defaultPage.records.length, 200);
+  assert.equal(defaultPage.nextCursor, null);
+  assert.equal((await exportResponse(env, 0, ["items"], 201)).status, 400);
 });
 
 test("signed record export preserves historical backfill items and canonical tombstones", async () => {
@@ -452,7 +590,8 @@ test("signed record export preserves historical backfill items and canonical tom
   ]);
   assert.equal(first.nextCursor, 1);
   assert.equal(storage.sql.queriesMatching(/FROM exact_review_record_backfill\s/).length, 1);
-  assert.equal(storage.sql.queriesMatching(/FROM exact_review_canonical_records\s/).length, 0);
+  assert.equal(sourceBatchQueries(storage).length, 1);
+  assert.equal(sourceBatchQueries(storage)[0]?.bindings[1], "[]");
 
   storage.sql.resetQueryHistory();
   const second = await exportPage(env, first.nextCursor, ["items"]);
@@ -511,7 +650,7 @@ test("signed record export returns one oversized serialized record and advances"
     sourceBytes: firstReconstructed[0]!.byteLength,
     serializedBytes: new TextEncoder().encode(JSON.stringify(first.records[0])).byteLength,
     records: first.records.length,
-    reconstructionQueries: firstReconstructed.length,
+    reconstructionQueries: sourceBatchQueries(storage).length,
     nextCursor: first.nextCursor,
   };
 
@@ -520,6 +659,60 @@ test("signed record export returns one oversized serialized record and advances"
   assert.equal(second.records.length, 1);
   assert.equal(second.records[0]?.id, "2");
   assert.equal(second.nextCursor, null);
+});
+
+test("signed record export stops on serialized bytes and resumes at the unreturned record", async () => {
+  const { env, storage } = await exportHarness();
+  const fixtures = [
+    fixtureRecord({
+      source: "canonical",
+      section: "items",
+      id: "1",
+      content: "\u0000".repeat(600_000),
+      storeRevision: 1,
+    }),
+    fixtureRecord({
+      source: "backfill",
+      section: "commits",
+      id: "a".repeat(40),
+      content: "\u0000".repeat(600_000),
+      storeRevision: 2,
+    }),
+    fixtureRecord({
+      source: "canonical",
+      section: "items",
+      id: "3",
+      content: "after-byte-stop",
+      storeRevision: 3,
+    }),
+  ];
+  for (const record of fixtures) seedFixtureRecord(storage, record);
+  assert.ok(
+    fixtures.reduce((sum, record) => sum + record.byteLength, 0) < EXPECTED_SOURCE_BYTE_BUDGET,
+  );
+
+  const first = await exportPage(env, 0);
+  assert.deepEqual(
+    first.records.map((record) => record.id),
+    ["1"],
+  );
+  assert.equal(first.nextCursor, 1);
+  const second = await exportPage(env, first.nextCursor);
+  assert.deepEqual(
+    second.records.map((record) => record.id),
+    ["a".repeat(40), "3"],
+  );
+  assert.equal(second.nextCursor, null);
+  for (const page of [first, second]) {
+    assert.ok(
+      page.records.reduce((sum, record) => sum + Buffer.byteLength(JSON.stringify(record)), 0) <=
+        4 * 1024 * 1024,
+    );
+  }
+  assert.deepEqual(
+    [...first.records, ...second.records].map((record) => record.content),
+    fixtures.map((record) => record.content),
+  );
 });
 
 test("signed record export hides missing and invalid logical byte metadata", async () => {

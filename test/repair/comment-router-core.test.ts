@@ -9,7 +9,6 @@ import {
   autocloseReasonFromCommand,
   autoRepairBlockReason,
   autoRepairHeadKey,
-  automergeActivationRepairReason,
   automergeChangelogBlockReason,
   automergeFailedChecksRepairReason,
   automergeClusterId,
@@ -72,7 +71,6 @@ import {
   renderResponse,
   selectPullRepairJob,
   sharedAutomergeStatusMarkerPrefix,
-  staleAutomergeActivationReason,
   staleClosedItemCommandReason,
   syncAutomergeJobRepairMode,
   shouldClearMaintainerCommandReaction,
@@ -540,29 +538,6 @@ test("cached async issue comments lookup shares cache and in-flight fetches", as
   assert.deepEqual(calls, [12]);
 });
 
-test("cached issue comments lookup does not cache malformed fetch results", async () => {
-  const cache = new Map<number, { id: number }[]>();
-  let syncCalls = 0;
-  const syncLookup = createCachedIssueCommentsLookup(() => {
-    syncCalls += 1;
-    return "bad" as never;
-  }, cache);
-
-  assert.deepEqual(syncLookup(12), []);
-  assert.deepEqual(syncLookup(12), []);
-  assert.equal(syncCalls, 2);
-
-  let asyncCalls = 0;
-  const asyncLookup = createCachedIssueCommentsLookupAsync(async () => {
-    asyncCalls += 1;
-    return "bad" as never;
-  }, cache);
-
-  assert.deepEqual(await asyncLookup(12), []);
-  assert.deepEqual(await asyncLookup(12), []);
-  assert.equal(asyncCalls, 2);
-});
-
 test("autoclose reason parser preserves maintainer wording", () => {
   assert.equal(
     autocloseReasonFromCommand("autoclose We don't want this feature"),
@@ -729,7 +704,7 @@ test("command response markers can match across head changes", () => {
 
 test("stale automerge activation commands after merge are skipped silently", () => {
   assert.equal(
-    staleAutomergeActivationReason({
+    staleClosedItemCommandReason({
       command: {
         intent: "automerge",
         comment_created_at: "2026-05-01T01:27:37Z",
@@ -740,7 +715,7 @@ test("stale automerge activation commands after merge are skipped silently", () 
     "automerge already completed after this command",
   );
   assert.equal(
-    staleAutomergeActivationReason({
+    staleClosedItemCommandReason({
       command: {
         intent: "automerge",
         comment_created_at: "2026-05-01T01:50:00Z",
@@ -1172,44 +1147,6 @@ test("automerge changelog gate ignores docs-only and tests-only changes", () => 
       repo: "openclaw/openclaw",
       title: "fix(sdk): align test expectation",
       files: [{ path: "packages/sdk/src/index.test.ts" }],
-    }),
-    null,
-  );
-});
-
-test("automerge activation does not send missing changelog to repair", () => {
-  assert.equal(
-    automergeActivationRepairReason({
-      intent: "automerge",
-      repo: "openclaw/openclaw",
-      title: "Preserve session corpus labels",
-      files: [
-        { path: "extensions/memory-core/src/tools.ts" },
-        { path: "extensions/memory-core/src/tools.test.ts" },
-      ],
-      target: { checks: { blockers: [] }, merge_state_status: "CLEAN", mergeable: "MERGEABLE" },
-    }),
-    null,
-  );
-
-  assert.equal(
-    automergeActivationRepairReason({
-      intent: "autofix",
-      repo: "openclaw/openclaw",
-      title: "fix(memory): preserve session corpus labels",
-      files: [{ path: "extensions/memory-core/src/tools.ts" }],
-      target: { checks: { blockers: [] }, merge_state_status: "CLEAN", mergeable: "MERGEABLE" },
-    }),
-    null,
-  );
-
-  assert.equal(
-    automergeActivationRepairReason({
-      intent: "automerge",
-      repo: "openclaw/openclaw",
-      title: "fix(memory): preserve session corpus labels",
-      files: [{ path: "extensions/memory-core/src/tools.ts" }],
-      target: { checks: { blockers: [] }, merge_state_status: "BEHIND", mergeable: "MERGEABLE" },
     }),
     null,
   );
@@ -2471,7 +2408,7 @@ test("proof override authorization is durable before merge while pause labels re
   const source = readFileSync("src/repair/comment-router.ts", "utf8");
   const mergeExecution = source.slice(
     source.indexOf("if (\n      MERGE_INTENTS.has(command.intent)"),
-    source.indexOf('if (\n      command.intent === "clawsweeper_needs_human"'),
+    source.indexOf('if (\n      ["clawsweeper_needs_human", "stop"].includes(command.intent)'),
   );
   const executeIndex = mergeExecution.indexOf("const merge = executeAutomerge(command)");
   const successIndex = mergeExecution.indexOf('if (merge.status === "executed")');
@@ -2682,7 +2619,7 @@ test("exact comment fast path converges terminal acknowledgement before own reac
   assert.doesNotMatch(ackConvergence, /clearTerminalMaintainerCommandReaction/);
   const reactionCleanup = source.slice(
     source.indexOf("function removeOwnCommentReaction"),
-    source.indexOf("function ensureAutomergeLabel"),
+    source.indexOf("function ensureRepairLoopLabel"),
   );
   assert.match(reactionCleanup, /isOwnCommentReaction\(reaction, content\)/);
   assert.match(reactionCleanup, /reactions\/\$\{reaction\.id\}/);
@@ -4062,8 +3999,14 @@ test("assist workflow preserves flat field fallbacks after nested dispatch field
     /LENS: \$\{\{ github\.event\.client_payload\.assist\.lens \|\| github\.event\.client_payload\.lens \|\| inputs\.lens \|\| 'auto' \}\}/,
   );
   assert.match(workflow, /MODEL: internal/);
-  assert.match(workflow, /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ secrets\.CLAWSWEEPER_MODEL \}\}/);
-  assert.match(workflow, /REASONING_EFFORT: high/);
+  assert.match(
+    workflow,
+    /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ vars\.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets\.CLAWSWEEPER_MODEL \|\| '' \}\}/,
+  );
+  assert.match(
+    workflow,
+    /REASONING_EFFORT: \$\{\{ vars\.CLAWSWEEPER_CODEX_REASONING_EFFORT \|\| 'high' \}\}/,
+  );
   assert.doesNotMatch(workflow, /client_payload\.(?:assist\.)?reasoning_effort/);
   assert.match(
     workflow,

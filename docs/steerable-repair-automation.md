@@ -322,7 +322,9 @@ Three identities are related but intentionally distinct:
 
 A new Action attempt registers the same work key with CrabFleet. Register
 and work-state update fetches use a 15-second `AbortSignal` deadline so a
-hung CrabFleet host cannot stall the Action job. CrabFleet:
+hung CrabFleet host cannot stall the Action job; the Codex app-server worker
+applies the same deadline to its own turn-start, heartbeat, and completion
+work-state updates. CrabFleet:
 
 - returns the existing logical session when one exists;
 - rotates the session-scoped agent token;
@@ -573,13 +575,15 @@ Current global and key lane limits:
 
 | Limit | Value |
 | --- | ---: |
-| Global Codex worker budget | 128 |
+| Global Codex worker budget | 32 |
 | Interactive reserve | 16 |
 | Expansion reserve | 8 |
-| Existing repair, PR repair, and issue implementation default | 51 |
+| Existing repair, PR repair, and issue implementation default | 12 |
 | Imported GitCrawl cluster repair | 2 |
-| Quiet normal-review ceiling | 89 |
-| Quiet hot-intake ceiling | 44 |
+| Configured normal-review ceiling | 22 |
+| Configured hot-intake ceiling | 11 |
+| Effective quiet background allowance after reserves | 8 |
+| Combined scheduled-review concurrency | 8 |
 
 Important behavior:
 

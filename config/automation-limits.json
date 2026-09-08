@@ -1,14 +1,17 @@
 {
+  "audit": {
+    "max_parallel_targets": 3
+  },
   "workers": {
-    "max": 128,
+    "max": 32,
     "reserve_for_interactive": 16,
     "expansion_reserve": 8,
-    "minimum_background": 16
+    "minimum_background": 8
   },
   "lanes": {
     "exact_review": {
-      "max_concurrent": 128,
-      "target_max_concurrent": 120,
+      "max_concurrent": 32,
+      "target_max_concurrent": 24,
       "actions_budget": 194
     },
     "assist": {

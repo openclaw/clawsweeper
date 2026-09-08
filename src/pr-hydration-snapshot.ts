@@ -1,3 +1,4 @@
+import { recordOrEmpty as record } from "./value-coerce.js";
 import type { ContextHydration } from "./clawsweeper-types.js";
 import { EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES } from "./exact-review-publication-limits.js";
 
@@ -554,12 +555,6 @@ function reviewCommentId(value: unknown): string | null {
   const id = record(value).id;
   if (typeof id === "number" && Number.isSafeInteger(id) && id > 0) return String(id);
   return typeof id === "string" && id.length > 0 ? id : null;
-}
-
-function record(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
 }
 
 function positiveInteger(value: unknown): value is number {

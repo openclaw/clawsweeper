@@ -289,6 +289,33 @@ test("gitcrawl importer CLIs preserve empty-result and database failure outcomes
   }
 });
 
+test("cluster intake accepts empty portable and legacy stores", (t) => {
+  const tempDir = temporaryDirectory(t);
+  for (const schema of ["portable", "legacy"] as const) {
+    const dbPath = path.join(tempDir, `${schema}.db`);
+    const database = createGitcrawlStore(dbPath, schema);
+    database.exec(
+      schema === "portable"
+        ? "delete from cluster_memberships; delete from cluster_groups;"
+        : "delete from cluster_members; delete from clusters;",
+    );
+    database.close();
+    const outDir = path.join(tempDir, `${schema}-jobs`);
+    const result = runCli(CLUSTER_IMPORTER, [
+      "--from-gitcrawl",
+      "--allow-empty",
+      "--db",
+      dbPath,
+      "--out",
+      outDir,
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /no unprocessed gitcrawl clusters found/);
+    assert.equal(fs.existsSync(outDir), false);
+  }
+});
+
 function temporaryDirectory(t: test.TestContext): string {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-sqlite-test-"));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));

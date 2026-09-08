@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 type WorkerConfig = {
+  audit: { max_parallel_targets: number };
   workers: {
     max: number;
     reserve_for_interactive: number;
@@ -25,6 +26,7 @@ type WorkerConfig = {
 };
 
 type AutomationLimits = {
+  audit: { max_parallel_targets: number };
   exact_review: {
     concurrent_max: number;
     target_concurrent_max: number;
@@ -58,6 +60,11 @@ const config = JSON.parse(
 const limits = deriveAutomationLimits(config);
 
 const expectations: { file: string; label: string; pattern: RegExp }[] = [
+  {
+    file: "docs/scheduler.md",
+    label: "audit parallel target bound",
+    pattern: new RegExp(`at most ${limits.audit.max_parallel_targets} target audits in flight`),
+  },
   {
     file: ".github/workflows/sweep.yml",
     label: "manual workflow_dispatch shard_count default",
@@ -129,7 +136,7 @@ const expectations: { file: string; label: string; pattern: RegExp }[] = [
     file: "docs/scheduler.md",
     label: "hot intake shard default",
     pattern: new RegExp(
-      `broad hot intake: up to ${limits.review_shards.hot_intake_default} shards`,
+      `broad hot intake: configured ceiling of ${limits.review_shards.hot_intake_default} shards`,
     ),
   },
   {
@@ -226,6 +233,7 @@ function deriveAutomationLimits(workerConfig: WorkerConfig): AutomationLimits {
   const max = workerConfig.workers.max;
   const clusterRepairMax = Math.min(workerConfig.lanes.repair.cluster_max_live_runs, max);
   return {
+    audit: { max_parallel_targets: workerConfig.audit.max_parallel_targets },
     exact_review: {
       concurrent_max: Math.min(workerConfig.lanes.exact_review.max_concurrent, max),
       target_concurrent_max: Math.min(

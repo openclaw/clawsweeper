@@ -1,5 +1,6 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { sha256 } from "./content-hash.js";
 
 import {
   prepareSafeReadRoot,
@@ -38,6 +39,7 @@ import {
   parseActionEventShardContent,
   readAllSpooledActionEvents,
   sortActionEventsCausally,
+  splitActionEventShardEvents,
   validateActionEvent,
   writeActionEvent,
   writeActionEventShards,
@@ -327,14 +329,13 @@ export function recordWorkflowActionEvent(
   const writeOptions = { now: () => recordedAt };
   const candidate = createActionEvent(eventInput, writeOptions);
   const partitionDate = workflowPartitionDate(env);
-  const event = withWorkflowProducerLock(root, candidate.producer, () => {
+  return withWorkflowProducerLock(root, candidate.producer, () => {
     assertWorkflowProducerAcceptsEvent(root, candidate);
     ensureWorkflowPartitionDateValue(root, persistedWorkflowProducer(producer), partitionDate);
     const persisted = writeActionEvent(root, eventInput, writeOptions).event;
     queueCrabFleetEvent(root, persisted, env, options.fetchImpl ?? fetch);
     return persisted;
   });
-  return event;
 }
 
 export function recordWorkflowPhaseEvent(
@@ -456,14 +457,19 @@ function workflowActionEventIsMutationOutcome(event: ActionEvent): boolean {
 
 function workflowActionRecoveryPriority(event: ActionEvent): number {
   if (workflowActionEventIsUncertainMutationStart(event)) return 0;
-  if (
+  return workflowActionAggregatesChildMutations(event) ? 2 : 1;
+}
+
+function workflowActionAggregatesChildMutations(event: ActionEvent): boolean {
+  return (
     event.event_type === ACTION_EVENT_TYPES.reviewBatch ||
     event.event_type === ACTION_EVENT_TYPES.applyBatch ||
     (event.event_type === ACTION_EVENT_TYPES.reviewRetry && event.subject.kind === "workflow")
-  ) {
-    return 2;
-  }
-  return 1;
+  );
+}
+
+function compareWorkflowActionPhases(left: ActionEvent, right: ActionEvent): number {
+  return left.phase_seq - right.phase_seq || left.event_id.localeCompare(right.event_id);
 }
 
 function workflowActionEventClosesLifecycle(start: ActionEvent, event: ActionEvent): boolean {
@@ -496,12 +502,7 @@ function interruptedWorkflowPhaseSeq(
   parentEventId: string,
 ): number {
   const parent = current.find((event) => event.event_id === parentEventId);
-  const reservedTerminalPhase =
-    start.event_type === ACTION_EVENT_TYPES.reviewBatch ||
-    start.event_type === ACTION_EVENT_TYPES.applyBatch ||
-    (start.event_type === ACTION_EVENT_TYPES.reviewRetry && start.subject.kind === "workflow")
-      ? 1_000_000
-      : 0;
+  const reservedTerminalPhase = workflowActionAggregatesChildMutations(start) ? 1_000_000 : 0;
   let phaseSeq = Math.max(
     reservedTerminalPhase,
     start.phase_seq + 1,
@@ -563,8 +564,7 @@ export function interruptOpenWorkflowActionEvents(
         .sort(
           (left, right) =>
             workflowActionRecoveryPriority(left) - workflowActionRecoveryPriority(right) ||
-            left.phase_seq - right.phase_seq ||
-            left.event_id.localeCompare(right.event_id),
+            compareWorkflowActionPhases(left, right),
         );
       let written = 0;
       for (const start of starts) {
@@ -581,18 +581,12 @@ export function interruptOpenWorkflowActionEvents(
             (event) =>
               event.operation_id === start.operation_id &&
               event.attempt_id === start.attempt_id &&
-              (start.event_type === ACTION_EVENT_TYPES.reviewBatch ||
-                start.event_type === ACTION_EVENT_TYPES.applyBatch ||
-                (start.event_type === ACTION_EVENT_TYPES.reviewRetry &&
-                  start.subject.kind === "workflow") ||
+              (workflowActionAggregatesChildMutations(start) ||
                 actionLedgerJson(workflowActionSubjectIdentity(event)) ===
                   actionLedgerJson(workflowActionSubjectIdentity(start))) &&
               workflowActionEventIsUncertainMutationStart(event),
           )
-          .sort(
-            (left, right) =>
-              left.phase_seq - right.phase_seq || left.event_id.localeCompare(right.event_id),
-          );
+          .sort(compareWorkflowActionPhases);
         const mutationEvents = current
           .filter(
             (event) =>
@@ -600,23 +594,14 @@ export function interruptOpenWorkflowActionEvents(
               event.attempt_id === start.attempt_id &&
               event.action.mutation,
           )
-          .sort(
-            (left, right) =>
-              left.phase_seq - right.phase_seq || left.event_id.localeCompare(right.event_id),
-          );
+          .sort(compareWorkflowActionPhases);
         const lifecycleMutations = lifecycleEvents
           .filter((event) => event.action.mutation)
-          .sort(
-            (left, right) =>
-              left.phase_seq - right.phase_seq || left.event_id.localeCompare(right.event_id),
-          );
+          .sort(compareWorkflowActionPhases);
         const lifecycleMutation = lifecycleMutations.at(-1);
         const lifecycleOutcome = lifecycleEvents
           .filter(workflowActionEventIsMutationOutcome)
-          .sort(
-            (left, right) =>
-              left.phase_seq - right.phase_seq || left.event_id.localeCompare(right.event_id),
-          )
+          .sort(compareWorkflowActionPhases)
           .at(-1);
         const openUncertainMutationStarts = uncertainMutationStarts.filter((event) => {
           const eventLifecycleKey = workflowActionLifecycleKey(event);
@@ -630,11 +615,7 @@ export function interruptOpenWorkflowActionEvents(
         const openUncertainMutation =
           workflowActionEventIsUncertainMutationStart(start) ||
           openUncertainMutationStarts.length > 0;
-        const aggregatesChildMutations =
-          start.event_type === ACTION_EVENT_TYPES.reviewBatch ||
-          start.event_type === ACTION_EVENT_TYPES.applyBatch ||
-          (start.event_type === ACTION_EVENT_TYPES.reviewRetry &&
-            start.subject.kind === "workflow");
+        const aggregatesChildMutations = workflowActionAggregatesChildMutations(start);
         const relevantMutationEvents = aggregatesChildMutations
           ? mutationEvents
           : lifecycleMutations;
@@ -892,7 +873,9 @@ export async function postActionEventToCrabFleet(
 ): Promise<void> {
   const config = crabFleetProjectionConfig(env);
   if (!config) return;
-  await enqueueCrabFleetProjection(event, config, fetchImpl);
+  const request = createCrabFleetProjectionRequest(event, config, fetchImpl);
+  admitCrabFleetProjection(request);
+  await request.promise;
 }
 
 function startActionEventCrabFleetPost(
@@ -1180,7 +1163,7 @@ function actionEventShardImportBindings(
   for (const shard of shards) {
     const { partitionDate, ...producerIdentity } = shard.identity;
     const producerKey = actionLedgerJson(producerIdentity);
-    const producerDigest = createHash("sha256").update(producerKey).digest("hex");
+    const producerDigest = sha256(producerKey);
     const producerContent = `${actionLedgerJson({
       schema: "clawsweeper.action-ledger-import-producer-run",
       schema_version: 1,
@@ -1236,9 +1219,9 @@ function actionEventShardImportBindings(
       producer: ordered[0]!.identity,
       shards: ordered.map((shard) => ({
         path: shard.relativePath,
-        replay_sha256: createHash("sha256")
-          .update(`${shard.events.map((event) => actionEventReplayJson(event)).join("\n")}\n`)
-          .digest("hex"),
+        replay_sha256: sha256(
+          `${shard.events.map((event) => actionEventReplayJson(event)).join("\n")}\n`,
+        ),
       })),
     };
     const reservationContent = `${actionLedgerJson(reservation)}\n`;
@@ -1254,7 +1237,7 @@ function actionEventShardImportBindings(
         schema: "clawsweeper.action-ledger-import-shard-set-completion",
         schema_version: 1,
         producer: ordered[0]!.identity,
-        reservation_sha256: createHash("sha256").update(reservationContent).digest("hex"),
+        reservation_sha256: sha256(reservationContent),
       })}\n`,
       label: "action event shard import producer shard-set completion binding",
       kind: "completion",
@@ -1317,15 +1300,13 @@ function validateImportedActionEventHistory(
 
   const resolved = new Set<string>();
   for (const eventId of incoming.keys()) {
-    const pathPositions = new Map<string, number>();
-    const traversed: string[] = [];
+    const traversed = new Set<string>();
     let current: string | null = eventId;
     while (current !== null && !resolved.has(current)) {
-      if (pathPositions.has(current)) {
+      if (traversed.has(current)) {
         throw new Error(`action event shard import contains a causal cycle: ${current}`);
       }
-      pathPositions.set(current, traversed.length);
-      traversed.push(current);
+      traversed.add(current);
       current = (incoming.get(current) ?? readBinding(current))?.parent_event_id ?? null;
     }
     for (const traversedEventId of traversed) resolved.add(traversedEventId);
@@ -1515,7 +1496,7 @@ function validateCanonicalImportedShard(
       relativePath,
     );
   const first = events[0];
-  if (!match || !first || events.length === 0) {
+  if (!match || !first) {
     throw new Error(`action event shard is empty or has an invalid path: ${relativePath}`);
   }
   const seen = new Set<string>();
@@ -1614,7 +1595,7 @@ function validateCanonicalImportedShardGroup(group: readonly ImportedActionEvent
     }
   }
   const events = sortActionEventsCausally(ordered.flatMap((shard) => shard.events));
-  const packed = packImportedActionEventShards(events);
+  const packed = splitActionEventShardEvents(events);
   if (packed.length !== ordered.length) {
     throw new Error("action event shard batch is not deterministically packed");
   }
@@ -1633,33 +1614,6 @@ function validateCanonicalImportedShardGroup(group: readonly ImportedActionEvent
       throw new Error("action event shard batch is not deterministically packed");
     }
   }
-}
-
-function packImportedActionEventShards(events: readonly ActionEvent[]): ActionEvent[][] {
-  const shards: ActionEvent[][] = [];
-  let current: ActionEvent[] = [];
-  let currentBytes = 0;
-  for (const event of events) {
-    const eventBytes = Buffer.byteLength(`${actionLedgerJson(event)}\n`, "utf8");
-    if (eventBytes > ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes) {
-      throw new Error(
-        `action event ${event.event_id} exceeds ${ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes} shard byte limit`,
-      );
-    }
-    if (
-      current.length > 0 &&
-      (current.length >= ACTION_EVENT_SHARD_FILE_LIMITS.maxEvents ||
-        currentBytes + eventBytes > ACTION_EVENT_SHARD_FILE_LIMITS.maxBytes)
-    ) {
-      shards.push(current);
-      current = [];
-      currentBytes = 0;
-    }
-    current.push(event);
-    currentBytes += eventBytes;
-  }
-  if (current.length > 0) shards.push(current);
-  return shards;
 }
 
 function importedShardPart(relativePath: string): {
@@ -1707,16 +1661,6 @@ function queueCrabFleetEvent(
   pendingWorkflowCrabFleetPosts.set(rootKey, rootPosts);
   pendingCrabFleetPosts.add(post);
   admitCrabFleetProjection(request);
-}
-
-function enqueueCrabFleetProjection(
-  event: ActionEvent,
-  config: CrabFleetProjectionConfig,
-  fetchImpl: typeof fetch,
-): Promise<void> {
-  const request = createCrabFleetProjectionRequest(event, config, fetchImpl);
-  admitCrabFleetProjection(request);
-  return request.promise;
 }
 
 function createCrabFleetProjectionRequest(
@@ -1926,7 +1870,10 @@ function failCrabFleetProjection(root: string, event: ActionEvent, reason: strin
 
 function recordCrabFleetProjectionFailure(root: string, event: ActionEvent): void {
   try {
-    const producer = crabFleetProjectionFailureProducer(event);
+    const producer = {
+      ...event.producer,
+      component: machineIdentifier(`${event.producer.component}.crabfleet_projection`, 256),
+    };
     const partitionDate = readWorkflowPartitionDate(
       prepareSafeReadRoot(root, "action event spool"),
       event.producer,
@@ -1946,28 +1893,8 @@ function recordCrabFleetProjectionFailure(root: string, event: ActionEvent): voi
         destination: "crabfleet",
       }),
       type: ACTION_EVENT_TYPES.projectionFailed,
-      producer: {
-        repository: producer.repository,
-        sha: producer.sha,
-        workflow: producer.workflow,
-        job: producer.job,
-        runId: producer.run_id,
-        runAttempt: producer.run_attempt,
-        component: producer.component,
-      },
-      subject: {
-        repository: event.subject.repository,
-        kind: event.subject.kind,
-        ...(event.subject.subject_id === undefined ? {} : { subjectId: event.subject.subject_id }),
-        ...(event.subject.number === undefined ? {} : { number: event.subject.number }),
-        ...(event.subject.cluster_id === undefined ? {} : { clusterId: event.subject.cluster_id }),
-        ...(event.subject.source_revision === undefined
-          ? {}
-          : { sourceRevision: event.subject.source_revision }),
-        ...(event.subject.record_path === undefined
-          ? {}
-          : { recordPath: event.subject.record_path }),
-      },
+      producer: workflowActionProducerInput(producer),
+      subject: workflowActionSubjectInput(event.subject),
       action: {
         name: "crabfleet_projection",
         status: "failed",
@@ -2004,13 +1931,6 @@ function recordCrabFleetProjectionFailure(root: string, event: ActionEvent): voi
       }`,
     );
   }
-}
-
-function crabFleetProjectionFailureProducer(event: ActionEvent): ActionEvent["producer"] {
-  return {
-    ...event.producer,
-    component: machineIdentifier(`${event.producer.component}.crabfleet_projection`, 256),
-  };
 }
 
 function workflowPartitionDate(env: NodeJS.ProcessEnv): string {
@@ -2211,9 +2131,7 @@ function reserveWorkflowProducerFinalization(
     producer,
     partition_date: partitionDate,
     event_count: events.length,
-    replay_sha256: createHash("sha256")
-      .update(`${events.map((event) => actionEventReplayJson(event)).join("\n")}\n`)
-      .digest("hex"),
+    replay_sha256: sha256(`${events.map((event) => actionEventReplayJson(event)).join("\n")}\n`),
   };
   const content = `${actionLedgerJson(value)}\n`;
   const target = prepareSafeWriteTarget(
@@ -2293,17 +2211,17 @@ function readWorkflowPartitionDate(root: SafeReadRoot, producer: ActionEvent["pr
 }
 
 function workflowPartitionRelativePath(producer: ActionEvent["producer"]): string {
-  const identity = createHash("sha256").update(actionLedgerJson(producer)).digest("hex");
+  const identity = sha256(actionLedgerJson(producer));
   return path.join(".clawsweeper-repair", "action-events", "_partitions", `${identity}.txt`);
 }
 
 function workflowFinalizationRelativePath(producer: ActionEvent["producer"]): string {
-  const identity = createHash("sha256").update(actionLedgerJson(producer)).digest("hex");
+  const identity = sha256(actionLedgerJson(producer));
   return path.join(".clawsweeper-repair", "action-events", "_finalizations", `${identity}.json`);
 }
 
 function workflowProducerLockRelativePath(producer: ActionEvent["producer"]): string {
-  const identity = createHash("sha256").update(actionLedgerJson(producer)).digest("hex");
+  const identity = sha256(actionLedgerJson(producer));
   return path.join(".clawsweeper-repair", "action-events", "_locks", `${identity}.lock`);
 }
 
@@ -2400,7 +2318,7 @@ function machineIdentifier(value: string, maxLength: number): string {
   const readable = source.replace(/[^A-Za-z0-9_.:/@+-]+/g, "-").replace(/^-+|-+$/g, "");
   if (!readable) throw new Error("workflow action identifier is required");
   if (readable === source && readable.length <= maxLength) return readable;
-  const digest = createHash("sha256").update(source).digest("hex").slice(0, 12);
+  const digest = sha256(source).slice(0, 12);
   const prefixLength = maxLength - digest.length - 1;
   if (prefixLength < 1) throw new Error("workflow action identifier limit is too small");
   const prefix = readable.slice(0, prefixLength).replace(/-+$/g, "") || "id";

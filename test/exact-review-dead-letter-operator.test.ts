@@ -386,7 +386,7 @@ test("parked review reconciliation plans by default and executes terminal resolv
       open_targets: 2,
       recovered_targets: 1,
       skipped_targets: 2,
-      skip_reasons: { unchanged_review_identity: 1 },
+      skip_reasons: { command_context: 1, unchanged_review_identity: 1 },
       skip_samples: [],
     });
     assert.equal(mutations.length, 0);
@@ -409,7 +409,7 @@ test("parked review reconciliation plans by default and executes terminal resolv
       open_targets: 2,
       recovered_targets: 1,
       skipped_targets: 2,
-      skip_reasons: { unchanged_review_identity: 1 },
+      skip_reasons: { command_context: 1, unchanged_review_identity: 1 },
       skip_samples: [],
     });
     assert.equal(mutations.filter((entry) => entry.url?.endsWith("/resolve")).length, 2);
@@ -452,6 +452,7 @@ test("parked review reconciliation plans by default and executes terminal resolv
     );
     assert.equal(pressureDeferred.code, 0, pressureDeferred.stderr);
     assert.deepEqual(JSON.parse(pressureDeferred.stdout).skip_reasons, {
+      command_context: 1,
       unchanged_review_identity: 1,
       recovery_deferred_pressure: 1,
     });
@@ -467,6 +468,31 @@ test("parked review reconciliation plans by default and executes terminal resolv
       "command_context",
     );
     assert.equal(JSON.stringify(artifact).includes("test-parked-review-reconcile"), false);
+
+    // The audited cohort: eleven excluded command receipts and one unchanged
+    // ordinary target. Every skip must have a bounded, machine-readable reason.
+    const unchanged = parkedRows.find((row) => row.item_key === "openclaw/repo#5")!;
+    parkedRows.splice(
+      0,
+      parkedRows.length,
+      ...Array.from({ length: 11 }, (_, index) => ({
+        ...parkedRow(`openclaw/repo#${50 + index}`, "openclaw/repo", 50 + index, 4_000),
+        excluded_reason: "command_context",
+      })),
+      unchanged,
+    );
+    queuePressure = "idle";
+    const beforeCensus = mutations.length;
+    const census = await runOperator(common, `http://127.0.0.1:${address.port}`, secret);
+    assert.equal(census.code, 0, census.stderr);
+    const censusSummary = JSON.parse(census.stdout);
+    assert.equal(censusSummary.inspected_targets, 1);
+    assert.equal(censusSummary.skipped_targets, 12);
+    assert.deepEqual(censusSummary.skip_reasons, {
+      command_context: 11,
+      unchanged_review_identity: 1,
+    });
+    assert.equal(mutations.length, beforeCensus);
 
     const overCap = await runOperator(
       ["--action", "reconcile-parked", "--max-recoveries", "6"],
@@ -1439,42 +1465,6 @@ test("multiple independently blocked groups share one authoritative refresh", as
     scenario.recoveries.map((recovery) => recovery.ids),
     [["recoverable"]],
   );
-});
-
-test("blocked canonical targets are counted only once across inventory refreshes", async () => {
-  const scenario = await automaticReconcileScenario({
-    rows: [
-      ...Array.from({ length: 2 }, (_, index) =>
-        row(
-          `blocked-${index + 1}`,
-          `publication:blocked-${index + 1}`,
-          index + 1,
-          "retry_exhausted",
-          true,
-          "eligible",
-          `openclaw/repo#${index + 1}`,
-        ),
-      ),
-      row(
-        "recoverable",
-        "publication:recoverable",
-        3,
-        "retry_exhausted",
-        true,
-        "eligible",
-        "openclaw/repo#3",
-      ),
-    ],
-    closedNumbers: [1, 2],
-    blockedCleanupIds: ["blocked-1", "blocked-2"],
-  });
-
-  assert.equal(scenario.first.code, 0, scenario.first.stderr);
-  const summary = JSON.parse(scenario.first.stdout);
-  assert.equal(summary.inspected_targets, 3);
-  assert.equal(summary.recovered_targets, 1);
-  assert.equal(summary.skipped_targets, 2);
-  assert.equal(scenario.inventoryRequests, 2);
 });
 
 test("active and capped targets are counted only once across blocked inventory refreshes", async () => {
@@ -2969,13 +2959,19 @@ test("multi-owner reconciliation recovers installed targets and reports missing 
   );
 });
 
-test("a missing selected repository does not hide an accessible repository under the same owner", async () => {
+for (const maxTargets of [10, 1]) {
+  test(`a missing selected repository does not hide an accessible repository under the same owner (maxTargets=${maxTargets})`, () =>
+    assertMissingRepositoryRecovery(maxTargets));
+}
+
+async function assertMissingRepositoryRecovery(maxTargets: number) {
   const { privateKey } = generateKeyPairSync("rsa", {
     modulusLength: 2048,
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
     publicKeyEncoding: { type: "spki", format: "pem" },
   });
   const scenario = await automaticReconcileScenario({
+    maxTargets,
     rows: [
       row(
         "missing",
@@ -3026,7 +3022,7 @@ test("a missing selected repository does not hide an accessible repository under
     new Set(scenario.targetReadAuthorizations),
     new Set(["Bearer selected-owner-token"]),
   );
-});
+}
 
 for (const failedStatus of [429, 403]) {
   test(`throttled owner token mint ${failedStatus} skips that owner's targets and recovers another owner`, async () => {

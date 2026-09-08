@@ -844,8 +844,7 @@ export function createReportCommentHelpers(
   function reviewFreshnessText(markdown: string, revision?: number): string {
     const timestamp = formatReviewFreshnessTimestamp(frontMatterValue(markdown, "reviewed_at"));
     if (!timestamp) return "";
-    const revisionSuffix =
-      revision !== undefined && revision >= 2 ? ` (Revision ${revision})` : "";
+    const revisionSuffix = revision !== undefined && revision >= 2 ? ` (Revision ${revision})` : "";
     return ` _Reviewed ${timestamp}${revisionSuffix}._`;
   }
 

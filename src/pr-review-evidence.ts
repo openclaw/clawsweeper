@@ -7,6 +7,7 @@ import type { ItemContext } from "./clawsweeper-types.js";
 const OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const MAX_FILES = 80;
 const MAX_PATCH_CHARS = 24_000;
+const MAX_COMMIT_PARENTS = 8;
 // Git for Windows accepts the DOS device spelling but rejects Node's `\\\\.\\nul`
 // spelling when it is supplied through GIT_CONFIG_GLOBAL.
 const gitNullDevice = process.platform === "win32" ? "NUL" : devNull;
@@ -31,17 +32,23 @@ type DiffEvidence = {
   patchComplete?: boolean;
 };
 
+type CommitEvidence<Role extends string> = { role: Role } & (
+  | { status: "verified"; sha: string; parents: string[] }
+  | { status: "unavailable"; sha: string | null; parents: null; reason: string }
+);
+
 export type PullRequestReviewEvidence = {
-  checkoutSha: string | null;
+  checkout: CommitEvidence<"actual_checkout">;
+  originalHead: CommitEvidence<"original_pr_head">;
   fetchedMainSha: string | null;
   baseSha: string | null;
-  headSha: string | null;
   mergeBase: MergeBase;
   introduced: DiffEvidence;
   endpointDrift: DiffEvidence;
   baseChanges: DiffEvidence;
   baseOnlyFiles: string[] | null;
   testMerge: {
+    role: "github_test_merge";
     status: "verified" | "unavailable" | "stale" | "not_test_merge";
     sha: string | null;
     parents?: string[];
@@ -165,6 +172,30 @@ function git(
   return readReviewGit(targetDir, args, options)?.toString("utf8") ?? null;
 }
 
+function commitEvidence<Role extends string>(
+  targetDir: string | undefined,
+  sha: string | null,
+  role: Role,
+): CommitEvidence<Role> {
+  const unavailable = (reason: string): CommitEvidence<Role> => ({
+    role,
+    status: "unavailable",
+    sha,
+    parents: null,
+    reason,
+  });
+  if (!sha) return unavailable("Missing commit identity.");
+  // cat-file commit can peel tags; require the exact pinned object to be a commit.
+  if (git(targetDir, ["cat-file", "-t", sha])?.trim() !== "commit")
+    return unavailable("Exact commit object unavailable in bounded local inspection.");
+  const raw = git(targetDir, ["cat-file", "commit", sha]);
+  if (raw === null) return unavailable("Raw commit read failed or exceeded its bounds.");
+  const parents = reviewCommitParents(raw);
+  if (parents === null || parents.length > MAX_COMMIT_PARENTS)
+    return unavailable("Invalid raw parent records or more than eight recorded parents.");
+  return { role, status: "verified", sha, parents };
+}
+
 export function reviewMergeBase(
   targetDir: string | undefined,
   baseSha: string | null,
@@ -267,6 +298,7 @@ export function buildPullRequestReviewEvidence(options: {
     "base_branch_changes_since_merge_base",
   );
   const testMerge: PullRequestReviewEvidence["testMerge"] = {
+    role: "github_test_merge",
     status: "unavailable",
     sha: objectId(pull.mergeCommitSha),
     reason:
@@ -296,10 +328,14 @@ export function buildPullRequestReviewEvidence(options: {
     }
   }
   return {
-    checkoutSha: objectId(git(targetDir, ["rev-parse", "HEAD"])?.trim()),
+    checkout: commitEvidence(
+      targetDir,
+      objectId(git(targetDir, ["rev-parse", "HEAD"])?.trim()),
+      "actual_checkout",
+    ),
+    originalHead: commitEvidence(targetDir, headSha, "original_pr_head"),
     fetchedMainSha: objectId(options.mainSha),
     baseSha,
-    headSha,
     mergeBase,
     introduced,
     endpointDrift: diff(targetDir, baseSha, headSha, "endpoint_drift_not_introduction"),

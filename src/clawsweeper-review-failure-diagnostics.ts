@@ -1,3 +1,4 @@
+import { stringOrEmpty as stringValue } from "./value-coerce.js";
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { AgentInputScanError } from "./agent-input-scan.js";
@@ -202,10 +203,6 @@ function unsafeControl(value: string): boolean {
 
 function safeCode(value: unknown, pattern: RegExp): string | null {
   return typeof value === "string" && pattern.test(value) ? value : null;
-}
-
-function stringValue(value: unknown): string {
-  return typeof value === "string" ? value : "";
 }
 
 function record(value: unknown): Record<string, unknown> {

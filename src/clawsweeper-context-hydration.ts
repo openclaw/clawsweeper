@@ -29,6 +29,7 @@ import {
   timestampValueMs,
 } from "./clawsweeper-review-comments.js";
 import { truncateText } from "./clawsweeper-text.js";
+import { compactPrimaryBody } from "./clawsweeper-primary-body.js";
 import type {
   BulkFilerDetectionOptions,
   BulkFilerDetectionResult,
@@ -204,7 +205,7 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
       url: comment.html_url,
       createdAt: comment.created_at,
       updatedAt: comment.updated_at,
-      body: truncateText(comment.body, 6000),
+      ...compactPrimaryBody(comment.body),
     };
   }
 

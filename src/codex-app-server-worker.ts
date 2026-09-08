@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { errorMessage } from "./value-coerce.js";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 import {
@@ -8,9 +16,17 @@ import {
   openCodexOutputCapture,
 } from "./codex-output-capture.js";
 import { spawnCodex, terminateCodexProcessTree, waitForCodexProcessExit } from "./codex-spawn.js";
+import {
+  requestReviewProof,
+  resolveReviewProofCapability,
+  reviewProofTools,
+  webUiReviewProofTool,
+  type ReviewProofCapability,
+} from "./review-proof-client.js";
 
 interface AppServerOptions {
   statePath: string;
+  reviewProof?: ReviewProofCapability;
   label?: string;
   runnerPtyUrl?: string;
   workStateUrl?: string;
@@ -31,8 +47,10 @@ interface WorkerOptions {
 
 interface ExecOptions {
   cwd: string;
+  additionalWritableRoots: string[];
   sandbox: "read-only" | "workspace-write" | "danger-full-access";
   networkAccess: boolean;
+  permissionsProfile?: string;
   loginMethod?: "api" | "chatgpt";
   model?: string;
   effort?: string;
@@ -48,7 +66,7 @@ interface ThreadState {
 }
 
 interface RpcMessage {
-  id?: number;
+  id?: number | string;
   method?: string;
   params?: Record<string, unknown>;
   result?: Record<string, unknown>;
@@ -59,7 +77,16 @@ interface RpcMessage {
   };
 }
 
-const options = JSON.parse(readFileSync(process.argv[2] ?? "", "utf8")) as WorkerOptions;
+// Matches ACTION_SESSION_FETCH_TIMEOUT_MS in src/repair/action-session.ts so a hung
+// CrabFleet host cannot stall the Codex turn or accumulate heartbeat requests.
+const WORK_STATE_FETCH_TIMEOUT_MS = 15_000;
+
+const optionsPath = process.argv[2] ?? "";
+const options = JSON.parse(readFileSync(optionsPath, "utf8")) as WorkerOptions;
+// The child shares this UID: owner-only permissions do not hide a capability
+// from its read-only filesystem tools. Consume the handoff before it starts.
+unlinkSync(optionsPath);
+const reviewDeadline = Date.now() + options.timeoutMs;
 const execOptions = parseExecOptions(options.args, process.cwd());
 const prompt = await readStdin();
 const stdout = openCodexOutputCapture(options.stdoutPath, {
@@ -75,6 +102,9 @@ const child = spawnCodex(
   [
     ...(execOptions.loginMethod
       ? ["-c", `forced_login_method=${JSON.stringify(execOptions.loginMethod)}`]
+      : []),
+    ...(execOptions.permissionsProfile
+      ? ["-c", `default_permissions=${JSON.stringify(execOptions.permissionsProfile)}`]
       : []),
     "app-server",
     "--listen",
@@ -105,7 +135,11 @@ let forceKillTimer: NodeJS.Timeout | undefined;
 let terminal: WebSocket | null = null;
 let terminalInput = "";
 let heartbeat: NodeJS.Timeout | undefined;
+const proofAbort = new AbortController();
+const proofCalls = new Set<string>();
+let proofBusy = false;
 const timeout = setTimeout(() => {
+  proofAbort.abort();
   timeoutError = new Error(`Codex app-server timed out after ${options.timeoutMs}ms`);
   (timeoutError as NodeJS.ErrnoException).code = "ETIMEDOUT";
   forceKillTimer = terminateCodexProcessTree(child);
@@ -136,12 +170,20 @@ lines.on("line", (line) => {
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
   process.once(signal, () => {
     if (settled) return;
+    proofAbort.abort();
     forceKillTimer = terminateCodexProcessTree(child, signal);
   });
 }
 
 try {
+  if (options.appServer.reviewProof) {
+    options.appServer.reviewProof = await resolveReviewProofCapability(
+      options.appServer.reviewProof,
+      proofAbort.signal,
+    );
+  }
   await request("initialize", {
+    ...(options.appServer.reviewProof ? { capabilities: { experimentalApi: true } } : {}),
     clientInfo: {
       name: "clawsweeper",
       title: "ClawSweeper GitHub Actions",
@@ -149,7 +191,9 @@ try {
     },
   });
   notify("initialized");
-  const previous = readThreadState(options.appServer.statePath);
+  const previous = options.appServer.reviewProof
+    ? null
+    : readThreadState(options.appServer.statePath);
   const thread = previous ? await resumeThread(previous.threadId) : await startThread();
   threadId = stringAt(thread, ["thread", "id"]);
   sessionId = stringAt(thread, ["thread", "sessionId"]);
@@ -167,7 +211,16 @@ try {
     input: [{ type: "text", text: prompt }],
     cwd: execOptions.cwd,
     approvalPolicy: "never",
-    sandboxPolicy: sandboxPolicy(execOptions.sandbox, execOptions.cwd, execOptions.networkAccess),
+    ...(execOptions.permissionsProfile
+      ? {}
+      : {
+          sandboxPolicy: sandboxPolicy(
+            execOptions.sandbox,
+            execOptions.cwd,
+            execOptions.networkAccess,
+            execOptions.additionalWritableRoots,
+          ),
+        }),
     ...(execOptions.model ? { model: execOptions.model } : {}),
     ...(execOptions.effort ? { effort: execOptions.effort } : {}),
     ...(execOptions.serviceTier ? { serviceTier: execOptions.serviceTier } : {}),
@@ -189,8 +242,11 @@ async function startThread(): Promise<Record<string, unknown>> {
   return request("thread/start", {
     cwd: execOptions.cwd,
     approvalPolicy: "never",
-    sandbox: execOptions.sandbox,
-    ephemeral: false,
+    ...(execOptions.permissionsProfile ? {} : { sandbox: execOptions.sandbox }),
+    ephemeral: Boolean(options.appServer.reviewProof),
+    ...(options.appServer.reviewProof
+      ? { dynamicTools: reviewProofTools(options.appServer.reviewProof) }
+      : {}),
     serviceName: "clawsweeper",
     personality: "pragmatic",
     ...(execOptions.model ? { model: execOptions.model } : {}),
@@ -205,7 +261,7 @@ async function resumeThread(previousThreadId: string): Promise<Record<string, un
       threadId: previousThreadId,
       cwd: execOptions.cwd,
       approvalPolicy: "never",
-      sandbox: execOptions.sandbox,
+      ...(execOptions.permissionsProfile ? {} : { sandbox: execOptions.sandbox }),
       personality: "pragmatic",
       ...(execOptions.model ? { model: execOptions.model } : {}),
       ...(execOptions.serviceTier ? { serviceTier: execOptions.serviceTier } : {}),
@@ -220,6 +276,73 @@ async function resumeThread(previousThreadId: string): Promise<Record<string, un
 }
 
 async function handleRpcMessage(message: RpcMessage): Promise<void> {
+  if (message.method === "item/tool/call" && message.id !== undefined) {
+    const params = message.params;
+    const callId = typeof params?.callId === "string" ? params.callId : "";
+    let evidence: unknown = {
+      status: "inconclusive",
+      reason: "Proof call is unavailable or does not belong to this active review.",
+    };
+    if (
+      !settled &&
+      !proofAbort.signal.aborted &&
+      !proofBusy &&
+      options.appServer.reviewProof &&
+      params?.threadId === threadId &&
+      params?.turnId === turnId &&
+      turnId &&
+      reviewProofTools(options.appServer.reviewProof).some((tool) => tool.name === params?.tool) &&
+      !params?.namespace &&
+      callId &&
+      !proofCalls.has(callId) &&
+      proofCalls.size < 3
+    ) {
+      proofCalls.add(callId);
+      proofBusy = true;
+      try {
+        const webUi = params.tool === webUiReviewProofTool.name;
+        const argumentsValid =
+          !webUi ||
+          (params.arguments !== null &&
+            typeof params.arguments === "object" &&
+            !Array.isArray(params.arguments) &&
+            Object.keys(params.arguments).length === 0);
+        const remainingProofMs = Math.max(
+          0,
+          Math.floor(reviewDeadline - Date.now() - Math.min(90_000, options.timeoutMs / 10)),
+        );
+        evidence =
+          argumentsValid && remainingProofMs > 0
+            ? await requestReviewProof(
+                options.appServer.reviewProof,
+                webUi ? { kind: "web-ui-chat-smoke" } : params.arguments,
+                AbortSignal.any([proofAbort.signal, AbortSignal.timeout(remainingProofMs)]),
+                fetch,
+                webUi ? "web-ui-chat-proof" : "telegram-bot-e2e-proof",
+              )
+            : {
+                status: "inconclusive",
+                reason: argumentsValid
+                  ? "Review budget reserved for the final decision; proof was not started."
+                  : "The fixed Web UI check does not accept custom actions.",
+              };
+      } finally {
+        proofBusy = false;
+      }
+    }
+    if (!settled && !proofAbort.signal.aborted) {
+      child.stdin.write(
+        `${JSON.stringify({
+          id: message.id,
+          result: {
+            contentItems: [{ type: "inputText", text: JSON.stringify(evidence) }],
+            success: true,
+          },
+        })}\n`,
+      );
+    }
+    return;
+  }
   if (typeof message.id === "number") {
     const waiter = pending.get(message.id);
     if (!waiter) return;
@@ -361,6 +484,7 @@ async function updateWorkState(state: string, phase: string, summary: string): P
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
       },
+      signal: AbortSignal.timeout(WORK_STATE_FETCH_TIMEOUT_MS),
       body: JSON.stringify({
         state,
         phase,
@@ -384,6 +508,7 @@ function terminalWrite(value: string): void {
 async function finish(status: number, signal: NodeJS.Signals | null, error?: Error): Promise<void> {
   if (settled) return;
   settled = true;
+  proofAbort.abort();
   clearTimeout(timeout);
   if (heartbeat) clearInterval(heartbeat);
   if (forceKillTimer) clearTimeout(forceKillTimer);
@@ -414,8 +539,10 @@ async function finish(status: number, signal: NodeJS.Signals | null, error?: Err
 
 function parseExecOptions(args: string[], fallbackCwd: string): ExecOptions {
   let cwd = fallbackCwd;
+  const additionalWritableRoots: string[] = [];
   let sandbox: ExecOptions["sandbox"] = "read-only";
   let networkAccess = false;
+  let permissionsProfile: string | undefined;
   let loginMethod: ExecOptions["loginMethod"];
   let model: string | undefined;
   let effort: string | undefined;
@@ -426,12 +553,14 @@ function parseExecOptions(args: string[], fallbackCwd: string): ExecOptions {
     const arg = args[index];
     const value = args[index + 1];
     if ((arg === "--cd" || arg === "-C") && value) cwd = value;
+    if (arg === "--add-dir" && value) additionalWritableRoots.push(value);
     if (arg === "--sandbox" && isSandbox(value)) sandbox = value;
     if ((arg === "--model" || arg === "-m") && value) model = value;
     if (arg === "--output-schema" && value) outputSchemaPath = value;
     if (arg === "--output-last-message" && value) outputLastMessagePath = value;
     if (arg === "-c" && value) {
       const parsed = parseConfig(value);
+      if (parsed.key === "default_permissions") permissionsProfile = parsed.value;
       if (parsed.key === "model_reasoning_effort") effort = parsed.value;
       if (parsed.key === "service_tier") serviceTier = parsed.value;
       if (
@@ -447,8 +576,10 @@ function parseExecOptions(args: string[], fallbackCwd: string): ExecOptions {
   }
   return {
     cwd,
+    additionalWritableRoots,
     sandbox,
     networkAccess,
+    ...(permissionsProfile ? { permissionsProfile } : {}),
     ...(loginMethod ? { loginMethod } : {}),
     ...(model ? { model } : {}),
     ...(effort ? { effort } : {}),
@@ -474,10 +605,15 @@ function sandboxPolicy(
   mode: ExecOptions["sandbox"],
   cwd: string,
   networkAccess: boolean,
+  additionalWritableRoots: string[] = [],
 ): Record<string, unknown> {
   if (mode === "danger-full-access") return { type: "dangerFullAccess" };
   if (mode === "workspace-write") {
-    return { type: "workspaceWrite", writableRoots: [cwd], networkAccess };
+    return {
+      type: "workspaceWrite",
+      writableRoots: [...new Set([cwd, ...additionalWritableRoots])],
+      networkAccess,
+    };
   }
   return { type: "readOnly", networkAccess: false };
 }
@@ -548,10 +684,6 @@ function readStdin(): Promise<string> {
     process.stdin.once("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
     process.stdin.once("error", reject);
   });
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function serializedError(error: Error): { message: string; code?: string } {

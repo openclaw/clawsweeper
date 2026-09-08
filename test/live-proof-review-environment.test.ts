@@ -1169,9 +1169,22 @@ test(
 
       const originalPid = Number.parseInt(readFileSync(join(root, "original.pid"), "utf8"), 10);
       const diversionPid = Number.parseInt(readFileSync(join(root, "diversion.pid"), "utf8"), 10);
+      const reaped = (pid: number): boolean => {
+        try {
+          process.kill(pid, 0);
+          return false;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ESRCH") return true;
+          throw error;
+        }
+      };
       let matches = processesContaining(processToken);
       const deadline = Date.now() + 2_000;
-      while (matches.length > 0 && Date.now() < deadline) {
+      // A zombie can lose its command text before the parent reaps its PID.
+      while (
+        (matches.length > 0 || !reaped(originalPid) || !reaped(diversionPid)) &&
+        Date.now() < deadline
+      ) {
         execFileSync("sleep", ["0.05"]);
         matches = processesContaining(processToken);
       }

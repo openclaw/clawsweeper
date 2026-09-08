@@ -1956,7 +1956,7 @@ const STATUS_BOOLEAN_FIELDS = new Set([
   "workflow_run_census_complete", "durable_server_observed"
 ]);
 const STATUS_TEXT_FIELDS = new Set([
-  "conclusion", "mode", "outcome", "reason", "sample_kind", "severity", "source", "stage", "state",
+  "conclusion", "enqueue_replay", "mode", "outcome", "reason", "sample_kind", "severity", "source", "stage", "state",
   "status", "terminal_outcome", "work_kind", "errors", "reasons", "cache_state"
 ]);
 const STATUS_TEXT_VALUES = new Set([
@@ -1973,11 +1973,12 @@ const STATUS_TEXT_VALUES = new Set([
   "observed", "queue_empty", "claim_stalled", "dispatcher_blocked", "dispatcher_paused",
   "claim_delayed", "handoff_current", "handoff_unknown", "capacity_unavailable", "capacity_available",
   "no_ready_backlog", "no_admissible_backlog", "dispatcher_inactive", "capacity_full_with_backlog",
+  "scheduled_disposition_v1",
   "fresh", "miss", "repeated_failure_identity", "terminal_review_failure",
-  "retryable_review_failure", "queue_telemetry_unavailable", "queue_handoff_stalled",
+  "retryable_review_failure", "terminal_status_delivery_failed", "queue_telemetry_unavailable", "queue_handoff_stalled",
   "queue_handoff_degraded", "queue_handoff_unavailable", "publication_critical",
   "publication_degraded", "publication_health_unavailable", "publication_dlq_open",
-  "review_failures_repeated", "review_failures_recent", "review_failure_telemetry_unavailable",
+  "review_failures_repeated", "review_failures_recent", "review_failure_telemetry_unavailable", "review_status_delivery_failed",
   "review_retries_exhausted", "workflow_execution_stalled", "workflow_execution_degraded",
   "worker_failures_unresolved", "apply_health_attention", "automerge_attention"
 ]);
@@ -2013,7 +2014,7 @@ const STATUS_NUMBER_FIELDS = new Set([
   "failure_rate_percent", "generated_count", "longest_duration_ms", "maximum_age_ms", "median_ms",
   "oldest_age_seconds", "oldest_dispatching_age_seconds", "oldest_leased_age_seconds",
   "oldest_pending_age_seconds", "omitted_count", "ready_pending", "admissible_pending",
-  "scheduled_interval_minutes", "target_rate_per_hour", "terminal_count", "total_count", "total_duration_ms", "ttl_seconds",
+  "scheduled_interval_minutes", "target_rate_per_hour", "max_concurrent", "terminal_count", "total_count", "total_duration_ms", "ttl_seconds",
   "setting-up", "ready", "backoff", "parked", "oldest_ready_age_seconds",
   "oldest_backoff_age_seconds", "oldest_lease_age_seconds", "enqueued_total", "completed_total",
   "published_total", "superseded_total", "semantic_deduped_total", "retried_total",
@@ -2023,7 +2024,7 @@ const STATUS_NUMBER_FIELDS = new Set([
   "throttle_retry", "review_retry", "publication_retry", "dead_letter_capacity",
   "dispatch_rejected", "review_retry_exhausted", "direct_publication", "claim_timeout",
   "execution_timeout", "workflow_cancelled", "workflow_failed", "affected_targets",
-  "retryable_attempts", "terminal_attempts", "repeated_identities", "agent_input_scan",
+  "retryable_attempts", "terminal_attempts", "terminal_status_observed", "terminal_status_failed", "repeated_identities", "agent_input_scan",
   "source_preparation", "provider_or_model", "workflow"
 ]);
 function dashboardStatusNumber(value, field) {

@@ -1,8 +1,16 @@
+import {
+  recordExtension,
+  tarHeader,
+  RECORD_SNAPSHOT_UPLOAD_MAX_BYTES,
+  SNAPSHOT_MAX_IDENTITIES,
+  snapshotIdentityKey,
+  type SnapshotIdentity,
+} from "../src/record-snapshot-protocol.ts";
 import type {
   ExactReviewDirectPublicationStore,
-  RecordSection,
   RecordSnapshotIdentity,
 } from "./exact-review-direct-publication.ts";
+import type { DurableStorage } from "./durable-storage.ts";
 
 export const EXACT_REVIEW_RECORD_SNAPSHOT_TABLE = "exact_review_record_snapshots";
 export const RECORD_SNAPSHOT_KEEP = 2;
@@ -11,15 +19,6 @@ export const RECORD_SNAPSHOT_DOWNLOAD_MAX_BYTES = 32 * 1024 * 1024;
 const R2_MULTIPART_PART_BYTES = 8 * 1024 * 1024;
 const TAR_BLOCK_BYTES = 512;
 const encoder = new TextEncoder();
-
-type SqlStorage = {
-  exec: (query: string, ...bindings: unknown[]) => Iterable<Record<string, unknown>>;
-};
-
-type DurableStorage = {
-  sql: SqlStorage;
-  transactionSync: <T>(callback: () => T) => T;
-};
 
 type UploadedPart = { partNumber: number; etag: string };
 
@@ -39,7 +38,7 @@ export type SnapshotR2Bucket = {
     key: string,
     options?: { httpMetadata?: { contentType?: string } },
   ) => Promise<R2MultipartUploadLike>;
-  head: (key: string) => Promise<unknown | null>;
+  head: (key: string) => Promise<{ size: number } | null>;
   get: (
     key: string,
     options?: { range?: { offset: number; length: number } },
@@ -54,6 +53,7 @@ export type RecordSnapshot = {
   bytes: number;
   uncompressedBytes: number;
   fileCount: number;
+  identityDigest?: string;
   createdAt: number;
 };
 
@@ -64,10 +64,21 @@ export class SnapshotStoreUnavailableError extends Error {
   }
 }
 
+export class SnapshotRegistrationError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status = 400) {
+    super(message);
+    this.name = "SnapshotRegistrationError";
+    this.status = status;
+  }
+}
+
 export class ExactReviewRecordSnapshotStore {
   private readonly storage: DurableStorage;
   private readonly records: ExactReviewDirectPublicationStore;
   private readonly bucket: SnapshotR2Bucket | null;
+  private registrationTail: Promise<unknown> = Promise.resolve();
 
   constructor(
     storage: DurableStorage,
@@ -89,9 +100,20 @@ export class ExactReviewRecordSnapshotStore {
          bytes INTEGER NOT NULL CHECK (bytes >= 0),
          uncompressed_bytes INTEGER NOT NULL CHECK (uncompressed_bytes >= 0),
          file_count INTEGER NOT NULL CHECK (file_count >= 0),
+         identity_digest TEXT,
          created_at INTEGER NOT NULL
        ) STRICT`,
     );
+    const columns = Array.from(
+      this.storage.sql.exec(
+        `SELECT name FROM pragma_table_info('${EXACT_REVIEW_RECORD_SNAPSHOT_TABLE}')`,
+      ),
+    );
+    if (!columns.some((column) => column.name === "identity_digest")) {
+      this.storage.sql.exec(
+        `ALTER TABLE ${EXACT_REVIEW_RECORD_SNAPSHOT_TABLE} ADD COLUMN identity_digest TEXT`,
+      );
+    }
     this.storage.sql.exec(
       `CREATE INDEX IF NOT EXISTS exact_review_record_snapshots_latest
          ON ${EXACT_REVIEW_RECORD_SNAPSHOT_TABLE}
@@ -159,6 +181,88 @@ export class ExactReviewRecordSnapshotStore {
     }
   }
 
+  register(value: Record<string, unknown>): Promise<RecordSnapshot> {
+    return this.serializeRegistration(() => this.registerSnapshot(value));
+  }
+
+  discardUnregistered(value: Record<string, unknown>): Promise<void> {
+    return this.serializeRegistration(async () => {
+      const snapshot = validateSnapshotRegistration(value, Number.MAX_SAFE_INTEGER);
+      const referenced =
+        Array.from(
+          this.storage.sql.exec(
+            `SELECT 1 FROM ${EXACT_REVIEW_RECORD_SNAPSHOT_TABLE} WHERE object_key = ? LIMIT 1`,
+            snapshot.objectKey,
+          ),
+        ).length > 0;
+      if (!referenced) await this.requireBucket().delete(snapshot.objectKey);
+    });
+  }
+
+  private serializeRegistration<T>(callback: () => Promise<T>): Promise<T> {
+    // Reference checks and deletion must not race registration across R2 awaits.
+    const result = this.registrationTail.then(callback);
+    this.registrationTail = result.catch(() => undefined);
+    return result;
+  }
+
+  private async registerSnapshot(value: Record<string, unknown>): Promise<RecordSnapshot> {
+    const snapshot = validateSnapshotRegistration(value, this.records.currentExportRevision());
+    const bucket = this.requireBucket();
+    let object: { size: number } | null;
+    try {
+      object = await bucket.head(snapshot.objectKey);
+    } catch (error) {
+      throw unavailable(error);
+    }
+    if (!object) throw new SnapshotRegistrationError("snapshot_object_not_found", 404);
+    if (object.size !== snapshot.bytes)
+      throw new SnapshotRegistrationError("snapshot_size_mismatch");
+    // Updates after the watermark lower this live-index count; no content is read.
+    const expected = this.records.snapshotRecordCount(
+      snapshot.repoSlug,
+      snapshot.revisionWatermark,
+    );
+    if (snapshot.fileCount < expected)
+      throw new SnapshotRegistrationError("snapshot_coverage_incomplete", 422);
+    const identities = validateSnapshotIdentities(value.identities);
+    const hash = await crypto.subtle.digest("SHA-256", encoder.encode(JSON.stringify(identities)));
+    const digest = Array.from(new Uint8Array(hash), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+    if (digest !== snapshot.identityDigest)
+      throw new SnapshotRegistrationError("snapshot_identity_digest_mismatch");
+    const provided = new Set(identities.map(snapshotIdentityKey));
+    // One ids-only scan; concurrent updates/deletions can only shrink the required set.
+    for (const { section, id } of this.records.snapshotRecordIdentities(
+      snapshot.repoSlug,
+      snapshot.revisionWatermark,
+    )) {
+      if (!provided.has(snapshotIdentityKey([section, id])))
+        throw new SnapshotRegistrationError("snapshot_coverage_incomplete", 422);
+    }
+    if (identities.length !== snapshot.fileCount)
+      throw new SnapshotRegistrationError("invalid_snapshot_identities");
+    // A lost response can retry registration; it must not insert another row.
+    const existing = Array.from(
+      this.storage.sql.exec(
+        `SELECT repo_slug, revision_watermark, object_key, bytes, uncompressed_bytes,
+              file_count, identity_digest, created_at FROM ${EXACT_REVIEW_RECORD_SNAPSHOT_TABLE}
+        WHERE object_key = ?`,
+        snapshot.objectKey,
+      ),
+    )[0];
+    if (existing) {
+      if (JSON.stringify(snapshotFromRow(existing)) !== JSON.stringify(snapshot)) {
+        throw new SnapshotRegistrationError("snapshot_registration_conflict", 409);
+      }
+    } else {
+      this.insertSync(snapshot);
+    }
+    await this.prune(snapshot.repoSlug);
+    return snapshot;
+  }
+
   async readRange(
     repoSlug: string,
     revisionWatermark: number,
@@ -201,7 +305,7 @@ export class ExactReviewRecordSnapshotStore {
     const row = Array.from(
       this.storage.sql.exec(
         `SELECT repo_slug, revision_watermark, object_key, bytes, uncompressed_bytes,
-                file_count, created_at
+                file_count, identity_digest, created_at
            FROM ${EXACT_REVIEW_RECORD_SNAPSHOT_TABLE}
           WHERE repo_slug = ?
           ORDER BY created_at DESC, snapshot_id DESC
@@ -216,7 +320,7 @@ export class ExactReviewRecordSnapshotStore {
     const row = Array.from(
       this.storage.sql.exec(
         `SELECT repo_slug, revision_watermark, object_key, bytes, uncompressed_bytes,
-                file_count, created_at
+                file_count, identity_digest, created_at
            FROM ${EXACT_REVIEW_RECORD_SNAPSHOT_TABLE}
           WHERE repo_slug = ? AND revision_watermark = ?
           ORDER BY created_at DESC, snapshot_id DESC
@@ -232,14 +336,15 @@ export class ExactReviewRecordSnapshotStore {
     this.storage.sql.exec(
       `INSERT INTO ${EXACT_REVIEW_RECORD_SNAPSHOT_TABLE}
          (repo_slug, revision_watermark, object_key, bytes, uncompressed_bytes,
-          file_count, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          file_count, identity_digest, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       snapshot.repoSlug,
       snapshot.revisionWatermark,
       snapshot.objectKey,
       snapshot.bytes,
       snapshot.uncompressedBytes,
       snapshot.fileCount,
+      snapshot.identityDigest ?? null,
       snapshot.createdAt,
     );
   }
@@ -300,6 +405,7 @@ function snapshotFromRow(row: Record<string, unknown>): RecordSnapshot {
     bytes: Number(row.bytes),
     uncompressedBytes: Number(row.uncompressed_bytes),
     fileCount: Number(row.file_count),
+    ...(row.identity_digest == null ? {} : { identityDigest: String(row.identity_digest) }),
     createdAt: Number(row.created_at),
   };
 }
@@ -396,59 +502,79 @@ async function* tarChunks(
   yield new Uint8Array(TAR_BLOCK_BYTES * 2);
 }
 
-function tarHeader(relativePath: string, size: number) {
-  const header = new Uint8Array(TAR_BLOCK_BYTES);
-  const { name, prefix } = splitTarPath(relativePath);
-  writeTarString(header, 0, 100, name);
-  writeTarOctal(header, 100, 8, 0o644);
-  writeTarOctal(header, 108, 8, 0);
-  writeTarOctal(header, 116, 8, 0);
-  writeTarOctal(header, 124, 12, size);
-  writeTarOctal(header, 136, 12, 0);
-  header.fill(0x20, 148, 156);
-  header[156] = "0".charCodeAt(0);
-  writeTarString(header, 257, 6, "ustar\0");
-  writeTarString(header, 263, 2, "00");
-  writeTarString(header, 265, 32, "clawsweeper");
-  writeTarString(header, 297, 32, "clawsweeper");
-  writeTarString(header, 345, 155, prefix);
-  const checksum = header.reduce((sum, value) => sum + value, 0);
-  const checksumText = checksum.toString(8).padStart(6, "0");
-  writeTarString(header, 148, 6, checksumText);
-  header[154] = 0;
-  header[155] = 0x20;
-  return header;
+export function validateSnapshotRegistration(
+  value: Record<string, unknown>,
+  currentRevision: number,
+): RecordSnapshot {
+  const {
+    repoSlug,
+    revisionWatermark,
+    objectKey,
+    bytes,
+    uncompressedBytes,
+    fileCount,
+    createdAt,
+    identityDigest,
+  } = value;
+  if (
+    typeof repoSlug !== "string" ||
+    !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/.test(repoSlug) ||
+    !Number.isSafeInteger(revisionWatermark) ||
+    Number(revisionWatermark) < 0 ||
+    Number(revisionWatermark) > currentRevision ||
+    !Number.isSafeInteger(bytes) ||
+    Number(bytes) < 1 ||
+    Number(bytes) > RECORD_SNAPSHOT_UPLOAD_MAX_BYTES ||
+    !Number.isSafeInteger(uncompressedBytes) ||
+    Number(uncompressedBytes) < 0 ||
+    !Number.isSafeInteger(fileCount) ||
+    Number(fileCount) < 0 ||
+    Number(fileCount) > SNAPSHOT_MAX_IDENTITIES ||
+    typeof identityDigest !== "string" ||
+    !/^[0-9a-f]{64}$/.test(identityDigest) ||
+    !Number.isSafeInteger(createdAt) ||
+    Number(createdAt) < 1 ||
+    Number(createdAt) > Date.now() ||
+    typeof objectKey !== "string" ||
+    !objectKey.startsWith(`${repoSlug}/${revisionWatermark}/${createdAt}-`) ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tar\.gz$/.test(
+      objectKey.slice(`${repoSlug}/${revisionWatermark}/${createdAt}-`.length),
+    )
+  )
+    throw new SnapshotRegistrationError("invalid_snapshot_descriptor");
+  return {
+    repoSlug,
+    revisionWatermark: Number(revisionWatermark),
+    objectKey,
+    bytes: Number(bytes),
+    uncompressedBytes: Number(uncompressedBytes),
+    fileCount: Number(fileCount),
+    identityDigest,
+    createdAt: Number(createdAt),
+  };
 }
 
-function splitTarPath(relativePath: string) {
-  if (encoder.encode(relativePath).byteLength <= 100) return { name: relativePath, prefix: "" };
-  for (
-    let index = relativePath.lastIndexOf("/");
-    index > 0;
-    index = relativePath.lastIndexOf("/", index - 1)
-  ) {
-    const prefix = relativePath.slice(0, index);
-    const name = relativePath.slice(index + 1);
-    if (encoder.encode(prefix).byteLength <= 155 && encoder.encode(name).byteLength <= 100) {
-      return { name, prefix };
-    }
+export function validateSnapshotIdentities(value: unknown, fileCount?: number): SnapshotIdentity[] {
+  if (
+    !Array.isArray(value) ||
+    value.length > SNAPSHOT_MAX_IDENTITIES ||
+    (fileCount !== undefined && value.length !== fileCount)
+  )
+    throw new SnapshotRegistrationError("invalid_snapshot_identities");
+  let previous = "";
+  for (const pair of value) {
+    if (
+      !Array.isArray(pair) ||
+      pair.length !== 2 ||
+      !["items", "closed", "plans", "decision-packets", "commits"].includes(pair[0]) ||
+      typeof pair[1] !== "string" ||
+      pair[1].length > 255 ||
+      !(pair[0] === "commits" ? /^[0-9a-f]{40}$/.test(pair[1]) : /^[1-9]\d*$/.test(pair[1]))
+    )
+      throw new SnapshotRegistrationError("invalid_snapshot_identities");
+    const key = snapshotIdentityKey(pair as SnapshotIdentity);
+    if (key <= previous) throw new SnapshotRegistrationError("invalid_snapshot_identities");
+    previous = key;
   }
-  throw new Error(`snapshot tar path is too long: ${relativePath}`);
-}
-
-function writeTarString(target: Uint8Array, offset: number, length: number, value: string) {
-  const bytes = encoder.encode(value);
-  if (bytes.byteLength > length) throw new Error(`tar header value exceeds ${length} bytes`);
-  target.set(bytes, offset);
-}
-
-function writeTarOctal(target: Uint8Array, offset: number, length: number, value: number) {
-  const octal = value.toString(8).padStart(length - 1, "0");
-  if (octal.length >= length) throw new Error(`tar numeric value exceeds ${length} bytes`);
-  writeTarString(target, offset, length - 1, octal);
-  target[offset + length - 1] = 0;
-}
-
-function recordExtension(section: RecordSection) {
-  return section === "decision-packets" ? ".json" : ".md";
+  return value as SnapshotIdentity[];
 }

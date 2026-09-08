@@ -12,6 +12,7 @@ import {
   GITHUB_EGRESS_STATUS_BUCKETS,
   GITHUB_EGRESS_UNITS,
 } from "../src/github-egress-telemetry-contract.ts";
+import { sqlColumnNames, type DurableStorage } from "./durable-storage.ts";
 
 const ROLLUP_TABLE = "exact_review_github_egress_rollups_v2";
 const RATE_LIMIT_TABLE = "exact_review_github_rate_limits_v2";
@@ -36,15 +37,6 @@ export type GithubEgressCredentialCircuitObservation = {
   retryAt: number;
   provenance: "retry_after" | "rate_limit_reset";
   authoritative: true;
-};
-
-type SqlStorage = {
-  exec: (query: string, ...bindings: unknown[]) => Iterable<Record<string, unknown>>;
-};
-
-type DurableStorage = {
-  sql: SqlStorage;
-  transactionSync: <T>(callback: () => T) => T;
 };
 
 function alignedBucketStart(bucketKind: "five_minute" | "hour", timestamp: number) {
@@ -199,13 +191,7 @@ export class GithubEgressTelemetryStore {
          credential_circuits_json TEXT NOT NULL DEFAULT '[]'
        ) STRICT`,
     );
-    const receiptColumns = new Set(
-      (
-        Array.from(
-          this.storage.sql.exec(`SELECT name FROM pragma_table_info('${RECEIPT_TABLE}')`),
-        ) as Array<Record<string, unknown>>
-      ).map((row) => String(row.name || "")),
-    );
+    const receiptColumns = sqlColumnNames(this.storage, RECEIPT_TABLE);
     if (!receiptColumns.has("credential_circuits_json")) {
       this.storage.sql.exec(
         `ALTER TABLE ${RECEIPT_TABLE}
@@ -235,13 +221,7 @@ export class GithubEgressTelemetryStore {
          last_observed_at INTEGER
        ) STRICT`,
     );
-    const diagnosticColumns = new Set(
-      (
-        Array.from(
-          this.storage.sql.exec(`SELECT name FROM pragma_table_info('${DIAGNOSTICS_TABLE}')`),
-        ) as Array<Record<string, unknown>>
-      ).map((row) => String(row.name || "")),
-    );
+    const diagnosticColumns = sqlColumnNames(this.storage, DIAGNOSTICS_TABLE);
     for (const [column, definition] of [
       ["evicted_five_minute_rollup_rows", "INTEGER NOT NULL DEFAULT 0"],
       ["evicted_hour_rollup_rows", "INTEGER NOT NULL DEFAULT 0"],

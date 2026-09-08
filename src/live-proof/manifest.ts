@@ -1,3 +1,4 @@
+import { requireRecord, rejectUnexpectedKeys, requirePositiveInteger } from "../value-coerce.js";
 import { statSync } from "node:fs";
 import { mediaProofSpawnDetail, ffprobeMedia } from "../clawsweeper-media-proof.js";
 import type { MediaProofCommandRunner } from "../clawsweeper-types.js";
@@ -194,34 +195,12 @@ export function validateAttachedMedia(options: {
   return video;
 }
 
-function requireRecord(value: unknown, label: string): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${label} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
-function rejectUnexpectedKeys(
-  record: Record<string, unknown>,
-  allowed: ReadonlySet<string>,
-  label: string,
-): void {
-  const unexpected = Object.keys(record).filter((key) => !allowed.has(key));
-  if (unexpected.length) throw new Error(`${label} has unexpected keys: ${unexpected.join(", ")}`);
-}
-
+// Manifest strings must be trimmed and single-line.
 function requireString(value: unknown, label: string): string {
   if (typeof value !== "string" || !value.trim() || /[\r\n\u2028\u2029]/.test(value)) {
     throw new Error(`${label} must be a non-empty single-line string`);
   }
   return value.trim();
-}
-
-function requirePositiveInteger(value: unknown, label: string): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`${label} must be a positive safe integer`);
-  }
-  return value;
 }
 
 function requireFiniteNumber(value: unknown, label: string): number {

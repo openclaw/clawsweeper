@@ -1,4 +1,5 @@
 export const GITHUB_ETAG_CACHE_KEY_VERSION = 1 as const;
+export const GITHUB_ETAG_CACHE_MAX_BODY_BYTES = 128 * 1_024;
 export const GITHUB_ETAG_DEFAULT_MEDIA_TYPE = "application/vnd.github+json";
 
 export const GITHUB_ETAG_CREDENTIAL_POOLS = [

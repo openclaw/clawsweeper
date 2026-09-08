@@ -4,8 +4,8 @@
 - Owner: ClawSweeper maintainers
 - Source of truth: `dashboard/bay-page.ts`, public Worker and queue projectors,
   Bay tests, and the read-only `/bay` route
-- Last verified: 2026-09-02, with baseline
-  `openclaw/clawsweeper@ff071968ca4e3fa62c364f9642e10a03c2fda025`; the lifecycle
+- Last verified: 2026-09-04, with baseline
+  `openclaw/clawsweeper@ea976d0cda362d3547f0058f25174f6a1c97ff18`; the lifecycle
   inventory follow-up's exact tested revision and native/browser evidence are
   recorded in its pull request
 - Update when: lane names, stage mapping, public projection or completeness
@@ -19,6 +19,11 @@ show a canonical repository and issue or pull-request number when the
 repository is on the deployment's verified-public allowlist. It is linked from
 the Overview, issue-triage, and PR-proof headers as a normal ClawSweeper
 web-page destination.
+
+The page reads top to bottom: a hero with the last-hour review timing, the
+shoreline toolbar (finder, repository filters, tide, view options) above the
+illustrated beach, the durable lifecycle board, the collapsed queue telemetry
+disclosure, and a footer.
 
 Bay is an observer-only surface: it displays bounded public status and may
 provide view-only navigation to verified-public GitHub repository, item,
@@ -113,15 +118,15 @@ timestamps. The Preview tide button changes only the browser animation and does
 not mutate stored state.
 
 The exact-review control board is secondary operator context under the closed
-`System details` disclosure. Expanding it separates review admission from
+`Queue telemetry` disclosure. Expanding it separates review admission from
 result publication and shows aggregate lane totals, bounded 6-hour, 24-hour,
 or 7-day history, and closed observed cause counts. The crab lanes remain the
 primary pipeline visualization. The control board does not infer an upstream
 reason for a cancellation or failure and exposes no queue, recovery, deploy,
 or rollback controls.
 
-The durable lifecycle board contains three inventory counts and six closed
-lifecycle-lane counts: pending, acknowledgement pending, completed, superseded,
+The collapsed **Retained lifecycle records** disclosure below queue telemetry
+contains three inventory counts and six closed lifecycle-lane counts: pending, acknowledgement pending, completed, superseded,
 requeued, and terminal attention. A complete projection may include at most 24
 cards drawn only from `PUBLIC_BAY_REPOS`. Each card contains the canonical
 repository and issue or pull-request number, a closed lane/state, a current
@@ -135,6 +140,30 @@ only for the final 24-card sample. Validation still costs a linear scan of that
 history; it does not retain a history-sized JavaScript array or identity set.
 An invalid historical row makes the whole projection unavailable even when it
 would not appear in the sample. Reads never prune or rewrite durable facts.
+Counts cover all retained records in the public repository scope, with no date
+filter: latest recorded state, not live backlog or cumulative event totals.
+Records are keyed by target, fence and revision; target revisions deduplicate
+target and revision; unique targets are repository/item identities. Beach and
+time filters do not affect this disclosure. The 24 cards sample across lanes,
+not in proportion to their totals. Retained does not establish all-time coverage.
+
+The top duration chart uses a zero-based minutes Y-axis and a fixed rolling
+last-hour X-axis in UTC anchored to `bay.timings.window_ended_at`, captured
+by the same query that computes the timing aggregate. It does not use the
+browser clock or the earlier outer status-collection timestamp. Stale
+status snapshots are labeled and missing timing-window timestamps
+make the chart unavailable rather than shifting the data. One plot-wide focusable
+slider reveals interval, median, mean and sample count in a compact floating
+tooltip. Hover or scrub across the plot, tap/drag on touch, or use arrow keys and
+Home/End on the keyboard; Escape dismisses details. There is no chart interval
+dropdown or permanent detail panel. The separate inline-proof cohort selector
+remains. Valid refresh preserves the navigation node, focus and logical interval;
+unavailable data removes stale chart interaction and returns focus to status.
+Missing buckets are hatched gaps, never zero-duration samples; partial hour-edge
+buckets are labeled.
+The existing API returns at most 12 aligned five-minute buckets, so a rolling
+hour that intersects 13 can have an unrepresented edge bucket. This remains
+explicitly missing rather than being inferred from the overall aggregate.
 
 The public lifecycle response is cached for up to 20 seconds in Cloudflare's
 native, per-data-center cache, scoped to the verified public repository set.
@@ -169,6 +198,37 @@ new fixed aggregate object. Unknown, stale, malformed, mixed, or over-cap state
 produces an unavailable projection with no inventory, lane, or sample payload.
 This boundary preserves useful private operations state without making it a
 public or cache-serializable identity surface.
+
+## Inline Proof Timing Comparison
+
+The last-hour timing control defaults to all reviews in the selected publication-path
+view. It can compare **inline proof requested**, **no inline proof requested (known)**,
+and **inline proof unknown**. These are full request-to-final durations: inline
+proof time is already included and is never subtracted. The legacy publication-path
+filter remains independent; selecting Waters filters the beach, not this metric.
+
+“Requested” means the original review lease successfully admitted at least one
+inline-proof request. It does not mean a producer ran, evidence returned, a check
+passed, or a reviewer judged proof sufficient. A bounded durable enum belongs to
+the admitted review revision and survives lease cleanup and retries. A new head
+or admission revision does not inherit it. Linked publication timing follows only
+the exact producer fence/revision and completed claim generation; missing, stale,
+cancelled, or command-mismatched lineage remains unknown. No plans, observations, request IDs,
+lease capabilities, or credentials are exposed.
+
+“No request” is known only when tracking began at original admission. Historical,
+reconstructed, missing, and malformed participation remains unknown rather than
+being inferred from command wording, selected scenarios, or the legacy batch flag.
+The timing population is still the existing bounded last-hour final-receipt set;
+missing cohort data does not invalidate the all-reviews metric or invent a no-proof
+cohort. Lifecycle cards display the same closed participation fact (while pending,
+“not requested yet”). Each selected cohort reports its own sample count, median,
+mean, and history.
+
+This additive contract was exercised on September 7, 2026 using the local Worker,
+SQLite Durable Object and Chromium fixture in
+[`proof/bay-inline-proof`](proof/bay-inline-proof/README.md). Exact-head evidence
+belongs in the accompanying PR body; this fixture does not exercise live producers.
 
 ## Data And GitHub API Load
 

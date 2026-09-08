@@ -119,7 +119,7 @@ jobs:
         if: ${{ steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
         run: |
           sudo apt-get update
-          sudo apt-get install --yes ffmpeg
+          sudo apt-get install --yes --no-install-recommends ffmpeg
 
       - name: Prepare each item independently
         if: ${{ steps.batch.outputs.claimed == 'true' && steps.batch.outputs.item_count != '0' }}
@@ -139,7 +139,7 @@ jobs:
           pnpm run --silent repair:exact-review-batch heartbeat
           (
             while sleep 60; do
-              if ! pnpm run --silent repair:exact-review-batch heartbeat; then
+              if ! pnpm run --silent repair:exact-review-batch heartbeat --tolerate-until-lease; then
                 touch "$heartbeat_failed"
                 exit 1
               fi
@@ -179,7 +179,7 @@ jobs:
           pnpm run --silent repair:exact-review-batch heartbeat
           (
             while sleep 60; do
-              if ! pnpm run --silent repair:exact-review-batch heartbeat; then
+              if ! pnpm run --silent repair:exact-review-batch heartbeat --tolerate-until-lease; then
                 touch "$heartbeat_failed"
                 exit 1
               fi
@@ -227,6 +227,7 @@ jobs:
             target_branch="$(jq -r '.decision.targetBranch' <<<"$item")"
             item_number="$(jq -r '.decision.itemNumber' <<<"$item")"
             source_action="$(jq -r '.decision.publication.producerDecision.sourceAction' <<<"$item")"
+            publication_policy="$(jq -r '.decision.publication.producerDecision.publicationPolicy // ""' <<<"$item")"
             repeat_revision="$(jq -r '.repeatRevision == true' <<<"$item")"
             claim_generation="$(jq -r '.claimGeneration' <<<"$item")"
             fence_key="$(jq -r '.itemKey' <<<"$item")"
@@ -253,7 +254,7 @@ jobs:
                 '{
                   delivery_id: $delivery_id,
                   decision: ($decision + {
-                    sourceAction: (if $source_action == "failed_review_shard_recovery" then $source_action else "source_drift_requeue" end),
+                    sourceAction: (if $source_action == "failed_review_shard_recovery" or $source_action == "command_proof_result" then $source_action else "source_drift_requeue" end),
                     supersedesInProgress: true
                   })
                 }')"
@@ -275,7 +276,7 @@ jobs:
               continue
             elif [ "$outcome_kind" = "superseded" ]; then
               lifecycle_terminal="superseded"
-            elif [ "$source_action" = "failed_review_shard_recovery" ]; then
+            elif [ "$publication_policy" = "record_comment_only" ] || [ "$source_action" = "failed_review_shard_recovery" ]; then
               lifecycle_router_outcome="not_required"
             elif jq -e '.disposition.routableSyncExpected == true' "$outcome_path" >/dev/null; then
               github_apply_error="$(mktemp)"
@@ -372,6 +373,7 @@ jobs:
             # receipt or terminal handoff. It is deliberately independent of
             # the later terminal command acknowledgement finalizer.
             if [ "$AUTO_IMPLEMENT_ISSUES" = "1" ] &&
+              [ -z "$publication_policy" ] &&
               [ "$remaining_implementations" -gt 0 ] &&
               [ "$target_repo" = "openclaw/openclaw" ] &&
               [ "$(jq -r '.decision.itemKind' <<<"$item")" = "issue" ] &&

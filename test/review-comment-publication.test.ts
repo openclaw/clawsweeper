@@ -17,6 +17,36 @@ import {
 } from "../dist/clawsweeper-review-comment-state.js";
 import { freshExactHeadReviewStartLease } from "../dist/repair/comment-router-core.js";
 
+import { manualPublicationOwnerFromEnv } from "../dist/manual-publication-authority.js";
+
+test("manual publication owner metadata requires actual producer or batch claim identifiers", () => {
+  const run = { GITHUB_RUN_ID: "1074", GITHUB_RUN_ATTEMPT: "2" };
+  assert.deepEqual(
+    manualPublicationOwnerFromEnv({ ...run, EXACT_REVIEW_LEASE_ID: "claimed-lease" }),
+    { leaseId: "claimed-lease", runId: "1074", runAttempt: 2 },
+  );
+  assert.deepEqual(
+    manualPublicationOwnerFromEnv({
+      ...run,
+      EXACT_REVIEW_BATCH_ID: "claimed-batch",
+      EXACT_REVIEW_BATCH_LEASE_OWNER: "claimed-worker",
+    }),
+    { batchId: "claimed-batch", leaseOwner: "claimed-worker", runId: "1074", runAttempt: 2 },
+  );
+  for (const invalid of [
+    {
+      ...run,
+      EXACT_REVIEW_ITEM_KEY: "openclaw/openclaw#74",
+      EXACT_REVIEW_LEASE_REVISION: "1",
+      EXACT_REVIEW_CLAIM_GENERATION: "1",
+    },
+    { ...run, EXACT_REVIEW_LEASE_ID: "old-producer", EXACT_REVIEW_BATCH_ID: "incomplete-batch" },
+    { EXACT_REVIEW_LEASE_ID: "claimed-lease", GITHUB_RUN_ID: "1074" },
+    { ...run, EXACT_REVIEW_LEASE_ID: "claimed-lease", GITHUB_RUN_ATTEMPT: "0" },
+  ])
+    assert.throws(() => manualPublicationOwnerFromEnv(invalid), /manual publication requires/);
+});
+
 const itemNumber = 120232;
 const headSha = "522ac4a03828a827c5c266194459d995b9982ff9";
 const reviewMarker = `<!-- clawsweeper-review item=${itemNumber} -->`;
@@ -168,6 +198,56 @@ test("review version timestamps round-trip through the durable parser", () => {
   assert.ok(parsed);
   assert.equal(parsed.reviewedAt, "2026-08-08T18:00:00.000Z");
   assert.equal(Date.parse(parsed.reviewedAt), Date.parse(fields.reviewed_at));
+  const restricted = "---\npublication_policy: record_comment_only\n---\nReview\n";
+  assert.equal(automation.reviewAutomationMarkersFromReport(restricted), "");
+  assert.equal(automation.reviewVersionMarkerFromReport(restricted), versionMarker);
+});
+
+test("marker-suppressed oversized publication refuses before writing a fallback", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-restricted-oversize-"));
+  try {
+    const existing = durableReviewComment({
+      id: 20,
+      reviewedAt: "2026-08-07T16:00:00Z",
+      updatedAt: "2026-08-07T16:01:00Z",
+    });
+    const comments = () => [existing];
+    let writes = 0;
+    let publishedBody = "";
+    const publication = reviewCommentPublication({
+      root,
+      comments,
+      state: reviewCommentState(comments),
+      mutate: ({ args }) => {
+        writes += 1;
+        publishedBody = JSON.parse(readFileSync(args[args.indexOf("--input") + 1]!, "utf8")).body;
+        return JSON.stringify({ ...existing, body: publishedBody });
+      },
+    });
+    const oversized = `${"x".repeat(70_000)}\n${existing.body}`;
+    const original = JSON.stringify(existing);
+    assert.throws(
+      () =>
+        publication.upsertReviewComment(itemNumber, oversized, existing, undefined, {
+          suppressAutomationMarkers: true,
+        }),
+      /marker-suppressed publication cannot emit a fallback/,
+    );
+    assert.equal(writes, 0);
+    assert.equal(publishedBody, "");
+    assert.equal(JSON.stringify(existing), original);
+
+    // Ordinary publication retains its established bounded-notice behavior.
+    assert.throws(
+      () => publication.upsertReviewComment(itemNumber, oversized, existing),
+      DurableReviewPublicationBlockedError,
+    );
+    assert.equal(writes, 1);
+    assert.match(publishedBody, /clawsweeper-verdict:needs-human/);
+    assert.match(publishedBody, /clawsweeper-review-state:blocked/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("oversized durable review publication replaces ready state with a verified blocked receipt", () => {

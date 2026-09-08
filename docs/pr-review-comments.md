@@ -31,6 +31,28 @@ Each synced comment includes the durable identity marker:
 ClawSweeper edits that comment in place instead of posting repeated comments.
 Report front matter stores the synced comment id, URL, hash, and sync time.
 
+Explicit manual reports carry `publication_policy: record_comment_only`. Their
+publisher permits the selected durable comment and canonical report/plan/packet
+tuple, plus owned coordination. It suppresses automation action markers and
+label synchronization, closes, paired-item writes, repair, and implementation.
+The completion identity/version and original `reviewed_at` remain intact after
+an accepted comment write. Retrying publication does not make the review newer;
+unknown acknowledgements still require the exact trusted read-back described
+below. The coordinator checks current publication authority without extending
+expired claims, and records router disposition as `not_required`.
+It checks the actual lease/run/attempt or active batch owner at each comment
+mutation attempt, including lease cleanup, and checks ownership again before
+canonical acceptance after asynchronous admission. These checks do not make
+GitHub and the coordinator one atomic transaction: an accepted comment may
+precede a rejected canonical handoff if ownership changes between services.
+An absent new restricted report fails as `missing_record_tuple`; hydrated old
+canonical content cannot supply the missing review authority. Ordinary absent
+reports keep their terminal missing disposition. Cached reports are reusable only
+under a matching publication policy; an incompatible cache requires a fresh
+review rather than relabeling the cached provenance. Marker-suppressed comments
+that exceed 60 KiB are refused before any write, so the ordinary oversized
+fallback cannot introduce automation markers or a replacement completion claim.
+
 Publication requires a trusted author, positive server comment ID, and the exact
 submitted body. A PATCH must return the targeted ID. An unusable acknowledgement
 can be recovered by one fresh scoped comment read; equivalent prose or different
@@ -62,6 +84,29 @@ both `clawsweeper-command-ack:<source-comment-id>` and a version-specific
 `clawsweeper-command-status` marker. Retries may repeat GitHub reads and writes,
 but they must reuse the command receipt and must not enqueue the same comment
 version twice.
+
+Automatically received pull requests keep their lightweight
+`clawsweeper-pr-ack` receipt separate from command status. When a deterministic
+input refusal (`findings`, `incomplete_source`, or `source_incompatible`) stops
+review, ClawSweeper edits that exact trusted-bot receipt with bounded,
+reason-specific guidance. It never reproduces scanner findings, detected values,
+paths, or source excerpts. The failure ledger records whether the edit was
+observed, failed, or unavailable; failed delivery raises operator health without
+restarting the unchanged review. A later queue claim replaces the blocked
+section with review-in-progress text, and a successful review replaces that
+with a completed state. If the pull request closes during review, the same
+receipt records that the review ended. Failure to persist either terminal state
+leaves the workflow durably failed while queue completion still prevents a
+review loop. Scheduled PR claims recover the same trusted receipt and bind its
+ID to the active queue lease before editing it. Source-authority fallback waits for the acknowledgement
+lookup to resolve, with a bounded crash-recovery deadline, so it cannot normally
+enqueue a routed review before the receipt identity is durable. Webhook
+redelivery alone cannot erase the terminal explanation. Automatic receipt and
+progress comments are filtered from reviewer context, while human comments that
+quote those markers remain visible. Receipt lookup reads at most ten pages of
+100 comments. If the tenth page is full, the lookup cannot safely establish
+absence or choose among receipts: it leaves comments untouched and proceeds
+without a status receipt rather than blocking the underlying review intake.
 
 After a newer source revision wins its lease, ClawSweeper may delete dedicated
 review-start placeholders for older revisions. The candidate comment snapshot
@@ -209,6 +254,18 @@ generic metadata or identifier filenames. Known storage paths, explicit
 vector/embedding contracts, and same-hunk persistence
 evidence still require review; diagnostic logging does not exempt real storage
 changes in the same patch.
+
+SQLite table detection retains directly changed table DDL and `sqliteTable(...)`
+declarations. Unchanged SQL or ORM table context must share a diff hunk with a
+changed column declaration; context from another hunk cannot establish one.
+Raw SQL columns use whitespace-separated, case-insensitive type keywords,
+including `NULL` and `NUMERIC`. ORM properties require supported column-builder
+calls such as `text(...)` or `integer(...)`; plain `null`, `TEXT`, `INTEGER`, and
+primitive type annotations are not column declarations. Likely-schema path
+uncertainty and approval/compatibility-proof requirements remain unchanged.
+OpenClaw Bay needs no change: the producer's classification is corrected without
+changing observer fields, routes, or controls.
+
 Markdown beside source is still documentation: ordinary
 prose mentioning sessions or metadata is not a stored-format change. Explicit
 storage formats, SQL DDL, and structured storage keys (including frontmatter)
@@ -220,14 +277,34 @@ cache keys, versions, namespaces, TTLs, and typed runtime fields alone do not
 establish persistence, including when their patches are missing or truncated.
 Cache-shaped objects need an explicit cache schema, storage path, or same-hunk
 persistence boundary; component-local maps, promises, and abort signals do not
-supply one. Explicit serialization, browser storage (local/session storage and
-IndexedDB), durable storage, and schema/migration evidence remain eligible in
-UI code too. Unchanged storage context in the same diff hunk can establish the
-boundary for changed stored fields; an in-memory map or display-only comment
-never vetoes that evidence. Ordinary validation fields in a `schema` file alone
-do not establish persisted database columns. The warning requests review; it
-does not prove a persisted contract changed. This classification does not change
-the separate `docs/` exemption for contributor behavior proof.
+supply one. JSON parse/stringify syntax and a bare `serialized` variable do not
+establish persistence, unchanged storage context, or truncated-patch uncertainty.
+Transient stdout/stderr diagnostics, IPC, and in-memory JSON conversion need a
+durable boundary. Explicit serialized-format contracts, disk read/write APIs
+(including synchronous variants), browser/VSCode storage, durable storage, and
+schema/migration evidence remain eligible in UI code too. An explicit persistence
+owner path or unchanged storage boundary in the same diff hunk retains warnings
+for changed stored fields and JSON formatting/argument edits. Unrelated hunks
+cannot supply that boundary; an in-memory map or display-only comment never
+vetoes it. SQLite-prefixed helper leaves such as `sqlite-error-diagnostics.ts` and
+`sqlite-readonly-location.worker.ts` alone do not imply schema ownership, even
+with incomplete patches. SQLite directories, standalone `sqlite.ts` owners,
+schema/migration/SQL/store paths, and either production rename side retain their
+conservative incomplete-patch handling. Compound SQLite store/schema names such
+as `sqlite-board-store.ts` and `sqlite-index-schema.ts` retain that ownership.
+SQLite codecs such as `sqlite-board-codec.ts` own serialized state, while
+`sqlite-user-version.ts` owns database compatibility; both retain stored-shape,
+JSON-edit, and incomplete-patch warnings without implying table ownership.
+Actual DDL remains evidence at any production filename, including diagnostic
+helpers. Ordinary validation fields in a `schema` file alone do not establish
+persisted database columns. A suffix such as `users-schema.ts` is only a domain
+hint: missing patches, JSON conversion, and local `table`, `column`, or `index`
+variables do not establish storage ownership. Explicit schema directories and
+storage owners keep their incomplete-patch warnings. Database API signals and
+column changes beside `sqliteTable`, `pgTable`, or `mysqlTable` calls in the same
+hunk remain evidence, including optional calls and typed calls. The warning
+requests review; it does not prove a persisted contract changed. This classification does not change the separate
+`docs/` exemption for contributor behavior proof.
 
 ## Evidence Repository Identity
 
@@ -247,10 +324,19 @@ This changes evidence rendering only, not the observer API or OpenClaw Bay.
 ## PR Introduction Evidence
 
 Before model execution, the host assembles bounded local Git evidence for the
-pinned PR base and head. The reviewer receives the actual checkout SHA separately
-from fetched main, the unique merge base, introduced files and patch from
-merge-base to head, base-branch changes, and a separately labeled base-to-head
-endpoint comparison. A file that differs only because main advanced is not
+pinned PR base and head. `originalHead` records the exact pinned head and its raw
+parents; `checkout` separately records the actual local commit and its raw parents.
+Both carry explicit roles and inspection status. Reads disable replacement refs
+and grafts, require an exact commit object, and bound these parent lists to eight
+entries. Failed, malformed, missing, or oversized inspection yields unavailable
+with `parents: null`; only an inspected root yields `parents: []`. Shallow history
+does not erase recorded parents or prove their objects are available. Neither
+workspace/test-merge ancestry nor fetched main or the merge base may substitute
+for original parentage; raw parents do not establish causality or authorship.
+
+The reviewer also receives fetched main, the unique merge base, introduced files
+and patch from merge-base to head, base-branch changes, and a separately labeled
+base-to-head endpoint comparison. A file that differs only because main advanced is not
 automatically a PR edit. Findings in untouched files remain valid when an
 introduced hunk elsewhere causes the failure; risks, labels, scores, and fixups
 must use that same ownership boundary.
@@ -290,6 +376,10 @@ Full review comments, source links, owner routing, acceptance criteria, and
 evidence stay under the collapsed `Agent review details` block so the top-level
 PR comment reads like a concise review.
 
+Finding-shaped headings and `body`, `late`, or `confidence` list fields quoted
+inside model prose are escaped before storage. They remain quoted text when
+the durable report is parsed again and cannot add findings or replace scores.
+
 Automerge and autofix state belongs in the command/status comment and hidden
 markers, not in the public review section headings. A clean opted-in PR should
 still read as `Codex review: passed.` in the durable review comment.
@@ -324,9 +414,13 @@ report representation; older unmarked attribution cannot regain verified status
 when comments are rendered. Stored reports and live comments are not rewritten by
 this reader change. OpenClaw Bay needs no change: no observer API or controls change.
 
-## Primary Body Coverage
+## Primary Body and Discussion Coverage
 
-Hosted primary issue and PR bodies up to 12,000 UTF-16 units remain intact.
+Hosted primary issue and PR bodies and retained discussion comments up to
+12,000 UTF-16 units remain intact. This includes inline PR review comments;
+the existing 24 discussion-comment and 40 inline-comment windows still apply.
+This replaces the former 6,000-unit discussion prefix, which could omit a
+contributor's later correction without reporting body coverage.
 Longer bodies retain an opening plus at most three source-ordered verbatim
 excerpts around proof and trace/output anchors, including inside details.
 The sibling `bodyCoverage` records the full-source SHA-256, original length,
@@ -334,6 +428,8 @@ end-exclusive UTF-16 ranges, omitted units, and incomplete coverage. The
 opening, excerpts, JSON escaping, and coverage metadata share the existing
 12,000-unit allocation. Candidate overflow, oversized blocks, and unrecognized
 layouts can still omit evidence; anchors are navigation, not proof validation.
+Inline-comment cache fingerprints include the full-source hash when coverage
+is incomplete, so edits in excerpts or omitted text invalidate prior verdicts.
 
 Reviewers must inspect supplied evidence with existing authorized read-only
 capabilities before a negative proof claim, preserve the captured source
@@ -352,7 +448,7 @@ retain curl's 90-second limit.
 Assist preserves coverage alongside the body. The report context ledger counts
 each primary record as one entry and includes its coverage in character totals;
 its list hydration counters do not describe body completeness. Related items,
-comments, patch content, local body overrides, proof statuses, and mutation gates
+patch content, local body overrides, proof statuses, and mutation gates
 are unchanged. This is reviewer input only: OpenClaw Bay needs no change because
 no observer API, public data contract, or action surface changes.
 
@@ -370,6 +466,11 @@ therefore carry a compact ledger of earlier cycles inside a collapsed
 ```html
 <!-- clawsweeper-review-history v=1 total=<completed-earlier-cycle-count> -->
 ```
+
+The visible freshness line adds `(Revision N)` from the second completed PR
+review onward, using this lifetime count plus the current review. A first review
+and issue comments have no revision suffix; re-syncing the same review keeps
+the same revision number.
 
 Each ledger line records one completed earlier cycle: reviewed-at timestamp,
 reviewed head sha, verdict, and finding titles. The marker's `total` attribute
@@ -500,3 +601,47 @@ pnpm run apply-decisions -- --target-repo openclaw/openclaw --sync-comments-only
 ```
 
 - Normal review/apply workflows also refresh missing or stale durable comments.
+
+### Reviewer network boundary
+
+Hosted Codex issue/PR review tools use the `clawsweeper-review` permission profile in
+`.github/actions/setup-codex/review-permissions.toml`, owned by ClawSweeper
+maintainers and verified with Codex 0.153.3. Update this guidance when the pinned
+CLI, profile, credential handling, or setup smoke changes. The active profile
+extends read-only filesystem access and enables the managed proxy in limited
+mode for its explicit GitHub, npm, Node, MDN, and OpenClaw documentation hosts.
+Other hosts are blocked; blocked access is not evidence against the PR. The
+sandbox receives the target repository's read-only GitHub App token only as
+`GH_TOKEN` when the review job supplies it (contents, issues, and pull requests
+read; expires within the hour). Use `gh api` or other authenticated GitHub reads
+to avoid public rate limits; the token cannot write. Never put it in a URL, log
+it, or send it to a non-GitHub host. Without a token, use public endpoints or
+pre-fetched GitHub context. Read downloaded screenshots/videos through the media
+proof manifest. The allowlist is not a credential containment boundary: a
+prompt-injected reviewer could leak the token in a GET query string to an
+allowlisted third-party host. Its read-only, single-repository, one-hour scope
+limits the impact.
+
+Review setup opts in with `review-network: "true"`; review commands select
+`--codex-sandbox clawsweeper-review`, translated to Codex configuration
+`default_permissions="clawsweeper-review"`. Neither exec nor the app-server
+thread/turn path overrides that profile with a legacy sandbox policy. Setup
+fails before publication if allowed HTTPS fails, unlisted HTTPS is not rejected
+by the proxy, or a checkout write succeeds. Non-review callers and offline local
+reviews keep their existing sandbox settings.
+
+Capability text follows the active `CLAWSWEEPER_RUNNER` before the Codex sandbox
+argument. OpenClaw reviews have network access through gateway execution with
+sandbox mode off; they do not use the Codex allowlisted proxy, and must treat the
+checkout as read-only by instruction. Their final child environment allowlist
+strips GitHub tokens, so OpenClaw prompts retain the no-token guidance even when
+an inspection token was supplied to the parent. Token capability text accounts
+for that runner-specific filter as well as the sanitized Codex environment. Other Codex sandbox
+selections retain the no-review-tool-network statement.
+This reporting does not change either runner's execution policy.
+
+The required-style `review-network-smoke` CI job runs on every PR using
+`ubuntu-24.04`, Node 24, and the Codex version pin read from setup-codex. It installs
+into a temporary prefix without secrets, creates an isolated Codex home, applies
+the same hosted Linux user-namespace prerequisites, and runs the configuration
+writer and enforcement smoke unchanged. Any smoke failure fails the job.

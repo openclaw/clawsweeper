@@ -1,5 +1,18 @@
 import { stableJson } from "../src/stable-json.ts";
 import {
+  validProofAllowedScenarios,
+  type InlineProofScenario,
+} from "../src/repair/direct-re-review-admission.ts";
+import {
+  COMMAND_PROOF_BATCH_CONTEXT_MAX,
+  commandProofBatchBinding,
+} from "../src/command-proof-contract.ts";
+import {
+  decisionPublicationPolicy,
+  MANUAL_REVIEW_SOURCE_ACTION,
+  type PublicationPolicy,
+} from "../src/manual-publication-policy.ts";
+import {
   DIRECT_PUBLICATION_LIFECYCLE_KINDS,
   type DirectPublicationLifecyclePlan,
 } from "./exact-review-direct-publication.ts";
@@ -32,6 +45,7 @@ export type ExactReviewBaseDecision = {
   itemKind: "issue" | "pull_request";
   sourceEvent: "issues" | "pull_request";
   sourceAction: string;
+  publicationPolicy?: PublicationPolicy;
   supersedesInProgress: boolean;
   sourceHeadSha?: string;
   sourceBaseSha?: string;
@@ -46,7 +60,9 @@ export type ExactReviewBaseDecision = {
   mediaProofTimeoutMs?: number;
   commandStatusMarker?: string;
   statusCommentId?: number;
+  reviewAcknowledgementCommentId?: number;
   additionalPrompt?: string;
+  proofAllowedScenarios?: InlineProofScenario[];
   sourceCommentId?: number;
   sourceCommentUpdatedAt?: string;
   commandBodyDigest?: string;
@@ -75,6 +91,15 @@ export type ExactReviewPublication = {
 export type ExactReviewDecision = ExactReviewBaseDecision & {
   publication?: ExactReviewPublication;
 };
+export function exactReviewProofAllowedScenarios(
+  decision: ExactReviewBaseDecision,
+): InlineProofScenario[] {
+  const supported: InlineProofScenario[] = ["web-ui-chat-proof", "telegram-bot-e2e-proof"];
+  if (!Object.hasOwn(decision, "proofAllowedScenarios")) return supported;
+  return validProofAllowedScenarios(decision.proofAllowedScenarios)
+    ? supported.filter((scenario) => decision.proofAllowedScenarios!.includes(scenario))
+    : [];
+}
 export type ExactReviewIngress = {
   route: "direct_webhook" | "target_dispatcher";
   fingerprint: string;
@@ -85,6 +110,7 @@ export type ExactReviewSourceAuthorityReservation = {
   ingress?: ExactReviewIngress;
   installationId: number;
   sourceAuthoritySeq: number;
+  reviewAcknowledgementPending?: boolean;
   attempts: number;
   nextAttemptAt: number;
 };
@@ -150,6 +176,7 @@ export function exactReviewDecisionWithoutSourceAuthority(decision: ExactReviewD
     sourceBaseSha: _sourceBaseSha,
     sourceIsDraft: _sourceIsDraft,
     sourceContentRevision: _sourceContentRevision,
+    reviewAcknowledgementCommentId: _reviewAcknowledgementCommentId,
     ...rest
   } = decision;
   return rest;
@@ -230,6 +257,7 @@ export function exactReviewSourceAuthorityReservationFrom(
     reservation.ingress === undefined ? undefined : exactReviewIngressFrom(reservation.ingress);
   const installationId = Number(reservation.installationId);
   const sourceAuthoritySeq = Number(reservation.sourceAuthoritySeq);
+  const reviewAcknowledgementPending = reservation.reviewAcknowledgementPending === true;
   const attempts = Number(reservation.attempts);
   const nextAttemptAt = Number(reservation.nextAttemptAt);
   if (
@@ -244,6 +272,8 @@ export function exactReviewSourceAuthorityReservationFrom(
     !Number.isSafeInteger(sourceAuthoritySeq) ||
     sourceAuthoritySeq <= 0 ||
     decision.sourceAuthoritySeq !== sourceAuthoritySeq ||
+    (reservation.reviewAcknowledgementPending !== undefined &&
+      typeof reservation.reviewAcknowledgementPending !== "boolean") ||
     !Number.isInteger(attempts) ||
     attempts < 0 ||
     attempts > EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_LIMIT ||
@@ -258,6 +288,7 @@ export function exactReviewSourceAuthorityReservationFrom(
     ...(ingress ? { ingress } : {}),
     installationId,
     sourceAuthoritySeq,
+    ...(reviewAcknowledgementPending ? { reviewAcknowledgementPending: true } : {}),
     attempts,
     nextAttemptAt,
   };
@@ -289,6 +320,12 @@ export function exactReviewIngressCanPromoteFallback(
 }
 
 export function exactReviewBaseDecisionFrom(value: unknown): ExactReviewBaseDecision | null {
+  let publicationPolicy: PublicationPolicy | undefined;
+  try {
+    publicationPolicy = decisionPublicationPolicy(value);
+  } catch {
+    return null;
+  }
   const decision = objectValue(value);
   const targetRepo = String(decision.targetRepo || "").trim();
   const targetBranch = String(decision.targetBranch || "").trim();
@@ -332,8 +369,18 @@ export function exactReviewBaseDecisionFrom(value: unknown): ExactReviewBaseDeci
   const commandStatusMarker = hasCommandStatusMarker ? decision.commandStatusMarker : undefined;
   const hasStatusCommentId = Object.hasOwn(decision, "statusCommentId");
   const statusCommentId = hasStatusCommentId ? Number(decision.statusCommentId) : undefined;
+  const hasReviewAcknowledgementCommentId = Object.hasOwn(
+    decision,
+    "reviewAcknowledgementCommentId",
+  );
+  const reviewAcknowledgementCommentId = hasReviewAcknowledgementCommentId
+    ? Number(decision.reviewAcknowledgementCommentId)
+    : undefined;
   const hasAdditionalPrompt = Object.hasOwn(decision, "additionalPrompt");
   const additionalPrompt = hasAdditionalPrompt ? decision.additionalPrompt : undefined;
+  const hasProofAllowedScenarios = Object.hasOwn(decision, "proofAllowedScenarios");
+  const proofAllowedScenarios = decision.proofAllowedScenarios;
+  if (hasProofAllowedScenarios && !validProofAllowedScenarios(proofAllowedScenarios)) return null;
   const hasSourceCommentId = Object.hasOwn(decision, "sourceCommentId");
   const sourceCommentId = hasSourceCommentId ? Number(decision.sourceCommentId) : undefined;
   const hasSourceCommentUpdatedAt = Object.hasOwn(decision, "sourceCommentUpdatedAt");
@@ -396,9 +443,20 @@ export function exactReviewBaseDecisionFrom(value: unknown): ExactReviewBaseDeci
     return null;
   }
   if (
+    hasReviewAcknowledgementCommentId &&
+    (itemKind !== "pull_request" ||
+      !Number.isSafeInteger(reviewAcknowledgementCommentId) ||
+      Number(reviewAcknowledgementCommentId) <= 0)
+  ) {
+    return null;
+  }
+  if (
     hasAdditionalPrompt &&
     (typeof additionalPrompt !== "string" ||
-      additionalPrompt.length > EXACT_REVIEW_ADDITIONAL_PROMPT_MAX_CHARS ||
+      additionalPrompt.length >
+        (sourceAction === "command_proof_result" && commandProofBatchBinding(additionalPrompt)
+          ? COMMAND_PROOF_BATCH_CONTEXT_MAX
+          : EXACT_REVIEW_ADDITIONAL_PROMPT_MAX_CHARS) ||
       additionalPrompt.includes("\0"))
   ) {
     return null;
@@ -435,6 +493,7 @@ export function exactReviewBaseDecisionFrom(value: unknown): ExactReviewBaseDeci
     itemKind,
     sourceEvent,
     sourceAction,
+    ...(publicationPolicy ? { publicationPolicy } : {}),
     supersedesInProgress: Boolean(decision.supersedesInProgress),
     ...(sourceHeadSha === undefined ? {} : { sourceHeadSha }),
     ...(sourceBaseSha === undefined ? {} : { sourceBaseSha }),
@@ -457,7 +516,11 @@ export function exactReviewBaseDecisionFrom(value: unknown): ExactReviewBaseDeci
       : {}),
     ...(typeof commandStatusMarker === "string" ? { commandStatusMarker } : {}),
     ...(statusCommentId === undefined ? {} : { statusCommentId }),
+    ...(reviewAcknowledgementCommentId === undefined ? {} : { reviewAcknowledgementCommentId }),
     ...(typeof additionalPrompt === "string" ? { additionalPrompt } : {}),
+    ...(hasProofAllowedScenarios
+      ? { proofAllowedScenarios: [...(proofAllowedScenarios as InlineProofScenario[])].sort() }
+      : {}),
     ...(sourceCommentId === undefined ? {} : { sourceCommentId }),
     ...(sourceCommentUpdatedAt === undefined ? {} : { sourceCommentUpdatedAt }),
     ...(commandBodyDigest === undefined ? {} : { commandBodyDigest }),
@@ -507,6 +570,7 @@ export async function exactReviewEditedSemanticInput(
         ? decision.statusCommentId
         : null,
       additional_prompt: decision.additionalPrompt || null,
+      proof_allowed_scenarios: exactReviewProofAllowedScenarios(decision),
     },
   });
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(tuple));
@@ -680,6 +744,21 @@ export function mergePendingExactReviewDecision(
   next: ExactReviewDecision,
 ): ExactReviewDecision {
   const merged = { ...current, ...next };
+  // Coalescing cannot widen an admitted manual revision. A separately claimed
+  // successor may review normally; it cannot lend authority to these bytes.
+  const retainedPolicy = decisionPublicationPolicy(current);
+  if (retainedPolicy) {
+    merged.publicationPolicy = retainedPolicy;
+    merged.sourceAction = current.sourceAction;
+    // Only another explicit manual request may replace the operator's options.
+    if (next.sourceAction !== MANUAL_REVIEW_SOURCE_ACTION || !decisionPublicationPolicy(next)) {
+      merged.targetBranch = current.targetBranch;
+      if (current.codexTimeoutMs === undefined) delete merged.codexTimeoutMs;
+      else merged.codexTimeoutMs = current.codexTimeoutMs;
+      if (current.additionalPrompt === undefined) delete merged.additionalPrompt;
+      else merged.additionalPrompt = current.additionalPrompt;
+    }
+  }
   const commandMarkerChanged =
     Object.hasOwn(next, "commandStatusMarker") &&
     next.commandStatusMarker !== current.commandStatusMarker;
@@ -698,13 +777,15 @@ export function mergePendingExactReviewDecision(
   return merged;
 }
 
-export function exactReviewDecisionHasCommandContext(decision: ExactReviewDecision) {
+export function exactReviewDecisionHasCommandContext(
+  decision: Pick<ExactReviewDecision, "commandStatusMarker" | "statusCommentId">,
+) {
   return Boolean(decision.commandStatusMarker || decision.statusCommentId);
 }
 
 export function exactReviewCommandObligationSurvives(
-  current: ExactReviewDecision,
-  incoming: ExactReviewDecision,
+  current: Pick<ExactReviewDecision, "commandStatusMarker" | "statusCommentId">,
+  incoming: Pick<ExactReviewDecision, "commandStatusMarker" | "statusCommentId">,
 ) {
   if (!exactReviewDecisionHasCommandContext(current)) return true;
   if (!exactReviewDecisionHasCommandContext(incoming)) return false;
@@ -868,6 +949,7 @@ export function isImmediateExactReviewDecision(
 ) {
   return Boolean(
     decision.commandStatusMarker ||
+    decision.sourceAction === MANUAL_REVIEW_SOURCE_ACTION ||
     decision.publication ||
     exactReviewScheduledLane(decision) ||
     (isFirstEvent &&

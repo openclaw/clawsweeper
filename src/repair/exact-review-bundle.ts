@@ -1,4 +1,10 @@
-import { createHash } from "node:crypto";
+import { requireRecord as record } from "../value-coerce.js";
+import { sha256 } from "../content-hash.js";
+import {
+  assertReportPublicationPolicy,
+  type PublicationPolicy,
+} from "../manual-publication-policy.js";
+
 import fs from "node:fs";
 import path from "node:path";
 
@@ -17,6 +23,7 @@ const FILE_PATH_PATTERN =
   /^(?:review\/[1-9]\d*\.md|action-ledger\/ledger\/[A-Za-z0-9_./-]+|live-proof\/[1-9]\d*\/(?:live-verification\.json|live-proof-manifest\.json|live-proof\.mp4|poster\.jpg))$/;
 
 export interface ExactReviewBundleContext {
+  publicationPolicy?: PublicationPolicy;
   repository: string;
   sourceSha: string;
   runId: string;
@@ -104,6 +111,10 @@ export function createExactReviewBundle(
 
   let artifactPresent = false;
   if (options.reviewPath && fs.existsSync(options.reviewPath)) {
+    assertReportPublicationPolicy(
+      fs.readFileSync(options.reviewPath, "utf8"),
+      context.publicationPolicy,
+    );
     const reviewDestination = path.join(bundleDir, "review", `${context.itemNumber}.md`);
     copyRegularFile(options.reviewPath, reviewDestination);
     artifactPresent = true;
@@ -187,6 +198,11 @@ export function validateExactReviewBundle(
   }
   const expectedReviewPath = `review/${context.itemNumber}.md`;
   const hasReview = actualFiles.some((file) => file.path === expectedReviewPath);
+  if (hasReview)
+    assertReportPublicationPolicy(
+      fs.readFileSync(path.join(bundleDir, expectedReviewPath), "utf8"),
+      context.publicationPolicy,
+    );
   if (hasReview !== manifest.review.artifact_present) {
     throw new Error("exact review bundle review artifact presence does not match its manifest");
   }
@@ -217,7 +233,8 @@ function assertExpectedManifest(
     liveTerminalMissing: manifest.review.live_terminal_missing,
     liveGuardedOpen: manifest.review.live_guarded_open,
   } satisfies ExactReviewBundleContext;
-  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+  const { publicationPolicy: _policy, ...boundContext } = expected;
+  if (JSON.stringify(actual) !== JSON.stringify(boundContext)) {
     throw new Error("exact review bundle does not match the trusted workflow context");
   }
 }
@@ -274,7 +291,7 @@ function validateContext(value: ExactReviewBundleContext): ExactReviewBundleCont
   return { ...value };
 }
 
-function validateManifest(value: unknown): ExactReviewBundleManifest {
+export function validateManifest(value: unknown): ExactReviewBundleManifest {
   const manifest = record(value, "manifest");
   exactKeys(manifest, [
     "schema_version",
@@ -503,13 +520,6 @@ function canonicalTimestamp(value: string): string {
   return value;
 }
 
-function record(value: unknown, label: string): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${label} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
 function exactKeys(value: Record<string, unknown>, expected: readonly string[]): void {
   const actual = Object.keys(value).sort();
   const sortedExpected = [...expected].sort();
@@ -518,6 +528,7 @@ function exactKeys(value: Record<string, unknown>, expected: readonly string[]):
   }
 }
 
+// Bundle strings reject empty text but preserve whitespace.
 function stringValue(value: unknown, label: string): string {
   if (typeof value !== "string" || !value) throw new Error(`${label} must be a string`);
   return value;
@@ -544,8 +555,4 @@ function positiveInteger(value: number, label: string): void {
 
 function nullablePositiveInteger(value: number | null, label: string): void {
   if (value !== null) positiveInteger(value, label);
-}
-
-function sha256(value: string | Buffer): string {
-  return createHash("sha256").update(value).digest("hex");
 }

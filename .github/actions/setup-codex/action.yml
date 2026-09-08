@@ -3,16 +3,19 @@ description: Cache, install, and authenticate the OpenAI Codex CLI.
 inputs:
   codex-version:
     description: Exact Codex CLI npm package version.
-    default: "0.146.0"
+    default: "0.153.3"
   proxy-version:
     description: Exact Codex Responses proxy npm package version.
     default: "0.139.0"
   auth-mode:
-    description: Authentication mode. Use proxy to keep OPENAI_API_KEY out of Codex subprocesses, or login for legacy codex login.
+    description: Authentication mode. Use clawrouter for private alias inference, proxy for an isolated API-key proxy, or login for legacy codex login.
     default: "proxy"
   codex-home:
     description: CODEX_HOME directory. Defaults to an isolated per-run ClawSweeper directory.
     default: ""
+  review-network:
+    description: Enable the credential-free, allowlisted read-only reviewer profile.
+    default: "false"
   cache-suffix:
     description: Extra cache key suffix for target-tool downloads.
     default: ""
@@ -42,19 +45,33 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        npm config set prefix "$HOME/.clawsweeper-repair/codex"
-        npm config set cache "$HOME/.npm"
         echo "$HOME/.clawsweeper-repair/codex/bin" >> "$GITHUB_PATH"
         export PATH="$HOME/.clawsweeper-repair/codex/bin:$PATH"
 
-        install_env=(env -u OPENAI_API_KEY -u CODEX_API_KEY -u PROXY_API_KEY -u CLAWSWEEPER_INTERNAL_MODEL)
-        "${install_env[@]}" npm install -g "@openai/codex@${{ inputs['codex-version'] }}" \
-          --prefer-online --no-audit --no-fund --ignore-scripts
-        if [[ "${{ inputs['auth-mode'] }}" == "proxy" ]]; then
-          "${install_env[@]}" npm install -g "@openai/codex-responses-api-proxy@${{ inputs['proxy-version'] }}" \
+        install_env=(env -u OPENAI_API_KEY -u CODEX_API_KEY -u PROXY_API_KEY -u CLAWSWEEPER_INTERNAL_MODEL -u CLAWSWEEPER_CLAWROUTER_CONFIG)
+        npm_configured=false
+        ensure_installed() {
+          local name="$1" version="$2" status
+          if "${install_env[@]}" node "$GITHUB_ACTION_PATH/validate-install.mjs" "$name" "$version"; then
+            return
+          else
+            status=$?
+          fi
+          # Only an absent or unusable contained installation may be repaired.
+          if [[ "$status" != 1 ]]; then return "$status"; fi
+          if [[ "$npm_configured" == false ]]; then
+            "${install_env[@]}" npm config set prefix "$HOME/.clawsweeper-repair/codex"
+            "${install_env[@]}" npm config set cache "$HOME/.npm"
+            npm_configured=true
+          fi
+          "${install_env[@]}" npm install -g "@openai/$name@$version" \
             --prefer-online --no-audit --no-fund --ignore-scripts
+          "${install_env[@]}" node "$GITHUB_ACTION_PATH/validate-install.mjs" "$name" "$version"
+        }
+        ensure_installed codex "${{ inputs['codex-version'] }}"
+        if [[ "${{ inputs['auth-mode'] }}" == "proxy" ]]; then
+          ensure_installed codex-responses-api-proxy "${{ inputs['proxy-version'] }}"
         fi
-        codex --version
 
     - name: Enable Linux user namespaces for bubblewrap
       if: ${{ runner.os == 'Linux' && runner.environment == 'github-hosted' }}
@@ -74,7 +91,7 @@ runs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
         fi
 
-        # Exercise the same read-only, network-isolated backend used by reviews.
+        # Keep the baseline backend probe for non-review Codex consumers.
         # A sandbox regression must stop the job before it can publish a verdict.
         codex sandbox --permission-profile :read-only -C "$GITHUB_WORKSPACE" -- /bin/true
 
@@ -94,6 +111,7 @@ runs:
         echo "Using isolated CODEX_HOME=$CODEX_HOME"
 
     - name: Configure internal Codex model
+      if: ${{ inputs['auth-mode'] != 'clawrouter' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -102,6 +120,11 @@ runs:
         model_json="$(node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$CLAWSWEEPER_INTERNAL_MODEL")"
         printf 'model = %s\n' "$model_json" > "$CODEX_HOME/config.toml"
         chmod 600 "$CODEX_HOME/config.toml"
+
+    - name: Configure private ClawRouter inference
+      if: ${{ inputs['auth-mode'] == 'clawrouter' }}
+      shell: bash
+      run: node "${{ github.action_path }}/configure-clawrouter.mjs"
 
     - name: Authenticate Codex through Responses proxy
       if: ${{ inputs['auth-mode'] == 'proxy' }}
@@ -150,9 +173,24 @@ runs:
           codex login status
         fi
 
+    - name: Configure direct API context
+      if: ${{ inputs['auth-mode'] == 'proxy' || inputs['auth-mode'] == 'login' }}
+      shell: bash
+      run: node "${{ github.action_path }}/configure-api-context.mjs" "${{ inputs['codex-version'] }}"
+
     - name: Reject unknown Codex auth mode
-      if: ${{ inputs['auth-mode'] != 'proxy' && inputs['auth-mode'] != 'login' }}
+      if: ${{ inputs['auth-mode'] != 'proxy' && inputs['auth-mode'] != 'login' && inputs['auth-mode'] != 'clawrouter' }}
       shell: bash
       run: |
         echo "Unsupported setup-codex auth-mode: ${{ inputs['auth-mode'] }}" >&2
         exit 1
+
+    - name: Configure review network profile
+      if: ${{ inputs['review-network'] == 'true' }}
+      shell: bash
+      run: node "${{ github.action_path }}/configure-review-network.mjs"
+
+    - name: Verify review sandbox capabilities
+      if: ${{ inputs['review-network'] == 'true' }}
+      shell: bash
+      run: bash "${{ github.action_path }}/smoke-review-network.sh"

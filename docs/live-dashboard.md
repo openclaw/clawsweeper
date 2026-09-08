@@ -11,6 +11,14 @@
 Read when changing the Cloudflare status dashboard, status ingest contract, or
 operator-facing ClawSweeper observability.
 
+The signed internal canonical-record export route serves up to 200 records per
+page (also the Worker and hydration-client default), bounded by 2 MiB of source
+content and 4 MiB of serialized entries. Large-record pages stop early and resume
+from the last returned record; the existing first-record progress exception
+remains. See [canonical record export limits](limits.md#canonical-record-export).
+This changes hydration request volume only; OpenClaw Bay's observer projection
+and public data contract are unaffected.
+
 The live dashboard is observer-only. ClawSweeper still owns review, repair,
 apply, merge, comments, labels, and all GitHub mutations. The Cloudflare Worker
 reads GitHub workflow state, projects it into closed status and Bay views, and
@@ -133,6 +141,17 @@ pipeline rows. Production also enables a bounded live fallback for the first
 few active PR rows so visible rows do not remain on workflow-only status when KV
 is absent or a cache event lands in another Cloudflare colo.
 
+### Workflow health source
+
+The deployment sets `CLAWSWEEPER_DASHBOARD_WORKFLOW_SOURCE=poll` to collect
+workflow health through the existing bounded GitHub run/job polls. It skips
+workflow read-model reads, repairs, and missing-subscription warnings even when
+the shared webhook signing secret is configured. Unset or `webhook` retains
+the existing webhook-first behavior. Snapshot and job-cache TTLs, pagination,
+freshness, genuine GitHub errors, and the public Bay contract are unchanged.
+Changing source does not flush persisted snapshots; normal expiry refreshes
+them. Concurrent refreshes with different resolved sources do not coalesce.
+
 ## What It Shows
 
 - bounded active-work counts and closed workflow, worker, status, stage, and
@@ -187,7 +206,14 @@ is absent or a cache event lands in another Cloudflare colo.
   current durable queue snapshot
 - normal direct-review journeys in the Bay Kanban and one-hour timing metric by
   default, with a presentation-only switch to include the retired automatic
-  proof/legacy-batch path for historical comparison
+  proof/legacy-batch path for historical comparison. Modern inline proof stays
+  within normal end-to-end review timing; the legacy toggle is not a proof-used
+  filter. The chart has a rolling-hour UTC axis, minutes scale, and bucket-wide
+  hover/focus/tap detail; missing buckets remain gaps
+- collapsed retained lifecycle inventory below queue telemetry: latest recorded
+  state of all retained records, not live backlog, event totals or a day/week
+  view. Beach/time filters do not apply; records and target revisions are
+  distinct units, and at most 24 records are sampled across lanes
 
 The Worker fetches job details only for the bounded active-run set, limits that
 GitHub fanout to 12 concurrent requests, and caches each run's jobs for 60
@@ -196,8 +222,8 @@ twenty-way fanout and caches error/recovery telemetry for 120 seconds. That leav
 enough distinct completed-item evidence to drive a 20-outcome tide despite
 repeated targets or excluded runs while still bounding telemetry pressure.
 This bounds
-telemetry pressure without exceeding the 128-worker fleet budget. Worker details
-paginate up to 300 jobs per workflow run so 89-shard runs contribute to a
+telemetry pressure without changing the 32-worker fleet budget. Worker details
+paginate up to 300 jobs per workflow run so retained large matrix runs contribute to a
 complete internal census. Titles, job names, raw URLs, opaque target keys, and
 raw errors are removed before the status snapshot is persisted or returned.
 Only the allowlisted canonical repository/item reference tuple and a validated
@@ -354,7 +380,7 @@ Do not move these into the dashboard:
 
 The dashboard Worker owns durable exact-review admission only: it deduplicates
 webhook deliveries, coalesces each repository/item pair, and leases at most
-128 Actions executors, with up to 120 active leases per target repository. It does
+32 Actions executors, with up to 24 active leases per target repository. It does
 not decide review outcomes or perform target repository mutations. For
 command-triggered reviews, the queue retains the bounded review prompt and
 command-status identifiers so the leased GitHub Actions executor can update the
@@ -446,6 +472,63 @@ so handoff recovery stays live. If the optional queue read fails or is malformed
 the public response uses an unavailable/unknown aggregate and a bounded
 `telemetry_unavailable` diagnostic; it never returns the underlying error text.
 
+The object memoizes its private stats response for 10 seconds by default
+(`EXACT_REVIEW_STATS_CACHE_MS`; set `0` to disable). Concurrent polls with the
+same Bay sample parameters share the computation and its original `generated_at`.
+Queue mutations and auxiliary SQLite writes invalidate the memo; a missing or
+overdue alarm also bypasses it so polling still repairs the queue heartbeat.
+Only completed snapshots whose mutation generation and storage change counter
+remain unchanged are memoized; polls waiting on invalidated work recompute.
+This only bounds observation freshness: the public projection's fields and
+meaning, admission, publication fences, and Bay behavior are unchanged.
+
+The object's lifecycle Bay response has a 30-second TTL-only memo
+(`EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS`; set `0` to disable). Production explicitly
+sets `EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "30000"`. Ordinary lifecycle, queue,
+and auxiliary writes do not invalidate it: this public, observer-only,
+closed-aggregate surface accepts staleness up to the TTL. Concurrent reads for
+the same normalized repository scope share one in-flight computation and its
+original `generated_at`. Only completed work enters the memo; disabling it
+resets pending work so an older computation cannot restore the cache. The stats
+memo retains its separate write-invalidation rules for admission diagnostics.
+
+Producer and publication fences have independent revision counters. For newly
+admitted protocol-v2 publications, the lifecycle projection keeps an immutable
+producer fence/revision/generation link in its existing JSON. Audit and Bay use
+that exact link to display publication completion on the corresponding producer
+journey after the queue item is removed. Missing or conflicting lineage fails
+closed; an older publication cannot complete a later producer revision. Physical
+receipts and terminal telemetry remain on the publication fence, so replay does
+not emit a second producer completion. The private link is not serialized by the
+public endpoint; Bay's public fields and observer-only controls remain unchanged.
+
+The outer `/api/durable-lifecycle-bay` route caches the sanitized response for
+30 seconds at the edge, keyed by origin and verified-public repository scope.
+After expiry it serves a stale copy while coalescing one background refresh per
+scope per isolate, as the status route does. Both cache buckets are capped by
+the original snapshot's 60-second maximum age; neither layer renews
+`generated_at`. An unavailable or malformed background refresh leaves an
+existing complete stale snapshot untouched until that original age expires,
+then the route fails closed until a complete refresh replaces both buckets.
+Without a background execution context, an expired fresh entry is refreshed
+synchronously. Edge caches are local to each colo, so cross-colo misses can
+still reach the object; its TTL memo absorbs those reads. Bay's public field
+set, freshness contract, and observer-only boundary are unchanged.
+
+An uncached Bay build still scans every retained projection in the requested
+repositories (all repositories for an unscoped internal request). A derived index
+on the existing repository/target/fence/revision fields streams each repository
+in journey order without sorting retained projection JSON; the primary identity
+index serves unscoped reads. The older v2 index remains available for readers
+that explicitly select it during rollback. No stored record or authority fields
+change. The scan has no seven-day cutoff: seven-day telemetry retention and 30-day Bay event retention
+belong to separate telemetry tables. Each row's full `projection_json` passes
+through the existing parser and integrity validation, without a per-row
+parsed-object cache. This preserves malformed-data handling and avoids the
+extra SQL JSON validation, extraction, and serialization of the compact cursor.
+The remaining full-history scan is not a constant-size aggregate query; adding
+persisted counters requires a separate backfill and writer-compatibility change.
+
 For capacity displays, `/api/exact-review-queue` also exposes compatible
 `lanes.review` and `lanes.publication` objects. Each lane reports its own
 pending, ready, backoff, dispatching, leased, capacity, active, available-slot,
@@ -461,7 +544,7 @@ required count or health value returns an unknown projection with HTTP 503
 instead of a plausible empty queue.
 
 Production overrides publication minimum, base, and maximum capacity to 8, 32,
-and 40, while source fallback values are 4, 24, and 48. The controller records
+and 32, while source fallback values are 4, 24, and 48. The controller records
 failure, cooldown, recovery, and demand telemetry and scales within the
 production range. The private publication state also tracks `batches`, `direct`,
 and adaptive capacity control: production enables up to 8 concurrent size-8
@@ -471,12 +554,99 @@ counts but are not serialized by the public projector. Document effective
 production values from `dashboard/wrangler.toml`, not only fallback constants
 in `dashboard/exact-review-queue.ts`.
 
+Canonical record snapshots for `openclaw/openclaw` are produced every six hours
+by `worker-records-ops.yml`, at minute 9 UTC. Manual dispatch remains available
+for a selected repository; scheduled and manual snapshots share a concurrency
+group so snapshot runs do not overlap. Full record hydration replays changes
+since the latest snapshot.
+
+The workflow runs `node scripts/worker-records.ts snapshot-upload --repo-slug
+<slug>`: it hydrates the latest snapshot plus export delta into a temporary tree,
+streams the same ustar/gzip layout to disk on the runner, then uploads and
+registers the archive. The temporary tree and archive are removed on success or
+failure. The snapshot watermark is `exportStartRevision`, the revision returned
+by the **first** delta page. Later pages may observe concurrent writes, so using
+the highest revision observed would risk claiming changes not present in the
+archive. As with object-side production, later record versions may be included;
+future hydration replays every change after the initial watermark.
+
+The outer Worker's signed `POST /internal/state/records/snapshots/upload/`
+`start`, `part`, `manifest`, `complete`, and `abort` routes reuse the blob upload pattern:
+bounded JSON/base64 requests, each HMAC-signed over the exact body with
+`CLAWSWEEPER_WEBHOOK_SECRET`. Every signed body includes `operation` matching
+its route; a mismatch returns 400 `upload_operation_mismatch`. Each body also
+includes ISO `issuedAt`: requests at least one hour old or more than five minutes
+in the future return 400 `upload_request_expired` before accessing upload state.
+Start receipts survive the entire validity window, including allowed clock skew,
+so an expired signed start cannot recreate an upload. `start` accepts
+`repoSlug`, `revisionWatermark`, `bytes`, gzip `sha256`, `fileCount`,
+`uncompressedBytes`, `identityDigest`, and a client-generated `operationId`;
+the runner uses `<repoSlug>:<GITHUB_RUN_ID>:<GITHUB_RUN_ATTEMPT>` or a UUID outside
+Actions. A dedicated instance of the existing StatusStore serializes metadata
+operations and deduplicates starts: an identical retry returns 200 and the
+original session, while conflicting metadata returns 409. A new start generates
+`createdAt`, an upload ID, and the R2 key
+`<repoSlug>/<revisionWatermark>/<createdAt>-<uuid>.tar.gz`. `part` accepts
+`uploadId`, `partNumber`, base64 `data`, and per-part `sha256`. Parts are 6 MiB
+decoded (above R2's 5 MiB minimum), except the final part. Requests are bounded
+before parsing, with at most 200 parts and 1 GiB per archive. Descriptors and
+part receipts use the existing StatusStore and expire after one hour (extended
+for an accepted future `issuedAt`). Multipart
+bytes pass from the outer Worker directly to R2. The
+runner retries transport failures with identical bytes and part numbers.
+Aborts and expiry alarms clean up unfinished multipart uploads and completed
+objects that have no snapshot descriptor. Cleanup failures retain the session
+and its part/manifest receipts. Explicit retry alarms back off from one minute
+to one hour; after eight failed cleanup attempts a bounded warning is logged and
+the receipt remains for the next upload-triggered cleanup. The bucket's multipart
+lifecycle policy remains a backstop.
+
+`complete` accepts `uploadId`, ordered `{partNumber, etag}` receipts, and the
+sorted packed `identities` as `[section, id]` pairs (at most 250,000). If the
+signed completion body would exceed the outer JSON cap, the runner first stages
+final signed `manifest` chunks of at most 10,000 identities in R2. Each chunk
+includes `uploadId`, sequential `partNumber`, and `identities`; StatusStore keeps
+only its digest receipt. Completion reads these chunks and registration checks
+the combined list. Manifest chunks are removed with session cleanup. The
+StatusStore assembles the R2 multipart upload, verifies the per-part
+SHA-256 receipts and total R2 object size, and calls the object's
+`/records/snapshots/register`. It does not download the entire object to
+recompute gzip SHA-256; R2 metadata marks that digest as a runner claim verified
+by parts and length. Registration checks the descriptor watermark against the
+current export revision, object key prefix, and R2 existence/size. A cheap aggregate
+SQL count rejects a smaller `fileCount` with 422 `snapshot_coverage_incomplete`.
+Registration then recomputes `identityDigest`, SHA-256 over the JSON encoding of
+the pair list sorted by `section/id`, and scans the live export index once for
+identities with `store_revision <= revisionWatermark`, reading ids only. Every
+required identity must appear in the supplied list, or registration returns 422
+`snapshot_coverage_incomplete`; extra entries are allowed because records may
+have been deleted after the watermark. Later updates can move identities above
+the watermark, so the required set is a lower bound. The verified digest is
+stored for audit; membership verifies the manifest claim, not archive content.
+Registration inserts into the
+existing snapshot table and retains the newest two snapshots. Retrying completion
+or registration after response loss is safe. Cleanup checks all descriptor
+references and serializes deletion with registration, preserving registered
+objects even after a lost completion response.
+
+The small signed `/internal/state/records/snapshots/register` route is also
+available for descriptor registration. The existing
+`/internal/state/records/snapshots/trigger` endpoint remains for explicit
+object-side production, but neither scheduled nor manual ops invokes it.
+Cold hydration retains its existing record bound; a large repository without
+any snapshot still needs an initial snapshot before normal hydration can run.
+No bindings or Durable Object migrations change. The existing descriptor table
+gains a nullable `identity_digest` column; existing snapshots remain readable.
+OpenClaw Bay is unaffected because its public observer contract does not use
+these internal maintenance routes.
+
 Batch publication heartbeats retry network errors, timeouts, and HTTP 5xx
 responses (including `exact_review_queue_unavailable`) up to three attempts
 within 45 seconds, with at most 20 seconds per attempt. Heartbeat retries
 preserve the signed bytes, use jittered exponential backoff, honor `Retry-After`
 up to 10 seconds, and stop at the last confirmed server lease expiry.
 Validation, authentication, and fence rejections are never retried.
+Periodic workflow heartbeats use `--tolerate-until-lease` to tolerate exhausted transport failures only while the confirmed lease has more than `EXACT_REVIEW_BATCH_HEARTBEAT_SAFETY_MS` (default 180,000 ms) remaining. Claim, fetch, and heartbeat responses include an internal `server_time`; the manifest saves `leaseTtlMs` as `lease_expires_at - server_time`, `leaseTtlSource: "server"`, and `leaseConfirmedAtLocal`. Retry deadlines and tolerance subtract only local elapsed time from that TTL, so a runner clock offset cannot extend or shorten the lease. Older Workers without `server_time` use the local clock at confirmation and mark `leaseTtlSource: "local"`; tolerance is forbidden once that confirmation is older than one safety margin. Manifests without confirmation metadata require a successful heartbeat before tolerance is available. Each pre-loop heartbeat stays strict to establish live ownership, and 4xx/fence rejections remain fatal. The public projection and OpenClaw Bay are unchanged.
 
 Post-effect enqueue, router-receipt, and terminal-disposition POSTs are
 deliberately one-shot until Worker replay ordering is repaired. An ambiguous
@@ -507,9 +677,33 @@ older probes, including across tombstone expiry. Tombstones expire lazily after
 at least 30 minutes; probes outliving retention must retry.
 
 Alarms prune up to `EXACT_REVIEW_STALE_PUBLICATION_PRUNE_LIMIT` stale revisions
-(default 100), oldest first, without GitHub reads. Only pending/parked rows without
-active batch ownership, terminal finalization or command context qualify;
+(default 100), oldest first, without GitHub reads. Pending/parked rows require no
+active batch ownership or terminal finalization. A command row with a missing
+terminal requires one exact authoritative successor and matching lifecycle
+admission: the same marker and comment requeues without a finalizer, while a
+changed address or non-command successor records superseded with an acknowledgement
+driver. Missing, ambiguous, or mismatched successor state stays retained fail-closed;
 duplicate-lineage and legacy terminal cleanup remains operator-owned.
+New publication admissions retain one predecessor-bound successor witness, so
+the successor's normal completion cannot erase command ownership evidence.
+Same-source conflicts remain blocked through removal, restart, and redelivery;
+only a unique, verified admission beyond both the durable source head and the
+retained conflict can establish newer authority. Direct publication conversion
+can block authority but cannot establish it. Malformed or mismatched evidence
+fails closed. Historical rows whose successor disappeared before evidence was
+retained are not automatically repaired. This private queue state changes no
+Bay response or action contract.
+Authenticated reconciliation samples report `successor_fence_state` only for
+`stale_revision` rows whose acknowledgement is unavailable because the terminal
+disposition is missing. `verified` is diagnostic evidence, never mutation
+permission; other rows report `null`. The maintenance client exposes this field
+as `successorFenceState` and rejects missing, unknown, or incoherent values.
+If the Worker must roll back below `e4d0e82050300cafb9459a6d9cf8a2041f4e62cb`,
+roll back the strict client first so it never reads a response without this field.
+CLI samples omit target, item, retained-item, and producer identities. Their
+`identity_hash` is SHA-256 of the unmodified UTF-8 item key, without a newline,
+so operators can correlate a row without logging its key. A different hash or
+an empty sample does not establish what happened to a previously observed row.
 Successful queue handoff expires the workflow's review-start lease to permit
 another exact-head review; terminal publication still deletes the placeholder.
 
@@ -591,6 +785,60 @@ cancellation clears the lease and requeues the item. Finalizer success remains
 provisional because GitHub can still cancel the run or fail a post-action; only
 the signed terminal-run backstop removes the item after GitHub confirms the
 exact attempt succeeded. A newer revision can requeue immediately. A signed
+`POST /internal/exact-review/publications/reconcile` defaults to `apply:false`.
+It classifies stale and legacy publication candidates without reconciliation-driven
+queue, lifecycle, batch, or Bay mutations; expired batches are excluded from active
+ownership without reclaiming their rows. Existing admission-cache revocation,
+request cleanup, and cold-start initialization still run. `apply:true` retains
+normal expiry recovery and terminalization. This is an authenticated operator
+route, not a Bay action.
+
+### Retire One Closed-Target Publication
+
+Active operator runbook. Owner: exact-review maintainers. Owning sources:
+`.github/workflows/exact-review-queue-maintenance.yml`,
+`src/repair/closed-publication-retirement.ts`, and
+`dashboard/exact-review-queue.ts`. Last source verification: `ff0156fb` plus
+the retirement maintenance route. Update this section when artifact provenance,
+plan fields, terminal disposition, or acknowledgement ownership changes.
+
+Use **Maintain exact review queue** on `main`, mode
+`retire-closed-publication`, only for an explicitly approved publication whose
+public target PR is merged. Supply its exact producer run ID, artifact ID,
+publication-key SHA256, and publication queue revision. The source-review
+revision in the artifact is not the publication queue revision.
+
+1. Leave `execute` false. Preview fetches the exact artifact and attempt
+   metadata, verifies the archive digest, reads only its bounded root manifest,
+   and checks the public merged target. It neither constructs a Worker client
+   nor requests a Worker route. An expired artifact or absent GitHub archive
+   digest fails closed.
+2. Review the emitted plan SHA256 and numeric tuple against the approved
+   publication. The plan also binds the immutable workflow SHA, historical
+   producer source SHA, archive identity, and merged PR identity. Raw target
+   keys, command identities, artifact contents, and signed URLs stay private.
+3. Run the same inputs with `execute` true and `reviewed_plan_sha256` set to
+   that reviewed hash. Preparation remains secretless with respect to the
+   Worker signing credential. Only the final assertion step receives it.
+   A changed workflow SHA or evidence requires a new preview and review.
+
+Execution records one **new operator `target_closed` fact** through the existing
+terminal-disposition route. It is not a replay of a historical completion.
+This is deliberately not an ownership CAS: concurrent active or newer queue
+ownership does not reject the assertion. The normal owner removes only a
+matching pending or parked publication revision and uses the original
+admission's command marker for acknowledgement. It does not retire another
+publication, reject a concurrent owner, or publish a stale review verdict.
+
+The normal finalizer must observe the original command acknowledgement as
+`Complete`, with detail `The item is closed; no stale verdict was published.`,
+and record its verified receipt. HTTP success or `acknowledgementState: pending`
+is not completion proof. Check the exact original receipt, available matching
+queue cleanup evidence, and preservation of later commands. Do not force a
+driver dispatch. On timeout, redirect, malformed response, or error, stop and
+inspect the exact operation; never blindly retry or substitute a new operation
+ID. Bay remains observer-only and uses the unchanged lifecycle projections.
+
 `POST /internal/exact-review/reconcile` backstop accepts at most 32 exact run IDs
 and intersects them with currently claimed leases. The Worker checks those IDs
 and attempts with an Actions-read GitHub App token and reconciles only runs
@@ -610,3 +858,65 @@ v1 Worker. Keep this mixed-version coverage until every in-flight v1 dispatch
 has drained naturally. The dashboard deployment smoke test must still observe
 HTTP 401 from an unsigned reconciliation request; HTTP 404 means the old Worker
 is serving that route.
+
+## Exhausted command review records in Bay
+
+Repair Cove counts retained exception records, not running repair workers. Its
+public references may carry the bounded `queue_disposition` values
+`parked_exhausted`, `parked`, or `retry_scheduled`. Both the server and browser
+sanitizers retain only these values, and only for queue references. Exhausted
+records show operator attention instead of an increasing queued-worker clock;
+the sampled header separates live references from queue/attention records.
+This remains an observer-only surface with the existing public repository
+allowlist and sampling/freshness limits.
+
+The queue's globally bounded parked-terminal check also observes exhausted
+command producers. An explicit closed GitHub item, observed twice with the same
+node/head/closure identity, may create a separate acknowledgement-only driver.
+The producer remains parked until its own receipt is observed or its trusted
+receipt is explicitly missing/locked. The driver rechecks the live closed
+identity and current producer revision/decision before authorizing a status
+write. Reopened, superseded, unknown, and still-open work is not restarted;
+operator bulk resolution/recovery still refuses command-context records.
+Closed failed commands retain a failure acknowledgement, not a fabricated
+successful review. Ordinary reconciliation now includes command exclusions
+in its bounded skip-reason accounting.
+
+The local Worker/SQLite/HTTP and Chromium proof is documented in
+`docs/proof/parked-command-finalization/README.md`.
+
+Parked-command finalizers reserve status-write ownership while their receipt is
+looked up, then re-fence immediately before the status PATCH. A successor may be
+recorded but cannot dispatch through that owned write window; ownership is
+released after a successful bounded PATCH or expires under the acknowledgement
+lease. The opted-in finalizer does not prune duplicate comments during lookup.
+When only the live-activity census is unavailable, Bay still retains verified
+queue dispositions from its bounded queue projection and labels the live count
+as unavailable rather than zero.
+
+When a parked-command target reopens after acknowledgement authorization, the
+queue atomically cancels the unobserved closure plan in its existing terminal
+operation ledger before deleting the driver. The producer remains exhausted.
+Cancellation retains a failed/attention lifecycle state, not a requeue claim;
+no new review is scheduled by canceling a closure plan.
+That cancelled revision cannot accept a late receipt or recreate an unfenced
+closure finalizer after a later webhook or Worker restart; a genuinely new
+command/source revision retains its separate acknowledgement ownership.
+Losing hosted/public repository eligibility also leaves exhausted command
+obligations parked: it is neither a verified receipt nor a missing/locked
+comment skip, and does not authorize generic deletion or finalizer dispatch.
+An already-planned parked-command driver is deferred with its original fence
+rather than superseded or discarded, so eligibility can recover safely. Such
+auxiliary drivers never replace their exhausted producer in the canonical Bay
+queue projection; actual workflow activity remains a separate live overlay.
+Claimed parked-command writes also re-probe hosted/public eligibility before
+target credentials and after the target read. Revocation defers the original
+fenced driver; it cannot authorize a status PATCH on a now-ineligible target.
+
+A later stable closure can re-arm an exhausted command whose earlier closure
+plan was cancelled. It receives a fresh lifecycle revision while the cancelled
+revision and its receipt-rejection tombstone remain immutable. The producer
+stays parked with its exhausted attempt/recovery budgets; no review is restarted.
+If a status writer retries after a token or write failure, it releases only its
+exact recorded successor coordination deferral before clearing the lease. A
+concurrently changed successor revision, reason, or deadline is not overwritten.

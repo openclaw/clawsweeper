@@ -20,6 +20,7 @@ import {
   type AssistRequestBinding,
 } from "./assist-artifact.js";
 import { numberArg, stringArg, type Args } from "./clawsweeper-args.js";
+import { DEFAULT_SERVICE_TIER } from "./clawsweeper-policy.js";
 import { safeOutputTail } from "./clawsweeper-text.js";
 import type {
   AssistSourceCommentSnapshot,
@@ -259,7 +260,11 @@ export function createAssistWorkflow({
       ...(options.mode === undefined ? {} : { mode: options.mode }),
       ...(options.lens === undefined ? {} : { lens: options.lens }),
     });
-    const codexConfig = [codexLoginConfig(), 'approval_policy="never"'];
+    const codexConfig = [
+      codexLoginConfig(),
+      'approval_policy="never"',
+      `service_tier=${JSON.stringify(DEFAULT_SERVICE_TIER)}`,
+    ];
     const emptyGitHubConfigDir = join(options.workDir, ".gh-empty");
     ensureDir(emptyGitHubConfigDir);
     const result = runAgentProcess({

@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { extname, join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { trimMiddle } from "./clawsweeper-text.js";
 import type {
@@ -43,6 +43,18 @@ function trimTrailingUrlPunctuation(raw: string): string {
   return raw.slice(0, end);
 }
 
+export function isGitHubMediaAttachmentUrl(url: URL): boolean {
+  if (url.origin !== "https://github.com" || url.username || url.password) return false;
+  return (
+    /^\/user-attachments\/assets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      url.pathname,
+    ) ||
+    /^\/[^/]+\/[^/]+\/assets\/\d+\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      url.pathname,
+    )
+  );
+}
+
 function proofMediaUrlsFromContext(context: ItemContext): string[] {
   const {
     pullCommitsRevision: __,
@@ -66,7 +78,9 @@ function proofMediaUrlsFromContext(context: ItemContext): string[] {
       continue;
     }
     const pathname = parsed.pathname.toLowerCase();
-    const isMedia = [...MEDIA_PROOF_EXTENSIONS].some((extension) => pathname.endsWith(extension));
+    const isMedia =
+      isGitHubMediaAttachmentUrl(parsed) ||
+      [...MEDIA_PROOF_EXTENSIONS].some((extension) => pathname.endsWith(extension));
     if (!isMedia || seen.has(parsed.href)) continue;
     seen.add(parsed.href);
     urls.push(parsed.href);
@@ -85,9 +99,38 @@ function mediaProofFileExtension(url: string): string {
   }
 }
 
-function mediaProofKind(url: string): "image" | "video" {
+function mediaProofKind(url: string): PreparedMediaProofArtifact["kind"] {
+  if (isGitHubMediaAttachmentUrl(new URL(url))) return "attachment";
   const extension = mediaProofFileExtension(url);
   return IMAGE_PROOF_EXTENSIONS.has(extension) ? "image" : "video";
+}
+
+function attachmentFileExtension(contentType: string, effectiveUrl: string): string {
+  const extensions: Record<string, string> = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "image/avif": ".avif",
+    "image/bmp": ".bmp",
+    "image/svg+xml": ".svg",
+    "image/tiff": ".tiff",
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
+    "video/webm": ".webm",
+    "video/x-m4v": ".m4v",
+    "video/x-msvideo": ".avi",
+    "video/x-matroska": ".mkv",
+    "video/ogg": ".ogv",
+  };
+  if (extensions[contentType]) return extensions[contentType];
+  try {
+    const extension = extname(new URL(effectiveUrl).pathname).toLowerCase();
+    if (/^\.[a-z0-9]{1,10}$/.test(extension)) return extension;
+  } catch {
+    // Missing redirect metadata leaves a generic local filename.
+  }
+  return ".media";
 }
 
 export function mediaProofSpawnDetail(result: ReturnType<MediaProofCommandRunner>): string {
@@ -155,8 +198,8 @@ export function prepareMediaProofArtifacts(
       return runner(command, args, { timeoutMs, killSignal: "SIGKILL" });
     };
     const ordinal = index + 1;
-    const kind = mediaProofKind(url);
-    const downloadedPath = join(
+    let kind = mediaProofKind(url);
+    let downloadedPath = join(
       proofScratchDir,
       `proof-${kind}-${ordinal}${mediaProofFileExtension(url)}`,
     );
@@ -171,6 +214,7 @@ export function prepareMediaProofArtifacts(
       "90",
       "--output",
       downloadedPath,
+      ...(kind === "attachment" ? ["-w", "%{content_type}\n%{url_effective}"] : []),
       url,
     ]);
     if (download.status !== 0) {
@@ -181,9 +225,32 @@ export function prepareMediaProofArtifacts(
         metadataPath: null,
         contactSheetPath: null,
         status: "failed",
-        detail: `download failed: ${mediaProofSpawnDetail(download)}`,
+        detail: `download failed: ${mediaProofSpawnDetail(kind === "attachment" ? { ...download, stdout: "" } : download)}`,
       });
       continue;
+    }
+    if (kind === "attachment") {
+      const [rawContentType = "", effectiveUrl = ""] = String(download.stdout ?? "").split("\n");
+      const contentType = rawContentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+      if (!contentType.startsWith("image/") && !contentType.startsWith("video/")) {
+        artifacts.push({
+          kind,
+          url,
+          downloadedPath: null,
+          metadataPath: null,
+          contactSheetPath: null,
+          status: "failed",
+          detail: `unsupported content type ${contentType || "(missing)"}`,
+        });
+        continue;
+      }
+      kind = contentType.startsWith("image/") ? "image" : "video";
+      const resolvedPath = join(
+        proofScratchDir,
+        `proof-${kind}-${ordinal}${attachmentFileExtension(contentType, effectiveUrl.trim())}`,
+      );
+      renameSync(downloadedPath, resolvedPath);
+      downloadedPath = resolvedPath;
     }
     if (kind === "image") {
       artifacts.push({

@@ -1,3 +1,9 @@
+import {
+  requireRecord,
+  rejectUnexpectedKeys,
+  requireString,
+  requirePositiveInteger,
+} from "../value-coerce.js";
 import { createHash } from "node:crypto";
 import type { LiveProofPlan, LiveProofStep } from "../clawsweeper-types.js";
 import { LIVE_VERIFICATION_MARKER } from "../clawsweeper-policy.js";
@@ -674,27 +680,6 @@ function truncateOutput(value: string, maxChars: number): string {
   return `${value.slice(0, headChars)}${separator}${value.slice(-tailChars)}`;
 }
 
-function requireRecord(value: unknown, label: string): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${label} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
-function rejectUnexpectedKeys(
-  record: Record<string, unknown>,
-  allowed: ReadonlySet<string>,
-  label: string,
-): void {
-  const unexpected = Object.keys(record).filter((key) => !allowed.has(key));
-  if (unexpected.length) throw new Error(`${label} has unexpected keys: ${unexpected.join(", ")}`);
-}
-
-function requireString(value: unknown, label: string): string {
-  if (typeof value !== "string") throw new Error(`${label} must be a string`);
-  return value;
-}
-
 function requireBoundedString(value: unknown, label: string, maxChars: number): string {
   const string = requireString(value, label);
   if (string.length > maxChars) {
@@ -715,11 +700,4 @@ function requireSingleLine(value: unknown, label: string, maxChars: number): str
     );
   }
   return value.trim();
-}
-
-function requirePositiveInteger(value: unknown, label: string): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`${label} must be a positive safe integer`);
-  }
-  return value;
 }

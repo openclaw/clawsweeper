@@ -115,6 +115,13 @@ need to inspect GitHub before posting a notification. Include the repository,
 item number, title, URL, action, reason, timestamp, commit SHA, workflow run,
 and any cluster or job id that helps later debugging.
 
+For the general GitHub activity stream, each prompt represents one exact
+received event, not a complete repository activity window. It may inspect the
+linked subject and directly related resources, but it must not enumerate or
+paginate repository-wide event, activity, or audit feeds or claim a time window
+or page range is complete. The notifier labels its observation timestamp as
+receiver time rather than GitHub event creation time.
+
 ## Failure Semantics
 
 Default behavior:
@@ -198,9 +205,12 @@ The workflow skips native and forwarded pull request synchronize events plus
 successful workflow-run events before checkout because the notifier always
 treats them as routine. The notifier also applies a cheap deterministic
 prefilter before calling OpenClaw. Routine bot comments, comment edits, metadata
-edits, duplicate PR synchronizes, and successful automation events are skipped
-unless they contain an explicit ClawSweeper command or mention. This keeps noisy
-GitHub churn from consuming hook-session model turns.
+edits, duplicate PR synchronizes, and successful automation events are skipped.
+Trusted self-authored ClawSweeper issue comments, inline review comments, and
+formal reviews are always skipped; commands or mentions remain visible when
+authored by a human, a third-party bot, or an actor that does not match the
+normalized author. This keeps noisy GitHub churn from consuming hook-session
+model turns.
 
 The workflow coalesces observer runs by event, repository, and action,
 cancelling older in-progress observer runs during bursts. This activity stream

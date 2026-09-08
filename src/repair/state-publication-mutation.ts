@@ -1,4 +1,8 @@
 import { Buffer } from "node:buffer";
+import {
+  manualPublicationOwnerFrom,
+  type ManualPublicationOwner,
+} from "../manual-publication-policy.js";
 
 import {
   EXACT_REVIEW_BUNDLE_MAX_FILES,
@@ -36,6 +40,7 @@ export type PreparedStateMutationOperation = {
 };
 
 export type PreparedStateMutationPlan = {
+  owner?: ManualPublicationOwner;
   identity: StateMutationIdentity;
   publication?: BatchPublicationIdentity;
   operations: readonly PreparedStateMutationOperation[];
@@ -145,6 +150,7 @@ export function validatePreparedStateMutationPlans(
     }
     batchBytes += totalBytes;
     return {
+      ...(plan.owner === undefined ? {} : { owner: manualPublicationOwnerFrom(plan.owner) }),
       identity: { ...plan.identity },
       ...(plan.publication ? { publication: { ...plan.publication } } : {}),
       operations,

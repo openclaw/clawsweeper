@@ -656,6 +656,10 @@ test("keep-open PR comment carries the previous review as an earlier cycle", () 
 
   const parsed = parseReviewHistory(comment);
   assert.equal(parsed.cycles.length, 1);
+  const resynced = renderReviewCommentFromReport(keepOpenPullReport(), "none", {
+    previousReviewCommentBody: comment,
+  });
+  assert.match(resynced, /\(Revision 2\)/);
 });
 
 test("re-syncing the same review does not add a duplicate cycle", () => {
@@ -698,6 +702,25 @@ test("existing ledger cycles survive the next comment sync", () => {
   assert.match(secondSync, /_Reviewed .+\(Revision 3\)\._/);
 });
 
+test("freshness revision uses the lifetime count beyond the visible history cap", () => {
+  const history = renderReviewHistorySection({
+    cycles: [
+      {
+        reviewedAt: "2026-06-18T08:00:00.000Z",
+        sha: "aaaaaaa",
+        verdict: "needs changes before merge.",
+        findings: [],
+      },
+    ],
+    totalCompletedCycles: 50,
+  });
+  const comment = renderReviewCommentFromReport(keepOpenPullReport(), "none", {
+    previousReviewCommentBody: `${previousDurableComment()}\n${history}`,
+  });
+  assert.equal(parseReviewHistory(comment).totalCompletedCycles, 51);
+  assert.match(comment, /\(Revision 52\)/);
+});
+
 test("issue comments never carry a review history ledger", () => {
   const report = `${reportFrontMatter({
     type: "issue",
@@ -718,6 +741,7 @@ Keep this issue open.
   });
 
   assert.doesNotMatch(comment, /clawsweeper-review-history/);
+  assert.doesNotMatch(comment, /\(Revision/);
 });
 
 function projectReview(body: string) {

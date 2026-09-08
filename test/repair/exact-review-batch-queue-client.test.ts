@@ -12,6 +12,17 @@ const heartbeat = {
   leaseExpiresAt: new Date(now + 120_000).toISOString(),
   items: [],
 };
+const dispatchedClaim = {
+  claimId: "claim-proof",
+  leaseOwner: "worker-proof",
+  maxItems: 4,
+  dispatch: { id: "dispatch-proof", at: new Date(now - 60_000).toISOString() },
+  runner: {
+    runId: "123456",
+    runAttempt: 2,
+    startedAt: new Date(now - 30_000).toISOString(),
+  },
+};
 
 function fixture(t, respond) {
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now });
@@ -23,6 +34,7 @@ function fixture(t, respond) {
     baseUrl: "https://queue.example.test",
     webhookSecret: "synthetic-test-secret",
     fetch: async (url, init) => {
+      assert.equal(init.redirect, "error");
       calls.push({ url, ...init, at: Date.now() });
       return respond(calls.length, init);
     },
@@ -37,6 +49,107 @@ async function flush() {
 function unavailable(headers = {}) {
   return new Response("exact_review_queue_unavailable", { status: 500, headers });
 }
+
+test("dispatched claim retries timeout and HTTP 500 with unchanged identity", async (t) => {
+  const batch = {
+    batch_id: dispatchedClaim.claimId,
+    lease_owner: dispatchedClaim.leaseOwner,
+    lease_expires_at: new Date(now + 120_000).toISOString(),
+    items: [
+      {
+        item_key: "openclaw/example#1@publish:10:1",
+        revision: 3,
+        claim_generation: 7,
+      },
+    ],
+  };
+  const { client, calls } = fixture(t, (attempt, init) => {
+    if (attempt === 1) {
+      return new Promise((_resolve, reject) =>
+        init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true }),
+      );
+    }
+    if (attempt === 2) return unavailable();
+    return Response.json({
+      claimed: true,
+      batch,
+      configured_batch_size: 4,
+      batch_wait_ms: 125,
+    });
+  });
+
+  const result = client.claim(dispatchedClaim);
+  await flush();
+  t.mock.timers.tick(20_000);
+  await flush();
+  t.mock.timers.tick(1_000);
+  await flush();
+  t.mock.timers.tick(2_000);
+  await flush();
+
+  assert.deepEqual(await result, {
+    batchId: dispatchedClaim.claimId,
+    leaseOwner: dispatchedClaim.leaseOwner,
+    leaseExpiresAt: batch.lease_expires_at,
+    items: [
+      {
+        itemKey: "openclaw/example#1@publish:10:1",
+        revision: 3,
+        claimGeneration: 7,
+      },
+    ],
+    configuredBatchSize: 4,
+    batchWaitMs: 125,
+  });
+  assert.equal(calls.length, 3);
+  assert.equal(calls[0].body, calls[1].body);
+  assert.equal(calls[1].body, calls[2].body);
+  assert.deepEqual(calls[0].headers, calls[1].headers);
+  assert.deepEqual(calls[1].headers, calls[2].headers);
+  assert.deepEqual(JSON.parse(calls[0].body), {
+    claim_id: dispatchedClaim.claimId,
+    lease_owner: dispatchedClaim.leaseOwner,
+    max_items: dispatchedClaim.maxItems,
+    dispatch_id: dispatchedClaim.dispatch.id,
+    dispatched_at: dispatchedClaim.dispatch.at,
+    runner_run_id: dispatchedClaim.runner.runId,
+    runner_run_attempt: dispatchedClaim.runner.runAttempt,
+    runner_started_at: dispatchedClaim.runner.startedAt,
+  });
+  assert.equal(
+    calls[0].headers["x-clawsweeper-exact-review-signature"],
+    `sha256=${createHmac("sha256", "synthetic-test-secret").update(calls[0].body).digest("hex")}`,
+  );
+});
+
+test("dispatched claim does not retry HTTP 4xx", async (t) => {
+  const { client, calls, logs } = fixture(t, () => new Response(null, { status: 409 }));
+  await assert.rejects(client.claim(dispatchedClaim), /HTTP 409/);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(logs, []);
+});
+
+test("undispatched claim and completion remain single-attempt", async (t) => {
+  const { client, calls, logs } = fixture(t, () => unavailable());
+  await assert.rejects(
+    client.claim({
+      claimId: dispatchedClaim.claimId,
+      leaseOwner: dispatchedClaim.leaseOwner,
+      maxItems: dispatchedClaim.maxItems,
+    }),
+    /HTTP 500/,
+  );
+  await assert.rejects(
+    client.complete({
+      batchId: dispatchedClaim.claimId,
+      leaseOwner: dispatchedClaim.leaseOwner,
+      items: [],
+    }),
+    /HTTP 500/,
+  );
+  assert.equal(calls.length, 2);
+  assert.deepEqual(logs, []);
+});
 
 test("post-effect HTTP 500 is attempted once", async (t) => {
   const { client, calls, logs } = fixture(t, () => unavailable());
@@ -120,6 +233,7 @@ test("heartbeat retries 500 with unchanged signed bytes and returns the renewed 
     batch_id: heartbeat.batchId,
     lease_owner: heartbeat.leaseOwner,
     lease_expires_at: new Date(now + 240_000).toISOString(),
+    server_time: new Date(now).toISOString(),
     items: [],
   };
   const { client, calls } = fixture(t, (attempt) =>
@@ -129,6 +243,7 @@ test("heartbeat retries 500 with unchanged signed bytes and returns the renewed 
   await flush();
   t.mock.timers.tick(1_000);
   assert.equal((await result).leaseExpiresAt, batch.lease_expires_at);
+  assert.equal((await result).serverTime, batch.server_time);
   assert.equal(calls.length, 2);
   assert.equal(calls[0].body, calls[1].body);
   assert.deepEqual(calls[0].headers, calls[1].headers);
@@ -180,4 +295,349 @@ test("heartbeat with an expired or invalid lease sends no request", async (t) =>
   );
   await assert.rejects(client.heartbeat({ ...heartbeat, leaseExpiresAt: "invalid" }), /expiry/i);
   assert.equal(calls.length, 0);
+});
+
+test("publication reconciliation returns a bounded allowlisted sample", async (t) => {
+  const acknowledgementStates = [
+    "not_required",
+    "pending",
+    "observed",
+    "skipped_locked",
+    "skipped_missing_comment",
+    "unavailable",
+  ];
+  const successorFenceStates = [
+    "verified",
+    "missing",
+    "ambiguous",
+    "admission_missing",
+    "admission_command_mismatch",
+    "admission_marker_mismatch",
+    "admission_comment_mismatch",
+  ];
+  const sample = Array.from({ length: 21 }, (_, index) => {
+    const successorFenceState = index >= 13 ? successorFenceStates[index - 13] : null;
+    const acknowledgementState =
+      successorFenceState === null
+        ? acknowledgementStates[index % acknowledgementStates.length]
+        : "unavailable";
+    return {
+      item_key: `openclaw/example#${index + 1}@publish:${index + 2}:1`,
+      queue_revision: String(index + 1),
+      reason: "stale_revision",
+      target_key: `openclaw/example#${index + 1}`,
+      publication_revision: String(index + 1),
+      superseded_by_revision: String(index + 2),
+      lineage_claim_generation: null,
+      retained_item_key: null,
+      command_context: successorFenceState !== null || index % 6 !== 0,
+      acknowledgement_state: acknowledgementState,
+      acknowledgement_unavailable_reason:
+        acknowledgementState === "unavailable" ? "terminal_missing" : null,
+      successor_fence_state:
+        acknowledgementState === "unavailable" ? (successorFenceState ?? "verified") : null,
+      supersede_safe: !["pending", "unavailable"].includes(acknowledgementState),
+      private_detail: `must-not-escape-${index}`,
+    };
+  });
+  const { client, calls } = fixture(t, (_attempt, init) =>
+    Response.json({
+      apply: JSON.parse(init.body).apply,
+      scanned: 21,
+      legacy_terminal_scanned: 0,
+      eligible: 21,
+      changed: 0,
+      eligible_remaining: 21,
+      stale_revision_eligible: 21,
+      stale_revision_changed: 0,
+      lineage_duplicate_eligible: 0,
+      lineage_duplicate_changed: 0,
+      lineage_refreshed: 0,
+      legacy_terminal_candidates: 0,
+      legacy_terminal_selected: 0,
+      legacy_terminal_eligible: 0,
+      legacy_terminal_changed: 0,
+      legacy_state_batch_terminal_candidates: 0,
+      legacy_state_batch_terminal_selected: 0,
+      legacy_state_batch_terminal_producer_succeeded: 0,
+      legacy_state_batch_terminal_eligible: 0,
+      legacy_state_batch_terminal_changed: 0,
+      protected_batch_items: 0,
+      protected_lineage_items: 0,
+      oldest_eligible_age_seconds: 60,
+      oldest_remaining_age_seconds: 60,
+      sample,
+      private_response_detail: "must-not-escape",
+    }),
+  );
+
+  const result = await client.reconcilePublications({ apply: true, maxItems: 1 });
+
+  assert.equal(result.apply, true);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(JSON.parse(calls[0].body), { apply: true, max_items: 1 });
+  assert.equal(calls[0].redirect, "error");
+  assert.equal(result.sample.length, 20);
+  assert.deepEqual(result.sample[0], {
+    itemKey: "openclaw/example#1@publish:2:1",
+    queueRevision: 1,
+    reason: "stale_revision",
+    targetKey: "openclaw/example#1",
+    publicationRevision: 1,
+    supersededByRevision: 2,
+    lineageClaimGeneration: null,
+    retainedItemKey: null,
+    commandContext: false,
+    acknowledgementState: "not_required",
+    acknowledgementUnavailableReason: null,
+    successorFenceState: null,
+    supersedeSafe: true,
+  });
+  assert.deepEqual(
+    result.sample.find((entry) => entry.acknowledgementState === "unavailable"),
+    {
+      itemKey: "openclaw/example#6@publish:7:1",
+      queueRevision: 6,
+      reason: "stale_revision",
+      targetKey: "openclaw/example#6",
+      publicationRevision: 6,
+      supersededByRevision: 7,
+      lineageClaimGeneration: null,
+      retainedItemKey: null,
+      commandContext: true,
+      acknowledgementState: "unavailable",
+      acknowledgementUnavailableReason: "terminal_missing",
+      successorFenceState: "verified",
+      supersedeSafe: false,
+    },
+  );
+  assert.deepEqual(
+    [...new Set(result.sample.map((entry) => entry.acknowledgementState))],
+    acknowledgementStates,
+  );
+  assert.deepEqual(
+    [...new Set(result.sample.map((entry) => entry.successorFenceState).filter(Boolean))],
+    successorFenceStates,
+  );
+  assert.equal("private_detail" in result.sample[0]!, false);
+  assert.equal("private_response_detail" in result, false);
+});
+
+test("publication reconciliation treats an omitted inapplicable unavailable reason as null", async (t) => {
+  const { client } = fixture(t, () =>
+    Response.json({
+      apply: false,
+      scanned: 1,
+      eligible: 1,
+      changed: 0,
+      eligible_remaining: 1,
+      protected_batch_items: 0,
+      oldest_eligible_age_seconds: 60,
+      oldest_remaining_age_seconds: 60,
+      sample: [
+        {
+          item_key: "openclaw/example#1@publish:2:1",
+          queue_revision: 1,
+          reason: "stale_revision",
+          target_key: "openclaw/example#1",
+          publication_revision: 1,
+          superseded_by_revision: 2,
+          lineage_claim_generation: null,
+          retained_item_key: null,
+          command_context: false,
+          acknowledgement_state: "not_required",
+          successor_fence_state: null,
+          supersede_safe: true,
+        },
+      ],
+    }),
+  );
+
+  assert.equal(
+    (await client.reconcilePublications({ apply: false, maxItems: 1 })).sample[0]!
+      .acknowledgementUnavailableReason,
+    null,
+  );
+});
+
+test("publication reconciliation rejects malformed sample rows", async (t) => {
+  const { client } = fixture(t, () =>
+    Response.json({
+      apply: false,
+      scanned: 1,
+      eligible: 1,
+      changed: 0,
+      eligible_remaining: 1,
+      protected_batch_items: 0,
+      oldest_eligible_age_seconds: 60,
+      oldest_remaining_age_seconds: 60,
+      sample: [
+        {
+          item_key: "openclaw/example#1@publish:2:1",
+          queue_revision: 1,
+          reason: "private_reason",
+          target_key: "openclaw/example#1",
+          publication_revision: 1,
+          superseded_by_revision: 2,
+          lineage_claim_generation: null,
+          retained_item_key: null,
+          command_context: false,
+          acknowledgement_state: "not_required",
+          acknowledgement_unavailable_reason: null,
+          successor_fence_state: null,
+          supersede_safe: false,
+        },
+      ],
+    }),
+  );
+
+  await assert.rejects(
+    client.reconcilePublications({ apply: false, maxItems: 1 }),
+    /sample reason/,
+  );
+});
+
+test("publication reconciliation rejects malformed supersede safety", async (t) => {
+  let acknowledgementState = "private_state";
+  let commandContext = true;
+  let reason = "stale_revision";
+  let supersedeSafe = true;
+  let acknowledgementUnavailableReason: unknown = null;
+  let successorFenceState: unknown = null;
+  let responseApply: unknown = true;
+  const { client, calls } = fixture(t, () =>
+    Response.json({
+      apply: responseApply,
+      scanned: 1,
+      eligible: 1,
+      changed: 0,
+      eligible_remaining: 1,
+      protected_batch_items: 0,
+      oldest_eligible_age_seconds: 60,
+      oldest_remaining_age_seconds: 60,
+      sample: [
+        {
+          item_key: "openclaw/example#1@publish:2:1",
+          queue_revision: 1,
+          reason,
+          target_key: "openclaw/example#1",
+          publication_revision: 1,
+          superseded_by_revision: 2,
+          lineage_claim_generation: null,
+          retained_item_key: null,
+          command_context: commandContext,
+          acknowledgement_state: acknowledgementState,
+          acknowledgement_unavailable_reason: acknowledgementUnavailableReason,
+          successor_fence_state: successorFenceState,
+          supersede_safe: supersedeSafe,
+        },
+      ],
+    }),
+  );
+
+  await assert.rejects(
+    client.reconcilePublications({ apply: true, maxItems: 1 }),
+    /acknowledgement_state/,
+  );
+  acknowledgementState = "pending";
+  await assert.rejects(
+    client.reconcilePublications({ apply: true, maxItems: 1 }),
+    /supersede safety/,
+  );
+  acknowledgementState = "unavailable";
+  supersedeSafe = false;
+  await assert.rejects(
+    client.reconcilePublications({ apply: true, maxItems: 1 }),
+    /supersede safety/,
+  );
+  acknowledgementUnavailableReason = "private_reason";
+  await assert.rejects(
+    client.reconcilePublications({ apply: true, maxItems: 1 }),
+    /acknowledgement_unavailable_reason/,
+  );
+  acknowledgementUnavailableReason = null;
+  acknowledgementState = "not_required";
+  await assert.rejects(
+    client.reconcilePublications({ apply: true, maxItems: 1 }),
+    /supersede safety/,
+  );
+  commandContext = false;
+  acknowledgementState = "observed";
+  await assert.rejects(
+    client.reconcilePublications({ apply: true, maxItems: 1 }),
+    /supersede safety/,
+  );
+  acknowledgementState = "not_required";
+  reason = "legacy_terminal";
+  supersedeSafe = true;
+  await assert.rejects(
+    client.reconcilePublications({ apply: true, maxItems: 1 }),
+    /supersede safety/,
+  );
+  supersedeSafe = false;
+  responseApply = undefined;
+  await assert.rejects(
+    client.reconcilePublications({ apply: true, maxItems: 1 }),
+    /reconciliation apply/,
+  );
+  responseApply = false;
+  await assert.rejects(
+    client.reconcilePublications({ apply: true, maxItems: 1 }),
+    /reconciliation apply/,
+  );
+  assert.equal(calls.length, 9);
+  assert.deepEqual(JSON.parse(calls[0].body), { apply: true, max_items: 1 });
+});
+
+test("publication reconciliation requires a coherent successor fence diagnostic", async (t) => {
+  const sample: Record<string, unknown> = {
+    item_key: "openclaw/example#1@publish:2:1",
+    queue_revision: 1,
+    reason: "stale_revision",
+    target_key: "openclaw/example#1",
+    publication_revision: 1,
+    superseded_by_revision: 2,
+    lineage_claim_generation: null,
+    retained_item_key: null,
+    command_context: true,
+    acknowledgement_state: "unavailable",
+    acknowledgement_unavailable_reason: "terminal_missing",
+    successor_fence_state: "verified",
+    supersede_safe: false,
+  };
+  const { client } = fixture(t, () =>
+    Response.json({
+      apply: false,
+      scanned: 1,
+      eligible: 1,
+      changed: 0,
+      eligible_remaining: 1,
+      protected_batch_items: 0,
+      oldest_eligible_age_seconds: 60,
+      oldest_remaining_age_seconds: 60,
+      sample: [sample],
+    }),
+  );
+
+  delete sample.successor_fence_state;
+  await assert.rejects(
+    client.reconcilePublications({ apply: false, maxItems: 1 }),
+    /successor_fence_state/,
+  );
+  sample.successor_fence_state = "private_state";
+  await assert.rejects(
+    client.reconcilePublications({ apply: false, maxItems: 1 }),
+    /successor_fence_state/,
+  );
+  sample.successor_fence_state = null;
+  await assert.rejects(
+    client.reconcilePublications({ apply: false, maxItems: 1 }),
+    /supersede safety/,
+  );
+  sample.successor_fence_state = "verified";
+  sample.acknowledgement_unavailable_reason = "routed_receipts_incomplete";
+  await assert.rejects(
+    client.reconcilePublications({ apply: false, maxItems: 1 }),
+    /supersede safety/,
+  );
 });

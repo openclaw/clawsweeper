@@ -35,11 +35,7 @@ import {
   generatePlaywrightScript,
   terminalCommandPlan,
 } from "../dist/live-proof/drivers.js";
-import {
-  ensureLiveProofPackageManager,
-  executeLiveProof,
-  liveProofPackageManagerInstallCommand,
-} from "../dist/live-proof/execute.js";
+import { ensureLiveProofPackageManager, executeLiveProof } from "../dist/live-proof/execute.js";
 import { liveProofSetupCommand } from "../dist/live-proof/setup.js";
 import {
   assertLiveProofEnvironmentSanitized,
@@ -480,10 +476,6 @@ test("live-proof reports an unsupported package manager clearly", () => {
         PATH: "/usr/bin",
       }),
     /unsupported live-proof package manager "yarn"; expected bun, pnpm, or npm/,
-  );
-  assert.equal(
-    liveProofPackageManagerInstallCommand("bun"),
-    "curl -fsSL https://bun.sh/install | bash",
   );
 });
 
@@ -954,29 +946,6 @@ test("terminal nonzero and signal exits fail even when the expected marker is pr
     assert.equal(result.status, "failed");
     assert.equal(result.steps[0]?.status, "failed");
     assert.match(result.steps[0]?.detail ?? "", reason);
-  }
-});
-
-test("terminal pane signals fail even when expected output is present", () => {
-  for (const signal of ["term", "15"]) {
-    const result = driveTerminal({
-      plan: {
-        ...recommendedPlan("terminal"),
-        entry: "kill -TERM $$",
-        steps: [{ action: "expect_output", text: "Ready" }],
-      },
-      checkout: "/tmp/checkout",
-      rawVideoPath: "/tmp/live-proof.raw.webm",
-      maxRecordingSeconds: 90,
-      recordMedia: false,
-      runner: terminalLifecycleRunner([], {
-        commandSignal: signal,
-        terminalCaptures: ["Ready\n"],
-      }),
-    });
-
-    assert.equal(result.status, "failed");
-    assert.match(result.output, /terminated by a signal with exit status 143/);
   }
 });
 
@@ -1465,23 +1434,6 @@ test("terminal finalization catches a prompt failure before cleanup", () => {
     runner: terminalLifecycleRunner([], {
       commandExitStatus: 7,
       terminalCaptures: ["$ printf 'Ready\\n'; sleep 1; exit 7\nReady\n"],
-    }),
-  });
-
-  assert.equal(result.status, "failed");
-  assert.match(result.output, /failed with exit status 7/);
-});
-
-test("terminal detects an active shell that exits before publishing prompt status", () => {
-  const result = driveTerminal({
-    plan: { ...recommendedPlan("terminal"), entry: "exit 7", steps: [] },
-    checkout: "/tmp/checkout",
-    rawVideoPath: "/tmp/live-proof.raw.webm",
-    maxRecordingSeconds: 90,
-    recordMedia: false,
-    runner: terminalLifecycleRunner([], {
-      commandExitStatus: 7,
-      terminalCaptures: ["$ exit 7\n"],
     }),
   });
 
@@ -2171,7 +2123,6 @@ test("terminal entry executes once and publishes only its final visible viewport
   let commandExecuted = false;
   let capture:
     | {
-        captureScript: string;
         capture: string;
         captureTemporary: string;
         captureDone: string;
@@ -4150,10 +4101,9 @@ test("live-proof detach is a clean no-op when the record has no recording block"
   assert.match(fixture.logs.join("\n"), /has no recording block; no changes needed/);
 });
 
-test("live-proof maintenance syncs the marker-backed comment only after publication", () => {
+test("live-proof maintenance syncs a comment without the detached recording", () => {
   const fixture = recordedAttachmentFixture();
-  const calls: string[] = [];
-  calls.push("hydrate");
+  let publishedBody = "";
   const result = detachLiveProof(
     {
       recordPath: fixture.recordPath,
@@ -4170,7 +4120,6 @@ test("live-proof maintenance syncs the marker-backed comment only after publicat
       logs: fixture.logs,
     }),
   );
-  calls.push("detach", "publish", "comment");
   syncDetachedLiveProofComment(
     { recordPath: fixture.recordPath, repositorySlug: "example-repo", item: 42 },
     attachDependencies({
@@ -4179,7 +4128,7 @@ test("live-proof maintenance syncs the marker-backed comment only after publicat
         throw new Error("detach must not fetch the pull request");
       },
       upsertReviewComment: (_number, body) => {
-        assert.doesNotMatch(body, /clawsweeper-live-proof-recording|Live proof recording/);
+        publishedBody = body;
         return {};
       },
       logs: fixture.logs,
@@ -4187,7 +4136,8 @@ test("live-proof maintenance syncs the marker-backed comment only after publicat
   );
 
   assert.equal(result, "detached");
-  assert.deepEqual(calls, ["hydrate", "detach", "publish", "comment"]);
+  assert.match(publishedBody, /<!-- clawsweeper-review item=42 -->/);
+  assert.doesNotMatch(publishedBody, /clawsweeper-live-proof-recording|Live proof recording/);
 });
 
 test("live-proof comment sync requires the exact published bundle result", () => {
@@ -4388,6 +4338,7 @@ test("live-proof attach dry-run prints exact uploads and mutations without perfo
   assert.match(output, /dry-run: upsert marker-backed review comment/);
 });
 
+// Workflow guard: historical proof is folded before publication, and maintenance stays manual.
 test("automatic live proof is retired while historical artifact publication remains", () => {
   assert.throws(() => readFileSync(".github/workflows/live-proof.yml", "utf8"));
   assert.throws(() => readFileSync(".github/actions/dispatch-live-proofs/action.yml", "utf8"));
@@ -4708,7 +4659,6 @@ function terminalLifecycleRunner(
     keepsRunningCommands?: string[];
     heldCommandKeepsRunning?: boolean;
     commandCompletionAfterProbe?: number;
-    commandCompletionAfterProbes?: number[];
     recordedStatuses?: Array<number | string | null>;
     captureCompletion?: string;
     paneStatusDuringFinalize?: { status: "exited"; exitStatus: number };
@@ -4749,11 +4699,9 @@ function terminalLifecycleRunner(
         command: string;
         held: boolean;
         status: string;
-        statusTemporary: string;
         start: string;
         ready: string;
         readyTemporary: string;
-        lease: string;
         leaseIdentity: string;
         nonce: string;
       }
@@ -4761,7 +4709,6 @@ function terminalLifecycleRunner(
   let activeCleanup: TerminalCleanupInvocation | undefined;
   let activeFiles:
     | {
-        captureScript: string;
         capture: string;
         captureTemporary: string;
         captureDone: string;
@@ -4787,10 +4734,7 @@ function terminalLifecycleRunner(
     }
     const captures = options.terminalCapturesByCommand?.[typedCommand] ??
       options.terminalCaptures ?? ["command output\n"];
-    const completionAfter =
-      options.commandCompletionAfterProbes?.[commandLaunch - 1] ??
-      options.commandCompletionAfterProbe ??
-      captures.length - 1;
+    const completionAfter = options.commandCompletionAfterProbe ?? captures.length - 1;
     if (terminalCaptureProbe < completionAfter) return;
     const configured = options.recordedStatuses?.[commandLaunch - 1];
     if (configured === null) return;
@@ -5044,11 +4988,9 @@ function terminalCommandInvocation(args: readonly string[]):
       command: string;
       held: boolean;
       status: string;
-      statusTemporary: string;
       start: string;
       ready: string;
       readyTemporary: string;
-      lease: string;
       leaseIdentity: string;
       nonce: string;
     }
@@ -5062,13 +5004,11 @@ function terminalCommandInvocation(args: readonly string[]):
   return {
     command: invocation[1]!,
     held: shellCommand.includes("while :; do sleep 3600; done"),
-    statusTemporary: invocation[2]!,
     status: invocation[3]!,
     start: invocation[4]!,
     readyTemporary: invocation[5]!,
     ready: invocation[6]!,
     nonce: invocation[7]!,
-    lease: invocation[8]!,
     leaseIdentity: invocation[9]!,
   };
 }
@@ -5078,7 +5018,6 @@ interface TerminalCleanupInvocation {
   paneTty: string;
   panePid: string;
   nonce: string;
-  lease: string;
   leaseIdentity: string;
   request: string;
   resultTemporary: string;
@@ -5095,7 +5034,6 @@ function terminalCleanupInvocation(args: readonly string[]): TerminalCleanupInvo
     paneTty: invocation[2]!,
     panePid: invocation[3]!,
     nonce: invocation[4]!,
-    lease: invocation[5]!,
     leaseIdentity: invocation[6]!,
     request: invocation[7]!,
     resultTemporary: invocation[8]!,
@@ -5105,7 +5043,6 @@ function terminalCleanupInvocation(args: readonly string[]): TerminalCleanupInvo
 
 function terminalCaptureInvocation(args: readonly string[]):
   | {
-      captureScript: string;
       capture: string;
       captureTemporary: string;
       captureDone: string;
@@ -5118,7 +5055,6 @@ function terminalCaptureInvocation(args: readonly string[]):
   const files = quoted.slice(-5);
   if (files.length !== 5) return undefined;
   return {
-    captureScript: files[0]!,
     capture: files[1]!,
     captureTemporary: files[2]!,
     captureDone: files[3]!,

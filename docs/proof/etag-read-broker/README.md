@@ -11,6 +11,12 @@ digest check, changed-resource replacement, independent page keys, unchanged
 wire-call count, and a final-guard-style read that always revalidates. The
 operator secret is rejected from the publisher-scoped data plane.
 
+The current runner also exercises the 128 KiB store limit: a 100 KiB response
+is stored over loopback HTTP, a 200 KiB response is returned intact without
+transmitting the response body (one size-only store request records the skip),
+and a direct 200 KiB store request returns `body_size_bound`. Historical receipts below describe their recorded revision;
+new runs report the current body limit from the shared contract.
+
 Run locally after `pnpm run build:all`:
 
 ```bash

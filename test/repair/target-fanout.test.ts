@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHmac } from "node:crypto";
 import {
   chmodSync,
@@ -13,12 +13,15 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
+import type { AuditWaveState } from "../../src/audit-wave-state.ts";
 
 import {
   SCHEDULED_REVIEW_PLAN_BATCH_SIZE,
   admitSelectedRepositories,
   allocateReviewCandidateCapacity,
   defaultLimit,
+  dispatchAuditWaves,
   fetchFanoutCursor,
   filterEligibleRepositories,
   loadFanoutCursor,
@@ -62,10 +65,91 @@ const config: InventoryConfig = {
   requireIssues: true,
 };
 
+const auditTargets = Array.from({ length: 12 }, (_, index) => ({
+  targetRepo: `synthetic/audit-${index + 1}`,
+  defaultBranch: "main",
+  visibility: "PUBLIC",
+}));
+
 test("target fanout defaults match the scheduled cursor batch sizes", () => {
   assert.equal(defaultLimit("hot-intake"), "20");
   assert.equal(defaultLimit("normal-review"), "12");
   assert.equal(defaultLimit("audit"), "12");
+});
+
+test("audit waves retain queued slots and drain failures before dispatching all twelve targets", async () => {
+  let dispatched = 0;
+  let polls = 0;
+  let active = 0;
+  let peak = 0;
+  const completed: string[] = [];
+  await dispatchAuditWaves(auditTargets, {
+    dispatchRepo: "openclaw/clawsweeper",
+    commandForTarget: (target) => [target.targetRepo],
+    persist: async () => {},
+    wait: async () => {
+      polls++;
+    },
+    run: (args) => {
+      if (args[0] !== "run") {
+        if (dispatched % 3 === 0) assert.equal(active, 0);
+        active++;
+        peak = Math.max(peak, active);
+        return JSON.stringify({ workflow_run_id: ++dispatched });
+      }
+      assert.deepEqual(args.slice(3), [
+        "--repo",
+        "openclaw/clawsweeper",
+        "--json",
+        "databaseId,status,conclusion",
+      ]);
+      const terminal = polls % 3 === 0;
+      if (terminal) {
+        active--;
+        completed.push(args[2]);
+      }
+      return JSON.stringify({
+        databaseId: Number(args[2]),
+        status: terminal ? "completed" : polls % 3 === 1 ? "queued" : "in_progress",
+        conclusion: terminal ? ["success", "failure", "cancelled"][Number(args[2]) % 3] : null,
+      });
+    },
+  });
+  assert.equal(dispatched, 12);
+  assert.equal(completed.length, 12);
+  assert.equal(peak, 3);
+});
+
+test("audit waves stop on unknown dispatch or run state without admitting another wave", async () => {
+  for (const scenario of ["missing-id", "lookup-failed", "mismatched-id", "timeout"]) {
+    let dispatched = 0;
+    let clock = 0;
+    await assert.rejects(
+      dispatchAuditWaves(auditTargets, {
+        dispatchRepo: "openclaw/clawsweeper",
+        commandForTarget: () => ["dispatch"],
+        persist: async () => {},
+        retryWait: async () => {},
+        wait: async () => {
+          clock += 10;
+        },
+        now: () => clock,
+        waveTimeoutMs: 10,
+        run: (args) => {
+          if (args[0] === "dispatch") {
+            dispatched++;
+            return JSON.stringify(scenario === "missing-id" ? {} : { workflow_run_id: dispatched });
+          }
+          if (scenario === "lookup-failed") throw new Error("lookup failed");
+          return JSON.stringify({
+            databaseId: scenario === "mismatched-id" ? 999 : Number(args[2]),
+            status: "in_progress",
+          });
+        },
+      }),
+    );
+    assert.ok(dispatched <= 3, scenario);
+  }
 });
 
 test("scheduled fanout retains a bounded fallback when queue capacity is unavailable", () => {
@@ -1078,3 +1162,206 @@ function planningRepository(targetRepo: string, untrackedOpen: number) {
     untrackedOpen,
   };
 }
+
+test("audit timeout persists nine targets and resumes after three real children drain", async () => {
+  const root = mkdtempSync(join(tmpdir(), "audit-wave-resume-"));
+  const statePath = join(root, "cursor-batch.json");
+  const children: ReturnType<typeof spawn>[] = [];
+  const active = new Set<string>();
+  const dispatched: string[] = [];
+  let peak = 0;
+  let resuming = false;
+  let resumedPolls = 0;
+  let clock = 0;
+  const persist = async (state: AuditWaveState | null) => {
+    writeFileSync(statePath, JSON.stringify(state));
+  };
+  const options = {
+    dispatchRepo: "synthetic/audits",
+    commandForTarget: (target: (typeof auditTargets)[number]) => [target.targetRepo],
+    persist,
+    wait: async () => {
+      clock += 10;
+      await delay(20);
+    },
+    run: (args: readonly string[]) => {
+      if (args[0] !== "run") {
+        assert.equal(active.size < 3, true);
+        if (resuming)
+          assert.ok(resumedPolls >= 3, "saved children must be polled before any new dispatch");
+        const id = String(dispatched.length + 1);
+        dispatched.push(args[0]);
+        active.add(id);
+        peak = Math.max(peak, active.size);
+        const receipt = join(root, `${id}.json`);
+        children.push(
+          spawn(
+            process.execPath,
+            [
+              "--input-type=module",
+              "-e",
+              `
+          import { existsSync, writeFileSync } from "node:fs";
+          const timer = setInterval(() => {
+            if (!existsSync(process.argv[1])) return;
+            clearInterval(timer);
+            writeFileSync(process.argv[2], JSON.stringify({databaseId: Number(process.argv[3]), status: "completed", conclusion: "success"}));
+          }, 20);
+        `,
+              join(root, "release"),
+              receipt,
+              id,
+            ],
+            { stdio: "ignore" },
+          ),
+        );
+        return JSON.stringify({ workflow_run_id: Number(id) });
+      }
+      if (resuming) resumedPolls++;
+      const id = args[2];
+      const receipt = join(root, `${id}.json`);
+      if (!existsSync(receipt))
+        return JSON.stringify({ databaseId: Number(id), status: "in_progress" });
+      active.delete(id);
+      return readFileSync(receipt, "utf8");
+    },
+  };
+  try {
+    await assert.rejects(
+      dispatchAuditWaves(auditTargets, {
+        ...options,
+        now: () => clock,
+        waveTimeoutMs: 15,
+      }),
+      /timed out/,
+    );
+    const saved: AuditWaveState = JSON.parse(readFileSync(statePath, "utf8"));
+    assert.deepEqual(saved.remainingTargets, auditTargets.slice(3));
+    assert.deepEqual(saved.outstandingRunIds, ["1", "2", "3"]);
+    assert.equal(saved.dispatchingTarget, null);
+    assert.equal(active.size, 3);
+    resuming = true;
+    await dispatchAuditWaves(saved.remainingTargets, {
+      ...options,
+      state: saved,
+      wait: async () => {
+        // Leave earlier children running through one complete resumed poll.
+        if (resumedPolls >= 3) writeFileSync(join(root, "release"), "go");
+        await delay(20);
+      },
+      waveTimeoutMs: 10_000,
+    });
+    assert.deepEqual(
+      dispatched,
+      auditTargets.map((target) => target.targetRepo),
+    );
+    assert.equal(peak, 3);
+    assert.equal(active.size, 0);
+    assert.equal(JSON.parse(readFileSync(statePath, "utf8")), null);
+  } finally {
+    for (const child of children) if (child.exitCode === null) child.kill();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("audit lookup errors retry with bounded backoff and retain progress when exhausted", async () => {
+  for (const failures of [2, 3]) {
+    let saved: AuditWaveState | null = null;
+    let lookups = 0;
+    const backoffs: number[] = [];
+    const work = dispatchAuditWaves(auditTargets, {
+      dispatchRepo: "synthetic/audits",
+      commandForTarget: (target) => [target.targetRepo],
+      persist: async (state) => {
+        saved = structuredClone(state);
+      },
+      wait: async () => {},
+      retryWait: async (ms) => {
+        backoffs.push(ms);
+      },
+      run: (args) => {
+        if (args[0] !== "run")
+          return JSON.stringify({ workflow_run_id: Number(args[0].split("-").at(-1)) });
+        if (++lookups <= failures) throw new Error("temporary history error");
+        return JSON.stringify({
+          databaseId: Number(args[2]),
+          status: "completed",
+          conclusion: "success",
+        });
+      },
+    });
+    if (failures === 3) {
+      await assert.rejects(work, /temporary history error/);
+      assert.deepEqual(saved!.remainingTargets, auditTargets.slice(3));
+      assert.deepEqual(saved!.outstandingRunIds, ["1", "2", "3"]);
+    } else {
+      await work;
+      assert.equal(saved, null);
+    }
+    assert.deepEqual(backoffs, [1_000, 2_000]);
+  }
+});
+
+test("audit dispatch uncertainty and unavailable persistence cannot admit fresh work", async () => {
+  let saved: AuditWaveState | null = null;
+  let calls = 0;
+  const options = {
+    dispatchRepo: "synthetic/audits",
+    commandForTarget: () => ["dispatch"],
+    persist: async (state: AuditWaveState | null) => {
+      saved = structuredClone(state);
+    },
+    run: () => {
+      calls++;
+      return "{}";
+    },
+  };
+  await assert.rejects(dispatchAuditWaves(auditTargets, options), /missing run id/);
+  assert.equal(saved!.dispatchingTarget, auditTargets[0].targetRepo);
+  await assert.rejects(
+    dispatchAuditWaves(auditTargets, { ...options, state: saved! }),
+    /receipt unresolved/,
+  );
+  await assert.rejects(
+    dispatchAuditWaves(auditTargets, {
+      ...options,
+      persist: async () => {
+        throw new Error("state unavailable");
+      },
+    }),
+    /state unavailable/,
+  );
+  assert.equal(calls, 1);
+  await assert.rejects(
+    loadFanoutCursor({
+      baseUrl: "https://synthetic.invalid",
+      webhookSecret: "fixture",
+      mode: "audit",
+      attempts: 1,
+      fetchImpl: async () => {
+        throw new Error("state unavailable");
+      },
+    }),
+    /state unavailable/,
+  );
+});
+
+test("audit fanout requires batch-aware storage before advancing the cursor", async () => {
+  await assert.rejects(
+    loadFanoutCursor({
+      baseUrl: "https://synthetic.invalid",
+      webhookSecret: "fixture",
+      mode: "audit",
+      attempts: 1,
+      fetchImpl: async () =>
+        Response.json({
+          ok: true,
+          mode: "audit",
+          next_cursor: 0,
+          revision: 0,
+          updated_at: null,
+        }),
+    }),
+    /does not support resumable batches/,
+  );
+});

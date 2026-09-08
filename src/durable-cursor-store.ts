@@ -1,4 +1,6 @@
+import { requireRecord as record, errorSummary as errorMessage } from "./value-coerce.js";
 import { createHmac } from "node:crypto";
+import { parseAuditWaveState, type AuditWaveState } from "./audit-wave-state.js";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -7,6 +9,7 @@ export interface DurableCursorSnapshot<Mode extends string = string> {
   nextCursor: number;
   revision: number;
   updatedAt: string | null;
+  auditBatch?: AuditWaveState | null;
 }
 
 export type DurableCursorStoreOptions<Mode extends string = string> = {
@@ -25,6 +28,9 @@ export async function fetchDurableCursor<Mode extends string>(
   if (payload.mode !== options.mode) throw new Error("durable cursor response mode mismatch");
   return {
     mode: options.mode,
+    ...(payload.audit_batch !== undefined
+      ? { auditBatch: parseAuditWaveState(payload.audit_batch) }
+      : {}),
     nextCursor: nonNegativeNumber(payload.next_cursor, "durable cursor next_cursor"),
     revision: nonNegativeNumber(payload.revision, "durable cursor revision"),
     updatedAt:
@@ -38,15 +44,27 @@ export async function putDurableCursor<Mode extends string>(
   options: DurableCursorStoreOptions<Mode>,
   nextCursor: number,
   expectedRevision: number,
+  auditBatch?: AuditWaveState | null,
 ): Promise<DurableCursorSnapshot<Mode>> {
   const body = JSON.stringify({
     next_cursor: nonNegativeNumber(nextCursor, "durable cursor next_cursor"),
     expected_revision: nonNegativeNumber(expectedRevision, "durable cursor expected_revision"),
+    ...(auditBatch !== undefined ? { audit_batch: parseAuditWaveState(auditBatch) } : {}),
   });
   const payload = await durableCursorRequest(options, "PUT", body);
   if (payload.mode !== options.mode) throw new Error("durable cursor response mode mismatch");
+  if (
+    auditBatch !== undefined &&
+    JSON.stringify(parseAuditWaveState(payload.audit_batch)) !==
+      JSON.stringify(parseAuditWaveState(auditBatch))
+  ) {
+    throw new Error("durable cursor did not acknowledge audit batch");
+  }
   return {
     mode: options.mode,
+    ...(payload.audit_batch !== undefined
+      ? { auditBatch: parseAuditWaveState(payload.audit_batch) }
+      : {}),
     nextCursor: nonNegativeNumber(payload.next_cursor, "durable cursor next_cursor"),
     revision: nonNegativeNumber(payload.revision, "durable cursor revision"),
     updatedAt: typeof payload.updated_at === "string" ? payload.updated_at : null,
@@ -102,17 +120,4 @@ function nonNegativeNumber(value: unknown, label: string): number {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error(`${label} must be non-negative`);
   return parsed;
-}
-
-function record(value: unknown, label: string): JsonRecord {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${label} must be an object`);
-  }
-  return value as JsonRecord;
-}
-
-function errorMessage(error: unknown): string {
-  return (error instanceof Error ? error.message : String(error))
-    .replace(/[\r\n]+/g, " ")
-    .slice(0, 300);
 }

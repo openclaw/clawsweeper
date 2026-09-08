@@ -1,3 +1,4 @@
+import { isRecord } from "./value-coerce.js";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -486,10 +487,6 @@ function openclawSessionId(label: string): string {
     .replace(/[^a-z0-9_-]+/g, "-")
     .slice(0, 48);
   return `${safeLabel || "clawsweeper"}-${randomUUID()}`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function normalizedTailBytes(value: number | undefined): number {

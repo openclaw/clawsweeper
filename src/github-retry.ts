@@ -1,3 +1,5 @@
+import { ExactReviewBatchQueueTransportError } from "./repair/exact-review-queue-transport-error.js";
+
 export type GhRetryKind = "none" | "throttle" | "transient";
 
 export type GitHubCredentialScope = "repository_actions" | "target_app";
@@ -107,6 +109,8 @@ const GH_TRANSIENT_PATTERNS = [
 ];
 
 export function ghRetryKind(error: unknown): GhRetryKind {
+  // Coordinator retries belong to their queue, not the GitHub retry loop.
+  if (error instanceof ExactReviewBatchQueueTransportError) return "none";
   const message = ghErrorText(error);
   if (GH_THROTTLE_PATTERNS.some((pattern) => pattern.test(message))) return "throttle";
   if (hasGitHubStatus(message, [429])) return "throttle";

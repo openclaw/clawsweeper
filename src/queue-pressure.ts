@@ -1,3 +1,4 @@
+import { isRecord } from "./value-coerce.js";
 export const QUEUE_PRESSURE_SOFT_PENDING = 150;
 export const QUEUE_PRESSURE_HARD_PENDING = 400;
 export const QUEUE_PRESSURE_SOFT_AGE_MS = 30 * 60 * 1_000;
@@ -137,10 +138,6 @@ function malformedPressure(): ExactReviewQueuePressure {
 function errorReason(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message.trim();
   return "fetch_failed";
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isNonNegativeNumber(value: unknown): value is number {

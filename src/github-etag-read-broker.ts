@@ -1,5 +1,8 @@
-import { createHash } from "node:crypto";
-import type { GithubEtagCacheKey } from "./github-etag-cache-contract.js";
+import { sha256 } from "./content-hash.js";
+import {
+  GITHUB_ETAG_CACHE_MAX_BODY_BYTES,
+  type GithubEtagCacheKey,
+} from "./github-etag-cache-contract.js";
 
 export type GithubConditionalResponse = {
   status: number;
@@ -41,7 +44,10 @@ export function durableGithubEtagReadSync(options: {
   lookup: (key: GithubEtagCacheKey) => GithubEtagLookupResponse;
   store200: (
     key: GithubEtagCacheKey,
-    response: { etag: string; body: string },
+    response: { etag: string } & (
+      | { body: string; body_bytes?: never }
+      | { body?: never; body_bytes: number }
+    ),
   ) => GithubEtagStoreResponse;
   confirm304: (
     key: GithubEtagCacheKey,
@@ -94,12 +100,17 @@ function acceptLive200(
   response: GithubConditionalResponse,
 ): string {
   const body = requireLive200(response);
-  if (!response.etag) {
+  const bodyBytes = Buffer.byteLength(body, "utf8");
+  if (!response.etag && bodyBytes <= GITHUB_ETAG_CACHE_MAX_BODY_BYTES) {
     options.record({ unit: "broker_lookup", outcome: "cache_skip" });
     return body;
   }
   try {
-    if (options.store200(options.key, { etag: response.etag, body }).stored) {
+    const stored = options.store200(options.key, {
+      etag: response.etag || "",
+      ...(bodyBytes > GITHUB_ETAG_CACHE_MAX_BODY_BYTES ? { body_bytes: bodyBytes } : { body }),
+    });
+    if (stored.stored) {
       options.record({
         unit: "conditional_response",
         outcome: "cache_200_stored",
@@ -127,8 +138,4 @@ function validLookupEntry(
   return Boolean(
     value?.etag && !/[\r\n]/.test(value.etag) && /^[0-9a-f]{64}$/.test(value.bodyDigest),
   );
-}
-
-function sha256(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
 }

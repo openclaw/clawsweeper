@@ -1,3 +1,4 @@
+import { isRecord } from "../value-coerce.js";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { parseSimpleYaml, validateJob } from "./lib.js";
 
@@ -1342,8 +1343,4 @@ function isoDate(value: unknown, label: string): string {
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

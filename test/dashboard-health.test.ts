@@ -112,3 +112,17 @@ test("dashboard health reports absent review failure telemetry", () => {
     reasons: ["review_failure_telemetry_unavailable"],
   });
 });
+
+test("dashboard health raises a failed terminal explanation distinctly", () => {
+  const snapshot = healthySnapshot();
+  const queue = snapshot.exact_review_queue as Record<string, any>;
+  queue.review_failure_health = {
+    status: "critical",
+    reasons: ["terminal_status_delivery_failed", "terminal_review_failure"],
+  };
+  assert.deepEqual(summarizeDashboardHealth(snapshot), {
+    conclusion: "needs_attention",
+    severity: "red",
+    reasons: ["review_status_delivery_failed"],
+  });
+});

@@ -1,3 +1,4 @@
+import { isRecord } from "../value-coerce.js";
 type JsonRecord = Record<string, unknown>;
 
 const MAX_COMMANDS = 1000;
@@ -128,8 +129,4 @@ function latestTimestamp(left: string | null, right: string | null): string | nu
 function timestamp(value: unknown): number {
   const parsed = typeof value === "string" ? Date.parse(value) : Number.NaN;
   return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function isRecord(value: unknown): value is JsonRecord {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

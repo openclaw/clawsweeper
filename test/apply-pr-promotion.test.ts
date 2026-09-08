@@ -8,8 +8,10 @@ import {
   promotionGhMock,
   reportWithSyncedReviewComment,
   runApplyDecisionsForTest,
+  runOpenClawApplyDecisionsForTest,
   stalePullRequestReport,
   tmpPrefix,
+  withApplyTestWorkspace,
   withMockCodexProof,
   withMockGh,
   workPlanCandidateReport,
@@ -344,14 +346,7 @@ test("apply leaves a promotable old report unchanged while exact-head review is 
 });
 
 test("apply-decisions upgrades live no-diff kept-open PRs to duplicate closes", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     writeFileSync(
       join(itemsDir, "322.md"),
       workPlanCandidateReport({
@@ -460,20 +455,12 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/322\\/timeline(?:\\?|$
         root,
         { type: "failure", message: "proof should not run for no-diff PR" },
         () => {
-          runApplyDecisionsForTest({
+          runOpenClawApplyDecisionsForTest({
             itemsDir,
             closedDir,
             plansDir,
             reportPath,
-            extraArgs: [
-              "--target-repo",
-              "openclaw/openclaw",
-              "--dry-run",
-              "--apply-kind",
-              "all",
-              "--processed-limit",
-              "3",
-            ],
+            dryRun: true,
           });
         },
       );
@@ -492,21 +479,12 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/322\\/timeline(?:\\?|$
           "dry-run: would close as duplicate or superseded; dry-run: would post close-applied comment",
       },
     ]);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });
 
 test("apply-decisions promotes old F-rated stale PRs with low-signal close semantics", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const closeAppliedBodyLogPath = join(root, "close-applied-body.log");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     const staleReport = stalePullRequestReport({
       pull_head_sha: "head-sha",
       work_cluster_refs: JSON.stringify(["Related discussion in #400"]),
@@ -542,19 +520,11 @@ test("apply-decisions promotes old F-rated stale PRs with low-signal close seman
           root,
           { type: "failure", message: "proof should not run for stale promotion incidental ref" },
           () => {
-            runApplyDecisionsForTest({
+            runOpenClawApplyDecisionsForTest({
               itemsDir,
               closedDir,
               plansDir,
               reportPath,
-              extraArgs: [
-                "--target-repo",
-                "openclaw/openclaw",
-                "--apply-kind",
-                "all",
-                "--processed-limit",
-                "3",
-              ],
             });
           },
         );
@@ -592,9 +562,7 @@ test("apply-decisions promotes old F-rated stale PRs with low-signal close seman
     assert.match(closeAppliedBody, /Review evidence: \[durable ClawSweeper review\]/);
     assert.doesNotMatch(closeAppliedBody, /Implementation evidence:/);
     assert.doesNotMatch(closeAppliedBody, /Keep open:/);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });
 
 test("apply-decisions keeps MERGEABLE UNSTABLE low-signal proposals open", () => {
@@ -945,14 +913,7 @@ test("apply-decisions does not fall through from filtered no-diff to low-signal 
 });
 
 test("apply-decisions promotes stale PRs after automation-only drift", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const synced = reportWithSyncedReviewComment(stalePullRequestReport(), 330, "none");
     writeFileSync(join(itemsDir, "330.md"), synced.report, "utf8");
 
@@ -972,20 +933,12 @@ test("apply-decisions promotes stale PRs after automation-only drift", () => {
             reason: "PR B is the canonical PR covering PR A.",
           },
           () => {
-            runApplyDecisionsForTest({
+            runOpenClawApplyDecisionsForTest({
               itemsDir,
               closedDir,
               plansDir,
               reportPath,
-              extraArgs: [
-                "--target-repo",
-                "openclaw/openclaw",
-                "--dry-run",
-                "--apply-kind",
-                "all",
-                "--processed-limit",
-                "3",
-              ],
+              dryRun: true,
             });
           },
         );
@@ -997,20 +950,11 @@ test("apply-decisions promotes stale PRs after automation-only drift", () => {
       report.some((entry) => entry.action === "closed"),
       true,
     );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });
 
 test("apply-decisions does not promote stale PRs from truncated activity", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const synced = reportWithSyncedReviewComment(stalePullRequestReport(), 330, "none");
     writeFileSync(join(itemsDir, "330.md"), synced.report, "utf8");
 
@@ -1033,20 +977,12 @@ test("apply-decisions does not promote stale PRs from truncated activity", () =>
       }),
       () => {
         withMockCodexProof(root, { type: "failure", message: "proof should not run" }, () => {
-          runApplyDecisionsForTest({
+          runOpenClawApplyDecisionsForTest({
             itemsDir,
             closedDir,
             plansDir,
             reportPath,
-            extraArgs: [
-              "--target-repo",
-              "openclaw/openclaw",
-              "--dry-run",
-              "--apply-kind",
-              "all",
-              "--processed-limit",
-              "3",
-            ],
+            dryRun: true,
           });
         });
       },
@@ -1058,20 +994,11 @@ test("apply-decisions does not promote stale PRs from truncated activity", () =>
       false,
     );
     assert.doesNotMatch(JSON.stringify(report), /proof should not run/);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });
 
 test("apply-decisions does not promote stale PRs after human follow-up", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const synced = reportWithSyncedReviewComment(stalePullRequestReport(), 330, "none");
     writeFileSync(join(itemsDir, "330.md"), synced.report, "utf8");
 
@@ -1101,20 +1028,12 @@ test("apply-decisions does not promote stale PRs after human follow-up", () => {
       }),
       () => {
         withMockCodexProof(root, { type: "failure", message: "proof should not run" }, () => {
-          runApplyDecisionsForTest({
+          runOpenClawApplyDecisionsForTest({
             itemsDir,
             closedDir,
             plansDir,
             reportPath,
-            extraArgs: [
-              "--target-repo",
-              "openclaw/openclaw",
-              "--dry-run",
-              "--apply-kind",
-              "all",
-              "--processed-limit",
-              "3",
-            ],
+            dryRun: true,
           });
         });
       },
@@ -1127,20 +1046,11 @@ test("apply-decisions does not promote stale PRs after human follow-up", () => {
     );
     assert.doesNotMatch(JSON.stringify(report), /proof should not run/);
     assert.match(readFileSync(join(itemsDir, "330.md"), "utf8"), /^action_taken: kept_open$/m);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });
 
 test("apply-decisions does not promote stale PRs after a command-only re-review request", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const synced = reportWithSyncedReviewComment(stalePullRequestReport(), 330, "none");
     writeFileSync(join(itemsDir, "330.md"), synced.report, "utf8");
 
@@ -1178,20 +1088,12 @@ test("apply-decisions does not promote stale PRs after a command-only re-review 
       }),
       () => {
         withMockCodexProof(root, { type: "failure", message: "proof should not run" }, () => {
-          runApplyDecisionsForTest({
+          runOpenClawApplyDecisionsForTest({
             itemsDir,
             closedDir,
             plansDir,
             reportPath,
-            extraArgs: [
-              "--target-repo",
-              "openclaw/openclaw",
-              "--dry-run",
-              "--apply-kind",
-              "all",
-              "--processed-limit",
-              "3",
-            ],
+            dryRun: true,
           });
         });
       },
@@ -1204,20 +1106,11 @@ test("apply-decisions does not promote stale PRs after a command-only re-review 
     );
     assert.doesNotMatch(JSON.stringify(report), /proof should not run/);
     assert.match(readFileSync(join(itemsDir, "330.md"), "utf8"), /^action_taken: kept_open$/m);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });
 
 test("apply-decisions promotes recommended pause-or-close PRs", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const synced = reportWithSyncedReviewComment(
       stalePullRequestReport({
         number: 331,
@@ -1243,20 +1136,12 @@ test("apply-decisions promotes recommended pause-or-close PRs", () => {
       root,
       promotionGhMock({ number: 331, title: "Superseded prompt PR", comment: synced.comment }),
       () => {
-        runApplyDecisionsForTest({
+        runOpenClawApplyDecisionsForTest({
           itemsDir,
           closedDir,
           plansDir,
           reportPath,
-          extraArgs: [
-            "--target-repo",
-            "openclaw/openclaw",
-            "--dry-run",
-            "--apply-kind",
-            "all",
-            "--processed-limit",
-            "3",
-          ],
+          dryRun: true,
         });
       },
     );
@@ -1266,20 +1151,11 @@ test("apply-decisions promotes recommended pause-or-close PRs", () => {
       report.some((entry) => entry.action === "closed"),
       true,
     );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });
 
 test("apply-decisions does not promote docs-only PRs superseded by code-only pull requests", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const docsOnlyReport = stalePullRequestReport({
       number: 337,
       title: "ENETDOWN docs companion",
@@ -1321,20 +1197,12 @@ test("apply-decisions does not promote docs-only PRs superseded by code-only pul
         },
       }),
       () => {
-        runApplyDecisionsForTest({
+        runOpenClawApplyDecisionsForTest({
           itemsDir,
           closedDir,
           plansDir,
           reportPath,
-          extraArgs: [
-            "--target-repo",
-            "openclaw/openclaw",
-            "--dry-run",
-            "--apply-kind",
-            "all",
-            "--processed-limit",
-            "3",
-          ],
+          dryRun: true,
         });
       },
     );
@@ -1344,7 +1212,5 @@ test("apply-decisions does not promote docs-only PRs superseded by code-only pul
       report.some((entry) => entry.action === "closed"),
       false,
     );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });

@@ -43,7 +43,10 @@ test("normalizeGithubActivity extracts pull request activity with compact untrus
   assert.equal(activity?.subject.number, 123);
   assert.match(activity?.idempotencyKey ?? "", /github-activity:openclaw\/openclaw/);
 
-  const message = renderGithubActivityMessage(activity!, "channel:123");
+  const message = renderGithubActivityMessage(activity!, {
+    discordTarget: "channel:123",
+    observedAt: "2026-09-05T07:24:31.000Z",
+  });
   assert.match(message, /reply ONLY: NO_REPLY/);
   assert.match(message, /untrusted data/);
   assert.match(message, /Ignore previous instructions/);
@@ -139,11 +142,17 @@ test("normalizeGithubActivity handles supported GitHub event variants", () => {
           html_url: "https://github.com/openclaw/openclaw/pull/9",
           merged: false,
         },
-        review: { id: 90, state: "changes_requested", body: "please fix" },
+        review: {
+          id: 90,
+          state: "changes_requested",
+          body: "please fix",
+          user: { login: "reviewer" },
+        },
       },
     })?.payload.review,
     {
       id: 90,
+      author: "reviewer",
       state: "changes_requested",
       url: null,
       body_excerpt: "please fix",
@@ -163,11 +172,18 @@ test("normalizeGithubActivity handles supported GitHub event variants", () => {
           state: "open",
           html_url: "https://github.com/openclaw/openclaw/pull/10",
         },
-        comment: { id: 100, path: "src/a.ts", line: 12, body: "inline" },
+        comment: {
+          id: 100,
+          path: "src/a.ts",
+          line: 12,
+          body: "inline",
+          user: { login: "reviewer" },
+        },
       },
     })?.payload.comment,
     {
       id: 100,
+      author: "reviewer",
       path: "src/a.ts",
       line: 12,
       url: null,
@@ -238,27 +254,27 @@ test("normalizeGithubActivity handles supported GitHub event variants", () => {
   assert.equal(normalizeGithubActivity({ eventName: "unknown", payload: {} }), null);
 });
 
-test("runGithubActivityNotifier posts ingest-only hook payload by default", async () => {
+test("runGithubActivityNotifier posts one bounded forwarded push event", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-github-activity-"));
   const eventPath = path.join(root, "event.json");
   fs.writeFileSync(
     eventPath,
     `${JSON.stringify({
-      action: "created",
-      repository: { full_name: "openclaw/openclaw" },
-      sender: { login: "reviewer" },
-      issue: {
-        number: 123,
-        title: "Fix config parsing",
-        state: "open",
-        html_url: "https://github.com/openclaw/openclaw/pull/123",
-        pull_request: {},
-      },
-      comment: {
-        id: 999,
-        html_url: "https://github.com/openclaw/openclaw/pull/123#issuecomment-999",
-        body: "This changed behavior unexpectedly.",
-        user: { login: "reviewer" },
+      action: "github_activity",
+      client_payload: {
+        event_name: "push",
+        activity: {
+          repo: "openclaw/fs-safe",
+          actor: "maintainer",
+          action: "updated",
+          subject: {
+            kind: "repository",
+            title: "main updated",
+            state: "active",
+            url: "https://github.com/openclaw/fs-safe",
+          },
+          delivery_id: "push-1",
+        },
       },
     })}\n`,
   );
@@ -272,13 +288,15 @@ test("runGithubActivityNotifier posts ingest-only hook payload by default", asyn
     return new Response(JSON.stringify({ ok: true, runId: "hook-run-1" }), { status: 200 });
   };
 
-  const summary = await runGithubActivityNotifier([], {
+  const observedAt = new Date("2026-09-05T07:24:31.000Z");
+  const summary = await runGithubActivityNotifier(["--write-report"], {
     root,
     fetch: mockFetch,
+    now: () => observedAt,
     log: () => undefined,
     env: {
       GITHUB_EVENT_PATH: eventPath,
-      GITHUB_EVENT_NAME: "issue_comment",
+      GITHUB_EVENT_NAME: "repository_dispatch",
       GITHUB_REPOSITORY: "openclaw/clawsweeper",
       CLAWSWEEPER_OPENCLAW_HOOK_URL: "https://claw.example/hooks",
       CLAWSWEEPER_OPENCLAW_HOOK_TOKEN: "secret",
@@ -292,6 +310,16 @@ test("runGithubActivityNotifier posts ingest-only hook payload by default", asyn
   assert.equal(requests[0]?.body.deliver, false);
   assert.match(String(requests[0]?.body.message), /use the message tool/);
   assert.match(String(requests[0]?.body.message), /channel:123/);
+  assert.match(String(requests[0]?.body.message), /one exact GitHub event/);
+  assert.match(String(requests[0]?.body.message), /not a complete repository activity window/);
+  assert.match(String(requests[0]?.body.message), /2026-09-05T07:24:31\.000Z/);
+  assert.match(String(requests[0]?.body.message), /receiver time/);
+  assert.match(String(requests[0]?.body.message), /paginate repository-wide event/);
+  assert.match(String(requests[0]?.body.message), /page range is complete/);
+  const report = JSON.parse(
+    fs.readFileSync(path.join(root, "notifications/github-activity-report.json"), "utf8"),
+  );
+  assert.equal(report.generated_at, observedAt.toISOString());
 });
 
 test("runGithubActivityNotifier skips routine noisy GitHub activity before posting hooks", async () => {
@@ -340,20 +368,20 @@ test("runGithubActivityNotifier skips routine noisy GitHub activity before posti
   assert.equal(summary.status, "skipped");
   assert.equal(summary.sent, 0);
   assert.equal(posts, 0);
-  assert.match(summary.reason ?? "", /issue comment edit/);
+  assert.match(summary.reason ?? "", /ClawSweeper-authored/);
   const report = JSON.parse(
     fs.readFileSync(path.join(root, "notifications/github-activity-report.json"), "utf8"),
   );
-  assert.match(report.reason, /issue comment edit/);
+  assert.match(report.reason, /ClawSweeper-authored/);
 });
 
-test("routineGithubActivityReason keeps explicit ClawSweeper commands visible", () => {
+test("routineGithubActivityReason keeps explicit human commands visible", () => {
   const activity = normalizeGithubActivity({
     eventName: "issue_comment",
     payload: {
       action: "edited",
       repository: { full_name: "openclaw/openclaw" },
-      sender: { login: "openclaw-clawsweeper[bot]" },
+      sender: { login: "reviewer" },
       issue: {
         number: 123,
         title: "Fix config parsing",
@@ -365,6 +393,7 @@ test("routineGithubActivityReason keeps explicit ClawSweeper commands visible", 
         id: 999,
         html_url: "https://github.com/openclaw/openclaw/pull/123#issuecomment-999",
         body: "@clawsweeper review this again",
+        user: { login: "reviewer" },
       },
     },
   });
@@ -388,6 +417,7 @@ test("routineGithubActivityReason keeps explicit ClawSweeper commands visible", 
         id: 1000,
         html_url: "https://github.com/openclaw/openclaw/pull/124#issuecomment-1000",
         body: "/re-run",
+        user: { login: "contributor" },
       },
     },
   });
@@ -395,12 +425,43 @@ test("routineGithubActivityReason keeps explicit ClawSweeper commands visible", 
   assert.equal(routineGithubActivityReason(rerun!), null);
 });
 
-test("routineGithubActivityReason filters trusted ClawSweeper command status comments", () => {
-  for (const action of ["created", "edited"]) {
-    const activity = normalizeGithubActivity({
+test("routineGithubActivityReason filters trusted ClawSweeper-authored comments and reviews", () => {
+  const cases = [
+    {
       eventName: "issue_comment",
+      authoredKey: "comment",
+      authored: {
+        id: 4643099431,
+        body: "@clawsweeper re-review",
+        user: { login: "clawsweeper[bot]" },
+      },
+    },
+    {
+      eventName: "pull_request_review_comment",
+      authoredKey: "comment",
+      authored: {
+        id: 4643099432,
+        body: "@clawsweeper re-review",
+        user: { login: "clawsweeper[bot]" },
+      },
+    },
+    {
+      eventName: "pull_request_review",
+      authoredKey: "review",
+      authored: {
+        id: 4643099433,
+        state: "commented",
+        body: "@clawsweeper re-review",
+        user: { login: "clawsweeper[bot]" },
+      },
+    },
+  ] as const;
+
+  for (const fixture of cases) {
+    const activity = normalizeGithubActivity({
+      eventName: fixture.eventName,
       payload: {
-        action,
+        action: fixture.eventName === "pull_request_review" ? "submitted" : "created",
         repository: { full_name: "openclaw/openclaw" },
         sender: { login: "clawsweeper[bot]" },
         issue: {
@@ -410,32 +471,35 @@ test("routineGithubActivityReason filters trusted ClawSweeper command status com
           html_url: "https://github.com/openclaw/openclaw/pull/90328",
           pull_request: {},
         },
-        comment: {
-          id: 4643099431,
-          html_url: "https://github.com/openclaw/openclaw/pull/90328#issuecomment-4643099431",
-          body: [
-            "<!-- clawsweeper-command-status:90328:re_review:bc62b391bf7 -->",
-            "<!-- clawsweeper-command:4643099431:2026-06-07T15:28:02Z:re_review:bc62b391bf7 -->",
-            "🦞👀",
-            "ClawSweeper is reviewing @clawsweeper re-review.",
-          ].join("\n"),
-          user: { login: "clawsweeper[bot]" },
+        pull_request: {
+          number: 90328,
+          title: "Expose model picker agent runtimes",
+          state: "open",
+          html_url: "https://github.com/openclaw/openclaw/pull/90328",
         },
+        [fixture.authoredKey]: fixture.authored,
       },
     });
 
-    assert.match(routineGithubActivityReason(activity!) ?? "", /command status comment/);
+    assert.match(routineGithubActivityReason(activity!) ?? "", /ClawSweeper-authored/);
   }
 });
 
-test("routineGithubActivityReason preserves untrusted marker-backed commands", () => {
-  for (const login of ["contributor", "third-party[bot]"]) {
+test("routineGithubActivityReason preserves commands without trusted matching authorship", () => {
+  const actors = [
+    ["contributor", "contributor"],
+    ["third-party[bot]", "third-party[bot]"],
+    ["clawsweeper[bot]", "contributor"],
+    ["contributor", "clawsweeper[bot]"],
+    ["clawsweeper[bot]", "openclaw-clawsweeper[bot]"],
+  ] as const;
+  for (const [actor, author] of actors) {
     const activity = normalizeGithubActivity({
       eventName: "issue_comment",
       payload: {
         action: "edited",
         repository: { full_name: "openclaw/openclaw" },
-        sender: { login },
+        sender: { login: actor },
         issue: {
           number: 90328,
           title: "<!-- clawsweeper-command-status:90328:re_review:abc -->",
@@ -450,7 +514,7 @@ test("routineGithubActivityReason preserves untrusted marker-backed commands", (
             "<!-- clawsweeper-command-status:90328:re_review:bc62b391bf7 -->",
             "@clawsweeper re-review",
           ].join("\n"),
-          user: { login },
+          user: { login: author },
         },
       },
     });

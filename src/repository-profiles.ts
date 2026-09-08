@@ -1,3 +1,4 @@
+import { recordOrEmpty, requireRecord as record } from "./value-coerce.js";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -112,6 +113,7 @@ const CORE_OPENCLAW_PROFILE: RepositoryProfile = {
   communityUrl: "https://clawhub.ai/",
   promptNote:
     "Use the OpenClaw source tree, docs, changelog, and current main branch. Close proposals may use the normal OpenClaw stale/duplicate/not-in-repo/implemented-on-main policy when evidence is strong. For OpenClaw PR reviews, ClawSweeper renders deterministic PR surface stats separately; do not repeat changed-file counts, additions/deletions, or area totals in Review metrics unless adding a new interpretation not present in the deterministic surface block. Use Review metrics for new review-relevant facts, especially user-facing configuration additions, new flags/options/env vars, new protocol/API params, default changes, migrations, persisted settings, or compatibility paths.\n\n" +
+    "Keep repository-managed locale PRs open: the canonical same-repository `automation/native-app-locale-refresh` and `automation/control-ui-locale-refresh` branches targeting main, authored by `openclaw-mantis[bot]` (`app/openclaw-mantis` in GraphQL), belong to their generated-PR publisher. That publisher owns freshness and auto-merge; continue normal review and CI requirements.\n\n" +
     "For `openclaw/openclaw` PR release-note review, `CHANGELOG.md` is release-owned. Normal PRs, repair workers, and automerge/autofix lanes should not edit it. Do not make missing `CHANGELOG.md` a review finding, merge blocker, work item, or next-step blocker. If release-note context is needed, ask for PR-body or commit message context: user-visible behavior, affected surface, issue/PR refs, and credited human author/reporter when known. Never request `Thanks @steipete`, `Thanks @openclaw`, `Thanks @clawsweeper`, or other forbidden bot/maintainer changelog attributions.",
   applyCloseRules: {
     issue: OPENCLAW_CLOSE_REASONS.filter(
@@ -179,6 +181,34 @@ export function isAutoCloseAllowed(
   reason: RepositoryCloseReason,
 ): boolean {
   return Boolean(profile.applyCloseRules[kind]?.includes(reason));
+}
+
+export function repositoryManagedPullRequestCloseReason(
+  item: { repo: string; kind: RepositoryItemKind; author: string },
+  readPullRequest: () => unknown,
+): string | null {
+  if (
+    normalizeRepo(item.repo) !== DEFAULT_TARGET_REPO ||
+    item.kind !== "pull_request" ||
+    !["openclaw-mantis[bot]", "app/openclaw-mantis"].includes(item.author.toLowerCase())
+  )
+    return null;
+  const pull = recordOrEmpty(readPullRequest());
+  const head = recordOrEmpty(pull.head);
+  const base = recordOrEmpty(pull.base);
+  if (
+    recordOrEmpty(pull.user).login !== "openclaw-mantis[bot]" ||
+    recordOrEmpty(head.repo).full_name !== DEFAULT_TARGET_REPO ||
+    recordOrEmpty(base.repo).full_name !== DEFAULT_TARGET_REPO ||
+    base.ref !== "main" ||
+    typeof head.ref !== "string" ||
+    !["automation/native-app-locale-refresh", "automation/control-ui-locale-refresh"].includes(
+      head.ref,
+    )
+  )
+    return null;
+  // This withholds close authority only; the publisher owns freshness and auto-merge.
+  return "repository-managed locale PR: leave reconciliation and auto-merge to its publisher";
 }
 
 function configuredRepositoryProfile(profile: ConfiguredRepositoryProfile): RepositoryProfile {
@@ -454,6 +484,7 @@ function packageManagerValue(value: unknown, label: string): RepositoryPackageMa
   return packageManager;
 }
 
+// Profile strings reject whitespace-only text without trimming accepted values.
 function stringValue(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "")
     throw new Error(`${label} must be a string`);
@@ -507,13 +538,6 @@ function numberValue(value: unknown, label: string): number {
 function arrayValue(value: unknown, label: string): unknown[] {
   if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
   return value;
-}
-
-function record(value: unknown, label: string): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${label} must be an object`);
-  }
-  return value as Record<string, unknown>;
 }
 
 function repoRoot(): string {

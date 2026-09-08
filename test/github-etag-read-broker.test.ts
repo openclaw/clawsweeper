@@ -4,7 +4,9 @@ import test from "node:test";
 
 import {
   GITHUB_ETAG_CACHE_MAX_BODY_BYTES,
+  GITHUB_ETAG_CACHE_MAX_ENTRIES,
   GITHUB_ETAG_CACHE_RETENTION_MS,
+  GITHUB_ETAG_CACHE_TABLE,
   GithubEtagResponseStore,
 } from "../dashboard/github-etag-cache.ts";
 import worker, { ExactReviewQueue, githubJsonForTest } from "../dashboard/worker.ts";
@@ -220,6 +222,305 @@ test("durable store confirms 304 bodies by ETag and digest and enforces bounds",
   assert.equal(store.lookup(request, now + GITHUB_ETAG_CACHE_RETENTION_MS + 3), null);
 });
 
+test("durable store accepts 100 KiB and skips 200 KiB UTF-8 bodies", async () => {
+  const storage = new MemoryDurableStorage();
+  const store = new GithubEtagResponseStore(storage);
+  store.ensureSchemaSync();
+  const request = githubEtagCacheRequestBody(
+    requiredKey("target_app", "/repos/openclaw/openclaw/pulls/99"),
+    "apply",
+  );
+  for (const character of ["x", "é"]) {
+    const accepted = jsonBodyBytes(100 * 1_024, character);
+    const result = await store.store200({ ...request, etag: '"accepted"', body: accepted }, 1);
+    assert.equal(result.ok && result.stored, true);
+    assert.equal(store.lookup(request, 2)?.bodyDigest, sha256(accepted));
+    assert.deepEqual(
+      await store.store200(
+        { ...request, etag: '"oversized"', body: jsonBodyBytes(200 * 1_024, character) },
+        3,
+      ),
+      { ok: true, stored: false, reason: "body_size_bound" },
+    );
+    assert.equal(store.lookup(request, 4)?.etag, '"accepted"');
+  }
+  assert.equal(store.telemetry(4).cache_skip, 2);
+});
+
+test("size-only stores count skips without accessing the body table", async () => {
+  const storage = new MemoryDurableStorage();
+  const store = new GithubEtagResponseStore(storage);
+  store.ensureSchemaSync();
+  const request = githubEtagCacheRequestBody(
+    requiredKey("target_app", "/repos/openclaw/openclaw/pulls/99"),
+    "apply",
+  );
+  await store.store200({ ...request, etag: '"existing"', body: "{}" }, 1);
+  storage.sql.resetQueryHistory();
+  for (const size of [200, 600]) {
+    assert.deepEqual(
+      await store.store200({ ...request, etag: '"large"', body_bytes: size * 1_024 }, 60_001),
+      { ok: true, stored: false, reason: "body_size_bound" },
+    );
+  }
+  assert.equal(storage.sql.queriesMatching(/\bgithub_etag_response_cache_v1\b/).length, 0);
+  assert.deepEqual(store.telemetry(60_001), { cache_200_stored: 1, cache_skip: 2 });
+  assert.equal(store.lookup(request, 60_002)?.etag, '"existing"');
+  const legacy = await store.store200(
+    { ...request, etag: '"legacy"', body: "{}", body_bytes: 600 * 1_024 },
+    60_003,
+  );
+  assert.equal(legacy.ok && legacy.stored, true, "a supplied body remains authoritative");
+  for (const bodyBytes of [undefined, null, "204800", -1, 128 * 1_024, 204800.5, Infinity]) {
+    assert.deepEqual(
+      await store.store200({ ...request, etag: '"invalid"', body_bytes: bodyBytes }, 60_004),
+      { ok: true, stored: false, reason: "invalid_json_body" },
+    );
+  }
+});
+
+test("durable store caps entries immediately and reconciles counts every 64 stores", async () => {
+  const storage = new MemoryDurableStorage();
+  let store = new GithubEtagResponseStore(storage);
+  store.ensureSchemaSync();
+  const request = (number: number) =>
+    githubEtagCacheRequestBody(
+      requiredKey("target_app", `/repos/openclaw/openclaw/pulls/${number}`),
+      "apply",
+    );
+  const put = (number: number, now: number) =>
+    store.store200({ ...request(number), etag: '"v1"', body: "{}" }, now);
+  storage.sql.resetQueryHistory();
+  for (let index = 0; index < GITHUB_ETAG_CACHE_MAX_ENTRIES; index += 1) {
+    await put(index, index);
+  }
+  const oldest = store.lookup(request(0), 3_000)!;
+  store.confirm304({ ...request(0), etag: oldest.etag, body_digest: oldest.bodyDigest }, 3_000);
+  for (let index = 0; index < 64; index += 1) {
+    await put(0, 3_001 + index);
+    await put(GITHUB_ETAG_CACHE_MAX_ENTRIES + index, 4_000 + index);
+    assert.equal(
+      Array.from(storage.sql.exec(`SELECT cache_key FROM ${GITHUB_ETAG_CACHE_TABLE}`)).length,
+      GITHUB_ETAG_CACHE_MAX_ENTRIES,
+    );
+  }
+  assert.ok(store.lookup(request(0), 5_000), "recently validated oldest entry survives");
+  for (let index = 1; index <= 64; index += 1) {
+    assert.equal(store.lookup(request(index), 5_000), null);
+  }
+  assert.ok(store.lookup(request(65), 5_000));
+  assert.equal(
+    storage.sql.queriesMatching(/SELECT COUNT\(\*\) AS count FROM github_etag_response_cache_v1/)
+      .length,
+    34,
+    "full counts must be amortized across at least 64 stores",
+  );
+  store = new GithubEtagResponseStore(storage);
+  await put(10_000, 6_000);
+  assert.equal(store.lookup(request(65), 6_001), null, "cold instances count persisted entries");
+  assert.ok(store.lookup(request(0), 6_001));
+  storage.sql.failNext(/INSERT INTO github_etag_response_cache_metrics_v1/);
+  await assert.rejects(put(10_001, 6_002), /injected SQL failure/);
+  assert.ok(store.lookup(request(66), 6_003), "failed stores roll back eviction");
+  await put(10_002, 6_004);
+  assert.equal(store.lookup(request(66), 6_005), null);
+  assert.ok(store.lookup(request(67), 6_005), "rollback must not drift the cached count");
+  assert.equal(
+    Array.from(storage.sql.exec(`SELECT cache_key FROM ${GITHUB_ETAG_CACHE_TABLE}`)).length,
+    GITHUB_ETAG_CACHE_MAX_ENTRIES,
+  );
+});
+
+test("expiry housekeeping runs at most once per minute without serving expired bodies", async () => {
+  const storage = new MemoryDurableStorage();
+  const store = new GithubEtagResponseStore(storage);
+  store.ensureSchemaSync();
+  const request = githubEtagCacheRequestBody(
+    requiredKey("target_app", "/repos/openclaw/openclaw/pulls/99"),
+    "apply",
+  );
+  await store.store200({ ...request, etag: '"v1"', body: "{}" }, 0);
+  const entry = store.lookup(request, 1)!;
+  const nearExpiry = GITHUB_ETAG_CACHE_RETENTION_MS - 1;
+  storage.sql.resetQueryHistory();
+  store.lookup(request, nearExpiry);
+  for (let index = 1; index <= 64; index += 1) {
+    await store.store200(
+      {
+        ...githubEtagCacheRequestBody(
+          requiredKey("target_app", `/repos/openclaw/openclaw/pulls/${100 + index}`),
+          "apply",
+        ),
+        etag: '"fresh"',
+        body: "{}",
+      },
+      nearExpiry + index,
+    );
+    assert.equal(store.lookup(request, nearExpiry + index), null);
+  }
+  assert.deepEqual(
+    store.confirm304(
+      { ...request, etag: entry.etag, body_digest: entry.bodyDigest },
+      nearExpiry + 65,
+    ),
+    { ok: true, confirmed: false, reason: "entry_changed_or_expired" },
+  );
+  store.lookup(request, nearExpiry + 59_999);
+  const cleanupCount = () =>
+    storage.sql.queriesMatching(/DELETE FROM github_etag_response_cache_v1[\s\S]*expires_at <=/)
+      .length;
+  assert.equal(cleanupCount(), 1);
+  assert.equal(
+    storage.sql.queriesMatching(/DELETE FROM github_etag_response_cache_metrics_v1/).length,
+    1,
+  );
+  store.lookup(request, nearExpiry + 60_000);
+  assert.equal(cleanupCount(), 2);
+  assert.equal(
+    storage.sql.queriesMatching(/DELETE FROM github_etag_response_cache_metrics_v1/).length,
+    2,
+  );
+});
+
+test("publication client reports oversized UTF-8 bodies through size-only stores", async (t) => {
+  for (const size of [100, 128, 200, 600]) {
+    for (const character of ["x", "é"]) {
+      await t.test(`${size} KiB ${character}`, async () => {
+        const body = jsonBodyBytes(size * 1_024, character);
+        const storage = new MemoryDurableStorage();
+        const store = new GithubEtagResponseStore(storage);
+        store.ensureSchemaSync();
+        const key = requiredKey("target_app", "/repos/openclaw/openclaw/pulls/99");
+        const request = githubEtagCacheRequestBody(key, "apply");
+        const events: GithubEtagBrokerEvent[] = [];
+        const stores: Record<string, unknown>[] = [];
+        const pending: ReturnType<typeof store.store200>[] = [];
+        assert.equal(
+          durableGithubEtagReadSync({
+            key,
+            lookup: () => ({ hit: Boolean(store.lookup(request, 1)) }),
+            store200: (_key, response) => {
+              const wire = JSON.parse(JSON.stringify({ ...request, ...response }));
+              stores.push(wire);
+              pending.push(store.store200(wire, 2));
+              return { stored: size <= 128 };
+            },
+            confirm304: () => {
+              throw new Error("unexpected confirmation");
+            },
+            githubRequest: () => ({ status: 200, body, etag: '"v1"' }),
+            record: (event) => events.push(event),
+          }),
+          body,
+        );
+        await Promise.all(pending);
+        assert.equal(stores.length, 1);
+        assert.deepEqual(stores[0], {
+          ...request,
+          etag: '"v1"',
+          ...(size <= 128 ? { body } : { body_bytes: size * 1_024 }),
+        });
+        assert.equal(
+          Buffer.byteLength(String(stores[0].body ?? "")),
+          size <= 128 ? size * 1_024 : 0,
+        );
+        assert.deepEqual(store.telemetry(2), {
+          cache_miss: 1,
+          [size <= 128 ? "cache_200_stored" : "cache_skip"]: 1,
+        });
+        assert.equal(events.filter((event) => event.outcome === "cache_miss").length, 1);
+        assert.equal(events.at(-1)?.outcome, size <= 128 ? "cache_200_stored" : "cache_skip");
+      });
+    }
+  }
+});
+
+test("publication client reports oversized bodies even without an ETag", async () => {
+  for (const size of [200, 600]) {
+    const storage = new MemoryDurableStorage();
+    const store = new GithubEtagResponseStore(storage);
+    store.ensureSchemaSync();
+    const key = requiredKey("target_app", "/repos/openclaw/openclaw/pulls/99");
+    const request = githubEtagCacheRequestBody(key, "apply");
+    const body = jsonBodyBytes(size * 1_024, "é");
+    const events: GithubEtagBrokerEvent[] = [];
+    const stores: Record<string, unknown>[] = [];
+    const pending: ReturnType<typeof store.store200>[] = [];
+    assert.equal(
+      durableGithubEtagReadSync({
+        key,
+        lookup: () => ({ hit: Boolean(store.lookup(request, 1)) }),
+        store200: (_key, response) => {
+          const wire = JSON.parse(JSON.stringify({ ...request, ...response }));
+          stores.push(wire);
+          pending.push(store.store200(wire, 2));
+          return { stored: false };
+        },
+        confirm304: () => {
+          throw new Error("unexpected confirmation");
+        },
+        githubRequest: () => ({ status: 200, body }),
+        record: (event) => events.push(event),
+      }),
+      body,
+    );
+    await Promise.all(pending);
+    assert.deepEqual(stores, [{ ...request, etag: "", body_bytes: size * 1_024 }]);
+    assert.deepEqual(store.telemetry(2), { cache_miss: 1, cache_skip: 1 });
+    assert.deepEqual(
+      events.map((event) => event.outcome),
+      ["cache_miss", "cache_skip"],
+    );
+  }
+});
+
+test("dashboard health client counts oversized bodies through size-only stores", async (t) => {
+  for (const size of [200, 600]) {
+    await t.test(`${size} KiB`, async () => {
+      const storage = new MemoryDurableStorage();
+      const queue = new ExactReviewQueue({ storage }, {});
+      const paths: string[] = [];
+      const stores: Record<string, unknown>[] = [];
+      const originalQueueFetch = queue.fetch.bind(queue);
+      queue.fetch = async (request) => {
+        const path = new URL(request.url).pathname;
+        paths.push(path);
+        if (path === "/github-etag-cache/store") stores.push(await request.clone().json());
+        return originalQueueFetch(request);
+      };
+      const env = {
+        GITHUB_TOKEN: "dashboard-token",
+        CLAWSWEEPER_WEBHOOK_SECRET: webhookSecret,
+        EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+      };
+      const originalFetch = globalThis.fetch;
+      const body = jsonBodyBytes(size * 1_024, "é");
+      globalThis.fetch = async () => new Response(body, { headers: { etag: '"large"' } });
+      try {
+        assert.deepEqual(
+          await githubJsonForTest(env, "/repos/openclaw/clawsweeper/actions/runs"),
+          JSON.parse(body),
+        );
+        assert.deepEqual(new GithubEtagResponseStore(storage).telemetry(Date.now()), {
+          cache_miss: 1,
+          cache_skip: 1,
+        });
+        assert.deepEqual(paths, ["/github-etag-cache/lookup", "/github-etag-cache/store"]);
+        assert.equal(stores.length, 1);
+        assert.equal(stores[0].body_bytes, size * 1_024);
+        assert.equal("body" in stores[0], false);
+        assert.equal(Buffer.byteLength(String(stores[0].body ?? "")), 0);
+        assert.equal(
+          Array.from(storage.sql.exec(`SELECT cache_key FROM ${GITHUB_ETAG_CACHE_TABLE}`)).length,
+          0,
+        );
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+  }
+});
+
 test("publisher HMAC endpoints persist and confirm bodies while operator scope is rejected", async () => {
   const storage = new MemoryDurableStorage();
   const queue = new ExactReviewQueue({ storage }, {});
@@ -336,4 +637,15 @@ function signedRequest(url: string, body: string, secret: string) {
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function jsonBodyBytes(bytes: number, character: string): string {
+  const empty = JSON.stringify({ body: "" });
+  const padding = bytes - Buffer.byteLength(empty);
+  const width = Buffer.byteLength(character);
+  const body = JSON.stringify({
+    body: character.repeat(Math.floor(padding / width)) + "x".repeat(padding % width),
+  });
+  assert.equal(Buffer.byteLength(body), bytes);
+  return body;
 }

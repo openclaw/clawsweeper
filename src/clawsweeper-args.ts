@@ -25,6 +25,12 @@ export function parseArgs(argv: string[]): Args {
   return args;
 }
 
+export function requiredCliValue(argv: readonly string[], index: number, flag: string): string {
+  const value = argv[index];
+  if (!value || value.startsWith("--")) throw new Error(`${flag} requires a value`);
+  return value;
+}
+
 export function stringArg(
   value: string | boolean | string[] | undefined,
   fallback: string,

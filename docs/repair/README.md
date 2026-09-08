@@ -156,6 +156,12 @@ Codex does not receive a GitHub token during classification. The runner prefligh
 
 Merge is deliberately harder than closeout. A merge action must include `merge_preflight` proving security clearance, resolved human comments, resolved review-bot findings, addressed review findings, and clean validation commands. The fix executor gives Codex the normalized changed-surface validation gate up front, so the agentic edit loop is edit, run validation, fix validation fallout, rerun validation, and only then return. The deterministic executor still re-runs validation as the final safety rail, then feeds any remaining validation failure back through a narrow Codex validation-fix pass, runs Codex `/review`, feeds actionable review findings back into Codex for the configured review-fix budget, and revalidates after each pass. If the final internal `/review` still finds something actionable, the worker gives Codex one last review-fix prompt and pushes only if changed-surface validation passes; the normal exact-head ClawSweeper review, GitHub checks, and live unresolved-thread checks still gate the merge.
 
+Direct local validation commands such as `./tests/proof.sh` normalize to the
+existing guarded `bash ./tests/proof.sh` form, including benign environment
+assignments. The same normalization applies to resolved token arrays. Direct
+script arguments, absolute paths, traversal, and unsafe environment assignments
+remain rejected.
+
 Replacement fix work uses a recoverable target branch named `clawsweeper/<cluster-id>`. The executor resumes that branch if it already exists and pushes checkpoint commits after agent edits and review-fix edits, adding `Co-authored-by` trailers for non-bot source PR authors when a contributor PR is replaced. It then opens or updates the PR only after validation and internal review/fix handling. If validation or Codex itself still blocks after retries, the run writes a blocked fix report and leaves the checkpoint branch recoverable instead of losing the patch.
 
 Runs for the same job path are queued instead of running concurrently (the workflow concurrency group is keyed by job path only, not by mode). The workflow uses Node 24, `blacksmith-4vcpu-ubuntu-2404` for cluster planning/review, and `blacksmith-16vcpu-ubuntu-2404` for fix/apply execution. Planning defaults to Codex's `read-only` sandbox. Maintainers may select `planner_sandbox: danger-full-access` only when moving a job to a trusted ephemeral runner whose host cannot start the Linux sandbox; the default and all automated dispatches stay read-only. Fix execution prepares the target checkout with Corepack and the target `pnpm` package manager before validation; the execution job caches Codex, npm, Corepack, and the target pnpm store. Fix validation is pinned to OpenClaw's fast changed-lane posture by default: `pnpm check:changed` plus diff checks are the hard local gate, and target validation commands normalize to `pnpm check:changed` unless `CLAWSWEEPER_TARGET_VALIDATION_MODE=strict` or `CLAWSWEEPER_STRICT_TARGET_VALIDATION=1` is explicitly set. Adopted OpenClaw automerge repairs require that changed-surface command without adding full-repository lint or typecheck gates; exact-head hosted CI remains the authority for broader repository health. The deterministic repair artifact also carries failing exact-head check names and links when available, and the prompt treats those failed checks as automerge repair scope even when the failing file is outside the original `likely_files`; Codex must rebase, inspect logs, fix the narrow failure, or prove current `main` is independently blocked. That normalized gate is also passed to Codex in the write prompt; Codex is expected to run it, fix failures it introduced, and report the exact command/result before returning. Unrelated flaky main CI, broad `pnpm check`, full tests, live, docker, and e2e lanes do not block narrow ClawSweeper Repair fixes by default.
@@ -213,6 +219,12 @@ Keep these boundaries visible from the entry point:
 
 Requires Node 24.
 
+The comment-router wrapper retires its previous latest report before each child
+invocation. A throttle before discovery reports zero current commands, allowing
+the existing empty-ledger guard to apply. Partial reports and event receipts
+from the current invocation are retained; durable command ledgers and scan
+cursors are never cleared by this report reset.
+
 Validation, rendering, dry-run, and artifact-building commands below are local
 development surfaces. Commands that dispatch workflows, pass `--execute`, open
 gates, alter labels, or publish live state are operator-only; use
@@ -244,7 +256,11 @@ pnpm run repair:import-gitcrawl -- --from-gitcrawl --limit 40 --mode autonomous 
 # gitcrawl-store refreshes openclaw/openclaw every 15 minutes; the ClawSweeper
 # intake runs daily, records the processed portable DB SHA in
 # results/cluster-repair-intake/<repo>.json, and skips repeated ticks for the
-# same store snapshot. The selector model compares the candidate batch without
+# same store snapshot. New snapshots are materialized by the store's own
+# portable-artifact helper pinned to a reviewed digest, supporting raw and
+# verified gzip archives. A helper update requires a reviewed digest change. Empty
+# portable cluster tables produce no candidates; intake does not reconstruct
+# clustering omitted by the upstream export. The selector model compares the candidate batch without
 # word lists, scores, or semantic thresholds, and dispatches at most one cluster
 # through the two-worker cluster_repair lane. Clusters with one live candidate
 # and useful closed context remain eligible for model evaluation. Intake appends
@@ -266,12 +282,12 @@ pnpm run repair:import-gitcrawl -- --from-gitcrawl --limit 40 --mode autonomous 
 
 # Dispatch reviewed jobs. Dispatch derives its default live-worker cap from the
 # job's job_intent and config/automation-limits.json. Existing repair lanes
-# keep the normal 40%-of-workers.max cap, currently 51; imported gitcrawl
+# keep the normal 40%-of-workers.max cap, currently 12; imported gitcrawl
 # cluster jobs default to lanes.repair.cluster_max_live_runs, currently 2.
 # Use CLAWSWEEPER_MAX_LIVE_WORKERS/--max-live-workers for a one-lane override.
 # With --wait-for-capacity, dispatch can drain a larger file
 # list in capacity-sized waves instead of refusing the whole batch.
-CLAWSWEEPER_MAX_LIVE_WORKERS=51 pnpm run repair:dispatch -- jobs/openclaw/inbox/ordinary-example.md \
+CLAWSWEEPER_MAX_LIVE_WORKERS=12 pnpm run repair:dispatch -- jobs/openclaw/inbox/ordinary-example.md \
   --mode autonomous \
   --runner blacksmith-4vcpu-ubuntu-2404 \
   --execution-runner blacksmith-16vcpu-ubuntu-2404
@@ -376,7 +392,10 @@ The workflow needs:
   materialization or dispatch; publication recovery retains the exact selected
   job and selector decision.
 - merge is separately gated by `CLAWSWEEPER_ALLOW_MERGE`, which defaults to `0`; merge-ready PRs are labeled `clawsweeper:human-review` and `clawsweeper:merge-ready` for a maintainer to merge manually when the global gate is closed
-- required `CLAWSWEEPER_MODEL` GitHub Actions secret containing the actual
+- optional private alias routing through ClawRouter; see
+  [`../private-inference.md`](../private-inference.md) for the isolated deployment,
+  workload credential, and native metadata contract
+- required `CLAWSWEEPER_MODEL` GitHub Actions secret for direct Codex modes, containing the actual
   internal model name; workflows, dispatch payloads, comments, and reports use
   only the public `internal` alias
 - Codex CLI and its responses API proxy install from their latest npm tags on

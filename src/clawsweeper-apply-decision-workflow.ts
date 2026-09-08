@@ -1,5 +1,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { reportPublicationPolicy } from "./manual-publication-policy.js";
+import { assertManualPublicationAuthority } from "./manual-publication-authority.js";
 import { createApplyCandidateGuards } from "./clawsweeper-apply-candidate-guards.js";
 import { executeApplyClose } from "./clawsweeper-apply-close-execution.js";
 import {
@@ -215,6 +217,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
     );
     const syncCommentsOnly = boolArg(args.sync_comments_only);
     const suppressAutomationMarkers = boolArg(args.suppress_automation_markers);
+    const requestedSyncCommentsOnly = syncCommentsOnly;
+    const requestedSuppressAutomationMarkers = suppressAutomationMarkers;
     const emitEventApplyProof = boolArg(args.event_apply_proof);
     const exactEventPublication = boolArg(args.exact_event_publication);
     const commentSyncMinAgeDays = numberArg(args.comment_sync_min_age_days, 0);
@@ -330,7 +334,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
               left.applyCheckedAt - right.applyCheckedAt ||
               left.number - right.number,
     );
-    const files = fileEntries.map((entry) => entry.name);
     const boundedExactSelection = exactEventPublication && requestedItemNumberSet.size > 0;
     const openReportEntry = createOpenReportLookup(fileEntries, boundedExactSelection);
     const pairedIssueCloseoutReportKeys = new Set<string>();
@@ -492,7 +495,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       return;
     }
     logProgress(
-      `starting apply: files=${files.length} dry_run=${dryRun} apply_kind=${applyKind} min_age=${minAgeDescription} apply_close_reasons=${closeReasonFilterText(applyCloseReasons)} stale_min_age_days=${staleMinAgeDays} close_delay_ms=${closeDelayMs} sync_comments_only=${syncCommentsOnly} suppress_automation_markers=${suppressAutomationMarkers} comment_sync_min_age_days=${commentSyncMinAgeDays} comment_sync_cursor=${commentSyncCursor ?? "none"} max_runtime_ms=${maxRuntimeMs} item_numbers=${requestedItemNumbers.join(",") || "all"} reconciliation_deferred=${[...reconciliationDeferredItemNumbers].join(",") || "none"}`,
+      `starting apply: files=${fileEntries.length} dry_run=${dryRun} apply_kind=${applyKind} min_age=${minAgeDescription} apply_close_reasons=${closeReasonFilterText(applyCloseReasons)} stale_min_age_days=${staleMinAgeDays} close_delay_ms=${closeDelayMs} sync_comments_only=${syncCommentsOnly} suppress_automation_markers=${suppressAutomationMarkers} comment_sync_min_age_days=${commentSyncMinAgeDays} comment_sync_cursor=${commentSyncCursor ?? "none"} max_runtime_ms=${maxRuntimeMs} item_numbers=${requestedItemNumbers.join(",") || "all"} reconciliation_deferred=${[...reconciliationDeferredItemNumbers].join(",") || "none"}`,
     );
     // oxfmt-ignore
     for (const entry of fileEntries) {
@@ -508,6 +511,13 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         return;
       }
       let markdown = entry.markdown;
+      const restrictedPublication = Boolean(reportPublicationPolicy(markdown));
+      // Background apply has no publication claim. Canonical restrictions outlive
+      // queue completion, so only the exact publisher can sync this report.
+      if (restrictedPublication && !exactEventPublication) continue;
+      if (restrictedPublication) assertManualPublicationAuthority(markdown, entry.repo, entry.number);
+      const syncCommentsOnly = restrictedPublication || requestedSyncCommentsOnly;
+      const suppressAutomationMarkers = restrictedPublication || requestedSuppressAutomationMarkers;
       const repo = entry.repo;
       const number = entry.number;
       let mutationLedgerEntry: ReportEntry = entry;
@@ -623,25 +633,16 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         liveReadGeneration.invalidate();
         resetGenerationBoundReads();
         if (!preserveGuardReadCacheAfterMutation) resetMutationGuardBoundary();
-        if (mutationEntry === entry) {
-          activeApplyItem = { repo, number, mutationOccurred: true };
-          mutationByItem.set(`${repo}#${number}`, true);
-        } else {
-          activeApplyItem = {
-            repo: mutationEntry.repo,
-            number: mutationEntry.number,
-            mutationOccurred: true,
-          };
-          mutationByItem.set(`${mutationEntry.repo}#${mutationEntry.number}`, true);
-        }
+        activeApplyItem = {
+          repo: mutationEntry.repo,
+          number: mutationEntry.number,
+          mutationOccurred: true,
+        };
+        mutationByItem.set(`${mutationEntry.repo}#${mutationEntry.number}`, true);
       };
       const recordMutation = (parentEventId?: string | null): void => {
         markMutationObserved();
-        if (mutationLedgerEntry === entry) {
-          recordApplyMutationBoundary(applyLedger, entry, parentEventId);
-        } else {
-          recordApplyMutationBoundary(applyLedger, mutationLedgerEntry, parentEventId);
-        }
+        recordApplyMutationBoundary(applyLedger, mutationLedgerEntry, parentEventId);
       };
       dependencies.activeApplyMutationRunner = <T>(options: {
         identity: string;
@@ -650,6 +651,12 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         didMutate?: ((result: T) => boolean) | undefined;
         knownNoMutation?: ((error: unknown) => boolean) | undefined;
       }): T => {
+        if (restrictedPublication) {
+          if (!options.identity.startsWith(`review_comment_upsert:${number}:`) && !options.identity.startsWith("review_lease_")) {
+            throw new Error("manual publication forbids this mutation");
+          }
+          assertManualPublicationAuthority(markdown, repo, number);
+        }
         if (dryRun) return options.operation();
         const attempt = startApplyMutationAttempt(
           applyLedger,
@@ -779,6 +786,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       const pairedIssueCanonicalProvenanceBlock = (issueNumber: number): string | null => {
         const pairedEntry = openReportEntry(issueNumber);
         if (!pairedEntry) return "implemented-on-main paired closeout requires an independently reviewed linked issue report";
+        if (reportPublicationPolicy(pairedEntry.markdown)) return "linked issue publication policy forbids paired closeout";
         const parentFixedPrNumber = frontMatterValue(markdown, "fixed_pr_number");
         const parentFixedPrUrl = frontMatterValue(markdown, "fixed_pr_url");
         const pairedFixedPrNumber = frontMatterValue(pairedEntry.markdown, "fixed_pr_number");
@@ -1694,13 +1702,13 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           continue;
         }
       }
-      if (state === "open" && exactEventPublication && !dryRun) {
+      if (!restrictedPublication && state === "open" && exactEventPublication && !dryRun) {
         beginIssueLabelMutationBatch(number);
         issueLabelBatchActive = true;
         preserveGuardReadCacheAfterMutation = true;
         resetMutationGuardBoundary();
       }
-      if (state === "open" && item.kind === "pull_request") {
+      if (!restrictedPublication && state === "open" && item.kind === "pull_request") {
         const pullRequestLabels = syncApplyPullRequestLabels(dependencies, {
           currentItemContext,
           dryRun,
@@ -1886,7 +1894,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           break;
         continue;
       }
-      const labelsCanSync = !lockedMetadataOnly && !stalePrReviewHead && labelSyncFreshEnough();
+      const labelsCanSync = !restrictedPublication && !lockedMetadataOnly && !stalePrReviewHead && labelSyncFreshEnough();
       const complete = frontMatterValue(markdown, "review_status") === "complete" && labelsCanSync;
       const reportLabelSync = syncApplyReportLabels(dependencies, {
         bulkFilerRepositoryPermissionCache,
@@ -1938,45 +1946,59 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
           continue;
         }
       }
-      let reviewCommentHash = reviewCommentBodyDigest(markedReviewComment);
       const allowApplyCloseActionUpgrade = isUpgradedCloseCandidate && !syncCommentsOnly;
-      let existingReviewCommentMatches = commentBodyMatches(
-        existingReviewComment,
-        markedReviewComment,
-        { allowApplyCloseActionUpgrade },
-      );
-      let needsReviewCommentBodySync = !existingReviewComment || !existingReviewCommentMatches;
-      let needsReviewCommentHashSync = !reviewCommentHashMatches(
-        existingReviewComment,
-        markedReviewComment,
-        frontMatterValue(markdown, "review_comment_sha256"),
-        reviewCommentHash,
-        { allowApplyCloseActionUpgrade },
-      );
-      let needsReviewCommentReferenceSync =
-        /^(?:none|unknown)?$/.test(frontMatterValue(markdown, "review_comment_id") ?? "") ||
-        /^(?:none|unknown)?$/.test(frontMatterValue(markdown, "review_comment_url") ?? "");
       const guarded =
         guardedReviewAction &&
         reviewedSourceFresh() &&
         !stalePrReviewHead;
-      let needsReviewCommentSync = shouldSyncReviewComment({
-        syncCommentsOnly,
-        isCloseProposal,
-        commentSyncMinAgeDays,
-        reviewCommentSyncedAt: frontMatterValue(markdown, "review_comment_synced_at"),
-        reviewCommentVerifiedAt: frontMatterValue(markdown, "review_comment_checked_at"),
-        reviewedAt: frontMatterValue(markdown, "reviewed_at"),
-        lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
-        guardedReviewedAt: guarded ? frontMatterValue(markdown, "apply_checked_at") : undefined,
-        hasExistingReviewComment: Boolean(existingReviewComment),
-        needsReviewCommentBodySync,
-        needsReviewCommentHashSync,
-        needsReviewCommentReferenceSync,
-        forceReviewCommentBodySync:
-          clawSweeperLabelsChanged || Boolean(closeBlockedForCommentSync) || guarded ||
+      const reviewCommentSyncState = (mode: "current" | "rewritten", forceBodySync = true) => {
+        const reviewCommentHash = reviewCommentBodyDigest(markedReviewComment);
+        const matchOptions = mode === "current" ? { allowApplyCloseActionUpgrade } : undefined;
+        const existingReviewCommentMatches = commentBodyMatches(
+          existingReviewComment,
+          markedReviewComment,
+          matchOptions,
+        );
+        const needsReviewCommentBodySync = !existingReviewComment || !existingReviewCommentMatches;
+        const needsReviewCommentHashSync = mode === "current"
+          ? !reviewCommentHashMatches(
+              existingReviewComment,
+              markedReviewComment,
+              frontMatterValue(markdown, "review_comment_sha256"),
+              reviewCommentHash,
+              matchOptions,
+            )
+          : frontMatterValue(markdown, "review_comment_sha256") !== reviewCommentHash;
+        const needsReviewCommentReferenceSync =
+          /^(?:none|unknown)?$/.test(frontMatterValue(markdown, "review_comment_id") ?? "") ||
+          /^(?:none|unknown)?$/.test(frontMatterValue(markdown, "review_comment_url") ?? "");
+        return {
+          needsReviewCommentBodySync,
+          needsReviewCommentSync: shouldSyncReviewComment({
+            syncCommentsOnly,
+            isCloseProposal,
+            commentSyncMinAgeDays,
+            reviewCommentSyncedAt: frontMatterValue(markdown, "review_comment_synced_at"),
+            reviewedAt: frontMatterValue(markdown, "reviewed_at"),
+            lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
+            // Rewritten reports cannot reuse the prior verification or guarded-review receipt.
+            ...(mode === "current" ? {
+              reviewCommentVerifiedAt: frontMatterValue(markdown, "review_comment_checked_at"),
+              guardedReviewedAt: guarded ? frontMatterValue(markdown, "apply_checked_at") : undefined,
+            } : {}),
+            hasExistingReviewComment: Boolean(existingReviewComment),
+            needsReviewCommentBodySync,
+            needsReviewCommentHashSync,
+            needsReviewCommentReferenceSync,
+            forceReviewCommentBodySync: forceBodySync,
+          }),
+        };
+      };
+      let { needsReviewCommentBodySync, needsReviewCommentSync } = reviewCommentSyncState(
+        "current",
+        clawSweeperLabelsChanged || Boolean(closeBlockedForCommentSync) || guarded ||
           Boolean(stalePrReviewHead),
-      });
+      );
       if (
         isCloseProposal &&
         closeReason === "duplicate_or_superseded" &&
@@ -2034,30 +2056,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             isCloseProposal = false;
             reviewComment = renderReviewCommentFromReport(markdown, closeReason, renderOptions);
             markedReviewComment = markedReviewCommentForApply(reviewComment);
-            reviewCommentHash = reviewCommentBodyDigest(markedReviewComment);
-            existingReviewCommentMatches = commentBodyMatches(
-              existingReviewComment,
-              markedReviewComment,
-            );
-            needsReviewCommentBodySync = !existingReviewComment || !existingReviewCommentMatches;
-            needsReviewCommentHashSync =
-              frontMatterValue(markdown, "review_comment_sha256") !== reviewCommentHash;
-            needsReviewCommentReferenceSync =
-              /^(?:none|unknown)?$/.test(frontMatterValue(markdown, "review_comment_id") ?? "") ||
-              /^(?:none|unknown)?$/.test(frontMatterValue(markdown, "review_comment_url") ?? "");
-            needsReviewCommentSync = shouldSyncReviewComment({
-              syncCommentsOnly,
-              isCloseProposal,
-              commentSyncMinAgeDays,
-              reviewCommentSyncedAt: frontMatterValue(markdown, "review_comment_synced_at"),
-              reviewedAt: frontMatterValue(markdown, "reviewed_at"),
-              lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
-              hasExistingReviewComment: Boolean(existingReviewComment),
-              needsReviewCommentBodySync,
-              needsReviewCommentHashSync,
-              needsReviewCommentReferenceSync,
-              forceReviewCommentBodySync: true,
-            });
+            ({ needsReviewCommentBodySync, needsReviewCommentSync } = reviewCommentSyncState("rewritten"));
           }
           const coveringFreshnessBlock = postProofCoveringPrFreshnessBlock();
           if (coveringFreshnessBlock) {
@@ -2111,30 +2110,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         if (!wasStaleCanonicalCommentSyncPending && staleCanonicalCommentSyncPending) {
           reviewComment = renderCurrentReviewComment();
           markedReviewComment = markedReviewCommentForApply(reviewComment);
-          reviewCommentHash = reviewCommentBodyDigest(markedReviewComment);
-          existingReviewCommentMatches = commentBodyMatches(
-            existingReviewComment,
-            markedReviewComment,
-          );
-          needsReviewCommentBodySync = !existingReviewComment || !existingReviewCommentMatches;
-          needsReviewCommentHashSync =
-            frontMatterValue(markdown, "review_comment_sha256") !== reviewCommentHash;
-          needsReviewCommentReferenceSync =
-            /^(?:none|unknown)?$/.test(frontMatterValue(markdown, "review_comment_id") ?? "") ||
-            /^(?:none|unknown)?$/.test(frontMatterValue(markdown, "review_comment_url") ?? "");
-          needsReviewCommentSync = shouldSyncReviewComment({
-            syncCommentsOnly,
-            isCloseProposal,
-            commentSyncMinAgeDays,
-            reviewCommentSyncedAt: frontMatterValue(markdown, "review_comment_synced_at"),
-            reviewedAt: frontMatterValue(markdown, "reviewed_at"),
-            lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
-            hasExistingReviewComment: Boolean(existingReviewComment),
-            needsReviewCommentBodySync,
-            needsReviewCommentHashSync,
-            needsReviewCommentReferenceSync,
-            forceReviewCommentBodySync: true,
-          });
+          ({ needsReviewCommentBodySync, needsReviewCommentSync } = reviewCommentSyncState("rewritten"));
         }
       }
       if (
@@ -2145,63 +2121,10 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         const markedReviewCommentBeforeLabelFlush = markedReviewComment;
         flushIssueLabelBatch();
         if (markedReviewComment !== markedReviewCommentBeforeLabelFlush) {
-          reviewCommentHash = reviewCommentBodyDigest(markedReviewComment);
-          existingReviewCommentMatches = commentBodyMatches(
-            existingReviewComment,
-            markedReviewComment,
-            { allowApplyCloseActionUpgrade },
-          );
-          needsReviewCommentBodySync = !existingReviewComment || !existingReviewCommentMatches;
-          needsReviewCommentHashSync = !reviewCommentHashMatches(
-            existingReviewComment,
-            markedReviewComment,
-            frontMatterValue(markdown, "review_comment_sha256"),
-            reviewCommentHash,
-            { allowApplyCloseActionUpgrade },
-          );
-          needsReviewCommentReferenceSync =
-            /^(?:none|unknown)?$/.test(frontMatterValue(markdown, "review_comment_id") ?? "") ||
-            /^(?:none|unknown)?$/.test(frontMatterValue(markdown, "review_comment_url") ?? "");
-          needsReviewCommentSync = shouldSyncReviewComment({
-            syncCommentsOnly,
-            isCloseProposal,
-            commentSyncMinAgeDays,
-            reviewCommentSyncedAt: frontMatterValue(markdown, "review_comment_synced_at"),
-            reviewCommentVerifiedAt: frontMatterValue(markdown, "review_comment_checked_at"),
-            reviewedAt: frontMatterValue(markdown, "reviewed_at"),
-            lastFullReviewAt: frontMatterValue(markdown, "last_full_review_at"),
-            guardedReviewedAt: guarded ? frontMatterValue(markdown, "apply_checked_at") : undefined,
-            hasExistingReviewComment: Boolean(existingReviewComment),
-            needsReviewCommentBodySync,
-            needsReviewCommentHashSync,
-            needsReviewCommentReferenceSync,
-            forceReviewCommentBodySync: true,
-          });
+          ({ needsReviewCommentBodySync, needsReviewCommentSync } = reviewCommentSyncState("current"));
         }
       }
       if (needsReviewCommentSync) {
-        const staleSyncReason = needsReviewCommentBodySync ? staleReviewCommentReason : null;
-        if (staleSyncReason) {
-          markdown = replaceFrontMatterValue(
-            markdown,
-            "apply_checked_at",
-            new Date().toISOString(),
-          );
-          if (!dryRun) writeReportAfterDiscardingIssueLabelBatch(path, markdown);
-          results.push({
-            number,
-            action: "skipped_stale_review_comment_sync",
-            reason: staleSyncReason,
-            ...(emitEventApplyProof &&
-            verifiedNewerReviewTuple(markdown, existingReviewComment, staleSyncReason)
-              ? { newerReviewTupleVerified: true }
-              : {}),
-          });
-          processedCount += 1;
-          maybeLogProgress(`skipped stale review comment sync #${number}`);
-          if (processedCount >= processedLimit) break;
-          continue;
-        }
         const lockedCommentSkip = skipLockedConversation(
           needsReviewCommentBodySync ? lockedConversationApplyReason(item) : null,
         );
@@ -2309,6 +2232,8 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
                 number,
                 markedReviewComment,
                 existingReviewComment,
+                undefined,
+                { suppressAutomationMarkers },
               );
               rememberSelfMutationUpdatedAt();
               deferredSelfMutationReceipt = false;

@@ -1,15 +1,19 @@
 import {
+  GITHUB_ETAG_CACHE_MAX_BODY_BYTES,
   githubEtagCacheKeyFromValue,
   type GithubEtagCacheKey,
 } from "../src/github-etag-cache-contract.ts";
+import { recordOrEmpty as objectValue } from "../src/value-coerce.ts";
 
 export const GITHUB_ETAG_CACHE_TABLE = "github_etag_response_cache_v1";
 export const GITHUB_ETAG_CACHE_MAX_ENTRIES = 2_048;
-export const GITHUB_ETAG_CACHE_MAX_BODY_BYTES = 512 * 1_024;
+export { GITHUB_ETAG_CACHE_MAX_BODY_BYTES };
 export const GITHUB_ETAG_CACHE_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 
 const METRICS_TABLE = "github_etag_response_cache_metrics_v1";
 const CLEANUP_LIMIT = 128;
+const CLEANUP_INTERVAL_MS = 60_000;
+const ENTRY_COUNT_RECONCILE_STORES = 64;
 const ETAG_MAX_LENGTH = 1_024;
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 
@@ -29,6 +33,9 @@ export type GithubEtagCacheLookup = {
 
 export class GithubEtagResponseStore {
   private readonly storage: GithubEtagStorage;
+  private entryCount: number | null = null;
+  private storesSinceCount = 0;
+  private lastCleanupAt: number | null = null;
 
   constructor(storage: GithubEtagStorage) {
     this.storage = storage;
@@ -104,18 +111,37 @@ export class GithubEtagResponseStore {
     const etag = String(body.etag || "").trim();
     const responseBody = typeof body.body === "string" ? body.body : "";
     if (!key) return { ok: false, error: "invalid_github_etag_cache_key", status: 400 };
-    if (!validEtag(etag)) return this.skipped(key, now, "missing_or_invalid_etag");
-    if (!validJsonBody(responseBody)) return this.skipped(key, now, "invalid_json_body");
-    const bodyBytes = new TextEncoder().encode(responseBody).byteLength;
-    if (bodyBytes < 1 || bodyBytes > GITHUB_ETAG_CACHE_MAX_BODY_BYTES) {
+    if (
+      !("body" in body) &&
+      typeof body.body_bytes === "number" &&
+      Number.isSafeInteger(body.body_bytes) &&
+      body.body_bytes > GITHUB_ETAG_CACHE_MAX_BODY_BYTES
+    ) {
       return this.skipped(key, now, "body_size_bound");
     }
-    const bodyDigest = await sha256Text(responseBody);
+    if (!validEtag(etag)) return this.skipped(key, now, "missing_or_invalid_etag");
+    const encodedBody = new TextEncoder().encode(responseBody);
+    const bodyBytes = encodedBody.byteLength;
+    if (bodyBytes > GITHUB_ETAG_CACHE_MAX_BODY_BYTES) {
+      return this.skipped(key, now, "body_size_bound");
+    }
+    if (!validJsonBody(responseBody)) return this.skipped(key, now, "invalid_json_body");
+    const bodyDigest = await sha256Bytes(encodedBody);
     const expiresAt = now + GITHUB_ETAG_CACHE_RETENTION_MS;
-    this.storage.transactionSync(() => {
-      this.deleteExpiredSync(now);
-      this.storage.sql.exec(
-        `INSERT INTO ${GITHUB_ETAG_CACHE_TABLE} (
+    const lastCleanupAt = this.lastCleanupAt;
+    try {
+      this.storage.transactionSync(() => {
+        this.deleteExpiredSync(now);
+        const existing =
+          this.entryCount !== null &&
+          firstRow(
+            this.storage.sql.exec(
+              `SELECT 1 AS found FROM ${GITHUB_ETAG_CACHE_TABLE} WHERE cache_key = ?`,
+              key.cacheKey,
+            ),
+          );
+        this.storage.sql.exec(
+          `INSERT INTO ${GITHUB_ETAG_CACHE_TABLE} (
            cache_key, credential_pool, route, media_type, page, etag, body,
            body_digest, body_bytes, response_at, validated_at, expires_at
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -127,22 +153,30 @@ export class GithubEtagResponseStore {
            response_at = excluded.response_at,
            validated_at = excluded.validated_at,
            expires_at = excluded.expires_at`,
-        key.cacheKey,
-        key.credentialPool,
-        key.route,
-        key.mediaType,
-        key.page,
-        etag,
-        responseBody,
-        bodyDigest,
-        bodyBytes,
-        now,
-        now,
-        expiresAt,
-      );
-      this.enforceEntryCapSync();
-      this.recordMetricSync(now, key.credentialPool, "cache_200_stored");
-    });
+          key.cacheKey,
+          key.credentialPool,
+          key.route,
+          key.mediaType,
+          key.page,
+          etag,
+          responseBody,
+          bodyDigest,
+          bodyBytes,
+          now,
+          now,
+          expiresAt,
+        );
+        if (this.entryCount !== null && !existing) this.entryCount += 1;
+        this.enforceEntryCapSync();
+        this.recordMetricSync(now, key.credentialPool, "cache_200_stored");
+      });
+    } catch (error) {
+      // SQLite rolls back housekeeping too; discard the in-memory count.
+      this.entryCount = null;
+      this.storesSinceCount = 0;
+      this.lastCleanupAt = lastCleanupAt;
+      throw error;
+    }
     return {
       ok: true,
       stored: true,
@@ -222,26 +256,35 @@ export class GithubEtagResponseStore {
   }
 
   private deleteExpiredSync(now: number): void {
-    this.storage.sql.exec(
-      `DELETE FROM ${GITHUB_ETAG_CACHE_TABLE}
+    if (this.lastCleanupAt !== null && now - this.lastCleanupAt < CLEANUP_INTERVAL_MS) return;
+    const deleted = Array.from(
+      this.storage.sql.exec(
+        `DELETE FROM ${GITHUB_ETAG_CACHE_TABLE}
         WHERE cache_key IN (
           SELECT cache_key FROM ${GITHUB_ETAG_CACHE_TABLE}
            WHERE expires_at <= ? ORDER BY expires_at LIMIT ${CLEANUP_LIMIT}
-        )`,
-      now,
-    );
+        ) RETURNING cache_key`,
+        now,
+      ),
+    ).length;
+    if (this.entryCount !== null) this.entryCount -= deleted;
     this.storage.sql.exec(
       `DELETE FROM ${METRICS_TABLE} WHERE bucket_start < ?`,
       now - 30 * 86_400_000,
     );
+    this.lastCleanupAt = now;
   }
 
   private enforceEntryCapSync(): void {
-    const count = Number(
-      firstRow(this.storage.sql.exec(`SELECT COUNT(*) AS count FROM ${GITHUB_ETAG_CACHE_TABLE}`))
-        ?.count || 0,
-    );
-    const overflow = Math.max(0, count - GITHUB_ETAG_CACHE_MAX_ENTRIES);
+    this.storesSinceCount += 1;
+    if (this.entryCount === null || this.storesSinceCount >= ENTRY_COUNT_RECONCILE_STORES) {
+      this.entryCount = Number(
+        firstRow(this.storage.sql.exec(`SELECT COUNT(*) AS count FROM ${GITHUB_ETAG_CACHE_TABLE}`))
+          ?.count || 0,
+      );
+      this.storesSinceCount = 0;
+    }
+    const overflow = Math.max(0, this.entryCount - GITHUB_ETAG_CACHE_MAX_ENTRIES);
     if (!overflow) return;
     this.storage.sql.exec(
       `DELETE FROM ${GITHUB_ETAG_CACHE_TABLE}
@@ -251,6 +294,7 @@ export class GithubEtagResponseStore {
         )`,
       overflow,
     );
+    this.entryCount -= overflow;
   }
 
   private recordMetricSync(now: number, credentialPool: string, outcome: string): void {
@@ -280,17 +324,11 @@ function validJsonBody(value: string): boolean {
   }
 }
 
-async function sha256Text(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+async function sha256Bytes(value: Uint8Array<ArrayBuffer>): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", value);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function firstRow(rows: Iterable<SqlRow>): SqlRow | undefined {
   return Array.from(rows)[0];
-}
-
-function objectValue(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
 }

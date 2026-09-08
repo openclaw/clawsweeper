@@ -746,7 +746,7 @@ export interface ReviewPromptBuild {
 }
 
 export interface PreparedMediaProofArtifact {
-  kind: "image" | "video";
+  kind: "image" | "video" | "attachment";
   url: string;
   downloadedPath: string | null;
   metadataPath: string | null;
@@ -772,6 +772,8 @@ export interface ReviewContextLedgerEntry {
 }
 
 export interface ReviewPromptRuntimeHints {
+  networkCapability?: "allowlisted-proxy" | "unrestricted" | "none";
+  hasGitHubToken?: boolean;
   targetDir?: string;
   proofScratchDir?: string;
   mediaProofManifestPath?: string;
@@ -1224,6 +1226,7 @@ export interface ExistingReviewIndex {
 
 export type ReviewGitInfoOptions = {
   targetBranch?: string;
+  classifyFetchFailure?: boolean;
 };
 
 export type LocalPullMetadata = {

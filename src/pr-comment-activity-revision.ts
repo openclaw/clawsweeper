@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { compareCodeUnits, stableJson } from "./stable-json.js";
+import { recordOrEmpty as jsonRecord } from "./value-coerce.js";
 
 export const PR_ACTIVITY_REVISION_QUERY_PAGE_SIZE = 100;
 export const PR_ACTIVITY_REVISION_CONNECTION_LIMIT = 40;
@@ -112,12 +113,6 @@ export function prCommentActivityRevision(value: unknown): string | null {
   return `sha256:${createHash("sha256")
     .update(stableJson({ reviewCount, threadCount, threads }))
     .digest("hex")}`;
-}
-
-function jsonRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
 }
 
 function nonnegativeIntegerOrNull(value: unknown): number | null {

@@ -20,6 +20,7 @@ import {
 } from "./github-etag-read-broker.js";
 import { recordGithubEgressBrokerEvent } from "./github-egress-observer.js";
 import { GitHubRateLimitError, ghRetryKind, type GitHubCredentialScope } from "./github-retry.js";
+import { recordOrEmpty as objectValue } from "./value-coerce.js";
 
 interface CreateGitHubRuntimeDependencies {
   ROOT: string;
@@ -510,8 +511,7 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
       store200: (_cacheKey, response) => {
         const stored = signedEtagBrokerPost("store", {
           ...requestBody,
-          etag: response.etag,
-          body: response.body,
+          ...response,
         });
         return { stored: stored.stored === true };
       },
@@ -662,12 +662,6 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
     };
   }
 
-  function objectValue(value: unknown): Record<string, unknown> {
-    return value && typeof value === "object" && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : {};
-  }
-
   function stringValue(value: unknown): string {
     return typeof value === "string" ? value : "";
   }
@@ -722,7 +716,8 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
   ): NodeJS.ProcessEnv {
     const env = codexEnv(options);
     for (const key of Object.keys(env)) {
-      if (key.startsWith("CLAWSWEEPER_ACTION_LEDGER_")) delete env[key];
+      if (key.startsWith("CLAWSWEEPER_ACTION_LEDGER_") || key.startsWith("EXACT_REVIEW_"))
+        delete env[key];
     }
     return env;
   }

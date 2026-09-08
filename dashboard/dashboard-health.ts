@@ -39,7 +39,13 @@ export function summarizeDashboardHealth(snapshot: Record<string, unknown>): Das
     if (openDeadLetters > 0) raise("amber", "publication_dlq_open");
 
     const reviewFailureStatus = String(objectValue(queue.review_failure_health).status || "");
-    if (reviewFailureStatus === "critical") raise("red", "review_failures_repeated");
+    const rawReviewFailureReasons = objectValue(queue.review_failure_health).reasons;
+    const reviewFailureReasons = Array.isArray(rawReviewFailureReasons)
+      ? rawReviewFailureReasons.map(String)
+      : [];
+    if (reviewFailureReasons.includes("terminal_status_delivery_failed")) {
+      raise("red", "review_status_delivery_failed");
+    } else if (reviewFailureStatus === "critical") raise("red", "review_failures_repeated");
     else if (reviewFailureStatus === "degraded") raise("amber", "review_failures_recent");
     else if (reviewFailureStatus !== "healthy") {
       raise("amber", "review_failure_telemetry_unavailable");

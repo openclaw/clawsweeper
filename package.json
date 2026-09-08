@@ -69,6 +69,7 @@
     "repair:exact-review-direct-publication": "node dist/repair/exact-review-direct-publication.js",
     "repair:publish-event-result": "node dist/repair/publish-event-result.js",
     "repair:update-command-status": "node dist/repair/update-command-status.js",
+    "repair:update-review-status": "node dist/repair/update-review-status.js",
     "workflow": "node dist/repair/workflow-utils.js",
     "repair:promote-stuck-jobs": "node dist/repair/promote-stuck-jobs.js",
     "repair:sweep-openclaw-jobs": "node dist/repair/sweep-openclaw-jobs.js",
@@ -120,15 +121,17 @@
     "repair:pr-intake": "node dist/repair/pr-repair-intake.js"
   },
   "dependencies": {
-    "yaml": "^2.9.0"
+    "yaml": "^2.9.0",
+    "yauzl": "3.4.0"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
-    "markdown-it": "^15.0.0",
+    "@types/yauzl": "3.4.0",
+    "markdown-it": "^15.0.1",
     "oxfmt": "^0.58.0",
     "oxlint": "^1.73.0",
     "oxlint-tsgolint": "0.24.0",
-    "playwright-core": "^1.62.1",
+    "playwright-core": "^1.63.0",
     "typescript": "^7.0.2"
   },
   "engines": {

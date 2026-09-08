@@ -583,6 +583,8 @@ test("post-flight rechecks repair mode and live authorization immediately before
 test("post-flight records authorization and never closes related items directly", () => {
   const source = fs.readFileSync("src/repair/post-flight.ts", "utf8");
 
+  assert.match(source, /from "\.\/merge-readiness-github\.js"/);
+  assert.doesNotMatch(source, /function (?:fetchPullRequestView|validateResolvedReviewThreads)\(/);
   assert.match(source, /closure_authorization = buildClosureAuthorization/);
   assert.doesNotMatch(source, /finalizePostMergeCloseout/);
   assert.doesNotMatch(source, /postMergeCloseoutComment/);

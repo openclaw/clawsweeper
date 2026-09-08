@@ -1324,6 +1324,9 @@ test("public queue projection retains only closed operational aggregates", () =>
     },
     scheduled_feed: {
       target_rate_per_hour: 300,
+      max_concurrent: 8,
+      active: 3,
+      enqueue_replay: "scheduled_disposition_v1",
       burst: 50,
       token_balance: 42,
       throttle_source: sentinel,
@@ -1399,6 +1402,8 @@ test("public queue projection retains only closed operational aggregates", () =>
       affected_targets: 2,
       retryable_attempts: 1,
       terminal_attempts: 2,
+      terminal_status_observed: 0,
+      terminal_status_failed: 0,
       repeated_identities: 1,
       first_seen_at: "2026-08-15T11:30:00.000Z",
       last_seen_at: "2026-08-15T11:55:00.000Z",
@@ -1457,6 +1462,8 @@ test("public queue projection retains only closed operational aggregates", () =>
     affected_targets: 2,
     retryable_attempts: 1,
     terminal_attempts: 2,
+    terminal_status_observed: 0,
+    terminal_status_failed: 0,
     repeated_identities: 1,
     first_seen_at: "2026-08-15T11:30:00.000Z",
     last_seen_at: "2026-08-15T11:55:00.000Z",
@@ -1467,7 +1474,12 @@ test("public queue projection retains only closed operational aggregates", () =>
       workflow: 1,
     },
   });
-  assert.deepEqual(projected.scheduled_feed, { target_rate_per_hour: 300 });
+  assert.deepEqual(projected.scheduled_feed, {
+    target_rate_per_hour: 300,
+    max_concurrent: 8,
+    active: 3,
+    enqueue_replay: "scheduled_disposition_v1",
+  });
   assert.deepEqual(projected.bay_projection.activity, {
     complete: false,
     queue_stages: null,
@@ -1519,6 +1531,9 @@ test("public queue projection retains only closed operational aggregates", () =>
   );
   assert.deepEqual(statusProjected.exact_review_queue.scheduled_feed, {
     target_rate_per_hour: 300,
+    max_concurrent: 8,
+    active: 3,
+    enqueue_replay: "scheduled_disposition_v1",
   });
   assert.deepEqual(statusProjected.exact_review_queue.handoff_health.phases, {
     pending: { count: 7, oldest_at: null, oldest_age_seconds: null },
@@ -1552,6 +1567,8 @@ test("public queue projection retains only closed operational aggregates", () =>
     { target_rate_per_hour: 1.5 },
     { target_rate_per_hour: 2_001 },
     { target_rate_per_hour: "300" },
+    { target_rate_per_hour: 300 },
+    { target_rate_per_hour: 300, enqueue_replay: "future_contract" },
   ]) {
     assert.equal(
       publicExactReviewQueueProjection({ ...source, scheduled_feed }).scheduled_feed,
@@ -1743,6 +1760,8 @@ test("public queue HTTP route applies the closed projector before serialization"
             affected_targets: 0,
             retryable_attempts: 0,
             terminal_attempts: 0,
+            terminal_status_observed: 0,
+            terminal_status_failed: 0,
             repeated_identities: 0,
             first_seen_at: null,
             last_seen_at: null,

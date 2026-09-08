@@ -1,4 +1,9 @@
 import { EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES } from "../src/exact-review-publication-limits.ts";
+import { sqlColumnNames, type DurableStorage } from "./durable-storage.ts";
+import {
+  manualPublicationOwnerFrom,
+  type ManualPublicationOwner,
+} from "../src/manual-publication-policy.ts";
 
 export { EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES };
 
@@ -31,15 +36,6 @@ const RECORD_SECTIONS = new Set<RecordSection>([
   "commits",
 ]);
 
-type SqlStorage = {
-  exec: (query: string, ...bindings: unknown[]) => Iterable<Record<string, unknown>>;
-};
-
-type DurableStorage = {
-  sql: SqlStorage;
-  transactionSync: <T>(callback: () => T) => T;
-};
-
 export type RecordSection = "items" | "closed" | "plans" | "decision-packets" | "commits";
 export type ExactReviewTupleRecordSection = Exclude<RecordSection, "commits">;
 
@@ -69,6 +65,7 @@ export type DirectPublicationLifecyclePlan = {
 };
 
 export type DirectPublicationPlan = {
+  owner?: ManualPublicationOwner;
   canonicalTargetKey: string;
   fenceKey: string;
   revision: number;
@@ -236,12 +233,9 @@ export class ExactReviewDirectPublicationStore {
          PRIMARY KEY (item_key, revision)
        ) STRICT`,
     );
-    const directPublicationColumns = new Set(
-      Array.from(
-        this.storage.sql.exec(
-          `SELECT name FROM pragma_table_info('${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}')`,
-        ),
-      ).map((row) => String(row.name || "")),
+    const directPublicationColumns = sqlColumnNames(
+      this.storage,
+      EXACT_REVIEW_DIRECT_PUBLICATION_TABLE,
     );
     if (!directPublicationColumns.has("canonical_target_key")) {
       this.storage.sql.exec(
@@ -554,7 +548,16 @@ export class ExactReviewDirectPublicationStore {
     section: ExactReviewTupleRecordSection,
     itemId: number,
   ): CanonicalRecord | null {
-    const metadata = this.readCanonicalMetadataSync(repoSlug, section, itemId);
+    return this.readCanonicalContentSync(repoSlug, section, itemId);
+  }
+
+  private readCanonicalContentSync(
+    repoSlug: string,
+    section: ExactReviewTupleRecordSection,
+    itemId: number,
+    sourceRow?: Record<string, unknown>,
+  ): CanonicalRecord | null {
+    const metadata = this.readCanonicalMetadataSync(repoSlug, section, itemId, sourceRow);
     if (!metadata) return null;
     if (metadata.deleted) return { ...metadata, content: null };
     if (metadata.content !== null) return metadata;
@@ -825,6 +828,8 @@ export class ExactReviewDirectPublicationStore {
     maxSourceBytes: number;
     maxRecords: number;
   }): { records: RecordExportEntry[]; nextCursor: number | null; watermark: number } {
+    // Snapshot builders use the first page's revision as their replay boundary.
+    const watermark = this.currentExportRevisionSync();
     const placeholders = options.sections.map(() => "?").join(", ");
     // The preflight joins source metadata before reconstruction. It must not
     // scan more candidates than the reconstruction bound can ever consume.
@@ -878,16 +883,20 @@ export class ExactReviewDirectPublicationStore {
       selectedRows.push(row);
       sourceBytes += byteLength;
     }
+    const sourceRows = this.readExportSourceRowsSync(options.repoSlug, selectedRows);
     const records: RecordExportEntry[] = [];
     let responseBytes = 0;
     for (const row of selectedRows) {
-      const entry = this.recordExportEntrySync(row);
+      const sourceRow = sourceRows.get(`${String(row.section)}/${String(row.record_id)}`);
+      if (Number(row.deleted) !== 1 && !sourceRow) {
+        throw new RecordExportConsistencyError("record export source missing");
+      }
+      const entry = this.recordExportEntrySync(row, sourceRow);
       const entryBytes = new TextEncoder().encode(JSON.stringify(entry)).byteLength;
       if (records.length && responseBytes + entryBytes > options.maxBytes) break;
       records.push(entry);
       responseBytes += entryBytes;
     }
-    const watermark = this.currentExportRevisionSync();
     const lastRevision = records.at(-1)?.storeRevision ?? null;
     const hasMore =
       lastRevision !== null && records.length === rows.length && rows.length === rowLimit
@@ -966,14 +975,30 @@ export class ExactReviewDirectPublicationStore {
     return this.currentExportRevisionSync();
   }
 
-  snapshotRecordIdentities(repoSlug: string): RecordSnapshotIdentity[] {
+  snapshotRecordCount(repoSlug: string, watermark: number): number {
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT COUNT(*) AS count FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
+       WHERE repo_slug = ? AND deleted = 0 AND store_revision <= ?`,
+        repoSlug,
+        watermark,
+      ),
+    )[0];
+    return Number(row?.count ?? 0);
+  }
+
+  snapshotRecordIdentities(
+    repoSlug: string,
+    watermark = Number.MAX_SAFE_INTEGER,
+  ): RecordSnapshotIdentity[] {
     return Array.from(
       this.storage.sql.exec(
         `SELECT section, record_id
            FROM ${EXACT_REVIEW_RECORD_EXPORT_INDEX_TABLE}
-          WHERE repo_slug = ? AND deleted = 0
+          WHERE repo_slug = ? AND deleted = 0 AND store_revision <= ?
           ORDER BY section, record_id`,
         repoSlug,
+        watermark,
       ),
       (row) => ({
         section: String(row.section) as RecordSection,
@@ -995,6 +1020,15 @@ export class ExactReviewDirectPublicationStore {
       ),
     )[0];
     return row ? this.recordExportEntrySync(row) : null;
+  }
+
+  count(): number {
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT COUNT(*) AS count FROM ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}`,
+      ),
+    )[0];
+    return Number(row?.count ?? 0);
   }
 
   list(): DirectPublicationRow[] {
@@ -1042,17 +1076,20 @@ export class ExactReviewDirectPublicationStore {
     repoSlug: string,
     section: ExactReviewTupleRecordSection,
     itemId: number,
+    sourceRow?: Record<string, unknown>,
   ) {
-    const row = Array.from(
-      this.storage.sql.exec(
-        `SELECT content, digest, byte_length, chunk_count, deleted, revision, updated_at
+    const row =
+      sourceRow ??
+      Array.from(
+        this.storage.sql.exec(
+          `SELECT content, digest, byte_length, chunk_count, deleted, revision, updated_at
            FROM ${EXACT_REVIEW_CANONICAL_RECORD_TABLE}
           WHERE repo_slug = ? AND section = ? AND item_id = ?`,
-        repoSlug,
-        section,
-        itemId,
-      ),
-    )[0];
+          repoSlug,
+          section,
+          itemId,
+        ),
+      )[0];
     if (!row) return null;
     return {
       repoSlug,
@@ -1230,7 +1267,52 @@ export class ExactReviewDirectPublicationStore {
     return revision;
   }
 
-  private recordExportEntrySync(row: Record<string, unknown>): RecordExportEntry {
+  private readExportSourceRowsSync(repoSlug: string, rows: Record<string, unknown>[]) {
+    const canonical: Array<[string, number]> = [];
+    const backfill: Array<[string, string]> = [];
+    for (const row of rows) {
+      if (Number(row.deleted) === 1) continue;
+      if (String(row.source) === "canonical" && row.section !== "commits") {
+        canonical.push([String(row.section), Number(row.record_id)]);
+      } else {
+        backfill.push([String(row.section), String(row.record_id)]);
+      }
+    }
+    if (!canonical.length && !backfill.length) return new Map<string, Record<string, unknown>>();
+    // Load only the byte-budgeted identities. JSON arrays keep the binding
+    // count fixed even for 200 records; chunks still use the existing reader.
+    return new Map(
+      Array.from(
+        this.storage.sql.exec(
+          `SELECT section, CAST(item_id AS TEXT) AS record_id, content, digest,
+                  byte_length, chunk_count, deleted, revision, updated_at
+             FROM ${EXACT_REVIEW_CANONICAL_RECORD_TABLE}
+            WHERE repo_slug = ? AND (section, item_id) IN (
+              SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]')
+                FROM json_each(?)
+            )
+            UNION ALL
+           SELECT section, record_id, content, digest, byte_length, chunk_count,
+                  0 AS deleted, 0 AS revision, updated_at
+             FROM ${EXACT_REVIEW_RECORD_BACKFILL_TABLE}
+            WHERE repo_slug = ? AND (section, record_id) IN (
+              SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]')
+                FROM json_each(?)
+            )`,
+          repoSlug,
+          JSON.stringify(canonical),
+          repoSlug,
+          JSON.stringify(backfill),
+        ),
+        (row) => [`${String(row.section)}/${String(row.record_id)}`, row] as const,
+      ),
+    );
+  }
+
+  private recordExportEntrySync(
+    row: Record<string, unknown>,
+    sourceRow?: Record<string, unknown>,
+  ): RecordExportEntry {
     const repoSlug = String(row.repo_slug);
     const section = String(row.section) as RecordSection;
     const id = String(row.record_id);
@@ -1246,7 +1328,7 @@ export class ExactReviewDirectPublicationStore {
         }
         let canonical: CanonicalRecord | null;
         try {
-          canonical = this.readCanonical(repoSlug, section, itemId);
+          canonical = this.readCanonicalContentSync(repoSlug, section, itemId, sourceRow);
         } catch (error) {
           if (error instanceof RecordExportConsistencyError) throw error;
           throw new RecordExportConsistencyError("canonical export content is malformed", {
@@ -1260,7 +1342,7 @@ export class ExactReviewDirectPublicationStore {
         }
         content = canonical.content;
       } else {
-        content = this.readBackfillContentSync(repoSlug, section, id);
+        content = this.readBackfillContentSync(repoSlug, section, id, sourceRow);
       }
     }
     return {
@@ -1310,17 +1392,24 @@ export class ExactReviewDirectPublicationStore {
     }
   }
 
-  private readBackfillContentSync(repoSlug: string, section: RecordSection, id: string) {
-    const row = Array.from(
-      this.storage.sql.exec(
-        `SELECT content, byte_length, chunk_count
+  private readBackfillContentSync(
+    repoSlug: string,
+    section: RecordSection,
+    id: string,
+    sourceRow?: Record<string, unknown>,
+  ) {
+    const row =
+      sourceRow ??
+      Array.from(
+        this.storage.sql.exec(
+          `SELECT content, byte_length, chunk_count
            FROM ${EXACT_REVIEW_RECORD_BACKFILL_TABLE}
           WHERE repo_slug = ? AND section = ? AND record_id = ?`,
-        repoSlug,
-        section,
-        id,
-      ),
-    )[0];
+          repoSlug,
+          section,
+          id,
+        ),
+      )[0];
     if (!row) {
       throw new RecordExportConsistencyError(
         `backfill export content missing: ${repoSlug}/${section}/${id}`,
@@ -1790,6 +1879,7 @@ export async function validateDirectPublicationPlan(
     canonicalTargetKey,
     fenceKey,
     revision: plan.revision,
+    ...(plan.owner === undefined ? {} : { owner: manualPublicationOwnerFrom(plan.owner) }),
     ...(sourceSha === undefined ? {} : { sourceSha }),
     identity: {
       canonicalTargetKey,

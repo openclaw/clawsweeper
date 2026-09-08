@@ -32,6 +32,7 @@ import {
   githubReadModelRequestSync,
   usableGithubReadModelResponse,
 } from "./github-webhook-read-model-client.js";
+import { recordOrEmpty as jsonRecord } from "./value-coerce.js";
 
 export {
   PR_ACTIVITY_REVISION_CONNECTION_LIMIT,
@@ -367,12 +368,6 @@ export function createReviewPlanningInventory(dependencies: ReviewPlanningDepend
     fetchOpenItemCounts,
     fetchPlannedPrActivityRevisions,
   };
-}
-
-function jsonRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
 }
 
 function validGraphQlName(value: string | undefined): value is string {

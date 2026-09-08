@@ -1,5 +1,6 @@
+import { sha256 } from "./content-hash.js";
 import { spawnSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   lstatSync,
   mkdirSync,
@@ -117,10 +118,6 @@ const ARTIFACTS: Readonly<Record<string, ReviewToolArtifact>> = {
     sha256: "dc1759892a41d64ee0d46cd5d4391dad7f916f54257154aa1b0732f9c50901b2",
   },
 };
-
-function sha256(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex");
-}
 
 async function boundedResponseBytes(response: Response): Promise<Buffer> {
   const contentLength = response.headers.get("content-length");

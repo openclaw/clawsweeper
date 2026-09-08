@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256 } from "./content-hash.js";
 import { isIP } from "node:net";
 import path from "node:path";
 
@@ -1216,7 +1216,7 @@ export function readAllSpooledActionEvents(root: string | SafeReadRoot): ActionE
     if (isNotFoundError(error)) return [];
     throw error;
   }
-  const budget = createActionEventSpoolReadBudget();
+  const budget: ActionEventSpoolReadBudget = { events: [], producerKeys: new Set(), totalBytes: 0 };
   let repositoryCount = 0;
   for (const repositoryEntry of repositoryEntries) {
     if (
@@ -1269,10 +1269,6 @@ type ActionEventSpoolReadBudget = {
   totalBytes: number;
 };
 
-function createActionEventSpoolReadBudget(): ActionEventSpoolReadBudget {
-  return { events: [], producerKeys: new Set(), totalBytes: 0 };
-}
-
 function retainSpooledActionEvent(budget: ActionEventSpoolReadBudget, event: ActionEvent): void {
   if (budget.events.length >= ACTION_EVENT_SPOOL_READ_LIMITS.maxEvents) {
     throw new Error(
@@ -1299,16 +1295,7 @@ function retainSpooledActionEvent(budget: ActionEventSpoolReadBudget, event: Act
   budget.events.push(event);
 }
 
-function assertCanonicalSpooledEventPath(
-  event: ActionEvent,
-  relativePath: string,
-  expectedRepository?: string,
-): void {
-  if (expectedRepository && event.subject.repository !== expectedRepository) {
-    throw new Error(
-      `action event spool repository mismatch: ${event.subject.repository} != ${expectedRepository}`,
-    );
-  }
+function assertCanonicalSpooledEventPath(event: ActionEvent, relativePath: string): void {
   const canonicalPath = actionEventSpoolRelativePath(event.subject.repository, event.event_id);
   if (path.normalize(relativePath) !== path.normalize(canonicalPath)) {
     throw new Error(`action event spool path is not canonical: ${relativePath}`);
@@ -1522,11 +1509,7 @@ function normalizeAttributeScalar(
     if (typeof value !== "string") {
       throw new Error(`action event attribute ${key} must be machine-readable text`);
     }
-    const normalized = machineText(value, `action event attribute ${key}`);
-    if (containsConfidentialIdentifier(normalized)) {
-      throw new Error(`action event attribute ${key} contains a confidential identifier`);
-    }
-    return normalized;
+    return machineText(value, `action event attribute ${key}`);
   }
   throw new Error(`action event attribute has no value contract: ${key}`);
 }
@@ -1584,7 +1567,7 @@ function assertRawActionEventShardInput(events: readonly ActionEvent[], maxEvent
   }
 }
 
-function splitActionEventShardEvents(events: readonly ActionEvent[]): ActionEvent[][] {
+export function splitActionEventShardEvents(events: readonly ActionEvent[]): ActionEvent[][] {
   const shards: ActionEvent[][] = [];
   let current: ActionEvent[] = [];
   let currentBytes = 0;
@@ -2482,7 +2465,7 @@ function canonicalizeJsonValue(
       }
     }
     const normalized: Record<string, unknown> = {};
-    for (const key of (ownKeys as string[]).sort(compareCanonicalKeys)) {
+    for (const key of (ownKeys as string[]).sort(compareLedgerText)) {
       if (rejectCredentialFields && highRiskCredentialField(key)) {
         throw new Error(
           `action event identity contains a high-risk credential field at ${location}`,
@@ -2621,10 +2604,6 @@ function validateCanonicalJsonComplexity(root: unknown): void {
   }
 }
 
-function compareCanonicalKeys(left: string, right: string): number {
-  return compareLedgerText(left, right);
-}
-
 function compareLedgerText(left: string, right: string): number {
   return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
 }
@@ -2645,7 +2624,7 @@ function serializeCanonicalJson(value: unknown): string {
     throw new Error("action event data contains a non-JSON value");
   }
   const entries = Object.keys(value)
-    .sort(compareCanonicalKeys)
+    .sort(compareLedgerText)
     .map(
       (key) =>
         `${JSON.stringify(key)}:${serializeCanonicalJson((value as Record<string, unknown>)[key])}`,
@@ -2682,10 +2661,6 @@ function highRiskCredentialField(value: string): boolean {
       normalized,
     )
   );
-}
-
-function sha256(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
 }
 
 function containsConfidentialIdentifier(value: string): boolean {

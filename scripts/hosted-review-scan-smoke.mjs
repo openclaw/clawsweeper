@@ -16,13 +16,22 @@ import { join } from "node:path";
 import { runAgentProcess } from "../dist/agent-runner.js";
 import { codexEnv } from "../dist/codex-env.js";
 import { AgentInputScanError } from "../dist/agent-input-scan.js";
+import { runCodexForTest } from "../dist/clawsweeper.js";
+import {
+  assertBooleanCountArtifact,
+  assertMatchesJsonSchema,
+  runWithWithheldDiagnostics,
+  summarizeHostedReviewTrace,
+} from "./hosted-review-canary-proof.mjs";
 
-// Dispatch-only proof: no GitHub credentials, publications, or target repository.
+// Dispatch-only proof: no GitHub credentials, publications, or external target repository.
 assert.equal(process.platform, "linux");
+assert.equal(process.env.CLAWSWEEPER_RUNNER?.trim() || "codex", "codex");
 const originalPath = process.env.PATH;
+const originalScannerCache = process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR;
+const originalCodexBin = process.env.CODEX_BIN;
 const artifact = process.argv[2];
 assert.ok(artifact, "pass a proof JSON destination");
-const sourceHead = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 const gitExecutable = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
 const codex = execFileSync("which", ["codex"], { encoding: "utf8" }).trim();
 const versionProbe = spawnSync("trufflehog", ["--version"], { encoding: "utf8" });
@@ -40,16 +49,21 @@ try {
   git("config", "user.name", "ClawSweeper smoke");
   git("config", "user.email", "smoke@example.invalid");
   git("config", "commit.gpgsign", "false");
-  writeFileSync(join(cwd, "value.txt"), "one\n");
+  writeFileSync(join(cwd, "review-fixture.js"), 'export const canaryValue = "before";\n');
   git("add", ".");
   git("commit", "-qm", "base");
   const baseSha = git("rev-parse", "HEAD");
   const marker = randomUUID();
-  writeFileSync(join(cwd, "value.txt"), `two ${marker}\n`);
+  const changedFixture = [
+    'export const canaryValue = "after";',
+    `export const canaryMarker = "${marker}";`,
+    "",
+  ].join("\n");
+  writeFileSync(join(cwd, "review-fixture.js"), changedFixture);
   git("add", ".");
   git("commit", "-qm", "change");
   const headSha = git("rev-parse", "HEAD");
-  const calls = join(root, "provider-starts");
+  const calls = join(root, "codex-launches");
   const wrapper = join(bin, "codex");
   // Negative cases can only hit this no-inference executable, even if the
   // admission gate regresses. Real Codex is wired only after these assertions.
@@ -64,58 +78,42 @@ ${live ? `const child = require('node:child_process').spawnSync(${JSON.stringify
       { mode: 0o700 },
     );
   writeProvider(false);
-  const schemaPath = join(root, "schema.json");
-  writeFileSync(
-    schemaPath,
-    JSON.stringify({
-      type: "object",
-      additionalProperties: false,
-      required: ["status", "marker"],
-      properties: { status: { type: "string", enum: ["clean"] }, marker: { type: "string" } },
-    }),
-    { mode: 0o600 },
-  );
-  const output = join(root, "decision.json");
+  const itemNumber = 990_001;
+  const workDir = join(root, "review-work");
+  mkdirSync(workDir);
+  const output = join(workDir, `${itemNumber}.json`);
   const diagnosticPromptPath = join(root, "review.prompt.md");
-  const prompt =
-    "Review the synthetic change in value.txt. Read that file and return its UUID as marker with status clean in the required JSON object. Do not run nested reviewers or network tools.";
-  const run = () =>
-    runAgentProcess({
-      label: "hosted-scan-smoke",
-      cwd,
-      model: "internal",
-      reasoningEffort: "low",
-      prompt,
-      diagnosticPromptPath,
-      scanSource: { kind: "committed", baseSha, headSha },
-      timeoutMs: 180_000,
-      env: { ...codexEnv(), CODEX_BIN: wrapper },
-      codexExtraArgs: [
-        "--sandbox",
-        "read-only",
-        "-c",
-        'approval_policy="never"',
-        "-c",
-        'web_search="disabled"',
-        "--output-schema",
-        schemaPath,
-        "--output-last-message",
-        output,
-        "--json",
-        "-",
-      ],
-    });
+  const reviewCommand = `git diff --no-ext-diff --unified=0 ${baseSha} ${headSha} -- review-fixture.js`;
+  const prompt = [
+    "This is a hosted ClawSweeper transport canary over a synthetic pull request.",
+    "First use the shell tool to inspect review-fixture.js in the committed diff.",
+    `Run: ${reviewCommand}`,
+    "Do not use any other tool or network access.",
+    "Read the UUID from that command output, then return one valid ClawSweeper decision using the required schema.",
+    'Use decision "keep_open", closeReason "none", no findings, no risks, no required next step, and overallCorrectness "patch is correct".',
+    'Set summary exactly to "Hosted review canary observed marker <UUID>.", replacing <UUID> with the command result.',
+    "Use one low-confidence synthetic owner with history null. This fixture is not real maintainer work.",
+  ].join("\n");
   const scratch = () =>
     readdirSync(tmpdir())
       .filter((name) => name.startsWith("clawsweeper-input-scan-"))
       .sort();
   const initialScratch = scratch();
   const assertCheckout = () => {
-    assert.equal(git("rev-parse", "HEAD"), headSha);
-    assert.equal(git("status", "--porcelain"), "");
-    assert.equal(readFileSync(join(cwd, "value.txt"), "utf8"), `two ${marker}\n`);
-    assert.deepEqual(scratch(), initialScratch);
+    assert.ok(git("rev-parse", "HEAD") === headSha, "synthetic checkout head changed");
+    assert.ok(git("status", "--porcelain") === "", "synthetic checkout became dirty");
+    assert.ok(
+      readFileSync(join(cwd, "review-fixture.js"), "utf8") === changedFixture,
+      "synthetic checkout bytes changed",
+    );
+    assert.ok(
+      JSON.stringify(scratch()) === JSON.stringify(initialScratch),
+      "scanner scratch files were retained",
+    );
   };
+  // A missing PATH scanner can now bootstrap automatically. Make that second
+  // source unavailable only for the synthetic refusal cases, before any download.
+  process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR = "relative-unavailable-scanner-cache";
   for (const scenario of ["missing", "failure", "findings", "unexpected-output"]) {
     process.env.PATH = bin;
     if (scenario !== "missing")
@@ -149,59 +147,101 @@ ${live ? `const child = require('node:child_process').spawnSync(${JSON.stringify
     assertCheckout();
   }
   process.env.PATH = originalPath;
+  if (originalScannerCache === undefined) delete process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR;
+  else process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR = originalScannerCache;
   writeProvider(true);
-  const result = run();
-  // Raw model output/diagnostics and configured model identity never enter proof artifacts.
-  assert.ok(!result.error, "native runner failed");
-  assert.equal(result.status, 0, "native runner exited unsuccessfully");
-  let parsed;
-  try {
-    parsed = JSON.parse(readFileSync(output, "utf8"));
-  } catch {
-    throw new Error("Native review did not produce valid JSON; diagnostics withheld.");
-  }
-  assert.ok(
-    parsed?.status === "clean" && parsed.marker === marker && Object.keys(parsed).length === 2,
-    "Native structured response did not match the fixture; diagnostics withheld.",
+  process.env.CODEX_BIN = wrapper;
+  const decision = runWithWithheldDiagnostics(
+    "Hosted production review failed; diagnostics withheld.",
+    () =>
+      runCodexForTest({
+        item: {
+          repo: "openclaw/clawsweeper",
+          number: itemNumber,
+          kind: "pull_request",
+          title: "Synthetic hosted review canary",
+          url: "https://github.com/openclaw/clawsweeper",
+          createdAt: "2026-09-04T00:00:00Z",
+          updatedAt: "2026-09-04T00:00:00Z",
+          author: "clawsweeper-canary",
+          authorAssociation: "NONE",
+          labels: [],
+        },
+        context: {
+          issue: {},
+          comments: [],
+          timeline: [],
+          pullRequest: { base: { sha: baseSha }, head: { sha: headSha } },
+        },
+        git: { mainSha: baseSha, latestRelease: null },
+        model: "internal",
+        openclawDir: cwd,
+        reasoningEffort: "medium",
+        sandboxMode: "read-only",
+        serviceTier: "",
+        preserveCodexAuth: true,
+        timeoutMs: 300_000,
+        workDir,
+        prompt,
+        quietLogs: true,
+        extraCodexConfig: ['web_search="disabled"'],
+      }),
   );
-  const decision = { status: "clean", marker };
-  assertCheckout();
-  assert.equal(readFileSync(calls, "utf8"), "1");
+  assert.ok(decision.localCheckoutAccess === "verified", "checkout verification failed");
   assert.ok(
-    readFileSync(diagnosticPromptPath, "utf8") === prompt,
+    decision.summary === `Hosted review canary observed marker ${marker}.`,
+    "Hosted review decision did not match the fixture; diagnostics withheld.",
+  );
+  runWithWithheldDiagnostics(
+    "Hosted review output did not match the decision schema; diagnostics withheld.",
+    () =>
+      assertMatchesJsonSchema(
+        JSON.parse(readFileSync(output, "utf8")),
+        JSON.parse(
+          readFileSync(join(process.cwd(), "schema", "clawsweeper-decision.schema.json"), "utf8"),
+        ),
+      ),
+  );
+  assertCheckout();
+  assert.equal(readFileSync(calls, "utf8").length, 2);
+  const productionPromptPath = join(workDir, `${itemNumber}.prompt.md`);
+  assert.ok(
+    readFileSync(productionPromptPath, "utf8") === prompt,
     "Admitted prompt diagnostic did not match; contents withheld.",
   );
-  const diagnosticPromptMode = statSync(diagnosticPromptPath).mode & 0o777;
+  const diagnosticPromptMode = statSync(productionPromptPath).mode & 0o777;
   assert.equal(diagnosticPromptMode, 0o600);
-  writeFileSync(
-    artifact,
-    JSON.stringify(
-      {
-        sourceHead,
-        provider: "github-hosted",
-        imageOS: process.env.ImageOS,
-        imageVersion: process.env.ImageVersion,
-        runId: process.env.GITHUB_RUN_ID,
-        runAttempt: process.env.GITHUB_RUN_ATTEMPT,
-        scannerVersion,
-        codexVersion: execFileSync(codex, ["--version"], { encoding: "utf8" }).trim(),
-        baseSha,
-        headSha,
-        refusalProviderStarts: 0,
-        cleanProviderStarts: 1,
-        refusalPromptArtifacts: 0,
-        diagnosticPromptMode: `0${diagnosticPromptMode.toString(8)}`,
-        decision,
-        model: "configured model (redacted)",
-        limits:
-          "Explicit initial prompt, schema and introduced before/after bytes. No universal provider-egress, project-doc, resumed-history or later tool-result coverage.",
-      },
-      null,
-      2,
-    ) + "\n",
-    { mode: 0o600 },
+  const trace = runWithWithheldDiagnostics(
+    "Hosted review trace did not prove the tool round; diagnostics withheld.",
+    () =>
+      summarizeHostedReviewTrace({
+        jsonl: readFileSync(join(workDir, `${itemNumber}.1.codex.stdout.log`), "utf8"),
+        marker,
+        expectedCommand: reviewCommand,
+        finalDecisionText: readFileSync(output, "utf8"),
+        checkoutUnchanged: true,
+      }),
   );
+  const proof = {
+    refusalScenarioCount: 4,
+    refusalCodexLaunchCount: 0,
+    reviewCodexLaunchCount: 2,
+    productionReviewPath: true,
+    syntheticCommittedDiffScenarioCount: 1,
+    externalRepositoryCovered: false,
+    reviewPublicationCovered: false,
+    queueLifecycleCovered: false,
+    decisionSchemaValid: true,
+    admissionArtifactOwnerOnly: diagnosticPromptMode === 0o600,
+    ...trace,
+  };
+  assertBooleanCountArtifact(proof);
+  writeFileSync(artifact, JSON.stringify(proof, null, 2) + "\n", { mode: 0o600 });
 } finally {
   process.env.PATH = originalPath;
+  if (originalCodexBin === undefined) delete process.env.CODEX_BIN;
+  else process.env.CODEX_BIN = originalCodexBin;
+  if (originalScannerCache === undefined) delete process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR;
+  else process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR = originalScannerCache;
   rmSync(root, { recursive: true, force: true });
 }

@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { stripVTControlCharacters } from "node:util";
+import { errorMessage } from "../value-coerce.js";
 import type {
   LiveProofBrowserStep,
   LiveProofPlan,
@@ -59,7 +60,6 @@ const END_STATE_HOLD_MILLISECONDS = 3_000;
 const MINIMUM_RECORDING_MILLISECONDS = 6_000;
 const TERMINAL_STREAM_MAX_BYTES = 1_000_000;
 const TERMINAL_HISTORY_LINES = 50_000;
-const TERMINAL_CAPTURE_CHUNK_BYTES = 64 * 1024;
 const TERMINAL_LEASE_FD = 9;
 
 type TerminalCommandInvocation = {
@@ -400,8 +400,7 @@ export function terminalCommandPlan(options: {
 interface TerminalOutputWindow {
   command: string;
   files: TerminalCommandFiles;
-  launchMode: TerminalLaunchMode;
-  chunks: Buffer[];
+  output: string;
   expectations: readonly string[];
   observedExpectations: Set<string>;
   panePid?: number;
@@ -433,14 +432,6 @@ interface TerminalCommandFiles {
   startTemporary: string;
   ready: string;
   readyTemporary: string;
-}
-
-type TerminalLaunchMode = "held";
-
-interface TerminalStepResult {
-  outputWindow: TerminalOutputWindow | undefined;
-  expectationSatisfied?: boolean;
-  detail?: string;
 }
 
 class TerminalCommandExecutionError extends Error {
@@ -671,7 +662,7 @@ export function driveTerminal(options: {
     delete env.TMUX_PANE;
     return options.runner(command, args, { ...runOptions, env });
   };
-  const nextCommand = (): { files: TerminalCommandFiles; launchMode: TerminalLaunchMode } => {
+  const nextCommand = (): TerminalCommandFiles => {
     const prefix = `${options.rawVideoPath}.command-${process.pid}-${commandIndex}`;
     commandIndex += 1;
     const files = {
@@ -693,7 +684,7 @@ export function driveTerminal(options: {
       readyTemporary: `${prefix}.ready.tmp`,
     };
     privatePaths.push(...Object.values(files));
-    return { files, launchMode: "held" };
+    return files;
   };
   try {
     for (const invocation of terminalCommandPlan({
@@ -717,17 +708,15 @@ export function driveTerminal(options: {
     }
     const expectations = terminalExpectations(options.plan);
     terminalDeadline = Date.now() + options.maxRecordingSeconds * 1_000;
-    initialPaneSnapshot = captureTerminalPane(runner, options.checkout, terminalPane);
+    initialPaneSnapshot = captureTerminalPane(runner, options.checkout, terminalPane, 200);
     try {
-      const command = nextCommand();
       outputWindow = runTerminalCommand(
         options.plan.entry,
         terminalPane,
         runner,
         options.checkout,
-        command.files,
+        nextCommand(),
         expectations,
-        command.launchMode,
         terminalDeadline,
       );
       commandWindows.push(outputWindow);
@@ -757,18 +746,18 @@ export function driveTerminal(options: {
             terminalDeadline,
             completion,
           );
-          if (result.outputWindow && result.outputWindow !== outputWindow) {
-            commandWindows.push(result.outputWindow);
+          if (result && result !== outputWindow) {
+            commandWindows.push(result);
           }
-          outputWindow = result.outputWindow;
+          outputWindow = result;
           log.push(
             step.action === "expect_output"
               ? {
                   action: step.action,
                   status: "completed",
-                  detail: result.detail ?? "ok",
+                  detail: "ok",
                   presentAtStart: initialPaneSnapshot.includes(step.text),
-                  satisfied: result.expectationSatisfied === true,
+                  satisfied: true,
                 }
               : { action: step.action, status: "completed", detail: "ok" },
           );
@@ -852,8 +841,7 @@ export function driveTerminal(options: {
       );
     } else {
       const viewport =
-        outputWindow?.finalViewport ??
-        captureTerminalViewport(runner, options.checkout, terminalPane);
+        outputWindow?.finalViewport ?? captureTerminalPane(runner, options.checkout, terminalPane);
       capturedOutput = terminalPrivateErrorMessage(
         viewport.trim() ? viewport.replace(/\n$/, "") : "",
         privatePaths,
@@ -880,20 +868,14 @@ export function driveTerminal(options: {
       cleanup(() => closeTerminalCapture(window, runner, options.checkout, terminalPane));
       cleanup(() => cleanupTerminalWindow(window, terminalPane, runner, options.checkout));
     }
-    if (recordMedia) {
+    for (const session of [
+      ...(recordMedia ? [recorderSession, xtermSession, displaySession] : []),
+      terminalSession,
+    ]) {
       cleanup(() => {
-        runner("tmux", ["kill-session", "-t", recorderSession]);
-      });
-      cleanup(() => {
-        runner("tmux", ["kill-session", "-t", xtermSession]);
-      });
-      cleanup(() => {
-        runner("tmux", ["kill-session", "-t", displaySession]);
+        runner("tmux", ["kill-session", "-t", session]);
       });
     }
-    cleanup(() => {
-      runner("tmux", ["kill-session", "-t", terminalSession]);
-    });
     for (const privatePath of privatePaths) {
       cleanup(() => rmSync(privatePath, { force: true, recursive: privatePath === tmuxTmpDir }));
     }
@@ -952,7 +934,6 @@ function waitForRecorder(
     if (elapsed >= RECORDER_READY_TIMEOUT_SECONDS) return;
     pollSleep(runner);
   }
-  throw new Error(`raw WebM was not written within ${RECORDER_READY_TIMEOUT_SECONDS} seconds`);
 }
 
 function finalizeRecorder(
@@ -1021,19 +1002,17 @@ function terminalErrorWithDiagnostics(
   checkout: string,
   sessions: Record<"terminal" | "display" | "xterm" | "recorder", string>,
 ): Error {
-  const message = error instanceof Error ? error.message : String(error);
-  const diagnostics = (Object.entries(sessions) as Array<[keyof typeof sessions, string]>).map(
-    ([label, session]) => {
-      const result = runner("tmux", ["capture-pane", "-p", "-t", session, "-S", "-40"], {
-        cwd: checkout,
-      });
-      const output =
-        result.status === 0
-          ? lastLines(String(result.stdout ?? ""), 40) || "<empty>"
-          : `<capture failed: ${mediaProofSpawnDetail(result)}>`;
-      return `[${label}: ${session}]\n${output}`;
-    },
-  );
+  const message = errorMessage(error);
+  const diagnostics = Object.entries(sessions).map(([label, session]) => {
+    const result = runner("tmux", ["capture-pane", "-p", "-t", session, "-S", "-40"], {
+      cwd: checkout,
+    });
+    const output =
+      result.status === 0
+        ? lastLines(String(result.stdout ?? ""), 40) || "<empty>"
+        : `<capture failed: ${mediaProofSpawnDetail(result)}>`;
+    return `[${label}: ${session}]\n${output}`;
+  });
   return new Error(
     `${message}\n\nTerminal session diagnostics (last 40 lines):\n\n${diagnostics.join("\n\n")}`,
   );
@@ -1049,11 +1028,11 @@ function runTerminalStep(
   runner: MediaProofCommandRunner,
   checkout: string,
   outputWindow: TerminalOutputWindow | undefined,
-  nextCommand: () => { files: TerminalCommandFiles; launchMode: TerminalLaunchMode },
+  nextCommand: () => TerminalCommandFiles,
   expectations: readonly string[],
   terminalDeadline: number,
   completion: LiveProofPlan["terminalCompletion"],
-): TerminalStepResult {
+): TerminalOutputWindow | undefined {
   if (step.action === "run") {
     if (outputWindow) {
       try {
@@ -1068,28 +1047,24 @@ function runTerminalStep(
         cleanupTerminalWindow(outputWindow, terminalPane, runner, checkout);
       } catch (error) {
         throw new Error(
-          `terminal run was blocked by the previous command: ${error instanceof Error ? error.message : String(error)}`,
+          `terminal run was blocked by the previous command: ${errorMessage(error)}`,
           { cause: error },
         );
       }
     }
-    const command = nextCommand();
-    return {
-      outputWindow: runTerminalCommand(
-        step.command,
-        terminalPane,
-        runner,
-        checkout,
-        command.files,
-        expectations,
-        command.launchMode,
-        terminalDeadline,
-      ),
-    };
+    return runTerminalCommand(
+      step.command,
+      terminalPane,
+      runner,
+      checkout,
+      nextCommand(),
+      expectations,
+      terminalDeadline,
+    );
   }
   if (step.action === "wait") {
     sleepWithinTerminalBudget(runner, step.seconds, terminalDeadline);
-    return { outputWindow };
+    return outputWindow;
   }
   if (!outputWindow) {
     throw new Error("expected terminal output without a preceding command");
@@ -1110,18 +1085,18 @@ function runTerminalStep(
         `proof-plan assertion mismatch: terminal command exited successfully but expected output was not observed; verify the command/wrapper/reporter contract: ${JSON.stringify(step.text)}`,
       );
     }
-    return { outputWindow, expectationSatisfied: true };
+    return outputWindow;
   }
   for (let elapsed = 0; elapsed <= TERMINAL_EXPECT_OUTPUT_TIMEOUT_SECONDS; elapsed += 1) {
     refreshTerminalCommandOutput(outputWindow, runner, checkout, terminalPane);
     if (outputWindow.observedExpectations.has(step.text)) {
-      return { outputWindow, expectationSatisfied: true };
+      return outputWindow;
     }
     const status = readHeldTerminalStatus(outputWindow);
     if (status !== undefined) {
       finalizeHeldTerminalCommand(outputWindow, status, terminalPane, runner, checkout);
       if (outputWindow.observedExpectations.has(step.text)) {
-        return { outputWindow, expectationSatisfied: true };
+        return outputWindow;
       }
       if (status !== 0) throw terminalCommandFailure(outputWindow, status);
       throw new Error(
@@ -1138,7 +1113,7 @@ function runTerminalStep(
   }
   refreshTerminalCommandOutput(outputWindow, runner, checkout, terminalPane);
   if (outputWindow.observedExpectations.has(step.text)) {
-    return { outputWindow, expectationSatisfied: true };
+    return outputWindow;
   }
   throw new Error(
     `expected terminal output was not visible within ${TERMINAL_EXPECT_OUTPUT_TIMEOUT_SECONDS} seconds: ${JSON.stringify(step.text)}`,
@@ -1152,7 +1127,6 @@ function runTerminalCommand(
   checkout: string,
   files: TerminalCommandFiles,
   expectations: readonly string[],
-  launchMode: TerminalLaunchMode,
   terminalDeadline: number,
 ): TerminalOutputWindow {
   const target = terminalPane;
@@ -1175,8 +1149,7 @@ function runTerminalCommand(
   const window: TerminalOutputWindow = {
     command,
     files,
-    launchMode,
-    chunks: [],
+    output: "",
     expectations,
     observedExpectations: new Set(),
     leaseIdentity: `${leaseStat.dev}:${leaseStat.ino}`,
@@ -1245,10 +1218,7 @@ function runTerminalCommand(
       `${launchedState.pid}|${launchedState.tty}|${window.nonce}|${window.leaseIdentity}\n`,
     );
   } catch (error) {
-    throw new TerminalCommandExecutionError(
-      error instanceof Error ? error.message : String(error),
-      window,
-    );
+    throw new TerminalCommandExecutionError(errorMessage(error), window);
   }
   for (let elapsed = 0; elapsed <= TERMINAL_COMMAND_START_TIMEOUT_SECONDS; elapsed += 1) {
     try {
@@ -1269,10 +1239,7 @@ function runTerminalCommand(
         throw new Error("terminal command exited before clearing its pane");
       }
     } catch (error) {
-      throw new TerminalCommandExecutionError(
-        error instanceof Error ? error.message : String(error),
-        window,
-      );
+      throw new TerminalCommandExecutionError(errorMessage(error), window);
     }
     if (elapsed < TERMINAL_COMMAND_START_TIMEOUT_SECONDS) {
       pollTerminalSleep(runner, terminalDeadline);
@@ -1358,9 +1325,6 @@ function validateFinalTerminalCommand(
   terminalDeadline: number,
 ): void {
   if (completion === "exit_zero") {
-    if (window.launchMode !== "held") {
-      throw new Error("exit_zero terminal proof did not use held command supervision");
-    }
     requireTerminalCommandExitZero(
       window,
       terminalPane,
@@ -1373,9 +1337,6 @@ function validateFinalTerminalCommand(
   }
   if (completion !== "ready_while_running") {
     throw new Error("terminal proof is missing a terminal completion contract");
-  }
-  if (window.launchMode !== "held") {
-    throw new Error("ready_while_running terminal proof did not use held command supervision");
   }
   if (window.observedExpectations.size === 0) {
     throw new Error("ready_while_running terminal proof requires a satisfied output expectation");
@@ -1409,7 +1370,7 @@ function validateFinalTerminalCommand(
         }
         throw error;
       }
-      window.finalViewport ??= captureTerminalViewport(runner, checkout, terminalPane);
+      window.finalViewport ??= captureTerminalPane(runner, checkout, terminalPane);
       const sealedState = readTerminalCommandState(window, runner, checkout, terminalPane);
       if (sealedState?.status === "exited") {
         throw new Error(
@@ -1439,9 +1400,6 @@ function requireTerminalCommandExitZero(
   terminalDeadline: number,
   cutover: boolean,
 ): void {
-  if (window.launchMode !== "held") {
-    throw new Error("terminal command is not using held supervision");
-  }
   if (window.finalizedExitStatus !== undefined) {
     if (window.finalizedExitStatus !== 0) {
       throw terminalCommandFailure(window, window.finalizedExitStatus);
@@ -1513,12 +1471,12 @@ function finalizeHeldTerminalCommand(
   closeTerminalCapture(window, runner, checkout, terminalPane);
   observeTerminalSnapshot(
     window,
-    captureTerminalHistory(runner, checkout, terminalPane).replaceAll(
+    captureTerminalPane(runner, checkout, terminalPane, TERMINAL_HISTORY_LINES).replaceAll(
       window.files.command,
       "<private command>",
     ),
   );
-  window.finalViewport = captureTerminalViewport(runner, checkout, terminalPane);
+  window.finalViewport = captureTerminalPane(runner, checkout, terminalPane);
   window.finalizedExitStatus = recordedStatus;
 }
 
@@ -1529,10 +1487,12 @@ function refreshTerminalCommandOutput(
   terminalPane: string,
 ): void {
   if (!window.captureOpen) return;
-  const snapshot = captureTerminalHistory(runner, checkout, terminalPane).replaceAll(
-    window.files.command,
-    "<private command>",
-  );
+  const snapshot = captureTerminalPane(
+    runner,
+    checkout,
+    terminalPane,
+    TERMINAL_HISTORY_LINES,
+  ).replaceAll(window.files.command, "<private command>");
   observeTerminalSnapshot(window, snapshot);
 }
 
@@ -1551,12 +1511,9 @@ function terminalExpectations(plan: LiveProofPlan): string[] {
 
 function storeTerminalSnapshot(window: TerminalOutputWindow, snapshot: string): void {
   const bytes = Buffer.from(snapshot);
-  const bounded = bytes.subarray(Math.max(0, bytes.length - TERMINAL_STREAM_MAX_BYTES));
-  const chunks: Buffer[] = [];
-  for (let offset = 0; offset < bounded.length; offset += TERMINAL_CAPTURE_CHUNK_BYTES) {
-    chunks.push(bounded.subarray(offset, offset + TERMINAL_CAPTURE_CHUNK_BYTES));
-  }
-  window.chunks = chunks;
+  window.output = bytes
+    .subarray(Math.max(0, bytes.length - TERMINAL_STREAM_MAX_BYTES))
+    .toString("utf8");
 }
 
 function closeTerminalCapture(
@@ -1665,10 +1622,6 @@ function sleepWithinTerminalBudget(
   requireSuccess("sleep", [duration], runner("sleep", [duration]));
 }
 
-function terminalWindowOutput(window: TerminalOutputWindow): string {
-  return Buffer.concat(window.chunks).toString("utf8");
-}
-
 function normalizeTerminalOutput(value: string): string {
   return stripVTControlCharacters(value).replaceAll("\r\n", "\n").replaceAll("\r", "\n");
 }
@@ -1700,7 +1653,7 @@ function renderFailedTerminalOutput(
 ): string {
   const sections = failureReason ? [`[failure]\n${failureReason}`] : [];
   for (const [index, window] of windows.entries()) {
-    const output = terminalWindowOutput(window);
+    const output = window.output;
     if (output.trim()) {
       sections.push(`[command ${index + 1} combined output]\n${output.trim()}`);
     }
@@ -1726,7 +1679,7 @@ function cleanupTerminalWindow(
   const state = readTerminalPaneState(runner, checkout, terminalPane);
   if (!state) throw new Error("terminal pane disappeared before controller cleanup");
   assertTerminalPaneIdentity(window, state);
-  window.finalViewport ??= captureTerminalViewport(runner, checkout, terminalPane);
+  window.finalViewport ??= captureTerminalPane(runner, checkout, terminalPane);
   if (!existsSync(window.files.start)) {
     writeTerminalControlFile(
       window.files.readyTemporary,
@@ -1836,7 +1789,7 @@ function quoteTerminalShellArgument(value: string): string {
 }
 
 function terminalPrivateErrorMessage(error: unknown, privatePaths: readonly string[]): string {
-  let message = error instanceof Error ? error.message : String(error);
+  let message = errorMessage(error);
   for (const privatePath of [...privatePaths].sort((left, right) => right.length - left.length)) {
     message = message.replaceAll(privatePath, "<private path>");
   }
@@ -1848,30 +1801,10 @@ function captureTerminalPane(
   runner: MediaProofCommandRunner,
   checkout: string,
   target: string,
+  historyLines?: number,
 ): string {
-  const args = ["capture-pane", "-p", "-J", "-t", target, "-S", "-200"];
-  const capture = runner("tmux", args, { cwd: checkout });
-  requireSuccess("tmux", args, capture);
-  return normalizeTerminalOutput(String(capture.stdout ?? ""));
-}
-
-function captureTerminalHistory(
-  runner: MediaProofCommandRunner,
-  checkout: string,
-  target: string,
-): string {
-  const args = ["capture-pane", "-p", "-J", "-t", target, "-S", `-${TERMINAL_HISTORY_LINES}`];
-  const capture = runner("tmux", args, { cwd: checkout });
-  requireSuccess("tmux", args, capture);
-  return normalizeTerminalOutput(String(capture.stdout ?? ""));
-}
-
-function captureTerminalViewport(
-  runner: MediaProofCommandRunner,
-  checkout: string,
-  target: string,
-): string {
-  const args = ["capture-pane", "-p", "-t", target];
+  const args = ["capture-pane", "-p", ...(historyLines === undefined ? [] : ["-J"]), "-t", target];
+  if (historyLines !== undefined) args.push("-S", `-${historyLines}`);
   const capture = runner("tmux", args, { cwd: checkout });
   requireSuccess("tmux", args, capture);
   return normalizeTerminalOutput(String(capture.stdout ?? ""));

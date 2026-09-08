@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { ExactReviewBatchQueueClient } from "./exact-review-batch-queue-client.js";
 import { parseArgs } from "./lib.js";
 
 type ScheduledReviewLane = "hot_intake" | "normal_backfill";
@@ -53,6 +53,11 @@ export async function enqueueScheduledReviewPlan(
   }
   for (const candidate of options.plan.candidates) validateCandidate(candidate, options.targetRepo);
   const queueUrl = options.queueUrl.replace(/\/$/, "");
+  const queueClient = new ExactReviewBatchQueueClient({
+    baseUrl: queueUrl,
+    webhookSecret: options.secret,
+    fetch: fetchImpl,
+  });
   const capabilityResponse = await fetchImpl(`${queueUrl}/api/exact-review-queue`, {
     signal: AbortSignal.timeout(20_000),
   });
@@ -64,7 +69,8 @@ export async function enqueueScheduledReviewPlan(
   if (
     !capabilityResponse.ok ||
     !scheduledFeed ||
-    !Number.isFinite(Number(scheduledFeed.target_rate_per_hour))
+    !Number.isFinite(Number(scheduledFeed.target_rate_per_hour)) ||
+    scheduledFeed.enqueue_replay !== "scheduled_disposition_v1"
   ) {
     throw new Error("exact-review queue does not advertise scheduled feed admission");
   }
@@ -110,22 +116,10 @@ export async function enqueueScheduledReviewPlan(
         sourceUpdatedAt: candidate.updatedAt,
       },
     });
-    const signature = `sha256=${createHmac("sha256", options.secret).update(payload).digest("hex")}`;
     summary.attempted += 1;
-    const response = await fetchImpl(`${queueUrl}/internal/exact-review/enqueue`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-clawsweeper-exact-review-signature": signature,
-      },
-      body: payload,
-      signal: AbortSignal.timeout(20_000),
-    });
-    const body = (await response.json().catch(() => null)) as Record<string, unknown> | null;
-    if (!response.ok || !body || body.ok !== true) {
-      throw new Error(
-        `scheduled review queue rejected ${candidate.repo}#${candidate.number}: HTTP ${response.status}`,
-      );
+    const body = await queueClient.enqueueScheduledReview(payload);
+    if (body.ok !== true) {
+      throw new Error(`scheduled review queue rejected ${candidate.repo}#${candidate.number}`);
     }
     if (body.queued === true) summary.queued += 1;
     else if (body.deduped === true) summary.deduped += 1;

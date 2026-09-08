@@ -10,6 +10,61 @@ import { writeFakeScanner } from "../agent-input-scan-helpers.ts";
 
 const repoRoot = process.cwd();
 
+for (const branch of [
+  "automation/native-app-locale-refresh",
+  "automation/control-ui-locale-refresh",
+]) {
+  test(`repair apply preserves publisher-owned locale PR on ${branch}`, () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-locale-"));
+    try {
+      const paths = writeApplyFixture(tmp, {
+        action: "close_duplicate",
+        classification: "duplicate",
+        canonical: "#202",
+      });
+      writeFakeGh(paths.binDir, {
+        issues: {
+          101: {
+            ...issue({ number: 101, title: "Locale refresh", pullRequest: true }),
+            user: { login: "openclaw-mantis[bot]" },
+          },
+          202: issue({
+            number: 202,
+            title: "Replacement",
+            pullRequest: true,
+            labels: ["proof: sufficient"],
+          }),
+        },
+        pulls: {
+          101: {
+            ...pull({ number: 101, title: "Locale refresh" }),
+            user: { login: "openclaw-mantis[bot]" },
+            head: { ref: branch, repo: { full_name: "openclaw/openclaw" } },
+            base: { ref: "main", repo: { full_name: "openclaw/openclaw" } },
+          },
+          202: pull({ number: 202, title: "Replacement" }),
+        },
+        comments: {},
+        logPath: paths.ghLogPath,
+      });
+      writeFakeCodex(paths.binDir);
+      runApplyResult(paths, { proofDecision: "covered" });
+
+      const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
+      assert.equal(report.actions[0].status, "blocked");
+      assert.match(report.actions[0].reason, /repository-managed locale PR/);
+      assert.equal(report.actions[0].live_state, "open");
+      assert.equal(hasPrCloseCall(paths.ghLogPath), false);
+      assert.equal(
+        ghCalls(paths.ghLogPath).some(({ args }) => args.includes("POST") || args[1] === "comment"),
+        false,
+      );
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+}
+
 test("repair apply blocks PR duplicate close when coverage proof keeps the source open", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
   try {
@@ -485,7 +540,12 @@ test("repair apply checks superseded candidate PR coverage before canonical issu
   }
 });
 
-test("repair apply bounds covering PR comments when issue comment count is absent", () => {
+for (const omitCount of [false, true]) {
+  test(`repair apply marks omitted middle comments in a 150-comment PR (${omitCount ? "unknown" : "known"} total)`, () =>
+    assertOmittedPrCommentWindow(omitCount));
+}
+
+function assertOmittedPrCommentWindow(omitCount: boolean) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
   try {
     const paths = writeApplyFixture(tmp, {
@@ -509,27 +569,31 @@ test("repair apply bounds covering PR comments when issue comment count is absen
       },
       comments: {
         101: [comment("alice", "PR A keeps legacy config behavior intact.")],
-        202: Array.from({ length: 160 }, (_, index) =>
+        202: Array.from({ length: 150 }, (_, index) =>
           comment(
             "bob",
-            index === 159
+            index === 149
               ? "Recent discussion: PR B carries forward the legacy behavior."
               : `Older discussion ${index}`,
           ),
         ),
       },
-      omitIssueCommentCounts: [202],
+      omitIssueCommentCounts: omitCount ? [202] : [],
       logPath: paths.ghLogPath,
     });
     writeFakeCodex(paths.binDir);
 
     runApplyResult(paths, {
       proofDecision: "covered",
-      expectedPromptIncludes: "Recent discussion: PR B carries forward the legacy behavior.",
+      expectedPromptIncludes: [
+        '"omitted": 100',
+        "Recent discussion: PR B carries forward the legacy behavior.",
+      ],
+      unexpectedPromptIncludes: "Older discussion 75",
     });
 
     const report = JSON.parse(fs.readFileSync(paths.reportPath, "utf8"));
-    assert.equal(report.actions[0].status, "executed");
+    assert.equal(report.actions[0].status, "executed", JSON.stringify(report));
     assert.equal(hasPrCloseCall(paths.ghLogPath), true);
     const coveringCommentFetches = ghCalls(paths.ghLogPath).filter(
       (call) =>
@@ -542,16 +606,16 @@ test("repair apply bounds covering PR comments when issue comment count is absen
       false,
     );
     assert.equal(coveringCommentFetches.length, 2);
-    assert.ok(coveringCommentFetches.every((call) => call.args.includes("-i")));
+    assert.ok(coveringCommentFetches.every((call) => call.args.includes("-i") === omitCount));
     assert.ok(
-      coveringCommentFetches.every((call) =>
-        call.args.some((arg) => /[?&]per_page=100(?:&|$)/.test(arg)),
+      coveringCommentFetches.some((call) =>
+        call.args.some((arg) => /[?&]per_page=100&page=2$/.test(arg)),
       ),
     );
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
-});
+}
 
 test("repair apply blocks PR close when open covering PR lacks positive proof", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-apply-result-"));
@@ -1124,6 +1188,8 @@ test("repair apply leaves current-main fixed closeout outside coverage proof", (
 test("post-flight authorization promotes only candidate-bound closeouts into guarded apply", () => {
   const source = fs.readFileSync("src/repair/apply-result.ts", "utf8");
 
+  assert.match(source, /from "\.\/merge-readiness-github\.js"/);
+  assert.doesNotMatch(source, /function (?:fetchPullRequestView|validateResolvedReviewThreads)\(/);
   assert.match(source, /closure_authorization\?\.status !== "authorized"/);
   assert.match(source, /mergedFixes\.has\(candidateFix\)/);
   assert.match(source, /normalizeIssueRef\(entry\.target, result\.repo\) === candidateFix/);
@@ -1240,7 +1306,7 @@ function runApplyResult(
   paths: ApplyFixturePaths,
   options: {
     proofDecision: "covered" | "keep_open";
-    expectedPromptIncludes?: string;
+    expectedPromptIncludes?: string | string[];
     unexpectedPromptIncludes?: string;
     failIfProofRuns?: boolean;
     proofFailureMessage?: string;
@@ -1265,7 +1331,9 @@ function runApplyResult(
       ...mockGhBinEnv(path.join(paths.binDir, "gh.js")),
       PATH: `${paths.binDir}${path.delimiter}${process.env.PATH ?? ""}`,
       PR_CLOSE_COVERAGE_PROOF_DECISION: options.proofDecision,
-      PR_CLOSE_COVERAGE_PROOF_EXPECT_PROMPT: options.expectedPromptIncludes ?? "",
+      PR_CLOSE_COVERAGE_PROOF_EXPECT_PROMPT: JSON.stringify(
+        [options.expectedPromptIncludes ?? ""].flat(),
+      ),
       PR_CLOSE_COVERAGE_PROOF_UNEXPECTED_PROMPT: options.unexpectedPromptIncludes ?? "",
       PR_CLOSE_COVERAGE_PROOF_FAIL_IF_INVOKED: options.failIfProofRuns ? "1" : "",
       PR_CLOSE_COVERAGE_PROOF_FAILURE_MESSAGE: options.proofFailureMessage ?? "",
@@ -1451,10 +1519,11 @@ if (prompt.includes("Repair job.")) {
   process.exit(1);
 }
 const decision = process.env.PR_CLOSE_COVERAGE_PROOF_DECISION;
-const expectedPrompt = process.env.PR_CLOSE_COVERAGE_PROOF_EXPECT_PROMPT || "";
-if (expectedPrompt && !prompt.includes(expectedPrompt)) {
-  process.stderr.write("missing expected proof prompt text: " + expectedPrompt);
-  process.exit(1);
+for (const expectedPrompt of JSON.parse(process.env.PR_CLOSE_COVERAGE_PROOF_EXPECT_PROMPT || "[]")) {
+  if (!prompt.includes(expectedPrompt)) {
+    process.stderr.write("missing expected proof prompt text: " + expectedPrompt);
+    process.exit(1);
+  }
 }
 const unexpectedPrompt = process.env.PR_CLOSE_COVERAGE_PROOF_UNEXPECTED_PROMPT || "";
 if (unexpectedPrompt && prompt.includes(unexpectedPrompt)) {

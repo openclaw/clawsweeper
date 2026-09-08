@@ -5,14 +5,27 @@ import { createHash, createHmac } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 
-import { githubEtagCacheKey, githubEtagCacheRequestBody } from "../../../dist/github-etag-cache-contract.js";
+import {
+  GITHUB_ETAG_CACHE_MAX_BODY_BYTES,
+  githubEtagCacheKey,
+  githubEtagCacheRequestBody,
+} from "../../../dist/github-etag-cache-contract.js";
 import { durableGithubEtagReadSync } from "../../../dist/github-etag-read-broker.js";
+import { createGitHubRuntime } from "../../../dist/clawsweeper-github-runtime.js";
 
 const secret = "etag-proof-publisher-placeholder";
 const operatorSecret = "etag-proof-operator-placeholder";
 
 if (process.argv.includes("--server")) {
   await runServer();
+} else if (process.argv.includes("--github-cli")) {
+  const index = process.argv.indexOf("--github-cli");
+  const args = process.argv.slice(index + 2);
+  const conditional = args.find((arg) => arg.startsWith("If-None-Match: "));
+  const response = githubGet(process.argv[index + 1], args.at(-1), conditional?.slice(15));
+  process.stdout.write(
+    `HTTP/1.1 ${response.status} OK\r\n${response.etag ? `etag: ${response.etag}\r\n` : ""}\r\n${response.body}`,
+  );
 } else {
   await runProof();
 }
@@ -98,13 +111,68 @@ async function runProof() {
         (outcome) => [outcome, events.filter((event) => event.outcome === outcome).length],
       ),
     );
+    const bodyBounds = {};
+    for (const size of [100, 200, 600]) {
+      const surfaces = ["publication", "dashboard"];
+      if (size > 128) surfaces.push("publication_without_etag");
+      for (const surface of surfaces) {
+        const body = JSON.stringify({ body: "x".repeat(size * 1024 - 11) });
+        assert.equal(Buffer.byteLength(body), size * 1024);
+        const route = surface.startsWith("publication")
+          ? `/repos/openclaw/openclaw/issues/${size + (surface === "publication_without_etag" ? 1_000 : 0)}`
+          : `/repos/openclaw/clawsweeper/actions/runs?page=${size}&per_page=100`;
+        await adminPost(baseUrl, "/admin/mutate", {
+          route,
+          etag: surface === "publication_without_etag" ? "" : `"size-${size}"`,
+          body,
+        });
+        const before = await (await fetch(`${baseUrl}/admin/store-requests`)).json();
+        const metricsBefore = await (await fetch(`${baseUrl}/admin/metrics`)).json();
+        if (surface.startsWith("publication")) {
+          assert.equal(runnerRead(baseUrl, route), body);
+        } else {
+          const response = await fetch(
+            `${baseUrl}/admin/dashboard-read?route=${encodeURIComponent(route)}`,
+          );
+          assert.equal(response.status, 200);
+          assert.deepEqual(await response.json(), JSON.parse(body));
+        }
+        const after = await (await fetch(`${baseUrl}/admin/store-requests`)).json();
+        const metricsAfter = await (await fetch(`${baseUrl}/admin/metrics`)).json();
+        const outcome = size === 100 ? "cache_200_stored" : "cache_skip";
+        assert.equal(after.length - before.length, 1);
+        assert.equal(after.at(-1).body_wire_bytes, size === 100 ? size * 1024 : 0);
+        assert.equal(after.at(-1).body_bytes, size === 100 ? null : size * 1024);
+        assert.equal(metricsAfter.cache_miss - (metricsBefore.cache_miss || 0), 1);
+        assert.equal(metricsAfter[outcome] - (metricsBefore[outcome] || 0), 1);
+        bodyBounds[`${surface}_${size}_kib`] = {
+          returned_bytes: Buffer.byteLength(body),
+          store_requests: after.length - before.length,
+          body_wire_bytes: after.at(-1).body_wire_bytes,
+          reported_body_bytes: after.at(-1).body_bytes,
+          cache_miss: 1,
+          [outcome]: 1,
+        };
+      }
+    }
+    const rejected = signedPost(baseUrl, "store", {
+      ...githubEtagCacheRequestBody(key1, "apply"),
+      etag: '"direct-oversized"',
+      body: JSON.stringify({ body: "x".repeat(200 * 1024 - 11) }),
+    });
+    assert.deepEqual(rejected, { ok: true, stored: false, reason: "body_size_bound" });
+    bodyBounds.direct_200_kib = rejected;
     const report = {
       schema: "clawsweeper-etag-read-broker-proof/v1",
       generated_at: new Date().toISOString(),
       tested_head: head,
       merge_base: base,
       key_schema: "[1, credential_pool, route_with_sorted_query, media_type]",
-      storage: { max_entries: 2048, max_body_bytes: 524288, ttl_days: 30 },
+      storage: {
+        max_entries: 2048,
+        max_body_bytes: GITHUB_ETAG_CACHE_MAX_BODY_BYTES,
+        ttl_days: 30,
+      },
       results: {
         first_read: "200_stored",
         unchanged_read: "304_confirmed_body_served",
@@ -119,6 +187,7 @@ async function runProof() {
         telemetry: counts,
         publisher_hmac_status: publisherStatus,
         operator_hmac_status: operatorStatus,
+        body_bounds: bodyBounds,
       },
       limits: [
         "Loopback GitHub and credentials are deterministic fixtures.",
@@ -135,13 +204,19 @@ async function runProof() {
 }
 
 async function runServer() {
-  const [{ default: worker, ExactReviewQueue }, harness] = await Promise.all([
+  const [
+    { default: worker, ExactReviewQueue, githubJsonForTest },
+    harness,
+    { GithubEtagResponseStore },
+  ] = await Promise.all([
     import("../../../dashboard/worker.ts"),
     import("../../../test/dashboard-worker-harness.ts"),
+    import("../../../dashboard/github-etag-cache.ts"),
   ]);
   const storage = new harness.MemoryDurableStorage();
   const queue = new ExactReviewQueue({ storage }, {});
   const env = {
+    GITHUB_TOKEN: "etag-proof-github-placeholder",
     CLAWSWEEPER_WEBHOOK_SECRET: secret,
     EXACT_REVIEW_OPERATOR_SECRET: operatorSecret,
     EXACT_REVIEW_QUEUE: new harness.MemoryDurableNamespace(queue),
@@ -157,16 +232,35 @@ async function runServer() {
     ],
   ]);
   const requests = [];
+  const storeRequests = [];
+  const queueFetch = queue.fetch.bind(queue);
+  queue.fetch = async (request) => {
+    if (new URL(request.url).pathname === "/github-etag-cache/store") {
+      const value = await request.clone().json();
+      storeRequests.push({
+        body_wire_bytes: Buffer.byteLength(value.body || ""),
+        body_bytes: value.body_bytes ?? null,
+      });
+    }
+    return queueFetch(request);
+  };
   const server = createServer(async (request, response) => {
     const url = new URL(request.url || "/", "http://127.0.0.1");
     if (url.pathname === "/admin/requests") return sendJson(response, 200, requests);
+    if (url.pathname === "/admin/store-requests") return sendJson(response, 200, storeRequests);
+    if (url.pathname === "/admin/metrics") {
+      return sendJson(response, 200, new GithubEtagResponseStore(storage).telemetry(Date.now()));
+    }
+    if (url.pathname === "/admin/dashboard-read") {
+      return sendJson(response, 200, await githubJsonForTest(env, url.searchParams.get("route")));
+    }
     if (url.pathname === "/admin/mutate") {
       const value = JSON.parse(await requestText(request));
       resources.set(value.route, { etag: value.etag, body: value.body });
       return sendJson(response, 200, { ok: true });
     }
-    if (url.pathname.startsWith("/github/")) {
-      const route = `${url.pathname.slice("/github".length)}${url.search}`;
+    if (url.pathname.startsWith("/github/") || url.pathname.startsWith("/repos/")) {
+      const route = `${url.pathname.replace(/^\/github/, "")}${url.search}`;
       const resource = resources.get(route);
       if (!resource) return sendJson(response, 404, { error: "missing_fixture" });
       const ifNoneMatch = request.headers["if-none-match"] || null;
@@ -197,8 +291,40 @@ async function runServer() {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
+  env.GITHUB_API_URL = `http://127.0.0.1:${address.port}`;
   process.stdout.write(`${JSON.stringify({ url: `http://127.0.0.1:${address.port}` })}\n`);
   process.on("SIGTERM", () => server.close(() => process.exit(0)));
+}
+
+function runnerRead(baseUrl, route) {
+  const overrides = {
+    EXACT_EVENT_PUBLICATION: "true",
+    EXACT_REVIEW_QUEUE_URL: baseUrl,
+    CLAWSWEEPER_WEBHOOK_SECRET: secret,
+    GH_BIN: process.execPath,
+    GH_BIN_ARGS: JSON.stringify([new URL(import.meta.url).pathname, "--github-cli", baseUrl]),
+    CURL_BIN: "curl",
+    CURL_BIN_ARGS: "[]",
+  };
+  const previous = Object.fromEntries(Object.keys(overrides).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, overrides);
+  try {
+    const runtime = createGitHubRuntime({
+      ROOT: process.cwd(),
+      targetRepo: () => "openclaw/openclaw",
+      run: () => {
+        throw new Error("unexpected unbrokered read");
+      },
+    });
+    return runtime.ghWithPreparedTimeout(["api", route], 5_000, {
+      GH_TOKEN: "etag-proof-github-placeholder",
+    });
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 }
 
 function signedPost(baseUrl, operation, body) {

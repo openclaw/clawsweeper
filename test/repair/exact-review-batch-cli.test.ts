@@ -80,6 +80,12 @@ test("batch commit records an invalid member permanently while publishing its he
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-batch-cli-"));
   try {
     const healthy = batchMember("openclaw/openclaw#801@publish:8010:1", 801);
+    const owner = {
+      batchId: "batch-cli-proof",
+      leaseOwner: "proof-worker",
+      runId: "8010",
+      runAttempt: 1,
+    };
     const invalid = batchMember("openclaw/openclaw#802@publish:8020:1", 802);
     const healthyOutcome = join(root, "healthy.json");
     const invalidOutcome = join(root, "invalid.json");
@@ -88,7 +94,7 @@ test("batch commit records an invalid member permanently while publishing its he
     const postsPath = join(root, "posts.json");
     writeFileSync(
       healthyOutcome,
-      JSON.stringify({ kind: "eligible", plan: mutationPlan(healthy) }),
+      JSON.stringify({ kind: "eligible", plan: { ...mutationPlan(healthy), owner } }),
     );
     writeFileSync(
       invalidOutcome,
@@ -190,6 +196,7 @@ globalThis.fetch = async (url, init) => {
     ]);
     assert.deepEqual(JSON.parse(readFileSync(postsPath, "utf8")), [
       {
+        owner,
         canonicalTargetKey: "openclaw/openclaw#801",
         fenceKey: healthy.itemKey,
         revision: 1,
@@ -1259,22 +1266,206 @@ globalThis.fetch = async (url, init) => {
   }
 }
 
-test("batch claim, heartbeat, and observe persist the last confirmed lease expiry", () => {
-  const root = mkdtempSync(join(tmpdir(), "clawsweeper-lease-expiry-"));
-  try {
-    const manifestPath = join(root, "manifest.json");
-    const preloadPath = join(root, "fetch-preload.cjs");
-    const baseTime = Date.UTC(2026, 8, 2);
-    writeFileSync(
-      preloadPath,
-      `
+for (const scenario of [
+  {
+    name: "rejects exhausted 5xx after server TTL with runner five minutes behind",
+    response: 500,
+    leaseMs: 20_000,
+    attemptMs: 7_000,
+    clockSkewMs: -300_000,
+    source: "server",
+  },
+  {
+    name: "tolerates exhausted 5xx within server TTL with runner five minutes ahead",
+    response: 500,
+    leaseMs: 240_000,
+    clockSkewMs: 300_000,
+    source: "server",
+    tolerated: true,
+  },
+  {
+    name: "rejects local fallback even with an ample lease",
+    response: 500,
+    leaseMs: 1_200_000,
+    source: "local",
+  },
+  {
+    name: "rejects local fallback older than one safety margin",
+    response: 500,
+    leaseMs: 1_200_000,
+    source: "local",
+    confirmationAgeMs: 180_001,
+  },
+  {
+    name: "rejects local fallback that ages past the margin during retries",
+    response: 500,
+    leaseMs: 1_200_000,
+    source: "local",
+    confirmationAgeMs: 179_000,
+  },
+  {
+    name: "tolerates exhausted 5xx with ample lease",
+    response: 500,
+    leaseMs: 1_200_000,
+    tolerated: true,
+  },
+  {
+    name: "tolerates network failure with ample lease",
+    response: "network",
+    leaseMs: 1_200_000,
+    tolerated: true,
+  },
+  {
+    name: "tolerates timeout with ample lease",
+    response: "timeout",
+    leaseMs: 1_200_000,
+    tolerated: true,
+  },
+  { name: "fails on 5xx inside the safety margin", response: 500, leaseMs: 180_000 },
+  { name: "fails on 5xx at the safety margin after retries", response: 500, leaseMs: 183_000 },
+  { name: "fails on 409 despite ample lease", response: 409, leaseMs: 1_200_000 },
+  { name: "fails on 401 despite ample lease", response: 401, leaseMs: 1_200_000 },
+  { name: "fails on invalid success despite ample lease", response: "invalid", leaseMs: 1_200_000 },
+  { name: "fails on expired lease", response: 500, leaseMs: -1 },
+  { name: "honors a larger safety margin", response: 500, leaseMs: 1_200_000, safetyMs: "1500000" },
+  {
+    name: "honors a smaller safety margin",
+    response: 500,
+    leaseMs: 120_000,
+    safetyMs: "60000",
+    tolerated: true,
+  },
+  {
+    name: "keeps strict heartbeat failures fatal",
+    response: 500,
+    leaseMs: 1_200_000,
+    strict: true,
+  },
+  { name: "refreshes the confirmed lease on success", response: 200, leaseMs: 1_200_000 },
+]) {
+  test(`batch heartbeat lease tolerance ${scenario.name}`, () => {
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-heartbeat-tolerance-"));
+    try {
+      const manifestPath = join(root, "manifest.json");
+      const preloadPath = join(root, "fetch-preload.cjs");
+      const requestsPath = join(root, "requests.jsonl");
+      const baseTime = Date.UTC(2026, 8, 3);
+      const localTime = baseTime + (scenario.clockSkewMs ?? 0);
+      const confirmationAgeMs = scenario.confirmationAgeMs ?? 0;
+      const manifest = {
+        batchId: "lease-proof",
+        leaseOwner: "proof-worker",
+        leaseExpiresAt: new Date(baseTime + scenario.leaseMs).toISOString(),
+        leaseTtlMs: scenario.leaseMs + confirmationAgeMs,
+        leaseTtlSource: scenario.source ?? "server",
+        leaseConfirmedAtLocal: localTime - confirmationAgeMs,
+        configuredBatchSize: 1,
+        batchWaitMs: 0,
+        items: [],
+      };
+      writeFileSync(manifestPath, JSON.stringify(manifest));
+      writeFileSync(
+        preloadPath,
+        `
+const { appendFileSync } = require("node:fs");
 const baseTime = ${baseTime};
-Date.now = () => baseTime;
+let attempts = 0;
+Date.now = () => ${localTime} + attempts * ${scenario.attemptMs ?? 1_000};
+Math.random = () => 0;
+globalThis.fetch = async (url) => {
+  appendFileSync(${JSON.stringify(requestsPath)}, JSON.stringify({ url: String(url), attempt: ++attempts }) + "\\n");
+  const response = ${JSON.stringify(scenario.response)};
+  if (response === "network") throw new TypeError("private transport details");
+  if (response === "timeout") throw new DOMException("private timeout details", "TimeoutError");
+  if (response === "invalid") return new Response("not json", { status: 200 });
+  if (response !== 200) return Response.json({ error: "exact_review_queue_unavailable" }, { status: response });
+  return Response.json({ batch: { batch_id: "lease-proof", lease_owner: "proof-worker", items: [], lease_expires_at: new Date(baseTime + 1800000).toISOString() } });
+};
+`,
+      );
+      const result = spawnSync(
+        process.execPath,
+        [
+          "--require",
+          preloadPath,
+          "dist/repair/exact-review-batch-cli.js",
+          "heartbeat",
+          ...(scenario.strict ? [] : ["--tolerate-until-lease"]),
+        ],
+        {
+          encoding: "utf8",
+          timeout: 10_000,
+          env: {
+            ...process.env,
+            CLAWSWEEPER_WEBHOOK_SECRET: "proof-secret",
+            EXACT_REVIEW_QUEUE_URL: "https://queue.example.test",
+            EXACT_REVIEW_BATCH_MANIFEST: manifestPath,
+            EXACT_REVIEW_BATCH_HEARTBEAT_SAFETY_MS: scenario.safetyMs ?? "180000",
+          },
+        },
+      );
+      const requests = existsSync(requestsPath)
+        ? readFileSync(requestsPath, "utf8").trim().split("\n")
+        : [];
+      const retryable = [500, "network", "timeout"].includes(scenario.response);
+      assert.equal(requests.length, scenario.leaseMs < 0 ? 0 : retryable ? 3 : 1, result.stderr);
+      assert.equal(
+        result.status,
+        scenario.tolerated || scenario.response === 200 ? 0 : 1,
+        result.stderr,
+      );
+      const stored = JSON.parse(readFileSync(manifestPath, "utf8"));
+      if (scenario.response === 200) {
+        assert.equal(stored.leaseExpiresAt, new Date(baseTime + 1_800_000).toISOString());
+        assert.deepEqual(JSON.parse(result.stdout), { ok: true, batch_id: manifest.batchId });
+      } else {
+        assert.deepEqual(stored, manifest);
+        if (scenario.tolerated) {
+          assert.equal(result.stdout.trim().split("\n").length, 1);
+          assert.deepEqual(JSON.parse(result.stdout), {
+            ok: false,
+            tolerated: true,
+            remaining_ms: scenario.leaseMs - 3_000,
+            reason:
+              scenario.response === 500
+                ? "HTTP_500"
+                : scenario.response === "network"
+                  ? "network_error"
+                  : "timeout",
+          });
+        } else {
+          assert.equal(result.stdout, "");
+        }
+      }
+      assert.doesNotMatch(
+        result.stdout + result.stderr,
+        /proof-secret|private transport details|private timeout details/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const source of ["server", "local"]) {
+  test(`batch claim, heartbeat, and observe persist the confirmed ${source} TTL`, () => {
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-lease-expiry-"));
+    try {
+      const manifestPath = join(root, "manifest.json");
+      const preloadPath = join(root, "fetch-preload.cjs");
+      const baseTime = Date.UTC(2026, 8, 2);
+      writeFileSync(
+        preloadPath,
+        `
+const baseTime = ${baseTime};
+const localTime = baseTime - 300000 + (process.env.CONFIRMATION_ADVANCE_MS ? 1000 : 0);
+Date.now = () => localTime;
 Math.random = () => 0;
 let attempt = 0;
 globalThis.fetch = async (url, init) => {
   const command = process.argv[2];
   const batch = { batch_id: "lease-proof", lease_owner: "proof-worker", items: [], lease_expires_at: new Date(baseTime + (command === "claim" ? 60000 : command === "heartbeat" ? 120000 : 180000)).toISOString() };
+  if (${JSON.stringify(source)} === "server") batch.server_time = new Date(baseTime + (process.env.CONFIRMATION_ADVANCE_MS ? 1000 : 0)).toISOString();
   if (String(url).endsWith("/claim")) return Response.json({ claimed: true, batch, configured_batch_size: 1, batch_wait_ms: 0 });
   if (String(url).endsWith("/fetch")) return Response.json({ batch, items: [], superseded: 0 });
   if (String(url).endsWith("/heartbeat")) {
@@ -1284,39 +1475,49 @@ globalThis.fetch = async (url, init) => {
   throw new Error("unexpected request");
 };
 `,
-    );
-    for (const [command, expectedExpiry] of [
-      ["claim", 60_000],
-      ["heartbeat", 120_000],
-      ["observe", 180_000],
-    ]) {
-      const result = spawnSync(
-        process.execPath,
-        ["--require", preloadPath, "dist/repair/exact-review-batch-cli.js", command],
-        {
-          cwd: process.cwd(),
-          encoding: "utf8",
-          timeout: 5_000,
-          env: {
-            ...process.env,
-            CLAWSWEEPER_WEBHOOK_SECRET: "proof-secret",
-            EXACT_REVIEW_QUEUE_URL: "https://queue.example.test",
-            EXACT_REVIEW_BATCH_ID: "lease-proof",
-            EXACT_REVIEW_BATCH_LEASE_OWNER: "proof-worker",
-            EXACT_REVIEW_BATCH_MAX_ITEMS: "1",
-            EXACT_REVIEW_BATCH_MANIFEST: manifestPath,
-            EXACT_REVIEW_BATCH_OBSERVATION: "preparation_started",
-            GITHUB_OUTPUT: join(root, "github-output"),
+      );
+      for (const [command, expectedExpiry, advanceMs] of [
+        ["claim", 60_000, 0],
+        ["heartbeat", 120_000, 0],
+        ["observe", 180_000, 0],
+        ["observe", 180_000, 1_000],
+      ]) {
+        const result = spawnSync(
+          process.execPath,
+          ["--require", preloadPath, "dist/repair/exact-review-batch-cli.js", command],
+          {
+            cwd: process.cwd(),
+            encoding: "utf8",
+            timeout: 5_000,
+            env: {
+              ...process.env,
+              CLAWSWEEPER_WEBHOOK_SECRET: "proof-secret",
+              EXACT_REVIEW_QUEUE_URL: "https://queue.example.test",
+              EXACT_REVIEW_BATCH_ID: "lease-proof",
+              EXACT_REVIEW_BATCH_LEASE_OWNER: "proof-worker",
+              EXACT_REVIEW_BATCH_MAX_ITEMS: "1",
+              EXACT_REVIEW_BATCH_MANIFEST: manifestPath,
+              EXACT_REVIEW_BATCH_OBSERVATION: "preparation_started",
+              GITHUB_OUTPUT: join(root, "github-output"),
+              CONFIRMATION_ADVANCE_MS: advanceMs ? String(advanceMs) : "",
+            },
           },
-        },
-      );
-      assert.equal(result.status, 0, result.stderr);
-      assert.equal(
-        JSON.parse(readFileSync(manifestPath, "utf8")).leaseExpiresAt,
-        new Date(baseTime + expectedExpiry).toISOString(),
-      );
+        );
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(
+          JSON.parse(readFileSync(manifestPath, "utf8")).leaseExpiresAt,
+          new Date(baseTime + expectedExpiry).toISOString(),
+        );
+        const saved = JSON.parse(readFileSync(manifestPath, "utf8"));
+        assert.equal(
+          saved.leaseTtlMs,
+          expectedExpiry + (source === "local" ? 300_000 : 0) - advanceMs,
+        );
+        assert.equal(saved.leaseTtlSource, source);
+        assert.equal(saved.leaseConfirmedAtLocal, baseTime - 300_000 + advanceMs);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
+  });
+}

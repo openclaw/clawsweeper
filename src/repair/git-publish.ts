@@ -7,14 +7,14 @@ import { clawsweeperGitUserEmail, clawsweeperGitUserName } from "./process-env.j
 import { mergeSweepStatusJson } from "./sweep-status-merge.js";
 import { acquireStateWriterCoordinator } from "./state-writer-coordinator.js";
 
-export type GitRunResult = {
+type GitRunResult = {
   status: number;
   stdout: string;
   stderr: string;
   timedOut: boolean;
 };
 
-export type GitRunOptions = {
+type GitRunOptions = {
   allowFailure?: boolean;
   env?: NodeJS.ProcessEnv;
   input?: string | Uint8Array;
@@ -41,14 +41,14 @@ export type PublishResult = "committed" | "unchanged";
 const GIT_TIMEOUT_MS = 60_000;
 const GIT_PUSH_TIMEOUT_MS = 300_000;
 
-export class GitCommandTimeoutError extends Error {
+class GitCommandTimeoutError extends Error {
   constructor(args: readonly string[], timeoutMs: number) {
     super(`git ${safeAction(args[0])} timed out after ${timeoutMs}ms`);
     this.name = "GitCommandTimeoutError";
   }
 }
 
-export function configureGitUser(): void {
+function configureGitUser(): void {
   runGit(["config", "user.name", clawsweeperGitUserName()]);
   runGit(["config", "user.email", clawsweeperGitUserEmail()]);
 }
@@ -64,7 +64,7 @@ export function runGit(args: readonly string[], options: GitRunOptions = {}): st
   return result.stdout;
 }
 
-export function spawnGit(args: readonly string[], options: GitRunOptions = {}): GitRunResult {
+function spawnGit(args: readonly string[], options: GitRunOptions = {}): GitRunResult {
   const child = spawnSync("git", [...args], {
     cwd: publishRoot() ?? process.cwd(),
     encoding: "utf8",
@@ -101,10 +101,10 @@ export function publishMainCommit(options: GitPublishOptions): PublishResult {
     stagePaths(options.paths);
     if (!hasStagedChanges()) {
       console.log("No publish changes");
-      refreshSourceAfterStatePublish(options.paths, null);
+      refreshSourceAfterStatePublish(options.paths);
       return "unchanged";
     }
-    runGit(["commit", "-m", commitMessageForPublishedPaths(options.message, options.paths)]);
+    runGit(["commit", "-m", options.message]);
     coordinator?.assertActive();
     const push = spawnGit(["push", remote, `HEAD:${branch}`], {
       quiet: true,
@@ -117,25 +117,25 @@ export function publishMainCommit(options: GitPublishOptions): PublishResult {
       throw new Error(push.stderr.trim() || `git push failed with status ${push.status}`);
     }
     restoreWorktree(options.restorePaths ?? []);
-    refreshSourceAfterStatePublish(options.paths, null);
+    refreshSourceAfterStatePublish(options.paths);
     return "committed";
   } finally {
     coordinator?.release();
   }
 }
 
-export function stagePaths(paths: readonly string[]): void {
+function stagePaths(paths: readonly string[]): void {
   const unique = uniqueNonEmpty(paths).map(normalizedPath);
   if (!unique.length) throw new Error("No paths were provided for publishing");
   runGit(["add", "-A", "--", ...unique]);
 }
 
-export function restoreWorktree(paths: readonly string[]): void {
+function restoreWorktree(paths: readonly string[]): void {
   const unique = uniqueNonEmpty(paths).map(normalizedPath);
   if (unique.length) runGit(["restore", "--worktree", "--", ...unique], { allowFailure: true });
 }
 
-export function hasStagedChanges(): boolean {
+function hasStagedChanges(): boolean {
   return spawnGit(["diff", "--cached", "--quiet"], { quiet: true }).status !== 0;
 }
 
@@ -144,7 +144,7 @@ export function publishRoot(): string | undefined {
   return configured ? resolve(configured) : undefined;
 }
 
-export function syncPublishPaths(paths: readonly string[]): void {
+function syncPublishPaths(paths: readonly string[]): void {
   const stateRoot = publishRoot();
   if (!stateRoot) return;
   const sourceRoot = resolve(process.cwd());
@@ -186,10 +186,7 @@ export function syncPublishPaths(paths: readonly string[]): void {
   }
 }
 
-export function refreshSourceAfterStatePublish(
-  paths: readonly string[],
-  _baselineCommit: string | null,
-): void {
+export function refreshSourceAfterStatePublish(paths: readonly string[]): void {
   const stateRoot = publishRoot();
   if (!stateRoot) return;
   const sourceRoot = resolve(process.cwd());
@@ -205,17 +202,8 @@ export function refreshSourceAfterStatePublish(
   }
 }
 
-export function hardResetToRemoteMain(remote = "origin", branch = publishDefaultBranch()): void {
-  runGit(["fetch", "--no-tags", "--depth=1", remote, branch], { timeout: GIT_PUSH_TIMEOUT_MS });
-  runGit(["checkout", "--detach", "FETCH_HEAD"]);
-}
-
-export function uniqueNonEmpty(values: readonly string[]): string[] {
+function uniqueNonEmpty(values: readonly string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
-}
-
-export function commitMessageForPublishedPaths(message: string, _paths: readonly string[]): string {
-  return message;
 }
 
 function publishDefaultBranch(): string {

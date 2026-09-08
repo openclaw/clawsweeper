@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+**Highlights:** Preserve later review evidence, keep quoted report prose from forging findings, and prevent stalled status updates from blocking review starts.
+
 ### Removed
 
 - Deleted the separate live-proof dispatch/execute/attach workflow and its composite dispatcher; live verification now stays inside the review artifact lifecycle.
@@ -18,6 +20,47 @@ checkpoint, and status-only commits are intentionally omitted.
 - Deleted the monthly `state-compaction.yml` history rewrite of `openclaw/clawsweeper-state`, removing one of the last writers ahead of that repository's retirement.
 
 ### Changed
+
+- Refresh markdown-it to 15.0.1 and Playwright to 1.63.0, retaining the repository's release-age policy and Node 24 runtime floor.
+
+- Recover failed aggregate review shards only from recognized retryable item terminals in the complete exact-attempt ledger. Keep completed, nonretryable, uncertain, and unstarted items out of recovery, and retain identity- and digest-verified completed reports for normal guarded publication.
+
+- Move optional aggregate review-ledger uploads out of the target publisher lock into a bounded artifact-backed job, preserving producer artifacts and required record/comment receipts when telemetry is slow or unavailable.
+
+- Give Codex reviewers the existing short-lived, read-only target-repository GitHub App token as `GH_TOKEN` for authenticated reads, and describe token availability from the actual reviewer environment, including OpenClaw's credential filter.
+- Give hosted issue/PR reviewers allowlisted public research access through a managed proxy while keeping the checkout read-only; describe token, blocked-host, and downloaded-media capabilities accurately and fail setup when sandbox enforcement regresses.
+- Describe review capabilities from the active runner so OpenClaw gateway execution is not mistaken for the Codex allowlisted sandbox; prove Linux review sandbox enforcement in credential-free PR CI.
+
+- Add reviewed-plan retirement of one merged-target publication through the existing maintenance workflow, keeping signing credentials confined to its execution step.
+- Admit the two approved Signal URL-rejection fixtures through exact URI, source-line, path, and native decoder bindings while retaining all scanner and verification checks.
+- Admit the reviewed Crabbox PostgreSQL operations example through exact Postgres detector, observed `PLAIN`/`HTML` decoder, value-hash, source-line, path, mode, metadata, and committed base/head bindings.
+- Admit the reviewed OpenClaw logging redaction fixtures through exact detector, native decoder, role, value-hash, source-line, path, mode, and metadata bindings while preserving legacy URI fixture behavior.
+- Keep canonical OpenClaw locale refresh PRs open across apply and repair close paths so their publisher can reconcile and auto-merge them after normal checks.
+
+- Keep publication reconciliation dry runs from recording terminal lifecycle state or reclaiming expired publication batches.
+
+- Reduce the review ceiling to 32, cap scheduled background reviews at eight, pace scheduled intake at 60 per hour with a six-item burst, and scan normal backlog hourly while retaining manual-review priority and existing leases.
+- Honor the configured Codex reasoning effort in sweep planning, event and shard reviews, assist answers, and close-coverage proofs instead of forcing high reasoning; assist uses the shared fast service tier.
+
+- Authenticated publication reconciliation now diagnoses missing, ambiguous, and mismatched successor fences without changing supersede behavior.
+- Exact-review maintenance clients now expose and strictly validate successor-fence diagnostics after the Worker-first rollout.
+- Redact publication identities in maintenance output with stable row fingerprints and refuse redirects for signed queue requests.
+- Explicit manual item reviews now enter the durable exact-review queue independently and retain record/comment-only publication policy through retries, without enabling labels, closes, routing, or issue implementation. Restricted comment and canonical publication require the actual current producer or batch owner; retained receipts cannot revive stale authority. Repeated authorized requests remain publishable after earlier completion, and absent new reports cannot borrow hydrated review authority. Isolated proof status and deployment limits are recorded in `docs/proof/manual-review-publication/README.md`.
+
+- Resolve publication completion to the exact producer journey in lifecycle audit and OpenClaw Bay through immutable lineage in existing JSON, preserving independent receipt revisions and preventing duplicate completion telemetry.
+- Keep lineage-aware Bay reads indexed by repository and identity, without sorting retained projection JSON.
+- Preserve explicit manual reviews' selected branch, requested timeout, and one-off instructions through admission and ordinary-event coalescing, while accepting fresh source facts and option changes from a new manual request; the existing exact-review timeout cap remains unchanged.
+- Keep exact-review imports and snapshot validation in the selected publication workspace when invoked from a separate code checkout.
+- Preserve temporary publication-authority outages as coordinator retries instead of exhausting the shorter unknown-failure budget; ownership rejection remains fail-closed and separate from GitHub throttling.
+- Publication reconciliation diagnostics now report the exact acknowledgement-unavailable reason while preserving fail-closed supersede behavior.
+
+- Admit the reviewed mocked marketplace telemetry-redaction and Gateway config CDP-redaction fixtures through exact URI, source-line, path, and decoder bindings without relaxing native scanner checks.
+
+- Preserve legacy review lease completions without lifecycle admission rows and reschedule queue alarms even when a lifecycle update fails.
+
+- Reduce cold Bay snapshot work by reading full projections through the existing parser, preserving the 30-second TTL memo and edge cache.
+
+- Keep queue stats fresh when alarm or auxiliary-state writes overlap a memo computation, without changing the cache TTL or response fields.
 
 - Admit the reviewed OpenClaw MCP Apps sandbox-origin test fixture using exact URI, source-line, path, and decoder bindings so config reviews can proceed through the existing scanner rules.
 
@@ -75,6 +118,37 @@ checkpoint, and status-only commits are intentionally omitted.
 - Generated live-proof plans now receive the effective cold-checkout setup contract and guidance to supply missing build or code-generation prerequisites before dependent commands.
 
 ### Fixed
+
+- Prevent quoted finding and security-concern prose from adding findings or replacing confidence when durable reviews are parsed again; thanks @Yigtwxx.
+- Preserve later discussion evidence and invalidate cached reviews when omitted inline-comment text changes instead of silently dropping comment tails; thanks @TommyLei666.
+- Mask credentialed URLs in supplementary review context and ignore foreign timeline issue numbers; thanks @yetval.
+- Bound app-server CrabFleet status updates so a stalled endpoint cannot block the review turn indefinitely; thanks @Yigtwxx.
+- Accept direct local `.sh` validation through shared guarded Bash normalization for command strings and resolved arguments; thanks @Jhacarreiro.
+
+- Prepare GitHub user-attachment and legacy repository asset proof locally, resolving image/video types after download and reserving bounded preprocessing time for attachments.
+
+- Avoid stored-data warnings for validation-only schema helpers by separating ambiguous schema filenames from explicit storage owners, while preserving database operations and incomplete-patch warnings on storage paths.
+- Stop transient JSON diagnostics and SQLite helper filenames from creating false stored-data and migration-proof blockers, while retaining compatibility gates for real persistence owners and stored-shape changes.
+- Scoped unchanged SQLite table context to the changed column's diff hunk and stopped treating runtime property values as schema declarations.
+- Align generated evidence commands with the parser's single-line contract so multiline proof commands remain in evidence detail instead of failing completed reviews.
+- Retire stale comment-router reports before each invocation so early GitHub throttles do not claim prior commands or fail empty action-ledger finalization.
+
+- Keep GitHub request deadlines active through response-body reads so stalled responses cannot hold queue operations indefinitely, while preserving HTTP and rate-limit classification.
+
+- Accept compressed Gitcrawl store snapshots in cluster intake and treat empty portable cluster tables as a successful empty import.
+- Terminalize stale command publications after batch expiry without losing shared acknowledgement obligations; thanks @vincentkoc.
+- Bound GitHub activity hook prompts to one received event and filtered trusted self-authored review chatter before model intake.
+- Replay durable scheduled enqueue dispositions after transient response loss while preserving signed delivery identity, rejecting mismatched bytes, failing closed on legacy ambiguous receipts, and leaving publication post-effects single-attempt.
+- Use the producer Actions run URL in failed-review retry receipts so ledger validation no longer prevents dispatch and fails the retry command.
+- Preserve canonical repository slugs when reading persisted apply records, including dots, underscores, and repeated or trailing hyphens.
+- Make timeout tests tolerate loaded macOS hosts by isolating checkout timing, synchronizing lock contention, and budgeting snapshot admission fixtures separately from deadline tests.
+- Preserve a valid stale Bay lifecycle snapshot when a background refresh is unavailable or malformed, without extending its original 60-second expiry.
+- Preserve explicit contributor credits in source-PR link comments for both direct replacements and fallback publication after a blocked fork push.
+
+- Reject parent-directory validation symlinks, preserve porcelain paths when selecting repair checks, retain the fast-rebase base SHA for replacement publication, and mark omitted PR comments in close-coverage proof.
+- Run dashboard smoke checks through symlinks and continue dead-letter recovery after a repository without an App installation.
+
+- Count oversized ETag responses as durable cache skips using size-only store requests, preserving telemetry without sending or storing the response bodies.
 
 - Bound standalone webhook bodies to 2 MiB before signature verification, preserving chunked deliveries and flushing rejection responses before closing oversized requests. Thanks @SebTardif.
 - Preserve committed lifecycle outcomes when later queue completions disagree, preventing terminal-state conflicts from failing completion callbacks and acknowledgement drivers.
