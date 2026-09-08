@@ -19,6 +19,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Recover failed aggregate review shards only from recognized retryable item terminals in the complete exact-attempt ledger. Keep completed, nonretryable, uncertain, and unstarted items out of recovery, and retain identity- and digest-verified completed reports for normal guarded publication.
+
 - Move optional aggregate review-ledger uploads out of the target publisher lock into a bounded artifact-backed job, preserving producer artifacts and required record/comment receipts when telemetry is slow or unavailable.
 
 - Give Codex reviewers the existing short-lived, read-only target-repository GitHub App token as `GH_TOKEN` for authenticated reads, and describe token availability from the actual reviewer environment, including OpenClaw's credential filter.

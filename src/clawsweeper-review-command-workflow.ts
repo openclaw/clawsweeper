@@ -1540,7 +1540,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         throw new Error(
           `Could not acquire durable review coordination for ${leaseAcquisitionFailures} item${
             leaseAcquisitionFailures === 1 ? "" : "s"
-          }; the workflow recovery lane can requeue the planned set. ${leaseAcquisitionFailureDetails.join("; ")}`,
+          }; the workflow recovery lane can requeue evidence-backed retryable items. ${leaseAcquisitionFailureDetails.join("; ")}`,
         );
       }
       if (reviewTreeCleanupFailures.length > 0) {
@@ -1555,7 +1555,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         }
         const message = `Codex failed for ${codexFailures} item${
           codexFailures === 1 ? "" : "s"
-        }; local failure reports were written and the workflow recovery lane can requeue the planned set.${
+        }; local failure reports were written and the workflow recovery lane can requeue evidence-backed retryable items.${
           codexFailureReports.length > 0
             ? ` Report${codexFailureReports.length === 1 ? "" : "s"}: ${codexFailureReports
                 .map(displayPath)

@@ -2031,13 +2031,21 @@ test("scheduled review shards retire automatic live proof without removing histo
   const metrics = reviewSteps.find((candidate) => candidate.name === "Record shard metrics");
   assert.ok(metrics);
   assert.doesNotMatch(JSON.stringify(metrics), /live[_-]proof/i);
-  const upload = reviewSteps.find(
+  const uploads = reviewSteps.filter(
     (candidate) => candidate.with?.name === "review-shard-${{ matrix.shard }}",
   );
-  assert.ok(upload);
-  assert.match(upload.if ?? "", /review-shard\.outcome/);
-  assert.match(String(upload.with?.path), /review-artifacts\/shard-/);
-  assert.doesNotMatch(String(upload.with?.path), /live-proof/);
+  assert.equal(uploads.length, 2);
+  for (const upload of uploads) {
+    assert.match(upload.if ?? "", /review-shard\.outcome/);
+    assert.doesNotMatch(String(upload.with?.path), /live-proof/);
+  }
+  const completed = uploads.find((upload) => upload.if?.includes("== 'failure'"))!;
+  const successful = uploads.find(
+    (upload) => upload.if?.includes("== 'success'") && !upload.if?.includes("== 'failure'"),
+  )!;
+  assert.match(String(successful.with?.path), /review-artifacts\/shard-/);
+  assert.match(String(completed.with?.path), /review-artifacts\/completed-.*\/\*\.md$/);
+  assert.match(completed.if!, /completed-prefix\.outcome == 'success'/);
 
   assert.ok(
     workflow.jobs.publish!.steps.some(
@@ -6951,36 +6959,36 @@ test("review finalizers recover start-only ledger attempts after hard timeout", 
   }
 });
 
-test("optional ledger work is never presented as model review or review publication in Bay", async () => {
-  const { publicStatusProjection } = await import("../dashboard/worker.ts");
-  const job = YAML.parse(readText(".github/workflows/sweep.yml")).jobs[
-    "publish-review-action-ledger"
-  ];
-  const projected = publicStatusProjection({
-    schema_version: 1,
-    generated_at: "2026-09-08T08:00:00.000Z",
-    source: { target_repository_count: 0 },
-    fleet: {},
-    workers: job.steps.map((entry: { name?: string; uses?: string }) => ({
-      name: job.name,
-      status: "in_progress",
-      current_step: entry.name ?? entry.uses,
-      steps: job.steps.map((step: { name?: string; uses?: string }) => ({
-        name: step.name ?? step.uses,
+for (const jobId of ["publish-review-action-ledger", "recover-review-failures"]) {
+  test(`${jobId} is never presented as model review or review publication in Bay`, async () => {
+    const { publicStatusProjection } = await import("../dashboard/worker.ts");
+    const job = YAML.parse(readText(".github/workflows/sweep.yml")).jobs[jobId];
+    const projected = publicStatusProjection({
+      schema_version: 1,
+      generated_at: "2026-09-08T08:00:00.000Z",
+      source: { target_repository_count: 0 },
+      fleet: {},
+      workers: job.steps.map((entry: { name?: string; uses?: string }) => ({
+        name: job.name,
+        status: "in_progress",
+        current_step: entry.name ?? entry.uses,
+        steps: job.steps.map((step: { name?: string; uses?: string }) => ({
+          name: step.name ?? step.uses,
+        })),
       })),
-    })),
-    automatic_work: [],
-    pipeline: [],
-    bay: {},
-    recent: {},
-    diagnostics: { errors: [], error_count: 0 },
+      automatic_work: [],
+      pipeline: [],
+      bay: {},
+      recent: {},
+      diagnostics: { errors: [], error_count: 0 },
+    });
+    assert.equal(projected.workers.length, job.steps.length);
+    for (const worker of projected.workers) {
+      assert.ok(!["reviewing", "publishing"].includes(worker.stage));
+      assert.equal(worker.status, "in_progress");
+    }
   });
-  assert.equal(projected.workers.length, job.steps.length);
-  for (const worker of projected.workers) {
-    assert.ok(!["reviewing", "publishing"].includes(worker.stage));
-    assert.equal(worker.status, "in_progress");
-  }
-});
+}
 
 test("every action-ledger publication authenticates the expected producer job", () => {
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {

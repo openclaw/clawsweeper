@@ -5076,6 +5076,34 @@ jobs:
           }
           JSON
 
+      - name: Stage verified completed reports
+        id: completed-prefix
+        if: ${{ always() && steps.review-shard.outcome == 'failure' }}
+        continue-on-error: true
+        working-directory: clawsweeper
+        env:
+          ITEM_NUMBERS: ${{ matrix.item_numbers }}
+          TARGET_REPO: ${{ needs.plan.outputs.target_repo }}
+        run: |
+          set -euo pipefail
+          result="$(node dist/repair/workflow-utils.js review-recovery \
+            --ledger-dir "$RUNNER_TEMP/clawsweeper-action-ledger/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/review" \
+            --producer-repository "$GITHUB_REPOSITORY" --producer-sha "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --target-repo "$TARGET_REPO" --shard "${{ matrix.shard }}" \
+            --shard-count "${{ needs.plan.outputs.planned_shards }}" --item-numbers "$ITEM_NUMBERS" \
+            --reports-dir "../review-artifacts/shard-${{ matrix.shard }}" \
+            --stage-dir "../review-artifacts/completed-${{ matrix.shard }}")"
+          echo "$result" | jq -r '.items[] | "Item #\(.number): \(.disposition), publication \(.publication) (\(.reason))"' | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "Review step failed; retained reports still require normal publisher guards." >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ always() && steps.review-shard.outcome == 'failure' && steps.completed-prefix.outcome == 'success' }}
+        with:
+          name: review-shard-${{ matrix.shard }}
+          path: review-artifacts/completed-${{ matrix.shard }}/*.md
+          if-no-files-found: ignore
+
       - uses: actions/upload-artifact@v7
         if: ${{ always() && steps.review-shard.outcome == 'success' }}
         with:
@@ -5776,7 +5804,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   recover-review-failures:
-    name: Recover failed review shards
+    name: Apply bounded item recovery
     needs: [plan, review, publish]
     if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.queue_feed != 'true' && needs.review.result != 'skipped' && !contains(github.event.inputs.additional_prompt || '', '[clawsweeper-recovery-attempt=1]') && needs.plan.outputs.planned_item_numbers != '' && github.event_name != 'repository_dispatch' }}
     runs-on: ubuntu-latest
@@ -5785,6 +5813,24 @@ jobs:
       actions: read
       contents: read
     steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: clawsweeper-runtime-dist
+          path: .artifacts
+
+      - name: Extract recovery runtime artifact
+        run: tar -xzf .artifacts/review-runtime.tar.gz
+
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          pattern: action-ledger-review-*
+          path: recovery-ledgers
+
       - uses: actions/download-artifact@v8
         id: failed-shards
         continue-on-error: true
@@ -5793,7 +5839,7 @@ jobs:
           path: failed-review-shards
           merge-multiple: true
 
-      - name: Requeue planned review items once
+      - name: Requeue eligible item terminals once
         env:
           GH_TOKEN: ${{ github.token }}
           ADDITIONAL_PROMPT: ${{ github.event.inputs.additional_prompt || '' }}
@@ -5840,25 +5886,24 @@ jobs:
             echo "No failed review shard jobs found; nothing to requeue."
             exit 0
           fi
-          item_numbers="$(
-            jq -r --arg failed_shards ",$failed_shards," '
-              [
-                .[]
-                | . as $matrix_entry
-                | select($failed_shards | contains("," + ($matrix_entry.shard | tostring) + ","))
-                | $matrix_entry.item_numbers
-                | split(",")[]
-                | select(test("^[0-9]+$"))
-              ]
-              | unique
-              | join(",")
-            ' <<<"$MATRIX_JSON"
-          )"
+          recovery_items=()
+          while IFS=$'\t' read -r shard planned_items; do
+            result="$(node dist/repair/workflow-utils.js review-recovery \
+              --ledger-dir "recovery-ledgers/action-ledger-review-$shard" \
+              --producer-repository "$GITHUB_REPOSITORY" --producer-sha "$GITHUB_SHA" \
+              --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+              --target-repo "${{ needs.plan.outputs.target_repo }}" --shard "$shard" \
+              --shard-count "${{ needs.plan.outputs.planned_shards }}" --item-numbers "$planned_items")"
+            echo "$result" | jq -r '.items[] | "Item #\(.number): \(.disposition) (\(.reason))"' | tee -a "$GITHUB_STEP_SUMMARY"
+            while IFS= read -r item_number; do
+              recovery_items+=("$item_number")
+            done < <(jq -r '.retryable[]' <<<"$result")
+          done < <(jq -r --arg failed ",$failed_shards," '.[] | select(.shard as $s | $failed | contains("," + ($s | tostring) + ",")) | [.shard, .item_numbers] | @tsv' <<<"$MATRIX_JSON")
+          item_numbers="$(IFS=,; echo "${recovery_items[*]}")"
           if [ -z "$item_numbers" ]; then
-            echo "Failed shards had no item numbers to requeue: $failed_shards"
+            echo "No evidence-backed retryable item terminals; failed review work remains terminal, completed, or held." | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          IFS=',' read -r -a recovery_items <<<"$item_numbers"
           failed_recovery_dispatches=()
           for item_number in "${recovery_items[@]}"; do
             if ! [[ "$item_number" =~ ^[0-9]+$ ]]; then
@@ -5899,9 +5944,13 @@ jobs:
                 "$queue_url/internal/exact-review/enqueue")" || response=""
               if jq -e '.ok == true and (.queued == true or .deduped == true or .shed == true or .accepted == false)' <<<"$response" >/dev/null; then
                 if jq -e '.accepted == false' <<<"$response" >/dev/null; then
-                  echo "Recovery skipped because the target is disabled."
+                  echo "Item #$item_number: Recovery skipped because the target is disabled." | tee -a "$GITHUB_STEP_SUMMARY"
                 elif jq -e '.shed == true' <<<"$response" >/dev/null; then
-                  echo "Recovery shed by exact-review queue backpressure."
+                  echo "Item #$item_number: Recovery shed by exact-review queue backpressure." | tee -a "$GITHUB_STEP_SUMMARY"
+                elif jq -e '.deduped == true' <<<"$response" >/dev/null; then
+                  echo "Item #$item_number: recovery admission deduplicated." | tee -a "$GITHUB_STEP_SUMMARY"
+                else
+                  echo "Item #$item_number: recovery admission queued." | tee -a "$GITHUB_STEP_SUMMARY"
                 fi
                 queued=true
                 break
@@ -5916,10 +5965,10 @@ jobs:
             fi
           done
           if [ "${#failed_recovery_dispatches[@]}" -gt 0 ]; then
-            echo "Unable to queue failed review recovery for item numbers: ${failed_recovery_dispatches[*]}" >&2
+            echo "Unable to queue failed review recovery for item numbers: ${failed_recovery_dispatches[*]}" | tee -a "$GITHUB_STEP_SUMMARY" >&2
             exit 1
           fi
-          echo "Queued failed review shards $failed_shards through the exact-review control plane: $item_numbers"
+          echo "Recovery acknowledgements handled for eligible items: $item_numbers. Original failed-review outcomes remain recorded; this is not publication success." | tee -a "$GITHUB_STEP_SUMMARY"
 
   retry-failed-reviews:
     name: Retry failed Codex reviews
