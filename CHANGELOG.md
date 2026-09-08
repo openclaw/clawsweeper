@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+**Highlights:** Preserve later review evidence, keep quoted report prose from forging findings, and prevent stalled status updates from blocking review starts.
+
 ### Removed
 
 - Deleted the separate live-proof dispatch/execute/attach workflow and its composite dispatcher; live verification now stays inside the review artifact lifecycle.
@@ -18,6 +20,8 @@ checkpoint, and status-only commits are intentionally omitted.
 - Deleted the monthly `state-compaction.yml` history rewrite of `openclaw/clawsweeper-state`, removing one of the last writers ahead of that repository's retirement.
 
 ### Changed
+
+- Refresh markdown-it to 15.0.1 and Playwright to 1.63.0, retaining the repository's release-age policy and Node 24 runtime floor.
 
 - Recover failed aggregate review shards only from recognized retryable item terminals in the complete exact-attempt ledger. Keep completed, nonretryable, uncertain, and unstarted items out of recovery, and retain identity- and digest-verified completed reports for normal guarded publication.
 
@@ -114,6 +118,12 @@ checkpoint, and status-only commits are intentionally omitted.
 - Generated live-proof plans now receive the effective cold-checkout setup contract and guidance to supply missing build or code-generation prerequisites before dependent commands.
 
 ### Fixed
+
+- Prevent quoted finding and security-concern prose from adding findings or replacing confidence when durable reviews are parsed again; thanks @Yigtwxx.
+- Preserve later discussion evidence and invalidate cached reviews when omitted inline-comment text changes instead of silently dropping comment tails; thanks @TommyLei666.
+- Mask credentialed URLs in supplementary review context and ignore foreign timeline issue numbers; thanks @yetval.
+- Bound app-server CrabFleet status updates so a stalled endpoint cannot block the review turn indefinitely; thanks @Yigtwxx.
+- Accept direct local `.sh` validation through shared guarded Bash normalization for command strings and resolved arguments; thanks @Jhacarreiro.
 
 - Prepare GitHub user-attachment and legacy repository asset proof locally, resolving image/video types after download and reserving bounded preprocessing time for attachments.
 
