@@ -751,9 +751,9 @@ test("review workflow gives Codex a read-only inspection token", () => {
   assert.match(exactReviewStep, /Exact review produced no artifact for open item/);
   assert.match(reviewJob, /uses: \.\/clawsweeper\/\.github\/actions\/setup-codex/);
   assert.doesNotMatch(reviewJob, /uses: \.\/\.github\/actions\/setup-codex/);
-  assert.match(exactReviewStep, /--codex-sandbox read-only/);
+  assert.match(exactReviewStep, /--codex-sandbox clawsweeper-review/);
   assert.match(exactReviewStep, /--skip-start-comment/);
-  assert.match(reviewJob, /--codex-sandbox read-only/);
+  assert.match(reviewJob, /--codex-sandbox clawsweeper-review/);
   assert.doesNotMatch(workflow, /--codex-sandbox danger-full-access/);
 });
 

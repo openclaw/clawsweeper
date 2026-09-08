@@ -782,6 +782,33 @@ test("media preparation kills a timed-out probe even when it ignores SIGTERM", (
   assert.match(prepared.artifacts[0]?.detail ?? "", /ffprobe failed: .*ETIMEDOUT/);
 });
 
+test("runtime capabilities describe the configured network and credential boundary", () => {
+  for (const allowlistedNetwork of [true, false]) {
+    const prompt = reviewPromptForTest(
+      item({ kind: "pull_request" }),
+      { issue: {}, comments: [], timeline: [] },
+      { mainSha: "abc123", latestRelease: null },
+      "",
+      { allowlistedNetwork },
+    );
+    assert.match(prompt, /There is no GitHub token in the sandbox/);
+    assert.match(prompt, /read those files rather than re-fetching/);
+    assert.match(prompt, /The target checkout is read-only/);
+    assert.doesNotMatch(prompt, /available network and read-only GitHub token/);
+    if (allowlistedNetwork) {
+      assert.match(
+        prompt,
+        /managed proxy limited to allowlisted GitHub, npm, Node, MDN, and OpenClaw/,
+      );
+      assert.match(prompt, /other hosts are blocked/);
+      assert.match(prompt, /A blocked request is not evidence about the PR/);
+    } else {
+      assert.match(prompt, /No review-tool network access is configured/);
+      assert.doesNotMatch(prompt, /Network egress uses a managed proxy/);
+    }
+  }
+});
+
 test("runtime prompt tells Codex to inspect local media artifacts before browser fallback", () => {
   const context = {
     issue: {},

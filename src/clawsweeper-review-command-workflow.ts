@@ -1271,7 +1271,11 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           context,
           git,
           additionalPrompt,
-          { ...mediaProofRuntimeHints(proofScratchDir, preparedMediaProof), targetDir: reviewOpenclawDir },
+          {
+            ...mediaProofRuntimeHints(proofScratchDir, preparedMediaProof),
+            targetDir: reviewOpenclawDir,
+            allowlistedNetwork: sandboxMode === "clawsweeper-review",
+          },
         );
         diagnosticPrompt = prompt.text;
         const snapshotHash = itemSnapshotHash(item, context);

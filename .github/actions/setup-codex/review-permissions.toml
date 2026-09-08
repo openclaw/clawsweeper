@@ -1,0 +1,30 @@
+# Reviewers inspect untrusted contributor PRs: never make them an open egress
+# channel. No credentials belong in the sandbox; use public, allowlisted hosts.
+approval_policy = "never"
+default_permissions = "clawsweeper-review"
+[features]
+network_proxy = true
+[permissions.clawsweeper-review]
+extends = ":read-only"
+[permissions.clawsweeper-review.network]
+enabled = true
+mode = "limited"
+allow_upstream_proxy = false
+allow_local_binding = false
+enable_socks5 = false
+[permissions.clawsweeper-review.network.domains]
+"github.com" = "allow"
+"api.github.com" = "allow"
+"raw.githubusercontent.com" = "allow"
+"objects.githubusercontent.com" = "allow"
+"user-images.githubusercontent.com" = "allow"
+"private-user-images.githubusercontent.com" = "allow"
+"avatars.githubusercontent.com" = "allow"
+"github-production-user-asset-6210df.s3.amazonaws.com" = "allow"
+"docs.github.com" = "allow"
+"registry.npmjs.org" = "allow"
+"www.npmjs.com" = "allow"
+"nodejs.org" = "allow"
+"developer.mozilla.org" = "allow"
+"docs.openclaw.ai" = "allow"
+"openclaw.ai" = "allow"

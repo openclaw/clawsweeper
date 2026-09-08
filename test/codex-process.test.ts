@@ -526,18 +526,19 @@ setInterval(() => {}, 1000);
   }
 });
 
-test("Codex app-server mode persists and resumes a thread", () => {
-  const root = mkdtempSync(tmpPrefix);
-  const binDir = join(root, "node_modules", ".bin");
-  const statePath = join(root, "session", "state.json");
-  const outputPath = join(root, "last-message.json");
-  const requestsPath = join(root, "requests.jsonl");
-  const argsPath = join(root, "args.json");
-  mkdirSync(binDir, { recursive: true });
-  const scriptPath = join(root, "app-server-codex.cjs");
-  writeFileSync(
-    scriptPath,
-    `
+for (const configuredProfile of [false, true]) {
+  test(`Codex app-server persists and resumes with configured profile: ${configuredProfile}`, () => {
+    const root = mkdtempSync(tmpPrefix);
+    const binDir = join(root, "node_modules", ".bin");
+    const statePath = join(root, "session", "state.json");
+    const outputPath = join(root, "last-message.json");
+    const requestsPath = join(root, "requests.jsonl");
+    const argsPath = join(root, "args.json");
+    mkdirSync(binDir, { recursive: true });
+    const scriptPath = join(root, "app-server-codex.cjs");
+    writeFileSync(
+      scriptPath,
+      `
 const fs = require("node:fs");
 const readline = require("node:readline");
 const requestsPath = process.env.CODEX_TEST_REQUESTS_PATH;
@@ -570,76 +571,88 @@ rl.on("line", (line) => {
   }
 });
 `,
-  );
-  const codexPath =
-    process.platform === "win32" ? join(binDir, "codex.cmd") : join(binDir, "codex");
-  if (process.platform === "win32") {
-    writeFileSync(codexPath, `@echo off\r\nnode "%~dp0\\..\\..\\app-server-codex.cjs" %*\r\n`);
-  } else {
-    writeFileSync(codexPath, `#!/usr/bin/env node\n${readFileSync(scriptPath, "utf8")}`, {
-      mode: 0o755,
-    });
-  }
-  const env = {
-    ...process.env,
-    CODEX_BIN: codexPath,
-    CODEX_TEST_ARGS_PATH: argsPath,
-    CODEX_TEST_REQUESTS_PATH: requestsPath,
-  };
-
-  try {
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const result = runCodexProcess({
-        args: [
-          "exec",
-          "--cd",
-          root,
-          "--sandbox",
-          "workspace-write",
-          "-c",
-          "sandbox_workspace_write.network_access=false",
-          "-c",
-          'forced_login_method="chatgpt"',
-          "--output-last-message",
-          outputPath,
-          "--json",
-          "-",
-        ],
-        cwd: root,
-        env,
-        input: "Plan the repair.",
-        timeoutMs: 10_000,
-        appServer: { statePath, label: "test worker" },
-      });
-      assert.equal(result.status, 0, result.stderr);
-      assert.equal(result.error, undefined);
-      assert.equal(readFileSync(outputPath, "utf8"), '{"status":"planned"}');
-    }
-
-    const state = JSON.parse(readFileSync(statePath, "utf8"));
-    assert.equal(state.threadId, "thread-1");
-    assert.deepEqual(JSON.parse(readFileSync(argsPath, "utf8")), [
-      "-c",
-      'forced_login_method="chatgpt"',
-      "app-server",
-      "--listen",
-      "stdio://",
-    ]);
-    const requests = readFileSync(requestsPath, "utf8")
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line));
-    assert.equal(requests.filter((request) => request.method === "thread/start").length, 1);
-    assert.equal(requests.filter((request) => request.method === "thread/resume").length, 1);
-    assert.equal(requests.filter((request) => request.method === "turn/start").length, 2);
-    for (const request of requests.filter((request) => request.method === "turn/start")) {
-      assert.deepEqual(request.params.sandboxPolicy, {
-        type: "workspaceWrite",
-        writableRoots: [root],
-        networkAccess: false,
+    );
+    const codexPath =
+      process.platform === "win32" ? join(binDir, "codex.cmd") : join(binDir, "codex");
+    if (process.platform === "win32") {
+      writeFileSync(codexPath, `@echo off\r\nnode "%~dp0\\..\\..\\app-server-codex.cjs" %*\r\n`);
+    } else {
+      writeFileSync(codexPath, `#!/usr/bin/env node\n${readFileSync(scriptPath, "utf8")}`, {
+        mode: 0o755,
       });
     }
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
+    const env = {
+      ...process.env,
+      CODEX_BIN: codexPath,
+      CODEX_TEST_ARGS_PATH: argsPath,
+      CODEX_TEST_REQUESTS_PATH: requestsPath,
+    };
+
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const result = runCodexProcess({
+          args: [
+            "exec",
+            "--cd",
+            root,
+            ...(configuredProfile
+              ? ["-c", 'default_permissions="clawsweeper-review"']
+              : ["--sandbox", "workspace-write"]),
+            "-c",
+            "sandbox_workspace_write.network_access=false",
+            "-c",
+            'forced_login_method="chatgpt"',
+            "--output-last-message",
+            outputPath,
+            "--json",
+            "-",
+          ],
+          cwd: root,
+          env,
+          input: "Plan the repair.",
+          timeoutMs: 10_000,
+          appServer: { statePath, label: "test worker" },
+        });
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(result.error, undefined);
+        assert.equal(readFileSync(outputPath, "utf8"), '{"status":"planned"}');
+      }
+
+      const state = JSON.parse(readFileSync(statePath, "utf8"));
+      assert.equal(state.threadId, "thread-1");
+      assert.deepEqual(JSON.parse(readFileSync(argsPath, "utf8")), [
+        "-c",
+        'forced_login_method="chatgpt"',
+        ...(configuredProfile ? ["-c", 'default_permissions="clawsweeper-review"'] : []),
+        "app-server",
+        "--listen",
+        "stdio://",
+      ]);
+      const requests = readFileSync(requestsPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      assert.equal(requests.filter((request) => request.method === "thread/start").length, 1);
+      assert.equal(requests.filter((request) => request.method === "thread/resume").length, 1);
+      assert.equal(requests.filter((request) => request.method === "turn/start").length, 2);
+      if (configuredProfile) {
+        for (const request of requests.filter((request) => request.method.startsWith("thread/"))) {
+          assert.equal(request.params.sandbox, undefined);
+        }
+      }
+      for (const request of requests.filter((request) => request.method === "turn/start")) {
+        if (configuredProfile) {
+          assert.equal(request.params.sandboxPolicy, undefined);
+          continue;
+        }
+        assert.deepEqual(request.params.sandboxPolicy, {
+          type: "workspaceWrite",
+          writableRoots: [root],
+          networkAccess: false,
+        });
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}

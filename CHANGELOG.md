@@ -19,6 +19,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Give hosted issue/PR reviewers allowlisted public research access through a managed proxy while keeping the checkout read-only; describe token, blocked-host, and downloaded-media capabilities accurately and fail setup when sandbox enforcement regresses.
+
 - Add reviewed-plan retirement of one merged-target publication through the existing maintenance workflow, keeping signing credentials confined to its execution step.
 - Admit the two approved Signal URL-rejection fixtures through exact URI, source-line, path, and native decoder bindings while retaining all scanner and verification checks.
 - Admit the reviewed Crabbox PostgreSQL operations example through exact Postgres detector, observed `PLAIN`/`HTML` decoder, value-hash, source-line, path, mode, metadata, and committed base/head bindings.

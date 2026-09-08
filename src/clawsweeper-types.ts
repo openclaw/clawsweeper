@@ -772,6 +772,7 @@ export interface ReviewContextLedgerEntry {
 }
 
 export interface ReviewPromptRuntimeHints {
+  allowlistedNetwork?: boolean;
   targetDir?: string;
   proofScratchDir?: string;
   mediaProofManifestPath?: string;

@@ -586,3 +586,23 @@ pnpm run apply-decisions -- --target-repo openclaw/openclaw --sync-comments-only
 ```
 
 - Normal review/apply workflows also refresh missing or stale durable comments.
+
+### Reviewer network boundary
+
+Hosted issue/PR review tools use the `clawsweeper-review` permission profile in
+`.github/actions/setup-codex/review-permissions.toml`, owned by ClawSweeper
+maintainers and verified with Codex 0.153.3. Update this guidance when the pinned
+CLI, profile, credential handling, or setup smoke changes. The active profile
+extends read-only filesystem access and enables the managed proxy in limited
+mode for its explicit GitHub, npm, Node, MDN, and OpenClaw documentation hosts.
+Other hosts are blocked; blocked access is not evidence against the PR. The
+sandbox receives no GitHub token. Use public endpoints, pre-fetched GitHub
+context, and the downloaded screenshots/videos in the media proof manifest.
+
+Review setup opts in with `review-network: "true"`; review commands select
+`--codex-sandbox clawsweeper-review`, translated to Codex configuration
+`default_permissions="clawsweeper-review"`. Neither exec nor the app-server
+thread/turn path overrides that profile with a legacy sandbox policy. Setup
+fails before publication if allowed HTTPS fails, unlisted HTTPS is not rejected
+by the proxy, or a checkout write succeeds. Non-review callers and offline local
+reviews keep their existing sandbox settings.

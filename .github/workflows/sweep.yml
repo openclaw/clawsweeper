@@ -1107,6 +1107,7 @@ jobs:
         with:
           auth-mode: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE || 'proxy' }}
           login-status: "true"
+          review-network: "true"
 
       - uses: ./.github/actions/setup-openclaw
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
@@ -1474,7 +1475,7 @@ jobs:
             --max-pages 1 \
             --codex-model internal \
             --codex-reasoning-effort "$CLAWSWEEPER_CODEX_REASONING_EFFORT" \
-            --codex-sandbox read-only \
+            --codex-sandbox clawsweeper-review \
             --codex-timeout-ms "$codex_timeout_ms" \
             --item-numbers "${{ steps.target.outputs.item_number }}" \
             --readonly-openclaw \
@@ -4685,7 +4686,7 @@ jobs:
             --shard-count "$SHARD_COUNT" \
             --codex-model internal \
             --codex-reasoning-effort "$CLAWSWEEPER_CODEX_REASONING_EFFORT" \
-            --codex-sandbox read-only \
+            --codex-sandbox clawsweeper-review \
             --min-active-shards "$MIN_ACTIVE_SHARDS" \
             --min-backfill-review-age-minutes "$MIN_BACKFILL_REVIEW_AGE_MINUTES" \
             --coverage-tracked-items-manifest .artifacts/worker-records-manifest.json \
@@ -4900,6 +4901,7 @@ jobs:
         with:
           auth-mode: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE || 'proxy' }}
           login-status: "true"
+          review-network: "true"
 
       - uses: ./clawsweeper/.github/actions/setup-openclaw
 
@@ -5003,7 +5005,7 @@ jobs:
             --max-pages ${{ needs.plan.outputs.max_pages }} \
             --codex-model internal \
             --codex-reasoning-effort "$CLAWSWEEPER_CODEX_REASONING_EFFORT" \
-            --codex-sandbox read-only \
+            --codex-sandbox clawsweeper-review \
             --codex-timeout-ms ${{ needs.plan.outputs.codex_timeout_ms }} \
             --item-numbers "${{ matrix.item_numbers }}" \
             "${pr_comment_activity_arg[@]}" \

@@ -723,7 +723,16 @@ publication, and queue lifecycle.
   Codex exits.
 - The retired hosted commit-review lane no longer mints target credentials;
   `pnpm local-review` operates on the local branch range without GitHub writes.
-- CI makes the target checkout read-only for reviews.
+- CI keeps the target checkout read-only and gives issue/PR reviewers a managed
+  network proxy restricted to the hosts in
+  [the review permission profile](.github/actions/setup-codex/review-permissions.toml):
+  GitHub, npm, Node, MDN, and OpenClaw documentation. Limited mode inspects HTTPS
+  and permits only GET/HEAD/OPTIONS; other hosts are blocked. Review tools have
+  no GitHub token, so they use public endpoints and pre-fetched context, including
+  the local media proof manifest. A blocked request is not evidence against a PR.
+  Setup must prove allowed HTTPS, denied unlisted HTTPS, and denied checkout
+  writes before reviews can publish. Offline local reviews retain their existing
+  network restriction.
 - Reviews fail if Codex leaves tracked or untracked changes behind.
 - Snapshot changes block apply unless the only change is the bot’s own review
   comment.
