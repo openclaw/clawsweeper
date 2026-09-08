@@ -3,15 +3,29 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync, execFileSync } from "node:child_process";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
+import { once } from "node:events";
 import { stripTypeScriptTypes } from "node:module";
+import { createReviewedPrActivityCursorV2 } from "../../../dist/review-activity-cursor.js";
 import { workPlanCandidateReport, reportWithSyncedReviewComment } from "../../../test/helpers.ts";
 
 const source = process.cwd();
 const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-pair-proof-")));
 const output = path.resolve(process.argv[2] || ".artifacts/paired-close-drift");
 fs.mkdirSync(output, { recursive: true });
-const transport = fileURLToPath(new URL("./gh.cjs", import.meta.url));
+const transport = fileURLToPath(new URL("./api-server.cjs", import.meta.url));
+const nativeGh = process.env.PAIR_NATIVE_GH || "/opt/homebrew/bin/gh";
+let server;
+async function stopServer() {
+  const child = server;
+  server = undefined;
+  if (child && child.exitCode === null && child.signalCode === null) {
+    const closed = once(child, "close");
+    child.kill("SIGTERM");
+    await closed;
+  }
+}
+
 const owners = [
   "clawsweeper-apply-close-policies",
   "clawsweeper-apply-candidate-guards",
@@ -23,6 +37,7 @@ const owners = [
 ];
 const runtimes = {};
 const summary = [];
+const socketDirs = [];
 function initialize(root, scenario) {
   for (const name of ["items", "closed", "plans", "baselines", "artifacts"])
     fs.mkdirSync(path.join(root, name), { recursive: true });
@@ -57,7 +72,16 @@ function initialize(root, scenario) {
       item_created_at: "2026-01-01T00:00:00Z",
       item_updated_at: "2026-05-01T00:00:00Z",
       reviewed_at: "2026-09-08T00:00:00Z",
-      ...(pr ? { pull_head_sha: state.head } : {}),
+      ...(pr
+        ? {
+            pull_head_sha: state.head,
+            review_activity_cursor: createReviewedPrActivityCursorV2({
+              reviews: [],
+              inlineComments: [],
+              reviewThreads: [],
+            }),
+          }
+        : {}),
     });
     report = report.replace(
       "The dashboard has queue_fix_pr candidates but no generated coding plan.",
@@ -171,13 +195,95 @@ try {
         "--canonical-record-baseline-dir",
         path.join(root, "baselines"),
       ];
+      const portFile = path.join(root, "port");
+      const socketDir = fs.mkdtempSync(path.join(os.tmpdir(), "p-"));
+      socketDirs.push(socketDir);
+      const socketPath = path.join(socketDir, "s");
+      server = spawn(process.execPath, [transport], {
+        env: {
+          PAIR_PROOF_ROOT: root,
+          PAIR_SOCKET: socketPath,
+          PAIR_PORT_FILE: portFile,
+        },
+        stdio: ["ignore", "ignore", "inherit"],
+      });
+      for (let i = 0; i < 100 && !fs.existsSync(portFile); i++)
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.ok(fs.existsSync(portFile), "local HTTP socket server started");
+      fs.mkdirSync(path.join(root, "gh-config"));
+      fs.writeFileSync(
+        path.join(root, "gh-config/config.yml"),
+        "telemetry: disabled\nhttp_unix_socket: " + socketPath + "\n",
+      );
       const env = {
         PATH: "/usr/bin:/bin",
         TMPDIR: process.env.TMPDIR,
-        GH_BIN: process.execPath,
-        GH_BIN_ARGS: JSON.stringify([transport]),
-        PAIR_PROOF_ROOT: root,
+        HOME: root,
+        XDG_STATE_HOME: path.join(root, "gh-state"),
+        GH_BIN: nativeGh,
+        GH_HOST: "github.com",
+        GH_TOKEN: "synthetic-pair-proof-token",
+        GH_CONFIG_DIR: path.join(root, "gh-config"),
+        HTTPS_PROXY: "http://127.0.0.1:9",
+        HTTP_PROXY: "http://127.0.0.1:9",
+        NO_PROXY: "127.0.0.1,localhost",
       };
+      if (variant === "baseline")
+        console.log(
+          JSON.stringify({
+            client: execFileSync(nativeGh, ["--version"], {
+              encoding: "utf8",
+              env,
+              cwd: root,
+            }).split("\n")[0],
+            transport: "native gh HTTP over Unix socket",
+            scenario,
+            baseline: execFileSync("git", ["rev-parse", "origin/main"], {
+              encoding: "utf8",
+            }).trim(),
+          }),
+        );
+      if (scenario === "stable" && variant === "baseline") {
+        const before = fs.readFileSync(path.join(root, "state.json"), "utf8");
+        for (const input of [
+          { labelableId: "UNKNOWN_TARGET", labelIds: [] },
+          { labelableId: "PR_321", labelIds: ["L_UNKNOWN_LABEL"] },
+        ]) {
+          const file = path.join(root, "invalid-label.json");
+          fs.writeFileSync(
+            file,
+            JSON.stringify({
+              query:
+                "mutation LabelAdd($input:AddLabelsToLabelableInput!){addLabelsToLabelable(input:$input){__typename}}",
+              variables: { input },
+            }),
+          );
+          const rejected = spawnSync(nativeGh, ["api", "graphql", "--input", file], {
+            env,
+            encoding: "utf8",
+            timeout: 10_000,
+          });
+          assert.equal(rejected.status, 1, "native gh must reject invalid mutation IDs");
+          assert.equal(
+            fs.readFileSync(path.join(root, "state.json"), "utf8"),
+            before,
+            "invalid IDs must not mutate fixture state",
+          );
+        }
+        const wrongMethod = spawnSync(
+          nativeGh,
+          ["api", "--method", "POST", "search/issues?q=fixture"],
+          { env, cwd: root, encoding: "utf8", timeout: 10_000 },
+        );
+        assert.equal(wrongMethod.status, 1, "read-only route must reject native POST");
+        assert.equal(fs.readFileSync(path.join(root, "state.json"), "utf8"), before);
+        console.log(
+          JSON.stringify({
+            invalidGraphqlTargetsAndLabels: "rejected without state mutation",
+            wrongReadMethod: "rejected without state mutation",
+          }),
+        );
+      }
       const result = spawnSync(process.execPath, args, {
         cwd: runtime,
         env,
@@ -185,6 +291,7 @@ try {
         timeout: 120000,
         maxBuffer: 10 * 1024 * 1024,
       });
+      await stopServer();
       const tag = variant + "-" + scenario;
       fs.writeFileSync(path.join(output, tag + ".stdout.log"), result.stdout || "");
       fs.writeFileSync(path.join(output, tag + ".stderr.log"), result.stderr || "");
@@ -210,7 +317,7 @@ try {
       );
       assert.equal(result.status, scenario === "read-failure" ? 1 : 0, `${tag}: ${result.stderr}`);
       if (scenario === "read-failure")
-        assert.match(result.stderr, /HTTP 422: synthetic counterpart refresh failure/);
+        assert.match(result.stderr, /synthetic counterpart refresh failure/);
       assert.equal(note, true, `${tag}: must reach the parent closeout note`);
       assert.equal(
         closes.includes(321),
@@ -226,9 +333,15 @@ try {
         exit: result.status,
         closes,
         postNoteCounterpartRead: refreshed,
+        wireRequests: trace.filter((x) => x.method).length,
+        graphqlCloseRequests: trace.filter(
+          (x) => x.event === "graphql" && x.query.includes("closePullRequest"),
+        ).length,
       });
     }
   fs.writeFileSync(path.join(output, "summary.json"), JSON.stringify(summary, null, 2) + "\n");
 } finally {
+  await stopServer();
+  for (const dir of socketDirs) fs.rmSync(dir, { recursive: true, force: true });
   fs.rmSync(scratch, { recursive: true, force: true });
 }
