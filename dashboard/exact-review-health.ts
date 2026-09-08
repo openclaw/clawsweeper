@@ -27,6 +27,12 @@ export type ExactReviewPhaseSummary = {
   oldest_key: string | null;
 };
 
+export type ExactReviewHandoffPhaseCensus = {
+  count: number;
+  oldestAt: number | null;
+  oldestKey: string | null;
+};
+
 export type ExactReviewHandoffHealth = {
   status: "idle" | "healthy" | "degraded" | "stalled";
   reason:
@@ -99,19 +105,9 @@ export function summarizeExactReviewHandoff({
   shedSinceReset?: number;
 }): ExactReviewHandoffHealth {
   const safeNow = finiteTimestamp(now, Date.now());
-  const safeCapacity = Math.max(0, Math.floor(finiteNumber(capacity, 0)));
-  const safeShedSinceReset = Math.max(0, Math.floor(finiteNumber(shedSinceReset, 0)));
   const safeLeaseMs = Math.max(1_000, finiteNumber(dispatchLeaseMs, 10 * 60_000));
   const safeExecutionLeaseMs = Math.max(1_000, finiteNumber(executionLeaseMs, 130 * 60_000));
-  const warningMs = Math.min(2 * 60_000, Math.max(30_000, Math.floor(safeLeaseMs / 3)));
-  const stalledMs = Math.min(
-    5 * 60_000,
-    Math.max(warningMs + 1_000, Math.floor((safeLeaseMs * 2) / 3)),
-  );
-  const phaseValues: Record<
-    ExactReviewPhase,
-    { count: number; oldestAt: number | null; oldestKey: string | null }
-  > = {
+  const phaseValues: Record<ExactReviewPhase, ExactReviewHandoffPhaseCensus> = {
     pending: { count: 0, oldestAt: null, oldestKey: null },
     dispatching: { count: 0, oldestAt: null, oldestKey: null },
     leased: { count: 0, oldestAt: null, oldestKey: null },
@@ -145,16 +141,55 @@ export function summarizeExactReviewHandoff({
     }
   }
 
+  return projectExactReviewHandoff({
+    itemCount: items.length,
+    phaseCensus: phaseValues,
+    recoveryReasons,
+    dispatcher,
+    now: safeNow,
+    capacity,
+    dispatchLeaseMs: safeLeaseMs,
+    shedSinceReset,
+  });
+}
+
+export function projectExactReviewHandoff({
+  itemCount,
+  phaseCensus,
+  recoveryReasons,
+  dispatcher,
+  now,
+  capacity,
+  dispatchLeaseMs,
+  shedSinceReset = 0,
+}: {
+  itemCount: number;
+  phaseCensus: Record<ExactReviewPhase, ExactReviewHandoffPhaseCensus>;
+  recoveryReasons: Record<ExactReviewReviewRecoveryReason, number>;
+  dispatcher?: ExactReviewHealthDispatcher | undefined;
+  now: number;
+  capacity: number;
+  dispatchLeaseMs: number;
+  shedSinceReset?: number;
+}): ExactReviewHandoffHealth {
+  const safeCapacity = Math.max(0, Math.floor(finiteNumber(capacity, 0)));
+  const safeShedSinceReset = Math.max(0, Math.floor(finiteNumber(shedSinceReset, 0)));
+  const safeLeaseMs = Math.max(1_000, finiteNumber(dispatchLeaseMs, 10 * 60_000));
+  const warningMs = Math.min(2 * 60_000, Math.max(30_000, Math.floor(safeLeaseMs / 3)));
+  const stalledMs = Math.min(
+    5 * 60_000,
+    Math.max(warningMs + 1_000, Math.floor((safeLeaseMs * 2) / 3)),
+  );
   const phases = Object.fromEntries(
     PHASES.map((phase) => {
-      const { count, oldestAt, oldestKey } = phaseValues[phase];
+      const { count, oldestAt, oldestKey } = phaseCensus[phase];
       return [
         phase,
         {
           count,
           oldest_at: oldestAt === null ? null : new Date(oldestAt).toISOString(),
           oldest_age_seconds:
-            oldestAt === null ? null : Math.max(0, Math.floor((safeNow - oldestAt) / 1_000)),
+            oldestAt === null ? null : Math.max(0, Math.floor((now - oldestAt) / 1_000)),
           oldest_key: oldestKey,
         },
       ];
@@ -163,7 +198,7 @@ export function summarizeExactReviewHandoff({
 
   const active = phases.dispatching.count + phases.leased.count;
   const common = {
-    observed_at: new Date(safeNow).toISOString(),
+    observed_at: new Date(now).toISOString(),
     warning_after_seconds: Math.floor(warningMs / 1_000),
     stalled_after_seconds: Math.floor(stalledMs / 1_000),
     capacity: safeCapacity,
@@ -174,7 +209,7 @@ export function summarizeExactReviewHandoff({
     recovery_reasons: recoveryReasons,
     phases,
   };
-  if (items.length === 0) {
+  if (itemCount === 0) {
     return {
       status: "idle",
       reason: "queue_empty",

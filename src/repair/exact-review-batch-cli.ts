@@ -15,15 +15,18 @@ import { parseArgs } from "node:util";
 import type { ExactReviewBatchCompletion } from "./exact-review-batch-publisher.js";
 import {
   ExactReviewBatchQueueClient,
-  ExactReviewBatchQueueTransportError,
   type ExactReviewBatchLease,
   type ExactReviewGithubRateLimitObservation,
   type ExactReviewGithubRequestMetric,
   type ExactReviewBatchQueueItem,
   type ExactReviewBatchPostEffectRoute,
 } from "./exact-review-batch-queue-client.js";
+import { ExactReviewBatchQueueTransportError } from "./exact-review-queue-transport-error.js";
 import { exactReviewBatchStateWriterProgressReporter } from "./exact-review-batch-state-writer-progress.js";
-import { postDirectPublicationResult } from "./exact-review-direct-publication.js";
+import {
+  postDirectPublicationResult,
+  prepareDirectPublicationPayload,
+} from "./exact-review-direct-publication.js";
 import { failureFingerprint } from "./error-fingerprint.js";
 import { StateWriterTelemetryRecorder } from "./state-writer-telemetry-recorder.js";
 import { normalizeRepo, slugForRepo } from "../repository-profiles.js";
@@ -512,20 +515,12 @@ async function publishCanonicalBatch(
   const outcomes: BatchPublicationOutcome[] = [];
   for (const { member, plan } of candidates) {
     const publication = plan.publication!;
-    const operations = plan.operations.map((operation) => ({ ...operation }));
     try {
       const result = await postDirectPublicationResult({
         baseUrl: env("EXACT_REVIEW_QUEUE_URL"),
         webhookSecret: env("CLAWSWEEPER_WEBHOOK_SECRET"),
         path: "/internal/exact-review/publication-batch-results",
-        payload: {
-          canonicalTargetKey: publication.canonicalTargetKey,
-          fenceKey: publication.fenceKey,
-          revision: plan.identity.revision,
-          identity: { ...publication, ...plan.identity },
-          operations,
-          totalBytes: plan.totalBytes,
-        },
+        payload: prepareDirectPublicationPayload({ revision: plan.identity.revision, plan }),
       });
       outcomes.push(publicationOutcomeFromResult(member, publication, result));
     } catch (error) {

@@ -13,7 +13,8 @@ close state, or repair state.
 - `/api/triage`: aggregate JSON snapshot used by the UI
 
 The live pipeline dashboard remains at `/`. Pull-request proof aggregates live
-separately at `/pr-proof-triage`.
+separately at `/pr-proof-triage`. OpenClaw Bay is unaffected by this collection
+change: it does not consume `/api/triage`.
 
 ## Public Contract
 
@@ -46,9 +47,12 @@ integers no greater than 1,000,000. `item_limit` is between 1 and 1,000 for a
 valid snapshot and describes only the bounded private collection used to
 calculate the view; it is not a promise that public item rows are available.
 
-`complete` is true only when private collection produced no diagnostics.
-Collection diagnostics are reduced to `error_count`; their text is never
-serialized. Invalid or uncertain input produces a fixed unavailable aggregate:
+`complete` is true only when label and Search collection produced no
+diagnostics. Real source failures and exhausted Search budgets remain incomplete
+and contribute to `error_count`; their text is never serialized. Linked-PR
+GraphQL enrichment is not performed, so missing enrichment auth, GraphQL
+failures, and enrichment truncation cannot mark otherwise valid counts incomplete.
+Invalid or uncertain input produces a fixed unavailable aggregate:
 `generated_at` is null, `complete` is false, `error_count` is 1, every count and
 limit is null, and every `items` array is empty.
 
@@ -62,9 +66,10 @@ set.
 The Worker currently collects GitHub Search results privately in memory. It
 discovers configured advisory labels, loads a bounded broad issue sample, and
 uses fixed focused searches when a capped broad sample cannot support a
-complete view. Linked-pull-request and routing metadata may be used inside that
-collection step. None of those raw records is a public or ordinary persisted
-triage model.
+complete view. View membership uses labels (including `clawsweeper:linked-pr-open`
+for Already has PR); Search counts use `total_count`. The Worker does not fetch
+linked-PR metadata or compute routing groups. None of the raw records is a
+public or ordinary persisted triage model.
 
 The Worker applies the public projector before serializing either the fresh or
 stale cache body. It applies the same projector again on every cache read. A

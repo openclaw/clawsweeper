@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { sha256 } from "../content-hash.js";
+import { repositoryManagedPullRequestCloseReason } from "../repository-profiles.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -32,6 +33,7 @@ import {
   buildRepairSquashMergeMessage,
   writeRepairSquashMergeBody,
 } from "./repair-merge-message.js";
+import { fetchPullRequestView, validateResolvedReviewThreads } from "./merge-readiness-github.js";
 import {
   compactPrCloseCoverageProofComment,
   compactPrCloseCoverageProofText,
@@ -398,6 +400,16 @@ function applyCloseAction({
 
   let live = fetchIssue(result.repo, target);
   const kind = live.pull_request ? "pull_request" : "issue";
+  const managedPullRequestReason =
+    live.state === "open"
+      ? repositoryManagedPullRequestCloseReason(
+          { repo: result.repo, kind, author: String(live.user?.login ?? "") },
+          () => fetchPullRequest(result.repo, target),
+        )
+      : null;
+  if (managedPullRequestReason) {
+    return { ...base, status: "blocked", reason: managedPullRequestReason, live_state: live.state };
+  }
   const authorAssociation = normalizeAuthorAssociation(live.author_association);
   if (hasSecuritySignal(live)) {
     return {
@@ -886,58 +898,6 @@ function validateMergedCandidateFix(repo: string, candidateFix: LooseRecord) {
   const candidate = fetchPullRequest(repo, candidateFix);
   if (!candidate.merged_at) return "candidate fix is not merged";
   return "";
-}
-
-function validateResolvedReviewThreads(repo: string, target: LooseRecord) {
-  const [owner, name] = repo.split("/");
-  const query = `
-    query($owner: String!, $name: String!, $number: Int!) {
-      repository(owner: $owner, name: $name) {
-        pullRequest(number: $number) {
-          reviewThreads(first: 100) {
-            pageInfo { hasNextPage }
-            nodes {
-              isResolved
-              path
-              line
-              comments(first: 1) {
-                nodes {
-                  url
-                  author { login }
-                  body
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  `;
-  const data = ghJson([
-    "api",
-    "graphql",
-    "-f",
-    `owner=${owner}`,
-    "-f",
-    `name=${name}`,
-    "-F",
-    `number=${target}`,
-    "-f",
-    `query=${query}`,
-  ]);
-  const threads = data?.data?.repository?.pullRequest?.reviewThreads;
-  if (threads?.pageInfo?.hasNextPage) return "too many review threads to prove resolved";
-  const unresolved = (threads?.nodes ?? []).filter(
-    (thread: JsonValue) => thread && !thread.isResolved,
-  );
-  if (unresolved.length === 0) return "";
-  const examples = unresolved
-    .slice(0, 3)
-    .map(
-      (thread: JsonValue) =>
-        thread.comments?.nodes?.[0]?.url ?? `${thread.path}:${thread.line ?? "?"}`,
-    );
-  return `unresolved review threads remain: ${examples.join(", ")}`;
 }
 
 function validateReplacementCloseout({ result, actionName, target }: LooseRecord) {
@@ -1693,31 +1653,6 @@ function fetchIssue(repo: string, number: JsonValue) {
 
 function fetchPullRequest(repo: string, number: JsonValue) {
   return ghJson(["api", `repos/${repo}/pulls/${number}`]);
-}
-
-function fetchPullRequestView(repo: string, number: JsonValue) {
-  return ghJson([
-    "pr",
-    "view",
-    String(number),
-    "--repo",
-    repo,
-    "--json",
-    [
-      "baseRefName",
-      "isDraft",
-      "mergeable",
-      "mergeCommit",
-      "mergeStateStatus",
-      "mergedAt",
-      "reviewDecision",
-      "state",
-      "statusCheckRollup",
-      "title",
-      "updatedAt",
-      "url",
-    ].join(","),
-  ]);
 }
 
 function findExistingComment(repo: string, number: JsonValue, marker: LooseRecord, body: string) {

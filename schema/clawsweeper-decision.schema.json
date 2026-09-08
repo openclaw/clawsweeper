@@ -136,7 +136,8 @@
           },
           "command": {
             "type": ["string", "null"],
-            "description": "Exact read-only command used, when applicable. Implementation close decisions need at least one git blame/log/show command and one release or current-main-only check."
+            "pattern": "^[^\\r\\n\\u2028\\u2029]*$",
+            "description": "Exact read-only command used, on one physical line, when applicable. For a multiline command, set command to null and preserve the command and explanation in detail; do not invent a flattened command. Implementation close decisions need at least one git blame/log/show command and one release or current-main-only check."
           },
           "sha": {
             "type": ["string", "null"],

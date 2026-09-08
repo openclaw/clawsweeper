@@ -694,6 +694,8 @@ test("runCodex honors env login config unless preserving local Codex auth", () =
     `#!/usr/bin/env node
 ${fakeCodexSandboxPass}
 const fs = require("node:fs");
+if (process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN || process.env.GITHUB_TOKEN) process.exit(3);
+fs.writeFileSync(process.env.CODEX_ARGS_PATH + ".env", JSON.stringify({ GH_TOKEN: process.env.GH_TOKEN }));
 fs.writeFileSync(process.env.CODEX_ARGS_PATH, JSON.stringify(process.argv.slice(2)));
 const outputIndex = process.argv.indexOf("--output-last-message");
 if (outputIndex === -1) process.exit(2);
@@ -706,10 +708,12 @@ fs.writeFileSync(process.argv[outputIndex + 1], process.env.CODEX_DECISION_JSON)
     CODEX_ARGS_PATH: process.env.CODEX_ARGS_PATH,
     CODEX_DECISION_JSON: process.env.CODEX_DECISION_JSON,
     CLAWSWEEPER_CODEX_LOGIN_METHOD: process.env.CLAWSWEEPER_CODEX_LOGIN_METHOD,
+    CLAWSWEEPER_PROOF_INSPECTION_TOKEN: process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN,
   };
   process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
   process.env.CODEX_ARGS_PATH = argsPath;
   process.env.CLAWSWEEPER_CODEX_LOGIN_METHOD = "chatgpt";
+  process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN = "synthetic-inspection-token";
   process.env.CODEX_DECISION_JSON = JSON.stringify(
     closeDecision({
       decision: "keep_open",
@@ -722,7 +726,7 @@ fs.writeFileSync(process.argv[outputIndex + 1], process.env.CODEX_DECISION_JSON)
     }),
   );
 
-  const runAndReadArgs = (preserveCodexAuth: boolean): string[] => {
+  const runAndReadArgs = (preserveCodexAuth: boolean, sandboxMode = "read-only"): string[] => {
     const decision = runCodexForTest({
       item: item({ number: 83395 }),
       context: { issue: {}, comments: [], timeline: [] },
@@ -730,7 +734,7 @@ fs.writeFileSync(process.argv[outputIndex + 1], process.env.CODEX_DECISION_JSON)
       model: "model-test",
       openclawDir,
       reasoningEffort: "high",
-      sandboxMode: "read-only",
+      sandboxMode,
       serviceTier: "",
       preserveCodexAuth,
       timeoutMs: 10_000,
@@ -738,10 +742,24 @@ fs.writeFileSync(process.argv[outputIndex + 1], process.env.CODEX_DECISION_JSON)
       prompt: "Return a review decision.",
     });
     assert.equal(decision.decision, "keep_open");
+    assert.deepEqual(
+      JSON.parse(readFileSync(argsPath + ".env", "utf8")),
+      process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN
+        ? { GH_TOKEN: "synthetic-inspection-token" }
+        : {},
+    );
     return JSON.parse(readFileSync(argsPath, "utf8")) as string[];
   };
 
   try {
+    const networkArgs = runAndReadArgs(false, "clawsweeper-review");
+    assert.ok(networkArgs.includes('default_permissions="clawsweeper-review"'));
+    assert.ok(networkArgs.includes('approval_policy="never"'));
+    assert.equal(networkArgs.includes("--sandbox"), false);
+    delete process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN;
+    runAndReadArgs(false, "clawsweeper-review");
+    runAndReadArgs(false);
+    process.env.CLAWSWEEPER_PROOF_INSPECTION_TOKEN = "synthetic-inspection-token";
     const defaultArgs = runAndReadArgs(false);
     assert.deepEqual(defaultArgs, [
       "exec",

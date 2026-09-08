@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import type { JsonObject, JsonValue } from "./json-types.js";
 import { asJsonObject } from "./json-types.js";
 import { parseArgs, repoRoot } from "./lib.js";
-import { readJsonFile } from "./json-file.js";
+import { readJsonFile, writeJsonFile } from "./json-file.js";
 import {
   errorText,
   postOpenClawAgentHook,
@@ -713,11 +713,6 @@ function summaryRow(
   reason: string | null,
 ): ClawSweeperEventNotifierSummary {
   return { status, considered, pending, sent, failed, skipped, exitCode: 0, reason };
-}
-
-function writeJsonFile(filePath: string, value: JsonValue) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
 async function main() {

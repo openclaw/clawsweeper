@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { requiredCliValue } from "../src/clawsweeper-args.ts";
 import { discoverWorkerRecordRepoSlugs, exportWorkerRecords } from "./worker-records.ts";
 
 const CANONICAL_PROMOTION_KEYS = Object.freeze([
@@ -136,12 +137,12 @@ function parseArgs(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--") continue;
-    if (arg === "--output") parsed.output = requiredValue(argv, ++index, arg);
-    else if (arg === "--records-url") parsed.recordsUrl = requiredValue(argv, ++index, arg);
+    if (arg === "--output") parsed.output = requiredCliValue(argv, ++index, arg);
+    else if (arg === "--records-url") parsed.recordsUrl = requiredCliValue(argv, ++index, arg);
     else if (arg === "--repo-slugs") {
-      parsed.repoSlugs = parseRepoSlugs(requiredValue(argv, ++index, arg));
+      parsed.repoSlugs = parseRepoSlugs(requiredCliValue(argv, ++index, arg));
     } else if (arg === "--max-records") {
-      parsed.maxRecords = positiveInteger(requiredValue(argv, ++index, arg), arg);
+      parsed.maxRecords = positiveInteger(requiredCliValue(argv, ++index, arg), arg);
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
@@ -152,12 +153,6 @@ function parseArgs(argv) {
 function parseRepoSlugs(value) {
   if (value === undefined || value.trim() === "") return undefined;
   return [...new Set(value.split(/[\s,]+/).filter(Boolean))].sort();
-}
-
-function requiredValue(argv, index, flag) {
-  const value = argv[index];
-  if (!value || value.startsWith("--")) throw new Error(`${flag} requires a value`);
-  return value;
 }
 
 function positiveInteger(value, name) {

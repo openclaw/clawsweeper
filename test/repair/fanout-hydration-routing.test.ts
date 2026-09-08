@@ -16,15 +16,15 @@ test("only normal-review fanout uses identities; hot intake skips preflight and 
     (step: { name?: string }) => step.name === "Dispatch selected targets",
   );
   assert.equal(full.if, "${{ github.event.schedule == '37 */6 * * *' }}");
-  assert.equal(identity.if, "${{ github.event.schedule == '41/10 * * * *' }}");
+  assert.equal(identity.if, "${{ github.event.schedule == '41 * * * *' }}");
   const nodeSetup = fanout.steps.find(
     (step: { uses?: string }) => step.uses === "actions/setup-node@v6",
   );
   assert.equal(nodeSetup.if, identity.if);
-  for (const schedule of ["41/10 * * * *", "4/20 * * * *", "37 */6 * * *"]) {
+  for (const schedule of ["41 * * * *", "4/20 * * * *", "37 */6 * * *"]) {
     const matches = (condition: string) =>
       condition === "${{ github.event.schedule == '" + schedule + "' }}";
-    assert.equal(matches(identity.if), schedule === "41/10 * * * *");
+    assert.equal(matches(identity.if), schedule === "41 * * * *");
     assert.equal(matches(full.if), schedule === "37 */6 * * *");
   }
   assert.equal(identity.run, "node scripts/prepare-worker-coverage-manifest.ts");

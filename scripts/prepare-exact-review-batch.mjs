@@ -20,6 +20,9 @@ import {
   appendLegacyAvoidedGithubEgressMember,
   recordGithubEgressMember,
 } from "../dist/github-egress-observer.js";
+import { eventRecordPaths } from "../dist/repair/event-record-store.js";
+import { assertRepo } from "../dist/repair/comment-router-utils.js";
+import { requirePositiveInteger } from "../dist/value-coerce.js";
 import {
   exactReviewArtifactReceiptTuple,
   publishExactReviewArtifact,
@@ -139,14 +142,49 @@ async function controller() {
     let timedOut = false;
     let failureStage = "canonical record copy";
     try {
+      const targetRepo = String(item.decision?.targetRepo || "");
+      assertRepo(targetRepo, "targetRepo");
+      const itemNumber = String(requirePositiveInteger(item.decision?.itemNumber, "itemNumber"));
+      if (targetRepo.split("/").some((part) => part === "." || part === "..")) {
+        throw new Error("invalid canonical record identity");
+      }
+      const paths = eventRecordPaths({
+        targetRepo,
+        itemNumber,
+        snapshotDir: join(root, ".artifacts/event-record-snapshot"),
+      });
       const recordsSource = join(workspace, "records");
       if (!existsSync(recordsSource)) throw new Error("canonical records are not hydrated");
-      cpSync(recordsSource, join(root, "records"), { recursive: true });
+      if (!statSync(recordsSource).isDirectory()) {
+        // Preserve the publisher's non-retryable failure for an invalid records root.
+        writeFailure(outcomePath, "permanent_failure", "unknown_failure");
+        throw new Error("canonical records are not a directory");
+      }
+      // Exact-event apply is selected-only, including paired-record lookups.
+      for (const path of [
+        paths.itemRecord,
+        paths.closedRecord,
+        paths.planRecord,
+        paths.decisionPacket,
+      ]) {
+        const source = join(workspace, path);
+        if (!existsSync(source)) continue;
+        const destination = join(root, path);
+        mkdirSync(dirname(destination), { recursive: true });
+        cpSync(source, destination);
+      }
       failureStage = "worker execution";
       const status = await run(
         process.execPath,
         [process.argv[1], "worker", itemPath, root, workspace],
-        { timeoutMs: Math.min(itemTimeoutMs, remainingTimeout(deadline)) },
+        {
+          timeoutMs: Math.min(itemTimeoutMs, remainingTimeout(deadline)),
+          env: {
+            ...process.env,
+            EXACT_REVIEW_BATCH_ID: manifest.batchId,
+            EXACT_REVIEW_BATCH_LEASE_OWNER: manifest.leaseOwner,
+          },
+        },
       );
       const acquisition = readWorkerAcquisition(root);
       if (acquisition.cacheHit) cacheHits += 1;
@@ -444,8 +482,12 @@ async function worker(itemPath, root, workspace) {
         EXACT_REVIEW_WORK_ROOT: root,
         TARGET_REPO: targetRepo,
         ITEM_NUMBER: itemNumber,
+        EXACT_REVIEW_DECISION: JSON.stringify(producer),
         MIN_AGE_MINUTES: "0",
-        REVIEW_ONLY: String(producer.sourceAction === "failed_review_shard_recovery"),
+        REVIEW_ONLY: String(
+          producer.publicationPolicy === "record_comment_only" ||
+            producer.sourceAction === "failed_review_shard_recovery",
+        ),
         EXACT_EVENT_PUBLICATION: "true",
         EXACT_REVIEW_CLOSE_COVERAGE_DEFERRED: "true",
         EXACT_REVIEW_BATCH_ITEM_KEY: String(item.itemKey),

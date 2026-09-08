@@ -125,8 +125,8 @@ primary pipeline visualization. The control board does not infer an upstream
 reason for a cancellation or failure and exposes no queue, recovery, deploy,
 or rollback controls.
 
-The durable lifecycle board contains three inventory counts and six closed
-lifecycle-lane counts: pending, acknowledgement pending, completed, superseded,
+The collapsed **Retained lifecycle records** disclosure below queue telemetry
+contains three inventory counts and six closed lifecycle-lane counts: pending, acknowledgement pending, completed, superseded,
 requeued, and terminal attention. A complete projection may include at most 24
 cards drawn only from `PUBLIC_BAY_REPOS`. Each card contains the canonical
 repository and issue or pull-request number, a closed lane/state, a current
@@ -140,6 +140,26 @@ only for the final 24-card sample. Validation still costs a linear scan of that
 history; it does not retain a history-sized JavaScript array or identity set.
 An invalid historical row makes the whole projection unavailable even when it
 would not appear in the sample. Reads never prune or rewrite durable facts.
+Counts cover all retained records in the public repository scope, with no date
+filter: latest recorded state, not live backlog or cumulative event totals.
+Records are keyed by target, fence and revision; target revisions deduplicate
+target and revision; unique targets are repository/item identities. Beach and
+time filters do not affect this disclosure. The 24 cards sample across lanes,
+not in proportion to their totals. Retained does not establish all-time coverage.
+
+The top duration chart uses a zero-based minutes Y-axis and a fixed rolling
+last-hour X-axis in UTC anchored to `bay.timings.window_ended_at`, captured
+by the same query that computes the timing aggregate. It does not use the
+browser clock or the earlier outer status-collection timestamp. Stale
+status snapshots are labeled and missing timing-window timestamps
+makes the chart unavailable rather than shifting the data. Full-height bucket controls reveal interval, median,
+mean and sample count on hover, keyboard focus or tap. A full-width native
+interval picker with a 44-pixel minimum height provides an equivalent control
+for narrow/mobile buckets without stretching their time-axis geometry. Missing buckets are
+hatched gaps, never zero-duration samples; partial hour-edge buckets are labeled.
+The existing API returns at most 12 aligned five-minute buckets, so a rolling
+hour that intersects 13 can have an unrepresented edge bucket. This remains
+explicitly missing rather than being inferred from the overall aggregate.
 
 The public lifecycle response is cached for up to 20 seconds in Cloudflare's
 native, per-data-center cache, scoped to the verified public repository set.

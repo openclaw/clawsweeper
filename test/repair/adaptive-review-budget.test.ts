@@ -2,6 +2,30 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { adaptiveReviewBudgetForPullRequest } from "../../dist/repair/adaptive-review-budget.js";
+import { mediaFixtureUrls } from "../primary-body-fixture.ts";
+
+test("adaptive review budget includes unknown GitHub attachments once and excludes known images", () => {
+  const { attachment, legacyAttachment, prefix } = mediaFixtureUrls;
+  assert.equal(adaptiveReviewBudgetForPullRequest({ body: prefix }).mediaProofTimeoutMs, 0);
+  const budget = adaptiveReviewBudgetForPullRequest({
+    title: attachment,
+    body: [
+      attachment,
+      legacyAttachment,
+      prefix,
+      attachment.replace("github.com", "example.invalid"),
+    ].join("\n"),
+  });
+  assert.equal(budget.mediaProofTimeoutMs, 240_000);
+  assert.equal(budget.codexTimeoutMs, 600_000);
+});
+
+test("adaptive review budget caps GitHub attachment preprocessing at four URLs", () => {
+  const body = [1, 2, 3, 4, 5]
+    .map((n) => mediaFixtureUrls.attachment.replace(/.$/, String(n)))
+    .join("\n");
+  assert.equal(adaptiveReviewBudgetForPullRequest({ body }).mediaProofTimeoutMs, 480_000);
+});
 
 test("adaptive review budget normalizes REST aggregate and gh file shapes", () => {
   const aggregate = adaptiveReviewBudgetForPullRequest({

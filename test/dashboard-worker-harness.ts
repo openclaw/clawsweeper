@@ -32,10 +32,6 @@ import runtimeWorker, {
   workerWorkKind,
   workflowJobsForRunSnapshot,
 } from "../dashboard/worker.ts";
-import {
-  TRIAGE_ROUTING_GROUPS,
-  triageRoutingGroupsForLabels,
-} from "../dashboard/triage-routing-groups.ts";
 import { ExactReviewPublicationBatchStore } from "../dashboard/exact-review-publication-batches.ts";
 import {
   ExactReviewDirectPublicationStore,
@@ -156,7 +152,13 @@ class MemorySqlCursor<T extends Record<string, unknown>> implements Iterable<T> 
 }
 
 class MemorySqlStorage {
-  private readonly database = new DatabaseSync(":memory:");
+  private readonly database: DatabaseSync;
+  constructor(filename = ":memory:") {
+    this.database = new DatabaseSync(filename);
+  }
+  close() {
+    this.database.close();
+  }
   private failure: { pattern: RegExp; error: Error } | undefined;
   private bindingLimit = Number.POSITIVE_INFINITY;
   private queryHistory: Array<{ query: string; bindings: unknown[] }> | null = null;
@@ -305,7 +307,10 @@ class MemoryDurableStorage {
   private putFailure: { key: string; error: Error } | undefined;
   private deleteFailure: { key: string; error: Error } | undefined;
   private alarmAt: number | null = null;
-  readonly sql = new MemorySqlStorage();
+  readonly sql: MemorySqlStorage;
+  constructor(filename = ":memory:") {
+    this.sql = new MemorySqlStorage(filename);
+  }
   readonly kv = {
     get: (key: string) => this.values.get(key),
     put: (key: string, value: unknown) => this.putRawSync(key, value),
@@ -962,6 +967,17 @@ function createExactReviewAdmissionHarness(
   };
 }
 
+async function withExactReviewAdmissionHarness<T>(
+  harness: ReturnType<typeof createExactReviewAdmissionHarness>,
+  callback: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await callback();
+  } finally {
+    harness.restore();
+  }
+}
+
 function buildExactReviewQueueRequest(
   deliveryId: string,
   itemNumber: number,
@@ -1153,8 +1169,6 @@ export {
   summarizeBayJourneyTimings,
   workerWorkKind,
   workflowJobsForRunSnapshot,
-  TRIAGE_ROUTING_GROUPS,
-  triageRoutingGroupsForLabels,
   ExactReviewPublicationBatchStore,
   ExactReviewDirectPublicationStore,
   validateDirectPublicationPlan,
@@ -1188,6 +1202,7 @@ export {
   stateAppendQueueRequest,
   signedStateAppendRequest,
   createExactReviewAdmissionHarness,
+  withExactReviewAdmissionHarness,
   buildExactReviewQueueRequest,
   exactReviewPublicationOverrides,
   legacyExactReviewPublicationOverrides,

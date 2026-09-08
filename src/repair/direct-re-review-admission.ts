@@ -1,4 +1,16 @@
 export type DirectReReviewOrigin = "hosted_webhook" | "comment_router";
+export type InlineProofScenario = "web-ui-chat-proof" | "telegram-bot-e2e-proof";
+
+export function validProofAllowedScenarios(value: unknown): value is InlineProofScenario[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= 2 &&
+    new Set(value).size === value.length &&
+    value.every(
+      (scenario) => scenario === "web-ui-chat-proof" || scenario === "telegram-bot-e2e-proof",
+    )
+  );
+}
 
 export type DirectReReviewDecision = {
   targetRepo: string;
@@ -16,6 +28,7 @@ export type DirectReReviewDecision = {
   commandOrigin: DirectReReviewOrigin;
   commandStatusMarker: string;
   additionalPrompt: string;
+  proofAllowedScenarios?: InlineProofScenario[];
   statusCommentId?: number;
   sourceHeadSha?: string;
   sourceUpdatedAt?: string;
@@ -67,6 +80,7 @@ export function directReReviewIntake(options: {
   commandBodyDigest: string;
   commandOrigin: DirectReReviewOrigin;
   additionalPrompt: string;
+  proofAllowedScenarios?: InlineProofScenario[];
   statusCommentId?: number;
   candidateHeadSha?: string;
   bayJourneyDeliveryId?: string;
@@ -78,6 +92,12 @@ export function directReReviewIntake(options: {
   });
   if (!Number.isSafeInteger(options.installationId) || options.installationId < 1) {
     throw new Error("exact re-review installation is invalid");
+  }
+  if (
+    Object.hasOwn(options, "proofAllowedScenarios") &&
+    !validProofAllowedScenarios(options.proofAllowedScenarios)
+  ) {
+    throw new Error("exact re-review proof selection is invalid");
   }
   const decision: DirectReReviewIntake["decision"] = {
     targetRepo: options.targetRepo,
@@ -95,6 +115,10 @@ export function directReReviewIntake(options: {
     commandOrigin: options.commandOrigin,
     commandStatusMarker: directReReviewStatusMarker(options.itemNumber, commandVersionId),
     additionalPrompt: options.additionalPrompt.slice(0, 5_000),
+    // An explicit empty selection denies every proof tool; never omit it.
+    ...(options.proofAllowedScenarios !== undefined
+      ? { proofAllowedScenarios: [...options.proofAllowedScenarios] }
+      : {}),
     ...(options.statusCommentId ? { statusCommentId: options.statusCommentId } : {}),
     ...(options.candidateHeadSha ? { sourceHeadSha: options.candidateHeadSha } : {}),
   };
@@ -153,6 +177,8 @@ export function validateDirectReReviewIntake(value: unknown): DirectReReviewInta
       directReReviewStatusMarker(Number(decision.itemNumber), intake.commandVersionId) ||
     typeof decision.additionalPrompt !== "string" ||
     decision.additionalPrompt.length > 5_000 ||
+    (Object.hasOwn(decision, "proofAllowedScenarios") &&
+      !validProofAllowedScenarios(decision.proofAllowedScenarios)) ||
     Object.hasOwn(decision, "sourceHeadVerified") ||
     Object.hasOwn(decision, "sourceCommentVerified") ||
     Object.hasOwn(decision, "sourceAuthoritySeq") ||

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import type { JsonValue, LooseRecord } from "./json-types.js";
+import { repositoryManagedPullRequestCloseReason } from "../repository-profiles.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -90,7 +91,6 @@ import {
   renderFixArtifactForPrompt,
 } from "./fix-prompt-builder.js";
 import { canTreatRebaseAsCompleteRepair } from "./fix-edit-policy.js";
-import { applyMechanicalChangelogFix } from "./mechanical-changelog.js";
 import {
   finalizeExecutionReport,
   pinRepairBase,
@@ -2129,6 +2129,14 @@ function closeSupersededSourcePr({
     return { ...base, status: "skipped", reason: "already closed" };
   }
 
+  const managedPullRequestReason = repositoryManagedPullRequestCloseReason(
+    { repo: result.repo, kind: "pull_request", author: String(view.author?.login ?? "") },
+    () => fetchPullRequest(result.repo, parsed.number),
+  );
+  if (managedPullRequestReason) {
+    return { ...base, status: "skipped", reason: managedPullRequestReason };
+  }
+
   const comment = replacementSourceCloseComment({
     replacementPrUrl,
     sourcePrUrl: source,
@@ -2223,15 +2231,6 @@ function editValidatePrepareMerge({
         current_head: completed.current_head,
       });
     }
-  }
-  if (!producedChanges && !reconcileWithBase) {
-    const mechanicalFix = applyMechanicalChangelogFix({
-      fixArtifact,
-      repo: result.repo,
-      targetDir,
-    });
-    producedChanges = mechanicalFix?.status === "applied";
-    if (producedChanges) logProgress("applied mechanical changelog fix");
   }
   const repositoryContext = buildRepositoryContext({ fixArtifact, targetDir });
   const targetBaseSha = pinRepairBase(() =>

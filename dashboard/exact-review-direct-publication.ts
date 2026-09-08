@@ -1,5 +1,9 @@
 import { EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES } from "../src/exact-review-publication-limits.ts";
-import type { DurableStorage } from "./durable-storage.ts";
+import { sqlColumnNames, type DurableStorage } from "./durable-storage.ts";
+import {
+  manualPublicationOwnerFrom,
+  type ManualPublicationOwner,
+} from "../src/manual-publication-policy.ts";
 
 export { EXACT_REVIEW_DIRECT_PUBLICATION_MAX_FILE_BYTES };
 
@@ -61,6 +65,7 @@ export type DirectPublicationLifecyclePlan = {
 };
 
 export type DirectPublicationPlan = {
+  owner?: ManualPublicationOwner;
   canonicalTargetKey: string;
   fenceKey: string;
   revision: number;
@@ -228,12 +233,9 @@ export class ExactReviewDirectPublicationStore {
          PRIMARY KEY (item_key, revision)
        ) STRICT`,
     );
-    const directPublicationColumns = new Set(
-      Array.from(
-        this.storage.sql.exec(
-          `SELECT name FROM pragma_table_info('${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}')`,
-        ),
-      ).map((row) => String(row.name || "")),
+    const directPublicationColumns = sqlColumnNames(
+      this.storage,
+      EXACT_REVIEW_DIRECT_PUBLICATION_TABLE,
     );
     if (!directPublicationColumns.has("canonical_target_key")) {
       this.storage.sql.exec(
@@ -1877,6 +1879,7 @@ export async function validateDirectPublicationPlan(
     canonicalTargetKey,
     fenceKey,
     revision: plan.revision,
+    ...(plan.owner === undefined ? {} : { owner: manualPublicationOwnerFrom(plan.owner) }),
     ...(sourceSha === undefined ? {} : { sourceSha }),
     identity: {
       canonicalTargetKey,

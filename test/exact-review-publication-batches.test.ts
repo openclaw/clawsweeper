@@ -610,6 +610,54 @@ test("publication batches allow a bounded number of disjoint active owners", () 
   });
 });
 
+test("publication batch snapshots can exclude expired leases without reclaiming them", () => {
+  const storage = new TestStorage();
+  const batches = new ExactReviewPublicationBatchStore(storage);
+  batches.ensureSchemaSync();
+  for (const [index, leaseExpiresAt] of [1_999, 2_000, 2_001].entries()) {
+    batches.claim({
+      batchId: `boundary-${index}`,
+      leaseOwner: "worker",
+      leaseExpiresAt,
+      now: 1_000,
+      maxItems: 1,
+      maxConcurrentBatches: 3,
+      candidates: [candidates[index]],
+    });
+  }
+  const snapshot = () =>
+    [
+      "exact_review_publication_batches",
+      "exact_review_publication_batch_items",
+      "exact_review_publication_batch_generations",
+    ].map((table) => Array.from(storage.sql.exec(`SELECT * FROM ${table} ORDER BY rowid`)));
+  const before = snapshot();
+
+  const observed = batches.activeLeaseSnapshot(2_000, { reclaimExpired: false });
+
+  assert.deepEqual(observed, {
+    items: [{ itemKey: candidates[2].itemKey, batchId: "boundary-2" }],
+    itemKeys: [candidates[2].itemKey],
+    activeBatches: 1,
+    nextLeaseExpiresAt: 2_001,
+  });
+  assert.deepEqual(snapshot(), before);
+  assert.deepEqual(batches.activeLeaseSnapshot(2_000), observed);
+  assert.equal(
+    storage.scalar(
+      "SELECT COUNT(*) AS value FROM exact_review_publication_batches WHERE state = 'expired'",
+    ),
+    2,
+  );
+  assert.equal(
+    storage.scalar(
+      "SELECT COUNT(*) AS value FROM exact_review_publication_batch_items WHERE terminal_outcome = 'lease_expired'",
+    ),
+    2,
+  );
+  assert.deepEqual(snapshot()[2], before[2]);
+});
+
 test("batch schema migration derives a safe cap for an active legacy lease", () => {
   const storage = new TestStorage();
   storage.exec(
@@ -1082,12 +1130,12 @@ for (const churn of [
     await h.queue.alarm();
     assert.equal(dispatches.length, 1);
     if (churn === "all probed items gone") {
-      await h.post("/publications/supersede", {
-        items: [10, 11, 12, 13].map((number) => ({
-          item_key: `openclaw/openclaw#${number}@publish:${7000 + number}:1`,
-          revision: 1,
-        })),
-      });
+      for (const number of [10, 11, 12, 13]) {
+        h.storage.run(
+          "DELETE FROM exact_review_queue_items WHERE item_key = ?",
+          `openclaw/openclaw#${number}@publish:${7000 + number}:1`,
+        );
+      }
     } else if (churn === "revision bump") {
       await h.queue.fetch(publicationRequest("probe-bump", 13, "7013"));
     }
@@ -1233,14 +1281,17 @@ for (const transition of ["terminal", "retryable"]) {
 }
 
 for (const [limit, command] of [
-  [100, false],
-  [1, false],
-  [1, true],
+  [100, "none"],
+  [1, "none"],
+  [1, "producer"],
+  [1, "outer"],
 ] as const) {
   test(
-    command
-      ? "alarm preserves command acknowledgements after batch expiry while pruning ordinary stale publications"
-      : `alarm prunes stale publication revisions after batch expiry with limit ${limit}`,
+    command === "producer"
+      ? "alarm terminalizes a stale producer command after batch expiry while pruning ordinary publications"
+      : command === "outer"
+        ? "alarm treats outer-only command fields as non-command publication context"
+        : `alarm prunes stale publication revisions after batch expiry with limit ${limit}`,
     async (t) => {
       const h = admissionQueue(t, {
         EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
@@ -1248,8 +1299,9 @@ for (const [limit, command] of [
       });
       for (const number of [801, 802]) {
         const body = await publicationRequest(`prune-old-${number}`, number, String(number)).json();
-        if (command && number === 801)
+        if (command === "producer" && number === 801)
           body.decision.publication.producerDecision.statusCommentId = 12345;
+        if (command === "outer" && number === 801) body.decision.statusCommentId = 12345;
         assert.equal((await h.queue.fetch(batchRequest("/enqueue", body))).status, 202);
         h.now += 1;
       }
@@ -1260,27 +1312,78 @@ for (const [limit, command] of [
       h.now += 60_001;
       await h.queue.alarm();
       const after = await h.publicationStats();
-      assert.deepEqual([after.pending, after.completed_total], limit === 1 ? [3, 1] : [2, 2]);
+      const protectedCommand = command === "producer";
+      assert.deepEqual(
+        [after.pending, after.completed_total],
+        limit === 1 ? [protectedCommand ? 4 : 3, 1] : [2, 2],
+      );
       const remaining = await h.post("/publications/reconcile");
       assert.equal(remaining.stale_revision_eligible, limit === 1 ? 1 : 0);
       if (limit === 1) {
-        assert.equal(
-          remaining.sample[0].item_key,
-          `openclaw/openclaw#${command ? 801 : 802}@publish:${command ? 801 : 802}:1`,
-        );
-        if (command)
-          assert.equal(
-            (await h.post("/publications/reconcile", { apply: true })).stale_revision_changed,
-            1,
-          );
-        else await h.queue.alarm();
+        assert.equal(remaining.sample[0].item_key, "openclaw/openclaw#802@publish:802:1");
+        await h.queue.alarm();
       }
       const final = await h.publicationStats();
-      assert.deepEqual([final.pending, final.completed_total], [2, 2]);
+      assert.deepEqual([final.pending, final.completed_total], protectedCommand ? [3, 2] : [2, 2]);
       assert.equal(h.networkCalls, 0);
+      if (protectedCommand) {
+        const state = await h.storage.get("exact-review-queue");
+        const staleKey = "openclaw/openclaw#801@publish:801:1";
+        const driverKey = `terminal-finalization:${staleKey}:1`;
+        assert.equal(state.items[staleKey], undefined);
+        assert.equal(state.items[driverKey]?.terminalFinalization?.disposition, "superseded");
+        assert.equal(
+          new ExactReviewLifecycleProjectionStore(h.storage).read(
+            "openclaw/openclaw#801",
+            staleKey,
+            1,
+          )?.terminalDisposition?.kind,
+          "superseded",
+        );
+        await h.queue.alarm();
+        const replay = await h.publicationStats();
+        assert.deepEqual(
+          [replay.pending, replay.completed_total, replay.superseded_total],
+          [final.pending, final.completed_total, final.superseded_total],
+        );
+      }
     },
   );
 }
+
+test("alarm skips ineligible command rows before applying the prune limit", async (t) => {
+  const h = admissionQueue(t, {
+    EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
+    EXACT_REVIEW_STALE_PUBLICATION_PRUNE_LIMIT: "1",
+  });
+  for (const number of [803, 804]) {
+    const body = await publicationRequest(`prune-command-${number}`, number, String(number)).json();
+    body.decision.publication.producerDecision.statusCommentId = number * 10;
+    assert.equal((await h.queue.fetch(batchRequest("/enqueue", body))).status, 202);
+    h.now += 1;
+  }
+  assert.equal((await h.claim()).batch.items.length, 2);
+  for (const number of [803, 804]) await h.enqueue(number, 2);
+  const blockedKey = "openclaw/openclaw#803@publish:803:1";
+  new ExactReviewLifecycleProjectionStore(h.storage).recordTerminalDisposition({
+    canonicalTargetKey: "openclaw/openclaw#803",
+    fenceKey: blockedKey,
+    revision: 1,
+    kind: "requeue",
+    observedAt: h.now,
+  });
+
+  h.now += 60_001;
+  await h.queue.alarm();
+  const state = await h.storage.get("exact-review-queue");
+  const eligibleKey = "openclaw/openclaw#804@publish:804:1";
+  assert.ok(state.items[blockedKey]);
+  assert.equal(state.items[eligibleKey], undefined);
+  assert.equal(
+    state.items[`terminal-finalization:${eligibleKey}:1`]?.terminalFinalization?.disposition,
+    "superseded",
+  );
+});
 
 test("batch claims retain lifecycle identity until canonical routing is durable", async () => {
   const storage = new TestStorage();
@@ -1404,663 +1507,1457 @@ test("queue batch claim defaults off and additive schema keeps the legacy versio
   assert.equal(stats.lanes.publication.batches.leased, 0);
 });
 
-test("critical publication health does not override review pressure", async () => {
-  const originalNow = Date.now;
+test("critical publication health does not override review pressure", async (t) => {
   let now = 1_000_000;
-  Date.now = () => now;
-  try {
-    const queue = new ExactReviewQueue({ storage: new TestStorage() }, {});
-    await queue.fetch(publicationRequest("delivery-critical", 102, "1002"));
-    now += 6 * 60 * 60 * 1_000;
+  t.mock.method(Date, "now", () => now);
+  const queue = new ExactReviewQueue({ storage: new TestStorage() }, {});
+  await queue.fetch(publicationRequest("delivery-critical", 102, "1002"));
+  now += 6 * 60 * 60 * 1_000;
 
-    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.deepEqual(stats.lanes.publication.health, {
-      status: "critical",
-      reason: "oldest_pending_over_6h",
-    });
-    assert.equal(stats.pressure.status, "idle");
-    assert.equal(stats.pressure.reason, "no_ready_backlog");
-  } finally {
-    Date.now = originalNow;
-  }
+  const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.deepEqual(stats.lanes.publication.health, {
+    status: "critical",
+    reason: "oldest_pending_over_6h",
+  });
+  assert.equal(stats.pressure.status, "idle");
+  assert.equal(stats.pressure.reason, "no_ready_backlog");
 });
 
-test("legacy queue migration preserves receipts while adding empty batch tables", async () => {
-  const originalNow = Date.now;
-  Date.now = () => 3_000_000;
-  try {
-    const storage = new TestStorage();
-    await storage.put("exact-review-queue", {
-      items: {},
-      deliveries: { "legacy-delivery": 3_000_000 },
-    });
-    const queue = new ExactReviewQueue({ storage }, {});
-    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+test("legacy queue migration preserves receipts while adding empty batch tables", async (t) => {
+  t.mock.method(Date, "now", () => 3_000_000);
+  const storage = new TestStorage();
+  await storage.put("exact-review-queue", {
+    items: {},
+    deliveries: { "legacy-delivery": 3_000_000 },
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
 
-    assert.equal(stats.delivery_receipts, 1);
-    assert.equal(stats.storage_schema_version, 1);
-    assert.equal(stats.lanes.publication.batches.active_items, 0);
+  assert.equal(stats.delivery_receipts, 1);
+  assert.equal(stats.storage_schema_version, 1);
+  assert.equal(stats.lanes.publication.batches.active_items, 0);
+  assert.equal(storage.scalar("SELECT COUNT(*) AS value FROM exact_review_publication_batches"), 0);
+});
+
+test("batch claim honors the existing dispatcher pause gate", async (t) => {
+  t.mock.method(Date, "now", () => 4_000_000);
+  const storage = new TestStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+  );
+  await queue.fetch(publicationRequest("delivery-paused", 104, "1004"));
+  Array.from(
+    storage.sql.exec(
+      "UPDATE exact_review_queue_meta SET dispatcher_json = ? WHERE singleton_id = 1",
+      JSON.stringify({
+        state: "paused",
+        checkedAt: 4_000_000,
+        retryAt: 4_060_000,
+        reason: "workflow_not_active",
+      }),
+    ),
+  );
+
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-paused",
+        lease_owner: "worker-1",
+        max_items: 1,
+      }),
+    )
+  ).json();
+  assert.equal(claim.claimed, false);
+  assert.equal(claim.batch, null);
+});
+
+test("an active batch blocks the legacy publisher until its lease expires", async (t) => {
+  t.mock.method(Date, "now", () => 5_000_000);
+  const storage = new TestStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    {
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
+      EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT: "1",
+      EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT: "1",
+      EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT: "1",
+    },
+  );
+  await queue.fetch(publicationRequest("delivery-owned", 105, "1005"));
+  await queue.fetch(publicationRequest("delivery-unowned", 106, "1006"));
+  await queue.fetch(publicationRequest("delivery-unowned-2", 107, "1007"));
+
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-blocks-legacy",
+        lease_owner: "worker-1",
+        max_items: 2,
+      }),
+    )
+  ).json();
+  assert.equal(claim.claimed, true, JSON.stringify(claim));
+  assert.equal(claim.batch.items.length, 2);
+
+  await queue.alarm();
+  const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(stats.lanes.publication.pending, 3);
+  assert.equal(stats.lanes.publication.dispatching, 0);
+  assert.equal(stats.admissible_pending, 0);
+  assert.equal(storage.scheduledAlarm(), 5_060_000);
+});
+
+test("queue claims distinct batches up to the configured concurrent owner cap", async (t) => {
+  t.mock.method(Date, "now", () => 5_500_000);
+  const storage = new TestStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    {
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
+      EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT: "2",
+    },
+  );
+  for (let itemNumber = 120; itemNumber < 125; itemNumber += 1) {
+    await queue.fetch(
+      publicationRequest(`delivery-parallel-${itemNumber}`, itemNumber, String(4000 + itemNumber)),
+    );
+  }
+
+  const claim = async (id: string) =>
+    (
+      await queue.fetch(
+        batchRequest("/publication-batches/claim", {
+          claim_id: id,
+          lease_owner: id,
+          max_items: 2,
+        }),
+      )
+    ).json();
+  const first = await claim("parallel-claim-1");
+  const second = await claim("parallel-claim-2");
+  const third = await claim("parallel-claim-3");
+
+  assert.equal(first.claimed, true, JSON.stringify(first));
+  assert.equal(second.claimed, true, JSON.stringify(second));
+  assert.equal(third.claimed, false, JSON.stringify(third));
+  assert.deepEqual(
+    [
+      ...first.batch.items.map((item: { item_key: string }) => item.item_key),
+      ...second.batch.items.map((item: { item_key: string }) => item.item_key),
+    ],
+    [
+      "openclaw/openclaw#120@publish:4120:1",
+      "openclaw/openclaw#121@publish:4121:1",
+      "openclaw/openclaw#122@publish:4122:1",
+      "openclaw/openclaw#123@publish:4123:1",
+    ],
+  );
+  const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(stats.lanes.publication.batches.max_concurrent, 2);
+  assert.equal(stats.lanes.publication.batches.leased, 2);
+  assert.equal(stats.lanes.publication.batches.active_items, 4);
+});
+
+test("batch claim serializes distinct publication events for the same durable item", async (t) => {
+  t.mock.method(Date, "now", () => 6_000_000);
+  const storage = new TestStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+  );
+  await queue.fetch(publicationRequest("delivery-duplicate-old", 108676, "2001"));
+  await queue.fetch(publicationRequest("delivery-duplicate-new", 108676, "2002"));
+  await queue.fetch(publicationRequest("delivery-distinct", 108677, "2003"));
+
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-unique-durable-items",
+        lease_owner: "worker-1",
+        max_items: 2,
+      }),
+    )
+  ).json();
+
+  assert.equal(claim.claimed, true, JSON.stringify(claim));
+  assert.deepEqual(
+    claim.batch.items.map((item: { item_key: string }) => item.item_key),
+    ["openclaw/openclaw#108676@publish:2001:1", "openclaw/openclaw#108677@publish:2003:1"],
+  );
+});
+
+test("publication ingress is never shed by the review pending soft limit", async (t) => {
+  t.mock.method(Date, "now", () => 6_100_000);
+  const queue = new ExactReviewQueue(
+    { storage: new TestStorage() },
+    {
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_PENDING_SOFT_LIMIT: "1",
+    },
+  );
+  await queue.fetch(reviewRequest("delivery-review-cap", 108699));
+  const response = await (
+    await queue.fetch(
+      publicationRequest(
+        "delivery-publication-over-cap",
+        108699,
+        "2099",
+        "openclaw/openclaw",
+        null,
+        1,
+      ),
+    )
+  ).json();
+
+  assert.equal(response.queued, true);
+  assert.equal(response.shed, undefined);
+  const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(stats.lanes.publication.pending, 1);
+});
+
+test("newer publication revisions supersede unowned pending rows at enqueue", async (t) => {
+  t.mock.method(Date, "now", () => 6_200_000);
+  const queue = new ExactReviewQueue(
+    { storage: new TestStorage() },
+    { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+  );
+  await queue.fetch(
+    publicationRequest("delivery-revision-1", 108700, "2101", "openclaw/openclaw", 1),
+  );
+  const response = await (
+    await queue.fetch(
+      publicationRequest("delivery-revision-2", 108700, "2102", "openclaw/openclaw", 2),
+    )
+  ).json();
+
+  assert.equal(response.queued, true);
+  assert.equal(response.superseded_publications, 1);
+  const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(stats.lanes.publication.pending, 1);
+  assert.equal(stats.lanes.publication.completed_total, 1);
+  assert.equal(stats.lanes.publication.superseded_total, 1);
+});
+
+test("enqueue retains an unacknowledged command for alarm-owned supersession", async (t) => {
+  const h = admissionQueue(t);
+  const stale = await publicationRequest(
+    "delivery-command-revision-1",
+    108704,
+    "2111",
+    "openclaw/openclaw",
+    1,
+  ).json();
+  const marker =
+    "<!-- clawsweeper-command-status:108704:re_review:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->";
+  Object.assign(stale.decision.publication.producerDecision, {
+    commandStatusMarker: marker,
+    statusCommentId: 1087040,
+  });
+  assert.equal((await h.queue.fetch(batchRequest("/enqueue", stale))).status, 202);
+  const response = await (
+    await h.queue.fetch(
+      publicationRequest("delivery-command-revision-2", 108704, "2112", "openclaw/openclaw", 2),
+    )
+  ).json();
+  const staleKey = "openclaw/openclaw#108704@publish:2111:1";
+  const freshKey = "openclaw/openclaw#108704@publish:2112:1";
+  assert.equal(response.superseded_publications, 0);
+  assert.ok((await h.storage.get("exact-review-queue")).items[staleKey]);
+
+  await h.queue.alarm();
+  const state = await h.storage.get("exact-review-queue");
+  assert.equal(state.items[staleKey], undefined);
+  assert.ok(state.items[freshKey]);
+  assert.equal(
+    state.items[`terminal-finalization:${staleKey}:1`]?.terminalFinalization?.disposition,
+    "superseded",
+  );
+  assert.equal(
+    new ExactReviewLifecycleProjectionStore(h.storage).read("openclaw/openclaw#108704", staleKey, 1)
+      ?.terminalDisposition?.kind,
+    "superseded",
+  );
+  const metrics = await h.publicationStats();
+  await h.queue.alarm();
+  assert.deepEqual(await h.publicationStats(), metrics);
+});
+
+test("enqueue supersedes a stale command after its acknowledgement is observed", async (t) => {
+  const h = admissionQueue(t);
+  const number = 108705;
+  const marker =
+    "<!-- clawsweeper-command-status:108705:re_review:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->";
+  const stale = await publicationRequest(
+    "delivery-command-observed-1",
+    number,
+    "2113",
+    "openclaw/openclaw",
+    1,
+  ).json();
+  Object.assign(stale.decision.publication.producerDecision, {
+    commandStatusMarker: marker,
+    statusCommentId: 1087050,
+  });
+  assert.equal((await h.queue.fetch(batchRequest("/enqueue", stale))).status, 202);
+  const identity = {
+    canonicalTargetKey: `openclaw/openclaw#${number}`,
+    fenceKey: `openclaw/openclaw#${number}@publish:2113:1`,
+    revision: 1,
+  };
+  const lifecycle = new ExactReviewLifecycleProjectionStore(h.storage);
+  lifecycle.recordCanonicalReceipt({
+    ...identity,
+    outcome: "accepted",
+    receiptId: "canonical-observed",
+    observedAt: h.now,
+  });
+  lifecycle.recordRouterReceipt({
+    ...identity,
+    outcome: "durable",
+    receiptId: "router-observed",
+    observedAt: h.now,
+  });
+  lifecycle.recordTerminalDisposition({
+    ...identity,
+    kind: "review_completed_routed",
+    observedAt: h.now,
+  });
+  assert.equal(
+    lifecycle.authorizeCommandAcknowledgement({
+      ...identity,
+      statusMarker: marker,
+      statusCommentId: 1087050,
+      observedAt: h.now,
+    }).allowed,
+    true,
+  );
+  lifecycle.observeCommandAcknowledgement({
+    ...identity,
+    statusMarker: marker,
+    statusCommentId: 1087050,
+    commandCommentId: number,
+    completionCommentId: 1087050,
+    observedAt: h.now,
+  });
+
+  const response = await (
+    await h.queue.fetch(
+      publicationRequest("delivery-command-observed-2", number, "2114", "openclaw/openclaw", 2),
+    )
+  ).json();
+  assert.equal(response.superseded_publications, 1);
+  const state = await h.storage.get("exact-review-queue");
+  assert.equal(state.items[identity.fenceKey], undefined);
+  assert.ok(state.items[`openclaw/openclaw#${number}@publish:2114:1`]);
+});
+
+for (const [scenario, successorMarker, successorComment, terminal] of [
+  ["shared exact command", "same", "same", "requeue"],
+  ["same comment with a different marker", "different", "same", "superseded"],
+  ["same marker with a different comment", "same", "different", "superseded"],
+] as const) {
+  test(`alarm terminalizes ${scenario} after batch expiry`, async (t) => {
+    const h = admissionQueue(t, { EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000" });
+    const number = scenario.length + 108710;
+    const marker = `<!-- clawsweeper-command-status:${number}:re_review:${"a".repeat(40)} -->`;
+    const stale = await publicationRequest(
+      `delivery-${number}-1`,
+      number,
+      `${number}1`,
+      "openclaw/openclaw",
+      1,
+    ).json();
+    Object.assign(stale.decision.publication.producerDecision, {
+      commandStatusMarker: marker,
+      statusCommentId: number * 10,
+    });
+    assert.equal((await h.queue.fetch(batchRequest("/enqueue", stale))).status, 202);
+    assert.equal((await h.claim()).batch.items.length, 1);
+    const fresh = await publicationRequest(
+      `delivery-${number}-2`,
+      number,
+      `${number}2`,
+      "openclaw/openclaw",
+      2,
+    ).json();
+    Object.assign(fresh.decision.publication.producerDecision, {
+      commandStatusMarker:
+        successorMarker === "same" ? marker : marker.replace("a".repeat(40), "b".repeat(40)),
+      statusCommentId: successorComment === "same" ? number * 10 : number * 10 + 1,
+    });
+    assert.equal((await h.queue.fetch(batchRequest("/enqueue", fresh))).status, 202);
+    const staleKey = `openclaw/openclaw#${number}@publish:${number}1:1`;
+    await h.queue.alarm();
+    assert.ok((await h.storage.get("exact-review-queue")).items[staleKey]);
+
+    h.now += 60_001;
+    await h.queue.alarm();
+    const state = await h.storage.get("exact-review-queue");
+    assert.equal(state.items[staleKey], undefined);
+    assert.ok(state.items[`openclaw/openclaw#${number}@publish:${number}2:1`]);
     assert.equal(
-      storage.scalar("SELECT COUNT(*) AS value FROM exact_review_publication_batches"),
-      0,
+      new ExactReviewLifecycleProjectionStore(h.storage).read(
+        `openclaw/openclaw#${number}`,
+        staleKey,
+        1,
+      )?.terminalDisposition?.kind,
+      terminal,
     );
-  } finally {
-    Date.now = originalNow;
-  }
-});
+    assert.equal(
+      Boolean(state.items[`terminal-finalization:${staleKey}:1`]),
+      terminal !== "requeue",
+    );
+    const metrics = await h.publicationStats();
+    await h.queue.alarm();
+    assert.deepEqual(await h.publicationStats(), metrics);
+  });
+}
 
-test("batch claim honors the existing dispatcher pause gate", async () => {
-  const originalNow = Date.now;
-  Date.now = () => 4_000_000;
-  try {
-    const storage = new TestStorage();
-    const queue = new ExactReviewQueue(
-      { storage },
-      { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
-    );
-    await queue.fetch(publicationRequest("delivery-paused", 104, "1004"));
-    Array.from(
-      storage.sql.exec(
-        "UPDATE exact_review_queue_meta SET dispatcher_json = ? WHERE singleton_id = 1",
-        JSON.stringify({
-          state: "paused",
-          checkedAt: 4_000_000,
-          retryAt: 4_060_000,
-          reason: "workflow_not_active",
-        }),
-      ),
-    );
-
-    const claim = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-paused",
-          lease_owner: "worker-1",
-          max_items: 1,
-        }),
-      )
+test("alarm supersedes an expired command after its newer publication has completed routing", async (t) => {
+  const h = admissionQueue(t, {
+    EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT: "2",
+    EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
+  });
+  const number = 108740;
+  const canonicalTargetKey = `openclaw/openclaw#${number}`;
+  const lifecycle = new ExactReviewLifecycleProjectionStore(h.storage);
+  const batches = new ExactReviewPublicationBatchStore(h.storage);
+  const enqueue = async (sourceRevision: number, producerRunId: string, markerDigest: string) => {
+    const body = await publicationRequest(
+      `completed-successor-${sourceRevision}`,
+      number,
+      producerRunId,
+      "openclaw/openclaw",
+      sourceRevision,
     ).json();
-    assert.equal(claim.claimed, false);
-    assert.equal(claim.batch, null);
-  } finally {
-    Date.now = originalNow;
-  }
+    const command = {
+      commandStatusMarker: `<!-- clawsweeper-command-status:${number}:re_review:${markerDigest.repeat(40)} -->`,
+      statusCommentId: number * 10 + sourceRevision,
+    };
+    Object.assign(body.decision, command);
+    Object.assign(body.decision.publication.producerDecision, command);
+    const response = await h.queue.fetch(batchRequest("/enqueue", body));
+    assert.equal(response.status, 202, JSON.stringify(await response.clone().json()));
+    return response.json();
+  };
+  const claim = (suffix: string, runId: string, runAttempt: number) =>
+    h.claim({
+      claim_id: `completed-successor-${suffix}`,
+      lease_owner: `completed-successor-worker-${suffix}`,
+      max_items: 1,
+      runner_run_id: runId,
+      runner_run_attempt: runAttempt,
+      runner_started_at: new Date(h.now).toISOString(),
+    });
+
+  await enqueue(1, "27401", "a");
+  const claimA = await claim("a", "97401", 1);
+  assert.equal(claimA.claimed, true, JSON.stringify(claimA));
+  assert.equal(claimA.batch.items.length, 1);
+  const memberA = claimA.batch.items[0];
+  const expiryA = Date.parse(claimA.batch.lease_expires_at);
+  assert.ok(expiryA > h.now);
+  h.now += 1;
+  await enqueue(2, "27402", "b");
+  const claimB = await claim("b", "97402", 2);
+  assert.equal(claimB.claimed, true, JSON.stringify(claimB));
+  assert.equal(claimB.batch.items.length, 1);
+  const memberB = claimB.batch.items[0];
+  assert.notEqual(memberA.item_key, memberB.item_key);
+  assert.notEqual(claimA.batch.batch_id, claimB.batch.batch_id);
+  const identityA = () => lifecycle.read(canonicalTargetKey, memberA.item_key, memberA.revision);
+  const identityB = () => lifecycle.read(canonicalTargetKey, memberB.item_key, memberB.revision);
+  const activeA = batches.fetch(claimA.batch.batch_id, "completed-successor-worker-a", h.now);
+  assert.equal(activeA?.state, "leased");
+  assert.equal(activeA.items[0]?.terminalOutcome, null);
+  assert.equal(identityA()?.terminalDisposition, null);
+  assert.equal(identityA()?.admission.commandOriginated, true);
+  assert.equal(identityB()?.admission.commandOriginated, true);
+  assert.notEqual(identityA()?.admission.statusMarker, identityB()?.admission.statusMarker);
+  assert.notEqual(identityA()?.admission.statusCommentId, identityB()?.admission.statusCommentId);
+
+  const publishedResponse = await h.queue.fetch(
+    batchRequest(
+      "/publication-batch-results",
+      directPlan(canonicalTargetKey, memberB.revision, {
+        fenceKey: memberB.item_key,
+        claimGeneration: memberB.claim_generation,
+      }),
+    ),
+  );
+  const published = await publishedResponse.json();
+  assert.equal(publishedResponse.status, 202, JSON.stringify(published));
+  assert.equal(published.accepted, true, JSON.stringify(published));
+  const receiptId = "router-completed-successor:97402:2";
+  const routedResponse = await h.queue.fetch(
+    batchRequest("/lifecycle/router-receipt", {
+      canonical_target_key: canonicalTargetKey,
+      fence_key: memberB.item_key,
+      revision: memberB.revision,
+      receipt_id: receiptId,
+    }),
+  );
+  const routed = await routedResponse.json();
+  assert.equal(routedResponse.status, 200, JSON.stringify(routed));
+  const completedResponse = await h.queue.fetch(
+    batchRequest("/publication-batches/complete", {
+      batch_id: claimB.batch.batch_id,
+      lease_owner: "completed-successor-worker-b",
+      items: [
+        {
+          item_key: memberB.item_key,
+          revision: memberB.revision,
+          claim_generation: memberB.claim_generation,
+          terminal_outcome: "published",
+        },
+      ],
+    }),
+  );
+  const completed = await completedResponse.json();
+  assert.equal(completedResponse.status, 200, JSON.stringify(completed));
+  assert.equal(completed.accepted, 1, JSON.stringify(completed));
+  assert.equal(completed.batch.state, "completed");
+  assert.equal(completed.batch.items[0].terminal_outcome, "published");
+  assert.equal(identityB()?.canonicalReceipts[0]?.outcome, "accepted");
+  assert.equal(identityB()?.routerReceipts[0]?.receiptId, receiptId);
+  assert.equal(identityB()?.routerReceipts[0]?.outcome, "durable");
+  assert.equal(identityB()?.terminalDisposition?.kind, "review_completed_routed");
+  assert.equal((await h.storage.get("exact-review-queue")).items[memberB.item_key], undefined);
+  assert.ok(h.now < expiryA);
+
+  const snapshot = async () => ({
+    lifecycleA: identityA(),
+    metrics: await h.publicationStats(),
+  });
+  await h.queue.alarm();
+  assert.ok((await h.storage.get("exact-review-queue")).items[memberA.item_key]);
+  assert.equal(identityA()?.terminalDisposition, null);
+  assert.equal(
+    batches.fetch(claimA.batch.batch_id, "completed-successor-worker-a", h.now)?.items[0]
+      ?.terminalOutcome,
+    null,
+  );
+  h.now = expiryA + 1;
+  await h.queue.alarm();
+  const afterExpiry = await snapshot();
+  h.restart();
+  await h.queue.alarm();
+  const afterRestart = await snapshot();
+  const laterClaim = await claim("later", "97403", 1);
+  assert.equal(h.networkCalls, 0);
+  assert.equal(
+    (laterClaim.batch?.items ?? []).some(
+      (item: { item_key: string }) => item.item_key === memberA.item_key,
+    ),
+    false,
+  );
+  assert.deepEqual(afterRestart.lifecycleA, afterExpiry.lifecycleA);
+  assert.deepEqual(afterRestart.metrics, afterExpiry.metrics);
+  assert.equal(
+    identityA()?.terminalDisposition?.kind,
+    "superseded",
+    "the expired command must terminalize after its admitted successor completes routing",
+  );
+  const finalState = await h.storage.get("exact-review-queue");
+  assert.equal(finalState.items[memberA.item_key], undefined);
+  const driverKey = `terminal-finalization:${memberA.item_key}:${memberA.revision}`;
+  assert.equal(finalState.items[driverKey]?.terminalFinalization?.disposition, "superseded");
+  assert.equal(
+    Object.keys(finalState.items).filter((key) =>
+      key.startsWith(`terminal-finalization:${memberA.item_key}:`),
+    ).length,
+    1,
+  );
 });
 
-test("an active batch blocks the legacy publisher until its lease expires", async () => {
-  const originalNow = Date.now;
-  Date.now = () => 5_000_000;
-  try {
-    const storage = new TestStorage();
-    const queue = new ExactReviewQueue(
-      { storage },
-      {
-        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
-        EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
-        EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT: "1",
-        EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT: "1",
-        EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT: "1",
-      },
-    );
-    await queue.fetch(publicationRequest("delivery-owned", 105, "1005"));
-    await queue.fetch(publicationRequest("delivery-unowned", 106, "1006"));
-    await queue.fetch(publicationRequest("delivery-unowned-2", 107, "1007"));
-
-    const claim = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-blocks-legacy",
-          lease_owner: "worker-1",
-          max_items: 2,
-        }),
-      )
-    ).json();
-    assert.equal(claim.claimed, true, JSON.stringify(claim));
-    assert.equal(claim.batch.items.length, 2);
-
-    await queue.alarm();
-    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(stats.lanes.publication.pending, 3);
-    assert.equal(stats.lanes.publication.dispatching, 0);
-    assert.equal(stats.admissible_pending, 0);
-    assert.equal(storage.scheduledAlarm(), 5_060_000);
-  } finally {
-    Date.now = originalNow;
-  }
-});
-
-test("queue claims distinct batches up to the configured concurrent owner cap", async () => {
-  const originalNow = Date.now;
-  Date.now = () => 5_500_000;
-  try {
-    const storage = new TestStorage();
-    const queue = new ExactReviewQueue(
-      { storage },
-      {
-        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
-        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
-        EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT: "2",
-      },
-    );
-    for (let itemNumber = 120; itemNumber < 125; itemNumber += 1) {
-      await queue.fetch(
-        publicationRequest(
-          `delivery-parallel-${itemNumber}`,
-          itemNumber,
-          String(4000 + itemNumber),
-        ),
-      );
-    }
-
-    const claim = async (id: string) =>
-      (
-        await queue.fetch(
-          batchRequest("/publication-batches/claim", {
-            claim_id: id,
-            lease_owner: id,
-            max_items: 2,
-          }),
-        )
+for (const departure of ["after", "before"] as const) {
+  test(`alarm preserves same-source successor ambiguity when B leaves ${departure} C admission`, async (t) => {
+    const h = admissionQueue(t, {
+      EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT: "2",
+      EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
+    });
+    const number = departure === "after" ? 108741 : 108742;
+    const target = `openclaw/openclaw#${number}`;
+    const lifecycle = new ExactReviewLifecycleProjectionStore(h.storage);
+    const enqueue = async (
+      name: string,
+      sourceRevision: number,
+      generation: number,
+      replay = false,
+    ) => {
+      const index = "abcd".indexOf(name) + 1;
+      const body = await publicationRequest(
+        `ambiguous-${departure}-${name}${replay ? "-replay" : ""}`,
+        number,
+        String(number * 10 + index),
+        "openclaw/openclaw",
+        sourceRevision,
       ).json();
-    const first = await claim("parallel-claim-1");
-    const second = await claim("parallel-claim-2");
-    const third = await claim("parallel-claim-3");
+      const command = {
+        commandStatusMarker: `<!-- clawsweeper-command-status:${number}:re_review:${name.repeat(40)} -->`,
+        statusCommentId: number * 10 + index,
+      };
+      body.decision.publication.claimGeneration = generation;
+      Object.assign(body.decision, command);
+      Object.assign(body.decision.publication.producerDecision, command);
+      const response = await h.queue.fetch(batchRequest("/enqueue", body));
+      const result = await response.json();
+      assert.equal(response.status, 202, JSON.stringify(result));
+      assert.equal(result.queued, true, JSON.stringify(result));
+      const item = (await h.storage.get("exact-review-queue")).items[result.item_key];
+      assert.ok(item, JSON.stringify(result));
+      assert.equal(item.decision.publication.leaseRevision, sourceRevision);
+      assert.equal(item.decision.publication.claimGeneration, generation);
+      const admission = lifecycle.read(target, item.key, item.revision)?.admission;
+      assert.equal(admission?.commandOriginated, true);
+      assert.equal(admission.statusMarker, command.commandStatusMarker);
+      assert.equal(admission.statusCommentId, command.statusCommentId);
+      return { result, key: item.key, revision: item.revision };
+    };
+    const claim = async (name: string, runAttempt: number) => {
+      const result = await h.claim({
+        claim_id: `ambiguous-${departure}-${name}`,
+        lease_owner: `ambiguous-${departure}-worker-${name}`,
+        max_items: 1,
+        runner_run_id: String(number * 10 + runAttempt),
+        runner_run_attempt: runAttempt,
+        runner_started_at: new Date(h.now).toISOString(),
+      });
+      assert.equal(result.claimed, true, JSON.stringify(result));
+      assert.equal(result.batch.items.length, 1);
+      return result.batch;
+    };
 
-    assert.equal(first.claimed, true, JSON.stringify(first));
-    assert.equal(second.claimed, true, JSON.stringify(second));
-    assert.equal(third.claimed, false, JSON.stringify(third));
-    assert.deepEqual(
-      [
-        ...first.batch.items.map((item: { item_key: string }) => item.item_key),
-        ...second.batch.items.map((item: { item_key: string }) => item.item_key),
-      ],
-      [
-        "openclaw/openclaw#120@publish:4120:1",
-        "openclaw/openclaw#121@publish:4121:1",
-        "openclaw/openclaw#122@publish:4122:1",
-        "openclaw/openclaw#123@publish:4123:1",
-      ],
-    );
-    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(stats.lanes.publication.batches.max_concurrent, 2);
-    assert.equal(stats.lanes.publication.batches.leased, 2);
-    assert.equal(stats.lanes.publication.batches.active_items, 4);
-  } finally {
-    Date.now = originalNow;
-  }
-});
+    const a = await enqueue("a", 1, 1);
+    const batchA = await claim("a", 1);
+    const memberA = batchA.items[0];
+    assert.equal(memberA.item_key, a.key);
+    assert.equal(memberA.revision, a.revision);
+    const expiryA = Date.parse(batchA.lease_expires_at);
+    h.now += 1;
+    const b = await enqueue("b", 2, 1);
+    const batchB = await claim("b", 2);
+    const memberB = batchB.items[0];
+    assert.equal(memberB.item_key, b.key);
+    assert.equal(memberB.revision, b.revision);
+    let c: Awaited<ReturnType<typeof enqueue>>;
+    if (departure === "after") c = await enqueue("c", 2, 2);
 
-test("batch claim serializes distinct publication events for the same durable item", async () => {
-  const originalNow = Date.now;
-  Date.now = () => 6_000_000;
-  try {
-    const storage = new TestStorage();
-    const queue = new ExactReviewQueue(
-      { storage },
-      { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
-    );
-    await queue.fetch(publicationRequest("delivery-duplicate-old", 108676, "2001"));
-    await queue.fetch(publicationRequest("delivery-duplicate-new", 108676, "2002"));
-    await queue.fetch(publicationRequest("delivery-distinct", 108677, "2003"));
-
-    const claim = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-unique-durable-items",
-          lease_owner: "worker-1",
-          max_items: 2,
+    const publishedResponse = await h.queue.fetch(
+      batchRequest(
+        "/publication-batch-results",
+        directPlan(target, memberB.revision, {
+          fenceKey: memberB.item_key,
+          claimGeneration: memberB.claim_generation,
         }),
-      )
-    ).json();
-
-    assert.equal(claim.claimed, true, JSON.stringify(claim));
-    assert.deepEqual(
-      claim.batch.items.map((item: { item_key: string }) => item.item_key),
-      ["openclaw/openclaw#108676@publish:2001:1", "openclaw/openclaw#108677@publish:2003:1"],
+      ),
     );
-  } finally {
-    Date.now = originalNow;
-  }
-});
-
-test("publication ingress is never shed by the review pending soft limit", async () => {
-  const originalNow = Date.now;
-  Date.now = () => 6_100_000;
-  try {
-    const queue = new ExactReviewQueue(
-      { storage: new TestStorage() },
-      {
-        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
-        EXACT_REVIEW_PENDING_SOFT_LIMIT: "1",
-      },
+    const published = await publishedResponse.json();
+    assert.equal(publishedResponse.status, 202, JSON.stringify(published));
+    assert.equal(published.accepted, true, JSON.stringify(published));
+    const receiptId = `router-ambiguous-${departure}-b`;
+    const routedResponse = await h.queue.fetch(
+      batchRequest("/lifecycle/router-receipt", {
+        canonical_target_key: target,
+        fence_key: memberB.item_key,
+        revision: memberB.revision,
+        receipt_id: receiptId,
+      }),
     );
-    await queue.fetch(reviewRequest("delivery-review-cap", 108699));
-    const response = await (
-      await queue.fetch(
-        publicationRequest(
-          "delivery-publication-over-cap",
-          108699,
-          "2099",
-          "openclaw/openclaw",
-          null,
-          1,
+    const routed = await routedResponse.json();
+    assert.equal(routedResponse.status, 200, JSON.stringify(routed));
+    const completedResponse = await h.queue.fetch(
+      batchRequest("/publication-batches/complete", {
+        batch_id: batchB.batch_id,
+        lease_owner: `ambiguous-${departure}-worker-b`,
+        items: [
+          {
+            item_key: memberB.item_key,
+            revision: memberB.revision,
+            claim_generation: memberB.claim_generation,
+            terminal_outcome: "published",
+          },
+        ],
+      }),
+    );
+    const completed = await completedResponse.json();
+    assert.equal(completedResponse.status, 200, JSON.stringify(completed));
+    assert.equal(completed.accepted, 1, JSON.stringify(completed));
+    assert.equal(completed.batch.state, "completed");
+    assert.equal(completed.batch.items[0].terminal_outcome, "published");
+    const projectionB = lifecycle.read(target, memberB.item_key, memberB.revision);
+    assert.equal(projectionB?.canonicalReceipts[0]?.outcome, "accepted");
+    assert.equal(projectionB?.routerReceipts[0]?.outcome, "durable");
+    assert.equal(projectionB?.routerReceipts[0]?.receiptId, receiptId);
+    assert.equal(projectionB?.terminalDisposition?.kind, "review_completed_routed");
+    assert.equal((await h.storage.get("exact-review-queue")).items[b.key], undefined);
+    if (departure === "before") c = await enqueue("c", 2, 2);
+    assert.notEqual(b.key, c!.key);
+
+    const snapshot = async () => ({
+      queue: await h.storage.get("exact-review-queue"),
+      lifecycleA: lifecycle.read(target, memberA.item_key, memberA.revision),
+    });
+    assert.ok(h.now < expiryA);
+    await h.queue.alarm();
+    assert.ok((await h.storage.get("exact-review-queue")).items[a.key]);
+    assert.equal(
+      lifecycle.read(target, memberA.item_key, memberA.revision)?.terminalDisposition,
+      null,
+    );
+    assert.equal(
+      new ExactReviewPublicationBatchStore(h.storage).fetch(
+        batchA.batch_id,
+        `ambiguous-${departure}-worker-a`,
+        h.now,
+      )?.items[0]?.terminalOutcome,
+      null,
+    );
+    h.now = expiryA + 1;
+    await h.queue.alarm();
+    const afterExpiry = await snapshot();
+    h.restart();
+    await h.queue.alarm();
+    const afterRestart = await snapshot();
+    await enqueue("c", 2, 2, true);
+    await h.queue.alarm();
+    const afterRedelivery = await snapshot();
+    await enqueue("d", 3, 1);
+    await h.queue.alarm();
+    const afterNewerD = await snapshot();
+    assert.equal(h.networkCalls, 0);
+    for (const [phase, state] of Object.entries({ afterExpiry, afterRestart, afterRedelivery })) {
+      assert.equal(
+        state.lifecycleA?.terminalDisposition,
+        null,
+        `${phase}: losing B must not make conflicting source-revision-2 C authoritative`,
+      );
+      assert.ok(state.queue.items[a.key], `${phase}: retain A while its successor is ambiguous`);
+      assert.equal(
+        Object.keys(state.queue.items).some((key) =>
+          key.startsWith(`terminal-finalization:${a.key}:`),
         ),
-      )
-    ).json();
-
-    assert.equal(response.queued, true);
-    assert.equal(response.shed, undefined);
-    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(stats.lanes.publication.pending, 1);
-  } finally {
-    Date.now = originalNow;
-  }
-});
-
-test("newer publication revisions supersede unowned pending rows at enqueue", async () => {
-  const originalNow = Date.now;
-  Date.now = () => 6_200_000;
-  try {
-    const queue = new ExactReviewQueue(
-      { storage: new TestStorage() },
-      { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
-    );
-    await queue.fetch(
-      publicationRequest("delivery-revision-1", 108700, "2101", "openclaw/openclaw", 1),
-    );
-    const response = await (
-      await queue.fetch(
-        publicationRequest("delivery-revision-2", 108700, "2102", "openclaw/openclaw", 2),
-      )
-    ).json();
-
-    assert.equal(response.queued, true);
-    assert.equal(response.superseded_publications, 1);
-    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(stats.lanes.publication.pending, 1);
-    assert.equal(stats.lanes.publication.completed_total, 1);
-    assert.equal(stats.lanes.publication.superseded_total, 1);
-  } finally {
-    Date.now = originalNow;
-  }
-});
-
-test("semantic lineage dedupe cannot leave obsolete rows eligible for a batch", async () => {
-  const originalNow = Date.now;
-  Date.now = () => 6_250_000;
-  try {
-    const queue = new ExactReviewQueue(
-      { storage: new TestStorage() },
-      {
-        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
-        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "8",
-      },
-    );
-    for (let index = 0; index < 101; index += 1) {
-      await queue.fetch(
-        publicationRequest(
-          `delivery-many-old-${index}`,
-          108703,
-          String(2400 + index),
-          "openclaw/openclaw",
-          1,
-        ),
+        false,
       );
     }
+    assert.equal(afterNewerD.lifecycleA?.terminalDisposition?.kind, "superseded");
+    assert.equal(afterNewerD.queue.items[a.key], undefined);
+    assert.equal(
+      Object.keys(afterNewerD.queue.items).filter((key) =>
+        key.startsWith(`terminal-finalization:${a.key}:`),
+      ).length,
+      1,
+    );
+  });
+}
+
+async function successorGuardFixture(
+  t: import("node:test").TestContext,
+  number: number,
+  directReview = false,
+  targetRepo = "openclaw/openclaw",
+) {
+  const h = admissionQueue(t, {
+    EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT: "2",
+    EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
+  });
+  const target = `${targetRepo}#${number}`;
+  const lifecycle = new ExactReviewLifecycleProjectionStore(h.storage);
+  const state = () => h.storage.get("exact-review-queue");
+  if (directReview) {
+    for (let revision = 1; revision <= 3; revision++)
+      assert.equal((await h.queue.fetch(reviewRequest(`direct-${revision}`, number))).status, 202);
+  }
+  const enqueue = async (
+    name: string,
+    sourceRevision: number,
+    {
+      address = name,
+      generation = 1,
+      delivery = name,
+    }: {
+      address?: string | null;
+      generation?: number;
+      delivery?: string;
+    } = {},
+  ) => {
+    const body = await publicationRequest(
+      `guard-${number}-${delivery}`,
+      number,
+      `${number}${"abcd".indexOf(name) + 1}`,
+      targetRepo,
+      sourceRevision,
+    ).json();
+    body.decision.publication.claimGeneration = generation;
+    if (address) {
+      const command = {
+        commandStatusMarker: `<!-- clawsweeper-command-status:${number}:re_review:${address.repeat(40)} -->`,
+        statusCommentId: number * 10 + "abcd".indexOf(address) + 1,
+      };
+      Object.assign(body.decision, command);
+      Object.assign(body.decision.publication.producerDecision, command);
+    }
+    const response = await h.queue.fetch(batchRequest("/enqueue", body));
+    const result = await response.json();
+    assert.equal(response.status, 202, JSON.stringify(result));
+    assert.ok(result.queued || result.deduped, JSON.stringify(result));
+    const item = (await state()).items[result.item_key];
+    assert.ok(item, JSON.stringify(result));
+    return item;
+  };
+  const a = await enqueue("a", 1);
+  const batchA = (await h.claim({ claim_id: `guard-${number}-a`, max_items: 1 })).batch;
+  assert.equal(batchA.items[0].item_key, a.key);
+  const expire = async () => {
+    h.now = Date.parse(batchA.lease_expires_at) + 1;
+    await h.queue.alarm();
+  };
+  const projectionA = () => lifecycle.read(target, a.key, a.revision);
+  const assertRetained = async () => {
+    assert.equal(projectionA()?.terminalDisposition, null);
+    assert.ok((await state()).items[a.key]);
+  };
+  const publish = async (item) => {
+    const claim = await h.claim({
+      claim_id: `guard-${number}-publish`,
+      lease_owner: "guard-publisher",
+      max_items: 1,
+      runner_run_id: String(number),
+      runner_run_attempt: 1,
+      runner_started_at: new Date(h.now).toISOString(),
+    });
+    assert.equal(claim.claimed, true);
+    const member = claim.batch.items[0];
+    assert.equal(member.item_key, item.key);
+    const published = await h.post(
+      "/publication-batch-results",
+      directPlan(target, member.revision, {
+        fenceKey: member.item_key,
+        claimGeneration: member.claim_generation,
+      }),
+    );
+    assert.equal(published.accepted, true, JSON.stringify(published));
+    const routed = await h.post("/lifecycle/router-receipt", {
+      canonical_target_key: target,
+      fence_key: member.item_key,
+      revision: member.revision,
+      receipt_id: `guard-router-${number}`,
+    });
+    assert.equal(routed.ok, true);
+    const completed = await h.post("/publication-batches/complete", {
+      batch_id: claim.batch.batch_id,
+      lease_owner: "guard-publisher",
+      items: [{ ...member, terminal_outcome: "published" }],
+    });
+    assert.equal(completed.accepted, 1);
+    assert.equal(completed.batch.items[0].terminal_outcome, "published");
+    assert.equal(
+      lifecycle.read(target, member.item_key, member.revision)?.terminalDisposition?.kind,
+      "review_completed_routed",
+    );
+    assert.equal((await state()).items[item.key], undefined);
+  };
+  t.after(() => assert.equal(h.networkCalls, 0));
+  return { h, target, lifecycle, state, enqueue, a, expire, projectionA, assertRetained, publish };
+}
+
+for (const [address, terminal] of [
+  [null, "superseded"],
+  ["a", "requeue"],
+] as const) {
+  test(`retained successor completion preserves ${address ? "the same command" : "a non-command successor"}`, async (t) => {
+    const f = await successorGuardFixture(t, address ? 108751 : 108750);
+    const b = await f.enqueue("b", 2, { address });
+    await f.publish(b);
+    await f.h.queue.alarm();
+    await f.assertRetained();
+    await f.expire();
+    assert.equal(f.projectionA()?.terminalDisposition?.kind, terminal);
+    assert.equal((await f.state()).items[f.a.key], undefined);
+    assert.equal(
+      Object.keys((await f.state()).items).filter((key) =>
+        key.startsWith(`terminal-finalization:${f.a.key}:`),
+      ).length,
+      terminal === "requeue" ? 0 : 1,
+    );
+  });
+}
+
+for (const corruption of [
+  "malformed",
+  "cross-target",
+  "queue-revision",
+  "source-revision",
+  "admission",
+] as const) {
+  test(`successor witness fails closed for ${corruption} drift before accepting newer authority`, async (t) => {
+    const f = await successorGuardFixture(t, 108760);
+    const b = await f.enqueue("b", 2);
+    const witness = (await f.state()).items[f.a.key].publicationSuccessorWitness;
+    assert.equal(witness.state, "verified");
+    if (corruption === "admission") {
+      const projection = f.lifecycle.read(f.target, b.key, b.revision)!;
+      projection.admission.statusMarker = "mismatched-admission";
+      f.h.storage.run(
+        `UPDATE ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} SET projection_json = ?
+        WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
+        JSON.stringify(projection),
+        f.target,
+        b.key,
+        b.revision,
+      );
+    } else {
+      if (corruption === "malformed") witness.sourceHead = "2";
+      if (corruption === "cross-target") witness.targetKey = "openclaw/other#1";
+      if (corruption === "queue-revision") witness.predecessorQueueRevision += 1;
+      if (corruption === "source-revision") witness.predecessorSourceRevision += 1;
+      f.h.storage.run(
+        `UPDATE exact_review_queue_items
+        SET item_json = json_set(item_json, '$.publicationSuccessorWitness', json(?)) WHERE item_key = ?`,
+        JSON.stringify(witness),
+        f.a.key,
+      );
+    }
+    f.h.restart();
+    if (corruption === "admission") {
+      await f.expire();
+      const diagnostic = await f.h.post("/publications/reconcile", { max_items: 1 });
+      assert.equal(diagnostic.sample[0]?.item_key, f.a.key);
+      assert.equal(diagnostic.sample[0].successor_fence_state, "admission_marker_mismatch");
+    }
+    await f.enqueue("c", 3);
+    assert.equal((await f.state()).items[f.a.key].publicationSuccessorWitness.state, "blocked");
+    await f.expire();
+    await f.assertRetained();
+    await f.enqueue("d", 4);
+    await f.h.queue.alarm();
+    assert.equal(f.projectionA()?.terminalDisposition?.kind, "superseded");
+  });
+}
+
+test("historical missing successor evidence is not reconstructed after completion", async (t) => {
+  const f = await successorGuardFixture(t, 108761);
+  const b = await f.enqueue("b", 2);
+  const legacy = await f.state();
+  delete legacy.items[f.a.key].publicationSuccessorWitness;
+  await f.h.storage.put("exact-review-queue", legacy);
+  f.h.restart();
+  await f.publish(b);
+  await f.expire();
+  await f.assertRetained();
+  const result = await f.h.post("/publications/reconcile", { max_items: 1 });
+  assert.equal(result.sample[0].successor_fence_state, "missing");
+});
+
+test("retained successor resolves the exact mixed-case lifecycle admission target", async (t) => {
+  const f = await successorGuardFixture(t, 108764, false, "openclaw/OpenClaw");
+  const b = await f.enqueue("b", 2);
+  assert.equal((await f.state()).items[f.a.key].publicationSuccessorWitness.targetKey, f.target);
+  await f.publish(b);
+  f.h.restart();
+  await f.expire();
+  assert.equal(f.projectionA()?.terminalDisposition?.kind, "superseded");
+  assert.equal((await f.state()).items[f.a.key], undefined);
+});
+
+test("same-fence redelivery and semantic provenance cannot replace retained successor authority", async (t) => {
+  const f = await successorGuardFixture(t, 108762);
+  const b = await f.enqueue("b", 2);
+  const replay = await f.enqueue("b", 2, { delivery: "b-replay" });
+  assert.ok(replay.revision > b.revision);
+  assert.equal((await f.state()).items[f.a.key].publicationSuccessorWitness.state, "blocked");
+  const refreshed = await f.enqueue("c", 2);
+  assert.equal(refreshed.key, b.key);
+  await f.expire();
+  await f.assertRetained();
+  f.h.restart();
+  await f.h.post("/publications/reconcile", { apply: true, max_items: 10 });
+  await f.assertRetained();
+  assert.equal((await f.state()).items[f.a.key].publicationSuccessorWitness.state, "blocked");
+});
+
+test("same-fence admission at a strictly newer source revision can advance successor authority", async (t) => {
+  const f = await successorGuardFixture(t, 108765);
+  const b = await f.enqueue("b", 2);
+  const newer = await f.enqueue("b", 3, { delivery: "b-newer" });
+  assert.equal(newer.key, b.key);
+  assert.ok(newer.revision > b.revision);
+  const witness = (await f.state()).items[f.a.key].publicationSuccessorWitness;
+  assert.deepEqual(
+    [witness.state, witness.sourceHead, witness.successorQueueRevision],
+    ["verified", 3, newer.revision],
+  );
+  await f.expire();
+  assert.equal(f.projectionA()?.terminalDisposition?.kind, "superseded");
+});
+
+test("direct conversion blocks higher authority without advancing the artifact head", async (t) => {
+  const f = await successorGuardFixture(t, 108763, true);
+  await f.enqueue("b", 2);
+  const review = (await f.state()).items[f.target];
+  assert.equal(review.revision, 3);
+  // Model the already admitted review's live runner lease; only the real
+  // publication endpoint converts it into a successor publication.
+  Object.assign(review, {
+    state: "leased",
+    leaseDecision: review.decision,
+    leaseId: "direct-review",
+    leaseRevision: review.revision,
+    leaseExpiresAt: f.h.now + 60_000,
+    claimedRunId: "98763",
+    claimedRunAttempt: 1,
+    claimGeneration: 1,
+    claimProtocolVersion: 2,
+  });
+  f.h.storage.run(
+    "UPDATE exact_review_queue_items SET item_json = ? WHERE item_key = ?",
+    JSON.stringify(review),
+    review.key,
+  );
+  f.h.restart();
+  const direct = await f.h.post("/publication-results", {
+    ...directPlan(f.target, review.revision, {
+      fenceKey: review.key,
+      claimGeneration: review.claimGeneration,
+    }),
+    sourceSha: "a".repeat(40),
+    lifecycle: { kind: "router" },
+  });
+  assert.equal(direct.accepted, true, JSON.stringify(direct));
+  let witness = (await f.state()).items[f.a.key].publicationSuccessorWitness;
+  assert.deepEqual([witness.state, witness.sourceHead], ["blocked", 3]);
+  const routed = await f.h.post("/lifecycle/router-receipt", {
+    canonical_target_key: f.target,
+    fence_key: review.key,
+    revision: review.revision,
+    receipt_id: "direct-review-router",
+  });
+  assert.equal(routed.ok, true);
+  const completed = await f.h.post("/complete", {
+    lease_id: review.leaseId,
+    item_key: review.key,
+    lease_revision: review.leaseRevision,
+    claim_generation: review.claimGeneration,
+    run_id: review.claimedRunId,
+    run_attempt: review.claimedRunAttempt,
+    outcome: "success",
+    completion_kind: "published",
+    reason_code: "publication_applied",
+  });
+  assert.equal(completed.ok, true, JSON.stringify(completed));
+  assert.equal((await f.state()).items[review.key], undefined);
+  await f.enqueue("c", 2, { generation: 2 });
+  witness = (await f.state()).items[f.a.key].publicationSuccessorWitness;
+  assert.deepEqual([witness.state, witness.sourceHead], ["blocked", 3]);
+  await f.enqueue("d", 3);
+  witness = (await f.state()).items[f.a.key].publicationSuccessorWitness;
+  assert.deepEqual([witness.state, witness.sourceHead], ["blocked", 3]);
+  await f.expire();
+  await f.assertRetained();
+  await f.enqueue("d", 4, { delivery: "d-newer" });
+  await f.h.queue.alarm();
+  assert.equal(f.projectionA()?.terminalDisposition?.kind, "superseded");
+});
+
+test("semantic lineage dedupe cannot leave obsolete rows eligible for a batch", async (t) => {
+  t.mock.method(Date, "now", () => 6_250_000);
+  const queue = new ExactReviewQueue(
+    { storage: new TestStorage() },
+    {
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "8",
+    },
+  );
+  for (let index = 0; index < 101; index += 1) {
     await queue.fetch(
-      publicationRequest("delivery-many-new", 108703, "2600", "openclaw/openclaw", 2),
+      publicationRequest(
+        `delivery-many-old-${index}`,
+        108703,
+        String(2400 + index),
+        "openclaw/openclaw",
+        1,
+      ),
     );
-
-    const before = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(before.lanes.publication.pending, 1);
-    assert.equal(before.lanes.publication.semantic_deduped_total, 100);
-    const claim = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-skips-obsolete-remainder",
-          lease_owner: "worker-1",
-          max_items: 32,
-        }),
-      )
-    ).json();
-    assert.deepEqual(
-      claim.batch.items.map((item: { item_key: string }) => item.item_key),
-      ["openclaw/openclaw#108703@publish:2600:1"],
-    );
-  } finally {
-    Date.now = originalNow;
   }
+  await queue.fetch(
+    publicationRequest("delivery-many-new", 108703, "2600", "openclaw/openclaw", 2),
+  );
+
+  const before = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(before.lanes.publication.pending, 1);
+  assert.equal(before.lanes.publication.semantic_deduped_total, 100);
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-skips-obsolete-remainder",
+        lease_owner: "worker-1",
+        max_items: 32,
+      }),
+    )
+  ).json();
+  assert.deepEqual(
+    claim.batch.items.map((item: { item_key: string }) => item.item_key),
+    ["openclaw/openclaw#108703@publish:2600:1"],
+  );
 });
 
-test("stale publication ingress is acknowledged without replacing a newer revision", async () => {
-  const originalNow = Date.now;
-  Date.now = () => 6_300_000;
-  try {
-    const queue = new ExactReviewQueue(
-      { storage: new TestStorage() },
-      { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
-    );
-    await queue.fetch(publicationRequest("delivery-newer", 108701, "2202", "openclaw/openclaw", 2));
-    const removedNewer = await (
-      await queue.fetch(
-        batchRequest("/publications/supersede", {
-          items: [{ item_key: "openclaw/openclaw#108701@publish:2202:1", revision: 1 }],
-        }),
-      )
-    ).json();
-    assert.equal(removedNewer.superseded, 1);
-    const response = await (
-      await queue.fetch(
-        publicationRequest("delivery-stale", 108701, "2201", "openclaw/openclaw", 1),
-      )
-    ).json();
+test("stale publication ingress is acknowledged without replacing a newer revision", async (t) => {
+  t.mock.method(Date, "now", () => 6_300_000);
+  const storage = new TestStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+  );
+  await queue.fetch(publicationRequest("delivery-newer", 108701, "2202", "openclaw/openclaw", 2));
+  storage.run(
+    "DELETE FROM exact_review_queue_items WHERE item_key = ?",
+    "openclaw/openclaw#108701@publish:2202:1",
+  );
+  const response = await (
+    await queue.fetch(publicationRequest("delivery-stale", 108701, "2201", "openclaw/openclaw", 1))
+  ).json();
 
-    assert.equal(response.deduped, true);
-    assert.equal(response.superseded, true);
-    assert.equal(response.publication_revision, 1);
-    assert.equal(response.superseded_by_revision, 2);
-    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(stats.lanes.publication.pending, 0);
-  } finally {
-    Date.now = originalNow;
-  }
+  assert.equal(response.deduped, true);
+  assert.equal(response.superseded, true);
+  assert.equal(response.publication_revision, 1);
+  assert.equal(response.superseded_by_revision, 2);
+  const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(stats.lanes.publication.pending, 0);
 });
 
-test("publication reconcile preserves active batches and removes older revisions after expiry", async () => {
-  const originalNow = Date.now;
+test("publication reconcile preserves active batches and removes older revisions after expiry", async (t) => {
   let now = 6_400_000;
-  Date.now = () => now;
-  try {
-    const queue = new ExactReviewQueue(
-      { storage: new TestStorage() },
-      {
-        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
-        EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
-      },
-    );
+  t.mock.method(Date, "now", () => now);
+  const storage = new TestStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    {
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
+    },
+  );
+  await queue.fetch(
+    publicationRequest("delivery-owned-old", 108702, "2301", "openclaw/openclaw", 1),
+  );
+  const claim = await (
     await queue.fetch(
-      publicationRequest("delivery-owned-old", 108702, "2301", "openclaw/openclaw", 1),
-    );
-    const claim = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-reconcile-protection",
-          lease_owner: "worker-1",
-          max_items: 1,
-        }),
-      )
-    ).json();
-    assert.equal(claim.claimed, true);
-    await queue.fetch(
-      publicationRequest("delivery-unowned-new", 108702, "2302", "openclaw/openclaw", 2),
-    );
-    const removedNewer = await (
-      await queue.fetch(
-        batchRequest("/publications/supersede", {
-          items: [{ item_key: "openclaw/openclaw#108702@publish:2302:1", revision: 1 }],
-        }),
-      )
-    ).json();
-    assert.equal(removedNewer.superseded, 1);
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-reconcile-protection",
+        lease_owner: "worker-1",
+        max_items: 1,
+      }),
+    )
+  ).json();
+  assert.equal(claim.claimed, true);
+  await queue.fetch(
+    publicationRequest("delivery-unowned-new", 108702, "2302", "openclaw/openclaw", 2),
+  );
+  storage.run(
+    "DELETE FROM exact_review_queue_items WHERE item_key = ?",
+    "openclaw/openclaw#108702@publish:2302:1",
+  );
 
-    const protectedResult = await (
-      await queue.fetch(batchRequest("/publications/reconcile", { apply: true, max_items: 100 }))
-    ).json();
-    assert.equal(protectedResult.changed, 0);
-    assert.equal(protectedResult.eligible, 0);
+  const protectedResult = await (
+    await queue.fetch(batchRequest("/publications/reconcile", { apply: true, max_items: 100 }))
+  ).json();
+  assert.equal(protectedResult.changed, 0);
+  assert.equal(protectedResult.eligible, 0);
 
-    now += 60_001;
-    const dryRun = await (
-      await queue.fetch(batchRequest("/publications/reconcile", { max_items: 100 }))
-    ).json();
-    assert.equal(dryRun.apply, false);
-    assert.equal(dryRun.eligible, 1);
-    assert.equal(dryRun.changed, 0);
+  now += 60_001;
+  const dryRun = await (
+    await queue.fetch(batchRequest("/publications/reconcile", { max_items: 100 }))
+  ).json();
+  assert.equal(dryRun.apply, false);
+  assert.equal(dryRun.eligible, 1);
+  assert.equal(dryRun.changed, 0);
 
-    const applied = await (
-      await queue.fetch(batchRequest("/publications/reconcile", { apply: true, max_items: 100 }))
-    ).json();
-    assert.equal(applied.changed, 1);
-    assert.equal(applied.eligible_remaining, 0);
-    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(stats.lanes.publication.pending, 0);
-  } finally {
-    Date.now = originalNow;
-  }
+  const applied = await (
+    await queue.fetch(batchRequest("/publications/reconcile", { apply: true, max_items: 100 }))
+  ).json();
+  assert.equal(applied.changed, 1);
+  assert.equal(applied.eligible_remaining, 0);
+  const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(stats.lanes.publication.pending, 0);
 });
 
-test("publication reconcile backfills historical duplicate lineages in bounded passes", async () => {
-  const originalNow = Date.now;
+test("publication reconcile backfills historical duplicate lineages in bounded passes", async (t) => {
   const now = 6_450_000;
-  Date.now = () => now;
-  try {
-    const storage = new TestStorage();
-    const decisions = await Promise.all(
-      ["2401", "2402", "2403"].map(async (producerRunId) => {
-        const payload = (await publicationRequest(
-          `legacy-lineage-${producerRunId}`,
-          108703,
-          producerRunId,
-        ).json()) as { decision: Record<string, unknown> };
-        return payload.decision;
+  t.mock.method(Date, "now", () => now);
+  const storage = new TestStorage();
+  const decisions = await Promise.all(
+    ["2401", "2402", "2403"].map(async (producerRunId) => {
+      const payload = (await publicationRequest(
+        `legacy-lineage-${producerRunId}`,
+        108703,
+        producerRunId,
+      ).json()) as { decision: Record<string, unknown> };
+      return payload.decision;
+    }),
+  );
+  const keys = ["2401", "2402", "2403"].map(
+    (producerRunId) => `openclaw/openclaw#108703@publish:${producerRunId}:1`,
+  );
+  await storage.put("exact-review-queue", {
+    items: Object.fromEntries(
+      keys.map((key, index) => [
+        key,
+        {
+          decision: decisions[index],
+          state: "pending",
+          revision: 1,
+          createdAt: now - (3 - index) * 100_000,
+          updatedAt: now - (3 - index) * 100_000,
+          nextAttemptAt: now - (3 - index) * 100_000,
+          attempts: index === 0 ? 7 : 0,
+          ...(index === 0
+            ? {
+                publicationFailureAttempts: 2,
+                firstFailureAt: now - 300_000,
+                lastFailureReason: "state_contention",
+              }
+            : {}),
+        },
+      ]),
+    ),
+    deliveries: {},
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const dryRun = await (
+    await queue.fetch(batchRequest("/publications/reconcile", { max_items: 1 }))
+  ).json();
+  assert.equal(dryRun.apply, false);
+  assert.equal(dryRun.eligible, 2);
+  assert.equal(dryRun.changed, 0);
+  assert.equal(dryRun.lineage_duplicate_eligible, 2);
+  assert.equal(dryRun.oldest_eligible_age_seconds, 200);
+  assert.equal(dryRun.oldest_remaining_age_seconds, 200);
+  assert.equal(dryRun.sample[0].reason, "duplicate_lineage");
+  assert.equal(dryRun.sample[0].retained_item_key, keys[0]);
+
+  const firstPass = await (
+    await queue.fetch(batchRequest("/publications/reconcile", { apply: true, max_items: 1 }))
+  ).json();
+  assert.equal(firstPass.changed, 0);
+  assert.equal(firstPass.eligible_remaining, 2);
+  assert.equal(firstPass.lineage_duplicate_changed, 0);
+  assert.equal(firstPass.lineage_refreshed, 0);
+  assert.equal(firstPass.oldest_remaining_age_seconds, 200);
+  assert.equal(firstPass.sample[0].item_key, keys[1]);
+  assert.equal(firstPass.sample[0].supersede_safe, true);
+  assert.equal(firstPass.sample[0].acknowledgement_unavailable_reason, null);
+
+  const afterFirstPass = await (
+    await queue.fetch(batchRequest("/publications/list", { limit: 100 }))
+  ).json();
+  const retained = afterFirstPass.publications.find(
+    (item: { item_key: string }) => item.item_key === keys[0],
+  );
+  assert.equal(retained.attempts, 7);
+  assert.equal(retained.revision, 1);
+  assert.equal(retained.decision.publication.producerRunId, "2401");
+  assert.equal(afterFirstPass.publications.length, 3);
+
+  const staleSupersede = await (
+    await queue.fetch(
+      batchRequest("/publications/supersede", {
+        items: [{ item_key: keys[0], revision: 1 }],
       }),
-    );
-    const keys = ["2401", "2402", "2403"].map(
-      (producerRunId) => `openclaw/openclaw#108703@publish:${producerRunId}:1`,
-    );
-    await storage.put("exact-review-queue", {
-      items: Object.fromEntries(
-        keys.map((key, index) => [
-          key,
-          {
-            decision: decisions[index],
-            state: "pending",
-            revision: 1,
-            createdAt: now - (3 - index) * 100_000,
-            updatedAt: now - (3 - index) * 100_000,
-            nextAttemptAt: now - (3 - index) * 100_000,
-            attempts: index === 0 ? 7 : 0,
-            ...(index === 0
-              ? {
-                  publicationFailureAttempts: 2,
-                  firstFailureAt: now - 300_000,
-                  lastFailureReason: "state_contention",
-                }
-              : {}),
-          },
-        ]),
-      ),
-      deliveries: {},
-    });
-    const queue = new ExactReviewQueue({ storage }, {});
+    )
+  ).json();
+  assert.equal(staleSupersede.superseded, 0);
 
-    const dryRun = await (
-      await queue.fetch(batchRequest("/publications/reconcile", { max_items: 1 }))
-    ).json();
-    assert.equal(dryRun.apply, false);
-    assert.equal(dryRun.eligible, 2);
-    assert.equal(dryRun.changed, 0);
-    assert.equal(dryRun.lineage_duplicate_eligible, 2);
-    assert.equal(dryRun.oldest_eligible_age_seconds, 200);
-    assert.equal(dryRun.oldest_remaining_age_seconds, 200);
-    assert.equal(dryRun.sample[0].reason, "duplicate_lineage");
-    assert.equal(dryRun.sample[0].retained_item_key, keys[0]);
+  const secondPass = await (
+    await queue.fetch(batchRequest("/publications/reconcile", { apply: true, max_items: 100 }))
+  ).json();
+  assert.equal(secondPass.changed, 2);
+  assert.equal(secondPass.eligible_remaining, 0);
+  assert.equal(secondPass.lineage_duplicate_changed, 2);
+  assert.equal(secondPass.lineage_refreshed, 1);
+  assert.equal(secondPass.oldest_remaining_age_seconds, null);
 
-    const firstPass = await (
-      await queue.fetch(batchRequest("/publications/reconcile", { apply: true, max_items: 1 }))
-    ).json();
-    assert.equal(firstPass.changed, 1);
-    assert.equal(firstPass.eligible_remaining, 1);
-    assert.equal(firstPass.lineage_duplicate_changed, 1);
-    assert.equal(firstPass.lineage_refreshed, 1);
-    assert.equal(firstPass.oldest_remaining_age_seconds, 100);
-
-    const afterFirstPass = await (
-      await queue.fetch(batchRequest("/publications/list", { limit: 100 }))
-    ).json();
-    const retained = afterFirstPass.publications.find(
-      (item: { item_key: string }) => item.item_key === keys[0],
-    );
-    assert.equal(retained.attempts, 7);
-    assert.equal(retained.revision, 2);
-    assert.equal(retained.decision.publication.producerRunId, "2403");
-
-    const staleSupersede = await (
-      await queue.fetch(
-        batchRequest("/publications/supersede", {
-          items: [{ item_key: keys[0], revision: 1 }],
-        }),
-      )
-    ).json();
-    assert.equal(staleSupersede.superseded, 0);
-
-    const secondPass = await (
-      await queue.fetch(batchRequest("/publications/reconcile", { apply: true, max_items: 100 }))
-    ).json();
-    assert.equal(secondPass.changed, 1);
-    assert.equal(secondPass.eligible_remaining, 0);
-    assert.equal(secondPass.lineage_duplicate_changed, 1);
-    assert.equal(secondPass.lineage_refreshed, 0);
-    assert.equal(secondPass.oldest_remaining_age_seconds, null);
-
-    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(stats.lanes.publication.pending, 1);
-    assert.equal(stats.lanes.publication.superseded_total, 2);
-    assert.equal(stats.lanes.publication.semantic_deduped_total, 2);
-  } finally {
-    Date.now = originalNow;
-  }
+  const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(stats.lanes.publication.pending, 1);
+  assert.equal(stats.lanes.publication.superseded_total, 2);
+  assert.equal(stats.lanes.publication.semantic_deduped_total, 2);
 });
 
-test("publication lineage reconcile defers the whole lineage while a batch owns it", async () => {
-  const originalNow = Date.now;
+test("publication lineage refresh preserves a retained command decision", async (t) => {
+  const now = 6_460_000;
+  t.mock.method(Date, "now", () => now);
+  const storage = new TestStorage();
+  const decisions = await Promise.all(
+    ["2411", "2412"].map(async (producerRunId) => {
+      const payload = (await publicationRequest(
+        `command-lineage-${producerRunId}`,
+        108705,
+        producerRunId,
+      ).json()) as { decision: Record<string, any> };
+      return payload.decision;
+    }),
+  );
+  decisions[0].publication.producerDecision.statusCommentId = 24_111;
+  const keys = ["2411", "2412"].map(
+    (producerRunId) => `openclaw/openclaw#108705@publish:${producerRunId}:1`,
+  );
+  await storage.put("exact-review-queue", {
+    items: Object.fromEntries(
+      keys.map((key, index) => [
+        key,
+        {
+          decision: decisions[index],
+          state: "pending",
+          revision: 1,
+          createdAt: now - (2 - index) * 100_000,
+          updatedAt: now - (2 - index) * 100_000,
+          nextAttemptAt: now - (2 - index) * 100_000,
+          attempts: 0,
+        },
+      ]),
+    ),
+    deliveries: {},
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+
+  const result = await (
+    await queue.fetch(batchRequest("/publications/reconcile", { apply: true, max_items: 100 }))
+  ).json();
+  assert.equal(result.changed, 1);
+  assert.equal(result.lineage_duplicate_changed, 1);
+  assert.equal(result.lineage_refreshed, 0);
+
+  const after = await (
+    await queue.fetch(batchRequest("/publications/list", { limit: 100 }))
+  ).json();
+  assert.equal(after.publications.length, 1);
+  assert.equal(after.publications[0].item_key, keys[0]);
+  assert.equal(after.publications[0].revision, 1);
+  assert.equal(after.publications[0].decision.publication.producerDecision.statusCommentId, 24_111);
+  assert.equal(after.publications[0].decision.publication.producerRunId, "2411");
+});
+
+test("publication lineage reconcile defers the whole lineage while a batch owns it", async (t) => {
   let now = 6_475_000;
-  Date.now = () => now;
-  try {
-    const storage = new TestStorage();
-    const producerRunIds = ["2501", "2502"];
-    const decisions = await Promise.all(
-      producerRunIds.map(async (producerRunId) => {
-        const payload = (await publicationRequest(
-          `legacy-owned-lineage-${producerRunId}`,
-          108704,
-          producerRunId,
-        ).json()) as { decision: Record<string, unknown> };
-        return payload.decision;
+  t.mock.method(Date, "now", () => now);
+  const storage = new TestStorage();
+  const producerRunIds = ["2501", "2502"];
+  const decisions = await Promise.all(
+    producerRunIds.map(async (producerRunId) => {
+      const payload = (await publicationRequest(
+        `legacy-owned-lineage-${producerRunId}`,
+        108704,
+        producerRunId,
+      ).json()) as { decision: Record<string, unknown> };
+      return payload.decision;
+    }),
+  );
+  const keys = producerRunIds.map(
+    (producerRunId) => `openclaw/openclaw#108704@publish:${producerRunId}:1`,
+  );
+  await storage.put("exact-review-queue", {
+    items: Object.fromEntries(
+      keys.map((key, index) => [
+        key,
+        {
+          decision: decisions[index],
+          state: "pending",
+          revision: 1,
+          createdAt: now - (2 - index) * 100_000,
+          updatedAt: now - (2 - index) * 100_000,
+          nextAttemptAt: now - (2 - index) * 100_000,
+          attempts: 0,
+        },
+      ]),
+    ),
+    deliveries: {},
+  });
+  const queue = new ExactReviewQueue(
+    { storage },
+    {
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
+    },
+  );
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-lineage-reconcile-protection",
+        lease_owner: "worker-1",
+        max_items: 1,
       }),
-    );
-    const keys = producerRunIds.map(
-      (producerRunId) => `openclaw/openclaw#108704@publish:${producerRunId}:1`,
-    );
-    await storage.put("exact-review-queue", {
-      items: Object.fromEntries(
-        keys.map((key, index) => [
-          key,
-          {
-            decision: decisions[index],
-            state: "pending",
-            revision: 1,
-            createdAt: now - (2 - index) * 100_000,
-            updatedAt: now - (2 - index) * 100_000,
-            nextAttemptAt: now - (2 - index) * 100_000,
-            attempts: 0,
-          },
-        ]),
-      ),
-      deliveries: {},
-    });
-    const queue = new ExactReviewQueue(
-      { storage },
-      {
-        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
-        EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
-      },
-    );
-    const claim = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-lineage-reconcile-protection",
-          lease_owner: "worker-1",
-          max_items: 1,
-        }),
-      )
-    ).json();
-    assert.equal(claim.claimed, true);
-    assert.equal(claim.batch.items[0].item_key, keys[0]);
+    )
+  ).json();
+  assert.equal(claim.claimed, true);
+  assert.equal(claim.batch.items[0].item_key, keys[0]);
 
-    const applied = await (
-      await queue.fetch(batchRequest("/publications/reconcile", { apply: true, max_items: 100 }))
-    ).json();
-    assert.equal(applied.changed, 0);
-    assert.equal(applied.eligible, 0);
-    assert.equal(applied.lineage_duplicate_changed, 0);
-    assert.equal(applied.protected_batch_items, 1);
-    assert.equal(applied.protected_lineage_items, 2);
+  const applied = await (
+    await queue.fetch(batchRequest("/publications/reconcile", { apply: true, max_items: 100 }))
+  ).json();
+  assert.equal(applied.changed, 0);
+  assert.equal(applied.eligible, 0);
+  assert.equal(applied.lineage_duplicate_changed, 0);
+  assert.equal(applied.protected_batch_items, 1);
+  assert.equal(applied.protected_lineage_items, 2);
 
-    const fetched = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/fetch", {
-          batch_id: claim.batch.batch_id,
-          lease_owner: "worker-1",
-        }),
-      )
-    ).json();
-    assert.equal(fetched.batch.items[0].item_key, keys[0]);
-    assert.equal(fetched.items[0].item_key, keys[0]);
+  const fetched = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/fetch", {
+        batch_id: claim.batch.batch_id,
+        lease_owner: "worker-1",
+      }),
+    )
+  ).json();
+  assert.equal(fetched.batch.items[0].item_key, keys[0]);
+  assert.equal(fetched.items[0].item_key, keys[0]);
 
-    now += 60_001;
-    const reconciled = await (
-      await queue.fetch(batchRequest("/publications/reconcile", { apply: true, max_items: 100 }))
-    ).json();
-    assert.equal(reconciled.changed, 1);
-    assert.equal(reconciled.lineage_duplicate_changed, 1);
-    assert.equal(reconciled.lineage_refreshed, 1);
+  now += 60_001;
+  const reconciled = await (
+    await queue.fetch(batchRequest("/publications/reconcile", { apply: true, max_items: 100 }))
+  ).json();
+  assert.equal(reconciled.changed, 1);
+  assert.equal(reconciled.lineage_duplicate_changed, 1);
+  assert.equal(reconciled.lineage_refreshed, 1);
 
-    const publications = await (
-      await queue.fetch(batchRequest("/publications/list", { limit: 100 }))
-    ).json();
-    assert.equal(publications.publications.length, 1);
-    assert.equal(publications.publications[0].item_key, keys[0]);
-    assert.equal(publications.publications[0].decision.publication.producerRunId, "2502");
-  } finally {
-    Date.now = originalNow;
-  }
+  const publications = await (
+    await queue.fetch(batchRequest("/publications/list", { limit: 100 }))
+  ).json();
+  assert.equal(publications.publications.length, 1);
+  assert.equal(publications.publications[0].item_key, keys[0]);
+  assert.equal(publications.publications[0].decision.publication.producerRunId, "2502");
 });
 
-test("batch claim scans beyond but cannot exceed the configured rollout size", async () => {
-  const originalNow = Date.now;
-  Date.now = () => 6_500_000;
-  try {
-    const queue = new ExactReviewQueue(
-      { storage: new TestStorage() },
-      {
-        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
-        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "4",
-      },
+test("batch claim scans beyond but cannot exceed the configured rollout size", async (t) => {
+  t.mock.method(Date, "now", () => 6_500_000);
+  const queue = new ExactReviewQueue(
+    { storage: new TestStorage() },
+    {
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "4",
+    },
+  );
+  for (let itemNumber = 1; itemNumber <= 8; itemNumber += 1) {
+    await queue.fetch(
+      publicationRequest(`delivery-cap-${itemNumber}`, itemNumber, `${3000 + itemNumber}`),
     );
-    for (let itemNumber = 1; itemNumber <= 8; itemNumber += 1) {
-      await queue.fetch(
-        publicationRequest(`delivery-cap-${itemNumber}`, itemNumber, `${3000 + itemNumber}`),
-      );
-    }
-
-    const claim = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-configured-cap",
-          lease_owner: "worker-1",
-          max_items: 50,
-        }),
-      )
-    ).json();
-
-    assert.equal(claim.claimed, true, JSON.stringify(claim));
-    assert.equal(claim.requested_max_items, 50);
-    assert.equal(claim.effective_max_items, 4);
-    assert.equal(claim.batch.items.length, 4);
-  } finally {
-    Date.now = originalNow;
   }
+
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-configured-cap",
+        lease_owner: "worker-1",
+        max_items: 50,
+      }),
+    )
+  ).json();
+
+  assert.equal(claim.claimed, true, JSON.stringify(claim));
+  assert.equal(claim.requested_max_items, 50);
+  assert.equal(claim.effective_max_items, 4);
+  assert.equal(claim.batch.items.length, 4);
 });
 
 test("rollout dispatches one full batch workflow without admitting legacy publishers", async () => {
@@ -2367,43 +3264,38 @@ test("rollout refills concurrent batch owner slots without exceeding the cap", a
   }
 });
 
-test("batch rollout wakes a retryable publication at its next eligibility time", async () => {
-  const originalNow = Date.now;
-  Date.now = () => 9_000_000;
-  try {
-    const storage = new TestStorage();
-    const queue = new ExactReviewQueue(
-      { storage },
-      {
-        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
-        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
-        EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS: "60000",
-      },
-    );
-    await queue.fetch(publicationRequest("delivery-future-retry", 113, "1013"));
-    const [row] = Array.from(
-      storage.sql.exec(
-        "SELECT item_key, item_json FROM exact_review_queue_items WHERE item_key LIKE ?",
-        "%#113@publish:%",
-      ),
-    ) as Array<{ item_key: string; item_json: string }>;
-    assert.ok(row);
-    const item = JSON.parse(row.item_json);
-    item.nextAttemptAt = 9_030_000;
-    Array.from(
-      storage.sql.exec(
-        "UPDATE exact_review_queue_items SET item_json = ? WHERE item_key = ?",
-        JSON.stringify(item),
-        row.item_key,
-      ),
-    );
+test("batch rollout wakes a retryable publication at its next eligibility time", async (t) => {
+  t.mock.method(Date, "now", () => 9_000_000);
+  const storage = new TestStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    {
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
+      EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS: "60000",
+    },
+  );
+  await queue.fetch(publicationRequest("delivery-future-retry", 113, "1013"));
+  const [row] = Array.from(
+    storage.sql.exec(
+      "SELECT item_key, item_json FROM exact_review_queue_items WHERE item_key LIKE ?",
+      "%#113@publish:%",
+    ),
+  ) as Array<{ item_key: string; item_json: string }>;
+  assert.ok(row);
+  const item = JSON.parse(row.item_json);
+  item.nextAttemptAt = 9_030_000;
+  Array.from(
+    storage.sql.exec(
+      "UPDATE exact_review_queue_items SET item_json = ? WHERE item_key = ?",
+      JSON.stringify(item),
+      row.item_key,
+    ),
+  );
 
-    await queue.alarm();
+  await queue.alarm();
 
-    assert.equal(storage.scheduledAlarm(), 9_030_000);
-  } finally {
-    Date.now = originalNow;
-  }
+  assert.equal(storage.scheduledAlarm(), 9_030_000);
 });
 
 test("batch protocol routes require the shared internal signature", async () => {
@@ -2542,262 +3434,252 @@ test("publication batch observability retains the most recently completed termin
   );
 });
 
-test("reservation-to-claim observability traces one batch without exposing lease credentials", async () => {
-  const originalNow = Date.now;
+test("reservation-to-claim observability traces one batch without exposing lease credentials", async (t) => {
   let now = 18_000_000;
-  Date.now = () => now;
-  try {
-    const queue = new ExactReviewQueue(
-      { storage: new TestStorage() },
-      { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
-    );
-    await queue.fetch(publicationRequest("reservation-claim-trace", 729, "2729"));
-    now += 2_000;
-    const claim = await (
+  t.mock.method(Date, "now", () => now);
+  const queue = new ExactReviewQueue(
+    { storage: new TestStorage() },
+    { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+  );
+  await queue.fetch(publicationRequest("reservation-claim-trace", 729, "2729"));
+  now += 2_000;
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "trace-batch-729",
+        lease_owner: "worker-secret-not-public",
+        max_items: 1,
+        dispatch_id: "publication-batch-dispatch:trace-729",
+        dispatched_at: new Date(now - 1_000).toISOString(),
+        runner_run_id: "92729",
+        runner_run_attempt: 3,
+        runner_started_at: new Date(now - 500).toISOString(),
+      }),
+    )
+  ).json();
+  const member = claim.batch.items[0];
+  const claimedStats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(claimedStats.reservation_claim_observability.queue_slots.active_items, 1);
+  assert.equal(claimedStats.reservation_claim_observability.queue_slots.unassigned_pending, 0);
+  assert.ok(
+    !claimedStats.reservation_claim_observability.alerts.some(
+      (alert: { kind: string }) => alert.kind === "no_capacity",
+    ),
+  );
+  const heartbeat = (
+    timelineStage: string,
+    observedAt: number,
+    progress?: Record<string, unknown>,
+  ) =>
+    batchRequest("/publication-batches/heartbeat", {
+      batch_id: claim.batch.batch_id,
+      lease_owner: "worker-secret-not-public",
+      items: [member],
+      ...(progress ? { state_writer_progress: progress } : {}),
+      ...(timelineStage
+        ? { timeline_stage: timelineStage, observed_at: new Date(observedAt).toISOString() }
+        : {}),
+    });
+  now += 500;
+  assert.equal((await queue.fetch(heartbeat("preparation_started", now))).status, 200);
+  now += 500;
+  assert.equal((await queue.fetch(heartbeat("preparation_finished", now))).status, 200);
+  now += 500;
+  assert.equal(
+    (
       await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "trace-batch-729",
-          lease_owner: "worker-secret-not-public",
-          max_items: 1,
-          dispatch_id: "publication-batch-dispatch:trace-729",
-          dispatched_at: new Date(now - 1_000).toISOString(),
-          runner_run_id: "92729",
-          runner_run_attempt: 3,
-          runner_started_at: new Date(now - 500).toISOString(),
+        heartbeat("", now, {
+          schema_version: 1,
+          operation_id: `batch:${claim.batch.batch_id}`,
+          mode: "batch",
+          phase: "waiting",
+          sequence: 1,
+          observed_at: new Date(now).toISOString(),
+          configured_batch_size: 1,
+          actual_batch_size: 1,
         }),
       )
-    ).json();
-    const member = claim.batch.items[0];
-    const claimedStats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(claimedStats.reservation_claim_observability.queue_slots.active_items, 1);
-    assert.equal(claimedStats.reservation_claim_observability.queue_slots.unassigned_pending, 0);
-    assert.ok(
-      !claimedStats.reservation_claim_observability.alerts.some(
-        (alert: { kind: string }) => alert.kind === "no_capacity",
-      ),
-    );
-    const heartbeat = (
-      timelineStage: string,
-      observedAt: number,
-      progress?: Record<string, unknown>,
-    ) =>
-      batchRequest("/publication-batches/heartbeat", {
+    ).status,
+    200,
+  );
+  now += 500;
+  assert.equal((await queue.fetch(heartbeat("final_github_apply", now))).status, 200);
+  now += 500;
+  assert.equal((await queue.fetch(heartbeat("github_throttle", now))).status, 200);
+  now += 500;
+  const completed = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/complete", {
         batch_id: claim.batch.batch_id,
         lease_owner: "worker-secret-not-public",
-        items: [member],
-        ...(progress ? { state_writer_progress: progress } : {}),
-        ...(timelineStage
-          ? { timeline_stage: timelineStage, observed_at: new Date(observedAt).toISOString() }
-          : {}),
-      });
-    now += 500;
-    assert.equal((await queue.fetch(heartbeat("preparation_started", now))).status, 200);
-    now += 500;
-    assert.equal((await queue.fetch(heartbeat("preparation_finished", now))).status, 200);
-    now += 500;
-    assert.equal(
-      (
-        await queue.fetch(
-          heartbeat("", now, {
-            schema_version: 1,
-            operation_id: `batch:${claim.batch.batch_id}`,
-            mode: "batch",
-            phase: "waiting",
-            sequence: 1,
-            observed_at: new Date(now).toISOString(),
-            configured_batch_size: 1,
-            actual_batch_size: 1,
-          }),
-        )
-      ).status,
-      200,
-    );
-    now += 500;
-    assert.equal((await queue.fetch(heartbeat("final_github_apply", now))).status, 200);
-    now += 500;
-    assert.equal((await queue.fetch(heartbeat("github_throttle", now))).status, 200);
-    now += 500;
-    const completed = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/complete", {
-          batch_id: claim.batch.batch_id,
-          lease_owner: "worker-secret-not-public",
-          state_commit_sha: "a".repeat(40),
-          failure_fingerprint: "failure-body-secret-not-public",
-          state_writer: {
-            schema_version: 1,
-            operation_id: `batch:${claim.batch.batch_id}`,
-            mode: "batch",
-            started_at: new Date(now - 1_000).toISOString(),
-            finished_at: new Date(now).toISOString(),
-            wait_ms: 500,
-            acquire_attempts: 1,
-            acquired: true,
-            hold_ms: 500,
-            renewals: 0,
-            released: true,
-            git_duration_ms: 1_000,
-            git_processes: 1,
-            commit_count: 1,
-            materialized_items: 1,
-            configured_batch_size: 1,
-            actual_batch_size: 1,
-            batch_wait_ms: 0,
-            outcome: "materialized",
+        state_commit_sha: "a".repeat(40),
+        failure_fingerprint: "failure-body-secret-not-public",
+        state_writer: {
+          schema_version: 1,
+          operation_id: `batch:${claim.batch.batch_id}`,
+          mode: "batch",
+          started_at: new Date(now - 1_000).toISOString(),
+          finished_at: new Date(now).toISOString(),
+          wait_ms: 500,
+          acquire_attempts: 1,
+          acquired: true,
+          hold_ms: 500,
+          renewals: 0,
+          released: true,
+          git_duration_ms: 1_000,
+          git_processes: 1,
+          commit_count: 1,
+          materialized_items: 1,
+          configured_batch_size: 1,
+          actual_batch_size: 1,
+          batch_wait_ms: 0,
+          outcome: "materialized",
+        },
+        items: [
+          {
+            item_key: member.item_key,
+            revision: member.revision,
+            claim_generation: member.claim_generation,
+            terminal_outcome: "published",
           },
-          items: [
-            {
-              item_key: member.item_key,
-              revision: member.revision,
-              claim_generation: member.claim_generation,
-              terminal_outcome: "published",
-            },
-          ],
-        }),
-      )
-    ).json();
-    assert.equal(completed.accepted, 1, JSON.stringify(completed));
+        ],
+      }),
+    )
+  ).json();
+  assert.equal(completed.accepted, 1, JSON.stringify(completed));
 
-    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    const observability = stats.reservation_claim_observability;
-    assert.deepEqual(observability.publication_paths, {
-      cloudflare_canonical_direct: {
-        enabled: true,
-        reservation_to_claim: "not_applicable",
-        state_writer_timing: "not_applicable",
-      },
-      legacy_state_repo_batch: {
-        enabled: true,
-        reservation_to_claim: "tracked",
-        state_writer_timing: "tracked",
-      },
-    });
-    const batch = observability.batches.find(
-      (entry: { batch_id: string }) => entry.batch_id === claim.batch.batch_id,
-    );
-    assert.ok(batch, JSON.stringify(observability));
-    assert.equal(batch.publication_path, "legacy_state_repo_batch");
-    assert.equal(batch.dispatch.id, "publication-batch-dispatch:trace-729");
-    assert.equal(batch.workflow.run_id, "92729");
-    assert.equal(batch.workflow.run_attempt, 3);
-    assert.ok(batch.workflow.runner_started_at);
-    assert.ok(batch.timeline.preparation_started_at);
-    assert.ok(batch.timeline.preparation_finished_at);
-    assert.ok(batch.timeline.state_writer_wait_at);
-    assert.ok(batch.timeline.state_writer_committed_at);
-    assert.ok(batch.timeline.final_github_apply_at);
-    assert.ok(batch.timeline.github_throttle_at);
-    assert.equal(batch.items[0].producer_run_id, "2729");
-    assert.equal(batch.items[0].reservation_to_claim_ms, 1_000);
-    assert.equal(batch.items[0].enqueue_to_claim_ms, 2_000);
-    assert.equal(observability.delay_buckets.metric, "reservation_to_claim_ms");
-    assert.ok(
-      observability.alerts.some((alert: { kind: string }) => alert.kind === "github_throttle"),
-    );
-    assert.match(JSON.stringify(observability), /publication-batch-dispatch:trace-729/);
-    assert.doesNotMatch(JSON.stringify(observability), /worker-secret-not-public/);
-    assert.doesNotMatch(JSON.stringify(observability), /failure-body-secret-not-public/);
-  } finally {
-    Date.now = originalNow;
-  }
+  const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  const observability = stats.reservation_claim_observability;
+  assert.deepEqual(observability.publication_paths, {
+    cloudflare_canonical_direct: {
+      enabled: true,
+      reservation_to_claim: "not_applicable",
+      state_writer_timing: "not_applicable",
+    },
+    legacy_state_repo_batch: {
+      enabled: true,
+      reservation_to_claim: "tracked",
+      state_writer_timing: "tracked",
+    },
+  });
+  const batch = observability.batches.find(
+    (entry: { batch_id: string }) => entry.batch_id === claim.batch.batch_id,
+  );
+  assert.ok(batch, JSON.stringify(observability));
+  assert.equal(batch.publication_path, "legacy_state_repo_batch");
+  assert.equal(batch.dispatch.id, "publication-batch-dispatch:trace-729");
+  assert.equal(batch.workflow.run_id, "92729");
+  assert.equal(batch.workflow.run_attempt, 3);
+  assert.ok(batch.workflow.runner_started_at);
+  assert.ok(batch.timeline.preparation_started_at);
+  assert.ok(batch.timeline.preparation_finished_at);
+  assert.ok(batch.timeline.state_writer_wait_at);
+  assert.ok(batch.timeline.state_writer_committed_at);
+  assert.ok(batch.timeline.final_github_apply_at);
+  assert.ok(batch.timeline.github_throttle_at);
+  assert.equal(batch.items[0].producer_run_id, "2729");
+  assert.equal(batch.items[0].reservation_to_claim_ms, 1_000);
+  assert.equal(batch.items[0].enqueue_to_claim_ms, 2_000);
+  assert.equal(observability.delay_buckets.metric, "reservation_to_claim_ms");
+  assert.ok(
+    observability.alerts.some((alert: { kind: string }) => alert.kind === "github_throttle"),
+  );
+  assert.match(JSON.stringify(observability), /publication-batch-dispatch:trace-729/);
+  assert.doesNotMatch(JSON.stringify(observability), /worker-secret-not-public/);
+  assert.doesNotMatch(JSON.stringify(observability), /failure-body-secret-not-public/);
 });
 
-test("authenticated publication reconciliation dry-run reports without mutation", async () => {
-  const originalNow = Date.now;
+test("authenticated publication reconciliation dry-run reports without mutation", async (t) => {
   const now = 13_000_000;
-  Date.now = () => now;
-  try {
-    const secret = "test-secret";
-    const producerRunIds = ["2601", "2602"];
-    const decisions = await Promise.all(
-      producerRunIds.map(async (producerRunId) => {
-        const payload = (await publicationRequest(
-          `authenticated-dry-run-${producerRunId}`,
-          108705,
-          producerRunId,
-        ).json()) as { decision: Record<string, unknown> };
-        return payload.decision;
+  t.mock.method(Date, "now", () => now);
+  const secret = "test-secret";
+  const producerRunIds = ["2601", "2602"];
+  const decisions = await Promise.all(
+    producerRunIds.map(async (producerRunId) => {
+      const payload = (await publicationRequest(
+        `authenticated-dry-run-${producerRunId}`,
+        108705,
+        producerRunId,
+      ).json()) as { decision: Record<string, unknown> };
+      return payload.decision;
+    }),
+  );
+  const storage = new TestStorage();
+  await storage.put("exact-review-queue", {
+    items: Object.fromEntries(
+      producerRunIds.map((producerRunId, index) => [
+        `openclaw/openclaw#108705@publish:${producerRunId}:1`,
+        {
+          decision: decisions[index],
+          state: "pending",
+          revision: 1,
+          createdAt: now - (2 - index) * 60_000,
+          updatedAt: now - (2 - index) * 60_000,
+          nextAttemptAt: now - (2 - index) * 60_000,
+          attempts: 0,
+        },
+      ]),
+    ),
+    deliveries: {},
+  });
+  const queue = new ExactReviewQueue({ storage }, {});
+  let forwardedPath = "";
+  const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: secret,
+    EXACT_REVIEW_QUEUE: {
+      idFromName: () => "global",
+      get: () => ({
+        fetch: async (request: Request) => {
+          forwardedPath = new URL(request.url).pathname;
+          return queue.fetch(request);
+        },
       }),
-    );
-    const storage = new TestStorage();
-    await storage.put("exact-review-queue", {
-      items: Object.fromEntries(
-        producerRunIds.map((producerRunId, index) => [
-          `openclaw/openclaw#108705@publish:${producerRunId}:1`,
-          {
-            decision: decisions[index],
-            state: "pending",
-            revision: 1,
-            createdAt: now - (2 - index) * 60_000,
-            updatedAt: now - (2 - index) * 60_000,
-            nextAttemptAt: now - (2 - index) * 60_000,
-            attempts: 0,
-          },
-        ]),
-      ),
-      deliveries: {},
-    });
-    const queue = new ExactReviewQueue({ storage }, {});
-    let forwardedPath = "";
-    const env = {
-      CLAWSWEEPER_WEBHOOK_SECRET: secret,
-      EXACT_REVIEW_QUEUE: {
-        idFromName: () => "global",
-        get: () => ({
-          fetch: async (request: Request) => {
-            forwardedPath = new URL(request.url).pathname;
-            return queue.fetch(request);
-          },
-        }),
-      },
-    };
-    const body = JSON.stringify({ apply: false, max_items: 1 });
-    const url = "https://clawsweeper.openclaw.ai/internal/exact-review/publications/reconcile";
-    const unauthorized = await worker.fetch(new Request(url, { method: "POST", body }), env);
-    assert.equal(unauthorized.status, 401);
+    },
+  };
+  const body = JSON.stringify({ apply: false, max_items: 1 });
+  const url = "https://clawsweeper.openclaw.ai/internal/exact-review/publications/reconcile";
+  const unauthorized = await worker.fetch(new Request(url, { method: "POST", body }), env);
+  assert.equal(unauthorized.status, 401);
 
-    const signature = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
-    const authorized = await worker.fetch(
-      new Request(url, {
-        method: "POST",
-        headers: { "x-clawsweeper-exact-review-signature": signature },
-        body,
-      }),
-      env,
-    );
-    assert.equal(authorized.status, 200);
-    assert.equal(forwardedPath, "/publications/reconcile");
-    const result = await authorized.json();
-    assert.equal(result.apply, false);
-    assert.equal(result.eligible, 1);
-    assert.equal(result.changed, 0);
-    assert.equal(result.eligible_remaining, 1);
-    assert.equal(result.lineage_duplicate_eligible, 1);
-    assert.equal(result.protected_lineage_items, 0);
-    assert.equal(result.oldest_eligible_age_seconds, 60);
-    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(stats.lanes.publication.pending, 2);
+  const signature = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+  const authorized = await worker.fetch(
+    new Request(url, {
+      method: "POST",
+      headers: { "x-clawsweeper-exact-review-signature": signature },
+      body,
+    }),
+    env,
+  );
+  assert.equal(authorized.status, 200);
+  assert.equal(forwardedPath, "/publications/reconcile");
+  const result = await authorized.json();
+  assert.equal(result.apply, false);
+  assert.equal(result.eligible, 1);
+  assert.equal(result.changed, 0);
+  assert.equal(result.eligible_remaining, 1);
+  assert.equal(result.lineage_duplicate_eligible, 1);
+  assert.equal(result.protected_lineage_items, 0);
+  assert.equal(result.oldest_eligible_age_seconds, 60);
+  const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(stats.lanes.publication.pending, 2);
 
-    if (process.env.CLAWSWEEPER_EVIDENCE_TRANSCRIPT === "1") {
-      console.log(
-        `AUTHENTICATED_PUBLICATION_RECONCILE_DRY_RUN=${JSON.stringify({
-          http_status: authorized.status,
-          apply: result.apply,
-          scanned: result.scanned,
-          eligible: result.eligible,
-          changed: result.changed,
-          eligible_remaining: result.eligible_remaining,
-          lineage_duplicate_eligible: result.lineage_duplicate_eligible,
-          protected_batch_items: result.protected_batch_items,
-          protected_lineage_items: result.protected_lineage_items,
-          oldest_eligible_age_seconds: result.oldest_eligible_age_seconds,
-          pending_before: 2,
-          pending_after: stats.lanes.publication.pending,
-        })}`,
-      );
-    }
-  } finally {
-    Date.now = originalNow;
+  if (process.env.CLAWSWEEPER_EVIDENCE_TRANSCRIPT === "1") {
+    console.log(
+      `AUTHENTICATED_PUBLICATION_RECONCILE_DRY_RUN=${JSON.stringify({
+        http_status: authorized.status,
+        apply: result.apply,
+        scanned: result.scanned,
+        eligible: result.eligible,
+        changed: result.changed,
+        eligible_remaining: result.eligible_remaining,
+        lineage_duplicate_eligible: result.lineage_duplicate_eligible,
+        protected_batch_items: result.protected_batch_items,
+        protected_lineage_items: result.protected_lineage_items,
+        oldest_eligible_age_seconds: result.oldest_eligible_age_seconds,
+        pending_before: 2,
+        pending_after: stats.lanes.publication.pending,
+      })}`,
+    );
   }
 });
 
@@ -2846,293 +3728,273 @@ test("batch claim, fetch, and heartbeat responses carry current server time", as
   }
 });
 
-test("queue fetch terminalizes a stale batch revision before dispatch", async () => {
-  const originalNow = Date.now;
-  Date.now = () => 1_000_000;
-  try {
-    const storage = new TestStorage();
-    const queue = new ExactReviewQueue(
-      { storage },
-      {
-        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
-        EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
-      },
-    );
-    const enqueued = await queue.fetch(publicationRequest("delivery-stale-1", 102, "1002"));
-    assert.equal(enqueued.status, 202, JSON.stringify(await enqueued.clone().json()));
-    const beforeClaim = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(beforeClaim.lanes.publication.pending, 1, JSON.stringify(beforeClaim));
-    const claim = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-stale-revision-1",
-          lease_owner: "worker-1",
-          max_items: 1,
-          runner_run_id: "91002",
-          runner_run_attempt: 1,
-          runner_started_at: "2026-07-30T12:00:00.000Z",
-        }),
-      )
-    ).json();
-    assert.equal(claim.claimed, true, JSON.stringify(claim));
-    assert.equal(claim.batch.items[0].revision, 1);
+test("queue fetch terminalizes a stale batch revision before dispatch", async (t) => {
+  t.mock.method(Date, "now", () => 1_000_000);
+  const storage = new TestStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    {
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
+    },
+  );
+  const enqueued = await queue.fetch(publicationRequest("delivery-stale-1", 102, "1002"));
+  assert.equal(enqueued.status, 202, JSON.stringify(await enqueued.clone().json()));
+  const beforeClaim = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(beforeClaim.lanes.publication.pending, 1, JSON.stringify(beforeClaim));
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-stale-revision-1",
+        lease_owner: "worker-1",
+        max_items: 1,
+        runner_run_id: "91002",
+        runner_run_attempt: 1,
+        runner_started_at: "2026-07-30T12:00:00.000Z",
+      }),
+    )
+  ).json();
+  assert.equal(claim.claimed, true, JSON.stringify(claim));
+  assert.equal(claim.batch.items[0].revision, 1);
 
-    const retriedClaim = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-stale-revision-1",
-          lease_owner: "worker-1",
-          max_items: 1,
-        }),
-      )
-    ).json();
-    assert.deepEqual(retriedClaim, claim);
+  const retriedClaim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-stale-revision-1",
+        lease_owner: "worker-1",
+        max_items: 1,
+      }),
+    )
+  ).json();
+  assert.deepEqual(retriedClaim, claim);
 
-    const competingClaim = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-competing",
-          lease_owner: "worker-2",
-          max_items: 1,
-        }),
-      )
-    ).json();
-    assert.equal(competingClaim.claimed, false);
-    assert.equal(competingClaim.batch, null);
-
-    await queue.alarm();
-    const ownedStats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(ownedStats.lanes.publication.pending, 1);
-    assert.equal(ownedStats.lanes.publication.dispatching, 0);
-    assert.equal(storage.scheduledAlarm(), 1_060_000);
-
-    await queue.fetch(publicationRequest("delivery-stale-2", 102, "1002"));
-    const fetched = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/fetch", {
-          batch_id: claim.batch.batch_id,
-          lease_owner: "worker-1",
-        }),
-      )
-    ).json();
-    assert.equal(fetched.superseded, 1);
-    assert.equal(fetched.items.length, 0);
-    assert.equal(fetched.batch.state, "completed");
-    assert.equal(fetched.batch.items[0].terminal_outcome, "superseded");
-    assert.equal(storage.scheduledAlarm(), 1_060_000);
-    const lifecycleRow = Array.from(
-      storage.sql.exec(
-        `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-          WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
-        "openclaw/openclaw#102",
-        claim.batch.items[0].item_key,
-        1,
-      ),
-    )[0] as { projection_json: string };
-    const lifecycle = JSON.parse(lifecycleRow.projection_json) as {
-      terminalDisposition: { kind: string } | null;
-      reviewResults: Array<{ outcome: string }>;
-    };
-    assert.equal(lifecycle.terminalDisposition?.kind, "superseded");
-    assert.equal(lifecycle.reviewResults[0]?.outcome, "completed");
-
-    const retriedFetch = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/fetch", {
-          batch_id: claim.batch.batch_id,
-          lease_owner: "worker-1",
-        }),
-      )
-    ).json();
-    assert.equal(retriedFetch.batch.state, "completed");
-    assert.equal(retriedFetch.superseded, 1);
-
-    const next = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-stale-revision-2",
-          lease_owner: "worker-2",
-          max_items: 1,
-        }),
-      )
-    ).json();
-    assert.equal(next.batch.items[0].revision, 2);
-    assert.equal(next.batch.items[0].claim_generation, 2);
-  } finally {
-    Date.now = originalNow;
-  }
-});
-
-test("batch heartbeat extends only the active fenced lease", async () => {
-  const originalNow = Date.now;
-  Date.now = () => 1_500_000;
-  try {
-    const queue = new ExactReviewQueue(
-      { storage: new TestStorage() },
-      {
-        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
-        EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
-      },
-    );
-    await queue.fetch(publicationRequest("delivery-heartbeat-1", 110, "1010"));
-    await queue.fetch(publicationRequest("delivery-heartbeat-2", 111, "1011"));
-    const claim = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-heartbeat",
-          lease_owner: "worker-1",
-          max_items: 2,
-        }),
-      )
-    ).json();
-    assert.equal(claim.batch.lease_expires_at, new Date(1_560_000).toISOString());
-    const members = claim.batch.items.map((item) => ({
-      item_key: item.item_key,
-      revision: item.revision,
-      claim_generation: item.claim_generation,
-    }));
-
-    Date.now = () => 1_530_000;
-    const heartbeat = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/heartbeat", {
-          batch_id: claim.batch.batch_id,
-          lease_owner: "worker-1",
-          items: members,
-        }),
-      )
-    ).json();
-    assert.equal(heartbeat.batch.lease_expires_at, new Date(1_590_000).toISOString());
-
-    await queue.fetch(publicationRequest("delivery-heartbeat-3", 110, "1010"));
-    const fetched = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/fetch", {
-          batch_id: claim.batch.batch_id,
-          lease_owner: "worker-1",
-        }),
-      )
-    ).json();
-    assert.equal(fetched.superseded, 1);
-    assert.equal(fetched.items.length, 1);
-
-    Date.now = () => 1_540_000;
-    const originalFence = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/heartbeat", {
-          batch_id: claim.batch.batch_id,
-          lease_owner: "worker-1",
-          items: members,
-        }),
-      )
-    ).json();
-    assert.equal(originalFence.batch.lease_expires_at, new Date(1_600_000).toISOString());
-
-    const staleOwner = await queue.fetch(
-      batchRequest("/publication-batches/heartbeat", {
-        batch_id: claim.batch.batch_id,
+  const competingClaim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-competing",
         lease_owner: "worker-2",
-        items: members,
+        max_items: 1,
       }),
-    );
-    assert.equal(staleOwner.status, 409);
+    )
+  ).json();
+  assert.equal(competingClaim.claimed, false);
+  assert.equal(competingClaim.batch, null);
 
-    const staleGeneration = await queue.fetch(
-      batchRequest("/publication-batches/heartbeat", {
+  await queue.alarm();
+  const ownedStats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(ownedStats.lanes.publication.pending, 1);
+  assert.equal(ownedStats.lanes.publication.dispatching, 0);
+  assert.equal(storage.scheduledAlarm(), 1_060_000);
+
+  await queue.fetch(publicationRequest("delivery-stale-2", 102, "1002"));
+  const fetched = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/fetch", {
         batch_id: claim.batch.batch_id,
         lease_owner: "worker-1",
-        items: members.map((item) => ({
-          ...item,
-          claim_generation: item.claim_generation + 1,
-        })),
       }),
-    );
-    assert.equal(staleGeneration.status, 409);
+    )
+  ).json();
+  assert.equal(fetched.superseded, 1);
+  assert.equal(fetched.items.length, 0);
+  assert.equal(fetched.batch.state, "completed");
+  assert.equal(fetched.batch.items[0].terminal_outcome, "superseded");
+  assert.equal(storage.scheduledAlarm(), 1_060_000);
+  const lifecycleRow = Array.from(
+    storage.sql.exec(
+      `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+        WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
+      "openclaw/openclaw#102",
+      claim.batch.items[0].item_key,
+      1,
+    ),
+  )[0] as { projection_json: string };
+  const lifecycle = JSON.parse(lifecycleRow.projection_json) as {
+    terminalDisposition: { kind: string } | null;
+    reviewResults: Array<{ outcome: string }>;
+  };
+  assert.equal(lifecycle.terminalDisposition?.kind, "superseded");
+  assert.equal(lifecycle.reviewResults[0]?.outcome, "completed");
 
-    Date.now = () => 1_600_000;
-    const expired = await queue.fetch(
-      batchRequest("/publication-batches/heartbeat", {
+  const retriedFetch = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/fetch", {
         batch_id: claim.batch.batch_id,
         lease_owner: "worker-1",
-        items: members,
       }),
-    );
-    assert.equal(expired.status, 409);
-  } finally {
-    Date.now = originalNow;
-  }
+    )
+  ).json();
+  assert.equal(retriedFetch.batch.state, "completed");
+  assert.equal(retriedFetch.superseded, 1);
+
+  const next = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-stale-revision-2",
+        lease_owner: "worker-2",
+        max_items: 1,
+      }),
+    )
+  ).json();
+  assert.equal(next.batch.items[0].revision, 2);
+  assert.equal(next.batch.items[0].claim_generation, 2);
 });
 
-test("batch admission keeps one target owner for least-privilege credentials", async () => {
-  const originalNow = Date.now;
+test("batch heartbeat extends only the active fenced lease", async (t) => {
+  t.mock.method(Date, "now", () => 1_500_000);
+  const queue = new ExactReviewQueue(
+    { storage: new TestStorage() },
+    {
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
+    },
+  );
+  await queue.fetch(publicationRequest("delivery-heartbeat-1", 110, "1010"));
+  await queue.fetch(publicationRequest("delivery-heartbeat-2", 111, "1011"));
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-heartbeat",
+        lease_owner: "worker-1",
+        max_items: 2,
+      }),
+    )
+  ).json();
+  assert.equal(claim.batch.lease_expires_at, new Date(1_560_000).toISOString());
+  const members = claim.batch.items.map((item) => ({
+    item_key: item.item_key,
+    revision: item.revision,
+    claim_generation: item.claim_generation,
+  }));
+
+  Date.now = () => 1_530_000;
+  const heartbeat = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/heartbeat", {
+        batch_id: claim.batch.batch_id,
+        lease_owner: "worker-1",
+        items: members,
+      }),
+    )
+  ).json();
+  assert.equal(heartbeat.batch.lease_expires_at, new Date(1_590_000).toISOString());
+
+  await queue.fetch(publicationRequest("delivery-heartbeat-3", 110, "1010"));
+  const fetched = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/fetch", {
+        batch_id: claim.batch.batch_id,
+        lease_owner: "worker-1",
+      }),
+    )
+  ).json();
+  assert.equal(fetched.superseded, 1);
+  assert.equal(fetched.items.length, 1);
+
+  Date.now = () => 1_540_000;
+  const originalFence = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/heartbeat", {
+        batch_id: claim.batch.batch_id,
+        lease_owner: "worker-1",
+        items: members,
+      }),
+    )
+  ).json();
+  assert.equal(originalFence.batch.lease_expires_at, new Date(1_600_000).toISOString());
+
+  const staleOwner = await queue.fetch(
+    batchRequest("/publication-batches/heartbeat", {
+      batch_id: claim.batch.batch_id,
+      lease_owner: "worker-2",
+      items: members,
+    }),
+  );
+  assert.equal(staleOwner.status, 409);
+
+  const staleGeneration = await queue.fetch(
+    batchRequest("/publication-batches/heartbeat", {
+      batch_id: claim.batch.batch_id,
+      lease_owner: "worker-1",
+      items: members.map((item) => ({
+        ...item,
+        claim_generation: item.claim_generation + 1,
+      })),
+    }),
+  );
+  assert.equal(staleGeneration.status, 409);
+
+  Date.now = () => 1_600_000;
+  const expired = await queue.fetch(
+    batchRequest("/publication-batches/heartbeat", {
+      batch_id: claim.batch.batch_id,
+      lease_owner: "worker-1",
+      items: members,
+    }),
+  );
+  assert.equal(expired.status, 409);
+});
+
+test("batch admission keeps one target owner for least-privilege credentials", async (t) => {
   let now = 1_700_000;
-  Date.now = () => now;
-  try {
-    const queue = new ExactReviewQueue(
-      { storage: new TestStorage() },
-      { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
-    );
-    await queue.fetch(publicationRequest("owner-a-1", 120, "1020"));
-    now += 1;
-    await queue.fetch(publicationRequest("owner-b", 121, "1021", "example/project"));
-    now += 1;
-    await queue.fetch(publicationRequest("owner-a-2", 122, "1022"));
-    const claim = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-owner-scoped",
-          lease_owner: "worker-1",
-          max_items: 3,
-        }),
-      )
-    ).json();
-    assert.deepEqual(
-      claim.batch.items.map((item) => item.item_key),
-      ["openclaw/openclaw#120@publish:1020:1", "openclaw/openclaw#122@publish:1022:1"],
-    );
-  } finally {
-    Date.now = originalNow;
-  }
+  t.mock.method(Date, "now", () => now);
+  const queue = new ExactReviewQueue(
+    { storage: new TestStorage() },
+    { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+  );
+  await queue.fetch(publicationRequest("owner-a-1", 120, "1020"));
+  now += 1;
+  await queue.fetch(publicationRequest("owner-b", 121, "1021", "example/project"));
+  now += 1;
+  await queue.fetch(publicationRequest("owner-a-2", 122, "1022"));
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-owner-scoped",
+        lease_owner: "worker-1",
+        max_items: 3,
+      }),
+    )
+  ).json();
+  assert.deepEqual(
+    claim.batch.items.map((item) => item.item_key),
+    ["openclaw/openclaw#120@publish:1020:1", "openclaw/openclaw#122@publish:1022:1"],
+  );
 });
 
-test("batch ask widens owner scanning without exceeding the configured lease size", async () => {
-  const originalNow = Date.now;
+test("batch ask widens owner scanning without exceeding the configured lease size", async (t) => {
   let now = 1_800_000;
-  Date.now = () => now;
-  try {
-    const queue = new ExactReviewQueue(
-      { storage: new TestStorage() },
-      {
-        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
-        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
-      },
-    );
-    await queue.fetch(publicationRequest("owner-a-oldest", 130, "1030"));
-    now += 1;
-    await queue.fetch(publicationRequest("owner-b-interleaved", 131, "1031", "example/project"));
-    now += 1;
-    await queue.fetch(publicationRequest("owner-a-second", 132, "1032"));
-    now += 1;
-    await queue.fetch(publicationRequest("owner-a-over-cap", 133, "1033"));
+  t.mock.method(Date, "now", () => now);
+  const queue = new ExactReviewQueue(
+    { storage: new TestStorage() },
+    {
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
+    },
+  );
+  await queue.fetch(publicationRequest("owner-a-oldest", 130, "1030"));
+  now += 1;
+  await queue.fetch(publicationRequest("owner-b-interleaved", 131, "1031", "example/project"));
+  now += 1;
+  await queue.fetch(publicationRequest("owner-a-second", 132, "1032"));
+  now += 1;
+  await queue.fetch(publicationRequest("owner-a-over-cap", 133, "1033"));
 
-    const claim = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-owner-scan-cap",
-          lease_owner: "worker-1",
-          max_items: 4,
-        }),
-      )
-    ).json();
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-owner-scan-cap",
+        lease_owner: "worker-1",
+        max_items: 4,
+      }),
+    )
+  ).json();
 
-    assert.deepEqual(
-      claim.batch.items.map((item) => item.item_key),
-      ["openclaw/openclaw#130@publish:1030:1", "openclaw/openclaw#132@publish:1032:1"],
-    );
-    assert.equal(claim.configured_batch_size, 2);
-  } finally {
-    Date.now = originalNow;
-  }
+  assert.deepEqual(
+    claim.batch.items.map((item) => item.item_key),
+    ["openclaw/openclaw#130@publish:1030:1", "openclaw/openclaw#132@publish:1032:1"],
+  );
+  assert.equal(claim.configured_batch_size, 2);
 });
 
 test("aged superseded publication does not dispatch a fresh owner before its deadline", async () => {
@@ -3215,14 +4077,10 @@ test("aged superseded publication does not dispatch a fresh owner before its dea
 
     now += 1;
     await queue.fetch(publicationRequest("superseded-aged-2", 160, "1061", "stale/repo", 2));
-    const removedNewer = await (
-      await queue.fetch(
-        batchRequest("/publications/supersede", {
-          items: [{ item_key: "stale/repo#160@publish:1061:1", revision: 1 }],
-        }),
-      )
-    ).json();
-    assert.equal(removedNewer.superseded, 1);
+    storage.run(
+      "DELETE FROM exact_review_queue_items WHERE item_key = ?",
+      "stale/repo#160@publish:1061:1",
+    );
 
     now = agedEnqueuedAt + 300_001;
     const freshEnqueuedAt = now;
@@ -3640,461 +4498,372 @@ test("Bay no-progress recovery backs off without duplicating an aged publication
   }
 });
 
-test("fresh publication owner still wins when no owner's work has aged", async () => {
-  const originalNow = Date.now;
+test("fresh publication owner still wins when no owner's work has aged", async (t) => {
   let now = 1_950_000;
-  Date.now = () => now;
-  try {
-    const queue = new ExactReviewQueue(
-      { storage: new TestStorage() },
-      {
-        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
-        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
-        EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS: "300000",
-        EXACT_REVIEW_PUBLICATION_FRESH_LANE_ENABLED: "1",
-        EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_ITEMS: "1",
-        EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_AGE_MS: "60000",
-      },
-    );
-    await queue.fetch(publicationRequest("owner-full-1", 150, "1050", "full/repo"));
-    now += 1;
-    await queue.fetch(publicationRequest("owner-full-2", 151, "1051", "full/repo"));
-    now += 60_001;
-    await queue.fetch(publicationRequest("owner-fresh-only", 152, "1052", "fresh/repo"));
+  t.mock.method(Date, "now", () => now);
+  const queue = new ExactReviewQueue(
+    { storage: new TestStorage() },
+    {
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
+      EXACT_REVIEW_PUBLICATION_BATCH_WAIT_MS: "300000",
+      EXACT_REVIEW_PUBLICATION_FRESH_LANE_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_ITEMS: "1",
+      EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_AGE_MS: "60000",
+    },
+  );
+  await queue.fetch(publicationRequest("owner-full-1", 150, "1050", "full/repo"));
+  now += 1;
+  await queue.fetch(publicationRequest("owner-full-2", 151, "1051", "full/repo"));
+  now += 60_001;
+  await queue.fetch(publicationRequest("owner-fresh-only", 152, "1052", "fresh/repo"));
 
-    const claim = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-fresh-owner",
-          lease_owner: "worker-1",
-          max_items: 50,
-        }),
-      )
-    ).json();
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-fresh-owner",
+        lease_owner: "worker-1",
+        max_items: 50,
+      }),
+    )
+  ).json();
 
-    assert.equal(claim.claimed, true, JSON.stringify(claim));
-    assert.deepEqual(
-      claim.batch.items.map((item: { item_key: string }) => item.item_key),
-      ["fresh/repo#152@publish:1052:1"],
-    );
-  } finally {
-    Date.now = originalNow;
-  }
+  assert.equal(claim.claimed, true, JSON.stringify(claim));
+  assert.deepEqual(
+    claim.batch.items.map((item: { item_key: string }) => item.item_key),
+    ["fresh/repo#152@publish:1052:1"],
+  );
 });
 
-test("fresh publication admission reserves bounded service and preserves historical FIFO", async () => {
-  const originalNow = Date.now;
+test("fresh publication admission reserves bounded service and preserves historical FIFO", async (t) => {
   let now = 2_000_000;
-  Date.now = () => now;
-  try {
-    const queue = new ExactReviewQueue(
-      { storage: new TestStorage() },
-      {
-        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
-        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "4",
-        EXACT_REVIEW_PUBLICATION_FRESH_LANE_ENABLED: "1",
-        EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_ITEMS: "1",
-        EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_AGE_MS: "60000",
-      },
+  t.mock.method(Date, "now", () => now);
+  const queue = new ExactReviewQueue(
+    { storage: new TestStorage() },
+    {
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "4",
+      EXACT_REVIEW_PUBLICATION_FRESH_LANE_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_ITEMS: "1",
+      EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_AGE_MS: "60000",
+    },
+  );
+  for (let itemNumber = 10; itemNumber <= 13; itemNumber += 1) {
+    await queue.fetch(
+      publicationRequest(`historical-${itemNumber}`, itemNumber, String(7000 + itemNumber)),
     );
-    for (let itemNumber = 10; itemNumber <= 13; itemNumber += 1) {
-      await queue.fetch(
-        publicationRequest(`historical-${itemNumber}`, itemNumber, String(7000 + itemNumber)),
-      );
-      now += 1;
-    }
-    now += 60_001;
-    for (let itemNumber = 90; itemNumber <= 92; itemNumber += 1) {
-      await queue.fetch(
-        publicationRequest(`fresh-${itemNumber}`, itemNumber, String(7100 + itemNumber)),
-      );
-      now += 1;
-    }
-
-    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.deepEqual(stats.lanes.publication.batches.fresh_lane, {
-      enabled: true,
-      reserved_items: 1,
-      max_age_seconds: 60,
-      ready_items: 3,
-      historical_ready_items: 4,
-    });
-
-    const claim = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-fresh-reserve",
-          lease_owner: "worker-1",
-          max_items: 50,
-        }),
-      )
-    ).json();
-    assert.deepEqual(
-      claim.batch.items.map((item: { item_key: string }) => item.item_key),
-      [
-        "openclaw/openclaw#10@publish:7010:1",
-        "openclaw/openclaw#11@publish:7011:1",
-        "openclaw/openclaw#12@publish:7012:1",
-        "openclaw/openclaw#90@publish:7190:1",
-      ],
-    );
-  } finally {
-    Date.now = originalNow;
+    now += 1;
   }
+  now += 60_001;
+  for (let itemNumber = 90; itemNumber <= 92; itemNumber += 1) {
+    await queue.fetch(
+      publicationRequest(`fresh-${itemNumber}`, itemNumber, String(7100 + itemNumber)),
+    );
+    now += 1;
+  }
+
+  const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.deepEqual(stats.lanes.publication.batches.fresh_lane, {
+    enabled: true,
+    reserved_items: 1,
+    max_age_seconds: 60,
+    ready_items: 3,
+    historical_ready_items: 4,
+  });
+
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-fresh-reserve",
+        lease_owner: "worker-1",
+        max_items: 50,
+      }),
+    )
+  ).json();
+  assert.deepEqual(
+    claim.batch.items.map((item: { item_key: string }) => item.item_key),
+    [
+      "openclaw/openclaw#10@publish:7010:1",
+      "openclaw/openclaw#11@publish:7011:1",
+      "openclaw/openclaw#12@publish:7012:1",
+      "openclaw/openclaw#90@publish:7190:1",
+    ],
+  );
 });
 
-test("continuously replenished fresh work preserves historical progress across batches", async () => {
-  const originalNow = Date.now;
+test("continuously replenished fresh work preserves historical progress across batches", async (t) => {
   let now = 2_500_000;
-  Date.now = () => now;
-  try {
-    const queue = new ExactReviewQueue(
-      { storage: new TestStorage() },
-      {
-        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
-        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "4",
-        EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT: "2",
-        EXACT_REVIEW_PUBLICATION_FRESH_LANE_ENABLED: "1",
-        EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_ITEMS: "1",
-        EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_AGE_MS: "60000",
-      },
+  t.mock.method(Date, "now", () => now);
+  const queue = new ExactReviewQueue(
+    { storage: new TestStorage() },
+    {
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "4",
+      EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT: "2",
+      EXACT_REVIEW_PUBLICATION_FRESH_LANE_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_ITEMS: "1",
+      EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_AGE_MS: "60000",
+    },
+  );
+  for (let itemNumber = 30; itemNumber <= 37; itemNumber += 1) {
+    await queue.fetch(
+      publicationRequest(`continuous-old-${itemNumber}`, itemNumber, String(7400 + itemNumber)),
     );
-    for (let itemNumber = 30; itemNumber <= 37; itemNumber += 1) {
-      await queue.fetch(
-        publicationRequest(`continuous-old-${itemNumber}`, itemNumber, String(7400 + itemNumber)),
-      );
-      now += 1;
-    }
-    now += 60_001;
-    await queue.fetch(publicationRequest("continuous-fresh-90", 90, "7490"));
     now += 1;
-    await queue.fetch(publicationRequest("continuous-fresh-91", 91, "7491"));
-
-    const claim = async (id: string) =>
-      (
-        await queue.fetch(
-          batchRequest("/publication-batches/claim", {
-            claim_id: id,
-            lease_owner: id,
-            max_items: 50,
-          }),
-        )
-      ).json();
-    const first = await claim("continuous-claim-1");
-    assert.deepEqual(
-      new Set(first.batch.items.map((item: { item_key: string }) => item.item_key)),
-      new Set([
-        "openclaw/openclaw#30@publish:7430:1",
-        "openclaw/openclaw#31@publish:7431:1",
-        "openclaw/openclaw#32@publish:7432:1",
-        "openclaw/openclaw#90@publish:7490:1",
-      ]),
-    );
-
-    now += 1;
-    await queue.fetch(publicationRequest("continuous-fresh-92", 92, "7492"));
-    const second = await claim("continuous-claim-2");
-    assert.deepEqual(
-      new Set(second.batch.items.map((item: { item_key: string }) => item.item_key)),
-      new Set([
-        "openclaw/openclaw#33@publish:7433:1",
-        "openclaw/openclaw#34@publish:7434:1",
-        "openclaw/openclaw#35@publish:7435:1",
-        "openclaw/openclaw#91@publish:7491:1",
-      ]),
-    );
-  } finally {
-    Date.now = originalNow;
   }
-});
+  now += 60_001;
+  await queue.fetch(publicationRequest("continuous-fresh-90", 90, "7490"));
+  now += 1;
+  await queue.fetch(publicationRequest("continuous-fresh-91", 91, "7491"));
 
-test("fresh publication admission flag restores strict historical FIFO", async () => {
-  const originalNow = Date.now;
-  let now = 3_000_000;
-  Date.now = () => now;
-  try {
-    const queue = new ExactReviewQueue(
-      { storage: new TestStorage() },
-      {
-        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
-        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
-        EXACT_REVIEW_PUBLICATION_FRESH_LANE_ENABLED: "0",
-        EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_ITEMS: "1",
-        EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_AGE_MS: "60000",
-      },
-    );
-    await queue.fetch(publicationRequest("rollback-old-1", 20, "7201"));
-    now += 1;
-    await queue.fetch(publicationRequest("rollback-old-2", 21, "7202"));
-    now += 60_001;
-    await queue.fetch(publicationRequest("rollback-fresh", 99, "7299"));
-
-    const claim = await (
+  const claim = async (id: string) =>
+    (
       await queue.fetch(
         batchRequest("/publication-batches/claim", {
-          claim_id: "claim-fresh-disabled",
-          lease_owner: "worker-1",
+          claim_id: id,
+          lease_owner: id,
           max_items: 50,
         }),
       )
     ).json();
-    assert.deepEqual(
-      claim.batch.items.map((item: { item_key: string }) => item.item_key),
-      ["openclaw/openclaw#20@publish:7201:1", "openclaw/openclaw#21@publish:7202:1"],
-    );
-  } finally {
-    Date.now = originalNow;
-  }
+  const first = await claim("continuous-claim-1");
+  assert.deepEqual(
+    new Set(first.batch.items.map((item: { item_key: string }) => item.item_key)),
+    new Set([
+      "openclaw/openclaw#30@publish:7430:1",
+      "openclaw/openclaw#31@publish:7431:1",
+      "openclaw/openclaw#32@publish:7432:1",
+      "openclaw/openclaw#90@publish:7490:1",
+    ]),
+  );
+
+  now += 1;
+  await queue.fetch(publicationRequest("continuous-fresh-92", 92, "7492"));
+  const second = await claim("continuous-claim-2");
+  assert.deepEqual(
+    new Set(second.batch.items.map((item: { item_key: string }) => item.item_key)),
+    new Set([
+      "openclaw/openclaw#33@publish:7433:1",
+      "openclaw/openclaw#34@publish:7434:1",
+      "openclaw/openclaw#35@publish:7435:1",
+      "openclaw/openclaw#91@publish:7491:1",
+    ]),
+  );
 });
 
-test("batch fetch supersedes a claimed publication when the source head advances", async () => {
-  const originalNow = Date.now;
-  Date.now = () => 4_000_000;
-  try {
-    const queue = new ExactReviewQueue(
-      { storage: new TestStorage() },
-      {
-        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
-        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
-      },
-    );
-    await queue.fetch(publicationRequest("source-head-1", 200, "7301", "openclaw/openclaw", 1));
-    const claim = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-source-head-1",
-          lease_owner: "worker-1",
-          max_items: 1,
-        }),
-      )
-    ).json();
-    await queue.fetch(publicationRequest("source-head-2", 200, "7302", "openclaw/openclaw", 2));
+test("fresh publication admission flag restores strict historical FIFO", async (t) => {
+  let now = 3_000_000;
+  t.mock.method(Date, "now", () => now);
+  const queue = new ExactReviewQueue(
+    { storage: new TestStorage() },
+    {
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
+      EXACT_REVIEW_PUBLICATION_FRESH_LANE_ENABLED: "0",
+      EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_ITEMS: "1",
+      EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_AGE_MS: "60000",
+    },
+  );
+  await queue.fetch(publicationRequest("rollback-old-1", 20, "7201"));
+  now += 1;
+  await queue.fetch(publicationRequest("rollback-old-2", 21, "7202"));
+  now += 60_001;
+  await queue.fetch(publicationRequest("rollback-fresh", 99, "7299"));
 
-    const fetched = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/fetch", {
-          batch_id: claim.batch.batch_id,
-          lease_owner: "worker-1",
-        }),
-      )
-    ).json();
-    assert.equal(fetched.superseded, 1);
-    assert.equal(fetched.items.length, 0);
-    assert.equal(fetched.batch.items[0].terminal_outcome, "superseded");
-
-    const afterFetch = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(afterFetch.lanes.publication.pending, 1);
-    assert.equal(afterFetch.lanes.publication.completed_total, 1);
-    assert.equal(afterFetch.lanes.publication.superseded_total, 1);
-
-    const next = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-source-head-2",
-          lease_owner: "worker-2",
-          max_items: 1,
-        }),
-      )
-    ).json();
-    assert.equal(next.batch.items[0].revision, 1);
-    assert.equal(next.batch.items[0].item_key, "openclaw/openclaw#200@publish:7302:1");
-  } finally {
-    Date.now = originalNow;
-  }
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-fresh-disabled",
+        lease_owner: "worker-1",
+        max_items: 50,
+      }),
+    )
+  ).json();
+  assert.deepEqual(
+    claim.batch.items.map((item: { item_key: string }) => item.item_key),
+    ["openclaw/openclaw#20@publish:7201:1", "openclaw/openclaw#21@publish:7202:1"],
+  );
 });
 
-test("idempotent batch claims retain the cap recorded by the original lease", async () => {
-  const originalNow = Date.now;
-  Date.now = () => 1_900_000;
-  try {
-    const storage = new TestStorage();
-    const initialQueue = new ExactReviewQueue(
+test("batch fetch supersedes a claimed publication when the source head advances", async (t) => {
+  t.mock.method(Date, "now", () => 4_000_000);
+  const queue = new ExactReviewQueue(
+    { storage: new TestStorage() },
+    {
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
+    },
+  );
+  await queue.fetch(publicationRequest("source-head-1", 200, "7301", "openclaw/openclaw", 1));
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-source-head-1",
+        lease_owner: "worker-1",
+        max_items: 1,
+      }),
+    )
+  ).json();
+  await queue.fetch(publicationRequest("source-head-2", 200, "7302", "openclaw/openclaw", 2));
+
+  const fetched = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/fetch", {
+        batch_id: claim.batch.batch_id,
+        lease_owner: "worker-1",
+      }),
+    )
+  ).json();
+  assert.equal(fetched.superseded, 1);
+  assert.equal(fetched.items.length, 0);
+  assert.equal(fetched.batch.items[0].terminal_outcome, "superseded");
+
+  const afterFetch = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(afterFetch.lanes.publication.pending, 1);
+  assert.equal(afterFetch.lanes.publication.completed_total, 1);
+  assert.equal(afterFetch.lanes.publication.superseded_total, 1);
+
+  const next = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-source-head-2",
+        lease_owner: "worker-2",
+        max_items: 1,
+      }),
+    )
+  ).json();
+  assert.equal(next.batch.items[0].revision, 1);
+  assert.equal(next.batch.items[0].item_key, "openclaw/openclaw#200@publish:7302:1");
+});
+
+test("idempotent batch claims retain the cap recorded by the original lease", async (t) => {
+  t.mock.method(Date, "now", () => 1_900_000);
+  const storage = new TestStorage();
+  const initialQueue = new ExactReviewQueue(
+    { storage },
+    {
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
+    },
+  );
+  await initialQueue.fetch(publicationRequest("stable-cap-1", 140, "1040"));
+  await initialQueue.fetch(publicationRequest("stable-cap-2", 141, "1041"));
+  const requestBody = {
+    claim_id: "claim-stable-cap",
+    lease_owner: "worker-1",
+    max_items: 4,
+  };
+  const initial = await (
+    await initialQueue.fetch(batchRequest("/publication-batches/claim", requestBody))
+  ).json();
+  assert.equal(initial.configured_batch_size, 2);
+
+  for (const configuredSize of [1, 4]) {
+    const retryQueue = new ExactReviewQueue(
       { storage },
       {
         EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
-        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "2",
+        EXACT_REVIEW_PUBLICATION_BATCH_SIZE: String(configuredSize),
       },
     );
-    await initialQueue.fetch(publicationRequest("stable-cap-1", 140, "1040"));
-    await initialQueue.fetch(publicationRequest("stable-cap-2", 141, "1041"));
-    const requestBody = {
-      claim_id: "claim-stable-cap",
-      lease_owner: "worker-1",
-      max_items: 4,
-    };
-    const initial = await (
-      await initialQueue.fetch(batchRequest("/publication-batches/claim", requestBody))
+    const retried = await (
+      await retryQueue.fetch(batchRequest("/publication-batches/claim", requestBody))
     ).json();
-    assert.equal(initial.configured_batch_size, 2);
-
-    for (const configuredSize of [1, 4]) {
-      const retryQueue = new ExactReviewQueue(
-        { storage },
-        {
-          EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
-          EXACT_REVIEW_PUBLICATION_BATCH_SIZE: String(configuredSize),
-        },
-      );
-      const retried = await (
-        await retryQueue.fetch(batchRequest("/publication-batches/claim", requestBody))
-      ).json();
-      assert.equal(retried.configured_batch_size, 2);
-      assert.equal(retried.batch.configured_batch_size, 2);
-      assert.equal(retried.batch.items.length, 2);
-    }
-  } finally {
-    Date.now = originalNow;
+    assert.equal(retried.configured_batch_size, 2);
+    assert.equal(retried.batch.configured_batch_size, 2);
+    assert.equal(retried.batch.items.length, 2);
   }
 });
 
-test("queue completion atomically removes only the owned publication revision", async () => {
-  const originalNow = Date.now;
-  Date.now = () => 2_000_000;
-  try {
-    const queue = new ExactReviewQueue(
-      { storage: new TestStorage() },
-      { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
-    );
-    const enqueued = await queue.fetch(publicationRequest("delivery-complete", 103, "1003"));
-    assert.equal(enqueued.status, 202, JSON.stringify(await enqueued.clone().json()));
-    const beforeClaim = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(beforeClaim.lanes.publication.pending, 1, JSON.stringify(beforeClaim));
-    const claim = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-complete",
-          lease_owner: "worker-1",
-          max_items: 1,
-        }),
-      )
-    ).json();
-    assert.equal(claim.claimed, true, JSON.stringify(claim));
-    assert.equal(claim.batch_wait_ms, 0);
-    const member = claim.batch.items[0];
-    const progress = {
-      schema_version: 1,
-      operation_id: "batch:claim-complete",
-      mode: "batch",
-      phase: "holding",
-      sequence: 2,
-      observed_at: new Date(1_999_500).toISOString(),
-      configured_batch_size: 1,
-      actual_batch_size: 1,
-    };
-    const heartbeat = await queue.fetch(
-      batchRequest("/publication-batches/heartbeat", {
-        batch_id: claim.batch.batch_id,
+test("queue completion atomically removes only the owned publication revision", async (t) => {
+  t.mock.method(Date, "now", () => 2_000_000);
+  const queue = new ExactReviewQueue(
+    { storage: new TestStorage() },
+    { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+  );
+  const enqueued = await queue.fetch(publicationRequest("delivery-complete", 103, "1003"));
+  assert.equal(enqueued.status, 202, JSON.stringify(await enqueued.clone().json()));
+  const beforeClaim = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(beforeClaim.lanes.publication.pending, 1, JSON.stringify(beforeClaim));
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-complete",
         lease_owner: "worker-1",
-        items: [member],
-        state_writer_progress: progress,
+        max_items: 1,
       }),
-    );
-    assert.equal(heartbeat.status, 200, JSON.stringify(await heartbeat.clone().json()));
-    const stateWriter = {
-      schema_version: 1,
-      operation_id: "batch:claim-complete",
-      mode: "batch",
-      started_at: new Date(1_999_000).toISOString(),
-      finished_at: new Date(2_000_000).toISOString(),
-      wait_ms: 500,
-      acquire_attempts: 2,
-      acquired: true,
-      hold_ms: 500,
-      renewals: 0,
-      released: true,
-      git_duration_ms: 1_000,
-      git_processes: 8,
-      commit_count: 1,
-      materialized_items: 1,
-      configured_batch_size: 1,
-      actual_batch_size: 1,
-      batch_wait_ms: 0,
-      outcome: "materialized",
-    };
-    const completion = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/complete", {
-          batch_id: claim.batch.batch_id,
-          lease_owner: "worker-1",
-          state_commit_sha: "b".repeat(40),
-          state_writer: stateWriter,
-          items: [
-            {
-              item_key: member.item_key,
-              revision: member.revision,
-              claim_generation: member.claim_generation,
-              terminal_outcome: "published",
-            },
-          ],
-        }),
-      )
-    ).json();
-    assert.equal(completion.accepted, 1);
-    assert.equal(completion.batch.state, "completed");
-
-    const retriedCompletion = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/complete", {
-          batch_id: claim.batch.batch_id,
-          lease_owner: "worker-1",
-          state_commit_sha: "b".repeat(40),
-          items: [
-            {
-              item_key: member.item_key,
-              revision: member.revision,
-              claim_generation: member.claim_generation,
-              terminal_outcome: "retryable_failure",
-              reason_code: "workflow_cancelled",
-            },
-          ],
-        }),
-      )
-    ).json();
-    assert.equal(retriedCompletion.accepted, 0);
-    assert.equal(retriedCompletion.batch.state, "completed");
-
-    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(stats.lanes.publication.pending, 0);
-    assert.equal(stats.lanes.publication.published_total, 1);
-    assert.equal(stats.lanes.publication.batches.completed, 1);
-    assert.equal(stats.state_writer.mode, "batch");
-    assert.equal(stats.state_writer.collection.status, "fresh");
-    assert.equal(stats.state_writer.last_15_minutes.state_commits, 1);
-    assert.equal(stats.state_writer.last_15_minutes.materialized_items, 1);
-  } finally {
-    Date.now = originalNow;
-  }
-});
-
-test("direct fenced cleanup treats an expired batch as an idempotent no-op", async () => {
-  const originalNow = Date.now;
-  let now = 2_500_000;
-  Date.now = () => now;
-  try {
-    const queue = new ExactReviewQueue(
-      { storage: new TestStorage() },
-      {
-        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
-        EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
-      },
-    );
-    await queue.fetch(publicationRequest("delivery-expired-cleanup", 126, "1026"));
-    const claim = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-expired-cleanup",
-          lease_owner: "worker-1",
-          max_items: 1,
-        }),
-      )
-    ).json();
-    const member = claim.batch.items[0];
-
-    now += 60_001;
-    const cleanup = await queue.fetch(
+    )
+  ).json();
+  assert.equal(claim.claimed, true, JSON.stringify(claim));
+  assert.equal(claim.batch_wait_ms, 0);
+  const member = claim.batch.items[0];
+  const progress = {
+    schema_version: 1,
+    operation_id: "batch:claim-complete",
+    mode: "batch",
+    phase: "holding",
+    sequence: 2,
+    observed_at: new Date(1_999_500).toISOString(),
+    configured_batch_size: 1,
+    actual_batch_size: 1,
+  };
+  const heartbeat = await queue.fetch(
+    batchRequest("/publication-batches/heartbeat", {
+      batch_id: claim.batch.batch_id,
+      lease_owner: "worker-1",
+      items: [member],
+      state_writer_progress: progress,
+    }),
+  );
+  assert.equal(heartbeat.status, 200, JSON.stringify(await heartbeat.clone().json()));
+  const stateWriter = {
+    schema_version: 1,
+    operation_id: "batch:claim-complete",
+    mode: "batch",
+    started_at: new Date(1_999_000).toISOString(),
+    finished_at: new Date(2_000_000).toISOString(),
+    wait_ms: 500,
+    acquire_attempts: 2,
+    acquired: true,
+    hold_ms: 500,
+    renewals: 0,
+    released: true,
+    git_duration_ms: 1_000,
+    git_processes: 8,
+    commit_count: 1,
+    materialized_items: 1,
+    configured_batch_size: 1,
+    actual_batch_size: 1,
+    batch_wait_ms: 0,
+    outcome: "materialized",
+  };
+  const completion = await (
+    await queue.fetch(
       batchRequest("/publication-batches/complete", {
         batch_id: claim.batch.batch_id,
         lease_owner: "worker-1",
+        state_commit_sha: "b".repeat(40),
+        state_writer: stateWriter,
+        items: [
+          {
+            item_key: member.item_key,
+            revision: member.revision,
+            claim_generation: member.claim_generation,
+            terminal_outcome: "published",
+          },
+        ],
+      }),
+    )
+  ).json();
+  assert.equal(completion.accepted, 1);
+  assert.equal(completion.batch.state, "completed");
+
+  const retriedCompletion = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/complete", {
+        batch_id: claim.batch.batch_id,
+        lease_owner: "worker-1",
+        state_commit_sha: "b".repeat(40),
         items: [
           {
             item_key: member.item_key,
@@ -4105,50 +4874,182 @@ test("direct fenced cleanup treats an expired batch as an idempotent no-op", asy
           },
         ],
       }),
-    );
-    assert.equal(cleanup.status, 200);
-    assert.deepEqual(await cleanup.json(), {
-      ok: true,
-      accepted: 0,
-      skipped: 1,
-      batch: {
-        ...claim.batch,
-        state: "expired",
-        server_time: new Date(now).toISOString(),
-        completed_at: new Date(now).toISOString(),
-        items: [{ ...member, terminal_outcome: "lease_expired" }],
-      },
-    });
-  } finally {
-    Date.now = originalNow;
-  }
+    )
+  ).json();
+  assert.equal(retriedCompletion.accepted, 0);
+  assert.equal(retriedCompletion.batch.state, "completed");
+
+  const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(stats.lanes.publication.pending, 0);
+  assert.equal(stats.lanes.publication.published_total, 1);
+  assert.equal(stats.lanes.publication.batches.completed, 1);
+  assert.equal(stats.state_writer.mode, "batch");
+  assert.equal(stats.state_writer.collection.status, "fresh");
+  assert.equal(stats.state_writer.last_15_minutes.state_commits, 1);
+  assert.equal(stats.state_writer.last_15_minutes.materialized_items, 1);
 });
 
-test("retryable batch completion releases ownership and preserves queue retry policy", async () => {
-  const originalNow = Date.now;
+test("direct fenced cleanup treats an expired batch as an idempotent no-op", async (t) => {
+  let now = 2_500_000;
+  t.mock.method(Date, "now", () => now);
+  const queue = new ExactReviewQueue(
+    { storage: new TestStorage() },
+    {
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
+    },
+  );
+  await queue.fetch(publicationRequest("delivery-expired-cleanup", 126, "1026"));
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-expired-cleanup",
+        lease_owner: "worker-1",
+        max_items: 1,
+      }),
+    )
+  ).json();
+  const member = claim.batch.items[0];
+
+  now += 60_001;
+  const cleanup = await queue.fetch(
+    batchRequest("/publication-batches/complete", {
+      batch_id: claim.batch.batch_id,
+      lease_owner: "worker-1",
+      items: [
+        {
+          item_key: member.item_key,
+          revision: member.revision,
+          claim_generation: member.claim_generation,
+          terminal_outcome: "retryable_failure",
+          reason_code: "workflow_cancelled",
+        },
+      ],
+    }),
+  );
+  assert.equal(cleanup.status, 200);
+  assert.deepEqual(await cleanup.json(), {
+    ok: true,
+    accepted: 0,
+    skipped: 1,
+    batch: {
+      ...claim.batch,
+      state: "expired",
+      server_time: new Date(now).toISOString(),
+      completed_at: new Date(now).toISOString(),
+      items: [{ ...member, terminal_outcome: "lease_expired" }],
+    },
+  });
+});
+
+test("retryable batch completion releases ownership and preserves queue retry policy", async (t) => {
   let now = 2_000_000;
-  Date.now = () => now;
-  try {
-    const storage = new TestStorage();
-    const queue = new ExactReviewQueue(
-      { storage },
-      { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
-    );
-    await queue.fetch(publicationRequest("delivery-retryable", 123, "1023"));
-    const claim = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-retryable",
-          lease_owner: "worker-1",
-          max_items: 1,
-          runner_run_id: "9123",
-          runner_run_attempt: 1,
-          runner_started_at: "2026-07-30T12:00:00.000Z",
-        }),
-      )
-    ).json();
-    const member = claim.batch.items[0];
-    const invalidCompletion = await queue.fetch(
+  t.mock.method(Date, "now", () => now);
+  const storage = new TestStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+  );
+  await queue.fetch(publicationRequest("delivery-retryable", 123, "1023"));
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-retryable",
+        lease_owner: "worker-1",
+        max_items: 1,
+        runner_run_id: "9123",
+        runner_run_attempt: 1,
+        runner_started_at: "2026-07-30T12:00:00.000Z",
+      }),
+    )
+  ).json();
+  const member = claim.batch.items[0];
+  const invalidCompletion = await queue.fetch(
+    batchRequest("/publication-batches/complete", {
+      batch_id: claim.batch.batch_id,
+      lease_owner: "worker-1",
+      items: [
+        {
+          item_key: member.item_key,
+          revision: member.revision,
+          claim_generation: member.claim_generation,
+          terminal_outcome: "retryable_failure",
+          reason_code: "publication_applied",
+        },
+      ],
+    }),
+  );
+  assert.equal(invalidCompletion.status, 400);
+  const completion = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/complete", {
+        batch_id: claim.batch.batch_id,
+        lease_owner: "worker-1",
+        failure_fingerprint: "state-contention-proof",
+        items: [
+          {
+            item_key: member.item_key,
+            revision: member.revision,
+            claim_generation: member.claim_generation,
+            terminal_outcome: "retryable_failure",
+            reason_code: "state_contention",
+            pool_class: "repository_actions",
+            error_fingerprint: "state-contention-proof",
+          },
+        ],
+      }),
+    )
+  ).json();
+  assert.equal(completion.accepted, 1, JSON.stringify(completion));
+  assert.equal(completion.batch.state, "completed");
+  assert.equal(completion.batch.items[0].terminal_outcome, "lease_expired");
+  const lifecycleRow = Array.from(
+    storage.sql.exec(
+      `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
+        WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
+      "openclaw/openclaw#123",
+      member.item_key,
+      member.revision,
+    ),
+  )[0] as { projection_json: string };
+  assert.equal(JSON.parse(lifecycleRow.projection_json).terminalDisposition?.kind, "requeue");
+
+  const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(stats.lanes.publication.pending, 1);
+  assert.equal(stats.lanes.publication.completed_total, 0);
+  assert.equal(stats.lanes.publication.retried_total, 1);
+  assert.equal(stats.lanes.publication.batches.leased, 0);
+  assert.deepEqual(stats.lanes.publication.flow.last_15_minutes.causes.rows, [
+    {
+      transition: "retried",
+      stage: "state_commit",
+      completion_kind: "retryable_failure",
+      reason_code: "state_contention",
+      revision_relation: "same_revision",
+      pool_class: "repository_actions",
+      recovery_cause: "state_retry",
+      backoff_reason: "publication_retry",
+      attempt_bucket: "1",
+      count: 1,
+    },
+  ]);
+
+  now += 10 * 60_000;
+  const replacement = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-after-retryable",
+        lease_owner: "worker-2",
+        max_items: 1,
+      }),
+    )
+  ).json();
+  assert.equal(replacement.claimed, true, JSON.stringify(replacement));
+  assert.equal(replacement.batch.items[0].item_key, member.item_key);
+  assert.notEqual(replacement.batch.items[0].claim_generation, member.claim_generation);
+
+  const stale = await (
+    await queue.fetch(
       batchRequest("/publication-batches/complete", {
         batch_id: claim.batch.batch_id,
         lease_owner: "worker-1",
@@ -4158,136 +5059,48 @@ test("retryable batch completion releases ownership and preserves queue retry po
             revision: member.revision,
             claim_generation: member.claim_generation,
             terminal_outcome: "retryable_failure",
-            reason_code: "publication_applied",
+            reason_code: "state_contention",
           },
         ],
       }),
-    );
-    assert.equal(invalidCompletion.status, 400);
-    const completion = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/complete", {
-          batch_id: claim.batch.batch_id,
-          lease_owner: "worker-1",
-          failure_fingerprint: "state-contention-proof",
-          items: [
-            {
-              item_key: member.item_key,
-              revision: member.revision,
-              claim_generation: member.claim_generation,
-              terminal_outcome: "retryable_failure",
-              reason_code: "state_contention",
-              pool_class: "repository_actions",
-              error_fingerprint: "state-contention-proof",
-            },
-          ],
-        }),
-      )
-    ).json();
-    assert.equal(completion.accepted, 1, JSON.stringify(completion));
-    assert.equal(completion.batch.state, "completed");
-    assert.equal(completion.batch.items[0].terminal_outcome, "lease_expired");
-    const lifecycleRow = Array.from(
-      storage.sql.exec(
-        `SELECT projection_json FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-          WHERE canonical_target_key = ? AND fence_key = ? AND revision = ?`,
-        "openclaw/openclaw#123",
-        member.item_key,
-        member.revision,
-      ),
-    )[0] as { projection_json: string };
-    assert.equal(JSON.parse(lifecycleRow.projection_json).terminalDisposition?.kind, "requeue");
+    )
+  ).json();
+  assert.equal(stale.accepted, 0);
+  const fetchedReplacement = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/fetch", {
+        batch_id: replacement.batch.batch_id,
+        lease_owner: "worker-2",
+      }),
+    )
+  ).json();
+  assert.equal(fetchedReplacement.items.length, 1);
 
-    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(stats.lanes.publication.pending, 1);
-    assert.equal(stats.lanes.publication.completed_total, 0);
-    assert.equal(stats.lanes.publication.retried_total, 1);
-    assert.equal(stats.lanes.publication.batches.leased, 0);
-    assert.deepEqual(stats.lanes.publication.flow.last_15_minutes.causes.rows, [
-      {
-        transition: "retried",
-        stage: "state_commit",
-        completion_kind: "retryable_failure",
-        reason_code: "state_contention",
-        revision_relation: "same_revision",
-        pool_class: "repository_actions",
-        recovery_cause: "state_retry",
-        backoff_reason: "publication_retry",
-        attempt_bucket: "1",
-        count: 1,
-      },
-    ]);
+  const published = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/complete", {
+        batch_id: replacement.batch.batch_id,
+        lease_owner: "worker-2",
+        items: [
+          {
+            item_key: replacement.batch.items[0].item_key,
+            revision: replacement.batch.items[0].revision,
+            claim_generation: replacement.batch.items[0].claim_generation,
+            terminal_outcome: "published",
+          },
+        ],
+      }),
+    )
+  ).json();
+  assert.equal(published.accepted, 1, JSON.stringify(published));
 
-    now += 10 * 60_000;
-    const replacement = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-after-retryable",
-          lease_owner: "worker-2",
-          max_items: 1,
-        }),
-      )
-    ).json();
-    assert.equal(replacement.claimed, true, JSON.stringify(replacement));
-    assert.equal(replacement.batch.items[0].item_key, member.item_key);
-    assert.notEqual(replacement.batch.items[0].claim_generation, member.claim_generation);
-
-    const stale = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/complete", {
-          batch_id: claim.batch.batch_id,
-          lease_owner: "worker-1",
-          items: [
-            {
-              item_key: member.item_key,
-              revision: member.revision,
-              claim_generation: member.claim_generation,
-              terminal_outcome: "retryable_failure",
-              reason_code: "state_contention",
-            },
-          ],
-        }),
-      )
-    ).json();
-    assert.equal(stale.accepted, 0);
-    const fetchedReplacement = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/fetch", {
-          batch_id: replacement.batch.batch_id,
-          lease_owner: "worker-2",
-        }),
-      )
-    ).json();
-    assert.equal(fetchedReplacement.items.length, 1);
-
-    const published = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/complete", {
-          batch_id: replacement.batch.batch_id,
-          lease_owner: "worker-2",
-          items: [
-            {
-              item_key: replacement.batch.items[0].item_key,
-              revision: replacement.batch.items[0].revision,
-              claim_generation: replacement.batch.items[0].claim_generation,
-              terminal_outcome: "published",
-            },
-          ],
-        }),
-      )
-    ).json();
-    assert.equal(published.accepted, 1, JSON.stringify(published));
-
-    const completedStats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(completedStats.lanes.publication.pending, 0);
-    assert.equal(completedStats.lanes.publication.published_total, 1);
-    const publishedCause = completedStats.lanes.publication.flow.last_15_minutes.causes.rows.find(
-      (row: { transition: string }) => row.transition === "published",
-    );
-    assert.equal(publishedCause?.attempt_bucket, "1");
-  } finally {
-    Date.now = originalNow;
-  }
+  const completedStats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(completedStats.lanes.publication.pending, 0);
+  assert.equal(completedStats.lanes.publication.published_total, 1);
+  const publishedCause = completedStats.lanes.publication.flow.last_15_minutes.causes.rows.find(
+    (row: { transition: string }) => row.transition === "published",
+  );
+  assert.equal(publishedCause?.attempt_bucket, "1");
 });
 
 test("batch completion refreshes deterministic invalid artifacts", async () => {
@@ -4341,393 +5154,82 @@ test("batch completion refreshes deterministic invalid artifacts", async () => {
   assert.equal(state.items["openclaw/openclaw#127"].decision.publication, undefined);
 });
 
-test("credential circuits persist, preserve healthy owners, and defer unattempted members without retry charge", async () => {
-  const originalNow = Date.now;
+test("credential circuits persist, preserve healthy owners, and defer unattempted members without retry charge", async (t) => {
   let now = Date.parse("2026-08-10T14:00:00.000Z");
-  Date.now = () => now;
-  try {
-    const storage = new TestStorage();
-    let queue = new ExactReviewQueue(
-      { storage },
-      { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+  t.mock.method(Date, "now", () => now);
+  const storage = new TestStorage();
+  const env = {
+    EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+    EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "128",
+  };
+  let queue = new ExactReviewQueue({ storage }, env);
+  for (let index = 0; index < 52; index += 1) {
+    await queue.fetch(
+      publicationRequest(`owner-a-${index}`, 201 + index, String(1201 + index), "aaa/repo"),
     );
-    for (let index = 0; index < 52; index += 1) {
-      await queue.fetch(
-        publicationRequest(`owner-a-${index}`, 201 + index, String(1201 + index), "aaa/repo"),
-      );
-    }
-    await queue.fetch(publicationRequest("owner-b", 300, "1300", "bbb/repo"));
-    const claim = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-owner-a",
-          lease_owner: "worker-a",
-          max_items: 1,
-        }),
-      )
-    ).json();
-    const member = claim.batch.items[0];
-    assert.match(member.item_key, /^aaa\/repo#/);
-    const malformedUnattempted = await queue.fetch(
-      batchRequest("/publication-batches/complete", {
-        batch_id: claim.batch.batch_id,
+  }
+  await queue.fetch(publicationRequest("owner-b", 300, "1300", "bbb/repo"));
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-owner-a",
         lease_owner: "worker-a",
-        items: [
-          {
-            item_key: member.item_key,
-            revision: member.revision,
-            claim_generation: member.claim_generation,
-            terminal_outcome: "retryable_failure",
-            reason_code: "github_rate_limit",
-            attempted: false,
-          },
-        ],
+        max_items: 1,
       }),
-    );
-    assert.equal(malformedUnattempted.status, 400);
-    assert.deepEqual(await malformedUnattempted.json(), { error: "invalid_batch_completions" });
-    const longerReset = now + 120_000;
-    const completion = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/complete", {
-          batch_id: claim.batch.batch_id,
-          lease_owner: "worker-a",
-          github_rate_limit_observations: [
-            {
-              scope: "target_app",
-              target_owner: "aaa",
-              observed_at: new Date(now).toISOString(),
-              retry_at: new Date(longerReset).toISOString(),
-              provenance: "rate_limit_status",
-              authoritative: true,
-            },
-            {
-              scope: "target_app",
-              target_owner: "aaa",
-              observed_at: new Date(now + 1).toISOString(),
-              retry_at: new Date(now + 60_000).toISOString(),
-              provenance: "fallback",
-              authoritative: false,
-            },
-          ],
-          github_request_metrics: [
-            {
-              scope: "target_app",
-              category: "item_metadata",
-              mode: "read",
-              outcome: "throttle",
-              repeat_revision: false,
-              count: 1,
-            },
-          ],
-          items: [
-            {
-              item_key: member.item_key,
-              revision: member.revision,
-              claim_generation: member.claim_generation,
-              terminal_outcome: "retryable_failure",
-              reason_code: "github_rate_limit",
-              pool_class: "target_app",
-              retry_at: new Date(longerReset).toISOString(),
-              attempted: false,
-            },
-          ],
-        }),
-      )
-    ).json();
-    assert.equal(completion.accepted, 1, JSON.stringify(completion));
-
-    let stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(stats.lanes.publication.retried_total, 0);
-    assert.equal(stats.lanes.publication.credential_circuits.length, 1);
-    const { recovery_until: recoveryUntil, ...credentialCircuit } =
-      stats.lanes.publication.credential_circuits[0];
-    assert.deepEqual(credentialCircuit, {
-      pool: "target_app:aaa",
-      scope: "target_app",
-      target_owner: "aaa",
-      observed_at: new Date(now).toISOString(),
-      blocked_until: new Date(longerReset).toISOString(),
-      reset_source: "rate_limit_status",
-      authoritative: true,
-      active: true,
-      affected_pending: 52,
-    });
-    assert.ok(Date.parse(recoveryUntil) > longerReset);
-    assert.ok(Date.parse(recoveryUntil) <= longerReset + 30_000);
-    assert.equal(
-      stats.lanes.publication.github_request_metrics.counters[
-        "target_app:item_metadata:read:throttle:first"
-      ],
-      1,
-    );
-    assert.equal(stats.lanes.publication.capacity_control.last_failure_kind, "github_rate_limit");
-    assert.deepEqual(stats.lanes.publication.flow.last_15_minutes.causes.rows, [
-      {
-        transition: "backoff",
-        stage: "publication_apply",
-        completion_kind: "retryable_failure",
-        reason_code: "github_rate_limit",
-        revision_relation: "same_revision",
-        pool_class: "target_app",
-        recovery_cause: "credential_circuit",
-        backoff_reason: "publication_retry",
-        attempt_bucket: "0",
-        count: 1,
-      },
-    ]);
-
-    const lateReset = now + 180_000;
-    const lateTelemetry = {
+    )
+  ).json();
+  const member = claim.batch.items[0];
+  assert.match(member.item_key, /^aaa\/repo#/);
+  const malformedUnattempted = await queue.fetch(
+    batchRequest("/publication-batches/complete", {
       batch_id: claim.batch.batch_id,
       lease_owner: "worker-a",
-      github_telemetry_id: "a".repeat(64),
-      github_rate_limit_observations: [
+      items: [
         {
-          scope: "target_app",
-          target_owner: "aaa",
-          observed_at: new Date(now + 2).toISOString(),
-          retry_at: new Date(lateReset).toISOString(),
-          provenance: "retry_after",
-          authoritative: true,
+          item_key: member.item_key,
+          revision: member.revision,
+          claim_generation: member.claim_generation,
+          terminal_outcome: "retryable_failure",
+          reason_code: "github_rate_limit",
+          attempted: false,
         },
       ],
-      github_request_metrics: [
-        {
-          scope: "target_app",
-          category: "workflow_dispatch",
-          mode: "mutation_or_private_read",
-          outcome: "throttle",
-          repeat_revision: true,
-          count: 1,
-        },
-      ],
-      items: [],
-    };
-    storage.failNextSqlMatching(/UPDATE exact_review_queue_meta/);
-    await assert.rejects(
-      queue.fetch(batchRequest("/publication-batches/complete", lateTelemetry)),
-      /injected telemetry state write failure/,
-    );
-    stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(
-      stats.lanes.publication.github_request_metrics.counters[
-        "target_app:workflow_dispatch:mutation_or_private_read:throttle:repeat"
-      ],
-      undefined,
-    );
-    assert.equal(
-      stats.lanes.publication.credential_circuits[0].blocked_until,
-      new Date(longerReset).toISOString(),
-    );
-    const late = await (
-      await queue.fetch(batchRequest("/publication-batches/complete", lateTelemetry))
-    ).json();
-    assert.equal(late.accepted, 0);
-    assert.equal(late.telemetry_accepted, true);
-    const duplicate = await (
-      await queue.fetch(batchRequest("/publication-batches/complete", lateTelemetry))
-    ).json();
-    assert.equal(duplicate.telemetry_accepted, true);
-    stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(
-      stats.lanes.publication.credential_circuits[0].blocked_until,
-      new Date(lateReset).toISOString(),
-    );
-    assert.equal(
-      stats.lanes.publication.github_request_metrics.counters[
-        "target_app:workflow_dispatch:mutation_or_private_read:throttle:repeat"
-      ],
-      1,
-    );
-    assert.equal(stats.lanes.publication.capacity_control.ceiling, 12);
-    queue = new ExactReviewQueue({ storage }, { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" });
-    const healthyOwner = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-owner-b",
-          lease_owner: "worker-b",
-          max_items: 50,
-        }),
-      )
-    ).json();
-    assert.equal(healthyOwner.claimed, true, JSON.stringify(healthyOwner));
-    assert.match(healthyOwner.batch.items[0].item_key, /^bbb\/repo#/);
-    const replacementLeaseDuplicate = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/complete", {
-          ...lateTelemetry,
-          batch_id: healthyOwner.batch.batch_id,
-          lease_owner: "worker-b",
-        }),
-      )
-    ).json();
-    assert.equal(replacementLeaseDuplicate.telemetry_accepted, true);
-    stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(
-      stats.lanes.publication.github_request_metrics.counters[
-        "target_app:workflow_dispatch:mutation_or_private_read:throttle:repeat"
-      ],
-      1,
-    );
-    const independentTelemetry = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/complete", {
-          ...lateTelemetry,
-          batch_id: healthyOwner.batch.batch_id,
-          lease_owner: "worker-b",
-          github_telemetry_id: "b".repeat(64),
-        }),
-      )
-    ).json();
-    assert.equal(independentTelemetry.telemetry_accepted, true);
-    stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(
-      stats.lanes.publication.github_request_metrics.counters[
-        "target_app:workflow_dispatch:mutation_or_private_read:throttle:repeat"
-      ],
-      2,
-    );
-    assert.equal(stats.lanes.publication.capacity_control.ceiling, 6);
-    const retainedReceiptPayloads: Record<string, unknown>[] = [];
-    for (let index = 0; index < 201; index += 1) {
-      const payload = {
-        batch_id: healthyOwner.batch.batch_id,
-        lease_owner: "worker-b",
-        github_telemetry_id: index.toString(16).padStart(64, "0"),
-        github_request_metrics: lateTelemetry.github_request_metrics,
-        items: [],
-      };
-      retainedReceiptPayloads.push(payload);
-      const recorded = await (
-        await queue.fetch(batchRequest("/publication-batches/complete", payload))
-      ).json();
-      assert.equal(recorded.telemetry_accepted, true);
-    }
-    const delayedDuplicate = await (
-      await queue.fetch(batchRequest("/publication-batches/complete", retainedReceiptPayloads[0]))
-    ).json();
-    assert.equal(delayedDuplicate.telemetry_accepted, true);
-    stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(
-      stats.lanes.publication.github_request_metrics.counters[
-        "target_app:workflow_dispatch:mutation_or_private_read:throttle:repeat"
-      ],
-      203,
-    );
-
-    const receiptFailureReset = lateReset + 60_000;
-    const receiptFailureTelemetry = {
-      batch_id: healthyOwner.batch.batch_id,
-      lease_owner: "worker-b",
-      github_telemetry_id: "c".repeat(64),
-      github_rate_limit_observations: [
-        {
-          scope: "target_app",
-          target_owner: "aaa",
-          observed_at: new Date(now + 3).toISOString(),
-          retry_at: new Date(receiptFailureReset).toISOString(),
-          provenance: "retry_after",
-          authoritative: true,
-        },
-      ],
-      items: [],
-    };
-    storage.failNextSqlMatching(/INSERT INTO exact_review_github_telemetry_receipts/);
-    await assert.rejects(
-      queue.fetch(batchRequest("/publication-batches/complete", receiptFailureTelemetry)),
-      /injected telemetry state write failure/,
-    );
-    stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(stats.lanes.publication.capacity_control.ceiling, 6);
-    assert.equal(
-      stats.lanes.publication.credential_circuits[0].blocked_until,
-      new Date(lateReset).toISOString(),
-    );
-    const receiptReplay = await (
-      await queue.fetch(batchRequest("/publication-batches/complete", receiptFailureTelemetry))
-    ).json();
-    assert.equal(receiptReplay.telemetry_accepted, true);
-    stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(stats.lanes.publication.capacity_control.ceiling, 4);
-    assert.equal(
-      stats.lanes.publication.credential_circuits[0].blocked_until,
-      new Date(receiptFailureReset).toISOString(),
-    );
-
-    const healthyMember = healthyOwner.batch.items[0];
-    const healthyCompletion = await queue.fetch(
-      batchRequest("/publication-batches/complete", {
-        batch_id: healthyOwner.batch.batch_id,
-        lease_owner: "worker-b",
-        items: [
-          {
-            item_key: healthyMember.item_key,
-            revision: healthyMember.revision,
-            claim_generation: healthyMember.claim_generation,
-            terminal_outcome: "superseded",
-          },
-        ],
-      }),
-    );
-    assert.equal(
-      healthyCompletion.status,
-      200,
-      JSON.stringify(await healthyCompletion.clone().json()),
-    );
-
-    now = receiptFailureReset + 16 * 60_000;
-    stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(stats.lanes.publication.credential_circuits[0].active, false);
-    const recoveredOwner = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-owner-a-recovered",
-          lease_owner: "worker-c",
-          max_items: 50,
-        }),
-      )
-    ).json();
-    assert.equal(recoveredOwner.claimed, true, JSON.stringify(recoveredOwner));
-    assert.match(recoveredOwner.batch.items[0].item_key, /^aaa\/repo#/);
-  } finally {
-    Date.now = originalNow;
-  }
-});
-
-test("repository Actions circuit blocks every publication batch until reset", async () => {
-  const originalNow = Date.now;
-  let now = Date.parse("2026-08-10T14:00:00.000Z");
-  Date.now = () => now;
-  try {
-    const queue = new ExactReviewQueue(
-      { storage: new TestStorage() },
-      { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
-    );
-    await queue.fetch(publicationRequest("actions-a", 211, "1211", "aaa/repo"));
-    await queue.fetch(publicationRequest("actions-b", 212, "1212", "bbb/repo"));
-    const claim = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-actions-a",
-          lease_owner: "worker-a",
-          max_items: 1,
-        }),
-      )
-    ).json();
-    const member = claim.batch.items[0];
-    const resetAt = now + 90_000;
-    const completed = await queue.fetch(
+    }),
+  );
+  assert.equal(malformedUnattempted.status, 400);
+  assert.deepEqual(await malformedUnattempted.json(), { error: "invalid_batch_completions" });
+  const longerReset = now + 120_000;
+  const completion = await (
+    await queue.fetch(
       batchRequest("/publication-batches/complete", {
         batch_id: claim.batch.batch_id,
         lease_owner: "worker-a",
         github_rate_limit_observations: [
           {
-            scope: "repository_actions",
+            scope: "target_app",
+            target_owner: "aaa",
             observed_at: new Date(now).toISOString(),
-            retry_at: new Date(resetAt).toISOString(),
+            retry_at: new Date(longerReset).toISOString(),
             provenance: "rate_limit_status",
             authoritative: true,
+          },
+          {
+            scope: "target_app",
+            target_owner: "aaa",
+            observed_at: new Date(now + 1).toISOString(),
+            retry_at: new Date(now + 60_000).toISOString(),
+            provenance: "fallback",
+            authoritative: false,
+          },
+        ],
+        github_request_metrics: [
+          {
+            scope: "target_app",
+            category: "item_metadata",
+            mode: "read",
+            outcome: "throttle",
+            repeat_revision: false,
+            count: 1,
           },
         ],
         items: [
@@ -4737,301 +5239,443 @@ test("repository Actions circuit blocks every publication batch until reset", as
             claim_generation: member.claim_generation,
             terminal_outcome: "retryable_failure",
             reason_code: "github_rate_limit",
-            retry_at: new Date(resetAt).toISOString(),
+            pool_class: "target_app",
+            retry_at: new Date(longerReset).toISOString(),
             attempted: false,
           },
         ],
       }),
-    );
-    assert.equal(completed.status, 200, JSON.stringify(await completed.clone().json()));
-    const blocked = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-actions-blocked",
-          lease_owner: "worker-b",
-          max_items: 2,
-        }),
-      )
-    ).json();
-    assert.equal(blocked.claimed, false, JSON.stringify(blocked));
-    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(
-      stats.lanes.publication.credential_circuits[0].pool,
-      "actions:openclaw/clawsweeper",
-    );
-    assert.equal(stats.lanes.publication.credential_circuits[0].affected_pending, 2);
-    assert.ok(Date.parse(stats.lanes.publication.credential_circuits[0].recovery_until) > resetAt);
+    )
+  ).json();
+  assert.equal(completion.accepted, 1, JSON.stringify(completion));
 
-    now = resetAt;
-    const resetBoundary = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-actions-reset-boundary",
-          lease_owner: "worker-boundary",
-          max_items: 2,
-        }),
-      )
-    ).json();
-    assert.equal(resetBoundary.claimed, false, JSON.stringify(resetBoundary));
+  let stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(stats.lanes.publication.retried_total, 0);
+  assert.equal(stats.lanes.publication.credential_circuits.length, 1);
+  const { recovery_until: recoveryUntil, ...credentialCircuit } =
+    stats.lanes.publication.credential_circuits[0];
+  assert.deepEqual(credentialCircuit, {
+    pool: "target_app:aaa",
+    scope: "target_app",
+    target_owner: "aaa",
+    observed_at: new Date(now).toISOString(),
+    blocked_until: new Date(longerReset).toISOString(),
+    reset_source: "rate_limit_status",
+    authoritative: true,
+    active: true,
+    affected_pending: 52,
+  });
+  assert.ok(Date.parse(recoveryUntil) > longerReset);
+  assert.ok(Date.parse(recoveryUntil) <= longerReset + 30_000);
+  assert.equal(
+    stats.lanes.publication.github_request_metrics.counters[
+      "target_app:item_metadata:read:throttle:first"
+    ],
+    1,
+  );
+  assert.equal(stats.lanes.publication.capacity_control.last_failure_kind, "github_rate_limit");
+  assert.deepEqual(stats.lanes.publication.flow.last_15_minutes.causes.rows, [
+    {
+      transition: "backoff",
+      stage: "publication_apply",
+      completion_kind: "retryable_failure",
+      reason_code: "github_rate_limit",
+      revision_relation: "same_revision",
+      pool_class: "target_app",
+      recovery_cause: "credential_circuit",
+      backoff_reason: "publication_retry",
+      attempt_bucket: "0",
+      count: 1,
+    },
+  ]);
 
-    now = resetAt + 31_000;
-    const recovered = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-actions-recovered",
-          lease_owner: "worker-c",
-          max_items: 2,
-        }),
-      )
+  const lateReset = now + 180_000;
+  const lateTelemetry = {
+    batch_id: claim.batch.batch_id,
+    lease_owner: "worker-a",
+    github_telemetry_id: "a".repeat(64),
+    github_rate_limit_observations: [
+      {
+        scope: "target_app",
+        target_owner: "aaa",
+        observed_at: new Date(now + 2).toISOString(),
+        retry_at: new Date(lateReset).toISOString(),
+        provenance: "retry_after",
+        authoritative: true,
+      },
+    ],
+    github_request_metrics: [
+      {
+        scope: "target_app",
+        category: "workflow_dispatch",
+        mode: "mutation_or_private_read",
+        outcome: "throttle",
+        repeat_revision: true,
+        count: 1,
+      },
+    ],
+    items: [],
+  };
+  storage.failNextSqlMatching(/UPDATE exact_review_queue_meta/);
+  await assert.rejects(
+    queue.fetch(batchRequest("/publication-batches/complete", lateTelemetry)),
+    /injected telemetry state write failure/,
+  );
+  stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(
+    stats.lanes.publication.github_request_metrics.counters[
+      "target_app:workflow_dispatch:mutation_or_private_read:throttle:repeat"
+    ],
+    undefined,
+  );
+  assert.equal(
+    stats.lanes.publication.credential_circuits[0].blocked_until,
+    new Date(longerReset).toISOString(),
+  );
+  const late = await (
+    await queue.fetch(batchRequest("/publication-batches/complete", lateTelemetry))
+  ).json();
+  assert.equal(late.accepted, 0);
+  assert.equal(late.telemetry_accepted, true);
+  const duplicate = await (
+    await queue.fetch(batchRequest("/publication-batches/complete", lateTelemetry))
+  ).json();
+  assert.equal(duplicate.telemetry_accepted, true);
+  stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(
+    stats.lanes.publication.credential_circuits[0].blocked_until,
+    new Date(lateReset).toISOString(),
+  );
+  assert.equal(
+    stats.lanes.publication.github_request_metrics.counters[
+      "target_app:workflow_dispatch:mutation_or_private_read:throttle:repeat"
+    ],
+    1,
+  );
+  assert.equal(stats.lanes.publication.capacity_control.ceiling, 12);
+  queue = new ExactReviewQueue({ storage }, env);
+  const healthyOwner = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-owner-b",
+        lease_owner: "worker-b",
+        max_items: 50,
+      }),
+    )
+  ).json();
+  assert.equal(healthyOwner.claimed, true, JSON.stringify(healthyOwner));
+  assert.match(healthyOwner.batch.items[0].item_key, /^bbb\/repo#/);
+  const replacementLeaseDuplicate = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/complete", {
+        ...lateTelemetry,
+        batch_id: healthyOwner.batch.batch_id,
+        lease_owner: "worker-b",
+      }),
+    )
+  ).json();
+  assert.equal(replacementLeaseDuplicate.telemetry_accepted, true);
+  stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(
+    stats.lanes.publication.github_request_metrics.counters[
+      "target_app:workflow_dispatch:mutation_or_private_read:throttle:repeat"
+    ],
+    1,
+  );
+  const independentTelemetry = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/complete", {
+        ...lateTelemetry,
+        batch_id: healthyOwner.batch.batch_id,
+        lease_owner: "worker-b",
+        github_telemetry_id: "b".repeat(64),
+      }),
+    )
+  ).json();
+  assert.equal(independentTelemetry.telemetry_accepted, true);
+  stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(
+    stats.lanes.publication.github_request_metrics.counters[
+      "target_app:workflow_dispatch:mutation_or_private_read:throttle:repeat"
+    ],
+    2,
+  );
+  assert.equal(stats.lanes.publication.capacity_control.ceiling, 6);
+  const retainedReceiptPayloads: Record<string, unknown>[] = [];
+  for (let index = 0; index < 201; index += 1) {
+    const payload = {
+      batch_id: healthyOwner.batch.batch_id,
+      lease_owner: "worker-b",
+      github_telemetry_id: index.toString(16).padStart(64, "0"),
+      github_request_metrics: lateTelemetry.github_request_metrics,
+      items: [],
+    };
+    retainedReceiptPayloads.push(payload);
+    const recorded = await (
+      await queue.fetch(batchRequest("/publication-batches/complete", payload))
     ).json();
-    assert.equal(recovered.claimed, true, JSON.stringify(recovered));
-  } finally {
-    Date.now = originalNow;
+    assert.equal(recorded.telemetry_accepted, true);
   }
-});
+  const delayedDuplicate = await (
+    await queue.fetch(batchRequest("/publication-batches/complete", retainedReceiptPayloads[0]))
+  ).json();
+  assert.equal(delayedDuplicate.telemetry_accepted, true);
+  stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(
+    stats.lanes.publication.github_request_metrics.counters[
+      "target_app:workflow_dispatch:mutation_or_private_read:throttle:repeat"
+    ],
+    203,
+  );
 
-test("batch failure completion requeues a newer revision owned by the same lease", async () => {
-  const originalNow = Date.now;
-  let now = 2_500_000;
-  Date.now = () => now;
-  try {
-    const queue = new ExactReviewQueue(
-      { storage: new TestStorage() },
-      { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
-    );
-    await queue.fetch(publicationRequest("delivery-owned-revision-1", 127, "1027"));
-    const claim = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-owned-revision-1",
-          lease_owner: "worker-1",
-          max_items: 1,
-        }),
-      )
-    ).json();
-    const member = claim.batch.items[0];
+  const receiptFailureReset = lateReset + 60_000;
+  const receiptFailureTelemetry = {
+    batch_id: healthyOwner.batch.batch_id,
+    lease_owner: "worker-b",
+    github_telemetry_id: "c".repeat(64),
+    github_rate_limit_observations: [
+      {
+        scope: "target_app",
+        target_owner: "aaa",
+        observed_at: new Date(now + 3).toISOString(),
+        retry_at: new Date(receiptFailureReset).toISOString(),
+        provenance: "retry_after",
+        authoritative: true,
+      },
+    ],
+    items: [],
+  };
+  storage.failNextSqlMatching(/INSERT INTO exact_review_github_telemetry_receipts/);
+  await assert.rejects(
+    queue.fetch(batchRequest("/publication-batches/complete", receiptFailureTelemetry)),
+    /injected telemetry state write failure/,
+  );
+  stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(stats.lanes.publication.capacity_control.ceiling, 6);
+  assert.equal(
+    stats.lanes.publication.credential_circuits[0].blocked_until,
+    new Date(lateReset).toISOString(),
+  );
+  const receiptReplay = await (
+    await queue.fetch(batchRequest("/publication-batches/complete", receiptFailureTelemetry))
+  ).json();
+  assert.equal(receiptReplay.telemetry_accepted, true);
+  stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(stats.lanes.publication.capacity_control.ceiling, 4);
+  assert.equal(
+    stats.lanes.publication.credential_circuits[0].blocked_until,
+    new Date(receiptFailureReset).toISOString(),
+  );
 
-    await queue.fetch(publicationRequest("delivery-owned-revision-2", 127, "1027"));
-    const completion = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/complete", {
-          batch_id: claim.batch.batch_id,
-          lease_owner: "worker-1",
-          items: [
-            {
-              item_key: member.item_key,
-              revision: member.revision,
-              claim_generation: member.claim_generation,
-              terminal_outcome: "retryable_failure",
-              reason_code: "workflow_cancelled",
-            },
-          ],
-        }),
-      )
-    ).json();
-    assert.equal(completion.accepted, 1, JSON.stringify(completion));
-
-    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(stats.lanes.publication.pending, 1);
-    assert.equal(stats.lanes.publication.retried_total, 0);
-    assert.equal(stats.lanes.publication.batches.leased, 0);
-
-    now += 1;
-    const replacement = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-owned-revision-2",
-          lease_owner: "worker-2",
-          max_items: 1,
-        }),
-      )
-    ).json();
-    assert.equal(replacement.claimed, true, JSON.stringify(replacement));
-    assert.equal(replacement.batch.items[0].revision, 2);
-    assert.notEqual(replacement.batch.items[0].claim_generation, member.claim_generation);
-  } finally {
-    Date.now = originalNow;
-  }
-});
-
-test("batch published completion preserves a newer revision owned by the same lease", async () => {
-  const originalNow = Date.now;
-  let now = 2_750_000;
-  Date.now = () => now;
-  try {
-    const queue = new ExactReviewQueue(
-      { storage: new TestStorage() },
-      { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
-    );
-    await queue.fetch(publicationRequest("delivery-published-revision-1", 128, "1028"));
-    const claim = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-published-revision-1",
-          lease_owner: "worker-1",
-          max_items: 1,
-        }),
-      )
-    ).json();
-    const member = claim.batch.items[0];
-
-    await queue.fetch(publicationRequest("delivery-published-revision-2", 128, "1028"));
-    const completion = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/complete", {
-          batch_id: claim.batch.batch_id,
-          lease_owner: "worker-1",
-          state_commit_sha: "d".repeat(40),
-          items: [
-            {
-              item_key: member.item_key,
-              revision: member.revision,
-              claim_generation: member.claim_generation,
-              terminal_outcome: "published",
-            },
-          ],
-        }),
-      )
-    ).json();
-    assert.equal(completion.accepted, 1, JSON.stringify(completion));
-
-    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(stats.lanes.publication.pending, 1);
-    assert.equal(stats.lanes.publication.published_total, 1);
-    assert.equal(stats.lanes.publication.batches.leased, 0);
-    assert.equal(
-      stats.lanes.publication.flow.last_15_minutes.causes.reconciliation.published.complete,
-      true,
-    );
-    assert.deepEqual(
-      stats.lanes.publication.flow.last_15_minutes.causes.rows.map((row) => ({
-        transition: row.transition,
-        reason_code: row.reason_code,
-        revision_relation: row.revision_relation,
-        recovery_cause: row.recovery_cause,
-      })),
-      [
+  const healthyMember = healthyOwner.batch.items[0];
+  const healthyCompletion = await queue.fetch(
+    batchRequest("/publication-batches/complete", {
+      batch_id: healthyOwner.batch.batch_id,
+      lease_owner: "worker-b",
+      items: [
         {
-          transition: "backoff",
-          reason_code: "publication_applied",
-          revision_relation: "newer_local_revision",
-          recovery_cause: "newer_revision",
-        },
-        {
-          transition: "published",
-          reason_code: "publication_applied",
-          revision_relation: "newer_local_revision",
-          recovery_cause: "newer_revision",
+          item_key: healthyMember.item_key,
+          revision: healthyMember.revision,
+          claim_generation: healthyMember.claim_generation,
+          terminal_outcome: "superseded",
         },
       ],
-    );
+    }),
+  );
+  assert.equal(
+    healthyCompletion.status,
+    200,
+    JSON.stringify(await healthyCompletion.clone().json()),
+  );
 
-    now += 1;
-    const replacement = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-published-revision-2",
-          lease_owner: "worker-2",
-          max_items: 1,
-        }),
-      )
-    ).json();
-    assert.equal(replacement.claimed, true, JSON.stringify(replacement));
-    assert.equal(replacement.batch.items[0].revision, 2);
-    assert.notEqual(replacement.batch.items[0].claim_generation, member.claim_generation);
-  } finally {
-    Date.now = originalNow;
-  }
+  now = receiptFailureReset + 16 * 60_000;
+  stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(stats.lanes.publication.credential_circuits[0].active, false);
+  const recoveredOwner = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-owner-a-recovered",
+        lease_owner: "worker-c",
+        max_items: 50,
+      }),
+    )
+  ).json();
+  assert.equal(recoveredOwner.claimed, true, JSON.stringify(recoveredOwner));
+  assert.match(recoveredOwner.batch.items[0].item_key, /^aaa\/repo#/);
 });
 
-test("partial batch completion publishes healthy members and releases retryable members", async () => {
-  const originalNow = Date.now;
-  Date.now = () => 3_000_000;
-  try {
-    const queue = new ExactReviewQueue(
-      { storage: new TestStorage() },
-      { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
-    );
-    await queue.fetch(publicationRequest("delivery-partial-published", 124, "1024"));
-    await queue.fetch(publicationRequest("delivery-partial-retryable", 125, "1025"));
-    const claim = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-partial",
-          lease_owner: "worker-1",
-          max_items: 2,
-        }),
-      )
-    ).json();
-    const [published, retryable] = claim.batch.items;
-    const completion = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/complete", {
-          batch_id: claim.batch.batch_id,
-          lease_owner: "worker-1",
-          state_commit_sha: "c".repeat(40),
-          items: [
-            {
-              item_key: published.item_key,
-              revision: published.revision,
-              claim_generation: published.claim_generation,
-              terminal_outcome: "published",
-            },
-            {
-              item_key: retryable.item_key,
-              revision: retryable.revision,
-              claim_generation: retryable.claim_generation,
-              terminal_outcome: "retryable_failure",
-              reason_code: "artifact_unavailable",
-            },
-          ],
-        }),
-      )
-    ).json();
-    assert.equal(completion.accepted, 2, JSON.stringify(completion));
-    assert.equal(completion.batch.state, "completed");
+test("repository Actions circuit blocks every publication batch until reset", async (t) => {
+  let now = Date.parse("2026-08-10T14:00:00.000Z");
+  t.mock.method(Date, "now", () => now);
+  const queue = new ExactReviewQueue(
+    { storage: new TestStorage() },
+    { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+  );
+  await queue.fetch(publicationRequest("actions-a", 211, "1211", "aaa/repo"));
+  await queue.fetch(publicationRequest("actions-b", 212, "1212", "bbb/repo"));
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-actions-a",
+        lease_owner: "worker-a",
+        max_items: 1,
+      }),
+    )
+  ).json();
+  const member = claim.batch.items[0];
+  const resetAt = now + 90_000;
+  const completed = await queue.fetch(
+    batchRequest("/publication-batches/complete", {
+      batch_id: claim.batch.batch_id,
+      lease_owner: "worker-a",
+      github_rate_limit_observations: [
+        {
+          scope: "repository_actions",
+          observed_at: new Date(now).toISOString(),
+          retry_at: new Date(resetAt).toISOString(),
+          provenance: "rate_limit_status",
+          authoritative: true,
+        },
+      ],
+      items: [
+        {
+          item_key: member.item_key,
+          revision: member.revision,
+          claim_generation: member.claim_generation,
+          terminal_outcome: "retryable_failure",
+          reason_code: "github_rate_limit",
+          retry_at: new Date(resetAt).toISOString(),
+          attempted: false,
+        },
+      ],
+    }),
+  );
+  assert.equal(completed.status, 200, JSON.stringify(await completed.clone().json()));
+  const blocked = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-actions-blocked",
+        lease_owner: "worker-b",
+        max_items: 2,
+      }),
+    )
+  ).json();
+  assert.equal(blocked.claimed, false, JSON.stringify(blocked));
+  const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(stats.lanes.publication.credential_circuits[0].pool, "actions:openclaw/clawsweeper");
+  assert.equal(stats.lanes.publication.credential_circuits[0].affected_pending, 2);
+  assert.ok(Date.parse(stats.lanes.publication.credential_circuits[0].recovery_until) > resetAt);
 
-    const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
-    assert.equal(stats.lanes.publication.pending, 1);
-    assert.equal(stats.lanes.publication.published_total, 1);
-    assert.equal(stats.lanes.publication.retried_total, 1);
-    assert.equal(stats.lanes.publication.batches.leased, 0);
-  } finally {
-    Date.now = originalNow;
-  }
+  now = resetAt;
+  const resetBoundary = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-actions-reset-boundary",
+        lease_owner: "worker-boundary",
+        max_items: 2,
+      }),
+    )
+  ).json();
+  assert.equal(resetBoundary.claimed, false, JSON.stringify(resetBoundary));
+
+  now = resetAt + 31_000;
+  const recovered = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-actions-recovered",
+        lease_owner: "worker-c",
+        max_items: 2,
+      }),
+    )
+  ).json();
+  assert.equal(recovered.claimed, true, JSON.stringify(recovered));
 });
 
-test("batch completion schedules the remaining partial batch at its departure deadline", async () => {
-  const originalNow = Date.now;
-  Date.now = () => 6_000_000;
-  try {
-    const storage = new TestStorage();
-    const queue = new ExactReviewQueue(
-      { storage },
-      {
-        EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
-        EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
-      },
-    );
-    await queue.fetch(publicationRequest("delivery-completing", 108, "1008"));
-    await queue.fetch(publicationRequest("delivery-waiting", 109, "1009"));
-    const claim = await (
-      await queue.fetch(
-        batchRequest("/publication-batches/claim", {
-          claim_id: "claim-wakes-legacy",
-          lease_owner: "worker-1",
-          max_items: 1,
-        }),
-      )
-    ).json();
-    await queue.alarm();
-    assert.equal(storage.scheduledAlarm(), 6_060_000);
+test("batch failure completion requeues a newer revision owned by the same lease", async (t) => {
+  let now = 2_500_000;
+  t.mock.method(Date, "now", () => now);
+  const queue = new ExactReviewQueue(
+    { storage: new TestStorage() },
+    { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+  );
+  await queue.fetch(publicationRequest("delivery-owned-revision-1", 127, "1027"));
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-owned-revision-1",
+        lease_owner: "worker-1",
+        max_items: 1,
+      }),
+    )
+  ).json();
+  const member = claim.batch.items[0];
 
-    const member = claim.batch.items[0];
-    const completion = await queue.fetch(
+  await queue.fetch(publicationRequest("delivery-owned-revision-2", 127, "1027"));
+  const completion = await (
+    await queue.fetch(
       batchRequest("/publication-batches/complete", {
         batch_id: claim.batch.batch_id,
         lease_owner: "worker-1",
+        items: [
+          {
+            item_key: member.item_key,
+            revision: member.revision,
+            claim_generation: member.claim_generation,
+            terminal_outcome: "retryable_failure",
+            reason_code: "workflow_cancelled",
+          },
+        ],
+      }),
+    )
+  ).json();
+  assert.equal(completion.accepted, 1, JSON.stringify(completion));
+
+  const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(stats.lanes.publication.pending, 1);
+  assert.equal(stats.lanes.publication.retried_total, 0);
+  assert.equal(stats.lanes.publication.batches.leased, 0);
+
+  now += 1;
+  const replacement = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-owned-revision-2",
+        lease_owner: "worker-2",
+        max_items: 1,
+      }),
+    )
+  ).json();
+  assert.equal(replacement.claimed, true, JSON.stringify(replacement));
+  assert.equal(replacement.batch.items[0].revision, 2);
+  assert.notEqual(replacement.batch.items[0].claim_generation, member.claim_generation);
+});
+
+test("batch published completion preserves a newer revision owned by the same lease", async (t) => {
+  let now = 2_750_000;
+  t.mock.method(Date, "now", () => now);
+  const queue = new ExactReviewQueue(
+    { storage: new TestStorage() },
+    { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+  );
+  await queue.fetch(publicationRequest("delivery-published-revision-1", 128, "1028"));
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-published-revision-1",
+        lease_owner: "worker-1",
+        max_items: 1,
+      }),
+    )
+  ).json();
+  const member = claim.batch.items[0];
+
+  await queue.fetch(publicationRequest("delivery-published-revision-2", 128, "1028"));
+  const completion = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/complete", {
+        batch_id: claim.batch.batch_id,
+        lease_owner: "worker-1",
+        state_commit_sha: "d".repeat(40),
         items: [
           {
             item_key: member.item_key,
@@ -5041,10 +5685,147 @@ test("batch completion schedules the remaining partial batch at its departure de
           },
         ],
       }),
-    );
-    assert.equal(completion.status, 200);
-    assert.equal(storage.scheduledAlarm(), 6_060_000);
-  } finally {
-    Date.now = originalNow;
-  }
+    )
+  ).json();
+  assert.equal(completion.accepted, 1, JSON.stringify(completion));
+
+  const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(stats.lanes.publication.pending, 1);
+  assert.equal(stats.lanes.publication.published_total, 1);
+  assert.equal(stats.lanes.publication.batches.leased, 0);
+  assert.equal(
+    stats.lanes.publication.flow.last_15_minutes.causes.reconciliation.published.complete,
+    true,
+  );
+  assert.deepEqual(
+    stats.lanes.publication.flow.last_15_minutes.causes.rows.map((row) => ({
+      transition: row.transition,
+      reason_code: row.reason_code,
+      revision_relation: row.revision_relation,
+      recovery_cause: row.recovery_cause,
+    })),
+    [
+      {
+        transition: "backoff",
+        reason_code: "publication_applied",
+        revision_relation: "newer_local_revision",
+        recovery_cause: "newer_revision",
+      },
+      {
+        transition: "published",
+        reason_code: "publication_applied",
+        revision_relation: "newer_local_revision",
+        recovery_cause: "newer_revision",
+      },
+    ],
+  );
+
+  now += 1;
+  const replacement = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-published-revision-2",
+        lease_owner: "worker-2",
+        max_items: 1,
+      }),
+    )
+  ).json();
+  assert.equal(replacement.claimed, true, JSON.stringify(replacement));
+  assert.equal(replacement.batch.items[0].revision, 2);
+  assert.notEqual(replacement.batch.items[0].claim_generation, member.claim_generation);
+});
+
+test("partial batch completion publishes healthy members and releases retryable members", async (t) => {
+  t.mock.method(Date, "now", () => 3_000_000);
+  const queue = new ExactReviewQueue(
+    { storage: new TestStorage() },
+    { EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1" },
+  );
+  await queue.fetch(publicationRequest("delivery-partial-published", 124, "1024"));
+  await queue.fetch(publicationRequest("delivery-partial-retryable", 125, "1025"));
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-partial",
+        lease_owner: "worker-1",
+        max_items: 2,
+      }),
+    )
+  ).json();
+  const [published, retryable] = claim.batch.items;
+  const completion = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/complete", {
+        batch_id: claim.batch.batch_id,
+        lease_owner: "worker-1",
+        state_commit_sha: "c".repeat(40),
+        items: [
+          {
+            item_key: published.item_key,
+            revision: published.revision,
+            claim_generation: published.claim_generation,
+            terminal_outcome: "published",
+          },
+          {
+            item_key: retryable.item_key,
+            revision: retryable.revision,
+            claim_generation: retryable.claim_generation,
+            terminal_outcome: "retryable_failure",
+            reason_code: "artifact_unavailable",
+          },
+        ],
+      }),
+    )
+  ).json();
+  assert.equal(completion.accepted, 2, JSON.stringify(completion));
+  assert.equal(completion.batch.state, "completed");
+
+  const stats = await (await queue.fetch(new Request("https://queue/stats"))).json();
+  assert.equal(stats.lanes.publication.pending, 1);
+  assert.equal(stats.lanes.publication.published_total, 1);
+  assert.equal(stats.lanes.publication.retried_total, 1);
+  assert.equal(stats.lanes.publication.batches.leased, 0);
+});
+
+test("batch completion schedules the remaining partial batch at its departure deadline", async (t) => {
+  t.mock.method(Date, "now", () => 6_000_000);
+  const storage = new TestStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    {
+      EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED: "1",
+      EXACT_REVIEW_PUBLICATION_BATCH_LEASE_MS: "60000",
+    },
+  );
+  await queue.fetch(publicationRequest("delivery-completing", 108, "1008"));
+  await queue.fetch(publicationRequest("delivery-waiting", 109, "1009"));
+  const claim = await (
+    await queue.fetch(
+      batchRequest("/publication-batches/claim", {
+        claim_id: "claim-wakes-legacy",
+        lease_owner: "worker-1",
+        max_items: 1,
+      }),
+    )
+  ).json();
+  await queue.alarm();
+  assert.equal(storage.scheduledAlarm(), 6_060_000);
+
+  const member = claim.batch.items[0];
+  const completion = await queue.fetch(
+    batchRequest("/publication-batches/complete", {
+      batch_id: claim.batch.batch_id,
+      lease_owner: "worker-1",
+      items: [
+        {
+          item_key: member.item_key,
+          revision: member.revision,
+          claim_generation: member.claim_generation,
+          terminal_outcome: "published",
+        },
+      ],
+    }),
+  );
+  assert.equal(completion.status, 200);
+  assert.equal(storage.scheduledAlarm(), 6_060_000);
 });

@@ -63,6 +63,46 @@ function report(overrides = {}) {
   return `---\n${frontmatter}\n---\n\n## Repair Work Prompt\n\nFix the reproduced existing-behavior bug and add a regression test.\n`;
 }
 
+test("implementation discovery refuses persisted manual and ambiguous policies with automation enabled", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "manual-discovery-"));
+  try {
+    const reports = path.join(root, "records/openclaw-openclaw/items");
+    mkdirSync(reports, { recursive: true });
+    for (const policy of [
+      "record_comment_only",
+      "future_policy",
+      "record_comment_only\npublication_policy: record_comment_only",
+    ]) {
+      writeFileSync(path.join(reports, "123.md"), report({ publication_policy: policy }));
+      assert.deepEqual(
+        discoverImplementationCandidates({
+          enabled: true,
+          candidateKind: "strict_bug",
+          targetRepo: "openclaw/openclaw",
+          reportRepo: "openclaw/clawsweeper-state",
+          sourceDirs: [reports],
+          jobRoot: root,
+        }),
+        [],
+      );
+    }
+    writeFileSync(path.join(reports, "123.md"), report());
+    assert.equal(
+      discoverImplementationCandidates({
+        enabled: true,
+        candidateKind: "strict_bug",
+        targetRepo: "openclaw/openclaw",
+        reportRepo: "openclaw/clawsweeper-state",
+        sourceDirs: [reports],
+        jobRoot: root,
+      }).length,
+      1,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("strict reproducible bug reports are eligible for implementation intake", () => {
   const markdown = report();
   const parsed = parseReviewReport(markdown);

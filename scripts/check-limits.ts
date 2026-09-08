@@ -136,7 +136,7 @@ const expectations: { file: string; label: string; pattern: RegExp }[] = [
     file: "docs/scheduler.md",
     label: "hot intake shard default",
     pattern: new RegExp(
-      `broad hot intake: up to ${limits.review_shards.hot_intake_default} shards`,
+      `broad hot intake: configured ceiling of ${limits.review_shards.hot_intake_default} shards`,
     ),
   },
   {

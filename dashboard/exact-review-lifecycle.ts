@@ -158,11 +158,19 @@ type LifecycleAcknowledgementAttempt = {
   terminalSkip?: { reason: CommandAcknowledgementTerminalSkipReason; observedAt: number };
 };
 
+export type LifecycleProducerLineage = {
+  fenceKey: string;
+  revision: number;
+  claimGeneration: number;
+};
+
 export type ExactReviewLifecycleProjection = {
   version: 1;
   canonicalTargetKey: string;
   fenceKey: string;
   revision: number;
+  /** Observational producer identity; publication receipts keep their own fence. */
+  producerLineage?: LifecycleProducerLineage;
   admission: {
     deliveryId: string;
     sourceDeliveryId?: string;
@@ -240,6 +248,7 @@ type ProjectionIdentity = {
   revision: number;
 };
 type LifecycleAdmissionInput = ProjectionIdentity & {
+  producerLineage?: LifecycleProducerLineage;
   deliveryId: string;
   sourceDeliveryId?: string;
   bayJourneyDeliveryId?: string;
@@ -306,6 +315,14 @@ export class ExactReviewLifecycleProjectionStore {
             revision DESC
           )`,
     );
+    // Keep v2 for older readers that explicitly select it during rollback.
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_projection_bay_repository_journey
+         ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE} (
+           LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)),
+           canonical_target_key, fence_key, revision
+         )`,
+    );
     this.storage.sql.exec(
       `CREATE INDEX IF NOT EXISTS exact_review_lifecycle_projection_bay_telemetry_pending
          ON ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
@@ -320,6 +337,7 @@ export class ExactReviewLifecycleProjectionStore {
 
   recordAdmissionSync(input: LifecycleAdmissionInput) {
     this.validateIdentity(input);
+    if (!validProducerLineage(input)) throw new Error("invalid lifecycle producer lineage");
     if (!validText(input.deliveryId, 1, 300) || !validText(input.sourceAction, 1, 200)) {
       throw new Error("invalid lifecycle admission fact");
     }
@@ -347,6 +365,7 @@ export class ExactReviewLifecycleProjectionStore {
       this.assertIdentity(existing, input);
       const admission = existing.admission;
       if (
+        !sameLifecycleProducerLineage(existing.producerLineage, input.producerLineage) ||
         admission.deliveryId !== input.deliveryId ||
         admission.sourceDeliveryId !== input.sourceDeliveryId ||
         admission.bayJourneyDeliveryId !== input.bayJourneyDeliveryId ||
@@ -366,6 +385,7 @@ export class ExactReviewLifecycleProjectionStore {
       canonicalTargetKey: input.canonicalTargetKey,
       fenceKey: input.fenceKey,
       revision: input.revision,
+      ...(input.producerLineage ? { producerLineage: { ...input.producerLineage } } : {}),
       admission: {
         deliveryId: input.deliveryId,
         ...(input.sourceDeliveryId ? { sourceDeliveryId: input.sourceDeliveryId } : {}),
@@ -925,21 +945,29 @@ export class ExactReviewLifecycleProjectionStore {
     }
 
     try {
-      // Keep counts, validation, and sample revision lookups in one snapshot.
-      // Stream history through the existing reducer; only lane samples survive
-      // each cursor step, regardless of how many completed facts are retained.
+      // Resolve one target's history at a time in the same snapshot as counts.
+      // Only that target and bounded lane samples survive each cursor step;
+      // audit uses the same journey resolver without a second revision rule.
       return this.storage.transactionSync<DurableLifecycleBaySnapshot>(() => {
         const inventory = { lifecycle_records: 0, target_revisions: 0, unique_targets: 0 };
         const lanes = emptyDurableLifecycleBayLanes();
         const cardsByLane = new Map<DurableLifecycleBayLane, DurableLifecycleBayCard[]>();
         const laneOrder = Object.keys(lanes) as DurableLifecycleBayLane[];
         for (const lane of laneOrder) cardsByLane.set(lane, []);
+        const addTarget = (projections: ExactReviewLifecycleProjection[]) => {
+          for (const card of lifecycleJourneyCards(projections, now)) {
+            lanes[card.lane] += 1;
+            const cards = cardsByLane.get(card.lane)!;
+            cards.push(card);
+            cards.sort(compareAuditInventoryRecords);
+            if (cards.length > EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT) cards.pop();
+          }
+        };
 
         for (const repository of repositories ?? [null]) {
           const bindings = repository === null ? [] : [repository];
           const source = `${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-            INDEXED BY ${repository === null ? "exact_review_lifecycle_projection_bay" : "exact_review_lifecycle_projection_bay_repository_v2"}
-            ${repository === null ? "" : "WHERE LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)) = ?"}`;
+            ${repository === null ? "" : "INDEXED BY exact_review_lifecycle_projection_bay_repository_journey WHERE LOWER(SUBSTR(canonical_target_key, 1, INSTR(canonical_target_key, '#') - 1)) = ?"}`;
           const counts = Array.from(
             this.storage.sql.exec(
               `SELECT COUNT(*) AS lifecycle_records,
@@ -955,10 +983,11 @@ export class ExactReviewLifecycleProjectionStore {
             inventory[key] += count;
           }
 
+          let target: ExactReviewLifecycleProjection[] = [];
           for (const row of this.storage.sql.exec(
             `SELECT projection_json, canonical_target_key, fence_key, revision
                FROM ${source}
-              ORDER BY updated_at DESC, canonical_target_key ASC, fence_key ASC, revision DESC`,
+              ORDER BY canonical_target_key ASC, fence_key ASC, revision ASC`,
             ...bindings,
           )) {
             let projection: ExactReviewLifecycleProjection;
@@ -976,24 +1005,19 @@ export class ExactReviewLifecycleProjectionStore {
               ) {
                 return unknown("mixed");
               }
-              const lane = durableLifecycleBayLane(lifecycleState(projection));
-              lanes[lane] += 1;
-              const laneCards = cardsByLane.get(lane)!;
-              const last = laneCards.at(-1);
               if (
-                laneCards.length === EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT &&
-                last &&
-                projection.updatedAt < Date.parse(last.updated_at)
+                target.length &&
+                target[0]!.canonicalTargetKey !== projection.canonicalTargetKey
               ) {
-                continue;
+                addTarget(target);
+                target = [];
               }
-              laneCards.push(durableLifecycleBayCard(projection, now, projection.revision));
-              laneCards.sort(compareAuditInventoryRecords);
-              if (laneCards.length > EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT) laneCards.pop();
+              target.push(projection);
             } catch {
               return unknown("mixed");
             }
           }
+          addTarget(target);
         }
 
         const sample: DurableLifecycleBayCard[] = [];
@@ -1007,31 +1031,6 @@ export class ExactReviewLifecycleProjectionStore {
             if (sample.length === EXACT_REVIEW_LIFECYCLE_BAY_SAMPLE_LIMIT) break;
           }
           if (!added) break;
-        }
-        // Resolve only sampled targets; a newer revision can be arbitrarily
-        // old and absent from every retained lane sample.
-        const sampledTargets = [
-          ...new Set(sample.map((card) => `${card.target.repository}#${card.target.number}`)),
-        ];
-        const maxRevisionByTarget = new Map<string, number>();
-        if (sampledTargets.length) {
-          for (const row of this.storage.sql.exec(
-            `SELECT canonical_target_key, MAX(revision) AS max_revision
-             FROM ${EXACT_REVIEW_LIFECYCLE_PROJECTION_TABLE}
-             WHERE canonical_target_key IN (SELECT value FROM json_each(?))
-             GROUP BY canonical_target_key`,
-            JSON.stringify(sampledTargets),
-          )) {
-            const revision = Number(row.max_revision || 0);
-            maxRevisionByTarget.set(
-              String(row.canonical_target_key),
-              Number.isSafeInteger(revision) && revision >= 0 ? revision : 0,
-            );
-          }
-        }
-        for (const card of sample) {
-          const key = `${card.target.repository}#${card.target.number}`;
-          card.current_revision &&= card.revision === (maxRevisionByTarget.get(key) ?? 0);
         }
         return {
           version: 1,
@@ -1097,23 +1096,7 @@ export class ExactReviewLifecycleProjectionStore {
         if (!projections.every(validDurableLifecycleBayProjection)) {
           return this.unknownAuditInventory("mixed", now);
         }
-        const maxRevisionByTarget = new Map<string, number>();
-        for (const projection of projections) {
-          maxRevisionByTarget.set(
-            projection.canonicalTargetKey,
-            Math.max(
-              maxRevisionByTarget.get(projection.canonicalTargetKey) ?? 0,
-              projection.revision,
-            ),
-          );
-        }
-        const records = projections.map((projection) =>
-          durableLifecycleBayCard(
-            projection,
-            now,
-            maxRevisionByTarget.get(projection.canonicalTargetKey),
-          ),
-        );
+        const records = lifecycleJourneyCards(projections, now);
         records.sort(compareAuditInventoryRecords);
 
         const snapshotId = crypto.randomUUID();
@@ -1583,14 +1566,81 @@ function durableLifecycleBayLane(state: LifecycleState): DurableLifecycleBayLane
   }
 }
 
+function lifecycleJourneyCards(projections: ExactReviewLifecycleProjection[], now: number) {
+  const targets = new Map<string, ExactReviewLifecycleProjection[]>();
+  for (const projection of projections) {
+    const target = targets.get(projection.canonicalTargetKey) ?? [];
+    target.push(projection);
+    targets.set(projection.canonicalTargetKey, target);
+  }
+  return [...targets.values()].flatMap((target) => {
+    const canonicalKey = target[0]!.canonicalTargetKey;
+    // exactReviewItemKey's ordinary producer fence is the canonical item key.
+    // Other fence counters cannot order that producer's admitted revisions.
+    const fences = new Set(target.map((projection) => projection.fenceKey));
+    const currentFence = fences.has(canonicalKey)
+      ? canonicalKey
+      : fences.size === 1
+        ? target[0]!.fenceKey
+        : null;
+    const currentRevision = target.reduce(
+      (revision, projection) =>
+        projection.fenceKey === currentFence ? Math.max(revision, projection.revision) : revision,
+      0,
+    );
+    const publications = new Map<string, ExactReviewLifecycleProjection | null>();
+    for (const publication of target) {
+      const link = publication.producerLineage;
+      if (!link) continue;
+      const key = `${link.revision}:${link.claimGeneration}`;
+      publications.set(key, publications.has(key) ? null : publication);
+    }
+    return target.map((producer) => {
+      const generation = [...producer.claims, ...producer.reviewResults].reduce(
+        (latest, claim) => Math.max(latest, claim.claimGeneration),
+        0,
+      );
+      const publication = publications.get(`${producer.revision}:${generation}`);
+      const link = publication?.producerLineage;
+      // A missing/competing child, command mismatch, or newer claim cannot lend
+      // completion to this journey. Physical facts and Bay event ownership stay put.
+      const resolved =
+        publication &&
+        link &&
+        !producer.terminalDisposition &&
+        link.fenceKey === producer.fenceKey &&
+        producer.admission.commandOriginated === publication.admission.commandOriginated &&
+        producer.admission.statusMarker === publication.admission.statusMarker &&
+        producer.admission.statusCommentId === publication.admission.statusCommentId &&
+        producer.reviewResults.some(
+          (result) =>
+            result.fenceKey === link.fenceKey &&
+            result.claimGeneration === link.claimGeneration &&
+            result.outcome === "completed",
+        )
+          ? publication
+          : null;
+      return durableLifecycleBayCard(
+        producer,
+        now,
+        producer.fenceKey === currentFence ? currentRevision : undefined,
+        resolved,
+      );
+    });
+  });
+}
+
 function durableLifecycleBayCard(
   projection: ExactReviewLifecycleProjection,
   now: number,
   maxRevision: number | undefined,
+  publication: ExactReviewLifecycleProjection | null,
 ): DurableLifecycleBayCard {
   const target = canonicalTarget(projection.canonicalTargetKey);
   if (!target) throw new Error("invalid durable lifecycle Bay target");
-  const state = lifecycleState(projection);
+  const result = publication ?? projection;
+  const updatedAt = Math.max(projection.updatedAt, result.updatedAt);
+  const state = lifecycleState(result);
   const latestReviewResult = projection.reviewResults.reduce<
     ExactReviewLifecycleProjection["reviewResults"][number] | null
   >(
@@ -1601,7 +1651,7 @@ function durableLifecycleBayCard(
     state === "acknowledgement_skipped"
       ? "acknowledgement_skipped"
       : durableLifecycleBayLane(state) === "terminal_attention"
-        ? (projection.terminalDisposition?.kind ?? null)
+        ? (result.terminalDisposition?.kind ?? null)
         : null;
   return {
     target,
@@ -1609,24 +1659,25 @@ function durableLifecycleBayCard(
     state,
     lane: durableLifecycleBayLane(state),
     terminal_label: terminalLabel,
-    terminal_history: Array.from(
-      new Set(projection.terminalDispositions.map((entry) => entry.kind)),
-    ),
+    terminal_history: Array.from(new Set(result.terminalDispositions.map((entry) => entry.kind))),
     current_revision:
-      projection.revision === maxRevision && state !== "superseded" && state !== "requeue",
+      !projection.producerLineage &&
+      projection.revision === maxRevision &&
+      state !== "superseded" &&
+      state !== "requeue",
     facts: {
       admission: "recorded",
       claim_count: projection.claims.length,
       review_result: latestReviewResult?.outcome ?? null,
-      github_effect_recorded: projection.githubEffect !== null,
+      github_effect_recorded: result.githubEffect !== null,
       canonical_receipts: Array.from(
-        new Set(projection.canonicalReceipts.map((receipt) => receipt.outcome)),
+        new Set(result.canonicalReceipts.map((receipt) => receipt.outcome)),
       ),
-      router_receipt: projection.routerReceipt?.outcome ?? null,
-      acknowledgement: commandAcknowledgementState(projection),
+      router_receipt: result.routerReceipt?.outcome ?? null,
+      acknowledgement: commandAcknowledgementState(result),
     },
-    updated_at: new Date(projection.updatedAt).toISOString(),
-    age_ms: Math.max(0, now - projection.updatedAt),
+    updated_at: new Date(updatedAt).toISOString(),
+    age_ms: Math.max(0, now - updatedAt),
     provenance: "exact-review-lifecycle-projection-v1",
   };
 }
@@ -1968,7 +2019,8 @@ function normalizeProjection(
     parsed.version !== 1 ||
     !validCanonicalTargetKey(parsed.canonicalTargetKey) ||
     !validFenceKey(parsed.fenceKey) ||
-    !positiveInteger(parsed.revision)
+    !positiveInteger(parsed.revision) ||
+    !validProducerLineage(parsed)
   ) {
     throw new Error("invalid lifecycle projection row");
   }
@@ -2020,6 +2072,35 @@ function sameReviewResult(left: LifecycleReviewResultFact, right: LifecycleRevie
     left.runId === right.runId &&
     left.runAttempt === right.runAttempt &&
     left.outcome === right.outcome
+  );
+}
+
+export function sameLifecycleProducerLineage(
+  left: LifecycleProducerLineage | undefined,
+  right: LifecycleProducerLineage | undefined,
+) {
+  return (
+    left?.fenceKey === right?.fenceKey &&
+    left?.revision === right?.revision &&
+    left?.claimGeneration === right?.claimGeneration
+  );
+}
+
+function validProducerLineage(
+  identity: ProjectionIdentity & { producerLineage?: LifecycleProducerLineage },
+) {
+  const link = identity.producerLineage;
+  return (
+    link === undefined ||
+    Boolean(
+      link &&
+      typeof link === "object" &&
+      Object.keys(link).length === 3 &&
+      link.fenceKey === identity.canonicalTargetKey &&
+      link.fenceKey !== identity.fenceKey &&
+      positiveInteger(link.revision) &&
+      positiveInteger(link.claimGeneration),
+    )
   );
 }
 

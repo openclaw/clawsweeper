@@ -10,7 +10,9 @@ The queue Durable Object materializes signed GitHub App deliveries into a bounde
 
 ## Required GitHub App event subscriptions
 
-The deployed GitHub App must deliver all of these repository events:
+Full read-model coverage requires the following repository events. Each
+consumer requires only the event classes it reads; dashboard workflow health
+in `poll` mode does not require workflow-run or workflow-job subscriptions.
 
 | Subscription | Materialized state |
 | --- | --- |
@@ -24,6 +26,17 @@ The deployed GitHub App must deliver all of these repository events:
 | Check runs and check suites | Current check state associated with delivered commits |
 
 Subscription readiness is detected per event class. A class remains unavailable until at least one signed delivery of that exact class has arrived. After the 30-minute probe window, consumers continue their live poll and emit one structured `github_read_model_degraded` line with `reason=never_observed`; enabling a related event does not satisfy the missing class.
+
+### Dashboard workflow source
+
+`CLAWSWEEPER_DASHBOARD_WORKFLOW_SOURCE=poll` selects the existing bounded
+GitHub run/job polls for dashboard health. This deployment selects `poll` in
+`dashboard/wrangler.toml`; it neither reads nor repairs the workflow read model
+and does not warn about missing workflow subscriptions. Leaving the setting
+unset, or setting `webhook`, preserves snapshot reuse, fallback warnings, and
+repair. The shared signing secret remains required for those read-model calls.
+Item/comment consumers, signed ingress, queue operations, and ETag caching are
+unchanged. Poll mode does not require new GitHub App event subscriptions.
 
 ## Stored schema and bounds
 

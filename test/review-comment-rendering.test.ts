@@ -699,10 +699,16 @@ test("structural cache probes before hydration but acquires a lease before carry
     "structuralCacheRevalidations += 1",
     structuralLease,
   );
-  const structuralWrite = reviewLoop.indexOf("writeFileSync(reportPath, carried", structuralLease);
+  const structuralWrite = reviewLoop.indexOf(
+    "writeFileSync(reportPath, hostReport(carried)",
+    structuralLease,
+  );
   const contentCache = reviewLoop.indexOf("reviewContentCacheHit({");
   const structuralPreflight = reviewLoop.indexOf("cachePreflightPasses(", structuralRevalidation);
-  const contentWrite = reviewLoop.indexOf("writeFileSync(reportPath, carried", contentCache);
+  const contentWrite = reviewLoop.indexOf(
+    "writeFileSync(reportPath, hostReport(carried)",
+    contentCache,
+  );
   const contentPreflight = reviewLoop.indexOf("cachePreflightPasses(", contentCache);
   const provenancePromotions = [
     ...reviewLoop.matchAll(

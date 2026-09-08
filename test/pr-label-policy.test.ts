@@ -1138,43 +1138,58 @@ test("ClawSweeper maturity labels remove stale owned labels and preserve unrelat
   ]);
 });
 
-test("ClawSweeper updates managed maturity label metadata before applying it", () => {
-  const commands: string[][] = [];
-  const labels = createLabelSynchronization({
-    ghObservedMutationCommand: ({ args }: { args: string[] }) => {
-      commands.push(args);
-      return "";
-    },
-    hasNormalizedLabel: (current: readonly string[], label: string) =>
-      current.some((candidate) => candidate.toLowerCase() === label.toLowerCase()),
-    normalizeLabelName: (label: string) => label.toLowerCase(),
-    protectedLabels: () => [],
-    isBulkFilerExemptAuthorAssociation: () => false,
-    isBulkFilerExemptRepositoryPermission: () => false,
-    frontMatterValue: () => undefined,
-    frontMatterStringArray: () => [],
-    reportSecurityReview: () => ({ status: "not_applicable", evidence: [] }),
-    reviewSectionValue: () => "",
-    labelPolicy: {},
-  } as never);
+test("ClawSweeper updates each managed label category before applying it", () => {
+  for (const [method, field, label] of [
+    ["syncImpactLabels", "impactLabels", "impact:data-loss"],
+    ["syncMaturityLabels", "maturityLabels", "maturity:stable"],
+    ["syncMergeRiskLabels", "mergeRiskLabels", "merge-risk: 🚨 session-state"],
+  ] as const) {
+    const commands: string[][] = [];
+    const labels = createLabelSynchronization({
+      ghObservedMutationCommand: ({ args }: { args: string[] }) => {
+        commands.push(args);
+        return "";
+      },
+      hasNormalizedLabel: (current: readonly string[], expected: string) =>
+        current.some((candidate) => candidate.toLowerCase() === expected.toLowerCase()),
+      normalizeLabelName: (name: string) => name.toLowerCase(),
+      protectedLabels: () => [],
+      isBulkFilerExemptAuthorAssociation: () => false,
+      isBulkFilerExemptRepositoryPermission: () => false,
+      frontMatterValue: () => undefined,
+      frontMatterStringArray: () => [],
+      reportSecurityReview: () => ({ status: "not_applicable", evidence: [] }),
+      reviewSectionValue: () => "",
+      labelPolicy: {},
+    } as never);
 
-  labels.syncMaturityLabels({
-    number: 42,
-    labels: ["bug"],
-    maturityLabels: ["maturity:stable"],
-    dryRun: false,
-  });
+    const result = labels[method]({
+      number: 42,
+      labels: ["bug"],
+      [field]: [label],
+      dryRun: false,
+    } as never);
 
-  assert.deepEqual(commands[0], [
-    "label",
-    "create",
-    "maturity:stable",
-    "--force",
-    "--color",
-    "1F883D",
-    "--description",
-    "Broken existing behavior primarily owned by an M4/M5 scorecard surface.",
-  ]);
+    assert.deepEqual(result, { labels: ["bug", label], changed: true });
+    assert.deepEqual(
+      commands.map((args) => args.slice(0, 3)),
+      [
+        ["label", "create", label],
+        ["issue", "edit", "42"],
+      ],
+    );
+    if (method !== "syncMaturityLabels") continue;
+    assert.deepEqual(commands[0], [
+      "label",
+      "create",
+      "maturity:stable",
+      "--force",
+      "--color",
+      "1F883D",
+      "--description",
+      "Broken existing behavior primarily owned by an M4/M5 scorecard surface.",
+    ]);
+  }
 });
 
 test("ClawSweeper impact labels do not alter PR review finding priorities", () => {

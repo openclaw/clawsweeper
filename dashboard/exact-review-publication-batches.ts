@@ -1,4 +1,4 @@
-import type { DurableStorage } from "./durable-storage.ts";
+import { sqlColumnNames, type DurableStorage } from "./durable-storage.ts";
 
 export const EXACT_REVIEW_PUBLICATION_BATCH_TABLE = "exact_review_publication_batches";
 export const EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE = "exact_review_publication_batch_items";
@@ -111,13 +111,7 @@ export class ExactReviewPublicationBatchStore {
          failure_fingerprint TEXT
        ) STRICT`,
     );
-    const batchColumns = new Set(
-      Array.from(
-        this.storage.sql.exec(
-          `SELECT name FROM pragma_table_info('${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}')`,
-        ),
-      ).map((row) => String(row.name || "")),
-    );
+    const batchColumns = sqlColumnNames(this.storage, EXACT_REVIEW_PUBLICATION_BATCH_TABLE);
     if (!batchColumns.has("configured_batch_size")) {
       this.storage.sql.exec(
         `ALTER TABLE ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE}
@@ -160,12 +154,9 @@ export class ExactReviewPublicationBatchStore {
            ON DELETE CASCADE
        ) STRICT`,
     );
-    const batchItemColumns = new Set(
-      Array.from(
-        this.storage.sql.exec(
-          `SELECT name FROM pragma_table_info('${EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE}')`,
-        ),
-      ).map((row) => String(row.name || "")),
+    const batchItemColumns = sqlColumnNames(
+      this.storage,
+      EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE,
     );
     const telemetryItemColumns = [
       ["producer_run_id", "TEXT"],
@@ -350,10 +341,10 @@ export class ExactReviewPublicationBatchStore {
     });
   }
 
-  activeLeaseSnapshot(now: number) {
+  activeLeaseSnapshot(now: number, options: { reclaimExpired?: boolean } = {}) {
     return this.storage.transactionSync(() => {
-      this.reclaimExpiredSync(now);
-      return this.activeLeaseSnapshotSync();
+      if (options.reclaimExpired !== false) this.reclaimExpiredSync(now);
+      return this.activeLeaseSnapshotSync(now);
     });
   }
 
@@ -578,7 +569,7 @@ export class ExactReviewPublicationBatchStore {
       );
       const counts = new Map(rows.map((row) => [String(row.state), Number(row.count)]));
       const leased = rows.find((row) => row.state === "leased");
-      const activeLease = this.activeLeaseSnapshotSync();
+      const activeLease = this.activeLeaseSnapshotSync(now);
       const reclaimedItemsRetained = Number(
         Array.from(
           this.storage.sql.exec(
@@ -637,15 +628,17 @@ export class ExactReviewPublicationBatchStore {
     }
   }
 
-  private activeLeaseSnapshotSync() {
+  private activeLeaseSnapshotSync(now: number) {
     const rows = Array.from(
       this.storage.sql.exec(
         `SELECT membership.item_key, membership.batch_id, batch.lease_expires_at
            FROM ${EXACT_REVIEW_PUBLICATION_BATCH_ITEM_TABLE} AS membership
            JOIN ${EXACT_REVIEW_PUBLICATION_BATCH_TABLE} AS batch
              ON batch.batch_id = membership.batch_id
-          WHERE batch.state = 'leased' AND membership.terminal_outcome IS NULL
+          WHERE batch.state = 'leased' AND batch.lease_expires_at > ?
+            AND membership.terminal_outcome IS NULL
           ORDER BY membership.item_key`,
+        now,
       ),
     );
     return {

@@ -716,7 +716,8 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
   ): NodeJS.ProcessEnv {
     const env = codexEnv(options);
     for (const key of Object.keys(env)) {
-      if (key.startsWith("CLAWSWEEPER_ACTION_LEDGER_")) delete env[key];
+      if (key.startsWith("CLAWSWEEPER_ACTION_LEDGER_") || key.startsWith("EXACT_REVIEW_"))
+        delete env[key];
     }
     return env;
   }

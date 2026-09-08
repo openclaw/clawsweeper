@@ -1,8 +1,18 @@
 import assert from "node:assert/strict";
-import childProcess, { execFileSync, type SpawnSyncReturns } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import childProcess, { execFileSync, spawnSync, type SpawnSyncReturns } from "node:child_process";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 
 import {
@@ -15,6 +25,7 @@ import {
   reviewRetryActionNeedsItemEventForTest,
 } from "../dist/clawsweeper.js";
 import { tmpPrefix, withMockGh, workPlanCandidateReport } from "./helpers.ts";
+import { readAllSpooledActionEvents } from "../dist/action-ledger.js";
 
 function failedReviewReport(overrides = {}) {
   return `${workPlanCandidateReport({
@@ -136,6 +147,71 @@ function runFailedIssueRetry(
     ...failedIssueRetryArgs(fixture, extraArgs),
   ]);
 }
+
+test("failed review retry records the producer run URL before and after dispatch", () => {
+  const root = realpathSync(mkdtempSync(tmpPrefix));
+  const fixture = failedIssueRetryFixture(join(root, "records", "openclaw-openclaw"), 4350);
+  const dispatchPath = join(root, "dispatched");
+  const outputRoot = join(root, "ledger-output");
+  try {
+    for (const entry of ["dist", "config", "package.json"]) {
+      cpSync(entry, join(root, entry), { recursive: true });
+    }
+    symlinkSync(resolve("node_modules"), join(root, "node_modules"), "dir");
+    mkdirSync(outputRoot);
+    withMockGh(
+      root,
+      issueRetryGhMock(
+        fixture.issue,
+        `const fs = await import("node:fs"); fs.writeFileSync(${JSON.stringify(dispatchPath)}, "dispatched"); process.exit(0);`,
+      ),
+      () => {
+        const result = spawnSync(
+          process.execPath,
+          [join(root, "dist", "clawsweeper.js"), ...failedIssueRetryArgs(fixture)],
+          {
+            encoding: "utf8",
+            env: {
+              ...process.env,
+              CLAWSWEEPER_ACTION_LEDGER_FORCE: "1",
+              CLAWSWEEPER_ACTION_LEDGER_DISABLED: "0",
+              CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: outputRoot,
+              CLAWSWEEPER_ACTION_LEDGER_PARTITION_DATE: "2026-09-04",
+              CLAWSWEEPER_ACTION_LEDGER_INVOCATION: "retry-fixture",
+              CLAWSWEEPER_CRABFLEET_AGENT_TOKEN: "",
+              GITHUB_REPOSITORY: "openclaw/clawsweeper",
+              GITHUB_RUN_ID: "123456",
+              GITHUB_RUN_ATTEMPT: "1",
+              GITHUB_WORKFLOW: "fixture",
+              GITHUB_WORKFLOW_REF: "",
+              GITHUB_JOB: "retry",
+              GITHUB_SHA: "abc123",
+            },
+          },
+        );
+        assert.equal(result.status, 0, result.stderr);
+      },
+    );
+    assert.equal(readFileSync(dispatchPath, "utf8"), "dispatched");
+    assert.equal(
+      JSON.parse(readFileSync(fixture.reportPath, "utf8"))[0].action,
+      "dispatched_failed_review_retry",
+    );
+    const events = readAllSpooledActionEvents(root).filter(
+      (event) => event.subject.number === fixture.number,
+    );
+    assert.deepEqual(events.map((event) => event.action.status).sort(), ["dispatched", "started"]);
+    for (const event of events) {
+      assert.ok(event.evidence);
+      assert.deepEqual(
+        event.evidence.filter((entry) => entry.run_url).map((entry) => entry.run_url),
+        ["https://github.com/openclaw/clawsweeper/actions/runs/123456"],
+      );
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 async function runFailedIssueRetryAtDispatchDeadline(
   t: TestContext,

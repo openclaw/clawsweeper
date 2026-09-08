@@ -1,4 +1,5 @@
 import { requiredEnv } from "../required-env.js";
+import { decisionPublicationPolicy } from "../manual-publication-policy.js";
 import { createHmac } from "node:crypto";
 import fs from "node:fs";
 
@@ -30,6 +31,7 @@ export type DirectPublicationLifecyclePlan = {
 };
 
 export type DirectPublicationPayload = {
+  owner?: PreparedStateMutationPlan["owner"];
   canonicalTargetKey: string;
   fenceKey: string;
   revision: number;
@@ -59,6 +61,7 @@ export function prepareDirectPublicationPayload(options: {
     fenceKey: options.plan.identity.itemKey,
   };
   return {
+    ...(options.plan.owner ? { owner: options.plan.owner } : {}),
     canonicalTargetKey: publication.canonicalTargetKey,
     fenceKey: publication.fenceKey,
     revision: options.revision,
@@ -223,7 +226,12 @@ function directPublicationLifecyclePlanFromOutcome(
   if (typeof guardedOpenAction === "string" && guardedOpenAction.length > 0) {
     return { kind: "guarded_open" };
   }
-  if (sourceAction === "failed_review_shard_recovery") return { kind: "router_not_required" };
+  if (
+    (process.env.EXACT_REVIEW_DECISION &&
+      decisionPublicationPolicy(JSON.parse(process.env.EXACT_REVIEW_DECISION))) ||
+    sourceAction === "failed_review_shard_recovery"
+  )
+    return { kind: "router_not_required" };
   if (expectedBoolean("routableSyncExpected")) return { kind: "router" };
   if (expectedBoolean("deferredCloseCoverageExpected")) {
     return { kind: "router_deferred_coverage" };

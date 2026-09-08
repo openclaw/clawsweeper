@@ -333,16 +333,13 @@ function detectClusterSource() {
       ? Number(sqliteScalar("select count(*) from clusters;"))
       : 0;
   if (legacyRows > 0) return "legacy";
-  const portableRows =
+  const hasPortableSchema =
     Number(
       sqliteScalar(
         "select count(*) from sqlite_master where type = 'table' and name = 'cluster_groups';",
       ),
-    ) > 0
-      ? Number(sqliteScalar("select count(*) from cluster_groups;"))
-      : 0;
-  if (portableRows > 0) return "portable";
-  return "legacy";
+    ) > 0;
+  return hasPortableSchema ? "portable" : "legacy";
 }
 
 function numberArg(name: string, fallback: JsonValue) {

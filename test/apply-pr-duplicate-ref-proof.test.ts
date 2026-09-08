@@ -8,21 +8,16 @@ import {
   promotionGhMock,
   reportWithSyncedReviewComment,
   runApplyDecisionsForTest,
+  runOpenClawApplyDecisionsForTest,
   tmpPrefix,
+  withApplyTestWorkspace,
   withMockCodexProof,
   withMockGh,
 } from "./helpers.ts";
 
 test("apply-decisions ignores bare refs inside cross-repo markdown link labels for duplicate proof", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const proofLogPath = join(root, "proof.log");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     const synced = reportWithSyncedReviewComment(
       lowSignalCloseReport({
         number: 357,
@@ -68,20 +63,12 @@ test("apply-decisions ignores bare refs inside cross-repo markdown link labels f
             invocationLogPath: proofLogPath,
           },
           () => {
-            runApplyDecisionsForTest({
+            runOpenClawApplyDecisionsForTest({
               itemsDir,
               closedDir,
               plansDir,
               reportPath,
-              extraArgs: [
-                "--target-repo",
-                "openclaw/openclaw",
-                "--dry-run",
-                "--apply-kind",
-                "all",
-                "--processed-limit",
-                "3",
-              ],
+              dryRun: true,
             });
           },
         );
@@ -89,21 +76,12 @@ test("apply-decisions ignores bare refs inside cross-repo markdown link labels f
     );
 
     assert.equal(existsSync(proofLogPath), false);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });
 
 test("apply-decisions ignores bare refs inside same-repo markdown link labels for duplicate proof", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const proofLogPath = join(root, "proof.log");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     const synced = reportWithSyncedReviewComment(
       lowSignalCloseReport({
         number: 358,
@@ -163,19 +141,11 @@ test("apply-decisions ignores bare refs inside same-repo markdown link labels fo
             expectedPromptIncludes: "Canonical provider replacement",
           },
           () => {
-            runApplyDecisionsForTest({
+            runOpenClawApplyDecisionsForTest({
               itemsDir,
               closedDir,
               plansDir,
               reportPath,
-              extraArgs: [
-                "--target-repo",
-                "openclaw/openclaw",
-                "--apply-kind",
-                "all",
-                "--processed-limit",
-                "3",
-              ],
             });
           },
         );
@@ -191,21 +161,12 @@ test("apply-decisions ignores bare refs inside same-repo markdown link labels fo
       "skipped_pr_close_coverage_proof",
     );
     assert.match(readFileSync(proofLogPath, "utf8"), /proof/);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });
 
 test("apply-decisions keeps newline-start bare PR refs tied to their own line", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const proofLogPath = join(root, "proof.log");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     const synced = reportWithSyncedReviewComment(
       lowSignalCloseReport({
         number: 358,
@@ -259,19 +220,11 @@ test("apply-decisions keeps newline-start bare PR refs tied to their own line", 
             invocationLogPath: proofLogPath,
           },
           () => {
-            runApplyDecisionsForTest({
+            runOpenClawApplyDecisionsForTest({
               itemsDir,
               closedDir,
               plansDir,
               reportPath,
-              extraArgs: [
-                "--target-repo",
-                "openclaw/openclaw",
-                "--apply-kind",
-                "all",
-                "--processed-limit",
-                "3",
-              ],
             });
           },
         );
@@ -296,20 +249,11 @@ test("apply-decisions keeps newline-start bare PR refs tied to their own line", 
       report.find((entry) => entry.number === 358)?.reason ?? "",
       /unique fallback route behavior/,
     );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });
 
 test("apply-decisions ignores unrelated same-line bare PR refs for duplicate proof", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const synced = reportWithSyncedReviewComment(
       lowSignalCloseReport({
         number: 361,
@@ -363,20 +307,12 @@ test("apply-decisions ignores unrelated same-line bare PR refs for duplicate pro
             reason: "PR B carries forward PR A's fallback route behavior.",
           },
           () => {
-            runApplyDecisionsForTest({
+            runOpenClawApplyDecisionsForTest({
               itemsDir,
               closedDir,
               plansDir,
               reportPath,
-              extraArgs: [
-                "--target-repo",
-                "openclaw/openclaw",
-                "--dry-run",
-                "--apply-kind",
-                "all",
-                "--processed-limit",
-                "3",
-              ],
+              dryRun: true,
             });
           },
         );
@@ -396,9 +332,7 @@ test("apply-decisions ignores unrelated same-line bare PR refs for duplicate pro
       report.find((entry) => entry.action === "closed")?.reason ?? "",
       /duplicate or superseded/,
     );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });
 
 for (const scenario of [
@@ -527,14 +461,7 @@ for (const scenario of [
 }
 
 test("apply-decisions does not proof-gate duplicate PR closes with bare issue refs", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const synced = reportWithSyncedReviewComment(
       lowSignalCloseReport({
         number: 357,
@@ -568,20 +495,12 @@ test("apply-decisions does not proof-gate duplicate PR closes with bare issue re
       }),
       () => {
         withMockCodexProof(root, { type: "failure", message: "proof should not run" }, () => {
-          runApplyDecisionsForTest({
+          runOpenClawApplyDecisionsForTest({
             itemsDir,
             closedDir,
             plansDir,
             reportPath,
-            extraArgs: [
-              "--target-repo",
-              "openclaw/openclaw",
-              "--dry-run",
-              "--apply-kind",
-              "all",
-              "--processed-limit",
-              "3",
-            ],
+            dryRun: true,
           });
         });
       },
@@ -596,21 +515,12 @@ test("apply-decisions does not proof-gate duplicate PR closes with bare issue re
       true,
     );
     assert.equal(JSON.stringify(report).includes("proof should not run"), false);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });
 
 test("apply-decisions preserves full PR URL evidence over later bare refs", () => {
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    const itemsDir = join(root, "items");
-    const closedDir = join(root, "closed");
-    const plansDir = join(root, "plans");
-    const reportPath = join(root, "apply-report.json");
+  withApplyTestWorkspace(tmpPrefix, ({ root, itemsDir, closedDir, plansDir, reportPath }) => {
     const proofLogPath = join(root, "proof.log");
-    mkdirSync(itemsDir, { recursive: true });
-    mkdirSync(plansDir, { recursive: true });
     const synced = reportWithSyncedReviewComment(
       lowSignalCloseReport({
         number: 348,
@@ -654,19 +564,11 @@ test("apply-decisions preserves full PR URL evidence over later bare refs", () =
             invocationLogPath: proofLogPath,
           },
           () => {
-            runApplyDecisionsForTest({
+            runOpenClawApplyDecisionsForTest({
               itemsDir,
               closedDir,
               plansDir,
               reportPath,
-              extraArgs: [
-                "--target-repo",
-                "openclaw/openclaw",
-                "--apply-kind",
-                "all",
-                "--processed-limit",
-                "3",
-              ],
             });
           },
         );
@@ -687,7 +589,5 @@ test("apply-decisions preserves full PR URL evidence over later bare refs", () =
     );
     assert.equal(existsSync(proofLogPath), false);
     assert.equal(existsSync(join(closedDir, "348.md")), false);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  });
 });

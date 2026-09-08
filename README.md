@@ -36,8 +36,10 @@ At a high level ClawSweeper:
 - reviews open issues and pull requests on a schedule and on exact GitHub events
 - writes one durable markdown report per item in generated state
 - syncs one marker-backed public review comment per issue or PR, edited in place
+- can request relevant Web UI or Telegram proof within an eligible OpenClaw PR
+  review and evaluate results in that same turn; see [live proof](docs/live-proof.md)
 - preserves validation, rendering, media publication, and retraction for
-  historical live-proof artifacts; new reviews do not generate live proof
+  historical post-review live-proof artifacts
 - closes only unchanged, high-confidence, policy-allowed proposals
 - routes maintainer commands such as `@clawsweeper review`,
   `@clawsweeper fix`, `@clawsweeper autofix`, and `@clawsweeper automerge`
@@ -71,6 +73,12 @@ forward exact issue/PR events with `repository_dispatch` for low-latency
 one-item reviews. Each review writes
 `records/<repo-slug>/items/<number>.md` with the decision, evidence, proposed
 maintainer-facing comment, runtime metadata, and GitHub snapshot hash.
+
+Media proof preparation recognizes image/video filename extensions and GitHub
+attachment URLs, including legacy repository asset links. Attachments are fetched
+with GET and classified by the response content type; images are saved locally
+and videos are probed and converted to contact sheets. PR patches and supplemental
+body excerpts never supply host download URLs.
 
 ClawSweeper syncs one marker-backed public review comment per item and edits it
 in place instead of posting repeated comments. If a review starts before a
@@ -398,8 +406,9 @@ Review is proposal-only. It never closes items.
   dispatchers can use `shard_count` to bound parallel shards and `batch_size`
   to set the number of items assigned to each worker.
 - Each shard checks out the selected target repository at `main`.
-- Codex reviews with the internal model, high reasoning, the default service tier, and a
-  10-minute per-item timeout.
+- Codex reviews with the internal model and the configured service tier. Sweep planning,
+  reviews, assist answers, and close-coverage proofs honor `CLAWSWEEPER_CODEX_REASONING_EFFORT`
+  (default `high`), matching the repair lane. Reviews have a 10-minute per-item timeout.
 - Each item becomes a flat report under
   `records/<repo-slug>/items/<number>.md` with the decision, evidence,
   Codex `/review`-style PR findings, suggested comment, runtime metadata, and
@@ -451,7 +460,7 @@ enqueues a separate durable publication lease, and then releases its review
 lease without checking out or pushing the state repository. The queue retries
 publication independently, so a cancelled publisher does not rerun Codex. The
 source fallback uses adaptive minimum/base/maximum values of 4/24/48; production
-overrides them with 8/32/40 and enables direct
+overrides them with 8/32/32 and enables direct
 publication plus up to 8 concurrent size-8 batches. The Durable Object validates
 each artifact's workflow run, queue tuple,
 target, decision digest, file inventory, sizes, and SHA-256 hashes before a
@@ -585,6 +594,7 @@ the reviewed OpenClaw Browser CDP authentication and credential-redaction fixtur
 [`chrome.test.ts`](https://github.com/openclaw/openclaw/blob/8e03b0c62e76dc25c77045a84ab3098a111a7be3/extensions/browser/src/browser/chrome.test.ts),
 the [remote-CDP coverage](https://github.com/openclaw/openclaw/blob/58da2f5897feb6840937d8e50cf7ee6f26aa57d7/extensions/browser/src/browser/chrome.test.ts),
 the [server-context redaction test](https://github.com/openclaw/openclaw/blob/4b5987829d0f82ea44ae50f2f418ffe5ea445e7f/extensions/browser/src/browser/server-context.ensure-browser-available.waits-for-cdp-ready.test.ts),
+the [profile-status redaction fixture](https://github.com/openclaw/openclaw/blob/6419496e10404f624728f47d9ebcd874aaf60a79/extensions/browser/src/browser/server-context.list-profiles.test.ts#L424-L453),
 the [remote-CDP documentation example](https://github.com/openclaw/openclaw/blob/bf15c87d2b1223610b42775b8154b8eec60b541d/docs/tools/browser.md),
 the [credentialed-page rejection fixtures](https://github.com/openclaw/openclaw/blob/d5fb4903f1b13a4309d479f1011d995b1fc706ae/extensions/browser/src/browser-tool.test.ts),
 the [guarded CDP authentication fixtures](https://github.com/openclaw/openclaw/blob/1cf6ff3bdc08a6ac08facb1006b1d7aabc0eaff4/extensions/browser/src/browser/cdp.helpers.test.ts),
@@ -593,13 +603,17 @@ the [Crabbox fleet audit sanitization fixture](https://github.com/openclaw/crabb
 the [Mac dashboard credentialed-subframe rejection fixture](https://github.com/openclaw/openclaw/blob/9ba01d6c7b1c308e7b41eac11ba6f43e0fd0393d/apps/macos/Tests/OpenClawIPCTests/DashboardWindowSmokeTests.swift#L273),
 the [Mattermost slash-error sanitization fixtures](https://github.com/openclaw/openclaw/blob/9c0975c1c20ed635532c7aa0f510154224adee7f/extensions/mattermost/src/mattermost/slash-http.test.ts),
 the [MCP Apps sandbox-origin rejection fixture](https://github.com/openclaw/openclaw/blob/f3971bbd56e4aadea0f8b0c1434f6860f953cbbd/src/config/config-misc.test.ts),
+the [Gateway config CDP-redaction fixture](https://github.com/openclaw/openclaw/blob/4b5987829d0f82ea44ae50f2f418ffe5ea445e7f/src/gateway/server.config-patch.test.ts),
+the [mocked marketplace telemetry-redaction fixture](https://github.com/openclaw/openclaw/blob/9c5ee4676d0732e72ee9a939ae4918dc89bcaab8/src/cli/plugins-cli.marketplace-refresh.test.ts),
+the Signal URL-rejection fixtures in [client tests](https://github.com/openclaw/openclaw/blob/75d633a7b97240280ebf13e121a1960eb2ec2765/extensions/signal/src/client.test.ts#L172)
+and [container tests](https://github.com/openclaw/openclaw/blob/41dd2e04897b9bdbde971cad8c6ff21ecccd38b7/extensions/signal/src/client-container.test.ts#L1461),
 and the OpenClaw config [URL-redaction](https://github.com/openclaw/openclaw/blob/5fe22a7d88919f260e7999fc775733feff3cb1fa/src/config/redact-snapshot.test.ts)
 and [restoration fixtures](https://github.com/openclaw/openclaw/blob/5fe22a7d88919f260e7999fc775733feff3cb1fa/src/config/redact-snapshot.restore.test.ts)
 after a complete scan. Static host policy associates each
 exact detector-matched URI SHA-256 with only its approved source paths and exact
 scanner `Raw` digest, including when `Raw` omits a path retained by `RawV2`. The
 matched value must be a literal in a host-staged Git blob from mode `100644`.
-The three guarded-CDP/MCP entries, Crabbox fixture, Mac dashboard entry, MCP Apps entry, and four Mattermost entries also bind complete
+The three guarded-CDP/MCP entries, Crabbox fixture, Mac dashboard entry, MCP Apps entry, marketplace telemetry entry, Gateway config entry, two Signal entries, and four Mattermost entries also bind complete
 reviewed source lines, including surrounding query text that TruffleHog's URI
 detector does not match. Changes to those lines or additional literal occurrences
 refuse classification. These witnesses do not expand native query detection.
@@ -611,19 +625,35 @@ original source. Repeated literals remain eligible unless an entry is bound to
 an approved complete-line digest; those entries require exactly one occurrence
 in the staged blob. Finding order and duplicate records do not change the exact
 value, path, and mode checks.
-Findings must use `PLAIN` or `HTML`, except the Mac dashboard and MCP Apps entries permit only
+Findings must use `PLAIN` or `HTML`, except the Mac dashboard, MCP Apps, marketplace telemetry, and Gateway config entries permit only
 their observed `PLAIN` decoder and the two guarded-CDP fixtures also permit `BASE64`.
 The pinned Base64 decoder preserves the rest of a chunk after
 decoding another token, so an unchanged literal can acquire that decoder label
 and win cross-decoder deduplication. Those entries still require the literal in
 its exact original source line; encoded-only content remains blocking.
+
+The OpenClaw [logging redaction fixtures](https://github.com/openclaw/openclaw/blob/fe0367a07a23660ea35007ac69bdb8f54309fc21/src/logging/redact.test.ts)
+and the reviewed Crabbox PostgreSQL operations example use a separate flat
+attribution table without changing the legacy URI policy above. Each row binds
+the exact detector ID and name, observed native decoder, `Raw`, `RawV2`, and
+complete source-line SHA-256 digests, path, and mode. The logging rows permit
+only their observed `PLAIN` or `ESCAPED_UNICODE` variants; the Crabbox
+documentation row permits only its observed `PLAIN` or `HTML` variants. These
+exact attribution rows are role-neutral; every logical staged reference must
+independently match the row and have a committed `base` or `head` role. URI
+findings require one literal `RawV2` witness and derived host, username, and
+password fields. MongoDB and Postgres findings bind the scanner-reported line
+and their exact native metadata shape. Any emitted subset and order may qualify;
+duplicate exact findings, unknown variants, lossy decoder buckets, or an
+unqualified deduplicated blob reference refuse admission.
+
 One source path may contain multiple independently reviewed fixtures; each
 digest/path/mode tuple must match exactly, so source membership alone never
 qualifies a finding.
-Deduplicated blobs retain every scanned logical endpoint's path and Git mode,
-including mode-only transitions and shared-path aliases. Every captured reference
-must qualify under the same digest's exact path and mode `100644` policy before
-any source is eligible for classification or an audit notice.
+Deduplicated blobs retain every scanned logical endpoint's role, path, and Git
+mode, including mode-only transitions and shared-path aliases. Every captured
+reference must qualify under the same exact attribution policy before any source
+is eligible for classification or an audit notice.
 The policy does not trust checkout ignore rules, domain patterns, fixture words,
 test names, or unchanged-line inference; no nearby fixture is implicitly approved.
 When review evidence quotes an exact reviewed synthetic URI, prompt preparation
@@ -642,9 +672,10 @@ upgrades require requalification. See `src/agent-input-scan-fixtures.ts`.
 After successful cleanup and final source fences, each accepted fixture/source
 pair emits a host-side structured stderr notice with `event`, `fixtureSha256`,
 `source`, `detector`, and `findings` entries containing `blob`, `decoder`, and
-`occurrences`. Each finding retains its reported `scannerLine` and a `literalLine`
-for the first exact literal in the staged blob. This bounded witness establishes
-literal presence; it does not identify which occurrence produced a decoded hit.
+`occurrences`; role-bound findings also include `role`. Each finding retains its
+reported `scannerLine` and a `literalLine` for the first exact literal in the
+staged blob. This bounded witness establishes literal presence; it does not
+identify which occurrence produced a decoded hit.
 Counts are per source: a shared blob can appear in both source
 notices and those counts must not be summed across sources. A refused or drifted
 scan emits no success notice. Raw values and verification diagnostics never
@@ -692,7 +723,24 @@ publication, and queue lifecycle.
   Codex exits.
 - The retired hosted commit-review lane no longer mints target credentials;
   `pnpm local-review` operates on the local branch range without GitHub writes.
-- CI makes the target checkout read-only for reviews.
+- CI keeps the target checkout read-only and gives Codex issue/PR reviewers a managed
+  network proxy restricted to the hosts in
+  [the review permission profile](.github/actions/setup-codex/review-permissions.toml):
+  GitHub, npm, Node, MDN, and OpenClaw documentation. Limited mode inspects HTTPS
+  and permits only GET/HEAD/OPTIONS; other hosts are blocked. When supplied by the
+  review job, Codex tools receive the target repository's read-only GitHub App token
+  only as `GH_TOKEN` (contents, issues, and pull requests read; expires within the
+  hour). Use authenticated GitHub reads to avoid public rate limits; never put
+  the token in a URL, log it, or send it to a non-GitHub host. Without a token,
+  use public endpoints and pre-fetched context. Read downloaded media through
+  the local proof manifest. A blocked request is not evidence against a PR.
+  Setup must prove allowed HTTPS, denied unlisted HTTPS, and denied checkout
+  writes before reviews can publish. Offline local reviews retain their existing
+  network restriction. The `review-network-smoke` PR CI job proves the same
+  enforcement on Ubuntu without secrets. Capability text follows the active
+  runner: OpenClaw uses gateway network execution without the Codex proxy or
+  filesystem sandbox, strips GitHub tokens through its final child environment
+  allowlist, and must keep the checkout read-only by instruction.
 - Reviews fail if Codex leaves tracked or untracked changes behind.
 - Snapshot changes block apply unless the only change is the bot’s own review
   comment.
@@ -730,7 +778,7 @@ source ~/.profile
 corepack enable
 pnpm install
 pnpm run build
-pnpm run plan -- --target-repo openclaw/openclaw --batch-size 5 --shard-count 89 --max-pages 250 --codex-model internal --codex-reasoning-effort high
+pnpm run plan -- --target-repo openclaw/openclaw --batch-size 5 --shard-count 22 --max-pages 250 --codex-model internal --codex-reasoning-effort high
 pnpm run review -- --target-repo openclaw/openclaw --target-dir ../openclaw --batch-size 5 --max-pages 250 --artifact-dir artifacts/reviews --codex-model internal --codex-reasoning-effort high --codex-timeout-ms 600000
 pnpm run apply-artifacts -- --target-repo openclaw/openclaw --artifact-dir artifacts/reviews --skip-dashboard
 pnpm run audit -- --target-repo openclaw/openclaw --max-pages 250 --sample-limit 25 --update-dashboard
@@ -848,13 +896,13 @@ default, subject to the selected repository profile; pass `target_repo`,
 `apply_kind=issue`, or `apply_kind=pull_request` to narrow a manual run.
 
 Scheduled runs cover the configured product profiles. `openclaw/openclaw` runs
-normal backfill every 5 minutes with up to 89 review shards when the system is
-quiet; `openclaw/clawhub` runs on offset review/apply/audit crons so its reports
+normal backfill hourly; scheduled hot intake and normal backfill share an
+eight-worker cap in the durable review queue. `openclaw/clawhub` runs on offset review/apply/audit crons so its reports
 live under `records/openclaw-clawhub/` without colliding with default repo
 records. `openclaw/clawsweeper` has a scheduled read-only audit row and is
 available for manual and event self-review smoke tests. Broad hot-intake sweeps
-cap scheduled fan-out at 44 one-item shards per run when quiet; manual normal
-backfill can use up to 89 shards, while exact event reviews still use one shard.
+use the queue's scheduled admission budget; manual background matrices have at
+most eight slots when quiet, while exact event reviews still use one shard.
 Normal review and hot intake are
 background lanes, so they shrink automatically while repair or exact-item work
 is active. Throughput defaults live in
@@ -863,23 +911,25 @@ is active. Throughput defaults live in
 ### Worker Budget
 
 ClawSweeper has one main capacity knob:
-`config/automation-limits.json` -> `workers.max`. The current value is `128`.
+`config/automation-limits.json` -> `workers.max`. The current value is `32`.
 This is a Codex worker budget, not a GitHub Actions runner limit. Deterministic
 exact-review publishers, comment routers, and lease reconcilers are
-control-plane workflows and do not consume these 128 slots.
-Lane limits are derived from that number: normal review defaults to 89 shards
-for manual/backstop and scheduled runs, hot intake up to 44 shards, and
+control-plane workflows and do not consume these 32 slots.
+Lane limits are derived from that number: manual normal review defaults to 22
+requested shards and hot intake to 11; the interactive and expansion reserves
+reduce both to at most eight slots when quiet. Scheduled work has a separate
+eight-slot admission cap and a 60-review/hour target with a six-item burst. The
 existing repair/issue implementation lanes use 40% of `workers.max`, currently
-51 live workers. Imported gitcrawl cluster repair allows 2 live workers by default.
+12 live workers. Imported gitcrawl cluster repair allows 2 live workers by default.
 Exact-item review, repair, and issue implementation are priority work; normal
 review and hot intake are background work and automatically
 yield when priority work is active. Exact-item runs use a durable Worker queue
-that coalesces item deliveries, leases at most 128 concurrent reviews, and admits
-up to 120 active exact reviews per target repository. Other lanes retain the
-checked-in 128-worker scheduling model. A separate 194-slot exact-review
-Actions budget supports the production maximum of 40 publisher slots, the
-enforced 16-slot control-plane reserve, and 10 additional slots of current
-configuration headroom even when all 128 review leases are active.
+that coalesces item deliveries, leases at most 32 concurrent reviews, and admits
+up to 24 active exact reviews per target repository. Other lanes retain the
+checked-in 32-worker scheduling model. A separate 194-slot exact-review
+Actions budget supports the production maximum of 32 legacy publisher slots, the
+enforced 16-slot control-plane reserve, and additional Actions headroom without
+raising the Codex review ceiling.
 Use `workers.max` first when turning total Codex usage up or down; use
 `lanes.repair.cluster_max_live_runs` to tune the imported legacy cluster-repair
 lane separately, and individual environment overrides only for temporary

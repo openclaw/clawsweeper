@@ -1,4 +1,8 @@
 import { createHmac } from "node:crypto";
+import {
+  ExactReviewBatchQueueTransportError,
+  type TransportFailureReason,
+} from "./exact-review-queue-transport-error.js";
 
 import type {
   ExactReviewBatchCompletion,
@@ -62,6 +66,30 @@ export type ExactReviewBatchFetch = {
   superseded: number;
 };
 
+type ExactReviewPublicationAcknowledgementState =
+  | "not_required"
+  | "pending"
+  | "observed"
+  | `skipped_${"locked" | "missing_comment"}`
+  | "unavailable";
+type ExactReviewPublicationAcknowledgementUnavailableReason =
+  | "projection_missing"
+  | "projection_not_command"
+  | "marker_mismatch"
+  | "comment_mismatch"
+  | "acknowledgement_not_required"
+  | "lifecycle_requeued"
+  | "terminal_missing"
+  | "routed_receipts_incomplete";
+type ExactReviewPublicationSuccessorFenceState =
+  | "verified"
+  | "missing"
+  | "ambiguous"
+  | "admission_missing"
+  | "admission_command_mismatch"
+  | "admission_marker_mismatch"
+  | "admission_comment_mismatch";
+
 export type ExactReviewPublicationReconcileSample = {
   itemKey: string;
   queueRevision: number;
@@ -75,6 +103,11 @@ export type ExactReviewPublicationReconcileSample = {
   supersededByRevision: number | null;
   lineageClaimGeneration: number | null;
   retainedItemKey: string | null;
+  commandContext: boolean;
+  acknowledgementState: ExactReviewPublicationAcknowledgementState;
+  acknowledgementUnavailableReason: ExactReviewPublicationAcknowledgementUnavailableReason | null;
+  successorFenceState: ExactReviewPublicationSuccessorFenceState | null;
+  supersedeSafe: boolean;
   producerRunId?: string;
   producerRunAttempt?: number;
 };
@@ -168,17 +201,10 @@ const RECONCILIATION_REASONS = new Set<ExactReviewPublicationReconcileSample["re
   "legacy_terminal",
   "legacy_state_batch_terminal",
 ]);
-
-type TransportFailureReason = "network_error" | "timeout" | `HTTP_${number}`;
-
-export class ExactReviewBatchQueueTransportError extends Error {
-  constructor(
-    readonly reason: TransportFailureReason,
-    message: string,
-  ) {
-    super(message);
-  }
-}
+const ACKNOWLEDGEMENT_UNAVAILABLE_REASON =
+  /^(projection_missing|projection_not_command|marker_mismatch|comment_mismatch|acknowledgement_not_required|lifecycle_requeued|terminal_missing|routed_receipts_incomplete)$/;
+const SUCCESSOR_FENCE_STATE =
+  /^(verified|missing|ambiguous|admission_missing|admission_command_mismatch|admission_marker_mismatch|admission_comment_mismatch)$/;
 
 export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
   private readonly baseUrl: string;
@@ -303,8 +329,9 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
       apply: input.apply,
       max_items: input.maxItems,
     });
+    if (response.apply !== input.apply) throw new Error("Invalid batch queue reconciliation apply");
     return {
-      apply: response.apply === true,
+      apply: response.apply,
       scanned: nonNegativeInteger(response.scanned, "scanned"),
       legacyTerminalScanned: nonNegativeInteger(
         response.legacy_terminal_scanned ?? 0,
@@ -484,6 +511,7 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
       try {
         response = await this.request(`${this.baseUrl}${path}`, {
           method: "POST",
+          redirect: "error",
           headers: {
             "content-type": "application/json",
             "x-clawsweeper-exact-review-signature": signature,
@@ -638,6 +666,49 @@ function parseReconciliationSample(value: unknown): ExactReviewPublicationReconc
   if ((producerRunId === undefined) !== (producerRunAttempt === undefined)) {
     throw new Error("Invalid batch queue sample producer identity");
   }
+  const ack = stringValue(sample.acknowledgement_state, "sample acknowledgement_state");
+  if (!/^(not_required|pending|observed|skipped_(locked|missing_comment)|unavailable)$/.test(ack)) {
+    throw new Error("Invalid batch queue sample acknowledgement_state");
+  }
+  const hasAckUnavailableReason = Object.hasOwn(sample, "acknowledgement_unavailable_reason");
+  const ackUnavailableReason = !hasAckUnavailableReason
+    ? null
+    : sample.acknowledgement_unavailable_reason === null
+      ? null
+      : stringValue(
+          sample.acknowledgement_unavailable_reason,
+          "sample acknowledgement_unavailable_reason",
+        );
+  if (
+    ackUnavailableReason !== null &&
+    !ACKNOWLEDGEMENT_UNAVAILABLE_REASON.test(ackUnavailableReason)
+  ) {
+    throw new Error("Invalid batch queue sample acknowledgement_unavailable_reason");
+  }
+  if (!Object.hasOwn(sample, "successor_fence_state")) {
+    throw new Error("Invalid batch queue sample successor_fence_state");
+  }
+  const successorFenceState =
+    sample.successor_fence_state === null
+      ? null
+      : stringValue(sample.successor_fence_state, "sample successor_fence_state");
+  if (successorFenceState !== null && !SUCCESSOR_FENCE_STATE.test(successorFenceState)) {
+    throw new Error("Invalid batch queue sample successor_fence_state");
+  }
+  const commandContext = sample.command_context;
+  const staleCandidate = reason === "stale_revision" || reason === "duplicate_lineage";
+  const successorFenceApplicable =
+    reason === "stale_revision" && ackUnavailableReason === "terminal_missing";
+  if (
+    typeof commandContext !== "boolean" ||
+    typeof sample.supersede_safe !== "boolean" ||
+    commandContext === (ack === "not_required") ||
+    (hasAckUnavailableReason && (ack === "unavailable") !== (ackUnavailableReason !== null)) ||
+    successorFenceApplicable === (successorFenceState === null) ||
+    sample.supersede_safe !== (staleCandidate && !["pending", "unavailable"].includes(ack))
+  ) {
+    throw new Error("Invalid batch queue sample supersede safety");
+  }
   return {
     itemKey: stringValue(sample.item_key, "sample item_key"),
     queueRevision: positiveInteger(sample.queue_revision, "sample queue_revision"),
@@ -656,6 +727,12 @@ function parseReconciliationSample(value: unknown): ExactReviewPublicationReconc
       "sample lineage_claim_generation",
     ),
     retainedItemKey: nullableStringValue(sample.retained_item_key, "sample retained_item_key"),
+    commandContext,
+    acknowledgementState: ack as ExactReviewPublicationAcknowledgementState,
+    acknowledgementUnavailableReason:
+      ackUnavailableReason as ExactReviewPublicationAcknowledgementUnavailableReason | null,
+    successorFenceState: successorFenceState as ExactReviewPublicationSuccessorFenceState | null,
+    supersedeSafe: sample.supersede_safe,
     ...(producerRunId === undefined
       ? {}
       : { producerRunId, producerRunAttempt: producerRunAttempt! }),
