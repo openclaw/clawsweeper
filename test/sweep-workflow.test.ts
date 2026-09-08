@@ -140,6 +140,7 @@ test("queue completion tolerates only terminal-reason deploy skew", async (t) =>
         const child = spawn("bash", ["-c", producers[0].run], {
           env: {
             ...process.env,
+            SOURCE_CHECKOUT_OUTCOME: "success",
             QUEUE_URL: `http://127.0.0.1:${address.port}`,
             QUEUE_LEASE_ID: "synthetic-lease",
             PROTOCOL_VERSION: "2",
@@ -7554,4 +7555,27 @@ test("pre-checkout helper bootstrap fails on download errors, empty files, and m
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("claimed-lease cleanup survives skipped and failed checkouts and uses source after success", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  for (const [jobName, stepName] of [
+    ["event-review-apply", "Complete exact-review queue lease"],
+    ["event-review-publish", "Complete durable exact review publication"],
+    ["event-review-terminal-finalization", "Requeue unobserved terminal acknowledgement"],
+  ]) {
+    const steps = workflow.jobs[jobName].steps;
+    const checkout = steps.find((step: any) => step.id === "source-checkout");
+    assert.ok(checkout.uses.startsWith("actions/checkout@"));
+    const cleanup = steps.find((step: any) => step.name === stepName);
+    assert.equal(cleanup.env.SOURCE_CHECKOUT_OUTCOME, "${{ steps.source-checkout.outcome }}");
+    assert.match(cleanup.if, /always\(\)/);
+  }
+  const proof = JSON.parse(
+    execFileSync(process.execPath, ["scripts/e2e/control-plane-checkout-cleanup.mjs"], {
+      encoding: "utf8",
+    }),
+  );
+  assert.equal(proof.ok, true);
+  assert.equal(proof.cases.length, 9);
 });

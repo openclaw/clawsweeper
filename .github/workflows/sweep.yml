@@ -680,6 +680,7 @@ jobs:
           exit 1
 
       - uses: actions/checkout@v7
+        id: source-checkout
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' }}
         with:
           filter: blob:none
@@ -2261,6 +2262,7 @@ jobs:
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && always() && (steps.direct-exact-review-publication.outputs.accepted != 'true' || steps.finalize-direct-exact-review-lifecycle.outcome == 'success') }}
         continue-on-error: true
         env:
+          SOURCE_CHECKOUT_OUTCOME: ${{ steps.source-checkout.outcome }}
           PRIMARY_OUTCOME: ${{ steps.exact-review-generation-result.outputs.outcome || 'failure' }}
           CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
           ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
@@ -2289,7 +2291,11 @@ jobs:
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          source scripts/control-plane-curl.sh
+          if [[ "$SOURCE_CHECKOUT_OUTCOME" == "success" ]]; then
+            source scripts/control-plane-curl.sh
+          else
+            source "$RUNNER_TEMP/control-plane-curl.sh"
+          fi
           test -n "$QUEUE_LEASE_ID"
           queue_url="${QUEUE_URL%/}"
           payload="$(node -e '
@@ -2866,6 +2872,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v7
+        id: source-checkout
         if: ${{ steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' }}
         with:
           # The artifact validator binds the producer SHA. The publisher itself
@@ -3629,6 +3636,7 @@ jobs:
         if: ${{ steps.publication-context.outputs.claimed == 'true' && always() }}
         continue-on-error: true
         env:
+          SOURCE_CHECKOUT_OUTCOME: ${{ steps.source-checkout.outcome }}
           CLAIM_GENERATION: ${{ steps.publication-context.outputs.publisher_claim_generation }}
           ITEM_KEY: ${{ steps.publication-context.outputs.publisher_item_key }}
           LEASE_REVISION: ${{ steps.publication-context.outputs.publisher_lease_revision }}
@@ -3654,7 +3662,11 @@ jobs:
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          source scripts/control-plane-curl.sh
+          if [[ "$SOURCE_CHECKOUT_OUTCOME" == "success" ]]; then
+            source scripts/control-plane-curl.sh
+          else
+            source "$RUNNER_TEMP/control-plane-curl.sh"
+          fi
           queue_url="${QUEUE_URL%/}"
           payload="$(node -e '
             const leaseRevision = Number(process.env.LEASE_REVISION);
@@ -3891,6 +3903,7 @@ jobs:
           NODE
 
       - uses: actions/checkout@v7
+        id: source-checkout
         if: ${{ steps.finalization-context.outputs.claimed == 'true' }}
         with:
           # Fetch blobs during the retryable fetch instead of lazily fetching
@@ -4139,6 +4152,7 @@ jobs:
       - name: Requeue unobserved terminal acknowledgement
         if: ${{ always() && steps.finalization-context.outputs.claimed == 'true' && steps.observe-verified-terminal-acknowledgement.outcome != 'success' && !((steps.update-final-command-status.outputs.locked_conversation == 'true' || steps.update-final-command-status.outputs.missing_status_comment == 'true') && steps.complete-locked-terminal-acknowledgement.outcome == 'success') }}
         env:
+          SOURCE_CHECKOUT_OUTCOME: ${{ steps.source-checkout.outcome }}
           ITEM_KEY: ${{ steps.finalization-context.outputs.item_key }}
           QUEUE_LEASE_ID: ${{ github.event.client_payload.queue_lease_id }}
           LEASE_REVISION: ${{ steps.finalization-context.outputs.lease_revision }}
@@ -4147,7 +4161,11 @@ jobs:
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
-          source scripts/control-plane-curl.sh
+          if [[ "$SOURCE_CHECKOUT_OUTCOME" == "success" ]]; then
+            source scripts/control-plane-curl.sh
+          else
+            source "$RUNNER_TEMP/control-plane-curl.sh"
+          fi
           payload="$(node -e '
             const leaseRevision = Number(process.env.LEASE_REVISION);
             const claimGeneration = Number(process.env.CLAIM_GENERATION);

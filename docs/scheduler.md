@@ -89,6 +89,9 @@ Before a job's source checkout, the workflow downloads this single helper from
 with three curl retries into `RUNNER_TEMP`. The bootstrap fails if the download
 fails, is empty, or does not define `control_plane_curl`. These steps source the
 temporary copy; after the full checkout, steps source the repository copy.
+Claimed-lease completion and terminal retry steps select the repository copy
+only when the source checkout succeeded. They use the validated temporary copy
+when checkout failed or was skipped, including direct-lifecycle recovery.
 The bootstrap never changes workspace Git configuration: an early sparse
 checkout can otherwise leave later checkouts sparse and omit local actions.
 
