@@ -892,17 +892,34 @@ dispatches another `sweep.yml` run with the same lane inputs. The 5-minute
 normal schedule is still the safety net if continuation dispatch fails or GitHub
 delays it.
 
-If review shards fail, the recovery job reads failed shard artifacts or failed
-job names, extracts their planned item numbers from the original matrix, and
-requeues those exact item numbers once with a recovery marker in the additional
-prompt.
+If review shards fail, failed-shard artifacts or failed job names identify the
+shards to inspect, not the items to retry. Recovery reads each complete
+producer artifact through the canonical ledger importer, binding the exact
+repository, source SHA, workflow, job, run, attempt, and matrix shard. Only a
+recognized owner-recorded retryable **item terminal** with no unresolved
+mutation is admitted once through the existing signed exact-review queue.
+Batch failures and mutation receipts are not retry authority. The whole item
+chain is inspected, including cleanup after an earlier terminal.
 
-Review shard jobs are allowed to finish as recovered failures instead of making
-the whole sweep appear broken when the recovery job can requeue exact item
-numbers. Each shard uploads a small metrics artifact with item numbers, target
-repo, start/end timestamps, and review-step outcome. Publish includes artifact
-and metric counts in the status detail so setup noise, missing artifacts, and
-real review failures can be separated while monitoring.
+Completed/cached and nonretryable items are never requeued. Missing, corrupt,
+incomplete, ambiguous, uncertain, unselected, and unstarted evidence stays held.
+Automatic unstarted-tail recovery is a named follow-up: the current ledger
+does not record that membership, so the original matrix cannot authorize it.
+Each item has a visible disposition; queue acknowledgements distinguish queued,
+deduplicated, shed, disabled, and failed admission. None means review or
+publication succeeded.
+
+Before uploading a failed shard, the same projection stages only completed
+reports whose native terminal digest, repository/item/source identity, complete
+review status, and verified checkout provenance match. The existing publisher
+consumes those reports through its normal guards and required receipts.
+Recovery does not depend on the optional ledger-upload job.
+
+The original failed review-step outcome and failed-shard metrics remain visible;
+the existing job-level `continue-on-error` policy is unchanged and must not be
+read as all items recovered. Metrics retain item numbers, target repository,
+timestamps, and review-step outcome. Publish includes artifact and metric
+counts so setup noise, missing artifacts, and actual failures remain distinct.
 
 Each item report also records durable review cost proxies in front matter and a
 `Review Telemetry` section: prompt characters, static prompt characters, GitHub

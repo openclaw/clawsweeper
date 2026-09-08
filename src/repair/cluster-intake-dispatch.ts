@@ -10,7 +10,7 @@ import {
   dispatchClaimDecision,
   hasSuccessfulDispatchExecutionJob,
 } from "./comment-router-utils.js";
-import { ghJson } from "./github-cli.js";
+import { ghJson, githubCommandTimeoutMs } from "./github-cli.js";
 import { liveWorkerCapacity } from "./live-worker-capacity.js";
 import { workerLimit } from "../limits.js";
 import {
@@ -37,15 +37,6 @@ export type ClusterDispatchObserver = (
   entry: ClusterLedgerEntry,
   env: NodeJS.ProcessEnv,
 ) => ClusterDispatchObservation;
-
-export function clusterIntakeSpawnTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
-  const configured = Number(
-    env.CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS ?? env.CLAWSWEEPER_NETWORK_COMMAND_TIMEOUT_MS,
-  );
-  return Number.isFinite(configured) && configured > 0
-    ? Math.max(30_000, Math.floor(configured))
-    : 120_000;
-}
 
 export type ClusterCapacity = (options: Record<string, unknown>) => {
   active: number;
@@ -308,12 +299,13 @@ function dispatchClusterLedger(
       encoding: "utf8",
       env,
       stdio: "pipe",
-      timeout: clusterIntakeSpawnTimeoutMs(env),
+      timeout: githubCommandTimeoutMs(env),
+      killSignal: "SIGKILL",
       ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
     });
     if (result.status !== 0) {
       throw new Error(
-        `cluster intake dispatch failed for ${ledger.target_repo} cluster ${job.cluster_id}: ${result.stderr || result.stdout || result.status}`,
+        `cluster intake dispatch failed for ${ledger.target_repo} cluster ${job.cluster_id}: ${result.error?.message || result.stderr || result.stdout || result.status}`,
       );
     }
   }

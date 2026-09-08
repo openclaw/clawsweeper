@@ -23,6 +23,24 @@ export const mediaFixtureUrls = {
   loopback: ["http:", "", "127.0.0.1:9", "private.png"].join("/"),
   existingPrefix: ["https:", "", "example.invalid", "existing-prefix.png"].join("/"),
   prefix: ["https:", "", "example.invalid", "prefix.png"].join("/"),
+  attachment: [
+    "https:",
+    "",
+    "github.com",
+    "user-attachments",
+    "assets",
+    "00000000-0000-0000-0000-000000000001",
+  ].join("/"),
+  legacyAttachment: [
+    "https:",
+    "",
+    "github.com",
+    "fixture-owner",
+    "fixture-repo",
+    "assets",
+    "123",
+    "00000000-0000-0000-0000-000000000002",
+  ].join("/"),
 };
 
 export function longProofBody(): string {
@@ -94,6 +112,7 @@ export function hydratePrimaryBody(
     pullBody?: string;
     closingBodies?: string[];
     comments?: unknown[];
+    pullReviewComments?: unknown[];
     pullFiles?: unknown[];
   } = {},
 ) {
@@ -120,7 +139,7 @@ export function hydratePrimaryBody(
     base: { ref: "main", sha: "c".repeat(40) },
     changed_files: options.pullFiles?.length ?? 0,
     commits: 0,
-    review_comments: 0,
+    review_comments: options.pullReviewComments?.length ?? 0,
   };
   const window = (items: unknown[]) => ({
     items,
@@ -146,7 +165,9 @@ export function hydratePrimaryBody(
         ? (options.comments ?? [])
         : path.endsWith(`/pulls/${target.number}/files`)
           ? (options.pullFiles ?? [])
-          : [];
+          : path.endsWith(`/pulls/${target.number}/comments`)
+            ? (options.pullReviewComments ?? [])
+            : [];
       return window(items) as {
         items: T[];
         total: number;

@@ -13,6 +13,9 @@ inputs:
   codex-home:
     description: CODEX_HOME directory. Defaults to an isolated per-run ClawSweeper directory.
     default: ""
+  review-network:
+    description: Enable the credential-free, allowlisted read-only reviewer profile.
+    default: "false"
   cache-suffix:
     description: Extra cache key suffix for target-tool downloads.
     default: ""
@@ -88,7 +91,7 @@ runs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
         fi
 
-        # Exercise the same read-only, network-isolated backend used by reviews.
+        # Keep the baseline backend probe for non-review Codex consumers.
         # A sandbox regression must stop the job before it can publish a verdict.
         codex sandbox --permission-profile :read-only -C "$GITHUB_WORKSPACE" -- /bin/true
 
@@ -181,3 +184,13 @@ runs:
       run: |
         echo "Unsupported setup-codex auth-mode: ${{ inputs['auth-mode'] }}" >&2
         exit 1
+
+    - name: Configure review network profile
+      if: ${{ inputs['review-network'] == 'true' }}
+      shell: bash
+      run: node "${{ github.action_path }}/configure-review-network.mjs"
+
+    - name: Verify review sandbox capabilities
+      if: ${{ inputs['review-network'] == 'true' }}
+      shell: bash
+      run: bash "${{ github.action_path }}/smoke-review-network.sh"

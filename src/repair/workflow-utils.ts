@@ -19,6 +19,7 @@ import {
   isSelectableApplyCloseAction,
 } from "../apply-close-actions.js";
 import { repositoryProfileFor, slugForRepo } from "../repository-profiles.js";
+import { recoverReviewShard } from "../review-recovery.js";
 
 type ApplyAction = {
   action: string;
@@ -180,6 +181,31 @@ async function runCli(): Promise<void> {
     case "artifact-item-numbers":
       process.stdout.write(artifactItemNumbers(requiredString("artifact-dir")).join(","));
       break;
+    case "review-recovery": {
+      const result = recoverReviewShard({
+        ledgerDir: path.resolve(requiredString("ledger-dir")),
+        targetRepo: requiredString("target-repo"),
+        shard: nonNegativeIntegerArg("shard"),
+        shardCount: positiveIntegerArg("shard-count"),
+        itemNumbers: csvItems(requiredString("item-numbers")).map(Number),
+        expectedProducer: {
+          repository: requiredString("producer-repository"),
+          sha: requiredString("producer-sha"),
+          workflow: "sweep.yml",
+          job: "review",
+          runId: requiredString("run-id"),
+          runAttempt: positiveIntegerArg("run-attempt"),
+        },
+        ...(optionalString("reports-dir") || optionalString("stage-dir")
+          ? {
+              reportsDir: path.resolve(requiredString("reports-dir")),
+              stageDir: path.resolve(requiredString("stage-dir")),
+            }
+          : {}),
+      });
+      console.log(JSON.stringify(result));
+      break;
+    }
     case "count-csv":
       console.log(csvItems(optionalString("items")).length);
       break;

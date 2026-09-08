@@ -50,6 +50,7 @@ interface ExecOptions {
   additionalWritableRoots: string[];
   sandbox: "read-only" | "workspace-write" | "danger-full-access";
   networkAccess: boolean;
+  permissionsProfile?: string;
   loginMethod?: "api" | "chatgpt";
   model?: string;
   effort?: string;
@@ -76,6 +77,10 @@ interface RpcMessage {
   };
 }
 
+// Matches ACTION_SESSION_FETCH_TIMEOUT_MS in src/repair/action-session.ts so a hung
+// CrabFleet host cannot stall the Codex turn or accumulate heartbeat requests.
+const WORK_STATE_FETCH_TIMEOUT_MS = 15_000;
+
 const optionsPath = process.argv[2] ?? "";
 const options = JSON.parse(readFileSync(optionsPath, "utf8")) as WorkerOptions;
 // The child shares this UID: owner-only permissions do not hide a capability
@@ -97,6 +102,9 @@ const child = spawnCodex(
   [
     ...(execOptions.loginMethod
       ? ["-c", `forced_login_method=${JSON.stringify(execOptions.loginMethod)}`]
+      : []),
+    ...(execOptions.permissionsProfile
+      ? ["-c", `default_permissions=${JSON.stringify(execOptions.permissionsProfile)}`]
       : []),
     "app-server",
     "--listen",
@@ -203,12 +211,16 @@ try {
     input: [{ type: "text", text: prompt }],
     cwd: execOptions.cwd,
     approvalPolicy: "never",
-    sandboxPolicy: sandboxPolicy(
-      execOptions.sandbox,
-      execOptions.cwd,
-      execOptions.networkAccess,
-      execOptions.additionalWritableRoots,
-    ),
+    ...(execOptions.permissionsProfile
+      ? {}
+      : {
+          sandboxPolicy: sandboxPolicy(
+            execOptions.sandbox,
+            execOptions.cwd,
+            execOptions.networkAccess,
+            execOptions.additionalWritableRoots,
+          ),
+        }),
     ...(execOptions.model ? { model: execOptions.model } : {}),
     ...(execOptions.effort ? { effort: execOptions.effort } : {}),
     ...(execOptions.serviceTier ? { serviceTier: execOptions.serviceTier } : {}),
@@ -230,7 +242,7 @@ async function startThread(): Promise<Record<string, unknown>> {
   return request("thread/start", {
     cwd: execOptions.cwd,
     approvalPolicy: "never",
-    sandbox: execOptions.sandbox,
+    ...(execOptions.permissionsProfile ? {} : { sandbox: execOptions.sandbox }),
     ephemeral: Boolean(options.appServer.reviewProof),
     ...(options.appServer.reviewProof
       ? { dynamicTools: reviewProofTools(options.appServer.reviewProof) }
@@ -249,7 +261,7 @@ async function resumeThread(previousThreadId: string): Promise<Record<string, un
       threadId: previousThreadId,
       cwd: execOptions.cwd,
       approvalPolicy: "never",
-      sandbox: execOptions.sandbox,
+      ...(execOptions.permissionsProfile ? {} : { sandbox: execOptions.sandbox }),
       personality: "pragmatic",
       ...(execOptions.model ? { model: execOptions.model } : {}),
       ...(execOptions.serviceTier ? { serviceTier: execOptions.serviceTier } : {}),
@@ -472,6 +484,7 @@ async function updateWorkState(state: string, phase: string, summary: string): P
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
       },
+      signal: AbortSignal.timeout(WORK_STATE_FETCH_TIMEOUT_MS),
       body: JSON.stringify({
         state,
         phase,
@@ -529,6 +542,7 @@ function parseExecOptions(args: string[], fallbackCwd: string): ExecOptions {
   const additionalWritableRoots: string[] = [];
   let sandbox: ExecOptions["sandbox"] = "read-only";
   let networkAccess = false;
+  let permissionsProfile: string | undefined;
   let loginMethod: ExecOptions["loginMethod"];
   let model: string | undefined;
   let effort: string | undefined;
@@ -546,6 +560,7 @@ function parseExecOptions(args: string[], fallbackCwd: string): ExecOptions {
     if (arg === "--output-last-message" && value) outputLastMessagePath = value;
     if (arg === "-c" && value) {
       const parsed = parseConfig(value);
+      if (parsed.key === "default_permissions") permissionsProfile = parsed.value;
       if (parsed.key === "model_reasoning_effort") effort = parsed.value;
       if (parsed.key === "service_tier") serviceTier = parsed.value;
       if (
@@ -564,6 +579,7 @@ function parseExecOptions(args: string[], fallbackCwd: string): ExecOptions {
     additionalWritableRoots,
     sandbox,
     networkAccess,
+    ...(permissionsProfile ? { permissionsProfile } : {}),
     ...(loginMethod ? { loginMethod } : {}),
     ...(model ? { model } : {}),
     ...(effort ? { effort } : {}),

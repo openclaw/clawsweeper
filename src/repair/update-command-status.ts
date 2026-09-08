@@ -5,6 +5,7 @@ import { ghJsonWithRetry, ghPagedWithRetry, ghText } from "./github-cli.js";
 import { isLockedConversationCommentError } from "../github-retry.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import { repoRoot } from "./paths.js";
+import { terminalCommandStatusFence } from "./terminal-command-status-fence.js";
 import { DEFAULT_TRUSTED_BOTS } from "./config.js";
 import {
   commaSet,
@@ -46,6 +47,7 @@ type Options = {
   requireMutation: boolean;
   lockedConversationTerminalSkip: boolean;
   verifyTerminalStatusReceipt: boolean;
+  requireTerminalFinalizationFence: boolean;
 };
 
 type CommandStatusUpdateOutcome =
@@ -73,6 +75,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 
 async function updateCommandStatus(options: Options): Promise<CommandStatusUpdateResult> {
   const lifecycle = commandStatusLifecycle(options);
+  const fenceAddress = { marker: options.marker, statusCommentId: options.statusCommentId };
   if (!options.marker && !options.statusCommentId) {
     recordCommandProgress(lifecycle, {
       state: options.state,
@@ -89,8 +92,21 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
   try {
     comment = await findCommandStatusComment(options, lifecycle);
   } catch (error) {
+    if (
+      options.requireTerminalFinalizationFence &&
+      !(await terminalCommandStatusFence(fenceAddress))
+    )
+      return { outcome: "skipped" };
     if (!recordTerminalLockedConversationSkip(options, lifecycle, error)) throw error;
     return { outcome: "locked_conversation" };
+  }
+  // Lookup can await multiple GitHub pages. Re-fence only after those reads.
+  if (
+    options.requireTerminalFinalizationFence &&
+    !(await terminalCommandStatusFence(fenceAddress))
+  ) {
+    recordCommandProgress(lifecycle, { state: "superseded", status: "skipped", mutation: false });
+    return { outcome: "skipped" };
   }
   if (!comment?.id || typeof comment.body !== "string") {
     console.warn(`No command status comment found for ${options.repo}#${options.itemNumber}.`);
@@ -150,19 +166,24 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
       },
       component: "command_status",
       operation: () =>
-        ghText([
-          "api",
-          `repos/${options.repo}/issues/comments/${comment.id}`,
-          "--method",
-          "PATCH",
-          "--input",
-          payload,
-        ]),
+        ghText(
+          [
+            "api",
+            `repos/${options.repo}/issues/comments/${comment.id}`,
+            "--method",
+            "PATCH",
+            "--input",
+            payload,
+          ],
+          options.requireTerminalFinalizationFence ? { timeoutMs: 20_000 } : {},
+        ),
     });
   } catch (error) {
     if (!recordTerminalLockedConversationSkip(options, lifecycle, error)) throw error;
     return { outcome: "locked_conversation" };
   }
+  if (options.requireTerminalFinalizationFence)
+    await terminalCommandStatusFence(fenceAddress, true);
   recordCommandProgress(lifecycle, {
     state: options.state,
     status: "completed",
@@ -306,7 +327,9 @@ async function findCommandStatusComment(
       ) {
         options.statusCommentId = Number(match.id);
       }
-      pruneDuplicateCommandAckComments({ comments, keep: match, options, lifecycle });
+      if (!options.requireTerminalFinalizationFence) {
+        pruneDuplicateCommandAckComments({ comments, keep: match, options, lifecycle });
+      }
       return match;
     }
     if (exact && !statusMarkerDiffersFromRequested(exact.body, options.marker)) return exact;
@@ -594,6 +617,10 @@ export function parseOptions(argv: string[]): Options {
     lockedConversationTerminalSkip:
       (args["locked-conversation-terminal-skip"] ??
         process.env.COMMAND_STATUS_LOCKED_CONVERSATION_TERMINAL_SKIP ??
+        "") === "true",
+    requireTerminalFinalizationFence:
+      (args["require-terminal-finalization-fence"] ??
+        process.env.COMMAND_STATUS_REQUIRE_TERMINAL_FENCE ??
         "") === "true",
     verifyTerminalStatusReceipt:
       (args["verify-terminal-status-receipt"] ??

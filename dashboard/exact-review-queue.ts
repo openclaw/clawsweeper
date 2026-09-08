@@ -108,6 +108,7 @@ import {
 } from "./record-snapshots.ts";
 import {
   commandAcknowledgementState,
+  parkedCommandClosureCancelled,
   EXACT_REVIEW_ACKNOWLEDGEMENT_ATTEMPT_LEASE_MS,
   ExactReviewLifecycleProjectionStore,
   lifecycleState,
@@ -294,6 +295,19 @@ type ExactReviewTerminalFinalization = {
    * acknowledgement runs. Retain the original immutable lifecycle tuple.
    */
   projection?: ExactReviewLifecycleProjectionIdentity;
+  /** Exhausted producer retained until its own acknowledgement is settled. */
+  parkedCommand?: {
+    itemKey: string;
+    revision: number;
+    decisionFingerprint: string;
+    coordinationDeferral?: {
+      revision: number;
+      until: number;
+      nextAttemptAt: number;
+      backoffReason?: ExactReviewBackoffReason;
+    };
+    target: { nodeId: string; headSha: string | null; closedAt: string };
+  };
 };
 type PublicationSuccessorWitness = {
   targetKey: string;
@@ -1273,7 +1287,17 @@ export class ExactReviewQueue {
         item.reviewProofRequests = records;
         dispatch = true;
       }
-      await this.writeState(state);
+      this.storage.transactionSync(() => {
+        // Persist only participation, atomically with the accepted request. The
+        // immutable lease revision, not a newer pending head, owns this fact.
+        this.lifecycleProjectionStore.recordInlineProofRequestSync({
+          canonicalTargetKey: `${decision.targetRepo}#${decision.itemNumber}`,
+          fenceKey: owner.itemKey,
+          revision: owner.leaseRevision,
+          observedAt: now,
+        });
+        this.writeStateSync(state);
+      });
       return json({
         ok: true,
         dispatch,
@@ -2414,7 +2438,7 @@ export class ExactReviewQueue {
               ? { sourceAuthorityWatermark: exactReviewSourceAuthorityWatermark(decision)! }
               : {}),
           };
-          this.recordLifecycleAdmission(state.items[key], decision, now);
+          this.recordLifecycleAdmission(state.items[key], decision, now, undefined, true);
           ingressAdmitted = true;
         }
         if (
@@ -2433,7 +2457,13 @@ export class ExactReviewQueue {
           }
         }
         if (ingressAdmitted && state.items[key]) {
-          this.recordLifecycleAdmission(state.items[key], state.items[key].decision, now);
+          this.recordLifecycleAdmission(
+            state.items[key],
+            state.items[key].decision,
+            now,
+            undefined,
+            true,
+          );
         }
         if (incomingPublicationRevision && state.items[key]) {
           this.updatePublicationSuccessorWitnesses(
@@ -5498,6 +5528,7 @@ export class ExactReviewQueue {
             key: parkedCandidate.key,
             revision: parkedCandidate.revision,
             decision: parkedCandidate.decision,
+            updatedAt: parkedCandidate.updatedAt,
             queueState: "parked" as const,
           },
         ]
@@ -5541,6 +5572,18 @@ export class ExactReviewQueue {
         }
         try {
           const token = await targetTokenFor(candidate.decision.targetRepo);
+          if (candidate.queueState === "parked" && exactReviewQueueHasCommandContext(candidate)) {
+            const first = await exactReviewClosedCommandTarget(token, candidate.decision, this.env);
+            const second = first
+              ? await exactReviewClosedCommandTarget(token, candidate.decision, this.env)
+              : null;
+            return {
+              ...candidate,
+              state: { state: "unavailable" as const },
+              closedCommandTarget:
+                first && second && stableJson(first) === stableJson(second) ? second : null,
+            };
+          }
           return {
             ...candidate,
             state: await exactReviewTargetItemState(token, candidate.decision, this.env),
@@ -5635,6 +5678,13 @@ export class ExactReviewQueue {
           ? dispatchTargetAdmissions.get(item.decision.targetRepo)
           : initialTargetAdmissions.get(item.decision.targetRepo);
       if (targetAdmission?.outcome === "terminal") {
+        if (item.state === "parked" && exactReviewQueueHasCommandContext(item)) {
+          // Losing hosted/public eligibility is not an acknowledgement receipt
+          // or an explicit skip. Preserve the exhausted obligation without
+          // target credentials, finalizer dispatch, or a retry-budget reset.
+          item.parkedTerminalCheckedAt = checkedAt;
+          continue;
+        }
         this.terminalizeHostedTargetQueueItem(checkedState, item, checkedAt);
         terminalCompleted += 1;
         continue;
@@ -5650,6 +5700,33 @@ export class ExactReviewQueue {
           item.backoffReason = "admission_retry";
         }
         item.updatedAt = checkedAt;
+        continue;
+      }
+      if (item.state === "parked" && exactReviewQueueHasCommandContext(item)) {
+        // Operator deletion/recovery remains forbidden. Only a closed-target
+        // observation may schedule a separate, fenced acknowledgement driver.
+        if (
+          candidate.queueState !== "parked" ||
+          !("updatedAt" in candidate) ||
+          candidate.updatedAt !== item.updatedAt ||
+          stableJson(candidate.decision) !== stableJson(item.decision)
+        )
+          continue;
+        item.parkedTerminalCheckedAt = checkedAt;
+        if (
+          targetAdmission?.outcome === "public" &&
+          "closedCommandTarget" in candidate &&
+          candidate.closedCommandTarget
+        ) {
+          this.planParkedCommandFinalization(
+            checkedState,
+            item,
+            candidate.closedCommandTarget,
+            checkedAt,
+          );
+        }
+        // Open and unavailable exhausted commands must never reach the stale
+        // head recovery below: that would silently reset their retry budget.
         continue;
       }
       if (candidate.state.state === "terminal" && !exactReviewQueueHasCommandContext(item)) {
@@ -5761,6 +5838,10 @@ export class ExactReviewQueue {
           ? dispatchTargetAdmissions.get(item.decision.targetRepo)
           : initialTargetAdmissions.get(item.decision.targetRepo);
       if (targetAdmission?.outcome === "terminal") {
+        if (item.terminalFinalization?.parkedCommand) {
+          deferIneligibleParkedCommandFinalizer(checkedState, item, checkedAt);
+          continue;
+        }
         this.terminalizeHostedTargetQueueItem(checkedState, item, checkedAt);
         terminalPublications += 1;
         continue;
@@ -5832,6 +5913,30 @@ export class ExactReviewQueue {
         }
         const livePublication = livePublicationStateByCandidate.get(candidate.key);
         return !livePublication || livePublication.state.state !== "terminal" ? [item] : [];
+      }
+      const statusWriter = exactReviewParkedCommandWriteOwner(checkedState, item.key, checkedAt);
+      if (statusWriter) {
+        const until = Math.min(
+          Number(statusWriter.leaseExpiresAt),
+          Number(statusWriter.leaseHeartbeatAt) + EXACT_REVIEW_ACKNOWLEDGEMENT_ATTEMPT_LEASE_MS,
+        );
+        const parked = statusWriter.terminalFinalization!.parkedCommand!;
+        if (until > item.nextAttemptAt) {
+          const prior = parked.coordinationDeferral;
+          const retainsOwnDelay =
+            prior?.revision === item.revision &&
+            prior.until === item.nextAttemptAt &&
+            item.backoffReason === "coordination_retry";
+          parked.coordinationDeferral = {
+            revision: item.revision,
+            until,
+            nextAttemptAt: retainsOwnDelay ? prior.nextAttemptAt : item.nextAttemptAt,
+            backoffReason: retainsOwnDelay ? prior.backoffReason : item.backoffReason,
+          };
+          item.nextAttemptAt = until;
+          item.backoffReason = "coordination_retry";
+        }
+        return [];
       }
       const live = liveStateByCandidate.get(candidate.key);
       // A command acknowledgement needs the workflow's terminal completion
@@ -8953,6 +9058,7 @@ export class ExactReviewQueue {
     decision: ExactReviewDecision,
     now: number,
     revision = item.revision,
+    trackInlineProof = false,
   ) {
     const sourceDecision = decision.publication?.producerDecision ?? decision;
     const canonicalTargetKey = `${sourceDecision.targetRepo}#${sourceDecision.itemNumber}`;
@@ -8992,6 +9098,7 @@ export class ExactReviewQueue {
       return existing;
     }
     return this.lifecycleProjectionStore.recordAdmissionSync({
+      ...(trackInlineProof && !decision.publication ? { inlineProofTracked: true as const } : {}),
       canonicalTargetKey,
       fenceKey: item.key,
       revision,
@@ -9069,7 +9176,7 @@ export class ExactReviewQueue {
     item.decision = decision;
     item.updatedAt = now;
     state.items[item.key] = item;
-    this.recordLifecycleAdmission(item, decision, now);
+    this.recordLifecycleAdmission(item, decision, now, undefined, true);
     return { item, terminal };
   }
 
@@ -9786,6 +9893,58 @@ export class ExactReviewQueue {
     }
   }
 
+  private planParkedCommandFinalization(
+    state: ExactReviewQueueState,
+    item: ExactReviewQueueItem,
+    target: NonNullable<ExactReviewTerminalFinalization["parkedCommand"]>["target"],
+    now: number,
+  ) {
+    let projection = this.recordLifecycleAdmission(item, item.decision, now);
+    if (parkedCommandClosureCancelled(projection) && !projection.acknowledgement.observed) {
+      // A new stable closure observation may settle the same exhausted command,
+      // but never revive the cancelled projection or authorize its old receipts.
+      // Advance only lifecycle ownership; keep the stopped producer and budgets.
+      item.revision = this.nextExactReviewCommandRevisionSync(item.key, item.revision + 1);
+      item.updatedAt = now;
+      projection = this.recordLifecycleAdmission(item, item.decision, now);
+    }
+    // Do not repurpose an unrelated terminal fact or completed receipt.
+    if (
+      projection.terminalDisposition &&
+      !["requeue", "target_closed"].includes(projection.terminalDisposition.kind)
+    )
+      return;
+    const identity = {
+      canonicalTargetKey: projection.canonicalTargetKey,
+      fenceKey: projection.fenceKey,
+      revision: projection.revision,
+    };
+    const driverKey = exactReviewTerminalFinalizationDriverKey(identity);
+    if (state.items[driverKey]) return;
+    if (
+      !this.ensureLifecycleTerminalFinalizationDriver({
+        state,
+        projection,
+        terminalDisposition: "target_closed",
+        now,
+      })
+    )
+      return;
+    const driver = state.items[driverKey]!;
+    driver.terminalFinalization = {
+      ...driver.terminalFinalization!,
+      statusState: "Failed",
+      statusDetail:
+        "The review exhausted its retry budget and the item is now closed. No review or repair was restarted.",
+      parkedCommand: {
+        itemKey: item.key,
+        revision: item.revision,
+        decisionFingerprint: stableJson(item.decision),
+        target,
+      },
+    };
+  }
+
   private ensureLifecycleTerminalFinalizationDriver({
     state,
     projection,
@@ -9814,6 +9973,7 @@ export class ExactReviewQueue {
       !disposition ||
       disposition === "requeue" ||
       !projection.admission.commandOriginated ||
+      parkedCommandClosureCancelled(projection) ||
       !acknowledgementPending
     ) {
       return false;
@@ -9992,6 +10152,36 @@ export class ExactReviewQueue {
     }
   }
 
+  private cancelParkedCommandFinalization(
+    state: ExactReviewQueueState,
+    item: ExactReviewQueueItem,
+    now: number,
+  ) {
+    const identity = exactReviewTerminalFinalizationProjection(item, item.revision);
+    const projection = this.storage.transactionSync(() => {
+      const existing = this.lifecycleProjectionStore.read(
+        identity.canonicalTargetKey,
+        identity.fenceKey,
+        identity.revision,
+      );
+      // Retain already-observed history, but revoke an unobserved plan before
+      // deleting its fenced driver. A later webhook cannot recreate an
+      // unfenced driver from the old target_closed fact or accept its receipt.
+      const cancelled =
+        existing && !existing.acknowledgement.observed
+          ? this.lifecycleProjectionStore.cancelParkedCommandClosureSync({
+              ...identity,
+              observedAt: now,
+            }).projection
+          : null;
+      releaseParkedCommandWrite(state, item, now);
+      delete state.items[item.key];
+      this.writeStateSync(state);
+      return cancelled;
+    });
+    if (projection) this.syncBayLifecycle(projection);
+  }
+
   private async beginTerminalFinalizationAcknowledgement(value: unknown) {
     const tuple = exactReviewTerminalFinalizationTuple(value);
     const body = objectValue(value);
@@ -10012,14 +10202,127 @@ export class ExactReviewQueue {
     ) {
       return json({ error: "invalid_terminal_finalization_acknowledgement" }, 400);
     }
-    const now = Date.now();
-    const state = this.readStateSync();
-    const item = state.items[tuple.itemKey];
+    let now = Date.now();
+    let state = this.readStateSync();
+    let item = state.items[tuple.itemKey];
     if (!exactReviewTerminalFinalizationLeaseActive(item, tuple, now, this.env)) {
       return json({ error: "lease_not_active" }, 409);
     }
-    const finalization = item.terminalFinalization!;
+    const verifyOnly = body.verify_only === true;
+    const releaseWrite = body.release_status_write === true;
+    const attemptId = String(body.attempt_id || "");
+    if (
+      (body.verify_only !== undefined && typeof body.verify_only !== "boolean") ||
+      (body.release_status_write !== undefined && typeof body.release_status_write !== "boolean") ||
+      ((verifyOnly || releaseWrite) && !/^ack:[1-9][0-9]*$/.test(attemptId)) ||
+      (verifyOnly && releaseWrite)
+    )
+      return json({ error: "invalid_status_write_fence" }, 400);
     const identity = exactReviewTerminalFinalizationProjection(item, tuple.leaseRevision);
+    if (releaseWrite) {
+      const projection = this.lifecycleProjectionStore.read(
+        identity.canonicalTargetKey,
+        identity.fenceKey,
+        identity.revision,
+      );
+      if (
+        !projection?.acknowledgement.attempts.some(
+          (attempt) =>
+            attempt.attemptId === attemptId &&
+            attempt.statusMarker === statusMarker &&
+            attempt.statusCommentId === statusCommentId,
+        )
+      )
+        return json({ error: "acknowledgement_not_active" }, 409);
+      releaseParkedCommandWrite(state, item, now);
+      item.leasePhase = "review";
+      item.leaseHeartbeatAt = now;
+      await this.writeState(state);
+      await this.scheduleNext(state, now);
+      return json({ ok: true, released: true });
+    }
+    const parked = item.terminalFinalization?.parkedCommand;
+    if (parked) {
+      const producer = exactReviewParkedCommandProducer(state, item);
+      if (!producer) {
+        this.cancelParkedCommandFinalization(state, item, now);
+        await this.scheduleNext(state, now);
+        return json({ error: "parked_command_superseded" }, 409);
+      }
+      let target;
+      let targetAdmission: HostedTargetAdmission;
+      try {
+        const metadataToken = exactReviewHostedTargetMetadataTokenSource(this.env);
+        targetAdmission = await this.hostedTargetAdmission(
+          producer.decision.targetRepo,
+          metadataToken,
+        );
+        if (targetAdmission.outcome === "public") {
+          const token = await exactReviewTargetReadToken(this.env, producer.decision.targetRepo);
+          target = await exactReviewClosedCommandTarget(token, producer.decision, this.env);
+          // A visibility change during the item read cannot authorize a PATCH.
+          targetAdmission = await this.hostedTargetAdmission(
+            producer.decision.targetRepo,
+            metadataToken,
+          );
+        }
+      } catch {
+        return json({ error: "parked_command_target_unavailable" }, 503);
+      }
+      const currentState = this.readStateSync();
+      const current = currentState.items[tuple.itemKey];
+      if (
+        !exactReviewTerminalFinalizationLeaseActive(current, tuple, Date.now(), this.env) ||
+        !exactReviewParkedCommandProducer(currentState, current) ||
+        stableJson(current.terminalFinalization?.parkedCommand) !== stableJson(parked)
+      ) {
+        return json({ error: "lease_not_active" }, 409);
+      }
+      state = currentState;
+      item = current;
+      now = Date.now();
+      if (targetAdmission.outcome !== "public") {
+        deferIneligibleParkedCommandFinalizer(state, item, now);
+        await this.writeState(state);
+        await this.scheduleNext(state, now);
+        return targetAdmission.outcome === "terminal"
+          ? json({ error: "lease_not_active" }, 409)
+          : json({ error: "parked_command_target_unavailable" }, 503);
+      }
+      if (!target || stableJson(target) !== stableJson(parked.target)) {
+        // A reopened/changed target cancels this plan, not its exhausted producer.
+        this.cancelParkedCommandFinalization(currentState, current, Date.now());
+        await this.scheduleNext(currentState, Date.now());
+        return json({ error: "parked_command_target_changed" }, 409);
+      }
+    }
+    const finalization = item.terminalFinalization!;
+    if (verifyOnly) {
+      const projection = this.lifecycleProjectionStore.read(
+        identity.canonicalTargetKey,
+        identity.fenceKey,
+        identity.revision,
+      );
+      const active =
+        projection &&
+        !projection.acknowledgement.observed &&
+        projection.acknowledgement.attempts.some(
+          (attempt) =>
+            attempt.attemptId === attemptId &&
+            attempt.statusMarker === statusMarker &&
+            attempt.statusCommentId === statusCommentId &&
+            attempt.failedAt === undefined &&
+            attempt.expiredAt === undefined &&
+            attempt.terminalSkip === undefined &&
+            now - attempt.attemptedAt < EXACT_REVIEW_ACKNOWLEDGEMENT_ATTEMPT_LEASE_MS,
+        );
+      if (!active) return json({ error: "acknowledgement_not_active" }, 409);
+      item.leasePhase = "status";
+      item.leaseHeartbeatAt = now;
+      await this.writeState(state);
+      await this.scheduleNext(state, now);
+      return json({ ok: true, allowed: true, write_fenced: true });
+    }
     try {
       const terminal = this.lifecycleProjectionStore.recordTerminalDisposition({
         ...identity,
@@ -10033,6 +10336,11 @@ export class ExactReviewQueue {
         statusCommentId,
         observedAt: now,
       });
+      if (parked && result.allowed) {
+        item.leasePhase = "status";
+        item.leaseHeartbeatAt = now;
+        await this.writeState(state);
+      }
       await this.scheduleNext(this.readSchedulingStateSync(), now);
       return json({
         ok: true,
@@ -10067,11 +10375,13 @@ export class ExactReviewQueue {
       identity.revision,
     );
     if (projection?.acknowledgement.observed) {
+      removeAcknowledgedParkedCommandProducer(state, item);
       delete state.items[item.key];
       await this.writeState(state);
       await this.scheduleNext(state, now);
       return json({ ok: true, completed: true });
     }
+    releaseParkedCommandWrite(state, item, now);
     clearExactReviewLease(item);
     item.state = "pending";
     item.nextAttemptAt = now + EXACT_REVIEW_ACKNOWLEDGEMENT_ATTEMPT_LEASE_MS;
@@ -10125,6 +10435,7 @@ export class ExactReviewQueue {
       if (!result.skipped) {
         return json({ error: "acknowledgement_not_active" }, 409);
       }
+      removeAcknowledgedParkedCommandProducer(state, item);
       delete state.items[item.key];
       await this.writeState(state);
       await this.scheduleNext(state, now);
@@ -10242,7 +10553,10 @@ export class ExactReviewQueue {
           );
         });
         if (drivers.length) {
-          for (const driver of drivers) delete state.items[driver.key];
+          for (const driver of drivers) {
+            removeAcknowledgedParkedCommandProducer(state, driver);
+            delete state.items[driver.key];
+          }
           await this.writeState(state);
           await this.scheduleNext(state, recordedAt);
         }
@@ -10279,7 +10593,11 @@ export class ExactReviewQueue {
         exactReviewTerminalFinalizationProjection(item, item.revision).canonicalTargetKey ===
           canonicalTargetKey
       ) {
-        delete state.items[item.key];
+        if (item.terminalFinalization.parkedCommand) {
+          deferIneligibleParkedCommandFinalizer(state, item, Date.now());
+        } else {
+          delete state.items[item.key];
+        }
         removed = true;
       }
     }
@@ -16915,6 +17233,133 @@ async function exactReviewTargetDefaultBranch(
     throw new Error("target repository response missing valid default branch");
   }
   return targetBranch;
+}
+
+function exactReviewParkedCommandWriteOwner(
+  state: ExactReviewQueueState,
+  key: string,
+  now: number,
+) {
+  let owner: ExactReviewQueueItem | undefined;
+  let latest = now;
+  for (const driver of Object.values(state.items)) {
+    if (
+      driver.state !== "leased" ||
+      driver.leasePhase !== "status" ||
+      driver.terminalFinalization?.parkedCommand?.itemKey !== key
+    )
+      continue;
+    const until = Math.min(
+      Number(driver.leaseExpiresAt || 0),
+      Number(driver.leaseHeartbeatAt || 0) + EXACT_REVIEW_ACKNOWLEDGEMENT_ATTEMPT_LEASE_MS,
+    );
+    if (until > latest) {
+      owner = driver;
+      latest = until;
+    }
+  }
+  return owner;
+}
+
+function releaseParkedCommandWrite(
+  state: ExactReviewQueueState,
+  driver: ExactReviewQueueItem,
+  now: number,
+) {
+  const parked = driver.terminalFinalization?.parkedCommand;
+  const deferred = parked?.coordinationDeferral;
+  if (!parked || !deferred) return;
+  const successor = state.items[parked.itemKey];
+  if (
+    successor?.state === "pending" &&
+    successor.revision === deferred.revision &&
+    successor.backoffReason === "coordination_retry" &&
+    successor.nextAttemptAt === deferred.until
+  ) {
+    const admissionAt = exactReviewQueueEnqueueAttemptAt(state, now);
+    successor.nextAttemptAt = Math.max(now, deferred.nextAttemptAt, admissionAt);
+    successor.backoffReason =
+      admissionAt > now && admissionAt >= deferred.nextAttemptAt
+        ? "dispatcher_backoff"
+        : deferred.nextAttemptAt > now
+          ? deferred.backoffReason
+          : undefined;
+    successor.updatedAt = now;
+  }
+  delete parked.coordinationDeferral;
+}
+
+function deferIneligibleParkedCommandFinalizer(
+  state: ExactReviewQueueState,
+  item: ExactReviewQueueItem,
+  now: number,
+) {
+  // Revocation forbids dispatch/write credentials, not the durable obligation.
+  // Keep the original fenced plan so public eligibility can safely recover.
+  releaseParkedCommandWrite(state, item, now);
+  clearExactReviewLease(item);
+  item.state = "pending";
+  item.nextAttemptAt = now + EXACT_REVIEW_ACKNOWLEDGEMENT_ATTEMPT_LEASE_MS;
+  item.backoffReason = "admission_retry";
+  item.updatedAt = now;
+}
+
+function exactReviewParkedCommandProducer(
+  state: ExactReviewQueueState,
+  driver: ExactReviewQueueItem | undefined,
+) {
+  const expected = driver?.terminalFinalization?.parkedCommand;
+  if (!expected) return undefined;
+  const item = state.items[expected.itemKey];
+  return item &&
+    exactReviewParkedOperatorEligible(item) &&
+    exactReviewQueueHasCommandContext(item) &&
+    item.revision === expected.revision &&
+    stableJson(item.decision) === expected.decisionFingerprint
+    ? item
+    : undefined;
+}
+
+function removeAcknowledgedParkedCommandProducer(
+  state: ExactReviewQueueState,
+  driver: ExactReviewQueueItem,
+) {
+  releaseParkedCommandWrite(state, driver, Date.now());
+  const producer = exactReviewParkedCommandProducer(state, driver);
+  if (producer) delete state.items[producer.key];
+}
+
+// Unlike ordinary missing-target pruning, command cleanup requires an explicit
+// closed item and stable GitHub identity. 404/410/partial responses are not proof.
+async function exactReviewClosedCommandTarget(
+  token: string,
+  decision: ExactReviewDecision,
+  env = {},
+) {
+  const pull = decision.itemKind === "pull_request";
+  const item = objectValue(
+    await githubTokenJson({
+      env,
+      token,
+      path: `/repos/${decision.targetRepo}/${pull ? "pulls" : "issues"}/${decision.itemNumber}`,
+      method: "GET",
+      body: undefined,
+      errorLabel: "parked command terminal target",
+    }),
+  );
+  if (item.state !== "closed") return null;
+  const nodeId = String(item.node_id || "");
+  const closedAt = String(item.closed_at || "");
+  const headSha = pull ? String(objectValue(item.head).sha || "").toLowerCase() : null;
+  if (
+    Number(item.number) !== decision.itemNumber ||
+    !nodeId ||
+    nodeId.length > 200 ||
+    !Number.isFinite(Date.parse(closedAt)) ||
+    (pull && !/^[0-9a-f]{40}$/.test(headSha!))
+  )
+    return null;
+  return { nodeId, headSha, closedAt };
 }
 
 async function exactReviewTargetItemState(

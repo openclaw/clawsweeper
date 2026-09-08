@@ -74,6 +74,12 @@ one-item reviews. Each review writes
 `records/<repo-slug>/items/<number>.md` with the decision, evidence, proposed
 maintainer-facing comment, runtime metadata, and GitHub snapshot hash.
 
+Media proof preparation recognizes image/video filename extensions and GitHub
+attachment URLs, including legacy repository asset links. Attachments are fetched
+with GET and classified by the response content type; images are saved locally
+and videos are probed and converted to contact sheets. PR patches and supplemental
+body excerpts never supply host download URLs.
+
 ClawSweeper syncs one marker-backed public review comment per item and edits it
 in place instead of posting repeated comments. If a review starts before a
 completed comment exists, it first posts a short status placeholder, then
@@ -717,7 +723,24 @@ publication, and queue lifecycle.
   Codex exits.
 - The retired hosted commit-review lane no longer mints target credentials;
   `pnpm local-review` operates on the local branch range without GitHub writes.
-- CI makes the target checkout read-only for reviews.
+- CI keeps the target checkout read-only and gives Codex issue/PR reviewers a managed
+  network proxy restricted to the hosts in
+  [the review permission profile](.github/actions/setup-codex/review-permissions.toml):
+  GitHub, npm, Node, MDN, and OpenClaw documentation. Limited mode inspects HTTPS
+  and permits only GET/HEAD/OPTIONS; other hosts are blocked. When supplied by the
+  review job, Codex tools receive the target repository's read-only GitHub App token
+  only as `GH_TOKEN` (contents, issues, and pull requests read; expires within the
+  hour). Use authenticated GitHub reads to avoid public rate limits; never put
+  the token in a URL, log it, or send it to a non-GitHub host. Without a token,
+  use public endpoints and pre-fetched context. Read downloaded media through
+  the local proof manifest. A blocked request is not evidence against a PR.
+  Setup must prove allowed HTTPS, denied unlisted HTTPS, and denied checkout
+  writes before reviews can publish. Offline local reviews retain their existing
+  network restriction. The `review-network-smoke` PR CI job proves the same
+  enforcement on Ubuntu without secrets. Capability text follows the active
+  runner: OpenClaw uses gateway network execution without the Codex proxy or
+  filesystem sandbox, strips GitHub tokens through its final child environment
+  allowlist, and must keep the checkout read-only by instruction.
 - Reviews fail if Codex leaves tracked or untracked changes behind.
 - Snapshot changes block apply unless the only change is the bot’s own review
   comment.

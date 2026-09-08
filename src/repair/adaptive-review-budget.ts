@@ -1,3 +1,4 @@
+import { isGitHubMediaAttachmentUrl } from "../clawsweeper-media-proof.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 
 const DEFAULT_ADAPTIVE_CODEX_TIMEOUT_MS = 600_000;
@@ -68,7 +69,9 @@ function videoProofUrlsFromText(text: string) {
       continue;
     }
     const pathname = parsed.pathname.toLowerCase();
-    const isVideo = [...VIDEO_PROOF_EXTENSIONS].some((extension) => pathname.endsWith(extension));
+    const isVideo =
+      isGitHubMediaAttachmentUrl(parsed) ||
+      [...VIDEO_PROOF_EXTENSIONS].some((extension) => pathname.endsWith(extension));
     if (!isVideo || seen.has(parsed.href)) continue;
     seen.add(parsed.href);
     urls.push(parsed.href);

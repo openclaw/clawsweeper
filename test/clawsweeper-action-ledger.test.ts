@@ -998,8 +998,8 @@ test("sweep publishes complete immutable shards for every review and apply produ
   );
 
   for (const name of [
-    "Import immutable review action events",
-    "Publish immutable review action ledger",
+    "Import immutable action events",
+    "Publish immutable action ledger",
     "Publish review artifact action ledger",
     "Publish selected review comment action ledger",
     "Publish failed-review retry action ledger",
@@ -1021,7 +1021,7 @@ test("sweep publishes complete immutable shards for every review and apply produ
   assert.doesNotMatch(workflow, /durable_event_path|CLAWSWEEPER_STATE_APPEND_ENABLED/);
   assert.equal((workflow.match(/publish-action-event-paths/g) ?? []).length, 6);
   for (const name of [
-    "Publish immutable review action ledger",
+    "Publish immutable action ledger",
     "Publish review artifact action ledger",
     "Publish selected review comment action ledger",
     "Publish failed-review retry action ledger",

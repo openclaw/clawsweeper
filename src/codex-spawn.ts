@@ -75,6 +75,7 @@ export function terminateCodexProcessTree(
   }
 
   signalPosixProcessGroup(child, signal);
+  if (signal === "SIGKILL") return undefined;
   const timer = setTimeout(() => signalPosixProcessGroup(child, "SIGKILL"), forceAfterMs);
   timer.unref();
   return timer;

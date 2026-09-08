@@ -6352,6 +6352,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
         lane: "pending",
         state: "pending",
         current_revision: true,
+        inline_proof: "unknown",
         updated_at: new Date(generatedAt).toISOString(),
       },
       {
@@ -6360,6 +6361,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
         lane: "completed",
         state: "completed",
         current_revision: true,
+        inline_proof: "unknown",
         updated_at: new Date(generatedAt).toISOString(),
       },
     ],
@@ -7332,7 +7334,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.match(drawerElement("queue-sample-body").innerHTML, /openclaw\/openclaw#26/);
   assert.match(
     drawerElement("queue-sample-body").innerHTML,
-    /2 more active items have no public reference/,
+    /2 more recorded items have no public reference/,
   );
   assert.match(drawerElement("queue-sample-body").innerHTML, /data-overflow-reference/);
   drawerContext.state.items.push(
@@ -7977,7 +7979,8 @@ test("OpenClaw Bay reprojects status into a closed aggregate client model", asyn
       repository: "openclaw/openclaw",
       item_url: "https://github.com/openclaw/openclaw/issues/91",
       stage: "arriving",
-      status: "pending",
+      status: "Queue record",
+      queue_disposition: null,
       source: "queue",
       outcome: null,
       queue_item: true,

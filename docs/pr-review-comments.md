@@ -376,6 +376,10 @@ Full review comments, source links, owner routing, acceptance criteria, and
 evidence stay under the collapsed `Agent review details` block so the top-level
 PR comment reads like a concise review.
 
+Finding-shaped headings and `body`, `late`, or `confidence` list fields quoted
+inside model prose are escaped before storage. They remain quoted text when
+the durable report is parsed again and cannot add findings or replace scores.
+
 Automerge and autofix state belongs in the command/status comment and hidden
 markers, not in the public review section headings. A clean opted-in PR should
 still read as `Codex review: passed.` in the durable review comment.
@@ -410,9 +414,13 @@ report representation; older unmarked attribution cannot regain verified status
 when comments are rendered. Stored reports and live comments are not rewritten by
 this reader change. OpenClaw Bay needs no change: no observer API or controls change.
 
-## Primary Body Coverage
+## Primary Body and Discussion Coverage
 
-Hosted primary issue and PR bodies up to 12,000 UTF-16 units remain intact.
+Hosted primary issue and PR bodies and retained discussion comments up to
+12,000 UTF-16 units remain intact. This includes inline PR review comments;
+the existing 24 discussion-comment and 40 inline-comment windows still apply.
+This replaces the former 6,000-unit discussion prefix, which could omit a
+contributor's later correction without reporting body coverage.
 Longer bodies retain an opening plus at most three source-ordered verbatim
 excerpts around proof and trace/output anchors, including inside details.
 The sibling `bodyCoverage` records the full-source SHA-256, original length,
@@ -420,6 +428,8 @@ end-exclusive UTF-16 ranges, omitted units, and incomplete coverage. The
 opening, excerpts, JSON escaping, and coverage metadata share the existing
 12,000-unit allocation. Candidate overflow, oversized blocks, and unrecognized
 layouts can still omit evidence; anchors are navigation, not proof validation.
+Inline-comment cache fingerprints include the full-source hash when coverage
+is incomplete, so edits in excerpts or omitted text invalidate prior verdicts.
 
 Reviewers must inspect supplied evidence with existing authorized read-only
 capabilities before a negative proof claim, preserve the captured source
@@ -438,7 +448,7 @@ retain curl's 90-second limit.
 Assist preserves coverage alongside the body. The report context ledger counts
 each primary record as one entry and includes its coverage in character totals;
 its list hydration counters do not describe body completeness. Related items,
-comments, patch content, local body overrides, proof statuses, and mutation gates
+patch content, local body overrides, proof statuses, and mutation gates
 are unchanged. This is reviewer input only: OpenClaw Bay needs no change because
 no observer API, public data contract, or action surface changes.
 
@@ -586,3 +596,47 @@ pnpm run apply-decisions -- --target-repo openclaw/openclaw --sync-comments-only
 ```
 
 - Normal review/apply workflows also refresh missing or stale durable comments.
+
+### Reviewer network boundary
+
+Hosted Codex issue/PR review tools use the `clawsweeper-review` permission profile in
+`.github/actions/setup-codex/review-permissions.toml`, owned by ClawSweeper
+maintainers and verified with Codex 0.153.3. Update this guidance when the pinned
+CLI, profile, credential handling, or setup smoke changes. The active profile
+extends read-only filesystem access and enables the managed proxy in limited
+mode for its explicit GitHub, npm, Node, MDN, and OpenClaw documentation hosts.
+Other hosts are blocked; blocked access is not evidence against the PR. The
+sandbox receives the target repository's read-only GitHub App token only as
+`GH_TOKEN` when the review job supplies it (contents, issues, and pull requests
+read; expires within the hour). Use `gh api` or other authenticated GitHub reads
+to avoid public rate limits; the token cannot write. Never put it in a URL, log
+it, or send it to a non-GitHub host. Without a token, use public endpoints or
+pre-fetched GitHub context. Read downloaded screenshots/videos through the media
+proof manifest. The allowlist is not a credential containment boundary: a
+prompt-injected reviewer could leak the token in a GET query string to an
+allowlisted third-party host. Its read-only, single-repository, one-hour scope
+limits the impact.
+
+Review setup opts in with `review-network: "true"`; review commands select
+`--codex-sandbox clawsweeper-review`, translated to Codex configuration
+`default_permissions="clawsweeper-review"`. Neither exec nor the app-server
+thread/turn path overrides that profile with a legacy sandbox policy. Setup
+fails before publication if allowed HTTPS fails, unlisted HTTPS is not rejected
+by the proxy, or a checkout write succeeds. Non-review callers and offline local
+reviews keep their existing sandbox settings.
+
+Capability text follows the active `CLAWSWEEPER_RUNNER` before the Codex sandbox
+argument. OpenClaw reviews have network access through gateway execution with
+sandbox mode off; they do not use the Codex allowlisted proxy, and must treat the
+checkout as read-only by instruction. Their final child environment allowlist
+strips GitHub tokens, so OpenClaw prompts retain the no-token guidance even when
+an inspection token was supplied to the parent. Token capability text accounts
+for that runner-specific filter as well as the sanitized Codex environment. Other Codex sandbox
+selections retain the no-review-tool-network statement.
+This reporting does not change either runner's execution policy.
+
+The required-style `review-network-smoke` CI job runs on every PR using
+`ubuntu-24.04`, Node 24, and the Codex version pin read from setup-codex. It installs
+into a temporary prefix without secrets, creates an isolated Codex home, applies
+the same hosted Linux user-namespace prerequisites, and runs the configuration
+writer and enforcement smoke unchanged. Any smoke failure fails the job.

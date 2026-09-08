@@ -929,3 +929,54 @@ test(
     }
   },
 );
+
+test("review network writer preserves provider settings and uses one bounded profile", () => {
+  const home = mkdtempSync(join(tmpdir(), "clawsweeper-review-config-"));
+  try {
+    const existing =
+      'model = "test-model"\nmodel_provider = "test"\n[model_providers.test]\nname = "Test"\nbase_url = "http://127.0.0.1:1234/v1"\nwire_api = "responses"\n';
+    writeFileSync(join(home, "config.toml"), existing);
+    const result = spawnSync(process.execPath, [join(actionPath, "configure-review-network.mjs")], {
+      env: { ...process.env, CODEX_HOME: home },
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const config = readFileSync(join(home, "config.toml"), "utf8");
+    assert.ok(config.includes(existing));
+    assert.ok(
+      config.indexOf('default_permissions = "clawsweeper-review"') <
+        config.indexOf("[model_providers.test]"),
+    );
+    assert.ok(config.indexOf("[features]") > config.indexOf(existing));
+    assert.match(config, /network_proxy = true/);
+    assert.match(config, /extends = ":read-only"/);
+    assert.match(config, /mode = "limited"/);
+    assert.match(config, /approval_policy = "never"/);
+    assert.match(config, /allow_upstream_proxy = false/);
+    assert.match(config, /allow_local_binding = false/);
+    const domains = config
+      .split("[permissions.clawsweeper-review.network.domains]\n")[1]!
+      .trim()
+      .split("\n");
+    assert.equal(domains.length, 15);
+    assert.ok(domains.every((line) => /^"[a-z0-9.-]+" = "allow"$/.test(line)));
+    assert.ok(domains.includes('"api.github.com" = "allow"'));
+    assert.ok(domains.includes('"docs.openclaw.ai" = "allow"'));
+    assert.doesNotMatch(config, /example\.com|\*|danger-full-access|"write"/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("only review setup opts into the profile and enforcement smoke", () => {
+  const action = parse(readFileSync(join(actionPath, "action.yml"), "utf8"));
+  assert.equal(action.inputs["review-network"].default, "false");
+  for (const name of ["Configure review network profile", "Verify review sandbox capabilities"]) {
+    const step = action.runs.steps.find((entry: { name: string }) => entry.name === name);
+    assert.equal(step.if, "${{ inputs['review-network'] == 'true' }}");
+  }
+  const smoke = readFileSync(join(actionPath, "smoke-review-network.sh"), "utf8");
+  assert.match(smoke, /env -i/);
+  assert.match(smoke, /sandbox --permission-profile clawsweeper-review/);
+  assert.match(smoke, /CONNECT tunnel failed, response 403/);
+});

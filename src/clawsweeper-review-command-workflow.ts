@@ -7,6 +7,7 @@ import {
 import { ACTION_EVENT_REASON_CODES, ACTION_EVENT_STATUSES } from "./action-ledger.js";
 import { AgentInputScanError, agentInputScanFailureExitCode } from "./agent-input-scan.js";
 import { serializeReviewContext } from "./agent-input-scan-fixtures.js";
+import { reviewNetworkCapability } from "./agent-runner.js";
 import type { Args } from "./clawsweeper-args.js";
 import {
   isBulkFilerExemptRepositoryPermission as isVerifiedMaintainerRepositoryPermission,
@@ -136,6 +137,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     verifyRegressionProvenance,
     authorIssueCountInBulkFilerWindow,
     buildReviewPrompt,
+    reviewEnvironment,
     bulkFilerPolicyInvalidatesCachedReview,
     bulkFilerRepositoryPermission,
     codexFailureDecision,
@@ -1266,12 +1268,17 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         const preparedMediaProof: PreparedMediaProof = localRangeData
           ? { manifestPath: null, summaryPath: null, artifacts: [] }
           : prepareMediaProofArtifacts(context, proofScratchDir);
+        const reviewEnv = reviewEnvironment(localOnly);
         const prompt = buildReviewPrompt(
           item,
           context,
           git,
           additionalPrompt,
-          { ...mediaProofRuntimeHints(proofScratchDir, preparedMediaProof), targetDir: reviewOpenclawDir },
+          {
+            ...mediaProofRuntimeHints(proofScratchDir, preparedMediaProof),
+            targetDir: reviewOpenclawDir,
+            ...reviewNetworkCapability(sandboxMode, reviewEnv),
+          },
         );
         diagnosticPrompt = prompt.text;
         const snapshotHash = itemSnapshotHash(item, context);
@@ -1311,6 +1318,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             additionalPrompt,
             proofScratchDir,
             prompt: prompt.text,
+            reviewEnv,
             quietLogs: humanLocalReview,
             ...(localRange ? { extraCodexConfig: [LOCAL_REVIEW_WEB_SEARCH_CONFIG] } : {}),
           });
@@ -1532,7 +1540,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         throw new Error(
           `Could not acquire durable review coordination for ${leaseAcquisitionFailures} item${
             leaseAcquisitionFailures === 1 ? "" : "s"
-          }; the workflow recovery lane can requeue the planned set. ${leaseAcquisitionFailureDetails.join("; ")}`,
+          }; the workflow recovery lane can requeue evidence-backed retryable items. ${leaseAcquisitionFailureDetails.join("; ")}`,
         );
       }
       if (reviewTreeCleanupFailures.length > 0) {
@@ -1547,7 +1555,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         }
         const message = `Codex failed for ${codexFailures} item${
           codexFailures === 1 ? "" : "s"
-        }; local failure reports were written and the workflow recovery lane can requeue the planned set.${
+        }; local failure reports were written and the workflow recovery lane can requeue evidence-backed retryable items.${
           codexFailureReports.length > 0
             ? ` Report${codexFailureReports.length === 1 ? "" : "s"}: ${codexFailureReports
                 .map(displayPath)
