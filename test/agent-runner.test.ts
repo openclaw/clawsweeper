@@ -63,7 +63,7 @@ test("review token capability uses only the supplied child GH_TOKEN", () => {
             GITHUB_TOKEN: "synthetic-ambient-token",
             CLAWSWEEPER_PROOF_INSPECTION_TOKEN: "synthetic-source-token",
           }).hasGitHubToken,
-          Boolean(token?.trim()),
+          runner === "codex" && Boolean(token?.trim()),
         );
       }
     }

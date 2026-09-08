@@ -45,14 +45,16 @@ export function reviewNetworkCapability(
   networkCapability: "allowlisted-proxy" | "unrestricted" | "none";
   hasGitHubToken: boolean;
 } {
+  const runner = agentRunner(env);
   return {
     networkCapability:
-      agentRunner(env) === "openclaw"
+      runner === "openclaw"
         ? "unrestricted"
         : sandboxMode === "clawsweeper-review"
           ? "allowlisted-proxy"
           : "none",
-    hasGitHubToken: Boolean(env.GH_TOKEN?.trim()),
+    // OpenClaw's final child allowlist strips workflow credentials, including GH_TOKEN.
+    hasGitHubToken: runner === "codex" && Boolean(env.GH_TOKEN?.trim()),
   };
 }
 

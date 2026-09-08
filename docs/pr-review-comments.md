@@ -618,9 +618,10 @@ reviews keep their existing sandbox settings.
 Capability text follows the active `CLAWSWEEPER_RUNNER` before the Codex sandbox
 argument. OpenClaw reviews have network access through gateway execution with
 sandbox mode off; they do not use the Codex allowlisted proxy, and must treat the
-checkout as read-only by instruction. Their child environment receives the same
-read-only token when supplied. Token capability text follows the actual sanitized
-child environment for every runner and sandbox selection. Other Codex sandbox
+checkout as read-only by instruction. Their final child environment allowlist
+strips GitHub tokens, so OpenClaw prompts retain the no-token guidance even when
+an inspection token was supplied to the parent. Token capability text accounts
+for that runner-specific filter as well as the sanitized Codex environment. Other Codex sandbox
 selections retain the no-review-tool-network statement.
 This reporting does not change either runner's execution policy.
 

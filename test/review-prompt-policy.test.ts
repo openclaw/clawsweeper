@@ -807,23 +807,27 @@ test("runtime capabilities describe the configured network and credential bounda
         GH_TOKEN: "synthetic-inspection-token",
       }),
     );
-    assert.match(
-      authenticatedPrompt,
-      /read-only GitHub App token for the target repository is available as `GH_TOKEN`/,
-    );
-    assert.match(
-      authenticatedPrompt,
-      /contents, issues, and pull requests read; expires within the hour/,
-    );
-    assert.match(
-      authenticatedPrompt,
-      /use it for `gh api`\/authenticated GitHub reads so public rate limits do not apply; it cannot write/,
-    );
-    assert.match(
-      authenticatedPrompt,
-      /Never place it in a URL, log it, or send it to any non-GitHub host/,
-    );
-    assert.doesNotMatch(authenticatedPrompt, /No GitHub token|synthetic-inspection-token/);
+    if (runner === "openclaw") {
+      assert.equal(authenticatedPrompt, prompt);
+    } else {
+      assert.match(
+        authenticatedPrompt,
+        /read-only GitHub App token for the target repository is available as `GH_TOKEN`/,
+      );
+      assert.match(
+        authenticatedPrompt,
+        /contents, issues, and pull requests read; expires within the hour/,
+      );
+      assert.match(
+        authenticatedPrompt,
+        /use it for `gh api`\/authenticated GitHub reads so public rate limits do not apply; it cannot write/,
+      );
+      assert.match(
+        authenticatedPrompt,
+        /Never place it in a URL, log it, or send it to any non-GitHub host/,
+      );
+      assert.doesNotMatch(authenticatedPrompt, /No GitHub token|synthetic-inspection-token/);
+    }
     assert.match(prompt, /No GitHub token is supplied to the review process/);
     assert.match(prompt, /read those files rather than re-fetching/);
     assert.doesNotMatch(prompt, /available network and read-only GitHub token/);

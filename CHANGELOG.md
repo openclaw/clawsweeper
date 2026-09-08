@@ -19,7 +19,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
-- Give reviewers the existing short-lived, read-only target-repository GitHub App token as `GH_TOKEN` for authenticated reads, and describe token availability from the actual reviewer environment.
+- Give Codex reviewers the existing short-lived, read-only target-repository GitHub App token as `GH_TOKEN` for authenticated reads, and describe token availability from the actual reviewer environment, including OpenClaw's credential filter.
 - Give hosted issue/PR reviewers allowlisted public research access through a managed proxy while keeping the checkout read-only; describe token, blocked-host, and downloaded-media capabilities accurately and fail setup when sandbox enforcement regresses.
 - Describe review capabilities from the active runner so OpenClaw gateway execution is not mistaken for the Codex allowlisted sandbox; prove Linux review sandbox enforcement in credential-free PR CI.
 
