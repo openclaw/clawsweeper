@@ -657,3 +657,144 @@ test("parked command rechecks hosted admission before a claimed status write", a
     h.restore();
   }
 });
+
+for (const variant of ["marker", "comment"] as const) {
+  test(`cancelled ${variant} closure can finalize a later closure without restarting review`, async () => {
+    let target = { ...closed };
+    const h = await fixture(variant, () => jsonResponse(target));
+    const address =
+      variant === "marker" ? { status_marker: marker } : { status_comment_id: 990002 };
+    try {
+      const old = await claimDriver(h);
+      const begun = await (
+        await h.queue.fetch(
+          new Request("https://queue/terminal-finalization/attempt", {
+            method: "POST",
+            body: JSON.stringify({ ...old, ...address }),
+          }),
+        )
+      ).json();
+      target = { ...closed, state: "open" };
+      const cancelled = await h.queue.fetch(
+        new Request("https://queue/terminal-finalization/attempt", {
+          method: "POST",
+          body: JSON.stringify({
+            ...old,
+            ...address,
+            verify_only: true,
+            attempt_id: begun.attempt_id,
+          }),
+        }),
+      );
+      assert.equal(cancelled.status, 409);
+      target = { ...closed, closed_at: "2026-09-02T00:00:00Z" };
+      const due = await stateOf(h);
+      due.items[key].parkedTerminalCheckedAt = 0;
+      due.dispatcher = { ...due.dispatcher, parkedTerminalCheckedAt: 0 };
+      await h.storage.put("exact-review-queue", due);
+      const fresh = await claimDriver(h);
+      assert.ok(Number(fresh.lease_revision) > Number(old.lease_revision));
+      const retained = (await stateOf(h)).items[key];
+      assert.equal(retained.state, "parked");
+      assert.equal(retained.attempts, 8);
+      assert.equal(retained.parkedRecoveryAttempts, 3);
+      const oldReceipt = await h.queue.fetch(
+        new Request("https://queue/lifecycle/command-ack/observed", {
+          method: "POST",
+          body: JSON.stringify({
+            canonical_target_key: key,
+            fence_key: key,
+            revision: old.lease_revision,
+            ...address,
+            command_comment_id: 990010,
+            completion_comment_id: 990011,
+            observed_at: Date.now(),
+          }),
+        }),
+      );
+      assert.equal(oldReceipt.status, 200);
+      assert.equal((await oldReceipt.json()).accepted, false);
+      const allowed = await (
+        await h.queue.fetch(
+          new Request("https://queue/terminal-finalization/attempt", {
+            method: "POST",
+            body: JSON.stringify({ ...fresh, ...address }),
+          }),
+        )
+      ).json();
+      assert.equal(allowed.allowed, true);
+      const settled = await h.queue.fetch(
+        new Request("https://queue/terminal-finalization/skip", {
+          method: "POST",
+          body: JSON.stringify({
+            ...fresh,
+            ...address,
+            attempt_id: allowed.attempt_id,
+            reason: "missing_status_comment",
+          }),
+        }),
+      );
+      assert.equal(settled.status, 200);
+      assert.equal((await stateOf(h)).items[key], undefined);
+      assert.equal(h.dispatched.length, 2);
+    } finally {
+      h.restore();
+    }
+  });
+}
+
+for (const interference of ["none", "reason", "deadline", "revision"] as const) {
+  test(`failed parked writer retry releases only its ${interference} successor deferral`, async () => {
+    let open = false;
+    const h = await fixture("marker", () =>
+      jsonResponse(open ? { ...closed, state: "open", head: { sha: "b".repeat(40) } } : closed),
+    );
+    try {
+      const tuple = await claimDriver(h);
+      const first = await h.queue.fetch(
+        new Request("https://queue/terminal-finalization/attempt", {
+          method: "POST",
+          body: JSON.stringify({ ...tuple, status_marker: marker }),
+        }),
+      );
+      assert.equal(first.status, 200);
+      open = true;
+      const successor = await stateOf(h);
+      successor.items[key].revision += 1;
+      successor.items[key].decision.sourceHeadSha = "b".repeat(40);
+      successor.items[key].state = "pending";
+      successor.items[key].nextAttemptAt = Date.now() - 1;
+      await h.storage.put("exact-review-queue", successor);
+      await h.queue.alarm();
+      const before = await stateOf(h);
+      assert.equal(before.items[key].backoffReason, "coordination_retry");
+      if (interference === "reason") before.items[key].backoffReason = "throttle_retry";
+      if (interference === "deadline") before.items[key].nextAttemptAt += 30_000;
+      if (interference === "revision") before.items[key].revision += 1;
+      if (interference !== "none") await h.storage.put("exact-review-queue", before);
+      const retry = await h.queue.fetch(
+        new Request("https://queue/terminal-finalization/retry", {
+          method: "POST",
+          body: JSON.stringify(tuple),
+        }),
+      );
+      assert.equal(retry.status, 200);
+      assert.equal((await retry.json()).requeued, true);
+      const after = await stateOf(h);
+      assert.equal(after.items[tuple.item_key].state, "pending");
+      assert.equal(
+        after.items[tuple.item_key].terminalFinalization?.parkedCommand?.coordinationDeferral,
+        undefined,
+      );
+      if (interference === "none") {
+        assert.equal(after.items[key].backoffReason, undefined);
+        assert.ok(after.items[key].nextAttemptAt <= Date.now());
+      } else {
+        assert.equal(after.items[key].backoffReason, before.items[key].backoffReason);
+        assert.equal(after.items[key].nextAttemptAt, before.items[key].nextAttemptAt);
+      }
+    } finally {
+      h.restore();
+    }
+  });
+}

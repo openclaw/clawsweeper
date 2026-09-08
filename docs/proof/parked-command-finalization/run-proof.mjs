@@ -545,6 +545,45 @@ try {
     producer_preserved: true,
     lifecycle_retains_failure_not_requeue: true,
   });
+  // A fresh closure without another webhook gets new lifecycle ownership,
+  // while the cancelled receipt remains permanently unusable.
+  targets.get(cancelledPlan.n).state = "closed";
+  targets.get(cancelledPlan.n).closed_at = "2026-09-02T00:00:00Z";
+  await call("/__proof/park", { key: cancelledPlan.key });
+  const reclosedTuple = await drive(cancelledPlan);
+  assert.ok(reclosedTuple.lease_revision > cancelledTuple.lease_revision);
+  const reclosedProducer = (await state()).items[cancelledPlan.key];
+  assert.equal(reclosedProducer.state, "parked");
+  assert.equal(reclosedProducer.parkedRecoveryAttempts, 3);
+  assert.equal(reclosedProducer.attempts, 8);
+  const reclosedAttempt = await call("/internal/exact-review/terminal-finalization/attempt", {
+    ...reclosedTuple,
+    ...cancelledPlan.address,
+  });
+  assert.equal(reclosedAttempt.allowed, true);
+  const cancelledReceipt = await call("/internal/exact-review/lifecycle/command-ack/observed", {
+    canonical_target_key: cancelledPlan.key,
+    fence_key: cancelledPlan.key,
+    revision: cancelledTuple.lease_revision,
+    ...cancelledPlan.address,
+    command_comment_id: 991012,
+    completion_comment_id: 992012,
+    observed_at: Date.now(),
+  });
+  assert.equal(cancelledReceipt.accepted, false);
+  await call("/internal/exact-review/terminal-finalization/skip", {
+    ...reclosedTuple,
+    ...cancelledPlan.address,
+    attempt_id: reclosedAttempt.attempt_id,
+    reason: "missing_status_comment",
+  });
+  assert.equal((await state()).items[cancelledPlan.key], undefined);
+  results.push({
+    scenario: "reclose without webhook after cancelled closure",
+    fresh_lifecycle_revision: true,
+    old_receipt_rejected: true,
+    exhausted_budget_preserved: true,
+  });
   const takeover = await seed(990005);
   const old = await drive(takeover);
   await call("/__proof/park", { key: takeover.key, takeover: true });
@@ -626,10 +665,59 @@ try {
     resumed_fenced: true,
     producer_retired_after_skip: true,
   });
+  const failedWriter = await seed(990017);
+  const writerTuple = await drive(failedWriter);
+  const writerAdmission = await call("/internal/exact-review/terminal-finalization/attempt", {
+    ...writerTuple,
+    ...failedWriter.address,
+  });
+  assert.equal(writerAdmission.allowed, true);
+  const nextHead = "b".repeat(40);
+  targets.get(failedWriter.n).state = "open";
+  targets.get(failedWriter.n).head = { sha: nextHead };
+  const originalDecision = (await state()).items[failedWriter.key].decision;
+  await call(
+    "/internal/exact-review/enqueue",
+    {
+      delivery_id: "synthetic-failed-writer-successor",
+      decision: {
+        ...originalDecision,
+        sourceAction: "synchronize",
+        sourceHeadSha: nextHead,
+        sourceHeadVerified: true,
+        sourceUpdatedAt: new Date().toISOString(),
+        supersedesInProgress: true,
+      },
+    },
+    202,
+  );
+  await call("/__proof/alarm", {});
+  const deferredSuccessor = (await state()).items[failedWriter.key];
+  assert.equal(deferredSuccessor.backoffReason, "coordination_retry");
+  const releaseRetry = await call(
+    "/internal/exact-review/terminal-finalization/retry",
+    writerTuple,
+  );
+  assert.equal(releaseRetry.requeued, true);
+  const releasedState = await state();
+  assert.equal(
+    releasedState.items[writerTuple.item_key].terminalFinalization.parkedCommand
+      .coordinationDeferral,
+    undefined,
+  );
+  assert.notEqual(releasedState.items[failedWriter.key].backoffReason, "coordination_retry");
+  assert.ok(releasedState.items[failedWriter.key].nextAttemptAt < deferredSuccessor.nextAttemptAt);
+  results.push({
+    scenario: "failed writer retry releases a new-source successor",
+    owned_deferral_released: true,
+    new_source_head: nextHead,
+  });
   assert.ok(dispatches.length > 0);
   assert.ok(
     dispatches.every(
-      (d) => d.client_payload.source_action === "exact_review_command_acknowledgement",
+      (d) =>
+        d.client_payload.source_action === "exact_review_command_acknowledgement" ||
+        (d.client_payload.item_number === 990017 && d.client_payload.source_head_sha === nextHead),
     ),
   );
   const queue = await call("/api/exact-review-queue");

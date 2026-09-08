@@ -9881,7 +9881,15 @@ export class ExactReviewQueue {
     target: NonNullable<ExactReviewTerminalFinalization["parkedCommand"]>["target"],
     now: number,
   ) {
-    const projection = this.recordLifecycleAdmission(item, item.decision, now);
+    let projection = this.recordLifecycleAdmission(item, item.decision, now);
+    if (parkedCommandClosureCancelled(projection) && !projection.acknowledgement.observed) {
+      // A new stable closure observation may settle the same exhausted command,
+      // but never revive the cancelled projection or authorize its old receipts.
+      // Advance only lifecycle ownership; keep the stopped producer and budgets.
+      item.revision = this.nextExactReviewCommandRevisionSync(item.key, item.revision + 1);
+      item.updatedAt = now;
+      projection = this.recordLifecycleAdmission(item, item.decision, now);
+    }
     // Do not repurpose an unrelated terminal fact or completed receipt.
     if (
       projection.terminalDisposition &&
@@ -10355,6 +10363,7 @@ export class ExactReviewQueue {
       await this.scheduleNext(state, now);
       return json({ ok: true, completed: true });
     }
+    releaseParkedCommandWrite(state, item, now);
     clearExactReviewLease(item);
     item.state = "pending";
     item.nextAttemptAt = now + EXACT_REVIEW_ACKNOWLEDGEMENT_ATTEMPT_LEASE_MS;

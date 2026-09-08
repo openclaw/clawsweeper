@@ -901,3 +901,11 @@ queue projection; actual workflow activity remains a separate live overlay.
 Claimed parked-command writes also re-probe hosted/public eligibility before
 target credentials and after the target read. Revocation defers the original
 fenced driver; it cannot authorize a status PATCH on a now-ineligible target.
+
+A later stable closure can re-arm an exhausted command whose earlier closure
+plan was cancelled. It receives a fresh lifecycle revision while the cancelled
+revision and its receipt-rejection tombstone remain immutable. The producer
+stays parked with its exhausted attempt/recovery budgets; no review is restarted.
+If a status writer retries after a token or write failure, it releases only its
+exact recorded successor coordination deferral before clearing the lease. A
+concurrently changed successor revision, reason, or deadline is not overwritten.

@@ -36,3 +36,10 @@ allowed=false, and then proves restored eligibility authorizes the later step.
 The token action is gated on allowed=true; status PATCH additionally requires
 successful token creation. This is controlled workflow-boundary proof, not a
 hosted GitHub Actions execution.
+
+Additional recovery scenarios exercise a second closure without an intervening
+webhook and a failed status writer releasing a held new-source successor. The
+former allocates only fresh acknowledgement/lifecycle ownership and never
+resets review budgets. The latter uses real signed enqueue/alarm/retry HTTP
+routes; only that separately supplied new source may become eligible for a
+normal review dispatch to the synthetic GitHub adapter.
