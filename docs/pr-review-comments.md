@@ -87,7 +87,7 @@ version twice.
 
 Automatically received pull requests keep their lightweight
 `clawsweeper-pr-ack` receipt separate from command status. When a deterministic
-input refusal (`findings`, `incomplete_source`, or `source_incompatible`) stops
+input refusal (any non-retryable agent-input scan reason, or `source_incompatible`) stops
 review, ClawSweeper edits that exact trusted-bot receipt with bounded,
 reason-specific guidance. It never reproduces scanner findings, detected values,
 paths, or source excerpts. The failure ledger records whether the edit was

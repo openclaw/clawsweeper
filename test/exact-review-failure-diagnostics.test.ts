@@ -7,6 +7,10 @@ import test from "node:test";
 import { ReviewGitError } from "../dist/clawsweeper-review-blobs.js";
 import { writeExactReviewFailureDiagnostics } from "../dist/clawsweeper-review-failure-diagnostics.js";
 import { AgentInputScanError, agentInputScanFailureExitCode } from "../dist/agent-input-scan.js";
+import {
+  AGENT_INPUT_SCAN_FAILURE_REASONS,
+  terminalReviewFailureReason,
+} from "../dist/exact-review-failure-reason.js";
 
 const expectedFiles = ["error.txt", "manifest.json", "stderr.tail.txt", "stdout.error.txt"];
 
@@ -174,7 +178,7 @@ test("source-preparation diagnostics survive unsafe raw detail", () => {
 test("scan diagnostics retain refusal identity without scanner output", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-diagnostics-"));
   try {
-    for (const reason of ["findings", "incomplete_source"] as const) {
+    for (const reason of AGENT_INPUT_SCAN_FAILURE_REASONS) {
       const error = Object.assign(new AgentInputScanError(reason), {
         stdout: '{"type":"turn.failed","error":{"message":"raw scanner finding"}}',
         stderr: "raw scanner verification detail",
@@ -197,7 +201,12 @@ test("scan diagnostics retain refusal identity without scanner output", () => {
       assert.equal(manifest.classification, "agent_input_scan");
       assert.deepEqual(manifest.failure, { stage: "agent_input_scan", reason_code: reason });
       assert.equal(manifest.retryable, false);
-      assert.equal(manifest.process.workflow_exit, reason === "incomplete_source" ? 78 : 79);
+      assert.equal(error.retryable, false);
+      assert.equal(terminalReviewFailureReason(manifest.failure.reason_code), reason);
+      assert.equal(
+        manifest.process.workflow_exit,
+        reason === "incomplete_source" ? 78 : reason === "findings" ? 79 : 1,
+      );
       const text = expectedFiles.map((name) => readFileSync(join(output, name), "utf8")).join("\n");
       assert.doesNotMatch(text, /raw scanner/);
     }

@@ -14,6 +14,7 @@ import {
 import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
 import YAML from "yaml";
+import { AGENT_INPUT_SCAN_FAILURE_REASONS } from "../dist/exact-review-failure-reason.js";
 
 import { makeTreeReadOnlyForTest, restoreTreeModesForTest } from "../dist/clawsweeper.js";
 import {
@@ -25,6 +26,51 @@ import {
   workPlanCandidateReport,
 } from "./helpers.ts";
 import { scheduledReviewSemanticSourceRevision } from "../scripts/classify-scheduled-review-noop.ts";
+
+test("review workflow emits terminal reasons for non-retryable scanner manifests", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const producers = Object.values(workflow.jobs).flatMap((job: any) =>
+    (job.steps ?? []).filter((step: any) => /echo "failure_reason=/.test(step.run ?? "")),
+  );
+  assert.equal(producers.length, 1, "audit every terminal-reason producer when lanes change");
+  const root = mkdtempSync(`${tmpPrefix}terminal-scan-workflow-`);
+  try {
+    const manifestDir = join(root, "artifacts/event/failure-diagnostics");
+    mkdirSync(manifestDir, { recursive: true });
+    const output = join(root, "outputs");
+    for (const producer of producers) {
+      const body = producer.run as string;
+      const shell = body.slice(
+        body.indexOf('echo "exit_code=$review_exit_code"'),
+        body.indexOf('coordination_held_path="artifacts/event/coordination-held.json"'),
+      );
+      assert.ok(shell.includes('exit "$review_exit_code"'));
+      for (const reason of AGENT_INPUT_SCAN_FAILURE_REASONS) {
+        for (const retryable of [false, true]) {
+          writeFileSync(output, "");
+          writeFileSync(
+            join(manifestDir, "manifest.json"),
+            JSON.stringify({
+              classification: "codex_or_content_failure",
+              retryable,
+              failure: { stage: "agent_input_scan", reason_code: reason },
+            }),
+          );
+          const result = spawnSync("bash", ["-c", `set -euo pipefail\n${shell}`], {
+            cwd: root,
+            encoding: "utf8",
+            env: { ...process.env, review_exit_code: "1", GITHUB_OUTPUT: output },
+          });
+          assert.equal(result.status, 1, result.stderr);
+          const outputs = readFileSync(output, "utf8").split("\n");
+          assert.equal(outputs.includes(`failure_reason=${reason}`), !retryable, reason);
+        }
+      }
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 function runCommentSyncShell(root: string, commands: string[]): string {
   return execFileSync(

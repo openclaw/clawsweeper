@@ -1,4 +1,8 @@
 import { stableJson } from "../src/stable-json.ts";
+import {
+  terminalReviewFailureReason,
+  type TerminalReviewFailureReason as ExactReviewFailureReason,
+} from "../src/exact-review-failure-reason.ts";
 import { REVIEW_PROOF_RESULT_MAX_BYTES } from "../src/review-proof-limits.ts";
 import { CommandProofRequestStore } from "./command-proof-requests.ts";
 import {
@@ -376,7 +380,6 @@ export type ExactReviewReviewRecoveryReason =
   | "workflow_cancelled"
   | "workflow_failed";
 type ExactReviewRetryKind = "coordination" | "throttle";
-type ExactReviewFailureReason = "findings" | "incomplete_source" | "source_incompatible";
 type ExactReviewPublicationFailureKind = "github_rate_limit" | "github_transient";
 type ExactReviewDispatchFailureClass =
   | "permanent_rejection"
@@ -2923,11 +2926,7 @@ export class ExactReviewQueue {
       const reviewFailureReason =
         body.review_failure_reason === undefined
           ? undefined
-          : body.review_failure_reason === "findings" ||
-              body.review_failure_reason === "incomplete_source" ||
-              body.review_failure_reason === "source_incompatible"
-            ? (body.review_failure_reason as ExactReviewFailureReason)
-            : null;
+          : terminalReviewFailureReason(body.review_failure_reason);
       if (body.review_failure_reason !== undefined && !reviewFailureReason) {
         return json({ error: "invalid_review_failure_reason" }, 400);
       }

@@ -1,5 +1,6 @@
 import type { ExactReviewDecision } from "./exact-review-decision.ts";
 import { stableJson } from "../src/stable-json.ts";
+import type { TerminalReviewFailureReason } from "../src/exact-review-failure-reason.ts";
 
 export const EXACT_REVIEW_FAILURE_TELEMETRY_TABLE = "exact_review_failure_attempts_v1";
 export const EXACT_REVIEW_FAILURE_TELEMETRY_STATE_TABLE = "exact_review_failure_telemetry_state_v1";
@@ -123,7 +124,7 @@ export function normalizeExactReviewFailureDetail(value: unknown): ExactReviewFa
 
 export function exactReviewFailureDetail(options: {
   outcome: "failure" | "cancelled";
-  terminalReason?: "findings" | "incomplete_source" | "source_incompatible";
+  terminalReason?: TerminalReviewFailureReason;
   supplied?: ExactReviewFailureDetail;
 }): ExactReviewFailureDetail {
   if (options.supplied) return options.supplied;

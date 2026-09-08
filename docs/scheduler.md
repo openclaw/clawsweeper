@@ -22,6 +22,24 @@ still override live-worker caps, but when they do not, `repair:dispatch` derives
 the priority lane from `job_intent` instead of relying on workflow-specific
 defaults.
 
+Exact-review completion sends `review_failure_reason` for every diagnostics
+manifest with `failure.stage: agent_input_scan` and `retryable: false`, using
+`failure.reason_code` verbatim. The accepted scanner reasons are
+`scanner_unavailable`, `scanner_failed`, `findings`, `deadline`, `staging_limit`,
+`incomplete_source`, `source_drift`, `unsafe_path`, and `unsupported_content`;
+`source_incompatible` remains a separate terminal source-preparation reason.
+The shared allowlist lives in `src/exact-review-failure-reason.ts`. Exit codes
+78 and 79 still identify `incomplete_source` and `findings` without a manifest.
+A matching non-retryable `review_failure` detail is accepted; retryable or
+mismatched detail is rejected. Diagnostic detail alone does not suppress retry:
+without `review_failure_reason`, failed completion still retries. A terminal
+reason removes the unchanged queue revision while allowing an already queued
+newer revision to proceed; it does not turn the failed workflow green.
+
+Scheduled and manual explicit queue admissions use the same exact-event review
+step. Aggregate shard recovery uses its per-item terminal ledger instead of
+producing a queue-level `failure_reason` from the shard's process exit.
+
 ClawSweeper has three issue/PR scheduler paths:
 
 - exact event review for one target issue or pull request

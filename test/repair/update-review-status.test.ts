@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { AGENT_INPUT_SCAN_FAILURE_REASONS } from "../../dist/exact-review-failure-reason.js";
 import {
   mergeReviewProgressSection,
   parseOptions,
@@ -9,6 +10,27 @@ import {
 } from "../../dist/repair/update-review-status.js";
 
 const runUrl = "https://github.com/openclaw/clawsweeper/actions/runs/12345";
+
+test("all scanner refusals accept and render terminal review status", () => {
+  for (const reason of AGENT_INPUT_SCAN_FAILURE_REASONS) {
+    const options = parseOptions([
+      "--repo",
+      "openclaw/openclaw",
+      "--item-number",
+      "42",
+      "--status-comment-id",
+      "4200",
+      "--state",
+      "blocked",
+      "--failure-reason",
+      reason,
+    ]);
+    assert.equal(options.failureReason, reason);
+    const rendered = renderReviewProgressSection(options);
+    assert.match(rendered, /will not retry this unchanged revision/);
+    if (reason !== "findings") assert.match(rendered, /Maintainers should inspect/);
+  }
+});
 
 test("terminal review status renders bounded reason-specific guidance", () => {
   const findings = renderReviewProgressSection({
