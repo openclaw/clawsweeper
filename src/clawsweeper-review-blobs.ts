@@ -1,12 +1,31 @@
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, statfsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { readReviewGit, reviewMergeBase } from "./pr-review-evidence.js";
 import { AgentInputScanError, MAX_SCAN_BYTES } from "./agent-input-scan.js";
 import { ReviewSourcePreparationError } from "./review-source-preparation.js";
 
 const MAX_BLOB_SIZE_OBJECTS = 160;
 const MAX_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;
+const MAX_REVIEW_TREE_LIST_BYTES = 64 * 1024 * 1024;
 const GIT_OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
+export const REVIEW_TREE_MAX_FILES = 200_000;
+export const REVIEW_TREE_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+export const REVIEW_TREE_DISK_RESERVE_BYTES = 1024 * 1024 * 1024;
+
+export interface ReviewTreeMaterializationBudget {
+  maxFiles: number;
+  maxBytes: number;
+  diskReserveBytes: number;
+  availableBytes?: number;
+}
+
+interface ReviewTreeMaterializationOptions {
+  targetDir: string;
+  worktreeDir: string;
+  itemNumber: number;
+  headSha: string;
+}
 
 type ReviewGitFailureReason =
   | "review_commit_fetch_failed"
@@ -191,19 +210,90 @@ function reviewTreeMatchesCommit({ targetDir, sha }: { targetDir: string; sha: s
   return checkedReviewGit(status, "review_git_inspection_failed").trim() === "";
 }
 
-export function materializePullRequestReviewTree({
-  targetDir,
-  worktreeDir,
-  itemNumber,
-  headSha,
-}: {
-  targetDir: string;
-  worktreeDir: string;
-  itemNumber: number;
-  headSha: string;
-}): boolean {
+function reviewTreeBudgetError(headSha: string, detail: string): ReviewSourcePreparationError {
+  const error = new ReviewSourcePreparationError(
+    "review_checkout_unavailable",
+    `Review checkout exceeds its private workspace budget: ${detail}.`,
+  );
+  error.reviewedHeadSha = headSha;
+  return error;
+}
+
+function reviewTreeTrackedPathCount(targetDir: string, headSha: string): number {
+  const result = spawnSync("git", ["ls-tree", "-r", "-z", "--name-only", headSha], {
+    cwd: targetDir,
+    env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
+    encoding: "utf8",
+    maxBuffer: MAX_REVIEW_TREE_LIST_BYTES,
+  });
+  const output = checkedReviewGit(result, "review_git_inspection_failed");
+  if (!output) return 0;
+  if (!output.endsWith("\0")) {
+    throw new ReviewGitError("review_git_inspection_failed", {
+      ...result,
+      status: 1,
+      stderr: "git ls-tree returned an incomplete path list",
+    });
+  }
+  return output.split("\0").length - 1;
+}
+
+function reviewTreeTotals(
+  root: string,
+  limits: ReviewTreeMaterializationBudget,
+): {
+  files: number;
+  bytes: number;
+} {
+  let files = 0;
+  let bytes = 0;
+  const pending = [root];
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    for (const name of readdirSync(directory)) {
+      if (directory === root && name === ".git") continue;
+      const path = join(directory, name);
+      const metadata = lstatSync(path);
+      if (metadata.isDirectory()) {
+        pending.push(path);
+      } else if (metadata.isFile() || metadata.isSymbolicLink()) {
+        files += 1;
+        bytes += metadata.size;
+      } else {
+        return { files: limits.maxFiles + 1, bytes: limits.maxBytes + 1 };
+      }
+      if (files > limits.maxFiles || bytes > limits.maxBytes) return { files, bytes };
+    }
+  }
+  return { files, bytes };
+}
+
+function materializePullRequestReviewTreeWithBudget(
+  { targetDir, worktreeDir, itemNumber, headSha }: ReviewTreeMaterializationOptions,
+  budget: ReviewTreeMaterializationBudget,
+): boolean {
   if (!ensurePullRequestReviewHead({ targetDir, itemNumber, headSha })) return false;
   if (existsSync(worktreeDir)) return false;
+  const trackedPaths = reviewTreeTrackedPathCount(targetDir, headSha);
+  if (trackedPaths > budget.maxFiles) {
+    throw reviewTreeBudgetError(
+      headSha,
+      `${trackedPaths} tracked paths exceed the ${budget.maxFiles}-file limit`,
+    );
+  }
+  const availableBytes =
+    budget.availableBytes ??
+    (() => {
+      const fileSystem = statfsSync(dirname(worktreeDir));
+      return fileSystem.bavail * fileSystem.bsize;
+    })();
+  const requiredBytes = budget.maxBytes + budget.diskReserveBytes;
+  if (availableBytes < requiredBytes) {
+    throw reviewTreeBudgetError(
+      headSha,
+      `${availableBytes} available bytes cannot admit the ${budget.maxBytes}-byte checkout limit plus ${budget.diskReserveBytes}-byte reserve`,
+    );
+  }
   const worktree = spawnSync(
     "git",
     ["worktree", "add", "--detach", "--force", worktreeDir, headSha],
@@ -215,7 +305,32 @@ export function materializePullRequestReviewTree({
     },
   );
   checkedReviewGit(worktree, "review_checkout_failed");
+  const totals = reviewTreeTotals(worktreeDir, budget);
+  if (totals.files > budget.maxFiles || totals.bytes > budget.maxBytes) {
+    removePullRequestReviewTree({ targetDir, worktreeDir });
+    throw reviewTreeBudgetError(
+      headSha,
+      `${totals.files} files and ${totals.bytes} bytes exceed the ${budget.maxFiles}-file or ${budget.maxBytes}-byte limit`,
+    );
+  }
   return reviewTreeMatchesCommit({ targetDir: worktreeDir, sha: headSha });
+}
+
+export function materializePullRequestReviewTree(
+  options: ReviewTreeMaterializationOptions,
+): boolean {
+  return materializePullRequestReviewTreeWithBudget(options, {
+    maxFiles: REVIEW_TREE_MAX_FILES,
+    maxBytes: REVIEW_TREE_MAX_BYTES,
+    diskReserveBytes: REVIEW_TREE_DISK_RESERVE_BYTES,
+  });
+}
+
+export function materializePullRequestReviewTreeForTest(
+  options: ReviewTreeMaterializationOptions,
+  budget: ReviewTreeMaterializationBudget,
+): boolean {
+  return materializePullRequestReviewTreeWithBudget(options, budget);
 }
 
 export function removePullRequestReviewTree({

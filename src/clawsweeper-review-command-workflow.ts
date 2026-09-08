@@ -227,6 +227,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       humanLocalReview,
       openclawDir,
       artifactDir,
+      reviewWorkspaceDir,
       itemsDir,
       batchSize,
       maxPages,
@@ -471,7 +472,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               return false;
             }
           }
-          const reviewTreesDir = join(artifactDir, "review-trees");
+          const reviewTreesDir = join(reviewWorkspaceDir, "review-trees");
           ensureDir(reviewTreesDir);
           pullRequestReviewTreeDir = join(reviewTreesDir, String(item.number));
           pullRequestReviewTreeSha = null;

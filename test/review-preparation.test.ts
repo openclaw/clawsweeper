@@ -270,10 +270,15 @@ test("default local-range preparation owns private transient output and retains 
     assert.equal(prepared.outputSelection.retention, "none");
     assert.equal(prepared.localReviewHistoryPath, null);
     assert.equal(statSync(prepared.artifactDir).mode & 0o777, 0o700);
+    assert.notEqual(prepared.reviewWorkspaceDir, prepared.artifactDir);
+    assert.equal(statSync(prepared.reviewWorkspaceDir).mode & 0o777, 0o700);
     assert.equal(existsSync(join(root, "generated-artifacts")), false);
   } finally {
     prepared?.cleanupReviewOutput();
-    if (prepared) assert.equal(existsSync(prepared.artifactDir), false);
+    if (prepared) {
+      assert.equal(existsSync(prepared.artifactDir), false);
+      assert.equal(existsSync(prepared.reviewWorkspaceDir), false);
+    }
     process.env = oldEnv;
     rmSync(root, { recursive: true, force: true });
   }
@@ -296,7 +301,7 @@ test("summary preparation uses separate checkout scratch and removes owned outpu
           resolveReviewCheckout: ({ artifactDir }: { artifactDir: string }) => {
             checkoutScratch = artifactDir;
             assert.notEqual(artifactDir, output);
-            assert.match(artifactDir, /clawsweeper-review-checkout-/);
+            assert.match(artifactDir, /clawsweeper-review-workspace-/);
             throw new Error("synthetic checkout failure");
           },
           ensureDir: () => {},

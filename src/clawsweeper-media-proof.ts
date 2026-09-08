@@ -18,6 +18,8 @@ const MEDIA_PROOF_SUMMARY_FILE = "media-proof-summary.md";
 const MAX_MEDIA_PROOF_URLS = 4;
 const MEDIA_PROOF_TIMEOUT_MS = 120_000;
 export const MEDIA_PROOF_MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024;
+export const MEDIA_PROOF_MAX_TOTAL_DOWNLOAD_BYTES = 64 * 1024 * 1024;
+export const MEDIA_PROOF_MAX_DERIVED_BYTES = 16 * 1024 * 1024;
 
 export function mediaProofCommandRunner(
   command: string,
@@ -165,6 +167,7 @@ export function createVideoContactSheet(
   inputPath: string,
   outputPath: string,
   runner: MediaProofCommandRunner,
+  maxOutputBytes?: number,
 ) {
   return runner("ffmpeg", [
     "-hide_banner",
@@ -175,6 +178,7 @@ export function createVideoContactSheet(
     "fps=1/5,scale=640:-1,tile=5x4",
     "-frames:v",
     "1",
+    ...(maxOutputBytes === undefined ? [] : ["-fs", String(maxOutputBytes)]),
     outputPath,
   ]);
 }
@@ -188,6 +192,8 @@ export function prepareMediaProofArtifacts(
   if (urls.length === 0) return { manifestPath: null, summaryPath: null, artifacts: [] };
   mkdirSync(proofScratchDir, { recursive: true });
   const artifacts: PreparedMediaProofArtifact[] = [];
+  let downloadedBytes = 0;
+  let derivedBytes = 0;
   for (const [index, url] of urls.entries()) {
     const deadlineAt = performance.now() + MEDIA_PROOF_TIMEOUT_MS;
     const runBeforeDeadline: MediaProofCommandRunner = (command, args) => {
@@ -206,6 +212,20 @@ export function prepareMediaProofArtifacts(
     );
     const metadataPath = join(proofScratchDir, `proof-video-${ordinal}.ffprobe.json`);
     const contactSheetPath = join(proofScratchDir, `proof-video-${ordinal}.contact-sheet.jpg`);
+    const remainingDownloadBytes = MEDIA_PROOF_MAX_TOTAL_DOWNLOAD_BYTES - downloadedBytes;
+    if (remainingDownloadBytes <= 0) {
+      artifacts.push({
+        kind,
+        url,
+        downloadedPath: null,
+        metadataPath: null,
+        contactSheetPath: null,
+        status: "failed",
+        detail: `shared download budget exhausted at ${MEDIA_PROOF_MAX_TOTAL_DOWNLOAD_BYTES} bytes`,
+      });
+      continue;
+    }
+    const admittedDownloadBytes = Math.min(MEDIA_PROOF_MAX_DOWNLOAD_BYTES, remainingDownloadBytes);
     const download = runBeforeDeadline("curl", [
       "-L",
       "--fail",
@@ -214,13 +234,14 @@ export function prepareMediaProofArtifacts(
       "--max-time",
       "90",
       "--max-filesize",
-      String(MEDIA_PROOF_MAX_DOWNLOAD_BYTES),
+      String(admittedDownloadBytes),
       "--output",
       downloadedPath,
       ...(kind === "attachment" ? ["-w", "%{content_type}\n%{url_effective}"] : []),
       url,
     ]);
     if (download.status !== 0) {
+      rmSync(downloadedPath, { force: true });
       artifacts.push({
         kind,
         url,
@@ -232,7 +253,8 @@ export function prepareMediaProofArtifacts(
       });
       continue;
     }
-    if (statSync(downloadedPath).size > MEDIA_PROOF_MAX_DOWNLOAD_BYTES) {
+    const downloadBytes = statSync(downloadedPath).size;
+    if (downloadBytes > admittedDownloadBytes) {
       rmSync(downloadedPath, { force: true });
       artifacts.push({
         kind,
@@ -241,7 +263,7 @@ export function prepareMediaProofArtifacts(
         metadataPath: null,
         contactSheetPath: null,
         status: "failed",
-        detail: `download exceeded ${MEDIA_PROOF_MAX_DOWNLOAD_BYTES} bytes`,
+        detail: `download exceeded its admitted ${admittedDownloadBytes}-byte budget`,
       });
       continue;
     }
@@ -249,6 +271,7 @@ export function prepareMediaProofArtifacts(
       const [rawContentType = "", effectiveUrl = ""] = String(download.stdout ?? "").split("\n");
       const contentType = rawContentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
       if (!contentType.startsWith("image/") && !contentType.startsWith("video/")) {
+        rmSync(downloadedPath, { force: true });
         artifacts.push({
           kind,
           url,
@@ -268,6 +291,7 @@ export function prepareMediaProofArtifacts(
       renameSync(downloadedPath, resolvedPath);
       downloadedPath = resolvedPath;
     }
+    downloadedBytes += downloadBytes;
     if (kind === "image") {
       artifacts.push({
         kind,
@@ -293,13 +317,44 @@ export function prepareMediaProofArtifacts(
       });
       continue;
     }
-    writeFileSync(metadataPath, String(metadata.stdout ?? "{}"), "utf8");
+    const metadataText = String(metadata.stdout ?? "{}");
+    const metadataBytes = Buffer.byteLength(metadataText);
+    const remainingDerivedBytes = MEDIA_PROOF_MAX_DERIVED_BYTES - derivedBytes;
+    if (metadataBytes > remainingDerivedBytes) {
+      artifacts.push({
+        kind,
+        url,
+        downloadedPath,
+        metadataPath: null,
+        contactSheetPath: null,
+        status: "failed",
+        detail: `ffprobe metadata exceeded the remaining ${remainingDerivedBytes}-byte derived-artifact budget`,
+      });
+      continue;
+    }
+    writeFileSync(metadataPath, metadataText, "utf8");
+    derivedBytes += metadataBytes;
+    const contactSheetBudget = MEDIA_PROOF_MAX_DERIVED_BYTES - derivedBytes;
+    if (contactSheetBudget <= 0) {
+      artifacts.push({
+        kind,
+        url,
+        downloadedPath,
+        metadataPath,
+        contactSheetPath: null,
+        status: "failed",
+        detail: `derived-artifact budget exhausted at ${MEDIA_PROOF_MAX_DERIVED_BYTES} bytes`,
+      });
+      continue;
+    }
     const contactSheet = createVideoContactSheet(
       downloadedPath,
       contactSheetPath,
       runBeforeDeadline,
+      contactSheetBudget,
     );
     if (contactSheet.status !== 0) {
+      rmSync(contactSheetPath, { force: true });
       artifacts.push({
         kind,
         url,
@@ -311,6 +366,21 @@ export function prepareMediaProofArtifacts(
       });
       continue;
     }
+    const contactSheetBytes = statSync(contactSheetPath).size;
+    if (contactSheetBytes > contactSheetBudget) {
+      rmSync(contactSheetPath, { force: true });
+      artifacts.push({
+        kind,
+        url,
+        downloadedPath,
+        metadataPath,
+        contactSheetPath: null,
+        status: "failed",
+        detail: `contact sheet exceeded its admitted ${contactSheetBudget}-byte derived-artifact budget`,
+      });
+      continue;
+    }
+    derivedBytes += contactSheetBytes;
     artifacts.push({
       kind,
       url,

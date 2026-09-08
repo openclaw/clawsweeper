@@ -21,6 +21,7 @@ import {
   hydratePullRequestReviewBlobs,
   hydratePullRequestReviewHistory,
   materializePullRequestReviewTree,
+  materializePullRequestReviewTreeForTest,
   removePullRequestReviewTree,
   ReviewGitError,
 } from "../dist/clawsweeper-review-blobs.js";
@@ -717,6 +718,60 @@ test("restricted review materializes the exact pull request head before model ex
       true,
     );
     assert.equal(existsSync(reviewTree), false);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("restricted review admits file count and disk before checkout, then removes byte-limit breaches", () => {
+  const fixture = partialCloneFixture({ prefetchHead: false });
+  try {
+    const attempt = (
+      name: string,
+      budget: {
+        maxFiles: number;
+        maxBytes: number;
+        diskReserveBytes: number;
+        availableBytes: number;
+      },
+    ) => {
+      const reviewTree = join(fixture.root, name);
+      assert.throws(
+        () =>
+          materializePullRequestReviewTreeForTest(
+            {
+              targetDir: fixture.target,
+              worktreeDir: reviewTree,
+              itemNumber: 982,
+              headSha: fixture.headSha,
+            },
+            budget,
+          ),
+        (error) =>
+          error instanceof ReviewSourcePreparationError &&
+          error.diagnosticReason === "review_checkout_unavailable",
+      );
+      assert.equal(existsSync(reviewTree), false);
+    };
+
+    attempt("file-limit", {
+      maxFiles: 1,
+      maxBytes: 1024,
+      diskReserveBytes: 0,
+      availableBytes: 1024,
+    });
+    attempt("disk-admission", {
+      maxFiles: 100,
+      maxBytes: 1024,
+      diskReserveBytes: 1024,
+      availableBytes: 2047,
+    });
+    attempt("byte-limit", {
+      maxFiles: 100,
+      maxBytes: 1,
+      diskReserveBytes: 0,
+      availableBytes: 1,
+    });
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }

@@ -25,7 +25,9 @@ checkpoint, and status-only commits are intentionally omitted.
 - Made persistent local review output opt-in: ordinary local reviews now use
   private transient scratch by default, explicit summary/debug modes retain
   bounded output, and hosted review refuses before execution unless its required
-  artifact route explicitly selects debug retention.
+  artifact route explicitly selects debug retention. Required PR checkouts now
+  use a separately admitted private workspace, and media producers share
+  run-owned byte pools before writing.
 - Add reviewed-plan retirement of one merged-target publication through the existing maintenance workflow, keeping signing credentials confined to its execution step.
 - Admit the two approved Signal URL-rejection fixtures through exact URI, source-line, path, and native decoder bindings while retaining all scanner and verification checks.
 - Admit the reviewed Crabbox PostgreSQL operations example through exact Postgres detector, observed `PLAIN`/`HTML` decoder, value-hash, source-line, path, mode, metadata, and committed base/head bindings.

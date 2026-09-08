@@ -809,7 +809,11 @@ artifact tree. An explicit legacy `--artifact-dir` still selects debug
 retention. Summary destinations are created exclusively for one invocation.
 Transient output is capped at 96 MiB/256 files; debug output is capped at
 1 GiB/4,096 files with per-item allocations and at most 128 selected items per
-invocation. Existing or unrelated retained runs are never pruned automatically.
+invocation. Required pull-request checkouts use a separate private run workspace:
+tracked paths and free disk are admitted before materialization, actual checkout
+usage is then capped at 200,000 files/2 GiB, and 1 GiB remains reserved. Media
+proof downloads share 64 MiB per item and derived metadata/contact sheets share
+16 MiB. Existing or unrelated retained runs are never pruned automatically.
 `--result-format json` returns the same result as valid JSON.
 
 ```bash

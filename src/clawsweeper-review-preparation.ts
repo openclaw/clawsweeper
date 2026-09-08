@@ -71,13 +71,10 @@ export function prepareReviewCommand(
     outputSelection.retention === "none"
       ? createTransientReviewOutput("clawsweeper-review-")
       : null;
-  const transientCheckout =
-    localOnly &&
-    !localRange &&
-    !stringArg(args.target_dir, "").trim() &&
-    outputSelection.retention !== "debug"
-      ? createTransientReviewOutput("clawsweeper-review-checkout-", transientOutput ?? undefined)
-      : null;
+  const reviewWorkspace = createTransientReviewOutput(
+    "clawsweeper-review-workspace-",
+    transientOutput ?? undefined,
+  );
   let retainedReviewOutput: ReturnType<typeof prepareRetainedReviewOutput> | null = null;
   try {
     const verbose = boolArg(args.verbose);
@@ -100,8 +97,7 @@ export function prepareReviewCommand(
     const defaultArtifactDir = defaultReviewArtifactDir(localOnly, itemNumber, itemNumbers);
     const requestedArtifactDir = stringArg(args.artifact_dir, "");
     const requestedOrDefaultArtifactDir = resolve(requestedArtifactDir || defaultArtifactDir);
-    const checkoutArtifactDir =
-      transientCheckout?.path ?? transientOutput?.path ?? requestedOrDefaultArtifactDir;
+    const checkoutArtifactDir = reviewWorkspace.path;
     if (!transientOutput && !localRange) {
       retainedReviewOutput = prepareRetainedReviewOutput(
         requestedOrDefaultArtifactDir,
@@ -281,6 +277,7 @@ export function prepareReviewCommand(
       humanLocalReview,
       openclawDir,
       artifactDir,
+      reviewWorkspaceDir: reviewWorkspace.path,
       itemsDir,
       batchSize,
       maxPages,
@@ -310,7 +307,7 @@ export function prepareReviewCommand(
       outputSelection,
       retainedReviewOutput,
       cleanupReviewOutput: () => {
-        transientCheckout?.cleanup();
+        reviewWorkspace.cleanup();
         transientOutput?.cleanup();
       },
     };
@@ -324,7 +321,7 @@ export function prepareReviewCommand(
         }`,
       );
     }
-    transientCheckout?.cleanup();
+    reviewWorkspace.cleanup();
     transientOutput?.cleanup();
     throw error;
   }
