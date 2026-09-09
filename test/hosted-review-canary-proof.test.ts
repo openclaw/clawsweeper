@@ -44,6 +44,7 @@ import {
   readHostedLifecycle,
   recordHostedLifecycle,
   readHostedReviewRollout,
+  runWithHostedTraceDiagnostics,
   runWithWithheldDiagnostics,
   snapshotHostedReviewRollouts,
   stopHostedNativeGroup,
@@ -67,6 +68,38 @@ test("hosted review canary explicitly supplies the canonical transient result li
     /runCodexForTest\(\{[\s\S]*?\bresultFileBytes: TRANSIENT_REVIEW_RESULT_MAX_BYTES,/,
   );
 });
+
+type TraceCheck = (
+  id: string,
+  assertion: () => unknown,
+  count?: unknown,
+  unexpectedKind?: unknown,
+) => unknown;
+
+function captureTraceFailure(operation: (check: TraceCheck) => unknown) {
+  const lines: string[] = [];
+  const original = process.stderr.write;
+  process.stderr.write = (chunk: string | Uint8Array) => {
+    lines.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+    return true;
+  };
+  try {
+    assert.throws(
+      () => runWithHostedTraceDiagnostics("Trace failed; diagnostics withheld.", operation),
+      (error: Error) => {
+        assert.equal(error.message, "Trace failed; diagnostics withheld.");
+        return true;
+      },
+    );
+  } finally {
+    process.stderr.write = original;
+  }
+  assert.equal(lines.length, 1);
+  const line = lines[0]!;
+  assert.equal(line.split("\n").length, 2);
+  assert.ok(Buffer.byteLength(line) <= 512);
+  return { line, facts: JSON.parse(line) };
+}
 
 function nativeTraceFixture() {
   const marker = "9ccfabf3-8158-437d-a168-173ee10d102a";
@@ -170,7 +203,7 @@ function nativeTraceFixture() {
   return { records, item, options, rollout, invoke };
 }
 
-test("hosted review trace proves the pinned native command, final answer, and terminal turn", () => {
+test("hosted review trace proves the pinned native command, final answer, and terminal turn", (t) => {
   const fixture = nativeTraceFixture();
   const proof = fixture.invoke();
   assert.deepEqual(proof, {
@@ -187,6 +220,18 @@ test("hosted review trace proves the pinned native command, final answer, and te
     JSON.stringify(proof),
     /private|9ccfabf3|command":|output|prompt|transcript/i,
   );
+  const lines: unknown[] = [];
+  t.mock.method(process.stderr, "write", (chunk: unknown) => {
+    lines.push(chunk);
+    return true;
+  });
+  assert.deepEqual(
+    runWithHostedTraceDiagnostics("Trace failed.", (check: TraceCheck) =>
+      summarizeHostedReviewTrace({ ...fixture.options, rollout: fixture.rollout() }, check),
+    ),
+    proof,
+  );
+  assert.deepEqual(lines, []);
 });
 
 test("hosted review trace binds the terminal answer independently of optional message phase", () => {
@@ -427,8 +472,255 @@ for (const [name, mutate] of traceMutations) {
     const fixture = nativeTraceFixture();
     mutate(fixture);
     assert.throws(fixture.invoke);
+    captureTraceFailure((check) =>
+      summarizeHostedReviewTrace({ ...fixture.options, rollout: fixture.rollout() }, check),
+    );
   });
 }
+
+test("hosted trace diagnostics identify existing ordinal, session, and attestation assertions", () => {
+  for (const [id, mutate, count] of [
+    [
+      "ordinal",
+      (f) => {
+        f.records[3]!.ordinal = 9;
+      },
+      3,
+    ],
+    [
+      "session_version",
+      (f) => {
+        f.records[0]!.payload.cli_version = "other";
+      },
+      null,
+    ],
+    [
+      "command_exit",
+      (f) => {
+        f.item(3).exit_code = 1;
+      },
+      null,
+    ],
+    [
+      "final_count",
+      (f) => {
+        f.item(5).content = [];
+      },
+      0,
+    ],
+  ] as [string, (f: ReturnType<typeof nativeTraceFixture>) => void, number | null][]) {
+    const fixture = nativeTraceFixture();
+    mutate(fixture);
+    const { facts } = captureTraceFailure((check) =>
+      summarizeHostedReviewTrace({ ...fixture.options, rollout: fixture.rollout() }, check),
+    );
+    assert.deepEqual(facts, {
+      kind: "hosted_trace_failure",
+      assertionId: id,
+      observedCount: count,
+      unexpectedKind: null,
+    });
+  }
+});
+
+test("hosted trace diagnostics identify malformed UTF-8 and JSON without parser messages", () => {
+  for (const id of ["trace_utf8", "record_json", "call_arguments_json"]) {
+    const fixture = nativeTraceFixture();
+    let rollout = fixture.rollout();
+    if (id === "trace_utf8") {
+      rollout.bytes = Buffer.concat([Buffer.from("PRIVATE_SENTINEL"), Buffer.from([0xff, 0x0a])]);
+    } else if (id === "record_json") {
+      rollout.bytes = Buffer.from('{"PRIVATE_SENTINEL":\n');
+    } else {
+      fixture.records[2]!.payload.arguments = '{"PRIVATE_SENTINEL":';
+      rollout = fixture.rollout();
+    }
+    assert.throws(() => summarizeHostedReviewTrace({ ...fixture.options, rollout }));
+    const { line, facts } = captureTraceFailure((check) =>
+      summarizeHostedReviewTrace({ ...fixture.options, rollout }, check),
+    );
+    assert.deepEqual(facts, {
+      kind: "hosted_trace_failure",
+      assertionId: id,
+      observedCount: null,
+      unexpectedKind: null,
+    });
+    assert.doesNotMatch(line, /PRIVATE_SENTINEL|SyntaxError|TypeError|JSON at position/);
+  }
+});
+
+test("hosted trace diagnostics bucket unexpected kinds without accepting them", () => {
+  const privateValue = "PRIVATE_SENTINEL\n::error::untrusted kind";
+  for (const [id, value, expected, mutate] of [
+    [
+      "record_kind",
+      "security_risk_score",
+      "security_risk_score",
+      (f, value) => {
+        f.records[0]!.type = value as string;
+      },
+    ],
+    [
+      "event_kind",
+      "thread_settings_applied",
+      "thread_settings_applied",
+      (f, value) => {
+        f.records[1]!.payload.type = value;
+      },
+    ],
+    [
+      "completed_item_kind",
+      "FunctionCallOutput",
+      "FunctionCallOutput",
+      (f, value) => {
+        f.item(3).type = value;
+      },
+    ],
+    [
+      "record_kind",
+      "FunctionCallOutput",
+      "other",
+      (f, value) => {
+        f.records[0]!.type = value as string;
+      },
+    ],
+    [
+      "record_kind",
+      privateValue,
+      "other",
+      (f, value) => {
+        f.records[0]!.type = value as string;
+      },
+    ],
+    [
+      "event_kind",
+      { privateValue },
+      "other",
+      (f, value) => {
+        f.records[1]!.payload.type = value;
+      },
+    ],
+    [
+      "completed_item_kind",
+      null,
+      null,
+      (f, value) => {
+        f.item(3).type = value;
+      },
+    ],
+  ] as [
+    string,
+    unknown,
+    string | null,
+    (f: ReturnType<typeof nativeTraceFixture>, value: unknown) => void,
+  ][]) {
+    const fixture = nativeTraceFixture();
+    mutate(fixture, value);
+    assert.throws(fixture.invoke);
+    const { line, facts } = captureTraceFailure((check) =>
+      summarizeHostedReviewTrace({ ...fixture.options, rollout: fixture.rollout() }, check),
+    );
+    assert.equal(facts.assertionId, id);
+    assert.equal(facts.unexpectedKind, expected);
+    assert.equal(facts.observedCount, id === "event_kind" ? 4 : null);
+    assert.doesNotMatch(line, /PRIVATE_SENTINEL|::error::|privateValue/);
+  }
+});
+
+test("hosted trace diagnostics preserve the first failure across a failing finally", () => {
+  const { facts } = captureTraceFailure((check) => {
+    try {
+      check("ordinal", () => assert.equal("PRIVATE_OPERAND", "different"), 3);
+    } finally {
+      check("final_count", () => assert.equal(0, 1), 0);
+    }
+  });
+  assert.equal(facts.assertionId, "ordinal");
+  assert.equal(facts.observedCount, 3);
+
+  const unknown = captureTraceFailure((check) => {
+    try {
+      check(
+        "ordinal",
+        () => {
+          throw new Error("PRIVATE_FIRST_FAILURE");
+        },
+        3,
+      );
+    } finally {
+      check("final_count", () => assert.fail("PRIVATE_FINALLY_FAILURE"), 0);
+    }
+  });
+  assert.deepEqual(unknown.facts, {
+    kind: "hosted_trace_failure",
+    assertionId: "unknown",
+    observedCount: null,
+    unexpectedKind: null,
+  });
+  assert.doesNotMatch(unknown.line, /PRIVATE_FIRST|PRIVATE_FINALLY/);
+});
+
+test("hosted trace diagnostics leave unknown exceptions and unobserved facts unknown", () => {
+  const privateError = Object.create(Error.prototype);
+  for (const key of ["message", "stack", "code", "actual", "expected", "toJSON"]) {
+    Object.defineProperty(privateError, key, {
+      get() {
+        assert.fail("private exception properties must not be read");
+      },
+    });
+  }
+  for (const operation of [
+    () => {
+      throw privateError;
+    },
+    (check: TraceCheck) =>
+      check(
+        "ordinal",
+        () => {
+          throw privateError;
+        },
+        3,
+      ),
+    () => {
+      throw new assert.AssertionError({ message: "PRIVATE_SENTINEL" });
+    },
+  ]) {
+    assert.deepEqual(captureTraceFailure(operation).facts, {
+      kind: "hosted_trace_failure",
+      assertionId: "unknown",
+      observedCount: null,
+      unexpectedKind: null,
+    });
+  }
+  const { line, facts } = captureTraceFailure((check) =>
+    check(
+      "PRIVATE_SENTINEL\n::error::injected",
+      () => assert.fail("PRIVATE_OPERAND"),
+      Infinity,
+      "PRIVATE_KIND",
+    ),
+  );
+  assert.equal(facts.assertionId, "unknown");
+  assert.equal(facts.observedCount, null);
+  assert.equal(facts.unexpectedKind, "other");
+  assert.doesNotMatch(line, /PRIVATE|::error::/);
+});
+
+test("hosted trace diagnostics distinguish discovery and bounded read failures", (t) => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "hosted-trace-diagnostic-")));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  mkdirSync(join(home, "sessions"));
+  const empty = captureTraceFailure((check) => readHostedReviewRollout(home, [], check));
+  assert.equal(empty.facts.assertionId, "discovery_added");
+  assert.equal(empty.facts.observedCount, 0);
+  const path = join(home, "sessions", "rollout-large.jsonl");
+  writeFileSync(path, "");
+  truncateSync(path, HOSTED_REVIEW_ROLLOUT_MAX_BYTES + 1);
+  const large = captureTraceFailure((check) => readHostedReviewRollout(home, [], check));
+  assert.equal(large.facts.assertionId, "read_size");
+  assert.equal(large.facts.observedCount, HOSTED_REVIEW_ROLLOUT_MAX_BYTES + 1);
+  assert.doesNotMatch(large.line, /rollout-large|hosted-trace-diagnostic/);
+});
 
 for (const [name, index] of [
   ["session", 0],

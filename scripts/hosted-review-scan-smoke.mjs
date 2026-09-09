@@ -38,6 +38,7 @@ import {
   latchHostedNativeFailure,
   readHostedLifecycle,
   readHostedReviewRollout,
+  runWithHostedTraceDiagnostics,
   runWithWithheldDiagnostics,
   snapshotHostedReviewRollouts,
   stopHostedNativeGroup,
@@ -183,9 +184,9 @@ ${live ? `const child = require('node:child_process').spawnSync(${JSON.stringify
   assertCheckout();
   writeProvider(true);
   process.env.CODEX_BIN = wrapper;
-  const initialRollouts = runWithWithheldDiagnostics(
+  const initialRollouts = runWithHostedTraceDiagnostics(
     "Hosted review rollout inventory failed; diagnostics withheld.",
-    () => snapshotHostedReviewRollouts(process.env.CODEX_HOME),
+    (check) => snapshotHostedReviewRollouts(process.env.CODEX_HOME, check),
   );
   const decision = runWithWithheldDiagnostics(
     "Hosted production review failed; diagnostics withheld.",
@@ -248,17 +249,20 @@ ${live ? `const child = require('node:child_process').spawnSync(${JSON.stringify
   );
   const diagnosticPromptMode = statSync(productionPromptPath).mode & 0o777;
   assert.equal(diagnosticPromptMode, 0o600);
-  const trace = runWithWithheldDiagnostics(
+  const trace = runWithHostedTraceDiagnostics(
     "Hosted review trace did not prove the tool round; diagnostics withheld.",
-    () =>
-      summarizeHostedReviewTrace({
-        rollout: readHostedReviewRollout(process.env.CODEX_HOME, initialRollouts),
-        cwd,
-        marker,
-        expectedCommand: reviewCommand,
-        finalDecisionText: readFileSync(output, "utf8"),
-        checkoutUnchanged: true,
-      }),
+    (check) =>
+      summarizeHostedReviewTrace(
+        {
+          rollout: readHostedReviewRollout(process.env.CODEX_HOME, initialRollouts, check),
+          cwd,
+          marker,
+          expectedCommand: reviewCommand,
+          finalDecisionText: readFileSync(output, "utf8"),
+          checkoutUnchanged: true,
+        },
+        check,
+      ),
   );
   const proof = {
     refusalScenarioCount: 4,

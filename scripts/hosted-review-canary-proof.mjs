@@ -700,11 +700,124 @@ export function assertMatchesJsonSchema(value, schema, path = "$") {
   }
 }
 
-export function snapshotHostedReviewRollouts(codexHome) {
-  assert.ok(codexHome, "canary requires its isolated CODEX_HOME");
+const traceAssertionIds = new Set([
+  "discovery_home",
+  "discovery_depth",
+  "discovery_directory",
+  "discovery_count",
+  "discovery_symlink",
+  "discovery_file",
+  "discovery_previous",
+  "discovery_added",
+  "read_file",
+  "read_size",
+  "read_stable",
+  "trace_size",
+  "trace_utf8",
+  "trace_frame",
+  "record_count",
+  "record_size",
+  "record_json",
+  "ordinal",
+  "record_kind",
+  "session_count",
+  "session_position",
+  "session_id",
+  "session_path",
+  "session_version",
+  "session_source",
+  "session_history",
+  "session_cwd",
+  "event_kind",
+  "turn_count",
+  "turn_id",
+  "turn_error",
+  "turn_position",
+  "response_kind",
+  "call_count",
+  "result_count",
+  "call_name",
+  "call_id",
+  "call_turn",
+  "call_arguments_json",
+  "call_command",
+  "call_cwd",
+  "call_login",
+  "result_call",
+  "result_turn",
+  "result_marker",
+  "completed_item_thread",
+  "completed_item_turn",
+  "completed_item_kind",
+  "command_count",
+  "command_call",
+  "command_arguments",
+  "command_cwd",
+  "command_status",
+  "command_exit",
+  "command_marker",
+  "command_order",
+  "final_terminal",
+  "final_count",
+  "final_order",
+  "final_marker",
+]);
+const runTraceAssertion = (_id, operation) => operation();
+
+export function runWithHostedTraceDiagnostics(message, operation) {
+  let failure = null;
+  const check = (id, assertion, count = null, unexpectedKind = null) => {
+    try {
+      return assertion();
+    } catch (error) {
+      // Latch the first failure, including unknown exceptions, before finally.
+      // Known parser failures identify only their owner; never read error text.
+      if (failure === null) {
+        const identified =
+          error instanceof assert.AssertionError ||
+          (id === "trace_utf8" && error instanceof TypeError) ||
+          ((id === "record_json" || id === "call_arguments_json") && error instanceof SyntaxError);
+        failure = {
+          assertionId: identified && traceAssertionIds.has(id) ? id : "unknown",
+          observedCount: identified ? nativeCount(count) : null,
+          unexpectedKind:
+            !identified || unexpectedKind === null
+              ? null
+              : (id === "record_kind" && unexpectedKind === "security_risk_score") ||
+                  (id === "event_kind" && unexpectedKind === "thread_settings_applied") ||
+                  (id === "completed_item_kind" && unexpectedKind === "FunctionCallOutput")
+                ? unexpectedKind
+                : "other",
+        };
+      }
+      throw error;
+    }
+  };
+  try {
+    return operation(check);
+  } catch {
+    const line =
+      JSON.stringify({
+        kind: "hosted_trace_failure",
+        assertionId: failure?.assertionId ?? "unknown",
+        observedCount: failure?.observedCount ?? null,
+        unexpectedKind: failure?.unexpectedKind ?? null,
+      }) + "\n";
+    assert.ok(Buffer.byteLength(line) <= 512);
+    process.stderr.write(line);
+    throw new Error(message);
+  }
+}
+
+export function snapshotHostedReviewRollouts(codexHome, check = runTraceAssertion) {
+  check("discovery_home", () => assert.ok(codexHome, "canary requires its isolated CODEX_HOME"));
   const home = resolve(codexHome);
-  assert.equal(realpathSync(home), home, "canary CODEX_HOME must not traverse a symlink");
-  assert.ok(lstatSync(home).isDirectory(), "canary CODEX_HOME must be a directory");
+  check("discovery_home", () =>
+    assert.equal(realpathSync(home), home, "canary CODEX_HOME must not traverse a symlink"),
+  );
+  check("discovery_home", () =>
+    assert.ok(lstatSync(home).isDirectory(), "canary CODEX_HOME must be a directory"),
+  );
   const root = join(home, "sessions");
   try {
     lstatSync(root);
@@ -715,18 +828,32 @@ export function snapshotHostedReviewRollouts(codexHome) {
   const paths = [];
   let entries = 0;
   const visit = (path, depth) => {
-    assert.ok(depth <= 4, "canary rollout directory depth exceeded");
+    check(
+      "discovery_depth",
+      () => assert.ok(depth <= 4, "canary rollout directory depth exceeded"),
+      depth,
+    );
     const info = lstatSync(path);
-    assert.ok(info.isDirectory() && !info.isSymbolicLink(), "unsafe canary rollout directory");
+    check("discovery_directory", () =>
+      assert.ok(info.isDirectory() && !info.isSymbolicLink(), "unsafe canary rollout directory"),
+    );
     const directory = opendirSync(path);
     try {
       for (let entry; (entry = directory.readSync()) !== null;) {
-        assert.ok(++entries <= 512, "canary rollout path inventory exceeded");
+        check(
+          "discovery_count",
+          () => assert.ok(++entries <= 512, "canary rollout path inventory exceeded"),
+          entries + 1,
+        );
         const child = join(path, entry.name);
-        assert.ok(!entry.isSymbolicLink(), "canary rollout path is a symlink");
+        check("discovery_symlink", () =>
+          assert.ok(!entry.isSymbolicLink(), "canary rollout path is a symlink"),
+        );
         if (entry.isDirectory()) visit(child, depth + 1);
         else {
-          assert.ok(entry.isFile() && entry.name.endsWith(".jsonl"), "unexpected rollout path");
+          check("discovery_file", () =>
+            assert.ok(entry.isFile() && entry.name.endsWith(".jsonl"), "unexpected rollout path"),
+          );
           paths.push(child);
         }
       }
@@ -738,37 +865,57 @@ export function snapshotHostedReviewRollouts(codexHome) {
   return paths.sort();
 }
 
-export function readHostedReviewRollout(codexHome, before) {
-  const after = snapshotHostedReviewRollouts(codexHome);
-  assert.ok(
-    before.every((path) => after.includes(path)),
-    "existing rollout paths changed",
+export function readHostedReviewRollout(codexHome, before, check = runTraceAssertion) {
+  const after = snapshotHostedReviewRollouts(codexHome, check);
+  check("discovery_previous", () =>
+    assert.ok(
+      before.every((path) => after.includes(path)),
+      "existing rollout paths changed",
+    ),
   );
   const added = after.filter((path) => !before.includes(path));
-  assert.equal(added.length, 1, "canary must create exactly one new rollout");
+  check(
+    "discovery_added",
+    () => assert.equal(added.length, 1, "canary must create exactly one new rollout"),
+    added.length,
+  );
   const path = added[0];
   const file = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const initial = fstatSync(file);
-    assert.ok(initial.isFile(), "canary rollout must be a regular file");
-    assert.ok(initial.size <= HOSTED_REVIEW_ROLLOUT_MAX_BYTES, "canary rollout bytes exceeded");
+    check("read_file", () => assert.ok(initial.isFile(), "canary rollout must be a regular file"));
+    check(
+      "read_size",
+      () =>
+        assert.ok(initial.size <= HOSTED_REVIEW_ROLLOUT_MAX_BYTES, "canary rollout bytes exceeded"),
+      initial.size,
+    );
     const buffer = Buffer.alloc(initial.size + 1);
     let bytes = 0;
     for (;;) {
       const count = readSync(file, buffer, bytes, buffer.length - bytes, null);
       if (!count) break;
       bytes += count;
-      assert.ok(bytes <= initial.size, "canary rollout changed while reading");
+      check(
+        "read_stable",
+        () => assert.ok(bytes <= initial.size, "canary rollout changed while reading"),
+        bytes,
+      );
     }
     const final = lstatSync(path);
-    assert.ok(
-      final.isFile() &&
-        final.dev === initial.dev &&
-        final.ino === initial.ino &&
-        final.size === bytes &&
-        bytes === initial.size &&
-        final.mtimeMs === initial.mtimeMs,
-      "canary rollout changed while reading",
+    check(
+      "read_stable",
+      () =>
+        assert.ok(
+          final.isFile() &&
+            final.dev === initial.dev &&
+            final.ino === initial.ino &&
+            final.size === bytes &&
+            bytes === initial.size &&
+            final.mtimeMs === initial.mtimeMs,
+          "canary rollout changed while reading",
+        ),
+      bytes,
     );
     return { path, bytes: buffer.subarray(0, bytes) };
   } finally {
@@ -776,147 +923,260 @@ export function readHostedReviewRollout(codexHome, before) {
   }
 }
 
-export function summarizeHostedReviewTrace({
-  rollout,
-  cwd,
-  marker,
-  expectedCommand,
-  finalDecisionText,
-  checkoutUnchanged,
-}) {
+export function summarizeHostedReviewTrace(
+  { rollout, cwd, marker, expectedCommand, finalDecisionText, checkoutUnchanged },
+  check = runTraceAssertion,
+) {
   // The pinned CLI persists typed completed items in paginated rollouts.
   // Human stderr includes untrusted tool text and cannot establish tool success.
-  assert.ok(
-    rollout.bytes.length <= HOSTED_REVIEW_ROLLOUT_MAX_BYTES,
-    "canary rollout bytes exceeded",
+  check(
+    "trace_size",
+    () =>
+      assert.ok(
+        rollout.bytes.length <= HOSTED_REVIEW_ROLLOUT_MAX_BYTES,
+        "canary rollout bytes exceeded",
+      ),
+    rollout.bytes.length,
   );
-  const text = new TextDecoder("utf-8", { fatal: true }).decode(rollout.bytes);
-  assert.ok(text.endsWith("\n"), "canary rollout is incomplete");
+  const text = check("trace_utf8", () =>
+    new TextDecoder("utf-8", { fatal: true }).decode(rollout.bytes),
+  );
+  check("trace_frame", () => assert.ok(text.endsWith("\n"), "canary rollout is incomplete"));
   const lines = text.slice(0, -1).split("\n");
-  assert.ok(lines.length <= ROLLOUT_MAX_RECORDS, "canary rollout record count exceeded");
+  check(
+    "record_count",
+    () => assert.ok(lines.length <= ROLLOUT_MAX_RECORDS, "canary rollout record count exceeded"),
+    lines.length,
+  );
   const records = lines.map((line, index) => {
-    assert.ok(
-      Buffer.byteLength(line) <= ROLLOUT_RECORD_MAX_BYTES,
-      "canary rollout record bytes exceeded",
+    check(
+      "record_size",
+      () =>
+        assert.ok(
+          Buffer.byteLength(line) <= ROLLOUT_RECORD_MAX_BYTES,
+          "canary rollout record bytes exceeded",
+        ),
+      Buffer.byteLength(line),
     );
-    const record = JSON.parse(line);
-    assert.equal(record.ordinal, index, "canary rollout order is incomplete");
-    assert.ok(
-      [
-        "session_meta",
-        "event_msg",
-        "response_item",
-        "world_state",
-        "turn_context",
-        "token_usage_record",
-      ].includes(record.type),
-      "canary rollout contains an unexpected record",
+    const record = check("record_json", () => JSON.parse(line));
+    check(
+      "ordinal",
+      () => assert.equal(record.ordinal, index, "canary rollout order is incomplete"),
+      index,
+    );
+    check(
+      "record_kind",
+      () =>
+        assert.ok(
+          [
+            "session_meta",
+            "event_msg",
+            "response_item",
+            "world_state",
+            "turn_context",
+            "token_usage_record",
+          ].includes(record.type),
+          "canary rollout contains an unexpected record",
+        ),
+      null,
+      record.type,
     );
     return { ...record, index };
   });
   const metadata = records.filter((record) => record.type === "session_meta");
-  assert.equal(metadata.length, 1, "canary rollout session is ambiguous");
-  assert.equal(metadata[0].index, 0);
+  check(
+    "session_count",
+    () => assert.equal(metadata.length, 1, "canary rollout session is ambiguous"),
+    metadata.length,
+  );
+  check("session_position", () => assert.equal(metadata[0].index, 0));
   const session = metadata[0].payload;
-  assert.match(session.id, /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/);
-  assert.equal(session.session_id, session.id);
-  assert.ok(rollout.path.endsWith(`-${session.id}.jsonl`), "canary rollout session path mismatch");
-  assert.equal(session.cli_version, CODEX_VERSION, "canary rollout version mismatch");
-  assert.equal(session.source, "exec");
-  assert.equal(session.originator, "codex_exec");
-  assert.equal(session.history_mode, "paginated");
-  assert.equal(session.cwd, cwd, "canary rollout cwd mismatch");
-  const events = records.filter((record) => record.type === "event_msg");
-  assert.ok(
-    events.every((record) =>
-      ["task_started", "item_completed", "token_count", "task_complete"].includes(
-        record.payload.type,
-      ),
+  check("session_id", () =>
+    assert.match(session.id, /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/),
+  );
+  check("session_id", () => assert.equal(session.session_id, session.id));
+  check("session_path", () =>
+    assert.ok(
+      rollout.path.endsWith(`-${session.id}.jsonl`),
+      "canary rollout session path mismatch",
     ),
-    "canary rollout contains an unexpected event or abort",
+  );
+  check("session_version", () =>
+    assert.equal(session.cli_version, CODEX_VERSION, "canary rollout version mismatch"),
+  );
+  check("session_source", () => assert.equal(session.source, "exec"));
+  check("session_source", () => assert.equal(session.originator, "codex_exec"));
+  check("session_history", () => assert.equal(session.history_mode, "paginated"));
+  check("session_cwd", () => assert.equal(session.cwd, cwd, "canary rollout cwd mismatch"));
+  const events = records.filter((record) => record.type === "event_msg");
+  let unexpectedEventKind = null;
+  const acceptedEvents = events.every((record) => {
+    const accepted = ["task_started", "item_completed", "token_count", "task_complete"].includes(
+      record.payload.type,
+    );
+    if (!accepted) unexpectedEventKind = record.payload.type;
+    return accepted;
+  });
+  check(
+    "event_kind",
+    () => assert.ok(acceptedEvents, "canary rollout contains an unexpected event or abort"),
+    events.length,
+    unexpectedEventKind,
   );
   const starts = events.filter((record) => record.payload.type === "task_started");
   const ends = events.filter((record) => record.payload.type === "task_complete");
-  assert.equal(starts.length, 1, "canary must start exactly one turn");
-  assert.equal(ends.length, 1, "canary must complete exactly one turn");
+  check(
+    "turn_count",
+    () => assert.equal(starts.length, 1, "canary must start exactly one turn"),
+    starts.length,
+  );
+  check(
+    "turn_count",
+    () => assert.equal(ends.length, 1, "canary must complete exactly one turn"),
+    ends.length,
+  );
   const turn = starts[0].payload.turn_id;
-  assert.match(turn, /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/);
-  assert.equal(ends[0].payload.turn_id, turn);
-  assert.ok(!Object.hasOwn(ends[0].payload, "error"), "canary terminal turn failed");
-  assert.equal(ends[0].index, records.length - 1, "canary terminal record is not last");
+  check("turn_id", () => assert.match(turn, /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/));
+  check("turn_id", () => assert.equal(ends[0].payload.turn_id, turn));
+  check("turn_error", () =>
+    assert.ok(!Object.hasOwn(ends[0].payload, "error"), "canary terminal turn failed"),
+  );
+  check("turn_position", () =>
+    assert.equal(ends[0].index, records.length - 1, "canary terminal record is not last"),
+  );
 
   const responses = records.filter((record) => record.type === "response_item");
-  assert.ok(
-    responses.every((record) =>
-      ["message", "reasoning", "function_call", "function_call_output"].includes(
-        record.payload.type,
+  check("response_kind", () =>
+    assert.ok(
+      responses.every((record) =>
+        ["message", "reasoning", "function_call", "function_call_output"].includes(
+          record.payload.type,
+        ),
       ),
+      "canary attempted an additional tool",
     ),
-    "canary attempted an additional tool",
   );
   const calls = responses.filter((record) => record.payload.type === "function_call");
   const results = responses.filter((record) => record.payload.type === "function_call_output");
-  assert.equal(calls.length, 1, "canary must attempt exactly one review tool");
-  assert.equal(results.length, 1, "canary must receive exactly one tool result");
-  const call = calls[0];
-  assert.equal(call.payload.name, "exec_command", "canary must use the native command tool");
-  assert.ok(typeof call.payload.call_id === "string" && call.payload.call_id.length > 0);
-  assert.equal(call.payload.internal_chat_message_metadata_passthrough?.turn_id, turn);
-  const args = JSON.parse(call.payload.arguments);
-  assert.equal(
-    args.cmd,
-    expectedCommand,
-    "canary command did not match the required diff inspection",
+  check(
+    "call_count",
+    () => assert.equal(calls.length, 1, "canary must attempt exactly one review tool"),
+    calls.length,
   );
-  if (args.workdir !== undefined) assert.equal(args.workdir, cwd);
+  check(
+    "result_count",
+    () => assert.equal(results.length, 1, "canary must receive exactly one tool result"),
+    results.length,
+  );
+  const call = calls[0];
+  check("call_name", () =>
+    assert.equal(call.payload.name, "exec_command", "canary must use the native command tool"),
+  );
+  check("call_id", () =>
+    assert.ok(typeof call.payload.call_id === "string" && call.payload.call_id.length > 0),
+  );
+  check("call_turn", () =>
+    assert.equal(call.payload.internal_chat_message_metadata_passthrough?.turn_id, turn),
+  );
+  const args = check("call_arguments_json", () => JSON.parse(call.payload.arguments));
+  check("call_command", () =>
+    assert.equal(
+      args.cmd,
+      expectedCommand,
+      "canary command did not match the required diff inspection",
+    ),
+  );
+  if (args.workdir !== undefined) check("call_cwd", () => assert.equal(args.workdir, cwd));
   if (Object.hasOwn(args, "login")) {
-    assert.equal(typeof args.login, "boolean", "canary command login must be a boolean");
+    check("call_login", () =>
+      assert.equal(typeof args.login, "boolean", "canary command login must be a boolean"),
+    );
   }
-  assert.equal(results[0].payload.call_id, call.payload.call_id);
-  assert.equal(results[0].payload.internal_chat_message_metadata_passthrough?.turn_id, turn);
-  assert.ok(
-    typeof results[0].payload.output === "string" && results[0].payload.output.includes(marker),
-    "canary model-facing tool result did not contain the fixture marker",
+  check("result_call", () => assert.equal(results[0].payload.call_id, call.payload.call_id));
+  check("result_turn", () =>
+    assert.equal(results[0].payload.internal_chat_message_metadata_passthrough?.turn_id, turn),
+  );
+  check("result_marker", () =>
+    assert.ok(
+      typeof results[0].payload.output === "string" && results[0].payload.output.includes(marker),
+      "canary model-facing tool result did not contain the fixture marker",
+    ),
   );
 
   const completed = events.filter((record) => record.payload.type === "item_completed");
   for (const record of completed) {
-    assert.equal(record.payload.thread_id, session.id, "canary item thread mismatch");
-    assert.equal(record.payload.turn_id, turn, "canary item turn mismatch");
-    assert.ok(
-      ["UserMessage", "Reasoning", "AgentMessage", "CommandExecution"].includes(
-        record.payload.item.type,
-      ),
-      "canary attempted an additional tool",
+    check("completed_item_thread", () =>
+      assert.equal(record.payload.thread_id, session.id, "canary item thread mismatch"),
+    );
+    check("completed_item_turn", () =>
+      assert.equal(record.payload.turn_id, turn, "canary item turn mismatch"),
+    );
+    check(
+      "completed_item_kind",
+      () =>
+        assert.ok(
+          ["UserMessage", "Reasoning", "AgentMessage", "CommandExecution"].includes(
+            record.payload.item.type,
+          ),
+          "canary attempted an additional tool",
+        ),
+      null,
+      record.payload.item.type,
     );
   }
   const commands = completed.filter((record) => record.payload.item.type === "CommandExecution");
-  assert.equal(commands.length, 1, "canary must complete exactly one review command");
+  check(
+    "command_count",
+    () => assert.equal(commands.length, 1, "canary must complete exactly one review command"),
+    commands.length,
+  );
   const command = commands[0];
-  assert.equal(command.payload.item.id, call.payload.call_id, "canary completed a different call");
+  check("command_call", () =>
+    assert.equal(
+      command.payload.item.id,
+      call.payload.call_id,
+      "canary completed a different call",
+    ),
+  );
   // The isolated canary keeps the pinned CLI's login-enabled default.
   // An explicit login:false must match the native non-login invocation.
-  assert.deepEqual(
-    command.payload.item.command,
-    ["/bin/bash", args.login === false ? "-c" : "-lc", expectedCommand],
-    "canary executed different command arguments",
+  check("command_arguments", () =>
+    assert.deepEqual(
+      command.payload.item.command,
+      ["/bin/bash", args.login === false ? "-c" : "-lc", expectedCommand],
+      "canary executed different command arguments",
+    ),
   );
-  assert.equal(command.payload.item.cwd, pathToFileURL(cwd).href, "canary command cwd mismatch");
-  assert.equal(command.payload.item.status, "completed", "canary command did not complete");
-  assert.equal(command.payload.item.exit_code, 0, "canary command failed");
-  assert.ok(
-    typeof command.payload.item.aggregated_output === "string" &&
-      command.payload.item.aggregated_output.includes(marker),
-    "canary command did not return the fixture marker",
+  check("command_cwd", () =>
+    assert.equal(command.payload.item.cwd, pathToFileURL(cwd).href, "canary command cwd mismatch"),
   );
-  assert.ok(
-    starts[0].index < call.index && call.index < command.index && command.index < results[0].index,
-    "canary command and result order is invalid",
+  check("command_status", () =>
+    assert.equal(command.payload.item.status, "completed", "canary command did not complete"),
   );
-  assert.equal(
-    ends[0].payload.last_agent_message,
-    finalDecisionText,
-    "canary terminal answer mismatch",
+  check("command_exit", () =>
+    assert.equal(command.payload.item.exit_code, 0, "canary command failed"),
+  );
+  check("command_marker", () =>
+    assert.ok(
+      typeof command.payload.item.aggregated_output === "string" &&
+        command.payload.item.aggregated_output.includes(marker),
+      "canary command did not return the fixture marker",
+    ),
+  );
+  check("command_order", () =>
+    assert.ok(
+      starts[0].index < call.index &&
+        call.index < command.index &&
+        command.index < results[0].index,
+      "canary command and result order is invalid",
+    ),
+  );
+  check("final_terminal", () =>
+    assert.equal(
+      ends[0].payload.last_agent_message,
+      finalDecisionText,
+      "canary terminal answer mismatch",
+    ),
   );
   // The pinned CLI selects the terminal answer from completed messages without
   // requiring phase metadata, which some providers omit.
@@ -931,15 +1191,23 @@ export function summarizeHostedReviewTrace({
       item.content[0].text === finalDecisionText
     );
   });
-  assert.equal(finals.length, 1, "canary final review is ambiguous");
-  const final = finals[0];
-  assert.ok(
-    results[0].index < final.index && final.index < ends[0].index,
-    "final review was not emitted after the command",
+  check(
+    "final_count",
+    () => assert.equal(finals.length, 1, "canary final review is ambiguous"),
+    finals.length,
   );
-  assert.ok(
-    String(JSON.parse(finalDecisionText).summary ?? "").includes(marker),
-    "final review did not use the fixture marker",
+  const final = finals[0];
+  check("final_order", () =>
+    assert.ok(
+      results[0].index < final.index && final.index < ends[0].index,
+      "final review was not emitted after the command",
+    ),
+  );
+  check("final_marker", () =>
+    assert.ok(
+      String(JSON.parse(finalDecisionText).summary ?? "").includes(marker),
+      "final review did not use the fixture marker",
+    ),
   );
 
   return {
