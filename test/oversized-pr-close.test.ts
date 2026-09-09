@@ -110,6 +110,8 @@ for (const scenario of [
   "dry-run",
   "close",
   "exact-close",
+  "durable-missing-lease",
+  "durable-reserved-lease",
   "under-limit",
   "exempt",
   "head-drift",
@@ -123,7 +125,31 @@ for (const scenario of [
   test(`built review and apply size policy: ${scenario}`, () => {
     withApplyTestWorkspace(join(process.env.TMPDIR || "/tmp", "oversized-pr-"), (workspace) => {
       const admissionPath = join(workspace.root, "admission.json");
-      writeFileSync(admissionPath, JSON.stringify({ repo: "openclaw/openclaw", pull }));
+      const reservedAt = new Date(Date.now() - 10_000).toISOString();
+      const lease = {
+        id: 5602217053,
+        body: `Review started.\n\n<!-- clawsweeper-review-status:started item=${pull.number} sha=${size.head} started_at=${reservedAt} lease_expires_at=${new Date(Date.now() + 600_000).toISOString()} owner=reserved v=1 -->\n<!-- clawsweeper-review-lease item=${pull.number} -->`,
+        user: { login: "clawsweeper[bot]" },
+        created_at: reservedAt,
+        updated_at: reservedAt,
+      };
+      writeFileSync(
+        admissionPath,
+        JSON.stringify({
+          repo: "openclaw/openclaw",
+          pull: {
+            ...pull,
+            comments:
+              scenario === "durable-reserved-lease"
+                ? 2
+                : scenario === "durable-missing-lease"
+                  ? 1
+                  : 0,
+            updated_at: scenario === "durable-reserved-lease" ? reservedAt : pull.updated_at,
+          },
+          observedAt: new Date().toISOString(),
+        }),
+      );
       const calls = join(workspace.root, "calls.log");
       const commandLog = join(workspace.root, "commands.log");
       const previousGate = process.env.CLAWSWEEPER_OVERSIZED_PR_CLOSE_ENABLED;
@@ -148,6 +174,9 @@ for (const scenario of [
                 "--artifact-dir",
                 workspace.itemsDir,
                 "--skip-start-comment",
+                ...(scenario === "durable-reserved-lease"
+                  ? ["--review-lease-owner", "reserved", "--review-lease-comment-id", "5602217053"]
+                  : []),
               ],
               { stdio: "pipe" },
             );
@@ -165,8 +194,20 @@ for (const scenario of [
           body: pull.body,
           draft: pull.draft,
           trackCommentActivity: true,
+          itemUpdatedAt: scenario === "durable-reserved-lease" ? reservedAt : pull.updated_at,
           comment: "",
-          comments: [],
+          comments: scenario.startsWith("durable-")
+            ? [
+                {
+                  id: 9000 + pull.number,
+                  body: `Prior durable review\n\n<!-- clawsweeper-review-version item=${pull.number} reviewed_at=2026-05-01T00:00:00Z sha=${size.head} source_revision=${"a".repeat(64)} lease_owner=previous lease_comment_id=5602217052 v=1 -->\n\n<!-- clawsweeper-review item=${pull.number} -->`,
+                  user: { login: "clawsweeper[bot]" },
+                  created_at: "2026-05-01T00:00:00Z",
+                  updated_at: "2026-05-01T00:00:00Z",
+                },
+                ...(scenario === "durable-reserved-lease" ? [lease] : []),
+              ]
+            : [],
           commentsAfterCommentWrite:
             scenario === "late-human-comment"
               ? [
@@ -225,11 +266,26 @@ for (const scenario of [
             readFileSync(commandLog, "utf8"),
             /\/pulls\/141913\/(files|commits)|check-runs|git\/blobs/,
           );
+        if (scenario === "durable-missing-lease") {
+          assert.ok(
+            result.some(
+              (entry: any) =>
+                entry.action === "skipped_stale_review_comment_sync" &&
+                /no durable lease identity/.test(entry.reason),
+            ),
+            JSON.stringify(result),
+          );
+        }
         const mutations = existsSync(calls) ? readFileSync(calls, "utf8") : "";
-        if (scenario === "close" || scenario === "exact-close" || scenario === "notice-error") {
+        if (
+          scenario === "close" ||
+          scenario === "exact-close" ||
+          scenario === "notice-error" ||
+          scenario === "durable-reserved-lease"
+        ) {
           assert.ok(
             existsSync(join(workspace.closedDir, `${pull.number}.md`)),
-            JSON.stringify(result),
+            JSON.stringify(result) + mutations,
           );
           assert.equal(existsSync(report), false);
           const currentComment = JSON.parse(
@@ -251,7 +307,7 @@ for (const scenario of [
             mutations
               .split("\n")
               .filter((line) => line.includes("comments") && line.includes("POST")).length,
-            1,
+            scenario === "durable-reserved-lease" ? 0 : 1,
             mutations,
           );
         } else {

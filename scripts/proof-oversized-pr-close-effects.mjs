@@ -17,6 +17,7 @@ if (args[0] === 'api') {
   path = '/' + args[1];
   const mi = args.indexOf('--method'); if (mi >= 0) method = args[mi + 1];
   const bi = args.indexOf('--input'); if (bi >= 0) body = readFileSync(args[bi + 1], 'utf8');
+  const fi = args.indexOf('-f'); if (fi >= 0 && args[fi + 1].startsWith('body=')) body = JSON.stringify({body: args[fi + 1].slice(5)});
 } else if (args[0] === 'pr' && args[1] === 'close') {
   method = 'PATCH'; path = '/repos/openclaw/openclaw/pulls/' + args[2]; body = JSON.stringify({state:'closed'});
 } else throw new Error('Unexpected command at isolated GitHub transport');
@@ -57,6 +58,9 @@ const initial = {
 const summaries = [];
 for (const scenario of [
   "eligible",
+  "reserved-first-review",
+  "reserved-existing-review",
+  "reserved-queued-review",
   "protected",
   "ambiguous-initial-comment",
   "stable-old-comment",
@@ -65,6 +69,7 @@ for (const scenario of [
   "late-human-comment",
   "late-review-edit-retry",
 ]) {
+  const reserveLease = scenario.startsWith("reserved-");
   const quietObservation =
     scenario === "stable-old-comment" || scenario === "late-review-edit-retry";
   const directory = join(root, scenario);
@@ -75,6 +80,18 @@ for (const scenario of [
     timeline = [],
     requests = [];
   const reviews = [];
+  if (scenario === "reserved-existing-review") {
+    const prior = {
+      id: 999,
+      body: `Prior durable review\n\n<!-- clawsweeper-review-version item=141913 reviewed_at=2026-09-07T00:00:00Z sha=${initial.head.sha} source_revision=${"a".repeat(64)} lease_owner=previous lease_comment_id=999 v=1 -->\n<!-- clawsweeper-review item=141913 -->`,
+      user: { login: "clawsweeper[bot]", type: "Bot" },
+      created_at: "2026-09-07T00:00:00Z",
+      updated_at: "2026-09-07T00:00:00Z",
+    };
+    comments.push(prior);
+    timeline.push({ ...prior, event: "commented" });
+    pull.comments = 1;
+  }
   if (scenario === "late-review-edit-retry") {
     const review = {
       id: 700,
@@ -112,6 +129,10 @@ for (const scenario of [
       };
       const path = url.pathname;
       if (request.method === "GET") {
+        if (/\/issues\/comments\/\d+$/.test(path)) {
+          const comment = comments.find((entry) => entry.id === Number(path.split("/").at(-1)));
+          return comment ? send(comment) : send({ error: "comment missing" }, 404);
+        }
         if (path.endsWith("/pulls/141913")) return send(pull);
         if (path.endsWith("/issues/141913"))
           return send({
@@ -129,10 +150,13 @@ for (const scenario of [
       }
       if (request.method === "POST" && path.endsWith("/issues/141913/comments")) {
         const comment = {
-          id: 1000,
+          id: Math.max(999, ...comments.map((entry) => entry.id)) + 1,
           body: input.body,
           user: { login: "clawsweeper[bot]", type: "Bot" },
-          html_url: pull.html_url + "#issuecomment-1000",
+          html_url:
+            pull.html_url +
+            "#issuecomment-" +
+            (Math.max(999, ...comments.map((entry) => entry.id)) + 1),
           created_at: quietObservation ? "2026-09-08T00:00:04Z" : "2026-09-08T00:00:01Z",
           updated_at: quietObservation ? "2026-09-08T00:00:04Z" : "2026-09-08T00:00:01Z",
         };
@@ -160,16 +184,28 @@ for (const scenario of [
         }
         return send(comment, 201);
       }
-      if (request.method === "PATCH" && path.endsWith("/issues/comments/1000")) {
-        const owned = comments.find((comment) => comment.id === 1000);
+      if (request.method === "PATCH" && /\/issues\/comments\/\d+$/.test(path)) {
+        const owned = comments.find((comment) => comment.id === Number(path.split("/").at(-1)));
         owned.body = input.body;
         owned.updated_at = quietObservation ? "2026-09-08T00:00:06Z" : "2026-09-08T00:00:03Z";
         Object.assign(
-          timeline.find((event) => event.id === 1000),
+          timeline.find((event) => event.id === owned.id),
           owned,
         );
         pull.updated_at = owned.updated_at;
         return send(owned);
+      }
+      if (request.method === "DELETE" && path.endsWith("/issues/comments/1000")) {
+        comments.splice(
+          comments.findIndex((comment) => comment.id === 1000),
+          1,
+        );
+        timeline.splice(
+          timeline.findIndex((event) => event.id === 1000),
+          1,
+        );
+        pull.comments--;
+        return send({});
       }
       if (
         request.method === "PATCH" &&
@@ -203,8 +239,12 @@ for (const scenario of [
       env,
       stdio: ["ignore", "pipe", "pipe"],
     });
-    let output = "";
-    child.stdout.on("data", (chunk) => (output += chunk));
+    let output = "",
+      stdout = "";
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+      stdout += chunk;
+    });
     child.stderr.on("data", (chunk) => (output += chunk));
     const code = await new Promise((resolve, reject) => {
       child.on("error", reject);
@@ -218,6 +258,7 @@ for (const scenario of [
         .replaceAll(process.execPath, "<node>"),
     );
     assert.equal(code, 0, output);
+    return stdout;
   };
   try {
     const admission = join(directory, "admission.json"),
@@ -235,6 +276,29 @@ for (const scenario of [
         2,
       ),
     );
+    let reservation;
+    if (reserveLease) {
+      reservation = JSON.parse(
+        await run("reserve", [
+          "reserve-review-lease",
+          "--target-repo",
+          "openclaw/openclaw",
+          "--item-number",
+          "141913",
+          "--review-timeout-ms",
+          "60000",
+        ]),
+      );
+      assert.equal(reservation.status, "posted");
+      assert.equal(reservation.commentId, 1000);
+      assert.equal(reservation.headSha, initial.head.sha);
+      // Match the workflow metadata refresh after its reservation/status writes.
+      writeFileSync(
+        admission,
+        JSON.stringify({ repo: "openclaw/openclaw", pull, observedAt: "2026-09-08T00:00:10Z" }),
+      );
+    }
+    const beforeReviewRequests = requests.length;
     await run("review", [
       "review",
       "--target-repo",
@@ -246,8 +310,36 @@ for (const scenario of [
       "--artifact-dir",
       items,
       "--skip-start-comment",
+      ...(reservation
+        ? [
+            "--review-lease-owner",
+            reservation.owner,
+            "--review-lease-comment-id",
+            String(reservation.commentId),
+          ]
+        : []),
     ]);
-    assert.equal(requests.length, 0, "metadata admission must not fetch transport context");
+    const reviewRequests = requests.length - beforeReviewRequests;
+    assert.equal(reviewRequests, 0, "metadata admission must not fetch transport context");
+    if (reservation) {
+      const report = readFileSync(join(items, "141913.md"), "utf8");
+      assert.ok(report.includes(`review_lease_owner: ${reservation.owner}`));
+      assert.match(report, /^review_lease_comment_id: 1000$/m);
+    }
+    if (scenario === "reserved-queued-review") {
+      await run("expire", [
+        "expire-review-lease",
+        "--repo",
+        "openclaw/openclaw",
+        "--item-number",
+        "141913",
+        "--comment-id",
+        String(reservation.commentId),
+      ]);
+      const expiredBody = comments.find((entry) => entry.id === reservation.commentId).body;
+      assert.match(expiredBody, /clawsweeper-review-lease item=141913/);
+      assert.ok(Date.parse(expiredBody.match(/lease_expires_at=([^ ]+)/)[1]) <= Date.now());
+    }
     const applyArgs = [
       "apply-decisions",
       "--target-repo",
@@ -283,18 +375,33 @@ for (const scenario of [
         JSON.stringify(retry),
       );
     }
-    const isClosed = scenario === "eligible" || scenario === "stable-old-comment";
-    assert.equal(pull.state, isClosed ? "closed" : "open");
+    const isClosed =
+      (reserveLease && scenario !== "reserved-queued-review") ||
+      scenario === "eligible" ||
+      scenario === "stable-old-comment";
+    assert.equal(
+      pull.state,
+      isClosed ? "closed" : "open",
+      readFileSync(join(directory, "apply.json"), "utf8"),
+    );
     assert.equal(existsSync(join(closed, "141913.md")), isClosed);
     assert.equal(existsSync(join(items, "141913.md")), !isClosed);
     const closeWrites = requests.filter(
       (entry) => entry.method === "PATCH" && entry.path.endsWith("/pulls/141913"),
     ).length;
     assert.equal(closeWrites, isClosed ? 1 : 0);
-    const owned = comments.filter((entry) => entry.user.login === "clawsweeper[bot]");
+    const owned = comments.filter(
+      (entry) =>
+        entry.user.login === "clawsweeper[bot]" &&
+        !entry.body.includes("<!-- clawsweeper-review-status"),
+    );
     assert.equal(
       owned.length,
-      scenario === "protected" || scenario === "ambiguous-initial-comment" ? 0 : 1,
+      scenario === "protected" ||
+        scenario === "ambiguous-initial-comment" ||
+        scenario === "reserved-queued-review"
+        ? 0
+        : 1,
     );
     if (owned.length)
       assert.match(
@@ -304,8 +411,27 @@ for (const scenario of [
           : /ClawSweeper proposes closing this pull request/,
       );
     assert.ok(requests.every((entry) => !/\/(files|commits|blobs)(\/|$)/.test(entry.path)));
+    if (scenario === "reserved-queued-review") {
+      const result = JSON.parse(readFileSync(join(directory, "apply.json"), "utf8"));
+      assert.ok(
+        result.some(
+          (entry) =>
+            entry.action === "skipped_changed_since_review" &&
+            entry.reason === "updated_at changed",
+        ),
+        JSON.stringify(result),
+      );
+    }
     const summary = {
       scenario,
+      ...(reservation
+        ? {
+            reservation: "posted",
+            leaseCommentId: reservation.commentId,
+            reviewRequests,
+            durableCommentId: owned[0]?.id,
+          }
+        : {}),
       state: pull.state,
       closeWrites,
       ownedComments: owned.length,

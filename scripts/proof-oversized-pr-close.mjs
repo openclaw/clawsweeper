@@ -77,6 +77,10 @@ const reviewArgs = [
   "--item-number",
   String(pull.number),
   "--skip-start-comment",
+  "--review-lease-owner",
+  "synthetic-reservation",
+  "--review-lease-comment-id",
+  "1000",
 ];
 const result = run("oversized", [
   ...reviewArgs,
@@ -96,6 +100,8 @@ const report = readFileSync(reportPath, "utf8");
 assert.match(report, /action_taken: proposed_close/);
 assert.match(report, /review_model: none/);
 assert.match(report, /local_checkout_access: unverified/);
+assert.match(report, /^review_lease_owner: synthetic-reservation$/m);
+assert.match(report, /^review_lease_comment_id: 1000$/m);
 const metadata = report.match(/^oversized_pull_request: (.+)$/m)?.[1];
 assert.deepEqual(JSON.parse(metadata), {
   additions: 45791,
@@ -106,7 +112,7 @@ assert.deepEqual(JSON.parse(metadata), {
 });
 const closeComment = report.slice(report.indexOf("ClawSweeper closed this pull request"));
 transcript.push(
-  `Metadata: ${metadata}\nComment: ${closeComment.trim()}\nOversized subprocess counts: git=0 gh=0 codex=0; runtime hydration=0 scanner=0 codex=0.`,
+  `Metadata: ${metadata}\nLease: owner=synthetic-reservation comment_id=1000\nComment: ${closeComment.trim()}\nOversized subprocess counts: git=0 gh=0 codex=0; runtime hydration=0 scanner=0 codex=0.`,
 );
 const closed = join(root, "closed");
 const apply = run("apply-disabled", [

@@ -29,9 +29,26 @@ exempt an oversized PR.
 Exact events, scheduled work admitted through the exact queue, and shard
 review share the predicate. The exact-event live-state check saves its raw PR
 payload and invokes the built predicate. Oversized items skip target checkout,
-review-tool setup, reactions, and reservation, then use the same `review` CLI
-to write the report. Ordinary admitted PRs reuse the payload during hydration.
+review-tool setup and reactions, but reserve the same durable review lease as
+ordinary admitted items. Held or throttled reservations defer; superseded queue
+authority blocks publication. After reservation/status writes, the workflow
+waits through the timestamp margin and refreshes PR metadata, rechecking the
+admitted head and size policy. Changed eligibility or head defers to fresh
+admission instead of publishing a stale snapshot. The `review` CLI carries the supplied lease owner
+and comment ID into the metadata-only report without Git, GitHub, or model calls.
+Direct exact publication uses the shared fenced apply path to update the durable comment with
+the proposal and, when all close gates pass, the close notice. First reviews
+create the durable proposal through that writer; existing reviews update the
+canonical comment. Both carry the reserved lease identity. Ordinary admitted PRs reuse the payload during hydration.
 Each head or label change is evaluated again. This policy never reopens a PR.
+
+Known gap: when direct publication is not accepted and the proposal falls back
+to the durable queue, the queued lease-expiry write advances PR activity after
+the report's observation. The unchanged source-freshness guard keeps the PR
+open with `skipped_changed_since_review`; it can be re-evaluated at the next
+event or head. Deferred publication is not fixed by carrying the lease tuple.
+The follow-up is to create the final metadata proposal under publication
+ownership, after the publisher acquires its current lease and fence.
 
 `CLAWSWEEPER_OVERSIZED_PR_CLOSE_ENABLED` gates apply; it defaults off in a
 standalone CLI and defaults to `true` in the sweep workflow. The normal
@@ -84,10 +101,10 @@ The public comment is:
 ## Reproducible proof
 
 `node scripts/proof-oversized-pr-close.mjs` exercises metadata admission and
-dry-run retention, with a 29,999-line control.
+dry-run retention, with a 49,999-line control.
 `node scripts/proof-oversized-pr-close-effects.mjs` drives the built CLI through
 a loopback HTTP GitHub adapter and inspects service state plus items/closed
-records for eligible closing, protected-label refusal, and late exemption, body,
+records for first/existing durable review reservation and closing, protected-label refusal, and late exemption, body,
 and human-comment changes. This uses synthetic data and transport; it does not
 close a live GitHub PR. The workflow test also executes a HTTP-409 finalization
 branch and verifies that supersession prevents publication.

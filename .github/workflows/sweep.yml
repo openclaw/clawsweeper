@@ -1149,7 +1149,7 @@ jobs:
 
       - name: Reserve exact review lease
         id: reserve-exact-review-lease
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
@@ -1257,7 +1257,7 @@ jobs:
 
       - name: Fence automatic review in progress
         id: review-status-fence
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' && steps.target.outputs.has_command_context != 'true' && steps.automatic-review-status.outputs.status_comment_id != '' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' && steps.target.outputs.has_command_context != 'true' && steps.automatic-review-status.outputs.status_comment_id != '' }}
         continue-on-error: true
         env:
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
@@ -1359,7 +1359,7 @@ jobs:
 
       - name: Review exact event item
         id: review-exact-event-item
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && (steps.live-item.outputs.oversized == 'true' || (steps.reserve-exact-review-lease.outputs.status == 'posted' && (steps.review-status-fence.outcome == 'skipped' || (steps.review-status-fence.outputs.authorized == 'true' && steps.release-review-status-fence.outputs.authorized == 'true')))) }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' && (steps.review-status-fence.outcome == 'skipped' || (steps.review-status-fence.outputs.authorized == 'true' && steps.release-review-status-fence.outputs.authorized == 'true')) }}
         continue-on-error: true
         env:
           PR_ADMISSION_FILE: ${{ steps.live-item.outputs.pr_admission_file }}
@@ -1492,9 +1492,34 @@ jobs:
             admission_args=(--pr-admission-file "$PR_ADMISSION_FILE")
           fi
           if [ "$OVERSIZED_PR" = "true" ]; then
+            # GitHub updated_at has one-second granularity; let the reservation write precede the fresh observation and its clock margin.
+            sleep 2
+            admission_observed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            refreshed_pull="$(mktemp)"
+            gh api "repos/${{ steps.target.outputs.target_repo }}/pulls/${{ steps.target.outputs.item_number }}" > "$refreshed_pull"
+            REFRESHED_PULL="$refreshed_pull" ADMISSION_OBSERVED_AT="$admission_observed_at" node --input-type=module <<'NODE'
+            import fs from 'node:fs';
+            import { oversizedPullRequestAdmission } from './dist/clawsweeper-oversized-pr-policy.js';
+            const prior = JSON.parse(fs.readFileSync(process.env.PR_ADMISSION_FILE, 'utf8'));
+            const pull = JSON.parse(fs.readFileSync(process.env.REFRESHED_PULL, 'utf8'));
+            if (pull.head?.sha !== prior.pull?.head?.sha || oversizedPullRequestAdmission(pull).admitted) {
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, `retry_kind=coordination\nretry_at=${new Date(Date.now() + 60000).toISOString()}\nexit_code=0\n`);
+              process.exit(0);
+            }
+            fs.writeFileSync(process.env.PR_ADMISSION_FILE, JSON.stringify({ ...prior, pull, observedAt: process.env.ADMISSION_OBSERVED_AT }));
+            fs.writeFileSync(`${process.env.REFRESHED_PULL}.ready`, '');
+          NODE
+            if [ ! -f "$refreshed_pull.ready" ]; then
+              rm -f "$refreshed_pull"
+              echo "::notice::Oversized admission changed after reservation; deferring for fresh admission."
+              exit 0
+            fi
+            rm -f "$refreshed_pull" "$refreshed_pull.ready"
             pnpm run review -- --target-repo "${{ steps.target.outputs.target_repo }}" \
               --artifact-dir artifacts/event --item-number "${{ steps.target.outputs.item_number }}" \
               --output-retention debug \
+              --review-lease-owner "$REVIEW_LEASE_OWNER" \
+              --review-lease-comment-id "$REVIEW_LEASE_COMMENT_ID" \
               --skip-start-comment "${admission_args[@]}"
             start_heartbeat
             cleanup_heartbeat

@@ -762,6 +762,27 @@ const traceAssertionIds = new Set([
   "final_order",
   "final_marker",
 ]);
+// Canonical ResponseItem tags from pinned Codex models.rs. This bounds
+// diagnostics only; it does not widen the canary's accepted response kinds.
+const traceResponseKinds = new Set([
+  "additional_tools",
+  "message",
+  "agent_message",
+  "reasoning",
+  "local_shell_call",
+  "function_call",
+  "tool_search_call",
+  "function_call_output",
+  "custom_tool_call",
+  "custom_tool_call_output",
+  "tool_search_output",
+  "web_search_call",
+  "image_generation_call",
+  "compaction",
+  "compaction_trigger",
+  "context_compaction",
+  "other",
+]);
 const runTraceAssertion = (_id, operation) => operation();
 
 export function runWithHostedTraceDiagnostics(message, operation) {
@@ -780,14 +801,19 @@ export function runWithHostedTraceDiagnostics(message, operation) {
         failure = {
           assertionId: identified && traceAssertionIds.has(id) ? id : "unknown",
           observedCount: identified ? nativeCount(count) : null,
-          unexpectedKind:
-            !identified || unexpectedKind === null
-              ? null
-              : (id === "record_kind" && unexpectedKind === "security_risk_score") ||
-                  (id === "event_kind" && unexpectedKind === "thread_settings_applied") ||
-                  (id === "completed_item_kind" && unexpectedKind === "FunctionCallOutput")
+          unexpectedKind: !identified
+            ? null
+            : id === "response_kind"
+              ? traceResponseKinds.has(unexpectedKind)
                 ? unexpectedKind
-                : "other",
+                : "other"
+              : unexpectedKind === null
+                ? null
+                : (id === "record_kind" && unexpectedKind === "security_risk_score") ||
+                    (id === "event_kind" && unexpectedKind === "thread_settings_applied") ||
+                    (id === "completed_item_kind" && unexpectedKind === "FunctionCallOutput")
+                  ? unexpectedKind
+                  : "other",
         };
       }
       throw error;
@@ -1046,15 +1072,20 @@ export function summarizeHostedReviewTrace(
   );
 
   const responses = records.filter((record) => record.type === "response_item");
-  check("response_kind", () =>
-    assert.ok(
-      responses.every((record) =>
-        ["message", "reasoning", "function_call", "function_call_output"].includes(
-          record.payload.type,
-        ),
-      ),
-      "canary attempted an additional tool",
-    ),
+  let unexpectedResponseKind = null;
+  const acceptedResponses = responses.every((record) => {
+    const type = record.payload.type;
+    const accepted = ["message", "reasoning", "function_call", "function_call_output"].includes(
+      type,
+    );
+    if (!accepted) unexpectedResponseKind = type;
+    return accepted;
+  });
+  check(
+    "response_kind",
+    () => assert.ok(acceptedResponses, "canary contains an unsupported response item"),
+    responses.length,
+    unexpectedResponseKind,
   );
   const calls = responses.filter((record) => record.payload.type === "function_call");
   const results = responses.filter((record) => record.payload.type === "function_call_output");

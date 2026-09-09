@@ -602,6 +602,12 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               item, context, decision, git, action, reviewMode: "propose",
               snapshotHash: itemSnapshotHash(item, context), contentDigest: itemContentDigest(item, context),
               reviewPolicy, runtime,
+              // The workflow owns reservation and fenced publication. Carry its
+              // tuple to the shared durable-comment writer without hydrating here.
+              ...(suppliedReviewLease ? {
+                reviewLeaseOwner: suppliedReviewLease.owner,
+                reviewLeaseCommentId: suppliedReviewLease.commentId,
+              } : {}),
             })));
             finishReviewActionLedgerItem({ ledger: reviewLedger, item,
               status: ACTION_EVENT_STATUSES.completed, reasonCode: ACTION_EVENT_REASON_CODES.completed,

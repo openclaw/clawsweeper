@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createReviewCommandWorkflow } from "../dist/clawsweeper-review-command-workflow.js";
+import { suppliedReviewStartLeaseFromArgs } from "../dist/clawsweeper-review-lease.js";
 import { parseArgs } from "../dist/clawsweeper-args.js";
 import { repositoryProfileFor } from "../dist/repository-profiles.js";
 import { reviewActionForDecision } from "../dist/clawsweeper.js";
@@ -97,7 +98,7 @@ for (const source of [
         },
         ensureDir: (path: string) => mkdirSync(path, { recursive: true }),
         reviewCodexForcedLoginMethod: () => "",
-        suppliedReviewStartLeaseFromArgs: () => null,
+        suppliedReviewStartLeaseFromArgs,
         gitInfo: () => {
           calls.git++;
           return { mainSha: "a".repeat(40), releaseStateComplete: true, latestRelease: null };
@@ -147,10 +148,8 @@ for (const source of [
         itemSnapshotHash: () => "snapshot",
         itemContentDigest: () => "digest",
         reportFileName: () => "123.md",
-        markdownFor: ({ decision, action }: any) => {
-          renderedReport = overflow
-            ? "x".repeat(16 * 1024 * 1024 + 1)
-            : JSON.stringify({ decision, action });
+        markdownFor: (report: any) => {
+          renderedReport = overflow ? "x".repeat(16 * 1024 * 1024 + 1) : JSON.stringify(report);
           return renderedReport;
         },
         reviewActionForDecision,
@@ -204,10 +203,24 @@ for (const source of [
           ...(retention === "none" ? [] : ["--artifact-dir", artifactDir]),
           "--skip-start-comment",
           ...(metadataOnly ? ["--local-only", "--pr-admission-file", admissionPath] : []),
+          ...(total > 50000 && !metadataOnly
+            ? ["--review-lease-owner", "reserved-owner", "--review-lease-comment-id", "5602217053"]
+            : []),
           ...(source === "shard"
             ? ["--shard-count", "4", "--shard-index", "2"]
             : ["--item-number", "123", "--review-source-action", source]),
         ]);
+        if (metadataOnly) {
+          assert.throws(
+            () =>
+              reviewCommand({
+                ...args,
+                review_lease_owner: "reserved-owner",
+                review_lease_comment_id: "5602217053",
+              }),
+            /A supplied review lease cannot be used with local-only review/,
+          );
+        }
         if (overflow) {
           let failure: unknown;
           assert.throws(
@@ -229,6 +242,9 @@ for (const source of [
           reviewCommand(args);
           assert.deepEqual(completions, ["completed"]);
           assert.equal(existsSync(observedReportPath), retention !== "none");
+          const rendered = JSON.parse(renderedReport);
+          assert.equal(rendered.reviewLeaseOwner, metadataOnly ? undefined : "reserved-owner");
+          assert.equal(rendered.reviewLeaseCommentId, metadataOnly ? undefined : 5602217053);
           if (retention !== "none") {
             const report = JSON.parse(readFileSync(observedReportPath, "utf8"));
             assert.equal(report.decision.closeReason, "oversized_pull_request");

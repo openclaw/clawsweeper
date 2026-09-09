@@ -627,6 +627,92 @@ test("hosted trace diagnostics bucket unexpected kinds without accepting them", 
   }
 });
 
+test("hosted trace diagnostics identify rejected canonical response kinds without accepting them", () => {
+  for (const kind of [
+    "additional_tools",
+    "agent_message",
+    "local_shell_call",
+    "tool_search_call",
+    "custom_tool_call",
+    "custom_tool_call_output",
+    "tool_search_output",
+    "web_search_call",
+    "image_generation_call",
+    "compaction",
+    "compaction_trigger",
+    "context_compaction",
+    "other",
+  ]) {
+    const fixture = nativeTraceFixture();
+    fixture.records[2]!.payload.type = kind;
+    assert.throws(fixture.invoke, /unsupported response item/);
+    const { facts } = captureTraceFailure((check) =>
+      summarizeHostedReviewTrace({ ...fixture.options, rollout: fixture.rollout() }, check),
+    );
+    assert.deepEqual(facts, {
+      kind: "hosted_trace_failure",
+      assertionId: "response_kind",
+      observedCount: 2,
+      unexpectedKind: kind,
+    });
+  }
+});
+
+test("hosted trace diagnostics bound unknown response kinds without coercion or alias acceptance", () => {
+  for (const kind of [
+    undefined,
+    null,
+    42,
+    false,
+    ["agent_message"],
+    { privateValue: "PRIVATE_SENTINEL" },
+    "PRIVATE_SENTINEL\n::error::untrusted",
+    "compaction_summary",
+  ]) {
+    const fixture = nativeTraceFixture();
+    fixture.records[2]!.payload.type = kind;
+    assert.throws(fixture.invoke, /unsupported response item/);
+    const { line, facts } = captureTraceFailure((check) =>
+      summarizeHostedReviewTrace({ ...fixture.options, rollout: fixture.rollout() }, check),
+    );
+    assert.deepEqual(facts, {
+      kind: "hosted_trace_failure",
+      assertionId: "response_kind",
+      observedCount: 2,
+      unexpectedKind: "other",
+    });
+    assert.doesNotMatch(line, /PRIVATE_SENTINEL|::error::|compaction_summary|privateValue/);
+  }
+  const hostile = {
+    [Symbol.toPrimitive]() {
+      assert.fail("response kinds must not be coerced");
+    },
+  };
+  const { facts } = captureTraceFailure((check) =>
+    check("response_kind", () => assert.fail("unsupported response item"), 2, hostile),
+  );
+  assert.equal(facts.unexpectedKind, "other");
+});
+
+test("hosted trace diagnostics preserve the first rejected response kind", () => {
+  const fixture = nativeTraceFixture();
+  fixture.records[2]!.payload.type = "agent_message";
+  fixture.records[4]!.payload.type = "tool_search_output";
+  const { facts } = captureTraceFailure((check) => {
+    try {
+      summarizeHostedReviewTrace({ ...fixture.options, rollout: fixture.rollout() }, check);
+    } finally {
+      check("response_kind", () => assert.fail("later failure"), 99, "compaction");
+    }
+  });
+  assert.deepEqual(facts, {
+    kind: "hosted_trace_failure",
+    assertionId: "response_kind",
+    observedCount: 2,
+    unexpectedKind: "agent_message",
+  });
+});
+
 test("hosted trace diagnostics preserve the first failure across a failing finally", () => {
   const { facts } = captureTraceFailure((check) => {
     try {
@@ -770,7 +856,7 @@ test("hosted review trace rejects extra tools, aborts, and reordered evidence", 
     fixture.records.forEach((record, ordinal) => {
       record.ordinal = ordinal;
     });
-    assert.throws(fixture.invoke, /additional tool/);
+    assert.throws(fixture.invoke, /unsupported response item/);
   }
 
   for (const [first, second] of [
