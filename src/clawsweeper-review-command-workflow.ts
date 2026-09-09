@@ -1,4 +1,10 @@
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { oversizedPrSourceSnapshot } from "./clawsweeper-oversized-pr-freshness.js";
+import {
+  oversizedPullRequestAdmission,
+  oversizedPullRequestContext,
+  oversizedPullRequestDecision,
+} from "./clawsweeper-oversized-pr-policy.js";
 import { join } from "node:path";
 import {
   decisionPublicationPolicy,
@@ -12,6 +18,7 @@ import type { Args } from "./clawsweeper-args.js";
 import {
   isBulkFilerExemptRepositoryPermission as isVerifiedMaintainerRepositoryPermission,
   isMaintainerAuthorAssociation,
+  labelNames,
 } from "./clawsweeper-item-policy.js";
 import { mediaProofRuntimeHints, prepareMediaProofArtifacts } from "./clawsweeper-media-proof.js";
 import type {
@@ -236,6 +243,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         : markdown;
     const preparation = prepareReviewCommand(args, dependencies);
     const {
+      prAdmissionInput,
       localRange,
       localOnly,
       itemNumber,
@@ -389,7 +397,9 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       }
       const { candidates, scannedPages } = localRangeData
         ? { candidates: [localRangeData.item], scannedPages: 0 }
-        : selectCandidates(selectionOptions);
+        : prAdmissionInput
+          ? { candidates: [prAdmissionInput.item], scannedPages: 0 }
+          : selectCandidates(selectionOptions);
       const itemOutputBudget = configureReviewOutputItems(
         outputBudget,
         Math.max(1, candidates.length),
@@ -574,6 +584,39 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         try {
         startReviewActionLedgerItem(reviewLedger, item);
         dependencies.activeReviewMutationRunner = reviewMutationRunner(reviewLedger, item);
+        const pullObservedAt = prAdmissionInput ? prAdmissionInput.observedAt : new Date().toISOString();
+        const pullRequestPayload = item.kind === "pull_request" && !localRangeData
+          ? prAdmissionInput?.pull ?? asRecord(dependencies.ghJson(["api", `repos/${item.repo}/pulls/${item.number}`]))
+          : undefined;
+        if (pullRequestPayload) {
+          const admission = oversizedPullRequestAdmission(pullRequestPayload);
+          if (!admission.admitted) {
+            item.labels = labelNames(pullRequestPayload.labels);
+            item.updatedAt = stringOrUndefined(pullRequestPayload.updated_at) ?? item.updatedAt;
+            const context = oversizedPullRequestContext(pullRequestPayload);
+            const decision = oversizedPullRequestDecision(admission.decision, oversizedPrSourceSnapshot(pullRequestPayload, pullObservedAt));
+            const runtime = { model: "none", reasoningEffort: "none", contextElapsedMs: 0, codexElapsedMs: 0 };
+            const action = reviewActionForDecision({ item, decision, git, runtime });
+            const reportPath = join(artifactDir, reportFileName(item.repo, item.number));
+            writeOutputReport(item, reportPath, hostReport(markdownFor({
+              item, context, decision, git, action, reviewMode: "propose",
+              snapshotHash: itemSnapshotHash(item, context), contentDigest: itemContentDigest(item, context),
+              reviewPolicy, runtime,
+            })));
+            finishReviewActionLedgerItem({ ledger: reviewLedger, item,
+              status: ACTION_EVENT_STATUSES.completed, reasonCode: ACTION_EVENT_REASON_CODES.completed,
+              retryable: false, cached: false, startedAtMs: reviewLedger.startedAtMs,
+              sourceRevision: admission.decision.head, reportPath, findingCount: 0,
+              completionReason: "oversized_pull_request",
+            });
+            activeReviewItem = null;
+            assertCurrentOutputBudget();
+            pruneItemOutput(reportPath);
+            completed += 1;
+            console.error(`[review] oversized_pull_request #${item.number} total=${admission.decision.additions + admission.decision.deletions} hydration=0 scanner=0 codex=0 report=${reportPath}`);
+            continue;
+          }
+        }
         const bulkFilerDetection =
           !localOnly && item.kind === "issue"
             ? detectBulkFiler({
@@ -1017,7 +1060,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         }
         if (!skipStartComment && !acquiredReviewLease && item.kind === "pull_request") {
           acquiredReviewLease = acquireReviewStartLease(
-            () => structuralRecord?.pullHeadSha ?? pullRequestHeadSha(item.number),
+            () => structuralRecord?.pullHeadSha ?? stringOrUndefined(asRecord(pullRequestPayload?.head).sha) ?? pullRequestHeadSha(item.number),
           );
           if (!acquiredReviewLease) continue;
         }
@@ -1026,6 +1069,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         const context = localRangeData
           ? localRangeData.context
           : collectItemContext(item, {
+              pullRequestPayload,
               fullTimelineForRelations: true,
               reviewCacheDigest: true,
               reviewCacheGitDir: openclawDir,

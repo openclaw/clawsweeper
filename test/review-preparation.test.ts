@@ -337,6 +337,82 @@ test("summary preparation uses separate checkout scratch and removes owned outpu
   }
 });
 
+test("invalid PR admission cleans private preparation scratch and preserves existing debug output", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-admission-preparation-"));
+  const scratch = join(root, "tmp");
+  mkdirSync(scratch);
+  const previousTmpdir = process.env.TMPDIR;
+  process.env.TMPDIR = scratch;
+  const admissionPath = join(root, "admission.json");
+  try {
+    for (const retention of ["none", "summary", "debug"]) {
+      for (const malformed of [false, true]) {
+        const output = join(root, `${retention}-${malformed}`);
+        if (retention === "debug") {
+          mkdirSync(output);
+          writeFileSync(join(output, "existing.txt"), "preserve");
+        }
+        writeFileSync(
+          admissionPath,
+          malformed
+            ? "{"
+            : JSON.stringify({
+                repo: "other/project",
+                pull: { number: 123, state: "open" },
+              }),
+        );
+        let checkoutCalls = 0;
+        let gitCalls = 0;
+        const dependencies = {
+          DEFAULT_PLAN_BATCH_SIZE: 3,
+          repoFromArgs: () => repositoryProfileFor("openclaw/openclaw"),
+          targetRepo: () => "openclaw/openclaw",
+          localExactReviewItem: () => false,
+          defaultReviewArtifactDir: () => output,
+          defaultItemsDir: () => root,
+          resolveReviewCheckout: () => {
+            checkoutCalls++;
+            assert.fail("invalid admission must precede checkout preparation");
+          },
+          gitInfo: () => {
+            gitCalls++;
+            assert.fail("invalid admission must not read Git");
+          },
+        };
+        assert.throws(
+          () =>
+            prepareReviewCommand(
+              parseArgs([
+                "--local-only",
+                "--item-number",
+                "123",
+                "--pr-admission-file",
+                admissionPath,
+                "--output-retention",
+                retention,
+                ...(retention === "none" ? [] : ["--artifact-dir", output]),
+              ]),
+              dependencies as unknown as Parameters<typeof prepareReviewCommand>[1],
+            ),
+          malformed ? SyntaxError : /does not match the selected open pull request/,
+        );
+        assert.equal(checkoutCalls, 0);
+        assert.equal(gitCalls, 0);
+        assert.deepEqual(readdirSync(scratch), []);
+        assert.equal(existsSync(output), retention === "debug");
+        if (retention === "debug") {
+          assert.deepEqual(readdirSync(output), ["existing.txt"]);
+          assert.equal(readFileSync(join(output, "existing.txt"), "utf8"), "preserve");
+        }
+      }
+    }
+  } finally {
+    if (previousTmpdir === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = previousTmpdir;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("post-preparation read-only failure restores partial modes and removes transient output", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-readonly-preparation-"));
   const scratch = join(root, "tmp");

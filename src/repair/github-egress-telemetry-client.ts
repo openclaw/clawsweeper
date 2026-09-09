@@ -15,6 +15,7 @@ import {
   GITHUB_EGRESS_TELEMETRY_VERSION,
   GITHUB_EGRESS_UNITS,
   githubEgressFiveMinuteBucket,
+  resetAuthorityCandidate,
   type GitHubEgressMetricV2,
   type GitHubRateLimitObservationV2,
 } from "../github-egress-telemetry-contract.js";
@@ -390,18 +391,6 @@ function rateLimitHeaders(
     resourcePresent: value.resourcePresent as boolean,
     resource: resource as GitHubRateLimitObservationV2["headers"]["resource"],
   };
-}
-
-function resetAuthorityCandidate(
-  headers: GitHubRateLimitObservationV2["headers"],
-): GitHubRateLimitObservationV2["resetAuthorityCandidate"] {
-  if (headers.retryAfterPresent) {
-    return headers.retryAfterSeconds === null ? "invalid" : "retry_after";
-  }
-  if (headers.resetPresent) {
-    return headers.resetEpochSeconds === null ? "invalid" : "rate_limit_reset";
-  }
-  return "absent";
 }
 
 function metricPayload(metric: GitHubEgressMetricV2) {

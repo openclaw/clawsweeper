@@ -25,6 +25,7 @@ export type RepositoryCloseReason =
   | "clawhub"
   | "duplicate_or_superseded"
   | "low_signal_unmergeable_pr"
+  | "oversized_pull_request"
   | "stalled_unproven_pr"
   | "abandoned_pr"
   | "unconfirmed_product_direction"
@@ -85,6 +86,7 @@ const OPENCLAW_CLOSE_REASONS: readonly RepositoryCloseReason[] = [
   "clawhub",
   "duplicate_or_superseded",
   "low_signal_unmergeable_pr",
+  "oversized_pull_request",
   "stalled_unproven_pr",
   "abandoned_pr",
   "unconfirmed_product_direction",

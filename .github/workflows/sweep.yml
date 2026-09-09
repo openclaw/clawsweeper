@@ -234,6 +234,8 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   CLAWSWEEPER_AUTO_CLOSE_REASONS: ${{ vars.CLAWSWEEPER_AUTO_CLOSE_REASONS || 'all' }}
   CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNCONFIRMED_PRODUCT_DIRECTION_CLOSE_ENABLED || 'false' }}
+  CLAWSWEEPER_OVERSIZED_PR_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_OVERSIZED_PR_CLOSE_ENABLED || 'true' }}
+  CLAWSWEEPER_MAX_PR_CHANGED_LINES: ${{ vars.CLAWSWEEPER_MAX_PR_CHANGED_LINES || '50000' }}
   CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_UNSPONSORED_FEATURE_CLOSE_ENABLED || 'false' }}
   CLAWSWEEPER_STALE_VERSION_BUG_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_STALE_VERSION_BUG_CLOSE_ENABLED || 'false' }}
   CLAWSWEEPER_OBSOLETE_FIX_PR_CLOSE_ENABLED: ${{ vars.CLAWSWEEPER_OBSOLETE_FIX_PR_CLOSE_ENABLED || 'false' }}
@@ -780,6 +782,12 @@ jobs:
           permission-pull-requests: read
           permission-statuses: read
 
+      - uses: ./.github/actions/setup-pnpm
+        id: setup-pnpm
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target.outputs.target_enabled == 'true' }}
+        with:
+          build-script: build:all
+
       - name: Check live target item state
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target.outputs.target_enabled == 'true' }}
         id: live-item
@@ -872,15 +880,39 @@ jobs:
           live_locked="$(jq -r '.locked == true' <<< "$live_item")"
           item_kind="$(jq -r 'if .pull_request then "pull_request" else "issue" end' <<< "$live_item")"
           echo "item_kind=$item_kind" >> "$GITHUB_OUTPUT"
+          live_head_sha=""
+          if [ "$live_state" = "open" ] && [ "$live_locked" != "true" ] && [ "$item_kind" = "pull_request" ]; then
+            pull_observed_at="$(node -e 'process.stdout.write(new Date().toISOString())')"
+            if live_pull="$(gh api "repos/$TARGET_REPO/pulls/$ITEM_NUMBER")"; then
+            live_head_sha="$(jq -r '.head.sha // empty' <<< "$live_pull")"
+            mkdir -p .artifacts
+            jq -n --arg repo "$TARGET_REPO" --arg observedAt "$pull_observed_at" --argjson pull "$live_pull" '{repo: $repo, pull: $pull, observedAt: $observedAt}' > .artifacts/exact-pr-admission.json
+            oversized="$(node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { oversizedPullRequestAdmission } from "./dist/clawsweeper-oversized-pr-policy.js";
+          const { pull } = JSON.parse(readFileSync(".artifacts/exact-pr-admission.json", "utf8"));
+          process.stdout.write(String(!oversizedPullRequestAdmission(pull).admitted));
+          NODE
+          )"
+            echo "pr_admission_file=.artifacts/exact-pr-admission.json" >> "$GITHUB_OUTPUT"
+            echo "oversized=$oversized" >> "$GITHUB_OUTPUT"
+            if [ "$oversized" = "true" ]; then
+              {
+                echo "proceed=true"
+                echo "scheduled_semantic_noop=false"
+                echo "terminal_noop=false"
+                echo "terminal_missing=false"
+                echo "guarded_open=false"
+                echo "guarded_open_action="
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            else
+              echo "::warning::Unable to read PR admission metadata; preserving normal review admission."
+            fi
+          fi
           if [ "$live_state" = "open" ] && [ "$live_locked" != "true" ] &&
             jq -e '.sourceAction == "scheduled_hot_intake"' <<< "$CLAIM_DECISION" >/dev/null; then
-            live_head_sha=""
-            if [ "$item_kind" = "pull_request" ]; then
-              if ! live_head_sha="$(gh api "repos/$TARGET_REPO/pulls/$ITEM_NUMBER" --jq '.head.sha')"; then
-                echo "::warning::Unable to read the live pull request head; preserving normal review admission."
-                live_head_sha=""
-              fi
-            fi
             comments_error="$(mktemp)"
             if live_comments="$(gh api --paginate --slurp "repos/$TARGET_REPO/issues/$ITEM_NUMBER/comments?per_page=100" 2>"$comments_error" | jq 'add')"; then
               classification_output="$(mktemp)"
@@ -960,7 +992,7 @@ jobs:
 
       - name: Resolve automatic review status comment
         id: automatic-review-status
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target.outputs.has_command_context != 'true' && fromJSON(steps.claim-exact-review-queue.outputs.decision).itemKind == 'pull_request' && steps.target-write-token.outputs.token != '' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target.outputs.has_command_context != 'true' && steps.live-item.outputs.oversized != 'true' && fromJSON(steps.claim-exact-review-queue.outputs.decision).itemKind == 'pull_request' && steps.target-write-token.outputs.token != '' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -1004,7 +1036,7 @@ jobs:
           fi
 
       - name: React to target item review start
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -1032,14 +1064,8 @@ jobs:
           }
           react "eyes"
 
-      - uses: ./.github/actions/setup-pnpm
-        id: setup-pnpm
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outcome == 'success' && steps.live-item.outputs.scheduled_semantic_noop != 'true' && steps.live-item.outputs.admission_retry != 'true' }}
-        with:
-          build-script: ${{ steps.live-item.outputs.proceed == 'true' && 'build:all' || 'build:repair' }}
-
       - uses: actions/cache@v6
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' }}
         with:
           path: ${{ steps.target.outputs.target_checkout_dir }}-cache.git
           key: ${{ steps.target.outputs.target_repo_name }}-event-git-${{ runner.os }}-${{ github.run_id }}
@@ -1048,7 +1074,7 @@ jobs:
             ${{ steps.target.outputs.target_repo_name }}-git-${{ runner.os }}-
 
       - name: Check out target repository
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' }}
         run: |
           set -euo pipefail
           url="https://github.com/${{ steps.target.outputs.target_repo }}.git"
@@ -1081,13 +1107,13 @@ jobs:
           git -C "$checkout_dir" rev-parse --short HEAD
 
       - uses: ./.github/actions/setup-openclaw-codex-source
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' }}
         with:
           target-repo: ${{ steps.target.outputs.target_repo }}
           target-dir: ${{ steps.target.outputs.target_checkout_dir }}
 
       - name: Mark re-review command in progress
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -1108,7 +1134,7 @@ jobs:
             --wait-ms 120000
 
       - uses: ./.github/actions/setup-codex
-        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
+        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' }}
         env:
           OPENAI_API_KEY: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.OPENAI_API_KEY || '' }}
           CLAWSWEEPER_INTERNAL_MODEL: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.CLAWSWEEPER_MODEL || '' }}
@@ -1119,11 +1145,11 @@ jobs:
           review-network: "true"
 
       - uses: ./.github/actions/setup-openclaw
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' }}
 
       - name: Reserve exact review lease
         id: reserve-exact-review-lease
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' }}
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
@@ -1231,7 +1257,7 @@ jobs:
 
       - name: Fence automatic review in progress
         id: review-status-fence
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' && steps.target.outputs.has_command_context != 'true' && steps.automatic-review-status.outputs.status_comment_id != '' }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' && steps.target.outputs.has_command_context != 'true' && steps.automatic-review-status.outputs.status_comment_id != '' }}
         continue-on-error: true
         env:
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
@@ -1333,9 +1359,11 @@ jobs:
 
       - name: Review exact event item
         id: review-exact-event-item
-        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' && (steps.review-status-fence.outcome == 'skipped' || (steps.review-status-fence.outputs.authorized == 'true' && steps.release-review-status-fence.outputs.authorized == 'true')) }}
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && (steps.live-item.outputs.oversized == 'true' || (steps.reserve-exact-review-lease.outputs.status == 'posted' && (steps.review-status-fence.outcome == 'skipped' || (steps.review-status-fence.outputs.authorized == 'true' && steps.release-review-status-fence.outputs.authorized == 'true')))) }}
         continue-on-error: true
         env:
+          PR_ADMISSION_FILE: ${{ steps.live-item.outputs.pr_admission_file }}
+          OVERSIZED_PR: ${{ steps.live-item.outputs.oversized }}
           # Review hydration is the largest read stream (~30 calls/review); it
           # stays on the App installation bucket so the per-repo Actions pool
           # keeps headroom for the comment-router and support lanes.
@@ -1459,6 +1487,27 @@ jobs:
             return 1
           }
           trap cleanup_heartbeat EXIT
+          admission_args=()
+          if [ -n "$PR_ADMISSION_FILE" ]; then
+            admission_args=(--pr-admission-file "$PR_ADMISSION_FILE")
+          fi
+          if [ "$OVERSIZED_PR" = "true" ]; then
+            pnpm run review -- --target-repo "${{ steps.target.outputs.target_repo }}" \
+              --artifact-dir artifacts/event --item-number "${{ steps.target.outputs.item_number }}" \
+              --output-retention debug \
+              --skip-start-comment "${admission_args[@]}"
+            start_heartbeat
+            cleanup_heartbeat
+            mark_finalizing
+            if [ -f "$superseded_marker" ]; then
+              echo "superseded=true" >> "$GITHUB_OUTPUT"
+              echo "exit_code=0" >> "$GITHUB_OUTPUT"
+              echo "::notice::Oversized review generation lost queue authority; skipping publication."
+              exit 0
+            fi
+            echo "exit_code=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           codex_timeout_ms="${{ steps.target.outputs.codex_timeout_ms }}"
           if ! [[ "$codex_timeout_ms" =~ ^[0-9]+$ ]] || [ "$codex_timeout_ms" -lt 1 ]; then
             echo "Invalid Codex timeout: $codex_timeout_ms" >&2
@@ -1494,7 +1543,7 @@ jobs:
             --shard-index 0 \
             --shard-count 1 \
             --review-source-action "$SOURCE_ACTION" \
-            "${additional_prompt_arg[@]}" &
+            "${admission_args[@]}" "${additional_prompt_arg[@]}" &
           review_pid=$!
           review_pgid=$review_pid
           start_heartbeat

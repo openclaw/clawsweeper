@@ -137,6 +137,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Accept the exact-event PR admission handoff for mixed-case target repositories such as fallback-profile repos, whose profile slug is lowercased; the strict repo comparison failed every review of such pull requests after the oversized-PR policy landed.
 - Recheck current close policies and known same-author counterparts before close mutations, keeping the parent open when a counterpart locks, reopens, or cannot be refreshed; thanks @vincentkoc.
 - Bound cluster dispatch and target cloning with operator-configured deadlines, useful timeout errors, and clone process-tree cleanup; thanks @SebTardif.
 - Bound cluster-selector model and GitHub requests through response completion, failing without new selection output on stalled transports; thanks @SebTardif.
@@ -223,6 +224,8 @@ checkpoint, and status-only commits are intentionally omitted.
 - Prevented model-authored report prose and body-shaped front matter from spoofing proof or rating sections, keeping unproven external pull requests in human review instead of routing them into automated repair. (#951)
 
 ### Added
+
+- Propose closing pull requests above 50,000 changed lines before hydration, scanning, or model review, with a configurable threshold, maintainer size exemption, and live-revalidated gated apply that preserves human-activity freshness and queue supersession.
 
 - Enabled browser live proof for ClawSweeper with a self-contained local OpenClaw Bay launcher and seeded lifecycle/workflow demo data.
 - Added an opt-in live-proof lane that records typed browser or terminal plans in a secretless PR-head job, validates and uploads media from a separate trusted job, and attaches only trusted R2 URLs to the durable review comment.

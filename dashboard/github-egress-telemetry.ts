@@ -11,6 +11,8 @@ import {
   GITHUB_EGRESS_STAGES,
   GITHUB_EGRESS_STATUS_BUCKETS,
   GITHUB_EGRESS_UNITS,
+  resetAuthorityCandidate,
+  type GitHubRateLimitHeadersV2,
 } from "../src/github-egress-telemetry-contract.ts";
 import { sqlColumnNames, type DurableStorage } from "./durable-storage.ts";
 
@@ -1073,7 +1075,7 @@ function githubRateLimitObservation(value: unknown, now: number) {
   };
 }
 
-function rateLimitHeaders(headers: Record<string, unknown>) {
+function rateLimitHeaders(headers: Record<string, unknown>): GitHubRateLimitHeadersV2 | null {
   const presence = [
     "retryAfterPresent",
     "limitPresent",
@@ -1112,17 +1114,7 @@ function rateLimitHeaders(headers: Record<string, unknown>) {
   ) {
     return null;
   }
-  return headers;
-}
-
-function resetAuthorityCandidate(headers: Record<string, unknown>) {
-  if (headers.retryAfterPresent) {
-    return headers.retryAfterSeconds === null ? "invalid" : "retry_after";
-  }
-  if (headers.resetPresent) {
-    return headers.resetEpochSeconds === null ? "invalid" : "rate_limit_reset";
-  }
-  return "absent";
+  return headers as GitHubRateLimitHeadersV2;
 }
 
 function publicRateLimitRow(row: Record<string, unknown>) {

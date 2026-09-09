@@ -83,6 +83,7 @@ export function createReportActionRendering(
       return { actionTaken: "kept_open", closeComment: "" };
     if (
       isMaintainerAuthored(options.item) &&
+      options.decision.closeReason !== "oversized_pull_request" &&
       !isVerifiedFixedCloseReason(options.decision.closeReason)
     ) {
       return { actionTaken: "skipped_maintainer_authored", closeComment: "" };

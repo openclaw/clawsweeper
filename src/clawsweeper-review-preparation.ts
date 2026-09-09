@@ -1,3 +1,4 @@
+import { readPrAdmissionInput } from "./clawsweeper-pr-admission-input.js";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { boolArg, itemNumbersArg, numberArg, stringArg } from "./clawsweeper-args.js";
@@ -115,17 +116,28 @@ export function prepareReviewCommand(
       console.error("");
       console.error("Preparing target checkout");
     }
-    const checkout = resolveReviewCheckout({
-      args,
-      artifactDir: checkoutArtifactDir,
-      humanLocalReview,
-      itemNumber,
-      itemNumbers,
-      localRange,
-      localOnly,
-      profile,
-      verbose,
-    });
+    const admissionFile = stringArg(args.pr_admission_file, "");
+    const prAdmissionInput = admissionFile
+      ? readPrAdmissionInput(
+          admissionFile,
+          targetRepo(),
+          itemNumbers ?? (itemNumber ? [itemNumber] : []),
+        )
+      : undefined;
+    const metadataOnly = prAdmissionInput?.admission.admitted === false;
+    const checkout = metadataOnly
+      ? { openclawDir: checkoutArtifactDir, gitTargetBranch: undefined }
+      : resolveReviewCheckout({
+          args,
+          artifactDir: checkoutArtifactDir,
+          humanLocalReview,
+          itemNumber,
+          itemNumbers,
+          localRange,
+          localOnly,
+          profile,
+          verbose,
+        });
     const openclawDir = checkout.openclawDir;
     const artifactDir =
       transientOutput?.path ??
@@ -242,9 +254,11 @@ export function prepareReviewCommand(
       });
     let git: GitInfo;
     try {
-      git = localRangeData
-        ? { mainSha: localRangeData.baseSha, releaseStateComplete: true, latestRelease: null }
-        : loadReviewGitInfo();
+      git = metadataOnly
+        ? { mainSha: "unknown", releaseStateComplete: false, latestRelease: null }
+        : localRangeData
+          ? { mainSha: localRangeData.baseSha, releaseStateComplete: true, latestRelease: null }
+          : loadReviewGitInfo();
     } catch (error) {
       if (error instanceof ReviewSourcePreparationError && exactReviewIdentity) {
         try {
@@ -286,6 +300,7 @@ export function prepareReviewCommand(
     const maintainerRequest = additionalPrompt.trim().length > 0;
 
     return {
+      prAdmissionInput,
       localRange,
       localOnly,
       itemNumber,

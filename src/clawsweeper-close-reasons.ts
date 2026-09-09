@@ -14,6 +14,8 @@ export function closeReasonText(reason: CloseReason): string {
       return "duplicate or superseded";
     case "low_signal_unmergeable_pr":
       return "low-signal unmergeable PR";
+    case "oversized_pull_request":
+      return "pull request exceeds the review size limit";
     case "stalled_unproven_pr":
       return "stalled PR without requested real-behavior proof";
     case "abandoned_pr":

@@ -17,6 +17,7 @@ import {
   githubEgressPageBucket,
   githubEgressSourceAction,
   githubEgressStatusBucket,
+  resetAuthorityCandidate,
   type GitHubEgressMethod,
   type GitHubEgressMetricV2,
   type GitHubEgressOutcome,
@@ -588,18 +589,6 @@ function wireOutcome(
   if (status >= 200 && status < 400) return "success";
   if (status >= 500) return "transient";
   return "error";
-}
-
-function resetAuthorityCandidate(
-  headers: GitHubRateLimitHeadersV2,
-): GitHubRateLimitObservationV2["resetAuthorityCandidate"] {
-  if (headers.retryAfterPresent) {
-    return headers.retryAfterSeconds === null ? "invalid" : "retry_after";
-  }
-  if (headers.resetPresent) {
-    return headers.resetEpochSeconds === null ? "invalid" : "rate_limit_reset";
-  }
-  return "absent";
 }
 
 function boundedIntegerHeader(value: string | undefined): number | null {

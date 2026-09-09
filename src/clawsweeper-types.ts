@@ -181,6 +181,7 @@ export type CloseReason =
   | "clawhub"
   | "duplicate_or_superseded"
   | "low_signal_unmergeable_pr"
+  | "oversized_pull_request"
   | "stalled_unproven_pr"
   | "abandoned_pr"
   | "unconfirmed_product_direction"
@@ -562,6 +563,9 @@ export interface ReviewCommentRenderOptions {
 }
 
 export interface Decision {
+  oversizedPullRequestSource?: import("./clawsweeper-oversized-pr-freshness.js").OversizedPrSourceSnapshot;
+  /** Runner-owned GitHub metadata; never populated from model output. */
+  oversizedPullRequest?: import("./clawsweeper-oversized-pr-policy.js").OversizedPullRequestEvidence;
   decision: DecisionKind;
   closeReason: CloseReason;
   confidence: Confidence;

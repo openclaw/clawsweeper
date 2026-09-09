@@ -1,3 +1,7 @@
+import {
+  parseOversizedPullRequestEvidence,
+  ACCEPTED_LARGE_LABEL,
+} from "./clawsweeper-oversized-pr-policy.js";
 import { STALLED_UNPROVEN_PROOF_STATUSES } from "./clawsweeper-apply-guards.js";
 import { ALLOWED_REASONS, PR_AUTO_CLOSE_EXEMPT_LABELS } from "./clawsweeper-policy.js";
 import { isAutoCloseAllowed, repositoryProfileFor } from "./repository-profiles.js";
@@ -322,6 +326,25 @@ export function createCloseDecisionWorkflow({
         actionTaken: "skipped_invalid_decision",
         reason: "low_signal_unmergeable_pr is allowed only for pull requests",
       };
+    }
+    if (decision.closeReason === "oversized_pull_request") {
+      if (
+        item.kind !== "pull_request" ||
+        !parseOversizedPullRequestEvidence(decision.oversizedPullRequest)
+      ) {
+        return {
+          ok: false,
+          actionTaken: "skipped_invalid_decision",
+          reason: "oversized PR close requires complete GitHub size and head evidence",
+        };
+      }
+      if (item.labels.some((label) => label.trim().toLowerCase() === ACCEPTED_LARGE_LABEL)) {
+        return {
+          ok: false,
+          actionTaken: "skipped_close_exempt_label",
+          reason: "maintainer accepted large PR",
+        };
+      }
     }
     const closeExemptReason = prAutoCloseExemptDecisionReason(item, decision.closeReason);
     if (closeExemptReason) {

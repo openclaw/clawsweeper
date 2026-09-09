@@ -546,6 +546,7 @@ else {
     );
 
     const dependencies = {
+      ghJson: () => ({}),
       get activeReviewMutationRunner() {
         return activeReviewMutationRunner;
       },

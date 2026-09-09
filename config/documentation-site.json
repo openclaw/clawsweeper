@@ -18,6 +18,7 @@
         "obsolescence-close-policies.md",
         "product-direction-close-policy.md",
         "stalled-pr-close-policies.md",
+        "oversized-pr-close-policy.md",
         "unsponsored-feature-close-policy.md"
       ]
     },

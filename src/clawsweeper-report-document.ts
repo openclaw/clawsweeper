@@ -1,3 +1,4 @@
+import { parseOversizedPullRequestEvidence } from "./clawsweeper-oversized-pr-policy.js";
 import {
   configSurfaceChangeFromContext,
   dataModelChangeFromContext,
@@ -52,8 +53,14 @@ export function localCheckoutAccessSourceForDecision(
 }
 
 export function reviewStatusForDecision(
-  decision: Pick<Decision, "localCheckoutAccess" | "summary">,
+  decision: Pick<Decision, "localCheckoutAccess" | "summary"> &
+    Partial<Pick<Decision, "closeReason" | "oversizedPullRequest">>,
 ): "complete" | "failed" {
+  if (
+    decision.closeReason === "oversized_pull_request" &&
+    parseOversizedPullRequestEvidence(decision.oversizedPullRequest)
+  )
+    return "complete";
   return localCheckoutAccessForDecision(decision) === "verified" &&
     !decision.summary.startsWith("Codex review failed")
     ? "complete"
@@ -662,6 +669,8 @@ review_comment_id: unknown
 review_comment_url: unknown
 decision: ${options.decision.decision}
 close_reason: ${options.decision.closeReason}
+${options.decision.oversizedPullRequestSource ? `oversized_pr_source: ${JSON.stringify(options.decision.oversizedPullRequestSource)}\n` : ""}
+${options.decision.oversizedPullRequest ? `oversized_pull_request: ${JSON.stringify(options.decision.oversizedPullRequest)}\n` : ""}
 confidence: ${options.decision.confidence}
 action_taken: ${options.action.actionTaken}
 ${options.decision.nextStep === undefined ? "" : `next_step: ${JSON.stringify(parseNextStep(options.decision.nextStep))}\n`}work_candidate: ${options.decision.workCandidate}

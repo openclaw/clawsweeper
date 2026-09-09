@@ -1,3 +1,4 @@
+import { parseOversizedPullRequestEvidence } from "./clawsweeper-oversized-pr-policy.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isDocsPath } from "./clawsweeper-change-detection.js";
@@ -90,7 +91,13 @@ export function createPullRequestPromotionFacts(
     const mergeRiskLabels = mergeRiskLabelsFromReport(markdown);
     const maturityLabels = kind === "pull_request" ? [] : maturityLabelsFromReport(markdown);
     const visionFit = reportVisionFit(markdown);
+    const oversized = parseOversizedPullRequestEvidence(
+      frontMatterValue(markdown, "oversized_pull_request"),
+    );
     return {
+      ...(closeReason === "oversized_pull_request" && oversized
+        ? { oversizedPullRequest: oversized }
+        : {}),
       decision: "close",
       closeReason,
       confidence: "high",

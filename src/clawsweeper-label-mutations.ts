@@ -1,6 +1,7 @@
 import { IDEA_ARCHIVE_LABEL } from "./idea-archive-revival.js";
 import { ratingLabelForTier } from "./clawsweeper-rating.js";
 import {
+  ACCEPTED_LARGE_LABEL_DEFINITION,
   BULK_FILED_LABEL_DEFINITION,
   FEATURE_SHOWCASE_LABEL,
   FEATURE_SHOWCASE_LABEL_COLOR,
@@ -455,6 +456,7 @@ export function createLabelMutationOperations(
     );
   }
   function ensurePrStatusLabel(kind: PrStatusLabelKind, onMutation?: () => void): void {
+    ensureLabelDefinition(ACCEPTED_LARGE_LABEL_DEFINITION, onMutation);
     const definition = prStatusLabelForKind(kind);
     ensureLabelDefinition(definition, onMutation);
   }
