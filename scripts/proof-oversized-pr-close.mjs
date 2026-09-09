@@ -43,7 +43,7 @@ const pull = {
 const environment = {
   ...process.env,
   CLAWSWEEPER_OVERSIZED_PR_CLOSE_ENABLED: "false",
-  CLAWSWEEPER_MAX_PR_CHANGED_LINES: "30000",
+  CLAWSWEEPER_MAX_PR_CHANGED_LINES: "50000",
   PROOF_CALLS: calls,
 };
 for (const kind of ["gh", "git", "codex"]) {
@@ -101,7 +101,7 @@ assert.deepEqual(JSON.parse(metadata), {
   additions: 45791,
   deletions: 120895,
   changedFiles: 2747,
-  threshold: 30000,
+  threshold: 50000,
   head: "b".repeat(40),
 });
 const closeComment = report.slice(report.indexOf("ClawSweeper closed this pull request"));
@@ -141,7 +141,7 @@ const control = join(root, "control.json");
 writeFileSync(
   control,
   JSON.stringify(
-    { repo: "openclaw/openclaw", pull: { ...pull, additions: 29999, deletions: 0 } },
+    { repo: "openclaw/openclaw", pull: { ...pull, additions: 49999, deletions: 0 } },
     null,
     2,
   ),

@@ -196,7 +196,7 @@ for (const scenario of [
     GITHUB_TOKEN: "",
     PROOF_HTTP_URL: `http://127.0.0.1:${server.address().port}`,
     CLAWSWEEPER_OVERSIZED_PR_CLOSE_ENABLED: "true",
-    CLAWSWEEPER_MAX_PR_CHANGED_LINES: "30000",
+    CLAWSWEEPER_MAX_PR_CHANGED_LINES: "50000",
   };
   const run = async (name, args) => {
     const child = spawn(process.execPath, ["dist/clawsweeper.js", ...args], {
