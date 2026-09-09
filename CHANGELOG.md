@@ -120,6 +120,7 @@ checkpoint, and status-only commits are intentionally omitted.
 - Generated live-proof plans now receive the effective cold-checkout setup contract and guidance to supply missing build or code-generation prerequisites before dependent commands.
 
 ### Fixed
+- Accept the exact-event PR admission handoff for mixed-case target repositories such as fallback-profile repos, whose profile slug is lowercased; the strict repo comparison failed every review of such pull requests after the oversized-PR policy landed.
 
 - Recheck current close policies and known same-author counterparts before close mutations, keeping the parent open when a counterpart locks, reopens, or cannot be refreshed; thanks @vincentkoc.
 - Bound cluster dispatch and target cloning with operator-configured deadlines, useful timeout errors, and clone process-tree cleanup; thanks @SebTardif.
