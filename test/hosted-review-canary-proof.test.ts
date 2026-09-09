@@ -69,6 +69,21 @@ test("hosted review canary explicitly supplies the canonical transient result li
   );
 });
 
+test("hosted review canary scopes direct tool configuration and excludes default selection coverage", () => {
+  const source = readFileSync(
+    new URL("../scripts/hosted-review-scan-smoke.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /extraCodexConfig: \[\s*'web_search="disabled"',\s*'features\.code_mode\.direct_only_tool_namespaces=\["functions"\]',\s*\]/,
+  );
+  assert.equal(source.match(/direct_only_tool_namespaces/g)?.length, 1);
+  assert.match(source, /Use exactly one direct native exec_command call/);
+  assert.match(source, /defaultToolSelectionCovered: false/);
+  assert.doesNotMatch(source, /features\.code_mode(?:_only)?=false/);
+});
+
 type TraceCheck = (
   id: string,
   assertion: () => unknown,
@@ -1004,6 +1019,26 @@ test("hosted review trace rejects extra tools, aborts, and reordered evidence", 
     assert.throws(fixture.invoke);
   }
 });
+
+for (const name of ["exec", "wait"]) {
+  test(`hosted direct transport rejects a custom ${name} wrapper despite matching command evidence`, () => {
+    const fixture = nativeTraceFixture();
+    Object.assign(fixture.records[2]!.payload, {
+      type: "custom_tool_call",
+      name,
+      namespace: "functions",
+      input: `const result = await tools.exec_command({cmd: ${JSON.stringify(fixture.options.expectedCommand)}}); console.log(result);`,
+    });
+    fixture.records[4]!.payload.type = "custom_tool_call_output";
+    assert.throws(fixture.invoke, /unsupported response item/);
+    const { facts } = captureTraceFailure((check) =>
+      summarizeHostedReviewTrace({ ...fixture.options, rollout: fixture.rollout() }, check),
+    );
+    assert.equal(facts.assertionId, "response_kind");
+    assert.equal(facts.unexpectedKind, "custom_tool_call");
+    assert.equal(facts.unexpectedTool, name === "exec" ? "code_mode_exec" : "other_default");
+  });
+}
 
 test("hosted review trace rejects incomplete, oversized, invalid, or stale rollout bytes", () => {
   const fixture = nativeTraceFixture();

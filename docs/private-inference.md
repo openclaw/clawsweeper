@@ -48,12 +48,20 @@ gh workflow run ci.yml --ref main -f codex_auth_mode=clawrouter
 
 This override affects only the dispatch-only native review smoke job. It proves
 scanner refusals, then uses the production review runner and decision schema to
-inspect a synthetic committed diff with a read-only command, consume that tool
-result in the final review, and reach terminal turn completion without GitHub
-mutation. Raw commands, output, prompts, transcripts, fixture values, and
+inspect a synthetic committed diff with exactly one direct native `exec_command`
+call, consume that tool result in the final review, and reach terminal turn
+completion without GitHub mutation. The canary sets
+`features.code_mode.direct_only_tool_namespaces=["functions"]` for this invocation
+only. It proves configured direct-tool transport, not default model tool selection.
+Code-mode `exec` and `wait` may still be offered; custom calls and additional
+actions remain rejected by the proof. Production routing, model metadata, and
+ordinary review configuration are unchanged.
+
+Raw commands, output, prompts, transcripts, fixture values, and
 runtime identities remain ephemeral; the uploaded artifact contains only
-booleans and counts, including explicit false coverage flags for external
-repositories, review publication, and queue lifecycle. The default `configured`
+booleans and counts, including `defaultToolSelectionCovered: false` and explicit
+false coverage flags for external repositories, review publication, and queue
+lifecycle. The default `configured`
 choice uses the repository's current authentication mode.
 
 The default `proxy` mode and explicit legacy `login` mode retain their existing

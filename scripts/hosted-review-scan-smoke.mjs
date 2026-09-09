@@ -110,7 +110,7 @@ ${live ? `const child = require('node:child_process').spawnSync(${JSON.stringify
   const reviewCommand = `git diff --no-ext-diff --unified=0 ${baseSha} ${headSha} -- review-fixture.js`;
   const prompt = [
     "This is a hosted ClawSweeper transport canary over a synthetic pull request.",
-    "First use the shell tool to inspect review-fixture.js in the committed diff.",
+    "Use exactly one direct native exec_command call to inspect review-fixture.js in the committed diff.",
     `Run: ${reviewCommand}`,
     "Do not use any other tool or network access.",
     "Read the UUID from that command output, then return one valid ClawSweeper decision using the required schema.",
@@ -222,7 +222,12 @@ ${live ? `const child = require('node:child_process').spawnSync(${JSON.stringify
         resultFileBytes: TRANSIENT_REVIEW_RESULT_MAX_BYTES,
         prompt,
         quietLogs: true,
-        extraCodexConfig: ['web_search="disabled"'],
+        // Exercise the direct transport without changing model tool-mode metadata.
+        // Default tool selection and custom code-mode wrappers remain outside this proof.
+        extraCodexConfig: [
+          'web_search="disabled"',
+          'features.code_mode.direct_only_tool_namespaces=["functions"]',
+        ],
       }),
   );
   assert.ok(decision.localCheckoutAccess === "verified", "checkout verification failed");
@@ -270,6 +275,7 @@ ${live ? `const child = require('node:child_process').spawnSync(${JSON.stringify
     reviewCodexLaunchCount: 2,
     productionReviewPath: true,
     syntheticCommittedDiffScenarioCount: 1,
+    defaultToolSelectionCovered: false,
     externalRepositoryCovered: false,
     reviewPublicationCovered: false,
     queueLifecycleCovered: false,

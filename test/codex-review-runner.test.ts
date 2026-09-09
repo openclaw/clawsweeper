@@ -127,6 +127,10 @@ ${fakeManagedDecision}
             timeoutMs: 10_000,
             workDir,
             prompt: "Return a review decision.\nfixture-sensitive-value\nsecond line",
+            extraCodexConfig: [
+              'web_search="disabled"',
+              'features.code_mode.direct_only_tool_namespaces=["functions"]',
+            ],
           }),
         (error: Error) => {
           assert.match(error.message, /Agent input scan refused/);
@@ -246,6 +250,67 @@ process.exit(1);
     else process.env.PATH = originalPath;
     if (originalDecision === undefined) delete process.env.CODEX_DECISION_JSON;
     else process.env.CODEX_DECISION_JSON = originalDecision;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runCodex forwards direct-tool configuration only when explicitly supplied", () => {
+  const root = mkdtempSync(tmpPrefix);
+  const openclawDir = join(root, "target");
+  const workDir = join(root, "work");
+  const binDir = join(root, "bin");
+  const argsPath = join(root, "codex-args");
+  mkdirSync(openclawDir);
+  mkdirSync(binDir);
+  initTrackedRepo(openclawDir);
+  writeFileSync(
+    join(binDir, "codex"),
+    `#!${process.execPath}
+${fakeCodexSandboxPass}
+require("node:fs").writeFileSync(process.env.CODEX_ARGS_PATH, JSON.stringify(process.argv.slice(2)));
+${fakeManagedDecision}
+`,
+    { mode: 0o755 },
+  );
+  const previous = {
+    PATH: process.env.PATH,
+    CODEX_ARGS_PATH: process.env.CODEX_ARGS_PATH,
+    CODEX_DECISION_JSON: process.env.CODEX_DECISION_JSON,
+  };
+  process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
+  process.env.CODEX_ARGS_PATH = argsPath;
+  process.env.CODEX_DECISION_JSON = JSON.stringify(closeDecision({ decision: "keep_open" }));
+  const directConfig = 'features.code_mode.direct_only_tool_namespaces=["functions"]';
+  try {
+    for (const extraCodexConfig of [undefined, ['web_search="disabled"', directConfig]]) {
+      const decision = runBoundedCodexForTest({
+        item: item({ number: 83403 }),
+        context: { issue: {}, comments: [], timeline: [] },
+        git: { mainSha: "abc123", latestRelease: null },
+        model: "model-test",
+        openclawDir,
+        reasoningEffort: "high",
+        sandboxMode: "read-only",
+        serviceTier: "",
+        timeoutMs: 10_000,
+        workDir,
+        prompt: "Return a review decision.",
+        ...(extraCodexConfig ? { extraCodexConfig } : {}),
+      });
+      assert.equal(decision.localCheckoutAccess, "verified");
+      const args = JSON.parse(readFileSync(argsPath, "utf8")) as string[];
+      const config = args.filter((_, index) => args[index - 1] === "-c");
+      assert.deepEqual(
+        config.filter((value) => value.startsWith("features.code_mode")),
+        extraCodexConfig ? [directConfig] : [],
+      );
+      if (extraCodexConfig) assert.deepEqual(config.slice(-2), extraCodexConfig);
+    }
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     rmSync(root, { recursive: true, force: true });
   }
 });
