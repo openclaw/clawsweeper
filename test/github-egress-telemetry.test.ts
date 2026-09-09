@@ -115,9 +115,10 @@ test("GH_DEBUG observation counts paginated wire attempts and strips unsafe diag
       NOW,
     );
     const invalidRetry = jsonLines(rateLimitPath).at(-1);
-    assert.equal(invalidRetry?.resetAuthorityCandidate, "invalid");
+    assert.ok(invalidRetry);
+    assert.equal(invalidRetry.resetAuthorityCandidate, "invalid");
     assert.equal(
-      (invalidRetry?.headers as Record<string, unknown>).resetEpochSeconds,
+      (invalidRetry.headers as Record<string, unknown>).resetEpochSeconds,
       1_786_533_900,
     );
   } finally {
