@@ -1085,7 +1085,6 @@ jobs:
         with:
           target-repo: ${{ steps.target.outputs.target_repo }}
           target-dir: ${{ steps.target.outputs.target_checkout_dir }}
-          review-artifact-dir: ${{ github.workspace }}/artifacts/event
 
       - name: Mark re-review command in progress
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' }}
@@ -5015,7 +5014,6 @@ jobs:
         with:
           target-repo: ${{ needs.plan.outputs.target_repo }}
           target-dir: ${{ needs.plan.outputs.target_checkout_dir }}
-          review-artifact-dir: ${{ github.workspace }}/review-artifacts/shard-${{ matrix.shard }}
 
       - name: Mark shard start
         id: shard-start

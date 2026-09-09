@@ -3,10 +3,10 @@ set -euo pipefail
 
 target_repo="${1:-}"
 target_dir_input="${2:-}"
-review_artifact_dir_input="${3:-}"
-cache_dir_input="${4:-}"
-source_url="${5:-https://github.com/openai/codex.git}"
-pin_dir_input="${6:-$target_dir_input}"
+cache_dir_input="${3:-}"
+source_url="${4:-https://github.com/openai/codex.git}"
+pin_dir_input="${5:-$target_dir_input}"
+review_tree_root_input="${6:-}"
 setup_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")"
 source_incompatible_exit=80
 
@@ -39,32 +39,37 @@ resolve_from_workspace() {
   ' "$workspace_root" "$1"
 }
 
-review_artifact_root="$(resolve_from_workspace "$review_artifact_dir_input")"
 cache_dir="$(resolve_from_workspace "$cache_dir_input")"
-for candidate in "$review_artifact_root" "$cache_dir"; do
-  case "$candidate/" in
-    "$workspace_root/"*) ;;
-    *)
-      echo "Codex source setup paths must stay inside GITHUB_WORKSPACE." >&2
-      exit 1
-      ;;
-  esac
-done
+case "$cache_dir/" in
+  "$workspace_root/"*) ;;
+  *)
+    echo "Codex source setup paths must stay inside GITHUB_WORKSPACE." >&2
+    exit 1
+    ;;
+esac
 
 pin_root="$(cd "$pin_dir_input" && pwd -P)"
-review_tree_root="$review_artifact_root/review-trees"
-if [[ "$pin_root" != "$target_root" ]] &&
-  { [[ "$(dirname "$pin_root")" != "$review_tree_root" ]] ||
-    [[ "$(basename "$pin_root")" == *[!0-9]* ]]; }; then
-  echo "Codex version pin must come from the target checkout or one of its PR review trees." >&2
-  exit 1
+if [[ "$pin_root" != "$target_root" ]]; then
+  # Only the command owns this private root. A pin path cannot grant itself
+  # permission to retarget source or create a sibling link.
+  if [[ -z "$review_tree_root_input" || "$review_tree_root_input" != /* ||
+    ! -d "$review_tree_root_input" || -L "$review_tree_root_input" ]]; then
+    echo "Codex review trees require an explicit canonical private root." >&2
+    exit 1
+  fi
+  review_tree_root="$(cd "$review_tree_root_input" && pwd -P)"
+  if [[ "$review_tree_root_input" != "$review_tree_root" ]] ||
+    [[ "$(dirname "$pin_root")" != "$review_tree_root" ]] ||
+    [[ "$(basename "$pin_root")" == *[!0-9]* ]]; then
+    echo "Codex version pin must come from the target checkout or one of its PR review trees." >&2
+    exit 1
+  fi
 fi
 
 if [[ -n "${GITHUB_ENV:-}" ]]; then
   {
     echo "CLAWSWEEPER_OPENCLAW_CODEX_SETUP_SCRIPT=$setup_script"
     echo "CLAWSWEEPER_OPENCLAW_CODEX_TARGET_DIR=$target_root"
-    echo "CLAWSWEEPER_OPENCLAW_CODEX_ARTIFACT_DIR=$review_artifact_root"
     echo "CLAWSWEEPER_OPENCLAW_CODEX_CACHE_DIR=$cache_dir"
     echo "CLAWSWEEPER_OPENCLAW_CODEX_SOURCE_URL=$source_url"
   } >> "$GITHUB_ENV"
@@ -165,14 +170,15 @@ if [[ -n "$(git -C "$source_dir" status --porcelain=v1 --untracked-files=all)" ]
   exit 1
 fi
 
-review_sibling="$review_tree_root/codex"
-mkdir -p "$review_tree_root"
-if [[ -L "$review_sibling" ]]; then
-  rm -- "$review_sibling"
-elif [[ -e "$review_sibling" ]]; then
-  echo "PR review-tree Codex sibling already exists and is not a symbolic link." >&2
-  exit 1
+if [[ "$pin_root" != "$target_root" ]]; then
+  review_sibling="$review_tree_root/codex"
+  if [[ -L "$review_sibling" ]]; then
+    rm -- "$review_sibling"
+  elif [[ -e "$review_sibling" ]]; then
+    echo "PR review-tree Codex sibling already exists and is not a symbolic link." >&2
+    exit 1
+  fi
+  ln -s "$source_dir" "$review_sibling"
 fi
-ln -s "$source_dir" "$review_sibling"
 
 echo "Prepared Codex $version source for OpenClaw review at $source_dir."

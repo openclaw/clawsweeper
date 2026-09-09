@@ -8,6 +8,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -28,12 +29,13 @@ import { createReviewCommandWorkflow } from "../dist/clawsweeper-review-command-
 
 test("body-file keeps its authoritative precedence over compact hosted context", () => {
   const dir = mkdtempSync(join(tmpdir(), "clawsweeper-body-override-"));
+  let prepared: ReturnType<typeof prepareReviewCommand> | undefined;
   try {
     const bodyFile = join(dir, "body.md");
     const provided = "Provided override\n" + "x".repeat(12001) + "\nOVERRIDE_TAIL";
     writeFileSync(bodyFile, provided);
     const { target, context } = hydratePrimaryBody(longProofBody(), "pull_request");
-    const prepared = prepareReviewCommand(
+    prepared = prepareReviewCommand(
       parseArgs(["--body-file", bodyFile, "--artifact-dir", dir, "--output-retention", "debug"]),
       {
         DEFAULT_PLAN_BATCH_SIZE: 3,
@@ -55,6 +57,7 @@ test("body-file keeps its authoritative precedence over compact hosted context",
     assert.ok(prompt.indexOf("AUTHORITATIVE PR BODY") > prompt.indexOf("## GitHub Context"));
     assert.match(prepared.additionalPrompt, /Do NOT fetch, prefer, or assume any other version/);
   } finally {
+    prepared?.cleanupReviewOutput();
     rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -219,13 +222,14 @@ test("initial fetch timeout retains native evidence before any review work", () 
 test("local-range preparation remains offline even with a claimed exact item in the environment", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-local-range-"));
   const oldEnv = process.env;
+  let prepared: ReturnType<typeof prepareReviewCommand> | undefined;
   try {
     process.env = {
       ...oldEnv,
       EXACT_REVIEW_ITEM_KEY: "openclaw/openclaw#42",
       EXACT_REVIEW_ITEM_KIND: "pull_request",
     };
-    const prepared = prepareReviewCommand(parseArgs(["--local-range", "--artifact-dir", root]), {
+    prepared = prepareReviewCommand(parseArgs(["--local-range", "--artifact-dir", root]), {
       DEFAULT_PLAN_BATCH_SIZE: 3,
       repoFromArgs: () => repositoryProfileFor("openclaw/openclaw"),
       targetRepo: () => "openclaw/openclaw",
@@ -247,6 +251,7 @@ test("local-range preparation remains offline even with a claimed exact item in 
     assert.equal(prepared.git.releaseStateComplete, true);
     assert.equal(existsSync(join(root, "failure-diagnostics")), false);
   } finally {
+    prepared?.cleanupReviewOutput();
     process.env = oldEnv;
     rmSync(root, { recursive: true, force: true });
   }
@@ -313,6 +318,8 @@ test("summary preparation uses separate checkout scratch and removes owned outpu
             checkoutScratch = artifactDir;
             assert.notEqual(artifactDir, output);
             assert.match(artifactDir, /clawsweeper-review-workspace-/);
+            mkdirSync(join(artifactDir, "review-trees"));
+            symlinkSync(root, join(artifactDir, "review-trees", "codex"));
             throw new Error("synthetic checkout failure");
           },
           ensureDir: () => {},
@@ -324,6 +331,7 @@ test("summary preparation uses separate checkout scratch and removes owned outpu
     );
     assert.equal(existsSync(output), false);
     assert.equal(existsSync(checkoutScratch), false);
+    assert.equal(existsSync(root), true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

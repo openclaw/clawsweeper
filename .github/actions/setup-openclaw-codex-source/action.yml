@@ -7,9 +7,6 @@ inputs:
   target-dir:
     description: Target repository checkout path.
     required: true
-  review-artifact-dir:
-    description: Artifact directory where PR review trees are materialized.
-    required: true
 runs:
   using: composite
   steps:
@@ -37,7 +34,6 @@ runs:
         "$GITHUB_ACTION_PATH/install.sh" \
           "${{ steps.target.outputs.repository }}" \
           "${{ inputs.target-dir }}" \
-          "${{ inputs.review-artifact-dir }}" \
           "${{ inputs.target-dir }}-codex-cache.git"
         setup_status=$?
         set -e

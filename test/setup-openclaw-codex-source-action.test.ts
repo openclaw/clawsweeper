@@ -52,6 +52,7 @@ function createFixture() {
   const remote = join(root, "codex-remote");
   const cache = join(workspace, "openclaw-codex-cache.git");
   const artifacts = join(workspace, "artifacts", "event");
+  const reviewTreeRoot = join(realpathSync(root), "private-review", "review-trees");
   const githubEnv = join(workspace, "github-env");
   const bin = join(root, "bin");
   const fetchLog = join(root, "git-fetch.log");
@@ -81,6 +82,7 @@ function createFixture() {
     githubEnv,
     initialHead,
     remote,
+    reviewTreeRoot,
     root,
     source: join(workspace, "codex"),
     target,
@@ -90,7 +92,13 @@ function createFixture() {
 
 function runSetup(
   fixture: Fixture,
-  options: { pinRoot?: string; sourceUrl?: string } = {},
+  options: {
+    pinRoot?: string;
+    sourceUrl?: string;
+    reviewTreeRoot?: string | null;
+    cacheDir?: string;
+    targetDir?: string;
+  } = {},
 ): ReturnType<typeof spawnSync> & { fetchCount: number } {
   rmSync(fixture.fetchLog, { force: true });
   const result = spawnSync(
@@ -98,11 +106,11 @@ function runSetup(
     [
       script,
       "openclaw/openclaw",
-      fixture.target,
-      fixture.artifacts,
-      fixture.cache,
+      options.targetDir ?? fixture.target,
+      options.cacheDir ?? fixture.cache,
       options.sourceUrl ?? fixture.remote,
       options.pinRoot ?? fixture.target,
+      options.reviewTreeRoot === null ? "" : (options.reviewTreeRoot ?? fixture.reviewTreeRoot),
     ],
     {
       cwd: process.cwd(),
@@ -124,7 +132,7 @@ function runSetup(
 }
 
 function createReviewTree(fixture: Fixture, name: string, version: string): string {
-  const tree = join(fixture.artifacts, "review-trees", name);
+  const tree = join(fixture.reviewTreeRoot, name);
   writePin(tree, version);
   return tree;
 }
@@ -149,6 +157,8 @@ test("reuses a complete same-pin cache without network access", (t) => {
   const first = runSetup(fixture);
   assert.equal(first.status, 0, first.stderr);
   assert.equal(first.fetchCount, 1);
+  assert.equal(existsSync(fixture.artifacts), false);
+  assert.equal(existsSync(fixture.reviewTreeRoot), false);
 
   renameSync(fixture.remote, `${fixture.remote}.offline`);
   const offline = runSetup(fixture);
@@ -156,7 +166,12 @@ test("reuses a complete same-pin cache without network access", (t) => {
   assert.equal(offline.fetchCount, 0);
   assertPrepared(fixture, fixture.initialHead, "path");
 
-  const reviewSibling = join(fixture.artifacts, "review-trees", "codex");
+  const pullRequestTree = createReviewTree(fixture, "131584", "1.2.3");
+  const privateReview = runSetup(fixture, { pinRoot: pullRequestTree });
+  assert.equal(privateReview.status, 0, privateReview.stderr);
+  assert.equal(privateReview.fetchCount, 0);
+  assert.equal(existsSync(fixture.artifacts), false);
+  const reviewSibling = join(fixture.reviewTreeRoot, "codex");
   assert.equal(lstatSync(reviewSibling).isSymbolicLink(), true);
   assert.equal(realpathSync(reviewSibling), realpathSync(fixture.source));
   assert.equal(
@@ -175,12 +190,20 @@ test("publishes the runtime contract before deferring an incompatible base pin",
   for (const name of [
     "CLAWSWEEPER_OPENCLAW_CODEX_SETUP_SCRIPT",
     "CLAWSWEEPER_OPENCLAW_CODEX_TARGET_DIR",
-    "CLAWSWEEPER_OPENCLAW_CODEX_ARTIFACT_DIR",
     "CLAWSWEEPER_OPENCLAW_CODEX_CACHE_DIR",
     "CLAWSWEEPER_OPENCLAW_CODEX_SOURCE_URL",
   ]) {
     assert.match(environment, new RegExp(`^${name}=`, "m"));
   }
+  assert.doesNotMatch(environment, /CLAWSWEEPER_OPENCLAW_CODEX_ARTIFACT_DIR=/);
+  assert.equal(existsSync(fixture.artifacts), false);
+  assert.equal(existsSync(fixture.reviewTreeRoot), false);
+
+  const pullRequestTree = createReviewTree(fixture, "131584", "1.2.3");
+  const review = runSetup(fixture, { pinRoot: pullRequestTree });
+  assert.equal(review.status, 0, review.stderr);
+  assertPrepared(fixture, fixture.initialHead, "path");
+  assert.equal(existsSync(fixture.artifacts), false);
 });
 
 test("retargets to a cached pin offline and replaces a wrong dirty checkout", (t) => {
@@ -280,4 +303,99 @@ test("rejects nonnumeric review trees and escaped pin manifests", (t) => {
   const escapedPinResult = runSetup(fixture, { pinRoot: pullRequestTree });
   assert.notEqual(escapedPinResult.status, 0);
   assert.match(escapedPinResult.stderr, /regular file|stay inside/u);
+});
+
+test("private review pins require the exact owner-supplied root", (t) => {
+  const fixture = useFixture(t);
+  const tree = createReviewTree(fixture, "131584", "1.2.3");
+  const otherRoot = join(realpathSync(fixture.root), "other-review-trees");
+  mkdirSync(otherRoot);
+  const alias = join(realpathSync(fixture.root), "review-root-alias");
+  symlinkSync(fixture.reviewTreeRoot, alias);
+
+  for (const reviewTreeRoot of [null, "relative-root", otherRoot, alias]) {
+    const rejected = runSetup(fixture, { pinRoot: tree, reviewTreeRoot });
+    assert.notEqual(rejected.status, 0, String(reviewTreeRoot));
+    assert.match(rejected.stderr, /canonical private root|version pin must come from/u);
+    assert.equal(rejected.fetchCount, 0);
+  }
+  assert.equal(existsSync(join(fixture.reviewTreeRoot, "codex")), false);
+  assert.equal(existsSync(fixture.source), false);
+});
+
+test("rejects escaped or nested numeric review trees", (t) => {
+  const fixture = useFixture(t);
+  const escaped = join(realpathSync(fixture.root), "escaped", "131584");
+  writePin(escaped, "1.2.3");
+  mkdirSync(fixture.reviewTreeRoot, { recursive: true });
+  const alias = join(fixture.reviewTreeRoot, "131584");
+  symlinkSync(escaped, alias);
+  const nested = createReviewTree(fixture, join("nested", "131585"), "1.2.3");
+
+  for (const pinRoot of [escaped, alias, nested]) {
+    const rejected = runSetup(fixture, { pinRoot });
+    assert.notEqual(rejected.status, 0, pinRoot);
+    assert.match(rejected.stderr, /version pin must come from/u);
+    assert.equal(rejected.fetchCount, 0);
+  }
+  assert.equal(existsSync(fixture.source), false);
+});
+
+test("rejects a pin escaped through an ancestor symbolic link", (t) => {
+  const fixture = useFixture(t);
+  const tree = createReviewTree(fixture, "131584", "1.2.3");
+  rmSync(join(tree, "extensions"), { recursive: true });
+  symlinkSync(join(fixture.target, "extensions"), join(tree, "extensions"));
+
+  const rejected = runSetup(fixture, { pinRoot: tree });
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stderr, /stay inside its review checkout/u);
+  assert.equal(rejected.fetchCount, 0);
+});
+
+test("target and cache paths cannot escape the hosted workspace", (t) => {
+  const fixture = useFixture(t);
+  const outside = join(fixture.root, "outside");
+  writePin(outside, "1.2.3");
+  const escapedTarget = runSetup(fixture, { targetDir: outside, pinRoot: outside });
+  assert.notEqual(escapedTarget.status, 0);
+  assert.match(escapedTarget.stderr, /direct child of GITHUB_WORKSPACE/u);
+  assert.equal(escapedTarget.fetchCount, 0);
+
+  const alias = join(fixture.workspace, "cache-alias");
+  symlinkSync(outside, alias);
+  for (const cacheDir of [outside, join(alias, "cache.git")]) {
+    const escapedCache = runSetup(fixture, { cacheDir });
+    assert.notEqual(escapedCache.status, 0);
+    assert.match(escapedCache.stderr, /stay inside GITHUB_WORKSPACE/u);
+    assert.equal(escapedCache.fetchCount, 0);
+  }
+});
+
+test("private sibling setup replaces links but preserves file and directory collisions", (t) => {
+  const fixture = useFixture(t);
+  assert.equal(runSetup(fixture).status, 0);
+  const tree = createReviewTree(fixture, "131584", "1.2.3");
+  const sibling = join(fixture.reviewTreeRoot, "codex");
+  symlinkSync(fixture.target, sibling);
+  const linked = runSetup(fixture, { pinRoot: tree });
+  assert.equal(linked.status, 0, linked.stderr);
+  assert.equal(linked.fetchCount, 0);
+  assert.equal(realpathSync(sibling), realpathSync(fixture.source));
+  assert.equal(existsSync(join(fixture.target, "extensions", "codex", "package.json")), true);
+
+  rmSync(sibling);
+  writeFileSync(sibling, "preserve file\n");
+  const fileCollision = runSetup(fixture, { pinRoot: tree });
+  assert.notEqual(fileCollision.status, 0);
+  assert.match(fileCollision.stderr, /already exists and is not a symbolic link/u);
+  assert.equal(readFileSync(sibling, "utf8"), "preserve file\n");
+
+  rmSync(sibling);
+  mkdirSync(sibling);
+  writeFileSync(join(sibling, "owned.txt"), "preserve directory\n");
+  const directoryCollision = runSetup(fixture, { pinRoot: tree });
+  assert.notEqual(directoryCollision.status, 0);
+  assert.match(directoryCollision.stderr, /already exists and is not a symbolic link/u);
+  assert.equal(readFileSync(join(sibling, "owned.txt"), "utf8"), "preserve directory\n");
 });

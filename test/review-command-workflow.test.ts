@@ -8,11 +8,12 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 import { runAgentCheckoutInspection, runAgentProcess } from "../dist/agent-runner.js";
@@ -497,6 +498,7 @@ else {
     let inspectedPrompt = "";
     let reviewTreeAttempts = 0;
     let reviewTreeCleanupCalls = 0;
+    const privateReviewRoots = new Set<string>();
     let blobMetadataCalls = 0;
     let earlyHydrationError: unknown;
     let activeReviewMutationRunner = null;
@@ -693,6 +695,7 @@ else {
       pullHeadShaFromContext: (value) => value.pullRequest?.head.sha ?? null,
       reviewStructuralPullStateFromContext: () => pull,
       materializePullRequestReviewTree: ({ worktreeDir }) => {
+        privateReviewRoots.add(dirname(worktreeDir));
         reviewTreeAttempts += 1;
         if (checkoutUnavailable || (cacheRecovery && reviewTreeAttempts === 1)) return false;
         if (cacheRecovery) assert.equal(hydrationCalls, 1);
@@ -773,7 +776,7 @@ else {
           });
         throw new Error("scan refusal must not become a decision");
       },
-      runCodex: ({ item: reviewItem, openclawDir, reviewEnv, prompt }) => {
+      runCodex: ({ item: reviewItem, openclawDir, reviewTreeRoot, reviewEnv, prompt }) => {
         assert.equal(
           prompt,
           "Review the current item.",
@@ -781,6 +784,13 @@ else {
         );
         assert.equal(reviewEnv.GH_TOKEN, "synthetic-inspection-token");
         generationCalls += 1;
+        if (isPullRequest) {
+          assert.equal(reviewTreeRoot, realpathSync(dirname(openclawDir)));
+          assert.notEqual(reviewTreeRoot, join(artifactDir, "review-trees"));
+          const sibling = join(reviewTreeRoot, "codex");
+          if (!existsSync(sibling)) symlinkSync(target, sibling);
+          privateReviewRoots.add(reviewTreeRoot);
+        }
         if (cacheRecovery) {
           assert.equal(
             execFileSync("git", ["rev-parse", "HEAD"], {
@@ -793,7 +803,8 @@ else {
         if (preparationFailure) {
           prepareOpenClawCodexSourceForReview({
             targetRepo: REPO,
-            reviewDir: target,
+            reviewDir: openclawDir,
+            reviewTreeRoot,
             env: { CLAWSWEEPER_OPENCLAW_CODEX_SETUP_SCRIPT: "fixture-setup" },
           });
         }
@@ -1261,7 +1272,18 @@ else {
       assert.equal(metrics.content_cache_hits, hydrated ? 1 : 0);
       assert.equal(metrics.hydrations, hydrated ? 1 : 0);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      try {
+        for (const privateRoot of privateReviewRoots) {
+          assert.equal(
+            existsSync(privateRoot),
+            false,
+            "command must remove its private sibling root",
+          );
+        }
+        assert.equal(existsSync(join(target, "value.ts")), true, "sibling target remains intact");
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
     }
   });
 }

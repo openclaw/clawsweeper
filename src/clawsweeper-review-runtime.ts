@@ -973,6 +973,7 @@ ${extra}
     git: GitInfo;
     model: string;
     openclawDir: string;
+    reviewTreeRoot?: string;
     reasoningEffort: string;
     sandboxMode: string;
     serviceTier: string;
@@ -997,6 +998,7 @@ ${extra}
     prepareOpenClawCodexSourceForReview({
       targetRepo: options.item.repo,
       reviewDir: options.openclawDir,
+      ...(options.reviewTreeRoot === undefined ? {} : { reviewTreeRoot: options.reviewTreeRoot }),
     });
     ensureDir(options.workDir);
     const promptPath = join(options.workDir, `${options.item.number}.prompt.md`);

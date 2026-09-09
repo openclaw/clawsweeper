@@ -328,6 +328,7 @@ export interface CreateReviewCommandWorkflowDependencies {
     git: GitInfo;
     model: string;
     openclawDir: string;
+    reviewTreeRoot?: string;
     reasoningEffort: string;
     sandboxMode: string;
     serviceTier: string;

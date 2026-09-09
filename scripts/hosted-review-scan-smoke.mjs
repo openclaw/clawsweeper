@@ -17,6 +17,7 @@ import { runAgentProcess } from "../dist/agent-runner.js";
 import { codexEnv } from "../dist/codex-env.js";
 import { AgentInputScanError } from "../dist/agent-input-scan.js";
 import { runCodexForTest } from "../dist/clawsweeper.js";
+import { TRANSIENT_REVIEW_RESULT_MAX_BYTES } from "../dist/review-output-policy.js";
 import {
   assertBooleanCountArtifact,
   assertMatchesJsonSchema,
@@ -182,6 +183,7 @@ ${live ? `const child = require('node:child_process').spawnSync(${JSON.stringify
         preserveCodexAuth: true,
         timeoutMs: 300_000,
         workDir,
+        resultFileBytes: TRANSIENT_REVIEW_RESULT_MAX_BYTES,
         prompt,
         quietLogs: true,
         extraCodexConfig: ['web_search="disabled"'],

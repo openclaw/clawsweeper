@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -7,6 +8,22 @@ import {
   runWithWithheldDiagnostics,
   summarizeHostedReviewTrace,
 } from "../scripts/hosted-review-canary-proof.mjs";
+
+test("hosted review canary explicitly supplies the canonical transient result limit", () => {
+  const source = readFileSync(
+    new URL("../scripts/hosted-review-scan-smoke.mjs", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(
+    source,
+    /import \{ TRANSIENT_REVIEW_RESULT_MAX_BYTES \} from "\.\.\/dist\/review-output-policy\.js";/,
+  );
+  assert.match(
+    source,
+    /runCodexForTest\(\{[\s\S]*?\bresultFileBytes: TRANSIENT_REVIEW_RESULT_MAX_BYTES,/,
+  );
+});
 
 test("hosted review trace proves a command round before the final review", () => {
   const marker = "9ccfabf3-8158-437d-a168-173ee10d102a";

@@ -13,6 +13,7 @@ export const OPENCLAW_CODEX_SOURCE_INCOMPATIBLE_EXIT_CODE = 80;
 export function prepareOpenClawCodexSourceForReview(options: {
   targetRepo: string;
   reviewDir: string;
+  reviewTreeRoot?: string;
   env?: NodeJS.ProcessEnv;
   spawn?: Spawn;
 }): void {
@@ -22,7 +23,6 @@ export function prepareOpenClawCodexSourceForReview(options: {
   if (!script) return;
 
   const targetDir = requiredEnvironmentPath(env, "CLAWSWEEPER_OPENCLAW_CODEX_TARGET_DIR");
-  const artifactDir = requiredEnvironmentPath(env, "CLAWSWEEPER_OPENCLAW_CODEX_ARTIFACT_DIR");
   const cacheDir = requiredEnvironmentPath(env, "CLAWSWEEPER_OPENCLAW_CODEX_CACHE_DIR");
   const sourceUrl = env.CLAWSWEEPER_OPENCLAW_CODEX_SOURCE_URL?.trim() || DEFAULT_CODEX_SOURCE_URL;
   const run = options.spawn ?? ((command, args) => spawnSync(command, args, { encoding: "utf8" }));
@@ -30,10 +30,10 @@ export function prepareOpenClawCodexSourceForReview(options: {
     script,
     OPENCLAW_REPOSITORY,
     targetDir,
-    artifactDir,
     cacheDir,
     sourceUrl,
     options.reviewDir,
+    options.reviewTreeRoot ?? "",
   ]);
   if (result.error || result.status !== 0) {
     const detail = result.stderr.trim() || result.error?.message || `exit ${result.status}`;

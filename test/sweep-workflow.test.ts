@@ -493,7 +493,6 @@ test("OpenClaw review jobs provision the pinned sibling Codex source before revi
       action: "./.github/actions/setup-openclaw-codex-source",
       targetRepo: "${{ steps.target.outputs.target_repo }}",
       targetDir: "${{ steps.target.outputs.target_checkout_dir }}",
-      artifactDir: "${{ github.workspace }}/artifacts/event",
       reviewStep: "Review exact event item",
     },
     {
@@ -501,7 +500,6 @@ test("OpenClaw review jobs provision the pinned sibling Codex source before revi
       action: "./clawsweeper/.github/actions/setup-openclaw-codex-source",
       targetRepo: "${{ needs.plan.outputs.target_repo }}",
       targetDir: "${{ needs.plan.outputs.target_checkout_dir }}",
-      artifactDir: "${{ github.workspace }}/review-artifacts/shard-${{ matrix.shard }}",
       reviewStep: "Review shard",
     },
   ] as const) {
@@ -518,7 +516,6 @@ test("OpenClaw review jobs provision the pinned sibling Codex source before revi
     assert.deepEqual(steps[sourceCheckout]!.with, {
       "target-repo": scenario.targetRepo,
       "target-dir": scenario.targetDir,
-      "review-artifact-dir": scenario.artifactDir,
     });
   }
 });

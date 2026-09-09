@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   decisionPublicationPolicy,
@@ -367,6 +367,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     let completed = 0;
     let cacheHits = 0;
     try {
+      const reviewTreesDir = join(realpathSync(reviewWorkspaceDir), "review-trees");
       proofBinding = reviewCommandProofBinding(args.review_source_action, additionalPrompt);
       if (readonlyOpenclaw) makeTreeReadOnly(openclawDir, readonlyModeSnapshots);
       assertCurrentOutputBudget();
@@ -513,7 +514,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               return false;
             }
           }
-          const reviewTreesDir = join(reviewWorkspaceDir, "review-trees");
           ensureDir(reviewTreesDir);
           pullRequestReviewTreeDir = join(reviewTreesDir, String(item.number));
           pullRequestReviewTreeSha = null;
@@ -1428,6 +1428,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             git,
             model,
             openclawDir: reviewOpenclawDir,
+            reviewTreeRoot: reviewTreesDir,
             reasoningEffort,
             sandboxMode,
             serviceTier,
