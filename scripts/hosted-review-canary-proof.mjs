@@ -28,6 +28,124 @@ export const HOSTED_MULTILINE_PROVIDER_ERROR = "Rate limit reached.\nPlease try 
 // Codex 0.153.3 adds the protocol category, then human rendering adds ERROR.
 export const HOSTED_MULTILINE_RETRY_HINT = `ERROR: rate limit exceeded: ${HOSTED_MULTILINE_PROVIDER_ERROR}`;
 
+const nativeCheckpoint = (value) =>
+  [
+    "setup",
+    "outer_identity",
+    "wait",
+    "receipt_read",
+    "launch_count",
+    "native_stop",
+    "outer_stop",
+    "native_quiescence",
+    "outer_quiescence",
+    "child_assertion",
+  ].includes(value)
+    ? value
+    : null;
+const nativeBoolean = (value) => (typeof value === "boolean" ? value : null);
+const nativeCount = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : null);
+const nativeStatus = (value) =>
+  Number.isInteger(value) && value >= 0 && value <= 0xffffffff ? value : null;
+const nativeSignal = (value) =>
+  ["SIGINT", "SIGTERM", "SIGKILL", "SIGABRT", "SIGSEGV", "SIGPIPE"].includes(value) ? value : null;
+const nativeErrorCode = (value) =>
+  ["ETIMEDOUT", "ENOENT", "ENOBUFS", "EACCES", "ECONNRESET", "EPIPE"].includes(value)
+    ? value
+    : null;
+
+export function latchHostedNativeFailure(facts, abortReason = null) {
+  // Cleanup can fail too; retain the boundary that first made this proof fail.
+  facts.failureCheckpoint ??= facts.checkpoint;
+  facts.abortReason ??= abortReason;
+}
+
+function selectHostedNativeChildFacts(value) {
+  return {
+    kind: "hosted_native_child_failure",
+    stage: ["run_codex", "failure_decision", "checkout_observation", "failure_assertion"].includes(
+      value.stage,
+    )
+      ? value.stage
+      : null,
+    codexReviewError: nativeBoolean(value.codexReviewError),
+    status: nativeStatus(value.status),
+    signal: nativeSignal(value.signal),
+    errorCode: nativeErrorCode(value.errorCode),
+    inspectionFailed: nativeBoolean(value.inspectionFailed),
+    terminalFailure: nativeBoolean(value.terminalFailure),
+    retryable: nativeBoolean(value.retryable),
+    diagnosticEmpty: nativeBoolean(value.diagnosticEmpty),
+    hintMatched: nativeBoolean(value.hintMatched),
+    resultPresent: nativeBoolean(value.resultPresent),
+    checkoutUnchanged: nativeBoolean(value.checkoutUnchanged),
+  };
+}
+
+export function hostedNativeChildFailureFacts(stage, error, decision, observations) {
+  return selectHostedNativeChildFacts({
+    stage,
+    codexReviewError:
+      error instanceof Error &&
+      error.constructor.name === "CodexReviewError" &&
+      error.name === "CodexReviewError",
+    status: error?.status,
+    signal: error?.signal,
+    errorCode: error?.errorCode,
+    inspectionFailed: decision?.checkoutInspectionFailed,
+    terminalFailure: decision?.codexTerminalFailure,
+    retryable: error?.retryable,
+    diagnosticEmpty: typeof error?.diagnostic === "string" ? error.diagnostic === "" : null,
+    hintMatched:
+      typeof error?.retryHint === "string" ? error.retryHint === HOSTED_MULTILINE_RETRY_HINT : null,
+    resultPresent: observations?.resultExists,
+    checkoutUnchanged: observations?.checkoutUnchanged,
+  });
+}
+
+export function hostedNativeFailureLine(facts, childBytes) {
+  let child = null;
+  // This channel is diagnostic only. Reject extra fields and invalid values, not
+  // just raw error text; never serialize the child object or an assertion error.
+  if (childBytes.length > 0 && childBytes.length <= 2048) {
+    try {
+      const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(childBytes));
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        const selected = selectHostedNativeChildFacts(value);
+        if (
+          Object.keys(value).length === Object.keys(selected).length &&
+          Object.entries(selected).every(([key, field]) => value[key] === field)
+        )
+          child = selected;
+      }
+    } catch {}
+  }
+  const line =
+    JSON.stringify({
+      kind: "hosted_native_failure",
+      checkpoint: nativeCheckpoint(facts.failureCheckpoint),
+      abortReason: ["signal", "request", "spawn", "capture", "deadline"].includes(facts.abortReason)
+        ? facts.abortReason
+        : null,
+      outerIdentityRecorded: nativeBoolean(facts.outerIdentityRecorded),
+      outerClosed: nativeBoolean(facts.outerClosed),
+      outerStatus: nativeStatus(facts.outerStatus),
+      outerSignal: nativeSignal(facts.outerSignal),
+      requestCount: nativeCount(facts.requestCount),
+      receiptPresent: nativeBoolean(facts.receiptPresent),
+      receiptCount:
+        nativeCount(facts.receiptCount) !== null && facts.receiptCount <= 8
+          ? facts.receiptCount
+          : null,
+      nativeQuiescent: nativeBoolean(facts.nativeQuiescent),
+      outerQuiescent: nativeBoolean(facts.outerQuiescent),
+      capturedBytes: nativeCount(facts.capturedBytes),
+      child,
+    }) + "\n";
+  assert.ok(Buffer.byteLength(line) <= 2048, "Hosted native failure facts exceeded their bound.");
+  return line;
+}
+
 export async function withHostedFixtureSignals(refuse, operation) {
   let cancelled = false;
   const onSignal = () => {
@@ -309,10 +427,7 @@ export async function stopHostedTerminal({ path, nonce, tmux }) {
   assert.equal(fields[0], "v1");
   assert.equal(fields[1], "armed");
   assert.equal(fields.length, 7);
-  const root = realpathSync(dirname(path));
   assert.ok(armed.lease.endsWith(".lease"));
-  const directory = realpathSync(dirname(armed.lease));
-  assert.ok(directory === root || directory.startsWith(root + sep));
   const prefix = armed.lease.slice(0, -".lease".length);
   assert.equal(armed.request, prefix + ".start");
   assert.equal(armed.result, prefix + ".cleanup.result");
@@ -324,6 +439,9 @@ export async function stopHostedTerminal({ path, nonce, tmux }) {
       maxBuffer: 4096,
     }).trim();
   if (records.length === 1) {
+    const root = realpathSync(dirname(path));
+    const directory = realpathSync(dirname(armed.lease));
+    assert.ok(directory === root || directory.startsWith(root + sep));
     assert.deepEqual(hostedProcessIdentity(armed.server.pid), armed.server);
     const socket = lstatSync(armed.socket);
     assert.ok(socket.isSocket());
@@ -355,18 +473,40 @@ export async function stopHostedTerminal({ path, nonce, tmux }) {
     }, 12_000);
   }
   assertHostedTerminalDone(records);
+  const proveCompleted = async () => {
+    const fresh = readHostedLifecycle(path, nonce);
+    assert.deepEqual(fresh, records);
+    await assertHostedTerminalQuiescent(fresh);
+  };
   if (hostedProcessIdentity(armed.server.pid)) {
     assert.deepEqual(hostedProcessIdentity(armed.server.pid), armed.server);
     const socket = lstatSync(armed.socket);
     assert.ok(socket.isSocket());
     assert.equal(`${socket.dev}:${socket.ino}`, armed.socketIdentity);
-    assert.equal(
-      command("display-message", "-p", "-t", `${armed.session}:0.0`, "#{pane_pid}|#{pane_tty}"),
-      `${fields[3]}|${fields[4]}`,
-    );
-    command("kill-session", "-t", armed.session);
+    let paneIdentity;
+    try {
+      paneIdentity = command(
+        "display-message",
+        "-p",
+        "-t",
+        `${armed.session}:0.0`,
+        "#{pane_pid}|#{pane_tty}",
+      );
+    } catch {
+      // After DONE the real controller can remove its session concurrently.
+      // A failed command is not success without fresh receipts and quiescence.
+      await proveCompleted();
+      return;
+    }
+    assert.equal(paneIdentity, `${fields[3]}|${fields[4]}`);
+    try {
+      command("kill-session", "-t", armed.session);
+    } catch {
+      await proveCompleted();
+      return;
+    }
   }
-  await assertHostedTerminalQuiescent(records);
+  await proveCompleted();
 }
 
 export function assertHostedBlobStarts(starts, repo, item, childCount, temporaryRoot) {

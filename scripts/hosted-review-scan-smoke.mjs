@@ -32,8 +32,10 @@ import {
   assertMatchesJsonSchema,
   HOSTED_MULTILINE_PROVIDER_ERROR,
   hostedBlobPreloadSource,
+  hostedNativeFailureLine,
   hostedProcessIdentity,
   hostedTerminalObserverSource,
+  latchHostedNativeFailure,
   readHostedLifecycle,
   readHostedReviewRollout,
   runWithWithheldDiagnostics,
@@ -296,6 +298,8 @@ async function proveNativeMultilineFailure({ root, cwd, headSha, codex }) {
   let childClosed;
   let timer;
   let closed = false;
+  const stdout = [];
+  const failureFacts = { checkpoint: "setup", outerClosed: null, capturedBytes: 0 };
   let resolveAbort;
   const aborted = new Promise((resolve) => {
     resolveAbort = resolve;
@@ -318,7 +322,8 @@ recordHostedLifecycle(${JSON.stringify(launches)}, {
     `#!/bin/bash\n${quote(process.execPath)} --input-type=module --eval ${quote(receipt)} || exit 125\nexec ${quote(codex)} "$@"\n`,
     { mode: 0o700 },
   );
-  const refuse = () => {
+  const refuse = (reason = "signal") => {
+    latchHostedNativeFailure(failureFacts, reason);
     failed = true;
     resolveAbort();
   };
@@ -337,7 +342,7 @@ recordHostedLifecycle(${JSON.stringify(launches)}, {
           })}\n\n`,
         );
       } catch {
-        refuse();
+        refuse("request");
         response.destroy();
       }
     });
@@ -410,21 +415,25 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { runCodexForTest, codexFailureDecisionForTest } from ${JSON.stringify(new URL("../dist/clawsweeper.js", import.meta.url).href)};
-import { summarizeHostedMultilineFailure } from ${JSON.stringify(new URL("./hosted-review-canary-proof.mjs", import.meta.url).href)};
+import { hostedNativeChildFailureFacts, summarizeHostedMultilineFailure } from ${JSON.stringify(new URL("./hosted-review-canary-proof.mjs", import.meta.url).href)};
 const options = JSON.parse(process.argv[1]);
+let stage = "run_codex", failure, decision, observations;
 try {
-  let failure;
   try { runCodexForTest(options); } catch (error) { failure = error; }
+  stage = "failure_decision";
   assert.ok(failure instanceof Error);
-  const decision = codexFailureDecisionForTest(failure.status, failure.message, failure.stdout, failure.stderr, failure);
+  decision = codexFailureDecisionForTest(failure.status, failure.message, failure.stdout, failure.stderr, failure);
+  stage = "checkout_observation";
   const git = (...args) => execFileSync(${JSON.stringify(gitExecutable)}, args, { cwd: options.openclawDir, encoding: "utf8", timeout: 15000 }).trim();
-  const proof = summarizeHostedMultilineFailure(failure, decision, {
+  observations = {
     resultExists: existsSync(join(options.workDir, options.item.number + ".json")),
     checkoutUnchanged: git("rev-parse", "HEAD") === options.git.mainSha && git("status", "--porcelain") === "",
-  });
+  };
+  stage = "failure_assertion";
+  const proof = summarizeHostedMultilineFailure(failure, decision, observations);
   process.stdout.write(JSON.stringify(proof));
 } catch {
-  process.stderr.write("Hosted native multiline assertions failed; diagnostics withheld.\\n");
+  process.stdout.write(JSON.stringify(hostedNativeChildFailureFacts(stage, failure, decision, observations)));
   process.exitCode = 1;
 }
 `;
@@ -434,41 +443,60 @@ try {
         { cwd: process.cwd(), env, detached: true, stdio: ["ignore", "pipe", "pipe"] },
       );
       fixtureQuiescent = false;
+      failureFacts.checkpoint = "outer_identity";
       const outerIdentity = hostedProcessIdentity(child.pid);
+      failureFacts.outerIdentityRecorded = outerIdentity !== null;
       assert.ok(outerIdentity);
-      child.once("error", refuse);
+      child.once("error", () => refuse("spawn"));
       childClosed = new Promise((resolve) =>
         child.once("close", (code, signal) => {
           closed = true;
+          failureFacts.outerClosed = true;
+          failureFacts.outerStatus = code;
+          failureFacts.outerSignal = signal;
           resolve({ code, signal });
         }),
       );
       let capturedBytes = 0;
-      const stdout = [];
       for (const stream of [child.stdout, child.stderr]) {
         stream.on("data", (chunk) => {
           capturedBytes += chunk.length;
-          if (capturedBytes > maxCaptureBytes) refuse();
+          failureFacts.capturedBytes = capturedBytes;
+          if (capturedBytes > maxCaptureBytes) refuse("capture");
           else if (stream === child.stdout) stdout.push(chunk);
         });
       }
-      timer = setTimeout(refuse, 75_000);
+      timer = setTimeout(() => refuse("deadline"), 75_000);
+      failureFacts.checkpoint = "wait";
       await Promise.race([childClosed, aborted]);
+      failureFacts.checkpoint = "receipt_read";
+      failureFacts.receiptPresent = existsSync(launches);
       const records = readHostedLifecycle(launches, nonce);
+      failureFacts.receiptCount = records.length;
+      failureFacts.checkpoint = "launch_count";
       assert.equal(records.length, 2, "both inspection and review launch identities are required");
       if (failed) {
+        failureFacts.checkpoint = "native_stop";
         for (const record of records) {
           assert.equal(record.kind, "native");
           await stopHostedNativeGroup(record.identity);
         }
-        if (!closed) await stopHostedNativeGroup(outerIdentity);
+        if (!closed) {
+          failureFacts.checkpoint = "outer_stop";
+          await stopHostedNativeGroup(outerIdentity);
+        }
       }
       const result = await childClosed;
+      failureFacts.checkpoint = "native_quiescence";
       assertHostedNativeQuiescent(records);
+      failureFacts.nativeQuiescent = true;
+      failureFacts.checkpoint = "outer_quiescence";
       assertHostedProcessGroupGone(outerIdentity);
+      failureFacts.outerQuiescent = true;
       fixtureQuiescent = true;
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
+      failureFacts.checkpoint = "child_assertion";
       assert.equal(failed, false);
       assert.deepEqual(result, { code: 0, signal: null });
       assert.equal(requests, 1);
@@ -476,6 +504,7 @@ try {
       assertBooleanCountArtifact(proof);
       return { ...proof, nativeMultilineProviderRequestCount: requests };
     } catch {
+      latchHostedNativeFailure(failureFacts);
       throw new Error("Hosted native multiline proof failed; diagnostics withheld.");
     } finally {
       clearTimeout(timer);
@@ -488,6 +517,11 @@ try {
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
     }
+  }).catch((error) => {
+    // Includes cancellation during awaited cleanup, after a computed success.
+    failureFacts.requestCount = requests;
+    process.stderr.write(hostedNativeFailureLine(failureFacts, Buffer.concat(stdout)));
+    throw error;
   });
 }
 

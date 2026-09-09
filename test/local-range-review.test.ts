@@ -895,14 +895,7 @@ if (process.env.LOCAL_REVIEW_FAIL === "1") {
   process.stderr.write("deterministic local review failure\\n");
   process.exit(1);
 }
-process.stdout.write(JSON.stringify({
-  type: "item.completed",
-  item: {
-    type: "agent_message",
-    text: fs.readFileSync(process.env.LOCAL_REVIEW_DECISION, "utf8"),
-  },
-}) + "\\n");
-process.stdout.write(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1 } }) + "\\n");
+process.stdout.write(fs.readFileSync(process.env.LOCAL_REVIEW_DECISION, "utf8") + "\\n");
 `,
   );
   if (process.platform === "win32") {
