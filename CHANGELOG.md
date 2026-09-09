@@ -202,7 +202,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Added
 
-- Propose closing pull requests above 30,000 changed lines before hydration, scanning, or model review, with a configurable threshold, maintainer size exemption, and live-revalidated gated apply that preserves human-activity freshness and queue supersession.
+- Propose closing pull requests above 50,000 changed lines before hydration, scanning, or model review, with a configurable threshold, maintainer size exemption, and live-revalidated gated apply that preserves human-activity freshness and queue supersession.
 
 - Enabled browser live proof for ClawSweeper with a self-contained local OpenClaw Bay launcher and seeded lifecycle/workflow demo data.
 - Added an opt-in live-proof lane that records typed browser or terminal plans in a secretless PR-head job, validates and uploads media from a separate trusted job, and attaches only trusted R2 URLs to the durable review comment.
