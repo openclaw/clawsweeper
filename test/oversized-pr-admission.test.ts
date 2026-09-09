@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createReviewCommandWorkflow } from "../dist/clawsweeper-review-command-workflow.js";
+import { suppliedReviewStartLeaseFromArgs } from "../dist/clawsweeper-review-lease.js";
 import { parseArgs } from "../dist/clawsweeper-args.js";
 import { repositoryProfileFor } from "../dist/repository-profiles.js";
 import { reviewActionForDecision } from "../dist/clawsweeper.js";
@@ -47,7 +48,7 @@ for (const source of [
         resolveReviewCheckout: () => ({ openclawDir: root }),
         ensureDir: (path: string) => mkdirSync(path, { recursive: true }),
         reviewCodexForcedLoginMethod: () => "",
-        suppliedReviewStartLeaseFromArgs: () => null,
+        suppliedReviewStartLeaseFromArgs,
         gitInfo: () => ({
           mainSha: "a".repeat(40),
           releaseStateComplete: true,
@@ -68,7 +69,7 @@ for (const source of [
         itemSnapshotHash: () => "snapshot",
         itemContentDigest: () => "digest",
         reportFileName: () => "123.md",
-        markdownFor: ({ decision, action }: any) => JSON.stringify({ decision, action }),
+        markdownFor: (report: any) => JSON.stringify(report),
         reviewActionForDecision,
         collectItemContext: (_item: unknown, options: any) => {
           calls.hydration++;
@@ -116,6 +117,9 @@ for (const source of [
           "--artifact-dir",
           root,
           "--skip-start-comment",
+          ...(total > 50000
+            ? ["--review-lease-owner", "reserved-owner", "--review-lease-comment-id", "5602217053"]
+            : []),
           ...(source === "shard"
             ? ["--shard-count", "4", "--shard-index", "2"]
             : ["--item-number", "123", "--review-source-action", source]),
@@ -123,6 +127,8 @@ for (const source of [
         if (total > 50000) {
           reviewCommand(args);
           const report = JSON.parse(readFileSync(join(root, "123.md"), "utf8"));
+          assert.equal(report.reviewLeaseOwner, "reserved-owner");
+          assert.equal(report.reviewLeaseCommentId, 5602217053);
           assert.equal(report.decision.closeReason, "oversized_pull_request");
           assert.equal(report.action.actionTaken, "proposed_close");
           assert.equal(report.decision.oversizedPullRequest.additions, total);
