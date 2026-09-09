@@ -5,10 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  DEFAULT_CODEX_OUTPUT_FILE_BYTES,
-  DEFAULT_CODEX_OUTPUT_TAIL_BYTES,
-} from "./codex-output-capture.js";
+import { normalizedOutputFileBytes, normalizedTailBytes } from "./codex-output-capture.js";
 import type { CodexProcessResult } from "./codex-process.js";
 
 const OPENCLAW_PROCESS_WORKER_PATH = fileURLToPath(
@@ -487,16 +484,6 @@ function openclawSessionId(label: string): string {
     .replace(/[^a-z0-9_-]+/g, "-")
     .slice(0, 48);
   return `${safeLabel || "clawsweeper"}-${randomUUID()}`;
-}
-
-function normalizedTailBytes(value: number | undefined): number {
-  if (value === undefined) return DEFAULT_CODEX_OUTPUT_TAIL_BYTES;
-  return Math.max(0, Number.isFinite(value) ? Math.floor(value) : DEFAULT_CODEX_OUTPUT_TAIL_BYTES);
-}
-
-function normalizedOutputFileBytes(value: number | undefined): number {
-  if (value === undefined) return DEFAULT_CODEX_OUTPUT_FILE_BYTES;
-  return Math.max(0, Number.isFinite(value) ? Math.floor(value) : DEFAULT_CODEX_OUTPUT_FILE_BYTES);
 }
 
 function failedResult(

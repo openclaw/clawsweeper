@@ -1,7 +1,7 @@
-import fs from "node:fs";
 import path from "node:path";
 
 import type { JsonValue, LooseRecord } from "./json-types.js";
+import { readJsonFileIfExists } from "./json-file.js";
 import {
   REVIEW_REPRODUCIBLE_BUG_TRIGGER_SOURCE,
   REVIEW_VIABLE_ISSUE_TRIGGER_SOURCE,
@@ -90,7 +90,9 @@ export function validateFixSecurityScope({
     };
   }
 
-  const clusterPlan = readSiblingJson(resultPath, "cluster-plan.json");
+  const clusterPlan = readJsonFileIfExists(
+    path.join(path.dirname(resultPath), "cluster-plan.json"),
+  );
   const securityRefs = new Set(
     (clusterPlan?.security_boundary?.security_sensitive_items ?? [])
       .map(normalizeLocalRef)
@@ -249,12 +251,6 @@ function isTrustedPrRepairIntake(frontmatter: LooseRecord, fixArtifact: LooseRec
     frontmatter.cluster_id === expectedClusterId &&
     frontmatter.target_branch === `clawsweeper/${expectedClusterId}`
   );
-}
-
-function readSiblingJson(resultPath: string, name: string): LooseRecord | null {
-  const file = path.join(path.dirname(resultPath), name);
-  if (!fs.existsSync(file)) return null;
-  return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
 function normalizeLocalRef(value: JsonValue): string {

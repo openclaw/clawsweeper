@@ -1,0 +1,26 @@
+# LOCAL FIXTURE ONLY: no deployment, credentials, or live producers.
+name = "bay-inline-proof-local-fixture"
+main = "fixture-worker.mjs"
+compatibility_date = "2026-05-11"
+[[durable_objects.bindings]]
+name = "EXACT_REVIEW_QUEUE"
+class_name = "InlineProofFixtureQueue"
+[[durable_objects.bindings]]
+name = "STATUS_STORE"
+class_name = "StatusStore"
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["InlineProofFixtureQueue", "StatusStore"]
+[[r2_buckets]]
+binding = "STATE_SNAPSHOTS"
+bucket_name = "local-fixture-only"
+[vars]
+PUBLIC_BAY_REPOS = "openclaw/openclaw"
+TARGET_REPOS = "openclaw/openclaw"
+CLAWSWEEPER_REPO = "openclaw/clawsweeper"
+GITHUB_API_URL = "http://127.0.0.1:9"
+CACHE_TTL_SECONDS = "0"
+STALE_CACHE_TTL_SECONDS = "0"
+INCLUDE_CI_STATUS = "0"
+EXACT_REVIEW_DISPATCH_DEBOUNCE_MS = "900000"
+EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS = "900000"

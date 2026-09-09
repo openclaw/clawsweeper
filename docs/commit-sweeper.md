@@ -54,7 +54,7 @@ Use `--output-retention summary` to retain only `local-review.md`, or
 `--output-retention debug` for the existing per-run engine output. An explicit
 legacy `--report-dir` remains debug-compatible. `--result-format json` emits a
 valid JSON result with a nullable artifact path. Summary destinations are
-exclusive to the current invocation. Transient output is capped at 96 MiB/256
+exclusive to the current invocation. Managed transient output is capped at 96 MiB/256
 files and debug output at 1 GiB/4,096 files, with at most 128 selected items per
 invocation. Required PR checkouts are isolated from retained output in private
 run scratch. Before materialization, ClawSweeper admits at most 200,000 tracked
@@ -65,8 +65,11 @@ reserve. Missing-object acquisition is admitted against the real Git object
 store; checkout materialization is admitted against its workspace filesystem.
 When they share a filesystem, the combined requirement reserves space once.
 Projected and actual usage must stay within 200,000 files/2 GiB.
-Per-item media downloads share 64 MiB; generated metadata and contact sheets
-share 16 MiB. ClawSweeper does not prune older or unrelated retained runs.
+When media preparation applies, debug items can use at most 64 MiB for downloads
+and 16 MiB for derived output, subject to the remaining run byte and file
+allowances. Non-debug items use at most 32 MiB and 8 MiB respectively.
+These limits bound retained managed output, not arbitrary model writes or peak
+child-process disk use. ClawSweeper does not prune older or unrelated retained runs.
 
 For `review --local-range`, per-file line counts come from complete Git numstat
 metadata for the resolved merge-base-to-HEAD range, independently of bounded

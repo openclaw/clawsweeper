@@ -17,12 +17,18 @@ import {
 import type { Args } from "./clawsweeper-args.js";
 import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-review-command-dependencies.js";
 import { parsePrCommentActivityRevisionMap } from "./pr-hydration-snapshot.js";
-import { writeExactReviewFailureDiagnostics } from "./clawsweeper-review-failure-diagnostics.js";
+import {
+  EXACT_REVIEW_FAILURE_DIAGNOSTICS_MAX_BYTES,
+  EXACT_REVIEW_FAILURE_DIAGNOSTICS_MAX_FILES,
+  writeExactReviewFailureDiagnostics,
+} from "./clawsweeper-review-failure-diagnostics.js";
 import { ReviewSourcePreparationError } from "./review-source-preparation.js";
 import {
   createTransientReviewOutput,
+  createReviewOutputBudget,
   discardOwnedSummaryOutput,
   prepareRetainedReviewOutput,
+  produceReviewOutput,
   reviewOutputSelection,
 } from "./review-output-policy.js";
 
@@ -172,6 +178,7 @@ export function prepareReviewCommand(
       ? buildLocalRangeReview(openclawDir, targetRepo(), stringArg(args.base, ""))
       : undefined;
     ensureDir(artifactDir);
+    const outputBudget = createReviewOutputBudget(artifactDir, outputSelection.retention);
     const localReviewHistoryPath =
       outputSelection.retention !== "none" && localRangeData
         ? defaultLocalRangeHistoryPath(openclawDir, targetRepo(), localRangeData.baseSha)
@@ -241,20 +248,30 @@ export function prepareReviewCommand(
     } catch (error) {
       if (error instanceof ReviewSourcePreparationError && exactReviewIdentity) {
         try {
-          writeExactReviewFailureDiagnostics({
-            artifactDir,
-            error,
-            prompt: additionalPrompt,
-            model,
-            classification: "source_preparation",
-            ...exactReviewIdentity,
-            sourceSha:
-              exactReviewIdentity.itemKind === "pull_request"
-                ? process.env.EXACT_REVIEW_SOURCE_HEAD_SHA
-                : null,
-            retryable: dependencies.codexReviewFailureRetryable(error),
-            workflowExit: 1,
-          });
+          produceReviewOutput(
+            outputBudget,
+            {
+              paths: [join(artifactDir, "failure-diagnostics")],
+              maxBytes: EXACT_REVIEW_FAILURE_DIAGNOSTICS_MAX_BYTES,
+              maxFiles: EXACT_REVIEW_FAILURE_DIAGNOSTICS_MAX_FILES,
+              metadata: true,
+            },
+            () =>
+              writeExactReviewFailureDiagnostics({
+                artifactDir,
+                error,
+                prompt: additionalPrompt,
+                model,
+                classification: "source_preparation",
+                ...exactReviewIdentity,
+                sourceSha:
+                  exactReviewIdentity.itemKind === "pull_request"
+                    ? process.env.EXACT_REVIEW_SOURCE_HEAD_SHA
+                    : null,
+                retryable: dependencies.codexReviewFailureRetryable(error),
+                workflowExit: 1,
+              }),
+          );
         } catch {
           console.error("[review] exact-review failure diagnostics could not be written.");
         }
@@ -305,6 +322,7 @@ export function prepareReviewCommand(
       explicitDispatch,
       maintainerRequest,
       outputSelection,
+      outputBudget,
       retainedReviewOutput,
       cleanupReviewOutput: () => {
         reviewWorkspace.cleanup();

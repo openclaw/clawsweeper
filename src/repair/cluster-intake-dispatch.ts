@@ -10,7 +10,7 @@ import {
   dispatchClaimDecision,
   hasSuccessfulDispatchExecutionJob,
 } from "./comment-router-utils.js";
-import { ghJson } from "./github-cli.js";
+import { ghJson, githubCommandTimeoutMs } from "./github-cli.js";
 import { liveWorkerCapacity } from "./live-worker-capacity.js";
 import { workerLimit } from "../limits.js";
 import {
@@ -299,11 +299,13 @@ function dispatchClusterLedger(
       encoding: "utf8",
       env,
       stdio: "pipe",
+      timeout: githubCommandTimeoutMs(env),
+      killSignal: "SIGKILL",
       ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
     });
     if (result.status !== 0) {
       throw new Error(
-        `cluster intake dispatch failed for ${ledger.target_repo} cluster ${job.cluster_id}: ${result.stderr || result.stdout || result.status}`,
+        `cluster intake dispatch failed for ${ledger.target_repo} cluster ${job.cluster_id}: ${result.error?.message || result.stderr || result.stdout || result.status}`,
       );
     }
   }

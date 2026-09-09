@@ -9,6 +9,7 @@ import {
   assert,
   test,
   ExactReviewQueue,
+  ExactReviewLifecycleProjectionStore,
   MemoryDurableStorage,
   MemoryDurableNamespace,
   leasedExactReviewQueueItem,
@@ -833,5 +834,60 @@ test("queue status and Bay projections do not expose review proof capabilities o
   assert.equal(
     (stats as any).bay_projection.items[0].stage,
     baseline.bay_projection.items[0].stage,
+  );
+});
+
+test("accepted inline request survives lease clearing but cannot mark a newer revision", async () => {
+  const f = await fixture();
+  const lifecycle = new ExactReviewLifecycleProjectionStore(f.storage);
+  const identity = {
+    canonicalTargetKey: f.lease.itemKey,
+    fenceKey: f.lease.itemKey,
+    revision: f.lease.leaseRevision,
+  };
+  const admission = {
+    ...identity,
+    deliveryId: "inline-bay",
+    sourceAction: "synchronize",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    observedAt: Date.now(),
+    inlineProofTracked: true as const,
+  };
+  lifecycle.recordAdmission(admission);
+  assert.equal(
+    lifecycle.read(identity.canonicalTargetKey, identity.fenceKey, identity.revision)?.inlineProof,
+    "not_requested",
+  );
+  assert.equal(
+    (await f.post({ ...f.plan(), lease: { ...f.lease, claimGeneration: 999 } })).status,
+    409,
+  );
+  assert.equal(
+    lifecycle.read(identity.canonicalTargetKey, identity.fenceKey, identity.revision)?.inlineProof,
+    "not_requested",
+  );
+  assert.equal((await f.post(f.plan())).status, 200);
+  assert.equal((await f.post(f.plan())).body.dispatch, false);
+  lifecycle.recordAdmission({
+    ...admission,
+    revision: identity.revision + 1,
+    deliveryId: "inline-bay-new",
+  });
+  // The production clearExactReviewLease discards this private collection; it
+  // must not be Bay's source of participation after the review completes.
+  const state = await f.storage.get("exact-review-queue");
+  delete state.items[f.lease.itemKey].reviewProofRequests;
+  await f.storage.put("exact-review-queue", state);
+  const reopened = new ExactReviewLifecycleProjectionStore(f.storage);
+  assert.equal(
+    reopened.read(identity.canonicalTargetKey, identity.fenceKey, identity.revision)?.inlineProof,
+    "requested",
+  );
+  assert.equal(
+    reopened.read(identity.canonicalTargetKey, identity.fenceKey, identity.revision + 1)
+      ?.inlineProof,
+    "not_requested",
   );
 });

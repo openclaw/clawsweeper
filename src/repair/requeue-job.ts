@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import {
   assertLiveWorkerCapacity,
   currentProjectRepo,
@@ -32,6 +32,7 @@ import {
   normalizedRequeueSourceJobPath,
 } from "./requeue-job-key.js";
 import { findFilesByBasenameSync } from "./glob-files.js";
+import { currentMainHeadSha } from "./git-repo-utils.js";
 
 const DEFAULT_REPO = currentProjectRepo();
 const DEFAULT_WORKFLOW = REPAIR_CLUSTER_WORKFLOW;
@@ -108,7 +109,7 @@ if (!execute) {
 }
 
 const gateRestores: JsonValue[] = [];
-const headSha = currentHeadSha();
+const headSha = currentMainHeadSha(repoRoot());
 const dispatchStartedAt = new Date(Date.now() - 5000).toISOString();
 const nextRequeueDepth = boundedNextRequeueDepth(requeueDepth, maxRequeueDepth);
 const dispatchKey = deterministicRequeueDispatchKey({
@@ -353,14 +354,6 @@ function setGate(name: string, value: JsonValue, lifecycle: CommandLifecycleInpu
       ghText(["variable", "set", name, "--repo", repo, "--body", String(value ?? "")]),
   });
   console.log(`${name}=${value}`);
-}
-
-function currentHeadSha() {
-  return execFileSync("git", ["rev-parse", "origin/main"], {
-    cwd: repoRoot(),
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  }).trim();
 }
 
 function looksLikeRunId(value: JsonValue) {

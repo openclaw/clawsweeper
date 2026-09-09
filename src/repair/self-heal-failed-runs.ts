@@ -2,7 +2,7 @@
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import {
   assertLiveWorkerCapacity,
   currentProjectRepo,
@@ -16,6 +16,7 @@ import {
 import { ghErrorText, ghJson, ghText } from "./github-cli.js";
 import { sleepMs } from "./timing.js";
 import { REPAIR_CLUSTER_WORKFLOW } from "./constants.js";
+import { currentMainHeadSha } from "./git-repo-utils.js";
 
 const DEFAULT_REPO = currentProjectRepo();
 const DEFAULT_WORKFLOW = REPAIR_CLUSTER_WORKFLOW;
@@ -88,7 +89,7 @@ if (!execute) {
 
 const gateRestores: JsonValue[] = [];
 const dispatchStartedAt = new Date(Date.now() - 5000).toISOString();
-const headSha = currentHeadSha();
+const headSha = currentMainHeadSha(repoRoot());
 const ledger = readSelfHealLedger();
 const batchId = `self-heal-${new Date().toISOString().replace(/[:.]/g, "-")}`;
 const attempts: LooseRecord[] = candidates.map((candidate: JsonValue) => ({
@@ -470,14 +471,6 @@ function readRepoVariables() {
 function setGate(name: string, value: JsonValue) {
   ghText(["variable", "set", name, "--repo", repo, "--body", String(value ?? "")]);
   console.log(`${name}=${value}`);
-}
-
-function currentHeadSha() {
-  return execFileSync("git", ["rev-parse", "origin/main"], {
-    cwd: repoRoot(),
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  }).trim();
 }
 
 function runSortKey(record: LooseRecord) {

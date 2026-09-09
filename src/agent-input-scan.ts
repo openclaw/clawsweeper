@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { reviewToolCacheRoot } from "./review-tool-bootstrap.js";
+import type { AgentInputScanFailureReason } from "./exact-review-failure-reason.js";
 import { readReviewGit, reviewMergeBase, type ReviewGitReadOptions } from "./pr-review-evidence.js";
 import {
   classifyReviewedFixtureScan,
@@ -47,16 +48,7 @@ export class AgentInputScanError extends Error {
   readonly retryable = false;
   reviewedHeadSha?: string;
   constructor(
-    readonly reason:
-      | "scanner_unavailable"
-      | "scanner_failed"
-      | "findings"
-      | "deadline"
-      | "staging_limit"
-      | "incomplete_source"
-      | "source_drift"
-      | "unsafe_path"
-      | "unsupported_content",
+    readonly reason: AgentInputScanFailureReason,
     readonly scanDiagnostic?: ScanRefusalDiagnostic,
   ) {
     super(

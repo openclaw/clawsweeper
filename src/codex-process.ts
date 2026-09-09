@@ -11,10 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  DEFAULT_CODEX_OUTPUT_FILE_BYTES,
-  DEFAULT_CODEX_OUTPUT_TAIL_BYTES,
-} from "./codex-output-capture.js";
+import { normalizedOutputFileBytes, normalizedTailBytes } from "./codex-output-capture.js";
 import { codexProcessCommand } from "./codex-spawn.js";
 import type { ReviewProofCapability } from "./review-proof-client.js";
 
@@ -188,16 +185,6 @@ export function codexProcessErrorCode(error: Error | undefined): string | null {
   if (!error || !("code" in error)) return null;
   const code = (error as NodeJS.ErrnoException).code;
   return typeof code === "string" ? code : null;
-}
-
-function normalizedTailBytes(value: number | undefined): number {
-  if (value === undefined) return DEFAULT_CODEX_OUTPUT_TAIL_BYTES;
-  return Math.max(0, Number.isFinite(value) ? Math.floor(value) : DEFAULT_CODEX_OUTPUT_TAIL_BYTES);
-}
-
-function normalizedOutputFileBytes(value: number | undefined): number {
-  if (value === undefined) return DEFAULT_CODEX_OUTPUT_FILE_BYTES;
-  return Math.max(0, Number.isFinite(value) ? Math.floor(value) : DEFAULT_CODEX_OUTPUT_FILE_BYTES);
 }
 
 function normalizedOutputLastMessageBytes(

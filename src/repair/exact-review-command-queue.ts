@@ -2,9 +2,19 @@ import { spawnSync } from "node:child_process";
 import { createHmac } from "node:crypto";
 
 import type { DirectReReviewIntake } from "./direct-re-review-admission.js";
+import { queueResponseErrorCode, responseErrorCode } from "./exact-review-queue-transport-error.js";
 
 const COMMAND_INTAKE_PATH = "/internal/exact-review/command-intake";
 const REQUEST_TIMEOUT_MS = 15_000;
+const COMMAND_INTAKE_ERROR_CODES = new Set([
+  "webhook_not_configured",
+  "invalid_signature",
+  "exact_review_queue_not_configured",
+  "exact_review_queue_unavailable",
+  "private_target_unsupported",
+  "target_visibility_unverified",
+  "invalid_command_intake",
+]);
 
 export type CommandIntakeAdmissionResult =
   | { kind: "accepted"; deduped: boolean; commandVersionId: string }
@@ -43,6 +53,8 @@ export function postExactReviewCommandIntakeSync(options: {
       "--silent",
       "--show-error",
       "--fail-with-body",
+      "--write-out",
+      "%{stderr}\n%{http_code}",
       "--max-time",
       String(REQUEST_TIMEOUT_MS / 1_000),
       ...headerArgs,
@@ -52,8 +64,15 @@ export function postExactReviewCommandIntakeSync(options: {
     ],
     { encoding: "utf8", input: request.body },
   );
-  if (response.status !== 0) {
-    throw new Error(`exact re-review command intake failed: ${response.stderr || response.stdout}`);
+  if (response.status !== 0 || response.error) {
+    // Curl owns this final numeric field; its earlier stderr can contain private details.
+    const status = Number(response.stderr?.match(/\n(\d{3})$/)?.[1]);
+    if (!response.error && response.status === 22 && status >= 400 && status <= 599) {
+      throw commandIntakeHttpError(status, queueResponseErrorCode(Buffer.from(response.stdout)));
+    }
+    throw new Error(
+      `exact-review command intake failed (curl exit ${response.status ?? "unknown"})`,
+    );
   }
   return commandIntakeAdmissionResult(JSON.parse(response.stdout || "null"));
 }
@@ -71,11 +90,17 @@ export async function postExactReviewCommandIntake(options: {
     body: request.body,
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
-  const result = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(`exact-review command intake failed (HTTP ${response.status})`);
+    throw commandIntakeHttpError(response.status, await responseErrorCode(response));
   }
+  const result = await response.json().catch(() => null);
   return commandIntakeAdmissionResult(result);
+}
+
+function commandIntakeHttpError(status: number, code: string | undefined) {
+  return new Error(
+    `exact-review command intake failed (HTTP ${status})${code && COMMAND_INTAKE_ERROR_CODES.has(code) ? `: ${code}` : ""}`,
+  );
 }
 
 export function commandIntakeAdmissionResult(value: unknown): CommandIntakeAdmissionResult {

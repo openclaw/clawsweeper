@@ -35,7 +35,8 @@ require("node:fs").readFileSync(0, "utf8");`;
 const fakeManagedDecision = `process.stdout.write(JSON.stringify({
   type: "item.completed",
   item: { type: "agent_message", text: process.env.CODEX_DECISION_JSON },
-}) + "\\n");`;
+}) + "\\n");
+process.stdout.write(JSON.stringify({ type: "turn.completed" }) + "\\n");`;
 
 function runBoundedCodexForTest(
   options: Omit<Parameters<typeof runCodexForTest>[0], "resultFileBytes"> & {

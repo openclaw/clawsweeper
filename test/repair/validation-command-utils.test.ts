@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   packageScriptRequirement,
   parseAllowedValidationCommand,
+  validateAllowedValidationCommandParts,
+  validationCommandForExecution,
 } from "../../dist/repair/validation-command-utils.js";
 
 test("pnpm built-ins and aliases cannot fall back to same-named package scripts", () => {
@@ -126,4 +128,66 @@ test("wrapped validators retain mutation checks without rejecting read-only shor
       );
     }
   }
+});
+
+test("direct local shell validation commands normalize to the existing bash-safe form", () => {
+  assert.deepEqual(parseAllowedValidationCommand("./tests/unit/test-example.sh"), [
+    "bash",
+    "./tests/unit/test-example.sh",
+  ]);
+  assert.deepEqual(parseAllowedValidationCommand("CI=true ./tests/unit/test-example.sh"), [
+    "env",
+    "CI=true",
+    "bash",
+    "./tests/unit/test-example.sh",
+  ]);
+  assert.deepEqual(
+    validationCommandForExecution(parseAllowedValidationCommand("./tests/unit/test-example.sh")),
+    ["bash", "./tests/unit/test-example.sh"],
+  );
+});
+
+test("direct local shell validation normalization stays fail-closed", () => {
+  for (const command of [
+    "../tests/unit/test-example.sh",
+    "/tmp/test-example.sh",
+    "./tests/../test-example.sh",
+    "./tests/unit/test-example.sh --flag",
+    "./tests/unit/test-example.py",
+    "./tests\\\\unit\\\\test-example.sh",
+    "BASH_ENV=./tests/setup.sh ./tests/unit/test-example.sh",
+  ]) {
+    assert.throws(
+      () => parseAllowedValidationCommand(command),
+      /unsupported validation command|unsafe validation command/,
+      command,
+    );
+  }
+  assert.throws(
+    () => parseAllowedValidationCommand("./tests/unit/test-example.sh | cat"),
+    /unsafe validation command/,
+  );
+});
+
+test("resolved validation parts share direct-shell and environment normalization", () => {
+  for (const parts of [
+    ["./tests/proof.sh"],
+    ["CI=true", "./tests/proof.sh"],
+    ["env", "CI=true", "./tests/proof.sh"],
+  ]) {
+    const expected =
+      parts.length === 1
+        ? ["bash", "./tests/proof.sh"]
+        : ["env", "CI=true", "bash", "./tests/proof.sh"];
+    assert.deepEqual(validateAllowedValidationCommandParts(parts), expected);
+    assert.deepEqual(validateAllowedValidationCommandParts(expected), expected);
+  }
+  for (const parts of [
+    ["./tests/proof.sh", "--flag"],
+    ["./tests/../proof.sh"],
+    ["/tmp/proof.sh"],
+    ["./tests\\proof.sh"],
+    ["BASH_ENV=./setup.sh", "./tests/proof.sh"],
+  ])
+    assert.throws(() => validateAllowedValidationCommandParts(parts));
 });

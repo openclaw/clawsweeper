@@ -11,6 +11,20 @@ canonical reports. Publication attempts do not authorize label, close, repair,
 implementation, or router actions. Artifact retention is evidence, not a
 completion receipt or authority to adopt a historical producer lease.
 
+Aggregate failed-review recovery is a read-only projection in
+`src/review-recovery.ts`, invoked by the workflow utility CLI. It uses the
+canonical importer with an exact run attempt, complete shard parts, and
+producer/causal bindings. A native item start and recognized retryable item
+terminal are required; batch terminals and coordination mutation outcomes
+cannot substitute. Later cleanup remains part of the fold, so an unmatched or
+unknown mutation holds the item even after its terminal.
+
+Completed reports may be staged for the existing guarded publisher only after
+their terminal digest, subject identity, complete status, and checkout
+provenance match. Missing evidence is a visible hold, never an inferred retry.
+No selected-item event, schema, or producer fact is added; automatic recovery
+of the unstarted tail remains a follow-up.
+
 Writers first spool individual events locally:
 
 ```text
@@ -375,6 +389,14 @@ Attributes remain allowlisted, scalar, collection-bounded, and
 privacy-checked.
 
 ## Projections
+
+Aggregate review uploads run in the bounded `publish-review-action-ledger` job
+after the primary publisher, outside its target concurrency lock. Review and
+publisher artifacts retain their distinct producer identities; imports publish
+the complete canonical event and binding manifests. Optional upload failure is
+reported separately and does not delay primary artifact application, record
+publication, selected comments, or recovery. The primary artifact and comment
+receipt publication phases remain in the publisher.
 
 Consumers fold immutable events into purpose-specific views:
 

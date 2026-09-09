@@ -386,7 +386,7 @@ test("parked review reconciliation plans by default and executes terminal resolv
       open_targets: 2,
       recovered_targets: 1,
       skipped_targets: 2,
-      skip_reasons: { unchanged_review_identity: 1 },
+      skip_reasons: { command_context: 1, unchanged_review_identity: 1 },
       skip_samples: [],
     });
     assert.equal(mutations.length, 0);
@@ -409,7 +409,7 @@ test("parked review reconciliation plans by default and executes terminal resolv
       open_targets: 2,
       recovered_targets: 1,
       skipped_targets: 2,
-      skip_reasons: { unchanged_review_identity: 1 },
+      skip_reasons: { command_context: 1, unchanged_review_identity: 1 },
       skip_samples: [],
     });
     assert.equal(mutations.filter((entry) => entry.url?.endsWith("/resolve")).length, 2);
@@ -452,6 +452,7 @@ test("parked review reconciliation plans by default and executes terminal resolv
     );
     assert.equal(pressureDeferred.code, 0, pressureDeferred.stderr);
     assert.deepEqual(JSON.parse(pressureDeferred.stdout).skip_reasons, {
+      command_context: 1,
       unchanged_review_identity: 1,
       recovery_deferred_pressure: 1,
     });
@@ -467,6 +468,31 @@ test("parked review reconciliation plans by default and executes terminal resolv
       "command_context",
     );
     assert.equal(JSON.stringify(artifact).includes("test-parked-review-reconcile"), false);
+
+    // The audited cohort: eleven excluded command receipts and one unchanged
+    // ordinary target. Every skip must have a bounded, machine-readable reason.
+    const unchanged = parkedRows.find((row) => row.item_key === "openclaw/repo#5")!;
+    parkedRows.splice(
+      0,
+      parkedRows.length,
+      ...Array.from({ length: 11 }, (_, index) => ({
+        ...parkedRow(`openclaw/repo#${50 + index}`, "openclaw/repo", 50 + index, 4_000),
+        excluded_reason: "command_context",
+      })),
+      unchanged,
+    );
+    queuePressure = "idle";
+    const beforeCensus = mutations.length;
+    const census = await runOperator(common, `http://127.0.0.1:${address.port}`, secret);
+    assert.equal(census.code, 0, census.stderr);
+    const censusSummary = JSON.parse(census.stdout);
+    assert.equal(censusSummary.inspected_targets, 1);
+    assert.equal(censusSummary.skipped_targets, 12);
+    assert.deepEqual(censusSummary.skip_reasons, {
+      command_context: 11,
+      unchanged_review_identity: 1,
+    });
+    assert.equal(mutations.length, beforeCensus);
 
     const overCap = await runOperator(
       ["--action", "reconcile-parked", "--max-recoveries", "6"],

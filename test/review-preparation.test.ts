@@ -127,6 +127,7 @@ test("initial fetch timeout retains native evidence before any review work", () 
     for (const scenario of [
       { kind: "issue", args: ["--item-number", "42"], expected: true },
       { kind: "pull_request", args: ["--item-numbers", "42"], expected: true },
+      { kind: "pull_request", args: ["--item-numbers", "42"], expected: true, full: true },
       { kind: "", args: ["--item-number", "42"], expected: false },
       { kind: "unknown", args: ["--item-number", "42"], expected: false },
       { kind: "issue", args: ["--item-number", "43"], expected: false },
@@ -138,6 +139,10 @@ test("initial fetch timeout retains native evidence before any review work", () 
       { kind: "issue", args: ["--item-number", "42", "--local-only"], expected: false },
     ]) {
       const dir = join(root, String(readdirSync(root).length));
+      if (scenario.full) {
+        mkdirSync(dir);
+        for (let index = 0; index < 4096; index += 1) writeFileSync(join(dir, `${index}`), "");
+      }
       process.env = {
         ...oldEnv,
         EXACT_REVIEW_ITEM_KEY: scenario.key ?? "openclaw/openclaw#42",
@@ -182,9 +187,14 @@ test("initial fetch timeout retains native evidence before any review work", () 
       );
       assert.deepEqual(unexpectedCalls, []);
       const manifestPath = join(dir, "failure-diagnostics", "manifest.json");
-      assert.equal(existsSync(manifestPath), scenario.expected, JSON.stringify(scenario));
+      assert.equal(
+        existsSync(manifestPath),
+        scenario.expected && !scenario.full,
+        JSON.stringify(scenario),
+      );
       assert.equal(existsSync(join(dir, "selection.json")), false);
-      if (scenario.expected) {
+      if (scenario.full) assert.equal(readdirSync(dir).length, 4096);
+      if (scenario.expected && !scenario.full) {
         const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
         assert.equal(manifest.classification, "source_preparation");
         assert.deepEqual(manifest.failure, {

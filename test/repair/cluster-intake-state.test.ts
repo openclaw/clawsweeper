@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -1235,6 +1237,47 @@ test("v2 cluster intake ledgers reject unvalidated JSON shapes", () => {
     mutate(malformed);
     assert.throws(() => clusterIntakeLedger(malformed));
   }
+});
+
+test("dispatch deadlines preserve the claim and recover without a duplicate", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-dispatch-timeout-"));
+  const value = intent();
+  const ledgerPath = writeDurableIntents(root, [value]);
+  const ledger = () =>
+    JSON.parse(fs.readFileSync(path.join(ledgerPath, "openclaw-openclaw.json"), "utf8"));
+  let calls = 0;
+  t.mock.method(childProcess, "spawnSync", (_command, _args, options) => {
+    calls++;
+    assert.equal(options.timeout, 45_000);
+    assert.equal(options.killSignal, "SIGKILL");
+    assert.equal(ledger().clusters["42"].status, "dispatch_claimed");
+    return { status: null, stdout: "", stderr: "", error: new Error("spawnSync gh ETIMEDOUT") };
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const env = {
+    ...process.env,
+    GH_BIN: process.execPath,
+    GH_BIN_ARGS: "[]",
+    CLAWSWEEPER_WEBHOOK_SECRET: receiptSecret,
+    CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS: "45000",
+    CLAWSWEEPER_NETWORK_COMMAND_TIMEOUT_MS: "60000",
+  };
+  const capacity = () => ({ active: 0, max_live_workers: 2 });
+  assert.throws(() => dispatchClusterIntakes([value], root, env, capacity), /ETIMEDOUT/);
+  assert.equal(ledger().clusters["42"].status, "dispatch_claimed");
+  dispatchClusterIntakes([value], root, env, capacity, () => ({ action: "wait", run: null }));
+  assert.equal(calls, 1);
+  dispatchClusterIntakes([value], root, env, capacity, () => ({
+    action: "recover",
+    run: { databaseId: 123 },
+  }));
+  assert.equal(ledger().clusters["42"].status, "dispatched");
+  assert.equal(calls, 1);
 });
 
 test("selector decision sidecars reject unvalidated persisted shapes", () => {

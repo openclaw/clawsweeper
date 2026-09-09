@@ -99,7 +99,7 @@ test("exact review publisher bypasses the legacy action ledger and finalizes thr
   assert.ok(statusMutation > acknowledgement);
   assert.match(
     finalizer.slice(statusMutation, statusMutation + 320),
-    /if: \$\{\{ steps\.terminal-acknowledgement\.outputs\.allowed == 'true' \}\}/,
+    /if: \$\{\{ steps\.terminal-acknowledgement\.outputs\.allowed == 'true' && steps\.target-write-token\.outcome == 'success' \}\}/,
   );
 });
 

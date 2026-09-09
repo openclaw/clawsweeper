@@ -537,12 +537,14 @@ test("review candidates start lazily and deferred items cannot remain active", (
     "preparePullRequestReviewTree(headSha)",
     contextCollection,
   );
-  const modelReview = source.indexOf("decision = runCodex({", sourceAvailabilityGate);
+  const modelAdmission = source.indexOf("decision = produceReviewOutput(", sourceAvailabilityGate);
+  const modelReview = source.indexOf("runCodex({", modelAdmission);
   assert.ok(materializationHelper >= 0);
   assert.ok(exactHeadMaterialization > materializationHelper);
   assert.ok(contextCollection >= 0);
   assert.ok(sourceAvailabilityGate > contextCollection);
-  assert.ok(modelReview > sourceAvailabilityGate);
+  assert.ok(modelAdmission > sourceAvailabilityGate);
+  assert.ok(modelReview > modelAdmission);
   const logPublication = source.indexOf("recordReviewLogPublication({", modelReview);
   const itemCompletion = source.indexOf("finishReviewActionLedgerItem({", logPublication);
   const liveOutputBudget = source.indexOf("assertCurrentOutputBudget()", itemCompletion);
@@ -1011,8 +1013,8 @@ test("sweep publishes complete immutable shards for every review and apply produ
   );
 
   for (const name of [
-    "Import immutable review action events",
-    "Publish immutable review action ledger",
+    "Import immutable action events",
+    "Publish immutable action ledger",
     "Publish review artifact action ledger",
     "Publish selected review comment action ledger",
     "Publish failed-review retry action ledger",
@@ -1034,7 +1036,7 @@ test("sweep publishes complete immutable shards for every review and apply produ
   assert.doesNotMatch(workflow, /durable_event_path|CLAWSWEEPER_STATE_APPEND_ENABLED/);
   assert.equal((workflow.match(/publish-action-event-paths/g) ?? []).length, 6);
   for (const name of [
-    "Publish immutable review action ledger",
+    "Publish immutable action ledger",
     "Publish review artifact action ledger",
     "Publish selected review comment action ledger",
     "Publish failed-review retry action ledger",

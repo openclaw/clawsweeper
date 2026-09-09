@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -12,17 +12,19 @@ import { isUserFacingCommandError, runText, UserFacingCommandError } from "./com
 import { configuredRepositoryProfileFor } from "./repository-profiles.js";
 import {
   assertActiveReviewOutputBudget,
-  assertReviewReportsBudget,
   assertTransientReviewOutputBudget,
+  createReviewOutputBudget,
   createTransientReviewOutput,
   discardOwnedSummaryOutput,
   emitReviewFailureJson,
   emitReviewOutput,
   finalizeSummaryReviewOutput,
   prepareRetainedReviewOutput,
+  produceReviewOutput,
   readBoundedReviewResult,
   reviewOutputItemBudget,
   reviewOutputSelection,
+  writeReviewOutput,
 } from "./review-output-policy.js";
 
 interface CommitMetadata {
@@ -456,6 +458,7 @@ function localReviewCommand(args: Args): void {
       ? null
       : prepareRetainedReviewOutput(runDir, outputSelection.retention as "summary" | "debug");
     const itemOutputBudget = reviewOutputItemBudget(outputSelection.retention, 1);
+    const outputBudget = createReviewOutputBudget(runDir, outputSelection.retention, 1);
 
     // Spec: hard-enforce no GitHub access. The review prompt suggests `gh` for issue
     // refs, and `gh` uses its own configured auth (token-env deletion can't stop it),
@@ -470,30 +473,38 @@ function localReviewCommand(args: Args): void {
     );
 
     const markdown = ensureCommitReportTimestamps(
-      runCodex({
-        targetDir,
-        targetRepo,
-        sha: headSha,
-        baseSha,
-        metadata,
-        model: argString(args, "codex_model", DEFAULT_CODEX_MODEL),
-        reasoningEffort: argString(args, "codex_reasoning_effort", DEFAULT_REASONING_EFFORT),
-        sandboxMode: argString(args, "codex_sandbox", "read-only"),
-        serviceTier: argString(args, "codex_service_tier", DEFAULT_SERVICE_TIER),
-        timeoutMs: argNumber(args, "codex_timeout_ms", 1_800_000),
-        workDir: runDir,
-        additionalPrompt,
-        extraCodexConfig: [LOCAL_REVIEW_WEB_SEARCH_CONFIG],
-        resultFileBytes: itemOutputBudget.resultFileBytes,
-        streamFileBytes: itemOutputBudget.streamFileBytes,
-      }),
+      produceReviewOutput(
+        outputBudget,
+        {
+          paths: [join(runDir, `${headSha}.md`)],
+          maxBytes: itemOutputBudget.resultFileBytes,
+          maxFiles: 1,
+        },
+        () =>
+          runCodex({
+            targetDir,
+            targetRepo,
+            sha: headSha,
+            baseSha,
+            metadata,
+            model: argString(args, "codex_model", DEFAULT_CODEX_MODEL),
+            reasoningEffort: argString(args, "codex_reasoning_effort", DEFAULT_REASONING_EFFORT),
+            sandboxMode: argString(args, "codex_sandbox", "read-only"),
+            serviceTier: argString(args, "codex_service_tier", DEFAULT_SERVICE_TIER),
+            timeoutMs: argNumber(args, "codex_timeout_ms", 1_800_000),
+            workDir: runDir,
+            additionalPrompt,
+            extraCodexConfig: [LOCAL_REVIEW_WEB_SEARCH_CONFIG],
+            resultFileBytes: itemOutputBudget.resultFileBytes,
+            streamFileBytes: itemOutputBudget.streamFileBytes,
+          }),
+      ),
       metadata,
     );
 
     const outputPath = join(runDir, "local-review.md");
     const report = markdown.endsWith("\n") ? markdown : `${markdown}\n`;
-    assertReviewReportsBudget([{ path: outputPath, markdown: report }], outputSelection.retention);
-    writeFileSync(outputPath, report, "utf8");
+    writeReviewOutput(outputBudget, outputPath, report, "report");
     if (outputSelection.retention === "summary") {
       finalizeSummaryReviewOutput(retainedReviewOutput!, [outputPath]);
       retainedOutputFinalized = true;

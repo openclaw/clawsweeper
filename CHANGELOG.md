@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+**Highlights:** Preserve later review evidence, reject forged report findings, bound stalled repair calls, and recheck paired-close eligibility before mutations.
+
 ### Removed
 
 - Deleted the separate live-proof dispatch/execute/attach workflow and its composite dispatcher; live verification now stays inside the review artifact lifecycle.
@@ -19,6 +21,14 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Preserve bounded, recognized command-intake HTTP failure codes in review-request diagnostics without exposing raw responses or changing retry behavior.
+
+- Refresh markdown-it to 15.0.1 and Playwright to 1.63.0, retaining the repository's release-age policy and Node 24 runtime floor.
+
+- Recover failed aggregate review shards only from recognized retryable item terminals in the complete exact-attempt ledger. Keep completed, nonretryable, uncertain, and unstarted items out of recovery, and retain identity- and digest-verified completed reports for normal guarded publication.
+
+- Move optional aggregate review-ledger uploads out of the target publisher lock into a bounded artifact-backed job, preserving producer artifacts and required record/comment receipts when telemetry is slow or unavailable.
+
 - Give Codex reviewers the existing short-lived, read-only target-repository GitHub App token as `GH_TOKEN` for authenticated reads, and describe token availability from the actual reviewer environment, including OpenClaw's credential filter.
 - Give hosted issue/PR reviewers allowlisted public research access through a managed proxy while keeping the checkout read-only; describe token, blocked-host, and downloaded-media capabilities accurately and fail setup when sandbox enforcement regresses.
 - Describe review capabilities from the active runner so OpenClaw gateway execution is not mistaken for the Codex allowlisted sandbox; prove Linux review sandbox enforcement in credential-free PR CI.
@@ -28,7 +38,10 @@ checkpoint, and status-only commits are intentionally omitted.
   artifact route explicitly selects debug retention. Required PR checkouts now
   use a separately admitted private workspace with conservative Git metadata
   sizing and unbounded filter refusal, and media producers share run-owned byte
-  pools before writing. Managed local sources stay checkout-free until the
+  and file allowances before writing. Existing debug destinations, metadata,
+  cached and fresh reports, and bounded failure diagnostics use the same output
+  admission owner. These limits bound retained managed output, not arbitrary
+  model writes or peak child-process disk use. Managed local sources stay checkout-free until the
   admitted exact-head materializer runs, Git 2.39-compatible attribute checks
   use a bounded private index, and non-debug batches prune each item's engine
   files after ledger evidence is hashed. Ordinary and caught-failure cleanup remains automatic;
@@ -123,6 +136,20 @@ checkpoint, and status-only commits are intentionally omitted.
 - Generated live-proof plans now receive the effective cold-checkout setup contract and guidance to supply missing build or code-generation prerequisites before dependent commands.
 
 ### Fixed
+
+- Recheck current close policies and known same-author counterparts before close mutations, keeping the parent open when a counterpart locks, reopens, or cannot be refreshed; thanks @vincentkoc.
+- Bound cluster dispatch and target cloning with operator-configured deadlines, useful timeout errors, and clone process-tree cleanup; thanks @SebTardif.
+- Bound cluster-selector model and GitHub requests through response completion, failing without new selection output on stalled transports; thanks @SebTardif.
+- Show later PR review revisions beside the freshness timestamp while preserving same-review resyncs and lifetime history counts; thanks @elijahfriedman.
+- Prevent quoted finding and security-concern prose from adding findings or replacing confidence when durable reviews are parsed again; thanks @Yigtwxx.
+- Preserve later discussion evidence and invalidate cached reviews when omitted inline-comment text changes instead of silently dropping comment tails; thanks @TommyLei666.
+- Mask credentialed URLs in supplementary review context and ignore foreign timeline issue numbers; thanks @yetval.
+- Bound app-server CrabFleet status updates so a stalled endpoint cannot block the review turn indefinitely; thanks @Yigtwxx.
+- Accept direct local `.sh` validation through shared guarded Bash normalization for command strings and resolved arguments; thanks @Jhacarreiro.
+- Complete exact-review leases during Worker/workflow deploy skew by retrying rejected terminal reasons once without the reason/status, preserving diagnostics and warning operators.
+
+- Stop exact-review retries for every non-retryable scanner refusal, including scan deadlines, and retain terminal guidance for the unchanged revision.
+- Retry transient control-plane failures across exact-review workflow calls, preserve retryable admission 503 responses and Retry-After headers through webhook/internal ingress, and attribute failed fences and reservations to queue infrastructure. Bootstrap pre-checkout helpers with commit-pinned downloads so later full checkouts retain local setup actions, and keep lease cleanup working when checkout is skipped or fails.
 
 - Prepare GitHub user-attachment and legacy repository asset proof locally, resolving image/video types after download and reserving bounded preprocessing time for attachments.
 

@@ -1,11 +1,8 @@
 import type { CreateApplyDecisionWorkflowDependencies } from "./clawsweeper-apply-dependencies.js";
+import { liveApplyCloseReasonPolicyBlock } from "./clawsweeper-apply-close-policies.js";
 import { closeReasonText } from "./clawsweeper-close-reasons.js";
 import { linkedIssueNumbersForImplementationProvenance } from "./clawsweeper-status-context.js";
-import {
-  EVENT_GUARDED_OPEN_ACTIONS,
-  REVIEW_SECTIONS,
-  STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS,
-} from "./clawsweeper-policy.js";
+import { EVENT_GUARDED_OPEN_ACTIONS, REVIEW_SECTIONS } from "./clawsweeper-policy.js";
 import type {
   ActionTaken,
   ApplyKind,
@@ -30,6 +27,13 @@ type ApplyCloseExecutionDependencies = Pick<
   | "CLAWSWEEPER_BOT_AUTHORS"
   | "asRecord"
   | "abandonedPrApplyBlockReasonSafe"
+  | "applyAuthorPrBudgetStateToReport"
+  | "issueRecentHumanCommentBlockReasonFromComments"
+  | "resetGuardReadCache"
+  | "withGuardReadOptions"
+  | "unconfirmedProductDirectionApplyBlockReasonSafe"
+  | "unconfirmedProductDirectionCloseEnabled"
+  | "unsponsoredFeatureCloseEnabled"
   | "addIssueLabel"
   | "applyPrCloseCoverageProofReportSection"
   | "closeItem"
@@ -122,6 +126,10 @@ interface ApplyCloseExecutionOptions {
   currentObsoleteFixPrBlockReason: () => string | null;
   currentPrCloseCoverageProofGateBlock: () => PrCloseCoverageProofGateBlock | null;
   currentStaleVersionBugBlockReason: () => string | null;
+  currentSameAuthorPairBlockReason: () => string | null;
+  setCloseMutationPolicyGuard: (
+    guard: (mutationNumber: number) => PrCloseCoverageProofGateBlock | null,
+  ) => void;
   currentDurableReviewCommentUpdatedAt: () => string | null;
   dryRun: boolean;
   deferPairedIssueForThisRun: (number: number) => void;
@@ -170,7 +178,6 @@ export function executeApplyClose(
   const {
     CLAWSWEEPER_BOT_AUTHORS,
     asRecord,
-    abandonedPrApplyBlockReasonSafe,
     addIssueLabel,
     applyPrCloseCoverageProofReportSection,
     closeItem,
@@ -186,7 +193,6 @@ export function executeApplyClose(
     GitHubRuntimeBudgetError,
     ghJson,
     implementedOnMainPullRequestProvenanceApplyBlock,
-    issueRecentHumanCommentBlockReasonSafe,
     lowSignalUnmergeablePrApplyBlockReasonSafe,
     normalizeLabelName,
     removeCurrentCursorTraceItem,
@@ -195,8 +201,6 @@ export function executeApplyClose(
     reportDecision,
     sha256,
     sleepMs,
-    stalledUnprovenPrApplyBlockReasonSafe,
-    unsponsoredFeatureApplyBlockReasonSafe,
     validateCloseDecision,
   } = dependencies;
   const {
@@ -218,6 +222,8 @@ export function executeApplyClose(
     currentObsoleteFixPrBlockReason,
     currentPrCloseCoverageProofGateBlock,
     currentStaleVersionBugBlockReason,
+    currentSameAuthorPairBlockReason,
+    setCloseMutationPolicyGuard,
     currentDurableReviewCommentUpdatedAt,
     dryRun,
     deferPairedIssueForThisRun,
@@ -449,24 +455,33 @@ export function executeApplyClose(
     const reason = lowSignalUnmergeablePrApplyBlockReasonSafe(number, staleMinAgeDays);
     if (reason) return skip("skipped_low_signal_live_guard", reason, true);
   }
-  const inactivityPolicy = {
-    stalled_unproven_pr: () => stalledUnprovenPrApplyBlockReasonSafe(number, item),
-    abandoned_pr: () => abandonedPrApplyBlockReasonSafe(number, item),
-    unsponsored_feature_request: () => unsponsoredFeatureApplyBlockReasonSafe(number, item),
-    author_pr_budget_exceeded: () => {
-      const gate = currentAuthorPrBudgetApplyGate();
-      return gate.allowed ? null : gate.reason;
-    },
-    stale_version_bug: currentStaleVersionBugBlockReason,
-    obsolete_fix_pr: currentObsoleteFixPrBlockReason,
-    stale_insufficient_info: () =>
-      issueRecentHumanCommentBlockReasonSafe(number, STALE_INSUFFICIENT_INFO_MIN_INACTIVE_DAYS),
-  } satisfies Partial<Record<CloseReason, () => string | null>>;
-  const inactivityCloseBlockReason =
-    closeReason in inactivityPolicy
-      ? inactivityPolicy[closeReason as keyof typeof inactivityPolicy]()
-      : null;
-  if (inactivityCloseBlockReason) return skip("kept_open", inactivityCloseBlockReason);
+  const currentTerminalCloseBlock = (checkPair = true): PrCloseCoverageProofGateBlock | null => {
+    const policy = liveApplyCloseReasonPolicyBlock(dependencies, {
+      closeReason,
+      currentAuthorPrBudgetApplyGate,
+      currentObsoleteFixPrBlockReason,
+      currentStaleVersionBugBlockReason,
+      item,
+      markdown: getMarkdown(),
+      number,
+      storedUpdatedAt: frontMatterValue(getMarkdown(), "item_updated_at"),
+    });
+    if (policy) return { actionTaken: "kept_open", reason: policy.reason };
+    if (closeReason === "low_signal_unmergeable_pr") {
+      const reason = lowSignalUnmergeablePrApplyBlockReasonSafe(number, staleMinAgeDays);
+      if (reason) return { actionTaken: "skipped_low_signal_live_guard", reason };
+    }
+    const pairReason = checkPair ? currentSameAuthorPairBlockReason() : null;
+    return pairReason ? { actionTaken: "skipped_same_author_pair", reason: pairReason } : null;
+  };
+  // Paired implementation closes already have dedicated issue source/lease guards.
+  // Recheck parent policy for both mutations; pair admission is needed for the parent.
+  setCloseMutationPolicyGuard((mutationNumber) =>
+    currentTerminalCloseBlock(mutationNumber === number),
+  );
+  const initialTerminalBlock = currentTerminalCloseBlock();
+  if (initialTerminalBlock)
+    return skip(initialTerminalBlock.actionTaken, initialTerminalBlock.reason);
 
   const closeMutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
   if (closeMutationLeaseBlockReason) return skipLease(closeMutationLeaseBlockReason);
@@ -615,6 +630,8 @@ export function executeApplyClose(
   const preCloseMutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
   if (preCloseMutationLeaseBlockReason) return skipLease(preCloseMutationLeaseBlockReason);
   ensureRuntimeDelayFits(closeDelayMs, "before close");
+  const preNoteBlock = currentTerminalCloseBlock();
+  if (preNoteBlock) return skip(preNoteBlock.actionTaken, preNoteBlock.reason);
   try {
     closeAppliedCommentReason =
       item.kind === "pull_request"
@@ -689,6 +706,8 @@ export function executeApplyClose(
       setMarkdown(replaceFrontMatterValue(getMarkdown(), "labels", JSON.stringify(item.labels)));
     }
   }
+  const postNoteBlock = currentTerminalCloseBlock();
+  if (postNoteBlock) return skip(postNoteBlock.actionTaken, postNoteBlock.reason);
   const finalCloseMutationLeaseBlockReason = currentApplyMutationLeaseBlockReason();
   if (finalCloseMutationLeaseBlockReason) return skipLease(finalCloseMutationLeaseBlockReason);
   const pairedIssuesReadyToClose: Array<{

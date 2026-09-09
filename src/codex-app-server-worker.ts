@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -12,6 +13,7 @@ import { createInterface } from "node:readline";
 import {
   appendCodexOutputCapture,
   closeCodexOutputCapture,
+  CODEX_THREAD_STATE_MAX_BYTES,
   codexOutputTail,
   openCodexOutputCapture,
 } from "./codex-output-capture.js";
@@ -77,6 +79,10 @@ interface RpcMessage {
     data?: unknown;
   };
 }
+
+// Matches ACTION_SESSION_FETCH_TIMEOUT_MS in src/repair/action-session.ts so a hung
+// CrabFleet host cannot stall the Codex turn or accumulate heartbeat requests.
+const WORK_STATE_FETCH_TIMEOUT_MS = 15_000;
 
 const optionsPath = process.argv[2] ?? "";
 const options = JSON.parse(readFileSync(optionsPath, "utf8")) as WorkerOptions;
@@ -370,6 +376,9 @@ async function handleRpcMessage(message: RpcMessage): Promise<void> {
   if (turnId && turn?.id !== turnId) return;
   turnStatus = typeof turn?.status === "string" ? turn.status : "";
   const failed = turnStatus !== "completed";
+  // Codex clears partial messages on failed/interrupted turns. Only confirmed
+  // completion can publish a result, even if an earlier item looked complete.
+  if (failed) finalMessage = "";
   if (execOptions.outputLastMessagePath && finalMessage) {
     if (
       options.outputLastMessageBytes !== undefined &&
@@ -498,6 +507,7 @@ async function updateWorkState(state: string, phase: string, summary: string): P
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
       },
+      signal: AbortSignal.timeout(WORK_STATE_FETCH_TIMEOUT_MS),
       body: JSON.stringify({
         state,
         phase,
@@ -652,13 +662,21 @@ function readThreadState(path: string): ThreadState | null {
 }
 
 function writeThreadState(path: string, state: ThreadState): void {
+  const content = `${JSON.stringify(state, null, 2)}\n`;
+  if (Buffer.byteLength(content) > CODEX_THREAD_STATE_MAX_BYTES) {
+    throw new Error(`Codex thread state exceeded its ${CODEX_THREAD_STATE_MAX_BYTES}-byte limit.`);
+  }
   mkdirSync(dirname(path), { recursive: true });
   const temporary = `${path}.tmp-${process.pid}`;
-  writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  renameSync(temporary, path);
+  try {
+    writeFileSync(temporary, content, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    renameSync(temporary, path);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
 }
 
 function parseRpcMessage(line: string): RpcMessage | null {

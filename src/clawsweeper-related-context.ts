@@ -10,6 +10,19 @@ import type {
   LocalRelatedTitleEntry,
 } from "./clawsweeper-types.js";
 
+const CREDENTIAL_URI =
+  /(https?:\/\/)[\w!#$%&()*+,\-./;<=>?@[\\\]^_{|}~]{0,50}:[\w!#$%&()*+,\-./:;<=>?[\\\]^_{|}~]{3,50}@([a-zA-Z0-9.-]+)/g;
+
+export function redactCredentialUriUserinfo(text: string): string {
+  return text.replace(CREDENTIAL_URI, (uri, scheme: string, host: string) => {
+    try {
+      return new URL(uri).password ? `${scheme}***:***@${host}` : uri;
+    } catch {
+      return uri;
+    }
+  });
+}
+
 interface RelatedContextDependencies {
   root: string;
   targetRepo: () => string;
@@ -107,10 +120,20 @@ export function createRelatedContext({
       scanText(record.body, `timeline ${index + 1}`);
       const sourceIssue = asRecord(asRecord(record.source).issue);
       const number = sourceIssue.number;
+      const sourceRepo = asRecord(sourceIssue.repository).full_name;
+      if (typeof sourceRepo === "string" && sourceRepo.toLowerCase() !== targetRepo().toLowerCase())
+        return;
       if (typeof number === "number") add(number, `timeline ${index + 1} source issue`);
     });
 
     return mentions;
+  }
+
+  function redactRelatedBody(value: unknown): unknown {
+    const record = asRecord(value);
+    return typeof record.body === "string"
+      ? { ...record, body: redactCredentialUriUserinfo(record.body) }
+      : value;
   }
 
   function compactRelatedItem(
@@ -122,14 +145,14 @@ export function createRelatedContext({
       const issueRecord = asRecord(issue);
       const related: Record<string, unknown> = {
         mentionedIn: mentionedIn.slice(0, 6),
-        issue: compactIssue(issue),
+        issue: redactRelatedBody(compactIssue(issue)),
         commentCount: issueRecord.comments,
       };
 
       if (issueRecord.pull_request) {
         try {
-          related.pullRequest = compactPullRequest(
-            ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${number}`]),
+          related.pullRequest = redactRelatedBody(
+            compactPullRequest(ghJson<unknown>(["api", `repos/${targetRepo()}/pulls/${number}`])),
           );
         } catch (error) {
           related.pullRequestError = error instanceof Error ? error.message : String(error);
@@ -211,9 +234,11 @@ export function createRelatedContext({
       url: candidate.html_url,
       author: login(candidate.user),
       mergedAt: pullRequest.merged_at,
-      body: truncateText(
-        typeof candidate.body === "string" ? candidate.body : "",
-        REFERENCING_PR_BODY_CHARS,
+      body: redactCredentialUriUserinfo(
+        truncateText(
+          typeof candidate.body === "string" ? candidate.body : "",
+          REFERENCING_PR_BODY_CHARS,
+        ),
       ),
     };
   }
@@ -429,7 +454,7 @@ export function createRelatedContext({
           mentionedIn: ["GitHub issue search"],
           searchQuery: query,
           searchScore: candidate.score,
-          issue: compactIssue(candidate),
+          issue: redactRelatedBody(compactIssue(candidate)),
           commentCount: candidate.comments,
         }));
     } catch (error) {
@@ -651,7 +676,9 @@ export function createRelatedContext({
           title: row.title,
           updatedAt: row.updated_at,
           labels: parseJsonArrayBestEffort(row.labels_json),
-          body: truncateText(typeof row.body === "string" ? row.body : "", 800),
+          body: redactCredentialUriUserinfo(
+            truncateText(typeof row.body === "string" ? row.body : "", 800),
+          ),
         },
       }));
   }

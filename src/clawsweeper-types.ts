@@ -1451,6 +1451,7 @@ export interface ExpectedIssueSourceRevisionOptions {
   number: number;
   sourceRevision: string | undefined;
   artifactDir: string;
+  writeOutput?: (path: string, content: string) => void;
 }
 
 export type ReviewRetryActionLedger = {

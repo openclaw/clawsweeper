@@ -810,9 +810,11 @@ unhandled signal or `SIGKILL` can leave the bounded private scratch behind. Use
 without raw prompt/stream files, or `--output-retention debug` for the existing
 artifact tree. An explicit legacy `--artifact-dir` still selects debug
 retention. Summary destinations are created exclusively for one invocation.
-Transient output is capped at 96 MiB/256 files; debug output is capped at
+Managed transient output is capped at 96 MiB/256 files; managed debug output is capped at
 1 GiB/4,096 files with per-item allocations and at most 128 selected items per
-invocation. None and summary batches hash each item's report and stream evidence
+invocation. Existing destination files count toward these limits. Metadata,
+cached and fresh reports, and model output use the same run admission checks.
+None and summary batches hash each item's report and stream evidence
 into the canonical ledger before pruning that item's run-owned engine files;
 summary retains only the reports. Required pull-request checkouts use a separate private run workspace:
 tracked paths and Git blob sizes are admitted before materialization, with a 2x
@@ -823,8 +825,14 @@ reserve before creation and is removed after inspection. Checkout hooks are disa
 actual checkout usage is capped at 200,000 files/2 GiB, and 1 GiB remains
 reserved on each filesystem used for checkout materialization or missing Git
 object acquisition; a shared filesystem is charged once. Media proof downloads
-share 64 MiB per item and derived
-metadata/contact sheets share 16 MiB. Existing or unrelated retained runs are
+use at most 64 MiB per debug item and derived metadata/contact sheets at most
+16 MiB, subject to the remaining run byte and file allowances. Non-debug items
+use at most 32 MiB and 8 MiB respectively. Media admission reserves the non-media
+output pools before starting another download or transcode. These are producer
+admission and retained-output limits, not a peak disk quota: curl and ffmpeg can
+temporarily exceed their requested limits, and arbitrary model-written files
+are not quota-controlled. Oversized managed media output is discarded.
+Existing or unrelated retained runs are
 never pruned automatically.
 `--result-format json` returns the same result as valid JSON.
 

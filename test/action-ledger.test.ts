@@ -34,6 +34,7 @@ import {
   readActionEvent,
   readActionEventShard,
   readAllSpooledActionEvents,
+  strictUtcCalendarDate,
   validateActionEvent,
   writeActionEvent,
   writeActionEventShard,
@@ -43,6 +44,7 @@ import {
   type ActionEventProducer,
 } from "../dist/action-ledger.js";
 import {
+  isNotFoundError,
   prepareSafeWriteTarget,
   removeUtf8FileIfContentNoFollow,
   tryAcquireUtf8FileLockNoFollow,
@@ -141,6 +143,31 @@ function reviewInput(overrides: Partial<ActionEventInput> = {}): ActionEventInpu
     ...overrides,
   };
 }
+
+test("ledger missing-file detection requires an Error with the ENOENT code", () => {
+  assert.equal(isNotFoundError(Object.assign(new Error("missing"), { code: "ENOENT" })), true);
+  for (const value of [
+    { code: "ENOENT" },
+    null,
+    undefined,
+    false,
+    "ENOENT",
+    1,
+    new Error("ENOENT"),
+    Object.assign(new Error("denied"), { code: "EACCES" }),
+  ]) {
+    assert.equal(isNotFoundError(value), false);
+  }
+});
+
+test("ledger UTC date construction preserves early years and midnight", () => {
+  for (const year of [1, 99, 100]) {
+    assert.equal(
+      strictUtcCalendarDate(year, 1, 1).toISOString(),
+      `${String(year).padStart(4, "0")}-01-01T00:00:00.000Z`,
+    );
+  }
+});
 
 test("action events use deterministic identities and local spool paths", () => {
   const key = actionEventKey("review.completed", {
@@ -2252,7 +2279,11 @@ test("runtime normalization enforces checked-in schema bounds", () => {
     () => createActionEvent(reviewInput({ occurredAt: "2026-02-31T10:00:00Z" })),
     /ISO date-time/,
   );
-  for (const occurredAt of ["0001-01-01T00:00:00Z", "0099-12-31T23:59:59Z"]) {
+  for (const occurredAt of [
+    "0001-01-01T00:00:00Z",
+    "0099-12-31T23:59:59Z",
+    "0100-01-01T00:00:00Z",
+  ]) {
     assert.equal(createActionEvent(reviewInput({ occurredAt })).occurred_at, occurredAt);
   }
   assert.throws(

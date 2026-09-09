@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
+import { escapeRegExp } from "../src/clawsweeper-text.ts";
 
 type WorkerConfig = {
   audit: { max_parallel_targets: number };
@@ -271,10 +272,6 @@ function percent(max: number, value: number): number {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function limitTableValuePattern(limitPath: string, value: number): RegExp {

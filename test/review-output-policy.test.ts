@@ -23,19 +23,23 @@ import { parseArgs } from "../dist/clawsweeper-args.js";
 import {
   assertActiveReviewOutputBudget,
   assertTransientReviewOutputBudget,
-  createReviewOutputMetadataBudget,
+  createReviewOutputBudget,
   createTransientReviewOutput,
   emitReviewFailureJson,
   emitReviewOutput,
   finalizeSummaryReviewOutput,
   prepareRetainedReviewOutput,
   pruneReviewOutputItem,
+  produceReviewOutput,
   readBoundedReviewResult,
   reviewOutputFilePeak,
   reviewOutputItemBudget,
+  reviewOutputMediaLimits,
   reviewOutputSelection,
-  writeReviewOutputMetadata,
+  writeReviewOutput,
 } from "../dist/review-output-policy.js";
+import { prepareMediaProofArtifacts } from "../dist/clawsweeper-media-proof.js";
+import type { ItemContext, MediaProofCommandRunner } from "../src/clawsweeper-types.js";
 import { localReviewOutputHasPayload } from "../dist/clawsweeper-review-command-workflow.js";
 
 test("local review output defaults to none and preserves explicit-path compatibility", () => {
@@ -240,14 +244,16 @@ test("per-item budgets stay within their aggregate pools", () => {
       promptFileBytes: 0,
       resultFileBytes: 4 * 1024 * 1024,
       streamFileBytes: 16 * 1024 * 1024,
+      threadStateBytes: 1024,
       mediaDownloadBytes: 32 * 1024 * 1024,
       mediaDerivedBytes: 8 * 1024 * 1024,
-      metadataBytes: 4 * 1024 * 1024,
+      metadataBytes: 4 * 1024 * 1024 - 1024,
       reportsBytes: 16 * 1024 * 1024,
     });
     assert.equal(
       transient.streamFileBytes * 2 +
         transient.resultFileBytes +
+        transient.threadStateBytes +
         transient.reportsBytes +
         transient.mediaDownloadBytes +
         transient.mediaDerivedBytes +
@@ -262,12 +268,265 @@ test("review metadata rejects an over-budget producer before creating its file",
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-metadata-budget-"));
   try {
     const output = join(root, "metadata.json");
-    const budget = createReviewOutputMetadataBudget(root, 4);
+    const budget = createReviewOutputBudget(root, "debug", 2);
     assert.throws(
-      () => writeReviewOutputMetadata(budget, output, "12345"),
-      /exceeded its 4-byte limit/,
+      () => writeReviewOutput(budget, output, "x".repeat(budget.item.metadataBytes + 1)),
+      /metadata exceeded its .*byte limit/,
     );
     assert.equal(existsSync(output), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("run admission inventories all existing debug bytes and files before writing", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-existing-output-"));
+  try {
+    const nested = join(root, "existing");
+    mkdirSync(nested);
+    for (let index = 0; index < 300; index += 1) {
+      writeFileSync(join(nested, `${index}.txt`), "");
+    }
+    const large = join(nested, "large");
+    writeFileSync(large, "");
+    truncateSync(large, 1024 * 1024 * 1024 - 4);
+    const budget = createReviewOutputBudget(root, "debug", 2);
+    assert.throws(() => writeReviewOutput(budget, join(root, "new"), "12345"), /byte limit/);
+    assert.equal(existsSync(join(root, "new")), false);
+    truncateSync(large, 0);
+    for (let index = 300; index < 4095; index += 1) {
+      writeFileSync(join(nested, `${index}.txt`), "");
+    }
+    const full = createReviewOutputBudget(root, "debug", 2);
+    assert.throws(() => writeReviewOutput(full, join(root, "new"), ""), /file.*limit/);
+    let launched = false;
+    assert.throws(
+      () =>
+        produceReviewOutput(
+          full,
+          {
+            paths: [join(root, "result")],
+            maxBytes: 1,
+            maxFiles: 1,
+          },
+          () => {
+            launched = true;
+          },
+        ),
+      /file.*limit/,
+    );
+    assert.equal(launched, false);
+    writeFileSync(join(root, "over-limit"), "");
+    assert.throws(() => createReviewOutputBudget(root, "debug", 2), /file.*limit/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("replacement reports and metadata are charged once, including an existing destination", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-replacement-output-"));
+  try {
+    const report = join(root, "report.md");
+    writeFileSync(report, "");
+    truncateSync(report, 1024 * 1024 * 1024);
+    const budget = createReviewOutputBudget(root, "debug", 1);
+    writeReviewOutput(budget, report, "small", "report");
+    writeReviewOutput(budget, report, "replacement", "report");
+    const metadata = join(root, "selection.json");
+    writeReviewOutput(budget, metadata, "x".repeat(budget.item.metadataBytes));
+    writeReviewOutput(budget, metadata, "{}");
+    assert.equal(readFileSync(report, "utf8"), "replacement");
+    assert.equal(readFileSync(metadata, "utf8"), "{}");
+    assert.ok(reviewOutputMediaLimits(budget, join(root, "media")).downloadBytes > 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("sequential debug media shares remaining bytes and files before curl or ffmpeg", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-run-media-"));
+  const calls: string[] = [];
+  const context = { issue: { body: "https://example.test/proof.mp4" } } as ItemContext;
+  const runner: MediaProofCommandRunner = (command, args) => {
+    calls.push(command);
+    if (command === "curl") {
+      const output = args[args.indexOf("--output") + 1]!;
+      writeFileSync(output, "");
+      truncateSync(output, Number(args[args.indexOf("--max-filesize") + 1]));
+    } else if (command === "ffprobe") return { status: 0, stdout: "{}" };
+    else {
+      const output = args.at(-1)!;
+      writeFileSync(output, "");
+      truncateSync(output, Number(args[args.indexOf("-fs") + 1]));
+    }
+    return { status: 0 };
+  };
+  try {
+    const existing = join(root, "existing");
+    writeFileSync(existing, "");
+    const item = reviewOutputItemBudget("debug", 3);
+    const reserved =
+      3 *
+        (item.promptFileBytes +
+          item.resultFileBytes +
+          item.streamFileBytes * 2 +
+          item.threadStateBytes) +
+      item.metadataBytes +
+      item.reportsBytes;
+    truncateSync(existing, 1024 * 1024 * 1024 - reserved - 100);
+    const budget = createReviewOutputBudget(root, "debug", 3);
+    for (let index = 0; index < 3; index += 1) {
+      const proof = join(root, `proof-${index}`);
+      prepareMediaProofArtifacts(
+        context,
+        proof,
+        runner,
+        reviewOutputMediaLimits(budget, proof),
+        (path, content) => writeReviewOutput(budget, path, content),
+      );
+    }
+    assert.deepEqual(calls, ["curl", "ffprobe", "ffmpeg"]);
+    assert.match(
+      readFileSync(join(root, "proof-2", "media-proof-summary.md"), "utf8"),
+      /exhausted/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("media metadata is admitted before any producer with zero or insufficient allowance", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-media-metadata-"));
+  const context = { issue: { body: "https://example.test/proof.mp4" } } as ItemContext;
+  try {
+    for (const metadataBytes of [0, 1]) {
+      let calls = 0;
+      const output = join(root, String(metadataBytes));
+      assert.throws(
+        () =>
+          prepareMediaProofArtifacts(
+            context,
+            output,
+            () => {
+              calls += 1;
+              return { status: 0 };
+            },
+            { downloadBytes: 100, derivedBytes: 100, metadataBytes },
+          ),
+        /metadata requires/,
+      );
+      assert.equal(calls, 0);
+      assert.equal(existsSync(output), false);
+    }
+    const budget = createReviewOutputBudget(root, "debug", 1);
+    writeReviewOutput(budget, join(root, "selection"), "x".repeat(budget.item.metadataBytes));
+    const output = join(root, "media");
+    assert.throws(
+      () =>
+        prepareMediaProofArtifacts(
+          context,
+          output,
+          () => {
+            assert.fail("exhausted run metadata must prevent producer launch");
+          },
+          reviewOutputMediaLimits(budget, output),
+        ),
+      /metadata requires/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("partial managed output remains charged after producer failure", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-partial-output-"));
+  try {
+    const budget = createReviewOutputBudget(root, "debug", 1);
+    const partial = join(root, "partial");
+    const failure = new Error("producer failed after its first write");
+    assert.throws(
+      () =>
+        produceReviewOutput(
+          budget,
+          {
+            paths: [partial],
+            maxBytes: 16,
+            maxFiles: 1,
+            metadata: true,
+          },
+          () => {
+            writeFileSync(partial, "retained");
+            throw failure;
+          },
+        ),
+      (error) => error === failure,
+    );
+    assert.equal(readFileSync(partial, "utf8"), "retained");
+    assert.throws(
+      () =>
+        writeReviewOutput(budget, join(root, "too-large"), "x".repeat(budget.item.metadataBytes)),
+      /metadata exceeded/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("exhausted diagnostic metadata and oversized history preserve existing output", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-diagnostic-output-"));
+  try {
+    const budget = createReviewOutputBudget(root, "debug", 1);
+    const history = join(root, "history.md");
+    writeReviewOutput(budget, history, "prior");
+    assert.throws(
+      () => writeReviewOutput(budget, history, "x".repeat(budget.item.metadataBytes + 1)),
+      /metadata exceeded/,
+    );
+    assert.equal(readFileSync(history, "utf8"), "prior");
+    writeReviewOutput(budget, join(root, "metadata"), "x".repeat(budget.item.metadataBytes - 5));
+    let launched = false;
+    assert.throws(
+      () =>
+        produceReviewOutput(
+          budget,
+          {
+            paths: [join(root, "failure-diagnostics")],
+            maxBytes: 24 * 1024,
+            maxFiles: 4,
+            metadata: true,
+          },
+          () => {
+            launched = true;
+          },
+        ),
+      /diagnostics exceeded the metadata limit/,
+    );
+    assert.equal(launched, false);
+    assert.equal(existsSync(join(root, "failure-diagnostics")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("media file admission stops before the next download or contact sheet", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-media-files-"));
+  const calls: string[] = [];
+  const context = {
+    issue: { body: "https://example.test/one.mp4 https://example.test/two.mp4" },
+  } as ItemContext;
+  try {
+    prepareMediaProofArtifacts(
+      context,
+      root,
+      (command, args) => {
+        calls.push(command);
+        if (command === "curl") writeFileSync(args[args.indexOf("--output") + 1]!, "video");
+        return { status: 0, stdout: "{}" };
+      },
+      { downloadBytes: 100, derivedBytes: 100, files: 4 },
+    );
+    assert.deepEqual(calls, ["curl", "ffprobe"]);
+    assert.equal(countFiles(root), 4);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

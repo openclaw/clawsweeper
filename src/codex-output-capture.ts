@@ -2,6 +2,8 @@ import { closeSync, ftruncateSync, openSync, writeSync } from "node:fs";
 
 export const DEFAULT_CODEX_OUTPUT_FILE_BYTES = 128 * 1024 * 1024;
 export const DEFAULT_CODEX_OUTPUT_TAIL_BYTES = 64 * 1024;
+// App-server state contains two UUIDs and one ISO timestamp, not model output.
+export const CODEX_THREAD_STATE_MAX_BYTES = 1024;
 
 const TRUNCATION_MARKER = Buffer.from(
   "\n...[Codex output truncated; final tail follows]...\n",
@@ -73,9 +75,14 @@ function normalizedMaxFileBytes(value: number | undefined): number {
   return Math.max(TRUNCATION_MARKER.length, normalized);
 }
 
-function normalizedTailBytes(value: number | undefined): number {
+export function normalizedTailBytes(value: number | undefined): number {
   if (value === undefined) return DEFAULT_CODEX_OUTPUT_TAIL_BYTES;
   return Math.max(0, Number.isFinite(value) ? Math.floor(value) : DEFAULT_CODEX_OUTPUT_TAIL_BYTES);
+}
+
+export function normalizedOutputFileBytes(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_CODEX_OUTPUT_FILE_BYTES;
+  return Math.max(0, Number.isFinite(value) ? Math.floor(value) : DEFAULT_CODEX_OUTPUT_FILE_BYTES);
 }
 
 function availableTailBytes(maxFileBytes: number): number {

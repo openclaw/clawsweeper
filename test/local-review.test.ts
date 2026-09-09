@@ -217,6 +217,7 @@ process.stdout.write(JSON.stringify({
     text: "---\\nresult: success\\n---\\n\\nTransient local review completed.\\n",
   },
 }) + "\\n");
+process.stdout.write(JSON.stringify({ type: "turn.completed" }) + "\\n");
 `,
       );
       chmodSync(fakeCodex, 0o755);

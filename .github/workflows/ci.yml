@@ -160,3 +160,6 @@ jobs:
           node --test --test-name-pattern
           "escaped Windows launchers|extensionless Windows node shebang shims|CODEX_BIN and preserves argv|timeout errors|app-server mode"
           test/codex-process.test.ts
+
+      - name: Verify native Windows target clone deadlines
+        run: node --test test/repair/target-checkout.test.ts

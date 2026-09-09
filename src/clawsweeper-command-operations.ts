@@ -403,7 +403,10 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
     }
     if (actualSourceRevision === options.expectedSourceRevision) return;
 
-    writeFileSync(
+    const writeOutput =
+      options.writeOutput ??
+      ((path: string, content: string) => writeFileSync(path, content, "utf8"));
+    writeOutput(
       join(options.artifactDir, SOURCE_REVISION_MISMATCH_MARKER),
       `${JSON.stringify(
         {
@@ -417,7 +420,6 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
         null,
         2,
       )}\n`,
-      "utf8",
     );
     throw new UserFacingCommandError(
       `${options.repo}#${options.number} changed before review: expected source revision ${options.expectedSourceRevision}, found ${actualSourceRevision}.`,

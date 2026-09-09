@@ -30,7 +30,11 @@ import { UserFacingCommandError } from "./command.js";
 import { LOCAL_REVIEW_WEB_SEARCH_CONFIG } from "./commit-sweeper.js";
 import { isReviewedPrActivityCursor } from "./review-activity-cursor.js";
 import { previousClawSweeperReviewDigest } from "./clawsweeper-review-comments.js";
-import { writeExactReviewFailureDiagnostics } from "./clawsweeper-review-failure-diagnostics.js";
+import {
+  EXACT_REVIEW_FAILURE_DIAGNOSTICS_MAX_BYTES,
+  EXACT_REVIEW_FAILURE_DIAGNOSTICS_MAX_FILES,
+  writeExactReviewFailureDiagnostics,
+} from "./clawsweeper-review-failure-diagnostics.js";
 import {
   reviewStructuralCacheDecision,
   reviewStructuralCacheProbeDecision,
@@ -53,12 +57,13 @@ import {
   assertReviewOutputFilePeak,
   assertReviewReportsBudget,
   assertTransientReviewOutputBudget,
-  createReviewOutputMetadataBudget,
+  configureReviewOutputItems,
   emitReviewOutput,
   finalizeSummaryReviewOutput,
   pruneReviewOutputItem,
-  reviewOutputItemBudget,
-  writeReviewOutputMetadata,
+  produceReviewOutput,
+  reviewOutputMediaLimits,
+  writeReviewOutput,
   type ReviewOutputResult,
 } from "./review-output-policy.js";
 
@@ -266,6 +271,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       maintainerRequest,
       additionalPrompt,
       outputSelection,
+      outputBudget,
       retainedReviewOutput,
       cleanupReviewOutput,
     } = preparation;
@@ -274,19 +280,23 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
     let commandError: unknown;
     let finalizationError: unknown;
     let reviewCompleted = false;
-    const captureLocalOutput = (item: Item, reportPath: string, markdown: string): void => {
-      if (!localOnly) return;
-      const result = {
-        itemNumber: item.number,
-        path: outputSelection.retention === "none" ? null : reportPath,
-        markdown,
-      };
-      const prior = localOutputResults.findIndex(
-        (candidate) => candidate.itemNumber === item.number,
-      );
-      if (prior >= 0) localOutputResults[prior] = result;
-      else localOutputResults.push(result);
-      assertReviewReportsBudget(localOutputResults, outputSelection.retention);
+    const writeOutputReport = (item: Item, reportPath: string, markdown: string): void => {
+      const next = [...localOutputResults];
+      if (localOnly) {
+        const result = {
+          itemNumber: item.number,
+          path: outputSelection.retention === "none" ? null : reportPath,
+          markdown,
+        };
+        const prior = next.findIndex((candidate) => candidate.itemNumber === item.number);
+        if (prior >= 0) next[prior] = result;
+        else next.push(result);
+        // None-mode files are pruned, but the stdout collection remains live.
+        // Reject the prospective report before writing it or exposing it in JSON.
+        assertReviewReportsBudget(next, outputSelection.retention);
+      }
+      writeReviewOutput(outputBudget, reportPath, markdown, "report");
+      if (localOnly) localOutputResults.splice(0, localOutputResults.length, ...next);
     };
     const emitLocalOutput = (status: "completed" | "failed"): void => {
       if (!localOnly || outputEmitted) return;
@@ -379,18 +389,13 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       const { candidates, scannedPages } = localRangeData
         ? { candidates: [localRangeData.item], scannedPages: 0 }
         : selectCandidates(selectionOptions);
-      const itemOutputBudget = reviewOutputItemBudget(
-        outputSelection.retention,
+      const itemOutputBudget = configureReviewOutputItems(
+        outputBudget,
         Math.max(1, candidates.length),
       );
       assertReviewOutputFilePeak(outputSelection.retention, Math.max(1, candidates.length));
-      const metadataBudget =
-        outputSelection.retention === "debug"
-          ? null
-          : createReviewOutputMetadataBudget(artifactDir, itemOutputBudget.metadataBytes);
       const writeOutputMetadata = (path: string, content: string): void => {
-        if (metadataBudget) writeReviewOutputMetadata(metadataBudget, path, content);
-        else writeFileSync(path, content, "utf8");
+        writeReviewOutput(outputBudget, path, content);
       };
       if (suppliedReviewLease && candidates.length !== 1) {
         throw new UserFacingCommandError(
@@ -466,7 +471,12 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         const recordFailureDiagnostics = (error: unknown, classification = "codex_execution") => {
           if (!process.env.EXACT_REVIEW_ITEM_KEY) return;
           try {
-            writeExactReviewFailureDiagnostics({
+            produceReviewOutput(outputBudget, {
+              paths: [join(artifactDir, "failure-diagnostics")],
+              maxBytes: EXACT_REVIEW_FAILURE_DIAGNOSTICS_MAX_BYTES,
+              maxFiles: EXACT_REVIEW_FAILURE_DIAGNOSTICS_MAX_FILES,
+              metadata: true,
+            }, () => writeExactReviewFailureDiagnostics({
               artifactDir,
               error,
               prompt: diagnosticPrompt,
@@ -480,7 +490,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 : diagnosticSourceSha,
               retryable: codexReviewFailureRetryable(error),
               workflowExit: agentInputScanFailureExitCode(error) ?? 1,
-            });
+            }));
           } catch {
             console.error("[review] exact-review failure diagnostics could not be written.");
           }
@@ -959,8 +969,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 carried = updateBulkFilerDetectedFrontMatter(carried, bulkFilerDetection);
                 carried = updateReviewStructuralFrontMatter(carried, structuralRecord, true);
                 carried = withRunnerPreflightProvenance(carried, replaceFrontMatterValue);
-                captureLocalOutput(item, reportPath, hostReport(carried));
-                writeFileSync(reportPath, hostReport(carried), "utf8");
+                writeOutputReport(item, reportPath, hostReport(carried));
                 finishReviewActionLedgerItem({
                   ledger: reviewLedger,
                   item,
@@ -1207,6 +1216,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             number: item.number,
             sourceRevision: context.sourceRevision,
             artifactDir,
+            writeOutput: writeOutputMetadata,
           });
         }
         if (skipStartComment) {
@@ -1318,8 +1328,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             ? updateReviewStructuralFrontMatter(carried, structuralRecord, false)
             : replaceFrontMatterValue(carried, "review_structural_cache_hit", "false");
           carried = withRunnerPreflightProvenance(carried, replaceFrontMatterValue);
-          captureLocalOutput(item, reportPath, hostReport(carried));
-          writeFileSync(reportPath, hostReport(carried), "utf8");
+          writeOutputReport(item, reportPath, hostReport(carried));
           finishReviewActionLedgerItem({
             ledger: reviewLedger,
             item,
@@ -1365,13 +1374,8 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               context,
               proofScratchDir,
               undefined,
-              outputSelection.retention === "debug"
-                ? undefined
-                : {
-                    downloadBytes: itemOutputBudget.mediaDownloadBytes,
-                    derivedBytes: itemOutputBudget.mediaDerivedBytes,
-                    metadataBytes: itemOutputBudget.metadataBytes - (metadataBudget?.bytes ?? 0),
-                  },
+              reviewOutputMediaLimits(outputBudget, proofScratchDir),
+              writeOutputMetadata,
             );
         const reviewEnv = reviewEnvironment(localOnly);
         const prompt = buildReviewPrompt(
@@ -1411,7 +1415,14 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               );
             }
           }
-          decision = runCodex({
+          decision = produceReviewOutput(outputBudget, {
+            paths: [
+              "prompt.md", "json", "1.codex.stdout.log", "1.codex.stderr.log", "review-thread.json",
+            ].map((suffix) => join(codexWorkDir, `${item.number}.${suffix}`)),
+            maxBytes: itemOutputBudget.promptFileBytes + itemOutputBudget.resultFileBytes +
+              itemOutputBudget.streamFileBytes * 2 + itemOutputBudget.threadStateBytes,
+            maxFiles: 5,
+          }, () => runCodex({
             item,
             context,
             git,
@@ -1433,7 +1444,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             streamFileBytes: itemOutputBudget.streamFileBytes,
             quietLogs: humanLocalReview,
             ...(localRange ? { extraCodexConfig: [LOCAL_REVIEW_WEB_SEARCH_CONFIG] } : {}),
-          });
+          }));
         } catch (error) {
           if (error instanceof AgentInputScanError) throw error;
           codexFailures += 1;
@@ -1500,8 +1511,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 }
               : {}),
         }));
-        captureLocalOutput(item, reportPath, reportMarkdown);
-        writeFileSync(reportPath, reportMarkdown, "utf8");
+        writeOutputReport(item, reportPath, reportMarkdown);
         if (codexFailureError) {
           recordFailureDiagnostics(codexFailureError, codexFailureLogKind(reportMarkdown));
         }
@@ -1517,7 +1527,16 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
                 )
               : previousLocalReviewCommentBody;
           if (nextLocalReviewCommentBody) {
-            writeFileSync(itemLocalReviewHistoryPath, nextLocalReviewCommentBody, "utf8");
+            if (localRangeData) {
+              // Cross-run history belongs to the checkout, not this output run.
+              // Keep that owner/path while bounding the generated replacement.
+              if (Buffer.byteLength(nextLocalReviewCommentBody) > itemOutputBudget.metadataBytes) {
+                throw new UserFacingCommandError("Local review history exceeded its byte limit.");
+              }
+              writeFileSync(itemLocalReviewHistoryPath, nextLocalReviewCommentBody, "utf8");
+            } else {
+              writeOutputMetadata(itemLocalReviewHistoryPath, nextLocalReviewCommentBody);
+            }
           }
         }
         recordReviewLogPublication({
@@ -1661,7 +1680,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         throw new Error(
           `Could not acquire durable review coordination for ${leaseAcquisitionFailures} item${
             leaseAcquisitionFailures === 1 ? "" : "s"
-          }; the workflow recovery lane can requeue the planned set. ${leaseAcquisitionFailureDetails.join("; ")}`,
+          }; the workflow recovery lane can requeue evidence-backed retryable items. ${leaseAcquisitionFailureDetails.join("; ")}`,
         );
       }
       if (reviewTreeCleanupFailures.length > 0) {
@@ -1682,7 +1701,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             : "";
         const message = `Codex failed for ${codexFailures} item${
           codexFailures === 1 ? "" : "s"
-        }; the workflow recovery lane can requeue the planned set.${retainedFailureReports}`;
+        }; the workflow recovery lane can requeue evidence-backed retryable items.${retainedFailureReports}`;
         if (humanLocalReview) throw new UserFacingCommandError(message);
         throw new Error(message);
       }

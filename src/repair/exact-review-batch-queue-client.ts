@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import {
   ExactReviewBatchQueueTransportError,
+  responseErrorCode,
   type TransportFailureReason,
 } from "./exact-review-queue-transport-error.js";
 
@@ -579,29 +580,6 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
       await new Promise<void>((resolve) => setTimeout(resolve, delay));
     }
     throw new Error(`Batch queue ${path} retry attempts exhausted`);
-  }
-}
-
-async function responseErrorCode(response: Response): Promise<string | undefined> {
-  const reader = response.body?.getReader();
-  if (!reader) return undefined;
-  try {
-    const bytes = new Uint8Array(512);
-    let length = 0;
-    while (length < bytes.length) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      const chunk = value.subarray(0, bytes.length - length);
-      bytes.set(chunk, length);
-      length += chunk.length;
-    }
-    const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes.subarray(0, length)));
-    const error = objectValue(parsed).error;
-    return typeof error === "string" && /^[a-z0-9_]{1,64}$/.test(error) ? error : undefined;
-  } catch {
-    return undefined;
-  } finally {
-    void reader.cancel().catch(() => {});
   }
 }
 

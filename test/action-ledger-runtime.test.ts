@@ -2144,7 +2144,11 @@ test("workflow partition timestamps require real calendar dates", async () => {
   const [relativePath] = await flushWorkflowActionEvents(root, { env, outputRoot });
   assert.match(relativePath ?? "", /^ledger\/v1\/events\/2024\/03\/01\//);
 
-  for (const runStartedAt of ["0001-01-01T00:00:00Z", "0099-12-31T23:59:59Z"]) {
+  for (const runStartedAt of [
+    "0001-01-01T00:00:00Z",
+    "0099-12-31T23:59:59Z",
+    "0100-01-01T00:00:00Z",
+  ]) {
     const earlyRoot = tempRoot();
     const earlyOutputRoot = trustedChildRoot(earlyRoot, "state");
     const earlyEnv = workflowEnv({

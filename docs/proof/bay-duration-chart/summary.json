@@ -1,16 +1,21 @@
 {
   "checks": [
-    "fixed rolling hour, readable minute ticks and partial bucket",
-    "pointer anywhere in the bucket reveals exact interval/median/mean/count",
-    "keyboard focus and native activation preserve equivalent bucket detail",
-    "missing data is not reported as zero and real zero stays a sample",
-    "lifecycle starts collapsed, opens with keyboard and keeps records distinct",
-    "legacy and repository filters do not alter lifecycle inventory",
-    "responsive plot/labels remain contained and touch activates whole bucket",
-    "single and empty histories keep the full hour and no invented observations",
-    "server snapshot anchors stale and browser-clock-skewed windows",
-    "timing announcements retain their live-region node and missing clock fails closed",
-    "delayed status collection uses the later timing query boundary"
+    "fixed rolling hour, readable axes and partial/missing bucket geometry",
+    "chart dropdown and permanent detail row are gone; cohort selector remains",
+    "hover and scrubbing expose compact equivalent details; tooltip is hoverable and Escape-dismissable",
+    "one large keyboard surface supports arrows/Home/End and preserves DOM focus and bucket identity on refresh",
+    "pending hover dismissal cannot hide keyboard details; leaving focus dismisses",
+    "missing data stays unavailable and a real zero stays a sample",
+    "retained lifecycle remains collapsed and keeps records distinct",
+    "legacy and repository filters remain independent from lifecycle inventory",
+    "mobile touch target and floating tooltip fit; tap and drag scrub equivalent details",
+    "rolling refresh preserves the navigation node and clamps an aged-out logical interval",
+    "unavailable refresh immediately removes stale interaction and moves focus to status",
+    "transport failure removes stale tooltip/chart and retains safe focus",
+    "single and empty histories retain the hour with no invented observations",
+    "stale and browser-clock-skewed windows remain bound to the query cutoff",
+    "live-region identity survives refresh and missing source clock fails closed",
+    "delayed status collection cannot replace the later timing query boundary"
   ],
   "errors": [],
   "requests": [
@@ -28,11 +33,11 @@
     },
     {
       "method": "GET",
-      "path": "/api/durable-lifecycle-bay"
+      "path": "/bay-assets/master-sweeper.webp"
     },
     {
       "method": "GET",
-      "path": "/bay-assets/master-sweeper.webp"
+      "path": "/api/durable-lifecycle-bay"
     },
     {
       "method": "GET",
@@ -76,6 +81,66 @@
     },
     {
       "method": "GET",
+      "path": "/api/status"
+    },
+    {
+      "method": "GET",
+      "path": "/api/durable-lifecycle-bay"
+    },
+    {
+      "method": "GET",
+      "path": "/api/status"
+    },
+    {
+      "method": "GET",
+      "path": "/api/durable-lifecycle-bay"
+    },
+    {
+      "method": "GET",
+      "path": "/api/github-egress-observability?hours=6"
+    },
+    {
+      "method": "GET",
+      "path": "/api/health-history?range=6h"
+    },
+    {
+      "method": "GET",
+      "path": "/api/status"
+    },
+    {
+      "method": "GET",
+      "path": "/api/durable-lifecycle-bay"
+    },
+    {
+      "method": "GET",
+      "path": "/api/status"
+    },
+    {
+      "method": "GET",
+      "path": "/api/status"
+    },
+    {
+      "method": "GET",
+      "path": "/api/status"
+    },
+    {
+      "method": "GET",
+      "path": "/api/status"
+    },
+    {
+      "method": "GET",
+      "path": "/api/durable-lifecycle-bay"
+    },
+    {
+      "method": "GET",
+      "path": "/api/status"
+    },
+    {
+      "method": "GET",
+      "path": "/api/durable-lifecycle-bay"
+    },
+    {
+      "method": "GET",
       "path": "/api/github-egress-observability?hours=6"
     },
     {
@@ -97,22 +162,6 @@
     {
       "method": "GET",
       "path": "/api/durable-lifecycle-bay"
-    },
-    {
-      "method": "GET",
-      "path": "/api/status"
-    },
-    {
-      "method": "GET",
-      "path": "/api/durable-lifecycle-bay"
-    },
-    {
-      "method": "GET",
-      "path": "/api/github-egress-observability?hours=6"
-    },
-    {
-      "method": "GET",
-      "path": "/api/health-history?range=6h"
     },
     {
       "method": "GET",
@@ -148,8 +197,8 @@
     }
   ],
   "blockedExternalRequests": [],
-  "sourceSha": "f633c1e10228f0a337d8852c93a7af33c4c11aac",
-  "pageSha256": "7ad630c4d40c7b6bd3b27c586e4c4d174647f67f4dff76bbfca9e28c733453ae",
+  "sourceSha": "22a614ce1493487d5be5b6e3a860b6ef3e8c80bb",
+  "pageSha256": "a25cee304e6e7fd4ca857081f0e27c2b91f93aa05949fa1eaa3b72d19b9391ff",
   "browser": "152.0.7977.82",
   "node": "v24.20.0",
   "limits": "Production HTML/CSS/script with controlled same-origin API data; unrelated APIs/assets return 404, external fonts blocked; no live backend or modern proof telemetry claim."

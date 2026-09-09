@@ -17,6 +17,7 @@ import { dirname, join, resolve, sep } from "node:path";
 import type { Args } from "./clawsweeper-args.js";
 import { stringArg } from "./clawsweeper-args.js";
 import { UserFacingCommandError } from "./command.js";
+import { CODEX_THREAD_STATE_MAX_BYTES } from "./codex-output-capture.js";
 
 export type ReviewOutputRetention = "none" | "summary" | "debug";
 export type ReviewResultFormat = "text" | "json";
@@ -245,15 +246,10 @@ export function discardOwnedSummaryOutput(output: RetainedReviewOutput | null): 
 }
 
 export function assertTransientReviewOutputBudget(root: string): void {
-  const totals = reviewOutputTotals(resolve(root));
-  if (
-    totals.files > TRANSIENT_REVIEW_OUTPUT_MAX_FILES ||
-    totals.bytes > TRANSIENT_REVIEW_OUTPUT_MAX_BYTES
-  ) {
-    throw new UserFacingCommandError(
-      `Transient review output exceeded its ${TRANSIENT_REVIEW_OUTPUT_MAX_FILES}-file or ${TRANSIENT_REVIEW_OUTPUT_MAX_BYTES}-byte limit.`,
-    );
-  }
+  reviewOutputInventory(resolve(root), {
+    maxFiles: TRANSIENT_REVIEW_OUTPUT_MAX_FILES,
+    maxBytes: TRANSIENT_REVIEW_OUTPUT_MAX_BYTES,
+  });
 }
 
 export function assertReviewReportsBudget(
@@ -275,6 +271,7 @@ export function reviewOutputItemBudget(
   promptFileBytes: number;
   resultFileBytes: number;
   streamFileBytes: number;
+  threadStateBytes: number;
   mediaDownloadBytes: number;
   mediaDerivedBytes: number;
   metadataBytes: number;
@@ -294,8 +291,9 @@ export function reviewOutputItemBudget(
         Math.floor(DEBUG_REVIEW_STREAM_POOL_BYTES / (itemCount * 2)),
       ),
       mediaDownloadBytes: 64 * 1024 * 1024,
+      threadStateBytes: CODEX_THREAD_STATE_MAX_BYTES,
       mediaDerivedBytes: 16 * 1024 * 1024,
-      metadataBytes: DEBUG_REVIEW_OUTPUT_MAX_BYTES,
+      metadataBytes: PRIVATE_REVIEW_METADATA_BYTES,
       reportsBytes: DEBUG_REVIEW_REPORTS_MAX_BYTES,
     };
   }
@@ -303,14 +301,16 @@ export function reviewOutputItemBudget(
     promptFileBytes: 0,
     resultFileBytes: PRIVATE_REVIEW_RESULT_POOL_BYTES,
     streamFileBytes: PRIVATE_REVIEW_STREAM_POOL_BYTES / 2,
+    threadStateBytes: CODEX_THREAD_STATE_MAX_BYTES,
     mediaDownloadBytes: PRIVATE_REVIEW_MEDIA_DOWNLOAD_BYTES,
     mediaDerivedBytes: PRIVATE_REVIEW_MEDIA_DERIVED_BYTES,
-    metadataBytes: PRIVATE_REVIEW_METADATA_BYTES,
+    metadataBytes: PRIVATE_REVIEW_METADATA_BYTES - CODEX_THREAD_STATE_MAX_BYTES,
     reportsBytes: TRANSIENT_REVIEW_REPORTS_MAX_BYTES,
   };
   const allocatedBytes =
     budget.streamFileBytes * 2 +
     budget.resultFileBytes +
+    budget.threadStateBytes +
     budget.reportsBytes +
     budget.mediaDownloadBytes +
     budget.mediaDerivedBytes +
@@ -321,42 +321,252 @@ export function reviewOutputItemBudget(
   return budget;
 }
 
-export interface ReviewOutputMetadataBudget {
+export interface ReviewOutputBudget {
   readonly root: string;
+  readonly retention: ReviewOutputRetention;
+  item: ReturnType<typeof reviewOutputItemBudget>;
   readonly maxBytes: number;
-  bytes: number;
+  readonly maxFiles: number;
+  mediaMaxBytes: number;
+  mediaMaxFiles: number;
+  readonly metadata: Map<string, number>;
+  readonly reports: Map<string, number>;
+  readonly mediaRoots: Set<string>;
+  readonly existing: Set<string>;
+  readonly modelFiles: Set<string>;
 }
 
-export function createReviewOutputMetadataBudget(
+export function createReviewOutputBudget(
   root: string,
-  maxBytes: number,
-): ReviewOutputMetadataBudget {
-  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
-    throw new UserFacingCommandError("Review metadata requires a positive byte limit.");
-  }
+  retention: ReviewOutputRetention,
+  itemCount = 1,
+): ReviewOutputBudget {
   const resolved = resolve(root);
-  const bytes = reviewOutputTotals(resolved).bytes;
-  if (bytes > maxBytes) {
-    throw new UserFacingCommandError(`Review metadata exceeded its ${maxBytes}-byte limit.`);
-  }
-  return { root: resolved, maxBytes, bytes };
+  const item = reviewOutputItemBudget(retention, itemCount);
+  const maxBytes =
+    retention === "debug" ? DEBUG_REVIEW_OUTPUT_MAX_BYTES : TRANSIENT_REVIEW_OUTPUT_MAX_BYTES;
+  const maxFiles =
+    retention === "debug" ? DEBUG_REVIEW_OUTPUT_MAX_FILES : TRANSIENT_REVIEW_OUTPUT_MAX_FILES;
+  // Existing debug destinations consume the run allowance too. Admission needs
+  // a complete inventory, including nested files and later replacements.
+  const existing = reviewOutputInventory(resolved, { maxBytes, maxFiles });
+  const budget: ReviewOutputBudget = {
+    root: resolved,
+    retention,
+    item,
+    maxBytes,
+    maxFiles,
+    mediaMaxBytes: 0,
+    mediaMaxFiles: 0,
+    metadata: new Map(),
+    reports: new Map(),
+    mediaRoots: new Set(),
+    existing: new Set(existing.keys()),
+    modelFiles: new Set(),
+  };
+  configureReviewOutputItems(budget, itemCount);
+  return budget;
 }
 
-export function writeReviewOutputMetadata(
-  budget: ReviewOutputMetadataBudget,
+export function configureReviewOutputItems(
+  budget: ReviewOutputBudget,
+  itemCount: number,
+): ReturnType<typeof reviewOutputItemBudget> {
+  const item = reviewOutputItemBudget(budget.retention, itemCount);
+  const liveItems = budget.retention === "debug" ? itemCount : 1;
+  const modelBytes =
+    liveItems *
+    (item.promptFileBytes +
+      item.resultFileBytes +
+      item.streamFileBytes * 2 +
+      item.threadStateBytes);
+  budget.item = item;
+  budget.mediaMaxBytes = Math.max(
+    0,
+    budget.maxBytes - modelBytes - item.metadataBytes - item.reportsBytes,
+  );
+  budget.mediaMaxFiles = Math.max(
+    0,
+    budget.maxFiles -
+      REVIEW_OUTPUT_GLOBAL_MAX_FILES -
+      (budget.retention === "debug" ? itemCount * 7 : 5 + itemCount),
+  );
+  return item;
+}
+
+export function writeReviewOutput(
+  budget: ReviewOutputBudget,
   path: string,
   content: string,
+  kind: "metadata" | "report" = "metadata",
 ): void {
   const destination = assertOwnedOutputPath(budget.root, path);
-  if (existsSync(destination)) {
-    throw new UserFacingCommandError(`Review metadata destination already exists: ${destination}`);
-  }
+  const inventory = reviewOutputInventory(budget.root, budget);
+  const totals = outputInventoryTotals(inventory);
   const bytes = Buffer.byteLength(content);
-  if (bytes > budget.maxBytes - budget.bytes) {
-    throw new UserFacingCommandError(`Review metadata exceeded its ${budget.maxBytes}-byte limit.`);
+  const pool = kind === "metadata" ? budget.metadata : budget.reports;
+  const limit = kind === "metadata" ? budget.item.metadataBytes : budget.item.reportsBytes;
+  const retained = [...pool].reduce(
+    (sum, [entry]) => sum + (entry === destination ? 0 : (inventory.get(entry) ?? 0)),
+    0,
+  );
+  if (bytes > limit - retained) {
+    throw new UserFacingCommandError(`Review ${kind} exceeded its ${limit}-byte limit.`);
   }
-  writeFileSync(destination, content, { encoding: "utf8", flag: "wx", mode: 0o600 });
-  budget.bytes += bytes;
+  assertOutputAdmission(
+    budget,
+    totals.bytes - (inventory.get(destination) ?? 0) + bytes,
+    totals.files + (inventory.has(destination) ? 0 : 1),
+  );
+  writeFileSync(destination, content, { encoding: "utf8", mode: 0o600 });
+  pool.set(destination, bytes);
+}
+
+export function reviewOutputMediaLimits(
+  budget: ReviewOutputBudget,
+  root: string,
+): {
+  downloadBytes: number;
+  derivedBytes: number;
+  metadataBytes: number;
+  files: number;
+} {
+  const destination = assertOwnedOutputPath(budget.root, root);
+  budget.mediaRoots.add(destination);
+  const inventory = reviewOutputInventory(budget.root, budget);
+  const totals = outputInventoryTotals(inventory);
+  assertOutputAdmission(budget, totals.bytes, totals.files);
+  let mediaBytes = 0;
+  let mediaFiles = 0;
+  let existingBytes = 0;
+  let existingFiles = 0;
+  for (const [path, bytes] of inventory) {
+    if (![...budget.mediaRoots].some((mediaRoot) => path.startsWith(`${mediaRoot}${sep}`))) {
+      if (
+        budget.existing.has(path) &&
+        !budget.metadata.has(path) &&
+        !budget.reports.has(path) &&
+        !budget.modelFiles.has(path)
+      ) {
+        existingBytes += bytes;
+        existingFiles += 1;
+      }
+      continue;
+    }
+    mediaFiles += 1;
+    if (!budget.metadata.has(path)) mediaBytes += bytes;
+  }
+  // Preserve the non-media pools before admitting another download/transcode.
+  // Limits describe retained managed output, not a disk quota for child processes.
+  const remaining = Math.max(
+    0,
+    Math.min(budget.mediaMaxBytes - existingBytes - mediaBytes, budget.maxBytes - totals.bytes),
+  );
+  const downloadBytes = Math.min(budget.item.mediaDownloadBytes, Math.floor(remaining * 0.8));
+  return {
+    downloadBytes,
+    derivedBytes: Math.min(budget.item.mediaDerivedBytes, remaining - downloadBytes),
+    metadataBytes: Math.max(
+      0,
+      budget.item.metadataBytes -
+        [...budget.metadata.keys()].reduce((sum, path) => sum + (inventory.get(path) ?? 0), 0),
+    ),
+    files: Math.max(
+      0,
+      Math.min(budget.mediaMaxFiles - existingFiles - mediaFiles, budget.maxFiles - totals.files),
+    ),
+  };
+}
+
+export function produceReviewOutput<T>(
+  budget: ReviewOutputBudget,
+  allowance: { paths: readonly string[]; maxBytes: number; maxFiles: number; metadata?: boolean },
+  produce: () => T,
+): T {
+  const paths = allowance.paths.map((path) => assertOwnedOutputPath(budget.root, path));
+  const inventory = reviewOutputInventory(budget.root, budget);
+  const totals = outputInventoryTotals(inventory);
+  const replaces = (path: string) =>
+    paths.some((entry) => path === entry || path.startsWith(`${entry}${sep}`));
+  let replacedBytes = 0;
+  let replacedFiles = 0;
+  for (const [path, bytes] of inventory) {
+    if (replaces(path)) {
+      replacedBytes += bytes;
+      replacedFiles += 1;
+    }
+  }
+  assertOutputAdmission(
+    budget,
+    totals.bytes - replacedBytes + allowance.maxBytes,
+    totals.files - replacedFiles + allowance.maxFiles,
+  );
+  if (allowance.metadata) {
+    const retained = [...budget.metadata.keys()].reduce(
+      (sum, path) => sum + (replaces(path) ? 0 : (inventory.get(path) ?? 0)),
+      0,
+    );
+    if (allowance.maxBytes > budget.item.metadataBytes - retained) {
+      throw new UserFacingCommandError("Review failure diagnostics exceeded the metadata limit.");
+    }
+  }
+  try {
+    return produce();
+  } finally {
+    const actual = reviewOutputInventory(budget.root, budget);
+    for (const [path, bytes] of actual) {
+      if (!replaces(path)) continue;
+      if (allowance.metadata) budget.metadata.set(path, bytes);
+      else budget.modelFiles.add(path);
+    }
+    const totals = outputInventoryTotals(actual);
+    assertOutputAdmission(budget, totals.bytes, totals.files);
+  }
+}
+
+function assertOutputAdmission(
+  budget: Pick<ReviewOutputBudget, "maxBytes" | "maxFiles">,
+  bytes: number,
+  files: number,
+): void {
+  if (bytes > budget.maxBytes || files > budget.maxFiles) {
+    throw new UserFacingCommandError(
+      `Review output exceeded its ${budget.maxFiles}-file or ${budget.maxBytes}-byte limit.`,
+    );
+  }
+}
+
+function reviewOutputInventory(
+  root: string,
+  limits: Pick<ReviewOutputBudget, "maxBytes" | "maxFiles">,
+): Map<string, number> {
+  const files = new Map<string, number>();
+  let bytes = 0;
+  const pending = [root];
+  while (pending.length) {
+    const directory = pending.pop()!;
+    for (const name of readdirSync(directory)) {
+      const path = join(directory, name);
+      const metadata = lstatSync(path);
+      if (metadata.isDirectory()) pending.push(path);
+      else if (metadata.isFile()) {
+        bytes += metadata.size;
+        assertOutputAdmission(limits, bytes, files.size + 1);
+        files.set(path, metadata.size);
+      } else throw new UserFacingCommandError("Review output contained an unsafe file type.");
+    }
+  }
+  return files;
+}
+
+function outputInventoryTotals(inventory: ReadonlyMap<string, number>): {
+  bytes: number;
+  files: number;
+} {
+  return {
+    bytes: [...inventory.values()].reduce((sum, bytes) => sum + bytes, 0),
+    files: inventory.size,
+  };
 }
 
 export function reviewOutputFilePeak(retention: ReviewOutputRetention, itemCount: number): number {
@@ -424,16 +634,6 @@ export function pruneReviewOutputItem(options: {
 }
 
 export function assertActiveReviewOutputBudget(output: RetainedReviewOutput): void {
-  const totals = reviewOutputTotals(output.path, {
-    maxFiles:
-      output.retention === "debug"
-        ? DEBUG_REVIEW_OUTPUT_MAX_FILES
-        : TRANSIENT_REVIEW_OUTPUT_MAX_FILES,
-    maxBytes:
-      output.retention === "debug"
-        ? DEBUG_REVIEW_OUTPUT_MAX_BYTES
-        : TRANSIENT_REVIEW_OUTPUT_MAX_BYTES,
-  });
   const maxFiles =
     output.retention === "debug"
       ? DEBUG_REVIEW_OUTPUT_MAX_FILES
@@ -442,11 +642,7 @@ export function assertActiveReviewOutputBudget(output: RetainedReviewOutput): vo
     output.retention === "debug"
       ? DEBUG_REVIEW_OUTPUT_MAX_BYTES
       : TRANSIENT_REVIEW_OUTPUT_MAX_BYTES;
-  if (totals.files > maxFiles || totals.bytes > maxBytes) {
-    throw new UserFacingCommandError(
-      `${output.retention === "debug" ? "Debug" : "Summary"} review output exceeded its ${maxFiles}-file or ${maxBytes}-byte limit.`,
-    );
-  }
+  reviewOutputInventory(output.path, { maxFiles, maxBytes });
 }
 
 export function readBoundedReviewResult(path: string, maxBytes: number): string {
@@ -553,40 +749,4 @@ function assertSummaryOutputOwner(output: RetainedReviewOutput): void {
   ) {
     throw new UserFacingCommandError("Summary output ownership changed before finalization.");
   }
-}
-
-function reviewOutputTotals(
-  root: string,
-  limits: {
-    maxFiles: number;
-    maxBytes: number;
-  } = {
-    maxFiles: TRANSIENT_REVIEW_OUTPUT_MAX_FILES,
-    maxBytes: TRANSIENT_REVIEW_OUTPUT_MAX_BYTES,
-  },
-): { files: number; bytes: number } {
-  let files = 0;
-  let bytes = 0;
-  const pending = [root];
-  while (pending.length > 0) {
-    const directory = pending.pop()!;
-    for (const name of readdirSync(directory)) {
-      const path = join(directory, name);
-      const metadata = lstatSync(path);
-      if (metadata.isSymbolicLink()) {
-        throw new UserFacingCommandError("Transient review output contained a symbolic link.");
-      }
-      if (metadata.isDirectory()) pending.push(path);
-      else if (metadata.isFile()) {
-        files += 1;
-        bytes += metadata.size;
-      } else {
-        throw new UserFacingCommandError("Transient review output contained an unsafe file type.");
-      }
-      if (files > limits.maxFiles || bytes > limits.maxBytes) {
-        return { files, bytes };
-      }
-    }
-  }
-  return { files, bytes };
 }

@@ -32,7 +32,8 @@ import {
 } from "./repair-merge-message.js";
 import { fetchPullRequestView, validateResolvedReviewThreads } from "./merge-readiness-github.js";
 import { compactText as compactPlainText } from "./text-utils.js";
-import { rollUpStatusChecks } from "./status-check-rollup.js";
+import { isPendingStatusCheck, rollUpStatusChecks } from "./status-check-rollup.js";
+import { readJsonFileIfExists } from "./json-file.js";
 
 const PASSING_CHECK_CONCLUSIONS = new Set(["SUCCESS", "SKIPPED", "NEUTRAL"]);
 const FIX_PR_MERGE_STATES = new Set(["CLEAN", "HAS_HOOKS", "UNSTABLE"]);
@@ -87,7 +88,9 @@ if (!["execute", "autonomous"].includes(result.mode)) {
   throw new Error(`refusing post-flight: result mode is ${result.mode}`);
 }
 
-const fixReport = readSiblingJson(resultPath, "fix-execution-report.json");
+const fixReport = readJsonFileIfExists(
+  path.join(path.dirname(resultPath), "fix-execution-report.json"),
+);
 const report: LooseRecord = {
   repo: result.repo,
   cluster_id: result.cluster_id,
@@ -566,12 +569,6 @@ function postFlightStatusCheckRollup(checks: LooseRecord[]) {
   );
 }
 
-function isPendingStatusCheck(check: LooseRecord) {
-  const status = String(check.status ?? check.state ?? "").toUpperCase();
-  const conclusion = String(check.conclusion ?? "").toUpperCase();
-  return !conclusion && Boolean(status) && !["COMPLETED", "SUCCESS"].includes(status);
-}
-
 function shouldRequirePrChecks() {
   return process.env.CLAWSWEEPER_POST_FLIGHT_REQUIRE_PR_CHECKS === "1";
 }
@@ -592,12 +589,6 @@ function findLatestResultPath() {
   candidates.sort((left: JsonValue, right: JsonValue) => right.mtimeMs - left.mtimeMs);
   if (!candidates[0]) throw new Error("no result.json files found");
   return candidates[0].path;
-}
-
-function readSiblingJson(resultPath: string, name: string) {
-  const file = path.join(path.dirname(resultPath), name);
-  if (!fs.existsSync(file)) return null;
-  return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
 function writeReport(report: LooseRecord, resultPath: string) {

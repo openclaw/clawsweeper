@@ -671,6 +671,7 @@ process.stdout.write(JSON.stringify({
     text: fs.readFileSync(process.env.FIXTURE_DECISION, 'utf8'),
   },
 }) + '\\n');
+process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');
 `,
     );
     writeFileSync(

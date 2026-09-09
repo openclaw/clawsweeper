@@ -3,6 +3,7 @@ export class OutputLastMessageParser {
   private pending = Buffer.alloc(0);
   private failed: Error | undefined;
   private finalText: string | undefined;
+  private turnCompleted = false;
   private finished = false;
 
   constructor(private readonly maxTextBytes: number) {
@@ -36,6 +37,9 @@ export class OutputLastMessageParser {
       if (!this.failed && this.pending.length > 0) {
         this.fail("Codex JSONL output ended with a partial line.");
       }
+      if (!this.failed && !this.turnCompleted) {
+        this.fail("Codex JSONL output did not contain a completed turn.");
+      }
       if (!this.failed && this.finalText === undefined) {
         this.fail("Codex JSONL output did not contain a final agent message.");
       }
@@ -53,6 +57,7 @@ export class OutputLastMessageParser {
   private fail(message: string): void {
     this.failed = new Error(message);
     this.pending = Buffer.alloc(0);
+    this.finalText = undefined;
   }
 
   private consume(line: Buffer): void {
@@ -69,7 +74,17 @@ export class OutputLastMessageParser {
     }
     if (!value || typeof value !== "object" || Array.isArray(value)) return;
     const event = value as Record<string, unknown>;
-    if (event.type !== "item.completed") return;
+    // Codex can complete an agent message before the turn fails. Only terminal
+    // success authorizes retaining that message as the managed result.
+    if (event.type === "turn.failed") {
+      this.fail("Codex JSONL turn failed.");
+      return;
+    }
+    if (event.type === "turn.completed") {
+      this.turnCompleted = true;
+      return;
+    }
+    if (event.type !== "item.completed" || this.turnCompleted) return;
     const item = event.item;
     if (!item || typeof item !== "object" || Array.isArray(item)) return;
     const record = item as Record<string, unknown>;

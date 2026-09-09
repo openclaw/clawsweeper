@@ -1,5 +1,6 @@
 import { escapeRegExp } from "../clawsweeper-text.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
+import { compactCommentText as compact } from "./text-utils.js";
 
 const TIMELINE_START = "<!-- clawsweeper-automerge-timeline:start -->";
 const TIMELINE_END = "<!-- clawsweeper-automerge-timeline:end -->";
@@ -151,13 +152,4 @@ function renderCommitSha(value: JsonValue, repoValue: JsonValue): string {
 function fullSha(value: JsonValue): string {
   const text = String(value ?? "").trim();
   return /^[0-9a-f]{7,40}$/i.test(text) ? text : "";
-}
-
-function compact(value: JsonValue, max: number): string {
-  const text = String(value ?? "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!text) return "";
-  if (text.length <= max) return text;
-  return `${text.slice(0, Math.max(0, max - 1)).trimEnd()}...`;
 }
