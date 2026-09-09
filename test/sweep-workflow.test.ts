@@ -7524,8 +7524,8 @@ esac
       { mode: 0o755 },
     );
     for (const [total, labels, expected] of [
-      [30000, [], "false"],
-      [30001, [], "true"],
+      [50000, [], "false"],
+      [50001, [], "true"],
       [166686, ["size: accepted-large"], "false"],
       [undefined, [], "false"],
     ] as const) {

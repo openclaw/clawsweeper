@@ -15,7 +15,7 @@ for (const source of [
   "scheduled_normal_backfill",
   "shard",
 ]) {
-  for (const total of [166686, 29999]) {
+  for (const total of [166686, 49999]) {
     test(`reviewCommand ${source}: ${total} lines is checked before cache, lease, hydration and model`, () => {
       const root = mkdtempSync(join(tmpdir(), "pr-admission-"));
       const calls = { metadata: 0, hydration: 0, scanner: 0, codex: 0, lease: 0, cache: 0 };
@@ -92,7 +92,7 @@ for (const source of [
           throw new Error("cache must not run");
         },
         existingReview: () => {
-          if (total > 30000) throw new Error("oversized admission must precede cache lookup");
+          if (total > 50000) throw new Error("oversized admission must precede cache lookup");
           return null;
         },
         frontMatterValue: () => undefined,
@@ -120,7 +120,7 @@ for (const source of [
             ? ["--shard-count", "4", "--shard-index", "2"]
             : ["--item-number", "123", "--review-source-action", source]),
         ]);
-        if (total > 30000) {
+        if (total > 50000) {
           reviewCommand(args);
           const report = JSON.parse(readFileSync(join(root, "123.md"), "utf8"));
           assert.equal(report.decision.closeReason, "oversized_pull_request");
@@ -134,7 +134,7 @@ for (const source of [
         }
         assert.deepEqual(calls, {
           metadata: 1,
-          hydration: total > 30000 ? 0 : 1,
+          hydration: total > 50000 ? 0 : 1,
           scanner: 0,
           codex: 0,
           lease: 0,

@@ -7,7 +7,7 @@ import {
 } from "./repair/exact-review-guard-labels.js";
 import type { Decision, ItemContext } from "./clawsweeper-types.js";
 
-export const DEFAULT_MAX_PR_CHANGED_LINES = 30_000;
+export const DEFAULT_MAX_PR_CHANGED_LINES = 50_000;
 export { ACCEPTED_LARGE_LABEL };
 
 export interface OversizedPullRequestEvidence {

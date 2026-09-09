@@ -61,7 +61,7 @@ gates, quotas, dashboards, and recovery, see
 [`docs/steerable-repair-automation.md`](docs/steerable-repair-automation.md).
 
 The [oversized PR close lane](docs/oversized-pr-close-policy.md) proposes closing
-pull requests above 30,000 changed lines before hydration, scanning, or model
+pull requests above 50,000 changed lines before hydration, scanning, or model
 review, with a maintainer `size: accepted-large` exemption. See the
 [close-policy index](docs/README.md#close-policy) for the guarded close lanes.
 

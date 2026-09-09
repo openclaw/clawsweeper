@@ -27,7 +27,7 @@ const size = {
   additions: 45791,
   deletions: 120895,
   changedFiles: 2747,
-  threshold: 30000,
+  threshold: 50000,
   head: "b".repeat(40),
 };
 const pull = {
@@ -52,10 +52,10 @@ const pull = {
 };
 
 test("oversized PR predicate boundaries, missing metadata, exemptions and threshold configuration", () => {
-  for (const total of [29999, 30000, 30001]) {
+  for (const total of [49999, 50000, 50001]) {
     assert.equal(
       evaluateOversizedPullRequest({ ...size, additions: total, deletions: 0 }).admitted,
-      total <= 30000,
+      total <= 50000,
     );
   }
   for (const key of ["additions", "deletions", "changedFiles", "head"]) {
@@ -69,7 +69,7 @@ test("oversized PR predicate boundaries, missing metadata, exemptions and thresh
     );
   }
   for (const invalid of [undefined, "", "0", "-1", "1.5", "NaN", "1e5", "9007199254740992"]) {
-    assert.equal(maxPrChangedLines({ CLAWSWEEPER_MAX_PR_CHANGED_LINES: invalid }), 30000);
+    assert.equal(maxPrChangedLines({ CLAWSWEEPER_MAX_PR_CHANGED_LINES: invalid }), 50000);
   }
   assert.equal(maxPrChangedLines({ CLAWSWEEPER_MAX_PR_CHANGED_LINES: "12345" }), 12345);
   assert.equal(evaluateOversizedPullRequest({ ...size, threshold: 200000 }).admitted, true);
@@ -89,7 +89,7 @@ test("oversized PR predicate boundaries, missing metadata, exemptions and thresh
     parseDecision(JSON.parse(JSON.stringify(schemaDecision))).closeReason,
     "oversized_pull_request",
   );
-  for (const threshold of [undefined, null, 0, -1, "30000", 1.5]) {
+  for (const threshold of [undefined, null, 0, -1, "50000", 1.5]) {
     assert.equal(parseOversizedPullRequestEvidence({ ...size, threshold }), null);
   }
   const decision = oversizedPullRequestDecision(size);
@@ -183,13 +183,13 @@ for (const scenario of [
           authorAssociation: "OWNER",
           headSha: scenario === "head-drift" ? "c".repeat(40) : size.head,
           changedFiles: size.changedFiles,
-          additions: scenario === "under-limit" ? 29999 : size.additions,
+          additions: scenario === "under-limit" ? 49999 : size.additions,
           deletions: scenario === "under-limit" ? 0 : size.deletions,
           pullAfterCommentWrite:
             scenario === "late-body"
               ? { body: "Human edited the PR body" }
               : scenario === "late-under-limit"
-                ? { additions: 29999, deletions: 0 }
+                ? { additions: 49999, deletions: 0 }
                 : scenario === "late-exempt"
                   ? { labels: ["size: accepted-large"] }
                   : {},

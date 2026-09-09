@@ -13,8 +13,8 @@ An open pull request whose GitHub-reported additions plus deletions exceeds
 `CLAWSWEEPER_MAX_PR_CHANGED_LINES` receives the deterministic
 `oversized_pull_request` close proposal before structural-cache inspection,
 review-start comments, list/blob hydration, scanning, or model review.
-The threshold defaults to 30,000. It must be a positive integer; invalid values
-fall back to the default. Exactly 30,000 lines is admitted; 30,001 is oversized.
+The threshold defaults to 50,000. It must be a positive integer; invalid values
+fall back to the default. Exactly 50,000 lines is admitted; 50,001 is oversized.
 Missing or invalid size/head metadata admits the PR normally.
 
 Drafts and owner/member-authored PRs are subject to the policy. The existing
