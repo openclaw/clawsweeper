@@ -228,11 +228,17 @@ export function assertHostedProcessGroupGone(identity) {
   assert.ok(hostedGroupGone(identity), "hosted process group still exists");
 }
 
-async function awaitHostedCondition(condition, milliseconds) {
-  const end = Date.now() + milliseconds;
-  while (!condition()) {
-    assert.ok(Date.now() < end, "hosted fixture did not become quiescent");
-    await new Promise((resolve) => setTimeout(resolve, 25));
+async function awaitHostedCondition(condition, deadline, cancelled = () => false) {
+  for (;;) {
+    assert.equal(cancelled(), false, "Hosted fixture cancelled.");
+    assert.ok(Date.now() < deadline, "hosted fixture did not become quiescent");
+    const complete = condition();
+    assert.equal(cancelled(), false, "Hosted fixture cancelled.");
+    assert.ok(Date.now() < deadline, "hosted fixture did not become quiescent");
+    if (complete) return;
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(25, Math.max(0, deadline - Date.now()))),
+    );
   }
 }
 
@@ -251,13 +257,40 @@ export async function stopHostedNativeGroup(identity) {
   assert.ok(hostedGroupGone(identity), "hosted native process group survived cleanup");
 }
 
-export function assertHostedNativeQuiescent(records) {
+export async function assertHostedNativeQuiescent(
+  records,
+  { outerIdentity, deadline, facts, cancelled },
+) {
+  facts.checkpoint = "native_quiescence";
   assert.ok(records.length > 0 && records.length <= 4);
   for (const record of records) {
     assert.equal(record.kind, "native");
     assert.equal(record.identity.pid, record.identity.pgid);
-    assert.ok(hostedGroupGone(record.identity), "hosted native group still exists");
   }
+  const observe = (identities, key) => {
+    facts[key] = null;
+    let gone = true;
+    for (const identity of identities) {
+      const current = hostedProcessIdentity(identity.pid);
+      if (current) assert.deepEqual(current, identity);
+      if (!hostedGroupGone(identity)) gone = false;
+    }
+    facts[key] = gone;
+    return gone;
+  };
+  // Direct-child closure does not attest group exit. All observations share the
+  // original fixture deadline; only ESRCH proves a recorded group is gone.
+  await awaitHostedCondition(
+    () =>
+      observe(
+        records.map((record) => record.identity),
+        "nativeQuiescent",
+      ),
+    deadline,
+    cancelled,
+  );
+  facts.checkpoint = "outer_quiescence";
+  await awaitHostedCondition(() => observe([outerIdentity], "outerQuiescent"), deadline, cancelled);
 }
 
 export function recordHostedTerminalPublication(path, fixtureNonce, publication, values) {
@@ -416,7 +449,7 @@ export async function assertHostedTerminalQuiescent(records) {
       if (error.code === "ENOENT") return true;
       throw error;
     }
-  }, 2000);
+  }, Date.now() + 2000);
 }
 
 export async function stopHostedTerminal({ path, nonce, tmux }) {
@@ -470,7 +503,7 @@ export async function stopHostedTerminal({ path, nonce, tmux }) {
     await awaitHostedCondition(() => {
       records = readHostedLifecycle(path, nonce);
       return records.length === 2;
-    }, 12_000);
+    }, Date.now() + 12_000);
   }
   assertHostedTerminalDone(records);
   const proveCompleted = async () => {

@@ -437,6 +437,7 @@ try {
   process.exitCode = 1;
 }
 `;
+      const deadline = Date.now() + 75_000;
       child = spawn(
         process.execPath,
         ["--input-type=module", "--eval", source, JSON.stringify(options)],
@@ -466,7 +467,7 @@ try {
           else if (stream === child.stdout) stdout.push(chunk);
         });
       }
-      timer = setTimeout(() => refuse("deadline"), 75_000);
+      timer = setTimeout(() => refuse("deadline"), Math.max(0, deadline - Date.now()));
       failureFacts.checkpoint = "wait";
       await Promise.race([childClosed, aborted]);
       failureFacts.checkpoint = "receipt_read";
@@ -487,12 +488,12 @@ try {
         }
       }
       const result = await childClosed;
-      failureFacts.checkpoint = "native_quiescence";
-      assertHostedNativeQuiescent(records);
-      failureFacts.nativeQuiescent = true;
-      failureFacts.checkpoint = "outer_quiescence";
-      assertHostedProcessGroupGone(outerIdentity);
-      failureFacts.outerQuiescent = true;
+      await assertHostedNativeQuiescent(records, {
+        outerIdentity,
+        deadline,
+        facts: failureFacts,
+        cancelled: () => failed,
+      });
       fixtureQuiescent = true;
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));

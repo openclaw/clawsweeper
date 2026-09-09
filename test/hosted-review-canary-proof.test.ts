@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import {
@@ -994,11 +994,20 @@ test("hosted changed-surface proof keeps native execution and passive blob obser
   );
   assert.ok(
     source.indexOf('assert.equal(records.length, 2, "both inspection') <
-      source.indexOf("assertHostedNativeQuiescent(records)"),
+      source.indexOf("await assertHostedNativeQuiescent(records,"),
   );
   assert.ok(
-    source.indexOf("assertHostedProcessGroupGone(outerIdentity)") <
+    source.indexOf("await assertHostedNativeQuiescent(records,") <
       source.indexOf('failureFacts.checkpoint = "child_assertion"'),
+  );
+  assert.match(source, /const deadline = Date\.now\(\) \+ 75_000;\s*child = spawn\(/);
+  assert.match(
+    source,
+    /timer = setTimeout\(\(\) => refuse\("deadline"\), Math\.max\(0, deadline - Date\.now\(\)\)\)/,
+  );
+  assert.match(
+    source,
+    /await assertHostedNativeQuiescent\(records, \{\s*outerIdentity,\s*deadline,\s*facts: failureFacts,\s*cancelled: \(\) => failed,\s*\}\);\s*fixtureQuiescent = true;/,
   );
 });
 
@@ -1022,12 +1031,222 @@ setInterval(() => {}, 1000);
   return { child, closed, identity };
 }
 
-async function finishHostedSentinel(sentinel: Awaited<ReturnType<typeof hostedSentinel>>) {
+async function finishHostedSentinel(sentinel: {
+  child: ChildProcess;
+  closed: Promise<unknown>;
+  identity: NonNullable<ReturnType<typeof hostedProcessIdentity>>;
+}) {
   if (sentinel.child.exitCode === null && sentinel.child.signalCode === null) {
     process.kill(-sentinel.identity.pid, "SIGKILL");
   }
   await sentinel.closed;
 }
+
+async function hostedCompletingGroup() {
+  const child = spawn(
+    process.execPath,
+    ["--eval", 'process.on("message", () => process.exit(0)); process.stdout.write("ready\\n");'],
+    { detached: true, stdio: ["ignore", "pipe", "ignore", "ipc"] },
+  );
+  const closed = once(child, "close");
+  await once(child.stdout!, "data");
+  const identity = hostedProcessIdentity(child.pid);
+  assert.ok(identity);
+  return { child, closed, identity };
+}
+
+test(
+  "hosted native quiescence waits for every recorded group without signalling a foreign sentinel",
+  { skip: process.platform !== "linux", timeout: 5000 },
+  async () => {
+    const first = await hostedCompletingGroup();
+    const second = await hostedCompletingGroup();
+    const outer = await hostedCompletingGroup();
+    const foreign = await hostedSentinel();
+    const facts = { checkpoint: "", nativeQuiescent: null, outerQuiescent: null };
+    try {
+      const deadline = Date.now() + 2000;
+      const observing = assertHostedNativeQuiescent(
+        [first, second].map(({ identity }) => ({ kind: "native", identity })),
+        { outerIdentity: outer.identity, deadline, facts, cancelled: () => false },
+      );
+      assert.equal(facts.nativeQuiescent, false);
+      first.child.send("finish");
+      await first.closed;
+      assert.equal(facts.nativeQuiescent, false, "the second native group is still live");
+      second.child.send("finish");
+      await second.closed;
+      while (facts.checkpoint !== "outer_quiescence") {
+        assert.ok(Date.now() < deadline);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.equal(facts.nativeQuiescent, true);
+      assert.equal(facts.outerQuiescent, false);
+      outer.child.send("finish");
+      await observing;
+      await outer.closed;
+      assert.equal(facts.outerQuiescent, true);
+      for (const group of [first, second, outer]) {
+        assert.equal(group.child.signalCode, null);
+        assertHostedProcessGroupGone(group.identity);
+      }
+      assert.deepEqual(hostedProcessIdentity(foreign.identity.pid), foreign.identity);
+    } finally {
+      for (const group of [first, second, outer, foreign]) await finishHostedSentinel(group);
+    }
+  },
+);
+
+test(
+  "hosted native persistent groups fail at the deadline and retain unproven fixtures",
+  { skip: process.platform !== "linux", timeout: 5000 },
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), "hosted-quiescence-"));
+    const owned = await hostedSentinel();
+    const foreign = await hostedSentinel();
+    const facts = { checkpoint: "", nativeQuiescent: null, outerQuiescent: null };
+    let quiescent = false;
+    try {
+      await assert.rejects(async () => {
+        try {
+          await assertHostedNativeQuiescent([{ kind: "native", identity: owned.identity }], {
+            outerIdentity: owned.identity,
+            deadline: Date.now() + 75,
+            facts,
+            cancelled: () => false,
+          });
+          quiescent = true;
+          writeFileSync(join(root, "proof.json"), "{}");
+        } finally {
+          if (quiescent) rmSync(root, { recursive: true });
+        }
+      }, /did not become quiescent/);
+      latchHostedNativeFailure(facts);
+      const diagnostic = JSON.parse(hostedNativeFailureLine(facts, Buffer.alloc(0)));
+      assert.equal(diagnostic.checkpoint, "native_quiescence");
+      assert.equal(diagnostic.nativeQuiescent, false);
+      assert.equal(diagnostic.outerQuiescent, null);
+      assert.equal(existsSync(root), true);
+      assert.equal(existsSync(join(root, "proof.json")), false);
+      assert.deepEqual(hostedProcessIdentity(owned.identity.pid), owned.identity);
+      assert.deepEqual(hostedProcessIdentity(foreign.identity.pid), foreign.identity);
+    } finally {
+      await finishHostedSentinel(owned);
+      await finishHostedSentinel(foreign);
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+for (const expiry of ["before_observation", "during_observation", "before_outer"] as const) {
+  test(
+    `hosted native ${expiry} cannot reset the shared deadline or publish late success`,
+    { skip: process.platform !== "linux", timeout: 5000 },
+    async (t) => {
+      const owned = await hostedCompletingGroup();
+      try {
+        owned.child.send("finish");
+        await owned.closed;
+        const deadline = Date.now();
+        let clockReads = 0;
+        const allowedReads =
+          expiry === "before_observation" ? 0 : expiry === "during_observation" ? 1 : 2;
+        t.mock.method(Date, "now", () => (++clockReads <= allowedReads ? deadline - 1 : deadline));
+        const facts = { checkpoint: "", nativeQuiescent: null, outerQuiescent: null };
+        await assert.rejects(
+          assertHostedNativeQuiescent([{ kind: "native", identity: owned.identity }], {
+            outerIdentity: owned.identity,
+            deadline,
+            facts,
+            cancelled: () => false,
+          }),
+          /did not become quiescent/,
+        );
+        assert.equal(facts.nativeQuiescent, expiry === "before_observation" ? null : true);
+        assert.equal(facts.outerQuiescent, null);
+        assert.equal(
+          facts.checkpoint,
+          expiry === "before_outer" ? "outer_quiescence" : "native_quiescence",
+        );
+      } finally {
+        t.mock.restoreAll();
+        await finishHostedSentinel(owned);
+      }
+    },
+  );
+}
+
+test(
+  "hosted native cancellation during observation rejects proof without signalling groups",
+  { skip: process.platform !== "linux", timeout: 5000 },
+  async () => {
+    const owned = await hostedSentinel();
+    const foreign = await hostedSentinel();
+    let cancelled = false;
+    const facts = { checkpoint: "", nativeQuiescent: null, outerQuiescent: null };
+    try {
+      const observing = assertHostedNativeQuiescent(
+        [{ kind: "native", identity: owned.identity }],
+        {
+          outerIdentity: owned.identity,
+          deadline: Date.now() + 2000,
+          facts,
+          cancelled: () => cancelled,
+        },
+      );
+      assert.equal(facts.nativeQuiescent, false);
+      cancelled = true;
+      await assert.rejects(observing, /cancelled/);
+      assert.equal(facts.nativeQuiescent, false);
+      assert.equal(facts.outerQuiescent, null);
+      assert.deepEqual(hostedProcessIdentity(owned.identity.pid), owned.identity);
+      assert.deepEqual(hostedProcessIdentity(foreign.identity.pid), foreign.identity);
+    } finally {
+      await finishHostedSentinel(owned);
+      await finishHostedSentinel(foreign);
+    }
+  },
+);
+
+test(
+  "hosted native unreadable or replaced identities remain unknown, not quiescent",
+  { skip: process.platform !== "linux", timeout: 5000 },
+  async (t) => {
+    const owned = await hostedSentinel();
+    try {
+      for (const unreadable of [false, true]) {
+        const facts = { checkpoint: "", nativeQuiescent: null, outerQuiescent: null };
+        if (unreadable)
+          t.mock.method(process, "kill", () => {
+            throw Object.assign(new Error("unreadable"), { code: "EACCES" });
+          });
+        await assert.rejects(
+          assertHostedNativeQuiescent(
+            [
+              {
+                kind: "native",
+                identity: unreadable ? owned.identity : { ...owned.identity, start: "1" },
+              },
+            ],
+            {
+              outerIdentity: owned.identity,
+              deadline: Date.now() + 2000,
+              facts,
+              cancelled: () => false,
+            },
+          ),
+        );
+        assert.equal(facts.nativeQuiescent, null);
+        assert.equal(facts.outerQuiescent, null);
+        t.mock.restoreAll();
+        assert.deepEqual(hostedProcessIdentity(owned.identity.pid), owned.identity);
+      }
+    } finally {
+      t.mock.restoreAll();
+      await finishHostedSentinel(owned);
+    }
+  },
+);
 
 for (const scenario of [
   { signal: "SIGINT", late: false, unknown: false },
@@ -1198,16 +1417,28 @@ test(
       });
       const records = readHostedLifecycle(path, nonce);
       const facts = { checkpoint: "native_quiescence" };
-      assert.throws(() => assertHostedNativeQuiescent(records));
+      await assert.rejects(
+        assertHostedNativeQuiescent(records, {
+          outerIdentity: owned.identity,
+          deadline: Date.now() + 25,
+          facts,
+          cancelled: () => false,
+        }),
+      );
       latchHostedNativeFailure(facts);
       const failed = JSON.parse(hostedNativeFailureLine(facts, Buffer.alloc(0)));
       assert.equal(failed.checkpoint, "native_quiescence");
-      assert.equal(failed.nativeQuiescent, null);
+      assert.equal(failed.nativeQuiescent, false);
       await assert.rejects(stopHostedNativeGroup({ ...owned.identity, start: "1" }));
       assert.deepEqual(hostedProcessIdentity(owned.identity.pid), owned.identity);
       await stopHostedNativeGroup(records[0].identity);
       await owned.closed;
-      assertHostedNativeQuiescent(records);
+      await assertHostedNativeQuiescent(records, {
+        outerIdentity: owned.identity,
+        deadline: Date.now() + 1000,
+        facts,
+        cancelled: () => false,
+      });
       assertHostedProcessGroupGone(owned.identity);
       assert.deepEqual(hostedProcessIdentity(foreign.identity.pid), foreign.identity);
     } finally {
