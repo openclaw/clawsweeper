@@ -21,7 +21,9 @@ import { TRANSIENT_REVIEW_RESULT_MAX_BYTES } from "../dist/review-output-policy.
 import {
   assertBooleanCountArtifact,
   assertMatchesJsonSchema,
+  readHostedReviewRollout,
   runWithWithheldDiagnostics,
+  snapshotHostedReviewRollouts,
   summarizeHostedReviewTrace,
 } from "./hosted-review-canary-proof.mjs";
 
@@ -152,6 +154,10 @@ ${live ? `const child = require('node:child_process').spawnSync(${JSON.stringify
   else process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR = originalScannerCache;
   writeProvider(true);
   process.env.CODEX_BIN = wrapper;
+  const initialRollouts = runWithWithheldDiagnostics(
+    "Hosted review rollout inventory failed; diagnostics withheld.",
+    () => snapshotHostedReviewRollouts(process.env.CODEX_HOME),
+  );
   const decision = runWithWithheldDiagnostics(
     "Hosted production review failed; diagnostics withheld.",
     () =>
@@ -217,7 +223,8 @@ ${live ? `const child = require('node:child_process').spawnSync(${JSON.stringify
     "Hosted review trace did not prove the tool round; diagnostics withheld.",
     () =>
       summarizeHostedReviewTrace({
-        jsonl: readFileSync(join(workDir, `${itemNumber}.1.codex.stdout.log`), "utf8"),
+        rollout: readHostedReviewRollout(process.env.CODEX_HOME, initialRollouts),
+        cwd,
         marker,
         expectedCommand: reviewCommand,
         finalDecisionText: readFileSync(output, "utf8"),

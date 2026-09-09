@@ -664,14 +664,7 @@ if (args[0] === 'sandbox') {
   process.exit(result.status ?? 1);
 }
 fs.readFileSync(0, 'utf8');
-process.stdout.write(JSON.stringify({
-  type: 'item.completed',
-  item: {
-    type: 'agent_message',
-    text: fs.readFileSync(process.env.FIXTURE_DECISION, 'utf8'),
-  },
-}) + '\\n');
-process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n');
+process.stdout.write(fs.readFileSync(process.env.FIXTURE_DECISION, 'utf8') + '\\n');
 `,
     );
     writeFileSync(

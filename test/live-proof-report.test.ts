@@ -101,6 +101,7 @@ function reviewFixture(t: test.TestContext) {
     },
   };
   const dependencies = {
+    materializePullRequestReviewTree: () => assert.fail("must not materialize a target checkout"),
     repositoryProfileFor,
     reportLiveProofPlan,
     frontMatterValue: (markdown: string, key: string) =>
@@ -114,6 +115,27 @@ function reviewFixture(t: test.TestContext) {
     assertRecordsOnly: () => assert.deepEqual(readdirSync(root), ["42.md"]),
   };
 }
+
+test("review inspection reports executable plans without materializing a checkout", (t) => {
+  const fixture = reviewFixture(t);
+  fixture.write(
+    renderedReport({
+      ...noExecutionPlan("not_applicable"),
+      status: "recommended",
+      surface: "terminal",
+      terminalCompletion: "exit_zero",
+      entry: "printf synthetic",
+      steps: [{ action: "expect_output", text: "synthetic" }],
+    }),
+  );
+  assert.deepEqual(fixture.inspect(), {
+    candidates: [42],
+    recordMedia: false,
+    requiresBrowser: false,
+    requiresTerminal: true,
+  });
+  fixture.assertRecordsOnly();
+});
 
 test("non-executable plans roundtrip through the production renderer and skip review execution", (t) => {
   const fixture = reviewFixture(t);

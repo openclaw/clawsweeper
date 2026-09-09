@@ -83,7 +83,12 @@ export interface CreateReviewCommandWorkflowDependencies {
     detail: string,
     stdout?: string,
     stderr?: string,
-    processResult?: { errorCode?: string | null; signal?: NodeJS.Signals | null },
+    processResult?: {
+      errorCode?: string | null;
+      signal?: NodeJS.Signals | null;
+      diagnostic?: string;
+      retryHint?: string;
+    },
   ) => Decision;
   codexFailureLogKind: (markdown: string) => string;
   CodexReviewError: new (options: {
@@ -94,6 +99,8 @@ export interface CreateReviewCommandWorkflowDependencies {
     errorCode?: string | null;
     signal?: NodeJS.Signals | null;
     retryable?: boolean;
+    diagnostic?: string;
+    retryHint?: string;
   }) => Error & {
     readonly status: number | null;
     readonly stdout: string;
@@ -101,6 +108,8 @@ export interface CreateReviewCommandWorkflowDependencies {
     readonly errorCode: string | null;
     readonly signal: NodeJS.Signals | null;
     readonly retryable: boolean;
+    readonly diagnostic: string;
+    readonly retryHint?: string;
   };
   codexReviewFailureRetryable: (error: unknown) => boolean;
   collectItemContext: (

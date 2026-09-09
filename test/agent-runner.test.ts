@@ -194,7 +194,7 @@ process.stdout.write("ok");
         AGENT_RUNNER_PROMPT_PATH: promptPath,
       },
       timeoutMs: 10_000,
-      codexExtraArgs: ["--sandbox", "read-only", "--output-schema", schemaPath, "-"],
+      codexExtraArgs: ["--sandbox", "read-only", "--output-schema", schemaPath, "--json", "-"],
     });
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(JSON.parse(readFileSync(argsPath, "utf8")), [
@@ -205,6 +205,7 @@ process.stdout.write("ok");
       "read-only",
       "--output-schema",
       schemaPath,
+      "--json",
       "-",
     ]);
     assert.equal(readFileSync(promptPath, "utf8"), prompt);
@@ -230,6 +231,62 @@ test("OpenClaw runner requires a provider/model override", () => {
       }),
     /CLAWSWEEPER_OPENCLAW_MODEL is required/,
   );
+});
+
+test("managed native Codex uses framed stdout without changing schema, sandbox, or prompt", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-managed-agent-test-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  useFakeScanner(t);
+  const binary = join(root, "fake-codex");
+  const argsPath = join(root, "args.json");
+  const outputPath = join(root, "answer.json");
+  const schemaPath = join(root, "schema.json");
+  const payload = ' \r\n{"summary":"native final"}\t\r';
+  writeFileSync(schemaPath, '{"type":"object"}');
+  writeFileSync(
+    binary,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(process.argv.slice(2)));
+if (fs.readFileSync(0, "utf8") !== "review prompt\\r\\n") process.exit(2);
+process.stdout.write(${JSON.stringify(`${payload}\n`)});
+`,
+    { mode: 0o755 },
+  );
+  const result = runAgentProcess({
+    label: "managed-native",
+    scanSource: { kind: "prompt" },
+    prompt: "review prompt\r\n",
+    model: "gpt-public",
+    cwd: root,
+    env: { ...process.env, CLAWSWEEPER_RUNNER: "codex", CODEX_BIN: binary },
+    timeoutMs: 10_000,
+    outputLastMessageBytes: Buffer.byteLength(payload),
+    codexExtraArgs: [
+      "--output-schema",
+      schemaPath,
+      "--output-last-message",
+      outputPath,
+      "--json",
+      "--experimental-json",
+      "--sandbox",
+      "read-only",
+      "-",
+    ],
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0);
+  assert.deepEqual(JSON.parse(readFileSync(argsPath, "utf8")), [
+    "exec",
+    "--model",
+    "gpt-public",
+    "--output-schema",
+    schemaPath,
+    "--sandbox",
+    "read-only",
+    "-",
+  ]);
+  assert.equal(readFileSync(outputPath, "utf8"), payload);
 });
 
 test("OpenClaw checkout inspection attests the exact tracked path without checkout writes", (t) => {

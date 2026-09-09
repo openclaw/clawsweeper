@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 import {
   codexFailureDecisionForTest,
@@ -32,11 +33,7 @@ const fakeCodexSandboxPass = `if (process.argv[2] === "sandbox") {
 }
 // Like the real CLI, consume the prompt before a review result or early exit.
 require("node:fs").readFileSync(0, "utf8");`;
-const fakeManagedDecision = `process.stdout.write(JSON.stringify({
-  type: "item.completed",
-  item: { type: "agent_message", text: process.env.CODEX_DECISION_JSON },
-}) + "\\n");
-process.stdout.write(JSON.stringify({ type: "turn.completed" }) + "\\n");`;
+const fakeManagedDecision = `process.stdout.write(process.env.CODEX_DECISION_JSON + "\\n");`;
 
 function runBoundedCodexForTest(
   options: Omit<Parameters<typeof runCodexForTest>[0], "resultFileBytes"> & {
@@ -47,6 +44,26 @@ function runBoundedCodexForTest(
     ...options,
     resultFileBytes: options.resultFileBytes ?? reviewResultBytes,
   });
+}
+
+function reportedReviewFailure(error: Error) {
+  const failure = error as Error & {
+    status: number | null;
+    stdout: string;
+    stderr: string;
+    errorCode: string | null;
+    signal: NodeJS.Signals | null;
+    diagnostic: string;
+    retryHint?: string;
+  };
+  assert.equal(failure.name, "CodexReviewError");
+  return codexFailureDecisionForTest(
+    failure.status,
+    failure.message,
+    failure.stdout,
+    failure.stderr,
+    failure,
+  );
 }
 
 function initTrackedRepo(dir: string, trackedPath = "tracked.txt"): void {
@@ -787,7 +804,6 @@ ${fakeManagedDecision}
       openclawDir,
       "--output-schema",
       join(process.cwd(), "schema", "clawsweeper-decision.schema.json"),
-      "--json",
       "--sandbox",
       "read-only",
       "--add-dir",
@@ -892,8 +908,8 @@ ${fakeCodexSandboxPass}
 const fs = require("node:fs");
 for (let index = 0; index < 32; index += 1) {
   fs.writeSync(
-    1,
-    JSON.stringify({ type: "diagnostic", text: "x".repeat(64) }) + "\\n",
+    2,
+    "tool diagnostic: " + "x".repeat(64) + "\\n",
   );
 }
 ${fakeManagedDecision}
@@ -932,6 +948,7 @@ ${fakeManagedDecision}
 
     assert.equal(decision.summary, "Review survived verbose Codex output.");
     assert.equal(statSync(join(workDir, "83395.1.codex.stdout.log")).size, 128);
+    assert.equal(statSync(join(workDir, "83395.1.codex.stderr.log")).size, 128);
   } finally {
     if (originalPath === undefined) delete process.env.PATH;
     else process.env.PATH = originalPath;
@@ -949,6 +966,7 @@ test("codex failure decisions expose stderr and stdout separately", () => {
     "Codex review failed for #278 with exit 1.",
     JSON.stringify({ type: "turn.failed", error: { message: errorMessage } }),
     "user\nThe reviewed prompt discusses rate limits.",
+    { diagnostic: errorMessage },
   );
 
   assert.equal(
@@ -987,6 +1005,7 @@ test("codex failure decisions do not infer buffer overflow from reviewed content
     "Codex review failed for #89041 with exit 1.",
     JSON.stringify({ type: "turn.failed", error: { message: terminalError } }),
     "user\nThe reviewed PR discusses maxBufferedChunks and maxBuffer behavior.",
+    { diagnostic: terminalError },
   );
 
   assert.equal(
@@ -1036,7 +1055,7 @@ test("codex failure decisions ignore unstructured output and prompt stderr", () 
   assert.equal(decision.codexTerminalFailure, false);
 });
 
-test("codex failure decisions trust a final stderr model access denial", () => {
+test("codex failure decisions preserve the runtime's trusted model access diagnostic", () => {
   const terminalError =
     "ERROR: stream disconnected before completion: The model secret-model-for-test does not exist or you do not have access to it.";
   const decision = codexFailureDecisionForTest(
@@ -1044,6 +1063,7 @@ test("codex failure decisions trust a final stderr model access denial", () => {
     "Codex review failed for #92565 with exit 1.",
     "",
     `reviewed patch text\n${terminalError}`,
+    { diagnostic: terminalError },
   );
 
   assert.equal(
@@ -1057,73 +1077,259 @@ test("codex failure decisions trust a final stderr model access denial", () => {
   assert.equal(decision.codexTerminalFailure, true);
 });
 
-test("runCodex leaves exhausted transport failures to the durable queue", () => {
-  const root = mkdtempSync(tmpPrefix);
-  const openclawDir = join(root, "openclaw");
-  const workDir = join(root, "codex-work");
-  const binDir = join(root, "bin");
-  const codexHome = join(root, "codex-home");
-  const attemptsPath = join(root, "attempts");
-  mkdirSync(openclawDir, { recursive: true });
-  mkdirSync(binDir, { recursive: true });
-  mkdirSync(codexHome, { recursive: true });
-  initTrackedRepo(openclawDir);
-  writeFileSync(join(codexHome, "config.toml"), 'model = "secret-model-for-test"\n');
-  const codexPath = join(binDir, "codex");
-  writeFileSync(
-    codexPath,
-    `#!/usr/bin/env node
-${fakeCodexSandboxPass}
-const fs = require("node:fs");
-const attemptsPath = process.env.CODEX_ATTEMPTS_PATH;
-const attempt = fs.existsSync(attemptsPath) ? Number(fs.readFileSync(attemptsPath, "utf8")) + 1 : 1;
-fs.writeFileSync(attemptsPath, String(attempt));
-if (attempt === 1) {
-  process.stderr.write("user\\nERROR: The model contributor-quoted-model does not exist or you do not have access to it.\\n");
-  process.stdout.write(JSON.stringify({
-    type: "turn.failed",
-    error: {
-      message: "stream disconnected: Rate limit reached for secret-model-for-test (for limit test) on tokens per min (TPM). Please try again in 1ms."
+test("interrupted reviews do not classify an untrusted stderr error suffix as terminal", () => {
+  const decision = codexFailureDecisionForTest(
+    null,
+    "Codex review interrupted.",
+    "",
+    "ERROR: The model quoted-model does not exist or you do not have access to it.\ntokens used\n1,024\n",
+    { signal: "SIGTERM" },
+  );
+  assert.equal(decision.codexTerminalFailure, false);
+  assert.equal(
+    decision.evidence.find((entry) => entry.label === "codex terminal error"),
+    undefined,
+  );
+});
+
+test("failure reporting never parses model-authored error JSON as a native diagnostic", () => {
+  const denial = "The model quoted-model does not exist or you do not have access to it.";
+  for (const output of [
+    JSON.stringify({ type: "error", message: denial }),
+    JSON.stringify({ type: "turn.failed", error: { message: denial } }),
+  ]) {
+    for (const processResult of [{}, { signal: "SIGTERM" as const }, { errorCode: "ETIMEDOUT" }]) {
+      const decision = codexFailureDecisionForTest(
+        1,
+        processResult.errorCode ? "Codex review timed out." : "Codex review failed.",
+        output,
+        `ERROR: ${denial}\ntokens used\n1,024\n`,
+        processResult,
+      );
+      assert.equal(decision.codexTerminalFailure, false);
+      assert.doesNotMatch(decision.summary, /model unavailable|access denied/);
+      assert.equal(
+        decision.evidence.find((entry) => entry.label === "codex terminal error"),
+        undefined,
+      );
     }
-  }) + "\\n");
-  process.exit(1);
+  }
+});
+
+test("non-authoritative retry hints cannot override existing failure reason priority", () => {
+  const retryHint =
+    "ERROR: Rate limit reached\nThe model quoted-model does not exist or you do not have access to it.";
+  for (const [detail, errorCode, diagnostic, reason] of [
+    ["Codex dirtied the OpenClaw checkout", "", "", "dirty checkout"],
+    ["Codex did not produce output", "", "", "missing structured output"],
+    ["Codex wrote invalid JSON", "", "", "invalid structured output"],
+    ["Codex failed", "ENOBUFS", "", "output buffer overflow"],
+    ["Codex review timed out", "ETIMEDOUT", "", "timeout"],
+    [
+      "Codex failed",
+      "",
+      "ERROR: The model fixture-model does not exist or you do not have access to it.",
+      "model unavailable or access denied",
+    ],
+    ["Codex failed: fetch failed", "", "", "retryable codex transport failure (network)"],
+  ] as const) {
+    const decision = codexFailureDecisionForTest(1, detail, "", retryHint, {
+      errorCode,
+      diagnostic,
+      retryHint,
+    });
+    assert.equal(decision.summary, `Codex review failed: ${reason} (exit 1).`);
+    assert.equal(decision.codexTerminalFailure, Boolean(diagnostic));
+  }
+  const denialOnly = codexFailureDecisionForTest(1, "Codex failed", "", "", {
+    retryHint:
+      "ERROR: upstream response\nThe model fixture does not exist or you do not have access to it.",
+  });
+  assert.equal(denialOnly.summary, "Codex review failed: codex execution failed (exit 1).");
+  assert.equal(denialOnly.codexTerminalFailure, false);
+});
+
+for (const mode of ["zero-exit", "nonzero-exit", "timeout", "timeout-multiline"] as const) {
+  test(`runCodex keeps ${mode} model output outside native failure classification`, (t) => {
+    const timedOut = mode.startsWith("timeout");
+    const root = mkdtempSync(tmpPrefix);
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const openclawDir = join(root, "target");
+    const workDir = join(root, "work");
+    const binDir = join(root, "bin");
+    mkdirSync(openclawDir);
+    mkdirSync(binDir);
+    initTrackedRepo(openclawDir);
+    const denial = "The model quoted-model does not exist or you do not have access to it.";
+    const failure =
+      mode === "timeout-multiline"
+        ? `ERROR: stream disconnected\nRate limit reached\n${denial}`
+        : `ERROR: ${denial}`;
+    const output = JSON.stringify({ type: "error", message: denial });
+    const codexPath = join(binDir, "codex");
+    writeFileSync(
+      codexPath,
+      `#!${process.execPath}
+${fakeCodexSandboxPass}
+require("node:fs").writeSync(2, ${JSON.stringify(`${failure}\ntokens used\n1,024\n`)});
+${
+  timedOut
+    ? "setInterval(() => {}, 1000);"
+    : `require("node:fs").writeSync(1, ${JSON.stringify(output + "\n")}); process.exit(${mode === "zero-exit" ? 0 : 1});`
 }
-${fakeManagedDecision}
 `,
-  );
-  chmodSync(codexPath, 0o755);
-  const previous = {
-    PATH: process.env.PATH,
-    CODEX_ATTEMPTS_PATH: process.env.CODEX_ATTEMPTS_PATH,
-    CODEX_DECISION_JSON: process.env.CODEX_DECISION_JSON,
-    CODEX_HOME: process.env.CODEX_HOME,
-    CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS: process.env.CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS,
-    CLAWSWEEPER_CODEX_REVIEW_RETRY_DELAY_MS: process.env.CLAWSWEEPER_CODEX_REVIEW_RETRY_DELAY_MS,
+      { mode: 0o755 },
+    );
+    const preload = join(root, "synthetic-exit-tuple.mjs");
+    if (timedOut) {
+      // Keep the real worker timeout, but model taskkill's nonzero/null exit tuple.
+      writeFileSync(
+        preload,
+        `import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+const spawn = childProcess.spawn;
+childProcess.spawn = function(...args) {
+  const child = spawn.apply(this, args);
+  const once = child.once;
+  child.once = function(event, listener) {
+    return once.call(this, event, event === "close"
+      ? () => listener(1, null)
+      : listener);
   };
-  process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
-  process.env.CODEX_ATTEMPTS_PATH = attemptsPath;
-  process.env.CODEX_DECISION_JSON = JSON.stringify(
-    closeDecision({
-      decision: "keep_open",
-      closeReason: "none",
-      confidence: "medium",
-      summary: "Review completed after a fresh Codex process.",
-      bestSolution: "Continue the existing review loop.",
-      closeComment: "",
-      workReason: "No additional implementation is required.",
-    }),
-  );
-  process.env.CODEX_HOME = codexHome;
-  process.env.CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS = "2";
-  process.env.CLAWSWEEPER_CODEX_REVIEW_RETRY_DELAY_MS = "1";
-  try {
+  return child;
+};
+syncBuiltinESMExports();
+`,
+      );
+    }
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${binDir}${delimiter}${originalPath ?? ""}`;
+    t.after(() => {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+    });
     assert.throws(
       () =>
         runBoundedCodexForTest({
-          item: item({ number: 83394 }),
+          item: item({ number: 42 }),
           context: { issue: {}, comments: [], timeline: [] },
           git: { mainSha: "abc123", latestRelease: null },
-          model: "internal",
+          model: "model-test",
+          openclawDir,
+          reasoningEffort: "high",
+          sandboxMode: "read-only",
+          serviceTier: "",
+          timeoutMs: timedOut ? 5_000 : 10_000,
+          workDir,
+          prompt: "Return a review decision.",
+          reviewEnv: {
+            ...process.env,
+            CODEX_BIN: codexPath,
+            ...(timedOut ? { NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` } : {}),
+          },
+        }),
+      (
+        error: Error & {
+          status?: number | null;
+          signal?: NodeJS.Signals | null;
+          errorCode?: string | null;
+          retryable?: boolean;
+          diagnostic?: string;
+          retryHint?: string;
+        },
+      ) => {
+        assert.equal(error.diagnostic, "");
+        assert.equal(error.retryHint, undefined);
+        const decision = reportedReviewFailure(error);
+        assert.equal(decision.codexTerminalFailure, false);
+        assert.equal(
+          decision.evidence.find((entry) => entry.label === "codex terminal error"),
+          undefined,
+        );
+        if (timedOut) {
+          assert.equal(error.status, 1);
+          assert.equal(error.signal, null);
+          assert.equal(error.errorCode, "ETIMEDOUT");
+          assert.equal(error.retryable, true);
+          assert.match(decision.summary, /timeout/);
+        } else {
+          assert.match(decision.summary, /invalid structured output/);
+        }
+        return true;
+      },
+    );
+    assert.equal(existsSync(join(workDir, "42.json")), !timedOut);
+  });
+}
+
+for (const [name, failure, kind] of [
+  ["capacity LF", "ERROR: upstream response\n\nRate limit reached.\n", "capacity"],
+  [
+    "capacity CRLF with locale usage",
+    "ERROR: upstream response\r\n\r\nRate limit reached.\r\ntokens used\r\n1\u202f234\r\n",
+    "capacity",
+  ],
+  [
+    "final network after quoted denial",
+    "ERROR: The model quoted-model does not exist or you do not have access to it.\nERROR: stream disconnected before completion:\nfetch failed\ntokens used\n1,024\n",
+    "network",
+  ],
+  [
+    "denial-only",
+    "ERROR: upstream response\nThe model quoted-model does not exist or you do not have access to it.\ntokens used\n0\n",
+    "",
+  ],
+  [
+    "mixed transient and denial",
+    "ERROR: Rate limit reached\nThe model quoted-model does not exist or you do not have access to it.\nOPENAI_API_KEY=fixture-secret-value\ntokens used\n0\n",
+    "capacity",
+  ],
+  [
+    "final denial after quoted transient",
+    "ERROR: quoted response\nRate limit reached.\nERROR: upstream response\nThe model quoted-model does not exist or you do not have access to it.\n",
+    "",
+  ],
+  [
+    "malformed usage",
+    "ERROR: upstream response\nRate limit reached.\ntokens used\nnot a count\n",
+    "",
+  ],
+] as const) {
+  test(`runCodex keeps multiline ${name} failures separate from trusted diagnostics`, (t) => {
+    const root = mkdtempSync(tmpPrefix);
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const openclawDir = join(root, "target");
+    const workDir = join(root, "work");
+    const binDir = join(root, "bin");
+    const attemptsPath = join(root, "attempts");
+    mkdirSync(openclawDir);
+    mkdirSync(binDir);
+    initTrackedRepo(openclawDir);
+    const codexPath = join(binDir, "codex");
+    writeFileSync(
+      codexPath,
+      `#!${process.execPath}
+${fakeCodexSandboxPass}
+const fs = require("node:fs");
+fs.appendFileSync(${JSON.stringify(attemptsPath)}, "attempt\\n");
+fs.writeSync(2, ${JSON.stringify(failure)});
+process.exit(1);
+`,
+      { mode: 0o755 },
+    );
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${binDir}${delimiter}${originalPath ?? ""}`;
+    t.after(() => {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+    });
+    assert.throws(
+      () =>
+        runBoundedCodexForTest({
+          item: item({ number: 42 }),
+          context: { issue: {}, comments: [], timeline: [] },
+          git: { mainSha: "abc123", latestRelease: null },
+          model: "model-test",
           openclawDir,
           reasoningEffort: "high",
           sandboxMode: "read-only",
@@ -1131,23 +1337,142 @@ ${fakeManagedDecision}
           timeoutMs: 10_000,
           workDir,
           prompt: "Return a review decision.",
+          reviewEnv: {
+            ...process.env,
+            CODEX_BIN: codexPath,
+            CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS: "2",
+          },
         }),
-      (error: Error & { retryable?: boolean }) => {
-        assert.equal(error.retryable, true);
-        assert.match(error.message, /Rate limit reached/);
-        assert.doesNotMatch(error.message, /contributor-quoted-model/);
+      (error: Error & { retryable?: boolean; retryHint?: string; diagnostic?: string }) => {
+        assert.equal(error.retryable, Boolean(kind));
+        assert.equal(Boolean(error.retryHint), Boolean(kind));
+        assert.equal(error.diagnostic, "");
+        assert.doesNotMatch(error.message, /Rate limit|fetch failed|quoted-model|fixture-secret/);
+        assert.doesNotMatch(error.retryHint ?? "", /fixture-secret-value/);
+        if (name === "mixed transient and denial") {
+          assert.match(error.retryHint ?? "", /OPENAI_API_KEY=\[REDACTED\]/);
+        }
+        const decision = reportedReviewFailure(error);
+        assert.equal(decision.codexTerminalFailure, false);
+        assert.equal(
+          decision.summary,
+          `Codex review failed: ${kind ? `retryable codex transport failure (${kind})` : "codex execution failed"} (exit 1).`,
+        );
+        assert.equal(
+          decision.evidence.find((entry) => entry.label === "codex terminal error"),
+          undefined,
+        );
+        const hintEvidence = decision.evidence.find((entry) => entry.label === "codex retry hint");
+        assert.equal(Boolean(hintEvidence), Boolean(kind));
+        if (hintEvidence) {
+          assert.match(hintEvidence.detail, /Non-authoritative.*captured stderr/);
+          assert.doesNotMatch(hintEvidence.detail, /Rate limit|quoted-model|fixture-secret/);
+        }
+        assert.doesNotMatch(JSON.stringify(decision), /fixture-secret-value/);
         return true;
       },
     );
-    assert.equal(readFileSync(attemptsPath, "utf8"), "1");
-  } finally {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
+    assert.equal(readFileSync(attemptsPath, "utf8"), "attempt\n");
+    assert.equal(existsSync(join(workDir, "42.json")), false);
+  });
+}
+
+for (const [kind, failure] of [
+  [
+    "capacity",
+    "stream disconnected: Rate limit reached for secret-model-for-test (for limit test) on tokens per min (TPM). Please try again in 1ms.",
+  ],
+  ["network", "stream disconnected before completion: fetch failed"],
+] as const)
+  test(`runCodex leaves exhausted ${kind} failures with native trailers to the durable queue`, () => {
+    const root = mkdtempSync(tmpPrefix);
+    const openclawDir = join(root, "openclaw");
+    const workDir = join(root, "codex-work");
+    const binDir = join(root, "bin");
+    const codexHome = join(root, "codex-home");
+    const attemptsPath = join(root, "attempts");
+    mkdirSync(openclawDir, { recursive: true });
+    mkdirSync(binDir, { recursive: true });
+    mkdirSync(codexHome, { recursive: true });
+    initTrackedRepo(openclawDir);
+    writeFileSync(join(codexHome, "config.toml"), 'model = "secret-model-for-test"\n');
+    const codexPath = join(binDir, "codex");
+    writeFileSync(
+      codexPath,
+      `#!/usr/bin/env node
+${fakeCodexSandboxPass}
+const fs = require("node:fs");
+const attemptsPath = process.env.CODEX_ATTEMPTS_PATH;
+const attempt = fs.existsSync(attemptsPath) ? Number(fs.readFileSync(attemptsPath, "utf8")) + 1 : 1;
+fs.writeFileSync(attemptsPath, String(attempt));
+if (attempt === 1) {
+  process.stderr.write("user\\nERROR: The model contributor-quoted-model does not exist or you do not have access to it.\\n");
+  process.stderr.write(${JSON.stringify(`ERROR: ${failure}\ntokens used\n1,024\n`)});
+  process.exit(1);
+}
+${fakeManagedDecision}
+`,
+    );
+    chmodSync(codexPath, 0o755);
+    const previous = {
+      PATH: process.env.PATH,
+      CODEX_ATTEMPTS_PATH: process.env.CODEX_ATTEMPTS_PATH,
+      CODEX_DECISION_JSON: process.env.CODEX_DECISION_JSON,
+      CODEX_HOME: process.env.CODEX_HOME,
+      CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS: process.env.CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS,
+      CLAWSWEEPER_CODEX_REVIEW_RETRY_DELAY_MS: process.env.CLAWSWEEPER_CODEX_REVIEW_RETRY_DELAY_MS,
+    };
+    process.env.PATH = `${binDir}${delimiter}${process.env.PATH ?? ""}`;
+    process.env.CODEX_ATTEMPTS_PATH = attemptsPath;
+    process.env.CODEX_DECISION_JSON = JSON.stringify(
+      closeDecision({
+        decision: "keep_open",
+        closeReason: "none",
+        confidence: "medium",
+        summary: "Review completed after a fresh Codex process.",
+        bestSolution: "Continue the existing review loop.",
+        closeComment: "",
+        workReason: "No additional implementation is required.",
+      }),
+    );
+    process.env.CODEX_HOME = codexHome;
+    process.env.CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS = "2";
+    process.env.CLAWSWEEPER_CODEX_REVIEW_RETRY_DELAY_MS = "1";
+    try {
+      assert.throws(
+        () =>
+          runBoundedCodexForTest({
+            item: item({ number: 83394 }),
+            context: { issue: {}, comments: [], timeline: [] },
+            git: { mainSha: "abc123", latestRelease: null },
+            model: "internal",
+            openclawDir,
+            reasoningEffort: "high",
+            sandboxMode: "read-only",
+            serviceTier: "",
+            timeoutMs: 10_000,
+            workDir,
+            prompt: "Return a review decision.",
+          }),
+        (error: Error & { retryable?: boolean }) => {
+          assert.equal(error.retryable, true);
+          assert.match(error.message, kind === "capacity" ? /Rate limit reached/ : /fetch failed/);
+          assert.doesNotMatch(error.message, /contributor-quoted-model/);
+          const decision = reportedReviewFailure(error);
+          assert.match(decision.summary, new RegExp(`transport failure \\(${kind}\\)`));
+          assert.equal(decision.codexTerminalFailure, false);
+          return true;
+        },
+      );
+      assert.equal(readFileSync(attemptsPath, "utf8"), "1");
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      rmSync(root, { recursive: true, force: true });
     }
-    rmSync(root, { recursive: true, force: true });
-  }
-});
+  });
 
 test("runCodex does not retry terminal model access failures", () => {
   const root = mkdtempSync(tmpPrefix);
@@ -1168,7 +1493,7 @@ const attemptsPath = process.env.CODEX_ATTEMPTS_PATH;
 const attempt = fs.existsSync(attemptsPath) ? Number(fs.readFileSync(attemptsPath, "utf8")) + 1 : 1;
 fs.writeFileSync(attemptsPath, String(attempt));
 process.stderr.write("reviewed patch text\\n");
-process.stderr.write("stream disconnected before completion: The model secret-model-for-test does not exist or you do not have access to it.\\n");
+process.stderr.write("ERROR: stream disconnected before completion: The model secret-model-for-test does not exist or you do not have access to it.\\ntokens used\\n1,024\\n");
 process.exit(1);
 `,
   );
@@ -1200,8 +1525,12 @@ process.exit(1);
           prompt: "Return a review decision.",
         }),
       (error: unknown) => {
-        const reviewError = error as Error & { stderr?: string };
+        const reviewError = error as Error & { stderr?: string; retryable?: boolean };
         assert.match(reviewError.stderr ?? "", /does not exist or you do not have access/);
+        assert.equal(reviewError.retryable, false);
+        const decision = reportedReviewFailure(reviewError);
+        assert.equal(decision.codexTerminalFailure, true);
+        assert.match(decision.summary, /model unavailable or access denied/);
         return true;
       },
     );

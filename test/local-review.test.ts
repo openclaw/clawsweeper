@@ -107,13 +107,7 @@ fs.writeFileSync(process.env.LOCAL_REVIEW_PROOF_CAPTURE, JSON.stringify({
   prompt: fs.readFileSync(0, "utf8"),
 }));
 if (args.includes("--output-last-message")) process.exit(2);
-process.stdout.write(JSON.stringify({
-  type: "item.completed",
-  item: {
-    type: "agent_message",
-    text: "---\\nresult: success\\n---\\n\\nOffline local review completed.\\n",
-  },
-}) + "\\n");
+process.stdout.write("---\\nresult: success\\n---\\n\\nOffline local review completed.\\n\\n");
 `,
         );
         chmodSync(fakeCodex, 0o755);
@@ -194,7 +188,7 @@ test("commitMetadata offline mode uses only local git and never contacts GitHub"
 });
 
 test(
-  "local-review default returns text or JSON and removes its private run output",
+  "local-review returns text or JSON, keeps non-zero exits strict, and removes private output",
   { skip: process.platform === "win32" },
   (t) => {
     const dir = initRepo();
@@ -210,20 +204,18 @@ test(
 const fs = require("node:fs");
 const args = process.argv.slice(2);
 fs.writeFileSync(process.env.LOCAL_REVIEW_PROOF_CAPTURE, process.env.GH_CONFIG_DIR);
-process.stdout.write(JSON.stringify({
-  type: "item.completed",
-  item: {
-    type: "agent_message",
-    text: "---\\nresult: success\\n---\\n\\nTransient local review completed.\\n",
-  },
-}) + "\\n");
-process.stdout.write(JSON.stringify({ type: "turn.completed" }) + "\\n");
+process.stdout.write("---\\nresult: success\\n---\\n\\nTransient local review completed.\\n\\n");
+process.exitCode = Number(process.env.LOCAL_REVIEW_EXIT_STATUS || "0");
 `,
       );
       chmodSync(fakeCodex, 0o755);
 
-      for (const format of ["text", "json"] as const) {
-        const capture = join(harness, `${format}.txt`);
+      for (const [format, exitStatus] of [
+        ["text", 0],
+        ["json", 0],
+        ["json", 7],
+      ] as const) {
+        const capture = join(harness, `${format}-${exitStatus}.txt`);
         const result = runLocalReview(
           dir,
           [
@@ -237,6 +229,7 @@ process.stdout.write(JSON.stringify({ type: "turn.completed" }) + "\\n");
           {
             CODEX_BIN: fakeCodex,
             LOCAL_REVIEW_PROOF_CAPTURE: capture,
+            LOCAL_REVIEW_EXIT_STATUS: String(exitStatus),
           },
         );
         assert.equal(result.status, 0, result.out);
@@ -245,10 +238,15 @@ process.stdout.write(JSON.stringify({ type: "turn.completed" }) + "\\n");
         assert.doesNotMatch(result.stderr, /clawsweeper-local-review-/);
         if (format === "json") {
           const output = JSON.parse(result.stdout);
-          assert.equal(output.status, "completed");
+          assert.equal(output.status, exitStatus === 0 ? "completed" : "failed");
           assert.equal(output.retention, "none");
           assert.equal(output.reports[0].artifact_path, null);
-          assert.match(output.reports[0].report, /Transient local review completed/);
+          if (exitStatus === 0) {
+            assert.match(output.reports[0].report, /Transient local review completed/);
+          } else {
+            assert.match(output.reports[0].report, /^result: failed$/m);
+            assert.match(output.reports[0].report, /exit 7/);
+          }
         } else {
           assert.match(result.stdout, /Transient local review completed/);
         }
@@ -276,10 +274,7 @@ test(
         fakeCodex,
         `#!/usr/bin/env node
 const fs = require("node:fs");
-process.stdout.write(JSON.stringify({
-  type: "item.completed",
-  item: { type: "agent_message", text: "x".repeat(4 * 1024 * 1024 + 1) },
-}) + "\\n");
+process.stdout.write("x".repeat(4 * 1024 * 1024 + 1) + "\\n");
 `,
         { mode: 0o755 },
       );

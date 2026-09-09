@@ -11,10 +11,11 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test, { type TestContext } from "node:test";
-import { spawn, spawnSync } from "node:child_process";
+import childProcess, { spawn, spawnSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { createInterface } from "node:readline";
 import { codexEnv } from "../dist/codex-env.js";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   codexProcessCommand,
@@ -25,42 +26,23 @@ import {
 
 const tmpPrefix = join(tmpdir(), "clawsweeper-codex-process-test-");
 
-function managedAgentMessage(text: string): string {
-  return JSON.stringify({
-    type: "item.completed",
-    item: { id: "item_0", type: "agent_message", text },
-  });
-}
-
-const managedTurnCompleted = JSON.stringify({
-  type: "turn.completed",
-  usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 },
-});
-const managedTurnFailed = JSON.stringify({
-  type: "turn.failed",
-  error: { message: "turn failed" },
-});
-
 function managedCompletedOutput(text: string): string {
-  return [
-    JSON.stringify({ type: "thread.started", thread_id: "thread-1" }),
-    JSON.stringify({ type: "turn.started" }),
-    managedAgentMessage(text),
-    managedTurnCompleted,
-    "",
-  ].join("\n");
+  return `${text}\n`;
 }
 
 function runManagedOutputFixture(
   t: TestContext,
   options: {
-    payload?: string;
-    mode?: "payload" | "oversized-line";
+    payload?: string | Buffer;
+    stderr?: string;
+    mode?: "payload" | "oversized" | "signal" | "timeout";
     cap: number;
     status?: number;
+    timeoutMs?: number;
     outputFileBytes?: number;
     tailBytes?: number;
     existingOutput?: string;
+    partialWrite?: "fail" | "replace";
   },
 ) {
   const root = mkdtempSync(tmpPrefix);
@@ -68,40 +50,68 @@ function runManagedOutputFixture(
   const binary = join(root, "codex");
   const outputPath = join(root, "last-message.txt");
   const stdoutPath = join(root, "stdout.log");
+  const stderrPath = join(root, "stderr.log");
+  const preloadPath = join(root, "partial-write.mjs");
   if (options.existingOutput !== undefined) writeFileSync(outputPath, options.existingOutput);
+  if (options.partialWrite) {
+    writeFileSync(
+      preloadPath,
+      `import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+const original = fs.writeFileSync;
+fs.writeFileSync = function(file, ...args) {
+  if (typeof file === "number") {
+    fs.writeSync(file, "partial");
+    ${options.partialWrite === "replace" ? `fs.unlinkSync(${JSON.stringify(outputPath)}); original(${JSON.stringify(outputPath)}, "other writer contents");` : ""}
+    throw new Error("injected managed write failure");
+  }
+  return original.call(this, file, ...args);
+};
+syncBuiltinESMExports();
+`,
+    );
+  }
   writeFileSync(
     binary,
     `#!/usr/bin/env node
-if (process.env.CODEX_TEST_MODE === "oversized-line") {
-  process.stdout.write(JSON.stringify({ type: "diagnostic", text: "x".repeat(Number(process.env.CODEX_TEST_LINE_BYTES)) }));
+const { writeSync } = require("node:fs");
+writeSync(2, process.env.CODEX_TEST_STDERR || "");
+if (process.env.CODEX_TEST_MODE === "oversized") {
+  writeSync(1, "x".repeat(Number(process.env.CODEX_TEST_LINE_BYTES)) + "\\n");
 } else {
-  process.stdout.write(Buffer.from(process.env.CODEX_TEST_PAYLOAD_BASE64 || "", "base64"));
+  writeSync(1, Buffer.from(process.env.CODEX_TEST_PAYLOAD_BASE64 || "", "base64"));
 }
 process.exitCode = Number(process.env.CODEX_TEST_STATUS || "0");
+if (process.env.CODEX_TEST_MODE === "signal") process.kill(process.pid, "SIGTERM");
+if (process.env.CODEX_TEST_MODE === "timeout") setInterval(() => {}, 1000);
 `,
     { mode: 0o755 },
   );
   const result = runCodexProcess({
-    args: ["exec", "--json", "-"],
+    args: ["exec", "-"],
     cwd: root,
     env: {
       ...process.env,
       CODEX_BIN: binary,
       CODEX_TEST_MODE: options.mode ?? "payload",
-      CODEX_TEST_LINE_BYTES: String(options.cap * 6 + 64 * 1024 + 1),
+      CODEX_TEST_LINE_BYTES: String(options.cap + 1),
       CODEX_TEST_PAYLOAD_BASE64: Buffer.from(options.payload ?? "").toString("base64"),
       CODEX_TEST_STATUS: String(options.status ?? 0),
+      CODEX_TEST_STDERR: options.stderr ?? "",
+      ...(options.partialWrite
+        ? { NODE_OPTIONS: `--import=${pathToFileURL(preloadPath).href}` }
+        : {}),
     },
     input: "",
-    timeoutMs: 10_000,
+    timeoutMs: options.timeoutMs ?? 10_000,
     outputLastMessagePath: outputPath,
     outputLastMessageBytes: options.cap,
     ...(options.outputFileBytes === undefined
       ? {}
-      : { outputFileBytes: options.outputFileBytes, stdoutPath }),
+      : { outputFileBytes: options.outputFileBytes, stdoutPath, stderrPath }),
     ...(options.tailBytes === undefined ? {} : { tailBytes: options.tailBytes }),
   });
-  return { outputPath, result, stdoutPath };
+  return { outputPath, result, stdoutPath, stderrPath };
 }
 
 test("managed Codex result enforces exact UTF-8 bytes and rejects cap plus one", (t) => {
@@ -120,102 +130,177 @@ test("managed Codex result enforces exact UTF-8 bytes and rejects cap plus one",
   assert.equal(existsSync(oversized.outputPath), false);
 });
 
-test("managed Codex result uses the last top-level agent message and ignores nested lookalikes", (t) => {
-  const nested = {
-    type: "diagnostic",
-    payload: JSON.parse(managedAgentMessage("nested fake")),
-  };
+test("managed Codex result uses authoritative stdout rather than stale streamed stderr", (t) => {
   const fixture = runManagedOutputFixture(t, {
-    payload: [
-      JSON.stringify(nested),
-      managedAgentMessage("first"),
-      JSON.stringify({ type: "item.completed", item: { type: "command_execution" } }),
-      managedAgentMessage("last"),
-      managedTurnCompleted,
-      "",
-    ].join("\n"),
+    payload: managedCompletedOutput('{"summary":"recovered final"}'),
+    stderr: 'codex\n{"summary":"stale streamed answer"}\ntokens used\n1,024\n',
     cap: 64,
   });
   assert.equal(fixture.result.error, undefined);
-  assert.equal(readFileSync(fixture.outputPath, "utf8"), "last");
+  assert.equal(readFileSync(fixture.outputPath, "utf8"), '{"summary":"recovered final"}');
 });
 
 for (const failure of [
   {
-    name: "malformed JSONL",
-    options: { payload: "{not-json}\n", cap: 64 },
-    message: /malformed line/,
+    name: "invalid UTF-8",
+    options: { payload: Buffer.from([0xff, 0x0a]), cap: 64 },
+    message: /invalid UTF-8/,
   },
   {
-    name: "partial JSONL",
-    options: { payload: managedAgentMessage("partial"), cap: 64 },
-    message: /partial line/,
+    name: "missing newline frame",
+    options: { payload: "partial", cap: 64 },
+    message: /newline frame/,
   },
   {
-    name: "missing agent message",
-    options: { payload: `${managedTurnCompleted}\n`, cap: 64 },
-    message: /did not contain a final agent message/,
+    name: "missing final output",
+    options: { payload: "", cap: 64 },
+    message: /newline frame/,
   },
   {
-    name: "failed turn after an agent message",
+    name: "failed turn after a streamed agent message",
     options: {
-      payload: `${managedAgentMessage("partial")}\n${managedTurnFailed}\n`,
+      stderr: "codex\npartial answer\nERROR: turn failed\ntokens used\n1,024\n",
       cap: 64,
       status: 1,
     },
-    message: /turn failed/,
+    message: /newline frame/,
   },
   {
     name: "incomplete turn despite a zero child exit",
-    options: { payload: `${managedAgentMessage("partial")}\n`, cap: 64 },
-    message: /completed turn/,
+    options: { stderr: "codex\npartial answer\n", cap: 64 },
+    message: /newline frame/,
   },
   {
-    name: "interrupted turn without terminal success",
-    options: { payload: `${managedAgentMessage("partial")}\n`, cap: 64, status: 130 },
-    message: /completed turn/,
+    name: "signal after framed output",
+    options: { payload: "answer\n", mode: "signal" as const, cap: 64 },
+    message: /interrupted by SIGTERM/,
   },
   {
-    name: "oversized JSONL line",
-    options: { mode: "oversized-line" as const, cap: 64 },
-    message: /JSONL line exceeded/,
+    name: "timeout after framed output",
+    options: { payload: "answer\n", mode: "timeout" as const, timeoutMs: 1000, cap: 64 },
+    message: /timed out/,
+  },
+  {
+    name: "oversized output",
+    options: { mode: "oversized" as const, cap: 64 },
+    message: /exceeded its 64-byte limit/,
   },
 ]) {
-  test(`managed Codex result fails closed for ${failure.name}`, (t) => {
-    const fixture = runManagedOutputFixture(t, failure.options);
-    assert.match(fixture.result.error?.message ?? "", failure.message);
-    assert.equal(existsSync(fixture.outputPath), false);
-  });
+  test(
+    `managed Codex result fails closed for ${failure.name}`,
+    {
+      skip: process.platform === "win32" && failure.name === "signal after framed output",
+    },
+    (t) => {
+      const fixture = runManagedOutputFixture(t, failure.options);
+      assert.match(fixture.result.error?.message ?? "", failure.message);
+      assert.equal(
+        fixture.result.processError,
+        failure.name === "signal after framed output" ||
+          failure.name === "timeout after framed output",
+      );
+      assert.equal(existsSync(fixture.outputPath), false);
+    },
+  );
 }
 
 test("failed Codex turns preserve an existing managed result file", (t) => {
   const fixture = runManagedOutputFixture(t, {
-    payload: `${managedAgentMessage("partial")}\n${managedTurnFailed}\n`,
+    stderr: "codex\npartial answer\nERROR: turn failed\n",
     cap: 64,
     status: 1,
     existingOutput: "keep existing contents",
   });
 
-  assert.match(fixture.result.error?.message ?? "", /turn failed/);
+  assert.match(fixture.result.error?.message ?? "", /newline frame/);
   assert.equal(readFileSync(fixture.outputPath, "utf8"), "keep existing contents");
+});
+
+test("outer worker timeout overrides an output-only error even when the result file is absent", (t) => {
+  const root = mkdtempSync(tmpPrefix);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const timeout = Object.assign(new Error("outer worker timed out"), { code: "ETIMEDOUT" });
+  t.mock.method(childProcess, "spawnSync", ((command: string, args: readonly string[]) => {
+    assert.equal(command, process.execPath);
+    assert.ok(args?.[0]?.endsWith("codex-process-worker.js"));
+    const options = JSON.parse(readFileSync(args![1]!, "utf8"));
+    writeFileSync(
+      options.resultPath,
+      JSON.stringify({
+        status: 1,
+        signal: null,
+        error: { message: "missing final stdout frame" },
+        processError: false,
+        stdout: "",
+        stderr: "ERROR: untrusted trailing tool text",
+      }),
+    );
+    return { pid: 0, output: [], stdout: "", stderr: "", status: 1, signal: null, error: timeout };
+  }) as typeof spawnSync);
+  syncBuiltinESMExports();
+  try {
+    const result = runCodexProcess({
+      args: ["exec", "-"],
+      cwd: root,
+      env: { CODEX_BIN: process.execPath },
+      input: "",
+      timeoutMs: 1000,
+      outputLastMessagePath: join(root, "absent-final.txt"),
+      outputLastMessageBytes: 64,
+    });
+    assert.equal(result.error, timeout);
+    assert.equal(result.processError, true);
+    assert.equal(result.signal, null);
+    assert.equal(result.status, 1);
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
+});
+
+test("managed Codex exclusive writes preserve pre-existing collisions", (t) => {
+  const fixture = runManagedOutputFixture(t, {
+    payload: "new answer\n",
+    cap: 64,
+    existingOutput: "keep existing contents",
+  });
+  assert.equal(codexProcessErrorCode(fixture.result.error), "EEXIST");
+  assert.equal(readFileSync(fixture.outputPath, "utf8"), "keep existing contents");
+});
+
+test("managed Codex failed writes remove only their own partial result", (t) => {
+  const fixture = runManagedOutputFixture(t, {
+    payload: "new answer\n",
+    cap: 64,
+    partialWrite: "fail",
+  });
+  assert.match(fixture.result.error?.message ?? "", /injected managed write failure/);
+  assert.equal(existsSync(fixture.outputPath), false);
+});
+
+test("managed Codex failed-write cleanup preserves a replacement writer's file", (t) => {
+  const fixture = runManagedOutputFixture(t, {
+    payload: "new answer\n",
+    cap: 64,
+    partialWrite: "replace",
+  });
+  assert.match(fixture.result.error?.message ?? "", /injected managed write failure/);
+  assert.equal(readFileSync(fixture.outputPath, "utf8"), "other writer contents");
 });
 
 test("managed Codex result survives diagnostic capture truncation", (t) => {
   const fixture = runManagedOutputFixture(t, {
-    payload: [
-      JSON.stringify({ type: "diagnostic", text: "x".repeat(4096) }),
-      managedAgentMessage("final result"),
-      managedTurnCompleted,
-      "",
-    ].join("\n"),
+    payload: managedCompletedOutput("final result"),
+    stderr: "x".repeat(4096),
     cap: 64,
     outputFileBytes: 128,
     tailBytes: 32,
   });
   assert.equal(fixture.result.error, undefined);
   assert.equal(readFileSync(fixture.outputPath, "utf8"), "final result");
-  assert.equal(readFileSync(fixture.stdoutPath).length, 128);
-  assert.match(readFileSync(fixture.stdoutPath, "utf8"), /Codex output truncated/);
+  assert.equal(readFileSync(fixture.stdoutPath, "utf8"), "final result\n");
+  assert.equal(readFileSync(fixture.stderrPath).length, 128);
+  assert.match(readFileSync(fixture.stderrPath, "utf8"), /Codex output truncated/);
 });
 
 test("completed Codex result remains available after a non-zero shutdown exit", (t) => {

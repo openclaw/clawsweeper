@@ -21,6 +21,7 @@ export interface CodexProcessResult {
   status: number | null;
   signal: NodeJS.Signals | null;
   error?: Error;
+  processError?: boolean;
   stdout: string;
   stderr: string;
 }
@@ -32,6 +33,7 @@ interface SerializedCodexProcessResult {
     message: string;
     code?: string;
   };
+  processError?: boolean;
   stdout: string;
   stderr: string;
 }
@@ -149,20 +151,20 @@ export function runCodexProcess(options: {
             throw new Error(`Codex result exceeded its ${outputLastMessageBytes}-byte limit.`);
           }
         } catch (error) {
-          if (result.error && (error as NodeJS.ErrnoException).code === "ENOENT") {
-            return result;
+          if (!(result.error && (error as NodeJS.ErrnoException).code === "ENOENT")) {
+            return {
+              ...result,
+              error: error instanceof Error ? error : new Error(String(error)),
+              processError: true,
+            };
           }
-          return {
-            ...result,
-            error: error instanceof Error ? error : new Error(String(error)),
-          };
         }
       }
       if (
         worker.error &&
         !(result.status === 0 && codexProcessErrorCode(worker.error) === "EPIPE")
       ) {
-        return { ...result, error: worker.error };
+        return { ...result, error: worker.error, processError: true };
       }
       return result;
     }
@@ -209,7 +211,7 @@ function failedProcessResult(
   status: number | null = null,
   signal: NodeJS.Signals | null = null,
 ): CodexProcessResult {
-  return { status, signal, error, stdout: "", stderr: "" };
+  return { status, signal, error, processError: true, stdout: "", stderr: "" };
 }
 
 function deserializeProcessResult(value: SerializedCodexProcessResult): CodexProcessResult {
@@ -217,6 +219,7 @@ function deserializeProcessResult(value: SerializedCodexProcessResult): CodexPro
     status: value.status,
     signal: value.signal,
     ...(value.error ? { error: deserializeError(value.error) } : {}),
+    ...(value.processError === undefined ? {} : { processError: value.processError }),
     stdout: value.stdout,
     stderr: value.stderr,
   };

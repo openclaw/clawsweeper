@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import childProcess, { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import {
@@ -26,12 +26,14 @@ import {
   materializePullRequestReviewTree,
   materializePullRequestReviewTreeForTest,
   removePullRequestReviewTree,
+  REVIEW_TREE_MAX_BYTES,
   ReviewGitError,
 } from "../dist/clawsweeper-review-blobs.js";
 import { MAX_SCAN_BYTES } from "../dist/agent-input-scan.js";
 import { createContextHydration } from "../dist/clawsweeper-context-hydration.js";
 import { asRecord } from "../dist/clawsweeper-item-policy.js";
 import { createReviewRuntime } from "../dist/clawsweeper-review-runtime.js";
+import { main, reviewPolicyHashForTest } from "../dist/clawsweeper-runtime.js";
 import { runText } from "../dist/command.js";
 import { readReviewGit, reviewMergeBase } from "../dist/pr-review-evidence.js";
 import { ReviewSourcePreparationError } from "../dist/review-source-preparation.js";
@@ -58,11 +60,13 @@ function partialCloneFixture({
   largeFiles = [],
   prefetchHead = true,
   historicalBase = false,
+  attributes = false,
 }: {
   extraFiles?: number;
   largeFiles?: number[];
   prefetchHead?: boolean;
   historicalBase?: boolean;
+  attributes?: boolean;
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-review-promisor-"));
   const origin = join(root, "origin.git");
@@ -101,6 +105,7 @@ function partialCloneFixture({
   mkdirSync(join(source, "nested"));
   writeFileSync(join(source, "nested", "feature[1].txt"), "nested literal\n");
   writeFileSync(join(source, ":(glob)literal.txt"), "pathspec literal\n");
+  if (attributes) writeFileSync(join(source, ".gitattributes"), "*.txt -text\n");
   for (let index = 0; index < extraFiles; index += 1) {
     writeFileSync(join(source, `additional-${index}.txt`), `additional ${index}\n`);
   }
@@ -743,6 +748,146 @@ test("restricted review materializes the exact pull request head before model ex
     assert.equal(existsSync(reviewTree), false);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("manual live proof admits pinned promisor trees with the requested repository and restores its profile", async (t) => {
+  for (const scenario of ["admitted", "missing", "truncated", "overflow", "unavailable"] as const) {
+    await t.test(scenario, async (t) => {
+      const fixture = partialCloneFixture({ attributes: true });
+      const previousInvocation = process.env.CLAWSWEEPER_ACTION_LEDGER_INVOCATION;
+      t.after(() => {
+        t.mock.restoreAll();
+        syncBuiltinESMExports();
+        if (previousInvocation === undefined)
+          delete process.env.CLAWSWEEPER_ACTION_LEDGER_INVOCATION;
+        else process.env.CLAWSWEEPER_ACTION_LEDGER_INVOCATION = previousInvocation;
+        rmSync(fixture.root, { recursive: true, force: true });
+      });
+      const repo =
+        process.env.CLAWSWEEPER_TARGET_REPO === "openclaw/clawsweeper"
+          ? "openclaw/openclaw"
+          : "openclaw/clawsweeper";
+      const records = join(fixture.root, "records");
+      const output = join(fixture.root, "output");
+      mkdirSync(records);
+      writeFileSync(
+        join(records, "982.md"),
+        `---\nnumber: 982\nrepository: ${repo}\ntype: pull_request\npull_head_sha: ${fixture.headSha}\n---\n\n## Live Proof\n\nStatus: recommended\n\nSurface: terminal\n\nTerminal completion: exit_zero\n\nReason: Verify the pinned fixture.\n\nPayoff: static_text\n\nPayoff justification: Text is sufficient.\n\nEntry: printf fixture-ready\n\nSteps:\n\n- {"action":"expect_output","text":"fixture-ready"}\n\n## Work Candidate\n\nCandidate: none\n`,
+      );
+      const tree = git(
+        fixture.source,
+        "ls-tree",
+        "-r",
+        "--format=%(objecttype) %(objectname) %(objectsize)",
+        fixture.headSha,
+      )
+        .split("\n")
+        .map((line) => {
+          const [type, sha, size] = line.split(" ");
+          return { type, sha, size: Number(size) };
+        });
+      const attributes = git(fixture.source, "rev-parse", `${fixture.headSha}:.gitattributes`);
+      writeFileSync(join(fixture.target, "changed.txt"), "unreviewed checkout must not execute\n");
+      const statusBefore = git(fixture.target, "status", "--porcelain");
+      const worktreesBefore = git(fixture.target, "worktree", "list", "--porcelain");
+      const profileBefore = reviewPolicyHashForTest();
+      assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), false);
+      let metadataCalls = 0;
+      let childLaunches = 0;
+      t.mock.method(console, "log", () => {});
+      const nativeSpawn = childProcess.spawnSync;
+      t.mock.method(childProcess, "spawnSync", (...args: Parameters<typeof nativeSpawn>) => {
+        const argv = args[1] ?? [];
+        if (argv[0] === "api") {
+          metadataCalls++;
+          assert.deepEqual(argv, ["api", `repos/${repo}/git/trees/${fixture.headSha}?recursive=1`]);
+          assert.notEqual(reviewPolicyHashForTest(), profileBefore);
+          assert.ok(args[2]?.timeout && args[2].timeout <= 30_000);
+          if (scenario === "unavailable") throw new Error("fixture metadata unavailable");
+          const response = {
+            truncated: scenario === "truncated",
+            tree: tree
+              .filter((entry) => scenario !== "missing" || entry.sha !== fixture.addedBlobSha)
+              .map((entry) =>
+                scenario === "overflow" && entry.type === "blob" && entry.sha !== attributes
+                  ? { ...entry, size: REVIEW_TREE_MAX_BYTES / 4 }
+                  : entry,
+              ),
+          };
+          return { status: 0, stdout: JSON.stringify(response), stderr: "" };
+        }
+        if (args[0] === process.execPath && argv[1] === "live-proof") {
+          childLaunches++;
+          assert.equal(reviewPolicyHashForTest(), profileBefore);
+          assert.equal(argv[argv.indexOf("--repo") + 1], repo);
+          const checkout = String(args[2]?.cwd);
+          assert.equal(git(checkout, "rev-parse", "HEAD"), fixture.headSha);
+          assert.equal(readFileSync(join(checkout, "changed.txt"), "utf8"), "after\n");
+          writeFileSync(
+            join(argv[argv.indexOf("--output") + 1]!, "live-verification.json"),
+            JSON.stringify({ head_sha: fixture.headSha, repo }),
+          );
+          return {
+            status: 0,
+            stdout: "[live-proof] sanitized environment assertion passed: credentials=0\n",
+            stderr: "",
+          };
+        }
+        assert.equal(args[0], "git", "unexpected external command");
+        return nativeSpawn(...args);
+      });
+      syncBuiltinESMExports();
+      const execution = main(
+        [
+          "live-proof-review",
+          "--repo",
+          repo,
+          "--records-dir",
+          records,
+          "--checkout",
+          fixture.target,
+          "--output",
+          output,
+          "--item",
+          "982",
+        ],
+        { flushWorkflowActionEvents: async () => [] },
+      );
+      if (scenario === "admitted") {
+        await execution;
+        assert.equal(childLaunches, 1);
+        assert.deepEqual(
+          JSON.parse(readFileSync(join(output, "982", "live-verification.json"), "utf8")),
+          { head_sha: fixture.headSha, repo },
+        );
+      } else {
+        await assert.rejects(execution, (error: unknown) => {
+          assert.ok(error instanceof ReviewSourcePreparationError);
+          assert.equal(error.diagnosticReason, "review_checkout_unavailable");
+          assert.match(
+            error.message,
+            scenario === "overflow"
+              ? /conservatively projected bytes/
+              : /remote blob size metadata is (?:unavailable|incomplete)/,
+          );
+          return true;
+        });
+        assert.equal(childLaunches, 0);
+        assert.equal(existsSync(output), false);
+        assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), false);
+      }
+      // Attributes and content request separate size sets but share one pinned tree response.
+      assert.equal(metadataCalls, 1);
+      assert.equal(reviewPolicyHashForTest(), profileBefore);
+      assert.equal(git(fixture.target, "rev-parse", "HEAD"), fixture.baseSha);
+      assert.equal(git(fixture.target, "status", "--porcelain"), statusBefore);
+      assert.equal(git(fixture.target, "worktree", "list", "--porcelain"), worktreesBefore);
+      assert.equal(
+        readFileSync(join(fixture.target, "changed.txt"), "utf8"),
+        "unreviewed checkout must not execute\n",
+      );
+    });
   }
 });
 

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  codexHumanFailureDetail,
+  codexHumanRetryHint,
   codexJsonlFailureDetail,
   codexRetryDelayMs,
   codexTerminalErrorDetail,
@@ -52,6 +54,113 @@ test("Codex JSONL model access errors are trusted terminal failures", () => {
   assert.equal(codexJsonlFailureDetail(jsonl), message);
   assert.equal(isTerminalCodexErrorMessage(message), true);
   assert.equal(isRetryableCodexErrorMessage(message), false);
+});
+
+test("Codex human failures accept only a terminal error before a native usage trailer", () => {
+  const terminal =
+    "stream disconnected before completion: The model fixture-model does not exist or you do not have access to it.";
+  for (const count of [
+    "0",
+    "1,234",
+    "1.234",
+    "1\u202f234",
+    "1\u00a0234",
+    "1\u2019234",
+    "\u0661\u066c\u0662\u0663\u0664",
+    "\u061c\u0661\u066c\u0662\u0663\u0664",
+  ]) {
+    const stderr = `user\nERROR: quoted rate limit reached\nERROR: ${terminal}\ntokens used\n${count}\n`;
+    assert.equal(codexHumanFailureDetail(stderr), `ERROR: ${terminal}`);
+    assert.equal(isTerminalCodexErrorMessage(codexHumanFailureDetail(stderr)), true);
+  }
+  assert.equal(codexHumanFailureDetail(`ERROR: ${terminal}\n`), `ERROR: ${terminal}`);
+});
+
+test("Codex human classification ignores quoted errors and malformed trailers", () => {
+  for (const stderr of [
+    "user\nERROR: rate limit reached\nordinary prompt text\n",
+    "exec\nERROR: rate limit reached\nturn interrupted\n",
+    "ERROR: rate limit reached\ntokens used\nnot a count\n",
+    "ERROR: rate limit reached\ntokens used\n1,024\nlater output\n",
+    "quoted ERROR: rate limit reached\n",
+    "rate limit reached\n",
+  ]) {
+    assert.equal(codexHumanFailureDetail(stderr), "");
+  }
+});
+
+test("Codex human trailers preserve transport and capacity classification", () => {
+  for (const message of [
+    "Rate limit reached for model on tokens per min (TPM).",
+    "stream disconnected before completion: fetch failed",
+  ]) {
+    const detail = codexHumanFailureDetail(`ERROR: ${message}\ntokens used\n1,024\n`);
+    assert.equal(detail, `ERROR: ${message}`);
+    assert.equal(isRetryableCodexErrorMessage(detail), true);
+  }
+});
+
+test("Codex multiline retry hints accept bounded LF and CRLF blocks with locale usage", () => {
+  for (const newline of ["\n", "\r\n"]) {
+    for (const trailer of ["", "tokens used\n1,234", "tokens used\n1\u202f234"]) {
+      for (const block of [
+        "ERROR: upstream response\n\nRate limit reached on tokens per min (TPM).",
+        "ERROR: stream disconnected before completion:\nfetch failed",
+      ]) {
+        const stderr = [block, "", trailer, ""].join("\n").replaceAll("\n", newline);
+        assert.equal(codexHumanFailureDetail(stderr), "");
+        assert.equal(codexHumanRetryHint(stderr), block);
+      }
+    }
+  }
+});
+
+test("Codex multiline retry hints consider only the final column-zero error block", () => {
+  const denial = "The model fixture-model does not exist or you do not have access to it.";
+  const transient = "ERROR: upstream response\nRate limit reached.";
+  assert.equal(
+    codexHumanRetryHint(`ERROR: quoted failure\n${denial}\n${transient}\ntokens used\n0\n`),
+    transient,
+  );
+  for (const finalBlock of [
+    `ERROR: upstream response\n${denial}`,
+    "ERROR: upstream response\nunknown failure",
+    "ERROR:malformed final error\nunknown failure",
+  ]) {
+    assert.equal(codexHumanRetryHint(`${transient}\n${finalBlock}\n`), "");
+  }
+  for (const prefix of ["quoted ERROR: ", " ERROR: ", ""]) {
+    assert.equal(codexHumanRetryHint(`${prefix}upstream response\nRate limit reached.\n`), "");
+  }
+  const mixed = `ERROR: Rate limit reached\n${denial}`;
+  assert.equal(codexHumanRetryHint(mixed), mixed);
+  assert.equal(codexHumanFailureDetail(mixed), "");
+});
+
+test("Codex multiline retry hints reject malformed or superseded usage frames", () => {
+  const block = "ERROR: upstream response\nRate limit reached.";
+  for (const suffix of [
+    "tokens used\nnot a count",
+    "tokens used\n1,024\nlater output",
+    "tokens used\n1,024\ntokens used\n2,048",
+    " tokens used\n1,024",
+    "tokens used\n\n1,024",
+  ]) {
+    assert.equal(codexHumanRetryHint(`${block}\n${suffix}\n`), "");
+    assert.equal(codexHumanFailureDetail(`${block}\n${suffix}\n`), "");
+  }
+});
+
+test("Codex multiline retry hints bound the complete block without promoting a partial line", () => {
+  const prefix = "ERROR: upstream response\nRate limit reached ";
+  const atLimit = prefix + "x".repeat(4096 - prefix.length);
+  assert.equal(codexHumanRetryHint(atLimit), atLimit);
+  assert.equal(codexHumanRetryHint(atLimit + "x"), "");
+  assert.equal(codexHumanRetryHint(prefix + "\u00e9".repeat(2048)), "");
+  assert.equal(codexHumanRetryHint("quoted " + atLimit), "");
+  assert.equal(codexHumanRetryHint("x".repeat(8192) + "\n" + atLimit), atLimit);
+  assert.equal(codexHumanRetryHint("ERROR: Rate limit reached.\n"), "");
+  assert.equal(codexHumanRetryHint(undefined), "");
 });
 
 test("quoted model access failures do not override the final Codex error", () => {

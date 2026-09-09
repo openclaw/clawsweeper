@@ -18,6 +18,7 @@ import test from "node:test";
 
 import type { LiveProofPlan, MediaProofCommandRunner } from "../dist/clawsweeper-types.js";
 import { mediaProofCommandRunner } from "../dist/clawsweeper-media-proof.js";
+import { materializePullRequestReviewTree } from "../dist/clawsweeper-review-blobs.js";
 import { driveTerminal } from "../dist/live-proof/drivers.js";
 import {
   executeReviewLiveProofs,
@@ -62,6 +63,8 @@ test("review live proof inspection rejects invalid persisted plans", () => {
         inspectReviewLiveProofs(
           { itemNumbers: [42], recordsDir: records, repo: "example/repo" },
           {
+            materializePullRequestReviewTree: () =>
+              assert.fail("inspection must not materialize a target checkout"),
             frontMatterValue: (markdown, key) =>
               new RegExp(`^${key}:\\s*(.*)$`, "m").exec(markdown)?.[1]?.trim(),
             reportLiveProofPlan: () => ({
@@ -146,11 +149,13 @@ test(
       git(target, "add", ".");
       git(target, "commit", "-m", "fixture");
       const head = git(target, "rev-parse", "HEAD").trim();
+      const checkoutBefore = git(target, "status", "--porcelain");
       writeFileSync(
         join(records, "42.md"),
         `---\nnumber: 42\nrepository: openclaw/sanitized-fixture\ntype: pull_request\npull_head_sha: ${head}\n---\n\n## Live Proof\n\nStatus: recommended\n\nSurface: terminal\n\nTerminal completion: exit_zero\n\nReason: The command prints a deterministic result.\n\nPayoff: static_text\n\nPayoff justification: A recording adds no value.\n\nEntry: ${plan.entry}\n\nSteps:\n\n- {"action":"expect_output","text":"sanitized-ready"}\n\n## Work Candidate\n\nCandidate: none\n`,
       );
       const logs: string[] = [];
+      let materializations = 0;
       executeReviewLiveProofs(
         {
           checkoutPath: target,
@@ -161,6 +166,13 @@ test(
           repo: "openclaw/sanitized-fixture",
         },
         {
+          materializePullRequestReviewTree: (options) => {
+            materializations++;
+            assert.equal(options.itemNumber, 42);
+            assert.equal(options.headSha, head);
+            assert.equal(options.targetDir, target);
+            return materializePullRequestReviewTree(options);
+          },
           env: {
             ...process.env,
             OPENAI_API_KEY: "must-not-cross",
@@ -193,15 +205,21 @@ test(
           log: (message) => logs.push(message),
         },
       );
+      assert.equal(materializations, 1);
 
       const verification = parseLiveVerificationResult(
         JSON.parse(readFileSync(join(output, "42", "live-verification.json"), "utf8")) as unknown,
       );
+      assert.equal(verification.head_sha, head);
+      assert.equal(verification.repo, "openclaw/sanitized-fixture");
       assert.equal(verification.overall_pass, true, JSON.stringify(verification));
       assert.equal(verification.output.includes("sanitized-ready"), true);
       assert.match(logs.join("\n"), /sanitized environment assertion passed: credentials=0/);
       assert.match(logs.join("\n"), /execution=unsandboxed credentials=0/);
       assert.equal(logs.join("\n").includes("must-not-cross"), false);
+      assert.equal(git(target, "rev-parse", "HEAD").trim(), head);
+      assert.equal(git(target, "status", "--porcelain"), checkoutBefore);
+      assert.equal(existsSync(join(target, "install-script-ran")), false);
       console.log(logs.join("\n"));
     } finally {
       rmSync(root, { force: true, recursive: true });
@@ -1471,6 +1489,7 @@ process.exit(process.argv.includes('fail') ? 7 : 0);
             repo,
           },
           {
+            materializePullRequestReviewTree,
             env: {
               ...process.env,
               OPENAI_API_KEY: "must-not-cross",

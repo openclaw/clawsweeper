@@ -1,5 +1,6 @@
 const CODEX_MODEL_ACCESS_PREFIX = "the model ";
 const CODEX_MODEL_ACCESS_SUFFIX = " does not exist or you do not have access to it";
+const CODEX_HUMAN_RETRY_HINT_MAX_BYTES = 4096;
 
 export function isRetryableCodexTransportError(value: string | null | undefined): boolean {
   const message = value ?? "";
@@ -48,6 +49,53 @@ export function codexJsonlFailureDetail(value: string | null | undefined): strin
     }
   }
   return messages.at(-1) ?? "";
+}
+
+function codexHumanFailureLastLine(lines: string[]): number {
+  let last = lines.length - 1;
+  // Human-mode failures can end with Codex's locale-formatted token count.
+  if (
+    lines[last - 1] === "tokens used" &&
+    /^\p{Format}*\p{Decimal_Number}[\p{Decimal_Number}\p{Punctuation}\p{Space_Separator}\p{Format}]*$/u.test(
+      lines[last] ?? "",
+    )
+  ) {
+    last -= 2;
+  }
+  return last;
+}
+
+export function codexHumanFailureDetail(value: string | null | undefined): string {
+  const lines = (value ?? "").trimEnd().split(/\r?\n/);
+  const last = codexHumanFailureLastLine(lines);
+  // Only accept the terminal ERROR suffix, never earlier prompt or tool text.
+  const line = lines[last] ?? "";
+  return line.startsWith("ERROR: ") ? line : "";
+}
+
+export function codexHumanRetryHint(value: string | null | undefined): string {
+  const text = value ?? "";
+  const start = Math.max(0, text.length - CODEX_HUMAN_RETRY_HINT_MAX_BYTES);
+  const lines = text.slice(start).trimEnd().split(/\r?\n/);
+  if (start > 0 && text[start - 1] !== "\n") lines.shift();
+  const last = codexHumanFailureLastLine(lines);
+  // Multiline human output is not authenticated. A bounded final block may
+  // suggest a retry, but must never establish a terminal denial or diagnostic.
+  for (let index = last; index >= 0; index -= 1) {
+    const line = lines[index] ?? "";
+    if (line.trim() === "tokens used") return "";
+    if (!line.startsWith("ERROR:")) continue;
+    if (!line.startsWith("ERROR: ") || index === last) return "";
+    const hint = lines
+      .slice(index, last + 1)
+      .join("\n")
+      .trimEnd();
+    return Buffer.byteLength(hint) <= CODEX_HUMAN_RETRY_HINT_MAX_BYTES &&
+      isRetryableCodexTransportError(hint)
+      ? hint
+      : "";
+  }
+  return "";
 }
 
 export function isCodexContextLimitError(value: string | null | undefined): boolean {

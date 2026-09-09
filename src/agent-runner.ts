@@ -96,7 +96,7 @@ export function runAgentProcess(options: RunAgentProcessOptions): CodexProcessRe
     const args = codexAgentArgs(options);
     const managedOutput = options.outputLastMessageBytes !== undefined && outputPath !== undefined;
     return runCodexProcess({
-      args: managedOutput && !options.appServer ? withoutOutputLastMessage(args) : args,
+      args: managedOutput && !options.appServer ? managedCodexStdoutArgs(args) : args,
       cwd: options.cwd,
       env: options.env,
       input: options.prompt,
@@ -410,8 +410,8 @@ function codexOutputLastMessagePath(args: readonly string[] | undefined): string
   return value?.trim() || undefined;
 }
 
-function withoutOutputLastMessage(args: readonly string[]): string[] {
+function managedCodexStdoutArgs(args: readonly string[]): string[] {
   const index = args.lastIndexOf("--output-last-message");
-  if (index < 0) return [...args];
-  return [...args.slice(0, index), ...args.slice(index + 2)];
+  const withoutFile = index < 0 ? [...args] : [...args.slice(0, index), ...args.slice(index + 2)];
+  return withoutFile.filter((arg) => arg !== "--json" && arg !== "--experimental-json");
 }

@@ -1,4 +1,12 @@
-import { lstatSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { pipeline } from "node:stream";
 import {
   appendCodexOutputCapture,
@@ -67,41 +75,38 @@ child.once("close", (status, signal) => {
   clearTimeout(timeout);
   closeCodexOutputCapture(stdout);
   closeCodexOutputCapture(stderr);
+  const processError =
+    timeoutError ??
+    spawnError ??
+    (outputLastMessage && (terminating || signal)
+      ? new Error(`Codex process interrupted by ${signal ?? "signal"}`)
+      : undefined) ??
+    (status === 0 && (stdinError as NodeJS.ErrnoException | undefined)?.code === "EPIPE"
+      ? undefined
+      : stdinError);
   const finalMessage = outputLastMessage?.finish();
   let outputLastMessageError = finalMessage?.error;
   if (
+    !processError &&
     !outputLastMessageError &&
     finalMessage?.text !== undefined &&
     options.outputLastMessagePath
   ) {
     try {
-      const bytes = Buffer.byteLength(finalMessage.text);
-      writeFileSync(options.outputLastMessagePath, finalMessage.text, {
-        encoding: "utf8",
-        flag: "wx",
-        mode: 0o600,
-      });
-      const metadata = lstatSync(options.outputLastMessagePath);
-      if (!metadata.isFile() || metadata.size !== bytes) {
-        throw new Error("managed Codex result is not an exact regular file");
-      }
+      writeManagedResult(options.outputLastMessagePath, finalMessage.text);
     } catch (error) {
       outputLastMessageError = error instanceof Error ? error : new Error(String(error));
     }
   }
-  const processError =
-    timeoutError ??
-    spawnError ??
-    (status === 0 && (stdinError as NodeJS.ErrnoException | undefined)?.code === "EPIPE"
-      ? undefined
-      : stdinError) ??
-    outputLastMessageError;
+  const error = processError ?? outputLastMessageError;
   writeFileSync(
     options.resultPath,
     JSON.stringify({
       status,
       signal,
-      ...(processError ? { error: serializedError(processError) } : {}),
+      // A native failure can also omit the final stdout frame. Preserve whether
+      // the process itself failed so callers cannot trust interrupted stderr.
+      ...(error ? { error: serializedError(error), processError: Boolean(processError) } : {}),
       stdout: codexOutputTail(stdout),
       stderr: codexOutputTail(stderr),
     }),
@@ -118,6 +123,28 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     child.stdin.end();
     forceKillTimer = terminateCodexProcessTree(child, signal);
   });
+}
+
+function writeManagedResult(path: string, text: string): void {
+  const file = openSync(path, "wx", 0o600);
+  const owned = fstatSync(file);
+  try {
+    writeFileSync(file, text, "utf8");
+    const metadata = fstatSync(file);
+    if (!metadata.isFile() || metadata.size !== Buffer.byteLength(text)) {
+      throw new Error("managed Codex result is not an exact regular file");
+    }
+  } catch (error) {
+    // A failed exclusive write may leave a partial file. Remove only that inode,
+    // never a pre-existing collision or a path replaced by another writer.
+    try {
+      const current = lstatSync(path);
+      if (current.dev === owned.dev && current.ino === owned.ino) rmSync(path);
+    } catch {}
+    throw error;
+  } finally {
+    closeSync(file);
+  }
 }
 
 function serializedError(error: Error): { message: string; code?: string } {

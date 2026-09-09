@@ -5,8 +5,8 @@ import { join, resolve } from "node:path";
 
 import type { LiveProofPlan } from "../clawsweeper-types.js";
 import {
-  materializePullRequestReviewTree,
   removePullRequestReviewTree,
+  type ReviewTreeMaterializationOptions,
 } from "../clawsweeper-review-blobs.js";
 import type { RepositoryProfile } from "../repository-profiles.js";
 import { sanitizedLiveProofEnvironment } from "./environment.js";
@@ -39,6 +39,7 @@ export interface ReviewLiveProofDependencies {
   env?: NodeJS.ProcessEnv;
   frontMatterValue: (markdown: string, key: string) => string | undefined;
   log?: (message: string) => void;
+  materializePullRequestReviewTree: (options: ReviewTreeMaterializationOptions) => boolean;
   reportLiveProofPlan: (markdown: string) => LiveProofPlan;
   repositoryProfileFor: (repo: string) => RepositoryProfile;
 }
@@ -114,7 +115,7 @@ function executeReviewLiveProof(
   copyFileSync(recordPath, copiedRecordPath);
   try {
     if (
-      !materializePullRequestReviewTree({
+      !dependencies.materializePullRequestReviewTree({
         targetDir: resolve(options.checkoutPath),
         worktreeDir: worktree,
         itemNumber: item,

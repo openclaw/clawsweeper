@@ -33,13 +33,12 @@ if (reviewSchema) {
     evidence: ["Hermetic Codex simulator reviewed the repaired checkout."],
   });
   process.stdout.write(
-    `${JSON.stringify({
-      type: "item.completed",
-      item: {
-        type: "agent_message",
-        text: decision,
-      },
-    })}\n`,
+    args.includes("--json")
+      ? `${JSON.stringify({
+          type: "item.completed",
+          item: { type: "agent_message", text: decision },
+        })}\n`
+      : `${decision}\n`,
   );
   if (outputPath) {
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
@@ -71,7 +70,11 @@ if (reviewSchema) {
   );
 }
 
-process.stdout.write(`${JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1 } })}\n`);
+if (args.includes("--json")) {
+  process.stdout.write(
+    `${JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1 } })}\n`,
+  );
+}
 
 function optionValue(name) {
   const index = args.indexOf(name);

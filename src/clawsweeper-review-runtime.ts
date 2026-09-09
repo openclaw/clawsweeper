@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import {
+  agentRunner,
   reviewNetworkCapability,
   runAgentCheckoutInspection,
   runAgentProcess,
@@ -49,9 +50,12 @@ import type {
 import { codexLoginConfig, redactInternalCodexModel } from "./codex-env.js";
 import { codexProcessErrorCode, type CodexProcessResult } from "./codex-process.js";
 import {
+  codexHumanFailureDetail,
+  codexHumanRetryHint,
   codexJsonlFailureDetail,
   codexTerminalErrorDetail,
   isRetryableCodexErrorMessage,
+  isRetryableCodexTransportError,
   isTerminalCodexErrorMessage,
 } from "./codex-transient.js";
 import { UserFacingCommandError } from "./command.js";
@@ -600,24 +604,31 @@ ${extra}
     return buildReviewPrompt(item, context, git, additionalPrompt, runtimeHints).text;
   }
 
-  function codexFailureReason(detail: string, errorCode?: string | null): string {
+  function codexFailureReason(detail: string, errorCode?: string | null, retryHint = ""): string {
     if (detail.includes("Codex dirtied the OpenClaw checkout")) return "dirty checkout";
     if (detail.includes("did not produce output")) return "missing structured output";
     if (detail.includes("invalid JSON")) return "invalid structured output";
     if (errorCode === "ENOBUFS") return "output buffer overflow";
     if (isTerminalCodexErrorMessage(detail)) return "model unavailable or access denied";
     if (detail.includes("timed out") || detail.includes("ETIMEDOUT")) return "timeout";
-    if (
-      /rate limit reached|tokens per min|\bTPM\b|requests per min|\b429\b|temporarily unavailable|overloaded|please try again in \d+(?:ms|s)/i.test(
-        detail,
-      )
-    ) {
-      return "retryable codex transport failure (capacity)";
-    }
-    if (
-      /ECONNRESET|EAI_AGAIN|ENOTFOUND|socket hang up|fetch failed|transport failure/i.test(detail)
-    ) {
-      return "retryable codex transport failure (network)";
+    for (const transientDetail of [
+      detail,
+      isRetryableCodexTransportError(retryHint) ? retryHint : "",
+    ]) {
+      if (
+        /rate limit reached|tokens per min|\bTPM\b|requests per min|\b429\b|temporarily unavailable|overloaded|please try again in \d+(?:ms|s)/i.test(
+          transientDetail,
+        )
+      ) {
+        return "retryable codex transport failure (capacity)";
+      }
+      if (
+        /ECONNRESET|EAI_AGAIN|ENOTFOUND|socket hang up|fetch failed|transport failure/i.test(
+          transientDetail,
+        )
+      ) {
+        return "retryable codex transport failure (network)";
+      }
     }
     return "codex execution failed";
   }
@@ -648,19 +659,23 @@ ${extra}
     detail: string,
     stdout = "",
     stderr = "",
-    processResult: { errorCode?: string | null; signal?: NodeJS.Signals | null } = {},
+    processResult: {
+      errorCode?: string | null;
+      signal?: NodeJS.Signals | null;
+      diagnostic?: string;
+      retryHint?: string;
+    } = {},
   ): Decision {
     const failureDetail = redactInternalCodexModel(detail || "No failure detail.");
     const safeStdout = redactedOutputTail(stdout || "No stdout captured.");
     const safeStderr = redactedOutputTail(stderr || "No stderr captured.");
-    const structuredError = redactInternalCodexModel(codexJsonlFailureDetail(stdout));
-    const terminalError =
-      codexTerminalErrorDetail(structuredError) ||
-      (!structuredError ? codexTerminalErrorDetail(safeStderr) : "");
-    const processFailureDetail = [failureDetail, structuredError, terminalError]
-      .filter(Boolean)
-      .join("\n");
-    const reason = codexFailureReason(processFailureDetail, processResult.errorCode);
+    // runCodex owns runner-specific diagnostic trust. Captured model output is
+    // evidence only, even when it resembles a native JSONL error.
+    const diagnostic = redactInternalCodexModel(processResult.diagnostic ?? "");
+    const retryHint = redactedOutputTail(processResult.retryHint, 4096);
+    const terminalError = codexTerminalErrorDetail(diagnostic);
+    const processFailureDetail = [failureDetail, diagnostic].filter(Boolean).join("\n");
+    const reason = codexFailureReason(processFailureDetail, processResult.errorCode, retryHint);
     return {
       decision: "keep_open",
       closeReason: "none",
@@ -676,6 +691,15 @@ ${extra}
           label: "codex stderr",
           detail: trimMiddle(safeStderr, 3000),
         }),
+        ...(retryHint
+          ? [
+              evidenceEntry({
+                label: "codex retry hint",
+                detail:
+                  "Non-authoritative transient hint in captured stderr; used only for bounded retry eligibility.",
+              }),
+            ]
+          : []),
         evidenceEntry({
           label: "codex stdout",
           detail: trimMiddle(safeStdout, 2000),
@@ -806,7 +830,12 @@ ${extra}
     detail: string,
     stdout = "",
     stderr = "",
-    processResult: { errorCode?: string | null; signal?: NodeJS.Signals | null } = {},
+    processResult: {
+      errorCode?: string | null;
+      signal?: NodeJS.Signals | null;
+      diagnostic?: string;
+      retryHint?: string;
+    } = {},
   ): Decision {
     return codexFailureDecision(status, detail, stdout, stderr, processResult);
   }
@@ -835,6 +864,8 @@ ${extra}
     readonly errorCode: string | null;
     readonly signal: NodeJS.Signals | null;
     readonly retryable: boolean;
+    readonly diagnostic: string;
+    readonly retryHint?: string;
 
     constructor(options: {
       message: string;
@@ -844,6 +875,8 @@ ${extra}
       errorCode?: string | null;
       signal?: NodeJS.Signals | null;
       retryable?: boolean;
+      diagnostic?: string;
+      retryHint?: string;
     }) {
       super(options.message);
       this.name = "CodexReviewError";
@@ -853,6 +886,8 @@ ${extra}
       this.errorCode = options.errorCode ?? null;
       this.signal = options.signal ?? null;
       this.retryable = options.retryable ?? false;
+      this.diagnostic = options.diagnostic ?? "";
+      if (options.retryHint !== undefined) this.retryHint = options.retryHint;
     }
   }
 
@@ -1177,17 +1212,38 @@ ${extra}
           ? `Codex review did not produce output for #${options.item.number}: Codex exited successfully but did not write ${outputPath}.\n${stdout || "No stdout."}`
           : `Codex review failed for #${options.item.number} with exit ${result.status ?? "unknown"}.`;
     }
-    const structuredError = redactInternalCodexModel(codexJsonlFailureDetail(result.stdout));
-    const trustedProcessError = structuredError || stderr;
+    const plainNative = agentRunner(codexEnv) === "codex" && !reviewProof;
+    const nativeFailureEligible =
+      plainNative &&
+      !hasOutput &&
+      !result.stdout &&
+      (!result.error || result.processError === false) &&
+      result.status !== null &&
+      result.status !== 0 &&
+      result.signal === null;
+    const trustedProcessError = redactInternalCodexModel(
+      plainNative
+        ? nativeFailureEligible
+          ? codexHumanFailureDetail(result.stderr)
+          : ""
+        : codexJsonlFailureDetail(result.stdout) || stderr,
+    );
+    const retryHint =
+      nativeFailureEligible && !trustedProcessError
+        ? redactedOutputTail(codexHumanRetryHint(result.stderr), 4096)
+        : "";
     const processFailureDetail = [failureDetail, trustedProcessError].filter(Boolean).join("\n");
-    const terminalFailure = isTerminalCodexErrorMessage(processFailureDetail);
+    const terminalFailure = isTerminalCodexErrorMessage(
+      plainNative ? trustedProcessError : processFailureDetail,
+    );
     const retryable =
       !terminalFailure &&
       (result.signal !== null ||
         (result.status === 0 && !hasOutput) ||
         isRetryableCodexErrorMessage(processFailureDetail) ||
+        isRetryableCodexTransportError(retryHint) ||
         /\b(?:ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENOTFOUND|socket hang up|fetch failed|transport failure)\b/i.test(
-          processFailureDetail,
+          `${errorCode ?? ""}\n${processFailureDetail}`,
         ));
     throw new CodexReviewError({
       message: processFailureDetail || `Codex review failed for #${options.item.number}.`,
@@ -1197,6 +1253,8 @@ ${extra}
       errorCode,
       signal: result.signal,
       retryable,
+      diagnostic: plainNative ? trustedProcessError : trustedProcessError || failureDetail,
+      ...(retryHint ? { retryHint } : {}),
     });
   }
 

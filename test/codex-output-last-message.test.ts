@@ -3,127 +3,95 @@ import test from "node:test";
 
 import { OutputLastMessageParser } from "../dist/codex-output-last-message.js";
 
-function event(type: string, text: string): string {
-  return JSON.stringify({ type, text });
-}
+test("managed result parser removes only the native final newline frame", () => {
+  for (const text of ["", "answer", " \r\nanswer\t \r\n", "\ufeffanswer", "answer\r"]) {
+    const parser = new OutputLastMessageParser(Math.max(1, Buffer.byteLength(text)));
+    parser.append(Buffer.from(`${text}\n`));
 
-function agentMessage(text: string): string {
-  return JSON.stringify({
-    type: "item.completed",
-    item: { id: "item_0", type: "agent_message", text },
-  });
-}
-
-const turnCompleted = JSON.stringify({
-  type: "turn.completed",
-  usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 },
-});
-const turnFailed = JSON.stringify({ type: "turn.failed", error: { message: "turn failed" } });
-
-test("managed result parser accepts multiple bounded lines in one larger chunk", () => {
-  const parser = new OutputLastMessageParser(8);
-  const diagnostic = event("diagnostic", "x".repeat(30_000));
-  const payload = `${diagnostic}\n${diagnostic}\n${diagnostic}\n${agentMessage("accepted")}\n${turnCompleted}\n`;
-  assert.ok(Buffer.byteLength(payload) > parser.maxLineBytes);
-
-  parser.append(Buffer.from(payload));
-
-  assert.deepEqual(parser.finish(), { text: "accepted" });
+    assert.deepEqual(parser.finish(), { text });
+  }
 });
 
-test("managed result parser combines a prefix and copies an unfinished tail", () => {
+test("managed result parser preserves UTF-8 across arbitrary chunk boundaries", () => {
+  const text = "\u00e9 \ud83d\ude80";
+  const parser = new OutputLastMessageParser(Buffer.byteLength(text));
+  for (const byte of Buffer.from(`${text}\n`)) parser.append(Buffer.from([byte]));
+
+  assert.deepEqual(parser.finish(), { text });
+});
+
+test("managed result parser owns its retained input bytes", () => {
   const parser = new OutputLastMessageParser(16);
-  const diagnostic = event("diagnostic", "prefix");
-  const final = agentMessage("tail copied");
-  parser.append(Buffer.from(diagnostic.slice(0, 8)));
-  const middle = Buffer.from(
-    `${diagnostic.slice(8)}\n${event("diagnostic", "middle")}\n${final.slice(0, 20)}`,
-  );
-  parser.append(middle);
-  middle.fill(0);
-  parser.append(Buffer.from(`${final.slice(20)}\n${turnCompleted}\n`));
+  const first = Buffer.from("copied ");
+  parser.append(first);
+  first.fill(0);
+  parser.append(Buffer.from("answer\n"));
 
-  assert.deepEqual(parser.finish(), { text: "tail copied" });
+  assert.deepEqual(parser.finish(), { text: "copied answer" });
 });
 
-test("managed result parser requires terminal success after the agent message", () => {
-  const parser = new OutputLastMessageParser(16);
-  const payload = [
-    JSON.stringify({ type: "thread.started", thread_id: "thread-1" }),
-    JSON.stringify({ type: "turn.started" }),
-    agentMessage("final answer"),
-    turnCompleted,
-    "",
-  ].join("\n");
-  for (const byte of Buffer.from(payload)) parser.append(Buffer.from([byte]));
+test("managed result parser accepts the exact payload cap plus one framing byte", () => {
+  const parser = new OutputLastMessageParser(4);
+  parser.append(Buffer.from("\ud83d\ude80\n"));
 
-  assert.deepEqual(parser.finish(), { text: "final answer" });
+  assert.deepEqual(parser.finish(), { text: "\ud83d\ude80" });
 });
 
-for (const [name, events, message] of [
-  ["failed turn", [agentMessage("partial answer"), turnFailed], /turn failed/],
-  ["failed turn before a message", [turnFailed, agentMessage("partial answer")], /turn failed/],
-  [
-    "failed turn followed by terminal success",
-    [agentMessage("partial answer"), turnFailed, turnCompleted],
-    /turn failed/,
-  ],
-  ["interrupted or incomplete turn", [agentMessage("partial answer")], /completed turn/],
-  [
-    "stream error without terminal success",
-    [agentMessage("partial answer"), JSON.stringify({ type: "error", message: "stream failed" })],
-    /completed turn/,
-  ],
-  [
-    "nested terminal-success lookalike",
-    [agentMessage("partial answer"), JSON.stringify({ payload: JSON.parse(turnCompleted) })],
-    /completed turn/,
-  ],
+test("managed result parser rejects cap plus one payload byte before publication", () => {
+  const parser = new OutputLastMessageParser(4);
+  parser.append(Buffer.from("a\ud83d\ude80"));
+  parser.append(Buffer.from("\n"));
+
+  const result = parser.finish();
+  assert.match(result.error?.message ?? "", /exceeded its 4-byte limit/);
+  assert.equal(result.text, undefined);
+  assert.deepEqual(parser.finish(), result);
+});
+
+for (const [name, bytes] of [
+  ["no output", Buffer.alloc(0)],
+  ["missing final frame", Buffer.from("answer")],
+  ["carriage return without a newline", Buffer.from("answer\r")],
 ] as const) {
-  test(`managed result parser does not publish a message from a ${name}`, () => {
+  test(`managed result parser rejects ${name}`, () => {
     const parser = new OutputLastMessageParser(16);
-    parser.append(Buffer.from(`${events.join("\n")}\n`));
+    parser.append(bytes);
 
     const result = parser.finish();
-    assert.match(result.error?.message ?? "", message);
+    assert.match(result.error?.message ?? "", /newline frame/);
     assert.equal(result.text, undefined);
-    assert.deepEqual(parser.finish(), result);
   });
 }
 
-test("managed result parser does not replace a completed result with a later item", () => {
-  const parser = new OutputLastMessageParser(16);
-  parser.append(
-    Buffer.from(`${agentMessage("completed")}\n${turnCompleted}\n${agentMessage("late item")}\n`),
-  );
+for (const [name, bytes] of [
+  ["invalid leading byte", Buffer.from([0xff, 0x0a])],
+  ["incomplete multi-byte character", Buffer.from([0xc3, 0x0a])],
+  ["invalid bytes after a valid prefix", Buffer.from([0x6f, 0x6b, 0xff, 0x0a])],
+  ["overlong encoding", Buffer.from([0xc0, 0xaf, 0x0a])],
+] as const) {
+  test(`managed result parser rejects ${name}`, () => {
+    const parser = new OutputLastMessageParser(16);
+    parser.append(bytes);
 
-  assert.deepEqual(parser.finish(), { text: "completed" });
+    const result = parser.finish();
+    assert.match(result.error?.message ?? "", /invalid UTF-8/);
+    assert.equal(result.text, undefined);
+  });
+}
+
+test("managed result parser does not reinterpret JSONL-looking payload text", () => {
+  const text = '{"type":"turn.failed","error":{"message":"quoted example"}}';
+  const parser = new OutputLastMessageParser(Buffer.byteLength(text));
+  parser.append(Buffer.from(`${text}\n`));
+
+  assert.deepEqual(parser.finish(), { text });
 });
 
-test("managed result parser preserves UTF-8 and rejects malformed bytes after terminal success", () => {
-  const parser = new OutputLastMessageParser(2);
-  for (const byte of Buffer.from(`${agentMessage("\u00e9")}\n${turnCompleted}\n`)) {
-    parser.append(Buffer.from([byte]));
-  }
-  assert.deepEqual(parser.finish(), { text: "\u00e9" });
+test("managed result parser finishes once and ignores later input", () => {
+  const parser = new OutputLastMessageParser(8);
+  parser.append(Buffer.from("final\n"));
+  assert.deepEqual(parser.finish(), { text: "final" });
+  parser.append(Buffer.from("late output\n"));
 
-  const malformed = new OutputLastMessageParser(2);
-  malformed.append(Buffer.from(`${agentMessage("ok")}\n${turnCompleted}\n`));
-  malformed.append(Buffer.from([0xff, 0x0a]));
-  assert.match(malformed.finish().error?.message ?? "", /malformed line/);
-  assert.equal(malformed.finish().text, undefined);
-});
-
-test("managed result parser rejects oversized and unfinished records", () => {
-  const oversized = new OutputLastMessageParser(1);
-  oversized.append(Buffer.from(`${"x".repeat(oversized.maxLineBytes + 1)}\n`));
-  assert.match(oversized.finish().error?.message ?? "", /JSONL line exceeded/);
-
-  const unfinished = new OutputLastMessageParser(8);
-  unfinished.append(Buffer.from(agentMessage("partial")));
-  assert.match(unfinished.finish().error?.message ?? "", /partial line/);
-
-  const unfinishedSuccess = new OutputLastMessageParser(8);
-  unfinishedSuccess.append(Buffer.from(`${agentMessage("partial")}\n${turnCompleted}`));
-  assert.match(unfinishedSuccess.finish().error?.message ?? "", /partial line/);
+  assert.deepEqual(parser.finish(), { text: "final" });
 });

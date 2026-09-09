@@ -1462,6 +1462,8 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               {
                 errorCode: error.errorCode,
                 signal: error.signal,
+                diagnostic: error.diagnostic,
+                ...(error.retryHint ? { retryHint: error.retryHint } : {}),
               },
             );
           } else {
