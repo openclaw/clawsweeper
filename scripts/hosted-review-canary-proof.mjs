@@ -1,21 +1,453 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import {
+  appendFileSync,
   closeSync,
   constants,
   fstatSync,
+  linkSync,
   lstatSync,
   openSync,
   opendirSync,
+  readFileSync,
   readSync,
   realpathSync,
+  rmSync,
+  writeFileSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { gunzipSync } from "node:zlib";
+import { terminateCodexProcessTree } from "../dist/codex-spawn.js";
 
 export const HOSTED_REVIEW_ROLLOUT_MAX_BYTES = 4 * 1024 * 1024;
 const ROLLOUT_RECORD_MAX_BYTES = 512 * 1024;
 const ROLLOUT_MAX_RECORDS = 4096;
 const CODEX_VERSION = "0.153.3";
+export const HOSTED_MULTILINE_PROVIDER_ERROR = "Rate limit reached.\nPlease try again in 1ms.";
+// Codex 0.153.3 adds the protocol category, then human rendering adds ERROR.
+export const HOSTED_MULTILINE_RETRY_HINT = `ERROR: rate limit exceeded: ${HOSTED_MULTILINE_PROVIDER_ERROR}`;
+
+export async function withHostedFixtureSignals(refuse, operation) {
+  let cancelled = false;
+  const onSignal = () => {
+    if (cancelled) return;
+    cancelled = true;
+    refuse();
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+  try {
+    const result = await operation();
+    // The owner's awaited finally has finished; a signal during it still rejects proof.
+    assert.equal(cancelled, false, "Hosted fixture cancelled.");
+    return result;
+  } finally {
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+  }
+}
+
+export function hostedProcessIdentity(pid) {
+  assert.ok(Number.isSafeInteger(pid) && pid > 1);
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const fields = stat
+      .slice(stat.lastIndexOf(")") + 2)
+      .trim()
+      .split(/\s+/);
+    assert.match(fields[19], /^\d+$/);
+    return { pid, pgid: Number(fields[2]), start: fields[19] };
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+export function recordHostedLifecycle(path, record) {
+  const text = JSON.stringify(record) + "\n";
+  assert.ok(Buffer.byteLength(text) <= 2048);
+  try {
+    assert.ok(lstatSync(path).isFile() && lstatSync(path).size <= 14 * 1024);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  appendFileSync(path, text, { mode: 0o600 });
+}
+
+export function readHostedLifecycle(path, nonce) {
+  const file = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    assert.ok(fstatSync(file).isFile());
+    const bytes = Buffer.alloc(16 * 1024 + 1);
+    const size = readSync(file, bytes, 0, bytes.length, 0);
+    assert.ok(size > 0 && size < bytes.length);
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, size));
+    assert.ok(text.endsWith("\n"));
+    const records = text.slice(0, -1).split("\n").map(JSON.parse);
+    assert.ok(records.length <= 8);
+    for (const record of records) assert.equal(record.fixtureNonce, nonce);
+    return records;
+  } finally {
+    closeSync(file);
+  }
+}
+
+function hostedGroupGone(identity) {
+  assert.ok(Number.isSafeInteger(identity.pid) && identity.pid > 1);
+  assert.equal(identity.pgid, identity.pid);
+  assert.match(identity.start, /^\d+$/);
+  try {
+    process.kill(-identity.pgid, 0);
+    return false;
+  } catch (error) {
+    if (error.code === "ESRCH") return true;
+    throw error;
+  }
+}
+
+export function assertHostedProcessGroupGone(identity) {
+  assert.ok(hostedGroupGone(identity), "hosted process group still exists");
+}
+
+async function awaitHostedCondition(condition, milliseconds) {
+  const end = Date.now() + milliseconds;
+  while (!condition()) {
+    assert.ok(Date.now() < end, "hosted fixture did not become quiescent");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+export async function stopHostedNativeGroup(identity) {
+  assert.equal(identity.pid, identity.pgid);
+  for (const signal of ["SIGTERM", "SIGKILL"]) {
+    if (hostedGroupGone(identity)) return;
+    assert.deepEqual(hostedProcessIdentity(identity.pid), identity);
+    // Revalidate separately before escalation; the owner's timer alone cannot do that.
+    clearTimeout(terminateCodexProcessTree({ pid: identity.pid }, signal));
+    const until = Date.now() + (signal === "SIGTERM" ? 1000 : 2000);
+    while (!hostedGroupGone(identity) && Date.now() < until) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  assert.ok(hostedGroupGone(identity), "hosted native process group survived cleanup");
+}
+
+export function assertHostedNativeQuiescent(records) {
+  assert.ok(records.length > 0 && records.length <= 4);
+  for (const record of records) {
+    assert.equal(record.kind, "native");
+    assert.equal(record.identity.pid, record.identity.pgid);
+    assert.ok(hostedGroupGone(record.identity), "hosted native group still exists");
+  }
+}
+
+export function recordHostedTerminalPublication(path, fixtureNonce, publication, values) {
+  assert.ok(Buffer.byteLength(publication) <= 512);
+  const fields = publication.split("|");
+  assert.equal(fields[0], "v1");
+  assert.equal(fields[1], "armed");
+  const [socket, serverPid, sessionId] = values.tmux.split(",");
+  assert.match(sessionId, /^\d+$/);
+  const server = hostedProcessIdentity(Number(serverPid));
+  assert.ok(server);
+  const socketStat = lstatSync(socket);
+  assert.ok(socketStat.isSocket());
+  const lease = lstatSync(values.lease);
+  assert.ok(lease.isFile() && !lease.isSymbolicLink());
+  assert.equal(`${lease.dev}:${lease.ino}`, fields[5]);
+  recordHostedLifecycle(path, {
+    kind: "terminal",
+    fixtureNonce,
+    publication: publication + "\n",
+    socket,
+    socketIdentity: `${socketStat.dev}:${socketStat.ino}`,
+    server,
+    session: `$${sessionId}`,
+    lease: values.lease,
+    request: values.request,
+    result: values.result,
+    watchdog: hostedProcessIdentity(Number(fields[6])),
+  });
+}
+
+export function hostedTerminalObserverSource(path, nonce) {
+  const quote = (text) => "'" + text.replaceAll("'", "'\\''") + "'";
+  const observation = `
+import { recordHostedTerminalPublication } from ${JSON.stringify(import.meta.url)};
+recordHostedTerminalPublication(${JSON.stringify(path)}, ${JSON.stringify(nonce)}, process.argv[1], {
+  tmux: process.argv[2], lease: process.argv[3], request: process.argv[4], result: process.argv[5],
+});
+`;
+  // The watchdog cannot finish before this armed-publication callback returns.
+  // Done is observed at the controller's read boundary, before owner teardown.
+  return `
+mv() {
+  local publication= watched=0 status
+  if [ "$#" -eq 4 ] && [ -n "\${result_temporary-}" ] && [ "$3" = "$result_temporary" ] && [ "$4" = "$result" ]; then
+    IFS= read -r publication <"$3" && watched=1
+  fi
+  command mv "$@"
+  status=$?
+  if [ "$status" -eq 0 ] && [ "$watched" -eq 1 ]; then
+    case "$publication" in
+      "v1|armed|"*) ${quote(process.execPath)} --input-type=module --eval ${quote(observation)} "$publication" "\${TMUX-}" "$lease_path" "$request" "$result" >/dev/null 2>&1 || : ;;
+    esac
+  fi
+  return "$status"
+}
+`;
+}
+
+export function observeHostedTerminalRead(path, nonce, args, count) {
+  const [descriptor, buffer, offset, length, position] = args;
+  if (
+    !Number.isSafeInteger(descriptor) ||
+    !Buffer.isBuffer(buffer) ||
+    buffer.length !== 513 ||
+    offset !== 0 ||
+    length !== 513 ||
+    position !== 0 ||
+    count <= 0 ||
+    count > 512
+  )
+    return;
+  const publication = buffer.subarray(0, count).toString("utf8");
+  if (!publication.startsWith("v1|done|") || !publication.endsWith("|ok|0\n")) return;
+  const records = readHostedLifecycle(path, nonce);
+  if (records.length === 2) {
+    assertHostedTerminalDone(records);
+    return;
+  }
+  assert.equal(records.length, 1);
+  const armed = records[0];
+  assert.ok(fstatSync(descriptor).isFile());
+  assert.equal(realpathSync(`/proc/self/fd/${descriptor}`), armed.result);
+  const { watchdog: _, ...identity } = armed;
+  const done = { ...identity, publication };
+  assertHostedTerminalDone([armed, done]);
+  recordHostedLifecycle(path, done);
+}
+
+export function hostedBlobPreloadSource({ entrypoint, startsPath, terminalReceipts, nonce }) {
+  return `import fs from "node:fs";
+import { tmpdir } from "node:os";
+import { syncBuiltinESMExports } from "node:module";
+import { observeHostedTerminalRead } from ${JSON.stringify(import.meta.url)};
+if (process.argv[1] === ${JSON.stringify(entrypoint)} &&
+    ["live-proof-review", "live-proof"].includes(process.argv[2])) {
+  fs.appendFileSync(${JSON.stringify(startsPath)}, JSON.stringify({
+    command: process.argv[2], args: process.argv.slice(3), temporaryRoot: tmpdir(),
+  }) + "\\n", { mode: 0o600 });
+}
+if (process.argv[1] === ${JSON.stringify(entrypoint)} && process.argv[2] === "live-proof") {
+  const original = fs.readSync;
+  let observing = false;
+  fs.readSync = function(...args) {
+    const count = original.apply(this, args);
+    if (!observing) {
+      observing = true;
+      try { observeHostedTerminalRead(${JSON.stringify(terminalReceipts)}, ${JSON.stringify(nonce)}, args, count); }
+      catch {}
+      finally { observing = false; }
+    }
+    return count;
+  };
+  syncBuiltinESMExports();
+}
+`;
+}
+
+export function assertHostedTerminalDone(records) {
+  assert.equal(records.length, 2);
+  const [armed, done] = records;
+  assert.equal(armed.kind, "terminal");
+  assert.equal(done.kind, "terminal");
+  assert.equal(done.fixtureNonce, armed.fixtureNonce);
+  const fields = armed.publication.trimEnd().split("|");
+  assert.equal(fields.length, 7);
+  assert.equal(fields[0], "v1");
+  assert.equal(fields[1], "armed");
+  assert.match(fields[2], /^[0-9a-f-]{36}$/);
+  assert.match(fields[3], /^[1-9]\d+$/);
+  assert.match(fields[4], /^\/dev\/[^\s|]+$/);
+  assert.match(fields[5], /^\d+:\d+$/);
+  assert.ok(armed.watchdog && armed.watchdog.pid === Number(fields[6]));
+  assert.equal(armed.publication, fields.join("|") + "\n");
+  for (const key of ["socket", "socketIdentity", "session", "lease", "request", "result"]) {
+    assert.equal(done[key], armed[key]);
+  }
+  assert.deepEqual(done.server, armed.server);
+  const identity = fields.slice(2, 6).join("|");
+  assert.ok(
+    ["controller", "pane-death"].some(
+      (trigger) => done.publication === `v1|done|${identity}|${trigger}|ok|0\n`,
+    ),
+  );
+  return armed;
+}
+
+export async function assertHostedTerminalQuiescent(records) {
+  const armed = assertHostedTerminalDone(records);
+  await awaitHostedCondition(() => {
+    if (hostedProcessIdentity(armed.server.pid)) return false;
+    try {
+      lstatSync(armed.socket);
+      return false;
+    } catch (error) {
+      if (error.code === "ENOENT") return true;
+      throw error;
+    }
+  }, 2000);
+}
+
+export async function stopHostedTerminal({ path, nonce, tmux }) {
+  let records = readHostedLifecycle(path, nonce);
+  const armed = records[0];
+  assert.equal(armed.kind, "terminal");
+  const fields = armed.publication.trimEnd().split("|");
+  assert.equal(fields[0], "v1");
+  assert.equal(fields[1], "armed");
+  assert.equal(fields.length, 7);
+  const root = realpathSync(dirname(path));
+  assert.ok(armed.lease.endsWith(".lease"));
+  const directory = realpathSync(dirname(armed.lease));
+  assert.ok(directory === root || directory.startsWith(root + sep));
+  const prefix = armed.lease.slice(0, -".lease".length);
+  assert.equal(armed.request, prefix + ".start");
+  assert.equal(armed.result, prefix + ".cleanup.result");
+  const identity = fields.slice(2, 6).join("|");
+  const command = (...args) =>
+    execFileSync(tmux, ["-S", armed.socket, ...args], {
+      encoding: "utf8",
+      timeout: 2000,
+      maxBuffer: 4096,
+    }).trim();
+  if (records.length === 1) {
+    assert.deepEqual(hostedProcessIdentity(armed.server.pid), armed.server);
+    const socket = lstatSync(armed.socket);
+    assert.ok(socket.isSocket());
+    assert.equal(`${socket.dev}:${socket.ino}`, armed.socketIdentity);
+    assert.deepEqual(hostedProcessIdentity(armed.watchdog.pid), armed.watchdog);
+    const lease = lstatSync(armed.lease);
+    assert.ok(lease.isFile() && !lease.isSymbolicLink());
+    assert.equal(`${lease.dev}:${lease.ino}`, fields[5]);
+    assert.equal(
+      command("display-message", "-p", "-t", `${armed.session}:0.0`, "#{pane_pid}|#{pane_tty}"),
+      `${fields[3]}|${fields[4]}`,
+    );
+    const request = `v1|cleanup|${identity}\n`;
+    const temporary = `${armed.request}.hosted-cleanup`;
+    writeFileSync(temporary, request, { mode: 0o600, flag: "wx" });
+    try {
+      try {
+        linkSync(temporary, armed.request);
+      } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+        assert.equal(readFileSync(armed.request, "utf8"), request);
+      }
+    } finally {
+      rmSync(temporary);
+    }
+    await awaitHostedCondition(() => {
+      records = readHostedLifecycle(path, nonce);
+      return records.length === 2;
+    }, 12_000);
+  }
+  assertHostedTerminalDone(records);
+  if (hostedProcessIdentity(armed.server.pid)) {
+    assert.deepEqual(hostedProcessIdentity(armed.server.pid), armed.server);
+    const socket = lstatSync(armed.socket);
+    assert.ok(socket.isSocket());
+    assert.equal(`${socket.dev}:${socket.ino}`, armed.socketIdentity);
+    assert.equal(
+      command("display-message", "-p", "-t", `${armed.session}:0.0`, "#{pane_pid}|#{pane_tty}"),
+      `${fields[3]}|${fields[4]}`,
+    );
+    command("kill-session", "-t", armed.session);
+  }
+  await assertHostedTerminalQuiescent(records);
+}
+
+export function assertHostedBlobStarts(starts, repo, item, childCount, temporaryRoot) {
+  assert.equal(starts.length, childCount + 1);
+  assert.equal(starts[0].command, "live-proof-review");
+  for (const [index, start] of starts.entries()) {
+    assert.equal(start.command, index === 0 ? "live-proof-review" : "live-proof");
+    assert.equal(start.args[start.args.indexOf("--repo") + 1], repo);
+    assert.equal(start.args[start.args.indexOf("--item") + 1], String(item));
+    if (index === 0) {
+      assert.equal(start.temporaryRoot, temporaryRoot);
+    } else {
+      const outputIndex = start.args.indexOf("--output");
+      assert.ok(outputIndex >= 0);
+      const bundle = start.args[outputIndex + 1];
+      const scratch = dirname(bundle);
+      assert.equal(dirname(scratch), temporaryRoot);
+      assert.ok(basename(scratch).startsWith(`clawsweeper-live-proof-${item}-`));
+      assert.equal(bundle, join(scratch, "bundle"));
+      assert.equal(start.temporaryRoot, join(scratch, "profile", "tmp"));
+    }
+  }
+}
+
+export async function assertHostedMultilineRequest(request, requestCount) {
+  assert.equal(requestCount, 1);
+  assert.equal(request.method, "POST");
+  assert.equal(request.url, "/v1/responses");
+  assert.equal(request.headers.authorization, undefined);
+  const encoding = request.headers["content-encoding"];
+  assert.ok(encoding === undefined || encoding === "gzip");
+  const maxBytes = 1024 * 1024;
+  let bytes = 0;
+  const chunks = [];
+  for await (const chunk of request) {
+    bytes += chunk.length;
+    assert.ok(bytes <= maxBytes);
+    chunks.push(chunk);
+  }
+  const compressed = Buffer.concat(chunks);
+  const decoded =
+    encoding === "gzip" ? gunzipSync(compressed, { maxOutputLength: maxBytes }) : compressed;
+  const body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(decoded));
+  assert.equal(body.model, "gpt-5.4");
+}
+
+export function summarizeHostedMultilineFailure(error, decision, observations) {
+  assert.ok(error instanceof Error);
+  assert.equal(error.constructor.name, "CodexReviewError");
+  assert.equal(error.name, "CodexReviewError");
+  assert.equal(error.status, 1);
+  assert.equal(error.signal, null);
+  assert.equal(error.errorCode, null);
+  assert.equal(error.stdout, "");
+  assert.equal(error.diagnostic, "");
+  assert.equal(error.retryHint, HOSTED_MULTILINE_RETRY_HINT);
+  assert.ok(error.stderr.includes(HOSTED_MULTILINE_RETRY_HINT));
+  assert.equal(error.retryable, true);
+  assert.ok(!error.message.includes(HOSTED_MULTILINE_PROVIDER_ERROR));
+  assert.equal(decision.codexTerminalFailure, false);
+  assert.match(decision.summary, /retryable codex transport failure \(capacity\)/);
+  assert.doesNotMatch(decision.summary, /model unavailable|access denied/);
+  assert.equal(
+    decision.evidence.some((entry) => entry.label === "codex terminal error"),
+    false,
+  );
+  assert.match(
+    decision.evidence.find((entry) => entry.label === "codex retry hint")?.detail ?? "",
+    /Non-authoritative/,
+  );
+  assert.equal(observations.resultExists, false);
+  assert.equal(observations.checkoutUnchanged, true);
+  return {
+    nativeMultilineFailureCount: 1,
+    nativeMultilineRetryEligible: true,
+    nativeMultilineTrustedDiagnosticEmpty: true,
+    nativeMultilineTerminalDenial: false,
+    nativeMultilineResultAbsent: true,
+    nativeMultilineCheckoutUnchanged: true,
+  };
+}
 
 export function assertMatchesJsonSchema(value, schema, path = "$") {
   if (schema.anyOf) {
