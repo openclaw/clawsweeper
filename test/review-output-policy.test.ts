@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -724,6 +724,91 @@ test("early review failures remain valid JSON", () => {
     error: { message: "scan failed" },
   });
 });
+
+test("built review CLI emits one complete small JSON failure", { timeout: 15_000 }, () => {
+  const env = { ...process.env, CLAWSWEEPER_ACTION_LEDGER_DISABLED: "1" };
+  delete env.EXACT_REVIEW_DECISION;
+  const result = spawnSync(
+    process.execPath,
+    [
+      "dist/clawsweeper.js",
+      "review",
+      "--local-only",
+      "--target-repo",
+      "openclaw/clawsweeper",
+      "--result-format",
+      "json",
+      "--output-retention",
+      "invalid",
+    ],
+    { env, encoding: "utf8", timeout: 10_000, maxBuffer: 64 * 1024 },
+  );
+  assert.equal(result.error, undefined);
+  assert.equal(result.signal, null);
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, "");
+  const expected = {
+    status: "failed",
+    retention: "none",
+    reports: [],
+    error: {
+      message: '--output-retention must be one of: none, summary, debug (received "invalid").',
+    },
+  };
+  assert.equal(result.stdout, JSON.stringify(expected) + "\n");
+  assert.deepEqual(JSON.parse(result.stdout), expected);
+});
+
+test(
+  "built review CLI drains large JSON failures through a delayed POSIX pipe reader",
+  { skip: process.platform === "win32", timeout: 15_000 },
+  () => {
+    // Escaping expands this small argv value beyond the pipe's capacity without
+    // approaching the OS argument limit or needing a dirty-checkout fixture.
+    const invalidRetention = "\u0001".repeat(12_000);
+    const env = { ...process.env, CLAWSWEEPER_ACTION_LEDGER_DISABLED: "1" };
+    delete env.EXACT_REVIEW_DECISION;
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        [
+          '"$1" dist/clawsweeper.js review --local-only --target-repo openclaw/clawsweeper --result-format json --output-retention "$2" | "$1" --eval "$3"',
+          'statuses=("${PIPESTATUS[@]}")',
+          'printf "pipeline-status:%s,%s\\n" "${statuses[0]}" "${statuses[1]}" >&2',
+          '[ "${statuses[0]}" -eq 1 ] && [ "${statuses[1]}" -eq 0 ]',
+        ].join("\n"),
+        "review-json-pipe",
+        process.execPath,
+        invalidRetention,
+        "setTimeout(() => process.stdin.pipe(process.stdout), 250);",
+      ],
+      { env, encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024 },
+    );
+    assert.equal(result.error, undefined);
+    assert.equal(result.signal, null);
+    assert.equal(result.status, 0);
+    assert.ok(
+      result.stderr === "pipeline-status:1,0\n",
+      "writer exits 1, reader exits 0, no stderr",
+    );
+    const expected = {
+      status: "failed",
+      retention: "none",
+      reports: [],
+      error: {
+        message: `--output-retention must be one of: none, summary, debug (received ${JSON.stringify(invalidRetention)}).`,
+      },
+    };
+    const expectedBytes = JSON.stringify(expected) + "\n";
+    assert.ok(Buffer.byteLength(expectedBytes) > 64 * 1024);
+    assert.ok(
+      result.stdout === expectedBytes,
+      "the pipe must receive exactly one complete JSON result",
+    );
+    assert.deepEqual(JSON.parse(result.stdout), expected);
+  },
+);
 
 test("legacy explicit-path failures report compatibility retention in JSON", () => {
   const lines: string[] = [];

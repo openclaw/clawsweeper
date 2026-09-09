@@ -783,11 +783,41 @@ const traceResponseKinds = new Set([
   "context_compaction",
   "other",
 ]);
+const traceToolCategories = new Set([
+  "native_exec",
+  "code_mode_exec",
+  "apply_patch",
+  "other_default",
+  "other_namespace",
+  "invalid",
+]);
+
+function traceCustomToolCategory({ name, namespace }) {
+  if (
+    typeof name !== "string" ||
+    (namespace !== undefined && namespace !== null && typeof namespace !== "string")
+  )
+    return "invalid";
+  // Pinned Codex ToolName treats absent, empty, and "functions" as default.
+  // Preserve that split; flattened names or whitespace are not aliases.
+  if (
+    namespace !== undefined &&
+    namespace !== null &&
+    namespace !== "" &&
+    namespace !== "functions"
+  )
+    return "other_namespace";
+  if (name === "exec_command") return "native_exec";
+  if (name === "exec") return "code_mode_exec";
+  if (name === "apply_patch") return "apply_patch";
+  return "other_default";
+}
+
 const runTraceAssertion = (_id, operation) => operation();
 
 export function runWithHostedTraceDiagnostics(message, operation) {
   let failure = null;
-  const check = (id, assertion, count = null, unexpectedKind = null) => {
+  const check = (id, assertion, count = null, unexpectedKind = null, unexpectedTool = null) => {
     try {
       return assertion();
     } catch (error) {
@@ -814,6 +844,13 @@ export function runWithHostedTraceDiagnostics(message, operation) {
                     (id === "completed_item_kind" && unexpectedKind === "FunctionCallOutput")
                   ? unexpectedKind
                   : "other",
+          unexpectedTool:
+            identified &&
+            id === "response_kind" &&
+            unexpectedKind === "custom_tool_call" &&
+            traceToolCategories.has(unexpectedTool)
+              ? unexpectedTool
+              : null,
         };
       }
       throw error;
@@ -828,6 +865,9 @@ export function runWithHostedTraceDiagnostics(message, operation) {
         assertionId: failure?.assertionId ?? "unknown",
         observedCount: failure?.observedCount ?? null,
         unexpectedKind: failure?.unexpectedKind ?? null,
+        unexpectedTool: traceToolCategories.has(failure?.unexpectedTool)
+          ? failure.unexpectedTool
+          : null,
       }) + "\n";
     assert.ok(Buffer.byteLength(line) <= 512);
     process.stderr.write(line);
@@ -1073,12 +1113,16 @@ export function summarizeHostedReviewTrace(
 
   const responses = records.filter((record) => record.type === "response_item");
   let unexpectedResponseKind = null;
+  let unexpectedTool = null;
   const acceptedResponses = responses.every((record) => {
     const type = record.payload.type;
     const accepted = ["message", "reasoning", "function_call", "function_call_output"].includes(
       type,
     );
-    if (!accepted) unexpectedResponseKind = type;
+    if (!accepted) {
+      unexpectedResponseKind = type;
+      if (type === "custom_tool_call") unexpectedTool = traceCustomToolCategory(record.payload);
+    }
     return accepted;
   });
   check(
@@ -1086,6 +1130,7 @@ export function summarizeHostedReviewTrace(
     () => assert.ok(acceptedResponses, "canary contains an unsupported response item"),
     responses.length,
     unexpectedResponseKind,
+    unexpectedTool,
   );
   const calls = responses.filter((record) => record.payload.type === "function_call");
   const results = responses.filter((record) => record.payload.type === "function_call_output");

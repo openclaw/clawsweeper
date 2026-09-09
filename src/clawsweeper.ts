@@ -13,7 +13,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   main().catch((error) => {
     const args = parseArgs(process.argv.slice(2));
     if ((args._[0] ?? "review") === "review" && emitReviewFailureJson(args, error)) {
-      process.exit(agentInputScanFailureExitCode(error) ?? 1);
+      // Piped stdout must drain before the JSON failure process exits.
+      process.exitCode = agentInputScanFailureExitCode(error) ?? 1;
+      return;
     }
     const message = isUserFacingCommandError(error)
       ? `Error: ${error.message}`

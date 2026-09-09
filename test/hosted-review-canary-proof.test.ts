@@ -74,6 +74,7 @@ type TraceCheck = (
   assertion: () => unknown,
   count?: unknown,
   unexpectedKind?: unknown,
+  unexpectedTool?: unknown,
 ) => unknown;
 
 function captureTraceFailure(operation: (check: TraceCheck) => unknown) {
@@ -519,6 +520,7 @@ test("hosted trace diagnostics identify existing ordinal, session, and attestati
       assertionId: id,
       observedCount: count,
       unexpectedKind: null,
+      unexpectedTool: null,
     });
   }
 });
@@ -544,6 +546,7 @@ test("hosted trace diagnostics identify malformed UTF-8 and JSON without parser 
       assertionId: id,
       observedCount: null,
       unexpectedKind: null,
+      unexpectedTool: null,
     });
     assert.doesNotMatch(line, /PRIVATE_SENTINEL|SyntaxError|TypeError|JSON at position/);
   }
@@ -654,6 +657,7 @@ test("hosted trace diagnostics identify rejected canonical response kinds withou
       assertionId: "response_kind",
       observedCount: 2,
       unexpectedKind: kind,
+      unexpectedTool: kind === "custom_tool_call" ? "native_exec" : null,
     });
   }
 });
@@ -680,6 +684,7 @@ test("hosted trace diagnostics bound unknown response kinds without coercion or 
       assertionId: "response_kind",
       observedCount: 2,
       unexpectedKind: "other",
+      unexpectedTool: null,
     });
     assert.doesNotMatch(line, /PRIVATE_SENTINEL|::error::|compaction_summary|privateValue/);
   }
@@ -694,10 +699,130 @@ test("hosted trace diagnostics bound unknown response kinds without coercion or 
   assert.equal(facts.unexpectedKind, "other");
 });
 
+test("hosted trace diagnostics classify only the rejected custom tool's canonical identity", () => {
+  for (const namespace of [undefined, null, "", "functions"]) {
+    for (const [name, category] of [
+      ["exec_command", "native_exec"],
+      ["exec", "code_mode_exec"],
+      ["apply_patch", "apply_patch"],
+    ]) {
+      const fixture = nativeTraceFixture();
+      Object.assign(fixture.records[2]!.payload, {
+        type: "custom_tool_call",
+        name,
+        namespace,
+        input: "PRIVATE_INPUT\n::error::untrusted operands",
+      });
+      assert.throws(fixture.invoke, /unsupported response item/);
+      const { line, facts } = captureTraceFailure((check) =>
+        summarizeHostedReviewTrace({ ...fixture.options, rollout: fixture.rollout() }, check),
+      );
+      assert.deepEqual(facts, {
+        kind: "hosted_trace_failure",
+        assertionId: "response_kind",
+        observedCount: 2,
+        unexpectedKind: "custom_tool_call",
+        unexpectedTool: category,
+      });
+      assert.doesNotMatch(line, /PRIVATE_INPUT|::error::|operands/);
+    }
+  }
+});
+
+test("hosted custom tool diagnostics reject aliases and malformed identities without leaking them", () => {
+  const privateValue = "PRIVATE_IDENTITY\n::error::" + "x".repeat(4096);
+  const cases: [unknown, unknown, string][] = [
+    ...["functions.exec_command", "exec_command ", "EXEC_COMMAND", "", privateValue].map(
+      (name): [unknown, unknown, string] => [name, "functions", "other_default"],
+    ),
+    ...["functions.", " functions", "functions ", privateValue].map(
+      (namespace): [unknown, unknown, string] => ["exec_command", namespace, "other_namespace"],
+    ),
+    ...[undefined, null, 42, false, [], { privateValue }].map(
+      (name): [unknown, unknown, string] => [name, "functions", "invalid"],
+    ),
+    ...[42, false, [], { privateValue }].map((namespace): [unknown, unknown, string] => [
+      "exec_command",
+      namespace,
+      "invalid",
+    ]),
+  ];
+  for (const [name, namespace, category] of cases) {
+    const fixture = nativeTraceFixture();
+    Object.assign(fixture.records[2]!.payload, {
+      type: "custom_tool_call",
+      name,
+      namespace,
+      input: privateValue,
+    });
+    assert.throws(fixture.invoke, /unsupported response item/);
+    const { line, facts } = captureTraceFailure((check) =>
+      summarizeHostedReviewTrace({ ...fixture.options, rollout: fixture.rollout() }, check),
+    );
+    assert.equal(facts.unexpectedTool, category);
+    assert.equal(facts.unexpectedKind, "custom_tool_call");
+    assert.equal(facts.observedCount, 2);
+    assert.doesNotMatch(line, /PRIVATE_IDENTITY|::error::|privateValue|functions|exec_command/);
+  }
+});
+
+test("hosted custom tool categories bind to the first rejected record across failing cleanup", () => {
+  const fixture = nativeTraceFixture();
+  Object.assign(fixture.records[2]!.payload, { type: "custom_tool_call", name: "exec" });
+  Object.assign(fixture.records[4]!.payload, { type: "custom_tool_call", name: "apply_patch" });
+  const { facts } = captureTraceFailure((check) => {
+    try {
+      summarizeHostedReviewTrace({ ...fixture.options, rollout: fixture.rollout() }, check);
+    } finally {
+      check(
+        "response_kind",
+        () => assert.fail("later failure"),
+        99,
+        "custom_tool_call",
+        "apply_patch",
+      );
+    }
+  });
+  assert.deepEqual(facts, {
+    kind: "hosted_trace_failure",
+    assertionId: "response_kind",
+    observedCount: 2,
+    unexpectedKind: "custom_tool_call",
+    unexpectedTool: "code_mode_exec",
+  });
+});
+
+test("hosted custom tool diagnostic categories are closed and never coerce private values", () => {
+  const hostile = {
+    [Symbol.toPrimitive]() {
+      assert.fail("tool identities must not be coerced");
+    },
+    toJSON() {
+      assert.fail("tool identities must not be serialized");
+    },
+  };
+  for (const value of [undefined, null, 42, false, [], hostile, "PRIVATE_CATEGORY\n::error::"]) {
+    const { line, facts } = captureTraceFailure((check) =>
+      check("response_kind", () => assert.fail("PRIVATE_OPERAND"), 2, "custom_tool_call", value),
+    );
+    assert.equal(facts.unexpectedTool, null);
+    assert.doesNotMatch(line, /PRIVATE|::error::/);
+  }
+  for (const [id, kind] of [
+    ["response_kind", "agent_message"],
+    ["event_kind", "custom_tool_call"],
+  ]) {
+    const { facts } = captureTraceFailure((check) =>
+      check(id!, () => assert.fail("unrelated failure"), 2, kind, "native_exec"),
+    );
+    assert.equal(facts.unexpectedTool, null);
+  }
+});
+
 test("hosted trace diagnostics preserve the first rejected response kind", () => {
   const fixture = nativeTraceFixture();
   fixture.records[2]!.payload.type = "agent_message";
-  fixture.records[4]!.payload.type = "tool_search_output";
+  Object.assign(fixture.records[4]!.payload, { type: "custom_tool_call", name: "apply_patch" });
   const { facts } = captureTraceFailure((check) => {
     try {
       summarizeHostedReviewTrace({ ...fixture.options, rollout: fixture.rollout() }, check);
@@ -710,6 +835,7 @@ test("hosted trace diagnostics preserve the first rejected response kind", () =>
     assertionId: "response_kind",
     observedCount: 2,
     unexpectedKind: "agent_message",
+    unexpectedTool: null,
   });
 });
 
@@ -742,6 +868,7 @@ test("hosted trace diagnostics preserve the first failure across a failing final
     assertionId: "unknown",
     observedCount: null,
     unexpectedKind: null,
+    unexpectedTool: null,
   });
   assert.doesNotMatch(unknown.line, /PRIVATE_FIRST|PRIVATE_FINALLY/);
 });
@@ -776,6 +903,7 @@ test("hosted trace diagnostics leave unknown exceptions and unobserved facts unk
       assertionId: "unknown",
       observedCount: null,
       unexpectedKind: null,
+      unexpectedTool: null,
     });
   }
   const { line, facts } = captureTraceFailure((check) =>
