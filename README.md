@@ -282,6 +282,19 @@ Common commands:
 - `automerge` labels an open PR, creates or reuses the adopted job, dispatches
   review, and enters the bounded review/fix/merge loop. Draft PRs are fix-only
   until GitHub marks them ready for review.
+- On scheduled router runs with `CLAWSWEEPER_COMMENT_ROUTER_EXECUTE=1`, Endor
+  Pro remediation PRs in `openclaw/openclaw` can enter this same automerge loop
+  automatically. Intake verifies the bot's immutable GitHub user ID and login,
+  an open non-draft PR, and a same-repository branch targeting the default
+  branch. It adds only `clawsweeper:automerge`; the normal review, repair, CI,
+  security and merge gates still apply. Other repositories are not enrolled.
+  Endor's policy owns vulnerability selection; intake does not independently
+  verify reachability.
+  Existing repair-mode or blocking labels, including their label-event history,
+  prevent automatic enrolment. Removing a mode or pause label therefore does
+  not opt the PR back in; a maintainer must explicitly resume it. Intake errors
+  are reported without stopping the existing router. Preview without mutations:
+  `node dist/repair/endor-automerge-intake.js --repo openclaw/openclaw`.
 - `implement issue` on an open issue creates or reuses one issue implementation
   job and dispatches the issue-to-PR lane. OpenClaw organization members may
   request this explicitly even without repository write permission.
