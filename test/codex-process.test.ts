@@ -1089,10 +1089,7 @@ const server = http.createServer((request, response) => {
   });
 });
 server.listen(0, "127.0.0.1", () => {
-  // Publish readiness only after the port file is complete.
-  const temporaryPath = process.env.WORK_STATE_PORT_PATH + ".tmp";
-  fs.writeFileSync(temporaryPath, String(server.address().port));
-  fs.renameSync(temporaryPath, process.env.WORK_STATE_PORT_PATH);
+  fs.writeFileSync(process.env.WORK_STATE_PORT_PATH, String(server.address().port));
 });
 `,
     );

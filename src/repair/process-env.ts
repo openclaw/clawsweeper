@@ -39,12 +39,6 @@ export function codexSubprocessEnv(): NodeJS.ProcessEnv {
   delete env.GH_TOKEN;
   delete env.GITHUB_TOKEN;
   delete env.REPO_TOKEN;
-  // Queue ownership and write receipts belong to the publisher, never to reviewed code.
-  delete env.CLAWSWEEPER_OVERSIZED_ACTIVITY_CONTEXT;
-  delete env.CLAWSWEEPER_WEBHOOK_SECRET;
-  delete env.GITHUB_ENV;
-  delete env.GITHUB_EVENT_PATH;
-  for (const key of Object.keys(env)) if (key.startsWith("EXACT_REVIEW_")) delete env[key];
   delete env.CLAWSWEEPER_CRABFLEET_AGENT_TOKEN;
   delete env.CLAWSWEEPER_CRABFLEET_SERVICE_TOKEN;
   delete env.CLAWSWEEPER_CRABFLEET_RUNNER_PTY_URL;

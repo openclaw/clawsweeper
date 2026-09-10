@@ -2516,9 +2516,7 @@ test("hosted pull request receipt fast acks precede verification and stay idempo
       assert.ok(
         JSON.stringify(tokenRequest.permissions) ===
           JSON.stringify({ issues: "write", pull_requests: "write" }) ||
-          JSON.stringify(tokenRequest.permissions) === JSON.stringify({ pull_requests: "read" }) ||
-          JSON.stringify(tokenRequest.permissions) ===
-            JSON.stringify({ issues: "read", pull_requests: "read" }),
+          JSON.stringify(tokenRequest.permissions) === JSON.stringify({ pull_requests: "read" }),
       );
       return jsonResponse({ token: "target-token" });
     }
@@ -2889,11 +2887,10 @@ test("hosted pull request receipt fast acks precede verification and stay idempo
     await Promise.all(waitUntilPromises);
     assert.ok(acknowledgementLookupUsesSince.includes(false));
     assert.ok(acknowledgementLookupUsesSince.includes(true));
-    // A duplicate ingress may also defer while queue-owned cleanup is active.
-    // Keep the error surface fixed without asserting timer-dependent log counts.
-    assert.ok(errorLogs.length >= 2);
-    for (const entry of errorLogs)
-      assert.deepEqual(entry, ["ClawSweeper pull request fast ack failed"]);
+    assert.deepEqual(errorLogs, [
+      ["ClawSweeper pull request fast ack failed"],
+      ["ClawSweeper pull request fast ack failed"],
+    ]);
     assert.doesNotMatch(JSON.stringify(errorLogs), new RegExp(logMarker));
   } finally {
     globalThis.fetch = originalFetch;
@@ -2911,11 +2908,7 @@ test("hosted pull request receipts dedupe across opened and ready_for_review", a
   const storage = new MemoryDurableStorage();
   const queue = new ExactReviewQueue(
     { storage },
-    {
-      hostedPublicTargetProbe: publicHostedTargetProbe,
-      CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
-      CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
-    },
+    { hostedPublicTargetProbe: publicHostedTargetProbe },
   );
   type AckComment = {
     id: number;

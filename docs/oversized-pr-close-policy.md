@@ -42,76 +42,13 @@ create the durable proposal through that writer; existing reviews update the
 canonical comment. Both carry the reserved lease identity. Ordinary admitted PRs reuse the payload during hydration.
 Each head or label change is evaluated again. This policy never reopens a PR.
 
-## Queue-owned evidence and publication
-
-Before acknowledgement effects on an oversized PR, the queue captures PR metadata
-and the four bounded activity streams: issue comments, timeline, inline comments,
-and submitted reviews. Each stream retains the existing three-page, 300-entry
-refusal boundary. Missing pages, repeated identities, undatable activity, changing
-counts/metadata, and activity inside the observation-second margin invalidate the
-evidence. Settled acknowledgements already present are part of the baseline.
-Capture adds metadata reads only; it never fetches PR files, commits, or blobs.
-
-The Durable Object stores the baseline in separate bounded keys and journals each
-owned acknowledgement POST, PATCH, and DELETE, including duplicate cleanup. Each
-write has a persisted intent before its request and a receipt with the comment ID,
-kind, before/after body and identity fingerprints, comment timestamps, and the
-resulting PR timestamp/count from the post-write observation. An uncertain
-response, malformed post-write snapshot, or incomplete receipt prevents closing. Receipt history is retained independently of queue-item
-completion; no existing queue-storage migration is required.
-
-The decision allowlist carries a validated, item-bound version-1 reference to that
-journal. Capability-aware claims establish an explicit per-item acknowledgement
-fence. The fence lasts through publication/apply completion or lease release and
-has a deadline bounded by the execution lease and 30 minutes. Heartbeats can renew
-a current owner's deadline; a crashed owner cannot block acknowledgements forever.
-Queue convergence defers while fenced. As in the existing metadata-only workflow,
-queue intake omits the review eyes reaction for oversized proposals; ordinary
-reviews retain it. The Worker's fast PR acknowledgement and
-its delayed cleanup also use this owner; deferred cleanup is retained for retry.
-
-The upgraded workflow/CLI records reservation, command/review status, durable
-comment, mutation-lease, and queued-expiry writes in the same journal. The original
-artifact carries the reference, so queued publication can fetch receipts added
-after artifact creation without replacing the baseline. Publication owns the
-current claim before finalization. It waits a bounded interval for its recorded
-writes to appear in PR metadata, replays exact preimages and write responses,
-compares all non-owned activity against the original baseline, and repeats the
-size/head/exemption and existing canonical-comment checks before closing. A
-same-second human review edit remains a fingerprint change even when an owned
-write has the same PR timestamp. Missing, malformed, stale, ambiguous, or
-incomplete evidence keeps the PR open; ordinary comment delivery and completion
-continue subject to their existing authority and canonical-comment guards.
-
-If the journal is unavailable, the consumer writes a durable local failure marker
-before continuing ordinary comment effects. That marker prevents its close and is
-sealed into the queue at completion. A successor also refuses if a prior owner
-never sealed its writes, so a crash cannot lose the failure evidence between
-publication attempts. Oversized references use the existing single-item queued
-publisher to preserve this per-item fence; ordinary review publication batching
-is unchanged.
-
-A queued publication that encounters another active review writes and receipts its
-Waiting status before completing the publishing lease. Completion seals that
-status effect and releases ownership; a released owner still cannot mutate it.
-
-## Rollout and legacy exception
-
-The maintainer explicitly accepted a bounded legacy exception on September 9,
-2026: already-running pre-capability workflow/apply consumers started from the
-previous main head before deployment finish under their existing safeguards.
-They may close eligible oversized PRs under that existing guard profile. This is
-an explicit transition exception, not retroactive evidence enforcement. Do not
-invalidate or reopen their work, pause the sweep, or drain those runs.
-
-Every upgraded consumer requires valid queue-owned evidence to close. Against an
-older Worker, the new workflow receives no evidence capability and retains the
-proposal with a normal kept-open result. The new Worker preserves old claim,
-heartbeat, publication, and completion contracts. New workflows advertise the
-capability when claiming; their close path cannot silently fall back to legacy
-freshness behavior. The coordinator must verify the serving deployment SHA and
-the end of the pre-capability cohort after deployment. Bay continues to observe
-the existing proposal/close lifecycle and gains no mutation controls.
+Known gap: when direct publication is not accepted and the proposal falls back
+to the durable queue, the queued lease-expiry write advances PR activity after
+the report's observation. The unchanged source-freshness guard keeps the PR
+open with `skipped_changed_since_review`; it can be re-evaluated at the next
+event or head. Deferred publication is not fixed by carrying the lease tuple.
+The follow-up is to create the final metadata proposal under publication
+ownership, after the publisher acquires its current lease and fence.
 
 `CLAWSWEEPER_OVERSIZED_PR_CLOSE_ENABLED` gates apply; it defaults off in a
 standalone CLI and defaults to `true` in the sweep workflow. The normal
@@ -122,12 +59,24 @@ with `decision: close` and its additions, deletions, changedFiles, threshold,
 and head evidence. The report also records a metadata source fingerprint and
 comment counts. No scanner or model provenance is asserted.
 
-Apply requires complete recorded size/head metadata and repeats the live PR
-open-state, lock, size, head, and exemption checks immediately before closing.
-The queue baseline includes review bodies because submitted reviews do not expose
-an edit timestamp. Only individually receipted comment writes can change the
-expected comment images; all other stream entries stay fingerprinted. The queue
-fence and evidence are checked again after the final bounded activity capture.
+Apply requires complete recorded metadata and repeats the live PR size,
+head, open-state, lock, and exemption checks immediately before closing.
+Changed metadata or unreadable live state blocks the close. The source record also carries the observation time taken before the PR metadata
+read; initial activity at that second or within the one-second clock margin is
+ambiguous and keeps the proposal open. Missing handoff observation times fall
+back conservatively to the PR update timestamp. Submitted reviews expose no
+edit timestamp, so a PR update timestamp in that observation window also blocks
+initial receipt creation when reviews exist. Before comment
+publication, apply captures bounded issue-comment, timeline, inline-comment,
+and review metadata, with a maximum of three 100-entry pages per stream.
+Incomplete reads keep the proposal open. The receipt excludes only the exact
+owned review-comment ID and verifies that comment against its write response;
+all other activity remains fingerprinted. The baseline is persisted before
+publication, and the exact owned write identity is persisted before any
+post-publication read, including when subsequent validation fails. Forced checks before closing catch
+body edits and same-second human comments after publication, and persisted
+receipts preserve that protection across retries. PR files, commits, blobs,
+scanner work, and model review are not hydrated by this guard.
 
 Changed metadata or unreadable live state blocks the close. The public notice
 uses proposal wording until GitHub confirms the close, so an aborted close never
@@ -153,11 +102,9 @@ The public comment is:
 
 `node scripts/proof-oversized-pr-close.mjs` exercises metadata admission and
 dry-run retention, with a 49,999-line control.
-`node scripts/proof-oversized-pr-close-effects.mjs` runs the built CLI through a
-loopback GitHub service and the queue receipt store/acknowledgement writer. It
-covers first/existing durable comments on direct/queued publication, one-second
-POST/PATCH/DELETE metadata propagation, same-second review edits, human comments,
-labels/heads, and missing/malformed/stale evidence. Metadata reads are counted
-separately and file/blob hydration, scanner, and model work remain zero. Dashboard
-tests exercise claim/evidence/receipt/completion routes and old-consumer protocol
-compatibility. These use synthetic data and do not close a live GitHub PR.
+`node scripts/proof-oversized-pr-close-effects.mjs` drives the built CLI through
+a loopback HTTP GitHub adapter and inspects service state plus items/closed
+records for first/existing durable review reservation and closing, protected-label refusal, and late exemption, body,
+and human-comment changes. This uses synthetic data and transport; it does not
+close a live GitHub PR. The workflow test also executes a HTTP-409 finalization
+branch and verifies that supersession prevents publication.

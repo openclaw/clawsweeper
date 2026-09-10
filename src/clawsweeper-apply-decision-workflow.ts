@@ -1,4 +1,7 @@
-import { createQueueOwnedOversizedFreshnessGuard } from "./oversized-activity-runtime.js";
+import {
+  createOversizedPrFreshnessGuard,
+  parseOversizedPrSourceSnapshot,
+} from "./clawsweeper-oversized-pr-freshness.js";
 import { REVIEW_SECTIONS } from "./clawsweeper-policy.js";
 import {
   oversizedPrCloseEnabled,
@@ -752,11 +755,11 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         isPairBlockedCloseReport(markdown);
       const oversizedMetadataDecision = closeReason === "oversized_pull_request" &&
         parseOversizedPullRequestEvidence(frontMatterValue(markdown, "oversized_pull_request")) !== null;
-      let oversizedActivityGuard: ReturnType<typeof createQueueOwnedOversizedFreshnessGuard> | undefined;
+      let oversizedActivityGuard: ReturnType<typeof createOversizedPrFreshnessGuard> | undefined;
       const persistOversizedActivityReceipt = (): void => {
         const receipt = oversizedActivityGuard?.receipt();
         if (!receipt || dryRun || frontMatterValue(markdown, "action_taken") === "closed" || !existsSync(path)) return;
-        markdown = replaceFrontMatterValue(markdown, "oversized_activity_reference", JSON.stringify(receipt));
+        markdown = replaceFrontMatterValue(markdown, "oversized_activity_receipt", JSON.stringify(receipt));
         writeReportMarkdown(path, markdown);
       };
       const verifiedLocalCheckout = hasVerifiedLocalCheckoutAccess(markdown);
@@ -1119,7 +1122,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
             ) === "equal")
         );
       };
-      const currentReviewActivityBlock = oversizedMetadataDecision ? () => null : createApplyReviewActivityGuard(dependencies, {
+      const currentReviewActivityBlock = oversizedMetadataDecision ? () => oversizedActivityGuard?.check(liveReadGeneration.id) ?? null : createApplyReviewActivityGuard(dependencies, {
         expectedCursor: expectedReviewActivityCursor,
         itemKind: item.kind,
         number,
@@ -1820,7 +1823,6 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         state === "open" &&
         (isCloseProposal || guardedReviewAction) &&
         !stalePrReviewHead &&
-        !oversizedMetadataDecision &&
         !reviewedSourceFresh()
       ) {
         if (markReviewedSourceDrift()) break;
@@ -1853,9 +1855,15 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       }
       let markedReviewComment = markedReviewCommentForApply(reviewComment);
       if (oversizedMetadataDecision && state === "open") {
-        let reference: unknown;
-        try { reference = JSON.parse(frontMatterValue(markdown,"oversized_activity_reference") || "null"); } catch { reference = null; }
-        oversizedActivityGuard = createQueueOwnedOversizedFreshnessGuard({repo,number,reference,ghJson});
+        oversizedActivityGuard = createOversizedPrFreshnessGuard({
+          repo, number, source: parseOversizedPrSourceSnapshot(frontMatterValue(markdown, "oversized_pr_source")),
+          priorReceipt: frontMatterValue(markdown, "oversized_activity_receipt"),
+          ...(existingReviewComment && commentBodyMatches(existingReviewComment, markedReviewComment) ? { ownedComment: existingReviewComment } : {}),
+          ghJson,
+        });
+        const block = oversizedActivityGuard.check(liveReadGeneration.id, true);
+        if (block) { if (markApplySkipped("kept_open", block)) break; continue; }
+        persistOversizedActivityReceipt();
       }
       const { postProofCoveringPrFreshnessBlock, postProofFreshnessBlock } =
         createApplyProofFreshnessGuards({

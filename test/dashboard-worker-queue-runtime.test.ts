@@ -1121,7 +1121,7 @@ test("source authority acknowledgement errors remain deferred without enqueue", 
     assert.equal(reservation.attempts, EXACT_REVIEW_SOURCE_AUTHORITY_RETRY_LIMIT);
     assert.ok(reservation.nextAttemptAt > 0);
     assert.equal(reservation.reviewAcknowledgementPending, true);
-    assert.equal(pullReads, 1); // Size probe only; no head-authority verification.
+    assert.equal(pullReads, 0);
     const state = (await harness.storage.get("exact-review-queue")) as {
       items: Record<string, unknown>;
     };
@@ -1295,7 +1295,7 @@ test("source authority acknowledgement recovery preserves concurrent receipt and
           98_084,
         );
         assert.equal(harness.storage.rawHas(reservationKey), false);
-        assert.equal(pullReads, 2); // Size probe plus authoritative head read.
+        assert.equal(pullReads, 1);
       } else {
         assert.equal(state.items[`openclaw/fs-safe#${itemNumber}`], undefined);
         const reservation = harness.storage.rawGet(reservationKey) as {
@@ -1304,7 +1304,7 @@ test("source authority acknowledgement recovery preserves concurrent receipt and
         };
         assert.equal(reservation.decision.sourceHeadSha, "e".repeat(40));
         assert.equal(reservation.reviewAcknowledgementPending, true);
-        assert.equal(pullReads, 1); // The size probe does not bind source authority.
+        assert.equal(pullReads, 0);
         harness.storage.rawPut(reservationKey, { ...reservation, nextAttemptAt: 0 });
         await harness.queue.alarm();
         const afterStaleHead = (await harness.storage.get("exact-review-queue")) as {
@@ -1312,7 +1312,7 @@ test("source authority acknowledgement recovery preserves concurrent receipt and
         };
         assert.equal(afterStaleHead.items[`openclaw/fs-safe#${itemNumber}`], undefined);
         assert.equal(harness.storage.rawHas(reservationKey), false);
-        assert.equal(pullReads, 3);
+        assert.equal(pullReads, 1);
         assert.equal(sqlCount(harness.storage, "exact_review_queue_deliveries"), 1);
       }
     });

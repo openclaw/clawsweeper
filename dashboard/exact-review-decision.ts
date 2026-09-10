@@ -1,7 +1,3 @@
-import {
-  parseOversizedActivityReference,
-  type OversizedActivityReference,
-} from "../src/oversized-activity-contract.ts";
 import { stableJson } from "../src/stable-json.ts";
 import {
   validProofAllowedScenarios,
@@ -43,7 +39,6 @@ const EXACT_REVIEW_ADDITIONAL_PROMPT_MAX_CHARS = 5000;
 const EXACT_REVIEW_INGRESS_FINGERPRINT_PATTERN = /^[0-9a-f]{64}$/;
 
 export type ExactReviewBaseDecision = {
-  oversizedActivityReference?: OversizedActivityReference;
   targetRepo: string;
   targetBranch: string;
   itemNumber: number;
@@ -333,15 +328,6 @@ export function exactReviewBaseDecisionFrom(value: unknown): ExactReviewBaseDeci
   }
   const decision = objectValue(value);
   const targetRepo = String(decision.targetRepo || "").trim();
-  const activityReference =
-    decision.oversizedActivityReference === undefined
-      ? undefined
-      : parseOversizedActivityReference(
-          decision.oversizedActivityReference,
-          String(decision.targetRepo),
-          Number(decision.itemNumber),
-        );
-  if (activityReference === null) return null;
   const targetBranch = String(decision.targetBranch || "").trim();
   const itemNumber = Number(decision.itemNumber);
   const itemKind = String(decision.itemKind || "");
@@ -501,7 +487,6 @@ export function exactReviewBaseDecisionFrom(value: unknown): ExactReviewBaseDeci
   ].filter(Boolean).length;
   if (commandMetadataCount !== 0 && commandMetadataCount !== 4) return null;
   return {
-    ...(activityReference ? { oversizedActivityReference: activityReference } : {}),
     targetRepo,
     targetBranch,
     itemNumber,
@@ -759,13 +744,6 @@ export function mergePendingExactReviewDecision(
   next: ExactReviewDecision,
 ): ExactReviewDecision {
   const merged = { ...current, ...next };
-  if (
-    !next.oversizedActivityReference &&
-    (["sourceHeadSha", "sourceUpdatedAt", "commandStatusMarker"] as const).some(
-      (key) => Object.hasOwn(next, key) && next[key] !== current[key],
-    )
-  )
-    delete merged.oversizedActivityReference;
   // Coalescing cannot widen an admitted manual revision. A separately claimed
   // successor may review normally; it cannot lend authority to these bytes.
   const retainedPolicy = decisionPublicationPolicy(current);
@@ -1003,8 +981,6 @@ export function exactReviewQueueIsBatchablePublication(
   return (
     exactReviewQueueIsPublication(item) &&
     !item.terminalFinalization &&
-    // The size lane holds a per-item claim/fence through queued apply.
-    !item.decision.oversizedActivityReference &&
     !item.decision.publication?.directLifecycle
   );
 }

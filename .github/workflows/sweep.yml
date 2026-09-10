@@ -527,7 +527,6 @@ jobs:
               process.exit(1);
             }
             process.stdout.write(JSON.stringify({
-              oversized_activity_version: 1,
               lease_id: process.env.QUEUE_LEASE_ID,
               ...(hasTuple ? { item_key: itemKey, lease_revision: leaseRevision } : {}),
               run_id: process.env.GITHUB_RUN_ID,
@@ -572,7 +571,6 @@ jobs:
             elif RESPONSE="$response" node <<'NODE'
               const fs = require("node:fs");
               const response = JSON.parse(process.env.RESPONSE || "{}");
-              if (process.env.GITHUB_ENV) fs.appendFileSync(process.env.GITHUB_ENV, `CLAWSWEEPER_OVERSIZED_ACTIVITY_CONTEXT=${JSON.stringify(response.oversized_activity_version === 1 && response.oversized_activity ? {...response.oversized_activity,queueUrl:process.env.QUEUE_URL,failurePath:require("node:path").join(process.env.RUNNER_TEMP || process.cwd(),`clawsweeper-oversized-${response.oversized_activity.reference?.epoch}-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}.json`)} : null)}\n`);
               const dispatch = JSON.parse(process.env.DISPATCH_PAYLOAD || "{}");
               const requestedItemKey = String(process.env.ITEM_KEY || "").trim();
               const requestedLeaseRevision = Number(process.env.QUEUE_LEASE_REVISION);
@@ -2432,10 +2430,7 @@ jobs:
                 !["true", "false"].includes(reviewFailureRetryable))
             ) process.exit(1);
             if (requeueLatest && directLifecycleRequeue) process.exit(1);
-            const activityContext = JSON.parse(process.env.CLAWSWEEPER_OVERSIZED_ACTIVITY_CONTEXT || "null");
-            const activityFailure = activityContext ? {oversized_activity_failed: typeof activityContext.failurePath !== "string" || require("node:fs").existsSync(activityContext.failurePath)} : {};
             process.stdout.write(JSON.stringify({
-              ...activityFailure,
               lease_id: process.env.QUEUE_LEASE_ID,
               ...(protocolVersion === 2
                 ? {
@@ -2653,7 +2648,6 @@ jobs:
             if (!Number.isInteger(leaseRevision) || leaseRevision < 1) process.exit(1);
             if (!Number.isInteger(runAttempt) || runAttempt < 1) process.exit(1);
             process.stdout.write(JSON.stringify({
-              oversized_activity_version: 1,
               lease_id: process.env.QUEUE_LEASE_ID,
               item_key: process.env.ITEM_KEY,
               lease_revision: leaseRevision,
@@ -2699,7 +2693,6 @@ jobs:
             elif RESPONSE="$response" node <<'NODE'
               const fs = require("node:fs");
               const response = JSON.parse(process.env.RESPONSE || "{}");
-              if (process.env.GITHUB_ENV) fs.appendFileSync(process.env.GITHUB_ENV, `CLAWSWEEPER_OVERSIZED_ACTIVITY_CONTEXT=${JSON.stringify(response.oversized_activity_version === 1 && response.oversized_activity ? {...response.oversized_activity,queueUrl:process.env.QUEUE_URL,failurePath:require("node:path").join(process.env.RUNNER_TEMP || process.cwd(),`clawsweeper-oversized-${response.oversized_activity.reference?.epoch}-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}.json`)} : null)}\n`);
               const decision = response.decision;
               const publication = decision?.publication;
               const producerDecision = publication?.producerDecision;
@@ -3712,26 +3705,6 @@ jobs:
             echo "state_writer_json=$STATE_WRITER_JSON" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Mark active lease retry waiting
-        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.has_command_context == 'true' && steps.exact-review-publication-result.outputs.outcome == 'success' && steps.exact-review-publication-result.outputs.completion_kind == 'retryable_failure' && steps.exact-review-publication-result.outputs.reason_code == 'review_lease_active' }}
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
-          TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
-          ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
-          COMMAND_STATUS_MARKER: ${{ fromJSON(steps.publication-context.outputs.decision).commandStatusMarker || '' }}
-          STATUS_COMMENT_ID: ${{ fromJSON(steps.publication-context.outputs.decision).statusCommentId || '' }}
-          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          pnpm run repair:update-command-status -- \
-            --repo "$TARGET_REPO" \
-            --item-number "$ITEM_NUMBER" \
-            --marker "$COMMAND_STATUS_MARKER" \
-            --status-comment-id "$STATUS_COMMENT_ID" \
-            --state "Waiting" \
-            --detail "Another same-revision review is active; this publication attempt is waiting for that lease to expire." \
-            --run-url "$RUN_URL"
-
       - name: Complete durable exact review publication
         id: complete-exact-review-publication
         if: ${{ steps.publication-context.outputs.claimed == 'true' && always() }}
@@ -3821,10 +3794,7 @@ jobs:
               const parsed = JSON.parse(process.env.STATE_WRITER_JSON || "");
               if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) stateWriter = parsed;
             } catch {}
-            const activityContext = JSON.parse(process.env.CLAWSWEEPER_OVERSIZED_ACTIVITY_CONTEXT || "null");
-            const activityFailure = activityContext ? {oversized_activity_failed: typeof activityContext.failurePath !== "string" || require("node:fs").existsSync(activityContext.failurePath)} : {};
             process.stdout.write(JSON.stringify({
-              ...activityFailure,
               lease_id: process.env.QUEUE_LEASE_ID,
               item_key: process.env.ITEM_KEY,
               lease_revision: leaseRevision,
@@ -3850,6 +3820,26 @@ jobs:
             exit 0
           fi
           exit 1
+
+      - name: Mark active lease retry waiting
+        if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.has_command_context == 'true' && steps.exact-review-publication-result.outputs.outcome == 'success' && steps.exact-review-publication-result.outputs.completion_kind == 'retryable_failure' && steps.exact-review-publication-result.outputs.reason_code == 'review_lease_active' && steps.complete-exact-review-publication.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
+          TARGET_REPO: ${{ steps.publication-context.outputs.target_repo }}
+          ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
+          COMMAND_STATUS_MARKER: ${{ fromJSON(steps.publication-context.outputs.decision).commandStatusMarker || '' }}
+          STATUS_COMMENT_ID: ${{ fromJSON(steps.publication-context.outputs.decision).statusCommentId || '' }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          pnpm run repair:update-command-status -- \
+            --repo "$TARGET_REPO" \
+            --item-number "$ITEM_NUMBER" \
+            --marker "$COMMAND_STATUS_MARKER" \
+            --status-comment-id "$STATUS_COMMENT_ID" \
+            --state "Waiting" \
+            --detail "Another same-revision review is active; durable publication will retry after its lease expires." \
+            --run-url "$RUN_URL"
 
       - name: Submit artifact-publication GitHub egress telemetry
         if: ${{ always() && steps.publication-context.outputs.claimed == 'true' && steps.publication-context.outputs.direct_lifecycle_recovery != 'true' && steps.artifact-github-egress-observer.outcome == 'success' }}

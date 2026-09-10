@@ -14,6 +14,10 @@ import { isExactReviewCloseGuardLabel } from "../src/repair/exact-review-guard-l
 import { sha256Hex } from "./exact-review-direct-publication.ts";
 import { exactReviewSourceRevisionMaterial } from "./exact-review-source-revision.ts";
 import {
+  resolvePullRequestAcknowledgement,
+  settlePullRequestAcknowledgement,
+} from "./pull-request-acknowledgement.ts";
+import {
   GITHUB_ETAG_CACHE_MAX_BODY_BYTES,
   githubEtagCacheKey,
   githubEtagCacheRequestBody,
@@ -1147,8 +1151,6 @@ export default {
       return authenticatedExactReviewQueueRequest(request, env, "/state-writer/heartbeat");
     if (url.pathname === "/internal/state-writer/release" && request.method === "POST")
       return authenticatedExactReviewQueueRequest(request, env, "/state-writer/release");
-    if (url.pathname === "/internal/exact-review/oversized-activity" && request.method === "POST")
-      return exactReviewQueueRequest(env, "/oversized-activity", request);
     if (url.pathname === "/internal/exact-review/claim" && request.method === "POST")
       return exactReviewQueueRequest(env, "/claim", request);
     // Heartbeat authenticates by full lease tuple, matching /claim and /complete: the
@@ -7194,36 +7196,65 @@ async function enqueueExactReview({
 }
 
 async function acknowledgePullRequestReceipt({ env, ctx, decision }) {
-  if (decision.itemKind !== "pull_request" || !githubAppCredentials(env)) return null;
-  if (!Number.isInteger(decision.installationId) || decision.installationId <= 0) return null;
-  const queue = exactReviewQueueStub(env);
-  if (!queue) throw new Error("acknowledgement queue is unavailable");
-  const resolve = async (settle: boolean) => {
-    const { response } = await exactReviewQueueFetch(
-      queue,
-      "/pull-request-acknowledgement",
-      new Request("https://clawsweeper-exact-review-queue/pull-request-acknowledgement", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ decision, installation_id: decision.installationId, settle }),
+  if (decision.itemKind !== "pull_request") return null;
+  const credentials = githubAppCredentials(env);
+  if (!credentials || !Number.isInteger(decision.installationId) || decision.installationId <= 0) {
+    return null;
+  }
+  const appJwt = await signGithubAppJwt(credentials.issuer, credentials.privateKey);
+  const token = await createGithubAppTokenFor({
+    env,
+    appJwt,
+    installationId: decision.installationId,
+    label: decision.targetRepo,
+    repositories: [repoName(decision.targetRepo)],
+    permissions: { issues: "write", pull_requests: "write" },
+  });
+  const createsReceipt = ["opened", "ready_for_review"].includes(decision.sourceAction);
+  const acknowledgement = await resolvePullRequestAcknowledgement({
+    githubJson: (request) =>
+      githubTokenJson({
+        env,
+        token,
+        path: request.path,
+        method: request.method,
+        body: request.body,
+        errorLabel: request.errorLabel,
       }),
-    );
-    if (!response.ok) throw new Error("queue acknowledgement deferred");
-    return objectValue(await response.json());
-  };
-  const acknowledgement = await resolve(false);
-  if (acknowledgement.deferred === true) throw new Error("queue acknowledgement deferred");
-  if (["opened", "ready_for_review"].includes(decision.sourceAction)) {
+    targetRepo: decision.targetRepo,
+    itemNumber: decision.itemNumber,
+    sourceAction: decision.sourceAction,
+  });
+  if (acknowledgement.outcome === "lookup_limit") {
+    console.warn("ClawSweeper pull request acknowledgement lookup limit reached");
+    return null;
+  }
+  if (createsReceipt) {
     const cleanup = async () => {
       for (const delayMs of fastAckSettleDelaysMs(env.CLAWSWEEPER_FAST_ACK_SETTLE_DELAYS_MS)) {
         await sleep(delayMs);
-        await resolve(true);
+        await settlePullRequestAcknowledgement({
+          githubJson: (request) =>
+            githubTokenJson({
+              env,
+              token,
+              path: request.path,
+              method: request.method,
+              body: request.body,
+              errorLabel: request.errorLabel,
+            }),
+          targetRepo: decision.targetRepo,
+          itemNumber: decision.itemNumber,
+          sourceAction: decision.sourceAction,
+        });
       }
     };
-    const promise = cleanup().catch(() => console.error("ClawSweeper fast ack cleanup deferred"));
+    const promise = cleanup().catch(() => {
+      console.error("ClawSweeper fast ack cleanup failed");
+    });
     if (ctx?.waitUntil) ctx.waitUntil(promise);
   }
-  return Number(acknowledgement.commentId) || null;
+  return acknowledgement.commentId;
 }
 
 async function createFastAckComment({

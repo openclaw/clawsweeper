@@ -1,4 +1,3 @@
-import { observeOversizedCommentWrite } from "./oversized-activity-runtime.js";
 import { spawnSync } from "node:child_process";
 import { createHmac } from "node:crypto";
 import { appendFileSync, closeSync, openSync } from "node:fs";
@@ -380,12 +379,10 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
       });
     }
     try {
-      const result = observeOversizedCommentWrite(resolvedArgs, (requestArgs) =>
-        run("gh", requestArgs, {
-          timeoutMs,
-          ...(preparedEnv ? { env: preparedEnv } : {}),
-        }),
-      );
+      const result = run("gh", resolvedArgs, {
+        timeoutMs,
+        ...(preparedEnv ? { env: preparedEnv } : {}),
+      });
       recordGitHubRequest(resolvedArgs, scope, "success");
       return result;
     } catch (error) {

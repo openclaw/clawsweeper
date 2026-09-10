@@ -2138,9 +2138,12 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   );
   assert.match(publishComplete.run ?? "", /direct_lifecycle_requeue/);
   assert.ok(publisher.steps.indexOf(publishResult) < publisher.steps.indexOf(publishComplete));
-  assert.ok(publisher.steps.indexOf(activeLeaseWaiting) < publisher.steps.indexOf(publishComplete));
+  assert.ok(publisher.steps.indexOf(publishComplete) < publisher.steps.indexOf(activeLeaseWaiting));
   assert.match(activeLeaseWaiting.if ?? "", /reason_code == 'review_lease_active'/);
-  assert.doesNotMatch(activeLeaseWaiting.if ?? "", /complete-exact-review-publication/);
+  assert.match(
+    activeLeaseWaiting.if ?? "",
+    /complete-exact-review-publication\.outcome == 'success'/,
+  );
   assert.match(activeLeaseWaiting.run ?? "", /--state "Waiting"/);
 
   const publisherSource = readText("src/repair/publish-event-result.ts");
