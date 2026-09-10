@@ -381,11 +381,31 @@ Do not move these into the dashboard:
 The dashboard Worker owns durable exact-review admission only: it deduplicates
 webhook deliveries, coalesces each repository/item pair, and leases at most
 32 Actions executors, with up to 24 active leases per target repository. It does
-not decide review outcomes or perform target repository mutations. For
+not decide review outcomes or close target items. It owns bounded acknowledgement
+comment effects; GitHub Actions owns review publication and apply. For
 command-triggered reviews, the queue retains the bounded review prompt and
 command-status identifiers so the leased GitHub Actions executor can update the
 original acknowledgement through completion. GitHub Actions remains the
 executor and the existing review/apply safety model remains unchanged.
+
+For oversized PRs, the Durable Object additionally owns the pre-acknowledgement
+activity baseline, append-only write history, and acknowledgement fence described
+in [the size policy](oversized-pr-close-policy.md#queue-owned-evidence-and-publication).
+Version-1 evidence references pass through the validated decision allowlist.
+The internal `POST /internal/exact-review/oversized-activity` endpoint binds reads
+and write receipts to the current item/lease/run/attempt/claim generation; it is
+not a public observer or browser API. Source PR acknowledgements and delayed
+cleanup are delegated through the private queue binding, so they share the same
+journal and fence. Baseline streams and individual receipts use separate KV keys;
+existing SQL queue items and rollback state are not migrated or discarded.
+The Worker enables `nodejs_compat` for the shared SHA-256 and UUID implementation.
+
+Upgraded consumers keep oversized proposals open when evidence is absent,
+malformed, stale, or incomplete while preserving ordinary publication/completion.
+The explicitly accepted September 9, 2026 legacy exception lets already-running
+pre-capability consumers finish with their existing safeguards. They are not
+retroactively fenced or invalidated. The existing observer projection and Bay
+lifecycle contract are unchanged; neither surface gains action controls.
 
 The singleton Durable Object stores each delivery receipt and queue item in its
 own SQLite row. Receipt insertion and item coalescing commit in one transaction,

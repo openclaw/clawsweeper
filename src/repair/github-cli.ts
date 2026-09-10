@@ -1,3 +1,7 @@
+import {
+  observeOversizedCommentWrite,
+  oversizedActivityContextFromEnv,
+} from "../oversized-activity-runtime.js";
 import type { JsonValue } from "./json-types.js";
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -161,6 +165,13 @@ export function ghPagedLimitWithRetry<T = JsonValue>(
 }
 
 export function ghText(ghArgs: string[], options: GhRunOptions = {}): string {
+  return observeOversizedCommentWrite(
+    ghArgs,
+    (args) => ghTextUnobserved(args, options),
+    options.input,
+  );
+}
+function ghTextUnobserved(ghArgs: string[], options: GhRunOptions = {}): string {
   const env = ghCommandEnv(ghArgs, options);
   const command = ghCommand(ghArgs, env);
   const text = execFileSync(command.command, command.args, {
@@ -253,7 +264,8 @@ export async function ghTextWithRetryAsync(
 }
 
 export async function ghTextAsync(ghArgs: string[], options: GhRunOptions = {}): Promise<string> {
-  if (options.input !== undefined) return ghText(ghArgs, options);
+  if (options.input !== undefined || oversizedActivityContextFromEnv())
+    return ghText(ghArgs, options);
   const env = ghCommandEnv(ghArgs, options);
   const command = ghCommand(ghArgs, env);
   const { stdout } = await execFileAsync(command.command, command.args, {

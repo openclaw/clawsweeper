@@ -255,8 +255,7 @@ for (const scenario of [
                 ...(scenario === "exact-close" ? ["--exact-event-publication"] : []),
               ],
             });
-          if (scenario === "close-error") assert.throws(apply);
-          else apply();
+          apply();
         });
         const result = existsSync(workspace.reportPath)
           ? JSON.parse(readFileSync(workspace.reportPath, "utf8"))
@@ -277,60 +276,36 @@ for (const scenario of [
           );
         }
         const mutations = existsSync(calls) ? readFileSync(calls, "utf8") : "";
+        assert.ok(existsSync(report), JSON.stringify(result));
+        assert.equal(existsSync(join(workspace.closedDir, `${pull.number}.md`)), false);
+        assert.doesNotMatch(mutations, /pr close/);
         if (
-          scenario === "close" ||
-          scenario === "exact-close" ||
-          scenario === "notice-error" ||
-          scenario === "durable-reserved-lease"
+          [
+            "close",
+            "exact-close",
+            "durable-reserved-lease",
+            "notice-error",
+            "close-error",
+          ].includes(scenario)
         ) {
           assert.ok(
-            existsSync(join(workspace.closedDir, `${pull.number}.md`)),
-            JSON.stringify(result) + mutations,
+            result.some(
+              (entry: any) =>
+                entry.action === "kept_open" && /queue-owned activity evidence/.test(entry.reason),
+            ),
+            JSON.stringify(result),
           );
-          assert.equal(existsSync(report), false);
-          const currentComment = JSON.parse(
+          assert.ok(
+            result.some((entry: any) => entry.action === "review_comment_synced"),
+            JSON.stringify(result),
+          );
+          const commentState = JSON.parse(
             readFileSync(join(workspace.root, `comment-state-${pull.number}.json`), "utf8"),
           );
-          assert.match(
-            currentComment.body,
-            scenario === "notice-error"
-              ? /ClawSweeper proposes closing this pull request/
-              : /ClawSweeper closed this pull request/,
-          );
-          assert.doesNotMatch(currentComment.body, /did not apply/);
-          assert.equal(
-            mutations.split("\n").filter((line) => line.includes("pr close")).length,
-            1,
-            mutations,
-          );
-          assert.equal(
-            mutations
-              .split("\n")
-              .filter((line) => line.includes("comments") && line.includes("POST")).length,
-            scenario === "durable-reserved-lease" ? 0 : 1,
-            mutations,
-          );
-        } else {
-          assert.ok(existsSync(report), JSON.stringify(result));
-          assert.equal(existsSync(join(workspace.closedDir, `${pull.number}.md`)), false);
-          if (scenario.startsWith("late-") || scenario === "close-error") {
-            assert.match(readFileSync(report, "utf8"), /oversized_activity_receipt: /);
-            assert.equal(
-              mutations
-                .split("\n")
-                .filter((line) => line.includes("comments") && line.includes("POST")).length,
-              1,
-              mutations,
-            );
-            if (scenario !== "close-error") assert.doesNotMatch(mutations, /pr close/);
-            const currentComment = JSON.parse(
-              readFileSync(join(workspace.root, `comment-state-${pull.number}.json`), "utf8"),
-            );
-            assert.match(currentComment.body, /ClawSweeper proposes closing this pull request/);
-            assert.doesNotMatch(currentComment.body, /ClawSweeper closed this pull request/);
-          } else assert.equal(mutations, "");
-          assert.match(readFileSync(report, "utf8"), /decision: close/);
+          assert.match(commentState.body, /ClawSweeper proposes closing/);
+          assert.doesNotMatch(commentState.body, /ClawSweeper closed/);
         }
+        assert.match(readFileSync(report, "utf8"), /decision: close/);
       } finally {
         if (previousGate === undefined) delete process.env.CLAWSWEEPER_OVERSIZED_PR_CLOSE_ENABLED;
         else process.env.CLAWSWEEPER_OVERSIZED_PR_CLOSE_ENABLED = previousGate;

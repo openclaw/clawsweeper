@@ -527,6 +527,7 @@ jobs:
               process.exit(1);
             }
             process.stdout.write(JSON.stringify({
+              oversized_activity_version: 1,
               lease_id: process.env.QUEUE_LEASE_ID,
               ...(hasTuple ? { item_key: itemKey, lease_revision: leaseRevision } : {}),
               run_id: process.env.GITHUB_RUN_ID,
@@ -571,6 +572,7 @@ jobs:
             elif RESPONSE="$response" node <<'NODE'
               const fs = require("node:fs");
               const response = JSON.parse(process.env.RESPONSE || "{}");
+              if (process.env.GITHUB_ENV) fs.appendFileSync(process.env.GITHUB_ENV, `CLAWSWEEPER_OVERSIZED_ACTIVITY_CONTEXT=${JSON.stringify(response.oversized_activity_version === 1 && response.oversized_activity ? {...response.oversized_activity,queueUrl:process.env.QUEUE_URL,failurePath:require("node:path").join(process.env.RUNNER_TEMP || process.cwd(),`clawsweeper-oversized-${response.oversized_activity.reference?.epoch}-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}.json`)} : null)}\n`);
               const dispatch = JSON.parse(process.env.DISPATCH_PAYLOAD || "{}");
               const requestedItemKey = String(process.env.ITEM_KEY || "").trim();
               const requestedLeaseRevision = Number(process.env.QUEUE_LEASE_REVISION);
@@ -2430,7 +2432,10 @@ jobs:
                 !["true", "false"].includes(reviewFailureRetryable))
             ) process.exit(1);
             if (requeueLatest && directLifecycleRequeue) process.exit(1);
+            const activityContext = JSON.parse(process.env.CLAWSWEEPER_OVERSIZED_ACTIVITY_CONTEXT || "null");
+            const activityFailure = activityContext ? {oversized_activity_failed: typeof activityContext.failurePath !== "string" || require("node:fs").existsSync(activityContext.failurePath)} : {};
             process.stdout.write(JSON.stringify({
+              ...activityFailure,
               lease_id: process.env.QUEUE_LEASE_ID,
               ...(protocolVersion === 2
                 ? {
@@ -2648,6 +2653,7 @@ jobs:
             if (!Number.isInteger(leaseRevision) || leaseRevision < 1) process.exit(1);
             if (!Number.isInteger(runAttempt) || runAttempt < 1) process.exit(1);
             process.stdout.write(JSON.stringify({
+              oversized_activity_version: 1,
               lease_id: process.env.QUEUE_LEASE_ID,
               item_key: process.env.ITEM_KEY,
               lease_revision: leaseRevision,
@@ -2693,6 +2699,7 @@ jobs:
             elif RESPONSE="$response" node <<'NODE'
               const fs = require("node:fs");
               const response = JSON.parse(process.env.RESPONSE || "{}");
+              if (process.env.GITHUB_ENV) fs.appendFileSync(process.env.GITHUB_ENV, `CLAWSWEEPER_OVERSIZED_ACTIVITY_CONTEXT=${JSON.stringify(response.oversized_activity_version === 1 && response.oversized_activity ? {...response.oversized_activity,queueUrl:process.env.QUEUE_URL,failurePath:require("node:path").join(process.env.RUNNER_TEMP || process.cwd(),`clawsweeper-oversized-${response.oversized_activity.reference?.epoch}-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}.json`)} : null)}\n`);
               const decision = response.decision;
               const publication = decision?.publication;
               const producerDecision = publication?.producerDecision;
@@ -3794,7 +3801,10 @@ jobs:
               const parsed = JSON.parse(process.env.STATE_WRITER_JSON || "");
               if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) stateWriter = parsed;
             } catch {}
+            const activityContext = JSON.parse(process.env.CLAWSWEEPER_OVERSIZED_ACTIVITY_CONTEXT || "null");
+            const activityFailure = activityContext ? {oversized_activity_failed: typeof activityContext.failurePath !== "string" || require("node:fs").existsSync(activityContext.failurePath)} : {};
             process.stdout.write(JSON.stringify({
+              ...activityFailure,
               lease_id: process.env.QUEUE_LEASE_ID,
               item_key: process.env.ITEM_KEY,
               lease_revision: leaseRevision,

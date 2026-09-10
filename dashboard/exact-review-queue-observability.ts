@@ -30,6 +30,8 @@ const EXACT_REVIEW_QUEUE_ENDPOINTS = new Map<string, string>([
   ["/github-read-model/repair", "github_read_model_repair"],
   ["/github-read-model/workflows", "github_read_model_workflows"],
   ["/heartbeat", "heartbeat"],
+  ["/oversized-activity", "oversized_activity"],
+  ["/pull-request-acknowledgement", "pull_request_acknowledgement"],
   ["/item-status", "item_status"],
   ["/lifecycle-audit/inventory", "lifecycle_audit_inventory"],
   ["/lifecycle-bay", "lifecycle_bay"],

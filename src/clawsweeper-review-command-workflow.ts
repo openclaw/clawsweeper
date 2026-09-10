@@ -1,3 +1,4 @@
+import { oversizedActivityContextFromEnv } from "./oversized-activity-runtime.js";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { oversizedPrSourceSnapshot } from "./clawsweeper-oversized-pr-freshness.js";
 import {
@@ -595,6 +596,8 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             item.updatedAt = stringOrUndefined(pullRequestPayload.updated_at) ?? item.updatedAt;
             const context = oversizedPullRequestContext(pullRequestPayload);
             const decision = oversizedPullRequestDecision(admission.decision, oversizedPrSourceSnapshot(pullRequestPayload, pullObservedAt));
+            const activityReference = oversizedActivityContextFromEnv()?.reference;
+            if (activityReference && activityReference.repo.toLowerCase() === item.repo.toLowerCase() && activityReference.number === item.number) decision.oversizedActivityReference = activityReference;
             const runtime = { model: "none", reasoningEffort: "none", contextElapsedMs: 0, codexElapsedMs: 0 };
             const action = reviewActionForDecision({ item, decision, git, runtime });
             const reportPath = join(artifactDir, reportFileName(item.repo, item.number));

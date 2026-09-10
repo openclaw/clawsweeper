@@ -3,347 +3,447 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { OversizedActivityStore } from "../dashboard/oversized-activity-store.ts";
+import { convergeCommandAcknowledgement } from "../dashboard/exact-review-queue.ts";
+import {
+  ownedCommentWriteIntent,
+  ownedCommentWriteResult,
+} from "../src/oversized-activity-write.ts";
 
 const root = resolve(process.argv[2] || ".artifacts/oversized-effects-proof");
 mkdirSync(root, { recursive: true });
 const adapter = join(root, "github-http-adapter.mjs");
 writeFileSync(
   adapter,
-  `import { readFileSync } from 'node:fs';
-let args = process.argv.slice(2);
-if (args[0] === '--repo') args = args.slice(2);
-let method = 'GET', path, body;
-if (args[0] === 'api') {
-  path = '/' + args[1];
-  const mi = args.indexOf('--method'); if (mi >= 0) method = args[mi + 1];
-  const bi = args.indexOf('--input'); if (bi >= 0) body = readFileSync(args[bi + 1], 'utf8');
-  const fi = args.indexOf('-f'); if (fi >= 0 && args[fi + 1].startsWith('body=')) body = JSON.stringify({body: args[fi + 1].slice(5)});
-} else if (args[0] === 'pr' && args[1] === 'close') {
-  method = 'PATCH'; path = '/repos/openclaw/openclaw/pulls/' + args[2]; body = JSON.stringify({state:'closed'});
-} else throw new Error('Unexpected command at isolated GitHub transport');
-if (!path.startsWith('/repos/openclaw/openclaw/')) throw new Error('Unexpected repository');
-const base = new URL(process.env.PROOF_HTTP_URL);
-if (base.hostname !== '127.0.0.1' || base.protocol !== 'http:') throw new Error('Loopback transport required');
-const response = await fetch(new URL(path, base), {method, body, headers:{'content-type':'application/json'}});
-const text = await response.text();
-if (!response.ok) { console.error(text); process.exit(1); }
-process.stdout.write(args.includes("--slurp") ? JSON.stringify([JSON.parse(text)]) : text);
+  `import {readFileSync} from 'node:fs';
+let args=process.argv.slice(2); if(args[0]==='--repo')args=args.slice(2);
+let method='GET',path,body;
+if(args[0]==='api') {
+ path='/'+args[1]; const m=args.findIndex(x=>x==='--method'||x==='-X'); if(m>=0)method=args[m+1];
+ const i=args.indexOf('--input'); if(i>=0)body=readFileSync(args[i+1],'utf8');
+ const f=args.indexOf('-f'); if(f>=0&&args[f+1].startsWith('body='))body=JSON.stringify({body:args[f+1].slice(5)});
+} else if(args[0]==='pr'&&args[1]==='close'){method='PATCH';path='/repos/openclaw/openclaw/pulls/'+args[2];body=JSON.stringify({state:'closed'});}else throw new Error('unexpected GitHub command');
+if(!path.startsWith('/repos/openclaw/openclaw/'))throw new Error('unexpected target');
+const base=new URL(process.env.PROOF_HTTP_URL); if(base.hostname!=='127.0.0.1'||base.protocol!=='http:')throw new Error('loopback required');
+const r=await fetch(new URL(path,base),{method,body,headers:{'content-type':'application/json'}});const t=await r.text();if(!r.ok){console.error(t);process.exit(1);}process.stdout.write(args.includes('--slurp')?JSON.stringify([JSON.parse(t)]):t);
 `,
 );
-const initial = {
-  number: 141913,
-  title: "Synthetic final-effect proof",
-  body: "Synthetic PR body",
-  html_url: "https://github.com/openclaw/openclaw/pull/141913",
-  state: "open",
-  locked: false,
-  draft: true,
-  author_association: "OWNER",
-  user: { login: "synthetic-owner" },
-  additions: 45791,
-  deletions: 120895,
-  changed_files: 2747,
-  comments: 0,
-  review_comments: 0,
-  labels: [],
-  assignees: [],
-  milestone: null,
-  requested_reviewers: [],
-  requested_teams: [],
-  created_at: "2026-01-01T00:00:00Z",
-  updated_at: "2026-09-08T00:00:00Z",
-  head: { sha: "b".repeat(40), repo: { full_name: "synthetic-owner/openclaw" } },
-  base: { ref: "main", sha: "a".repeat(40) },
-};
-const summaries = [];
-for (const scenario of [
-  "eligible",
-  "reserved-first-review",
-  "reserved-existing-review",
-  "reserved-queued-review",
-  "protected",
-  "ambiguous-initial-comment",
-  "stable-old-comment",
-  "late-exemption",
-  "late-body",
+const number = 141913,
+  repo = "openclaw/openclaw",
+  head = "b".repeat(40);
+const marker = "<!-- clawsweeper-command-status:synthetic-proof -->";
+const oldTime = new Date(Date.now() - 86_400_000).toISOString().replace(/\.\d{3}Z$/, "Z");
+const scenarios = [
+  "first-direct",
+  "existing-direct",
+  "first-queued",
+  "existing-queued",
+  "review-unchanged",
+  "same-second-review-edit",
   "late-human-comment",
-  "late-review-edit-retry",
-]) {
-  const reserveLease = scenario.startsWith("reserved-");
-  const quietObservation =
-    scenario === "stable-old-comment" || scenario === "late-review-edit-retry";
+  "late-review-edit",
+  "late-label",
+  "late-head",
+  "propagation-race",
+  "evidence-absent",
+  "evidence-malformed",
+  "evidence-stale",
+  "journal-begin-unavailable",
+  "journal-complete-unavailable",
+  "journal-malformed-response",
+];
+const selected = process.env.PROOF_SCENARIOS?.split(",") || scenarios;
+const summaries = [];
+for (const scenario of selected) {
   const directory = join(root, scenario);
   mkdirSync(directory, { recursive: true });
-  const pull = structuredClone(initial);
-  if (scenario === "protected") pull.labels = ["security"];
+  const pull = {
+    number,
+    title: "Synthetic oversized PR",
+    body: "Synthetic body",
+    html_url: `https://github.com/${repo}/pull/${number}`,
+    state: "open",
+    locked: false,
+    draft: true,
+    author_association: "OWNER",
+    user: { login: "synthetic-owner" },
+    additions: 45791,
+    deletions: 120895,
+    changed_files: 2747,
+    comments: 0,
+    review_comments: 0,
+    labels: [],
+    assignees: [],
+    milestone: null,
+    requested_reviewers: [],
+    requested_teams: [],
+    created_at: oldTime,
+    updated_at: oldTime,
+    head: { sha: head, repo: { full_name: "synthetic-owner/openclaw" } },
+    base: { ref: "main", sha: "a".repeat(40) },
+  };
   const comments = [],
     timeline = [],
-    requests = [];
-  const reviews = [];
-  if (scenario === "reserved-existing-review") {
-    const prior = {
-      id: 999,
-      body: `Prior durable review\n\n<!-- clawsweeper-review-version item=141913 reviewed_at=2026-09-07T00:00:00Z sha=${initial.head.sha} source_revision=${"a".repeat(64)} lease_owner=previous lease_comment_id=999 v=1 -->\n<!-- clawsweeper-review item=141913 -->`,
-      user: { login: "clawsweeper[bot]", type: "Bot" },
-      created_at: "2026-09-07T00:00:00Z",
-      updated_at: "2026-09-07T00:00:00Z",
-    };
-    comments.push(prior);
-    timeline.push({ ...prior, event: "commented" });
-    pull.comments = 1;
+    reviews = [],
+    requests = [],
+    projections = [];
+  let nextId = 1000,
+    ref,
+    owner,
+    context,
+    mutationCount = 0,
+    interventionDone = false,
+    applying = false;
+  const memory = new Map();
+  const store = new OversizedActivityStore({
+    get: (key) => structuredClone(memory.get(key)),
+    put: (key, value) => memory.set(key, structuredClone(value)),
+  });
+  const comment = (id, body, author = "clawsweeper[bot]") => ({
+    id,
+    body,
+    user: { login: author, type: author.includes("bot") ? "Bot" : "User" },
+    author_association: "NONE",
+    html_url: `${pull.html_url}#issuecomment-${id}`,
+    issue_url: `https://api.github.com/repos/${repo}/issues/${number}`,
+    created_at: oldTime,
+    updated_at: oldTime,
+  });
+  if (scenario.startsWith("existing")) {
+    const c = comment(
+      999,
+      `Previous review\n<!-- clawsweeper-review-version item=${number} reviewed_at=${oldTime} sha=${head} source_revision=${"a".repeat(64)} lease_owner=old lease_comment_id=999 v=1 -->\n<!-- clawsweeper-review item=${number} -->`,
+    );
+    comments.push(c);
+    timeline.push({ ...c, event: "commented" });
   }
-  if (scenario === "late-review-edit-retry") {
-    const review = {
-      id: 700,
-      body: "Original submitted review",
-      submitted_at: "2026-01-01T00:00:00Z",
-      state: "COMMENTED",
-      user: { login: "synthetic-human" },
-    };
-    reviews.push(review);
-    timeline.push({ ...review, event: "reviewed" });
-  }
-  if (scenario === "ambiguous-initial-comment" || scenario === "stable-old-comment") {
-    const human = {
-      id: 1001,
-      body: "Human comment edited in the observation second",
-      user: { login: "synthetic-human", type: "User" },
-      created_at: "2026-01-01T00:00:00Z",
-      updated_at: initial.updated_at,
-    };
-    comments.push(human);
-    timeline.push({ ...human, event: "commented" });
-    pull.comments = 1;
-  }
+  comments.push(comment(800, "@clawsweeper re-review", "synthetic-human"));
+  timeline.push({ ...comments.at(-1), event: "commented" });
+  pull.comments = comments.length;
+  const review = {
+    id: 700,
+    body: "Original review body",
+    submitted_at: oldTime,
+    state: "COMMENTED",
+    user: { login: "synthetic-reviewer" },
+  };
+  reviews.push(review);
+  timeline.push({ ...review, event: "reviewed" });
   const server = createServer(async (request, response) => {
     try {
-      const url = new URL(request.url, "http://127.0.0.1");
       const chunks = [];
-      for await (const chunk of request) chunks.push(chunk);
-      const text = Buffer.concat(chunks).toString();
-      const input = text ? JSON.parse(text) : {};
-      requests.push({ method: request.method, path: url.pathname });
+      for await (const c of request) chunks.push(c);
+      const raw = Buffer.concat(chunks).toString();
+      const input = raw ? JSON.parse(raw) : {};
+      const url = new URL(request.url, "http://127.0.0.1");
+      const path = url.pathname;
+      requests.push({ method: request.method, path });
       const send = (value, status = 200) => {
         response.writeHead(status, { "content-type": "application/json" });
         response.end(JSON.stringify(value));
       };
-      const path = url.pathname;
+      if (path === "/internal/exact-review/heartbeat") return send({ ok: true });
+      if (path === "/internal/exact-review/oversized-activity") {
+        if (
+          applying &&
+          ((scenario === "journal-begin-unavailable" && input.operation === "begin") ||
+            (scenario === "journal-complete-unavailable" && input.operation === "complete"))
+        )
+          return send({ error: "synthetic evidence outage" }, 503);
+        if (applying && scenario === "journal-malformed-response" && input.operation === "begin") {
+          response.writeHead(200);
+          response.end("not-json");
+          return;
+        }
+
+        if (!ref || input.reference?.epoch !== ref.epoch || !store.owns(ref, input.owner))
+          return send({ ok: true, evidence: null });
+        if (input.operation === "read") return send({ ok: true, evidence: store.evidence(ref) });
+        if (input.operation === "begin") store.begin(ref, input.receipt);
+        else if (input.operation === "complete") store.complete(ref, input.receipt);
+        else return send({ error: "invalid operation" }, 400);
+        return send({ ok: true, recorded: true });
+      }
       if (request.method === "GET") {
         if (/\/issues\/comments\/\d+$/.test(path)) {
-          const comment = comments.find((entry) => entry.id === Number(path.split("/").at(-1)));
-          return comment ? send(comment) : send({ error: "comment missing" }, 404);
+          const c = comments.find((c) => c.id === Number(path.split("/").at(-1)));
+          return c ? send(c) : send({ error: "missing comment" }, 404);
         }
-        if (path.endsWith("/pulls/141913")) return send(pull);
-        if (path.endsWith("/issues/141913"))
+        if (path.endsWith(`/pulls/${number}`)) return send(pull);
+        if (path.endsWith(`/issues/${number}`))
           return send({
             ...pull,
-            pull_request: { url: "https://api.github.com/repos/openclaw/openclaw/pulls/141913" },
+            pull_request: { url: `https://api.github.com/repos/${repo}/pulls/${number}` },
           });
         const page = Number(url.searchParams.get("page") || 1),
           start = (page - 1) * 100;
-        if (path.endsWith("/issues/141913/comments"))
+        if (path.endsWith(`/issues/${number}/comments`))
           return send(comments.slice(start, start + 100));
         if (path.endsWith("/timeline")) return send(timeline.slice(start, start + 100));
         if (path.endsWith("/reviews")) return send(reviews.slice(start, start + 100));
-        if (path.endsWith("/pulls/141913/comments")) return send([]);
+        if (path.endsWith(`/pulls/${number}/comments`)) return send([]);
         return send({ error: "unimplemented read" }, 404);
       }
-      if (request.method === "POST" && path.endsWith("/issues/141913/comments")) {
-        const comment = {
-          id: Math.max(999, ...comments.map((entry) => entry.id)) + 1,
-          body: input.body,
-          user: { login: "clawsweeper[bot]", type: "Bot" },
-          html_url:
-            pull.html_url +
-            "#issuecomment-" +
-            (Math.max(999, ...comments.map((entry) => entry.id)) + 1),
-          created_at: quietObservation ? "2026-09-08T00:00:04Z" : "2026-09-08T00:00:01Z",
-          updated_at: quietObservation ? "2026-09-08T00:00:04Z" : "2026-09-08T00:00:01Z",
-        };
-        comments.push(comment);
-        timeline.push({ ...comment, event: "commented" });
-        pull.comments++;
-        pull.updated_at = comment.updated_at;
-        if (scenario === "late-review-edit-retry") {
-          reviews[0].body = "Review edited after proposal publication";
-          timeline.find((event) => event.id === 700).body = reviews[0].body;
-        }
-        if (scenario === "late-exemption") pull.labels.push("size: accepted-large");
-        if (scenario === "late-body")
-          pull.body = "Human edited the body after proposal publication";
-        if (scenario === "late-human-comment") {
-          const human = {
-            ...comment,
-            id: 1001,
-            body: "Same-second human follow-up",
-            user: { login: "synthetic-human", type: "User" },
-          };
-          comments.push(human);
-          timeline.push({ ...human, event: "commented" });
-          pull.comments++;
-        }
-        return send(comment, 201);
-      }
-      if (request.method === "PATCH" && /\/issues\/comments\/\d+$/.test(path)) {
-        const owned = comments.find((comment) => comment.id === Number(path.split("/").at(-1)));
-        owned.body = input.body;
-        owned.updated_at = quietObservation ? "2026-09-08T00:00:06Z" : "2026-09-08T00:00:03Z";
+      mutationCount++;
+      const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+      let result;
+      if (request.method === "POST" && path.endsWith(`/issues/${number}/comments`)) {
+        result = { ...comment(nextId++, input.body), created_at: timestamp, updated_at: timestamp };
+        comments.push(result);
+        timeline.push({ ...result, event: "commented" });
+      } else if (request.method === "PATCH" && /\/issues\/comments\/\d+$/.test(path)) {
+        result = comments.find((c) => c.id === Number(path.split("/").at(-1)));
+        assert.ok(result);
+        result.body = input.body;
+        result.updated_at = timestamp;
         Object.assign(
-          timeline.find((event) => event.id === owned.id),
-          owned,
+          timeline.find((e) => e.id === result.id),
+          result,
         );
-        pull.updated_at = owned.updated_at;
-        return send(owned);
-      }
-      if (request.method === "DELETE" && path.endsWith("/issues/comments/1000")) {
-        comments.splice(
-          comments.findIndex((comment) => comment.id === 1000),
-          1,
-        );
-        timeline.splice(
-          timeline.findIndex((event) => event.id === 1000),
-          1,
-        );
-        pull.comments--;
-        return send({});
-      }
-      if (
+      } else if (request.method === "DELETE" && /\/issues\/comments\/\d+$/.test(path)) {
+        const id = Number(path.split("/").at(-1));
+        const index = comments.findIndex((c) => c.id === id);
+        if (index < 0) return send({ error: "missing comment" }, 404);
+        comments.splice(index, 1);
+        const ti = timeline.findIndex((c) => c.id === id);
+        if (ti >= 0) timeline.splice(ti, 1);
+        result = {};
+      } else if (
         request.method === "PATCH" &&
-        path.endsWith("/pulls/141913") &&
+        path.endsWith(`/pulls/${number}`) &&
         input.state === "closed"
       ) {
         pull.state = "closed";
-        pull.updated_at = quietObservation ? "2026-09-08T00:00:05Z" : "2026-09-08T00:00:02Z";
-        return send(pull);
+        result = pull;
+      } else return send({ error: "unexpected mutation" }, 400);
+      // Intervene after the owned status PATCH, in exactly its GitHub timestamp second.
+      if (
+        !interventionDone &&
+        request.method === "PATCH" &&
+        String(input.body || "").includes(marker)
+      ) {
+        interventionDone = true;
+        if (scenario === "same-second-review-edit" || scenario === "late-review-edit") {
+          review.body = "Human edited after baseline";
+          timeline.find((e) => e.id === 700).body = review.body;
+        }
+        if (scenario === "late-human-comment") {
+          const h = {
+            ...comment(nextId++, "Human follow-up", "synthetic-human"),
+            created_at: timestamp,
+            updated_at: timestamp,
+          };
+          comments.push(h);
+          timeline.push({ ...h, event: "commented" });
+        }
+        if (scenario === "late-label") pull.labels.push("size: accepted-large");
+        if (scenario === "late-head") pull.head.sha = "c".repeat(40);
       }
-      return send({ error: "unexpected mutation" }, 400);
+      const projectedCount = comments.length;
+      projections.push({
+        method: request.method,
+        path,
+        updatedAt: timestamp,
+        comments: projectedCount,
+        propagationMs: 1000,
+      });
+      setTimeout(() => {
+        pull.updated_at = timestamp;
+        pull.comments = projectedCount;
+      }, 1000);
+      return send(result, request.method === "POST" ? 201 : 200);
     } catch (error) {
       response.writeHead(500);
       response.end(String(error));
     }
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
   const env = {
     PATH: process.env.PATH,
     HOME: directory,
     GH_BIN: process.execPath,
     GH_BIN_ARGS: JSON.stringify([adapter]),
-    GH_TOKEN: "synthetic-loopback-token",
+    GH_TOKEN: "synthetic-loopback",
     GITHUB_TOKEN: "",
-    PROOF_HTTP_URL: `http://127.0.0.1:${server.address().port}`,
+    PROOF_HTTP_URL: origin,
     CLAWSWEEPER_OVERSIZED_PR_CLOSE_ENABLED: "true",
     CLAWSWEEPER_MAX_PR_CHANGED_LINES: "50000",
+    CLAWSWEEPER_ACTION_LEDGER_DISABLED: "1",
   };
-  const run = async (name, args) => {
-    const child = spawn(process.execPath, ["dist/clawsweeper.js", ...args], {
+  const read = async (path) => {
+    const r = await fetch(`${origin}/${path.replace(/^\//, "")}`);
+    assert.equal(r.status, 200);
+    return r.json();
+  };
+  const run = async (name, args, cli = "dist/clawsweeper.js") => {
+    const child = spawn(process.execPath, [cli, ...args], {
       env,
       stdio: ["ignore", "pipe", "pipe"],
     });
-    let output = "",
-      stdout = "";
-    child.stdout.on("data", (chunk) => {
-      output += chunk;
-      stdout += chunk;
+    let stdout = "",
+      output = "";
+    child.stdout.on("data", (c) => {
+      stdout += c;
+      output += c;
     });
-    child.stderr.on("data", (chunk) => (output += chunk));
-    const code = await new Promise((resolve, reject) => {
+    child.stderr.on("data", (c) => (output += c));
+    const exit = await new Promise((resolve, reject) => {
       child.on("error", reject);
       child.on("close", resolve);
     });
     writeFileSync(
-      join(directory, name + ".log"),
+      join(directory, `${name}.log`),
       output
         .replaceAll(root, "<proof>")
         .replaceAll(process.cwd(), "<checkout>")
         .replaceAll(process.execPath, "<node>"),
     );
-    assert.equal(code, 0, output);
+    assert.equal(exit, 0, output);
     return stdout;
   };
   try {
+    ref = await store.prepare(repo, number, { head, command: marker }, read);
+    assert.equal(store.evidence(ref)?.invalid, null);
+    const baselineReadCount = requests.length;
+    const journal = async (request, write) => {
+      const before = request.method === "POST" ? null : await read(request.path);
+      const intent = ownedCommentWriteIntent(request, before);
+      store.begin(ref, intent);
+      const result = await write();
+      await new Promise((r) => setTimeout(r, 1100));
+      store.complete(
+        ref,
+        ownedCommentWriteResult(intent, result, await read(`repos/${repo}/pulls/${number}`)),
+      );
+      return result;
+    };
+    const acknowledgementToken = store.lockAcknowledgement(ref);
+    const ackId = await convergeCommandAcknowledgement({
+      env: { GITHUB_API_URL: origin },
+      token: Promise.resolve("synthetic"),
+      decision: { targetRepo: repo, itemNumber: number, commandStatusMarker: marker },
+      sourceCommentId: 800,
+      journal,
+    });
+    store.unlockAcknowledgement(ref, acknowledgementToken);
+    owner = {
+      itemKey: `${repo}#${number}`,
+      leaseId: "synthetic-review",
+      claimGeneration: 1,
+      runId: "123456789",
+      runAttempt: 1,
+    };
+    assert.equal(store.fence(ref, owner, Date.now() + 600_000), true);
+    context = {
+      reference: ref,
+      owner,
+      queueUrl: origin,
+      failurePath: join(directory, `evidence-failure-${ref.epoch}.json`),
+    };
+    env.CLAWSWEEPER_OVERSIZED_ACTIVITY_CONTEXT = JSON.stringify(context);
+    // A late duplicate-convergence attempt must defer without touching GitHub.
+    assert.equal(store.blocked(repo, number), true);
+    const reservation = JSON.parse(
+      await run("reserve", [
+        "reserve-review-lease",
+        "--target-repo",
+        repo,
+        "--item-number",
+        String(number),
+        "--review-timeout-ms",
+        "60000",
+      ]),
+    );
+    assert.equal(reservation.status, "posted");
     const admission = join(directory, "admission.json"),
       items = join(directory, "items"),
       closed = join(directory, "closed");
-    writeFileSync(
-      admission,
-      JSON.stringify(
-        {
-          repo: "openclaw/openclaw",
-          pull,
-          observedAt: quietObservation ? "2026-09-08T00:00:03Z" : initial.updated_at,
-        },
-        null,
-        2,
-      ),
-    );
-    let reservation;
-    if (reserveLease) {
-      reservation = JSON.parse(
-        await run("reserve", [
-          "reserve-review-lease",
-          "--target-repo",
-          "openclaw/openclaw",
-          "--item-number",
-          "141913",
-          "--review-timeout-ms",
-          "60000",
-        ]),
-      );
-      assert.equal(reservation.status, "posted");
-      assert.equal(reservation.commentId, 1000);
-      assert.equal(reservation.headSha, initial.head.sha);
-      // Match the workflow metadata refresh after its reservation/status writes.
-      writeFileSync(
-        admission,
-        JSON.stringify({ repo: "openclaw/openclaw", pull, observedAt: "2026-09-08T00:00:10Z" }),
-      );
-    }
-    const beforeReviewRequests = requests.length;
+    writeFileSync(admission, JSON.stringify({ repo, pull, observedAt: new Date().toISOString() }));
+    const beforeReview = requests.length;
     await run("review", [
       "review",
       "--target-repo",
-      "openclaw/openclaw",
+      repo,
       "--item-number",
-      "141913",
+      String(number),
       "--pr-admission-file",
       admission,
       "--artifact-dir",
       items,
       "--skip-start-comment",
-      ...(reservation
-        ? [
-            "--review-lease-owner",
-            reservation.owner,
-            "--review-lease-comment-id",
-            String(reservation.commentId),
-          ]
-        : []),
+      "--review-lease-owner",
+      reservation.owner,
+      "--review-lease-comment-id",
+      String(reservation.commentId),
     ]);
-    const reviewRequests = requests.length - beforeReviewRequests;
-    assert.equal(reviewRequests, 0, "metadata admission must not fetch transport context");
-    if (reservation) {
-      const report = readFileSync(join(items, "141913.md"), "utf8");
-      assert.ok(report.includes(`review_lease_owner: ${reservation.owner}`));
-      assert.match(report, /^review_lease_comment_id: 1000$/m);
-    }
-    if (scenario === "reserved-queued-review") {
+    const reviewRequests = requests.length - beforeReview;
+    assert.equal(reviewRequests, 0);
+    await run(
+      "status",
+      [
+        "--repo",
+        repo,
+        "--item-number",
+        String(number),
+        "--marker",
+        marker,
+        "--status-comment-id",
+        String(ackId),
+        "--state",
+        "Complete",
+        "--detail",
+        "Synthetic review finished",
+        "--run-url",
+        "https://github.com/openclaw/clawsweeper/actions/runs/123456789",
+      ],
+      "dist/repair/update-command-status.js",
+    );
+    if (scenario.endsWith("queued")) {
       await run("expire", [
         "expire-review-lease",
         "--repo",
-        "openclaw/openclaw",
+        repo,
         "--item-number",
-        "141913",
+        String(number),
         "--comment-id",
         String(reservation.commentId),
       ]);
-      const expiredBody = comments.find((entry) => entry.id === reservation.commentId).body;
-      assert.match(expiredBody, /clawsweeper-review-lease item=141913/);
-      assert.ok(Date.parse(expiredBody.match(/lease_expires_at=([^ ]+)/)[1]) <= Date.now());
+      store.seal(ref, owner, existsSync(context.failurePath));
+      store.release(ref, owner);
+      owner = {
+        ...owner,
+        itemKey: `${repo}#${number}@publish:123456789:1`,
+        leaseId: "synthetic-publisher",
+        claimGeneration: 2,
+      };
+      assert.equal(store.fence(ref, owner, Date.now() + 600_000), true);
+      context = {
+        ...context,
+        owner,
+        failurePath: join(directory, `publisher-evidence-failure-${ref.epoch}.json`),
+      };
+      env.CLAWSWEEPER_OVERSIZED_ACTIVITY_CONTEXT = JSON.stringify(context);
     }
-    const applyArgs = [
+    if (scenario.startsWith("evidence-")) {
+      const file = join(items, `${number}.md`);
+      let markdown = readFileSync(file, "utf8");
+      if (scenario === "evidence-absent")
+        markdown = markdown.replace(/^oversized_activity_reference:.*\n/m, "");
+      if (scenario === "evidence-malformed")
+        markdown = markdown.replace(
+          /^oversized_activity_reference:.*$/m,
+          "oversized_activity_reference: {broken",
+        );
+      if (scenario === "evidence-stale")
+        markdown = markdown.replace(ref.epoch, "00000000-0000-0000-0000-000000000000");
+      writeFileSync(file, markdown);
+    }
+    applying = true;
+    await run("apply", [
       "apply-decisions",
       "--target-repo",
-      "openclaw/openclaw",
+      repo,
       "--items-dir",
       items,
       "--closed-dir",
@@ -353,97 +453,69 @@ for (const scenario of [
       "--report-path",
       join(directory, "apply.json"),
       "--item-number",
-      "141913",
+      String(number),
       "--apply-kind",
       "all",
       "--min-age-minutes",
       "0",
       "--close-delay-ms",
       "0",
+      "--exact-event-publication",
+      "--event-apply-proof",
       "--skip-dashboard",
-    ];
-    await run("apply", applyArgs);
-    let retry;
-    if (scenario === "late-review-edit-retry") {
-      const original = JSON.parse(readFileSync(join(directory, "apply.json"), "utf8"));
-      assert.ok(original.some((entry) => /activity changed/.test(entry.reason)));
-      assert.match(readFileSync(join(items, "141913.md"), "utf8"), /oversized_activity_receipt:/);
-      await run("retry", applyArgs);
-      retry = JSON.parse(readFileSync(join(directory, "apply.json"), "utf8"));
+    ]);
+    const apply = JSON.parse(readFileSync(join(directory, "apply.json"), "utf8"));
+    const shouldClose = [
+      "first-direct",
+      "existing-direct",
+      "first-queued",
+      "existing-queued",
+      "review-unchanged",
+      "propagation-race",
+    ].includes(scenario);
+    assert.equal(pull.state, shouldClose ? "closed" : "open", JSON.stringify(apply));
+    assert.equal(existsSync(join(closed, `${number}.md`)), shouldClose);
+    if (
+      shouldClose ||
+      scenario.startsWith("evidence-") ||
+      scenario.startsWith("journal-") ||
+      ["same-second-review-edit", "late-human-comment", "late-review-edit"].includes(scenario)
+    )
       assert.ok(
-        retry.some((entry) => /persisted PR activity receipt/.test(entry.reason)),
-        JSON.stringify(retry),
+        apply.some((r) => r.action === "review_comment_synced"),
+        JSON.stringify(apply),
       );
-    }
-    const isClosed =
-      (reserveLease && scenario !== "reserved-queued-review") ||
-      scenario === "eligible" ||
-      scenario === "stable-old-comment";
-    assert.equal(
-      pull.state,
-      isClosed ? "closed" : "open",
-      readFileSync(join(directory, "apply.json"), "utf8"),
-    );
-    assert.equal(existsSync(join(closed, "141913.md")), isClosed);
-    assert.equal(existsSync(join(items, "141913.md")), !isClosed);
     const closeWrites = requests.filter(
-      (entry) => entry.method === "PATCH" && entry.path.endsWith("/pulls/141913"),
+      (r) => r.method === "PATCH" && r.path.endsWith(`/pulls/${number}`),
     ).length;
-    assert.equal(closeWrites, isClosed ? 1 : 0);
-    const owned = comments.filter(
-      (entry) =>
-        entry.user.login === "clawsweeper[bot]" &&
-        !entry.body.includes("<!-- clawsweeper-review-status"),
-    );
-    assert.equal(
-      owned.length,
-      scenario === "protected" ||
-        scenario === "ambiguous-initial-comment" ||
-        scenario === "reserved-queued-review"
-        ? 0
-        : 1,
-    );
-    if (owned.length)
-      assert.match(
-        owned[0].body,
-        isClosed
-          ? /ClawSweeper closed this pull request/
-          : /ClawSweeper proposes closing this pull request/,
-      );
-    assert.ok(requests.every((entry) => !/\/(files|commits|blobs)(\/|$)/.test(entry.path)));
-    if (scenario === "reserved-queued-review") {
-      const result = JSON.parse(readFileSync(join(directory, "apply.json"), "utf8"));
-      assert.ok(
-        result.some(
-          (entry) =>
-            entry.action === "skipped_changed_since_review" &&
-            entry.reason === "updated_at changed",
-        ),
-        JSON.stringify(result),
-      );
-    }
+    assert.equal(closeWrites, shouldClose ? 1 : 0);
+    assert.ok(requests.every((r) => !/\/(files|commits|blobs)(\/|$)/.test(r.path)));
+    store.seal(ref, owner, existsSync(context.failurePath));
+    store.release(ref, owner);
+    assert.equal(store.blocked(repo, number), false);
     const summary = {
       scenario,
-      ...(reservation
-        ? {
-            reservation: "posted",
-            leaseCommentId: reservation.commentId,
-            reviewRequests,
-            durableCommentId: owned[0]?.id,
-          }
-        : {}),
       state: pull.state,
       closeWrites,
-      ownedComments: owned.length,
-      location: isClosed ? "closed" : "items",
-      apply: JSON.parse(readFileSync(join(directory, "apply.json"), "utf8")),
-      ...(retry ? { retry } : {}),
+      reviewRequests,
+      baselineMetadataReads: baselineReadCount,
+      metadataReads: requests.filter((r) => r.method === "GET").length,
+      receiptCount: [...memory.keys()].filter((key) => key.includes(":receipt:")).length,
+      githubMutations: mutationCount,
+      fencedLateAcknowledgement: true,
+      completed: true,
+      apply,
     };
     summaries.push(summary);
     writeFileSync(
-      join(directory, "server-state.json"),
-      JSON.stringify({ pull, comments, timeline, reviews, requests }, null, 2),
+      join(directory, "trace.json"),
+      JSON.stringify(
+        { summary, requests, projections, evidence: store.evidence(ref), pull, comments, reviews },
+        null,
+        2,
+      ),
     );
+    console.log(JSON.stringify(summary));
   } finally {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
@@ -451,18 +523,5 @@ for (const scenario of [
 }
 writeFileSync(join(root, "results.json"), JSON.stringify(summaries, null, 2));
 console.log(
-  JSON.stringify(
-    {
-      environment: {
-        node: process.version,
-        platform: process.platform,
-        transport: "isolated loopback HTTP through the built CLI GitHub command adapter",
-      },
-      results: summaries,
-      limits:
-        "Synthetic GitHub service and data; no live GitHub close or production dispatch. Filesystem records and HTTP service state are observed final effects.",
-    },
-    null,
-    2,
-  ),
+  "PASS: built CLI, queue receipt store, acknowledgement writer, delayed GitHub projection; synthetic loopback only; hydration=0 scanner=0 model=0",
 );

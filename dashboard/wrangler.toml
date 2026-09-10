@@ -2,6 +2,7 @@ name = "clawsweeper-status"
 main = "worker.ts"
 account_id = "91b59577e757131d68d55a471fe32aca"
 compatibility_date = "2026-05-11"
+compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
 [triggers]

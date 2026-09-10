@@ -1,3 +1,18 @@
+import { OversizedActivityStore } from "./oversized-activity-store.ts";
+import {
+  oversizedActivityNeeded,
+  parseOversizedActivityReference,
+  parseOversizedActivityEvidence,
+  type OversizedActivityReference,
+  type OversizedActivityOwner,
+  type OversizedAcknowledgementReceipt,
+} from "../src/oversized-activity-contract.ts";
+import {
+  isOversizedCommentWrite,
+  ownedCommentWriteIntent,
+  ownedCommentWriteResult,
+  type OversizedCommentRequest,
+} from "../src/oversized-activity-write.ts";
 import { stableJson } from "../src/stable-json.ts";
 import {
   terminalReviewFailureReason,
@@ -126,7 +141,10 @@ import {
   unknownBaySnapshot,
 } from "./exact-review-lifecycle-telemetry.ts";
 import { GithubEgressTelemetryStore } from "./github-egress-telemetry.ts";
-import { resolvePullRequestAcknowledgement } from "./pull-request-acknowledgement.ts";
+import {
+  resolvePullRequestAcknowledgement,
+  settlePullRequestAcknowledgement,
+} from "./pull-request-acknowledgement.ts";
 import {
   ExactReviewCommandIntakeStore,
   type ExactReviewCommandIntakeRecord,
@@ -196,6 +214,7 @@ import {
   mergePendingExactReviewDecision,
   type ExactReviewBranchAuthorityReservation,
   type ExactReviewDecision,
+  type ExactReviewBaseDecision,
   type ExactReviewEditedSemanticInput,
   type ExactReviewIngress,
   type ExactReviewPublication,
@@ -1008,7 +1027,55 @@ export class ExactReviewQueue {
     const mutating = request.method !== "GET";
     if (mutating) this.invalidateReadCaches();
     try {
-      return await this.handleFetch(request, hostedTargetMetadataToken);
+      const route = new URL(request.url).pathname;
+      const completion =
+        route === "/complete" || route === "/heartbeat"
+          ? objectValue(
+              await request
+                .clone()
+                .json()
+                .catch(() => null),
+            )
+          : null;
+      let previous: ExactReviewQueueItem | undefined;
+      if (completion) {
+        await this.ready;
+        const state = this.readStateSync();
+        previous =
+          state.items[String(completion.item_key)] ??
+          exactReviewItemForLease(state, String(completion.lease_id));
+      }
+      const response = await this.handleFetch(request, hostedTargetMetadataToken);
+      const ref =
+        previous?.leaseDecision?.oversizedActivityReference ??
+        previous?.decision.oversizedActivityReference;
+      if (
+        response.ok &&
+        completion &&
+        previous &&
+        ref &&
+        previous.leaseId === completion.lease_id &&
+        previous.claimedRunId === String(completion.run_id) &&
+        previous.claimGeneration === Number(completion.claim_generation)
+      ) {
+        const store = new OversizedActivityStore(this.storage.kv);
+        const owner = {
+          itemKey: previous.key,
+          leaseId: previous.leaseId!,
+          runId: previous.claimedRunId!,
+          runAttempt: previous.claimedRunAttempt!,
+          claimGeneration: previous.claimGeneration!,
+        };
+        if (route === "/complete") {
+          if (typeof completion.oversized_activity_failed === "boolean")
+            store.seal(ref, owner, completion.oversized_activity_failed);
+          store.release(ref, owner);
+        } else {
+          const current = this.readStateSync().items[previous.key];
+          if (current?.leaseId === owner.leaseId) store.fence(ref, owner, current.leaseExpiresAt!);
+        }
+      }
+      return response;
     } catch (error) {
       rethrowQueueFailure(error, "fetch", request);
     } finally {
@@ -2590,6 +2657,108 @@ export class ExactReviewQueue {
       );
     }
 
+    // Binding-only: the authenticated webhook ingress delegates all PR acknowledgement effects here.
+    if (request.method === "POST" && url.pathname === "/pull-request-acknowledgement") {
+      const body = objectValue(await request.json().catch(() => null));
+      const decision = exactReviewDecisionFrom(body.decision);
+      const installationId = Number(body.installation_id);
+      if (
+        !decision ||
+        decision.itemKind !== "pull_request" ||
+        !Number.isSafeInteger(installationId) ||
+        installationId < 1
+      )
+        return json({ error: "invalid_acknowledgement" }, 400);
+      const admission = await this.hostedTargetAdmission(
+        decision.targetRepo,
+        hostedTargetMetadataToken,
+      );
+      if (admission.outcome === "terminal") return json({ commentId: null, outcome: "resolved" });
+      if (admission.outcome === "retryable") return hostedTargetProbeResponse(admission);
+      try {
+        const result = await this.withOversizedAcknowledgement(
+          decision,
+          exactReviewTargetReadToken(this.env, decision.targetRepo, installationId),
+          (journal) =>
+            exactReviewSourceAuthorityAcknowledgement(
+              this.env,
+              { decision, installationId },
+              journal,
+              body.settle === true,
+            ),
+        );
+        return json(result);
+      } catch {
+        if (body.settle !== true) return json({ deferred: true, commentId: null }, 202);
+        this.storage.kv.put(
+          `oversized-ack-cleanup:v1:${decision.targetRepo.toLowerCase()}#${decision.itemNumber}`,
+          { decision, installationId, nextAttemptAt: Date.now() + 30_000 },
+        );
+        await this.scheduleNext(this.readStateSync(), Date.now());
+        return json({ deferred: true, commentId: null }, 202);
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/oversized-activity") {
+      const body = objectValue(await request.json().catch(() => null));
+      const ref = parseOversizedActivityReference(body.reference);
+      const owner = objectValue(body.owner) as unknown as OversizedActivityOwner;
+      const item = this.readStateSync().items[owner.itemKey];
+      const store = new OversizedActivityStore(this.storage.kv);
+      if (
+        !ref ||
+        !item ||
+        item.leaseId !== owner.leaseId ||
+        item.claimedRunId !== owner.runId ||
+        item.claimedRunAttempt !== owner.runAttempt ||
+        item.claimGeneration !== owner.claimGeneration ||
+        !store.owns(ref, owner) ||
+        item.decision.targetRepo.toLowerCase() !== ref.repo.toLowerCase() ||
+        item.decision.itemNumber !== ref.number
+      )
+        return json({
+          ok: true,
+          evidence: null,
+          authority_current: false,
+          reason: "missing or stale queue-owned evidence",
+        });
+      if (body.operation === "read") return json({ ok: true, evidence: store.evidence(ref) });
+      if (body.operation === "begin" && store.evidence(ref) === null)
+        return json({ ok: true, recorded: false, authority_current: true, evidence: null });
+      const receipt = body.receipt as OversizedAcknowledgementReceipt;
+      if (
+        !parseOversizedActivityEvidence({
+          reference: ref,
+          baseline: null,
+          invalid: null,
+          receipts: [receipt],
+        })
+      )
+        return json({ error: "invalid_oversized_write_receipt" }, 400);
+      const trusted = exactReviewCommandBotLogins(this.env);
+      trusted.add("clawsweeper");
+      if (
+        [receipt.before, receipt.after].some(
+          (image) => image && !trusted.has(image.author.toLowerCase()),
+        )
+      )
+        return json({ error: "invalid_oversized_write_actor" }, 400);
+      try {
+        if (
+          body.operation === "begin" &&
+          receipt.completedAt === null &&
+          receipt.after === null &&
+          receipt.pullAfter === null
+        )
+          store.begin(ref, receipt);
+        else if (body.operation === "complete" && receipt.completedAt) store.complete(ref, receipt);
+        else return json({ error: "invalid_oversized_write_operation" }, 400);
+      } catch {
+        return json({ error: "oversized_write_conflict" }, 409);
+      }
+      return json({ ok: true, recorded: true });
+    }
+
     if (request.method === "POST" && url.pathname === "/claim") {
       const body = objectValue(await request.json().catch(() => null));
       const leaseId = String(body.lease_id || "").trim();
@@ -2681,6 +2850,123 @@ export class ExactReviewQueue {
       }
       if (admission.outcome === "retryable") return hostedTargetProbeResponse(admission);
 
+      const wantsOversizedEvidence =
+        body.oversized_activity_version === 1 && item.decision.itemKind === "pull_request";
+      let activityReference: OversizedActivityReference | undefined;
+      let activityClaimToken: string | undefined;
+      if (wantsOversizedEvidence) {
+        const store = new OversizedActivityStore(this.storage.kv);
+        const activityControl = store.control(item.decision.targetRepo, item.decision.itemNumber);
+        if (
+          activityControl &&
+          (activityControl.busyUntil > now ||
+            (activityControl.fence &&
+              activityControl.fence.expiresAt > now &&
+              (activityControl.fence.owner.itemKey !== item.key ||
+                activityControl.fence.owner.leaseId !== leaseId)))
+        )
+          return json({ error: "oversized_acknowledgement_busy" }, 503);
+        const before = item;
+        const decision = item.leaseDecision ?? item.decision;
+        let metadataToken: Promise<string> | undefined;
+        const readMetadata = async (path: string) =>
+          githubTokenJson({
+            env: this.env,
+            token: await (metadataToken ??= exactReviewTargetReadToken(
+              this.env,
+              decision.targetRepo,
+            )),
+            path: `/${path}`,
+            method: "GET",
+            body: undefined,
+            errorLabel: "oversized queue metadata",
+          });
+        let needsActivity = Boolean(decision.oversizedActivityReference);
+        if (!needsActivity) {
+          try {
+            needsActivity = oversizedActivityNeeded(
+              await readMetadata(`repos/${decision.targetRepo}/pulls/${decision.itemNumber}`),
+              this.env.CLAWSWEEPER_MAX_PR_CHANGED_LINES,
+            );
+          } catch {
+            /* Missing evidence only prevents upgraded closing. */
+          }
+        }
+        // Every metadata await may expire, replace, or supersede this lease.
+        now = Date.now();
+        state = this.readStateSync();
+        item = state.items[before.key];
+        if (
+          !item ||
+          item.leaseId !== leaseId ||
+          item.leaseRevision !== before.leaseRevision ||
+          !isLiveExactReviewLease(
+            item,
+            now,
+            exactReviewPublicationDispatchLeaseMs(this.env),
+            exactReviewHeartbeatGraceMs(this.env),
+          )
+        )
+          return json({ error: "lease_not_active" }, 409);
+        if (item.claimedRunId && item.claimedRunId !== runId)
+          return json({ error: "lease_already_claimed" }, 409);
+        if (needsActivity) {
+          activityReference =
+            decision.oversizedActivityReference ??
+            (await store.prepare(
+              decision.targetRepo,
+              decision.itemNumber,
+              this.oversizedScope(decision),
+              async (path) =>
+                githubTokenJson({
+                  env: this.env,
+                  token: await (metadataToken ??= exactReviewTargetReadToken(
+                    this.env,
+                    decision.targetRepo,
+                  )),
+                  path: `/${path}`,
+                  method: "GET",
+                  body: undefined,
+                  errorLabel: "oversized queue baseline",
+                }),
+            ));
+          state = this.readStateSync();
+          item = state.items[before.key];
+          now = Date.now();
+          if (
+            !item ||
+            item.leaseId !== leaseId ||
+            item.leaseRevision !== before.leaseRevision ||
+            !isLiveExactReviewLease(
+              item,
+              now,
+              exactReviewPublicationDispatchLeaseMs(this.env),
+              exactReviewHeartbeatGraceMs(this.env),
+            )
+          )
+            return json({ error: "lease_not_active" }, 409);
+          if (item.claimedRunId && item.claimedRunId !== runId)
+            return json({ error: "lease_already_claimed" }, 409);
+          const currentReference = store.control(
+            decision.targetRepo,
+            decision.itemNumber,
+          )?.reference;
+          if (currentReference && currentReference.epoch !== activityReference.epoch) {
+            activityReference = currentReference;
+            store.invalidate(activityReference, "claimed activity reference is stale");
+          }
+          const held = store.control(decision.targetRepo, decision.itemNumber)?.fence;
+          if (!held || held.expiresAt <= Date.now())
+            activityClaimToken = store.lockAcknowledgement(activityReference);
+          item.decision = { ...item.decision, oversizedActivityReference: activityReference };
+          if (item.leaseDecision)
+            item.leaseDecision = {
+              ...item.leaseDecision,
+              oversizedActivityReference: activityReference,
+            };
+        }
+      }
+
       // Deploys can observe a pre-snapshot lease. Recover it only when no newer
       // enqueue has replaced the decision that was dispatched for this revision.
       if (!item.leaseDecision) {
@@ -2711,7 +2997,15 @@ export class ExactReviewQueue {
           await this.writeState(state);
           this.recordLifecycleClaim(item, now);
           await this.scheduleNext(state, now);
-          return json(exactReviewClaimResponse(item, claimProtocolVersion, claimGeneration));
+          return json(
+            this.oversizedClaimResponse(
+              item,
+              claimProtocolVersion,
+              claimGeneration,
+              activityReference,
+              activityClaimToken,
+            ),
+          );
         }
       } else if (item.claimedRunId && runAttempt === null) {
         if (
@@ -2730,7 +3024,15 @@ export class ExactReviewQueue {
           await this.writeState(state);
         }
         this.recordLifecycleClaim(item, now);
-        return json(exactReviewClaimResponse(item, claimProtocolVersion, claimGeneration));
+        return json(
+          this.oversizedClaimResponse(
+            item,
+            claimProtocolVersion,
+            claimGeneration,
+            activityReference,
+            activityClaimToken,
+          ),
+        );
       }
 
       item.state = "leased";
@@ -2745,7 +3047,15 @@ export class ExactReviewQueue {
       await this.writeState(state);
       this.recordLifecycleClaim(item, now);
       await this.scheduleNext(state, now);
-      return json(exactReviewClaimResponse(item, claimProtocolVersion, item.claimGeneration));
+      return json(
+        this.oversizedClaimResponse(
+          item,
+          claimProtocolVersion,
+          item.claimGeneration,
+          activityReference,
+          activityClaimToken,
+        ),
+      );
     }
 
     if (request.method === "POST" && url.pathname === "/heartbeat") {
@@ -5159,6 +5469,7 @@ export class ExactReviewQueue {
     await this.processBranchAuthorityReservations(startedAt, hostedTargetMetadataToken);
     await this.processSourceAuthorityReservations(startedAt, hostedTargetMetadataToken);
     await this.processCommandIntakes(startedAt, hostedTargetMetadataToken);
+    await this.processDeferredOversizedAcknowledgements(hostedTargetMetadataToken);
     const batchItemKeys = new Set<string>(this.batchStore.activeLeaseSnapshot(startedAt).itemKeys);
     let terminalized: ExactReviewLifecycleProjection[] = [];
     let snapshot = this.storage.transactionSync(() => {
@@ -13351,6 +13662,163 @@ export class ExactReviewQueue {
     this.storage.kv.delete(EXACT_REVIEW_QUEUE_STATE_KEY);
   }
 
+  private async deferredAcknowledgements() {
+    return Array.from(
+      (await this.storage.list({ prefix: "oversized-ack-cleanup:v1:" })).entries(),
+    ) as Array<
+      [string, { decision: ExactReviewDecision; installationId: number; nextAttemptAt: number }]
+    >;
+  }
+  private async processDeferredOversizedAcknowledgements(metadataToken: HostedTargetMetadataToken) {
+    for (const [key, entry] of (await this.deferredAcknowledgements())
+      .filter(([, entry]) => entry.nextAttemptAt <= Date.now())
+      .slice(0, 8)) {
+      try {
+        const admission = await this.hostedTargetAdmission(
+          entry.decision.targetRepo,
+          metadataToken,
+        );
+        if (admission.outcome === "terminal") {
+          this.storage.kv.delete(key);
+          continue;
+        }
+        if (admission.outcome === "retryable")
+          throw new Error("target acknowledgement admission deferred");
+        await this.withOversizedAcknowledgement(
+          entry.decision,
+          exactReviewTargetReadToken(this.env, entry.decision.targetRepo, entry.installationId),
+          (journal) => exactReviewSourceAuthorityAcknowledgement(this.env, entry, journal, true),
+        );
+        this.storage.kv.delete(key);
+      } catch {
+        this.storage.kv.put(key, { ...entry, nextAttemptAt: Date.now() + 30_000 });
+      }
+    }
+  }
+
+  private oversizedScope(decision: ExactReviewBaseDecision) {
+    return {
+      head: decision.sourceHeadSha ?? null,
+      command: decision.commandStatusMarker ?? null,
+      source: decision.sourceUpdatedAt ?? null,
+    };
+  }
+  private oversizedClaimResponse(
+    item: ExactReviewQueueItem,
+    protocol: 1 | 2,
+    generation: number,
+    ref?: OversizedActivityReference,
+    claimToken?: string,
+  ) {
+    const response = exactReviewClaimResponse(item, protocol, generation);
+    if (!ref) return response;
+    const store = new OversizedActivityStore(this.storage.kv);
+    const owner: OversizedActivityOwner = {
+      itemKey: item.key,
+      leaseId: item.leaseId!,
+      claimGeneration: generation,
+      runId: item.claimedRunId!,
+      runAttempt: item.claimedRunAttempt!,
+    };
+    if (claimToken) store.unlockAcknowledgement(ref, claimToken);
+    const fenced = store.fence(ref, owner, item.leaseExpiresAt!);
+    if (!fenced) {
+      store.invalidate(ref, "publication fence could not be established");
+      throw new Error("oversized publication fence is not available");
+    }
+    return {
+      ...response,
+      oversized_activity_version: 1,
+      oversized_activity: fenced ? { reference: ref, owner } : null,
+    };
+  }
+  private async withOversizedAcknowledgement<T>(
+    decision: ExactReviewBaseDecision,
+    token: Promise<string>,
+    operation: (
+      journal?: (
+        request: OversizedCommentRequest,
+        write: () => Promise<unknown>,
+      ) => Promise<unknown>,
+      metadataOnly?: boolean,
+    ) => Promise<T>,
+  ): Promise<T> {
+    if (decision.itemKind !== "pull_request") return operation();
+    const store = new OversizedActivityStore(this.storage.kv);
+    if (store.blocked(decision.targetRepo, decision.itemNumber))
+      throw new Error("oversized acknowledgement is fenced");
+    const read = async (path: string) =>
+      githubTokenJson({
+        env: this.env,
+        token: await token,
+        path: path.startsWith("/") ? path : `/${path}`,
+        method: "GET",
+        body: undefined,
+        errorLabel: "oversized acknowledgement metadata",
+      });
+    let needsActivity = false;
+    try {
+      needsActivity = oversizedActivityNeeded(
+        await read(`repos/${decision.targetRepo}/pulls/${decision.itemNumber}`),
+        this.env.CLAWSWEEPER_MAX_PR_CHANGED_LINES,
+      );
+    } catch {
+      /* Keep the acknowledgement path; no evidence is granted. */
+    }
+    // Metadata awaits can admit another claimant. Both the success and fallback
+    // paths acquire current acknowledgement ownership before any effects.
+    if (store.blocked(decision.targetRepo, decision.itemNumber))
+      throw new Error("oversized acknowledgement is fenced");
+    const ref = needsActivity
+      ? await store.prepare(
+          decision.targetRepo,
+          decision.itemNumber,
+          this.oversizedScope(decision),
+          read,
+        )
+      : store.unavailable(
+          decision.targetRepo,
+          decision.itemNumber,
+          this.oversizedScope(decision),
+          "size evidence unavailable or outside metadata-only admission",
+        );
+    const acknowledgementToken = store.lockAcknowledgement(ref);
+    try {
+      return await operation(async (request, write) => {
+        store.assertAcknowledgement(ref, acknowledgementToken);
+        if (!isOversizedCommentWrite(request, ref)) return write();
+        let intent: OversizedAcknowledgementReceipt;
+        try {
+          const before = request.method === "POST" ? null : await read(request.path);
+          intent = ownedCommentWriteIntent(request, before);
+          store.begin(ref, intent);
+        } catch (error) {
+          store.invalidate(
+            ref,
+            `acknowledgement intent unavailable: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          store.assertAcknowledgement(ref, acknowledgementToken);
+          return write();
+        }
+        store.assertAcknowledgement(ref, acknowledgementToken);
+        const result = await write();
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 1100));
+          const pull = await read(`repos/${ref.repo}/pulls/${ref.number}`);
+          store.complete(ref, ownedCommentWriteResult(intent, result, pull));
+        } catch (error) {
+          store.invalidate(
+            ref,
+            `acknowledgement receipt unavailable: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        return result;
+      }, needsActivity);
+    } finally {
+      store.unlockAcknowledgement(ref, acknowledgementToken);
+    }
+  }
+
   private async processCommandIntakes(
     now: number,
     hostedTargetMetadataToken: HostedTargetMetadataToken,
@@ -13509,20 +13977,33 @@ export class ExactReviewQueue {
           }
           const decision = current.verifiedDecision;
           if (!decision) throw new Error("command effects decision is missing");
-          await Promise.all([
-            convergeCommandAcknowledgement({
-              env: this.env,
-              token: token(),
-              decision,
-              sourceCommentId: current.intake.sourceCommentId,
-            }),
-            addCommandReaction({
-              env: this.env,
-              token: token(),
-              repo: decision.targetRepo,
-              commentId: current.intake.sourceCommentId,
-            }),
-          ]);
+          await this.withOversizedAcknowledgement(
+            decision,
+            token(),
+            async (journal, metadataOnly) => {
+              await Promise.all([
+                convergeCommandAcknowledgement({
+                  env: this.env,
+                  token: token(),
+                  decision,
+                  sourceCommentId: current.intake.sourceCommentId,
+                  journal,
+                }),
+                // Metadata-only size proposals already skip review reactions in the workflow.
+                // Do not create unjournaled reaction activity after their queue baseline.
+                ...(metadataOnly
+                  ? []
+                  : [
+                      addCommandReaction({
+                        env: this.env,
+                        token: token(),
+                        repo: decision.targetRepo,
+                        commentId: current.intake.sourceCommentId,
+                      }),
+                    ]),
+              ]);
+            },
+          );
           this.commandIntakeStore.finish(
             current.intake.commandVersionId,
             "completed",
@@ -13733,9 +14214,14 @@ export class ExactReviewQueue {
       }
       try {
         if (current.reviewAcknowledgementPending) {
-          const acknowledgement = await exactReviewSourceAuthorityAcknowledgement(
-            this.env,
-            current,
+          const acknowledgement = await this.withOversizedAcknowledgement(
+            current.decision,
+            exactReviewTargetReadToken(
+              this.env,
+              current.decision.targetRepo,
+              current.installationId,
+            ),
+            (journal) => exactReviewSourceAuthorityAcknowledgement(this.env, current, journal),
           );
           if (acknowledgement.outcome === "lookup_limit") {
             console.warn("exact-review source authority acknowledgement lookup limit reached");
@@ -14188,7 +14674,15 @@ export class ExactReviewQueue {
           this.freshPublicationItemKeysSync(state, now, heads),
           this.supersededPublicationItemKeysSync(state, heads),
         );
-    const sourceAuthorityNext = await this.nextSourceAuthorityVerificationAt();
+    const sourceAuthorityWake = await this.nextSourceAuthorityVerificationAt();
+    const acknowledgementWake = (await this.deferredAcknowledgements()).reduce(
+      (next, entry) => Math.min(next, entry[1].nextAttemptAt),
+      Infinity,
+    );
+    const combinedAuthorityWake = Math.min(sourceAuthorityWake ?? Infinity, acknowledgementWake);
+    const sourceAuthorityNext = Number.isFinite(combinedAuthorityWake)
+      ? combinedAuthorityWake
+      : null;
     const commandIntakeNext = this.commandIntakeStore.nextAttemptAt();
     const credentialCircuitNext = exactReviewGithubCircuitNextWakeAt(state, now);
     const bayTelemetryRecoveryPending = this.bayTelemetryRecoveryPendingSync();
@@ -16999,7 +17493,9 @@ async function exactReviewSourceAuthorityLiveHead(
 
 async function exactReviewSourceAuthorityAcknowledgement(
   env,
-  reservation: ExactReviewSourceAuthorityReservation,
+  reservation: Pick<ExactReviewSourceAuthorityReservation, "decision" | "installationId">,
+  journal?: (request: OversizedCommentRequest, write: () => Promise<unknown>) => Promise<unknown>,
+  settle = false,
 ) {
   const credentials = githubAppCredentials(env);
   if (!credentials) throw new Error("github app is not configured");
@@ -17012,20 +17508,35 @@ async function exactReviewSourceAuthorityAcknowledgement(
     repositories: [repoName(reservation.decision.targetRepo)],
     permissions: { issues: "write", pull_requests: "write" },
   });
-  return resolvePullRequestAcknowledgement({
-    githubJson: (request) =>
-      githubTokenJson({
-        env,
-        token,
-        path: request.path,
-        method: request.method,
-        body: request.body,
-        errorLabel: request.errorLabel,
-      }),
+  const options = {
+    githubJson: (request: {
+      path: string;
+      method?: string;
+      body?: unknown;
+      errorLabel: string;
+    }) => {
+      const write = () =>
+        githubTokenJson({
+          env,
+          token,
+          path: request.path,
+          method: request.method,
+          body: request.body,
+          errorLabel: request.errorLabel,
+        });
+      return journal && request.method !== "GET"
+        ? journal({ ...request, method: request.method ?? "GET" }, write)
+        : write();
+    },
     targetRepo: reservation.decision.targetRepo,
     itemNumber: reservation.decision.itemNumber,
     sourceAction: reservation.decision.sourceAction,
-  });
+  };
+  if (settle) {
+    await settlePullRequestAcknowledgement(options);
+    return { outcome: "resolved" as const, commentId: null };
+  }
+  return resolvePullRequestAcknowledgement(options);
 }
 
 function sourceAuthorityAcknowledgementIdentity(
@@ -17063,8 +17574,13 @@ export async function convergeCommandAcknowledgement(options: {
   token: Promise<string>;
   decision: DirectReReviewDecision;
   sourceCommentId: number;
+  journal?: (request: OversizedCommentRequest, write: () => Promise<unknown>) => Promise<unknown>;
 }) {
   const token = await options.token;
+  const request = (args) =>
+    options.journal && args.method !== "GET"
+      ? options.journal(args, () => githubTokenJson(args))
+      : githubTokenJson(args);
   const ackMarker = clawSweeperCommandAckMarker(options.sourceCommentId);
   const statusMarker = options.decision.commandStatusMarker;
   const trustedBotLogins = exactReviewCommandBotLogins(options.env);
@@ -17077,7 +17593,7 @@ export async function convergeCommandAcknowledgement(options: {
   const list = async () => {
     const matching: Record<string, unknown>[] = [];
     for (let page = 1; page <= 5; page += 1) {
-      const comments = await githubTokenJson({
+      const comments = await request({
         env: options.env,
         token,
         path: `/repos/${options.decision.targetRepo}/issues/${options.decision.itemNumber}/comments?per_page=100&page=${page}`,
@@ -17104,7 +17620,7 @@ export async function convergeCommandAcknowledgement(options: {
     !comments.some((comment) => Number(comment.id) === suppliedStatusCommentId)
   ) {
     const supplied = objectValue(
-      await githubTokenJson({
+      await request({
         env: options.env,
         token,
         path: `/repos/${options.decision.targetRepo}/issues/comments/${suppliedStatusCommentId}`,
@@ -17135,7 +17651,7 @@ export async function convergeCommandAcknowledgement(options: {
     const bareId = Number(bare?.id) || null;
     const body = renderClawSweeperQueuedAcknowledgement(options.sourceCommentId, statusMarker);
     exact = objectValue(
-      await githubTokenJson({
+      await request({
         env: options.env,
         token,
         path: bareId
@@ -17155,7 +17671,7 @@ export async function convergeCommandAcknowledgement(options: {
   for (const duplicate of convergence.prunable.slice(0, 20)) {
     const id = Number(duplicate.id);
     if (!Number.isSafeInteger(id) || id <= 0) continue;
-    await githubTokenJson({
+    await request({
       env: options.env,
       token,
       path: `/repos/${options.decision.targetRepo}/issues/comments/${id}`,
