@@ -121,7 +121,7 @@ test("comment router isolates public target reads from its GitHub App mutation i
   );
   assert.equal(
     workflow.match(/GH_TOKEN: \$\{\{ steps\.app_token\.outputs\.token \}\}/g)?.length,
-    3,
+    4,
   );
   const steps = routerWorkflowSteps(workflow);
   assert.deepEqual(
@@ -129,6 +129,7 @@ test("comment router isolates public target reads from its GitHub App mutation i
       .filter((step) => step.env?.GH_TOKEN === "${{ steps.app_token.outputs.token }}")
       .map((step) => step.name),
     [
+      "Enrol Endor remediation PRs",
       "Route ClawSweeper comments",
       "Reconcile explicitly requested behavioral proof",
       "Retry waiting repair dispatches",
@@ -140,6 +141,9 @@ test("comment router isolates public target reads from its GitHub App mutation i
       .map((step) => step.name),
     ["Route ClawSweeper comments", "Retry waiting repair dispatches"],
   );
+  const endor = steps.find((step) => step.name === "Enrol Endor remediation PRs");
+  assert.ok(endor);
+  assert.equal(endor.env?.CLAWSWEEPER_PUBLIC_GH_TOKEN, undefined);
   const proof = steps.find(
     (step) => step.name === "Reconcile explicitly requested behavioral proof",
   );
