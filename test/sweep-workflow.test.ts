@@ -7745,7 +7745,7 @@ test("all workflow control-plane curls use the shared helper after download or f
         if (step.name === "Fetch control-plane retry helper") {
           assert.match(
             run,
-            /curl -fsSL --retry 3 "https:\/\/raw\.githubusercontent\.com\/\$\{GITHUB_REPOSITORY\}\/\$\{GITHUB_SHA\}\/scripts\/control-plane-curl\.sh"/,
+            /curl -fsSL --retry 3 --retry-all-errors --retry-connrefused "https:\/\/raw\.githubusercontent\.com\/\$\{GITHUB_REPOSITORY\}\/\$\{GITHUB_SHA\}\/scripts\/control-plane-curl\.sh"/,
           );
           assert.match(run, /test -s "\$RUNNER_TEMP\/control-plane-curl\.sh"/);
           assert.match(run, /declare -F control_plane_curl/);
