@@ -1510,18 +1510,20 @@ test("source preparation reports unavailable historical blobs before restricted 
         isSafeGitBranchName: (branch: string) => branch === "main",
         targetRepo: () => "fixture/repository",
         ghJson: (args: string[]) => {
-          const query = args.find((arg) => arg.startsWith("query="));
-          assert.ok(query);
-          const ids = [...query.matchAll(/b(\d+): object\(oid: "([0-9a-f]+)"\)/g)];
-          assert.ok(ids.length);
-          const sizes = resolveFixtureBlobSizes(fixture.source)(ids.map((match) => match[2]!));
-          return {
-            data: {
-              repository: Object.fromEntries(
-                ids.map((match) => ["b" + match[1], { byteSize: sizes.get(match[2]!) }]),
-              ),
-            },
-          };
+          assert.equal(args[0], "api");
+          const revision = args[1]?.match(/\/git\/trees\/([0-9a-f]+)\?recursive=1$/)?.[1];
+          assert.ok(revision);
+          const tree = git(fixture.source, "ls-tree", "-r", "-l", revision)
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => {
+              const match = line.match(/^\d+ (\w+) ([0-9a-f]+)\s+(-|\d+)\t/);
+              assert.ok(match);
+              return match[1] === "blob"
+                ? { type: "blob", sha: match[2], size: Number(match[3]) }
+                : { type: match[1], sha: match[2] };
+            });
+          return { truncated: false, tree };
         },
       },
       { get: (target, key) => Reflect.get(target, key) ?? unavailable },
