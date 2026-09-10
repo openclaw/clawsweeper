@@ -857,6 +857,7 @@ export function latestRepairLoopResumeTime(entries: JsonValue, command: LooseRec
   let latest = 0;
   for (const entry of entries) {
     if (!entry || typeof entry !== "object") continue;
+    if (entry.trusted_bot === true) continue;
     if (entry.repo !== command.repo) continue;
     if (Number(entry.issue_number) !== Number(command.issue_number)) continue;
     const intent = String(entry.intent ?? "");
