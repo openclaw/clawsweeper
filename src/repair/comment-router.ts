@@ -4400,7 +4400,8 @@ function validateAutomergeReadiness({ command, view, target, comments }: LooseRe
 function authoritativeMaintainerHumanApprovalTime(command: LooseRecord) {
   if (
     command.trusted_bot !== true &&
-    (command.intent === "maintainer_approve_automerge" || command.command === "automerge")
+    (command.intent === "maintainer_approve_automerge" ||
+      command.validated_maintainer_human_approval === true)
   ) {
     return command.comment_updated_at ?? command.comment_created_at ?? 0;
   }
