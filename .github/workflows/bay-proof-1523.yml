@@ -1,0 +1,119 @@
+name: Bay 1523 supplementary public proof
+
+on:
+  push:
+    branches: [proof/bay-1523-actions-6e7f588554]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bay-1523-supplementary-proof
+  cancel-in-progress: false
+
+jobs:
+  proof:
+    if: github.repository == 'openclaw/clawsweeper' && github.ref == 'refs/heads/proof/bay-1523-actions-6e7f588554' && github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CI: "true"
+      GH_TOKEN: ""
+      GITHUB_TOKEN: ""
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - name: Checkout exact tested implementation, not workflow branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: 6e7f5885547436c5502261335e769fdbf4f4e7a1
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+      - name: Install locked dependencies and build actual Worker modules
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 6e7f5885547436c5502261335e769fdbf4f4e7a1
+          git cat-file -e 97c9a7b45caf20f6d580fe0ae5cc48db31da15f4^{commit}
+          corepack enable
+          corepack prepare pnpm@11.10.0 --activate
+          pnpm install --frozen-lockfile
+          pnpm run build:all
+      - name: Verify real runner image and sandbox-capable installed Chrome
+        run: |
+          set -euo pipefail
+          test -n "$ImageOS"
+          test -n "$ImageVersion"
+          browser=$(command -v google-chrome || command -v google-chrome-stable)
+          test -x "$browser"
+          export PLAYWRIGHT_CHROMIUM_EXECUTABLE="$browser"
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import {execFileSync} from 'node:child_process';
+          import {chromium} from 'playwright-core';
+          const browser=await chromium.launch({executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE,headless:true,chromiumSandbox:true});
+          const versions={node:process.version,pnpm:execFileSync('pnpm',['--version'],{encoding:'utf8'}).trim(),browser:browser.version(),chromiumSandbox:true};
+          await browser.close();
+          fs.writeFileSync(process.env.RUNNER_TEMP+'/bay-browser-versions.json',JSON.stringify(versions));
+          console.log(JSON.stringify(versions));
+          JS
+          {
+            echo "PLAYWRIGHT_CHROMIUM_EXECUTABLE=$browser"
+            echo "BAY_PROOF_PROVIDER=github-actions"
+            echo "BAY_PROOF_LEASE=github-actions/run/$GITHUB_RUN_ID/attempt/$GITHUB_RUN_ATTEMPT/job/$GITHUB_JOB"
+            echo "BAY_PROOF_IMAGE=$ImageOS@$ImageVersion"
+            echo "BAY_PROOF_OUTPUT=$RUNNER_TEMP/bay-runtime-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            echo "BAY_PROOF_SCRATCH=$RUNNER_TEMP/bay-scratch-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            echo "BAY_PROOF_CANDIDATE=$(git rev-parse HEAD)+patch-sha256:$(git diff --binary HEAD --full-index | sha256sum | cut -d' ' -f1)"
+          } >> "$GITHUB_ENV"
+      - name: Run unchanged real Worker, DO and browser matrix
+        id: runtime
+        run: bash docs/proof/bay-readable-layout/run-proof.sh
+      - name: Assemble allowlisted images and sanitized provenance
+        id: bundle
+        if: always()
+        env:
+          PROOF_OUTCOME: ${{ steps.runtime.outcome }}
+        run: |
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import assert from 'node:assert/strict';
+          import path from 'node:path';
+          import {createHash} from 'node:crypto';
+          import {execFileSync} from 'node:child_process';
+          const e=process.env,dir=path.join(e.RUNNER_TEMP,'bay-public-proof'),source=e.BAY_PROOF_OUTPUT;
+          fs.mkdirSync(dir,{recursive:true});
+          const head=execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
+          assert.equal(head,'6e7f5885547436c5502261335e769fdbf4f4e7a1');
+          const read=(p)=>p&&fs.existsSync(p)?JSON.parse(fs.readFileSync(p,'utf8')):null;
+          const s=read(source&&path.join(source,'summary.json'));
+          const versions=read(path.join(e.RUNNER_TEMP,'bay-browser-versions.json'));
+          const complete=e.PROOF_OUTCOME==='success'&&s?.status==='PASS';
+          const files=[];
+          if(complete){
+            assert.deepEqual(s.errors,[]);assert.equal(s.provider,'github-actions');
+            assert.equal(s.lease,e.BAY_PROOF_LEASE);assert.equal(s.image,e.BAY_PROOF_IMAGE);
+            assert.equal(s.candidate,e.BAY_PROOF_CANDIDATE);assert.equal(s.base,'97c9a7b45caf20f6d580fe0ae5cc48db31da15f4');
+            assert.equal(s.checks.length,78);assert.ok(s.checks.every(c=>typeof c.name==='string'&&c.result==='PASS'));
+            assert.equal(versions?.chromiumSandbox,true);
+            for(const pair of ['normal-1440','normal-360','crowded-430','long-430','empty-1440','partial-430'])for(const version of ['before','after']){
+              const name=pair+'-'+version+'.png',bytes=fs.readFileSync(path.join(source,name));
+              assert.ok(bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])));
+              fs.writeFileSync(path.join(dir,name),bytes);
+              files.push({name,bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex'),width:bytes.readUInt32BE(16),height:bytes.readUInt32BE(20)});
+            }
+          }
+          const provenance={status:complete?'PASS':'INCOMPLETE',runtimeStepOutcome:e.PROOF_OUTCOME,testSourceSha:head,comparisonBase:'97c9a7b45caf20f6d580fe0ae5cc48db31da15f4',workflowSha:e.GITHUB_SHA,workflowRef:e.GITHUB_WORKFLOW_REF,provider:'github-actions',executionId:'github-actions/run/'+e.GITHUB_RUN_ID+'/attempt/'+e.GITHUB_RUN_ATTEMPT+'/job/'+e.GITHUB_JOB,runId:e.GITHUB_RUN_ID,runAttempt:e.GITHUB_RUN_ATTEMPT,job:e.GITHUB_JOB,runUrl:'https://github.com/'+e.GITHUB_REPOSITORY+'/actions/runs/'+e.GITHUB_RUN_ID,imageOS:e.ImageOS||null,imageVersion:e.ImageVersion||null,runnerOS:e.RUNNER_OS,runnerArch:e.RUNNER_ARCH,versions,checks:complete?s.checks.map(c=>({name:c.name,result:c.result})):[],files,limits:['Supplementary GitHub Actions capture, not an AWS/Crabbox lease receipt.','Controlled local fixtures; no live producer, deployment or GitHub mutation.','Only selected before/after PNGs and sanitized provenance are published; no raw traces or private logs.','New screenshots require separate visual inspection; original AWS proof remains independent.']};
+          fs.writeFileSync(path.join(dir,'provenance.json'),JSON.stringify(provenance,null,2));
+          console.log(JSON.stringify({status:provenance.status,images:files.length,testSourceSha:head,workflowSha:e.GITHUB_SHA}));
+          JS
+      - name: Publish supplementary proof via Actions artifact service
+        if: always() && steps.bundle.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: bay-1523-proof-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bay-public-proof/
+          if-no-files-found: error
+          retention-days: 30
+          include-hidden-files: false
