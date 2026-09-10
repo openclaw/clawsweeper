@@ -91,6 +91,10 @@ publication attempts. Oversized references use the existing single-item queued
 publisher to preserve this per-item fence; ordinary review publication batching
 is unchanged.
 
+A queued publication that encounters another active review writes and receipts its
+Waiting status before completing the publishing lease. Completion seals that
+status effect and releases ownership; a released owner still cannot mutate it.
+
 ## Rollout and legacy exception
 
 The maintainer explicitly accepted a bounded legacy exception on September 9,

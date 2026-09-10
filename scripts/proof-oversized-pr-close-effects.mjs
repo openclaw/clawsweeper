@@ -1,3 +1,4 @@
+import { parse as parseYaml } from "yaml";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
@@ -52,6 +53,7 @@ const scenarios = [
   "journal-complete-unavailable",
   "journal-malformed-response",
   "journal-post-write-metadata-malformed",
+  "retry-status-before-completion",
 ];
 const selected = process.env.PROOF_SCENARIOS?.split(",") || scenarios;
 const summaries = [];
@@ -146,6 +148,14 @@ for (const scenario of selected) {
         response.end(JSON.stringify(value));
       };
       if (path === "/internal/exact-review/heartbeat") return send({ ok: true });
+      if (path === "/internal/exact-review/complete") {
+        assert.equal(input.item_key, owner.itemKey);
+        assert.equal(input.lease_id, owner.leaseId);
+        assert.equal(input.claim_generation, owner.claimGeneration);
+        store.seal(ref, owner, input.oversized_activity_failed === true);
+        store.release(ref, owner);
+        return send({ ok: true, requeued: true });
+      }
       if (path === "/internal/exact-review/oversized-activity") {
         if (
           applying &&
@@ -160,7 +170,7 @@ for (const scenario of selected) {
         }
 
         if (!ref || input.reference?.epoch !== ref.epoch || !store.owns(ref, input.owner))
-          return send({ ok: true, evidence: null });
+          return send({ ok: true, evidence: null, authority_current: false });
         if (input.operation === "read") return send({ ok: true, evidence: store.evidence(ref) });
         if (input.operation === "begin") store.begin(ref, input.receipt);
         else if (input.operation === "complete") store.complete(ref, input.receipt);
@@ -411,7 +421,7 @@ for (const scenario of selected) {
       ],
       "dist/repair/update-command-status.js",
     );
-    if (scenario.endsWith("queued")) {
+    if (scenario.endsWith("queued") || scenario === "retry-status-before-completion") {
       await run("expire", [
         "expire-review-lease",
         "--repo",
@@ -436,6 +446,93 @@ for (const scenario of selected) {
         failurePath: join(directory, `publisher-evidence-failure-${ref.epoch}.json`),
       };
       env.CLAWSWEEPER_OVERSIZED_ACTIVITY_CONTEXT = JSON.stringify(context);
+    }
+    if (scenario === "retry-status-before-completion") {
+      const workflow = parseYaml(readFileSync(".github/workflows/sweep.yml", "utf8"));
+      const steps = Object.values(workflow.jobs).find((job) =>
+        job.steps?.some((step) => step.id === "complete-exact-review-publication"),
+      ).steps;
+      const waiting = steps.find((step) => step.name === "Mark active lease retry waiting");
+      const completion = steps.find((step) => step.id === "complete-exact-review-publication");
+      assert.ok(steps.indexOf(waiting) < steps.indexOf(completion));
+      assert.doesNotMatch(waiting.if, /complete-exact-review-publication/);
+      const runShell = async (name, script, extra) => {
+        const child = spawn("bash", ["-euo", "pipefail", "-c", script], {
+          env: { ...env, ...extra },
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let output = "";
+        child.stdout.on("data", (c) => (output += c));
+        child.stderr.on("data", (c) => (output += c));
+        const code = await new Promise((resolve, reject) => {
+          child.on("error", reject);
+          child.on("close", resolve);
+        });
+        writeFileSync(
+          join(directory, `${name}.log`),
+          output
+            .replaceAll(root, "<proof>")
+            .replaceAll(process.cwd(), "<checkout>")
+            .replaceAll(process.execPath, "<node>"),
+        );
+        return { code, output };
+      };
+      const statusEnv = {
+        TARGET_REPO: repo,
+        ITEM_NUMBER: String(number),
+        COMMAND_STATUS_MARKER: marker,
+        STATUS_COMMENT_ID: String(ackId),
+        RUN_URL: "https://github.com/openclaw/clawsweeper/actions/runs/123456789",
+      };
+      const waited = await runShell("waiting-step", waiting.run, statusEnv);
+      assert.equal(waited.code, 0, waited.output);
+      assert.match(comments.find((c) => c.id === ackId).body, /waiting/i);
+      const waitingReceipt = store.evidence(ref).receipts.at(-1);
+      assert.equal(waitingReceipt.kind, "PATCH");
+      assert.equal(waitingReceipt.after.id, ackId);
+      assert.ok(waitingReceipt.completedAt);
+      const completed = await runShell("completion-step", completion.run, {
+        SOURCE_CHECKOUT_OUTCOME: "success",
+        QUEUE_URL: origin,
+        QUEUE_LEASE_ID: owner.leaseId,
+        ITEM_KEY: owner.itemKey,
+        LEASE_REVISION: "1",
+        CLAIM_GENERATION: String(owner.claimGeneration),
+        GITHUB_RUN_ID: owner.runId,
+        RUN_ATTEMPT: String(owner.runAttempt),
+        OUTCOME: "success",
+        COMPLETION_KIND: "retryable_failure",
+        REASON_CODE: "review_lease_active",
+      });
+      assert.equal(completed.code, 0, completed.output);
+      assert.equal(store.blocked(repo, number), false);
+      const beforeLate = mutationCount;
+      const late = await runShell(
+        "released-owner",
+        waiting.run.replace('--state "Waiting"', '--state "Complete"'),
+        statusEnv,
+      );
+      assert.notEqual(late.code, 0);
+      assert.match(late.output, /ownership is no longer current/);
+      assert.equal(mutationCount, beforeLate);
+      const summary = {
+        scenario,
+        state: pull.state,
+        closeWrites: 0,
+        waitingWritten: true,
+        waitingReceipted: true,
+        completionRequeued: true,
+        releasedOwnerRejected: true,
+        reviewRequests,
+        completed: true,
+      };
+      summaries.push(summary);
+      writeFileSync(
+        join(directory, "trace.json"),
+        JSON.stringify({ summary, requests, projections, evidence: store.evidence(ref) }, null, 2),
+      );
+      console.log(JSON.stringify(summary));
+      continue;
     }
     if (scenario.startsWith("evidence-")) {
       const file = join(items, `${number}.md`);
