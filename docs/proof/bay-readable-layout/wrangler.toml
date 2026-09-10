@@ -1,0 +1,29 @@
+# LOCAL FIXTURE ONLY. Never deploy.
+name = "bay-readable-layout-local-proof"
+main = "fixture-worker.mjs"
+compatibility_date = "2026-05-11"
+[assets]
+directory = "../../../dashboard/public"
+binding = "ASSETS"
+[[durable_objects.bindings]]
+name = "EXACT_REVIEW_QUEUE"
+class_name = "InlineProofFixtureQueue"
+[[durable_objects.bindings]]
+name = "STATUS_STORE"
+class_name = "StatusStore"
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["InlineProofFixtureQueue", "StatusStore"]
+[[r2_buckets]]
+binding = "STATE_SNAPSHOTS"
+bucket_name = "bay-local-fixture-only"
+[vars]
+PUBLIC_BAY_REPOS = "openclaw/openclaw,openclaw/clawsweeper,openclaw/a-very-long-public-repository-name-for-layout-proof"
+TARGET_REPOS = "openclaw/openclaw"
+CLAWSWEEPER_REPO = "openclaw/clawsweeper"
+GITHUB_API_URL = "http://127.0.0.1:9"
+CACHE_TTL_SECONDS = "60"
+STALE_CACHE_TTL_SECONDS = "60"
+INCLUDE_CI_STATUS = "0"
+EXACT_REVIEW_DISPATCH_DEBOUNCE_MS = "900000"
+EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS = "900000"

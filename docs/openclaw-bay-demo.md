@@ -20,9 +20,11 @@ repository is on the deployment's verified-public allowlist. It is linked from
 the Overview, issue-triage, and PR-proof headers as a normal ClawSweeper
 web-page destination.
 
-The page reads top to bottom: a hero with the last-hour review timing, the
-shoreline toolbar (finder, repository filters, tide, view options) above the
-illustrated beach, the durable lifecycle board, the collapsed queue telemetry
+The page reads top to bottom: a compact header with activity/freshness, last-hour
+review timing, an independent inline-proof timing selector and an always-visible
+chart (or an explicit unavailable state); then the shoreline toolbar with finder,
+repository and review-path selection. Appearance-only View options contains
+motion, sweeper movement and tide preview. Below is the illustrated beach, the durable lifecycle board, the collapsed queue telemetry
 disclosure, and a footer.
 
 Bay is an observer-only surface: it displays bounded public status and may
@@ -62,8 +64,8 @@ Bay uses one closed set of six active stages:
 - Setting up
 - Reviewing
 - Publishing
-- Repair cove
 - Applying & writing
+- Repair cove
 
 Each complete public activity snapshot contains exactly those six queue counts,
 the same six live counts, and a total equal to their sum. Counts are bounded
@@ -86,9 +88,28 @@ in orange. Raw workflow and step names never enter the public projection.
 Repository filters and the finder accept an item number or
 `owner/repository#number`. They search only the current bounded sample and do
 not call GitHub. Press `/` outside form controls to focus the finder. The
-shortcut stays inactive while a detail blade is open. The `+N more` control opens
-the same bounded sample in a blade; it does not imply that unsampled aggregate
-work has an identity.
+shortcut stays inactive while a detail blade is open. The `+N sampled items` / View list control opens every available record in that
+area’s bounded sample, including drawn records, in the existing read-only blade.
+Aggregate totals, sampled records and drawn slots are reported separately. The
+list is not the backlog and cannot retrieve unsampled identities.
+
+Each active area draws at most three stable slots; Completed draws four and
+Failed / cancelled draws two. Labels show the short repository name and item
+number on separate lines, with full owner/repository identity in the inspector.
+Below 1200px, the stage picker and Previous/Next controls cover the six stages
+in source order, followed by Completed and Failed / cancelled. Initial selection
+prefers the first populated area; an explicit selection survives refresh and
+resize, including empty areas. Page scrolling remains vertical. Native modal
+dialogs retain keyboard containment, Escape dismissal and semantic focus return.
+
+**All review paths** is the operational default so active batch publication
+fallback remains visible. **Direct-review paths only** uses the existing
+`legacy_batch_path` classification, which combines batch/artifact/shard/history
+heuristics; the field name does not mean that batch publication is retired or
+that these records are old. It is not proof-use provenance. This selector affects
+both the beach and timing population; repository filtering affects only the
+beach, and inline-proof cohort selection remains independent. No backend
+publication behavior changes with these controls.
 
 The reference exception is intentionally narrow. Verified-public repository,
 issue or pull-request numbers, GitHub run and job identifiers, a validated
@@ -204,8 +225,8 @@ public or cache-serializable identity surface.
 The last-hour timing control defaults to all reviews in the selected publication-path
 view. It can compare **inline proof requested**, **no inline proof requested (known)**,
 and **inline proof unknown**. These are full request-to-final durations: inline
-proof time is already included and is never subtracted. The legacy publication-path
-filter remains independent; selecting Waters filters the beach, not this metric.
+proof time is already included and is never subtracted. The Review paths
+selector remains independent; repository filters affect the beach, not this metric.
 
 “Requested” means the original review lease successfully admitted at least one
 inline-proof request. It does not mean a producer ran, evidence returned, a check

@@ -103,8 +103,9 @@ test("historical inventory is collapsed below operational telemetry with unchang
   assert.match(html, /Beach and time filters do not apply/);
   assert.match(html, /One target revision can have multiple lifecycle records/);
   assert.ok(html.includes('fetch("/api/durable-lifecycle-bay",{cache:"no-store"})'));
-  assert.match(html, /id="legacy-proof-toggle" aria-pressed="false"/);
-  assert.match(html, /Modern inline proof remains included/);
+  assert.match(html, /id="review-paths"/);
+  assert.match(html, /includeLegacyBatch:true/);
+  assert.match(html, /inline proof timing selection is independent/);
   assert.ok(script.includes("restoreJourneyBucket(node,focusedKey)"));
   new Function(script);
 });
