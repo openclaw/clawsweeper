@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { shouldSyncReviewComment } from "../dist/clawsweeper.js";
 import { createReviewCommentLeases } from "../dist/clawsweeper-review-comment-leases.js";
 import {
   createReviewCommentPublication,
@@ -167,6 +168,70 @@ function reviewCommentPublication(options: {
     ...options.state,
   } as never);
 }
+
+test("an unchanged exact-head re-review refreshes its durable comment once", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-review-refresh-"));
+  try {
+    const reviewedAt = "2026-09-09T20:00:00Z";
+    let existing = durableReviewComment({
+      id: 20,
+      reviewedAt: "2026-09-08T17:51:38Z",
+      updatedAt: "2026-09-08T17:52:00Z",
+    });
+    const refreshed = durableReviewComment({
+      id: 20,
+      reviewedAt,
+      updatedAt: "2026-09-08T17:52:00Z",
+      leaseCommentId: 21,
+    });
+    const comments = () => [existing];
+    const state = reviewCommentState(comments);
+    const writes: string[][] = [];
+    const publication = reviewCommentPublication({
+      root,
+      comments,
+      state,
+      mutate: ({ args }) => {
+        writes.push(args);
+        const body = JSON.parse(readFileSync(args[args.indexOf("--input") + 1]!, "utf8")).body;
+        existing = { ...existing, body, updated_at: "2026-09-09T20:01:00Z" };
+        return JSON.stringify(existing);
+      },
+    });
+    const shouldSync = (body: string) =>
+      shouldSyncReviewComment({
+        syncCommentsOnly: false,
+        isCloseProposal: false,
+        commentSyncMinAgeDays: 7,
+        reviewCommentSyncedAt: String(existing.updated_at),
+        reviewedAt,
+        hasExistingReviewComment: true,
+        needsReviewCommentBodySync: !state.commentBodyMatches(existing, body),
+        needsReviewCommentHashSync: !state.reviewCommentHashMatches(
+          existing,
+          body,
+          sha256(String(existing.body)),
+          sha256(body),
+        ),
+        needsReviewCommentReferenceSync: false,
+      });
+
+    assert.equal(shouldSync(String(refreshed.body)), true);
+    const published = publication.upsertReviewComment(itemNumber, String(refreshed.body));
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0]![1], "repos/openclaw/openclaw/issues/comments/20");
+    assert.equal(writes[0]![writes[0]!.indexOf("--method") + 1], "PATCH");
+    assert.equal(state.durableReviewVersion(published, itemNumber)?.reviewedAt, reviewedAt);
+    assert.equal(state.durableReviewVersion(published, itemNumber)?.headSha, headSha);
+    assert.equal(shouldSync(String(refreshed.body)), false);
+    assert.equal(
+      shouldSync(String(refreshed.body).replace("lease_comment_id=21", "lease_comment_id=22")),
+      false,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("review version timestamps round-trip through the durable parser", () => {
   const fields: Record<string, string> = {

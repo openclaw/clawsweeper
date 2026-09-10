@@ -237,6 +237,52 @@ test("v1 to v2 migration explicitly re-baselines instead of reporting activity c
   );
 });
 
+test("apply cursor drift distinguishes a changed snapshot from an unstable read without logging content", (t) => {
+  const expectedCursor = v2Cursor();
+  const changedCursor = v2Cursor({ reviewState: "DISMISSED" });
+  const messages: string[] = [];
+  t.mock.method(console, "error", (message: string) => messages.push(message));
+  for (const scenario of [
+    { reads: [expectedCursor, expectedCursor], reason: null },
+    { reads: [changedCursor, changedCursor], reason: "changed" },
+    { reads: [expectedCursor, changedCursor], reason: "unstable" },
+    { reads: [expectedCursor, "untrusted response content"], reason: "unstable" },
+  ]) {
+    let reads = 0;
+    messages.length = 0;
+    const guard = createApplyReviewActivityGuard(
+      {
+        fetchReviewedPrActivityCursor: () => scenario.reads[reads++] ?? null,
+        GitHubRuntimeBudgetError: class extends Error {
+          readonly reason = "test";
+        },
+      },
+      { expectedCursor: expectedCursor ?? undefined, itemKind: "pull_request", number: 42 },
+    );
+    assert.equal(
+      guard(),
+      scenario.reason ? "pull request review activity changed since review" : null,
+    );
+    assert.equal(reads, 2);
+    assert.deepEqual(
+      messages.map((message) => JSON.parse(message)),
+      scenario.reason
+        ? [
+            {
+              event: "reviewed_pr_activity_cursor_drift",
+              number: 42,
+              reason: scenario.reason,
+              expected_cursor: expectedCursor,
+              observed_cursors: scenario.reads.map((cursor) =>
+                isReviewedPrActivityCursor(cursor) ? cursor : null,
+              ),
+            },
+          ]
+        : [],
+    );
+  }
+});
+
 test("v2 query aliases a bounded PR batch and decoder fails closed", () => {
   const query = reviewedPrActivityCursorV2Query(
     "openclaw",

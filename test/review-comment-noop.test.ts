@@ -5,15 +5,23 @@ import { normalizeNoopReviewMarkerMetadata } from "../dist/clawsweeper-review-co
 const marker = () =>
   `<!-- clawsweeper-review-version item=41 reviewed_at=2026-08-09T21:12:00Z sha=na source_revision=${"a".repeat(64)} lease_owner=run-1 lease_comment_id=101 v=1 -->`;
 
-test("no-op public identity ignores only review clock and lease metadata", () => {
+test("no-op public identity ignores only item update and lease metadata", () => {
   const prior = marker();
   const refreshed = prior
-    .replace("21:12:00", "21:32:00")
+    .replace(" v=1", " updated_at=2026-08-09T21:32:00Z v=1")
     .replace("run-1", "run-2")
     .replace("101", "102");
   assert.equal(
     normalizeNoopReviewMarkerMetadata(prior),
     normalizeNoopReviewMarkerMetadata(refreshed),
+  );
+});
+
+test("a completed re-review retains its freshness in the public identity", () => {
+  const prior = marker();
+  assert.notEqual(
+    normalizeNoopReviewMarkerMetadata(prior),
+    normalizeNoopReviewMarkerMetadata(prior.replace("21:12:00", "21:32:00")),
   );
 });
 

@@ -31,6 +31,20 @@ Each synced comment includes the durable identity marker:
 ClawSweeper edits that comment in place instead of posting repeated comments.
 Report front matter stores the synced comment id, URL, hash, and sync time.
 
+A newly completed exact-head re-review refreshes the existing comment's
+`reviewed_at` and review-version marker even when its verdict and prose are
+unchanged. Reapplying that same completed review remains idempotent; item-update
+and lease-only metadata do not independently require a comment rewrite.
+
+ClawSweeper-owned placeholders, acknowledgements, lease comments, and edits to
+those comments are excluded from reviewed discussion/source activity. Human
+comments quoting the same markers remain source activity. The separate PR
+review-activity cursor covers PR reviews, inline comments, and review
+thread resolution, not ordinary issue comments. When that cursor changes, apply
+logs `reviewed_pr_activity_cursor_drift` with the expected and two observed
+version/count/digest cursors, distinguishing stable drift from a change between
+reads. It never logs review bodies and still refuses publication on drift.
+
 Explicit manual reports carry `publication_policy: record_comment_only`. Their
 publisher permits the selected durable comment and canonical report/plan/packet
 tuple, plus owned coordination. It suppresses automation action markers and

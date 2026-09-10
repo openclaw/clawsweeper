@@ -24,10 +24,10 @@ import { neutralizeReviewControlMarkers } from "./review-history.js";
 import type { ReviewCommentWorkflowDependencies } from "./clawsweeper-review-comment-dependencies.js";
 
 export function normalizeNoopReviewMarkerMetadata(body: string): string {
+  // A completed re-review must publish its freshness even when the verdict is unchanged.
   return body.replace(
     /<!--\s+clawsweeper-(?:review-version|verdict:[^\s>]+|action:[^\s>]+|security:[^\s>]+)\b[^>]*-->/g,
-    (marker) =>
-      marker.replace(/\s(?:reviewed_at|updated_at|lease_owner|lease_comment_id)=[^\s>]+/g, ""),
+    (marker) => marker.replace(/\s(?:updated_at|lease_owner|lease_comment_id)=[^\s>]+/g, ""),
   );
 }
 import type { createReviewCommentIdentity } from "./clawsweeper-review-comment-identity.js";
