@@ -137,6 +137,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Keep large review-tree metadata within the existing subprocess capture limit by omitting unused fields while preserving complete blob sizes and checkout admission checks.
+
 - Carry the durable review lease through oversized PR close proposals so direct exact publication can close eligible PRs; queued fallback still keeps PRs open with `skipped_changed_since_review` after lease expiry, pending the follow-up to create the final metadata proposal under publication ownership and re-evaluation at the next event or head.
 
 - Accept the exact-event PR admission handoff for mixed-case target repositories such as fallback-profile repos, whose profile slug is lowercased; the strict repo comparison failed every review of such pull requests after the oversized-PR policy landed.
