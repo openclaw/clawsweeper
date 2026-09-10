@@ -31,12 +31,14 @@ import {
 } from "../dist/clawsweeper-review-blobs.js";
 import { MAX_SCAN_BYTES } from "../dist/agent-input-scan.js";
 import { createContextHydration } from "../dist/clawsweeper-context-hydration.js";
+import { createGitHubRuntime } from "../dist/clawsweeper-github-runtime.js";
 import { asRecord } from "../dist/clawsweeper-item-policy.js";
 import { createReviewRuntime } from "../dist/clawsweeper-review-runtime.js";
 import { main, reviewPolicyHashForTest } from "../dist/clawsweeper-runtime.js";
 import { runText } from "../dist/command.js";
 import { readReviewGit, reviewMergeBase } from "../dist/pr-review-evidence.js";
 import { ReviewSourcePreparationError } from "../dist/review-source-preparation.js";
+import { withMockGh } from "./helpers.ts";
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -801,7 +803,10 @@ test("manual live proof admits pinned promisor trees with the requested reposito
         const argv = args[1] ?? [];
         if (argv[0] === "api") {
           metadataCalls++;
-          assert.deepEqual(argv, ["api", `repos/${repo}/git/trees/${fixture.headSha}?recursive=1`]);
+          assert.deepEqual(argv.slice(0, 2), [
+            "api",
+            `repos/${repo}/git/trees/${fixture.headSha}?recursive=1`,
+          ]);
           assert.notEqual(reviewPolicyHashForTest(), profileBefore);
           assert.ok(args[2]?.timeout && args[2].timeout <= 30_000);
           if (scenario === "unavailable") throw new Error("fixture metadata unavailable");
@@ -815,7 +820,14 @@ test("manual live proof admits pinned promisor trees with the requested reposito
                   : entry,
               ),
           };
-          return { status: 0, stdout: JSON.stringify(response), stderr: "" };
+          const filter = argv.indexOf("--jq");
+          return filter < 0
+            ? { status: 0, stdout: JSON.stringify(response), stderr: "" }
+            : nativeSpawn("jq", ["-c", argv[filter + 1]!], {
+                ...args[2],
+                input: JSON.stringify(response),
+                stdio: ["pipe", "pipe", "pipe"],
+              });
         }
         if (args[0] === process.execPath && argv[1] === "live-proof") {
           childLaunches++;
@@ -1644,6 +1656,109 @@ test("review blob sizes use one bounded GraphQL metadata request", () => {
     () => githubReviewBlobSizes({ repository: "../unsafe", objectIds, request: () => ({}) }),
     /invalid bounded review blob metadata request/,
   );
+});
+
+test("review checkout preserves large tree metadata within the GitHub CLI capture limit", () => {
+  const fixture = partialCloneFixture();
+  const reviewTree = join(fixture.root, "review-tree");
+  const metadataPath = join(fixture.root, "tree.json");
+  const tree = git(fixture.source, "ls-tree", "-rl", fixture.headSha)
+    .split("\n")
+    .map((line) => {
+      const match = /^(\d+) (\w+) ([0-9a-f]+)\s+(\d+|-)\t(.+)$/.exec(line);
+      assert.ok(match);
+      return {
+        mode: match[1],
+        type: match[2],
+        sha: match[3],
+        size: match[4] === "-" ? null : Number(match[4]),
+        path: match[5],
+        url: `https://api.github.com/repos/fixture/repository/git/blobs/${match[3]}`,
+      };
+    });
+  for (let index = 0; index < 33_000; index += 1) {
+    const sha = index.toString(16).padStart(40, "0");
+    tree.push({
+      mode: "100644",
+      type: "blob",
+      sha,
+      size: index + 1,
+      path: `synthetic/packages/${index}/${"segment/".repeat(20)}entry.ts`,
+      url: `https://api.github.com/repos/fixture/repository/git/blobs/${sha}`,
+    });
+  }
+  const metadata = { truncated: false, tree };
+  const raw = JSON.stringify(metadata);
+  assert.ok(Buffer.byteLength(raw) > 8 * 1024 * 1024);
+  writeFileSync(metadataPath, raw);
+  const unavailable = () => {
+    throw new Error("Unexpected dependency in tree metadata fixture");
+  };
+  let captured: typeof metadata | undefined;
+  const runtime = createGitHubRuntime({
+    ROOT: fixture.root,
+    run: unavailable,
+    targetRepo: () => "fixture/repository",
+  });
+  const context = createContextHydration(
+    new Proxy(
+      {
+        asRecord,
+        targetRepo: () => "fixture/repository",
+        ghJsonOnce: (args: string[], timeoutMs: number) => {
+          const output = runtime.ghOnce(args, timeoutMs);
+          assert.ok(Buffer.byteLength(output) < 8 * 1024 * 1024);
+          captured = JSON.parse(output);
+          return captured;
+        },
+      },
+      { get: (target, key) => Reflect.get(target, key) ?? unavailable },
+    ) as Parameters<typeof createContextHydration>[0],
+  );
+  const materialize = () =>
+    context.materializePullRequestReviewTree({
+      targetDir: fixture.target,
+      worktreeDir: reviewTree,
+      itemNumber: 982,
+      headSha: fixture.headSha,
+    });
+  try {
+    withMockGh(
+      fixture.root,
+      `const { spawnSync } = require("node:child_process");
+const args = process.argv.slice(2);
+const filter = args.indexOf("--jq");
+if (filter < 0) {
+  process.stdout.write(require("node:fs").readFileSync(${JSON.stringify(metadataPath)}));
+} else {
+  const result = spawnSync("jq", ["-c", args[filter + 1], ${JSON.stringify(metadataPath)}], { stdio: "inherit" });
+  process.exitCode = result.status ?? 1;
+}
+`,
+      () => {
+        for (const invalid of [
+          { ...metadata, truncated: true },
+          { truncated: false, tree: { entry: tree[0] } },
+          { truncated: false, tree: [null, ...tree] },
+        ]) {
+          writeFileSync(metadataPath, JSON.stringify(invalid));
+          assert.throws(materialize, { diagnosticReason: "review_checkout_unavailable" });
+          assert.equal(existsSync(reviewTree), false);
+        }
+        writeFileSync(metadataPath, raw);
+        assert.equal(materialize(), true);
+      },
+    );
+    assert.deepEqual(captured, {
+      truncated: false,
+      tree: tree.map(({ type, sha, size }) => ({ type, sha, size })),
+    });
+    assert.equal(git(reviewTree, "rev-parse", "HEAD"), fixture.headSha);
+    assert.equal(readFileSync(join(reviewTree, "added.txt"), "utf8"), "new implementation\n");
+  } finally {
+    removePullRequestReviewTree({ targetDir: fixture.target, worktreeDir: reviewTree });
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
 });
 
 test("review tree blob sizes use one bounded recursive-tree request", () => {

@@ -1097,7 +1097,17 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
           remoteTreeSizes ??= githubReviewTreeBlobSizes({
             repository: targetRepo(),
             headSha: options.headSha,
-            request: (path) => ghJsonOnce(["api", path], timeoutMs),
+            // Path and URL metadata can exceed the CLI capture limit before admission runs.
+            request: (path) =>
+              ghJsonOnce(
+                [
+                  "api",
+                  path,
+                  "--jq",
+                  '{truncated, tree: (.tree | if type == "array" then map(if type == "object" then {type, sha, size} else . end) else . end)}',
+                ],
+                timeoutMs,
+              ),
           });
           return new Map(
             objectIds.flatMap((objectId) => {

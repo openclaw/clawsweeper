@@ -79,6 +79,11 @@ one-item reviews. Each review writes
 `records/<repo-slug>/items/<number>.md` with the decision, evidence, proposed
 maintainer-facing comment, runtime metadata, and GitHub snapshot hash.
 
+PR checkout preparation captures only the recursive tree's entry types, object
+IDs, sizes, and truncation flag from the GitHub CLI. This keeps path and URL
+metadata from exhausting the response buffer while preserving the existing
+checkout size limits and rejection of incomplete or malformed trees.
+
 Media proof preparation recognizes image/video filename extensions and GitHub
 attachment URLs, including legacy repository asset links. Attachments are fetched
 with GET and classified by the response content type; images are saved locally
