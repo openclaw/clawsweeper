@@ -27,6 +27,7 @@ import {
   materializePullRequestReviewTreeForTest,
   removePullRequestReviewTree,
   REVIEW_TREE_MAX_BYTES,
+  REVIEW_TREE_MAX_FILES,
   ReviewGitError,
 } from "../dist/clawsweeper-review-blobs.js";
 import { MAX_SCAN_BYTES } from "../dist/agent-input-scan.js";
@@ -801,9 +802,15 @@ test("manual live proof admits pinned promisor trees with the requested reposito
         const argv = args[1] ?? [];
         if (argv[0] === "api") {
           metadataCalls++;
-          assert.deepEqual(argv, ["api", `repos/${repo}/git/trees/${fixture.headSha}?recursive=1`]);
+          assert.deepEqual(argv, [
+            "api",
+            `repos/${repo}/git/trees/${fixture.headSha}?recursive=1`,
+            "--jq",
+            '{truncated,tree:(.tree|if type=="array" then map(if type=="object" then {type,sha,size} else . end) else . end)}',
+          ]);
           assert.notEqual(reviewPolicyHashForTest(), profileBefore);
           assert.ok(args[2]?.timeout && args[2].timeout <= 30_000);
+          assert.equal(args[2]?.maxBuffer, 8 * 1024 * 1024);
           if (scenario === "unavailable") throw new Error("fixture metadata unavailable");
           const response = {
             truncated: scenario === "truncated",
@@ -1676,15 +1683,30 @@ test("review tree blob sizes use one bounded recursive-tree request", () => {
       ["d".repeat(40), 34],
     ],
   );
-  assert.throws(
-    () =>
-      githubReviewTreeBlobSizes({
-        repository: "openclaw/clawsweeper",
-        headSha,
-        request: () => ({ truncated: true, tree: [] }),
-      }),
-    /incomplete bounded review tree metadata response/,
-  );
+  for (const [response, message] of [
+    [{ truncated: true, tree: [] }, /incomplete bounded review tree metadata response/],
+    [{ truncated: false, tree: null }, /incomplete bounded review tree metadata response/],
+    [{ truncated: false, tree: { entry: {} } }, /incomplete bounded review tree metadata response/],
+    [{ truncated: false, tree: [null] }, /invalid bounded review tree metadata entry/],
+    [
+      { truncated: false, tree: [{ type: "blob", sha: "c".repeat(40), size: -1 }] },
+      /invalid bounded review tree blob metadata/,
+    ],
+    [
+      { truncated: false, tree: Array(REVIEW_TREE_MAX_FILES + 1).fill({ type: "tree" }) },
+      /bounded review tree metadata response exceeded its entry limit/,
+    ],
+  ] as const) {
+    assert.throws(
+      () =>
+        githubReviewTreeBlobSizes({
+          repository: "openclaw/clawsweeper",
+          headSha,
+          request: () => response,
+        }),
+      message,
+    );
+  }
 });
 
 test("large pinned deltas hydrate historical blobs after head checkout and produce the full offline binary patch", (t) => {
