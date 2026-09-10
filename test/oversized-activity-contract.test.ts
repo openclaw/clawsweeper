@@ -424,3 +424,33 @@ test("publisher losing ownership during pre-write metadata cannot mutate the com
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("completed write receipts reject malformed post-write PR metadata", () => {
+  const f = fixture();
+  const intent = ownedCommentWriteIntent(
+    { method: "POST", path: "unused", body: { body: f.comment.body } },
+    null,
+  );
+  for (const value of [null, {}, { ...f.pull, comments: undefined }])
+    assert.throws(
+      () => ownedCommentWriteResult(intent, f.comment, value),
+      /post-write PR metadata/,
+    );
+  const completed = { ...ownedCommentWriteResult(intent, f.comment, f.pull), pullAfter: null };
+  assert.equal(
+    parseOversizedActivityEvidence({
+      reference,
+      baseline: f.capture(),
+      receipts: [completed],
+      invalid: null,
+    }),
+    null,
+  );
+  assert.match(
+    oversizedActivityBlock(
+      { reference, baseline: f.capture(), receipts: [completed], invalid: null },
+      f.capture(),
+    )!,
+    /incomplete/,
+  );
+});

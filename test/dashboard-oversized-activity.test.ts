@@ -386,3 +386,24 @@ for (const fails of [false, true]) {
     }
   });
 }
+
+test("an unavailable queue evidence reference keeps claim and completion usable", async () => {
+  const h = await setup(true);
+  h.storage.kv.delete(`oversized-activity:v1:item:${repo}#${number}`);
+  const response = await h.post("claim", { ...h.tuple, oversized_activity_version: 1 });
+  assert.equal(response.status, 200);
+  const claim: any = await response.json();
+  assert.equal(claim.claimed, true);
+  assert.ok(claim.oversized_activity);
+  const read: any = await (
+    await h.post("oversized-activity", { ...claim.oversized_activity, operation: "read" })
+  ).json();
+  assert.equal(read.evidence.baseline, null);
+  assert.match(read.evidence.invalid, /evidence is missing/);
+  const complete = await h.post("complete", {
+    ...h.tuple,
+    outcome: "success",
+    oversized_activity_failed: false,
+  });
+  assert.equal(complete.status, 200);
+});

@@ -64,10 +64,7 @@ export function ownedCommentWriteResult(
       (intent.before && after.id !== intent.before.id))
   )
     throw new Error("comment write response does not match its intent");
-  return {
-    ...intent,
-    after,
-    completedAt: new Date().toISOString(),
-    pullAfter: oversizedPrSourceSnapshot(recordOrEmpty(pull)),
-  };
+  const pullAfter = oversizedPrSourceSnapshot(recordOrEmpty(pull));
+  if (!pullAfter) throw new Error("post-write PR metadata snapshot is incomplete");
+  return { ...intent, after, completedAt: new Date().toISOString(), pullAfter };
 }

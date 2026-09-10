@@ -2951,7 +2951,14 @@ export class ExactReviewQueue {
             decision.targetRepo,
             decision.itemNumber,
           )?.reference;
-          if (currentReference && currentReference.epoch !== activityReference.epoch) {
+          if (!currentReference) {
+            activityReference = store.unavailable(
+              decision.targetRepo,
+              decision.itemNumber,
+              this.oversizedScope(decision),
+              "claimed activity evidence is missing",
+            );
+          } else if (currentReference.epoch !== activityReference.epoch) {
             activityReference = currentReference;
             store.invalidate(activityReference, "claimed activity reference is stale");
           }

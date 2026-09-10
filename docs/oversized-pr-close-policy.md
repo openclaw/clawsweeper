@@ -56,8 +56,8 @@ The Durable Object stores the baseline in separate bounded keys and journals eac
 owned acknowledgement POST, PATCH, and DELETE, including duplicate cleanup. Each
 write has a persisted intent before its request and a receipt with the comment ID,
 kind, before/after body and identity fingerprints, comment timestamps, and the
-resulting PR timestamp/count when observed. An uncertain response or incomplete
-receipt prevents closing. Receipt history is retained independently of queue-item
+resulting PR timestamp/count from the post-write observation. An uncertain
+response, malformed post-write snapshot, or incomplete receipt prevents closing. Receipt history is retained independently of queue-item
 completion; no existing queue-storage migration is required.
 
 The decision allowlist carries a validated, item-bound version-1 reference to that

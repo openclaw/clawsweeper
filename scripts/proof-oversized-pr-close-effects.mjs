@@ -51,6 +51,7 @@ const scenarios = [
   "journal-begin-unavailable",
   "journal-complete-unavailable",
   "journal-malformed-response",
+  "journal-post-write-metadata-malformed",
 ];
 const selected = process.env.PROOF_SCENARIOS?.split(",") || scenarios;
 const summaries = [];
@@ -93,7 +94,9 @@ for (const scenario of selected) {
     context,
     mutationCount = 0,
     interventionDone = false,
-    applying = false;
+    applying = false,
+    postWrite = false,
+    malformedMetadataReads = 0;
   const memory = new Map();
   const store = new OversizedActivityStore({
     get: (key) => structuredClone(memory.get(key)),
@@ -169,7 +172,15 @@ for (const scenario of selected) {
           const c = comments.find((c) => c.id === Number(path.split("/").at(-1)));
           return c ? send(c) : send({ error: "missing comment" }, 404);
         }
-        if (path.endsWith(`/pulls/${number}`)) return send(pull);
+        if (path.endsWith(`/pulls/${number}`)) {
+          if (
+            scenario === "journal-post-write-metadata-malformed" &&
+            postWrite &&
+            malformedMetadataReads++ < 9
+          )
+            return send({});
+          return send(pull);
+        }
         if (path.endsWith(`/issues/${number}`))
           return send({
             ...pull,
@@ -185,6 +196,7 @@ for (const scenario of selected) {
         return send({ error: "unimplemented read" }, 404);
       }
       mutationCount++;
+      if (applying) postWrite = true;
       const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
       let result;
       if (request.method === "POST" && path.endsWith(`/issues/${number}/comments`)) {

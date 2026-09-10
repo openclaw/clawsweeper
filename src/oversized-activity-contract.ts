@@ -290,7 +290,7 @@ export function parseOversizedActivityEvidence(value: unknown): OversizedActivit
         (r.after === null || validImage(r.after)) &&
         (r.requestedBodyFingerprint === null || digest(r.requestedBodyFingerprint)) &&
         timestamp(r.startedAt) &&
-        (r.completedAt === null || timestamp(r.completedAt)) &&
+        (r.completedAt === null || (timestamp(r.completedAt) && r.pullAfter !== null)) &&
         (r.pullAfter === null || parseOversizedPrSourceSnapshot(r.pullAfter))
       );
     })
@@ -316,7 +316,8 @@ export function oversizedActivityBlock(
   let updatedAt = base.source.updatedAt;
   const seen = new Set<string>();
   for (const r of evidence.receipts) {
-    if (!r.completedAt || seen.has(r.id)) return "incomplete or ambiguous owned-write receipt";
+    if (!r.completedAt || !r.pullAfter || seen.has(r.id))
+      return "incomplete or ambiguous owned-write receipt";
     seen.add(r.id);
     if (
       r.kind === "POST"
