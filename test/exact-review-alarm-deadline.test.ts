@@ -15,7 +15,7 @@ test("overdue command-intake wake uses a fresh deadline and polling preserves it
     scheduleNext(state: { items: {}; deliveries: {} }, now: number): Promise<void>;
   };
   t.mock.method(internals.commandIntakeStore, "nextAttemptAt", () => NOW - 7_200_000);
-  await storage.setAlarm(NOW - 60_000);
+  await storage.deleteAlarm();
   await internals.scheduleNext({ items: {}, deliveries: {} }, NOW);
   assert.equal(await storage.getAlarm(), NOW + 1_000);
   t.mock.method(Date, "now", () => NOW + 100);
@@ -41,7 +41,7 @@ test("source-authority recovery clamps past deadlines but preserves an earlier f
   assert.equal(await storage.getAlarm(), NOW + 60_000);
 });
 
-test("scheduling uses the current clock after asynchronous storage reads", async (t) => {
+test("a pending alarm that becomes due during storage reads is not postponed", async (t) => {
   let now = NOW;
   t.mock.method(Date, "now", () => now);
   const storage = new TestStorage();
@@ -60,5 +60,30 @@ test("scheduling uses the current clock after asynchronous storage reads", async
     return value;
   });
   await internals.scheduleNext({ items: {}, deliveries: {} }, NOW);
-  assert.equal(await getAlarm(), NOW + 3_000);
+  assert.equal(await getAlarm(), NOW + 500);
+});
+
+test("due stored alarms survive repeated request scheduling until delivery", async (t) => {
+  let now = NOW;
+  t.mock.method(Date, "now", () => now);
+  const storage = new TestStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  await queue.fetch(new Request("https://queue/stats"));
+  const internals = queue as unknown as {
+    commandIntakeStore: { nextAttemptAt(): number | null };
+    scheduleNext(state: { items: {}; deliveries: {} }, now: number): Promise<void>;
+    scheduleSourceAuthorityVerification(next: number): Promise<void>;
+  };
+  t.mock.method(internals.commandIntakeStore, "nextAttemptAt", () => NOW - 7_200_000);
+  await storage.setAlarm(NOW - 60_000);
+  for (let i = 0; i < 20; i++) {
+    now += 2000;
+    await internals.scheduleNext({ items: {}, deliveries: {} }, now);
+    await internals.scheduleSourceAuthorityVerification(NOW - 7_200_000);
+    assert.equal(await storage.getAlarm(), NOW - 60_000);
+  }
+  // Once consumed or missing, the next wake is still created normally.
+  await storage.deleteAlarm();
+  await internals.scheduleNext({ items: {}, deliveries: {} }, now);
+  assert.equal(await storage.getAlarm(), now + 1_000);
 });

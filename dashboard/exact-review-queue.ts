@@ -14081,8 +14081,10 @@ export class ExactReviewQueue {
     const now = Date.now();
     // Retained auxiliary work can be overdue. Use a fresh deadline so repeated
     // requests do not keep replacing a pending alarm with an expired timestamp.
+    // A due stored alarm is still pending delivery. Do not postpone it; the
+    // alarm handler clears it before arranging the next wake.
     next = Math.max(now + 1_000, next);
-    if (scheduled === null || scheduled <= now || next < scheduled) {
+    if (scheduled === null || next < scheduled) {
       await this.storage.setAlarm(next);
       const backoff = (this.bayTelemetryNoProgressDeadline ?? 0) > now;
       this.scheduledAlarmDecision = [reason, next, now, null, backoff];
@@ -14229,7 +14231,7 @@ export class ExactReviewQueue {
       await this.scheduleNextFromState(this.readSchedulingStateSync(), Date.now(), true);
       return;
     }
-    if (scheduled === null || scheduled <= schedulingNow || next < scheduled) {
+    if (scheduled === null || next < scheduled) {
       await this.storage.setAlarm(next);
       this.scheduledAlarmDecision = [
         selected[0],
