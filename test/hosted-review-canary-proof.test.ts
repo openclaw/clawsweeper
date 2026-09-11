@@ -2055,7 +2055,16 @@ test("hosted terminal cleanup requires its exact armed and successful done publi
     assert.throws(() => assertHostedTerminalDone(changed));
 });
 
-for (const scenario of ["finished", "query", "kill", "live", "mismatch"] as const) {
+for (const scenario of [
+  "finished",
+  "query",
+  "kill",
+  "live",
+  "mismatch",
+  "empty",
+  "empty-live",
+  "empty-mismatch",
+] as const) {
   test(
     `hosted terminal post-DONE ${scenario} requires fresh receipts and quiescence without retry`,
     { skip: process.platform !== "linux", timeout: 10_000 },
@@ -2137,13 +2146,14 @@ if (process.argv[2] === "finish") {
   if (race === "kill" && args[2] === "display-message") {
     process.stdout.write(execFileSync(${JSON.stringify(tmux)}, args));
   } else {
-    if (race !== "live") await finish();
-    if (race === "mismatch") {
+    if (race !== "live" && race !== "empty-live") await finish();
+    if (race === "mismatch" || race === "empty-mismatch") {
       const records = ${JSON.stringify(records)};
       records[1].session = "$999";
       fs.writeFileSync(${JSON.stringify(receipt)}, records.map(value => JSON.stringify(value) + "\\n").join(""));
     }
-    process.exitCode = 1;
+    if (race.startsWith("empty")) process.stdout.write("|");
+    else process.exitCode = 1;
   }
 }
 `,
@@ -2154,7 +2164,13 @@ if (process.argv[2] === "finish") {
           assert.equal(existsSync(live), false);
         }
         const operation = stopHostedTerminal({ path: receipt, nonce, tmux: wrapper });
-        if (scenario === "live" || scenario === "mismatch") await assert.rejects(operation);
+        if (
+          scenario === "live" ||
+          scenario === "mismatch" ||
+          scenario === "empty-live" ||
+          scenario === "empty-mismatch"
+        )
+          await assert.rejects(operation);
         else await operation;
         const observed = existsSync(calls)
           ? readFileSync(calls, "utf8")
@@ -2171,7 +2187,8 @@ if (process.argv[2] === "finish") {
               : ["display-message"],
         );
         assert.deepEqual(hostedProcessIdentity(foreign.identity.pid), foreign.identity);
-        if (scenario === "live") assert.deepEqual(hostedProcessIdentity(server.pid), server);
+        if (scenario === "live" || scenario === "empty-live")
+          assert.deepEqual(hostedProcessIdentity(server.pid), server);
         else assert.equal(hostedProcessIdentity(server.pid), null);
       } finally {
         let quiescent = !started;
