@@ -944,6 +944,7 @@ export class ExactReviewQueue {
   private scheduledAlarmDecision: AlarmScheduleDecision | null = null;
   private alarmScheduleLoggedAt = 0;
   private alarmInFlightAt: number | null = null;
+  private overdueAlarmRecoveryAttempted = false;
   private alarmInFlightPhase:
     | "startup"
     | "branch_authority"
@@ -5101,6 +5102,7 @@ export class ExactReviewQueue {
   }
 
   async alarm() {
+    this.overdueAlarmRecoveryAttempted = false;
     this.alarmInFlightAt = Date.now();
     this.alarmInFlightPhase = "startup";
     this.invalidateReadCaches();
@@ -14249,8 +14251,26 @@ export class ExactReviewQueue {
       await this.scheduleNextFromState(this.readSchedulingStateSync(), Date.now(), true);
       return;
     }
-    if (scheduled === null || next < scheduled) {
+    // A delivery can remain stranded after repeated historical replacements.
+    // Retry it once per object generation, only well beyond normal delivery and
+    // retry delays and while no handler is running. Ordinary due alarms remain
+    // untouched. Fence before awaiting storage so concurrent requests cannot
+    // turn this recovery into another sliding deadline.
+    const recoverStrandedAlarm =
+      scheduled !== null &&
+      scheduled < schedulingNow - 5 * 60_000 &&
+      this.alarmInFlightAt === null &&
+      !this.overdueAlarmRecoveryAttempted;
+    if (scheduled === null || next < scheduled || recoverStrandedAlarm) {
+      if (recoverStrandedAlarm) this.overdueAlarmRecoveryAttempted = true;
       await this.storage.setAlarm(next);
+      if (recoverStrandedAlarm) {
+        console.info("exact_review_queue_stranded_alarm_rearmed", {
+          observed_at: schedulingNow,
+          previous_alarm_at: scheduled,
+          new_alarm_at: next,
+        });
+      }
       this.scheduledAlarmDecision = [
         selected[0],
         next,

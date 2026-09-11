@@ -87,3 +87,36 @@ test("due stored alarms survive repeated request scheduling until delivery", asy
   await internals.scheduleNext({ items: {}, deliveries: {} }, now);
   assert.equal(await storage.getAlarm(), now + 1_000);
 });
+
+test("stranded-alarm recovery is bounded and never rearms an active handler", async (t) => {
+  let now = NOW;
+  t.mock.method(Date, "now", () => now);
+  const storage = new TestStorage();
+  const queue = new ExactReviewQueue({ storage }, {});
+  await queue.fetch(new Request("https://queue/stats"));
+  const internals = queue as unknown as {
+    commandIntakeStore: { nextAttemptAt(): number | null };
+    scheduleNext(state: { items: {}; deliveries: {} }, now: number): Promise<void>;
+    alarmInFlightAt: number | null;
+    scheduleSourceAuthorityVerification(next: number): Promise<void>;
+  };
+  t.mock.method(internals.commandIntakeStore, "nextAttemptAt", () => NOW - 7_200_000);
+  const stranded = NOW - 6 * 60_000;
+  await storage.setAlarm(stranded);
+  internals.alarmInFlightAt = NOW - 10_000;
+  await internals.scheduleNext({ items: {}, deliveries: {} }, now);
+  assert.equal(await storage.getAlarm(), stranded);
+  internals.alarmInFlightAt = null;
+  await Promise.all([
+    internals.scheduleNext({ items: {}, deliveries: {} }, now),
+    internals.scheduleNext({ items: {}, deliveries: {} }, now),
+    internals.scheduleSourceAuthorityVerification(NOW - 7_200_000),
+  ]);
+  const recovered = await storage.getAlarm();
+  assert.equal(recovered, NOW + 1_000);
+  for (let i = 0; i < 10; i++) {
+    now += 6 * 60_000;
+    await internals.scheduleNext({ items: {}, deliveries: {} }, now);
+    assert.equal(await storage.getAlarm(), recovered);
+  }
+});

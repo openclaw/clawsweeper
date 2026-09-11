@@ -43,7 +43,23 @@ export class Q extends ExactReviewQueue {
    await this.storage.deleteAlarm();
    return {dueBefore,dueObservedAt,dueAfter};
   });
-  return Response.json({before,after,fastBefore,fastAfter,missingStartedAt,missingAfter,...due});
+  // Advance only the application's clock to exercise the five-minute recovery
+  // threshold quickly. Alarm storage and scheduling still use real workerd.
+  const recovery = await this.ctx.blockConcurrencyWhile(async()=>{
+   const realNow=Date.now;
+   try {
+    const stranded=Date.now()+500;await this.storage.setAlarm(stranded);
+    let observed=stranded+6*60_000;Date.now=()=>observed;
+    await this.scheduleNext({items:{},deliveries:{}},observed);
+    const first=await this.storage.getAlarm();
+    observed+=6*60_000;
+    await this.scheduleNext({items:{},deliveries:{}},observed);
+    const second=await this.storage.getAlarm();
+    await this.storage.deleteAlarm();
+    return {stranded,first,second};
+   } finally {Date.now=realNow;}
+  });
+  return Response.json({before,after,fastBefore,fastAfter,missingStartedAt,missingAfter,...due,...recovery});
  }
  async alarm(){} // Terminal local sink: no GitHub or production effects.
 }
@@ -54,7 +70,7 @@ const observations = {
     encoding: "utf8",
   }).trim(),
   limits:
-    "Scheduling and storage paths are real; fixture seeds auxiliary due work and uses a no-op alarm sink. No external calls or claim of production dispatch.",
+    "Scheduling and storage paths are real; fixture seeds auxiliary due work and uses a no-op alarm sink. Stranded recovery advances only the application clock; native alarm storage remains real. No external calls or claim of production dispatch.",
 };
 for (const variant of ["base", "head"]) {
   const contents = variant === "base" ? base : readFileSync(filename, "utf8");
@@ -102,6 +118,8 @@ for (const variant of ["base", "head"]) {
       assert.ok(result.missingAfter >= result.missingStartedAt + 1000);
       assert.ok(result.dueObservedAt > result.dueBefore);
       assert.equal(result.dueAfter, result.dueBefore);
+      assert.ok(result.first > result.stranded);
+      assert.equal(result.second, result.first);
     }
   } finally {
     await mf.dispose();
