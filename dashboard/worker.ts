@@ -1,3 +1,5 @@
+import { githubEtagCacheShard } from "./github-etag-cache.ts";
+export { GithubEtagCache } from "./github-etag-cache.ts";
 import {
   commandTextForClawSweeperFastAck,
   directReReviewAdditionalPrompt,
@@ -1276,17 +1278,17 @@ export default {
       url.pathname === "/internal/exact-review/github-etag-cache/lookup" &&
       request.method === "POST"
     )
-      return authenticatedExactReviewQueueRequest(request, env, "/github-etag-cache/lookup");
+      return authenticatedGithubEtagCacheRequest(request, env, "/github-etag-cache/lookup");
     if (
       url.pathname === "/internal/exact-review/github-etag-cache/store" &&
       request.method === "POST"
     )
-      return authenticatedExactReviewQueueRequest(request, env, "/github-etag-cache/store");
+      return authenticatedGithubEtagCacheRequest(request, env, "/github-etag-cache/store");
     if (
       url.pathname === "/internal/exact-review/github-etag-cache/confirm" &&
       request.method === "POST"
     )
-      return authenticatedExactReviewQueueRequest(request, env, "/github-etag-cache/confirm");
+      return authenticatedGithubEtagCacheRequest(request, env, "/github-etag-cache/confirm");
     const githubReadModelRoute =
       request.method === "POST"
         ? /^\/internal\/state\/github-read-model\/(item|comments|activity|workflows|placeholders|repair)$/.exec(
@@ -5255,7 +5257,12 @@ async function attachExactReviewSourceAuthorityAcknowledgement(
   }
 }
 
-async function exactReviewQueueFetch(queue: DurableObjectStub, path: string, request?: Request) {
+async function exactReviewQueueFetch(
+  queue: DurableObjectStub,
+  path: string,
+  request?: Request,
+  service: "exact_review_queue" | "github_etag_cache" = "exact_review_queue",
+) {
   const body = request ? await request.text() : undefined;
   const traceId = newExactReviewQueueTraceId();
   const endpoint = exactReviewQueueEndpointTemplate(path);
@@ -5283,7 +5290,7 @@ async function exactReviewQueueFetch(queue: DurableObjectStub, path: string, req
     const responseBody = await response.clone().text();
     try {
       JSON.parse(responseBody);
-      console.error("exact_review_queue_structured_server_response", {
+      console.error(`${service}_structured_server_response`, {
         trace_id: traceId,
         endpoint,
         phase: "request",
@@ -5293,7 +5300,7 @@ async function exactReviewQueueFetch(queue: DurableObjectStub, path: string, req
       });
       return { response, malformedServerResponse: false };
     } catch {
-      console.error("exact_review_queue_malformed_server_response", {
+      console.error(`${service}_malformed_server_response`, {
         trace_id: traceId,
         endpoint,
         phase: "request",
@@ -5308,7 +5315,7 @@ async function exactReviewQueueFetch(queue: DurableObjectStub, path: string, req
     const remote = failure.remote === true;
     const retryable = failure.retryable === true;
     const overloaded = failure.overloaded === true;
-    console.error("exact_review_queue_request_failed", {
+    console.error(`${service}_request_failed`, {
       trace_id: traceId,
       endpoint,
       phase: "request",
@@ -6677,6 +6684,41 @@ async function boundedCommandProofBody(request: Request): Promise<string | null>
     await reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
+}
+
+async function githubEtagCacheRequest(env, path: string, body: string) {
+  const namespace: DurableObjectNamespace | undefined = env.GITHUB_ETAG_CACHE;
+  if (!namespace) return json({ error: "github_etag_cache_not_configured" }, 503);
+  try {
+    const shard = githubEtagCacheShard(parseJsonObject(body));
+    const stub = namespace.get(namespace.idFromName(shard));
+    const { response, malformedServerResponse } = await exactReviewQueueFetch(
+      stub,
+      path,
+      new Request(`https://clawsweeper-etag-cache${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      }),
+      "github_etag_cache",
+    );
+    return malformedServerResponse
+      ? json({ error: "github_etag_cache_unavailable" }, response.status)
+      : response;
+  } catch {
+    return json({ error: "github_etag_cache_unavailable" }, 503);
+  }
+}
+
+async function authenticatedGithubEtagCacheRequest(request: Request, env, path: string) {
+  const secret = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET);
+  if (!secret) return json({ error: "webhook_not_configured" }, 503);
+  const body = await request.text();
+  const signature = request.headers.get("x-clawsweeper-exact-review-signature") || "";
+  if (!(await verifyGithubWebhookSignature({ secret, signature, bodyText: body }))) {
+    return json({ error: "invalid_signature" }, 401);
+  }
+  return githubEtagCacheRequest(env, path, body);
 }
 
 async function authenticatedExactReviewQueueRequest(
@@ -11994,12 +12036,12 @@ async function githubJson(env, path) {
   });
   const requestBody = key ? githubEtagCacheRequestBody(key, "dashboard") : null;
   const etagBrokerEnabled = Boolean(
-    requestBody && exactReviewQueueStub(env) && stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET),
+    requestBody && env.GITHUB_ETAG_CACHE && stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET),
   );
   let cachedEntry: Record<string, unknown> | null = null;
   if (etagBrokerEnabled && requestBody) {
     try {
-      const lookup = await githubEtagQueuePost(env, "lookup", requestBody);
+      const lookup = await githubEtagCachePost(env, "lookup", requestBody);
       cachedEntry = lookup.hit === true ? objectValue(lookup.entry) : null;
     } catch {
       cachedEntry = null;
@@ -12008,7 +12050,7 @@ async function githubJson(env, path) {
   let response = await githubJsonResponse(env, path, token, String(cachedEntry?.etag || ""));
   if (response.status === 304 && etagBrokerEnabled && requestBody && cachedEntry) {
     try {
-      const confirmed = await githubEtagQueuePost(env, "confirm", {
+      const confirmed = await githubEtagCachePost(env, "confirm", {
         ...requestBody,
         etag: String(cachedEntry.etag || ""),
         body_digest: String(cachedEntry.bodyDigest || ""),
@@ -12034,7 +12076,7 @@ async function githubJson(env, path) {
   if (etagBrokerEnabled && requestBody) {
     const etag = response.headers.get("etag") || "";
     const bodyBytes = new TextEncoder().encode(body).byteLength;
-    await githubEtagQueuePost(env, "store", {
+    await githubEtagCachePost(env, "store", {
       ...requestBody,
       etag,
       ...(bodyBytes > GITHUB_ETAG_CACHE_MAX_BODY_BYTES ? { body_bytes: bodyBytes } : { body }),
@@ -12057,15 +12099,11 @@ function githubJsonResponse(env, path, token: string, ifNoneMatch: string) {
   });
 }
 
-async function githubEtagQueuePost(env, operation: "lookup" | "store" | "confirm", body) {
-  const response = await exactReviewQueueRequest(
+async function githubEtagCachePost(env, operation: "lookup" | "store" | "confirm", body) {
+  const response = await githubEtagCacheRequest(
     env,
     `/github-etag-cache/${operation}`,
-    new Request("https://clawsweeper-etag-cache", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    }),
+    JSON.stringify(body),
   );
   const result = objectValue(await response.json().catch(() => null));
   if (!response.ok) throw new Error(String(result.error || "GitHub ETag cache unavailable"));

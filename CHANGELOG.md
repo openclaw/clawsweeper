@@ -21,6 +21,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Isolate the GitHub ETag cache in repository-sharded Durable Objects so cache reads and writes no longer compete with exact-review admission, claims, or webhooks.
+
 - Refresh durable review freshness after unchanged exact-head re-reviews while preserving idempotent publication retries, and record bounded activity-cursor diagnostics for drift-blocked publication.
 
 - Preserve bounded, recognized command-intake HTTP failure codes in review-request diagnostics without exposing raw responses or changing retry behavior.

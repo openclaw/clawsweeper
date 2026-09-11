@@ -133,9 +133,7 @@ import {
 } from "./exact-review-command-intake.ts";
 import { recentDurablePublicationEvents } from "./recent-durable-publication-events.ts";
 import { sanitizedServerError } from "./error-safety.ts";
-import { GithubEtagResponseStore } from "./github-etag-cache.ts";
 import { GithubWebhookReadModelStore } from "./github-webhook-read-model.ts";
-import { githubEtagCacheKeyFromValue } from "../src/github-etag-cache-contract.ts";
 import {
   ExactReviewArtifactReceiptStore,
   exactReviewArtifactReceiptTuple,
@@ -908,7 +906,6 @@ export class ExactReviewQueue {
   private githubEgressTelemetryStore;
   private commandIntakeStore;
   private artifactReceiptStore;
-  private githubEtagResponseStore;
   private githubWebhookReadModelStore;
   private readonly random: () => number;
   private readonly baselines = new WeakMap<ExactReviewQueueState, ExactReviewQueueBaseline>();
@@ -973,7 +970,6 @@ export class ExactReviewQueue {
       this.storage,
       env.STATE_SNAPSHOTS,
     );
-    this.githubEtagResponseStore = new GithubEtagResponseStore(this.storage);
     this.githubWebhookReadModelStore = new GithubWebhookReadModelStore(this.storage);
     // The public lifecycle reader remains side-effect free. Its bounded read
     // schema and public Bay repository coverage scope are established
@@ -4281,34 +4277,6 @@ export class ExactReviewQueue {
         console.warn("artifact_cache_prune_failed");
       });
       return json({ ok: true, hit: Boolean(receipt), receipt });
-    }
-
-    if (request.method === "POST" && url.pathname === "/github-etag-cache/lookup") {
-      const body = await request.json().catch(() => null);
-      if (!githubEtagCacheKeyFromValue(body)) {
-        return json({ error: "invalid_github_etag_cache_key" }, 400);
-      }
-      const entry = this.githubEtagResponseStore.lookup(body, Date.now());
-      return json({ ok: true, hit: Boolean(entry), entry });
-    }
-
-    if (request.method === "POST" && url.pathname === "/github-etag-cache/store") {
-      const body = await request.json().catch(() => null);
-      try {
-        const result = await this.githubEtagResponseStore.store200(body, Date.now());
-        if (!result.ok) return json({ error: result.error }, result.status);
-        return json(result, result.stored ? 201 : 200);
-      } catch {
-        console.warn("github_etag_cache_store_failed");
-        return json({ error: "github_etag_cache_unavailable" }, 503);
-      }
-    }
-
-    if (request.method === "POST" && url.pathname === "/github-etag-cache/confirm") {
-      const body = await request.json().catch(() => null);
-      const result = this.githubEtagResponseStore.confirm304(body, Date.now());
-      if (!result.ok) return json({ error: result.error }, result.status);
-      return json(result);
     }
 
     if (request.method === "POST" && url.pathname === "/github-read-model/ingest") {
@@ -10912,7 +10880,6 @@ export class ExactReviewQueue {
     this.lifecycleTelemetryStore.syncBayRepositoryScope(exactReviewPublicBayRepositories(this.env));
     this.githubEgressTelemetryStore.ensureSchemaSync();
     this.artifactReceiptStore.ensureSchemaSync();
-    this.githubEtagResponseStore.ensureSchemaSync();
     this.githubWebhookReadModelStore.ensureSchemaSync();
     let meta = this.readStorageMetaSync();
     let migratedLegacy = false;

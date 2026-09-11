@@ -22,6 +22,10 @@ class_name = "StatusStore"
 name = "EXACT_REVIEW_QUEUE"
 class_name = "ExactReviewQueue"
 
+[[durable_objects.bindings]]
+name = "GITHUB_ETAG_CACHE"
+class_name = "GithubEtagCache"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["StatusStore"]
@@ -29,6 +33,10 @@ new_sqlite_classes = ["StatusStore"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["ExactReviewQueue"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["GithubEtagCache"]
 
 [[routes]]
 pattern = "clawsweeper.openclaw.ai"

@@ -387,7 +387,37 @@ command-status identifiers so the leased GitHub Actions executor can update the
 original acknowledgement through completion. GitHub Actions remains the
 executor and the existing review/apply safety model remains unchanged.
 
-The singleton Durable Object stores each delivery receipt and queue item in its
+The Worker's Durable Object bindings separate three storage owners:
+`STATUS_STORE` (`StatusStore`) holds dashboard state, `EXACT_REVIEW_QUEUE`
+(`ExactReviewQueue`) holds queue state, and `GITHUB_ETAG_CACHE` (`GithubEtagCache`)
+holds disposable GitHub response bodies and validators. The cache uses
+`idFromName("owner/repo")` from the store-validated, normalized `/repos/` route,
+with repository names lowercased. Requests without a valid repository key use
+the single `fallback` shard and retain the existing validation errors. Credential
+pool, media type, query, and page remain part of the cache key within each shard.
+The 2,048-entry cap and 30-day retention now apply per shard.
+
+The additive `v3` migration creates only `GithubEtagCache`; existing classes,
+queue storage, leases, fences, and alarms are unchanged. Runners keep the same
+HMAC-authenticated `/internal/exact-review/github-etag-cache/{lookup,store,confirm}`
+routes and response contract. Both these routes and dashboard health reads use
+the new binding directly, with no queue fallback. Deploy the binding and code
+together through Wrangler. The namespace starts empty; misses use the existing
+GitHub fetch/revalidation path. Old queue cache tables are deliberately left
+inert: they are not read, migrated, recreated, or pruned by the new code, avoiding
+extra work in the overloaded queue. A rollback may reuse them, subject to the
+existing validator/digest checks; no cached body is served without confirmation.
+
+Cache transport failures retain generated trace IDs and the existing
+`github_etag_cache_lookup`, `github_etag_cache_store`, and
+`github_etag_cache_confirm` endpoint labels, under `github_etag_cache_*` log
+events. Each shard's binding-only `GET /stats` returns its trailing 24-hour
+`telemetry` counters; no public cache-stats route is added. The public
+`/api/exact-review-queue` payload and Bay's observer contract are unchanged.
+After deployment, compare queue canceled invocations and bare 5xx rates against
+the pre-deploy window, and confirm etag requests are served by `GithubEtagCache`.
+
+The singleton queue Durable Object stores each delivery receipt and queue item in its
 own SQLite row. Receipt insertion and item coalescing commit in one transaction,
 so a crash cannot record a duplicate-suppression receipt without its queued
 work. Receipts retain the seven-day idempotency window and expire through the
