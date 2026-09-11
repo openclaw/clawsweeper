@@ -393,6 +393,10 @@ PR comment reads like a concise review.
 Finding-shaped headings and `body`, `late`, or `confidence` list fields quoted
 inside model prose are escaped before storage. They remain quoted text when
 the durable report is parsed again and cannot add findings or replace scores.
+Renderer-owned list labels such as `Next rank-up steps:` and `Vision evidence:`
+quoted inside the rating summary or vision reason are escaped the same way, so
+the published rank-up moves and vision evidence come from the structured
+decision rather than from quoted prose.
 
 Automerge and autofix state belongs in the command/status comment and hidden
 markers, not in the public review section headings. A clean opted-in PR should

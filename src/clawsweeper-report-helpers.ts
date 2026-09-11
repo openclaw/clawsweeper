@@ -133,6 +133,11 @@ export function createReportHelpers(dependencies: CreateReportHelpersDependencie
       .trim();
   }
 
+  // "Next rank-up steps:" and "Vision evidence:" are renderer-owned list labels whose
+  // first occurrence the report re-parser trusts; the rating summary and vision reason
+  // render above those lists, so a quoted label line would otherwise supply the items.
+  const OWNED_REPORT_LIST_LABELS = new Set(["next rank-up steps", "vision evidence"]);
+
   function neutralizeOwnedSectionSpoofing(value: string): string {
     // GitHub normalizes CRLF and bare CR to line endings, so normalize first or a
     // bare-CR line break could smuggle a heading past the per-line checks.
@@ -176,11 +181,11 @@ export function createReportHelpers(dependencies: CreateReportHelpersDependencie
         if (/^(?:=+|-+)[ \t]*$/.test(trimmed)) {
           return `${containerPrefix}${content.replace(/[=-]/, "\\$&")}`;
         }
-        if (
-          trimmed.endsWith(":") &&
-          OWNED_REVIEW_SECTION_HEADINGS.has(trimmed.slice(0, -1).trim().toLowerCase())
-        ) {
-          return `${containerPrefix}${content.trimEnd().slice(0, -1)}&#58;`;
+        if (trimmed.endsWith(":")) {
+          const label = trimmed.slice(0, -1).trim().toLowerCase();
+          if (OWNED_REVIEW_SECTION_HEADINGS.has(label) || OWNED_REPORT_LIST_LABELS.has(label)) {
+            return `${containerPrefix}${content.trimEnd().slice(0, -1)}&#58;`;
+          }
         }
         return `${containerPrefix}${content}`;
       })
