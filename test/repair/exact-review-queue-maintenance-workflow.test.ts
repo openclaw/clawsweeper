@@ -1,10 +1,19 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, createHmac } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:https";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, isAbsolute, join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import YAML from "yaml";
@@ -369,9 +378,67 @@ test("maintenance CLI signs one HTTPS dry run, redacts identities, and refuses r
     mergeCommitSha: "c".repeat(40),
   };
   writeFileSync(join(directory, "closed-publication-retirement.json"), JSON.stringify(plan));
-  assert.equal((await promisify(execFile)("pnpm", ["--version"])).stdout.trim(), "11.10.0");
+  const runtimeEnv: NodeJS.ProcessEnv = {
+    TMPDIR: directory,
+    TMP: directory,
+    TEMP: directory,
+    BASH_ENV: "/dev/null",
+    COREPACK_ENV_FILE: "0",
+    COREPACK_ENABLE_NETWORK: "0",
+    COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
+    COREPACK_DEFAULT_TO_LATEST: "0",
+  };
+  // Keep pnpm's install context so its dependency check does not see a different
+  // virtual-store setting and try to reinstall before the workflow CLI starts.
+  for (const key of [
+    "CI",
+    "PATH",
+    "HOME",
+    "USERPROFILE",
+    "XDG_CACHE_HOME",
+    "LOCALAPPDATA",
+    "COREPACK_HOME",
+    "PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE",
+    "pnpm_config_enable_global_virtual_store",
+  ]) {
+    const value = process.env[key];
+    if (value !== undefined) runtimeEnv[key] = value;
+  }
+  const searchPath = runtimeEnv.PATH;
+  assert.ok(searchPath, "the real pnpm and Bash probes require the current toolchain PATH");
+  const bashCandidate = searchPath
+    .split(delimiter)
+    .filter(isAbsolute)
+    .map((directory) => join(directory, process.platform === "win32" ? "bash.exe" : "bash"))
+    .find((candidate) => {
+      try {
+        accessSync(candidate, constants.X_OK);
+        return statSync(candidate).isFile();
+      } catch {
+        return false;
+      }
+    });
+  assert.ok(bashCandidate, "an executable Bash must be available on the same toolchain PATH");
+  const bash = realpathSync(bashCandidate);
+  assert.ok(isAbsolute(bash));
+  const bashArgs = ["--noprofile", "--norc", "-euo", "pipefail", "-c"];
+  const runtime = { cwd: process.cwd(), env: runtimeEnv, timeout: 10_000 };
+  assert.equal(
+    (
+      await promisify(execFile)(
+        process.execPath,
+        ["-e", "process.stdout.write(require('node:os').tmpdir())"],
+        runtime,
+      )
+    ).stdout,
+    directory,
+  );
+  assert.equal(
+    (await promisify(execFile)(bash, [...bashArgs, "pnpm --version"], runtime)).stdout.trim(),
+    "11.10.0",
+  );
   const env = {
-    PATH: process.env.PATH,
+    ...runtimeEnv,
     NODE_EXTRA_CA_CERTS: cert,
     EXACT_REVIEW_QUEUE_URL: endpoint,
     CLAWSWEEPER_WEBHOOK_SECRET: secret,
@@ -387,12 +454,13 @@ test("maintenance CLI signs one HTTPS dry run, redacts identities, and refuses r
     (step) => step.name === "Prepare closed publication retirement",
   )!;
   const executeWorkflowStep = () =>
-    promisify(execFile)("bash", ["-euo", "pipefail", "-c", execute.run!], {
+    promisify(execFile)(bash, [...bashArgs, execute.run!], {
+      ...runtime,
       env,
-      timeout: 10_000,
     });
   await assert.rejects(
-    promisify(execFile)("bash", ["-euo", "pipefail", "-c", prepare.run!], {
+    promisify(execFile)(bash, [...bashArgs, prepare.run!], {
+      ...runtime,
       env: {
         ...env,
         GH_TOKEN: "synthetic-token",
@@ -401,7 +469,6 @@ test("maintenance CLI signs one HTTPS dry run, redacts identities, and refuses r
         PUBLICATION_KEY_SHA256: plan.publicationKeySha256,
         QUEUE_REVISION: "8",
       },
-      timeout: 10_000,
     }),
     (error: Error & { stdout: string; stderr: string }) => {
       assert.match(error.stderr, /"status":"retirement_failed"/);
@@ -418,7 +485,7 @@ test("maintenance CLI signs one HTTPS dry run, redacts identities, and refuses r
       promisify(execFile)(
         "pnpm",
         ["run", "--silent", "repair:exact-review-queue-maintenance", ...args],
-        { env, timeout: 10_000 },
+        { ...runtime, env },
       ),
       (error: Error & { stderr: string }) => {
         assert.match(error.stderr, /invalid arguments/);
