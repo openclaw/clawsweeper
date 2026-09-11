@@ -676,8 +676,11 @@ bypassing the rate limiter.
 Scheduled review ingress requires
 `scheduled_feed.enqueue_replay: scheduled_disposition_v1` before retrying
 transient transport or HTTP 5xx failures with the same signed delivery bytes;
-legacy ambiguous receipts fail closed, and publication post-effects remain
-single-attempt.
+legacy ambiguous receipts fail closed. Publication enqueue remains single-attempt;
+batch lifecycle router receipts and terminal dispositions use bounded,
+byte-identical retries backed by durable operation identities. Operator
+retirement and other callers retain their single-attempt default.
+Legacy lifecycle payloads without replay identities remain single-attempt as well.
 
 Normal fanout ordinarily divides one live queue-advertised candidate-capacity
 budget across the selected repositories; it does not grant 50 candidates to

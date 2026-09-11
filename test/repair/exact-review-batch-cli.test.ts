@@ -1183,8 +1183,18 @@ for (const [route, endpoint] of [
   ["terminal-disposition", "/internal/exact-review/lifecycle/terminal-disposition"],
 ]) {
   for (const [scenario, statuses, exitCode, expectedAttempts] of [
-    ["fails after the first 500 in a recovery sequence", [500, 200], 1, 1],
-    ["fails after the first 500 in a repeated failure sequence", [500, 500, 500], 1, 1],
+    [
+      "handles transient recovery within the route's retry contract",
+      [500, 200],
+      route === "enqueue" ? 1 : 0,
+      route === "enqueue" ? 1 : 2,
+    ],
+    [
+      "bounds repeated failures within the route's retry contract",
+      [500, 500, 500],
+      1,
+      route === "enqueue" ? 1 : 3,
+    ],
     ["fails immediately on 409", [409], 1, 1],
   ]) {
     test(`batch post-effect ${route} ${scenario}`, () => {
@@ -1193,7 +1203,8 @@ for (const [route, endpoint] of [
         const payloadPath = join(root, "payload.json");
         const postsPath = join(root, "posts.jsonl");
         const preloadPath = join(root, "fetch-preload.cjs");
-        const payload = '{ "receipt_id": "stable-fixture", "kind": "policy_noop" }\n';
+        const payload =
+          '{ "receipt_id": "stable-fixture", "operation_id": "stable-operation", "kind": "policy_noop" }\n';
         writeFileSync(payloadPath, payload);
         writeFileSync(
           preloadPath,
@@ -1241,7 +1252,8 @@ globalThis.fetch = async (url, init) => {
           : [];
         assert.equal(posts.length, expectedAttempts, result.stderr);
         assert.equal(result.status, exitCode, result.stderr);
-        assert.equal(result.stdout, "");
+        if (exitCode === 0) assert.deepEqual(JSON.parse(result.stdout), { ok: true, queued: true });
+        else assert.equal(result.stdout, "");
         assert.ok(posts.every((post) => post.url === `https://queue.example.test${endpoint}`));
         assert.ok(posts.every((post) => post.body === payload));
         assert.ok(
@@ -1256,8 +1268,9 @@ globalThis.fetch = async (url, init) => {
         );
         assert.doesNotMatch(result.stderr, /proof-secret|stable-fixture|sha256=/);
         if (statuses[0] === 500) {
-          assert.match(result.stderr, /HTTP 500/);
-          assert.doesNotMatch(result.stderr, /Batch queue retry/);
+          if (exitCode !== 0) assert.match(result.stderr, /HTTP 500/);
+          if (expectedAttempts > 1) assert.match(result.stderr, /Batch queue retry/);
+          else assert.doesNotMatch(result.stderr, /Batch queue retry/);
         }
       } finally {
         rmSync(root, { recursive: true, force: true });

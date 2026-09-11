@@ -678,10 +678,12 @@ up to 10 seconds, and stop at the last confirmed server lease expiry.
 Validation, authentication, and fence rejections are never retried.
 Periodic workflow heartbeats use `--tolerate-until-lease` to tolerate exhausted transport failures only while the confirmed lease has more than `EXACT_REVIEW_BATCH_HEARTBEAT_SAFETY_MS` (default 180,000 ms) remaining. Claim, fetch, and heartbeat responses include an internal `server_time`; the manifest saves `leaseTtlMs` as `lease_expires_at - server_time`, `leaseTtlSource: "server"`, and `leaseConfirmedAtLocal`. Retry deadlines and tolerance subtract only local elapsed time from that TTL, so a runner clock offset cannot extend or shorten the lease. Older Workers without `server_time` use the local clock at confirmation and mark `leaseTtlSource: "local"`; tolerance is forbidden once that confirmation is older than one safety margin. Manifests without confirmation metadata require a successful heartbeat before tolerance is available. Each pre-loop heartbeat stays strict to establish live ownership, and 4xx/fence rejections remain fatal. The public projection and OpenClaw Bay are unchanged.
 
-Post-effect enqueue, router-receipt, and terminal-disposition POSTs are
-deliberately one-shot until Worker replay ordering is repaired. An ambiguous
-failure ends the publication run so scheduled recovery can replay it without an
-in-process retry arriving after newer queue state.
+Batch post-effect router-receipt and terminal-disposition POSTs retry transient
+transport failures up to three times within 45 seconds, preserving the signed
+bytes and stable operation identity. Durable Worker replay handling preserves
+newer requeues. Publication enqueue remains one-shot. Other client callers,
+including operator retirement, retain the single-attempt default.
+Legacy lifecycle payloads without their route's replay identity also remain one-shot.
 
 Lifecycle receipt replays are no-ops for the whole operation, including terminal
 transitions and acknowledgement drivers. Terminal-disposition requests from the
