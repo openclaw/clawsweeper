@@ -1850,6 +1850,7 @@ function maintainerAutomergeOptInApprovesNeedsHuman(command: LooseRecord) {
 }
 
 function approvedMissingProofNeedsHuman(command: LooseRecord, target: LooseRecord) {
+  if (command.trusted_bot === true) return null;
   const comments = cachedIssueComments(command.issue_number);
   const trusted = comments
     .map((comment: JsonValue) => {
@@ -4397,7 +4398,11 @@ function validateAutomergeReadiness({ command, view, target, comments }: LooseRe
 }
 
 function authoritativeMaintainerHumanApprovalTime(command: LooseRecord) {
-  if (command.intent === "maintainer_approve_automerge") {
+  if (
+    command.trusted_bot !== true &&
+    (command.intent === "maintainer_approve_automerge" ||
+      command.validated_maintainer_human_approval === true)
+  ) {
     return command.comment_updated_at ?? command.comment_created_at ?? 0;
   }
   return latestAutomergeResumeAt(command);

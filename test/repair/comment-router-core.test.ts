@@ -3196,6 +3196,31 @@ test("canonical landing needs-human accepts waiting automerge opt-in as active r
   );
 });
 
+test("bot label sweeps cannot authorize a needs-human proof override", () => {
+  const command = { repo: "openclaw/openclaw", issue_number: 42 };
+  for (const status of ["executed", "waiting"]) {
+    const entry = {
+      ...command,
+      intent: "automerge",
+      status,
+      trusted_bot: true,
+      automation_source: "repair_loop_label_sweep",
+      comment_updated_at: "2026-09-10T12:00:00Z",
+    };
+    const optInTime = latestRepairLoopResumeTime([entry], command);
+    assert.equal(optInTime, 0);
+    assert.equal(
+      maintainerAutomergeOptInApprovesNeedsHuman({
+        reason: "No repair lane is needed, but missing proof needs maintainer handling.",
+        commentCreatedAt: "2026-09-10T12:01:00Z",
+        liveVerification: "absent",
+        optInTime,
+      }),
+      false,
+    );
+  }
+});
+
 test("canonical landing needs-human keeps an exact-head maintainer approval active", () => {
   const headSha = "0123456789abcdef0123456789abcdef01234567";
   const command = {
