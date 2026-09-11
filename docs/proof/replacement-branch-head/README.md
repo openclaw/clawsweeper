@@ -16,14 +16,17 @@ node --test test/repair/replacement-branch-head.test.ts
 node docs/proof/replacement-branch-head/run-proof.mjs 6bc31fc32aee440a3a2ae2a75431df508ef6c563
 ```
 
-The proof creates real local Git origins and clones. The origin advances after
-clone, and the clone fetches the new base while retaining its old HEAD. It
+The proof creates real local Git origins and full/blobless clones. The origin advances after
+clone, and the isolated network owner fetches the new base while retaining the old HEAD. The blobless fixture verifies that its new blob is missing before recovery. It
 executes the actual executor control-flow function taken from the built artifact
 with the real isolated Git materialization and branch-switch owners. Only
 remote PR/branch discovery is replaced with the already-established fresh-branch
 result; no model or GitHub publication is executed.
 
-The baseline reproduces the exact head-mismatch error. The candidate attaches
+The baseline reproduces the exact head-mismatch error. The candidate hydrates a
+single pinned snapshot through a depth-one unfiltered refetch in the trusted
+network owner; ordinary fetches retain their existing partial-clone filter.
+Checkout keeps lazy fetching and network protocols disabled. The candidate attaches
 the replacement branch to the fetched base with matching clean contents. Dirty
 source remains untouched and rejected, and an injected head change between
 materialization and attachment still trips the original guard. The receipt

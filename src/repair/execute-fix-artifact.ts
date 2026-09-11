@@ -3605,6 +3605,19 @@ function checkoutRecoverableReplacementBranch({
   const fetchedBaseSha = run("git", ["rev-parse", `origin/${baseBranch}`], {
     cwd: targetDir,
   }).trim();
+  // Hydrate one pinned tree here; isolated checkout cannot perform lazy fetches.
+  runGitNetwork(
+    [
+      "fetch",
+      "--no-tags",
+      "--refetch",
+      "--no-filter",
+      "--depth=1",
+      `https://github.com/${result.repo}.git`,
+      `+${fetchedBaseSha}:refs/remotes/origin/${baseBranch}`,
+    ],
+    targetDir,
+  );
   materializeTargetCommitWithIsolation({
     cwd: targetDir,
     expectedHeadSha: fetchedBaseSha,
