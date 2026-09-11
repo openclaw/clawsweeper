@@ -949,6 +949,10 @@ export class ExactReviewQueue {
   >();
 
   constructor(state, env, random: () => number = Math.random) {
+    console.warn("exact_review_queue_initialization", {
+      phase: "constructor",
+      observed_at: Date.now(),
+    });
     this.state = state;
     this.storage = state.storage;
     this.env = env;
@@ -10869,6 +10873,10 @@ export class ExactReviewQueue {
   }
 
   private async initializeStorage() {
+    console.warn("exact_review_queue_initialization", {
+      phase: "storage_begin",
+      observed_at: Date.now(),
+    });
     this.ensureStorageSchemaSync();
     this.commandIntakeStore.ensureSchemaSync();
     this.commandProofStore.ensureSchemaSync();
@@ -10882,6 +10890,10 @@ export class ExactReviewQueue {
     this.githubEgressTelemetryStore.ensureSchemaSync();
     this.artifactReceiptStore.ensureSchemaSync();
     this.githubWebhookReadModelStore.ensureSchemaSync();
+    console.warn("exact_review_queue_initialization", {
+      phase: "schema_ready",
+      observed_at: Date.now(),
+    });
     let meta = this.readStorageMetaSync();
     let migratedLegacy = false;
     const legacy = this.storage.kv.get(EXACT_REVIEW_QUEUE_STATE_KEY) as
@@ -10958,6 +10970,10 @@ export class ExactReviewQueue {
     }
     this.storage.transactionSync(() => {
       this.backfillPublicationHeadsSync(this.readStateSync(), Date.now());
+    });
+    console.warn("exact_review_queue_initialization", {
+      phase: "storage_ready",
+      observed_at: Date.now(),
     });
   }
 
