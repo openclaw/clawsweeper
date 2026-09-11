@@ -21,7 +21,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
-- Start fresh replacement repairs from the fetched base when the target branch advances during startup, retaining dirty-checkout and concurrent-head safeguards.
+- Fetch and materialize the pinned commit before creating or resuming replacement repair branches, preserving dirty-checkout and concurrent-head safeguards.
 - Keep dashboard publication counts and time windows through refresh and cached reload, preserving explicit zeroes and incomplete data; thanks @vincentkoc.
 - Preserve PR versus issue identity and retained source provenance in failed-shard recovery; thanks @yetval.
 - Extend strict TypeScript checks over review-failure telemetry and source/storage helpers without changing their runtime behavior.
