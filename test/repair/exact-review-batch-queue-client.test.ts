@@ -151,12 +151,52 @@ test("undispatched claim and completion remain single-attempt", async (t) => {
   assert.deepEqual(logs, []);
 });
 
-test("post-effect HTTP 500 is attempted once", async (t) => {
+test("publication enqueue HTTP 500 is attempted once", async (t) => {
   const { client, calls, logs } = fixture(t, () => unavailable());
-  await assert.rejects(client.postEffect("router-receipt", payload), /HTTP 500/);
+  await assert.rejects(client.postEffect("enqueue", payload), /HTTP 500/);
   assert.equal(calls.length, 1);
   assert.deepEqual(logs, []);
 });
+
+for (const route of ["router-receipt", "terminal-disposition"] as const) {
+  test(`${route} retries transient failures with byte-identical signed operations`, async (t) => {
+    const { client, calls } = fixture(t, (attempt) => {
+      if (attempt === 1) return unavailable();
+      if (attempt === 2) throw new TypeError("lost response");
+      return Response.json({ ok: true });
+    });
+    const result = client.postEffect(route, payload);
+    await flush();
+    t.mock.timers.tick(1_000);
+    await flush();
+    t.mock.timers.tick(2_000);
+    assert.deepEqual(await result, { ok: true });
+    assert.equal(calls.length, 3);
+    assert.ok(calls.every((call) => call.body === payload));
+    assert.ok(calls.every((call) => call.url.endsWith(`/lifecycle/${route}`)));
+    for (const call of calls) assert.deepEqual(call.headers, calls[0].headers);
+  });
+
+  test(`${route} stops after three unavailable responses`, async (t) => {
+    const { client, calls } = fixture(t, () => unavailable());
+    const result = assert.rejects(client.postEffect(route, payload), /HTTP 500/);
+    await flush();
+    t.mock.timers.tick(1_000);
+    await flush();
+    t.mock.timers.tick(2_000);
+    await result;
+    assert.equal(calls.length, 3);
+  });
+
+  for (const status of [401, 409, 429]) {
+    test(`${route} never retries HTTP ${status}`, async (t) => {
+      const { client, calls, logs } = fixture(t, () => new Response(null, { status }));
+      await assert.rejects(client.postEffect(route, payload), new RegExp(`HTTP ${status}`));
+      assert.equal(calls.length, 1);
+      assert.deepEqual(logs, []);
+    });
+  }
+}
 
 test("post-effect network failure is attempted once", async (t) => {
   const { client, calls, logs } = fixture(t, () => {

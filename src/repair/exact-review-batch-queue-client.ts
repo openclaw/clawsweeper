@@ -318,7 +318,14 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
   async postEffect(route: ExactReviewBatchPostEffectRoute, payload: string) {
     if (!Object.hasOwn(POST_EFFECT_ROUTES, route))
       throw new Error("Invalid batch post-effect route");
-    return this.postUrl(POST_EFFECT_ROUTES[route], payload);
+    // These lifecycle routes persist replay identity and preserve newer requeues.
+    // Publication enqueue still has no equivalent replay contract.
+    const retryable = route === "router-receipt" || route === "terminal-disposition";
+    return this.postUrl(
+      POST_EFFECT_ROUTES[route],
+      payload,
+      retryable ? Date.now() + RETRY_DEADLINE_MS : undefined,
+    );
   }
 
   async enqueueScheduledReview(payload: string) {
