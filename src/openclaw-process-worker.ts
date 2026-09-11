@@ -43,6 +43,7 @@ const child = spawn(invocation.command, invocation.args, {
 });
 let spawnError: Error | undefined;
 let timeoutError: Error | undefined;
+let terminating = false;
 let forceKillTimer: NodeJS.Timeout | undefined;
 const timeout = setTimeout(() => {
   timeoutError = new Error(`OpenClaw process timed out after ${options.timeoutMs}ms`);
@@ -56,7 +57,12 @@ child.once("error", (error) => {
   spawnError = error;
 });
 child.once("close", (status, signal) => {
-  if (forceKillTimer) clearTimeout(forceKillTimer);
+  if (forceKillTimer) {
+    clearTimeout(forceKillTimer);
+    // The direct child is gone, but detached descendants in its process group may
+    // still be running; finish the escalation before this worker exits.
+    signalProcessGroup(child, "SIGKILL");
+  }
   clearTimeout(timeout);
   closeCodexOutputCapture(stdout);
   closeCodexOutputCapture(stderr);
@@ -76,7 +82,21 @@ child.once("close", (status, signal) => {
   process.exit(0);
 });
 
-function terminateProcessTree(childProcess: ChildProcess): NodeJS.Timeout | undefined {
+// The OpenClaw child runs in its own process group, so a signal that stops this
+// worker never reaches it. Forward the stop to the whole tree, as the Codex worker
+// does, instead of leaving the CLI running after the worker is gone.
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+  process.on(signal, () => {
+    if (terminating) return;
+    terminating = true;
+    forceKillTimer = terminateProcessTree(child, signal);
+  });
+}
+
+function terminateProcessTree(
+  childProcess: ChildProcess,
+  signal: NodeJS.Signals = "SIGTERM",
+): NodeJS.Timeout | undefined {
   if (process.platform === "win32") {
     if (childProcess.pid) {
       spawnSync(
@@ -87,7 +107,7 @@ function terminateProcessTree(childProcess: ChildProcess): NodeJS.Timeout | unde
     }
     return undefined;
   }
-  signalProcessGroup(childProcess, "SIGTERM");
+  signalProcessGroup(childProcess, signal);
   const timer = setTimeout(() => signalProcessGroup(childProcess, "SIGKILL"), 1_000);
   timer.unref();
   return timer;
