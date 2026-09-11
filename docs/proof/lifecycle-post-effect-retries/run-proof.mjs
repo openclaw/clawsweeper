@@ -158,8 +158,15 @@ try {
             : { kind: "policy_noop", operation_id: `operation:${identity.fenceKey}` }),
         });
         if (arm === "baseline")
-          await assert.rejects(client.postEffect(route, payload), /HTTP 500|network_error/);
-        else assert.equal((await client.postEffect(route, payload)).ok, true);
+          await assert.rejects(
+            client.postEffect(route, payload, { retryLifecycle: true }),
+            /HTTP 500|network_error/,
+          );
+        else
+          assert.equal(
+            (await client.postEffect(route, payload, { retryLifecycle: true })).ok,
+            true,
+          );
         assert.equal(active.error, undefined);
         assert.equal(active.calls.length, arm === "baseline" ? 1 : 2);
         for (const request of active.calls) {

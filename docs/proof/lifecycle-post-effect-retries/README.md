@@ -4,7 +4,8 @@ Claim: the compiled batch client recovers transient failures for router receipts
 and terminal dispositions with byte-identical signed requests. The real Worker
 and SQLite-backed queue deduplicate a committed operation after its response is
 lost, including when a newer requeue arrives before the retry. Publication
-enqueue remains single-attempt.
+enqueue remains single-attempt. The batch CLI opts into lifecycle retries;
+other callers, including operator retirement, keep the single-attempt default.
 
 Run on Node 24+ after `pnpm run build:node`:
 

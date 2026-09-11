@@ -159,13 +159,20 @@ test("publication enqueue HTTP 500 is attempted once", async (t) => {
 });
 
 for (const route of ["router-receipt", "terminal-disposition"] as const) {
+  test(`${route} retains single-attempt behavior without batch retry opt-in`, async (t) => {
+    const { client, calls, logs } = fixture(t, () => unavailable());
+    await assert.rejects(client.postEffect(route, payload), /HTTP 500/);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(logs, []);
+  });
+
   test(`${route} retries transient failures with byte-identical signed operations`, async (t) => {
     const { client, calls } = fixture(t, (attempt) => {
       if (attempt === 1) return unavailable();
       if (attempt === 2) throw new TypeError("lost response");
       return Response.json({ ok: true });
     });
-    const result = client.postEffect(route, payload);
+    const result = client.postEffect(route, payload, { retryLifecycle: true });
     await flush();
     t.mock.timers.tick(1_000);
     await flush();
@@ -179,7 +186,10 @@ for (const route of ["router-receipt", "terminal-disposition"] as const) {
 
   test(`${route} stops after three unavailable responses`, async (t) => {
     const { client, calls } = fixture(t, () => unavailable());
-    const result = assert.rejects(client.postEffect(route, payload), /HTTP 500/);
+    const result = assert.rejects(
+      client.postEffect(route, payload, { retryLifecycle: true }),
+      /HTTP 500/,
+    );
     await flush();
     t.mock.timers.tick(1_000);
     await flush();
@@ -191,7 +201,10 @@ for (const route of ["router-receipt", "terminal-disposition"] as const) {
   for (const status of [401, 409, 429]) {
     test(`${route} never retries HTTP ${status}`, async (t) => {
       const { client, calls, logs } = fixture(t, () => new Response(null, { status }));
-      await assert.rejects(client.postEffect(route, payload), new RegExp(`HTTP ${status}`));
+      await assert.rejects(
+        client.postEffect(route, payload, { retryLifecycle: true }),
+        new RegExp(`HTTP ${status}`),
+      );
       assert.equal(calls.length, 1);
       assert.deepEqual(logs, []);
     });
