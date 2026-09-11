@@ -1,7 +1,7 @@
 # Fresh replacement branch proof
 
 Status: active validation recipe. Owner: repair execution and target Git plumbing.
-Source: `checkoutRecoverableReplacementBranch` in the repair executor and the
+Source: `checkoutRecoverableReplacementBranch` and its shared hydration helper in the repair executor and the
 existing target materialization/branch-switch helpers. Update when their
 head, clean-checkout or branch-attachment contracts change.
 
@@ -26,7 +26,9 @@ result; no model or GitHub publication is executed.
 The baseline reproduces the exact head-mismatch error. The candidate hydrates a
 single pinned snapshot through a depth-one unfiltered refetch in the trusted
 network owner; ordinary fetches retain their existing partial-clone filter.
-Checkout keeps lazy fetching and network protocols disabled. The candidate attaches
+Checkout keeps lazy fetching and network protocols disabled. Both a fresh base
+and a recovered checkpoint are covered; the checkpoint's verified remote lease
+remains unchanged. The candidate attaches
 the replacement branch to the fetched base with matching clean contents. Dirty
 source remains untouched and rejected, and an injected head change between
 materialization and attachment still trips the original guard. The receipt

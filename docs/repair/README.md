@@ -164,8 +164,8 @@ remain rejected.
 
 Replacement fix work uses a recoverable target branch named `clawsweeper/<cluster-id>`. The executor resumes that branch if it already exists and pushes checkpoint commits after agent edits and review-fix edits, adding `Co-authored-by` trailers for non-bot source PR authors when a contributor PR is replaced. It then opens or updates the PR only after validation and internal review/fix handling. If validation or Codex itself still blocks after retries, the run writes a blocked fix report and leaves the checkpoint branch recoverable instead of losing the patch.
 
-For a fresh replacement, the executor hydrates the pinned base tree through the
-isolated network owner, then materializes it before attaching the branch:
+For a fresh or resumed replacement, the executor hydrates the pinned base or
+checkpoint tree through the isolated network owner, then materializes it before attaching the branch:
 fetch can advance the remote ref without moving
 the clone's HEAD. Dirty checkouts and concurrent head changes still fail closed.
 Ordinary fetches remain blobless; offline materialization never enables lazy network fetches.

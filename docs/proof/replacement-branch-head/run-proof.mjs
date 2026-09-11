@@ -17,7 +17,7 @@ const sourcePath = "src/repair/execute-fix-artifact.ts";
 const env = () => ({ ...process.env, GIT_CONFIG_NOSYSTEM: "1" });
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, env: env(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 
-function checkoutFunction(text, materialize = materializeTargetCommitWithIsolation, network) {
+function checkoutFunction(text, materialize = materializeTargetCommitWithIsolation, network, remoteLease = "") {
   const start = text.indexOf("function checkoutRecoverableReplacementBranch(");
   const end = text.indexOf("function commitCheckpointIfNeeded(", start);
   assert.ok(start >= 0 && end > start);
@@ -25,7 +25,7 @@ function checkoutFunction(text, materialize = materializeTargetCommitWithIsolati
   // Execute the production control flow with real Git owners; only remote-PR discovery is absent.
   return new Function("run", "materializeTargetCommitWithIsolation", "switchTargetBranchWithPlumbing", "shouldSeedReplacementBranchFromSource", "trustedRemoteBranchSha", "result", "targetValidationTimeoutMs", "runGitNetwork", `${code}; return checkoutRecoverableReplacementBranch;`)(
     (command, args, options) => { assert.equal(command, "git"); return git(options.cwd, ...args); },
-    materialize, switchTargetBranchWithPlumbing, () => false, () => "", { repo: "openclaw/clawsweeper" }, 30000, network,
+    materialize, switchTargetBranchWithPlumbing, () => false, () => remoteLease, { repo: "openclaw/clawsweeper" }, 30000, network,
   );
 }
 
@@ -59,7 +59,7 @@ function fixture(parent, name, filtered = false) {
     const blob = git(writer, "rev-parse", `${fetchedHead}:source.txt`);
     assert.throws(() => execFileSync("git", ["-c", "protocol.allow=never", "cat-file", "-e", blob], { cwd: target, env: {...env(), GIT_NO_LAZY_FETCH: "1"}, stdio: "pipe" }));
   }
-  return { target, oldHead, fetchedHead, network };
+  return { target, oldHead, fetchedHead, network, origin };
 }
 
 export function runReplacementBranchProof(base) {
@@ -95,6 +95,14 @@ export function runReplacementBranchProof(base) {
     assert.equal(readFileSync(join(filtered.target, "source.txt"), "utf8"), "base B\n");
     assert.equal(git(filtered.target, "status", "--porcelain"), "");
     observations.filtered = "hydrated the missing pinned-tree blob through isolated network fetch before offline checkout";
+    const recovered = fixture(scratch, "recovered", true);
+    git(scratch, "--git-dir", recovered.origin, "update-ref", `refs/heads/${branch}`, recovered.fetchedHead);
+    const resumed = checkoutFunction(candidate, undefined, recovered.network, recovered.fetchedHead)(options(recovered.target));
+    assert.equal(resumed.resumed, true);
+    assert.equal(resumed.remote_lease_sha, recovered.fetchedHead);
+    assert.equal(git(recovered.target, "rev-parse", "HEAD"), recovered.fetchedHead);
+    assert.equal(readFileSync(join(recovered.target, "source.txt"), "utf8"), "base B\n");
+    observations.recovered = "hydrated a missing checkpoint blob without changing the verified remote lease";
     const dirty = fixture(scratch, "dirty");
     writeFileSync(join(dirty.target, "source.txt"), "uncommitted work\n");
     assert.throws(() => checkoutFunction(candidate, undefined, dirty.network)(options(dirty.target)), /cannot materialize target commit over a changed checkout/);

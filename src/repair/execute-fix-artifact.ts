@@ -3553,10 +3553,10 @@ function checkoutRecoverableReplacementBranch({
         `recoverable branch ${branch} changed between API lease and fetch: expected ${remoteLeaseSha}, fetched ${recoveredHeadSha}`,
       );
     }
-    materializeTargetCommitWithIsolation({
-      cwd: targetDir,
-      expectedHeadSha: recoveredHeadSha,
-      timeoutMs: targetValidationTimeoutMs,
+    materializeFetchedReplacementCommit({
+      targetDir,
+      sourceSha: recoveredHeadSha,
+      remoteRef: `refs/remotes/origin/${branch}`,
     });
     switchTargetBranchWithPlumbing({
       cwd: targetDir,
@@ -3605,6 +3605,29 @@ function checkoutRecoverableReplacementBranch({
   const fetchedBaseSha = run("git", ["rev-parse", `origin/${baseBranch}`], {
     cwd: targetDir,
   }).trim();
+  materializeFetchedReplacementCommit({
+    targetDir,
+    sourceSha: fetchedBaseSha,
+    remoteRef: `refs/remotes/origin/${baseBranch}`,
+  });
+  switchTargetBranchWithPlumbing({
+    cwd: targetDir,
+    branch,
+    expectedHeadSha: fetchedBaseSha,
+    timeoutMs: targetValidationTimeoutMs,
+  });
+  return { resumed: false, remote_lease_sha: remoteLeaseSha };
+}
+
+function materializeFetchedReplacementCommit({
+  targetDir,
+  sourceSha,
+  remoteRef,
+}: {
+  targetDir: string;
+  sourceSha: string;
+  remoteRef: string;
+}) {
   // Hydrate one pinned tree here; isolated checkout cannot perform lazy fetches.
   runGitNetwork(
     [
@@ -3614,22 +3637,15 @@ function checkoutRecoverableReplacementBranch({
       "--no-filter",
       "--depth=1",
       `https://github.com/${result.repo}.git`,
-      `+${fetchedBaseSha}:refs/remotes/origin/${baseBranch}`,
+      `+${sourceSha}:${remoteRef}`,
     ],
     targetDir,
   );
   materializeTargetCommitWithIsolation({
     cwd: targetDir,
-    expectedHeadSha: fetchedBaseSha,
+    expectedHeadSha: sourceSha,
     timeoutMs: targetValidationTimeoutMs,
   });
-  switchTargetBranchWithPlumbing({
-    cwd: targetDir,
-    branch,
-    expectedHeadSha: fetchedBaseSha,
-    timeoutMs: targetValidationTimeoutMs,
-  });
-  return { resumed: false, remote_lease_sha: remoteLeaseSha };
 }
 
 function commitCheckpointIfNeeded({ targetDir, message, trailers = [] }: LooseRecord) {

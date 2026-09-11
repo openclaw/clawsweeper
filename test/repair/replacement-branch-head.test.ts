@@ -4,5 +4,5 @@ import { runReplacementBranchProof } from "../../docs/proof/replacement-branch-h
 
 test("fresh replacement branches materialize fetched heads and retain checkout guards", () => {
   const result = runReplacementBranchProof();
-  assert.equal(Object.keys(result.observations).length, 4);
+  assert.equal(Object.keys(result.observations).length, 5);
 });
