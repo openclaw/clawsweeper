@@ -21,6 +21,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Refresh Node 24 type definitions, the Oxc lint/format toolchain, and immutable checkout pins to v7.0.1 while retaining the 48-hour release-age policy and Node 24 minimum.
+
 - Isolate the GitHub ETag cache in repository-sharded Durable Objects so cache reads and writes no longer compete with exact-review admission, claims, or webhooks.
 
 - Refresh durable review freshness after unchanged exact-head re-reviews while preserving idempotent publication retries, and record bounded activity-cursor diagnostics for drift-blocked publication.
@@ -140,6 +142,11 @@ checkpoint, and status-only commits are intentionally omitted.
 - Generated live-proof plans now receive the effective cold-checkout setup contract and guidance to supply missing build or code-generation prerequisites before dependent commands.
 
 ### Fixed
+
+- Keep quoted rating-list labels and evidence/owner fields from replacing structured rank-up moves, evidence links, or attribution when durable reports are parsed again; thanks @Yigtwxx.
+- Stop the OpenClaw child process group when its worker is interrupted, including signal-ignoring descendants; thanks @Yigtwxx.
+- Retry replay-safe lifecycle receipts and terminal dispositions after transient queue failures while preserving newer requeues and leaving publication enqueue single-attempt.
+- Restore scheduled cluster intake after the snapshot materializer update by refreshing its reviewed digest and verifying bounded expansion before import.
 
 - Retry the pinned control-plane helper download on TLS and connection errors so a single handshake failure no longer drops an exact-review event before enqueue.
 - Keep large repository reviews within the GitHub CLI response limit by projecting recursive-tree metadata before capture, preserving complete blob sizes and strict private-checkout admission.
