@@ -944,6 +944,7 @@ export class ExactReviewQueue {
   private scheduledAlarmDecision: AlarmScheduleDecision | null = null;
   private alarmScheduleLoggedAt = 0;
   private alarmInFlightAt: number | null = null;
+  private alarmTask: Promise<void> | null = null;
   private overdueAlarmRecoveryAttempted = false;
   private alarmInFlightPhase:
     | "startup"
@@ -5101,18 +5102,21 @@ export class ExactReviewQueue {
     }
   }
 
-  async alarm() {
+  alarm(): Promise<void> {
+    // Native delivery can race a request-driven recovery. Both must join the
+    // same operation, including its failure, rather than dispatching twice.
+    if (this.alarmTask) return this.alarmTask;
     this.overdueAlarmRecoveryAttempted = false;
     this.alarmInFlightAt = Date.now();
     this.alarmInFlightPhase = "startup";
     this.invalidateReadCaches();
-    try {
-      await this.handleAlarm();
-    } finally {
+    this.alarmTask = this.handleAlarm().finally(() => {
+      this.alarmTask = null;
       this.alarmInFlightAt = null;
       this.alarmInFlightPhase = null;
       this.invalidateReadCaches();
-    }
+    });
+    return this.alarmTask;
   }
 
   private async handleAlarm() {
@@ -14278,6 +14282,22 @@ export class ExactReviewQueue {
         bayTelemetryRecoveryPending,
         (this.bayTelemetryNoProgressDeadline ?? 0) > now,
       ];
+      if (recoverStrandedAlarm && typeof this.state.waitUntil === "function") {
+        // Alarm delivery may itself be unavailable. Use the same processor and
+        // its admission checks, without holding the incoming request open.
+        // waitUntil expresses background ownership, not a retry guarantee.
+        this.state.waitUntil(
+          this.alarm().catch(async () => {
+            console.error("exact_review_queue_recovery_processor_failed");
+            const pending = await this.storage.getAlarm();
+            const failedAt = Date.now();
+            const retryAt = failedAt + 60_000;
+            if (pending === null || pending <= failedAt || retryAt < pending) {
+              await this.storage.setAlarm(retryAt);
+            }
+          }),
+        );
+      }
     }
   }
 }
