@@ -942,27 +942,15 @@ export class ExactReviewQueue {
   private alarmSampleCount = 0;
   private alarmSampleLoggedAt = -1;
   private scheduledAlarmDecision: AlarmScheduleDecision | null = null;
-  private alarmScheduleLoggedAt = 0;
   private alarmInFlightAt: number | null = null;
   private alarmTask: Promise<void> | null = null;
   private overdueAlarmRecoveryAttempted = false;
-  private alarmInFlightPhase:
-    | "startup"
-    | "branch_authority"
-    | "source_authority"
-    | "command_intake"
-    | "dispatch"
-    | null = null;
   private recentDurablePublicationEventsCache = new Map<
     string,
     { expiresAt: number; value: NonNullable<ReturnType<typeof recentDurablePublicationEvents>> }
   >();
 
   constructor(state, env, random: () => number = Math.random) {
-    console.info("exact_review_queue_initialization", {
-      phase: "constructor",
-      observed_at: Date.now(),
-    });
     this.state = state;
     this.storage = state.storage;
     this.env = env;
@@ -5108,12 +5096,10 @@ export class ExactReviewQueue {
     if (this.alarmTask) return this.alarmTask;
     this.overdueAlarmRecoveryAttempted = false;
     this.alarmInFlightAt = Date.now();
-    this.alarmInFlightPhase = "startup";
     this.invalidateReadCaches();
     this.alarmTask = this.handleAlarm().finally(() => {
       this.alarmTask = null;
       this.alarmInFlightAt = null;
-      this.alarmInFlightPhase = null;
       this.invalidateReadCaches();
     });
     return this.alarmTask;
@@ -5147,13 +5133,9 @@ export class ExactReviewQueue {
     await this.storage.deleteAlarm();
     this.scheduledAlarmDecision = null;
     this.reconcileBayTelemetryInternalSync(startedAt);
-    this.alarmInFlightPhase = "branch_authority";
     await this.processBranchAuthorityReservations(startedAt, hostedTargetMetadataToken);
-    this.alarmInFlightPhase = "source_authority";
     await this.processSourceAuthorityReservations(startedAt, hostedTargetMetadataToken);
-    this.alarmInFlightPhase = "command_intake";
     await this.processCommandIntakes(startedAt, hostedTargetMetadataToken);
-    this.alarmInFlightPhase = "dispatch";
     const batchItemKeys = new Set<string>(this.batchStore.activeLeaseSnapshot(startedAt).itemKeys);
     let terminalized: ExactReviewLifecycleProjection[] = [];
     let snapshot = this.storage.transactionSync(() => {
@@ -10895,10 +10877,6 @@ export class ExactReviewQueue {
   }
 
   private async initializeStorage() {
-    console.info("exact_review_queue_initialization", {
-      phase: "storage_begin",
-      observed_at: Date.now(),
-    });
     this.ensureStorageSchemaSync();
     this.commandIntakeStore.ensureSchemaSync();
     this.commandProofStore.ensureSchemaSync();
@@ -10912,10 +10890,6 @@ export class ExactReviewQueue {
     this.githubEgressTelemetryStore.ensureSchemaSync();
     this.artifactReceiptStore.ensureSchemaSync();
     this.githubWebhookReadModelStore.ensureSchemaSync();
-    console.info("exact_review_queue_initialization", {
-      phase: "schema_ready",
-      observed_at: Date.now(),
-    });
     let meta = this.readStorageMetaSync();
     let migratedLegacy = false;
     const legacy = this.storage.kv.get(EXACT_REVIEW_QUEUE_STATE_KEY) as
@@ -10992,10 +10966,6 @@ export class ExactReviewQueue {
     }
     this.storage.transactionSync(() => {
       this.backfillPublicationHeadsSync(this.readStateSync(), Date.now());
-    });
-    console.info("exact_review_queue_initialization", {
-      phase: "storage_ready",
-      observed_at: Date.now(),
     });
   }
 
@@ -14230,22 +14200,6 @@ export class ExactReviewQueue {
     const scheduled = await this.storage.getAlarm();
     const schedulingNow = Date.now();
     const next = Math.max(schedulingNow + 1_000, selected[1]!);
-    // Bounded numeric-only diagnostics distinguish a missing alarm from a
-    // repeatedly replaced overdue alarm without exposing queue contents.
-    if (Date.now() - this.alarmScheduleLoggedAt >= 60_000) {
-      this.alarmScheduleLoggedAt = Date.now();
-      console.info("exact_review_queue_alarm_schedule_status", {
-        observed_at: this.alarmScheduleLoggedAt,
-        stored_alarm_at: scheduled,
-        alarm_in_flight_at: this.alarmInFlightAt,
-        alarm_in_flight_phase: this.alarmInFlightPhase,
-        selected_alarm_at: next,
-        wake_reason: selected[0],
-        decision_age_ms: this.scheduledAlarmDecision
-          ? Math.max(0, this.alarmScheduleLoggedAt - this.scheduledAlarmDecision[2])
-          : null,
-      });
-    }
     if (
       preserveQueueWake &&
       (scheduled === null || scheduled <= schedulingNow || scheduled > preservedWakeAt)
@@ -14269,7 +14223,7 @@ export class ExactReviewQueue {
       if (recoverStrandedAlarm) this.overdueAlarmRecoveryAttempted = true;
       await this.storage.setAlarm(next);
       if (recoverStrandedAlarm) {
-        console.info("exact_review_queue_stranded_alarm_rearmed", {
+        console.warn("exact_review_queue_stranded_alarm_rearmed", {
           observed_at: schedulingNow,
           previous_alarm_at: scheduled,
           new_alarm_at: next,
