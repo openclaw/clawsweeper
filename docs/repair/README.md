@@ -170,10 +170,12 @@ Target dependency metadata may retain npm's positive `min-release-age` and
 package-name `min-release-age-exclude[]` settings. Registry overrides and other
 active package-manager configuration remain rejected; every YAML lockfile
 document is checked against the approved destinations. OpenClaw changed-gate
-validation restores `.cache/vitest`, `node_modules/.cache`, and
-`node_modules/.vite` after success or failure. Neighboring ignored inputs remain
-protected. A pending runtime build also retains its bound output until archive
-smoke completes; cache restoration does not exempt that output from verification.
+validation restores `.cache/vitest`, `node_modules/.cache`, `node_modules/.vite`,
+and `node_modules/.vite-temp` after success or failure. Cache and disposable-output
+copies preserve file and directory permissions, including cross-device
+compiler-cache moves. Neighboring ignored inputs remain protected. A pending
+runtime build retains its bound output until archive smoke completes; cache
+restoration does not exempt that output from verification.
 
 If Codex itself fails an edit pass with a transient tool-transport error, such
 as a closed stdin session from the Codex tool router, the executor consumes an

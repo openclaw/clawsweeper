@@ -10,11 +10,12 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   truncateSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { devNull, tmpdir } from "node:os";
 import { syncBuiltinESMExports } from "node:module";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -522,16 +523,61 @@ test("repair admission includes staged bytes when working bytes were restored", 
 
 function useGitConfigHome(t: test.TestContext, root: string) {
   const home = join(root, "home");
-  mkdirSync(home);
-  const previous = new Map(["HOME", "XDG_CONFIG_HOME"].map((key) => [key, process.env[key]]));
-  for (const key of previous.keys()) process.env[key] = home;
+  const globalConfig = join(home, ".gitconfig");
+  const previous = new Map(
+    ["HOME", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL"].map((key) => [key, process.env[key]]),
+  );
   t.after(() => {
     for (const [key, original] of previous) {
       if (original === undefined) delete process.env[key];
       else process.env[key] = original;
     }
   });
+  mkdirSync(home);
+  writeFileSync(globalConfig, "", { mode: 0o600 });
+  process.env.HOME = home;
+  process.env.XDG_CONFIG_HOME = home;
+  // GIT_CONFIG_GLOBAL overrides HOME, including a host's read-only /dev/null binding.
+  process.env.GIT_CONFIG_GLOBAL = globalConfig;
 }
+
+test("Git config fixtures restore unset, empty, and disabled global bindings", async (t) => {
+  const previous = process.env.GIT_CONFIG_GLOBAL;
+  t.after(() => {
+    if (previous === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+    else process.env.GIT_CONFIG_GLOBAL = previous;
+  });
+  for (const original of [undefined, "", devNull]) {
+    if (original === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+    else process.env.GIT_CONFIG_GLOBAL = original;
+    const home = process.env.HOME;
+    const xdgConfigHome = process.env.XDG_CONFIG_HOME;
+    await t.test(original === undefined ? "unset" : original === "" ? "empty" : "disabled", (t) => {
+      const root = mkdtempSync(join(tmpdir(), "clawsweeper-git-config-test-"));
+      t.after(() => rmSync(root, { recursive: true, force: true }));
+      useGitConfigHome(t, root);
+      const config = join(root, "home", ".gitconfig");
+      assert.equal(process.env.HOME, join(root, "home"));
+      assert.equal(process.env.XDG_CONFIG_HOME, process.env.HOME);
+      assert.equal(process.env.GIT_CONFIG_GLOBAL, config);
+      assert.equal(readFileSync(config, "utf8"), "");
+      if (process.platform !== "win32") assert.equal(statSync(config).mode & 0o777, 0o600);
+      execFileSync("git", ["config", "--global", "fixture.scope", "private"], { cwd: root });
+      assert.equal(
+        execFileSync("git", ["config", "--global", "--get", "fixture.scope"], {
+          cwd: root,
+          encoding: "utf8",
+        }).trim(),
+        "private",
+      );
+      assert.match(readFileSync(config, "utf8"), /scope = private/);
+    });
+    assert.equal(process.env.GIT_CONFIG_GLOBAL, original);
+    assert.equal(Object.hasOwn(process.env, "GIT_CONFIG_GLOBAL"), original !== undefined);
+    assert.equal(process.env.HOME, home);
+    assert.equal(process.env.XDG_CONFIG_HOME, xdgConfigHome);
+  }
+});
 
 for (const { scope, value } of [
   { scope: "repository", value: "true" },
