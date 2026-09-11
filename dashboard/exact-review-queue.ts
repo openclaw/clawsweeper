@@ -943,6 +943,14 @@ export class ExactReviewQueue {
   private alarmSampleLoggedAt = -1;
   private scheduledAlarmDecision: AlarmScheduleDecision | null = null;
   private alarmScheduleLoggedAt = 0;
+  private alarmInFlightAt: number | null = null;
+  private alarmInFlightPhase:
+    | "startup"
+    | "branch_authority"
+    | "source_authority"
+    | "command_intake"
+    | "dispatch"
+    | null = null;
   private recentDurablePublicationEventsCache = new Map<
     string,
     { expiresAt: number; value: NonNullable<ReturnType<typeof recentDurablePublicationEvents>> }
@@ -5093,10 +5101,14 @@ export class ExactReviewQueue {
   }
 
   async alarm() {
+    this.alarmInFlightAt = Date.now();
+    this.alarmInFlightPhase = "startup";
     this.invalidateReadCaches();
     try {
       await this.handleAlarm();
     } finally {
+      this.alarmInFlightAt = null;
+      this.alarmInFlightPhase = null;
       this.invalidateReadCaches();
     }
   }
@@ -5129,9 +5141,13 @@ export class ExactReviewQueue {
     await this.storage.deleteAlarm();
     this.scheduledAlarmDecision = null;
     this.reconcileBayTelemetryInternalSync(startedAt);
+    this.alarmInFlightPhase = "branch_authority";
     await this.processBranchAuthorityReservations(startedAt, hostedTargetMetadataToken);
+    this.alarmInFlightPhase = "source_authority";
     await this.processSourceAuthorityReservations(startedAt, hostedTargetMetadataToken);
+    this.alarmInFlightPhase = "command_intake";
     await this.processCommandIntakes(startedAt, hostedTargetMetadataToken);
+    this.alarmInFlightPhase = "dispatch";
     const batchItemKeys = new Set<string>(this.batchStore.activeLeaseSnapshot(startedAt).itemKeys);
     let terminalized: ExactReviewLifecycleProjection[] = [];
     let snapshot = this.storage.transactionSync(() => {
@@ -14215,6 +14231,8 @@ export class ExactReviewQueue {
       console.info("exact_review_queue_alarm_schedule_status", {
         observed_at: this.alarmScheduleLoggedAt,
         stored_alarm_at: scheduled,
+        alarm_in_flight_at: this.alarmInFlightAt,
+        alarm_in_flight_phase: this.alarmInFlightPhase,
         selected_alarm_at: next,
         wake_reason: selected[0],
         decision_age_ms: this.scheduledAlarmDecision
