@@ -169,8 +169,16 @@ export function createReportHelpers(dependencies: CreateReportHelpersDependencie
           return `${containerPrefix}${content.replace("**", "\\*\\*")}`;
         }
         // "- body:", "- late:", and "- confidence:" list items are finding continuation
-        // lines where the last occurrence wins on re-parse; &#58; renders as a colon.
-        if (/-[ \t]+$/.test(containerPrefix) && /^(?:body|late|confidence):/.test(trimmed)) {
+        // lines where the last occurrence wins on re-parse; the evidence ("- repo:",
+        // "- file:", "- sha:", "- command:") and related-person ("- reason:",
+        // "- commits:", "- files:", "- attribution source:") continuation lines attach
+        // locations, commits, and commands the same way. &#58; renders as a colon.
+        if (
+          /-[ \t]+$/.test(containerPrefix) &&
+          /^(?:body|late|confidence|repo|file|sha|command|reason|commits|files|attribution source):/.test(
+            trimmed,
+          )
+        ) {
           return `${containerPrefix}${content.replace(":", "&#58;")}`;
         }
         if (/^(?:```|~~~)/.test(trimmed)) {
