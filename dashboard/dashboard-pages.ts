@@ -2210,7 +2210,7 @@ function dashboardStatusSnapshot(value) {
     },
     dashboard_health: source.dashboard_health || { conclusion: "needs_attention", severity: "amber" },
     exact_review_queue: exactReviewQueue,
-    recent_durable_publication_events: source.recent_durable_publication_events ?? null,
+    recent_durable_publication_events: dashboardPublicationEvents(value.recent_durable_publication_events),
     freshness: dashboardStatusFreshness(source)
   };
 }
@@ -2620,6 +2620,23 @@ function dashboardObservabilityNullableCount(value, maximum = DASHBOARD_OBSERVAB
   if (value === null) return null;
   const parsed = dashboardObservabilityCount(value, maximum);
   return parsed === null ? undefined : parsed;
+}
+function dashboardPublicationEvents(value) {
+  const source = dashboardObservabilityObject(value);
+  if (!source) return null;
+  const windowId = dashboardObservabilityMember(DASHBOARD_OBSERVABILITY_RANGES, source.window?.id)
+    ? source.window.id : null;
+  const accepted = dashboardObservabilityCount(source.direct?.counts?.accepted, 10000);
+  const retryable = dashboardObservabilityCount(source.batch?.counts?.retryable, 10000);
+  const state = dashboardObservabilityMember(["complete", "mixed", "unknown"], source.collection?.state)
+    ? source.collection.state : "unknown";
+  // Keep only rendered fields in a shape that survives fetch, render and localStorage reprojection.
+  return {
+    window: { id: windowId },
+    collection: { state: state === "complete" && (windowId === null || accepted === null || retryable === null) ? "unknown" : state },
+    direct: { counts: { accepted } },
+    batch: { counts: { retryable } }
+  };
 }
 function dashboardObservabilityNullableSignedCount(value) {
   if (value === null) return null;
