@@ -21,6 +21,10 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Keep dashboard publication counts and time windows through refresh and cached reload, preserving explicit zeroes and incomplete data; thanks @vincentkoc.
+- Preserve PR versus issue identity and retained source provenance in failed-shard recovery; thanks @yetval.
+- Extend strict TypeScript checks over review-failure telemetry and source/storage helpers without changing their runtime behavior.
+
 - Refresh Node 24 type definitions, the Oxc lint/format toolchain, and immutable checkout pins to v7.0.1 while retaining the 48-hour release-age policy and Node 24 minimum.
 
 - Isolate the GitHub ETag cache in repository-sharded Durable Objects so cache reads and writes no longer compete with exact-review admission, claims, or webhooks.
