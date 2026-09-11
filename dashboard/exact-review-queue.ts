@@ -942,6 +942,7 @@ export class ExactReviewQueue {
   private alarmSampleCount = 0;
   private alarmSampleLoggedAt = -1;
   private scheduledAlarmDecision: AlarmScheduleDecision | null = null;
+  private alarmScheduleLoggedAt = 0;
   private recentDurablePublicationEventsCache = new Map<
     string,
     { expiresAt: number; value: NonNullable<ReturnType<typeof recentDurablePublicationEvents>> }
@@ -14183,6 +14184,20 @@ export class ExactReviewQueue {
     }
     const next = selected[1]!;
     const scheduled = await this.storage.getAlarm();
+    // Bounded numeric-only diagnostics distinguish a missing alarm from a
+    // repeatedly replaced overdue alarm without exposing queue contents.
+    if (Date.now() - this.alarmScheduleLoggedAt >= 60_000) {
+      this.alarmScheduleLoggedAt = Date.now();
+      console.warn("exact_review_queue_alarm_schedule_status", {
+        observed_at: this.alarmScheduleLoggedAt,
+        stored_alarm_at: scheduled,
+        selected_alarm_at: next,
+        wake_reason: selected[0],
+        decision_age_ms: this.scheduledAlarmDecision
+          ? Math.max(0, this.alarmScheduleLoggedAt - this.scheduledAlarmDecision[2])
+          : null,
+      });
+    }
     if (
       preserveQueueWake &&
       (scheduled === null || scheduled <= now || scheduled > preservedWakeAt)
