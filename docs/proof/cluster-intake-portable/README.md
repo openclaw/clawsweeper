@@ -31,6 +31,13 @@ on empty portable tables; the candidate accepts both, preserves raw input and
 forced reimports, skips processed snapshots before decompression, and rejects
 unreviewed materializer code and archive/decoded hash mismatches.
 
+The reviewed materializer pin also enforces the store's current archive-size
+contract and bounds decompression. The fixture uses a maximum archive size below
+100 MB and verifies that expansion beyond the declared output size is rejected
+before import. Refresh the digest only after reviewing the changed helper and
+rerunning this proof; an upstream helper update must never silently authorize
+new executable code.
+
 This is controlled runtime proof, not a production intake or inference call.
 It does not restore clusters omitted by an upstream export, verify raw database
 hashes beyond the store helper's contract, or exercise live GitHub publication.
