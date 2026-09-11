@@ -6044,17 +6044,19 @@ jobs:
               --target-repo "${{ needs.plan.outputs.target_repo }}" --shard "$shard" \
               --shard-count "${{ needs.plan.outputs.planned_shards }}" --item-numbers "$planned_items")"
             echo "$result" | jq -r '.items[] | "Item #\(.number): \(.disposition) (\(.reason))"' | tee -a "$GITHUB_STEP_SUMMARY"
-            while IFS= read -r item_number; do
-              recovery_items+=("$item_number")
-            done < <(jq -r '.retryable[]' <<<"$result")
+            while IFS= read -r recovery_item; do
+              recovery_items+=("$recovery_item")
+            done < <(jq -c 'if .evidence_complete then .items[] | select(.disposition == "retryable") | {number, kind} else empty end' <<<"$result")
           done < <(jq -r --arg failed ",$failed_shards," '.[] | select(.shard as $s | $failed | contains("," + ($s | tostring) + ",")) | [.shard, .item_numbers] | @tsv' <<<"$MATRIX_JSON")
-          item_numbers="$(IFS=,; echo "${recovery_items[*]}")"
-          if [ -z "$item_numbers" ]; then
+          if [ "${#recovery_items[@]}" -eq 0 ]; then
             echo "No evidence-backed retryable item terminals; failed review work remains terminal, completed, or held." | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
+          item_numbers="$(printf '%s\n' "${recovery_items[@]}" | jq -r '.number' | paste -sd, -)"
           failed_recovery_dispatches=()
-          for item_number in "${recovery_items[@]}"; do
+          for recovery_item in "${recovery_items[@]}"; do
+            item_number="$(jq -er '.number' <<<"$recovery_item")"
+            item_kind="$(jq -er '.kind | select(. == "issue" or . == "pull_request")' <<<"$recovery_item")"
             if ! [[ "$item_number" =~ ^[0-9]+$ ]]; then
               echo "Invalid failed-review recovery item number: $item_number" >&2
               exit 1
@@ -6064,6 +6066,7 @@ jobs:
               --arg target_repo "${{ needs.plan.outputs.target_repo }}" \
               --arg target_branch "${{ needs.plan.outputs.target_branch }}" \
               --arg item_number "$item_number" \
+              --arg item_kind "$item_kind" \
               --arg dispatch_key "$dispatch_key" \
               --arg codex_timeout_ms "${{ needs.plan.outputs.codex_timeout_ms }}" \
               --arg additional_prompt "$recovery_prompt" \
@@ -6073,8 +6076,8 @@ jobs:
                   targetRepo: $target_repo,
                   targetBranch: $target_branch,
                   itemNumber: ($item_number | tonumber),
-                  itemKind: "issue",
-                  sourceEvent: "issues",
+                  itemKind: $item_kind,
+                  sourceEvent: (if $item_kind == "pull_request" then "pull_request" else "issues" end),
                   sourceAction: "failed_review_shard_recovery",
                   supersedesInProgress: false,
                   codexTimeoutMs: ($codex_timeout_ms | tonumber),

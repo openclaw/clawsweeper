@@ -964,6 +964,13 @@ Each item has a visible disposition; queue acknowledgements distinguish queued,
 deduplicated, shed, disabled, and failed admission. None means review or
 publication succeeded.
 
+Validated recovery entries retain the item kind and any owner-recorded source
+revision. PR retries use PR routing rather than issue routing. The source
+revision remains opaque diagnostic provenance: it may include discussion and
+must not be reused as a PR head SHA or the queue's narrower content hash.
+This does not establish a cross-producer terminal-refusal fence; matching that
+fence requires the same complete scanned-input identity at both boundaries.
+
 Before uploading a failed shard, the same projection stages only completed
 reports whose native terminal digest, repository/item/source identity, complete
 review status, and verified checkout provenance match. The existing publisher

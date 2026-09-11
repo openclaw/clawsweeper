@@ -109,6 +109,33 @@ for (const [key, value] of [
   });
 }
 
+test("recovery CLI retains validated item kinds and opaque source revisions", async (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "review-recovery-kinds-")));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const seeded = await fixture(root);
+  const revision = "b".repeat(64);
+  rewriteLedger(seeded.ledgerDir, (events) =>
+    events.map((event) =>
+      [3, 7].includes(event.subject.number)
+        ? {
+            ...event,
+            subject: { ...event.subject, kind: "pull_request", source_revision: revision },
+          }
+        : event,
+    ),
+  );
+  const result = recover(root, seeded);
+  assert.deepEqual(result.retryable, [3, 4]);
+  const item = (number) => result.items.find((entry) => entry.number === number);
+  assert.equal(item(3).kind, "pull_request");
+  assert.equal(item(3).sourceRevision, revision);
+  assert.equal(item(4).kind, "issue");
+  assert.equal(item(4).sourceRevision, undefined);
+  assert.equal(item(7).kind, "pull_request");
+  assert.equal(item(7).disposition, "terminal");
+  for (const number of [5, 6, 8]) assert.equal(item(number).kind, undefined);
+});
+
 test("recovery CLI holds corrupted ledger bytes and never follows a report symlink", async (t) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "review-recovery-files-")));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -159,7 +186,7 @@ function recover(root, seeded) {
         "--stage-dir",
         join(root, "staged"),
       ],
-      { env: { PATH: process.env.PATH }, encoding: "utf8" },
+      { env: { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR }, encoding: "utf8" },
     ),
   );
 }
