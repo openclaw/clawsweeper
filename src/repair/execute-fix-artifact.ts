@@ -3601,10 +3601,19 @@ function checkoutRecoverableReplacementBranch({
       remote_lease_sha: remoteLeaseSha,
     };
   }
+  // Fetch can advance the base ref without moving the fresh clone's HEAD.
+  const fetchedBaseSha = run("git", ["rev-parse", `origin/${baseBranch}`], {
+    cwd: targetDir,
+  }).trim();
+  materializeTargetCommitWithIsolation({
+    cwd: targetDir,
+    expectedHeadSha: fetchedBaseSha,
+    timeoutMs: targetValidationTimeoutMs,
+  });
   switchTargetBranchWithPlumbing({
     cwd: targetDir,
     branch,
-    expectedHeadSha: run("git", ["rev-parse", `origin/${baseBranch}`], { cwd: targetDir }).trim(),
+    expectedHeadSha: fetchedBaseSha,
     timeoutMs: targetValidationTimeoutMs,
   });
   return { resumed: false, remote_lease_sha: remoteLeaseSha };
