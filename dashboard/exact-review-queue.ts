@@ -949,7 +949,7 @@ export class ExactReviewQueue {
   >();
 
   constructor(state, env, random: () => number = Math.random) {
-    console.warn("exact_review_queue_initialization", {
+    console.info("exact_review_queue_initialization", {
       phase: "constructor",
       observed_at: Date.now(),
     });
@@ -10873,7 +10873,7 @@ export class ExactReviewQueue {
   }
 
   private async initializeStorage() {
-    console.warn("exact_review_queue_initialization", {
+    console.info("exact_review_queue_initialization", {
       phase: "storage_begin",
       observed_at: Date.now(),
     });
@@ -10890,7 +10890,7 @@ export class ExactReviewQueue {
     this.githubEgressTelemetryStore.ensureSchemaSync();
     this.artifactReceiptStore.ensureSchemaSync();
     this.githubWebhookReadModelStore.ensureSchemaSync();
-    console.warn("exact_review_queue_initialization", {
+    console.info("exact_review_queue_initialization", {
       phase: "schema_ready",
       observed_at: Date.now(),
     });
@@ -10971,7 +10971,7 @@ export class ExactReviewQueue {
     this.storage.transactionSync(() => {
       this.backfillPublicationHeadsSync(this.readStateSync(), Date.now());
     });
-    console.warn("exact_review_queue_initialization", {
+    console.info("exact_review_queue_initialization", {
       phase: "storage_ready",
       observed_at: Date.now(),
     });
@@ -14079,6 +14079,9 @@ export class ExactReviewQueue {
   ) {
     const scheduled = await this.storage.getAlarm();
     const now = Date.now();
+    // Retained auxiliary work can be overdue. Use a fresh deadline so repeated
+    // requests do not keep replacing a pending alarm with an expired timestamp.
+    next = Math.max(now + 1_000, next);
     if (scheduled === null || scheduled <= now || next < scheduled) {
       await this.storage.setAlarm(next);
       const backoff = (this.bayTelemetryNoProgressDeadline ?? 0) > now;
@@ -14198,13 +14201,16 @@ export class ExactReviewQueue {
       this.scheduledAlarmDecision = null;
       return;
     }
-    const next = selected[1]!;
+    // Auxiliary wake sources do not share the queue read model's deadline floor.
+    // Normalize after the asynchronous reads, including recovery after a long gap.
     const scheduled = await this.storage.getAlarm();
+    const schedulingNow = Date.now();
+    const next = Math.max(schedulingNow + 1_000, selected[1]!);
     // Bounded numeric-only diagnostics distinguish a missing alarm from a
     // repeatedly replaced overdue alarm without exposing queue contents.
     if (Date.now() - this.alarmScheduleLoggedAt >= 60_000) {
       this.alarmScheduleLoggedAt = Date.now();
-      console.warn("exact_review_queue_alarm_schedule_status", {
+      console.info("exact_review_queue_alarm_schedule_status", {
         observed_at: this.alarmScheduleLoggedAt,
         stored_alarm_at: scheduled,
         selected_alarm_at: next,
@@ -14216,19 +14222,19 @@ export class ExactReviewQueue {
     }
     if (
       preserveQueueWake &&
-      (scheduled === null || scheduled <= now || scheduled > preservedWakeAt)
+      (scheduled === null || scheduled <= schedulingNow || scheduled > preservedWakeAt)
     ) {
       // An alarm was consumed/replaced while we awaited another authority.
       // Re-read durable state instead of reusing the earlier request snapshot.
       await this.scheduleNextFromState(this.readSchedulingStateSync(), Date.now(), true);
       return;
     }
-    if (scheduled === null || scheduled <= now || next < scheduled) {
+    if (scheduled === null || scheduled <= schedulingNow || next < scheduled) {
       await this.storage.setAlarm(next);
       this.scheduledAlarmDecision = [
         selected[0],
         next,
-        now,
+        schedulingNow,
         bayTelemetryRecoveryPending,
         (this.bayTelemetryNoProgressDeadline ?? 0) > now,
       ];
