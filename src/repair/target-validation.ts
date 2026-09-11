@@ -2987,6 +2987,7 @@ const OPENCLAW_CHANGED_GATE_CACHE_PATHS = [
   ".cache/vitest",
   "node_modules/.cache",
   "node_modules/.vite",
+  "node_modules/.vite-temp",
 ] as const;
 
 function prepareDisposableChangedGateState(
@@ -3049,7 +3050,7 @@ function prepareDisposableChangedGateState(
       if (outputStat) {
         const backup = path.join(backupRoot, relativePath);
         fs.mkdirSync(path.dirname(backup), { recursive: true });
-        fs.cpSync(output, backup, { recursive: true, verbatimSymlinks: true });
+        copyRuntimeTreeWithModes(output, backup);
       }
       snapshots.push({
         relativePath,
@@ -3092,10 +3093,7 @@ function prepareDisposableChangedGateState(
         }
         fs.rmSync(output, { recursive: true, force: true });
         if (snapshot.existed) {
-          fs.cpSync(path.join(backupRoot, snapshot.relativePath), output, {
-            recursive: true,
-            verbatimSymlinks: true,
-          });
+          copyRuntimeTreeWithModes(path.join(backupRoot, snapshot.relativePath), output);
         }
       } catch (error) {
         restorationFailure ??= error;
@@ -3158,12 +3156,33 @@ function prepareDisposableRuntimeBuildCache(
   };
 }
 
+function copyRuntimeTreeWithModes(source: string, destination: string) {
+  fs.cpSync(source, destination, { recursive: true, verbatimSymlinks: true });
+  // Recursive copies can apply the host umask. Restore identity-bound modes
+  // postorder, without following copied symlinks or changing their targets.
+  const restoreModes = (original: string, copied: string) => {
+    const originalStat = fs.lstatSync(original);
+    const copiedStat = fs.lstatSync(copied);
+    if ((originalStat.mode & fs.constants.S_IFMT) !== (copiedStat.mode & fs.constants.S_IFMT)) {
+      throw new Error(`runtime tree copy changed entry type: ${copied}`);
+    }
+    if (originalStat.isSymbolicLink()) return;
+    if (originalStat.isDirectory()) {
+      for (const entry of fs.readdirSync(original)) {
+        restoreModes(path.join(original, entry), path.join(copied, entry));
+      }
+    }
+    fs.chmodSync(copied, originalStat.mode);
+  };
+  restoreModes(source, destination);
+}
+
 function moveRuntimeBuildCache(source: string, destination: string) {
   try {
     fs.renameSync(source, destination);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
-    fs.cpSync(source, destination, { recursive: true, verbatimSymlinks: true });
+    copyRuntimeTreeWithModes(source, destination);
     fs.rmSync(source, { recursive: true, force: true });
   }
 }
