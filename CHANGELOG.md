@@ -21,6 +21,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Restore Vite config scratch after OpenClaw changed-gate validation so a successful cold run does not fail checkout identity checks; preserve cache and disposable-output permissions under restrictive umasks and cross-device moves without weakening unrelated runtime-input protection.
+
 - Refresh Node 24 type definitions, the Oxc lint/format toolchain, and immutable checkout pins to v7.0.1 while retaining the 48-hour release-age policy and Node 24 minimum.
 
 - Isolate the GitHub ETag cache in repository-sharded Durable Objects so cache reads and writes no longer compete with exact-review admission, claims, or webhooks.
