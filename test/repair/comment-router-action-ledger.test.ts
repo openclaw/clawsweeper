@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import test from "node:test";
 import { parse as parseYaml } from "yaml";
 
@@ -11,6 +12,8 @@ function routerWorkflowSteps(source: string) {
       {
         steps?: Array<{
           name?: string;
+          if?: string;
+          "continue-on-error"?: boolean;
           run?: string;
           env?: Record<string, string>;
         }>;
@@ -19,6 +22,56 @@ function routerWorkflowSteps(source: string) {
   };
   return Object.values(workflow.jobs).flatMap((job) => job.steps ?? []);
 }
+
+test("scheduled Endor enrolment routes only the test repository into autofix without recursion", () => {
+  const steps = routerWorkflowSteps(readText(".github/workflows/repair-comment-router.yml"));
+  const schedule = steps.find((step) => step.name === "Schedule Endor test repository autofix");
+  const intake = steps.find((step) => step.name === "Enrol Endor remediation PRs");
+  assert.ok(schedule?.run);
+  assert.ok(intake);
+  assert.equal(
+    schedule.if,
+    "${{ github.event_name == 'schedule' && vars.CLAWSWEEPER_COMMENT_ROUTER_EXECUTE == '1' && steps.target.outputs.target_repo != 'openclaw/endor-clawsweeper-e2e' }}",
+  );
+  assert.equal(schedule.env?.GH_TOKEN, "${{ steps.dispatch-token.outputs.token }}");
+  assert.equal(schedule["continue-on-error"], true);
+  const args = execFileSync(
+    "bash",
+    ["-eu", "-c", `gh() { printf '%s\\n' "$@"; }\n${schedule.run}`],
+    {
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH,
+        GITHUB_REPOSITORY: "openclaw/clawsweeper",
+        GITHUB_REF_NAME: "main",
+      },
+    },
+  )
+    .trim()
+    .split("\n");
+  assert.deepEqual(args, [
+    "workflow",
+    "run",
+    "repair-comment-router.yml",
+    "--repo",
+    "openclaw/clawsweeper",
+    "--ref",
+    "main",
+    "-f",
+    "execute=true",
+    "-f",
+    "target_repo=openclaw/endor-clawsweeper-e2e",
+  ]);
+  assert.equal(
+    intake.if,
+    "${{ steps.target.outputs.target_repo == 'openclaw/endor-clawsweeper-e2e' && ((github.event_name == 'schedule' && vars.CLAWSWEEPER_COMMENT_ROUTER_EXECUTE == '1') || (github.event_name == 'workflow_dispatch' && inputs.execute)) }}",
+  );
+  assert.equal(
+    intake.run,
+    'node dist/repair/endor-autofix-intake.js --repo "$TARGET_REPO" --execute',
+  );
+  assert.equal(intake["continue-on-error"], true);
+});
 
 test("comment router records receipts after durable command boundaries", () => {
   const source = readText("src/repair/comment-router.ts");

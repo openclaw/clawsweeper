@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { enrollEndorPullRequests } from "../../dist/repair/endor-automerge-intake.js";
+import { enrollEndorPullRequests } from "../../dist/repair/endor-autofix-intake.js";
 
-const repo = "openclaw/openclaw";
+const repo = "openclaw/endor-clawsweeper-e2e";
 const author = { login: "endor-labs-pro[bot]", id: 179191674, type: "Bot" };
 const pull = {
   number: 42,
@@ -33,8 +33,8 @@ function fixture(
     const endpoint = args[1];
     if (args.includes("POST")) {
       writes.push(args);
-      events.push([{ event: "labeled", label: { name: "clawsweeper:automerge" } }]);
-      return [{ name: "clawsweeper:automerge" }];
+      events.push([{ event: "labeled", label: { name: "clawsweeper:autofix" } }]);
+      return [{ name: "clawsweeper:autofix" }];
     }
     if (endpoint === `repos/${repo}`) {
       return {
@@ -52,7 +52,7 @@ function fixture(
         [
           options.candidate ?? {
             ...pull,
-            pull_request: { url: "https://api.github.com/repos/openclaw/openclaw/pulls/42" },
+            pull_request: { url: `https://api.github.com/repos/${repo}/pulls/42` },
           },
         ],
       ];
@@ -63,7 +63,7 @@ function fixture(
   return { github, writes, events };
 }
 
-test("enrols an Endor Pro PR using only the existing automerge label", () => {
+test("enrols an Endor Pro test PR using only the existing autofix label", () => {
   const { github, writes } = fixture();
   assert.deepEqual(enrollEndorPullRequests({ repo, execute: true, github }), [
     { number: 42, status: "enrolled" },
@@ -75,7 +75,7 @@ test("enrols an Endor Pro PR using only the existing automerge label", () => {
       "--method",
       "POST",
       "-f",
-      "labels[]=clawsweeper:automerge",
+      "labels[]=clawsweeper:autofix",
     ],
   ]);
 });
@@ -89,7 +89,7 @@ test("preview is read-only and reports the intended enrolment", () => {
 test("repeated runs and manual removal do not re-enrol a previously handled PR", () => {
   const { github, writes, events } = fixture();
   enrollEndorPullRequests({ repo, execute: true, github });
-  events.push([{ event: "unlabeled", label: { name: "clawsweeper:automerge" } }]);
+  events.push([{ event: "unlabeled", label: { name: "clawsweeper:autofix" } }]);
   // The live PR has no mode label, but GitHub retains the label events.
   assert.deepEqual(enrollEndorPullRequests({ repo, execute: true, github }), [
     { number: 42, status: "skipped" },
@@ -117,6 +117,7 @@ for (const [name, patch] of Object.entries({
 }
 
 for (const name of [
+  "clawsweeper:automerge",
   "clawsweeper:autofix",
   "clawsweeper:human-review",
   "clawsweeper:manual-only",
@@ -150,7 +151,7 @@ test("rejects out-of-scope repositories before any GitHub calls", () => {
   assert.throws(
     () =>
       enrollEndorPullRequests({
-        repo: "openclaw/endor-clawsweeper-e2e",
+        repo: "openclaw/openclaw",
         execute: true,
         github: () => assert.fail("must not contact GitHub"),
       }),
