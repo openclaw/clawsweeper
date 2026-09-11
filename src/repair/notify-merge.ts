@@ -7,13 +7,18 @@ import { asJsonObject } from "./json-types.js";
 import { parseArgs, repoRoot } from "./lib.js";
 import { readJsonFile, writeJsonFile } from "./json-file.js";
 import {
+  describeHookDelivery,
   errorText,
+  hookDeliveryFromError,
+  hookDeliveryReport,
+  isConclusiveHookDelivery,
   normalizeString,
   postOpenClawAgentHook,
   resolveOpenClawHookConfig,
   stringArg,
   stringOrNull,
 } from "./openclaw-hook.js";
+import type { OpenClawHookDelivery } from "./openclaw-hook.js";
 import type {
   CollectionResult,
   MergeLedgerEntry,
@@ -227,15 +232,29 @@ export async function runMergeNotifier(
           deliver: true,
         },
       });
-      const notifiedAt = now().toISOString();
-      nextLedger = addLedgerEntry(nextLedger, notification, {
-        notifiedAt,
-        hookRunId: result.runId,
-        discordTarget: config.discordTarget,
-      });
-      reportActions.push(reportRow(notification, "sent", "sent to OpenClaw hook", result.runId));
+      const conclusive = isConclusiveHookDelivery(result.delivery);
+      if (conclusive) {
+        const notifiedAt = now().toISOString();
+        nextLedger = addLedgerEntry(nextLedger, notification, {
+          notifiedAt,
+          hookRunId: result.runId,
+          discordTarget: config.discordTarget,
+        });
+      }
+      reportActions.push(
+        reportRow(
+          notification,
+          conclusive ? "sent" : "failed",
+          describeHookDelivery(result.delivery),
+          result.runId,
+          result.delivery,
+        ),
+      );
     } catch (error) {
-      reportActions.push(reportRow(notification, "failed", errorText(error)));
+      const delivery = hookDeliveryFromError(error);
+      reportActions.push(
+        reportRow(notification, "failed", describeHookDelivery(delivery), null, delivery),
+      );
     }
   }
 
@@ -342,6 +361,7 @@ function reportRow(
   status: "failed" | "planned" | "sent",
   reason: string,
   hookRunId: string | null = null,
+  delivery: OpenClawHookDelivery | null = null,
 ): JsonObject {
   return {
     key: notification.key,
@@ -355,6 +375,7 @@ function reportRow(
     merged_at: notification.mergedAt,
     run_id: notification.runId,
     hook_run_id: hookRunId,
+    delivery: delivery ? hookDeliveryReport(delivery) : null,
     url: notification.prUrl,
   };
 }

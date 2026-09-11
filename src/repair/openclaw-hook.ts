@@ -18,8 +18,23 @@ export type OpenClawHookPost = {
   deliver: boolean;
 };
 
+export type OpenClawHookDeliveryStatus =
+  | "delivered"
+  | "admitted"
+  | "suppressed"
+  | "failed"
+  | "unknown"
+  | "not-requested";
+
+export type OpenClawHookDelivery = {
+  status: OpenClawHookDeliveryStatus;
+  suppressionReason: string | null;
+  error: string | null;
+};
+
 export type OpenClawHookPostResult = {
   runId: string | null;
+  delivery: OpenClawHookDelivery;
 };
 
 const DEFAULT_AGENT_ID = "clawsweeper";
@@ -28,6 +43,8 @@ const DEFAULT_THINKING = "low";
 const DEFAULT_TIMEOUT_SECONDS = 60;
 const DEFAULT_RETRY_ATTEMPTS = 3;
 const DEFAULT_RETRY_DELAYS_MS = [1000, 4000];
+const MAX_DIAGNOSTIC_CHARS = 500;
+const MAX_SUPPRESSION_REASON_CHARS = 80;
 
 export function resolveOpenClawHookConfig(env: NodeJS.ProcessEnv): OpenClawHookConfig | null {
   const hookUrl = normalizeString(env.CLAWSWEEPER_OPENCLAW_HOOK_URL);
@@ -119,13 +136,25 @@ async function postOpenClawAgentHookOnce({
       thinking: config.thinking,
       timeoutSeconds: config.timeoutSeconds,
       message: post.message,
+      waitForCompletion: true,
     }),
   });
   const body = await response.text();
   if (!response.ok) {
-    throw new OpenClawHookHttpError(response.status, body);
+    throw new OpenClawHookHttpError(
+      response.status,
+      boundedText(body, MAX_DIAGNOSTIC_CHARS, [config.token]) ?? "",
+    );
   }
-  return { runId: readHookRunId(body) };
+  const parsed = parseHookBody(body);
+  const runId = boundedText(parsed.runId, 128) ?? boundedText(parsed.run_id, 128);
+  return {
+    runId,
+    delivery:
+      parsed.ok === true && runId && !Object.hasOwn(parsed, "completion")
+        ? hookDelivery("admitted")
+        : classifyHookDelivery(parsed.completion, post.deliver, config.token),
+  };
 }
 
 export class OpenClawHookHttpError extends Error {
@@ -148,14 +177,41 @@ export function isTransientOpenClawHookError(error: unknown): boolean {
   );
 }
 
-export function readHookRunId(body: string): string | null {
-  try {
-    const parsed = JSON.parse(body);
-    if (!isJsonObject(parsed)) return null;
-    return stringOrNull(parsed.runId) ?? stringOrNull(parsed.run_id);
-  } catch {
-    return null;
+export function isConclusiveHookDelivery(delivery: OpenClawHookDelivery): boolean {
+  return ["delivered", "admitted", "suppressed", "not-requested"].includes(delivery.status);
+}
+
+export function hookDeliveryReport(delivery: OpenClawHookDelivery): {
+  status: OpenClawHookDeliveryStatus;
+  suppression_reason: string | null;
+  error: string | null;
+} {
+  return {
+    status: delivery.status,
+    suppression_reason: delivery.suppressionReason,
+    error: delivery.error,
+  };
+}
+
+export function describeHookDelivery(delivery: OpenClawHookDelivery): string {
+  if (delivery.status === "admitted") {
+    return "OpenClaw delivery observability unavailable after legacy admission";
   }
+  if (delivery.status === "suppressed" && delivery.suppressionReason) {
+    return `OpenClaw delivery suppressed: ${delivery.suppressionReason}`;
+  }
+  if (delivery.status === "failed" && delivery.error) {
+    return `OpenClaw delivery failed: ${delivery.error}`;
+  }
+  return `OpenClaw delivery ${delivery.status}`;
+}
+
+export function hookDeliveryFromError(error: unknown): OpenClawHookDelivery {
+  return hookDelivery(
+    error instanceof OpenClawHookHttpError ? "failed" : "unknown",
+    null,
+    errorText(error),
+  );
 }
 
 export function positiveInt(value: string | undefined, fallback: number): number {
@@ -183,7 +239,97 @@ export function normalizeString(value: string | undefined): string | undefined {
 }
 
 export function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return (
+    boundedText(error instanceof Error ? error.message : String(error), MAX_DIAGNOSTIC_CHARS) ?? ""
+  );
+}
+
+function classifyHookDelivery(
+  value: unknown,
+  deliveryRequested: boolean,
+  token: string,
+): OpenClawHookDelivery {
+  if (!isJsonObject(value)) {
+    return hookDelivery("unknown");
+  }
+  const status = value.status;
+  if (status !== "ok" && status !== "error" && status !== "skipped") {
+    return hookDelivery("unknown");
+  }
+
+  const error = boundedText(value.deliveryError, MAX_DIAGNOSTIC_CHARS, [token]);
+  const suppressionReason = boundedText(
+    value.deliverySuppressionReason,
+    MAX_SUPPRESSION_REASON_CHARS,
+  );
+  const replyDisposition =
+    value.replyDisposition === "visible" ||
+    value.replyDisposition === "silent" ||
+    value.replyDisposition === "empty"
+      ? value.replyDisposition
+      : null;
+  if (value.delivered === true) {
+    return hookDelivery("delivered");
+  }
+  if (replyDisposition === "silent") {
+    return hookDelivery("suppressed", suppressionReason ?? "silent");
+  }
+  if (status === "error" || error) {
+    return hookDelivery("failed", null, error);
+  }
+  if (replyDisposition === "visible") {
+    return hookDelivery(value.deliveryAttempted === true ? "failed" : "unknown");
+  }
+  if (suppressionReason) {
+    return hookDelivery("suppressed", suppressionReason);
+  }
+  if (
+    status === "ok" &&
+    !deliveryRequested &&
+    replyDisposition === "empty" &&
+    value.delivered !== true &&
+    value.deliveryAttempted !== true
+  ) {
+    return hookDelivery("not-requested");
+  }
+  if (value.delivered === false && value.deliveryAttempted === true) {
+    return hookDelivery("failed");
+  }
+  return hookDelivery("unknown");
+}
+
+function parseHookBody(body: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(body);
+    return isJsonObject(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function hookDelivery(
+  status: OpenClawHookDeliveryStatus,
+  suppressionReason: string | null = null,
+  error: string | null = null,
+): OpenClawHookDelivery {
+  return { status, suppressionReason, error };
+}
+
+function boundedText(
+  value: unknown,
+  limit: number,
+  redactions: readonly string[] = [],
+): string | null {
+  if (typeof value !== "string") return null;
+  let text = value
+    .replace(/\p{Cc}+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  for (const redaction of redactions) {
+    if (redaction) text = text.replaceAll(redaction, "<redacted>");
+  }
+  if (!text) return null;
+  return text.length <= limit ? text : `${text.slice(0, limit - 3)}...`;
 }
 
 function delay(ms: number): Promise<void> {

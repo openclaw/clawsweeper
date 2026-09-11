@@ -285,10 +285,20 @@ test("runGithubActivityNotifier posts one bounded forwarded push event", async (
       body: JSON.parse(String(init?.body)),
       auth: new Headers(init?.headers).get("authorization"),
     });
-    return new Response(JSON.stringify({ ok: true, runId: "hook-run-1" }), { status: 200 });
+    return Response.json({
+      ok: true,
+      runId: "hook-run-1",
+      completion: {
+        status: "ok",
+        replyDisposition: "silent",
+        delivered: true,
+        deliveryAttempted: true,
+      },
+    });
   };
 
   const observedAt = new Date("2026-09-05T07:24:31.000Z");
+  const stepSummaryPath = path.join(root, "step-summary.md");
   const summary = await runGithubActivityNotifier(["--write-report"], {
     root,
     fetch: mockFetch,
@@ -301,6 +311,7 @@ test("runGithubActivityNotifier posts one bounded forwarded push event", async (
       CLAWSWEEPER_OPENCLAW_HOOK_URL: "https://claw.example/hooks",
       CLAWSWEEPER_OPENCLAW_HOOK_TOKEN: "secret",
       CLAWSWEEPER_DISCORD_TARGET: "channel:123",
+      GITHUB_STEP_SUMMARY: stepSummaryPath,
     },
   });
 
@@ -308,6 +319,7 @@ test("runGithubActivityNotifier posts one bounded forwarded push event", async (
   assert.equal(requests.length, 1);
   assert.equal(requests[0]?.auth, "Bearer secret");
   assert.equal(requests[0]?.body.deliver, false);
+  assert.equal(requests[0]?.body.waitForCompletion, true);
   assert.match(String(requests[0]?.body.message), /use the message tool/);
   assert.match(String(requests[0]?.body.message), /channel:123/);
   assert.match(String(requests[0]?.body.message), /one exact GitHub event/);
@@ -320,6 +332,12 @@ test("runGithubActivityNotifier posts one bounded forwarded push event", async (
     fs.readFileSync(path.join(root, "notifications/github-activity-report.json"), "utf8"),
   );
   assert.equal(report.generated_at, observedAt.toISOString());
+  assert.deepEqual(report.delivery, {
+    status: "delivered",
+    suppression_reason: null,
+    error: null,
+  });
+  assert.match(fs.readFileSync(stepSummaryPath, "utf8"), /Delivery: `delivered`/);
 });
 
 test("runGithubActivityNotifier skips routine noisy GitHub activity before posting hooks", async () => {

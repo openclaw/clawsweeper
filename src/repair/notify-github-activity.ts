@@ -9,12 +9,17 @@ import { writeJsonFile } from "./json-file.js";
 import { parseArgs, repoRoot } from "./lib.js";
 import {
   boolEnv,
+  describeHookDelivery,
   errorText,
+  hookDeliveryFromError,
+  hookDeliveryReport,
+  isConclusiveHookDelivery,
   postOpenClawAgentHook,
   resolveOpenClawHookConfig,
   stringArg,
   stringOrNull,
 } from "./openclaw-hook.js";
+import type { OpenClawHookDelivery } from "./openclaw-hook.js";
 
 export type GithubActivity = {
   type: string;
@@ -344,6 +349,7 @@ export async function runGithubActivityNotifier(
   }
 
   let hookRunId: string | null = null;
+  let delivery: OpenClawHookDelivery | null = null;
   let failed = 0;
   let reason: string | null = null;
   if (!dryRun) {
@@ -362,9 +368,15 @@ export async function runGithubActivityNotifier(
         },
       });
       hookRunId = result.runId;
+      delivery = result.delivery;
+      if (!isConclusiveHookDelivery(delivery)) {
+        failed = 1;
+        reason = describeHookDelivery(delivery);
+      }
     } catch (error) {
+      delivery = hookDeliveryFromError(error);
       failed = 1;
-      reason = errorText(error);
+      reason = describeHookDelivery(delivery);
     }
   }
 
@@ -377,10 +389,14 @@ export async function runGithubActivityNotifier(
       dry_run: dryRun,
       deliver,
       hook_run_id: hookRunId,
+      delivery: delivery ? hookDeliveryReport(delivery) : null,
       failed,
       reason,
       activity,
     });
+  }
+  if (delivery && env.GITHUB_STEP_SUMMARY) {
+    appendGithubStepSummary(env.GITHUB_STEP_SUMMARY, delivery);
   }
 
   const summary = summaryRow("ok", failed ? 0 : 1, failed, reason);
@@ -688,6 +704,16 @@ function summaryRow(
   reason: string | null,
 ): GithubActivityNotifierSummary {
   return { status, sent, failed, exitCode: 0, reason };
+}
+
+function appendGithubStepSummary(summaryPath: string, delivery: OpenClawHookDelivery): void {
+  const suppression = delivery.suppressionReason
+    ? ` (${delivery.suppressionReason.replaceAll("`", "'")})`
+    : "";
+  fs.appendFileSync(
+    summaryPath,
+    `### OpenClaw notification\n\n- Delivery: \`${delivery.status}\`${suppression}\n`,
+  );
 }
 
 async function main() {
