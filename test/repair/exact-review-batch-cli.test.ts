@@ -1203,7 +1203,8 @@ for (const [route, endpoint] of [
         const payloadPath = join(root, "payload.json");
         const postsPath = join(root, "posts.jsonl");
         const preloadPath = join(root, "fetch-preload.cjs");
-        const payload = '{ "receipt_id": "stable-fixture", "kind": "policy_noop" }\n';
+        const payload =
+          '{ "receipt_id": "stable-fixture", "operation_id": "stable-operation", "kind": "policy_noop" }\n';
         writeFileSync(payloadPath, payload);
         writeFileSync(
           preloadPath,

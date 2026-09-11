@@ -324,9 +324,15 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
       throw new Error("Invalid batch post-effect route");
     // These lifecycle routes persist replay identity and preserve newer requeues.
     // Publication enqueue still has no equivalent replay contract.
+    const lifecycle = route === "router-receipt" || route === "terminal-disposition";
+    const operation =
+      options.retryLifecycle === true && lifecycle ? objectValue(JSON.parse(payload)) : null;
+    const identity = operation?.[route === "router-receipt" ? "receipt_id" : "operation_id"];
     const retryable =
-      options.retryLifecycle === true &&
-      (route === "router-receipt" || route === "terminal-disposition");
+      typeof identity === "string" &&
+      identity.length > 0 &&
+      identity.length <= 300 &&
+      !/[\r\n]/.test(identity);
     return this.postUrl(
       POST_EFFECT_ROUTES[route],
       payload,

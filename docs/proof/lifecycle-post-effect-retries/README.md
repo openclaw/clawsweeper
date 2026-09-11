@@ -7,7 +7,10 @@ lost, including when a newer requeue arrives before the retry. Publication
 enqueue remains single-attempt. The batch CLI opts into lifecycle retries;
 other callers, including operator retirement, keep the single-attempt default.
 
-Run on Node 24+ after `pnpm run build:node`:
+Run on Linux or macOS with Node 24+ and pnpm after `pnpm run build:node`.
+The driver resolves the repository's pinned Wrangler 4.107.0 through `pnpm dlx`.
+Only Wrangler's esbuild, sharp, and workerd setup scripts are allowed for that
+invocation, using packaged libvips rather than a host-installed copy.
 
 ```sh
 node docs/proof/lifecycle-post-effect-retries/run-proof.mjs

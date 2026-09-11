@@ -86,8 +86,16 @@ const proxy = createServer(async (req, res) => {
 });
 const log = fs.openSync(path.join(output, "worker.log"), "w");
 const child = spawn(
-  "wrangler",
+  "pnpm",
   [
+    "dlx",
+    "--allow-build",
+    "esbuild",
+    "--allow-build",
+    "sharp",
+    "--allow-build",
+    "workerd",
+    "wrangler@4.107.0",
     "dev",
     "--config",
     "docs/proof/lifecycle-post-effect-retries/wrangler.toml",
@@ -106,7 +114,12 @@ const child = spawn(
   {
     detached: true,
     stdio: ["ignore", log, log],
-    env: { ...process.env, CI: "1", WRANGLER_SEND_METRICS: "false" },
+    env: {
+      ...process.env,
+      CI: "1",
+      WRANGLER_SEND_METRICS: "false",
+      SHARP_IGNORE_GLOBAL_LIBVIPS: "1",
+    },
   },
 );
 fs.closeSync(log);

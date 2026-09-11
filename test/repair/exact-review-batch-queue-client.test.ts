@@ -5,7 +5,8 @@ import test from "node:test";
 import { ExactReviewBatchQueueClient } from "../../dist/repair/exact-review-batch-queue-client.js";
 
 const now = Date.UTC(2026, 8, 2);
-const payload = '{ "receipt_id": "stable-receipt", "outcome": "durable" }\n';
+const payload =
+  '{ "receipt_id": "stable-receipt", "operation_id": "stable-operation", "outcome": "durable" }\n';
 const heartbeat = {
   batchId: "batch-proof",
   leaseOwner: "worker-proof",
@@ -159,6 +160,16 @@ test("publication enqueue HTTP 500 is attempted once", async (t) => {
 });
 
 for (const route of ["router-receipt", "terminal-disposition"] as const) {
+  test(`${route} never retries a legacy payload without a replay identity`, async (t) => {
+    const { client, calls, logs } = fixture(t, () => unavailable());
+    await assert.rejects(
+      client.postEffect(route, '{"kind":"policy_noop"}', { retryLifecycle: true }),
+      /HTTP 500/,
+    );
+    assert.equal(calls.length, 1);
+    assert.deepEqual(logs, []);
+  });
+
   test(`${route} retains single-attempt behavior without batch retry opt-in`, async (t) => {
     const { client, calls, logs } = fixture(t, () => unavailable());
     await assert.rejects(client.postEffect(route, payload), /HTTP 500/);
