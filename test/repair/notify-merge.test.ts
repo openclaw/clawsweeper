@@ -214,7 +214,16 @@ test("runMergeNotifier posts hook payloads and records sent ledger", async () =>
       body: JSON.parse(String(init?.body)),
       auth: new Headers(init?.headers).get("authorization"),
     });
-    return new Response(JSON.stringify({ ok: true, runId: "hook-run-1" }), { status: 200 });
+    return Response.json({
+      ok: true,
+      runId: "hook-run-1",
+      completion: {
+        status: "ok",
+        replyDisposition: "visible",
+        delivered: true,
+        deliveryAttempted: true,
+      },
+    });
   };
 
   const summary = await runMergeNotifier(["--run-id", "987"], {
@@ -235,6 +244,7 @@ test("runMergeNotifier posts hook payloads and records sent ledger", async () =>
   assert.equal(requests[0]?.auth, "Bearer secret");
   assert.equal(requests[0]?.body.agentId, "clawsweeper");
   assert.equal(requests[0]?.body.to, "channel:123");
+  assert.equal(requests[0]?.body.waitForCompletion, true);
   assert.match(String(requests[0]?.body.message), /Fix config parsing/);
 
   const ledger = JSON.parse(
@@ -242,6 +252,14 @@ test("runMergeNotifier posts hook payloads and records sent ledger", async () =>
   );
   assert.equal(ledger.notifications[0].hookRunId, "hook-run-1");
   assert.equal(ledger.notifications[0].discordTarget, "channel:123");
+  const report = JSON.parse(
+    fs.readFileSync(path.join(root, "notifications/clawsweeper-merge-report.json"), "utf8"),
+  );
+  assert.deepEqual(report.actions[0].delivery, {
+    status: "delivered",
+    suppression_reason: null,
+    error: null,
+  });
 
   const rerun = await runMergeNotifier(["--run-id", "987"], {
     root,
@@ -256,6 +274,90 @@ test("runMergeNotifier posts hook payloads and records sent ledger", async () =>
   assert.equal(rerun.sent, 0);
   assert.equal(rerun.skipped, 1);
   assert.equal(requests.length, 1);
+});
+
+test("runMergeNotifier keeps unknown completion retryable and out of the ledger", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-notify-unknown-"));
+  fs.writeFileSync(
+    path.join(root, "repair-apply-report.json"),
+    `${JSON.stringify([
+      {
+        repo: "openclaw/openclaw",
+        target: "#123",
+        action: "merge_candidate",
+        status: "executed",
+        merge_commit_sha: "abc123",
+        run_id: "987",
+      },
+    ])}\n`,
+  );
+
+  const summary = await runMergeNotifier(["--run-id", "987", "--write-report"], {
+    root,
+    fetch: async () =>
+      Response.json({ ok: true, runId: "hook-run-1", completion: { status: "skipped" } }),
+    log: () => undefined,
+    env: {
+      CLAWSWEEPER_OPENCLAW_HOOK_URL: "https://claw.example/hooks",
+      CLAWSWEEPER_OPENCLAW_HOOK_TOKEN: "secret",
+      CLAWSWEEPER_DISCORD_TARGET: "channel:123",
+    },
+  });
+
+  assert.equal(summary.sent, 0);
+  assert.equal(summary.failed, 1);
+  assert.equal(
+    fs.existsSync(path.join(root, "notifications/clawsweeper-merge-ledger.json")),
+    false,
+  );
+  const report = JSON.parse(
+    fs.readFileSync(path.join(root, "notifications/clawsweeper-merge-report.json"), "utf8"),
+  );
+  assert.equal(report.actions[0].delivery.status, "unknown");
+});
+
+test("runMergeNotifier ledgers legacy admission to preserve at-most-once delivery", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-notify-admitted-"));
+  fs.writeFileSync(
+    path.join(root, "repair-apply-report.json"),
+    `${JSON.stringify([
+      {
+        repo: "openclaw/openclaw",
+        target: "#123",
+        action: "merge_candidate",
+        status: "executed",
+        merge_commit_sha: "abc123",
+        run_id: "987",
+      },
+    ])}\n`,
+  );
+
+  let calls = 0;
+  const summary = await runMergeNotifier(["--run-id", "987", "--write-report"], {
+    root,
+    fetch: async () => {
+      calls += 1;
+      return Response.json({ ok: true, runId: "legacy-run" });
+    },
+    log: () => undefined,
+    env: {
+      CLAWSWEEPER_OPENCLAW_HOOK_URL: "https://claw.example/hooks",
+      CLAWSWEEPER_OPENCLAW_HOOK_TOKEN: "secret",
+      CLAWSWEEPER_DISCORD_TARGET: "channel:123",
+    },
+  });
+
+  assert.equal(summary.sent, 1);
+  assert.equal(calls, 1);
+  const ledger = JSON.parse(
+    fs.readFileSync(path.join(root, "notifications/clawsweeper-merge-ledger.json"), "utf8"),
+  );
+  assert.equal(ledger.notifications[0].hookRunId, "legacy-run");
+  const report = JSON.parse(
+    fs.readFileSync(path.join(root, "notifications/clawsweeper-merge-report.json"), "utf8"),
+  );
+  assert.equal(report.actions[0].delivery.status, "admitted");
+  assert.match(report.actions[0].reason, /observability unavailable/);
 });
 
 test("runMergeNotifier returns a strict failure when the hook rejects", async () => {

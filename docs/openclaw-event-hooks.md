@@ -4,7 +4,7 @@
 - Owner: ClawSweeper notification and activity-stream maintainers
 - Source of truth: `.github/workflows/github-activity.yml`,
   `.github/workflows/repair-publish-results.yml`, and `src/repair/*notify*`
-- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
+- Last verified: `openclaw/clawsweeper@42226a81c43c2c8ded17a684a706e58f3a58577a`
 - Update when: hook payloads, delivery policy, activity filtering, runtime setup,
   notification ledgers, or workflow ownership changes
 
@@ -31,8 +31,11 @@ The normal event flow is:
 5. OpenClaw starts an isolated agent turn for the requested `agentId`.
 6. The agent sends the final message to the configured delivery target, or
    replies `NO_REPLY` when the event is intentionally silent.
-7. ClawSweeper records successful sends in the ledger and publishes it to
-   `openclaw/clawsweeper-state`.
+7. ClawSweeper classifies the bounded completion as `delivered`, `suppressed`,
+   `failed`, `unknown`, or `not-requested`. Older admission-only OpenClaw
+   responses are recorded as `admitted`.
+8. ClawSweeper records only conclusive delivery outcomes in the ledger and
+   publishes it to `openclaw/clawsweeper-state`.
 
 The hook call is best-effort by default. A Discord outage or Gateway outage
 must not make an already-completed GitHub mutation roll back or fail the state
@@ -70,7 +73,8 @@ reverse proxy.
   "to": "channel:1499243561407741994",
   "idempotencyKey": "clawsweeper:merge:openclaw/openclaw:123:abc123",
   "thinking": "low",
-  "timeoutSeconds": 300
+  "timeoutSeconds": 300,
+  "waitForCompletion": true
 }
 ```
 
@@ -107,7 +111,9 @@ OpenClaw call itself:
   result, such as repo, PR number, action, and merge commit SHA;
 - check a durable ledger before sending;
 - write a report for attempted, skipped, sent, and failed notifications;
-- write the ledger only after OpenClaw accepted the request;
+- request completion for direct agent hooks and write its bounded delivery
+  classification to the report;
+- write the ledger only for `delivered`, `suppressed`, or `not-requested`;
 - publish the report and ledger with the normal result state.
 
 The message sent to OpenClaw should be explicit enough that the agent does not
@@ -131,11 +137,31 @@ Default behavior:
 - transient OpenClaw HTTP/network failure: retry with the same idempotency key;
 - persistent OpenClaw HTTP failure: record the failed attempt and keep the
   workflow green;
+- a valid legacy `{ok:true,runId}` admission without `completion`: classify as
+  terminal `admitted`, report that delivery observability is unavailable, and
+  preserve prior at-most-once ledger behavior;
+- a present but malformed completion: classify delivery as `unknown` and leave
+  the event retryable;
+- verified delivery: classify as `delivered` even when automatic hook delivery
+  was disabled and the agent used the message tool, or when later terminal
+  fields also report an execution or delivery error;
+- an exact silent reply without verified delivery: classify as `suppressed`,
+  preserving the reported reason or deriving `silent`;
+- a visible reply without verified delivery: classify as `failed` or `unknown`,
+  never intentional suppression;
+- no automatic delivery, message-tool delivery, or model reply evidence:
+  classify as `not-requested`;
+- `status: "skipped"` without explicit silent-reply or suppression evidence:
+  classify as `unknown`;
 - rerun after failure: retry because no success ledger entry exists;
 - rerun after success: skip because the ledger contains the event key.
 
 Set `CLAWSWEEPER_OPENCLAW_HOOK_RETRY_ATTEMPTS` to override the default retry
 count for hook posts.
+
+Deploy OpenClaw first when possible so completion observability is available as
+soon as ClawSweeper requests it. Deploying ClawSweeper first remains safe:
+admission-only responses are terminal `admitted` outcomes and are not retried.
 
 Strict mode is allowed for events whose notification is the product of the
 workflow. Strict mode should fail on OpenClaw delivery errors, but it still
@@ -200,6 +226,10 @@ The GitHub activity notifier posts to `/hooks/agent` with `deliver: false` by
 default. The agent receives the Discord target in the prompt and should use the
 message tool only when the event is surprising, actionable, risky, or otherwise
 operationally useful. For routine events it replies exactly `NO_REPLY`.
+The completion distinguishes verified message-tool delivery from a silent or
+private visible final reply without exposing reply text. The notifier writes
+that classification, plus a bounded suppression reason when present, to its
+report and a concise GitHub step summary.
 
 The workflow skips native and forwarded pull request synchronize events plus
 successful workflow-run events before checkout because the notifier always

@@ -7,12 +7,17 @@ import { asJsonObject } from "./json-types.js";
 import { parseArgs, repoRoot } from "./lib.js";
 import { readJsonFile, writeJsonFile } from "./json-file.js";
 import {
+  describeHookDelivery,
   errorText,
+  hookDeliveryFromError,
+  hookDeliveryReport,
+  isConclusiveHookDelivery,
   postOpenClawAgentHook,
   resolveOpenClawHookConfig,
   stringArg,
   stringOrNull,
 } from "./openclaw-hook.js";
+import type { OpenClawHookDelivery } from "./openclaw-hook.js";
 
 type EventSeverity = "info" | "warning" | "error";
 type EventStatus = "sent" | "planned" | "failed" | "skipped";
@@ -388,8 +393,24 @@ export async function runClawSweeperEventNotifier(
         } catch (error) {
           dashboardDelivered = false;
           dashboardStatus = `status dashboard failed: ${errorText(error)}`;
-          reportActions.push(reportRow(event, "failed", dashboardStatus, result.runId));
+          reportActions.push(
+            reportRow(event, "failed", dashboardStatus, result.runId, result.delivery),
+          );
         }
+      }
+      if (!isConclusiveHookDelivery(result.delivery)) {
+        if (dashboardDelivered) {
+          reportActions.push(
+            reportRow(
+              event,
+              "failed",
+              describeHookDelivery(result.delivery),
+              result.runId,
+              result.delivery,
+            ),
+          );
+        }
+        continue;
       }
       if (dashboardDelivered) {
         const notifiedAt = now().toISOString();
@@ -400,10 +421,19 @@ export async function runClawSweeperEventNotifier(
         });
       }
       reportActions.push(
-        reportRow(event, "sent", `sent to OpenClaw hook; ${dashboardStatus}`, result.runId),
+        reportRow(
+          event,
+          "sent",
+          `${describeHookDelivery(result.delivery)}; ${dashboardStatus}`,
+          result.runId,
+          result.delivery,
+        ),
       );
     } catch (error) {
-      reportActions.push(reportRow(event, "failed", errorText(error)));
+      const delivery = hookDeliveryFromError(error);
+      reportActions.push(
+        reportRow(event, "failed", describeHookDelivery(delivery), null, delivery),
+      );
     }
   }
 
@@ -684,6 +714,7 @@ function reportRow(
   status: EventStatus,
   reason: string,
   hookRunId: string | null = null,
+  delivery: OpenClawHookDelivery | null = null,
 ): JsonObject {
   return {
     key: event.key,
@@ -699,6 +730,7 @@ function reportRow(
     run_id: event.runId,
     cluster_id: event.clusterId,
     hook_run_id: hookRunId,
+    delivery: delivery ? hookDeliveryReport(delivery) : null,
     url: event.url,
   };
 }

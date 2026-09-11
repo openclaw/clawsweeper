@@ -4,7 +4,7 @@
 - Owner: ClawSweeper maintainers and the authorized repair operator
 - Source of truth: repair workflows/source, current gates, focused tests, and
   live read-only GitHub state where needed
-- Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
+- Last verified: `openclaw/clawsweeper@42226a81c43c2c8ded17a684a706e58f3a58577a`
 - Update when: commands, trust checks, gates, tokens, runners, routing,
   publication, recovery, or promotion rules change
 
@@ -208,6 +208,21 @@ Successful event notifications are recorded in
 `openclaw/clawsweeper-state`, keyed by event type, repo, target, action, status,
 and stable mutation evidence. This prevents duplicate Discord posts when the
 publish workflow reruns.
+
+The notifier waits for the direct OpenClaw hook completion and records a
+bounded delivery classification in its report. `delivered`, `suppressed`, and
+`not-requested` are terminal and may enter the notification ledger. A valid
+admission-only response from an older OpenClaw is terminal `admitted`: its
+report states that delivery observability is unavailable, and ledgered
+notifiers preserve their prior at-most-once behavior. `failed` and `unknown`
+remain non-ledgered so the existing rerun path can retry them.
+Verified message-tool delivery wins even when automatic hook delivery was
+disabled or later completion fields report an error. Exact silent replies and
+explicit suppression evidence become `suppressed`; bare `skipped` and visible
+replies without verified delivery remain nonconclusive. Deploy OpenClaw first
+when possible so ClawSweeper receives completion observability immediately.
+OpenClaw Bay is unaffected because its public status and event contracts do not
+consume notification reports or ledgers.
 
 ## Autonomous Flow
 
