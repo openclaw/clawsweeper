@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "captured_at": "2026-09-08T06:32:10.270Z",
+  "window": {
+    "id": "6h",
+    "start_at": "2026-09-08T00:32:10.270Z",
+    "end_at": "2026-09-08T06:32:10.270Z",
+    "bucket_seconds": 900,
+    "bucket_count": 24
+  },
+  "collection": { "state": "complete", "complete": true, "scan_limit": 10000 },
+  "activity": { "state": "observed" },
+  "direct": {
+    "complete": true,
+    "rows": 678,
+    "latest_observed_at": "2026-09-08T06:32:05.397Z",
+    "counts": { "accepted": 584, "deduped": 0, "superseded": 59, "fallback": 35 },
+    "buckets": [
+      { "index": 0, "counts": { "accepted": 31, "deduped": 0, "superseded": 0, "fallback": 0 } },
+      { "index": 1, "counts": { "accepted": 34, "deduped": 0, "superseded": 5, "fallback": 0 } },
+      { "index": 2, "counts": { "accepted": 33, "deduped": 0, "superseded": 5, "fallback": 2 } },
+      { "index": 3, "counts": { "accepted": 29, "deduped": 0, "superseded": 3, "fallback": 2 } },
+      { "index": 4, "counts": { "accepted": 23, "deduped": 0, "superseded": 5, "fallback": 0 } },
+      { "index": 5, "counts": { "accepted": 19, "deduped": 0, "superseded": 2, "fallback": 0 } },
+      { "index": 6, "counts": { "accepted": 32, "deduped": 0, "superseded": 4, "fallback": 5 } },
+      { "index": 7, "counts": { "accepted": 27, "deduped": 0, "superseded": 0, "fallback": 3 } },
+      { "index": 8, "counts": { "accepted": 29, "deduped": 0, "superseded": 3, "fallback": 0 } },
+      { "index": 9, "counts": { "accepted": 24, "deduped": 0, "superseded": 1, "fallback": 1 } },
+      { "index": 10, "counts": { "accepted": 16, "deduped": 0, "superseded": 4, "fallback": 2 } },
+      { "index": 11, "counts": { "accepted": 26, "deduped": 0, "superseded": 2, "fallback": 3 } },
+      { "index": 12, "counts": { "accepted": 23, "deduped": 0, "superseded": 3, "fallback": 1 } },
+      { "index": 13, "counts": { "accepted": 19, "deduped": 0, "superseded": 1, "fallback": 0 } },
+      { "index": 14, "counts": { "accepted": 18, "deduped": 0, "superseded": 2, "fallback": 2 } },
+      { "index": 15, "counts": { "accepted": 13, "deduped": 0, "superseded": 5, "fallback": 3 } },
+      { "index": 16, "counts": { "accepted": 14, "deduped": 0, "superseded": 4, "fallback": 1 } },
+      { "index": 17, "counts": { "accepted": 26, "deduped": 0, "superseded": 2, "fallback": 0 } },
+      { "index": 18, "counts": { "accepted": 26, "deduped": 0, "superseded": 0, "fallback": 2 } },
+      { "index": 19, "counts": { "accepted": 25, "deduped": 0, "superseded": 1, "fallback": 1 } },
+      { "index": 20, "counts": { "accepted": 34, "deduped": 0, "superseded": 2, "fallback": 5 } },
+      { "index": 21, "counts": { "accepted": 25, "deduped": 0, "superseded": 2, "fallback": 1 } },
+      { "index": 22, "counts": { "accepted": 14, "deduped": 0, "superseded": 3, "fallback": 1 } },
+      { "index": 23, "counts": { "accepted": 24, "deduped": 0, "superseded": 0, "fallback": 0 } }
+    ]
+  },
+  "batch": {
+    "complete": true,
+    "rows": 69,
+    "latest_observed_at": "2026-09-08T06:26:13.242Z",
+    "counts": { "superseded": 48, "retryable": 20, "permanent": 1 },
+    "buckets": [
+      { "index": 0, "counts": { "superseded": 2, "retryable": 1, "permanent": 0 } },
+      { "index": 1, "counts": { "superseded": 0, "retryable": 0, "permanent": 0 } },
+      { "index": 2, "counts": { "superseded": 1, "retryable": 0, "permanent": 0 } },
+      { "index": 3, "counts": { "superseded": 2, "retryable": 0, "permanent": 0 } },
+      { "index": 4, "counts": { "superseded": 1, "retryable": 0, "permanent": 0 } },
+      { "index": 5, "counts": { "superseded": 1, "retryable": 1, "permanent": 0 } },
+      { "index": 6, "counts": { "superseded": 5, "retryable": 3, "permanent": 0 } },
+      { "index": 7, "counts": { "superseded": 1, "retryable": 0, "permanent": 0 } },
+      { "index": 8, "counts": { "superseded": 5, "retryable": 2, "permanent": 0 } },
+      { "index": 9, "counts": { "superseded": 1, "retryable": 0, "permanent": 0 } },
+      { "index": 10, "counts": { "superseded": 1, "retryable": 0, "permanent": 0 } },
+      { "index": 11, "counts": { "superseded": 3, "retryable": 3, "permanent": 0 } },
+      { "index": 12, "counts": { "superseded": 2, "retryable": 1, "permanent": 0 } },
+      { "index": 13, "counts": { "superseded": 0, "retryable": 0, "permanent": 1 } },
+      { "index": 14, "counts": { "superseded": 0, "retryable": 1, "permanent": 0 } },
+      { "index": 15, "counts": { "superseded": 2, "retryable": 1, "permanent": 0 } },
+      { "index": 16, "counts": { "superseded": 3, "retryable": 1, "permanent": 0 } },
+      { "index": 17, "counts": { "superseded": 0, "retryable": 0, "permanent": 0 } },
+      { "index": 18, "counts": { "superseded": 1, "retryable": 1, "permanent": 0 } },
+      { "index": 19, "counts": { "superseded": 4, "retryable": 0, "permanent": 0 } },
+      { "index": 20, "counts": { "superseded": 0, "retryable": 0, "permanent": 0 } },
+      { "index": 21, "counts": { "superseded": 8, "retryable": 2, "permanent": 0 } },
+      { "index": 22, "counts": { "superseded": 1, "retryable": 3, "permanent": 0 } },
+      { "index": 23, "counts": { "superseded": 4, "retryable": 0, "permanent": 0 } }
+    ]
+  },
+  "provenance": {
+    "durable_server_observed": true,
+    "public_aggregate_only": true,
+    "retention_seconds": 604800
+  }
+}

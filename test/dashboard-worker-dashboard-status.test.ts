@@ -21,6 +21,11 @@ import {
   buildExactReviewQueueRequest,
 } from "./dashboard-worker-harness.ts";
 import { publicHealthHistoryContract } from "../dashboard/worker.ts";
+import { publicRecentDurablePublicationEventsProjection } from "../dashboard/public-observability.ts";
+import {
+  publicationEventsFixture,
+  publicationStatusFixture,
+} from "./helpers/publication-status-fixture.ts";
 
 const ISSUE_TRIAGE_VIEW_IDS = [
   "clawsweeper",
@@ -924,7 +929,7 @@ test("dashboard sanitizes stored status immediately and never renders transport 
   assert.ok(script);
   const marker = "synthetic-browser-storage-marker";
 
-  const run = async (cachedStatus: string | null) => {
+  const run = async (cachedStatus: string | null, fetchedStatus?: unknown) => {
     const elements = new Map<string, Record<string, unknown>>();
     const elementFor = (id: string) => {
       if (!elements.has(id)) {
@@ -962,6 +967,7 @@ test("dashboard sanitizes stored status immediately and never renders transport 
       fetch: async () => ({
         headers: { get: () => null },
         json: async () => {
+          if (fetchedStatus !== undefined) return structuredClone(fetchedStatus);
           throw new Error(`${marker} https://invalid.example/private?item=1`);
         },
         ok: true,
@@ -983,7 +989,7 @@ test("dashboard sanitizes stored status immediately and never renders transport 
     });
     new Script(script).runInContext(context);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    return { elements, removed, writes };
+    return { context, elements, removed, writes };
   };
 
   const cached = JSON.stringify({
@@ -1038,6 +1044,105 @@ test("dashboard sanitizes stored status immediately and never renders transport 
   assert.equal(invalidCache.removed, true);
   assert.equal(invalidCache.writes.length, 0);
   assert.doesNotMatch(JSON.stringify([...invalidCache.elements.values()]), new RegExp(marker, "i"));
+
+  for (const complete of [
+    [true, true],
+    [true, false],
+    [false, true],
+    [false, false],
+  ]) {
+    for (const idle of [false, true]) {
+      const events = publicRecentDurablePublicationEventsProjection(
+        publicationEventsFixture(Date.now(), complete, idle),
+      )!;
+      const expected = {
+        window: { id: events.window.id },
+        collection: { state: events.collection.state },
+        direct: { counts: { accepted: events.direct.counts.accepted } },
+        batch: { counts: { retryable: events.batch.counts.retryable } },
+      };
+      const status = {
+        ...publicationStatusFixture(),
+        recent_durable_publication_events: { ...events, private_marker: marker },
+      };
+      const fetched = await run(null, status);
+      const stored = fetched.writes.at(-1)!;
+      assert.deepEqual(JSON.parse(stored).recent_durable_publication_events, expected);
+      assert.equal(stored.includes(marker), false);
+      const reloaded = await run(stored);
+      assert.deepEqual(
+        JSON.parse(reloaded.writes.at(-1)!).recent_durable_publication_events,
+        expected,
+      );
+      for (const result of [fetched, reloaded]) {
+        const rendered = String(
+          result.elements.get("recent-durable-publication-events")?.innerHTML,
+        );
+        assert.match(rendered, /Trailing 24h window/);
+        assert.ok(
+          rendered.includes(`<strong>${expected.direct.counts.accepted ?? "unknown"}</strong>`),
+        );
+        assert.ok(
+          rendered.includes(`<strong>${expected.batch.counts.retryable ?? "unknown"}</strong>`),
+        );
+        assert.deepEqual(
+          JSON.parse(
+            JSON.stringify(
+              result.context.dashboardStatusSnapshot(result.context.dashboardStatusSnapshot(status))
+                .recent_durable_publication_events,
+            ),
+          ),
+          expected,
+        );
+      }
+    }
+  }
+
+  const browser = withoutCache.context;
+  const project = (events: unknown) =>
+    JSON.parse(
+      JSON.stringify(
+        browser.dashboardStatusSnapshot({
+          ...publicationStatusFixture(),
+          recent_durable_publication_events: events,
+        }).recent_durable_publication_events,
+      ),
+    );
+  assert.equal(project(null), null);
+  assert.equal(project(undefined), null);
+  for (const count of [undefined, null, -1, 0.5, 10_001, "1", NaN, Infinity]) {
+    for (const [lane, outcome] of [
+      ["direct", "accepted"],
+      ["batch", "retryable"],
+    ]) {
+      const events = publicationEventsFixture();
+      const projected = project({ ...events, [lane]: { counts: { [outcome]: count } } });
+      assert.equal(projected[lane].counts[outcome], null);
+      assert.equal(projected.collection.state, "unknown");
+      assert.deepEqual(project(projected), projected);
+    }
+  }
+  const bounded = project({
+    ...publicationEventsFixture(),
+    direct: { counts: { accepted: 10_000 } },
+    batch: { counts: { retryable: 10_000 } },
+  });
+  assert.equal(bounded.direct.counts.accepted, 10_000);
+  assert.equal(bounded.batch.counts.retryable, 10_000);
+  const closed = project({
+    ...publicationEventsFixture(),
+    window: { id: marker },
+    collection: { state: marker },
+    direct: { counts: {} },
+    batch: { counts: {} },
+  });
+  assert.deepEqual(closed, {
+    window: { id: null },
+    collection: { state: "unknown" },
+    direct: { counts: { accepted: null } },
+    batch: { counts: { retryable: null } },
+  });
+  assert.equal(JSON.stringify(closed).includes(marker), false);
 });
 
 test("dashboard reprojects separately fetched public observability before rendering", async () => {
