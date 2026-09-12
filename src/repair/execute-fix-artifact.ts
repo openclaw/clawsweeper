@@ -769,7 +769,7 @@ function isBlockedFixError(error: JsonValue) {
   if (isRepairBranchPushBlocked(error)) return true;
   if (isRetryableCodexErrorMessage(String(error?.message ?? error))) return true;
   if (isCodexContextLimitError(String(error?.message ?? error))) return true;
-  return /external base blocker|Codex produced no target repo changes|Codex \/review did not pass|Codex (?:fix worker|review-fix worker|\/review) timed out|Codex (?:fix worker|review-fix worker|\/review) failed|validation command failed|command timed out after \d+ms: git (?:fetch|push)|rebase (?:conflicts remain unresolved|produced additional conflicts)/i.test(
+  return /external base blocker|Codex produced no target repo changes|Codex \/review did not pass|Codex (?:fix worker|review-fix worker|validation-fix worker|\/review) timed out|Codex (?:fix worker|review-fix worker|validation-fix worker|\/review) failed|validation command failed|command timed out after \d+ms: git (?:fetch|push)|rebase (?:conflicts remain unresolved|produced additional conflicts)/i.test(
     String(error?.message ?? error),
   );
 }
