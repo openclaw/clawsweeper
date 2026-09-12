@@ -45,6 +45,7 @@
     "dashboard/record-snapshot-uploads.ts",
     "dashboard/record-snapshots.ts",
     "dashboard/review-observability.ts",
+    "dashboard/review-proof-execution.ts",
     "dashboard/review-proof-artifacts.ts",
     "dashboard/review-proof-producer-auth.ts",
     "dashboard/review-proof-requests.ts",

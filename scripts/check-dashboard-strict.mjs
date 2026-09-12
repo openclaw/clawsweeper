@@ -50,6 +50,7 @@ export const DASHBOARD_STRICT_BASELINE_FILES = Object.freeze([
   "dashboard/record-snapshot-uploads.ts",
   "dashboard/record-snapshots.ts",
   "dashboard/review-observability.ts",
+  "dashboard/review-proof-execution.ts",
   "dashboard/review-proof-artifacts.ts",
   "dashboard/review-proof-producer-auth.ts",
   "dashboard/review-proof-requests.ts",
