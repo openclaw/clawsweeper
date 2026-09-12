@@ -657,6 +657,16 @@ and their exact native metadata shape. Any emitted subset and order may qualify;
 duplicate exact findings, unknown variants, lossy decoder buckets, or an
 unqualified deduplicated blob reference refuse admission.
 
+The same table qualifies the exact embedded-credential rejection fixture in
+OpenClaw's `extensions/matrix/src/matrix/client.test.ts` for URI detector 17,
+only with `PLAIN` or `HTML` attribution. Both raw-value digests, the complete
+source line, path, regular-file mode, and committed base/head references must
+match. Retained source-only native scans observed PLAIN findings; the original
+hosted refusal identified HTML for its first finding but did not retain the
+second finding's details. Constructed HTML regression records are not recovered
+hosted evidence. Qualification does not waive that unknown finding or replace
+fresh whole-input admission and a completed review.
+
 One source path may contain multiple independently reviewed fixtures; each
 digest/path/mode tuple must match exactly, so source membership alone never
 qualifies a finding.

@@ -214,6 +214,8 @@ const CRABBOX_POSTGRES_DOC_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  [17, "URI", "PLAIN", "e26b2ccf9953c3e0e675998528577649327e1d3e1072233ff86cad586ca5c05d", "e26b2ccf9953c3e0e675998528577649327e1d3e1072233ff86cad586ca5c05d", "04e4f717532e6f38582816622367e020b28d8db6ced6e714667328853a422484", "extensions/matrix/src/matrix/client.test.ts", "100644"],
+  [17, "URI", "HTML", "e26b2ccf9953c3e0e675998528577649327e1d3e1072233ff86cad586ca5c05d", "e26b2ccf9953c3e0e675998528577649327e1d3e1072233ff86cad586ca5c05d", "04e4f717532e6f38582816622367e020b28d8db6ced6e714667328853a422484", "extensions/matrix/src/matrix/client.test.ts", "100644"],
   [17, "URI", "ESCAPED_UNICODE", "31ff9f3ec446cbcc27e6fc08f3cd96b5d95d8b436b4144f3a098d7c524a863f7", "0d9e27039ed24044fe06ab5145d7b04569ced32d3ff6fe8eb9acf04a75663919", "47171b920ebd0800ac107a92ad80b7279677f0096fad5a367f82fe3b1955c790", "src/logging/redact.test.ts", "100644"],
   [17, "URI", "ESCAPED_UNICODE", "a460200b4a488bc178d0dac30bc5fe027ff86d9c7c94554f5c9d915580bc4239", "839b16fa1dd892daf47ab10d50f7c1957a16ace282fe9e6df67fefc40f7f06ff", "232cce5bf0c7b495e2f008fdc45cbd2bd9afc5394906576e4466411f6841d260", "src/logging/redact.test.ts", "100644"],
   [17, "URI", "ESCAPED_UNICODE", "de7dcbd8612764d80691e85407d899f6e3686afd9ab40964943c3874ffe9571c", "198d323e34c2a045b86adbc72b8cd54bb8f9582175c5c25e6c68b4e374d8873f", "8ff8c788b296b7eb81abaf7f2f48bb4be717f6e8bef76200e7c842dbeea8a15c", "src/logging/redact.test.ts", "100644"],
@@ -249,6 +251,10 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
       !(
         (source === "src/logging/redact.test.ts" &&
           (decoder === "PLAIN" || decoder === "ESCAPED_UNICODE")) ||
+        (source === "extensions/matrix/src/matrix/client.test.ts" &&
+          detectorType === 17 &&
+          detectorName === "URI" &&
+          (decoder === "PLAIN" || decoder === "HTML")) ||
         (source === "docs/operations.md" &&
           detectorType === 968 &&
           detectorName === "Postgres" &&
