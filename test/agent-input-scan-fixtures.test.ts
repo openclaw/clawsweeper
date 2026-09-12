@@ -20,7 +20,7 @@ test("WebVNC fixture policy retains both exact native identities and source witn
   const records = flatObjects(declaration[1]!)
     .filter((body) => body.includes('"internal/cli/webvnc_test.go"'))
     .map((body) => {
-      const property = /([A-Za-z]\w*):\s*("(?:[^"\\]|\\.)*"|\[[^\[\]]*\]),/g;
+      const property = /([A-Za-z]\w*):\s*("(?:[^"\\]|\\.)*"|\[[^[\]]*\]),/g;
       const entries = [...body.matchAll(property)].map((match) => {
         const value: unknown = JSON.parse(match[2]!);
         assert.ok(
