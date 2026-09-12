@@ -2284,8 +2284,8 @@ test("agent workflows install pinned CLI releases and keep runner models secret"
     ".github/workflows/sweep.yml",
   ].map((file) => readText(file));
 
-  assert.match(action, /codex-version:[\s\S]*default: "0\.153\.3"/);
-  assert.match(action, /proxy-version:[\s\S]*default: "0\.139\.0"/);
+  assert.match(action, /codex-version:[\s\S]*default: "0\.154\.0"/);
+  assert.match(action, /proxy-version:[\s\S]*default: "0\.154\.0"/);
   assert.doesNotMatch(action, /@latest/);
   assert.match(localCheck, /CLAWSWEEPER_LOCAL_CODEX_MODEL \?\? "gpt-5\.6-sol"/);
   assert.match(localCheck, /model_reasoning_effort="high"/);
