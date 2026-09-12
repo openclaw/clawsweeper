@@ -4296,7 +4296,7 @@ jobs:
           hydrate-git-state: "false"
           hydrate-state-blobs: "false"
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         if: ${{ github.event.schedule == '41 * * * *' }}
         with:
           node-version: 24
@@ -5018,7 +5018,7 @@ jobs:
           permission-issues: read
           permission-pull-requests: read
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
 
@@ -5866,7 +5866,7 @@ jobs:
           filter: blob:none
           persist-credentials: false
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
 
@@ -5961,7 +5961,7 @@ jobs:
           test -s "$RUNNER_TEMP/control-plane-curl.sh"
           source "$RUNNER_TEMP/control-plane-curl.sh"
           declare -F control_plane_curl > /dev/null
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
 

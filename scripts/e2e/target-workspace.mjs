@@ -16,7 +16,7 @@ try {
   writeJson(join(fixture, "package.json"), {
     name: "fixture-root",
     private: true,
-    packageManager: "pnpm@11.10.0",
+    packageManager: JSON.parse(readFileSync("package.json", "utf8")).packageManager,
   });
   writeFileSync(
     join(fixture, "pnpm-workspace.yaml"),

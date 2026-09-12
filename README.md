@@ -1004,7 +1004,7 @@ pnpm run oxformat
 ```
 
 `oxformat` is an alias for `oxfmt`; there is no separate `oxformat` pnpm package.
-The `CI` GitHub Actions workflow uses the latest Node release and runs
+The `CI` GitHub Actions workflow uses the latest Node 24 release and runs
 `pnpm run check` on pushes, pull requests, and manual dispatches. The check gate
 includes the full test suite, a strict changed-surface coverage threshold, and a
 full compiled-repo coverage ratchet. It builds once, runs independent static and
@@ -1017,6 +1017,10 @@ Node test files are expanded by `scripts/run-node-tests.mjs` instead of the
 shell, so the same targets work on Linux, macOS, and Windows. The runner defaults
 to the smaller of the machine's available parallelism and 16, prints the chosen
 value, and accepts an explicit `--test-concurrency` override for diagnostics.
+`CLAWSWEEPER_TEST_CONCURRENCY` sets the default for CLI runs when that flag is
+absent. CI uses eight test workers; coverage thresholds and test selection stay
+the same. Crabbox diagnostic bundles under `.crabbox/` are generated scratch
+and are ignored by Git.
 
 ## GitHub Actions Setup
 

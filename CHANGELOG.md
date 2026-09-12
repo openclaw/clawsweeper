@@ -21,6 +21,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Refresh pnpm to 12.4.1 and Wrangler to 4.131.0, pin setup-node v7, and run CI with eight test workers while preserving the full suite, coverage gates, Node 24 floor, and 48-hour release-age policy.
+
 - Prepare the target's reviewed Knip helper for selected OpenClaw changed-gate scans, including current TypeScript runners and native pnpm 12 cache keys. Restore its offline cache between attempts without weakening frozen dependency or release-age checks.
 - Preserve the original validation failure or timeout when a checkout identity rejection also occurs, keeping protected-input and publication gates intact.
 - Retain blocked execution reports and recovery requests when a validation-fix worker times out or exits without diagnostics, while preserving failed validation and publication gates.

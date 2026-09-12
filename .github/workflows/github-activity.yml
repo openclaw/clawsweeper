@@ -98,55 +98,10 @@ jobs:
           filter: blob:none
           persist-credentials: false
 
-      - uses: actions/setup-node@v6
+      - uses: ./.github/actions/setup-pnpm
         if: steps.core-budget.outputs.skip != 'true'
         with:
-          node-version: "24"
-
-      - name: Enable pinned pnpm
-        if: steps.core-budget.outputs.skip != 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          corepack enable
-          for attempt in 1 2 3; do
-            if corepack prepare "pnpm@11.10.0" --activate; then
-              exit 0
-            fi
-            sleep "$((attempt * 10))"
-          done
-          corepack prepare "pnpm@11.10.0" --activate
-
-      - name: Resolve pnpm store
-        id: pnpm-store
-        if: steps.core-budget.outputs.skip != 'true'
-        shell: bash
-        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/cache@v6
-        if: steps.core-budget.outputs.skip != 'true'
-        with:
-          path: ${{ steps.pnpm-store.outputs.path }}
-          key: ${{ runner.os }}-pnpm-11.10.0-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-11.10.0-
-            ${{ runner.os }}-pnpm-
-
-      - name: Install dependencies
-        if: steps.core-budget.outputs.skip != 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3; do
-            if pnpm install --frozen-lockfile; then
-              break
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              exit 1
-            fi
-            sleep "$((attempt * 10))"
-          done
-          pnpm run build:repair
+          build-script: build:repair
 
       - name: Dispatch spam scan candidate
         if: steps.core-budget.outputs.skip != 'true'

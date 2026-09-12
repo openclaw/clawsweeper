@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   applyProcessOutcome,
   calculateTestConcurrency,
+  configuredTestConcurrency,
   parseArguments,
   resolveTestFiles,
   runNodeTests,
@@ -27,6 +28,18 @@ test("test runner caps adaptive concurrency at sixteen", () => {
   assert.equal(calculateTestConcurrency(4), 4);
   assert.equal(calculateTestConcurrency(16), 16);
   assert.equal(calculateTestConcurrency(32), 16);
+});
+
+test("test runner environment override is validated and CLI choice takes precedence", () => {
+  assert.equal(configuredTestConcurrency(undefined, {}), undefined);
+  assert.equal(configuredTestConcurrency(undefined, { CLAWSWEEPER_TEST_CONCURRENCY: "8" }), 8);
+  assert.equal(configuredTestConcurrency(2, { CLAWSWEEPER_TEST_CONCURRENCY: "invalid" }), 2);
+  for (const value of ["", "0", "-1", "1.5", "invalid", "9007199254740992"]) {
+    assert.throws(
+      () => configuredTestConcurrency(undefined, { CLAWSWEEPER_TEST_CONCURRENCY: value }),
+      /CLAWSWEEPER_TEST_CONCURRENCY must be/,
+    );
+  }
 });
 
 test("test runner expands named targets with sorted de-duplicated files", () => {

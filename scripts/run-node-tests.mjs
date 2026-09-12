@@ -4,8 +4,8 @@
  * Definition: expand one named ClawSweeper test target and run it with Node's
  * built-in test runner. The script does not build sources or mutate fixtures.
  *
- * Parameters: a required target, an optional positive --test-concurrency, and
- * optional Node test-runner arguments after `--`.
+ * Parameters: a required target, an optional positive --test-concurrency (or
+ * CLAWSWEEPER_TEST_CONCURRENCY), and Node test-runner arguments after `--`.
  *
  * Outputs: the selected target/concurrency/file count on stderr, inherited TAP
  * output, and the child runner's exit code or terminating signal.
@@ -48,6 +48,9 @@ Options:
   -h, --help                  Show this help
   --                          Forward remaining arguments to node --test
 
+Environment:
+  CLAWSWEEPER_TEST_CONCURRENCY  Positive integer used when the CLI override is absent
+
 Outputs:
   Writes the selected target, concurrency, and file count to stderr. Test output
   uses inherited stdio. The process preserves the child exit code or signal.
@@ -67,6 +70,14 @@ export function calculateTestConcurrency(parallelism = availableParallelism()) {
   // subprocess, and filesystem contention even on large hosts. Sixteen retains
   // useful parallelism without making that host-specific result a fixed demand.
   return Math.min(parallelism, MAX_TEST_CONCURRENCY);
+}
+
+export function configuredTestConcurrency(explicit, env = process.env) {
+  if (explicit !== undefined) return explicit;
+  const value = env.CLAWSWEEPER_TEST_CONCURRENCY;
+  return value === undefined
+    ? undefined
+    : parsePositiveInteger(value, "CLAWSWEEPER_TEST_CONCURRENCY");
 }
 
 export function parseArguments(argv) {
@@ -199,7 +210,12 @@ async function main() {
       process.stdout.write(HELP);
       return;
     }
-    applyProcessOutcome(await runNodeTests(options));
+    applyProcessOutcome(
+      await runNodeTests({
+        ...options,
+        concurrency: configuredTestConcurrency(options.concurrency),
+      }),
+    );
   } catch (error) {
     console.error(`run-node-tests: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
