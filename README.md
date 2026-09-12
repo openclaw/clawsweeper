@@ -575,7 +575,7 @@ Repair reviews scan the committed, staged, unstaged, and applicable untracked
 bytes of the validated checkout. Clean text-converted checkouts retain both
 canonical Git and raw working bytes in scan coverage. The host never starts a target-bundled autoreview helper or second reviewer.
 
-Hosted Codex and OpenClaw setup share the checksum-pinned TruffleHog 3.97.1
+Hosted Codex and OpenClaw setup share the checksum-pinned TruffleHog 3.97.4
 installer in `.github/actions/setup-review-tools/install.sh`. For local review,
 ClawSweeper first uses a trusted host executable outside both checkouts; when it
 is absent, it bootstraps the exact checksum-pinned release asset into a
@@ -687,7 +687,7 @@ encoded-only blobs remain blocking, as do other findings, verified findings,
 and incomplete scans. Unverified findings alone never qualify: every finding must
 match the exact bytes, source association, and strict detector contract. This
 classification does not expand TruffleHog's detection coverage.
-The classification is pinned to TruffleHog 3.97.1's output contract; scanner
+The classification is pinned to TruffleHog 3.97.4's output contract; scanner
 upgrades require requalification. See `src/agent-input-scan-fixtures.ts`.
 After successful cleanup and final source fences, each accepted fixture/source
 pair emits a host-side structured stderr notice with `event`, `fixtureSha256`,

@@ -22,7 +22,7 @@ review engine in `src/commit-sweeper.ts`, used two ways:
 
 Local review first uses a trusted TruffleHog executable on the host `PATH`,
 outside the source checkout and ClawSweeper checkout. If it is absent,
-ClawSweeper bootstraps the checksum-pinned 3.97.1 release asset into its
+ClawSweeper bootstraps the checksum-pinned 3.97.4 release asset into its
 user-owned cache outside both checkouts before it scans; run
 `pnpm setup:review-tools` to preflight that one-time cache setup. It accepts no
 scanner URL or version override and verifies both the downloaded archive and

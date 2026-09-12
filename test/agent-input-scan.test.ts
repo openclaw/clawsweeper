@@ -790,7 +790,7 @@ process.stdout.write(JSON.stringify({
 }) + '\n');
 process.stderr.write(JSON.stringify({
   level: 'info-0', logger: 'trufflehog', msg: 'finished scanning',
-  trufflehog_version: '3.97.1', chunks: 1, bytes: 1,
+  trufflehog_version: '3.97.4', chunks: 1, bytes: 1,
   verified_secrets: 0, unverified_secrets: 1,
 }) + '\n');
 process.exit(183);
@@ -996,7 +996,7 @@ function classifyExact(
         level: "info-0",
         logger: "trufflehog",
         msg: "finished scanning",
-        trufflehog_version: "3.97.1",
+        trufflehog_version: "3.97.4",
         chunks: 1,
         bytes: 1,
         verified_secrets: 0,
@@ -1021,7 +1021,7 @@ function classifyWithProductionPolicy(
         level: "info-0",
         logger: "trufflehog",
         msg: "finished scanning",
-        trufflehog_version: "3.97.1",
+        trufflehog_version: "3.97.4",
         chunks: 1,
         bytes: 1,
         verified_secrets: verifiedCount,
@@ -1197,7 +1197,7 @@ if (${scenario === "mixed unknown"}) findings.push({...findings[0], Raw: 'unrevi
 process.stdout.write(findings.map(finding => JSON.stringify(finding)).join('\n') + '\n');
 process.stderr.write(JSON.stringify({
   level: 'info-0', logger: 'trufflehog', msg: 'finished scanning',
-  trufflehog_version: '3.97.1', chunks: 2, bytes: 1000,
+  trufflehog_version: '3.97.4', chunks: 2, bytes: 1000,
   verified_secrets: 0, unverified_secrets: findings.length,
 }) + '\n');
 process.exit(183);
@@ -2436,7 +2436,7 @@ if (scenario === 'detector error') process.stderr.write(JSON.stringify({level:'e
 if (scenario === 'info error') process.stderr.write(JSON.stringify({level:'info-0', logger:'trufflehog', msg:'detector failed', error:'synthetic'}) + '\n');
 if (scenario === 'info errors') process.stderr.write(JSON.stringify({level:'info-0', logger:'trufflehog', msg:'detector failed', errors:[]}) + '\n');
 const completion = JSON.stringify({
-  level:'info-0', logger:'trufflehog', msg:'finished scanning', trufflehog_version:scenario === 'wrong version' ? 'changed' : '3.97.1',
+  level:'info-0', logger:'trufflehog', msg:'finished scanning', trufflehog_version:scenario === 'wrong version' ? 'changed' : '3.97.4',
   chunks:2, bytes:1000, verified_secrets:findings.filter(value => value.Verified).length + (scenario === 'verified count' ? 1 : 0), unverified_secrets:findings.filter(value => !value.Verified).length + (scenario === 'wrong count' ? 1 : 0),
 }) + (scenario === 'unterminated stderr' ? '' : '\n');
 if (scenario !== 'missing completion') process.stderr.write(completion);
