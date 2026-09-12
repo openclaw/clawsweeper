@@ -126,8 +126,8 @@ console.log(
       source_sha256: createHash("sha256").update(source).digest("hex"),
       runtime: "built Worker in workerd with persistent SQLite Durable Objects",
       cases: ["idle", "6h", "24h", "7d", "restart"],
-    response_sha256: createHash("sha256")
-      .update(JSON.stringify(observations[1].responseBodies))
+      response_sha256: createHash("sha256")
+        .update(JSON.stringify(observations[1].responseBodies))
         .digest("hex"),
       byte_identical: true,
       private_fixture_identifiers_disclosed: false,
