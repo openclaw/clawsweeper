@@ -16,6 +16,8 @@ const responses = {
   "channel-transform": { status: "ok", delivered: false, deliveryAttempted: true, replyDisposition: "visible", deliverySuppressionReason: "channel_transform" },
   failed: { status: "error", delivered: false, deliveryAttempted: true, deliveryError: "synthetic delivery failure" },
   unknown: { status: "skipped", delivered: false },
+  "unacknowledged-empty": { status: "ok", delivered: false, deliveryAttempted: true, replyDisposition: "empty" },
+  "unacknowledged-visible": { status: "ok", delivered: false, deliveryAttempted: true, replyDisposition: "visible" },
   "not-requested": { status: "ok", delivered: false, deliveryAttempted: false, replyDisposition: "empty" },
 };
 
@@ -88,7 +90,7 @@ async function scenario(surface, outcome) {
       return JSON.parse(readFileSync(report, "utf8"));
     };
     const first = await execute();
-    const expected = outcome === "channel-transform" ? "suppressed" : outcome === "not-requested" && ledgered ? "unknown" : outcome;
+    const expected = outcome.startsWith("unacknowledged-") ? "unknown" : outcome === "channel-transform" ? "suppressed" : outcome === "not-requested" && ledgered ? "unknown" : outcome;
     const actual = ledgered ? first.actions[0].delivery.status : first.delivery.status;
     assert.equal(actual, expected, `${surface}/${outcome}`);
     assert.equal(hooks.length, 1);
@@ -101,16 +103,21 @@ async function scenario(surface, outcome) {
       const second = await execute();
       assert.equal(hooks.length, conclusive ? 1 : 2);
       if (conclusive) assert.equal(second.skipped, 1);
-      else assert.equal(hooks[0].idempotencyKey, hooks[1].idempotencyKey);
+      else {
+        assert.equal(hooks[0].idempotencyKey, hooks[1].idempotencyKey);
+        assert.equal(second.actions[0].delivery.status, expected);
+        assert.equal(existsSync(ledger) ? JSON.parse(readFileSync(ledger, "utf8")).notifications.length : 0, 0);
+        if (surface === "events") assert.equal(dashboard.length, 2);
+      }
     }
     assert.deepEqual(failures, []);
-    results.push({ surface, outcome: expected, hook_requests: hooks.length, dashboard_requests: dashboard.length, persisted_ledger: ledgered ? conclusive : null, rerun: ledgered ? (conclusive ? "deduped" : "retryable with same key") : "gateway owns idempotency" });
+    results.push({ surface, scenario: outcome, outcome: expected, hook_requests: hooks.length, dashboard_requests: dashboard.length, persisted_ledger: ledgered ? conclusive : null, rerun: ledgered ? (conclusive ? "deduped" : "retryable with same key") : "gateway owns idempotency" });
   } finally { await new Promise(resolve => server.close(resolve)); }
 }
 
 try {
   for (const surface of ["merge", "events", "maintainer-report", "github-activity"])
-    for (const outcome of ["delivered", "suppressed", "channel-transform", "failed", "unknown", "admitted", "not-requested"])
+    for (const outcome of ["delivered", "suppressed", "channel-transform", "failed", "unknown", "unacknowledged-empty", "unacknowledged-visible", "admitted", "not-requested"])
       await scenario(surface, outcome);
   const receipt = { runtime: process.version, source_sha256: createHash("sha256").update(readFileSync(join(repo, "src/repair/openclaw-hook.ts"))).digest("hex"), real_built_clis: 4, scenarios: results.length, results, production_mutations: 0, limits: "Synthetic Gateway responses over real loopback HTTP; deployed OpenClaw compatibility and Discord delivery are not established." };
   mkdirSync(join(repo, ".artifacts"), { recursive: true });

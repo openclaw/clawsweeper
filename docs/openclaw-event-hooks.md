@@ -147,8 +147,9 @@ Default behavior:
   fields also report an execution or delivery error;
 - an exact silent reply without verified delivery: classify as `suppressed`,
   preserving the reported reason or deriving `silent`;
-- a visible reply without verified delivery: classify as `failed` or `unknown`,
-  never intentional suppression;
+- an attempted but unacknowledged delivery, with an empty or visible reply:
+  classify as `unknown` unless an explicit execution/delivery error establishes
+  failure or explicit suppression applies; an attempt alone is not failure evidence;
 - no automatic delivery, message-tool delivery, or model reply evidence:
   classify as `not-requested`;
 - `status: "skipped"` without explicit silent-reply or suppression evidence:

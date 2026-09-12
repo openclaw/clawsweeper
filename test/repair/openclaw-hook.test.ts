@@ -247,6 +247,42 @@ test("postOpenClawAgentHook classifies bounded completion results", async () => 
   }
 });
 
+for (const replyDisposition of ["empty", "visible"]) {
+  for (const deliver of [false, true]) {
+    test(`postOpenClawAgentHook preserves unknown ${replyDisposition} acknowledgement with deliver=${deliver}`, async () => {
+      const completion = {
+        status: "ok",
+        replyDisposition,
+        delivered: false,
+        deliveryAttempted: true,
+      };
+      const result = await postOpenClawAgentHook({
+        config,
+        fetcher: async () => Response.json({ runId: "run-123", completion }),
+        post: { ...post, deliver },
+      });
+      assert.deepEqual(result.delivery, {
+        status: "unknown",
+        suppressionReason: null,
+        error: null,
+      });
+
+      for (const failure of [
+        { status: "error" },
+        { deliveryError: "synthetic delivery failure" },
+      ]) {
+        const failed = await postOpenClawAgentHook({
+          config,
+          fetcher: async () =>
+            Response.json({ runId: "run-123", completion: { ...completion, ...failure } }),
+          post: { ...post, deliver },
+        });
+        assert.equal(failed.delivery.status, "failed");
+      }
+    });
+  }
+}
+
 test("postOpenClawAgentHook rejects malformed completion as unknown", async () => {
   const result = await postOpenClawAgentHook({
     config,

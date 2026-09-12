@@ -280,9 +280,6 @@ function classifyHookDelivery(
   if (suppressionReason) {
     return hookDelivery("suppressed", suppressionReason);
   }
-  if (replyDisposition === "visible") {
-    return hookDelivery(value.deliveryAttempted === true ? "failed" : "unknown");
-  }
   if (
     status === "ok" &&
     !deliveryRequested &&
@@ -291,9 +288,6 @@ function classifyHookDelivery(
     value.deliveryAttempted !== true
   ) {
     return hookDelivery("not-requested");
-  }
-  if (value.delivered === false && value.deliveryAttempted === true) {
-    return hookDelivery("failed");
   }
   return hookDelivery("unknown");
 }
