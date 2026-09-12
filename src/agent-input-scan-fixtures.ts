@@ -116,6 +116,21 @@ const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
     sources: ["worker/test/fleet.test.ts"],
   },
   {
+    // Reviewed WebVNC writer-redaction fixtures (Crabbox #544).
+    fixtureSha256: "18cd62c666a4b48f9968cacc2acc34a27c1f15682219d4f45bfb903cfb3d60fc",
+    rawSha256: "d72aa985328cd8b6b8d13182b028f5e5c06e574b9acfddc31dc5ab0655896050",
+    lineSha256s: ["83b93f401c1c6526ce80cca9860fdbf59825c92e70644a6f087e6a1b46b295e8"],
+    decoders: ["PLAIN"],
+    sources: ["internal/cli/webvnc_test.go"],
+  },
+  {
+    fixtureSha256: "5f63e971f3b95e10c500e2c40cfaf423b47c60e1bbb3c1dad9633cef0aa1a10f",
+    rawSha256: "6a160b5adb896b7ae8e5347258bce211ebcb35f422aa9fc0931d2406403e72ae",
+    lineSha256s: ["83b93f401c1c6526ce80cca9860fdbf59825c92e70644a6f087e6a1b46b295e8"],
+    decoders: ["PLAIN"],
+    sources: ["internal/cli/webvnc_test.go"],
+  },
+  {
     // Approved Mac dashboard subframe rejection witness in OpenClaw 9ba01d6c7b1c.
     fixtureSha256: "97c60d02f5114db97718cfe1c3686c0a36fb5138840611c8793c7abbd9c64f71",
     rawSha256: "43690a8c13d4028ed731bc4dfeb37f83adaa4e5849d2e0fa13f746843adec333",
