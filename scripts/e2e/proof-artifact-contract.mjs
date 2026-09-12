@@ -132,21 +132,25 @@ const cases = [
   },
 ];
 const observations = [];
+let baselineWorkerSources;
 try {
   for (const variant of ["base", "candidate"]) {
+    const loadedSources = new Map();
     const plugins =
       variant === "base"
         ? [
             {
               name: "baseline",
               setup(builder) {
-                builder.onLoad({ filter: /\/(src|dashboard)\/.*\.ts$/ }, (args) => ({
-                  contents: execFileSync("git", ["show", `${base}:${relative(root, args.path)}`], {
+                builder.onLoad({ filter: /\/(src|dashboard)\/.*\.ts$/ }, (args) => {
+                  const file = relative(root, args.path);
+                  const contents = execFileSync("git", ["show", `${base}:${file}`], {
                     encoding: "utf8",
                     maxBuffer: 16 * 1024 * 1024,
-                  }),
-                  loader: "ts",
-                }));
+                  });
+                  loadedSources.set(file, createHash("sha256").update(contents).digest("hex"));
+                  return { contents, loader: "ts" };
+                });
               },
             },
           ]
@@ -163,6 +167,7 @@ try {
     const nodePath = resolve(output, `${variant}.mjs`);
     writeFileSync(nodePath, nodeBundle.outputFiles[0].text);
     const node = await import(pathToFileURL(nodePath));
+    loadedSources.clear();
     const workerBundle = await build({
       stdin: {
         contents: workerEntry,
@@ -177,6 +182,14 @@ try {
       target: "es2024",
       plugins,
     });
+    if (variant === "base") {
+      const files = ["dashboard/review-proof-artifacts.ts", "dashboard/review-proof-execution.ts"];
+      for (const file of files)
+        assert.ok(loadedSources.has(file), `baseline Worker did not load ${file}`);
+      baselineWorkerSources = Object.fromEntries(
+        files.map((file) => [file, loadedSources.get(file)]),
+      );
+    }
     const runtime = new Miniflare({
       modules: true,
       script: workerBundle.outputFiles[0].text,
@@ -245,6 +258,7 @@ try {
         metadata_cases: cases.length,
         completion_cases: ["fresh", "cached"],
         equivalent: true,
+        baseline_worker_sources: baselineWorkerSources,
         source_sha256: createHash("sha256")
           .update(
             [
