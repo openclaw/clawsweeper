@@ -41,7 +41,7 @@ The fixed issue-triage views are:
 | `needs-live-repro`        | Needs live repro        | Issues where source evidence exists but live validation would improve confidence. |
 
 View IDs, titles, and descriptions come from server-side definitions. The
-projector rejects missing, duplicate, extra, malformed, or inconsistent views
+shared `dashboard/public-triage.ts` projector rejects missing, duplicate, extra, malformed, or inconsistent views
 instead of accepting a new public dimension implicitly. Counts are safe
 integers no greater than 1,000,000. `item_limit` is between 1 and 1,000 for a
 valid snapshot and describes only the bounded private collection used to

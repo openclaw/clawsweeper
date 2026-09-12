@@ -2,7 +2,7 @@
 
 - Status: active operator reference
 - Owner: ClawSweeper dashboard maintainers
-- Source of truth: `dashboard/worker.ts` request routing and its focused tests
+- Source of truth: `dashboard/worker.ts` request routing, `dashboard/public-triage.ts` triage projections, and their focused tests
 - Last verified: `openclaw/clawsweeper@647503ec44b8e777dd172adf974a945367da0d19`
 - Update when: a public observer route, method, query parameter, response source, or authentication boundary changes
 - Checked by: `pnpm run check:docs`

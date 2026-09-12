@@ -1,3 +1,5 @@
+import { publicTimestamp } from "./public-timestamp.ts";
+import { MAX_TRIAGE_ITEMS_PER_VIEW, publicTriageProjection } from "./public-triage.ts";
 import { githubEtagCacheShard } from "./github-etag-cache.ts";
 export { GithubEtagCache } from "./github-etag-cache.ts";
 import {
@@ -531,13 +533,9 @@ const SUPPORT_WORKFLOW_NAMES = new Set([
 const TRIAGE_CACHE_TTL_SECONDS = 120;
 const DEFAULT_TRIAGE_ITEMS_PER_VIEW = 500;
 const DEFAULT_PR_PROOF_ITEMS_PER_VIEW = 500;
-const MAX_TRIAGE_ITEMS_PER_VIEW = 1000;
 const TRIAGE_SEARCH_PAGE_SIZE = 100;
 const TRIAGE_FOCUSED_FALLBACK_ITEMS_PER_VIEW = 100;
 const TRIAGE_LABEL_PREFIX = "clawsweeper:";
-const PUBLIC_TRIAGE_SCHEMA_VERSION = 2;
-const PUBLIC_TRIAGE_COUNT_LIMIT = 1_000_000;
-const PUBLIC_TRIAGE_ERROR_LIMIT = 20;
 const GITHUB_APP_TOKEN_REFRESH_SKEW_MS = 120_000;
 const GITHUB_APP_TOKEN_DEFAULT_TTL_MS = 50 * 60_000;
 const PR_PROOF_LABEL_NAMES = [
@@ -1888,23 +1886,6 @@ const PUBLIC_STATUS_TIME_FIELDS = new Set([
   "first_seen_at",
   "last_seen_at",
 ]);
-
-const PUBLIC_TIMESTAMP_PATTERN =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
-const PUBLIC_TIMESTAMP_MIN_MS = Date.UTC(2020, 0, 1);
-const PUBLIC_TIMESTAMP_MAX_MS = Date.UTC(2100, 0, 1);
-
-function publicTimestamp(value) {
-  if (typeof value !== "string" || value.length > 35 || !PUBLIC_TIMESTAMP_PATTERN.test(value)) {
-    return null;
-  }
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) &&
-    timestamp >= PUBLIC_TIMESTAMP_MIN_MS &&
-    timestamp < PUBLIC_TIMESTAMP_MAX_MS
-    ? new Date(timestamp).toISOString()
-    : null;
-}
 
 const PUBLIC_STATUS_COUNT_FIELDS = new Set([
   "schema_version",
@@ -3704,152 +3685,6 @@ async function publicTriageCacheProjection(
     if (projection.valid) return projection.value;
   }
   return null;
-}
-
-function publicTriageProjection(value, definitions) {
-  const unavailable = unavailablePublicTriageProjection(definitions);
-  if (!value || typeof value !== "object" || Array.isArray(value)) return unavailable;
-  if (value.schema_version === PUBLIC_TRIAGE_SCHEMA_VERSION) {
-    return publicProjectedTriageProjection(value, definitions, unavailable);
-  }
-  if (value.schema_version !== 1) return unavailable;
-
-  const generatedAt = publicTriageTimestamp(value.generated_at);
-  const diagnostics = value.diagnostics;
-  const errors = diagnostics?.errors;
-  const views = value.views;
-  const counts = value.counts;
-  if (
-    !generatedAt ||
-    !diagnostics ||
-    typeof diagnostics !== "object" ||
-    Array.isArray(diagnostics) ||
-    !Array.isArray(errors) ||
-    errors.length > PUBLIC_TRIAGE_ERROR_LIMIT ||
-    !errors.every((error) => typeof error === "string") ||
-    !Array.isArray(views) ||
-    views.length !== definitions.length ||
-    !counts ||
-    typeof counts !== "object" ||
-    Array.isArray(counts)
-  ) {
-    return unavailable;
-  }
-
-  const projectedViews = publicTriageViews(views, counts, definitions, false);
-  if (!projectedViews) return unavailable;
-  return {
-    valid: true,
-    value: publicTriageProjectionValue(generatedAt, errors.length, definitions, projectedViews),
-  };
-}
-
-function publicProjectedTriageProjection(value, definitions, unavailable) {
-  const generatedAt = publicTriageTimestamp(value.generated_at);
-  const errorCount = publicTriageCount(value.error_count, PUBLIC_TRIAGE_ERROR_LIMIT);
-  if (
-    !generatedAt ||
-    typeof value.complete !== "boolean" ||
-    errorCount === null ||
-    value.complete !== (errorCount === 0) ||
-    !Array.isArray(value.views) ||
-    value.views.length !== definitions.length ||
-    !value.counts ||
-    typeof value.counts !== "object" ||
-    Array.isArray(value.counts)
-  ) {
-    return unavailable;
-  }
-  const projectedViews = publicTriageViews(value.views, value.counts, definitions, true);
-  if (!projectedViews) return unavailable;
-  return {
-    valid: true,
-    value: publicTriageProjectionValue(generatedAt, errorCount, definitions, projectedViews),
-  };
-}
-
-function publicTriageViews(views, counts, definitions, projected) {
-  const byId = new Map();
-  for (const view of views) {
-    if (!view || typeof view !== "object" || Array.isArray(view) || typeof view.id !== "string") {
-      return null;
-    }
-    if (byId.has(view.id)) return null;
-    byId.set(view.id, view);
-  }
-  const result = [];
-  for (const definition of definitions) {
-    const view = byId.get(definition.id);
-    const totalCount = publicTriageCount(view?.total_count, PUBLIC_TRIAGE_COUNT_LIMIT);
-    const itemLimit = publicTriageCount(view?.item_limit, MAX_TRIAGE_ITEMS_PER_VIEW);
-    const countValue = publicTriageCount(counts[definition.id], PUBLIC_TRIAGE_COUNT_LIMIT);
-    if (
-      !view ||
-      totalCount === null ||
-      itemLimit === null ||
-      itemLimit < 1 ||
-      countValue !== totalCount ||
-      !Array.isArray(view.items) ||
-      view.items.length > itemLimit ||
-      totalCount < view.items.length ||
-      (projected && view.items.length !== 0)
-    ) {
-      return null;
-    }
-    result.push({ total_count: totalCount, item_limit: itemLimit });
-  }
-  return byId.size === definitions.length ? result : null;
-}
-
-function publicTriageProjectionValue(generatedAt, errorCount, definitions, projectedViews) {
-  const views = definitions.map((definition, index) => ({
-    id: definition.id,
-    title: definition.title,
-    description: definition.description,
-    total_count: projectedViews[index].total_count,
-    item_limit: projectedViews[index].item_limit,
-    items: [],
-  }));
-  return {
-    schema_version: PUBLIC_TRIAGE_SCHEMA_VERSION,
-    generated_at: generatedAt,
-    complete: errorCount === 0,
-    error_count: errorCount,
-    counts: Object.fromEntries(views.map((view) => [view.id, view.total_count])),
-    views,
-  };
-}
-
-function unavailablePublicTriageProjection(definitions) {
-  const views = definitions.map((definition) => ({
-    id: definition.id,
-    title: definition.title,
-    description: definition.description,
-    total_count: null,
-    item_limit: null,
-    items: [],
-  }));
-  return {
-    valid: false,
-    value: {
-      schema_version: PUBLIC_TRIAGE_SCHEMA_VERSION,
-      generated_at: null,
-      complete: false,
-      error_count: 1,
-      counts: Object.fromEntries(views.map((view) => [view.id, null])),
-      views,
-    },
-  };
-}
-
-function publicTriageCount(value, maximum) {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= maximum
-    ? value
-    : null;
-}
-
-function publicTriageTimestamp(value) {
-  return publicTimestamp(value);
 }
 
 function publicTriageHeaders(cacheControl) {
