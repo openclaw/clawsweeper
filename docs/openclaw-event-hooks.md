@@ -150,8 +150,9 @@ Default behavior:
 - an attempted but unacknowledged delivery, with an empty or visible reply:
   classify as `unknown` unless an explicit execution/delivery error establishes
   failure or explicit suppression applies; an attempt alone is not failure evidence;
-- no automatic delivery, message-tool delivery, or model reply evidence:
-  classify as `not-requested`;
+- no automatic delivery, an empty reply, and explicit `delivered: false` plus
+  `deliveryAttempted: false`: classify as `not-requested`; missing delivery flags
+  leave the outcome `unknown`;
 - `status: "skipped"` without explicit silent-reply or suppression evidence:
   classify as `unknown`;
 - rerun after failure: retry because no success ledger entry exists;

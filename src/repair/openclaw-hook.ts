@@ -284,8 +284,8 @@ function classifyHookDelivery(
     status === "ok" &&
     !deliveryRequested &&
     replyDisposition === "empty" &&
-    value.delivered !== true &&
-    value.deliveryAttempted !== true
+    value.delivered === false &&
+    value.deliveryAttempted === false
   ) {
     return hookDelivery("not-requested");
   }

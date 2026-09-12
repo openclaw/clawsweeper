@@ -10,10 +10,10 @@ node docs/proof/notifier-completion/run-proof.mjs
 ```
 
 The real built merge, event, maintainer-report and GitHub-activity CLIs talk to a
-local HTTP server using synthetic hook responses and fixture inputs. Thirty-six
+local HTTP server using synthetic hook responses and fixture inputs. Forty-eight
 scenarios cover delivered, silent and channel-transform suppression, failure, ambiguous completion,
-attempted-but-unacknowledged empty and visible replies, legacy admission and no
-requested delivery. Merge/event ledger files survive
+attempted-but-unacknowledged empty and visible replies, omitted delivery flags,
+legacy admission and no requested delivery. Merge/event ledger files survive
 separate CLI invocations: conclusive outcomes deduplicate, while inconclusive
 ones retry the same idempotency key. Event dashboard publication remains
 independent of an inconclusive completion. GitHub activity writes its summary.

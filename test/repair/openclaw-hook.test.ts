@@ -283,6 +283,25 @@ for (const replyDisposition of ["empty", "visible"]) {
   }
 }
 
+for (const fixture of [
+  { name: "both flags", flags: {} },
+  { name: "deliveryAttempted", flags: { delivered: false } },
+  { name: "delivered", flags: { deliveryAttempted: false } },
+]) {
+  test(`postOpenClawAgentHook preserves unknown when completion lacks ${fixture.name}`, async () => {
+    const result = await postOpenClawAgentHook({
+      config,
+      fetcher: async () =>
+        Response.json({
+          runId: "run-123",
+          completion: { status: "ok", replyDisposition: "empty", ...fixture.flags },
+        }),
+      post: { ...post, deliver: false },
+    });
+    assert.deepEqual(result.delivery, { status: "unknown", suppressionReason: null, error: null });
+  });
+}
+
 test("postOpenClawAgentHook rejects malformed completion as unknown", async () => {
   const result = await postOpenClawAgentHook({
     config,
