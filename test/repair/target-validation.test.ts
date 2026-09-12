@@ -5452,6 +5452,36 @@ test("changed-gate compiler cache isolation still rejects unrelated ignored-inpu
   assert.equal(fs.existsSync(path.join(artifacts, "tsgo-cache")), false);
 });
 
+test("checkout identity rejection retains the failed validation command as its cause", () => {
+  const cwd = gitPackageFixture({ "check:changed": "node scripts/check-changed.mjs" });
+  fs.appendFileSync(path.join(cwd, ".gitignore"), ".artifacts/\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+  fs.mkdirSync(path.join(cwd, ".artifacts"));
+  fs.writeFileSync(path.join(cwd, ".artifacts", "stable.txt"), "original\n");
+  const binDir = makeFixtureDir("clawsweeper-failed-validation-identity-");
+  writeNodeCommandShim(
+    binDir,
+    "pnpm",
+    [
+      'require("node:fs").writeFileSync(".artifacts/stable.txt", "changed\\n");',
+      'console.error("validation failed before cleanup");',
+      "process.exit(23);",
+    ].join("\n"),
+  );
+
+  assert.throws(
+    () => runOpenClawChangedGate(cwd, binDir),
+    (error: Error & { cause?: Error }) => {
+      assert.match(error.message, /unsafe validation command mutated checkout identity/);
+      assert.match(error.message, /changed runtime roots: \.artifacts/);
+      assert.equal(error.cause?.message, "validation failed before cleanup");
+      return true;
+    },
+  );
+});
+
 test("runtime root diagnostics identify same-size poisoning even when its timestamp is restored", () => {
   const cwd = gitPackageFixture({ verify: "node scripts/verify.mjs" });
   git(cwd, "add", ".");

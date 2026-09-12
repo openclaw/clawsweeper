@@ -184,6 +184,11 @@ compiler-cache moves. Neighboring ignored inputs remain protected. A pending
 runtime build retains its bound output until archive smoke completes; cache
 restoration does not exempt that output from verification.
 
+When validation fails and also changes protected checkout inputs, the identity
+rejection remains the primary error and retains the command failure as its cause.
+This preserves timeout and compiler diagnostics without accepting changed inputs
+or treating an unfinished build's ownership lock as disposable cache.
+
 If Codex itself fails an edit pass with a transient tool-transport error, such
 as a closed stdin session from the Codex tool router, the executor consumes an
 edit retry and keeps the branch recoverable instead of failing the whole repair
