@@ -21,6 +21,10 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Fetch and materialize the pinned commit before creating or resuming replacement repair branches, preserving dirty-checkout and concurrent-head safeguards.
+- Keep dashboard publication counts and time windows through refresh and cached reload, preserving explicit zeroes and incomplete data; thanks @vincentkoc.
+- Preserve PR versus issue identity and retained source provenance in failed-shard recovery; thanks @yetval.
+- Extend strict TypeScript checks over review-failure telemetry and source/storage helpers without changing their runtime behavior.
 - Restore Vite config scratch after OpenClaw changed-gate validation so a successful cold run does not fail checkout identity checks; preserve cache and disposable-output permissions under restrictive umasks and cross-device moves without weakening unrelated runtime-input protection.
 
 - Refresh Node 24 type definitions, the Oxc lint/format toolchain, and immutable checkout pins to v7.0.1 while retaining the 48-hour release-age policy and Node 24 minimum.
