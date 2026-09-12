@@ -45,6 +45,8 @@ export const DASHBOARD_STRICT_BASELINE_FILES = Object.freeze([
   "dashboard/live-activity.ts",
   "dashboard/operational-health.ts",
   "dashboard/public-observability.ts",
+  "dashboard/public-timestamp.ts",
+  "dashboard/public-triage.ts",
   "dashboard/pull-request-acknowledgement.ts",
   "dashboard/recent-durable-publication-events.ts",
   "dashboard/record-snapshot-uploads.ts",

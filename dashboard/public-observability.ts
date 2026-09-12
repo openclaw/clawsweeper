@@ -1,3 +1,4 @@
+import { publicTimestamp as timestamp } from "./public-timestamp.ts";
 import {
   GITHUB_EGRESS_CLAIM_GENERATION_BUCKETS,
   GITHUB_EGRESS_LATENCY_BUCKETS,
@@ -109,10 +110,6 @@ const GITHUB_UNIT_FIELDS = [
 const DIRECT_PUBLICATION_OUTCOMES = ["accepted", "deduped", "superseded", "fallback"] as const;
 const BATCH_PUBLICATION_OUTCOMES = ["superseded", "retryable", "permanent"] as const;
 const PUBLICATION_WINDOW_SECONDS = { "6h": 900, "24h": 3600, "7d": 25_200 } as const;
-const PUBLIC_TIMESTAMP_PATTERN =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
-const PUBLIC_TIMESTAMP_MIN_MS = Date.UTC(2020, 0, 1);
-const PUBLIC_TIMESTAMP_MAX_MS = Date.UTC(2100, 0, 1);
 
 type JsonObject = Record<string, unknown>;
 
@@ -124,18 +121,6 @@ function objectValue(value: unknown): JsonObject | null {
 
 function member<const Value>(values: readonly Value[], value: unknown): value is Value {
   return values.some((candidate) => candidate === value);
-}
-
-function timestamp(value: unknown): string | null {
-  if (typeof value !== "string" || value.length > 35 || !PUBLIC_TIMESTAMP_PATTERN.test(value)) {
-    return null;
-  }
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) &&
-    parsed >= PUBLIC_TIMESTAMP_MIN_MS &&
-    parsed < PUBLIC_TIMESTAMP_MAX_MS
-    ? new Date(parsed).toISOString()
-    : null;
 }
 
 function nullableTimestamp(value: unknown): string | null | undefined {
