@@ -126,8 +126,6 @@ jobs:
       - uses: ./.github/actions/setup-pnpm
 
       - name: Run check
-        env:
-          CLAWSWEEPER_TEST_CONCURRENCY: "8"
         run: pnpm run check
 
   sparse-repair-builds:

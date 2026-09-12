@@ -1018,8 +1018,8 @@ shell, so the same targets work on Linux, macOS, and Windows. The runner default
 to the smaller of the machine's available parallelism and 16, prints the chosen
 value, and accepts an explicit `--test-concurrency` override for diagnostics.
 `CLAWSWEEPER_TEST_CONCURRENCY` sets the default for CLI runs when that flag is
-absent. CI uses eight test workers; coverage thresholds and test selection stay
-the same. Crabbox diagnostic bundles under `.crabbox/` are generated scratch
+absent, allowing controlled concurrency experiments through package scripts.
+CI retains the adaptive default. Crabbox diagnostic bundles under `.crabbox/` are generated scratch
 and are ignored by Git.
 
 ## GitHub Actions Setup
