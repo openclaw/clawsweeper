@@ -2915,6 +2915,9 @@ function assertValidationCheckoutIdentityWithinCommand(
     if (
       /unsafe validation command mutated checkout identity/.test(String((error as Error).message))
     ) {
+      // Keep the safety rejection primary without losing a timeout or failed
+      // command that prevented the target from cleaning up its artifacts.
+      if (cause !== undefined) (error as Error).cause = cause;
       throw error;
     }
     // oxlint-disable-next-line preserve-caught-error -- A caller-supplied command failure owns the public cause.
