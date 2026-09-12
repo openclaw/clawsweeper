@@ -12,13 +12,13 @@
 
 ## Use the right repair document
 
-| Need | Canonical page |
-| --- | --- |
-| Understand repair concepts, modes, artifacts, or local CLI entry points | This page |
-| Run or recover live repair work | [Operations](operations.md) |
-| Change implementation objects, stages, ledgers, or extension points | [Internal feature map](internal-features.md) |
-| Change trusted PR autofix/automerge behavior | [Auto-updating PRs](auto-update-prs.md) |
-| Understand the end-to-end steerable session protocol | [Steerable repair automation](../steerable-repair-automation.md) |
+| Need                                                                    | Canonical page                                                   |
+| ----------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| Understand repair concepts, modes, artifacts, or local CLI entry points | This page                                                        |
+| Run or recover live repair work                                         | [Operations](operations.md)                                      |
+| Change implementation objects, stages, ledgers, or extension points     | [Internal feature map](internal-features.md)                     |
+| Change trusted PR autofix/automerge behavior                            | [Auto-updating PRs](auto-update-prs.md)                          |
+| Understand the end-to-end steerable session protocol                    | [Steerable repair automation](../steerable-repair-automation.md) |
 
 The operations runbook is the single source for live command trust, mutation
 gates, runner selection, token boundaries, routing, recovery, and promotion.
@@ -188,6 +188,15 @@ When validation fails and also changes protected checkout inputs, the identity
 rejection remains the primary error and retains the command failure as its cause.
 This preserves timeout and compiler diagnostics without accepting changed inputs
 or treating an unfinished build's ownership lock as disposable cache.
+
+OpenClaw changed-gate setup recognizes both `deadcode-knip-runner.mts` and the
+older `.mjs` runner. It prepares Knip only when the selected paths require a
+scan. Explicit paths take precedence over staged paths, then the base/head
+range plus tracked and untracked worktree changes. Setup uses a reviewed frozen
+graph and preserves the target's minimum release age. An unsupported pin stops
+setup and names the missing reviewed graph. The helper uses the selected pnpm
+version's cache key, including native pnpm 12, and reseeds each isolated
+validation cache after reset.
 
 If Codex itself fails an edit pass with a transient tool-transport error, such
 as a closed stdin session from the Codex tool router, the executor consumes an

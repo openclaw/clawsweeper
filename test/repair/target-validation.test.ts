@@ -3903,29 +3903,50 @@ if (args[0] === "enable") {
   );
 });
 
-test(
-  "OpenClaw stages pinned Knip without package execution and restores its offline cache per command",
-  { skip: process.platform === "win32" },
-  () => {
-    const cwd = gitPackageFixture({ first: 'node -e ""', second: 'node -e ""' });
-    const runnerPath = path.join(cwd, "scripts", "deadcode-knip-runner.mjs");
-    fs.mkdirSync(path.dirname(runnerPath), { recursive: true });
-    fs.writeFileSync(runnerPath, 'const KNIP_VERSION = "6.8.0";\n');
-    git(cwd, "add", ".");
-    git(cwd, "commit", "-m", "initial");
-    attachOrigin(cwd);
-    const changedSource = path.join(cwd, "src", "index.ts");
-    fs.mkdirSync(path.dirname(changedSource), { recursive: true });
-    fs.writeFileSync(changedSource, "export const changed = true;\n");
-    git(cwd, "add", "src/index.ts");
+for (const [extension, knipVersion, pnpmVersion] of [
+  ["mjs", "6.8.0", "10.33.0"],
+  ["mts", "6.32.2", "11.10.0"],
+  ["mts", "6.32.2", "12.3.4"],
+]) {
+  test(
+    `OpenClaw stages pinned Knip ${knipVersion} with pnpm ${pnpmVersion} without package execution and restores its offline cache per command`,
+    { skip: process.platform === "win32" },
+    () => {
+      const cwd = gitPackageFixture({ first: 'node -e ""', second: 'node -e ""' });
+      const packagePath = path.join(cwd, "package.json");
+      const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+      packageJson.packageManager = `pnpm@${pnpmVersion}`;
+      fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+      const runnerPath = path.join(cwd, "scripts", `deadcode-knip-runner.${extension}`);
+      fs.mkdirSync(path.dirname(runnerPath), { recursive: true });
+      fs.writeFileSync(runnerPath, `const KNIP_VERSION = "${knipVersion}";\n`);
+      fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
+      fs.writeFileSync(path.join(cwd, "src", "unchanged.ts"), "export const unchanged = true;\n");
+      const helperSourcePaths = [
+        "scripts/unchanged.mjs",
+        "scripts/unchanged.mts",
+        "test/consumer.test.js",
+        "test/consumer.test.ts",
+      ];
+      for (const file of helperSourcePaths) {
+        fs.mkdirSync(path.dirname(path.join(cwd, file)), { recursive: true });
+        fs.writeFileSync(path.join(cwd, file), "export {};\n");
+      }
+      git(cwd, "add", ".");
+      git(cwd, "commit", "-m", "initial");
+      attachOrigin(cwd);
+      const changedSource = path.join(cwd, "src", "index.ts");
+      fs.mkdirSync(path.dirname(changedSource), { recursive: true });
+      fs.writeFileSync(changedSource, "export const changed = true;\n");
+      git(cwd, "add", "src/index.ts");
 
-    const hostBin = makeFixtureDir("clawsweeper-knip-prefetch-");
-    const targetBin = makeFixtureDir("clawsweeper-knip-pnpm-");
-    const logPath = path.join(hostBin, "invocations.jsonl");
-    writeNodeCommandShim(
-      targetBin,
-      "pnpm",
-      `#!/usr/bin/env node
+      const hostBin = makeFixtureDir("clawsweeper-knip-prefetch-");
+      const targetBin = makeFixtureDir("clawsweeper-knip-pnpm-");
+      const logPath = path.join(hostBin, "invocations.jsonl");
+      writeNodeCommandShim(
+        targetBin,
+        "pnpm",
+        `#!/usr/bin/env node
 const fs = require("node:fs");
 const path = require("node:path");
 const args = process.argv.slice(2);
@@ -3941,10 +3962,10 @@ if (args[0] === "install") {
     fs.writeFileSync(bin, "#!/bin/sh\\nexit 0\\n", { mode: 0o755 });
     const manifest = path.join(process.cwd(), "node_modules", "knip", "package.json");
     fs.mkdirSync(path.dirname(manifest), { recursive: true });
-    fs.writeFileSync(manifest, JSON.stringify({ name: "knip", version: "6.8.0" }));
+    fs.writeFileSync(manifest, JSON.stringify({ name: "knip", version: "${knipVersion}" }));
     if (fs.existsSync(${JSON.stringify(path.join(hostBin, "tamper-lock"))})) {
       const lock = path.join(process.cwd(), "pnpm-lock.yaml");
-      fs.writeFileSync(lock, fs.readFileSync(lock, "utf8").replace("specifier: 6.8.0", "specifier: 6.8.1"));
+      fs.writeFileSync(lock, fs.readFileSync(lock, "utf8").replace("specifier: ${knipVersion}", "specifier: 0.0.0"));
     }
     const configuredRegistry = args.find((arg) => arg.startsWith("--config.registry="))?.slice("--config.registry=".length);
     const registryHost = new URL(configuredRegistry).host.replace(":", "+");
@@ -3955,9 +3976,10 @@ if (args[0] === "install") {
 }
 if (args.at(-1) === "first" || args.at(-1) === "second") {
   const registry = process.env.PNPM_CONFIG_REGISTRY;
+  const registries = ${pnpmVersion === "12.3.4" ? '[["default", registry]]' : '[["@jsr", "https://npm.jsr.io/"], ["default", registry]]'};
   const fullCacheKey = require("node:crypto")
     .createHash("sha256")
-    .update(JSON.stringify([["knip@6.8.0"], [["@jsr", "https://npm.jsr.io/"], ["default", registry]]]))
+    .update(JSON.stringify([["knip@${knipVersion}"], registries]))
     .digest("hex");
   const cacheKey = fullCacheKey.slice(0, 32);
   const marker = path.join(process.env.XDG_CACHE_HOME, "pnpm", "dlx", cacheKey, "marker");
@@ -3969,19 +3991,19 @@ if (args.at(-1) === "first" || args.at(-1) === "second") {
     path.join(process.env.XDG_CACHE_HOME, "pnpm", "metadata-ff-v1.3", host, "knip.json"),
   ]) {
     const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8").trim().split("\\n").at(-1));
-    if (Object.keys(metadata.versions).join(",") !== "6.8.0") process.exit(45);
-    if (!metadata.versions["6.8.0"].dist.integrity.startsWith("sha512-")) process.exit(46);
+    if (Object.keys(metadata.versions).join(",") !== "${knipVersion}") process.exit(45);
+    if (!metadata.versions["${knipVersion}"].dist.integrity.startsWith("sha512-")) process.exit(46);
   }
   const knip = path.join(path.dirname(marker), "pinned", "node_modules", ".bin", "knip");
   if (!fs.readFileSync(knip, "utf8").includes("JITI_FS_CACHE=0")) process.exit(43);
   if (args.at(-1) === "first") fs.writeFileSync(marker, "validation mutated its own cache");
 }
 `,
-    );
-    writeNodeCommandShim(
-      hostBin,
-      "corepack",
-      `#!/usr/bin/env node
+      );
+      writeNodeCommandShim(
+        hostBin,
+        "corepack",
+        `#!/usr/bin/env node
 const fs = require("node:fs");
 const path = require("node:path");
 const args = process.argv.slice(2);
@@ -3994,131 +4016,238 @@ if (args[0] === "enable") {
   fs.chmodSync(target, fs.statSync(source).mode);
 }
 `,
-    );
-    const options = {
-      ...validationOptions("openclaw/openclaw", {
-        toolchain: {
-          packageManager: "pnpm",
-          baseValidationCommands: [],
-          changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
+      );
+      const options = {
+        ...validationOptions("openclaw/openclaw", {
+          toolchain: {
+            packageManager: "pnpm",
+            baseValidationCommands: [],
+            changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
+          },
+        }),
+        installTargetDeps: true,
+        installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+        setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
+      };
+
+      withPreparedPnpmToolchain(
+        cwd,
+        hostBin,
+        options,
+        () => {
+          assert.deepEqual(
+            runAllowedValidationCommands(["pnpm first", "pnpm second"], cwd, options),
+            ["pnpm first", "pnpm second"],
+          );
         },
-      }),
-      installTargetDeps: true,
-      installTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
-      setupTimeoutMs: FAKE_TOOLCHAIN_TIMEOUT_MS,
-    };
+        ["pnpm check:changed"],
+      );
 
-    withPreparedPnpmToolchain(
-      cwd,
-      hostBin,
-      options,
-      () => {
-        assert.deepEqual(
-          runAllowedValidationCommands(["pnpm first", "pnpm second"], cwd, options),
-          ["pnpm first", "pnpm second"],
-        );
-      },
-      ["pnpm check:changed"],
-    );
+      const invocations = fs
+        .readFileSync(logPath, "utf8")
+        .trim()
+        .split(/\r?\n/)
+        .map((line) => JSON.parse(line));
+      const prefetches = invocations.filter(
+        ({ args, cwd: invocationCwd }) =>
+          args[0] === "install" && invocationCwd.includes(".__clawsweeper_pnpm_helper_cache__"),
+      );
+      assert.equal(prefetches.length, 1, "staged source prepares exactly one helper");
+      const prefetch = prefetches[0];
+      assert.ok(prefetch);
+      assert.notEqual(prefetch.cwd, cwd);
+      assert.match(prefetch.cache, /[/\\]corepack[/\\]\.__clawsweeper_pnpm_helper_cache__$/);
+      assert.equal(prefetch.args[0], "install");
+      assert.ok(prefetch.args.includes("--frozen-lockfile"));
+      assert.ok(prefetch.args.includes("--ignore-scripts"));
+      assert.ok(prefetch.args.includes("--config.minimum-release-age=2880"));
+      assert.ok(prefetch.args.includes("--ignore-pnpmfile"));
+      assert.ok(prefetch.args.includes("--config.enable-pre-post-scripts=false"));
+      assert.ok(prefetch.args.includes("--config.enable-global-virtual-store=false"));
+      const validations = invocations.filter(({ args }) =>
+        ["first", "second"].includes(args.at(-1)),
+      );
+      assert.equal(validations.length, 2);
+      assert.notEqual(validations[0].cache, prefetch.cache);
+      assert.equal(validations[0].cache, validations[1].cache);
+      assert.ok(validations.every(({ jitiFsCache }) => jitiFsCache === undefined));
+      assert.ok(validations.every(({ offline }) => offline === "true"));
+      assert.ok(validations.every(({ legacyOffline }) => legacyOffline === "true"));
+      assert.ok(validations.every(({ registry }) => registry === "https://registry.npmjs.org/"));
 
-    const invocations = fs
-      .readFileSync(logPath, "utf8")
-      .trim()
-      .split(/\r?\n/)
-      .map((line) => JSON.parse(line));
-    const prefetch = invocations.find(
-      ({ args, cwd: invocationCwd }) =>
-        args[0] === "install" && invocationCwd.includes(".__clawsweeper_pnpm_helper_cache__"),
-    );
-    assert.ok(prefetch);
-    assert.notEqual(prefetch.cwd, cwd);
-    assert.match(prefetch.cache, /[/\\]corepack[/\\]\.__clawsweeper_pnpm_helper_cache__$/);
-    assert.equal(prefetch.args[0], "install");
-    assert.ok(prefetch.args.includes("--frozen-lockfile"));
-    assert.ok(prefetch.args.includes("--ignore-scripts"));
-    assert.ok(prefetch.args.includes("--config.minimum-release-age=2880"));
-    assert.ok(prefetch.args.includes("--ignore-pnpmfile"));
-    assert.ok(prefetch.args.includes("--config.enable-pre-post-scripts=false"));
-    assert.ok(prefetch.args.includes("--config.enable-global-virtual-store=false"));
-    const validations = invocations.filter(({ args }) => ["first", "second"].includes(args.at(-1)));
-    assert.equal(validations.length, 2);
-    assert.notEqual(validations[0].cache, prefetch.cache);
-    assert.equal(validations[0].cache, validations[1].cache);
-    assert.ok(validations.every(({ jitiFsCache }) => jitiFsCache === undefined));
-    assert.ok(validations.every(({ offline }) => offline === "true"));
-    assert.ok(validations.every(({ legacyOffline }) => legacyOffline === "true"));
-    assert.ok(validations.every(({ registry }) => registry === "https://registry.npmjs.org/"));
+      withCommandOverridesUnset(["corepack", "pnpm"], () =>
+        withPathOnlyPrefix(hostBin, () => {
+          fs.writeFileSync(path.join(hostBin, "tamper-lock"), "1");
+          assert.throws(
+            () => prepareTargetToolchain(cwd, options, ["pnpm check:changed"]),
+            /dependency lockfile does not match the trusted graph/,
+          );
+          fs.rmSync(path.join(hostBin, "tamper-lock"));
 
-    withCommandOverridesUnset(["corepack", "pnpm"], () =>
-      withPathOnlyPrefix(hostBin, () => {
-        fs.writeFileSync(path.join(hostBin, "tamper-lock"), "1");
-        assert.throws(
-          () => prepareTargetToolchain(cwd, options, ["pnpm check:changed"]),
-          /dependency lockfile does not match the trusted graph/,
-        );
-        fs.rmSync(path.join(hostBin, "tamper-lock"));
+          const previousRegistry = process.env.npm_config_registry;
+          process.env.npm_config_registry = "https://registry.example.invalid:8443/";
+          try {
+            prepareTargetToolchain(cwd, options, ["pnpm check:changed"]);
+            assert.deepEqual(runAllowedValidationCommands(["pnpm first"], cwd, options), [
+              "pnpm first",
+            ]);
+            const customValidation = fs
+              .readFileSync(logPath, "utf8")
+              .trim()
+              .split(/\r?\n/)
+              .map((line) => JSON.parse(line))
+              .findLast(({ args }) => args.at(-1) === "first");
+            assert.equal(customValidation.registry, "https://registry.example.invalid:8443/");
+            assert.equal(customValidation.offline, "true");
+            assert.equal(customValidation.legacyOffline, "true");
+          } finally {
+            restoreEnv("npm_config_registry", previousRegistry);
+          }
 
-        const previousRegistry = process.env.npm_config_registry;
-        process.env.npm_config_registry = "https://registry.example.invalid:8443/";
-        try {
-          prepareTargetToolchain(cwd, options, ["pnpm check:changed"]);
-          assert.deepEqual(runAllowedValidationCommands(["pnpm first"], cwd, options), [
-            "pnpm first",
-          ]);
-          const customValidation = fs
-            .readFileSync(logPath, "utf8")
-            .trim()
-            .split(/\r?\n/)
-            .map((line) => JSON.parse(line))
-            .findLast(({ args }) => args.at(-1) === "first");
-          assert.equal(customValidation.registry, "https://registry.example.invalid:8443/");
-          assert.equal(customValidation.offline, "true");
-          assert.equal(customValidation.legacyOffline, "true");
-        } finally {
-          restoreEnv("npm_config_registry", previousRegistry);
-        }
+          const prefetchCount = () =>
+            fs
+              .readFileSync(logPath, "utf8")
+              .split(/\r?\n/)
+              .filter((line) => {
+                if (!line) return false;
+                const invocation = JSON.parse(line);
+                return (
+                  invocation.args[0] === "install" &&
+                  invocation.cwd.includes(".__clawsweeper_pnpm_helper_cache__")
+                );
+              }).length;
+          const expectPreparation = (label, commands, expected, overrides = {}) => {
+            const before = prefetchCount();
+            prepareTargetToolchain(cwd, { ...options, ...overrides }, commands);
+            assert.equal(prefetchCount() - before, expected, label);
+          };
+          expectPreparation("omitted commands", undefined, 0);
+          expectPreparation("omitted changed gate", ["pnpm first"], 0);
+          expectPreparation("skipped changed gate", ["pnpm check:changed"], 0, {
+            skipOpenClawChangedGate: true,
+          });
+          git(cwd, "reset", "--", "src/index.ts");
+          fs.rmSync(changedSource);
+          fs.writeFileSync(path.join(cwd, "README.md"), "# Docs-only repair\n");
+          git(cwd, "add", "README.md");
+          expectPreparation("docs-only delta", ["pnpm check:changed"], 0);
 
-        const previousPrefetches = fs
-          .readFileSync(logPath, "utf8")
-          .split(/\r?\n/)
-          .filter((line) => {
-            if (!line) return false;
-            const invocation = JSON.parse(line);
-            return (
-              invocation.args[0] === "install" &&
-              invocation.cwd.includes(".__clawsweeper_pnpm_helper_cache__")
-            );
-          }).length;
-        prepareTargetToolchain(cwd, options);
-        prepareTargetToolchain(cwd, { ...options, skipOpenClawChangedGate: true }, [
-          "git diff --check",
-        ]);
-        git(cwd, "reset", "--", "src/index.ts");
-        fs.rmSync(changedSource);
-        fs.writeFileSync(path.join(cwd, "README.md"), "# Docs-only repair\n");
-        git(cwd, "add", "README.md");
-        prepareTargetToolchain(cwd, options, ["pnpm check:changed"]);
-        const untrackedSource = path.join(cwd, "src", "new-feature", "new.ts");
-        fs.mkdirSync(path.dirname(untrackedSource), { recursive: true });
-        fs.writeFileSync(untrackedSource, "export const untracked = true;\n");
-        prepareTargetToolchain(cwd, options, ["pnpm check:changed"]);
-        fs.rmSync(untrackedSource);
-        const subsequentPrefetches = fs
-          .readFileSync(logPath, "utf8")
-          .split(/\r?\n/)
-          .filter((line) => {
-            if (!line) return false;
-            const invocation = JSON.parse(line);
-            return (
-              invocation.args[0] === "install" &&
-              invocation.cwd.includes(".__clawsweeper_pnpm_helper_cache__")
-            );
-          }).length;
-        assert.equal(subsequentPrefetches, previousPrefetches + 1);
-      }),
-    );
-  },
-);
+          fs.writeFileSync(
+            path.join(cwd, "src", "unchanged.ts"),
+            "export const unchanged = false;\n",
+          );
+          expectPreparation(
+            "staged docs ignore unstaged source",
+            ["pnpm check:changed --staged"],
+            0,
+          );
+          expectPreparation(
+            "explicit source overrides staged docs",
+            ["pnpm check:changed --staged -- src/unchanged.ts"],
+            1,
+          );
+          git(cwd, "add", "src/unchanged.ts");
+          expectPreparation("staged source", ["pnpm check:changed --staged"], 1);
+          expectPreparation(
+            "explicit docs override staged source",
+            ["pnpm check:changed --staged -- README.md"],
+            0,
+          );
+          expectPreparation(
+            "no-changes overrides explicit source and staged source",
+            ["pnpm check:changed --no-changes --staged -- src/unchanged.ts"],
+            0,
+          );
+          expectPreparation(
+            "help skips explicit source",
+            ["pnpm check:changed --help -- src/unchanged.ts"],
+            0,
+          );
+
+          git(cwd, "commit", "-m", "source and docs changes");
+          git(cwd, "update-ref", "refs/remotes/origin/main", "HEAD");
+          assert.equal(git(cwd, "status", "--porcelain"), "", "ref scenarios use a clean checkout");
+          expectPreparation("empty default delta", ["pnpm check:changed"], 0);
+          expectPreparation(
+            "explicit refs select committed source instead of the default or pinned base",
+            ["pnpm check:changed --base 'HEAD~1' --head HEAD"],
+            1,
+            { pinnedBaseRef: git(cwd, "rev-parse", "HEAD") },
+          );
+          expectPreparation(
+            "explicit head excludes the newer source commit",
+            ["pnpm check:changed --base='HEAD~1' --head='HEAD~1'"],
+            0,
+          );
+          expectPreparation(
+            "inline refs select committed source",
+            ["pnpm check:changed --base='HEAD~1' --head=HEAD"],
+            1,
+          );
+          expectPreparation(
+            "staged mode ignores the committed range",
+            ["pnpm check:changed --staged --base 'HEAD~1' --head HEAD"],
+            0,
+          );
+          expectPreparation(
+            "explicit docs override the committed range",
+            ["pnpm check:changed --base 'HEAD~1' --head HEAD README.md"],
+            0,
+          );
+          const untrackedSource = path.join(cwd, "src", "new-feature", "new.ts");
+          fs.mkdirSync(path.dirname(untrackedSource), { recursive: true });
+          fs.writeFileSync(untrackedSource, "export const untracked = true;\n");
+          expectPreparation(
+            "default delta includes nested untracked source",
+            ["pnpm check:changed"],
+            1,
+          );
+          expectPreparation(
+            "explicit docs ignore untracked source",
+            ["pnpm check:changed -- README.md"],
+            0,
+          );
+          fs.rmSync(untrackedSource);
+          expectPreparation(
+            "explicit unchanged source in a later command",
+            [
+              "pnpm check:changed -- README.md",
+              "pnpm --silent run check:changed -- src/unchanged.ts",
+            ],
+            1,
+          );
+          for (const file of helperSourcePaths) {
+            expectPreparation(`explicit unchanged ${file}`, [`pnpm check:changed -- ${file}`], 1);
+          }
+          const changedScript = path.join(cwd, "scripts", "unchanged.mts");
+          fs.appendFileSync(changedScript, "// Removed an import.\n");
+          expectPreparation("script-only Git delta", ["pnpm check:changed"], 1);
+          fs.writeFileSync(changedScript, "export {};\n");
+          const deletedConsumer = "test/consumer.test.js";
+          fs.rmSync(path.join(cwd, deletedConsumer));
+          git(cwd, "add", deletedConsumer);
+          expectPreparation("deleted staged test consumer", ["pnpm check:changed --staged"], 1);
+          fs.writeFileSync(path.join(cwd, deletedConsumer), "export {};\n");
+          git(cwd, "add", deletedConsumer);
+          for (const file of ["scripts/check.sh", "scripts/check.py", "test/README.md"]) {
+            fs.writeFileSync(path.join(cwd, file), "fixture\n");
+            expectPreparation(`excluded explicit ${file}`, [`pnpm check:changed -- ${file}`], 0);
+            expectPreparation(`excluded Git delta ${file}`, ["pnpm check:changed"], 0);
+            fs.rmSync(path.join(cwd, file));
+          }
+          fs.writeFileSync(runnerPath, 'const KNIP_VERSION = "99.0.0";\n');
+          const beforeUnsupportedPin = prefetchCount();
+          assert.throws(
+            () => prepareTargetToolchain(cwd, options, ["pnpm check:changed -- src/unchanged.ts"]),
+            /unsupported Knip 99\.0\.0; add its reviewed frozen dependency graph/,
+          );
+          assert.equal(prefetchCount(), beforeUnsupportedPin, "unsupported pins never install");
+          fs.writeFileSync(runnerPath, `const KNIP_VERSION = "${knipVersion}";\n`);
+        }),
+      );
+    },
+  );
+}
 
 test(
   "pnpm validation refreshes the prepared executable within the shared setup identity budget",

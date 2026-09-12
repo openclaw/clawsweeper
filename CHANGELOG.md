@@ -21,6 +21,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Prepare the target's reviewed Knip helper for selected OpenClaw changed-gate scans, including current TypeScript runners and native pnpm 12 cache keys. Restore its offline cache between attempts without weakening frozen dependency or release-age checks.
 - Preserve the original validation failure or timeout when a checkout identity rejection also occurs, keeping protected-input and publication gates intact.
 - Retain blocked execution reports and recovery requests when a validation-fix worker times out or exits without diagnostics, while preserving failed validation and publication gates.
 - Fetch and materialize the pinned commit before creating or resuming replacement repair branches, preserving dirty-checkout and concurrent-head safeguards.
