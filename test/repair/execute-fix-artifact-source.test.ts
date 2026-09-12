@@ -312,7 +312,7 @@ test("replacement recovery materializes the fetched commit before branch attachm
   const recovery = source.slice(recoveryStart, recoveryEnd);
 
   const leaseCheck = recovery.indexOf("if (recoveredHeadSha !== remoteLeaseSha)");
-  const materialize = recovery.indexOf("materializeTargetCommitWithIsolation({");
+  const materialize = recovery.indexOf("materializeFetchedReplacementCommit({");
   const branchSwitch = recovery.indexOf("switchTargetBranchWithPlumbing({");
   assert.notEqual(leaseCheck, -1);
   assert.notEqual(materialize, -1);
