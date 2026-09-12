@@ -188,7 +188,11 @@ If Codex itself fails an edit pass with a transient tool-transport error, such
 as a closed stdin session from the Codex tool router, the executor consumes an
 edit retry and keeps the branch recoverable instead of failing the whole repair
 worker immediately. Timeouts and validation failures still use their dedicated
-timeout, validation-fix, and review-fix paths.
+timeout, validation-fix, and review-fix paths. Validation-fix worker timeouts and
+empty-output failures retain a blocked
+execution report and the existing recovery request while returning a failing exit
+status; they do not permit publication or count as passing validation. See the
+[validation-fix outcome proof](../proof/validation-fix-outcome/README.md).
 
 Full worker prompts, Codex transcripts, and raw artifacts stay in GitHub Actions. The committed ledger keeps only the cluster summary, run URL, action counts, apply outcomes, closed targets, and human-review entries.
 
