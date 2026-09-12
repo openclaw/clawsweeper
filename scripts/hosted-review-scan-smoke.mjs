@@ -144,7 +144,7 @@ ${live ? `const child = require('node:child_process').spawnSync(${JSON.stringify
     if (scenario !== "missing")
       writeFileSync(
         join(bin, "trufflehog"),
-        `#!${process.execPath}\n${scenario === "unexpected-output" ? "process.stdout.write('{}');" : `process.exit(${scenario === "findings" ? 183 : 1});`}`,
+        `#!${process.execPath}\nif (process.argv[2] === '--version') { console.log('trufflehog ${TRUFFLEHOG_VERSION}'); process.exit(0); }\n${scenario === "unexpected-output" ? "process.stdout.write('{}');" : `process.exit(${scenario === "findings" ? 183 : 1});`}`,
         { mode: 0o700 },
       );
     // Prompt-only negatives reach the executable boundary without requiring Git

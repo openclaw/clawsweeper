@@ -20,13 +20,13 @@ review engine in `src/commit-sweeper.ts`, used two ways:
 
 ## Usage
 
-Local review first uses a trusted TruffleHog executable on the host `PATH`,
-outside the source checkout and ClawSweeper checkout. If it is absent,
+Local review first qualifies a trusted TruffleHog executable on the host `PATH`,
+outside the source checkout and ClawSweeper checkout. If it is absent or reports a different release,
 ClawSweeper bootstraps the checksum-pinned 3.97.4 release asset into its
 user-owned cache outside both checkouts before it scans; run
 `pnpm setup:review-tools` to preflight that one-time cache setup. It accepts no
 scanner URL or version override and verifies both the downloaded archive and
-cached executable before a clean-environment version check. The mandatory scan
+cached executable before a clean-environment version check. A broken executable or malformed version response refuses admission; it does not bypass a scanner failure. The mandatory scan
 covers the explicit initial payload and complete introduced before/after source
 bytes, independently of prompt truncation. See the [safety model](../README.md#safety-model)
 for refused inputs, the 256 MiB staging cap, deadline, and coverage limits.

@@ -39,7 +39,7 @@ import {
   type ScanSourceRole,
   type StagedScanInput,
 } from "../dist/agent-input-scan-fixtures.js";
-import { useFakeScanner } from "./agent-input-scan-helpers.ts";
+import { useFakeScanner, writeFakeScanner } from "./agent-input-scan-helpers.ts";
 import { writeExactReviewFailureDiagnostics } from "../dist/clawsweeper-review-failure-diagnostics.js";
 
 test("unchanged source scan refusals receive terminal review exit codes", () => {
@@ -124,6 +124,82 @@ function disableManagedScanner(t: test.TestContext) {
     else process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR = previous;
   });
 }
+
+test("an older trusted PATH scanner selects the qualified managed scanner", (t) => {
+  const f = fixture(t);
+  const oldCalls = join(f.root, "old-scanner-calls");
+  const managedCalls = join(f.root, "managed-scanner-calls");
+  const bin = useFakeScanner(t);
+  writeFileSync(
+    join(bin, "trufflehog"),
+    `#!${process.execPath}
+const fs = require('node:fs');
+fs.appendFileSync(${JSON.stringify(oldCalls)}, process.argv[2] + '\\n');
+if (process.argv[2] === '--version') console.log('trufflehog 3.97.1');
+else process.exit(73);
+`,
+    { mode: 0o755 },
+  );
+  const managedBin = join(f.root, "managed-bin");
+  writeFakeScanner(managedBin, `fs.writeFileSync(${JSON.stringify(managedCalls)}, 'scanned');`);
+  const managedPath = realpathSync(join(managedBin, "trufflehog"));
+  const originalCache = process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR;
+  process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR = join(f.root, "managed-cache");
+  const nativeSpawn = childProcess.spawnSync;
+  let installs = 0;
+  t.mock.method(childProcess, "spawnSync", (...args: Parameters<typeof nativeSpawn>) => {
+    if (args[0] === process.execPath && args[1]?.[0]?.endsWith("setup-review-tools.mjs")) {
+      installs++;
+      assert.ok(Number(args[1][2]) > 0 && Number(args[1][2]) <= 5000);
+      return nativeSpawn(
+        process.execPath,
+        ["-e", `process.stdout.write(${JSON.stringify(`${managedPath}\n`)});`],
+        args[2],
+      );
+    }
+    return nativeSpawn(...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    if (originalCache === undefined) delete process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR;
+    else process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR = originalCache;
+  });
+  scanAgentInput({
+    cwd: f.cwd,
+    prompt: "Synthetic input",
+    source: { kind: "prompt" },
+    timeoutMs: 5000,
+  });
+  assert.equal(readFileSync(oldCalls, "utf8"), "--version\n");
+  assert.equal(readFileSync(managedCalls, "utf8"), "scanned");
+  assert.equal(installs, 1);
+});
+
+test("malformed PATH scanner version output refuses instead of falling through", (t) => {
+  const f = fixture(t);
+  disableManagedScanner(t);
+  const bin = useFakeScanner(t);
+  writeFileSync(
+    join(bin, "trufflehog"),
+    `#!${process.execPath}\nconsole.log('private malformed output');`,
+    { mode: 0o755 },
+  );
+  assert.throws(
+    () =>
+      scanAgentInput({
+        cwd: f.cwd,
+        prompt: "Synthetic input",
+        source: { kind: "prompt" },
+        timeoutMs: 5000,
+      }),
+    (error: unknown) =>
+      error instanceof AgentInputScanError &&
+      error.reason === "scanner_failed" &&
+      !error.message.includes("private malformed output"),
+  );
+});
 
 test("scanner bounds Git process growth while preserving complete binary inputs in both scans", (t) => {
   const f = fixture(t);

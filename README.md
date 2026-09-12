@@ -577,8 +577,8 @@ canonical Git and raw working bytes in scan coverage. The host never starts a ta
 
 Hosted Codex and OpenClaw setup share the checksum-pinned TruffleHog 3.97.4
 installer in `.github/actions/setup-review-tools/install.sh`. For local review,
-ClawSweeper first uses a trusted host executable outside both checkouts; when it
-is absent, it bootstraps the exact checksum-pinned release asset into a
+ClawSweeper first qualifies a trusted host executable outside both checkouts; when it
+is absent or reports a different TruffleHog release, it bootstraps the exact checksum-pinned release asset into a
 user-owned cache outside both checkouts. The local bootstrap accepts no URL or
 version override, verifies the download and cached executable, and runs a clean
 environment version check before scanning. Missing tools, unclassified findings, scan errors, source

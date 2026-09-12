@@ -434,7 +434,7 @@ function ensureManagedCacheDirectory(root: string, segments: readonly string[]):
   return current;
 }
 
-function assertVersion(path: string): void {
+export function readTruffleHogVersion(path: string, timeoutMs = 30_000): string {
   const result = spawnSync(path, ["--version"], {
     encoding: "utf8",
     env: {
@@ -443,16 +443,16 @@ function assertVersion(path: string): void {
       TMP: dirname(path),
       TEMP: dirname(path),
     },
-    timeout: 30_000,
+    timeout: Math.min(timeoutMs, 30_000),
     maxBuffer: 4096,
     windowsHide: true,
   });
-  if (
-    result.error ||
-    result.status !== 0 ||
-    `${result.stdout ?? ""}${result.stderr ?? ""}`.trim() !== `trufflehog ${TRUFFLEHOG_VERSION}`
-  )
+  const version = /^trufflehog (\d+\.\d+\.\d+)$/.exec(
+    `${result.stdout ?? ""}${result.stderr ?? ""}`.trim(),
+  )?.[1];
+  if (result.error || result.status !== 0 || !version)
     throw new Error("Trusted scanner version check failed.");
+  return version;
 }
 
 export async function ensureManagedTruffleHog(options: {
@@ -518,7 +518,8 @@ export async function ensureManagedTruffleHog(options: {
   try {
     if (!cachedBinaryMatches(binary, executable))
       throw new Error("Trusted scanner cache verification failed.");
-    assertVersion(binary);
+    if (readTruffleHogVersion(binary) !== TRUFFLEHOG_VERSION)
+      throw new Error("Trusted scanner version check failed.");
     return binary;
   } catch (error) {
     try {
