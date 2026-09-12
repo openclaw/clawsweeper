@@ -524,6 +524,7 @@ function preparePnpmToolchain({
     preparePinnedOpenClawValidationHelper({
       cwd,
       targetRepo,
+      packageManager,
       validationEnv,
       installRegistry,
       remainingTimeoutMs: () =>
@@ -549,19 +550,72 @@ function openClawValidationNeedsPinnedHelper(
   ) {
     return false;
   }
-  const commands = requiredValidationCommands(validationCommands, cwd, options);
-  if (!commands.some(isOpenClawChangedGateValidationCommand)) return false;
-  const changedPaths = options.pinnedBaseRef
-    ? gitChangedFilesFromRef(cwd, options.pinnedBaseRef)
-    : gitChangedFiles(cwd, DEFAULT_BASE_BRANCH);
-  const untrackedPaths = run("git", ["ls-files", "--others", "--exclude-standard", "-z"], {
-    cwd,
-  })
-    .split("\0")
-    .filter(Boolean);
-  return [...changedPaths, ...untrackedPaths].some((file) =>
-    /^(?:src|extensions|ui|packages)\/.+\.[cm]?[jt]sx?$/.test(file),
+  const commands = requiredValidationCommands(validationCommands, cwd, options).flatMap((command) =>
+    resolveAllowedValidationCommandsWithoutWorkspaceBinding(
+      command,
+      cwd,
+      DEFAULT_BASE_BRANCH,
+      options,
+    ),
   );
+  const isScannedSource = (file: string) =>
+    /^(?:src|extensions|ui|packages|scripts|test)\/.+\.[cm]?[jt]sx?$/.test(
+      file.replaceAll("\\", "/").replace(/^\.\//, ""),
+    );
+  for (const command of commands) {
+    const parts = stripEnvPrefix(command);
+    const requirement = packageScriptRequirement(parts);
+    if (
+      requirement?.packageManager !== "pnpm" ||
+      requirement.name !== "check:changed" ||
+      requirement.workspaceScoped
+    ) {
+      continue;
+    }
+    const scriptIndex = parts.indexOf(requirement.name, packageManagerCommandIndex(parts)!);
+    const args = parts.slice(scriptIndex + 1);
+    const separator = args.indexOf("--");
+    const flags = separator === -1 ? args : args.slice(0, separator);
+    if (flags.some((arg) => ["--no-changes", "--help", "-h"].includes(arg))) continue;
+    const paths = separator === -1 ? [] : args.slice(separator + 1);
+    const refs: Record<string, string> = {
+      "--base": options.pinnedBaseRef ?? `origin/${DEFAULT_BASE_BRANCH}`,
+      "--head": "HEAD",
+    };
+    for (let index = 0; index < flags.length; index++) {
+      const arg = flags[index]!;
+      const ref = /^(--base|--head)(?:=(.*))?$/.exec(arg);
+      if (ref) {
+        const value = ref[2] ?? flags[++index];
+        if (!value || value.startsWith("--")) {
+          throw new Error(`check:changed ${ref[1]} requires a value`);
+        }
+        refs[ref[1]!] = value;
+      } else if (!arg.startsWith("-")) paths.push(arg);
+    }
+    // Match check:changed per command: explicit paths beat staged paths,
+    // which beat the selected base/head range plus worktree changes.
+    if (paths.length === 0) {
+      if (flags.includes("--staged")) {
+        paths.push(
+          ...run("git", ["diff", "--cached", "--name-only", "--diff-filter=ACMRD", "-z"], {
+            cwd,
+          })
+            .split("\0")
+            .filter(Boolean),
+        );
+      } else {
+        paths.push(
+          ...gitChangedFilesFromRef(cwd, refs["--base"]!, refs["--head"]!),
+          ...run("git", ["ls-files", "--others", "--exclude-standard", "-z"], { cwd })
+            .split("\0")
+            .filter(Boolean),
+        );
+      }
+    }
+    if (paths.some(isScannedSource)) return true;
+  }
+  return false;
 }
 
 function isOpenClawChangedGateValidationCommand(command: LooseRecord): boolean {
@@ -5277,10 +5331,9 @@ function validationBaseRef(cwd: string, baseBranch: string, options: TargetValid
   return options.pinnedBaseRef;
 }
 
-function gitChangedFilesFromRef(cwd: string, baseRef: string) {
-  const committed = run("git", ["diff", "--name-only", `${baseRef}...HEAD`], { cwd })
-    .split("\n")
-    .map((line) => line.trim())
+function gitChangedFilesFromRef(cwd: string, baseRef: string, headRef = "HEAD") {
+  const committed = run("git", ["diff", "--name-only", "-z", `${baseRef}...${headRef}`], { cwd })
+    .split("\0")
     .filter(Boolean);
   return uniqueStrings([...committed, ...gitStatusPaths(cwd)]);
 }
