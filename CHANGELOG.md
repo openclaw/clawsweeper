@@ -21,6 +21,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Preserve the original validation failure or timeout when a checkout identity rejection also occurs, keeping protected-input and publication gates intact.
 - Retain blocked execution reports and recovery requests when a validation-fix worker times out or exits without diagnostics, while preserving failed validation and publication gates.
 - Fetch and materialize the pinned commit before creating or resuming replacement repair branches, preserving dirty-checkout and concurrent-head safeguards.
 - Keep dashboard publication counts and time windows through refresh and cached reload, preserving explicit zeroes and incomplete data; thanks @vincentkoc.
