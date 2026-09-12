@@ -1089,7 +1089,9 @@ const server = http.createServer((request, response) => {
   });
 });
 server.listen(0, "127.0.0.1", () => {
-  fs.writeFileSync(process.env.WORK_STATE_PORT_PATH, String(server.address().port));
+  const path = process.env.WORK_STATE_PORT_PATH;
+  fs.writeFileSync(path + ".tmp", String(server.address().port));
+  fs.renameSync(path + ".tmp", path);
 });
 `,
     );

@@ -21,6 +21,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Keep Codex turn state updates in order so a slow `active` write cannot overwrite `validating` after completion; stop late heartbeats and abort queued telemetry when the worker exits.
+
 - Refresh pnpm to 12.4.1 and Wrangler to 4.131.0, pin setup-node v7, share workflow setup, and expose a test-concurrency environment override while preserving the adaptive CI default, full suite, coverage gates, Node 24 floor, and 48-hour release-age policy.
 
 - Prepare the target's reviewed Knip helper for selected OpenClaw changed-gate scans, including current TypeScript runners and native pnpm 12 cache keys. Restore its offline cache between attempts without weakening frozen dependency or release-age checks.
