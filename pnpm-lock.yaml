@@ -180,8 +180,8 @@ importers:
         specifier: 3.4.0
         version: 3.4.0
       markdown-it:
-        specifier: ^15.0.1
-        version: 15.0.1
+        specifier: ^15.0.2
+        version: 15.0.2
       oxfmt:
         specifier: ^0.67.0
         version: 0.67.0
@@ -610,8 +610,8 @@ packages:
   linkify-it@6.1.0:
     resolution: {integrity: sha512-wJ/TwpSDTLepCrQoYWYIExIKg5Zchex2Nn5yk2mFnB+6PtdkHtyLx742md9csRjjOnGkKIS/RrbY7l8D6gT9Vw==}
 
-  markdown-it@15.0.1:
-    resolution: {integrity: sha512-9/7gE95FNPkfUWrjJIoHZza2iLmuJlPD0UNMxPi7bxUrbCR525YZY0r+zyfes0dZI5ZZ/uNIXUJca0pJvtw41g==}
+  markdown-it@15.0.2:
+    resolution: {integrity: sha512-q4IGxMv56jCqT4OCRCADBoDP3LO4MhmTXjFbphHPXs4g3j9Xg5RDnxqN8IF/3vIWEU+VCnUq+7JUg/cfy2E6Qw==}
     hasBin: true
 
   mdurl@2.1.0:
@@ -893,7 +893,7 @@ snapshots:
     dependencies:
       uc.micro: 3.0.0
 
-  markdown-it@15.0.1:
+  markdown-it@15.0.2:
     dependencies:
       argparse: 3.0.1
       entities: 8.0.0

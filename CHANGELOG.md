@@ -8,6 +8,7 @@ checkpoint, and status-only commits are intentionally omitted.
 ## 0.3.1 - Unreleased
 
 - Keep webhook receipt validation deterministic when fixed test timestamps pass their 30-day retention window.
+- Refresh Markdown rendering and Wrangler patches, Node 24.21.0, Bun 1.4.2, and the OpenClaw 2026.9.4 runner while preserving the 48-hour dependency release window.
 
 **Highlights:** Preserve later review evidence, reject forged report findings, bound stalled repair calls, and recheck paired-close eligibility before mutations.
 

@@ -3,7 +3,7 @@ description: Install the pinned OpenClaw CLI when ClawSweeper selects the OpenCl
 inputs:
   openclaw-version:
     description: Exact OpenClaw CLI npm package version.
-    default: "2026.9.3"
+    default: "2026.9.4"
   openclaw-source-ref:
     description: >-
       Optional openclaw/openclaw commit SHA. When set, build the CLI from
