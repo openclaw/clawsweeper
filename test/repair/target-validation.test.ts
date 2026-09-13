@@ -5181,7 +5181,14 @@ test("OpenClaw changed-gate compiler cache is disposable and preserves existing 
 
 test("OpenClaw changed gates restore boundary receipts and empty ownership directories", () => {
   for (const artifactsExisted of [true, false]) {
-    for (const command of ["pnpm check:changed", "pnpm check:changed -- src/example.ts"]) {
+    for (const command of [
+      "pnpm check:changed",
+      "pnpm run check:changed",
+      "pnpm check:changed -- src/example.ts",
+      "pnpm check:changed --staged",
+      "pnpm check:changed --base HEAD --head HEAD",
+      "env CI=1 pnpm --silent run check:changed -- src/example.ts",
+    ]) {
       const cwd = gitPackageFixture({ "check:changed": "node scripts/check-changed.mjs" });
       fs.mkdirSync(path.join(cwd, "src"));
       fs.writeFileSync(path.join(cwd, "src/example.ts"), "export {};\n");
@@ -5206,6 +5213,110 @@ test("OpenClaw changed gates restore boundary receipts and empty ownership direc
       assert.equal(fs.existsSync(path.join(cwd, "dist")), false);
       assert.equal(fs.existsSync(artifacts), artifactsExisted);
       if (artifactsExisted) assert.deepEqual(fs.readdirSync(artifacts), []);
+    }
+  }
+});
+
+test("changed-gate selectors restore state before the next command", () => {
+  for (const command of [
+    "pnpm run check:changed",
+    "pnpm check:changed --staged",
+    "pnpm check:changed --base HEAD --head HEAD",
+    "env CI=1 pnpm --silent run check:changed",
+  ]) {
+    const cwd = gitPackageFixture({ "check:changed": "node check.mjs", verify: "node verify.mjs" });
+    fs.appendFileSync(path.join(cwd, ".gitignore"), ".artifacts/\ndist/\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+    const paths = [
+      ".artifacts/extension-package-boundary/plugin-sdk.json",
+      ".artifacts/tsgo-cache/state.tsbuildinfo",
+      "dist/plugin-sdk/index.d.ts",
+    ];
+    for (const relative of paths) {
+      const file = path.join(cwd, relative);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, "trusted preimage\n");
+    }
+    const binDir = makeFixtureDir("clawsweeper-gate-selectors-");
+    writeNodeCommandShim(
+      binDir,
+      "pnpm",
+      [
+        'const fs = require("node:fs");',
+        `for (const file of ${JSON.stringify(paths)}) {`,
+        '  if (process.argv.includes("verify")) {',
+        '    if (fs.readFileSync(file, "utf8") !== "trusted preimage\\n") throw new Error("state survived preceding gate");',
+        "  } else {",
+        '    fs.mkdirSync(require("node:path").dirname(file), { recursive: true });',
+        '    fs.writeFileSync(file, "regenerated\\n");',
+        "  }",
+        "}",
+      ].join("\n"),
+    );
+    const commands = [command, "pnpm verify"];
+    assert.deepEqual(
+      withPathOnlyPrefix(binDir, () =>
+        runAllowedValidationCommands(
+          commands,
+          cwd,
+          validationOptions("openclaw/openclaw", {
+            strictTargetValidation: true,
+            skipOpenClawChangedGate: true,
+            pinnedBaseRef: "origin/main",
+            toolchain: {
+              packageManager: "pnpm",
+              baseValidationCommands: [],
+              changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
+            },
+          }),
+        ),
+      ),
+      commands,
+    );
+    for (const relative of paths) {
+      assert.equal(fs.readFileSync(path.join(cwd, relative), "utf8"), "trusted preimage\n");
+    }
+  }
+});
+
+test("workspace changed gates do not acquire root artifact exemptions", () => {
+  for (const command of [
+    "pnpm --filter fixture-one run check:changed",
+    "pnpm -r run check:changed",
+  ]) {
+    for (const mutate of [false, true]) {
+      const cwd = gitPackageFixture({ "check:changed": "node check.mjs" });
+      fs.appendFileSync(path.join(cwd, ".gitignore"), ".artifacts/\n");
+      fs.writeFileSync(path.join(cwd, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
+      const member = path.join(cwd, "packages/one");
+      fs.mkdirSync(member, { recursive: true });
+      fs.writeFileSync(
+        path.join(member, "package.json"),
+        JSON.stringify({ name: "fixture-one", scripts: { "check:changed": "node check.mjs" } }),
+      );
+      git(cwd, "add", ".");
+      git(cwd, "commit", "-m", "initial");
+      attachOrigin(cwd);
+      const receipt = path.join(cwd, ".artifacts/extension-package-boundary/plugin-sdk.json");
+      fs.mkdirSync(path.dirname(receipt), { recursive: true });
+      fs.writeFileSync(receipt, "trusted preimage\n");
+      const binDir = makeFixtureDir("clawsweeper-workspace-gate-");
+      writeNodeCommandShim(
+        binDir,
+        "pnpm",
+        mutate
+          ? 'require("node:fs").writeFileSync(".artifacts/extension-package-boundary/plugin-sdk.json", "workspace mutation\\n");'
+          : "",
+      );
+      const execute = () => runOpenClawChangedGate(cwd, binDir, command);
+      if (mutate) assert.throws(execute, /unsafe validation command mutated checkout identity/);
+      else assert.doesNotThrow(execute);
+      assert.equal(
+        fs.readFileSync(receipt, "utf8"),
+        mutate ? "workspace mutation\n" : "trusted preimage\n",
+      );
     }
   }
 });

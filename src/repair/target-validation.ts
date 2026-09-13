@@ -608,15 +608,8 @@ function openClawValidationNeedsPinnedHelper(
     );
   for (const command of commands) {
     const parts = stripEnvPrefix(command);
-    const requirement = packageScriptRequirement(parts);
-    if (
-      requirement?.packageManager !== "pnpm" ||
-      requirement.name !== "check:changed" ||
-      requirement.workspaceScoped
-    ) {
-      continue;
-    }
-    const scriptIndex = parts.indexOf(requirement.name, packageManagerCommandIndex(parts)!);
+    if (!isRootPnpmScript(parts, "check:changed")) continue;
+    const scriptIndex = parts.indexOf("check:changed", packageManagerCommandIndex(parts)!);
     const args = parts.slice(scriptIndex + 1);
     const separator = args.indexOf("--");
     const flags = separator === -1 ? args : args.slice(0, separator);
@@ -2977,13 +2970,13 @@ function validationCommandWithDisposableArchive(
   ];
 }
 
-function isRuntimeArtifactBuildCommand(parts: readonly string[]) {
+function isRootPnpmScript(parts: readonly string[], name: string) {
   const script = packageScriptRequirement(parts);
-  return (
-    script?.packageManager === "pnpm" &&
-    script.name === "build:ci-artifacts" &&
-    !script.workspaceScoped
-  );
+  return script?.packageManager === "pnpm" && script.name === name && !script.workspaceScoped;
+}
+
+function isRuntimeArtifactBuildCommand(parts: readonly string[]) {
+  return isRootPnpmScript(parts, "build:ci-artifacts");
 }
 
 function isRuntimeArtifactSmokeCommand(parts: readonly string[] | undefined) {
@@ -3044,8 +3037,11 @@ function runRestorableValidationCommand({
   identityReserveMs: number;
   rendered: string;
 }) {
+  // Strict plans retain script aliases and selectors. Restore their root-gate
+  // outputs too, without widening retry or fallback matching.
   const changedGate =
-    options.targetRepo === "openclaw/openclaw" && isChangedGateCommand(parts, options);
+    options.targetRepo === "openclaw/openclaw" &&
+    (isChangedGateCommand(parts, options) || isRootPnpmScript(parts, "check:changed"));
   return withDisposableValidationState(
     (save) => {
       if (changedGate) {

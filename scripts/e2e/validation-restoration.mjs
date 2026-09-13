@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 
 const dist = path.resolve(process.argv[2] ?? "dist");
 const before = process.argv[3] === "before";
+const commandOverride = process.argv[4];
 const api = await import(pathToFileURL(path.join(dist, "repair/target-validation.js")));
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "validation-restoration-proof-"));
 const roots = [
@@ -36,7 +37,9 @@ const retained = new Set();
 let cleanupAllowed = true;
 try {
   for (const scenario of before
-    ? ["empty", "lost-receipt"]
+    ? commandOverride
+      ? ["existing"]
+      : ["empty", "lost-receipt"]
     : ["empty", "absent", "existing", "lost-receipt"]) {
     const cwd = path.join(root, scenario);
     fs.mkdirSync(path.join(cwd, "packages/plugin-sdk"), { recursive: true });
@@ -112,9 +115,11 @@ try {
       [],
     );
     cleanupAllowed = true;
-    const validationCommand = ["empty", "lost-receipt"].includes(scenario)
-      ? "pnpm check:changed"
-      : "pnpm check:changed -- gate.mjs";
+    const validationCommand =
+      commandOverride ??
+      (["empty", "lost-receipt"].includes(scenario)
+        ? "pnpm check:changed"
+        : "pnpm check:changed -- gate.mjs");
     let receipt;
     let profile;
     let callsAfterReceipt = 0;
@@ -203,6 +208,7 @@ try {
       JSON.stringify({
         phase: before ? "before" : "after",
         scenario,
+        validationCommand,
         commands,
         boundaryExists,
         profileRetained: fs.existsSync(profile),

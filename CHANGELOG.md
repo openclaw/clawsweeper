@@ -21,6 +21,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Restore OpenClaw changed-gate receipts, caches, and disposable outputs for strict `pnpm run`, selector, and environment-prefixed commands without granting root artifact exemptions to workspace scripts.
+
 - Automatically enroll eligible Endor Pro PRs in the dedicated test repository’s autofix loop while retaining human merge and proof-approval gates. Thanks @jesse-merhi.
 
 - Keep Codex turn state updates in order so a slow `active` write cannot overwrite `validating` after completion; stop late heartbeats and abort queued telemetry when the worker exits.
