@@ -19,6 +19,7 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { terminateCodexProcessTree } from "../dist/codex-spawn.js";
+import { reviewTreeMetadataArgs } from "../dist/clawsweeper-context-hydration.js";
 
 export const HOSTED_REVIEW_ROLLOUT_MAX_BYTES = 4 * 1024 * 1024;
 const ROLLOUT_RECORD_MAX_BYTES = 512 * 1024;
@@ -177,9 +178,25 @@ export function hostedProcessIdentity(pid) {
     assert.match(fields[19], /^\d+$/);
     return { pid, pgid: Number(fields[2]), start: fields[19] };
   } catch (error) {
-    if (error.code === "ENOENT") return null;
+    if (error.code === "ENOENT" || error.code === "ESRCH") return null;
     throw error;
   }
+}
+
+export function hostedTreeMetadataSource({ repository, headSha, callsPath, truncated, tree }) {
+  const args = reviewTreeMetadataArgs(`repos/${repository}/git/trees/${headSha}?recursive=1`);
+  return `
+import assert from "node:assert/strict";
+import { appendFileSync } from "node:fs";
+try {
+  assert.deepEqual(process.argv.slice(1), ${JSON.stringify(args)});
+  appendFileSync(${JSON.stringify(callsPath)}, "1", { mode: 0o600 });
+  process.stdout.write(${JSON.stringify(JSON.stringify({ truncated, tree }))});
+} catch {
+  process.stderr.write("Unexpected synthetic metadata request.\\n");
+  process.exitCode = 1;
+}
+`;
 }
 
 export function recordHostedLifecycle(path, record) {
