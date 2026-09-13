@@ -2313,7 +2313,7 @@ test("agent workflows install pinned CLI releases and keep runner models secret"
     }
   }
 
-  assert.match(openclawAction, /openclaw-version:[\s\S]*default: "2026\.9\.3"/);
+  assert.match(openclawAction, /openclaw-version:[\s\S]*default: "2026\.9\.4"/);
   assert.match(openclawAction, /openclaw@\$\{\{ inputs\['openclaw-version'\] \}\}/);
   assert.doesNotMatch(openclawAction, /@latest/);
   for (const step of parseYaml(openclawAction).runs.steps) {
