@@ -78,8 +78,10 @@ GitHub deploys use `.github/workflows/dashboard.yml`. Configure either
 Workers Scripts edit permission before enabling the workflow as the production
 deploy path. The deploy workflow injects the `CLAWSWEEPER_STATUS_INGEST_TOKEN`
 GitHub secret into a temporary Wrangler config as the Worker `INGEST_TOKEN`.
-Its smoke test also verifies the durable exact-review queue binding, not only
-the dashboard response.
+The smoke test waits for the expected deployment revision and a successful
+exact-review queue response within the same default 180-second readiness budget. It then
+verifies the queue schema, unsigned-request rejection, Bay policy, and assets.
+A persistently unavailable queue still fails readiness.
 
 When a change updates both the Worker and a GitHub Actions workflow, keep the
 cross-component protocol compatible in both deployment orders. The exact-review

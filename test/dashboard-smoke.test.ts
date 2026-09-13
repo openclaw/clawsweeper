@@ -154,3 +154,57 @@ test("dashboard smoke bounds deployment propagation waits", async () => {
     /dashboard deployment expected-sha was not ready within 2ms \(deployment old-sha\)/,
   );
 });
+
+test("dashboard smoke waits for queue readiness after the deployed revision matches", async () => {
+  const requests: string[] = [];
+  let queueProbes = 0;
+  let sleeps = 0;
+  const health = await waitForDashboardDeployment({
+    baseUrl: "https://clawsweeper.example",
+    expectedSha: "expected-sha",
+    timeoutMs: 1_000,
+    intervalMs: 1,
+    fetchImpl: async (url) => {
+      requests.push(new URL(String(url)).pathname);
+      if (String(url).endsWith("/api/health")) {
+        return Response.json({ ok: true, deployment_sha: "expected-sha" });
+      }
+      queueProbes += 1;
+      return queueProbes === 1
+        ? new Response(null, { status: 503 })
+        : Response.json({ pending: 0, dispatching: 0, leased: 0 });
+    },
+    sleep: async () => {
+      sleeps += 1;
+    },
+  });
+
+  assert.equal(health.deployment_sha, "expected-sha");
+  assert.equal(queueProbes, 2);
+  assert.equal(sleeps, 1);
+  assert.deepEqual(requests, [
+    "/api/health",
+    "/api/exact-review-queue",
+    "/api/health",
+    "/api/exact-review-queue",
+  ]);
+});
+
+test("dashboard smoke keeps the deployment deadline when the queue stays unavailable", async () => {
+  let timestamp = 0;
+  await assert.rejects(
+    waitForDashboardDeployment({
+      baseUrl: "https://clawsweeper.example",
+      expectedSha: "expected-sha",
+      timeoutMs: 6,
+      intervalMs: 1,
+      fetchImpl: async (url) =>
+        String(url).endsWith("/api/health")
+          ? Response.json({ ok: true, deployment_sha: "expected-sha" })
+          : new Response(null, { status: 503 }),
+      sleep: async () => {},
+      now: () => timestamp++,
+    }),
+    /dashboard deployment expected-sha was not ready within 6ms \(queue HTTP 503\)/,
+  );
+});
