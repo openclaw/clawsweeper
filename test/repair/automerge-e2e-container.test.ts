@@ -32,7 +32,7 @@ test("automerge E2E builds the default base from repository-controlled source", 
 test("automerge E2E runs on OpenClaw's supported Node 24 floor", () => {
   assert.match(
     baseDockerfile,
-    /^FROM node:24\.15\.0-bookworm-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d/m,
+    /^FROM node:24\.21\.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553/m,
   );
   assert.match(wrapper, /const fixture = String\(args\.fixture \?\? "all"\)/);
   assert.match(wrapper, /"--fixture",\s*fixture/);

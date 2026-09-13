@@ -82,7 +82,7 @@ and the wrapper restores artifact ownership to the invoking host UID afterward.
 
 By default, the wrapper builds `Dockerfile.base` from the checked-out repository
 as `clawsweeper-automerge-e2e-base:local`, then passes that exact local tag to
-the application build. The base pins Node 24.15.0, which satisfies OpenClaw's
+the application build. The base pins Node 24.21.0, which satisfies OpenClaw's
 current Node 24 floor, and preinstalls Git, Python, CA
 certificates, and Corepack. Docker reuses the unchanged OS package layer, while
 the project dependency layer is cached independently by `package.json` and
