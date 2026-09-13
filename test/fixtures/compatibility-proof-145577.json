@@ -1,0 +1,9 @@
+{
+  "source": "https://github.com/openclaw/openclaw/pull/145577#issuecomment-5643277264",
+  "reviewedHead": "5e002cd8f3590bfc8d475beb5fc75597737b0bb6",
+  "reviewedAt": "2026-09-13T02:00:53.992Z",
+  "scope": "Selected public review prose; synthetic report metadata, not the canonical stored report.",
+  "structuralNegation": "No schema, serialized representation, migration, configuration, or installed-updater change is introduced.",
+  "proof": "The supplied Linux Docker transcript exercises the published updater installing candidate 9cdebdc907a1f629174bab85cfc0a3d4c43de329, preserving state through restart and repeat Doctor execution; registered real-SQLite readiness evidence demonstrates reduced copying. Reviewed rebase changes retain that optimization and upstream cleanup. This is reused earlier-candidate evidence, not a current-head Docker rerun.",
+  "evidence": "The captured PR body records Linux Docker execution of the actual published openclaw@2026.9.4 updater installing candidate 9cdebdc907a1f629174bab85cfc0a3d4c43de329. Copied terminal output reports preservation of 4,800 sessions, 23,890 events, 2,200 cron jobs, eight conversations across two agents, restart survival, and repeat Doctor idempotence in 18 seconds. This is earlier-candidate proof, not a newly executed current-head run."
+}

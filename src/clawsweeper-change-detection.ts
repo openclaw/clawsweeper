@@ -371,6 +371,22 @@ function pluginManifestConfigSurfaceKey(path: string, key: string): string {
 }
 
 export function hasDataModelUpgradeProof(text: string): boolean {
+  // Normalize only complete, unqualified structural no-change statements. Match
+  // the evidence regexes' period-delimited scope: coordination, semicolons and
+  // newlines containing other text must not truncate a statement. Remove its
+  // nouns as well as its negation so they cannot supply positive proof. A
+  // numbered marker's own period must not open a new statement.
+  const contractNoun =
+    "(?:(?:(?:database|db|persistent|stored|storage|on-disk) )?schema|serialized[- ](?:representation|format)|persistent[- ](?:contract|format)|data[- ]model|(?:(?:data|database|db|state|storage)[- ])?migration|config(?:uration)?|installed[- ]updater)";
+  const unchangedContractPattern = new RegExp(
+    "((?:^|(?<![0-9])\\.)\\s*(?:(?:[-*+]|\\d+[.)])\\s+)?)no\\s+" +
+      contractNoun +
+      "(?:(?:\\s*,\\s*(?:(?:or|and)\\s+)?|\\s+(?:or|and)\\s+)" +
+      contractNoun +
+      ")*\\s+changes?(?:\\s+(?:(?:is|are|was|were)\\s+)?(?:introduced|made|included))?(?=\\s*(?:\\.|(?![\\s\\S])))",
+    "gi",
+  );
+  text = text.replace(unchangedContractPattern, "$1.");
   const noMigrationRequiredPattern =
     /\bno\s+(?:data\s+)?migrations?\s+(?:(?:is|are)\s+)?(?:required|needed|necessary)\b/i;
   const negativeProofText = text.replace(
