@@ -32,6 +32,7 @@ import {
   workspacePatternMatches,
 } from "../../dist/repair/target-validation.js";
 import { compactText } from "../../dist/repair/text-utils.js";
+import { validationRecoveryRequired } from "../../dist/repair/validation-recovery.js";
 import { gitChangedFiles } from "../../dist/repair/git-repo-utils.js";
 import {
   __resetTargetRepoToolchainCache,
@@ -5178,6 +5179,257 @@ test("OpenClaw changed-gate compiler cache is disposable and preserves existing 
   }
 });
 
+test("OpenClaw changed gates restore boundary receipts and empty ownership directories", () => {
+  for (const artifactsExisted of [true, false]) {
+    for (const command of ["pnpm check:changed", "pnpm check:changed -- src/example.ts"]) {
+      const cwd = gitPackageFixture({ "check:changed": "node scripts/check-changed.mjs" });
+      fs.mkdirSync(path.join(cwd, "src"));
+      fs.writeFileSync(path.join(cwd, "src/example.ts"), "export {};\n");
+      fs.appendFileSync(path.join(cwd, ".gitignore"), ".artifacts/\ndist/\n");
+      git(cwd, "add", ".");
+      git(cwd, "commit", "-m", "initial");
+      attachOrigin(cwd);
+      const artifacts = path.join(cwd, ".artifacts");
+      if (artifactsExisted) fs.mkdirSync(artifacts);
+      const binDir = makeFixtureDir("clawsweeper-boundary-receipt-");
+      writeNodeCommandShim(
+        binDir,
+        "pnpm",
+        [
+          'const fs = require("node:fs");',
+          'for (const directory of ["dist/plugin-sdk", ".artifacts/extension-package-boundary", ".artifacts/dist-artifacts.lock", ".artifacts/vitest-workers"]) fs.mkdirSync(directory, { recursive: true });',
+          'fs.writeFileSync("dist/plugin-sdk/index.js", "generated SDK");',
+          'fs.writeFileSync(".artifacts/extension-package-boundary/plugin-sdk.json", "boundary receipt");',
+        ].join("\n"),
+      );
+      assert.deepEqual(runOpenClawChangedGate(cwd, binDir, command), [command]);
+      assert.equal(fs.existsSync(path.join(cwd, "dist")), false);
+      assert.equal(fs.existsSync(artifacts), artifactsExisted);
+      if (artifactsExisted) assert.deepEqual(fs.readdirSync(artifacts), []);
+    }
+  }
+});
+
+test("changed gates preserve existing receipts and ownership records", () => {
+  for (const unfinished of [false, true]) {
+    const cwd = gitPackageFixture({ "check:changed": "node scripts/check-changed.mjs" });
+    fs.appendFileSync(path.join(cwd, ".gitignore"), ".artifacts/\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+    const boundary = path.join(cwd, ".artifacts/extension-package-boundary");
+    const owner = path.join(cwd, ".artifacts/dist-artifacts.lock");
+    fs.mkdirSync(boundary, { recursive: true });
+    fs.writeFileSync(path.join(boundary, "plugin-sdk.json"), "previous receipt");
+    if (!unfinished) {
+      fs.mkdirSync(owner);
+      fs.writeFileSync(path.join(owner, "owner.json"), "previous ownership");
+    }
+    const binDir = makeFixtureDir("clawsweeper-retained-ownership-");
+    writeNodeCommandShim(
+      binDir,
+      "pnpm",
+      [
+        'const fs = require("node:fs");',
+        'fs.writeFileSync(".artifacts/extension-package-boundary/plugin-sdk.json", "new receipt");',
+        'fs.mkdirSync(".artifacts/dist-artifacts.lock", { recursive: true });',
+        ...(unfinished
+          ? [
+              'fs.writeFileSync(".artifacts/dist-artifacts.lock/owner.json", "unfinished ownership");',
+            ]
+          : []),
+      ].join("\n"),
+    );
+    if (unfinished) {
+      let recovery: ReturnType<typeof validationRecoveryRequired>;
+      try {
+        assert.throws(
+          () => runOpenClawChangedGate(cwd, binDir),
+          (error) => {
+            recovery = validationRecoveryRequired(error);
+            return Boolean(recovery && recovery.message.includes("unfinished ownership"));
+          },
+        );
+        assert.equal(
+          fs.readFileSync(path.join(owner, "owner.json"), "utf8"),
+          "unfinished ownership",
+        );
+      } finally {
+        for (const root of recovery?.recoveryPaths ?? []) {
+          if (root !== cwd) fs.rmSync(root, { recursive: true, force: true });
+        }
+      }
+    } else {
+      assert.deepEqual(runOpenClawChangedGate(cwd, binDir), ["pnpm check:changed"]);
+      assert.equal(fs.readFileSync(path.join(owner, "owner.json"), "utf8"), "previous ownership");
+    }
+    assert.equal(
+      fs.readFileSync(path.join(boundary, "plugin-sdk.json"), "utf8"),
+      "previous receipt",
+    );
+  }
+});
+
+test("unverified validation completion retains state and blocks every reuse path", (t) => {
+  const cwd = gitPackageFixture({ "check:changed": "node scripts/check-changed.mjs" });
+  fs.appendFileSync(path.join(cwd, ".gitignore"), ".artifacts/\ndist/\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+  for (const root of ["dist", ".artifacts/extension-package-boundary", ".artifacts/tsgo-cache"]) {
+    fs.mkdirSync(path.join(cwd, root), { recursive: true });
+    fs.writeFileSync(path.join(cwd, root, "previous"), "trusted previous state");
+  }
+  const binDir = makeFixtureDir("clawsweeper-unverified-completion-");
+  writeNodeCommandShim(
+    binDir,
+    "pnpm",
+    [
+      'const fs = require("node:fs");',
+      'for (const root of ["dist", ".artifacts/extension-package-boundary", ".artifacts/tsgo-cache"]) {',
+      'fs.mkdirSync(root, { recursive: true }); fs.writeFileSync(`${root}/generated`, "new state"); }',
+      'fs.writeFileSync(require("node:path").join(process.env.HOME, "evidence"), "profile evidence");',
+    ].join("\n"),
+  );
+  let supervisorCalls = 0;
+  let afterCompletionCalls = 0;
+  const originalSpawn = childProcess.spawnSync;
+  const spawn = t.mock.method(childProcess, "spawnSync", (command, args, options) => {
+    if (supervisorCalls) afterCompletionCalls++;
+    const result = originalSpawn(command, args, options);
+    if (args?.some((arg) => String(arg).endsWith("contained-command-worker.js"))) {
+      supervisorCalls++;
+      assert.equal(result.status, 0);
+      return {
+        ...result,
+        error: Object.assign(new Error("lost supervisor receipt"), { code: "ENOBUFS" }),
+      };
+    }
+    return result;
+  });
+  syncBuiltinESMExports();
+  let recovery: ReturnType<typeof validationRecoveryRequired>;
+  try {
+    assert.throws(
+      () => runOpenClawChangedGate(cwd, binDir),
+      (error) => {
+        recovery = validationRecoveryRequired(error);
+        return Boolean(recovery);
+      },
+    );
+    assert.ok(recovery);
+    assert.equal(supervisorCalls, 1);
+    assert.equal(afterCompletionCalls, 0, "no identity or cleanup commands after lost completion");
+    for (const root of ["dist", ".artifacts/extension-package-boundary", ".artifacts/tsgo-cache"]) {
+      assert.equal(fs.readFileSync(path.join(cwd, root, "generated"), "utf8"), "new state");
+    }
+    const paths = [...recovery.recoveryPaths];
+    const profile = paths.find((root) =>
+      path.basename(root).startsWith("clawsweeper-target-user-"),
+    );
+    const backup = paths.find((root) =>
+      path.basename(root).startsWith("clawsweeper-changed-gate-state-"),
+    );
+    const cache = paths.find((root) => path.basename(root).startsWith("build-cache-"));
+    assert.ok(profile && backup && cache);
+    assert.equal(fs.readFileSync(path.join(profile, "home/evidence"), "utf8"), "profile evidence");
+    assert.equal(
+      fs.readFileSync(path.join(backup, "dist/previous"), "utf8"),
+      "trusted previous state",
+    );
+    assert.equal(fs.readFileSync(path.join(cache, "previous"), "utf8"), "trusted previous state");
+    assert.throws(
+      () => runOpenClawChangedGate(cwd, binDir),
+      (error) => error === recovery,
+    );
+    assert.throws(
+      () => prepareTargetToolchain(cwd, validationOptions("openclaw/openclaw")),
+      (error) => error === recovery,
+    );
+    assert.throws(
+      () =>
+        reproduceValidationFailureAtPinnedBase({
+          commands: ["pnpm check:changed"],
+          targetDir: cwd,
+          options: validationOptions("openclaw/openclaw", { pinnedBaseRef: "origin/main" }),
+        }),
+      (error) => error === recovery,
+    );
+    assert.equal(afterCompletionCalls, 0);
+  } finally {
+    spawn.mock.restore();
+    syncBuiltinESMExports();
+    // The controlled fixture really joined before its receipt was discarded.
+    for (const root of recovery?.recoveryPaths ?? []) {
+      if (root !== cwd) fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("unverified pinned-base validation retains its checkout and blocks another reproduction", (t) => {
+  const cwd = gitPackageFixture({ "check:changed": "node scripts/check-changed.mjs" });
+  fs.appendFileSync(path.join(cwd, ".gitignore"), ".artifacts/\n");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+  const binDir = makeFixtureDir("clawsweeper-base-recovery-");
+  writeNodeCommandShim(
+    binDir,
+    "pnpm",
+    'const fs = require("node:fs"); fs.mkdirSync(".artifacts", { recursive: true }); fs.writeFileSync(".artifacts/evidence", "base command ran");',
+  );
+  let baseCheckout: string | undefined;
+  const originalSpawn = childProcess.spawnSync;
+  const spawn = t.mock.method(childProcess, "spawnSync", (command, args, options) => {
+    const result = originalSpawn(command, args, options);
+    if (args?.some((arg) => String(arg).endsWith("contained-command-worker.js"))) {
+      baseCheckout = String(options.cwd);
+      assert.notEqual(baseCheckout, cwd);
+      assert.equal(result.status, 0);
+      return { ...result, stdout: "lost result" };
+    }
+    return result;
+  });
+  syncBuiltinESMExports();
+  let recovery: ReturnType<typeof validationRecoveryRequired>;
+  const reproduce = () =>
+    withPathOnlyPrefix(binDir, () =>
+      reproduceValidationFailureAtPinnedBase({
+        commands: ["pnpm check:changed"],
+        targetDir: cwd,
+        options: validationOptions("openclaw/openclaw", {
+          pinnedBaseRef: "origin/main",
+          toolchain: {
+            packageManager: "pnpm",
+            baseValidationCommands: [],
+            changedGate: { command: "pnpm check:changed", requiredScript: "check:changed" },
+          },
+        }),
+      }),
+    );
+  try {
+    assert.throws(reproduce, (error) => {
+      recovery = validationRecoveryRequired(error);
+      return Boolean(recovery);
+    });
+    assert.ok(baseCheckout && recovery);
+    assert.equal(
+      fs.readFileSync(path.join(baseCheckout, ".artifacts/evidence"), "utf8"),
+      "base command ran",
+    );
+    assert.ok(recovery.recoveryPaths.has(path.dirname(baseCheckout)));
+    const calls = spawn.mock.callCount();
+    assert.throws(reproduce, (error) => error === recovery);
+    assert.equal(spawn.mock.callCount(), calls);
+  } finally {
+    spawn.mock.restore();
+    syncBuiltinESMExports();
+    for (const root of recovery?.recoveryPaths ?? []) {
+      if (root !== cwd) fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
 test("OpenClaw changed-gate caches are disposable without exempting sibling runtime inputs", () => {
   for (const poisonedPath of [null, ".cache/stable.txt", "node_modules/dependency/runtime.js"]) {
     const cwd = gitPackageFixture({ "check:changed": "node scripts/check-changed.mjs" });
@@ -9700,13 +9952,19 @@ function assertRuntimeModeTree(root: string, linkText: string) {
   assert.equal(fs.readlinkSync(path.join(root, "link")), linkText);
 }
 
-function runOpenClawChangedGate(cwd: string, binDir: string): string[] {
+function runOpenClawChangedGate(
+  cwd: string,
+  binDir: string,
+  command = "pnpm check:changed",
+): string[] {
   return withPathOnlyPrefix(binDir, () =>
     runAllowedValidationCommands(
-      ["pnpm check:changed"],
+      [command],
       cwd,
       validationOptions("openclaw/openclaw", {
         pinnedBaseRef: "origin/main",
+        skipOpenClawChangedGate: command !== "pnpm check:changed",
+        strictTargetValidation: command !== "pnpm check:changed",
         toolchain: {
           packageManager: "pnpm",
           baseValidationCommands: [],

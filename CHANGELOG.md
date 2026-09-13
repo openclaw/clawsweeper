@@ -159,6 +159,7 @@ checkpoint, and status-only commits are intentionally omitted.
 ### Fixed
 
 - Keep OpenClaw Bay controls compact and show more sampled cards in crowded lanes while preserving readable labels, focus, and observer-only navigation. Thanks @brokemac79.
+- Restore OpenClaw boundary receipts with changed-gate outputs, and preserve recovery state instead of retrying validation whose completion cannot be verified.
 - Keep comment and automerge timeline previews within their requested character limits, including the ellipsis and tiny caps.
 
 - Keep quoted rating-list labels and evidence/owner fields from replacing structured rank-up moves, evidence links, or attribution when durable reports are parsed again; thanks @Yigtwxx.

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolveSpawnCommand } from "../command.js";
 import type { ContainmentCapabilitySummary } from "./contained-command-worker.js";
+import { ValidationRecoveryRequiredError } from "./validation-recovery.js";
 
 const DEFAULT_COMMAND_MAX_BUFFER = 64 * 1024 * 1024;
 
@@ -99,11 +100,38 @@ export function runContainedCommandResult(
       windowsHide: true,
     },
   );
-  if (worker.error) throw worker.error;
-  if (worker.status !== 0) {
-    throw new Error(worker.stderr?.trim() || `validation supervisor exited ${worker.status}`);
+  if (worker.error) {
+    throw new ValidationRecoveryRequiredError(worker.error.message, worker.error);
   }
-  return JSON.parse(worker.stdout) as ContainedCommandResult;
+  if (worker.status !== 0) {
+    throw new ValidationRecoveryRequiredError(
+      worker.stderr?.trim() || `validation supervisor exited ${worker.status}`,
+      new Error(`validation supervisor exited ${worker.status ?? worker.signal}`),
+    );
+  }
+  try {
+    const result = JSON.parse(worker.stdout) as ContainedCommandResult;
+    if (
+      !result ||
+      !Number.isInteger(result.backgroundProcesses) ||
+      result.backgroundProcesses < 0 ||
+      (result.status !== null && !Number.isInteger(result.status)) ||
+      (result.signal !== null && typeof result.signal !== "string") ||
+      typeof result.stdout !== "string" ||
+      typeof result.stderr !== "string" ||
+      (result.error !== undefined &&
+        (!result.error ||
+          typeof result.error.message !== "string" ||
+          (result.error.code !== undefined && typeof result.error.code !== "string")))
+    )
+      throw new Error("invalid validation supervisor result");
+    return result;
+  } catch (error) {
+    throw new ValidationRecoveryRequiredError(
+      "validation supervisor completion could not be verified",
+      error,
+    );
+  }
 }
 
 function serializedWorkerMaxBuffer(maxBuffer: number) {
