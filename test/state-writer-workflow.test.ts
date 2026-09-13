@@ -21,7 +21,7 @@ const workerUrl =
   "${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}";
 const workerSecret = "${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}";
 
-test("every state hydration uses the canonical Worker with an explicit git-state decision", () => {
+test("state hydration retains canonical defaults with an explicit operational-only publisher", () => {
   const setups: Array<{ site: string; step: WorkflowStep }> = [];
   for (const { file, workflow } of workflows()) {
     for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
@@ -32,9 +32,21 @@ test("every state hydration uses the canonical Worker with an explicit git-state
   }
 
   assert.equal(setups.length, 21, "setup-state site count is an audited invariant");
+  assert.deepEqual(
+    setups.filter(({ step }) => step.with?.["hydrate-records"] === "false").map(({ site }) => site),
+    [".github/workflows/repair-publish-results.yml:publish"],
+  );
   for (const { site, step } of setups) {
-    assert.equal(step.with?.["records-url"], workerUrl, site);
-    assert.equal(step.with?.["records-secret"], workerSecret, site);
+    if (step.with?.["hydrate-records"] === "false") {
+      assert.equal(step.with?.["records-url"], undefined, site);
+      assert.equal(step.with?.["records-secret"], undefined, site);
+      assert.equal(step.with?.["hydrate-state-blobs"], "false", site);
+      assert.notEqual(step.with?.["hydrate-git-state"], "false", site);
+      assert.equal(step.with?.["coordinator-url"], workerUrl, site);
+    } else {
+      assert.equal(step.with?.["records-url"], workerUrl, site);
+      assert.equal(step.with?.["records-secret"], workerSecret, site);
+    }
     assert.equal(step.with?.["records-source"], undefined, site);
     assert.equal(step.with?.["ledger-source"], undefined, site);
     assert.equal(step.with?.["coordinator-enabled"], undefined, site);
@@ -128,13 +140,14 @@ test("setup-state checks out only the remaining operational git tree", () => {
   assert.equal(action.inputs?.["ledger-source"], undefined);
   assert.equal(action.inputs?.["coordinator-enabled"], undefined);
   assert.ok(action.inputs?.["hydrate-git-state"]);
+  assert.ok(action.inputs?.["hydrate-records"]);
   assert.ok(action.inputs?.["records-item-number"]);
   const snapshot = action.runs?.steps?.find(
     (step) => step.name === "Resolve canonical record snapshot cache key",
   );
   assert.equal(
     (snapshot as WorkflowStep & { if?: string })?.if,
-    "${{ inputs.records-item-number == '' }}",
+    "${{ inputs.hydrate-records == 'true' && inputs.records-item-number == '' }}",
   );
   assert.match(source, /--records-item-number "\$RECORDS_ITEM_NUMBER"/);
   assert.match(source, /CLAWSWEEPER_STATE_COORDINATOR_ENABLED=1/);
