@@ -1,7 +1,45 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { compactText, slug } from "../../dist/repair/text-utils.js";
+import { compactCommentText, compactText, slug } from "../../dist/repair/text-utils.js";
+import { mergeAutomergeTimelineSection } from "../../dist/repair/automerge-status-timeline.js";
+
+test("comment previews count the ellipsis inside every character cap", () => {
+  for (let cap = 0; cap <= 200; cap++) {
+    assert.ok(compactCommentText("long comment ".repeat(30), cap).length <= cap);
+  }
+  assert.equal(compactCommentText("hello world", 0), "");
+  assert.equal(compactCommentText("hello world", 2), "he");
+  assert.equal(compactCommentText("hello world", 3), "...");
+  assert.equal(compactCommentText("hello world", 5), "he...");
+  assert.equal(compactCommentText("hello world", 9), "hello...");
+  assert.equal(compactCommentText(" \n hello\t world ", 11), "hello world");
+  assert.equal(compactCommentText(null, 5), "");
+});
+
+test("rendered timeline label, status and detail previews stay within their caps", () => {
+  const body = mergeAutomergeTimelineSection({
+    body: "Synthetic report",
+    existingBody: "",
+    events: [
+      {
+        id: "proof",
+        at: "2026-09-12T00:00:00Z",
+        label: "L".repeat(200),
+        status: "S".repeat(100),
+        details: "D".repeat(200),
+      },
+    ],
+  });
+  for (const [letter, limit] of [
+    ["L", 90],
+    ["S", 80],
+    ["D", 160],
+  ] as const) {
+    const preview = new RegExp(`${letter}+\\.\\.\\.`).exec(body)?.[0];
+    assert.equal(preview?.length, limit);
+  }
+});
 
 test("compactText never exceeds maxLength, even for tiny caps", () => {
   for (const n of [0, 1, 2, 3, 5, 16]) {
