@@ -158,6 +158,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Restore OpenClaw boundary receipts with changed-gate outputs, and preserve recovery state instead of retrying validation whose completion cannot be verified.
+
 - Keep quoted rating-list labels and evidence/owner fields from replacing structured rank-up moves, evidence links, or attribution when durable reports are parsed again; thanks @Yigtwxx.
 - Stop the OpenClaw child process group when its worker is interrupted, including signal-ignoring descendants; thanks @Yigtwxx.
 - Retry replay-safe lifecycle receipts and terminal dispositions after transient queue failures while preserving newer requeues and leaving publication enqueue single-attempt.
