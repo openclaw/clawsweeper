@@ -72,9 +72,9 @@ const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
     sources: ["extensions/browser/src/browser/server-context.list-profiles.test.ts"],
   },
   {
-    // OpenClaw remote-CDP documentation example introduced by bf15c87d2b12.
+    // Introduced by bf15c87d2b12; moved unchanged to browser/remote.md by 26b84d3f38d.
     fixtureSha256: "e6907dddaccdec944b0f02e14fe9186293e2d513ff753db0a95b3460aa5dc1d9",
-    sources: ["docs/tools/browser.md"],
+    sources: ["docs/tools/browser.md", "docs/tools/browser/remote.md"],
   },
   {
     // OpenClaw credentialed-page rejection fixture introduced by d5fb4903f1b1.

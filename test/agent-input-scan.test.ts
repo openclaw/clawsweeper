@@ -904,6 +904,7 @@ const browserChromeSource = "extensions/browser/src/browser/chrome.test.ts";
 const browserServerContextSource =
   "extensions/browser/src/browser/server-context.ensure-browser-available.waits-for-cdp-ready.test.ts";
 const browserDocsSource = "docs/tools/browser.md";
+const browserRemoteDocsSource = "docs/tools/browser/remote.md";
 const browserToolSource = "extensions/browser/src/browser-tool.test.ts";
 const browserCdpHelpersSource = "extensions/browser/src/browser/cdp.helpers.test.ts";
 const browserMcpSource = "extensions/browser/src/browser/chrome-mcp.test.ts";
@@ -1939,6 +1940,9 @@ for (const scenarioName of [
   "browser remote server fixture",
   "browser local server mismatch",
   "browser docs fixture",
+  "browser docs relocated fixture",
+  "browser docs relocated source mismatch",
+  "browser docs relocated changed password",
   "browser page URL fixture",
   "firecrawl target URL fixture",
   "browser CDP relay fixture",
@@ -2175,6 +2179,7 @@ for (const scenarioName of [
       );
       url.username = local ? "browser-user" : "user";
       url.password = browserPageFixture ? "secret" : local ? "browser-password" : "pass";
+      if (scenario === "browser docs relocated changed password") url.password += "changed";
       if (scenario === "browser page URL changed path") url.pathname = "/changed";
       // Parser-only control: native URI matching excludes query text.
       if (scenario === "browser page URL synthetic query record") url.search = "?changed=1";
@@ -2278,9 +2283,13 @@ for (const scenarioName of [
           : scenario.startsWith("browser ")
             ? [
                 browserDocsFixture
-                  ? scenario.endsWith("source mismatch")
-                    ? browserToolSource
-                    : browserDocsSource
+                  ? scenario === "browser docs relocated source mismatch"
+                    ? "docs/tools/browser/other.md"
+                    : scenario.endsWith("source mismatch")
+                      ? browserToolSource
+                      : scenario.startsWith("browser docs relocated")
+                        ? browserRemoteDocsSource
+                        : browserDocsSource
                   : browserExactFixture
                     ? scenario.endsWith("source mismatch")
                       ? browserCdpFixture
@@ -2552,6 +2561,7 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
         "browser remote Chrome fixture",
         "browser remote server fixture",
         "browser docs fixture",
+        "browser docs relocated fixture",
         "browser page URL fixture",
         "firecrawl target URL fixture",
         "browser CDP relay fixture",
@@ -2678,6 +2688,14 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
           );
           if (contractFailure) assert.equal(diagnostic.reason, contractFailure);
           else {
+            if (scenario.startsWith("browser docs relocated")) {
+              assert.equal(
+                diagnostic.reason,
+                scenario.endsWith("source mismatch")
+                  ? "source_not_reviewed"
+                  : "literal_not_reviewed",
+              );
+            }
             if (mattermostFixture) {
               assert.equal(
                 diagnostic.reason,

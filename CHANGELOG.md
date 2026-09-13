@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Recognize the existing approved browser documentation fixture after its page split, preserving exact-value and source-path restrictions.
+
 - Keep repair-result publication within its job budget by hydrating only the operational Git state it consumes, without loading unrelated canonical review records.
 
 - Wait for the exact-review queue to become available before declaring a dashboard deployment ready, while retaining the deployment deadline and all smoke checks.
