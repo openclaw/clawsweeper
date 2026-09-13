@@ -15,6 +15,7 @@ export const repositories = [
 export const scenarios = [
   "normal",
   "crowded",
+  "busy-neighbors",
   "mixed",
   "long",
   "empty",
@@ -73,7 +74,11 @@ export function statusFixture(scenario, epoch) {
         : 8;
   const items = [];
   for (const [stageIndex, stage] of stages.entries()) {
-    for (let i = 0; i < count; i++) {
+    for (
+      let i = 0;
+      i < (scenario === "busy-neighbors" ? (stage === "reviewing" ? 20 : 1) : count);
+      i++
+    ) {
       const source = i % 3 === 0 ? "queue" : "live",
         legacy = stage === "publishing" && i % 2 === 0;
       (source === "queue" ? queue : live)[stage]++;

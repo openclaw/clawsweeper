@@ -48,6 +48,10 @@ import { compareCodeUnits, stableJson } from "./stable-json.js";
 const REVIEW_TREE_METADATA_JQ =
   '{truncated, tree: (.tree | if type == "array" then map(if type == "object" then {type, sha, size} else . end) else . end)}';
 
+export function reviewTreeMetadataArgs(path: string): string[] {
+  return ["api", path, "--jq", REVIEW_TREE_METADATA_JQ];
+}
+
 interface CreateContextHydrationDependencies {
   asRecord: (value: unknown) => Record<string, unknown>;
   CLAWSWEEPER_BOT_AUTHORS: Set<string>;
@@ -987,7 +991,7 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
         const sizes = githubReviewTreeBlobSizes({
           repository: targetRepo(),
           headSha: revision,
-          request: (path) => ghJson(["api", path, "--jq", REVIEW_TREE_METADATA_JQ]),
+          request: (path) => ghJson(reviewTreeMetadataArgs(path)),
         });
         remoteTreeSizes.set(revision, sizes);
         return sizes;
@@ -1116,8 +1120,7 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
             repository: targetRepo(),
             headSha: options.headSha,
             // Path and URL metadata can exceed the CLI capture limit before admission runs.
-            request: (path) =>
-              ghJsonOnce(["api", path, "--jq", REVIEW_TREE_METADATA_JQ], timeoutMs),
+            request: (path) => ghJsonOnce(reviewTreeMetadataArgs(path), timeoutMs),
           });
           return new Map(
             objectIds.flatMap((objectId) => {

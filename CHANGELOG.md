@@ -161,7 +161,7 @@ checkpoint, and status-only commits are intentionally omitted.
 ### Fixed
 
 - Prevent label sweeps from reactivating autofix after a ready review handler completes it in the same router run.
-
+- Keep OpenClaw Bay controls compact and show more sampled cards in crowded lanes while preserving readable labels, focus, and observer-only navigation. Thanks @brokemac79.
 - Restore OpenClaw boundary receipts with changed-gate outputs, and preserve recovery state instead of retrying validation whose completion cannot be verified.
 - Keep comment and automerge timeline previews within their requested character limits, including the ellipsis and tiny caps.
 
@@ -204,6 +204,7 @@ checkpoint, and status-only commits are intentionally omitted.
 - Terminalize stale command publications after batch expiry without losing shared acknowledgement obligations; thanks @vincentkoc.
 - Bound GitHub activity hook prompts to one received event and filtered trusted self-authored review chatter before model intake.
 - Replay durable scheduled enqueue dispositions after transient response loss while preserving signed delivery identity, rejecting mismatched bytes, failing closed on legacy ambiguous receipts, and leaving publication post-effects single-attempt.
+- Report completed notification delivery, suppression, failure, and unknown acknowledgements; keep inconclusive attempts retryable and preserve legacy admission deduplication. Thanks @vincentkoc.
 - Use the producer Actions run URL in failed-review retry receipts so ledger validation no longer prevents dispatch and fails the retry command.
 - Preserve canonical repository slugs when reading persisted apply records, including dots, underscores, and repeated or trailing hyphens.
 - Make timeout tests tolerate loaded macOS hosts by isolating checkout timing, synchronizing lock contention, and budgeting snapshot admission fixtures separately from deadline tests.

@@ -5,7 +5,7 @@ set -euo pipefail
 : "${BAY_PROOF_LEASE:?record actual lease}"
 : "${BAY_PROOF_IMAGE:?record actual image}"
 : "${PLAYWRIGHT_CHROMIUM_EXECUTABLE:?record sandbox-capable browser path}"
-export BAY_PROOF_BASE="${BAY_PROOF_BASE:-97c9a7b45caf20f6d580fe0ae5cc48db31da15f4}"
+export BAY_PROOF_BASE="${BAY_PROOF_BASE:-4d43f8f5a62215e41ba180930e2ee72f21bf5ace}"
 : "${BAY_PROOF_CANDIDATE:?record candidate commit and dirty patch digest explicitly}"
 export BAY_PROOF_CANDIDATE
 export BAY_PROOF_OUTPUT="${BAY_PROOF_OUTPUT:-.artifacts/bay-readable-layout}"

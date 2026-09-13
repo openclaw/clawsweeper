@@ -8,12 +8,17 @@ import { writeJsonFile } from "./json-file.js";
 import { parseArgs, repoRoot } from "./lib.js";
 import {
   boolEnv,
+  describeHookDelivery,
   errorText,
+  hookDeliveryFromError,
+  hookDeliveryReport,
+  isConclusiveHookDelivery,
   postOpenClawAgentHook,
   resolveOpenClawHookConfig,
   stringArg,
   stringOrNull,
 } from "./openclaw-hook.js";
+import type { OpenClawHookDelivery } from "./openclaw-hook.js";
 
 export type MaintainerReportPointer = {
   date: string;
@@ -159,6 +164,7 @@ export async function runMaintainerReportNotifier(
   }
 
   let hookRunId: string | null = null;
+  let delivery: OpenClawHookDelivery | null = null;
   let failed = 0;
   let reason: string | null = null;
   if (!dryRun) {
@@ -174,9 +180,15 @@ export async function runMaintainerReportNotifier(
         },
       });
       hookRunId = result.runId;
+      delivery = result.delivery;
+      if (!isConclusiveHookDelivery(delivery)) {
+        failed = 1;
+        reason = describeHookDelivery(delivery);
+      }
     } catch (error) {
+      delivery = hookDeliveryFromError(error);
       failed = 1;
-      reason = errorText(error);
+      reason = describeHookDelivery(delivery);
     }
   }
 
@@ -184,6 +196,7 @@ export async function runMaintainerReportNotifier(
     writeJsonFile(reportPath, {
       ...reportPayload({ now, dryRun, deliver, pointer, message }),
       hook_run_id: hookRunId,
+      delivery: delivery ? hookDeliveryReport(delivery) : null,
       failed,
       reason,
     });

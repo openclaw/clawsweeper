@@ -115,8 +115,19 @@ async function captureMasterClearance(page, label, requireSettled = false) {
       };
     };
     const visible = (node) => {
+      // Closed details can retain descendant layout boxes in Chromium. Only
+      // their own summary remains visible, including through nested disclosures.
+      for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+        if (
+          parent instanceof HTMLDetailsElement &&
+          !parent.open &&
+          !parent.querySelector(":scope > summary")?.contains(node)
+        )
+          return false;
+      }
       const style = getComputedStyle(node);
       return (
+        node.checkVisibility({ opacityProperty: true, visibilityProperty: true }) &&
         node.getClientRects().length > 0 &&
         style.visibility !== "hidden" &&
         style.visibility !== "collapse" &&
@@ -197,13 +208,24 @@ try {
   );
 
   for (const viewport of [
+    // Catch first-screen regressions on the smallest phone before the long matrix.
+    { width: 360, height: 800 },
+    { width: 2400, height: 1050 },
+    { width: 1920, height: 1080 },
     { width: 1440, height: 1000 },
+    { width: 1200, height: 525 },
     { width: 1199, height: 900 },
     { width: 768, height: 1024 },
     { width: 430, height: 932 },
-    { width: 360, height: 800 },
   ]) {
     for (const scenario of scenarios) {
+      // The full existing matrix runs at its five original breakpoints; extra
+      // wide/short canvases target the changed sparse/crowded geometry.
+      if (
+        [2400, 1920, 1200].includes(viewport.width) &&
+        !["normal", "crowded", "busy-neighbors"].includes(scenario)
+      )
+        continue;
       const epoch = Date.now() - 1000;
       await post(origin, "/fixture/snapshot", { scenario, epoch });
       await post(baseOrigin, "/fixture/snapshot", { scenario, epoch });
@@ -320,10 +342,7 @@ try {
           await page.waitForFunction(
             () => document.querySelector("#loading").style.display === "none",
           );
-          if (version === "before") {
-            // Baseline used direct-only by default. Align its data selection, not its layout.
-            await page.locator("#legacy-proof-toggle").click();
-          }
+          // Both the landed baseline and candidate default to all review paths.
           await page.screenshot({
             path: output + "/" + name + "-" + version + ".png",
             fullPage: true,
@@ -341,7 +360,20 @@ try {
                 bottom: r.bottom,
               };
             };
-            const visible = (node) => node.getClientRects().length > 0;
+            const visible = (node) => {
+              for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+                if (
+                  parent instanceof HTMLDetailsElement &&
+                  !parent.open &&
+                  !parent.querySelector(":scope > summary")?.contains(node)
+                )
+                  return false;
+              }
+              return (
+                node.checkVisibility({ opacityProperty: true, visibilityProperty: true }) &&
+                node.getClientRects().length > 0
+              );
+            };
             const labels = [...document.querySelectorAll(".critter .ref")].filter(visible).map(box);
             const controls = [
               ...document.querySelectorAll(
@@ -372,6 +404,87 @@ try {
             version === "after",
           );
           if (version === "after") {
+            // Full button rectangles, not only labels, must remain disjoint.
+            const positions = () =>
+              page.locator(".critter").evaluateAll((nodes) =>
+                nodes.map((node) => ({
+                  key: node.dataset.key,
+                  x: node.style.getPropertyValue("--card-x"),
+                  y: node.style.getPropertyValue("--card-y"),
+                  width: node.style.getPropertyValue("--card-width"),
+                })),
+              );
+            const initialPositions = await positions();
+            await page.evaluate(() => {
+              window.__bayRefreshRendered = false;
+              document.querySelector("#refresh-bay").addEventListener(
+                "click",
+                () => {
+                  const observer = new MutationObserver(() => {
+                    window.__bayRefreshRendered = true;
+                    observer.disconnect();
+                  });
+                  observer.observe(document.querySelector("#stage-grid"), { childList: true });
+                },
+                { once: true, capture: true },
+              );
+            });
+            const refreshed = page.waitForResponse(
+              (response) => response.url() === origin + "/api/status",
+            );
+            await page.locator("#refresh-bay").click();
+            await refreshed;
+            await page.waitForFunction(() => window.__bayRefreshRendered === true);
+            assert.deepEqual(await positions(), initialPositions, name + " stable repeat snapshot");
+            for (let i = 0; i < geometry.firstItems.length; i++)
+              for (let j = i + 1; j < geometry.firstItems.length; j++) {
+                const a = geometry.firstItems[i],
+                  b = geometry.firstItems[j];
+                assert.ok(
+                  !(a.x < b.right && a.right > b.x && a.y < b.bottom && a.bottom > b.y),
+                  name + " overlapping hit targets",
+                );
+              }
+            const finder = await page.locator("#finder-input").boundingBox();
+            if (viewport.width >= 1200) assert.ok(finder.width <= 240, name + " compact finder");
+            if (scenario === "busy-neighbors" && viewport.width >= 1200) {
+              const busy = await page.locator(selector("reviewing")).boundingBox(),
+                quiet = await page.locator(selector("setting-up")).boundingBox();
+              assert.ok(busy.width > quiet.width, name + " busy lane borrows quiet room");
+              assert.ok(
+                (await page.locator(selector("reviewing") + " .critter").count()) > 3,
+                name + " more than three busy cards",
+              );
+            }
+            if (["normal", "crowded", "busy-neighbors"].includes(scenario)) {
+              const card = page.locator(".critter:visible").first();
+              if (await card.count()) {
+                await card.hover();
+                assert.equal(
+                  await card.evaluate((node) => getComputedStyle(node).outlineWidth),
+                  "2px",
+                );
+                await page.screenshot({
+                  path: output + "/" + name + "-hover.png",
+                  fullPage: true,
+                  animations: "disabled",
+                });
+                await page.mouse.move(0, 0);
+                await card.focus();
+                await page.keyboard.press("Tab");
+                await page.keyboard.press("Shift+Tab");
+                assert.ok(
+                  await card.evaluate(
+                    (node) =>
+                      document.activeElement === node &&
+                      node.matches(":focus-visible") &&
+                      Number.parseFloat(getComputedStyle(node).outlineWidth) >= 2 &&
+                      getComputedStyle(node).outlineStyle !== "none",
+                  ),
+                  name + " visible keyboard focus outline",
+                );
+              }
+            }
             assert.equal(await page.locator("#review-paths").inputValue(), "all");
             assert.equal(await page.locator("#inline-proof-filter").inputValue(), "all");
             assert.ok(geometry.pageWidth <= viewport.width + 1, name + " horizontal page overflow");
@@ -421,8 +534,8 @@ try {
                 (row) => row.name === name && row.version === "before",
               );
               assert.ok(
-                geometry.hero.height < prior.hero.height,
-                "compact header must reduce baseline height",
+                geometry.hero.height <= prior.hero.height,
+                "preserve compact header height",
               );
               assert.ok(geometry.plot.width >= prior.plot.width, "chart must remain wide");
             }
@@ -493,12 +606,42 @@ try {
               }
               const rows = initialRows.filter((row) => row.stage === area),
                 section = page.locator(selector(area));
-              const limit = area === "completed" ? 4 : area === "attention" ? 2 : 3;
+              const limit = await section.locator(".critter").count();
+              assert.ok(limit <= rows.length, "drawn cannot exceed public sample");
+              if (stages.includes(area) && rows.length > 3)
+                assert.ok(limit > 3, name + " adaptive active capacity " + area);
+              assert.match(
+                await section.locator(".sample-count").textContent(),
+                new RegExp(rows.length + " sampled · " + limit + " drawn"),
+              );
               assert.equal(
                 await section.locator(".critter").count(),
                 Math.min(rows.length, limit),
                 name + " slot bound " + area,
               );
+              const targets = await section
+                .locator(".critter,[data-overflow-stage],h2")
+                .evaluateAll((nodes) =>
+                  nodes.map((node) => {
+                    const r = node.getBoundingClientRect();
+                    return {
+                      label: node.className,
+                      x: r.x,
+                      y: r.y,
+                      right: r.right,
+                      bottom: r.bottom,
+                    };
+                  }),
+                );
+              for (let i = 0; i < targets.length; i++)
+                for (let j = i + 1; j < targets.length; j++) {
+                  const a = targets[i],
+                    b = targets[j];
+                  assert.ok(
+                    !(a.x < b.right && a.right > b.x && a.y < b.bottom && a.bottom > b.y),
+                    name + " area target/control overlap " + area + " " + a.label + " / " + b.label,
+                  );
+                }
               if (!rows.length) {
                 assert.match(await section.innerText(), /No sampled/);
                 continue;
@@ -648,7 +791,14 @@ try {
                 drawn.every((reference) => expectedRefs.includes(reference)),
                 "direct-only terminal slots must not include batch-classified outcomes",
               );
-              assert.equal(drawn.length, Math.min(expected.length, area === "completed" ? 4 : 2));
+              assert.ok(
+                (drawn.length > 0 && drawn.length <= expected.length) ||
+                  (expected.length === 0 && drawn.length === 0),
+              );
+              assert.match(
+                await section.locator(".sample-count").textContent(),
+                new RegExp(expected.length + " sampled · " + drawn.length + " drawn"),
+              );
               if (expected.length) {
                 await section.locator("[data-overflow-stage]").click();
                 const listed = await page
@@ -771,9 +921,25 @@ try {
               await page.locator("#refresh-bay").click();
               assert.ok((await movedResponse).ok());
               await page.waitForSelector(".critter.being-swept", { timeout: 15000 });
+              assert.equal(
+                await page
+                  .locator(".critter.being-swept")
+                  .first()
+                  .evaluate((node) => getComputedStyle(node).animationName),
+                "swept-tumble",
+                "real forward transition retains its card animation",
+              );
               await captureMasterClearance(page, name + "-intentional-active-sweep");
               await page.locator("#finder-input").fill("openclaw/clawsweeper#91001");
               await page.locator("#finder-input").press("Enter");
+              assert.equal(
+                await page
+                  .locator(".critter.located")
+                  .first()
+                  .evaluate((node) => getComputedStyle(node).animationName),
+                "found",
+                "real finder action retains its pulse with motion enabled",
+              );
               assert.equal(
                 await page.evaluate(() => document.activeElement?.getAttribute("data-number")),
                 "91001",

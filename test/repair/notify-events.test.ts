@@ -13,6 +13,34 @@ import {
   runClawSweeperEventNotifier,
 } from "../../dist/repair/notify-events.js";
 
+function createNotifierEventRoot(prefix: string): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  fs.writeFileSync(
+    path.join(root, "repair-apply-report.json"),
+    `${JSON.stringify([
+      {
+        repo: "openclaw/openclaw",
+        target: "#456",
+        action: "close_duplicate",
+        status: "executed",
+        run_id: "987",
+        published_at: "2026-05-02T10:00:00Z",
+      },
+    ])}\n`,
+  );
+  return root;
+}
+
+function notifierEnvironment(): NodeJS.ProcessEnv {
+  return {
+    CLAWSWEEPER_OPENCLAW_HOOK_URL: "https://claw.example/hooks",
+    CLAWSWEEPER_OPENCLAW_HOOK_TOKEN: "secret",
+    CLAWSWEEPER_DISCORD_TARGET: "channel:123",
+    CLAWSWEEPER_STATUS_INGEST_URL: "https://status.example/api/events",
+    CLAWSWEEPER_STATUS_INGEST_TOKEN: "status-secret",
+  };
+}
+
 test("buildApplyEvent maps ClawSweeper merge, close, and blocked events", () => {
   const merge = buildApplyEvent({
     repo: "openclaw/openclaw",
@@ -179,8 +207,15 @@ test("runClawSweeperEventNotifier posts hook payloads and records ledger", async
       body: JSON.parse(String(init?.body)),
       auth: new Headers(init?.headers).get("authorization"),
     });
-    return new Response(JSON.stringify({ ok: true, runId: `hook-${requests.length}` }), {
-      status: 200,
+    return Response.json({
+      ok: true,
+      runId: `hook-${requests.length}`,
+      completion: {
+        status: "ok",
+        replyDisposition: "visible",
+        delivered: true,
+        deliveryAttempted: true,
+      },
     });
   };
 
@@ -203,6 +238,7 @@ test("runClawSweeperEventNotifier posts hook payloads and records ledger", async
   assert.equal(requests.length, 2);
   assert.equal(requests[0]?.auth, "Bearer secret");
   assert.equal(requests[0]?.body.deliver, true);
+  assert.equal(requests[0]?.body.waitForCompletion, true);
   assert.match(String(requests[0]?.body.message), /clawsweeper.pr_merged/);
   assert.match(String(requests[1]?.body.message), /clawsweeper.fix_pr_opened/);
 
@@ -244,7 +280,15 @@ test("runClawSweeperEventNotifier mirrors events to the live status dashboard", 
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
     hookRequests.push(request);
-    return new Response(JSON.stringify({ ok: true, runId: "hook-1" }), { status: 200 });
+    return Response.json({
+      ok: true,
+      runId: "hook-1",
+      completion: {
+        status: "skipped",
+        replyDisposition: "silent",
+        deliverySuppressionReason: "silent",
+      },
+    });
   };
 
   const summary = await runClawSweeperEventNotifier(["--run-id", "987"], {
@@ -277,6 +321,136 @@ test("runClawSweeperEventNotifier mirrors events to the live status dashboard", 
     title: "Duplicate issue",
     note: "duplicate",
   });
+  const report = JSON.parse(
+    fs.readFileSync(path.join(root, "notifications/clawsweeper-event-report.json"), "utf8"),
+  );
+  assert.deepEqual(report.actions[0].delivery, {
+    status: "suppressed",
+    suppression_reason: "silent",
+    error: null,
+  });
+});
+
+for (const scenario of [
+  {
+    name: "failed",
+    completion: {
+      status: "error",
+      replyDisposition: "visible",
+      delivered: false,
+      deliveryAttempted: true,
+      deliveryError: "delivery-failed",
+    },
+    delivery: {
+      status: "failed",
+      suppression_reason: null,
+      error: "delivery-failed",
+    },
+  },
+  {
+    name: "unknown",
+    completion: {
+      status: "ok",
+      replyDisposition: "visible",
+      delivered: false,
+      deliveryAttempted: false,
+      privateDiagnostic: "not public",
+    },
+    delivery: {
+      status: "unknown",
+      suppression_reason: null,
+      error: null,
+    },
+  },
+] as const) {
+  test(`runClawSweeperEventNotifier publishes dashboard but retries ${scenario.name} completion`, async () => {
+    const root = createNotifierEventRoot(`clawsweeper-events-${scenario.name}-`);
+
+    let hookRequests = 0;
+    let dashboardRequests = 0;
+    const fetcher: typeof fetch = async (input) => {
+      if (String(input).startsWith("https://status.example/")) {
+        dashboardRequests += 1;
+        return Response.json({ ok: true });
+      }
+      hookRequests += 1;
+      return Response.json({
+        ok: true,
+        runId: `hook-${hookRequests}`,
+        completion: scenario.completion,
+      });
+    };
+    const runtime = {
+      root,
+      fetch: fetcher,
+      now: () => new Date("2026-05-02T11:00:00Z"),
+      log: () => undefined,
+      env: notifierEnvironment(),
+    };
+
+    const first = await runClawSweeperEventNotifier(["--run-id", "987"], runtime);
+    const second = await runClawSweeperEventNotifier(["--run-id", "987"], runtime);
+
+    assert.equal(first.sent, 0);
+    assert.equal(first.failed, 1);
+    assert.equal(second.sent, 0);
+    assert.equal(second.failed, 1);
+    assert.equal(hookRequests, 2);
+    assert.equal(dashboardRequests, 2);
+    assert.equal(
+      fs.existsSync(path.join(root, "notifications/clawsweeper-event-ledger.json")),
+      false,
+    );
+    const report = JSON.parse(
+      fs.readFileSync(path.join(root, "notifications/clawsweeper-event-report.json"), "utf8"),
+    );
+    assert.equal(report.actions.length, 1);
+    assert.equal(report.actions[0].status, "failed");
+    assert.equal(report.actions[0].hook_run_id, "hook-2");
+    assert.deepEqual(report.actions[0].delivery, scenario.delivery);
+    assert.doesNotMatch(JSON.stringify(report), /not public/);
+  });
+}
+
+test("runClawSweeperEventNotifier reports one failure when delivery and dashboard fail", async () => {
+  const root = createNotifierEventRoot("clawsweeper-events-double-fail-");
+
+  const summary = await runClawSweeperEventNotifier(["--run-id", "987"], {
+    root,
+    fetch: async (input) => {
+      if (String(input).startsWith("https://status.example/")) {
+        return new Response("bad token", { status: 401 });
+      }
+      return Response.json({
+        ok: true,
+        runId: "hook-1",
+        completion: {
+          status: "error",
+          replyDisposition: "visible",
+          delivered: false,
+          deliveryAttempted: true,
+          deliveryError: "delivery-failed",
+        },
+      });
+    },
+    now: () => new Date("2026-05-02T11:00:00Z"),
+    log: () => undefined,
+    env: notifierEnvironment(),
+  });
+
+  assert.equal(summary.sent, 0);
+  assert.equal(summary.failed, 1);
+  const report = JSON.parse(
+    fs.readFileSync(path.join(root, "notifications/clawsweeper-event-report.json"), "utf8"),
+  );
+  assert.equal(report.actions.length, 1);
+  assert.equal(report.actions[0].status, "failed");
+  assert.match(report.actions[0].reason, /dashboard ingest returned 401/);
+  assert.deepEqual(report.actions[0].delivery, {
+    status: "failed",
+    suppression_reason: null,
+    error: "delivery-failed",
+  });
 });
 
 test("runClawSweeperEventNotifier retries events after dashboard ingest failures", async () => {
@@ -301,7 +475,16 @@ test("runClawSweeperEventNotifier retries events after dashboard ingest failures
       if (String(input).startsWith("https://status.example/")) {
         return new Response("bad token", { status: 401 });
       }
-      return new Response(JSON.stringify({ ok: true, runId: "hook-1" }), { status: 200 });
+      return Response.json({
+        ok: true,
+        runId: "hook-1",
+        completion: {
+          status: "ok",
+          replyDisposition: "visible",
+          delivered: true,
+          deliveryAttempted: true,
+        },
+      });
     },
     now: () => new Date("2026-05-02T11:00:00Z"),
     log: () => undefined,

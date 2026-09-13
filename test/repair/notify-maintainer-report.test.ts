@@ -110,7 +110,15 @@ test("runMaintainerReportNotifier fetches the live report and posts the hook", a
       body: JSON.parse(String(init?.body)),
       idempotency: new Headers(init?.headers).get("idempotency-key"),
     });
-    return Response.json({ runId: "hook-run-1" });
+    return Response.json({
+      runId: "hook-run-1",
+      completion: {
+        status: "ok",
+        replyDisposition: "visible",
+        delivered: true,
+        deliveryAttempted: true,
+      },
+    });
   };
 
   const summary = await runMaintainerReportNotifier(["--write-report"], {
@@ -133,6 +141,7 @@ test("runMaintainerReportNotifier fetches the live report and posts the hook", a
   assert.equal(requests[0]?.url, "https://claw.example/hooks/agent");
   assert.equal(requests[0]?.idempotency, "maintainer-report:2026-05-22");
   assert.equal(requests[0]?.body?.deliver, true);
+  assert.equal(requests[0]?.body?.waitForCompletion, true);
   assert.deepEqual(reportFetchHeaders, ["access-id", "access-id"]);
   assert.match(
     String(requests[0]?.body?.message),
@@ -143,6 +152,11 @@ test("runMaintainerReportNotifier fetches the live report and posts the hook", a
     fs.readFileSync(path.join(root, "notifications/maintainer-report-discord.json"), "utf8"),
   );
   assert.equal(notification.hook_run_id, "hook-run-1");
+  assert.deepEqual(notification.delivery, {
+    status: "delivered",
+    suppression_reason: null,
+    error: null,
+  });
   assert.equal(notification.report_url, "https://reports.openclaw.ai/day/2026-05-22/");
 });
 

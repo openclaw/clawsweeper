@@ -29,7 +29,7 @@ function harness(items: Array<{ key: string; stage: string; repository?: string 
     "clearLaneChat",
     "applyPendingItems",
     bayLayoutScript +
-      ";return {areaRows,drawnLimit,areaCounts,areaCountCopy,sampleControl,selectArea,renderAreaNavigation,updateSnapshotLine};",
+      ";BAY_AREAS.forEach(area=>bayAreaPlans[area]=planBayArea(area==='reviewing'?400:300,area==='completed'?249:area==='attention'?120:441,areaRows(area).length));return {areaRows,drawnLimit,areaCounts,areaCountCopy,sampleControl,selectArea,renderAreaNavigation,updateSnapshotLine,planBayArea,bayCardPosition,bayLaneWidths};",
   )(
     state,
     document,
@@ -51,12 +51,68 @@ test("drawn slots are bounded independently of aggregate counts, without losing 
     stage: "reviewing",
   }));
   const { helpers } = harness(items);
-  assert.deepEqual(helpers.areaCounts("reviewing"), { sampled: 24, drawn: 3, aggregate: "500" });
+  assert.deepEqual(helpers.areaCounts("reviewing"), { sampled: 24, drawn: 12, aggregate: "500" });
   assert.equal(helpers.areaRows("reviewing").length, 24);
-  assert.match(helpers.sampleControl("reviewing"), /\+21 sampled items/);
+  assert.match(helpers.sampleControl("reviewing"), /\+12 sampled items/);
   assert.doesNotMatch(helpers.sampleControl("reviewing"), /497/);
-  assert.equal(helpers.drawnLimit("completed"), 4);
-  assert.equal(helpers.drawnLimit("attention"), 2);
+  assert.equal(helpers.drawnLimit("completed"), 0);
+  assert.equal(helpers.drawnLimit("attention"), 0);
+});
+
+test("adaptive geometry keeps full hit targets disjoint and jitter deterministic", () => {
+  const helpers = new Function(
+    "STAGES",
+    "hash",
+    bayLayoutScript + ";return {planBayArea,bayCardPosition,bayLaneWidths};",
+  )(stages, (key: string) => {
+    let h = 2166136261;
+    for (const ch of key) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+    return h >>> 0;
+  });
+  for (const width of [112, 138, 222, 328, 400, 850])
+    for (const height of [120, 249, 266, 441])
+      for (const count of [1, 2, 8, 20, 48]) {
+        const plan = helpers.planBayArea(width, height, count);
+        const boxes = Array.from({ length: plan.limit }, (_, index) =>
+          helpers.bayCardPosition(plan, "public-reference-" + index, index),
+        );
+        assert.equal(plan.limit <= count, true);
+        assert.ok(plan.cardWidth >= 80 && plan.cardHeight >= 44);
+        boxes.forEach((a, index) => {
+          assert.deepEqual(a, helpers.bayCardPosition(plan, "public-reference-" + index, index));
+          assert.ok(
+            a.x >= 0 &&
+              a.y >= 0 &&
+              a.x + plan.cardWidth <= width &&
+              a.y + plan.cardHeight <= height,
+          );
+          boxes
+            .slice(index + 1)
+            .forEach((b) =>
+              assert.ok(
+                !(
+                  a.x < b.x + plan.cardWidth &&
+                  a.x + plan.cardWidth > b.x &&
+                  a.y < b.y + plan.cardHeight &&
+                  a.y + plan.cardHeight > b.y
+                ),
+              ),
+            );
+        });
+      }
+  assert.match(
+    bayLayoutCss,
+    /\.beach \.critter:not\(\.located\):not\(\.ready\):not\(\.retriggered\):not\(\.being-swept\):not\(\.tunneling\)\{animation:none\}/,
+  );
+  const phone = helpers.planBayArea(328, 266, 2);
+  phone.firstRowJitter = 0;
+  for (const key of ["public-a", "public-b", "public-c"]) {
+    assert.equal(helpers.bayCardPosition(phone, key, 0).y, 10);
+  }
+  const widths = helpers.bayLaneWidths(1051, [1, 1, 20, 1, 1, 1]);
+  assert.ok(widths[2] > widths[1]);
+  assert.ok(Math.abs(widths.reduce((a: number, b: number) => a + b, 0) + 50 - 1051) < 0.001);
+  assert.ok(helpers.planBayArea(widths[2], 441, 20).limit >= 8);
 });
 
 test("same bounded sample has stable ordering across input reordering", () => {

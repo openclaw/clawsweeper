@@ -22,7 +22,10 @@ mutation policies are unchanged.
 
 ## Environment and invocation
 
-Comparison base: 97c9a7b45caf20f6d580fe0ae5cc48db31da15f4.
+Active proof harness owned by Bay maintainers; source of truth is the production
+page/layout plus this executable matrix. Update when geometry, navigation,
+projection, cache schema or fixture contracts change. This follow-up compares
+the post-1523 layout at base 4d43f8f5a62215e41ba180930e2ee72f21bf5ace.
 Use the repository-resolved Crabbox provider and an explicitly authorized existing
 lease. This task uses Linux AWS proof, not an assumed Windows or local Docker
 host. Use --no-hydrate to avoid Actions dispatch. Node >=24 and a sandbox-capable
@@ -33,10 +36,10 @@ Stage intended source additions before proof. Crabbox sync transports working
 files but not the caller index: inside the isolated synced lease, restore
 intent-to-add for the explicitly intended new source files before running proof:
 
-~~~sh
+```sh
 git add -N -- dashboard/bay-layout.ts test/bay-readable-layout.test.ts \
   docs/proof/bay-readable-layout/{README.md,fixture-worker.mjs,fixtures.mjs,run-proof.mjs,run-proof.sh,settled-master.mjs,wrangler.toml}
-~~~
+```
 
 This changes only the isolated index, not source or commits. The runner rejects
 missing source index entries instead of silently omitting them. Compare the
@@ -53,12 +56,12 @@ BAY_PROOF_PROVIDER, BAY_PROOF_LEASE, BAY_PROOF_IMAGE,
 PLAYWRIGHT_CHROMIUM_EXECUTABLE and BAY_PROOF_CANDIDATE provenance. For each attempt,
 choose a new output and absolute scratch directory:
 
-~~~sh
+```sh
 export BAY_PROOF_CANDIDATE="$(git rev-parse HEAD)+patch-sha256:$(git diff --binary HEAD --full-index -- . ":(exclude).crabbox/**" ":(exclude).openclaw/**" ":(exclude).artifacts/**" ":(exclude)artifacts/**" | sha256sum | cut -d' ' -f1)"
 export BAY_PROOF_OUTPUT="$PWD/.artifacts/bay-readable-layout/attempt-N"
 export BAY_PROOF_SCRATCH="$PWD/.openclaw/tmp/bay-readable-runtime-attempt-N"
 bash docs/proof/bay-readable-layout/run-proof.sh
-~~~
+```
 
 The runner validates that the supplied candidate equals the actual HEAD plus
 the generated full-index source-patch digest, and refuses stale or mistyped
@@ -66,18 +69,21 @@ provenance before starting Workers. It refuses to overwrite prior evidence. It r
 with git archive, adds only fixture infrastructure to that baseline, installs
 frozen dependencies, and starts separate local Workers and SQLite/R2 state.
 HTTP ports are 8794/8795 and debugger ports 8796/8797; all bind to loopback.
-Both pages receive the same scenario epoch and source data. The baseline’s old
-path toggle is set to include batch work before comparison, aligning the data
-population rather than changing its layout.
+Both pages receive the same scenario epoch and source data. Both pages default to all review paths; baseline production layout is untouched.
 
 ## Scenarios and assertions
 
 The matrix covers normal, crowded, mixed-repository, long-reference, empty,
 stale, partial-diagnostic, unknown-participation, terminal, active batch-fallback,
-missing-timing, partial-activity and forward-transition fixtures. Viewports are
-1440x1000, 1199x900, 768x1024, 430x932 and 360x800.
+missing-timing, partial-activity and forward-transition fixtures, plus 20 active
+cards in Reviewing with one in each neighboring lane. Viewports are 2400x1050,
+1920x1080, 1440x1000, 1200x525, 1199x900, 768x1024, 430x932 and 360x800.
+The full scenario matrix runs at the original five breakpoints; additional
+2400/1920/1200 canvases exercise normal, crowded and sparse-neighbor density.
 
-It checks bounded drawn slots while every available sample stays reachable;
+It checks adaptive geometry-derived capacity, deterministic repeat-snapshot
+placement, compact finder width, quiet-lane borrowing, hover/focus outlines and
+pairwise disjoint hit targets while every available sample stays reachable;
 aggregate/sample/drawn distinctions; all six active stages and both outcomes;
 repository filters that leave timing unchanged; all inline-proof cohorts and
 independent review-path selection; exact terminal-list
@@ -117,9 +123,9 @@ review; a passing assertion suite alone does not provide that signoff.
 
 For narrow edit-speed regression checks:
 
-~~~sh
+```sh
 node --test test/bay-duration-chart.test.ts test/bay-readable-layout.test.ts test/openclaw-bay-proof-network.test.ts
-~~~
+```
 
 On the configured provider, build with pnpm run build:all and run the entire
 canonical test/dashboard-worker-bay-records-routes.test.ts before repeating

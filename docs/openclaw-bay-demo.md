@@ -93,9 +93,15 @@ area’s bounded sample, including drawn records, in the existing read-only blad
 Aggregate totals, sampled records and drawn slots are reported separately. The
 list is not the backlog and cannot retrieve unsampled identities.
 
-Each active area draws at most three stable slots; Completed draws four and
-Failed / cancelled draws two. Labels show the short repository name and item
-number on separate lines, with full owner/repository identity in the inspector.
+The finder is compact and left-aligned beside its actions and filters. Cards
+use deterministic, key-seeded offsets within nonoverlapping cells rather than
+perfect rows. Desktop lanes borrow spare width from quieter areas; crowded
+areas shrink sprites, not labels or hit targets. Capacity follows available
+geometry instead of a three-card limit. Resizing, filtering or changed sample
+membership may rearrange cards; repeating an unchanged snapshot does not.
+Labels show the short repository name and item number on separate lines, with
+full owner/repository identity in the inspector. All available sample records
+remain reachable through the area list when the beach cannot fit them.
 Below 1200px, the stage picker and Previous/Next controls cover the six stages
 in source order, followed by Completed and Failed / cancelled. Initial selection
 prefers the first populated area; an explicit selection survives refresh and

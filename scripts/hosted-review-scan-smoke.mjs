@@ -36,6 +36,7 @@ import {
   hostedNativeFailureLine,
   hostedProcessIdentity,
   hostedTerminalObserverSource,
+  hostedTreeMetadataSource,
   latchHostedNativeFailure,
   readHostedLifecycle,
   readHostedReviewRollout,
@@ -691,18 +692,13 @@ async function proveMissingBlobChild({ root, cwd, baseSha, headSha, itemNumber, 
     const callsBefore = existsSync(metadataCallsPath)
       ? readFileSync(metadataCallsPath, "utf8").length
       : 0;
-    const metadataSource = `
-import assert from "node:assert/strict";
-import { appendFileSync } from "node:fs";
-try {
-  assert.deepEqual(process.argv.slice(1), ["api", ${JSON.stringify(`repos/${repo}/git/trees/${headSha}?recursive=1`)}]);
-  appendFileSync(${JSON.stringify(metadataCallsPath)}, "1", { mode: 0o600 });
-  process.stdout.write(${JSON.stringify(JSON.stringify({ truncated, tree }))});
-} catch {
-  process.stderr.write("Unexpected synthetic metadata request.\\n");
-  process.exitCode = 1;
-}
-`;
+    const metadataSource = hostedTreeMetadataSource({
+      repository: repo,
+      headSha,
+      callsPath: metadataCallsPath,
+      truncated,
+      tree,
+    });
     const args = [
       entrypoint,
       "live-proof-review",

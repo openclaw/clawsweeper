@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import {
   existsSync,
   lstatSync,
@@ -23,6 +25,7 @@ import { gzipSync } from "node:zlib";
 
 import { codexHumanFailureDetail, codexHumanRetryHint } from "../dist/codex-transient.js";
 import { codexFailureDecisionForTest } from "../dist/clawsweeper.js";
+import { reviewTreeMetadataArgs } from "../dist/clawsweeper-context-hydration.js";
 import {
   assertBooleanCountArtifact,
   assertHostedBlobStarts,
@@ -40,6 +43,7 @@ import {
   hostedNativeFailureLine,
   hostedProcessIdentity,
   hostedTerminalObserverSource,
+  hostedTreeMetadataSource,
   latchHostedNativeFailure,
   readHostedLifecycle,
   recordHostedLifecycle,
@@ -52,6 +56,62 @@ import {
   summarizeHostedReviewTrace,
   summarizeHostedMultilineFailure,
 } from "../scripts/hosted-review-canary-proof.mjs";
+
+test("hosted process identity handles an exiting process without hiding other read errors", (t) => {
+  for (const code of ["ENOENT", "ESRCH", "EACCES", "EPERM", "EIO"]) {
+    const failure = Object.assign(new Error("synthetic proc read failure"), { code });
+    const read = t.mock.method(fs, "readFileSync", (file, encoding) => {
+      assert.equal(file, "/proc/42/stat");
+      assert.equal(encoding, "utf8");
+      throw failure;
+    });
+    syncBuiltinESMExports();
+    try {
+      if (code === "ENOENT" || code === "ESRCH") assert.equal(hostedProcessIdentity(42), null);
+      else
+        assert.throws(
+          () => hostedProcessIdentity(42),
+          (error) => error === failure,
+        );
+    } finally {
+      read.mock.restore();
+      syncBuiltinESMExports();
+    }
+  }
+});
+
+test("hosted tree metadata fixture accepts bounded requests and rejects other command shapes", () => {
+  const root = mkdtempSync(join(tmpdir(), "hosted-metadata-fixture-"));
+  const callsPath = join(root, "calls");
+  const repository = "steipete/camsnap";
+  const headSha = "a".repeat(40);
+  const route = `repos/${repository}/git/trees/${headSha}?recursive=1`;
+  const tree = [{ type: "blob", sha: "b".repeat(40), size: 23 }];
+  try {
+    for (const truncated of [true, false]) {
+      const source = hostedTreeMetadataSource({ repository, headSha, callsPath, truncated, tree });
+      const invoke = (args: string[]) =>
+        execFileSync(process.execPath, ["--input-type=module", "--eval", source, ...args], {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+      assert.deepEqual(JSON.parse(invoke(reviewTreeMetadataArgs(route))), { truncated, tree });
+      for (const args of [
+        ["api", route],
+        reviewTreeMetadataArgs(`${route}-wrong`),
+        [...reviewTreeMetadataArgs(route), "--paginate"],
+      ]) {
+        assert.throws(
+          () => invoke(args),
+          (error: Error & { status?: number }) => error.status === 1,
+        );
+      }
+    }
+    assert.equal(readFileSync(callsPath, "utf8"), "11");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("hosted review canary explicitly supplies the canonical transient result limit", () => {
   const source = readFileSync(
