@@ -110,9 +110,8 @@ jobs:
       - uses: ./.github/actions/setup-state
         with:
           coordinator-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          records-url: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
-          records-secret: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           coordinator-class: publication_batch
+          hydrate-records: "false"
           hydrate-state-blobs: "false"
           token: ${{ steps.state-token.outputs.token }}
 

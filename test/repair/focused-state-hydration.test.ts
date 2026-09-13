@@ -13,6 +13,79 @@ const repoSlug = "openclaw-openclaw";
 const itemNumber = 111745;
 const webhookSecret = "single-record-test-secret";
 
+test("Git-only hydration preserves operational state without Worker credentials or requests", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-git-only-state-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const stateRoot = join(root, "state");
+  const worktreeRoot = join(root, "worktree");
+  mkdirSync(join(stateRoot, "results", "runs"), { recursive: true });
+  writeFileSync(join(stateRoot, "results", "runs", "123.json"), '{"status":"blocked"}\n');
+  mkdirSync(join(worktreeRoot, "records", repoSlug, "items"), { recursive: true });
+  const record = join(worktreeRoot, "records", repoSlug, "items", "123.md");
+  writeFileSync(record, "preserve canonical data\n");
+  let requests = 0;
+  const result = await hydrateState(
+    ["--state-dir", stateRoot, "--worktree", worktreeRoot, "--skip-records", "--skip-state-blobs"],
+    {},
+    (async () => {
+      requests += 1;
+      throw new Error("Worker must not be contacted");
+    }) as typeof fetch,
+  );
+  assert.equal(requests, 0);
+  assert.equal(
+    readFileSync(join(worktreeRoot, "results", "runs", "123.json"), "utf8"),
+    '{"status":"blocked"}\n',
+  );
+  assert.equal(readFileSync(record, "utf8"), "preserve canonical data\n");
+  assert.deepEqual(result.hydrated, [
+    "jobs",
+    "results",
+    "notifications",
+    "apply-report.json",
+    "repair-apply-report.json",
+  ]);
+  assert.deepEqual(result.worker, {});
+  assert.equal(result.manifest, undefined);
+});
+
+test("skipping records does not bypass credentials for requested state blobs", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-git-only-auth-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  await assert.rejects(
+    hydrateState(["--worktree", root, "--skip-git-state", "--skip-records"], {}),
+    /CLAWSWEEPER_RECORDS_SECRET is required/,
+  );
+});
+
+test("result publisher opts out of unused canonical record and blob hydration", () => {
+  const workflow = readFileSync(".github/workflows/repair-publish-results.yml", "utf8");
+  const start = workflow.indexOf("uses: ./.github/actions/setup-state");
+  const end = workflow.indexOf("uses: ./.github/actions/setup-pnpm", start);
+  const setup = workflow.slice(start, end);
+  assert.match(setup, /hydrate-records: "false"/);
+  assert.match(setup, /hydrate-state-blobs: "false"/);
+  assert.doesNotMatch(setup, /records-secret:/);
+  assert.doesNotMatch(setup, /hydrate-git-state: "false"/);
+  const action = readFileSync(".github/actions/setup-state/action.yml", "utf8");
+  const recordInput = action.slice(
+    action.indexOf("  hydrate-records:"),
+    action.indexOf("  hydrate-state-blobs:"),
+  );
+  assert.match(recordInput, /default: "true"/);
+  for (const name of [
+    "Resolve canonical record snapshot cache key",
+    "Restore canonical record snapshot",
+  ]) {
+    const start = action.indexOf(`- name: ${name}`);
+    const end = action.indexOf("\n    - ", start + 1);
+    assert.ok(start >= 0);
+    assert.match(action.slice(start, end), /if:.*inputs\.hydrate-records == 'true'/);
+  }
+  assert.match(action, /HYDRATE_RECORDS: \$\{\{ inputs\.hydrate-records \}\}/);
+  assert.match(action, /false\) hydrate_args\+=\(--skip-records\)/);
+});
+
 function captureRetryDelays(t: TestContext) {
   const delays: number[] = [];
   const immediateSetTimeout = (

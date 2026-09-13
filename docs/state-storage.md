@@ -75,6 +75,13 @@ Jobs that need operational Git state receive a sparse checkout containing only
 the retained paths above. Canonical-only lanes set `hydrate-git-state: "false"`
 and never mint or use a state-repository token.
 
+Repair-result publication consumes the Git-backed operational paths and sets
+`hydrate-records: "false"` with `hydrate-state-blobs: "false"`. This avoids
+unused canonical-record discovery, snapshot caches, and R2 hydration while
+preserving the normal publication and validation steps. The equivalent CLI
+flags are `--skip-records --skip-state-blobs`; other callers retain canonical
+record hydration by default.
+
 State-blob publication gives each signed Worker request, including multipart
 operations, a 15-second deadline. Requests retain their existing retry policy
 of at most four attempts, so a stalled upload eventually fails and releases the

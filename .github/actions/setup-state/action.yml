@@ -61,6 +61,10 @@ inputs:
     description: HMAC secret used for canonical Worker hydration.
     required: false
     default: ""
+  hydrate-records:
+    description: Hydrate canonical review records from the Worker.
+    required: false
+    default: "true"
   hydrate-state-blobs:
     description: Hydrate the canonical ledger/assets R2 trees.
     required: false
@@ -117,7 +121,7 @@ runs:
         node-version: ${{ inputs.node-version }}
 
     - name: Resolve canonical record snapshot cache key
-      if: ${{ inputs.records-item-number == '' }}
+      if: ${{ inputs.hydrate-records == 'true' && inputs.records-item-number == '' }}
       id: records-snapshot
       shell: bash
       env:
@@ -128,7 +132,7 @@ runs:
       run: node "${{ inputs.worktree-path }}/scripts/prepare-worker-record-cache.ts"
 
     - name: Restore canonical record snapshot
-      if: ${{ inputs.records-item-number == '' && steps.records-snapshot.outputs.available == 'true' }}
+      if: ${{ inputs.hydrate-records == 'true' && inputs.records-item-number == '' && steps.records-snapshot.outputs.available == 'true' }}
       uses: actions/cache@v6
       with:
         path: ${{ inputs.worktree-path }}/.artifacts/worker-records-cache
@@ -154,12 +158,18 @@ runs:
         CLAWSWEEPER_RECORDS_CACHE_DIR: ${{ inputs.worktree-path }}/.artifacts/worker-records-cache
         CLAWSWEEPER_BLOBS_CACHE_DIR: ${{ inputs.worktree-path }}/.artifacts/worker-blobs-cache
         HYDRATE_STATE_BLOBS: ${{ inputs.hydrate-state-blobs }}
+        HYDRATE_RECORDS: ${{ inputs.hydrate-records }}
         HYDRATE_GIT_STATE: ${{ inputs.hydrate-git-state }}
       run: |
         hydrate_args=(
           --state-dir "${{ inputs.state-path }}"
           --worktree "${{ inputs.worktree-path }}"
         )
+        case "$HYDRATE_RECORDS" in
+          true) ;;
+          false) hydrate_args+=(--skip-records) ;;
+          *) echo "hydrate-records must be true or false" >&2; exit 2 ;;
+        esac
         case "$HYDRATE_STATE_BLOBS" in
           true) ;;
           false) hydrate_args+=(--skip-state-blobs) ;;

@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Keep repair-result publication within its job budget by hydrating only the operational Git state it consumes, without loading unrelated canonical review records.
+
 - Wait for the exact-review queue to become available before declaring a dashboard deployment ready, while retaining the deployment deadline and all smoke checks.
 
 - Fix OpenClaw Bay refusing to load inside the Team dashboard while continuing to block embedding by other sites.

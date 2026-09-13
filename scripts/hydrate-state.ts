@@ -26,6 +26,7 @@ type Args = {
   recordsUrl?: string;
   recordsRepoSlugs?: string[];
   recordsItemNumbers?: number[];
+  hydrateRecords?: boolean;
   hydrateStateBlobs?: boolean;
   hydrateGitState?: boolean;
 };
@@ -40,6 +41,7 @@ export async function hydrateState(
     args.stateDir ?? env.CLAWSWEEPER_STATE_DIR ?? "../clawsweeper-state",
   );
   const worktreeRoot = path.resolve(args.worktree ?? process.cwd());
+  const hydrateRecords = args.hydrateRecords ?? true;
   const hydrateStateBlobs = args.hydrateStateBlobs ?? true;
   const hydrateGitState = args.hydrateGitState ?? true;
 
@@ -53,7 +55,7 @@ export async function hydrateState(
     env.CLAWSWEEPER_STATE_COORDINATOR_URL ??
     "https://clawsweeper.openclaw.ai";
   const webhookSecret = env.CLAWSWEEPER_RECORDS_SECRET ?? env.CLAWSWEEPER_WEBHOOK_SECRET ?? "";
-  if (!webhookSecret) {
+  if ((hydrateRecords || hydrateStateBlobs) && !webhookSecret) {
     throw new Error("CLAWSWEEPER_RECORDS_SECRET is required for canonical state hydration");
   }
 
@@ -62,19 +64,23 @@ export async function hydrateState(
   if (args.recordsItemNumbers !== undefined && explicitRepoSlugs?.length !== 1) {
     throw new Error("Focused record hydration requires exactly one explicit repository slug");
   }
-  const repoSlugs =
-    explicitRepoSlugs ??
-    (
-      await discoverWorkerRecordRepoSlugs({
-        baseUrl,
-        webhookSecret,
-        fetch: fetchImpl,
-      })
-    ).map((entry) => entry.repoSlug);
-  if (!repoSlugs.length) throw new Error("canonical record store returned no repository slugs");
+  const repoSlugs = hydrateRecords
+    ? (explicitRepoSlugs ??
+      (
+        await discoverWorkerRecordRepoSlugs({
+          baseUrl,
+          webhookSecret,
+          fetch: fetchImpl,
+        })
+      ).map((entry) => entry.repoSlug))
+    : [];
+  if (hydrateRecords && !repoSlugs.length) {
+    throw new Error("canonical record store returned no repository slugs");
+  }
 
-  const worker =
-    args.recordsItemNumbers === undefined
+  const worker = !hydrateRecords
+    ? undefined
+    : args.recordsItemNumbers === undefined
       ? await materializeWorkerRecords({
           worktreeRoot,
           baseUrl,
@@ -104,15 +110,15 @@ export async function hydrateState(
   const result = {
     hydrated: [
       ...(hydrateGitState ? GIT_PATHS : []),
-      "records",
+      ...(hydrateRecords ? ["records"] : []),
       ...(blobs ? ["ledger", "assets"] : []),
     ],
     recordsSource: "worker",
     ledgerSource: "worker",
     ...(hydrateGitState ? { source: stateRoot } : {}),
     target: worktreeRoot,
-    worker: worker.repositories,
-    manifest: worker.manifestPath,
+    worker: worker?.repositories ?? {},
+    manifest: worker?.manifestPath,
     ...(blobs ? { blobs } : {}),
   };
   console.log(JSON.stringify(result));
@@ -153,7 +159,12 @@ function parseArgs(argv: string[]): Args {
       ].includes(arg)
     ) {
       normalized.push(`${arg}=${requiredCliValue(argv, ++index, arg)}`);
-    } else if (arg === "--skip-state-blobs" || arg === "--skip-git-state") normalized.push(arg);
+    } else if (
+      arg === "--skip-records" ||
+      arg === "--skip-state-blobs" ||
+      arg === "--skip-git-state"
+    )
+      normalized.push(arg);
     else throw new Error(`Unknown argument: ${arg}`);
   }
   const { values } = parseNodeArgs({
@@ -162,6 +173,7 @@ function parseArgs(argv: string[]): Args {
       "state-dir": { type: "string" },
       worktree: { type: "string" },
       "records-url": { type: "string" },
+      "skip-records": { type: "boolean" },
       "skip-state-blobs": { type: "boolean" },
       "skip-git-state": { type: "boolean" },
       "records-item-number": { type: "string" },
@@ -179,6 +191,7 @@ function parseArgs(argv: string[]): Args {
     stateDir: values["state-dir"],
     worktree: values.worktree,
     recordsUrl: values["records-url"],
+    hydrateRecords: values["skip-records"] ? false : undefined,
     hydrateStateBlobs: values["skip-state-blobs"] ? false : undefined,
     hydrateGitState: values["skip-git-state"] ? false : undefined,
     recordsItemNumbers: itemNumbers,
