@@ -14244,7 +14244,7 @@ test("exact-review reconciliation cannot release a later attempt with the same r
   }
 });
 
-test("exact-review stats heals a missing or stale alarm and expired lease", async () => {
+test("exact-review stats heals a missing alarm and expired lease without postponing due alarms", async () => {
   const storage = new MemoryDurableStorage();
   await storage.put("exact-review-queue", {
     deliveries: {},
@@ -14330,11 +14330,11 @@ test("exact-review stats heals a missing or stale alarm and expired lease", asyn
   assert.ok(scheduledBeforePoll !== null && scheduledAfterPoll !== null);
   assert.ok(scheduledAfterPoll <= scheduledBeforePoll);
 
-  await storage.setAlarm(Date.now() - 1_000);
-  const staleAlarmPollStartedAt = Date.now();
+  const dueAlarm = Date.now() - 1_000;
+  await storage.setAlarm(dueAlarm);
   await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"));
-  const rescheduledAlarm = await storage.getAlarm();
-  assert.ok(rescheduledAlarm !== null && rescheduledAlarm > staleAlarmPollStartedAt);
+  // Due is not missing: Cloudflare may still be waiting to deliver this alarm.
+  assert.equal(await storage.getAlarm(), dueAlarm);
 });
 
 test("exact-review queue drops an expired failed-shard recovery unless a newer revision superseded it", async () => {

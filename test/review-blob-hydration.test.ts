@@ -1523,6 +1523,10 @@ test("source preparation reports unavailable historical blobs before restricted 
         targetRepo: () => "fixture/repository",
         ghJson: (args: string[]) => {
           assert.equal(args[0], "api");
+          assert.deepEqual(args.slice(2), [
+            "--jq",
+            '{truncated, tree: (.tree | if type == "array" then map(if type == "object" then {type, sha, size} else . end) else . end)}',
+          ]);
           const revision = args[1]?.match(/\/git\/trees\/([0-9a-f]+)\?recursive=1$/)?.[1];
           assert.ok(revision);
           const tree = git(fixture.source, "ls-tree", "-r", "-l", revision)

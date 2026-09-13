@@ -1,3 +1,7 @@
+import { publicTimestamp } from "./public-timestamp.ts";
+import { MAX_TRIAGE_ITEMS_PER_VIEW, publicTriageProjection } from "./public-triage.ts";
+import { githubEtagCacheShard } from "./github-etag-cache.ts";
+export { GithubEtagCache } from "./github-etag-cache.ts";
 import {
   commandTextForClawSweeperFastAck,
   directReReviewAdditionalPrompt,
@@ -529,13 +533,9 @@ const SUPPORT_WORKFLOW_NAMES = new Set([
 const TRIAGE_CACHE_TTL_SECONDS = 120;
 const DEFAULT_TRIAGE_ITEMS_PER_VIEW = 500;
 const DEFAULT_PR_PROOF_ITEMS_PER_VIEW = 500;
-const MAX_TRIAGE_ITEMS_PER_VIEW = 1000;
 const TRIAGE_SEARCH_PAGE_SIZE = 100;
 const TRIAGE_FOCUSED_FALLBACK_ITEMS_PER_VIEW = 100;
 const TRIAGE_LABEL_PREFIX = "clawsweeper:";
-const PUBLIC_TRIAGE_SCHEMA_VERSION = 2;
-const PUBLIC_TRIAGE_COUNT_LIMIT = 1_000_000;
-const PUBLIC_TRIAGE_ERROR_LIMIT = 20;
 const GITHUB_APP_TOKEN_REFRESH_SKEW_MS = 120_000;
 const GITHUB_APP_TOKEN_DEFAULT_TTL_MS = 50 * 60_000;
 const PR_PROOF_LABEL_NAMES = [
@@ -1276,17 +1276,17 @@ export default {
       url.pathname === "/internal/exact-review/github-etag-cache/lookup" &&
       request.method === "POST"
     )
-      return authenticatedExactReviewQueueRequest(request, env, "/github-etag-cache/lookup");
+      return authenticatedGithubEtagCacheRequest(request, env, "/github-etag-cache/lookup");
     if (
       url.pathname === "/internal/exact-review/github-etag-cache/store" &&
       request.method === "POST"
     )
-      return authenticatedExactReviewQueueRequest(request, env, "/github-etag-cache/store");
+      return authenticatedGithubEtagCacheRequest(request, env, "/github-etag-cache/store");
     if (
       url.pathname === "/internal/exact-review/github-etag-cache/confirm" &&
       request.method === "POST"
     )
-      return authenticatedExactReviewQueueRequest(request, env, "/github-etag-cache/confirm");
+      return authenticatedGithubEtagCacheRequest(request, env, "/github-etag-cache/confirm");
     const githubReadModelRoute =
       request.method === "POST"
         ? /^\/internal\/state\/github-read-model\/(item|comments|activity|workflows|placeholders|repair)$/.exec(
@@ -1886,23 +1886,6 @@ const PUBLIC_STATUS_TIME_FIELDS = new Set([
   "first_seen_at",
   "last_seen_at",
 ]);
-
-const PUBLIC_TIMESTAMP_PATTERN =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
-const PUBLIC_TIMESTAMP_MIN_MS = Date.UTC(2020, 0, 1);
-const PUBLIC_TIMESTAMP_MAX_MS = Date.UTC(2100, 0, 1);
-
-function publicTimestamp(value) {
-  if (typeof value !== "string" || value.length > 35 || !PUBLIC_TIMESTAMP_PATTERN.test(value)) {
-    return null;
-  }
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) &&
-    timestamp >= PUBLIC_TIMESTAMP_MIN_MS &&
-    timestamp < PUBLIC_TIMESTAMP_MAX_MS
-    ? new Date(timestamp).toISOString()
-    : null;
-}
 
 const PUBLIC_STATUS_COUNT_FIELDS = new Set([
   "schema_version",
@@ -3336,6 +3319,11 @@ export function publicStatusProjection(
     documentQueue.bay_projection = publicBayProjection;
     document.exact_review_queue = documentQueue;
   }
+  if (Object.hasOwn(source, "recent_durable_publication_events")) {
+    document.recent_durable_publication_events = publicRecentDurablePublicationEventsProjection(
+      source.recent_durable_publication_events,
+    );
+  }
   return document;
 }
 
@@ -3697,152 +3685,6 @@ async function publicTriageCacheProjection(
     if (projection.valid) return projection.value;
   }
   return null;
-}
-
-function publicTriageProjection(value, definitions) {
-  const unavailable = unavailablePublicTriageProjection(definitions);
-  if (!value || typeof value !== "object" || Array.isArray(value)) return unavailable;
-  if (value.schema_version === PUBLIC_TRIAGE_SCHEMA_VERSION) {
-    return publicProjectedTriageProjection(value, definitions, unavailable);
-  }
-  if (value.schema_version !== 1) return unavailable;
-
-  const generatedAt = publicTriageTimestamp(value.generated_at);
-  const diagnostics = value.diagnostics;
-  const errors = diagnostics?.errors;
-  const views = value.views;
-  const counts = value.counts;
-  if (
-    !generatedAt ||
-    !diagnostics ||
-    typeof diagnostics !== "object" ||
-    Array.isArray(diagnostics) ||
-    !Array.isArray(errors) ||
-    errors.length > PUBLIC_TRIAGE_ERROR_LIMIT ||
-    !errors.every((error) => typeof error === "string") ||
-    !Array.isArray(views) ||
-    views.length !== definitions.length ||
-    !counts ||
-    typeof counts !== "object" ||
-    Array.isArray(counts)
-  ) {
-    return unavailable;
-  }
-
-  const projectedViews = publicTriageViews(views, counts, definitions, false);
-  if (!projectedViews) return unavailable;
-  return {
-    valid: true,
-    value: publicTriageProjectionValue(generatedAt, errors.length, definitions, projectedViews),
-  };
-}
-
-function publicProjectedTriageProjection(value, definitions, unavailable) {
-  const generatedAt = publicTriageTimestamp(value.generated_at);
-  const errorCount = publicTriageCount(value.error_count, PUBLIC_TRIAGE_ERROR_LIMIT);
-  if (
-    !generatedAt ||
-    typeof value.complete !== "boolean" ||
-    errorCount === null ||
-    value.complete !== (errorCount === 0) ||
-    !Array.isArray(value.views) ||
-    value.views.length !== definitions.length ||
-    !value.counts ||
-    typeof value.counts !== "object" ||
-    Array.isArray(value.counts)
-  ) {
-    return unavailable;
-  }
-  const projectedViews = publicTriageViews(value.views, value.counts, definitions, true);
-  if (!projectedViews) return unavailable;
-  return {
-    valid: true,
-    value: publicTriageProjectionValue(generatedAt, errorCount, definitions, projectedViews),
-  };
-}
-
-function publicTriageViews(views, counts, definitions, projected) {
-  const byId = new Map();
-  for (const view of views) {
-    if (!view || typeof view !== "object" || Array.isArray(view) || typeof view.id !== "string") {
-      return null;
-    }
-    if (byId.has(view.id)) return null;
-    byId.set(view.id, view);
-  }
-  const result = [];
-  for (const definition of definitions) {
-    const view = byId.get(definition.id);
-    const totalCount = publicTriageCount(view?.total_count, PUBLIC_TRIAGE_COUNT_LIMIT);
-    const itemLimit = publicTriageCount(view?.item_limit, MAX_TRIAGE_ITEMS_PER_VIEW);
-    const countValue = publicTriageCount(counts[definition.id], PUBLIC_TRIAGE_COUNT_LIMIT);
-    if (
-      !view ||
-      totalCount === null ||
-      itemLimit === null ||
-      itemLimit < 1 ||
-      countValue !== totalCount ||
-      !Array.isArray(view.items) ||
-      view.items.length > itemLimit ||
-      totalCount < view.items.length ||
-      (projected && view.items.length !== 0)
-    ) {
-      return null;
-    }
-    result.push({ total_count: totalCount, item_limit: itemLimit });
-  }
-  return byId.size === definitions.length ? result : null;
-}
-
-function publicTriageProjectionValue(generatedAt, errorCount, definitions, projectedViews) {
-  const views = definitions.map((definition, index) => ({
-    id: definition.id,
-    title: definition.title,
-    description: definition.description,
-    total_count: projectedViews[index].total_count,
-    item_limit: projectedViews[index].item_limit,
-    items: [],
-  }));
-  return {
-    schema_version: PUBLIC_TRIAGE_SCHEMA_VERSION,
-    generated_at: generatedAt,
-    complete: errorCount === 0,
-    error_count: errorCount,
-    counts: Object.fromEntries(views.map((view) => [view.id, view.total_count])),
-    views,
-  };
-}
-
-function unavailablePublicTriageProjection(definitions) {
-  const views = definitions.map((definition) => ({
-    id: definition.id,
-    title: definition.title,
-    description: definition.description,
-    total_count: null,
-    item_limit: null,
-    items: [],
-  }));
-  return {
-    valid: false,
-    value: {
-      schema_version: PUBLIC_TRIAGE_SCHEMA_VERSION,
-      generated_at: null,
-      complete: false,
-      error_count: 1,
-      counts: Object.fromEntries(views.map((view) => [view.id, null])),
-      views,
-    },
-  };
-}
-
-function publicTriageCount(value, maximum) {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= maximum
-    ? value
-    : null;
-}
-
-function publicTriageTimestamp(value) {
-  return publicTimestamp(value);
 }
 
 function publicTriageHeaders(cacheControl) {
@@ -5255,7 +5097,12 @@ async function attachExactReviewSourceAuthorityAcknowledgement(
   }
 }
 
-async function exactReviewQueueFetch(queue: DurableObjectStub, path: string, request?: Request) {
+async function exactReviewQueueFetch(
+  queue: DurableObjectStub,
+  path: string,
+  request?: Request,
+  service: "exact_review_queue" | "github_etag_cache" = "exact_review_queue",
+) {
   const body = request ? await request.text() : undefined;
   const traceId = newExactReviewQueueTraceId();
   const endpoint = exactReviewQueueEndpointTemplate(path);
@@ -5283,7 +5130,7 @@ async function exactReviewQueueFetch(queue: DurableObjectStub, path: string, req
     const responseBody = await response.clone().text();
     try {
       JSON.parse(responseBody);
-      console.error("exact_review_queue_structured_server_response", {
+      console.error(`${service}_structured_server_response`, {
         trace_id: traceId,
         endpoint,
         phase: "request",
@@ -5293,7 +5140,7 @@ async function exactReviewQueueFetch(queue: DurableObjectStub, path: string, req
       });
       return { response, malformedServerResponse: false };
     } catch {
-      console.error("exact_review_queue_malformed_server_response", {
+      console.error(`${service}_malformed_server_response`, {
         trace_id: traceId,
         endpoint,
         phase: "request",
@@ -5308,7 +5155,7 @@ async function exactReviewQueueFetch(queue: DurableObjectStub, path: string, req
     const remote = failure.remote === true;
     const retryable = failure.retryable === true;
     const overloaded = failure.overloaded === true;
-    console.error("exact_review_queue_request_failed", {
+    console.error(`${service}_request_failed`, {
       trace_id: traceId,
       endpoint,
       phase: "request",
@@ -6677,6 +6524,41 @@ async function boundedCommandProofBody(request: Request): Promise<string | null>
     await reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
+}
+
+async function githubEtagCacheRequest(env, path: string, body: string) {
+  const namespace: DurableObjectNamespace | undefined = env.GITHUB_ETAG_CACHE;
+  if (!namespace) return json({ error: "github_etag_cache_not_configured" }, 503);
+  try {
+    const shard = githubEtagCacheShard(parseJsonObject(body));
+    const stub = namespace.get(namespace.idFromName(shard));
+    const { response, malformedServerResponse } = await exactReviewQueueFetch(
+      stub,
+      path,
+      new Request(`https://clawsweeper-etag-cache${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      }),
+      "github_etag_cache",
+    );
+    return malformedServerResponse
+      ? json({ error: "github_etag_cache_unavailable" }, response.status)
+      : response;
+  } catch {
+    return json({ error: "github_etag_cache_unavailable" }, 503);
+  }
+}
+
+async function authenticatedGithubEtagCacheRequest(request: Request, env, path: string) {
+  const secret = stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET);
+  if (!secret) return json({ error: "webhook_not_configured" }, 503);
+  const body = await request.text();
+  const signature = request.headers.get("x-clawsweeper-exact-review-signature") || "";
+  if (!(await verifyGithubWebhookSignature({ secret, signature, bodyText: body }))) {
+    return json({ error: "invalid_signature" }, 401);
+  }
+  return githubEtagCacheRequest(env, path, body);
 }
 
 async function authenticatedExactReviewQueueRequest(
@@ -11994,12 +11876,12 @@ async function githubJson(env, path) {
   });
   const requestBody = key ? githubEtagCacheRequestBody(key, "dashboard") : null;
   const etagBrokerEnabled = Boolean(
-    requestBody && exactReviewQueueStub(env) && stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET),
+    requestBody && env.GITHUB_ETAG_CACHE && stringEnv(env.CLAWSWEEPER_WEBHOOK_SECRET),
   );
   let cachedEntry: Record<string, unknown> | null = null;
   if (etagBrokerEnabled && requestBody) {
     try {
-      const lookup = await githubEtagQueuePost(env, "lookup", requestBody);
+      const lookup = await githubEtagCachePost(env, "lookup", requestBody);
       cachedEntry = lookup.hit === true ? objectValue(lookup.entry) : null;
     } catch {
       cachedEntry = null;
@@ -12008,7 +11890,7 @@ async function githubJson(env, path) {
   let response = await githubJsonResponse(env, path, token, String(cachedEntry?.etag || ""));
   if (response.status === 304 && etagBrokerEnabled && requestBody && cachedEntry) {
     try {
-      const confirmed = await githubEtagQueuePost(env, "confirm", {
+      const confirmed = await githubEtagCachePost(env, "confirm", {
         ...requestBody,
         etag: String(cachedEntry.etag || ""),
         body_digest: String(cachedEntry.bodyDigest || ""),
@@ -12034,7 +11916,7 @@ async function githubJson(env, path) {
   if (etagBrokerEnabled && requestBody) {
     const etag = response.headers.get("etag") || "";
     const bodyBytes = new TextEncoder().encode(body).byteLength;
-    await githubEtagQueuePost(env, "store", {
+    await githubEtagCachePost(env, "store", {
       ...requestBody,
       etag,
       ...(bodyBytes > GITHUB_ETAG_CACHE_MAX_BODY_BYTES ? { body_bytes: bodyBytes } : { body }),
@@ -12057,15 +11939,11 @@ function githubJsonResponse(env, path, token: string, ifNoneMatch: string) {
   });
 }
 
-async function githubEtagQueuePost(env, operation: "lookup" | "store" | "confirm", body) {
-  const response = await exactReviewQueueRequest(
+async function githubEtagCachePost(env, operation: "lookup" | "store" | "confirm", body) {
+  const response = await githubEtagCacheRequest(
     env,
     `/github-etag-cache/${operation}`,
-    new Request("https://clawsweeper-etag-cache", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    }),
+    JSON.stringify(body),
   );
   const result = objectValue(await response.json().catch(() => null));
   if (!response.ok) throw new Error(String(result.error || "GitHub ETag cache unavailable"));

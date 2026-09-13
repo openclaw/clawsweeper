@@ -21,6 +21,27 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Automatically enroll eligible Endor Pro PRs in the dedicated test repository’s autofix loop while retaining human merge and proof-approval gates. Thanks @jesse-merhi.
+
+- Keep Codex turn state updates in order so a slow `active` write cannot overwrite `validating` after completion; stop late heartbeats and abort queued telemetry when the worker exits.
+
+- Refresh pnpm to 12.4.1 and Wrangler to 4.131.0, pin setup-node v7, share workflow setup, and expose a test-concurrency environment override while preserving the adaptive CI default, full suite, coverage gates, Node 24 floor, and 48-hour release-age policy.
+
+- Prepare the target's reviewed Knip helper for selected OpenClaw changed-gate scans, including current TypeScript runners and native pnpm 12 cache keys. Restore its offline cache between attempts without weakening frozen dependency or release-age checks.
+- Refresh the hosted review tools to Codex and its Responses proxy 0.154.0, OpenClaw 2026.9.3, and checksum-pinned TruffleHog 3.97.4; use the qualified managed scanner when an older release remains on PATH.
+- Compatibility: the optional OpenClaw runner now requires Node 24.16+ within Node 24 (or Node 26.1+), matching its upstream CLI requirement; hosted workflows already install the latest Node 24. ClawSweeper's own Node floor is unchanged.
+- Preserve the original validation failure or timeout when a checkout identity rejection also occurs, keeping protected-input and publication gates intact.
+- Retain blocked execution reports and recovery requests when a validation-fix worker times out or exits without diagnostics, while preserving failed validation and publication gates.
+- Fetch and materialize the pinned commit before creating or resuming replacement repair branches, preserving dirty-checkout and concurrent-head safeguards.
+- Keep dashboard publication counts and time windows through refresh and cached reload, preserving explicit zeroes and incomplete data; thanks @vincentkoc.
+- Preserve PR versus issue identity and retained source provenance in failed-shard recovery; thanks @yetval.
+- Extend strict TypeScript checks over review-failure telemetry and source/storage helpers without changing their runtime behavior.
+- Restore Vite config scratch after OpenClaw changed-gate validation so a successful cold run does not fail checkout identity checks; preserve cache and disposable-output permissions under restrictive umasks and cross-device moves without weakening unrelated runtime-input protection.
+
+- Refresh Node 24 type definitions, the Oxc lint/format toolchain, and immutable checkout pins to v7.0.1 while retaining the 48-hour release-age policy and Node 24 minimum.
+
+- Isolate the GitHub ETag cache in repository-sharded Durable Objects so cache reads and writes no longer compete with exact-review admission, claims, or webhooks.
+
 - Refresh durable review freshness after unchanged exact-head re-reviews while preserving idempotent publication retries, and record bounded activity-cursor diagnostics for drift-blocked publication.
 
 - Preserve bounded, recognized command-intake HTTP failure codes in review-request diagnostics without exposing raw responses or changing retry behavior.
@@ -139,6 +160,17 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Prevent label sweeps from reactivating autofix after a ready review handler completes it in the same router run.
+
+- Restore OpenClaw boundary receipts with changed-gate outputs, and preserve recovery state instead of retrying validation whose completion cannot be verified.
+- Keep comment and automerge timeline previews within their requested character limits, including the ellipsis and tiny caps.
+
+- Keep quoted rating-list labels and evidence/owner fields from replacing structured rank-up moves, evidence links, or attribution when durable reports are parsed again; thanks @Yigtwxx.
+- Stop the OpenClaw child process group when its worker is interrupted, including signal-ignoring descendants; thanks @Yigtwxx.
+- Retry replay-safe lifecycle receipts and terminal dispositions after transient queue failures while preserving newer requeues and leaving publication enqueue single-attempt.
+- Restore scheduled cluster intake after the snapshot materializer update by refreshing its reviewed digest and verifying bounded expansion before import.
+
+- Retry the pinned control-plane helper download on TLS and connection errors so a single handshake failure no longer drops an exact-review event before enqueue.
 - Keep large repository reviews within the GitHub CLI response limit by projecting recursive-tree metadata before capture, preserving complete blob sizes and strict private-checkout admission.
 
 - Carry the durable review lease through oversized PR close proposals so direct exact publication can close eligible PRs; queued fallback still keeps PRs open with `skipped_changed_since_review` after lease expiry, pending the follow-up to create the final metadata proposal under publication ownership and re-evaluation at the next event or head.

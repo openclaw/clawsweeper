@@ -894,6 +894,32 @@ export function isReadyHumanReviewPause(command: LooseRecord): boolean {
   );
 }
 
+export function pendingRepairLoopOptIns(
+  existingCommands: readonly LooseRecord[],
+  optedIn: readonly { intent: "autofix" | "automerge"; number: number }[],
+) {
+  const settling = new Set(
+    existingCommands
+      .filter(
+        (command) =>
+          isReadyHumanReviewPause(command) ||
+          (command.status === "ready" && command.autofix_complete === true),
+      )
+      .map((command) => Number(command.issue_number)),
+  );
+  const seen = new Set(
+    existingCommands
+      .filter((command) => ["autofix", "automerge"].includes(String(command.intent ?? "")))
+      .map((command) => `${command.intent}:${Number(command.issue_number)}`),
+  );
+  return optedIn.filter(({ intent, number }) => {
+    const key = `${intent}:${number}`;
+    if (seen.has(key) || settling.has(number)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 export function existingCommandStatusBlocksReplay({
   hasExistingResponse,
   forceReprocess,

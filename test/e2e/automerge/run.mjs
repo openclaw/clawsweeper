@@ -742,7 +742,7 @@ function assertDeferredVerdictHandoffIsolation(candidateRoot) {
   );
 }
 
-function createCandidateRuntime(root, candidateRoot) {
+export function createCandidateRuntime(root, candidateRoot) {
   const source = path.resolve(candidateRoot);
   const runtime = path.join(root, "candidate-runtime");
   for (const relative of ["dist", "schema", "prompts", "config"]) {
@@ -764,7 +764,7 @@ function createCandidateRuntime(root, candidateRoot) {
   return runtime;
 }
 
-function addExactHeadVerdict(statePath, headSha, sourceRevision = null) {
+export function addExactHeadVerdict(statePath, headSha, sourceRevision = null) {
   const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
   const now = new Date().toISOString();
   state.comments.push({
@@ -838,7 +838,7 @@ function addMaintainerApproveCommand(statePath) {
   });
 }
 
-function addCanonicalNeedsHumanVerdict(statePath, headSha) {
+export function addCanonicalNeedsHumanVerdict(statePath, headSha) {
   const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
   const now = new Date(Date.now() + 1000).toISOString();
   addFixtureComment(statePath, {
@@ -1197,7 +1197,7 @@ function updateGitHubState(statePath, update) {
   writeJson(statePath, state);
 }
 
-function initialGitHubState(fixture, targetPrNumber = 42) {
+export function initialGitHubState(fixture, targetPrNumber = 42) {
   const now = new Date().toISOString();
   return {
     repo: "openclaw/openclaw",

@@ -599,7 +599,7 @@ test("automatic bug backfill runs independently of queue-fed scheduled sweeps", 
   const checkout = workflow.jobs.backfill!.steps.find((step) =>
     step.uses?.startsWith("actions/checkout@"),
   );
-  assert.equal(checkout?.uses, "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0");
+  assert.equal(checkout?.uses, "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1");
   assert.equal(checkout?.with?.["persist-credentials"], false);
   const state = workflow.jobs.backfill!.steps.find((step) => step.uses?.endsWith("/setup-state"));
   assert.equal(state?.with?.["coordinator-class"], "cluster_intake");
@@ -7745,7 +7745,7 @@ test("all workflow control-plane curls use the shared helper after download or f
         if (step.name === "Fetch control-plane retry helper") {
           assert.match(
             run,
-            /curl -fsSL --retry 3 "https:\/\/raw\.githubusercontent\.com\/\$\{GITHUB_REPOSITORY\}\/\$\{GITHUB_SHA\}\/scripts\/control-plane-curl\.sh"/,
+            /curl -fsSL --retry 3 --retry-all-errors --retry-connrefused "https:\/\/raw\.githubusercontent\.com\/\$\{GITHUB_REPOSITORY\}\/\$\{GITHUB_SHA\}\/scripts\/control-plane-curl\.sh"/,
           );
           assert.match(run, /test -s "\$RUNNER_TEMP\/control-plane-curl\.sh"/);
           assert.match(run, /declare -F control_plane_curl/);

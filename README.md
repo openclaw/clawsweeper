@@ -292,6 +292,9 @@ Common commands:
   enrolment. Endor policy owns reachability. Intake failures do not stop the
   router. Read-only preview:
   `node dist/repair/endor-autofix-intake.js --repo openclaw/endor-clawsweeper-e2e`.
+  The controlled intake/router proof is `node scripts/e2e/endor-autofix.mjs`
+  after `pnpm run build:node`; it uses synthetic GitHub state and verifies
+  completion, human-review pause, replay, and zero merge calls.
 - `implement issue` on an open issue creates or reuses one issue implementation
   job and dispatches the issue-to-PR lane. OpenClaw organization members may
   request this explicitly even without repository write permission.
@@ -585,10 +588,10 @@ Repair reviews scan the committed, staged, unstaged, and applicable untracked
 bytes of the validated checkout. Clean text-converted checkouts retain both
 canonical Git and raw working bytes in scan coverage. The host never starts a target-bundled autoreview helper or second reviewer.
 
-Hosted Codex and OpenClaw setup share the checksum-pinned TruffleHog 3.97.1
+Hosted Codex and OpenClaw setup share the checksum-pinned TruffleHog 3.97.4
 installer in `.github/actions/setup-review-tools/install.sh`. For local review,
-ClawSweeper first uses a trusted host executable outside both checkouts; when it
-is absent, it bootstraps the exact checksum-pinned release asset into a
+ClawSweeper first qualifies a trusted host executable outside both checkouts; when it
+is absent or reports a different TruffleHog release, it bootstraps the exact checksum-pinned release asset into a
 user-owned cache outside both checkouts. The local bootstrap accepts no URL or
 version override, verifies the download and cached executable, and runs a clean
 environment version check before scanning. Missing tools, unclassified findings, scan errors, source
@@ -667,6 +670,16 @@ and their exact native metadata shape. Any emitted subset and order may qualify;
 duplicate exact findings, unknown variants, lossy decoder buckets, or an
 unqualified deduplicated blob reference refuse admission.
 
+The same table qualifies the exact embedded-credential rejection fixture in
+OpenClaw's `extensions/matrix/src/matrix/client.test.ts` for URI detector 17,
+only with `PLAIN` or `HTML` attribution. Both raw-value digests, the complete
+source line, path, regular-file mode, and committed base/head references must
+match. Retained source-only native scans observed PLAIN findings; the original
+hosted refusal identified HTML for its first finding but did not retain the
+second finding's details. Constructed HTML regression records are not recovered
+hosted evidence. Qualification does not waive that unknown finding or replace
+fresh whole-input admission and a completed review.
+
 One source path may contain multiple independently reviewed fixtures; each
 digest/path/mode tuple must match exactly, so source membership alone never
 qualifies a finding.
@@ -687,7 +700,7 @@ encoded-only blobs remain blocking, as do other findings, verified findings,
 and incomplete scans. Unverified findings alone never qualify: every finding must
 match the exact bytes, source association, and strict detector contract. This
 classification does not expand TruffleHog's detection coverage.
-The classification is pinned to TruffleHog 3.97.1's output contract; scanner
+The classification is pinned to TruffleHog 3.97.4's output contract; scanner
 upgrades require requalification. See `src/agent-input-scan-fixtures.ts`.
 After successful cleanup and final source fences, each accepted fixture/source
 pair emits a host-side structured stderr notice with `event`, `fixtureSha256`,
@@ -1004,7 +1017,7 @@ pnpm run oxformat
 ```
 
 `oxformat` is an alias for `oxfmt`; there is no separate `oxformat` pnpm package.
-The `CI` GitHub Actions workflow uses the latest Node release and runs
+The `CI` GitHub Actions workflow uses the latest Node 24 release and runs
 `pnpm run check` on pushes, pull requests, and manual dispatches. The check gate
 includes the full test suite, a strict changed-surface coverage threshold, and a
 full compiled-repo coverage ratchet. It builds once, runs independent static and
@@ -1017,6 +1030,10 @@ Node test files are expanded by `scripts/run-node-tests.mjs` instead of the
 shell, so the same targets work on Linux, macOS, and Windows. The runner defaults
 to the smaller of the machine's available parallelism and 16, prints the chosen
 value, and accepts an explicit `--test-concurrency` override for diagnostics.
+`CLAWSWEEPER_TEST_CONCURRENCY` sets the default for CLI runs when that flag is
+absent, allowing controlled concurrency experiments through package scripts.
+CI retains the adaptive default. Crabbox diagnostic bundles under `.crabbox/` are generated scratch
+and are ignored by Git.
 
 ## GitHub Actions Setup
 

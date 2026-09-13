@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
+import { TRUFFLEHOG_VERSION } from "./review-tool-bootstrap.js";
 
 interface ReviewedFixture {
   fixtureSha256: string;
@@ -116,6 +117,21 @@ const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
     sources: ["worker/test/fleet.test.ts"],
   },
   {
+    // Reviewed WebVNC writer-redaction fixtures (Crabbox #544).
+    fixtureSha256: "18cd62c666a4b48f9968cacc2acc34a27c1f15682219d4f45bfb903cfb3d60fc",
+    rawSha256: "d72aa985328cd8b6b8d13182b028f5e5c06e574b9acfddc31dc5ab0655896050",
+    lineSha256s: ["83b93f401c1c6526ce80cca9860fdbf59825c92e70644a6f087e6a1b46b295e8"],
+    decoders: ["PLAIN"],
+    sources: ["internal/cli/webvnc_test.go"],
+  },
+  {
+    fixtureSha256: "5f63e971f3b95e10c500e2c40cfaf423b47c60e1bbb3c1dad9633cef0aa1a10f",
+    rawSha256: "6a160b5adb896b7ae8e5347258bce211ebcb35f422aa9fc0931d2406403e72ae",
+    lineSha256s: ["83b93f401c1c6526ce80cca9860fdbf59825c92e70644a6f087e6a1b46b295e8"],
+    decoders: ["PLAIN"],
+    sources: ["internal/cli/webvnc_test.go"],
+  },
+  {
     // Approved Mac dashboard subframe rejection witness in OpenClaw 9ba01d6c7b1c.
     fixtureSha256: "97c60d02f5114db97718cfe1c3686c0a36fb5138840611c8793c7abbd9c64f71",
     rawSha256: "43690a8c13d4028ed731bc4dfeb37f83adaa4e5849d2e0fa13f746843adec333",
@@ -214,6 +230,8 @@ const CRABBOX_POSTGRES_DOC_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  [17, "URI", "PLAIN", "e26b2ccf9953c3e0e675998528577649327e1d3e1072233ff86cad586ca5c05d", "e26b2ccf9953c3e0e675998528577649327e1d3e1072233ff86cad586ca5c05d", "04e4f717532e6f38582816622367e020b28d8db6ced6e714667328853a422484", "extensions/matrix/src/matrix/client.test.ts", "100644"],
+  [17, "URI", "HTML", "e26b2ccf9953c3e0e675998528577649327e1d3e1072233ff86cad586ca5c05d", "e26b2ccf9953c3e0e675998528577649327e1d3e1072233ff86cad586ca5c05d", "04e4f717532e6f38582816622367e020b28d8db6ced6e714667328853a422484", "extensions/matrix/src/matrix/client.test.ts", "100644"],
   [17, "URI", "ESCAPED_UNICODE", "31ff9f3ec446cbcc27e6fc08f3cd96b5d95d8b436b4144f3a098d7c524a863f7", "0d9e27039ed24044fe06ab5145d7b04569ced32d3ff6fe8eb9acf04a75663919", "47171b920ebd0800ac107a92ad80b7279677f0096fad5a367f82fe3b1955c790", "src/logging/redact.test.ts", "100644"],
   [17, "URI", "ESCAPED_UNICODE", "a460200b4a488bc178d0dac30bc5fe027ff86d9c7c94554f5c9d915580bc4239", "839b16fa1dd892daf47ab10d50f7c1957a16ace282fe9e6df67fefc40f7f06ff", "232cce5bf0c7b495e2f008fdc45cbd2bd9afc5394906576e4466411f6841d260", "src/logging/redact.test.ts", "100644"],
   [17, "URI", "ESCAPED_UNICODE", "de7dcbd8612764d80691e85407d899f6e3686afd9ab40964943c3874ffe9571c", "198d323e34c2a045b86adbc72b8cd54bb8f9582175c5c25e6c68b4e374d8873f", "8ff8c788b296b7eb81abaf7f2f48bb4be717f6e8bef76200e7c842dbeea8a15c", "src/logging/redact.test.ts", "100644"],
@@ -249,6 +267,10 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
       !(
         (source === "src/logging/redact.test.ts" &&
           (decoder === "PLAIN" || decoder === "ESCAPED_UNICODE")) ||
+        (source === "extensions/matrix/src/matrix/client.test.ts" &&
+          detectorType === 17 &&
+          detectorName === "URI" &&
+          (decoder === "PLAIN" || decoder === "HTML")) ||
         (source === "docs/operations.md" &&
           detectorType === 968 &&
           detectorName === "Postgres" &&
@@ -471,7 +493,7 @@ export function classifyReviewedFixtureScan(
     return nativeFailure("incomplete_scan");
   const verifiedCount = findings.filter((finding) => finding.Verified === true).length;
   if (
-    completion.trufflehog_version !== "3.97.1" ||
+    completion.trufflehog_version !== TRUFFLEHOG_VERSION ||
     typeof completion.chunks !== "number" ||
     !Number.isSafeInteger(completion.chunks) ||
     completion.chunks <= 0 ||

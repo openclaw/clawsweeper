@@ -3115,7 +3115,9 @@ test("rollout dispatches one full batch workflow without admitting legacy publis
     assert.equal(stats.lanes.publication.batches.last_dispatch_succeeded, true);
     assert.equal(stats.lanes.publication.batches.dispatch_pending_until, null);
     assert.equal(regularDispatches.length, 1);
-    assert.equal(storage.scheduledAlarm(), 7_031_000);
+    // A concurrent request installed this wake while dispatch was in flight. It is now
+    // due but still pending delivery, so later scheduling must not postpone it.
+    assert.equal(storage.scheduledAlarm(), 7_001_000);
 
     await queue.alarm();
     assert.equal(dispatches.length, 1);

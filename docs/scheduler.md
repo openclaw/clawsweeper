@@ -614,7 +614,7 @@ GitHub is still expanding jobs. Scheduled feeds use one planner shard because
 the Durable Object, not the matrix, owns review concurrency.
 
 Planning is also the runtime build point for manual matrix review. The plan job installs
-with pinned Node 24 and `pnpm@11.10.0`, builds `dist/` once, and uploads that
+with Node 24 and the repository-pinned pnpm version, builds `dist/` once, and uploads that
 runtime artifact. Review shards download the built `dist/` and run
 `node dist/clawsweeper.js review` directly instead of running a per-shard pnpm
 install and build. Scheduled queue feeds skip this artifact because each exact
@@ -676,8 +676,11 @@ bypassing the rate limiter.
 Scheduled review ingress requires
 `scheduled_feed.enqueue_replay: scheduled_disposition_v1` before retrying
 transient transport or HTTP 5xx failures with the same signed delivery bytes;
-legacy ambiguous receipts fail closed, and publication post-effects remain
-single-attempt.
+legacy ambiguous receipts fail closed. Publication enqueue remains single-attempt;
+batch lifecycle router receipts and terminal dispositions use bounded,
+byte-identical retries backed by durable operation identities. Operator
+retirement and other callers retain their single-attempt default.
+Legacy lifecycle payloads without replay identities remain single-attempt as well.
 
 Normal fanout ordinarily divides one live queue-advertised candidate-capacity
 budget across the selected repositories; it does not grant 50 candidates to
@@ -960,6 +963,13 @@ does not record that membership, so the original matrix cannot authorize it.
 Each item has a visible disposition; queue acknowledgements distinguish queued,
 deduplicated, shed, disabled, and failed admission. None means review or
 publication succeeded.
+
+Validated recovery entries retain the item kind and any owner-recorded source
+revision. PR retries use PR routing rather than issue routing. The source
+revision remains opaque diagnostic provenance: it may include discussion and
+must not be reused as a PR head SHA or the queue's narrower content hash.
+This does not establish a cross-producer terminal-refusal fence; matching that
+fence requires the same complete scanned-input identity at both boundaries.
 
 Before uploading a failed shard, the same projection stages only completed
 reports whose native terminal digest, repository/item/source identity, complete

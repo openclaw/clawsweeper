@@ -43,6 +43,7 @@ const receipt = {
 async function scenario(kind, ack = "accepted") {
   const root = join(temp, `${kind}-${ack}`);
   mkdirSync(root, { recursive: true });
+  cpSync(join(repo, "scripts/control-plane-curl.sh"), join(root, "control-plane-curl.sh"));
   const produced = await run(
     process.execPath,
     [
@@ -53,7 +54,7 @@ async function scenario(kind, ack = "accepted") {
     ],
     {
       cwd: repo,
-      env: { PATH: process.env.PATH, HOME: root },
+      env: { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, HOME: root },
     },
   );
   assert.equal(produced.code, 79, produced.stderr);
@@ -70,6 +71,7 @@ async function scenario(kind, ack = "accepted") {
     recursive: true,
   });
   const requests = [];
+  const requestDecisions = [];
   const failures = [];
   const comments = new Map();
   const recordKeys = new Set();
@@ -186,6 +188,14 @@ async function scenario(kind, ack = "accepted") {
         `router:failed-review-recovery-123456-1-${body.decision.itemNumber}`,
       );
       requests.push(body.decision.itemNumber);
+      requestDecisions.push(body.decision);
+      if (kind === "mixed-identities") {
+        const expectedKind = body.decision.itemNumber === 3 ? "pull_request" : "issue";
+        assert.equal(body.decision.itemKind, expectedKind);
+        assert.equal(body.decision.sourceEvent, expectedKind === "issue" ? "issues" : "pull_request");
+        assert.equal(Object.hasOwn(body.decision, "sourceHeadSha"), false);
+        assert.equal(Object.hasOwn(body.decision, "sourceContentRevision"), false);
+      }
       response.writeHead(200, { "content-type": "application/json" });
       response.end(
         JSON.stringify(
@@ -227,7 +237,9 @@ async function scenario(kind, ack = "accepted") {
     const endpoint = `http://127.0.0.1:${server.address().port}`;
     const env = {
       PATH: process.env.PATH,
+      TMPDIR: process.env.TMPDIR,
       HOME: root,
+      RUNNER_TEMP: root,
       ...producerEnv,
       GH_TOKEN: "synthetic",
       QUEUE_URL: endpoint,
@@ -467,6 +479,7 @@ async function scenario(kind, ack = "accepted") {
       original_review_exit: produced.code,
       recovery_exit: code,
       requests,
+      requestDecisions,
       retained_reports: staged,
       published_records: [...recordKeys].sort(),
       published_comments: [...comments.keys()].sort(),
@@ -504,6 +517,9 @@ function run(command, args, options) {
 }
 
 try {
+  if (process.argv.includes("--identity-only")) {
+    await scenario("mixed-identities");
+  } else {
   await scenario("mixed");
   await scenario("filtered");
   if (!baseline) {
@@ -528,6 +544,7 @@ try {
     ]) {
       await scenario(kind);
     }
+  }
   }
   const output = process.argv.indexOf("--output");
   if (output >= 0)

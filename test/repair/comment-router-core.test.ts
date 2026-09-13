@@ -43,6 +43,7 @@ import {
   latestTrustedExactHeadReview,
   isCanonicalLandingNeedsHumanText,
   isReadyHumanReviewPause,
+  pendingRepairLoopOptIns,
   isTrustedStatusCommentAuthor,
   latestRepairLoopResumeTime,
   isAuthorReadOnlyCommandAllowed,
@@ -1889,7 +1890,21 @@ test("router classifies fresh human-review pauses before label sweeps", () => {
 
   assert.ok(classifyComments >= 0);
   assert.ok(repairLoopSweeps > classifyComments);
-  assert.match(source, /\.filter\(isReadyHumanReviewPause\)/);
+  assert.match(source, /pendingRepairLoopOptIns\(existingCommands, optedIn\)/);
+  assert.deepEqual(
+    pendingRepairLoopOptIns(
+      [
+        {
+          issue_number: 42,
+          intent: "clawsweeper_needs_human",
+          status: "ready",
+          actions: [{ action: "label", label: "clawsweeper:human-review" }],
+        },
+      ],
+      [{ intent: "autofix", number: 42 }],
+    ),
+    [],
+  );
 });
 
 test("label sweeps honor fresh trusted exact-head review start leases", () => {
@@ -3193,6 +3208,37 @@ test("canonical landing needs-human accepts waiting automerge opt-in as active r
       liveVerification: "passed",
     }),
     true,
+  );
+});
+
+test("label sweeps leave completion and pause to the already-ready PR owner", () => {
+  const completing = {
+    intent: "clawsweeper_auto_merge",
+    issue_number: 42,
+    status: "ready",
+    autofix_complete: true,
+  };
+  const paused = {
+    intent: "clawsweeper_needs_human",
+    issue_number: 43,
+    status: "ready",
+    actions: [{ action: "label", label: "clawsweeper:human-review" }],
+  };
+  const optedIn = [42, 43, 44, 44].map((number) => ({ intent: "autofix" as const, number }));
+  assert.deepEqual(pendingRepairLoopOptIns([completing, paused], optedIn), [
+    { intent: "autofix", number: 44 },
+  ]);
+  for (const status of ["waiting", "skipped", "executed"]) {
+    assert.deepEqual(pendingRepairLoopOptIns([{ ...completing, status }], [optedIn[0]!]), [
+      optedIn[0],
+    ]);
+  }
+  assert.deepEqual(
+    pendingRepairLoopOptIns(
+      [{ intent: "autofix", issue_number: 44 }],
+      [{ intent: "autofix", number: 44 }],
+    ),
+    [],
   );
 });
 

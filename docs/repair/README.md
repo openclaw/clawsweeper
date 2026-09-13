@@ -12,13 +12,13 @@
 
 ## Use the right repair document
 
-| Need | Canonical page |
-| --- | --- |
-| Understand repair concepts, modes, artifacts, or local CLI entry points | This page |
-| Run or recover live repair work | [Operations](operations.md) |
-| Change implementation objects, stages, ledgers, or extension points | [Internal feature map](internal-features.md) |
-| Change trusted PR autofix/automerge behavior | [Auto-updating PRs](auto-update-prs.md) |
-| Understand the end-to-end steerable session protocol | [Steerable repair automation](../steerable-repair-automation.md) |
+| Need                                                                    | Canonical page                                                   |
+| ----------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| Understand repair concepts, modes, artifacts, or local CLI entry points | This page                                                        |
+| Run or recover live repair work                                         | [Operations](operations.md)                                      |
+| Change implementation objects, stages, ledgers, or extension points     | [Internal feature map](internal-features.md)                     |
+| Change trusted PR autofix/automerge behavior                            | [Auto-updating PRs](auto-update-prs.md)                          |
+| Understand the end-to-end steerable session protocol                    | [Steerable repair automation](../steerable-repair-automation.md) |
 
 The operations runbook is the single source for live command trust, mutation
 gates, runner selection, token boundaries, routing, recovery, and promotion.
@@ -164,22 +164,49 @@ remain rejected.
 
 Replacement fix work uses a recoverable target branch named `clawsweeper/<cluster-id>`. The executor resumes that branch if it already exists and pushes checkpoint commits after agent edits and review-fix edits, adding `Co-authored-by` trailers for non-bot source PR authors when a contributor PR is replaced. It then opens or updates the PR only after validation and internal review/fix handling. If validation or Codex itself still blocks after retries, the run writes a blocked fix report and leaves the checkpoint branch recoverable instead of losing the patch.
 
+For a fresh or resumed replacement, the executor hydrates the pinned base or
+checkpoint tree through the isolated network owner, then materializes it before attaching the branch:
+fetch can advance the remote ref without moving
+the clone's HEAD. Dirty checkouts and concurrent head changes still fail closed.
+Ordinary fetches remain blobless; offline materialization never enables lazy network fetches.
+See the [replacement-branch proof](../proof/replacement-branch-head/README.md).
+
 Runs for the same job path are queued instead of running concurrently (the workflow concurrency group is keyed by job path only, not by mode). The workflow uses Node 24, `blacksmith-4vcpu-ubuntu-2404` for cluster planning/review, and `blacksmith-16vcpu-ubuntu-2404` for fix/apply execution. Planning defaults to Codex's `read-only` sandbox. Maintainers may select `planner_sandbox: danger-full-access` only when moving a job to a trusted ephemeral runner whose host cannot start the Linux sandbox; the default and all automated dispatches stay read-only. Fix execution prepares the target checkout with Corepack and the target `pnpm` package manager before validation; the execution job caches Codex, npm, Corepack, and the target pnpm store. Fix validation is pinned to OpenClaw's fast changed-lane posture by default: `pnpm check:changed` plus diff checks are the hard local gate, and target validation commands normalize to `pnpm check:changed` unless `CLAWSWEEPER_TARGET_VALIDATION_MODE=strict` or `CLAWSWEEPER_STRICT_TARGET_VALIDATION=1` is explicitly set. Adopted OpenClaw automerge repairs require that changed-surface command without adding full-repository lint or typecheck gates; exact-head hosted CI remains the authority for broader repository health. The deterministic repair artifact also carries failing exact-head check names and links when available, and the prompt treats those failed checks as automerge repair scope even when the failing file is outside the original `likely_files`; Codex must rebase, inspect logs, fix the narrow failure, or prove current `main` is independently blocked. That normalized gate is also passed to Codex in the write prompt; Codex is expected to run it, fix failures it introduced, and report the exact command/result before returning. Unrelated flaky main CI, broad `pnpm check`, full tests, live, docker, and e2e lanes do not block narrow ClawSweeper Repair fixes by default.
 
 Target dependency metadata may retain npm's positive `min-release-age` and
 package-name `min-release-age-exclude[]` settings. Registry overrides and other
 active package-manager configuration remain rejected; every YAML lockfile
 document is checked against the approved destinations. OpenClaw changed-gate
-validation restores `.cache/vitest`, `node_modules/.cache`, and
-`node_modules/.vite` after success or failure. Neighboring ignored inputs remain
-protected. A pending runtime build also retains its bound output until archive
-smoke completes; cache restoration does not exempt that output from verification.
+validation restores `.cache/vitest`, `node_modules/.cache`, `node_modules/.vite`,
+and `node_modules/.vite-temp` after success or failure. Cache and disposable-output
+copies preserve file and directory permissions, including cross-device
+compiler-cache moves. Neighboring ignored inputs remain protected. A pending
+runtime build retains its bound output until archive smoke completes; cache
+restoration does not exempt that output from verification.
+
+When validation fails and also changes protected checkout inputs, the identity
+rejection remains the primary error and retains the command failure as its cause.
+This preserves timeout and compiler diagnostics without accepting changed inputs
+or treating an unfinished build's ownership lock as disposable cache.
+
+OpenClaw changed-gate setup recognizes both `deadcode-knip-runner.mts` and the
+older `.mjs` runner. It prepares Knip only when the selected paths require a
+scan. Explicit paths take precedence over staged paths, then the base/head
+range plus tracked and untracked worktree changes. Setup uses a reviewed frozen
+graph and preserves the target's minimum release age. An unsupported pin stops
+setup and names the missing reviewed graph. The helper uses the selected pnpm
+version's cache key, including native pnpm 12, and reseeds each isolated
+validation cache after reset.
 
 If Codex itself fails an edit pass with a transient tool-transport error, such
 as a closed stdin session from the Codex tool router, the executor consumes an
 edit retry and keeps the branch recoverable instead of failing the whole repair
 worker immediately. Timeouts and validation failures still use their dedicated
-timeout, validation-fix, and review-fix paths.
+timeout, validation-fix, and review-fix paths. Validation-fix worker timeouts and
+empty-output failures retain a blocked
+execution report and the existing recovery request while returning a failing exit
+status; they do not permit publication or count as passing validation. See the
+[validation-fix outcome proof](../proof/validation-fix-outcome/README.md).
 
 Full worker prompts, Codex transcripts, and raw artifacts stay in GitHub Actions. The committed ledger keeps only the cluster summary, run URL, action counts, apply outcomes, closed targets, and human-review entries.
 

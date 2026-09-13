@@ -154,20 +154,18 @@ test(
     const h = await fixture(320);
     const samples: Record<string, unknown>[] = [];
     const batchStore = new ExactReviewPublicationBatchStore(h.storage);
-    const batches = Array.from(
-      { length: 10 },
-      (_, i) =>
-        batchStore.claim({
-          batchId: `cpu-batch-${i}`,
-          leaseOwner: "cpu-worker",
-          leaseExpiresAt: NOW + 3_600_000,
-          now: NOW,
-          maxItems: 8,
-          maxConcurrentBatches: 10,
-          candidates: h.items
-            .slice(100 + i * 8, 108 + i * 8)
-            .map((item) => ({ itemKey: item.key, revision: 1 })),
-        })!,
+    const batches = Array.from({ length: 10 }, (_, i) =>
+      batchStore.claim({
+        batchId: `cpu-batch-${i}`,
+        leaseOwner: "cpu-worker",
+        leaseExpiresAt: NOW + 3_600_000,
+        now: NOW,
+        maxItems: 8,
+        maxConcurrentBatches: 10,
+        candidates: h.items
+          .slice(100 + i * 8, 108 + i * 8)
+          .map((item) => ({ itemKey: item.key, revision: 1 })),
+      })!,
     );
     // Seed publication and command-finalizer leases outside the measured call.
     for (let i = 0; i < 20; i++) {

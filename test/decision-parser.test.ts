@@ -1721,3 +1721,22 @@ test("decision parser neutralizes finding-list grammar inside finding and concer
   );
   assert.deepEqual(parseDecision({ ...source, ...once }), once);
 });
+
+test("report prose neutralizer escapes renderer-owned list labels", () => {
+  const { neutralizeOwnedSectionSpoofing } = createReportHelpers({
+    OWNED_REVIEW_SECTION_HEADINGS: new Set(),
+    parseBacktickLocation: () => null,
+  });
+  const cases: Array<[string, string]> = [
+    ["Next rank-up steps:", "Next rank-up steps&#58;"],
+    ["next rank-up steps:  ", "next rank-up steps&#58;"],
+    ["> Vision evidence:", "> Vision evidence&#58;"],
+    ["Vision evidence:", "Vision evidence&#58;"],
+    ["Next rank-up steps are listed below.", "Next rank-up steps are listed below."],
+    ["Vision evidence: the roadmap entry", "Vision evidence: the roadmap entry"],
+  ];
+  for (const [input, expected] of cases) {
+    assert.equal(neutralizeOwnedSectionSpoofing(input), expected, input);
+    assert.equal(neutralizeOwnedSectionSpoofing(expected), expected, `idempotent: ${input}`);
+  }
+});

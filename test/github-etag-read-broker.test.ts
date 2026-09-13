@@ -9,7 +9,7 @@ import {
   GITHUB_ETAG_CACHE_TABLE,
   GithubEtagResponseStore,
 } from "../dashboard/github-etag-cache.ts";
-import worker, { ExactReviewQueue, githubJsonForTest } from "../dashboard/worker.ts";
+import worker, { GithubEtagCache, githubJsonForTest } from "../dashboard/worker.ts";
 import { createGitHubRuntime } from "../dist/clawsweeper-github-runtime.js";
 import {
   githubEtagCacheKey,
@@ -478,7 +478,7 @@ test("dashboard health client counts oversized bodies through size-only stores",
   for (const size of [200, 600]) {
     await t.test(`${size} KiB`, async () => {
       const storage = new MemoryDurableStorage();
-      const queue = new ExactReviewQueue({ storage }, {});
+      const queue = new GithubEtagCache({ storage });
       const paths: string[] = [];
       const stores: Record<string, unknown>[] = [];
       const originalQueueFetch = queue.fetch.bind(queue);
@@ -491,7 +491,7 @@ test("dashboard health client counts oversized bodies through size-only stores",
       const env = {
         GITHUB_TOKEN: "dashboard-token",
         CLAWSWEEPER_WEBHOOK_SECRET: webhookSecret,
-        EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+        GITHUB_ETAG_CACHE: new MemoryDurableNamespace(queue),
       };
       const originalFetch = globalThis.fetch;
       const body = jsonBodyBytes(size * 1_024, "é");
@@ -523,11 +523,11 @@ test("dashboard health client counts oversized bodies through size-only stores",
 
 test("publisher HMAC endpoints persist and confirm bodies while operator scope is rejected", async () => {
   const storage = new MemoryDurableStorage();
-  const queue = new ExactReviewQueue({ storage }, {});
+  const queue = new GithubEtagCache({ storage });
   const env = {
     CLAWSWEEPER_WEBHOOK_SECRET: webhookSecret,
     EXACT_REVIEW_OPERATOR_SECRET: operatorSecret,
-    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+    GITHUB_ETAG_CACHE: new MemoryDurableNamespace(queue),
   };
   const key = requiredKey("repository_actions", "/repos/openclaw/openclaw/issues/7");
   const request = githubEtagCacheRequestBody(key, "apply");
@@ -576,11 +576,11 @@ test("publisher HMAC endpoints persist and confirm bodies while operator scope i
 test("dashboard health reads send If-None-Match and replay only after durable confirmation", async () => {
   const originalFetch = globalThis.fetch;
   const storage = new MemoryDurableStorage();
-  const queue = new ExactReviewQueue({ storage }, {});
+  const queue = new GithubEtagCache({ storage });
   const env = {
     GITHUB_TOKEN: "dashboard-token",
     CLAWSWEEPER_WEBHOOK_SECRET: webhookSecret,
-    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+    GITHUB_ETAG_CACHE: new MemoryDurableNamespace(queue),
   };
   let resource = {
     etag: '"health-v1"',

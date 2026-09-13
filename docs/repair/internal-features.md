@@ -32,6 +32,11 @@ The core invariants:
 - Merge stays closed unless a maintainer explicitly opens the merge gate.
 - Security-sensitive work is out of scope and must be routed elsewhere.
 
+Target validation orchestration lives in `src/repair/target-validation.ts`.
+`src/repair/target-workspace.ts` owns bounded workspace discovery, manifest
+reading, package selection, and Bun lifecycle-hook inspection. Its traversal,
+metadata, selector, and deadline limits apply before validation commands run.
+
 ## Main Objects
 
 ### Job File

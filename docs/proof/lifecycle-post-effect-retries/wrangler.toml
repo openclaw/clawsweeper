@@ -1,0 +1,18 @@
+name = "lifecycle-post-effect-local-proof"
+main = "worker.ts"
+compatibility_date = "2026-05-11"
+
+[[durable_objects.bindings]]
+name = "EXACT_REVIEW_QUEUE"
+class_name = "ExactReviewQueue"
+
+[[durable_objects.bindings]]
+name = "STATUS_STORE"
+class_name = "StatusStore"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ExactReviewQueue", "StatusStore"]
+
+[vars]
+CLAWSWEEPER_WEBHOOK_SECRET = "synthetic-lifecycle-proof"

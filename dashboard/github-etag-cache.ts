@@ -5,6 +5,20 @@ import {
 } from "../src/github-etag-cache-contract.ts";
 import { recordOrEmpty as objectValue } from "../src/value-coerce.ts";
 
+import {
+  EXACT_REVIEW_QUEUE_TRACE_HEADER,
+  exactReviewQueueEndpointTemplate,
+  exactReviewQueueTraceId,
+} from "./exact-review-queue-observability.ts";
+
+export const GITHUB_ETAG_CACHE_FALLBACK_SHARD = "fallback";
+
+export function githubEtagCacheShard(value: unknown): string {
+  const key = githubEtagCacheKeyFromValue(value);
+  const repository = key && /^\/repos\/([^/]+\/[^/]+)\//.exec(key.route)?.[1];
+  return repository?.toLowerCase() || GITHUB_ETAG_CACHE_FALLBACK_SHARD;
+}
+
 export const GITHUB_ETAG_CACHE_TABLE = "github_etag_response_cache_v1";
 export const GITHUB_ETAG_CACHE_MAX_ENTRIES = 2_048;
 export { GITHUB_ETAG_CACHE_MAX_BODY_BYTES };
@@ -331,4 +345,78 @@ async function sha256Bytes(value: Uint8Array<ArrayBuffer>): Promise<string> {
 
 function firstRow(rows: Iterable<SqlRow>): SqlRow | undefined {
   return Array.from(rows)[0];
+}
+
+// This namespace owns only disposable HTTP cache state, never queue state.
+export class GithubEtagCache {
+  private readonly store: GithubEtagResponseStore;
+
+  constructor(state: { storage: GithubEtagStorage }) {
+    this.store = new GithubEtagResponseStore(state.storage);
+    this.store.ensureSchemaSync();
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    try {
+      return await this.handleFetch(request);
+    } catch (error) {
+      console.error("github_etag_cache_handler_failed", {
+        phase: "fetch",
+        trace_id: exactReviewQueueTraceId(request.headers.get(EXACT_REVIEW_QUEUE_TRACE_HEADER)),
+        endpoint: exactReviewQueueEndpointTemplate(new URL(request.url).pathname),
+        failure_category: "handler_exception",
+      });
+      throw error;
+    }
+  }
+
+  private async handleFetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname === "/stats") {
+      return json({ ok: true, telemetry: this.store.telemetry(Date.now()) });
+    }
+
+    if (request.method === "POST" && url.pathname === "/github-etag-cache/lookup") {
+      const body = await request.json().catch(() => null);
+      if (!githubEtagCacheKeyFromValue(body)) {
+        return json({ error: "invalid_github_etag_cache_key" }, 400);
+      }
+      const entry = this.store.lookup(body, Date.now());
+      return json({ ok: true, hit: Boolean(entry), entry });
+    }
+
+    if (request.method === "POST" && url.pathname === "/github-etag-cache/store") {
+      const body = await request.json().catch(() => null);
+      try {
+        const result = await this.store.store200(body, Date.now());
+        if (result.ok === false) return json({ error: result.error }, result.status);
+        return json(result, result.stored ? 201 : 200);
+      } catch {
+        console.warn("github_etag_cache_store_failed");
+        return json({ error: "github_etag_cache_unavailable" }, 503);
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/github-etag-cache/confirm") {
+      const body = await request.json().catch(() => null);
+      const result = this.store.confirm304(body, Date.now());
+      if (result.ok === false) return json({ error: result.error }, result.status);
+      return json(result);
+    }
+
+    return json({ error: "not_found" }, 404);
+  }
+}
+
+function json(value: unknown, status = 200): Response {
+  return new Response(JSON.stringify(value, null, 2), {
+    status,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      "access-control-allow-origin": "*",
+      "access-control-allow-methods": "GET,POST,OPTIONS",
+      "access-control-allow-headers": "authorization,content-type",
+    },
+  });
 }

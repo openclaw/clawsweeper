@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { validationRecoveryRequired } from "./validation-recovery.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import { repositoryManagedPullRequestCloseReason } from "../repository-profiles.js";
 import fs from "node:fs";
@@ -769,7 +770,7 @@ function isBlockedFixError(error: JsonValue) {
   if (isRepairBranchPushBlocked(error)) return true;
   if (isRetryableCodexErrorMessage(String(error?.message ?? error))) return true;
   if (isCodexContextLimitError(String(error?.message ?? error))) return true;
-  return /external base blocker|Codex produced no target repo changes|Codex \/review did not pass|Codex (?:fix worker|review-fix worker|\/review) timed out|Codex (?:fix worker|review-fix worker|\/review) failed|validation command failed|command timed out after \d+ms: git (?:fetch|push)|rebase (?:conflicts remain unresolved|produced additional conflicts)/i.test(
+  return /external base blocker|Codex produced no target repo changes|Codex \/review did not pass|Codex (?:fix worker|review-fix worker|validation-fix worker|\/review) timed out|Codex (?:fix worker|review-fix worker|validation-fix worker|\/review) failed|validation command failed|command timed out after \d+ms: git (?:fetch|push)|rebase (?:conflicts remain unresolved|produced additional conflicts)/i.test(
     String(error?.message ?? error),
   );
 }
@@ -2873,6 +2874,7 @@ function validateAndReviewLoop({
         };
       }
     } catch (error) {
+      if (validationRecoveryRequired(error)) throw error;
       const baseError = reproduceValidationFailureAtPinnedBase({
         commands: validationPlan.commands,
         targetDir,
@@ -3035,6 +3037,7 @@ function validateAndReviewSynchronizedTree({
     validationCommands = validationExecution.commands;
     checkoutBinding = validationExecution.checkoutBinding;
   } catch (error) {
+    if (validationRecoveryRequired(error)) throw error;
     const baseError = reproduceValidationFailureAtPinnedBase({
       commands: validationPlan.commands,
       targetDir,
@@ -3553,10 +3556,10 @@ function checkoutRecoverableReplacementBranch({
         `recoverable branch ${branch} changed between API lease and fetch: expected ${remoteLeaseSha}, fetched ${recoveredHeadSha}`,
       );
     }
-    materializeTargetCommitWithIsolation({
-      cwd: targetDir,
-      expectedHeadSha: recoveredHeadSha,
-      timeoutMs: targetValidationTimeoutMs,
+    materializeFetchedReplacementCommit({
+      targetDir,
+      sourceSha: recoveredHeadSha,
+      remoteRef: `refs/remotes/origin/${branch}`,
     });
     switchTargetBranchWithPlumbing({
       cwd: targetDir,
@@ -3601,13 +3604,51 @@ function checkoutRecoverableReplacementBranch({
       remote_lease_sha: remoteLeaseSha,
     };
   }
+  // Fetch can advance the base ref without moving the fresh clone's HEAD.
+  const fetchedBaseSha = run("git", ["rev-parse", `origin/${baseBranch}`], {
+    cwd: targetDir,
+  }).trim();
+  materializeFetchedReplacementCommit({
+    targetDir,
+    sourceSha: fetchedBaseSha,
+    remoteRef: `refs/remotes/origin/${baseBranch}`,
+  });
   switchTargetBranchWithPlumbing({
     cwd: targetDir,
     branch,
-    expectedHeadSha: run("git", ["rev-parse", `origin/${baseBranch}`], { cwd: targetDir }).trim(),
+    expectedHeadSha: fetchedBaseSha,
     timeoutMs: targetValidationTimeoutMs,
   });
   return { resumed: false, remote_lease_sha: remoteLeaseSha };
+}
+
+function materializeFetchedReplacementCommit({
+  targetDir,
+  sourceSha,
+  remoteRef,
+}: {
+  targetDir: string;
+  sourceSha: string;
+  remoteRef: string;
+}) {
+  // Hydrate one pinned tree here; isolated checkout cannot perform lazy fetches.
+  runGitNetwork(
+    [
+      "fetch",
+      "--no-tags",
+      "--refetch",
+      "--no-filter",
+      "--depth=1",
+      `https://github.com/${result.repo}.git`,
+      `+${sourceSha}:${remoteRef}`,
+    ],
+    targetDir,
+  );
+  materializeTargetCommitWithIsolation({
+    cwd: targetDir,
+    expectedHeadSha: sourceSha,
+    timeoutMs: targetValidationTimeoutMs,
+  });
 }
 
 function commitCheckpointIfNeeded({ targetDir, message, trailers = [] }: LooseRecord) {

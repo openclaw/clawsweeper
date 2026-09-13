@@ -18,6 +18,8 @@ import { readReportFrontMatterField } from "./report-front-matter.js";
 type Disposition = "completed" | "terminal" | "retryable" | "held";
 type RecoveryItem = {
   number: number;
+  kind?: "issue" | "pull_request";
+  sourceRevision?: string;
   disposition: Disposition;
   reason: string;
   publication: "not_requested" | "staged" | "held";
@@ -353,6 +355,13 @@ export function recoverReviewShard(options: ReviewRecoveryOptions) {
       );
       item.disposition = result.disposition;
       item.reason = result.reason;
+      if (result.terminal) {
+        const subject = result.terminal.subject;
+        if (subject.kind === "issue" || subject.kind === "pull_request") {
+          item.kind = subject.kind;
+          if (subject.source_revision) item.sourceRevision = subject.source_revision;
+        }
+      }
       if (options.stageDir && result.disposition === "completed" && result.terminal) {
         try {
           stageReport(options, result.terminal);

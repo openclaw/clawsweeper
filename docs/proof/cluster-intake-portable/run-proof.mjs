@@ -20,7 +20,8 @@ const source = baselineRef
   ? execFileSync("git", ["show", `${baselineRef}:${workflowPath}`], { encoding: "utf8" })
   : fs.readFileSync(workflowPath, "utf8");
 const prepare = parse(source).jobs.intake.steps.find((step) => step.name === "Prepare intake").run;
-const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cluster-intake-proof-"));
+// Keep argv and import.meta.url on the same canonical path on macOS.
+const fixtureRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "cluster-intake-proof-")));
 const importer = path.join(
   root,
   "dist/repair",
@@ -44,6 +45,7 @@ try {
     scenario("unreviewed-materializer", { compression: true, corruptMaterializer: true });
     scenario("archive-hash-mismatch", { compression: true, corruptArchiveHash: true });
     scenario("decoded-hash-mismatch", { compression: true, corruptDecodedHash: true });
+    scenario("expanded-size-exceeded", { compression: true, undersizedOutput: true });
     scenario("already-processed", { compression: true, processed: true, corruptArchiveHash: true });
     scenario("forced-reimport", { compression: true, processed: true, force: true });
   }
@@ -117,12 +119,13 @@ function scenario(name, options) {
       archivePath: `${dbName}.gz`,
       archiveBytes: archive.length,
       archiveSha256: options.corruptArchiveHash ? "0".repeat(64) : sha256(archive),
-      maxArchiveBytes: 100000000,
+      maxArchiveBytes: 99999999,
     });
     fs.writeFileSync(`${dbPath}.gz`, archive);
     fs.rmSync(dbPath);
   }
   if (options.corruptDecodedHash) manifest.sha256 = "0".repeat(64);
+  if (options.undersizedOutput) manifest.outputBytes = bytes.length - 1;
   fs.writeFileSync(`${dbPath}.manifest.json`, JSON.stringify(manifest));
   if (options.processed) {
     const ledger = path.join(cwd, "results/cluster-repair-intake/openclaw-fixture.json");
@@ -136,6 +139,7 @@ function scenario(name, options) {
     timeout: 30000,
     env: {
       PATH: process.env.PATH,
+      TMPDIR: process.env.TMPDIR,
       ENABLED: "1",
       SCHEDULE_ENABLED: "0",
       TARGET_REPO: "openclaw/fixture",
@@ -161,7 +165,10 @@ function scenario(name, options) {
   const rejected = baselineRef
     ? options.compression
     : !options.processed &&
-      (options.corruptMaterializer || options.corruptArchiveHash || options.corruptDecodedHash);
+      (options.corruptMaterializer ||
+        options.corruptArchiveHash ||
+        options.corruptDecodedHash ||
+        options.undersizedOutput);
   if (rejected) {
     assert.notEqual(prepared.status, 0, name);
     assert.notEqual(outputs.should_import, "true", name);
@@ -172,7 +179,9 @@ function scenario(name, options) {
         ? /Missing gitcrawl-store DB/
         : options.corruptMaterializer
           ? /materializer does not match the reviewed digest/
-          : /manifest (?:archiveSha256|sha256) mismatch/,
+          : options.undersizedOutput
+            ? /manifest outputBytes exceeded during expansion/
+            : /manifest (?:archiveSha256|sha256) mismatch/,
     );
     assert.equal(fs.existsSync(path.join(cwd, "gitcrawl-store/unreviewed-code-ran")), false);
     results.push({ name, admission: "rejected", jobs: 0 });
@@ -210,7 +219,7 @@ function scenario(name, options) {
       cwd,
       encoding: "utf8",
       timeout: 30000,
-      env: { PATH: process.env.PATH, NODE_NO_WARNINGS: "1" },
+      env: { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, NODE_NO_WARNINGS: "1" },
     },
   );
   if (baselineRef && options.empty) {
@@ -244,7 +253,7 @@ function scenario(name, options) {
         cwd,
         encoding: "utf8",
         timeout: 30000,
-        env: { PATH: process.env.PATH, NODE_NO_WARNINGS: "1" },
+        env: { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, NODE_NO_WARNINGS: "1" },
       },
     );
     assert.equal(selected.status, 0, selected.stderr);

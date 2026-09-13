@@ -59,7 +59,7 @@ import {
   isAutomergeMergeStateReady,
   issueImplementationClusterId,
   issueImplementationJobPath,
-  isReadyHumanReviewPause,
+  pendingRepairLoopOptIns,
   isTrustedStatusCommentAuthor,
   latestTrustedExactHeadReview,
   maintainerModeCommandCanResumePausedMode,
@@ -4738,49 +4738,37 @@ function repairLoopIssueComments(number: number): JsonValue[] {
 
 function listRepairLoopSweepCommands(existingCommands: LooseRecord[]) {
   if (itemNumbers.size > 0 || commentIds.size > 0) return [];
-  const paused = new Set(
-    existingCommands
-      .filter(isReadyHumanReviewPause)
-      .map((command) => Number(command.issue_number))
-      .filter((number) => Number.isInteger(number) && number > 0),
-  );
-  const seen = new Set(
-    existingCommands
-      .filter((command) => ["autofix", "automerge"].includes(String(command.intent ?? "")))
-      .map((command) => `${command.intent}:${Number(command.issue_number)}`),
-  );
   const commands: LooseRecord[] = [];
-  for (const [intent, label] of [
+  const modes = [
     ["autofix", AUTOFIX_LABEL],
     ["automerge", AUTOMERGE_LABEL],
-  ] as const) {
-    for (const number of listOpenIssueNumbersWithLabel(label)) {
-      const key = `${intent}:${number}`;
-      if (seen.has(key) || paused.has(number)) continue;
-      seen.add(key);
-      commands.push({
-        idempotency_key: `repair-loop-label-sweep:${targetRepo}:${intent}:${number}`,
-        comment_id: `repair-loop-label-sweep:${intent}:${number}`,
-        comment_version_key: null,
-        comment_url: `https://github.com/${targetRepo}/pull/${number}`,
-        repo: targetRepo,
-        issue_number: number,
-        author: "clawsweeper[bot]",
-        author_association: "NONE",
-        comment_created_at: new Date(startedAtMs).toISOString(),
-        comment_updated_at: new Date(startedAtMs).toISOString(),
-        trigger: "trusted_bot",
-        command: intent,
-        intent,
-        trusted_bot: true,
-        trusted_bot_author: "clawsweeper[bot]",
-        automation_source: "repair_loop_label_sweep",
-        repair_reason: "scheduled ClawSweeper repair-loop label sweep",
-        ...forcedReplayCommandFields({ forceReprocess, attemptId }),
-        status: "pending",
-        actions: [],
-      });
-    }
+  ] as const;
+  const optedIn = modes.flatMap(([intent, label]) =>
+    listOpenIssueNumbersWithLabel(label).map((number) => ({ intent, number })),
+  );
+  for (const { intent, number } of pendingRepairLoopOptIns(existingCommands, optedIn)) {
+    commands.push({
+      idempotency_key: `repair-loop-label-sweep:${targetRepo}:${intent}:${number}`,
+      comment_id: `repair-loop-label-sweep:${intent}:${number}`,
+      comment_version_key: null,
+      comment_url: `https://github.com/${targetRepo}/pull/${number}`,
+      repo: targetRepo,
+      issue_number: number,
+      author: "clawsweeper[bot]",
+      author_association: "NONE",
+      comment_created_at: new Date(startedAtMs).toISOString(),
+      comment_updated_at: new Date(startedAtMs).toISOString(),
+      trigger: "trusted_bot",
+      command: intent,
+      intent,
+      trusted_bot: true,
+      trusted_bot_author: "clawsweeper[bot]",
+      automation_source: "repair_loop_label_sweep",
+      repair_reason: "scheduled ClawSweeper repair-loop label sweep",
+      ...forcedReplayCommandFields({ forceReprocess, attemptId }),
+      status: "pending",
+      actions: [],
+    });
   }
   return commands;
 }

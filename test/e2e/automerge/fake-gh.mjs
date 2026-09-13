@@ -63,7 +63,7 @@ if (args[0] === "pr" && args[1] === "view") {
   const pull = pullResponse();
   const view = {
     additions: 1,
-    author: { login: state.pr.author, is_bot: false },
+    author: { login: state.pr.author, is_bot: state.pr.authorType === "Bot" },
     baseRefName: state.pr.baseRef,
     body: state.pr.body,
     changedFiles: 1,
@@ -181,7 +181,92 @@ function handleApi() {
 
   if (endpoint === `repos/${state.repo}`) {
     assertReadToken();
-    respondJson({ default_branch: state.pr.baseRef });
+    respondJson({
+      full_name: state.repo,
+      default_branch: state.pr.baseRef,
+      private: false,
+      archived: false,
+      disabled: false,
+      has_issues: true,
+    });
+  }
+  const requestUrl = new URL(endpoint, "https://api.github.com/");
+  if (
+    requestUrl.pathname === `/repos/${state.repo}/issues` &&
+    requestUrl.searchParams.get("state") === "open" &&
+    requestUrl.searchParams.has("labels")
+  ) {
+    assertReadToken();
+    if (
+      requestUrl.origin !== "https://api.github.com" ||
+      requestUrl.searchParams.get("per_page") !== "100" ||
+      [...requestUrl.searchParams.keys()].some(
+        (key) => !["state", "labels", "per_page"].includes(key),
+      )
+    )
+      fail("invalid label discovery query");
+    const label = requestUrl.searchParams.get("labels");
+    respondJson(
+      state.pr.state === "open" && state.pr.labels.includes(label) ? [issueResponse()] : [],
+      { paged: args.includes("--slurp") },
+    );
+  }
+  if (
+    requestUrl.pathname === `/repos/${state.repo}/issues/comments` &&
+    requestUrl.searchParams.has("since")
+  ) {
+    assertReadToken();
+    const since = requestUrl.searchParams.get("since");
+    const page = Number(requestUrl.searchParams.get("page") ?? 1);
+    const pageSize = Number(requestUrl.searchParams.get("per_page") ?? 100);
+    if (
+      requestUrl.origin !== "https://api.github.com" ||
+      [...requestUrl.searchParams.keys()].some(
+        (key) => !["since", "sort", "direction", "per_page", "page"].includes(key),
+      ) ||
+      !Number.isFinite(Date.parse(since)) ||
+      requestUrl.searchParams.get("sort") !== "updated" ||
+      requestUrl.searchParams.get("direction") !== "asc" ||
+      !Number.isSafeInteger(page) ||
+      page < 1 ||
+      !Number.isSafeInteger(pageSize) ||
+      pageSize < 1 ||
+      pageSize > 100
+    )
+      fail("invalid comment discovery query");
+    const comments = state.comments
+      .filter((comment) => comment.updated_at >= since)
+      .sort((a, b) => a.updated_at.localeCompare(b.updated_at));
+    respondJson(comments.slice((page - 1) * pageSize, page * pageSize), {
+      paged: args.includes("--slurp"),
+    });
+  }
+  if (
+    endpoint ===
+    `repos/${state.repo}/issues?creator=${encodeURIComponent(state.pr.author)}&state=open&per_page=100`
+  ) {
+    assertReadToken();
+    respondJson(state.pr.state === "open" ? [issueResponse()] : [], {
+      paged: args.includes("--slurp"),
+    });
+  }
+  if (endpoint === `repos/${state.repo}/issues/${state.pr.number}/events?per_page=100`) {
+    assertReadToken();
+    respondJson(state.labelEvents ?? [], { paged: args.includes("--slurp") });
+  }
+  if (endpoint === `repos/${state.repo}/issues/${state.pr.number}/labels` && method === "POST") {
+    assertMutationToken();
+    const label = optionValues("-f")
+      .find((value) => value.startsWith("labels[]="))
+      ?.slice("labels[]=".length);
+    if (!label) fail("missing label");
+    if (!state.pr.labels.includes(label)) {
+      state.pr.labels.push(label);
+      (state.labelEvents ??= []).push({ event: "labeled", label: { name: label } });
+      state.pr.updatedAt = new Date().toISOString();
+      saveState();
+    }
+    respondJson(state.pr.labels.map((name) => ({ name })));
   }
   if (endpoint === `repos/${state.repo}/collaborators/fixture-maintainer/permission`) {
     assertReadToken();
@@ -312,8 +397,8 @@ function issueResponse() {
     state: state.pr.mergedAt ? "closed" : state.pr.state,
     title: state.pr.title,
     html_url: `https://github.com/${state.repo}/pull/${state.pr.number}`,
-    user: { login: state.pr.author },
-    author_association: "CONTRIBUTOR",
+    user: fixtureAuthor(),
+    author_association: state.pr.authorType === "Bot" ? "NONE" : "CONTRIBUTOR",
     labels: state.pr.labels.map((name) => ({ name })),
     created_at: state.pr.createdAt,
     updated_at: state.pr.updatedAt,
@@ -331,6 +416,7 @@ function pullResponse() {
     title: state.pr.title,
     body: state.pr.body,
     draft: false,
+    locked: Boolean(state.pr.locked),
     merged: Boolean(state.pr.mergedAt),
     merged_at: state.pr.mergedAt,
     merge_commit_sha: state.pr.mergeCommitSha,
@@ -342,8 +428,8 @@ function pullResponse() {
     deletions: 1,
     commits: 1,
     labels: state.pr.labels.map((name) => ({ name })),
-    user: { login: state.pr.author },
-    author_association: "CONTRIBUTOR",
+    user: fixtureAuthor(),
+    author_association: state.pr.authorType === "Bot" ? "NONE" : "CONTRIBUTOR",
     base: { ref: state.pr.baseRef, sha: refSha(state.pr.baseRef), repo: repoIdentity() },
     head: { ref: state.pr.headRef, sha: currentHead(), repo: repoIdentity() },
   };
@@ -351,6 +437,14 @@ function pullResponse() {
 
 function repoIdentity() {
   return { full_name: state.repo, owner: { login: state.repo.split("/")[0] } };
+}
+
+function fixtureAuthor() {
+  return {
+    login: state.pr.author,
+    id: state.pr.authorId ?? 3,
+    type: state.pr.authorType ?? "User",
+  };
 }
 
 function currentChecks({ consumePending = false } = {}) {

@@ -23,7 +23,7 @@ import { terminateCodexProcessTree } from "../dist/codex-spawn.js";
 export const HOSTED_REVIEW_ROLLOUT_MAX_BYTES = 4 * 1024 * 1024;
 const ROLLOUT_RECORD_MAX_BYTES = 512 * 1024;
 const ROLLOUT_MAX_RECORDS = 4096;
-const CODEX_VERSION = "0.153.3";
+const CODEX_VERSION = "0.154.0";
 export const HOSTED_MULTILINE_PROVIDER_ERROR = "Rate limit reached.\nPlease try again in 1ms.";
 // Codex 0.153.3 adds the protocol category, then human rendering adds ERROR.
 export const HOSTED_MULTILINE_RETRY_HINT = `ERROR: rate limit exceeded: ${HOSTED_MULTILINE_PROVIDER_ERROR}`;
@@ -531,7 +531,11 @@ export async function stopHostedTerminal({ path, nonce, tmux }) {
       await proveCompleted();
       return;
     }
-    assert.equal(paneIdentity, `${fields[3]}|${fields[4]}`);
+    if (paneIdentity !== `${fields[3]}|${fields[4]}`) {
+      // tmux can also succeed with empty pane fields during owner teardown.
+      await proveCompleted();
+      return;
+    }
     try {
       command("kill-session", "-t", armed.session);
     } catch {

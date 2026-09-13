@@ -10,11 +10,12 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   truncateSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { devNull, tmpdir } from "node:os";
 import { syncBuiltinESMExports } from "node:module";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -38,7 +39,7 @@ import {
   type ScanSourceRole,
   type StagedScanInput,
 } from "../dist/agent-input-scan-fixtures.js";
-import { useFakeScanner } from "./agent-input-scan-helpers.ts";
+import { useFakeScanner, writeFakeScanner } from "./agent-input-scan-helpers.ts";
 import { writeExactReviewFailureDiagnostics } from "../dist/clawsweeper-review-failure-diagnostics.js";
 
 test("unchanged source scan refusals receive terminal review exit codes", () => {
@@ -123,6 +124,82 @@ function disableManagedScanner(t: test.TestContext) {
     else process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR = previous;
   });
 }
+
+test("an older trusted PATH scanner selects the qualified managed scanner", (t) => {
+  const f = fixture(t);
+  const oldCalls = join(f.root, "old-scanner-calls");
+  const managedCalls = join(f.root, "managed-scanner-calls");
+  const bin = useFakeScanner(t);
+  writeFileSync(
+    join(bin, "trufflehog"),
+    `#!${process.execPath}
+const fs = require('node:fs');
+fs.appendFileSync(${JSON.stringify(oldCalls)}, process.argv[2] + '\\n');
+if (process.argv[2] === '--version') console.log('trufflehog 3.97.1');
+else process.exit(73);
+`,
+    { mode: 0o755 },
+  );
+  const managedBin = join(f.root, "managed-bin");
+  writeFakeScanner(managedBin, `fs.writeFileSync(${JSON.stringify(managedCalls)}, 'scanned');`);
+  const managedPath = realpathSync(join(managedBin, "trufflehog"));
+  const originalCache = process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR;
+  process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR = join(f.root, "managed-cache");
+  const nativeSpawn = childProcess.spawnSync;
+  let installs = 0;
+  t.mock.method(childProcess, "spawnSync", (...args: Parameters<typeof nativeSpawn>) => {
+    if (args[0] === process.execPath && args[1]?.[0]?.endsWith("setup-review-tools.mjs")) {
+      installs++;
+      assert.ok(Number(args[1][2]) > 0 && Number(args[1][2]) <= 5000);
+      return nativeSpawn(
+        process.execPath,
+        ["-e", `process.stdout.write(${JSON.stringify(`${managedPath}\n`)});`],
+        args[2],
+      );
+    }
+    return nativeSpawn(...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    if (originalCache === undefined) delete process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR;
+    else process.env.CLAWSWEEPER_REVIEW_TOOLS_DIR = originalCache;
+  });
+  scanAgentInput({
+    cwd: f.cwd,
+    prompt: "Synthetic input",
+    source: { kind: "prompt" },
+    timeoutMs: 5000,
+  });
+  assert.equal(readFileSync(oldCalls, "utf8"), "--version\n");
+  assert.equal(readFileSync(managedCalls, "utf8"), "scanned");
+  assert.equal(installs, 1);
+});
+
+test("malformed PATH scanner version output refuses instead of falling through", (t) => {
+  const f = fixture(t);
+  disableManagedScanner(t);
+  const bin = useFakeScanner(t);
+  writeFileSync(
+    join(bin, "trufflehog"),
+    `#!${process.execPath}\nconsole.log('private malformed output');`,
+    { mode: 0o755 },
+  );
+  assert.throws(
+    () =>
+      scanAgentInput({
+        cwd: f.cwd,
+        prompt: "Synthetic input",
+        source: { kind: "prompt" },
+        timeoutMs: 5000,
+      }),
+    (error: unknown) =>
+      error instanceof AgentInputScanError &&
+      error.reason === "scanner_failed" &&
+      !error.message.includes("private malformed output"),
+  );
+});
 
 test("scanner bounds Git process growth while preserving complete binary inputs in both scans", (t) => {
   const f = fixture(t);
@@ -522,16 +599,61 @@ test("repair admission includes staged bytes when working bytes were restored", 
 
 function useGitConfigHome(t: test.TestContext, root: string) {
   const home = join(root, "home");
-  mkdirSync(home);
-  const previous = new Map(["HOME", "XDG_CONFIG_HOME"].map((key) => [key, process.env[key]]));
-  for (const key of previous.keys()) process.env[key] = home;
+  const globalConfig = join(home, ".gitconfig");
+  const previous = new Map(
+    ["HOME", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL"].map((key) => [key, process.env[key]]),
+  );
   t.after(() => {
     for (const [key, original] of previous) {
       if (original === undefined) delete process.env[key];
       else process.env[key] = original;
     }
   });
+  mkdirSync(home);
+  writeFileSync(globalConfig, "", { mode: 0o600 });
+  process.env.HOME = home;
+  process.env.XDG_CONFIG_HOME = home;
+  // GIT_CONFIG_GLOBAL overrides HOME, including a host's read-only /dev/null binding.
+  process.env.GIT_CONFIG_GLOBAL = globalConfig;
 }
+
+test("Git config fixtures restore unset, empty, and disabled global bindings", async (t) => {
+  const previous = process.env.GIT_CONFIG_GLOBAL;
+  t.after(() => {
+    if (previous === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+    else process.env.GIT_CONFIG_GLOBAL = previous;
+  });
+  for (const original of [undefined, "", devNull]) {
+    if (original === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+    else process.env.GIT_CONFIG_GLOBAL = original;
+    const home = process.env.HOME;
+    const xdgConfigHome = process.env.XDG_CONFIG_HOME;
+    await t.test(original === undefined ? "unset" : original === "" ? "empty" : "disabled", (t) => {
+      const root = mkdtempSync(join(tmpdir(), "clawsweeper-git-config-test-"));
+      t.after(() => rmSync(root, { recursive: true, force: true }));
+      useGitConfigHome(t, root);
+      const config = join(root, "home", ".gitconfig");
+      assert.equal(process.env.HOME, join(root, "home"));
+      assert.equal(process.env.XDG_CONFIG_HOME, process.env.HOME);
+      assert.equal(process.env.GIT_CONFIG_GLOBAL, config);
+      assert.equal(readFileSync(config, "utf8"), "");
+      if (process.platform !== "win32") assert.equal(statSync(config).mode & 0o777, 0o600);
+      execFileSync("git", ["config", "--global", "fixture.scope", "private"], { cwd: root });
+      assert.equal(
+        execFileSync("git", ["config", "--global", "--get", "fixture.scope"], {
+          cwd: root,
+          encoding: "utf8",
+        }).trim(),
+        "private",
+      );
+      assert.match(readFileSync(config, "utf8"), /scope = private/);
+    });
+    assert.equal(process.env.GIT_CONFIG_GLOBAL, original);
+    assert.equal(Object.hasOwn(process.env, "GIT_CONFIG_GLOBAL"), original !== undefined);
+    assert.equal(process.env.HOME, home);
+    assert.equal(process.env.XDG_CONFIG_HOME, xdgConfigHome);
+  }
+});
 
 for (const { scope, value } of [
   { scope: "repository", value: "true" },
@@ -744,7 +866,7 @@ process.stdout.write(JSON.stringify({
 }) + '\n');
 process.stderr.write(JSON.stringify({
   level: 'info-0', logger: 'trufflehog', msg: 'finished scanning',
-  trufflehog_version: '3.97.1', chunks: 1, bytes: 1,
+  trufflehog_version: '3.97.4', chunks: 1, bytes: 1,
   verified_secrets: 0, unverified_secrets: 1,
 }) + '\n');
 process.exit(183);
@@ -950,7 +1072,7 @@ function classifyExact(
         level: "info-0",
         logger: "trufflehog",
         msg: "finished scanning",
-        trufflehog_version: "3.97.1",
+        trufflehog_version: "3.97.4",
         chunks: 1,
         bytes: 1,
         verified_secrets: 0,
@@ -975,7 +1097,7 @@ function classifyWithProductionPolicy(
         level: "info-0",
         logger: "trufflehog",
         msg: "finished scanning",
-        trufflehog_version: "3.97.1",
+        trufflehog_version: "3.97.4",
         chunks: 1,
         bytes: 1,
         verified_secrets: verifiedCount,
@@ -984,6 +1106,208 @@ function classifyWithProductionPolicy(
     ),
     inputs,
   );
+}
+
+function matrixCredentialFixture(decoder: "PLAIN" | "HTML" = "PLAIN") {
+  const source = "extensions/matrix/src/matrix/client.test.ts";
+  const uri = new URL("https://matrix.example.org");
+  uri.username = "user";
+  uri.password = "pass";
+  const raw = uri.href.slice(0, -1);
+  const line = `          homeserver: ${JSON.stringify(raw)},`;
+  const inputs = new Map<string, StagedScanInput>();
+  const findings = (["base", "head"] as const).map((role, index) => {
+    const id = String(index).repeat(40);
+    const file = `/private/scanner/${id}`;
+    const literalLine = index === 0 ? 268 : 314;
+    inputs.set(file, {
+      kind: "blob",
+      id,
+      bytes: Buffer.from(`${"// context\n".repeat(literalLine - 1)}${line}\n`),
+      references: [{ source, mode: "100644", revision: id, role }],
+    });
+    return {
+      SourceType: 15,
+      DetectorType: 17,
+      DetectorName: "URI",
+      DecoderName: decoder,
+      Verified: false,
+      VerificationError: "synthetic verification error",
+      Raw: raw,
+      RawV2: raw,
+      SourceMetadata: { Data: { Filesystem: { file, line: literalLine } } },
+      SecretParts: { host: uri.host, username: uri.username, password: uri.password },
+      ExtraData: null,
+      StructuredData: null,
+    };
+  });
+  return { source, raw, line, inputs, findings };
+}
+
+test("reviewed Matrix fixture qualifies exact base/head and shared references", () => {
+  // These decoder variants are constructed controls, not recovered hosted records.
+  for (const decoder of ["PLAIN", "HTML"] as const) {
+    const f = matrixCredentialFixture(decoder);
+    for (const findings of [f.findings, f.findings.toReversed(), [f.findings[0]!]]) {
+      const result = classifyWithProductionPolicy(findings, f.inputs);
+      assert.equal(result.kind, "classified", decoder);
+      if (result.kind === "classified") {
+        assert.equal(result.notices.length, 1);
+        assert.equal(result.notices[0]!.source, f.source);
+        assert.deepEqual(
+          result.notices[0]!.findings.map(({ literalLine }) => literalLine).sort(),
+          findings.map((finding) => finding.SourceMetadata.Data.Filesystem.line).sort(),
+        );
+      }
+    }
+    const first = f.findings[0]!;
+    const file = first.SourceMetadata.Data.Filesystem.file;
+    const input = f.inputs.get(file)!;
+    assert.ok(input.kind === "blob");
+    f.inputs.set(file, {
+      ...input,
+      references: [
+        ...input.references,
+        { ...input.references[0]!, role: "head", revision: "b".repeat(40) },
+      ],
+    });
+    const shared = classifyWithProductionPolicy([first], f.inputs);
+    assert.equal(shared.kind, "classified");
+    if (shared.kind === "classified")
+      assert.deepEqual(shared.notices[0]!.findings.map(({ role }) => role).sort(), [
+        "base",
+        "head",
+      ]);
+  }
+});
+
+test("reviewed Matrix fixture refuses changed identities and every unqualified reference", () => {
+  const f = matrixCredentialFixture();
+  const first = f.findings[0]!;
+  const file = first.SourceMetadata.Data.Filesystem.file;
+  const input = f.inputs.get(file)!;
+  assert.ok(input.kind === "blob");
+  const refuses = (
+    findings: readonly Record<string, unknown>[],
+    inputs: ReadonlyMap<string, StagedScanInput>,
+    reason: string,
+  ) => {
+    const result = classifyWithProductionPolicy(findings, inputs);
+    assert.equal(result.kind, "refused");
+    assert.equal("notices" in result, false);
+    if (result.kind === "refused") assert.equal(result.diagnostic.reason, reason);
+  };
+  for (const change of [{ Raw: `${f.raw}/changed` }, { RawV2: `${f.raw}/changed` }])
+    refuses([{ ...first, ...change }], f.inputs, "literal_not_reviewed");
+  for (const change of [
+    { DecoderName: "BASE64" },
+    { DecoderName: "ESCAPED_UNICODE" },
+    { DetectorType: 895, DetectorName: "MongoDB" },
+    { Verified: true },
+    { VerificationError: "" },
+    { SourceType: 16 },
+  ])
+    refuses([{ ...first, ...change }], f.inputs, "finding_not_reviewed");
+  refuses([{ ...first, SecretParts: { host: "other" } }], f.inputs, "metadata_mismatch");
+  for (const bytes of [
+    Buffer.from(`${f.line} // changed\n`),
+    Buffer.from(`${f.line}\n${f.line}\n`),
+    Buffer.from(Buffer.from(f.raw).toString("base64")),
+  ])
+    refuses([first], new Map([[file, { ...input, bytes }]]), "literal_mismatch");
+  for (const reference of [
+    { ...input.references[0]!, source: "other.test.ts" },
+    { ...input.references[0]!, mode: "100755" },
+    ...(["index", "tree", "worktree"] as const).map((role) => ({
+      ...input.references[0]!,
+      role,
+    })),
+  ]) {
+    for (const references of [[reference], [...input.references, reference]])
+      refuses([first], new Map([[file, { ...input, references }]]), "source_not_reviewed");
+  }
+  for (const kind of ["prompt", "schema", "additional", "patch", "raw_diff"] as const)
+    refuses(
+      [first],
+      new Map([
+        [
+          file,
+          { kind, id: input.id, bytes: input.bytes, from: "a".repeat(40), to: "b".repeat(40) },
+        ],
+      ]),
+      "material_not_reviewed",
+    );
+  refuses(
+    [first, { ...first, Raw: "unreviewed", RawV2: "unreviewed" }],
+    f.inputs,
+    "literal_not_reviewed",
+  );
+  refuses([first, first], f.inputs, "duplicate_finding");
+});
+
+for (const scenario of ["PLAIN", "HTML", "mixed unknown"] as const) {
+  test(`reviewed Matrix fixture admission: ${scenario}`, (t) => {
+    const matrix = matrixCredentialFixture();
+    const f = fixture(t);
+    const notices: unknown[][] = [];
+    t.mock.method(console, "error", (...args: unknown[]) => notices.push(args));
+    const target = join(f.cwd, matrix.source);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, `// before\n${"// context\n".repeat(20)}${matrix.line}\n`);
+    const baseSha = f.commit();
+    writeFileSync(target, `// after\n${"// context\n".repeat(20)}${matrix.line}\n`);
+    const headSha = f.commit();
+    const receipt = join(f.root, "scan-root");
+    useFakeScanner(
+      t,
+      String.raw`
+fs.writeFileSync(${JSON.stringify(receipt)}, path.dirname(inputDir));
+const template = ${JSON.stringify(matrix.findings[0])};
+const findings = inputs.filter(({name}) => /^[a-f0-9]{40}$/.test(name)).map(({name}) => ({
+  ...template,
+  DecoderName: ${JSON.stringify(scenario === "HTML" ? "HTML" : "PLAIN")},
+  SourceMetadata: {Data: {Filesystem: {file: path.join(inputDir, name), line: 22}}},
+}));
+assert.equal(findings.length, 2);
+if (${scenario === "mixed unknown"}) findings.push({...findings[0], Raw: 'unreviewed', RawV2: 'unreviewed'});
+process.stdout.write(findings.map(finding => JSON.stringify(finding)).join('\n') + '\n');
+process.stderr.write(JSON.stringify({
+  level: 'info-0', logger: 'trufflehog', msg: 'finished scanning',
+  trufflehog_version: '3.97.4', chunks: 2, bytes: 1000,
+  verified_secrets: 0, unverified_secrets: findings.length,
+}) + '\n');
+process.exit(183);
+`,
+    );
+    const run = () => f.run({ kind: "committed", baseSha, headSha });
+    if (scenario === "mixed unknown") {
+      assert.throws(run, (error) => {
+        assert.ok(error instanceof AgentInputScanError);
+        assert.equal(error.reason, "findings");
+        assert.equal(error.scanDiagnostic?.kind, "unclassified_finding");
+        if (error.scanDiagnostic?.kind === "unclassified_finding") {
+          assert.equal(error.scanDiagnostic.reason, "literal_not_reviewed");
+          assert.equal(error.scanDiagnostic.findingIndex, 2);
+        }
+        return true;
+      });
+      assert.equal(existsSync(f.calls), false);
+      assert.deepEqual(notices, []);
+    } else {
+      assert.equal(run().status, 0);
+      assert.equal(readFileSync(f.calls, "utf8"), "called");
+      assert.equal(notices.length, 1);
+      const notice = JSON.parse(String(notices[0]![0]));
+      assert.equal(notice.event, "agent_input_scan_classified");
+      assert.equal(notice.source, matrix.source);
+      assert.deepEqual(notice.findings.map(({ role }: { role: string }) => role).sort(), [
+        "base",
+        "head",
+      ]);
+      assert.equal(JSON.stringify(notices).includes(matrix.raw), false);
+    }
+    assert.equal(existsSync(readFileSync(receipt, "utf8")), false);
+  });
 }
 
 test("reviewed Signal fixtures preserve exact source, line, decoder, and verification bindings", () => {
@@ -2188,7 +2512,7 @@ if (scenario === 'detector error') process.stderr.write(JSON.stringify({level:'e
 if (scenario === 'info error') process.stderr.write(JSON.stringify({level:'info-0', logger:'trufflehog', msg:'detector failed', error:'synthetic'}) + '\n');
 if (scenario === 'info errors') process.stderr.write(JSON.stringify({level:'info-0', logger:'trufflehog', msg:'detector failed', errors:[]}) + '\n');
 const completion = JSON.stringify({
-  level:'info-0', logger:'trufflehog', msg:'finished scanning', trufflehog_version:scenario === 'wrong version' ? 'changed' : '3.97.1',
+  level:'info-0', logger:'trufflehog', msg:'finished scanning', trufflehog_version:scenario === 'wrong version' ? 'changed' : '3.97.4',
   chunks:2, bytes:1000, verified_secrets:findings.filter(value => value.Verified).length + (scenario === 'verified count' ? 1 : 0), unverified_secrets:findings.filter(value => !value.Verified).length + (scenario === 'wrong count' ? 1 : 0),
 }) + (scenario === 'unterminated stderr' ? '' : '\n');
 if (scenario !== 'missing completion') process.stderr.write(completion);

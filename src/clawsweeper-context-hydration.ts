@@ -45,6 +45,9 @@ import { isGitHubNotFoundError } from "./github-retry.js";
 import { type RepositoryProfile } from "./repository-profiles.js";
 import { compareCodeUnits, stableJson } from "./stable-json.js";
 
+const REVIEW_TREE_METADATA_JQ =
+  '{truncated, tree: (.tree | if type == "array" then map(if type == "object" then {type, sha, size} else . end) else . end)}';
+
 interface CreateContextHydrationDependencies {
   asRecord: (value: unknown) => Record<string, unknown>;
   CLAWSWEEPER_BOT_AUTHORS: Set<string>;
@@ -984,7 +987,7 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
         const sizes = githubReviewTreeBlobSizes({
           repository: targetRepo(),
           headSha: revision,
-          request: (path) => ghJson(["api", path]),
+          request: (path) => ghJson(["api", path, "--jq", REVIEW_TREE_METADATA_JQ]),
         });
         remoteTreeSizes.set(revision, sizes);
         return sizes;
@@ -1114,15 +1117,7 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
             headSha: options.headSha,
             // Path and URL metadata can exceed the CLI capture limit before admission runs.
             request: (path) =>
-              ghJsonOnce(
-                [
-                  "api",
-                  path,
-                  "--jq",
-                  '{truncated, tree: (.tree | if type == "array" then map(if type == "object" then {type, sha, size} else . end) else . end)}',
-                ],
-                timeoutMs,
-              ),
+              ghJsonOnce(["api", path, "--jq", REVIEW_TREE_METADATA_JQ], timeoutMs),
           });
           return new Map(
             objectIds.flatMap((objectId) => {
