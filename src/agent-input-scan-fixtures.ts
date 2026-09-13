@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
+import { TRUFFLEHOG_VERSION } from "./review-tool-bootstrap.js";
 
 interface ReviewedFixture {
   fixtureSha256: string;
@@ -492,7 +493,7 @@ export function classifyReviewedFixtureScan(
     return nativeFailure("incomplete_scan");
   const verifiedCount = findings.filter((finding) => finding.Verified === true).length;
   if (
-    completion.trufflehog_version !== "3.97.1" ||
+    completion.trufflehog_version !== TRUFFLEHOG_VERSION ||
     typeof completion.chunks !== "number" ||
     !Number.isSafeInteger(completion.chunks) ||
     completion.chunks <= 0 ||

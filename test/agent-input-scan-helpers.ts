@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import type { TestContext } from "node:test";
+import { TRUFFLEHOG_VERSION } from "../dist/review-tool-bootstrap.js";
 
 export function writeFakeScanner(bin: string, body = ""): void {
   mkdirSync(bin, { recursive: true });
@@ -12,9 +13,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const args = process.argv.slice(2);
+for (const key of ['OPENAI_API_KEY', 'GH_TOKEN', 'CODEX_HOME', 'NODE_OPTIONS', 'GIT_CONFIG_COUNT']) assert.equal(process.env[key], undefined);
+if (args.length === 1 && args[0] === '--version') {
+  console.log('trufflehog ${TRUFFLEHOG_VERSION}');
+  process.exit(0);
+}
 assert.equal(args[0], 'filesystem');
 for (const flag of ['--results=verified,unknown', '--fail', '--fail-on-scan-errors', '--no-update', '--json', '--no-color']) assert.ok(args.includes(flag));
-for (const key of ['OPENAI_API_KEY', 'GH_TOKEN', 'CODEX_HOME', 'NODE_OPTIONS', 'GIT_CONFIG_COUNT']) assert.equal(process.env[key], undefined);
 const inputDir = args[1];
 assert.equal(fs.statSync(inputDir).mode & 0o777, 0o700);
 const inputs = fs.readdirSync(inputDir).map(name => {

@@ -435,7 +435,9 @@ test("maintenance CLI signs one HTTPS dry run, redacts identities, and refuses r
   );
   assert.equal(
     (await promisify(execFile)(bash, [...bashArgs, "pnpm --version"], runtime)).stdout.trim(),
-    "11.10.0",
+    JSON.parse(readFileSync("package.json", "utf8"))
+      .packageManager.slice("pnpm@".length)
+      .split("+")[0],
   );
   const env = {
     ...runtimeEnv,

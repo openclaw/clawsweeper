@@ -17,9 +17,10 @@ test("only normal-review fanout uses identities; hot intake skips preflight and 
   );
   assert.equal(full.if, "${{ github.event.schedule == '37 */6 * * *' }}");
   assert.equal(identity.if, "${{ github.event.schedule == '41 * * * *' }}");
-  const nodeSetup = fanout.steps.find(
-    (step: { uses?: string }) => step.uses === "actions/setup-node@v6",
+  const nodeSetup = fanout.steps.find((step: { uses?: string }) =>
+    step.uses?.startsWith("actions/setup-node@"),
   );
+  assert.match(nodeSetup.uses, /^actions\/setup-node@[0-9a-f]{40}$/);
   assert.equal(nodeSetup.if, identity.if);
   for (const schedule of ["41 * * * *", "4/20 * * * *", "37 */6 * * *"]) {
     const matches = (condition: string) =>

@@ -4,7 +4,7 @@
 - Owner: ClawSweeper review and publication maintainers
 - Source of truth: `src/review-proof-client.ts`, `src/codex-app-server-worker.ts`,
   `dashboard/review-proof-execution.ts`, `dashboard/exact-review-queue.ts`,
-  and `src/repair/comment-router.ts`
+  `src/proof-artifact-contract.ts`, and `src/repair/comment-router.ts`
 - Last verified: expiry acknowledgement repair `5d5fd577d2`
 - Update when: supported tools, admission, producer bindings, deadlines, evidence,
   command routing, or historical publication compatibility changes

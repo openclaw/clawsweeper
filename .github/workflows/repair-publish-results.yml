@@ -116,58 +116,13 @@ jobs:
           hydrate-state-blobs: "false"
           token: ${{ steps.state-token.outputs.token }}
 
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "24"
-
-      - name: Enable pinned pnpm
-        shell: bash
-        run: |
-          set -euo pipefail
-          corepack enable
-          for attempt in 1 2 3; do
-            if corepack prepare "pnpm@11.10.0" --activate; then
-              exit 0
-            fi
-            sleep "$((attempt * 10))"
-          done
-          corepack prepare "pnpm@11.10.0" --activate
-
       # This workflow_run job executes trusted main-branch code only; artifacts
       # from worker runs are downloaded as data and handled by repair publishers.
       # codeql[actions/untrusted-checkout/critical]
       # lgtm[actions/untrusted-checkout/critical]
-      - name: Resolve pnpm store
-        id: pnpm-store
-        shell: bash
-        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/cache@v6
+      - uses: ./.github/actions/setup-pnpm
         with:
-          path: ${{ steps.pnpm-store.outputs.path }}
-          key: ${{ runner.os }}-pnpm-11.10.0-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-11.10.0-
-            ${{ runner.os }}-pnpm-
-
-      # This workflow_run job executes trusted main-branch code only; artifacts
-      # from worker runs are downloaded as data and handled by repair publishers.
-      # codeql[actions/untrusted-checkout/critical]
-      # lgtm[actions/untrusted-checkout/critical]
-      - name: Install dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3; do
-            if pnpm install --frozen-lockfile; then
-              break
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              exit 1
-            fi
-            sleep "$((attempt * 10))"
-          done
-          pnpm run build:repair
+          build-script: build:repair
 
       - name: Download worker artifacts
         id: download

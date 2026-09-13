@@ -1,3 +1,15 @@
+import {
+  proofApiNumericId as numericId,
+  proofArtifactMetadataMatches,
+  proofReceiptArtifactName,
+  trustedRun,
+  type ProofProducerIdentity,
+} from "../proof-artifact-contract.js";
+export {
+  proofReceiptArtifactName,
+  trustedRun,
+  type ProofProducerIdentity,
+} from "../proof-artifact-contract.js";
 import { createHash } from "node:crypto";
 import {
   COMMAND_PROOF_RECEIPT_MAX_BYTES,
@@ -6,10 +18,8 @@ import {
   TELEGRAM_QA_SCENARIO,
   commandProofProfile,
   type CommandProofScenario,
-  COMMAND_PROOF_ARCHIVE_MAX_BYTES,
   parseMantisProofReceipt,
   proofRecord,
-  proofNumericId,
   type CommandProofClaim,
   type MantisProofReceipt,
 } from "../command-proof-contract.js";
@@ -20,8 +30,6 @@ import { commandProofBaseRefSha256 } from "../command-proof-assessment.js";
 
 export const proofDigest = (bytes: string | Buffer) =>
   createHash("sha256").update(bytes).digest("hex");
-export const proofReceiptArtifactName = (_id: string, runId: string, attempt: number) =>
-  "mantis-request-receipt-" + runId + "-" + attempt;
 export function proofEvidenceArtifactName(
   _id: string,
   runId: string,
@@ -282,40 +290,6 @@ export function verifyCommandProof(options: {
 function inconclusive(reason: string): VerifiedCommandProof {
   return { outcome: "inconclusive", reason };
 }
-function numericId(value: unknown): string | null {
-  const id = typeof value === "number" && Number.isSafeInteger(value) ? String(value) : value;
-  return proofNumericId(id) ? id : null;
-}
-export type ProofProducerIdentity = Pick<
-  CommandProofClaim,
-  | "requestId"
-  | "repository"
-  | "repositoryId"
-  | "scenario"
-  | "workflowPath"
-  | "workflowRef"
-  | "workflowSha"
->;
-export function trustedRun(claim: ProofProducerIdentity, value: unknown): boolean {
-  const run = proofRecord(value);
-  return (
-    numericId(run.id) !== null &&
-    Number.isSafeInteger(run.run_attempt) &&
-    run.run_attempt === 1 &&
-    run.event === "workflow_dispatch" &&
-    run.status === "completed" &&
-    ["success", "failure"].includes(String(run.conclusion)) &&
-    // GitHub documents a ref-qualified path as well as the observed plain path.
-    (run.path === claim.workflowPath ||
-      run.path === claim.workflowPath + "@" + claim.workflowRef) &&
-    run.display_title ===
-      commandProofProfile(claim.scenario)?.runName + " [" + claim.requestId + "]" &&
-    run.head_sha === claim.workflowSha &&
-    numericId(proofRecord(run.repository).id) === claim.repositoryId &&
-    proofRecord(run.repository).full_name === claim.repository &&
-    numericId(proofRecord(run.head_repository).id) === claim.repositoryId
-  );
-}
 export function trustedArtifact(
   value: unknown,
   bytes: Buffer,
@@ -323,19 +297,8 @@ export function trustedArtifact(
   run: Record<string, unknown>,
   name: string,
 ) {
-  const artifact = proofRecord(value),
-    producer = proofRecord(artifact.workflow_run);
   return (
-    numericId(artifact.id) !== null &&
-    artifact.name === name &&
-    artifact.expired === false &&
-    Number.isSafeInteger(artifact.size_in_bytes) &&
-    artifact.size_in_bytes === bytes.length &&
-    bytes.length <= COMMAND_PROOF_ARCHIVE_MAX_BYTES &&
-    artifact.digest === "sha256:" + proofDigest(bytes) &&
-    numericId(producer.id) === numericId(run.id) &&
-    producer.head_sha === claim.workflowSha &&
-    numericId(producer.repository_id) === claim.repositoryId &&
-    numericId(producer.head_repository_id) === claim.repositoryId
+    proofArtifactMetadataMatches(value, bytes.length, claim, run, name) &&
+    proofRecord(value).digest === "sha256:" + proofDigest(bytes)
   );
 }

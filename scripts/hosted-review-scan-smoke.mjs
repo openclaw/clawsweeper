@@ -18,6 +18,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { runAgentProcess } from "../dist/agent-runner.js";
 import { codexEnv } from "../dist/codex-env.js";
 import { AgentInputScanError } from "../dist/agent-input-scan.js";
+import { TRUFFLEHOG_VERSION } from "../dist/review-tool-bootstrap.js";
 import { runCodexForTest } from "../dist/clawsweeper.js";
 import { sanitizedLiveProofEnvironment } from "../dist/live-proof/environment.js";
 import { parseLiveVerificationResult } from "../dist/live-proof/verification.js";
@@ -60,7 +61,7 @@ const codex = execFileSync("which", ["codex"], { encoding: "utf8" }).trim();
 const versionProbe = spawnSync("trufflehog", ["--version"], { encoding: "utf8" });
 assert.equal(versionProbe.status, 0, "scanner version probe failed");
 const scannerVersion = `${versionProbe.stdout}${versionProbe.stderr}`.trim();
-assert.equal(scannerVersion, "trufflehog 3.97.1");
+assert.equal(scannerVersion, `trufflehog ${TRUFFLEHOG_VERSION}`);
 const root = mkdtempSync(join(tmpdir(), "clawsweeper-hosted-scan-"));
 let fixtureQuiescent = true;
 try {
@@ -143,7 +144,7 @@ ${live ? `const child = require('node:child_process').spawnSync(${JSON.stringify
     if (scenario !== "missing")
       writeFileSync(
         join(bin, "trufflehog"),
-        `#!${process.execPath}\n${scenario === "unexpected-output" ? "process.stdout.write('{}');" : `process.exit(${scenario === "findings" ? 183 : 1});`}`,
+        `#!${process.execPath}\nif (process.argv[2] === '--version') { console.log('trufflehog ${TRUFFLEHOG_VERSION}'); process.exit(0); }\n${scenario === "unexpected-output" ? "process.stdout.write('{}');" : `process.exit(${scenario === "findings" ? 183 : 1});`}`,
         { mode: 0o700 },
       );
     // Prompt-only negatives reach the executable boundary without requiring Git

@@ -31,7 +31,7 @@ pnpm run build
 pnpm run check
 ```
 
-Corepack reads the pinned `pnpm@11.10.0` version from `package.json`; do not
+Corepack reads the pinned `pnpm@12.4.1` version from `package.json`; do not
 replace it with an unpinned global pnpm command in canonical examples.
 
 Workflow-intake fixtures require Bash 4+ for `mapfile`. macOS `/bin/bash` 3.2 is
@@ -60,10 +60,10 @@ main-body sections current:
 
 - **What Problem This Solves** — the concrete user, product, or operator
   problem and trigger.
-- **Why This Change Was Made** — the shipped solution, important boundary, and
-  non-goals.
-- **User Impact** — the observable benefit, or a clear statement that there is
-  no user-visible change.
+- **User Impact** — the concrete outcome in plain language, or a clear statement
+  that there is no user-visible change. Keep important risks and actions visible.
+- **Why This Change Was Made** — a brief explanation without implementation
+  inventories. Keep technical details optional and material tradeoffs visible.
 - **Evidence** — focused tests, CI, screenshots, terminal output, live
   observations, redacted logs, or artifact links that make the validation easy
   to inspect.

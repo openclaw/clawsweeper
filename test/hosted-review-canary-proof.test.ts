@@ -132,7 +132,7 @@ function nativeTraceFixture() {
       payload: {
         id: session,
         session_id: session,
-        cli_version: "0.153.3",
+        cli_version: "0.154.0",
         cwd,
         source: "exec",
         originator: "codex_exec",

@@ -4,6 +4,7 @@ dist/
 .DS_Store
 .env
 .artifacts/
+.crabbox/
 artifacts/
 dashboard/.wrangler/
 .wrangler/

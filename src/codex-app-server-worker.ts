@@ -1,4 +1,5 @@
 import { errorMessage } from "./value-coerce.js";
+import { createCodexWorkStatePublisher } from "./codex-work-state.js";
 import {
   existsSync,
   mkdirSync,
@@ -80,10 +81,6 @@ interface RpcMessage {
   };
 }
 
-// Matches ACTION_SESSION_FETCH_TIMEOUT_MS in src/repair/action-session.ts so a hung
-// CrabFleet host cannot stall the Codex turn or accumulate heartbeat requests.
-const WORK_STATE_FETCH_TIMEOUT_MS = 15_000;
-
 const optionsPath = process.argv[2] ?? "";
 const options = JSON.parse(readFileSync(optionsPath, "utf8")) as WorkerOptions;
 // The child shares this UID: owner-only permissions do not hide a capability
@@ -121,6 +118,7 @@ const child = spawnCodex(
 const pending = new Map<
   number,
   {
+    method: string;
     resolve: (value: Record<string, unknown>) => void;
     reject: (error: Error) => void;
   }
@@ -133,12 +131,27 @@ let sessionId = "";
 let turnId = "";
 let finalMessage = "";
 let turnStatus = "";
+let turnStarted: Promise<Record<string, unknown>> | undefined;
+let turnActivation: Promise<void> | undefined;
+let turnCompleted = false;
 let settled = false;
 let forceKillTimer: NodeJS.Timeout | undefined;
 let terminal: WebSocket | null = null;
 let terminalInput = "";
 let heartbeat: NodeJS.Timeout | undefined;
 const proofAbort = new AbortController();
+const publishWorkState = createCodexWorkStatePublisher({
+  url: options.appServer.workStateUrl,
+  token: options.appServer.agentToken,
+  signal: proofAbort.signal,
+  deadlineAt: reviewDeadline,
+  onError: (error) => {
+    appendCodexOutputCapture(
+      stderr,
+      Buffer.from(`CrabFleet work-state update failed: ${errorMessage(error)}\n`),
+    );
+  },
+});
 const proofCalls = new Set<string>();
 let proofBusy = false;
 const timeout = setTimeout(() => {
@@ -167,7 +180,10 @@ const lines = createInterface({ input: child.stdout });
 lines.on("line", (line) => {
   appendCodexOutputCapture(stdout, Buffer.from(`${line}\n`));
   const message = parseRpcMessage(line);
-  if (message) void handleRpcMessage(message);
+  if (message)
+    void handleRpcMessage(message).catch((error) =>
+      finish(1, null, error instanceof Error ? error : new Error(String(error))),
+    );
 });
 
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
@@ -209,7 +225,7 @@ try {
   connectTerminal();
   startHeartbeat();
   await updateWorkState("running", "codex", "Codex turn starting");
-  const turn = await request("turn/start", {
+  turnStarted = request("turn/start", {
     threadId,
     input: [{ type: "text", text: prompt }],
     cwd: execOptions.cwd,
@@ -231,12 +247,13 @@ try {
       ? { outputSchema: JSON.parse(readFileSync(execOptions.outputSchemaPath, "utf8")) }
       : {}),
   });
-  turnId = stringAt(turn, ["turn", "id"]);
-  await updateWorkState("running", "codex", "Codex turn active");
-  terminalWrite(
-    `\r\n[ClawSweeper] ${options.appServer.label ?? "Codex"} active` +
-      `${turnId ? ` (${turnId})` : ""}. Type a message and press Enter to steer.\r\n\r\n`,
-  );
+  await turnStarted;
+  await turnActivation;
+  if (!turnCompleted)
+    terminalWrite(
+      `\r\n[ClawSweeper] ${options.appServer.label ?? "Codex"} active` +
+        `${turnId ? ` (${turnId})` : ""}. Type a message and press Enter to steer.\r\n\r\n`,
+    );
 } catch (error) {
   await finish(1, null, error instanceof Error ? error : new Error(String(error)));
 }
@@ -288,6 +305,7 @@ async function handleRpcMessage(message: RpcMessage): Promise<void> {
     };
     if (
       !settled &&
+      !turnCompleted &&
       !proofAbort.signal.aborted &&
       !proofBusy &&
       options.appServer.reviewProof &&
@@ -355,10 +373,20 @@ async function handleRpcMessage(message: RpcMessage): Promise<void> {
         new Error(message.error.message ?? `JSON-RPC error ${message.error.code ?? ""}`),
       );
     } else {
-      waiter.resolve(message.result ?? {});
+      const result = message.result ?? {};
+      if (waiter.method === "turn/start") {
+        turnId = stringAt(result, ["turn", "id"]);
+        turnActivation = updateWorkState("running", "codex", "Codex turn active");
+      }
+      waiter.resolve(result);
     }
     return;
   }
+  // A single stdout chunk can contain both the start response and turn events.
+  // Register the turn and enqueue its active state before consuming those events.
+  if (!turnStarted) return;
+  await turnStarted;
+  if (settled || turnCompleted) return;
   if (message.method === "item/agentMessage/delta") {
     const delta = typeof message.params?.delta === "string" ? message.params.delta : "";
     terminalWrite(delta);
@@ -374,6 +402,8 @@ async function handleRpcMessage(message: RpcMessage): Promise<void> {
   if (message.method !== "turn/completed") return;
   const turn = recordAt(message.params, ["turn"]);
   if (turnId && turn?.id !== turnId) return;
+  turnCompleted = true;
+  if (heartbeat) clearInterval(heartbeat);
   turnStatus = typeof turn?.status === "string" ? turn.status : "";
   const failed = turnStatus !== "completed";
   // Codex clears partial messages on failed/interrupted turns. Only confirmed
@@ -417,8 +447,10 @@ function request(
   params: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   const id = ++requestId;
-  child.stdin.write(`${JSON.stringify({ method, id, params })}\n`);
-  return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
+  return new Promise((resolve, reject) => {
+    pending.set(id, { method, resolve, reject });
+    child.stdin.write(`${JSON.stringify({ method, id, params })}\n`);
+  });
 }
 
 function notify(method: string): void {
@@ -488,7 +520,8 @@ async function handleTerminalInput(data: string | ArrayBuffer | Blob): Promise<v
 
 function startHeartbeat(): void {
   heartbeat = setInterval(() => {
-    void updateWorkState("running", "codex", "Codex turn active");
+    if (turnCompleted || settled) return;
+    void updateWorkState("running", "codex", turnId ? "Codex turn active" : "Codex turn starting");
     terminalWrite(
       `\r\n[ClawSweeper] ${new Date().toISOString()} still running; thread ${threadId}, turn ${turnId || "starting"}.\r\n`,
     );
@@ -496,32 +529,14 @@ function startHeartbeat(): void {
   heartbeat.unref();
 }
 
-async function updateWorkState(state: string, phase: string, summary: string): Promise<void> {
-  const url = options.appServer.workStateUrl?.trim();
-  const token = options.appServer.agentToken?.trim();
-  if (!url || !token) return;
-  try {
-    await fetch(url, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-      },
-      signal: AbortSignal.timeout(WORK_STATE_FETCH_TIMEOUT_MS),
-      body: JSON.stringify({
-        state,
-        phase,
-        summary,
-        codexThreadId: threadId || undefined,
-        codexTurnId: turnId || undefined,
-      }),
-    });
-  } catch (error) {
-    appendCodexOutputCapture(
-      stderr,
-      Buffer.from(`CrabFleet work-state update failed: ${errorMessage(error)}\n`),
-    );
-  }
+function updateWorkState(state: string, phase: string, summary: string): Promise<void> {
+  return publishWorkState({
+    state,
+    phase,
+    summary,
+    ...(threadId ? { codexThreadId: threadId } : {}),
+    ...(turnId ? { codexTurnId: turnId } : {}),
+  });
 }
 
 function terminalWrite(value: string): void {
