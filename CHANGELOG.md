@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Fix OpenClaw Bay refusing to load inside the Team dashboard while continuing to block embedding by other sites.
+
 - Keep webhook receipt validation deterministic when fixed test timestamps pass their 30-day retention window.
 
 **Highlights:** Preserve later review evidence, reject forged report findings, bound stalled repair calls, and recheck paired-close eligibility before mutations.

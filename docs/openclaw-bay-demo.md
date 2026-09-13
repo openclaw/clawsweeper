@@ -299,9 +299,24 @@ The page, status API, and image assets all belong to `openclaw/clawsweeper`:
 - `.github/workflows/dashboard.yml` deploys the existing
   `clawsweeper-status` Worker to `clawsweeper.openclaw.ai`.
 
-The Bay HTML is `no-store`, frame-blocked, and protected by a content security
-policy. `/bay` is the single canonical public route; `/bay-demo` is retained
-only as a permanent redirect to the query-free canonical route.
+The Bay HTML is `no-store` and protected by a content security policy. Its
+`frame-ancestors https://team.openclaw.ai` policy permits embedding in the Team
+dashboard and blocks other parent origins. It deliberately omits
+`X-Frame-Options`, which cannot express this cross-origin allowlist. Standalone
+navigation remains available. `/bay` is the single canonical public route;
+`/bay-demo` is retained only as a permanent redirect to the query-free canonical
+route.
+
+The dashboard owner maintains this policy in `dashboard/worker.ts` and verifies
+it during deployment with `scripts/dashboard-smoke.mjs`. When changing allowed
+parents or Bay navigation, run `node scripts/proof-bay-embedding.mjs` in a
+browser-equipped validation environment. Set `PLAYWRIGHT_CHROMIUM_EXECUTABLE`
+to its Chromium binary if needed. This proof uses the real Worker responses
+and synthetic parents to exercise Overview-to-Bay iframe navigation, blocked
+origins, and standalone access; its JSON and screenshot artifacts are written
+to `.artifacts/bay-team-embedding/`. Telemetry is deliberately unavailable in
+this focused proof. The active embedding contract was verified on 2026-09-13;
+the proof receipt records the source revision and Worker hash.
 
 ## Local Proof
 

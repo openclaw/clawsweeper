@@ -90,7 +90,8 @@ async function main() {
   const bayCsp = bayResponse.headers.get("content-security-policy") || "";
   if (
     !bayCsp.includes("connect-src 'self' https://*.openclaw.ai") ||
-    !bayCsp.includes("frame-ancestors 'none'")
+    !bayCsp.includes("frame-ancestors https://team.openclaw.ai;") ||
+    bayResponse.headers.get("x-frame-options") !== null
   ) {
     throw new Error("Bay is missing its expected content security policy");
   }

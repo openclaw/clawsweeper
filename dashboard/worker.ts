@@ -12290,11 +12290,10 @@ function demoHtml(value) {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
       "content-security-policy":
-        "default-src 'self'; img-src 'self' data:; connect-src 'self' https://*.openclaw.ai; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+        "default-src 'self'; img-src 'self' data:; connect-src 'self' https://*.openclaw.ai; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors https://team.openclaw.ai; form-action 'self'",
       "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
       "referrer-policy": "no-referrer",
       "x-content-type-options": "nosniff",
-      "x-frame-options": "DENY",
     },
   });
 }

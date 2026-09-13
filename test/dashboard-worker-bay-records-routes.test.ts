@@ -6166,10 +6166,16 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.equal(response.headers.get("x-robots-tag"), null);
   assert.equal(response.headers.get("referrer-policy"), "no-referrer");
   assert.equal(response.headers.get("x-content-type-options"), "nosniff");
-  assert.equal(response.headers.get("x-frame-options"), "DENY");
+  assert.equal(response.headers.get("x-frame-options"), null);
   const contentSecurityPolicy = response.headers.get("content-security-policy") || "";
   assert.match(contentSecurityPolicy, /connect-src 'self' https:\/\/\*\.openclaw\.ai/);
-  assert.match(contentSecurityPolicy, /frame-ancestors 'none'/);
+  assert.equal(
+    contentSecurityPolicy
+      .split(";")
+      .map((directive) => directive.trim())
+      .find((directive) => directive.startsWith("frame-ancestors ")),
+    "frame-ancestors https://team.openclaw.ai",
+  );
   const body = await response.text();
   assert.match(body, /<title>OpenClaw Bay · ClawSweeper<\/title>/);
   assert.doesNotMatch(body, /<meta name="robots"/);

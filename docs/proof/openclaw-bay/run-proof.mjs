@@ -952,9 +952,9 @@ try {
       "Bay throttle proof retains hardened response headers",
       Boolean(bayResponse) &&
         (bayResponse.headers()["cache-control"] || "").includes("no-store") &&
-        (bayResponse.headers()["x-frame-options"] || "").toUpperCase() === "DENY" &&
+        bayResponse.headers()["x-frame-options"] === undefined &&
         (bayResponse.headers()["content-security-policy"] || "").includes(
-          "frame-ancestors 'none'",
+          "frame-ancestors https://team.openclaw.ai;",
         ),
       { status: bayResponse?.status() },
     );
@@ -1072,8 +1072,8 @@ try {
       bayResponse.headers()["x-robots-tag"] === undefined &&
       (await page.locator('meta[name="robots"]').count()) === 0 &&
       (bayResponse.headers()["cache-control"] || "").includes("no-store") &&
-      (bayResponse.headers()["x-frame-options"] || "").toUpperCase() === "DENY" &&
-      (bayResponse.headers()["content-security-policy"] || "").includes("frame-ancestors 'none'"),
+      bayResponse.headers()["x-frame-options"] === undefined &&
+      (bayResponse.headers()["content-security-policy"] || "").includes("frame-ancestors https://team.openclaw.ai;"),
     {
       x_robots_tag: bayResponse?.headers()["x-robots-tag"] || null,
       robots_meta_count: await page.locator('meta[name="robots"]').count(),
