@@ -1,3 +1,4 @@
+import { publicTimestamp as timestamp } from "./public-timestamp.ts";
 import {
   GITHUB_EGRESS_CLAIM_GENERATION_BUCKETS,
   GITHUB_EGRESS_LATENCY_BUCKETS,
@@ -109,10 +110,6 @@ const GITHUB_UNIT_FIELDS = [
 const DIRECT_PUBLICATION_OUTCOMES = ["accepted", "deduped", "superseded", "fallback"] as const;
 const BATCH_PUBLICATION_OUTCOMES = ["superseded", "retryable", "permanent"] as const;
 const PUBLICATION_WINDOW_SECONDS = { "6h": 900, "24h": 3600, "7d": 25_200 } as const;
-const PUBLIC_TIMESTAMP_PATTERN =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
-const PUBLIC_TIMESTAMP_MIN_MS = Date.UTC(2020, 0, 1);
-const PUBLIC_TIMESTAMP_MAX_MS = Date.UTC(2100, 0, 1);
 
 type JsonObject = Record<string, unknown>;
 
@@ -124,18 +121,6 @@ function objectValue(value: unknown): JsonObject | null {
 
 function member<const Value>(values: readonly Value[], value: unknown): value is Value {
   return values.some((candidate) => candidate === value);
-}
-
-function timestamp(value: unknown): string | null {
-  if (typeof value !== "string" || value.length > 35 || !PUBLIC_TIMESTAMP_PATTERN.test(value)) {
-    return null;
-  }
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) &&
-    parsed >= PUBLIC_TIMESTAMP_MIN_MS &&
-    parsed < PUBLIC_TIMESTAMP_MAX_MS
-    ? new Date(parsed).toISOString()
-    : null;
 }
 
 function nullableTimestamp(value: unknown): string | null | undefined {
@@ -177,28 +162,40 @@ function nullableNumber(
     : undefined;
 }
 
-function nullableCountObject(value: unknown, fields: readonly string[]) {
+function nullableCountObject<Key extends string>(
+  value: unknown,
+  fields: readonly Key[],
+  maximum = MAX_PUBLIC_COUNT,
+) {
   const source = objectValue(value);
   if (!source) return null;
-  const result: Record<string, number | null> = {};
+  const result = {} as Record<Key, number | null>;
   for (const field of fields) {
-    const parsed = nullableCount(source[field]);
+    const parsed = nullableCount(source[field], maximum);
     if (parsed === undefined) return null;
     result[field] = parsed;
   }
   return result;
 }
 
-function countObject(value: unknown, fields: readonly string[]) {
+function countObject<Key extends string>(
+  value: unknown,
+  fields: readonly Key[],
+  maximum = MAX_PUBLIC_COUNT,
+) {
   const source = objectValue(value);
   if (!source) return null;
-  const result: Record<string, number> = {};
+  const result = {} as Record<Key, number>;
   for (const field of fields) {
-    const parsed = count(source[field]);
+    const parsed = count(source[field], maximum);
     if (parsed === null) return null;
     result[field] = parsed;
   }
   return result;
+}
+
+function zeroCounts<Key extends string>(fields: readonly Key[]): Record<Key, number> {
+  return Object.fromEntries(fields.map((field) => [field, 0])) as Record<Key, number>;
 }
 
 export function publicReviewObservabilityProjection(value: unknown) {
@@ -333,12 +330,8 @@ export function publicReviewCoverageProjection(value: unknown) {
 function publicApplyAggregate(value: unknown): Record<string, number | null> | null {
   const source = objectValue(value);
   if (!source) return null;
-  const result: Record<string, number | null> = {};
-  for (const field of APPLY_RESULT_FIELDS) {
-    const parsed = nullableCount(source[field]);
-    if (parsed === undefined) return null;
-    result[field] = parsed;
-  }
+  const result = nullableCountObject(source, APPLY_RESULT_FIELDS);
+  if (!result) return null;
   const netDrain = nullableSignedCount(source.net_drain);
   const expectedNetDrain =
     result.arrivals === null || result.applied === null ? null : result.applied - result.arrivals;
@@ -482,6 +475,7 @@ function automergeBuckets(value: unknown, range: (typeof REVIEW_RANGES)[number])
     const successRate = nullableNumber(source.success_rate_percent, 0, 100);
     const latencyP50 = nullableCount(source.command_to_merge_p50_ms, MAX_DURATION_MS);
     const latencyP90 = nullableCount(source.command_to_merge_p90_ms, MAX_DURATION_MS);
+    if (latencyP50 === undefined || latencyP90 === undefined) return null;
     const latencyPairValid =
       (latencyP50 === null) === (latencyP90 === null) &&
       (latencyP50 === null || latencyP50 <= Number(latencyP90)) &&
@@ -495,8 +489,6 @@ function automergeBuckets(value: unknown, range: (typeof REVIEW_RANGES)[number])
       mergedCount === null ||
       mergedCount > terminalCount ||
       successRate === undefined ||
-      latencyP50 === undefined ||
-      latencyP90 === undefined ||
       !latencyPairValid ||
       typeof source.low_sample !== "boolean" ||
       successRate !==
@@ -691,13 +683,10 @@ function githubRateLimits(value: unknown) {
   if (!Array.isArray(value) || value.length > MAX_GITHUB_RATE_LIMIT_ROWS) return null;
   const entries = value;
   const byStatus = { "403": 0, "429": 0 };
-  const byPoolClass = Object.fromEntries(GITHUB_EGRESS_POOL_CLASSES.map((item) => [item, 0]));
-  const byOperation = Object.fromEntries(GITHUB_EGRESS_OPERATIONS.map((item) => [item, 0]));
-  const byResetAuthority = Object.fromEntries(GITHUB_RESET_AUTHORITIES.map((item) => [item, 0]));
-  const byResource = Object.fromEntries([
-    ...GITHUB_RATE_LIMIT_RESOURCES.map((item) => [item, 0] as const),
-    ["absent", 0] as const,
-  ]);
+  const byPoolClass = zeroCounts(GITHUB_EGRESS_POOL_CLASSES);
+  const byOperation = zeroCounts(GITHUB_EGRESS_OPERATIONS);
+  const byResetAuthority = zeroCounts(GITHUB_RESET_AUTHORITIES);
+  const byResource = zeroCounts([...GITHUB_RATE_LIMIT_RESOURCES, "absent"] as const);
   const headerPresence = {
     retry_after: 0,
     limit: 0,
@@ -1010,12 +999,8 @@ export function publicGithubEgressObservabilityProjection(value: unknown) {
   ) {
     return null;
   }
-  const units: Record<string, number> = {};
-  for (const field of GITHUB_UNIT_FIELDS) {
-    const parsed = count(unitsSource[field], MAX_GITHUB_COUNT);
-    if (parsed === null) return null;
-    units[field] = parsed;
-  }
+  const units = countObject(unitsSource, GITHUB_UNIT_FIELDS, MAX_GITHUB_COUNT);
+  if (!units) return null;
   const rows = githubRollups(source.rows, !alreadyPublic);
   const rateLimits = alreadyPublic
     ? publicGithubRateLimits(source.rate_limits)
@@ -1141,29 +1126,24 @@ function publicationSource(value: unknown, outcomes: readonly string[]) {
   const rows = nullableCount(source.rows, 10_000);
   const latestObservedAt = nullableTimestamp(source.latest_observed_at);
   if (rows === undefined || latestObservedAt === undefined) return null;
-  const counts: Record<string, number | null> = {};
-  for (const outcome of outcomes) {
-    const parsed = nullableCount(countsSource[outcome], 10_000);
-    if (parsed === undefined) return null;
-    counts[outcome] = parsed;
-  }
+  const counts = nullableCountObject(countsSource, outcomes, 10_000);
+  if (!counts) return null;
   if (!Array.isArray(source.buckets) || source.buckets.length !== 24) return null;
   const buckets = [];
   for (let index = 0; index < 24; index += 1) {
     const bucket = objectValue(source.buckets[index]);
     const bucketCountsSource = objectValue(bucket?.counts);
     if (!bucket || !bucketCountsSource || bucket.index !== index) return null;
-    const bucketCounts: Record<string, number | null> = {};
-    for (const outcome of outcomes) {
-      const parsed = nullableCount(bucketCountsSource[outcome], 10_000);
-      if (parsed === undefined) return null;
-      bucketCounts[outcome] = parsed;
-    }
+    const bucketCounts = nullableCountObject(bucketCountsSource, outcomes, 10_000);
+    if (!bucketCounts) return null;
     buckets.push({ index, counts: bucketCounts });
   }
   if (source.complete) {
     if (rows === null || Object.values(counts).some((value) => value === null)) return null;
-    const countTotal = Object.values(counts).reduce((total, item) => total + Number(item), 0);
+    const countTotal = Object.values(counts).reduce<number>(
+      (total, item) => total + Number(item),
+      0,
+    );
     if (countTotal !== rows || (rows === 0) !== (latestObservedAt === null)) return null;
     for (const outcome of outcomes) {
       const bucketTotal = buckets.reduce(

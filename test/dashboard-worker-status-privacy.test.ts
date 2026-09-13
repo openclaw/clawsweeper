@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { publicRecentDurablePublicationEventsProjection } from "../dashboard/public-observability.ts";
+import {
+  publicationEventsFixture,
+  publicationStatusFixture,
+} from "./helpers/publication-status-fixture.ts";
 
 import worker, {
   activeBayItemKeys,
@@ -1122,9 +1127,58 @@ test("public status freshness rejects a future generated timestamp", () => {
   );
 });
 
-test("public status filters a legacy cached body before it can be served", async () => {
+test("composed publication outcomes retain the dedicated projection through repeated sanitation", () => {
+  for (const complete of [
+    [true, true],
+    [true, false],
+    [false, true],
+    [false, false],
+  ]) {
+    for (const idle of [false, true]) {
+      const events = publicationEventsFixture(Date.parse(STATUS_NOW), complete, idle);
+      const expected = publicRecentDurablePublicationEventsProjection(events);
+      assert.ok(expected);
+      const projected = publicStatusProjection({
+        recent_durable_publication_events: {
+          ...events,
+          private_marker: "withheld-publication-identity",
+          direct: { ...events.direct, private_marker: "withheld-publication-identity" },
+        },
+      });
+      assert.deepEqual(projected.recent_durable_publication_events, expected);
+      assert.deepEqual(strictPublicStatusProjection(projected), projected);
+      assert.equal(JSON.stringify(projected).includes("withheld-publication-identity"), false);
+    }
+  }
+});
+
+test("composed publication outcomes reject lossy or inconsistent cached values", () => {
+  const valid = publicationEventsFixture(Date.parse(STATUS_NOW));
+  const malformed = [
+    { ...valid, direct: { ...valid.direct, counts: {} } },
+    { ...valid, captured_at: "not-a-timestamp" },
+    { ...valid, direct: { ...valid.direct, rows: 2 } },
+    { ...valid, batch: { ...valid.batch, buckets: valid.batch.buckets.slice(1) } },
+    { ...valid, direct: { ...valid.direct, counts: { ...valid.direct.counts, accepted: -1 } } },
+    null,
+  ];
+  for (const events of malformed) {
+    assert.equal(
+      publicStatusProjection({ recent_durable_publication_events: events })
+        .recent_durable_publication_events,
+      null,
+    );
+  }
+  assert.equal("recent_durable_publication_events" in publicStatusProjection({}), false);
+});
+
+test("public status filters a legacy cached body before it can be served", async (t) => {
   const originalCaches = globalThis.caches;
   const entries = new Map<string, Response>();
+  const pending: Promise<unknown>[] = [];
+  t.mock.method(globalThis, "fetch", async () => {
+    throw new Error("outbound network disabled in status fixture");
+  });
   Object.defineProperty(globalThis, "caches", {
     configurable: true,
     value: {
@@ -1150,6 +1204,7 @@ test("public status filters a legacy cached body before it can be served", async
           automatic_work: [],
           pipeline: [],
           recent: {},
+          recent_durable_publication_events: publicationEventsFixture(Date.parse(STATUS_NOW)),
           workers: [
             {
               workflow_title: "synthetic cache title",
@@ -1215,6 +1270,12 @@ test("public status filters a legacy cached body before it can be served", async
       errors: ["telemetry_unavailable"],
       error_count: 1,
     });
+    assert.deepEqual(
+      body.recent_durable_publication_events,
+      publicRecentDurablePublicationEventsProjection(
+        publicationEventsFixture(Date.parse(STATUS_NOW)),
+      ),
+    );
 
     entries.delete("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/fresh");
     await globalThis.caches.default.put(
@@ -1229,6 +1290,7 @@ test("public status filters a legacy cached body before it can be served", async
           pipeline: [],
           bay: {},
           recent: {},
+          recent_durable_publication_events: publicationEventsFixture(Date.parse(STATUS_NOW)),
           diagnostics: { errors: [], error_count: 0 },
         }),
         {
@@ -1244,13 +1306,19 @@ test("public status filters a legacy cached body before it can be served", async
     const staleResponse = await worker.fetch(
       new Request("https://clawsweeper.openclaw.ai/api/status"),
       {},
-      { waitUntil: () => undefined },
+      { waitUntil: (promise: Promise<unknown>) => pending.push(promise) },
     );
     assert.equal(staleResponse.status, 200);
     assert.equal(staleResponse.headers.get("x-clawsweeper-cache"), "stale");
     assert.equal(staleResponse.headers.get("location"), null);
     assert.equal(staleResponse.headers.get("set-cookie"), null);
     assert.equal(staleResponse.headers.get("x-private-marker"), null);
+    const staleBody = await staleResponse.json();
+    assert.deepEqual(
+      staleBody.recent_durable_publication_events,
+      body.recent_durable_publication_events,
+    );
+    await Promise.all(pending);
 
     entries.delete("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/stale");
     await globalThis.caches.default.put(
@@ -1301,7 +1369,65 @@ test("public status filters a legacy cached body before it can be served", async
     });
     assert.equal(malformedResponse.headers.get("x-private-marker"), null);
   } finally {
+    await Promise.allSettled(pending);
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
+test("cold and durable-cache status preserve the dedicated publication contract", async (t) => {
+  const originalCaches = globalThis.caches;
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: { match: async () => undefined, put: async () => undefined } },
+  });
+  const outbound: string[] = [];
+  t.mock.method(globalThis, "fetch", async (input: Request | string | URL) => {
+    outbound.push(String(input instanceof Request ? input.url : input));
+    throw new Error("outbound network disabled in status fixture");
+  });
+  t.after(() => {
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  });
+
+  for (const cached of [false, true]) {
+    const events = publicationEventsFixture();
+    const reads: string[] = [];
+    const env = {
+      STATUS_STORE: {
+        async get(key: string) {
+          reads.push(key);
+          return cached && key === "snapshot:bay-scope:v1:_"
+            ? JSON.stringify(publicationStatusFixture(events))
+            : null;
+        },
+        async put() {},
+      },
+      EXACT_REVIEW_QUEUE: {
+        idFromName: (name: string) => name,
+        get: () => ({
+          async fetch(request: Request) {
+            return new URL(request.url).pathname === "/recent-durable-publication-events"
+              ? Response.json({ recent_durable_publication_events: events })
+              : Response.json({ error: "unavailable in publication fixture" }, { status: 503 });
+          },
+        }),
+      },
+    };
+    outbound.length = 0;
+    const dedicated = await worker.fetch(
+      new Request("https://example.invalid/api/recent-durable-publication-events"),
+      env,
+    );
+    const response = await worker.fetch(new Request("https://example.invalid/api/status"), env);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.deepEqual(
+      body.recent_durable_publication_events,
+      (await dedicated.json()).recent_durable_publication_events,
+    );
+    assert.equal(body.recent_durable_publication_events.direct.counts.accepted, 1);
+    assert.ok(reads.includes("snapshot:bay-scope:v1:_"));
+    assert.equal(outbound.length === 0, cached, "durable snapshot reuse must skip collection");
   }
 });
 

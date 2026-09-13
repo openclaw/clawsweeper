@@ -324,7 +324,15 @@ A new Action attempt registers the same work key with CrabFleet. Register
 and work-state update fetches use a 15-second `AbortSignal` deadline so a
 hung CrabFleet host cannot stall the Action job; the Codex app-server worker
 applies the same deadline to its own turn-start, heartbeat, and completion
-work-state updates. CrabFleet:
+work-state updates.
+
+Within one Codex turn, ClawSweeper publishes state updates in order. Turn events
+wait for the start acknowledgment, and completion stops further heartbeats before
+publishing `validating` or the failure phase. The queue shares the worker deadline,
+with each request capped at 15 seconds; expired updates cannot extend the turn's
+budget. Worker shutdown aborts outstanding telemetry requests and drops queued updates.
+
+CrabFleet:
 
 - returns the existing logical session when one exists;
 - rotates the session-scoped agent token;

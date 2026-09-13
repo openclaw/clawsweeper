@@ -147,6 +147,8 @@ Default behavior:
   fields also report an execution or delivery error;
 - an exact silent reply without verified delivery: classify as `suppressed`,
   preserving the reported reason or deriving `silent`;
+- explicit channel suppression without verified delivery: classify as
+  `suppressed` even when later terminal fields contain an error;
 - an attempted but unacknowledged delivery, with an empty or visible reply:
   classify as `unknown` unless an explicit execution/delivery error establishes
   failure or explicit suppression applies; an attempt alone is not failure evidence;

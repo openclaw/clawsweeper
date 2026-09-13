@@ -274,11 +274,11 @@ function classifyHookDelivery(
   if (replyDisposition === "silent") {
     return hookDelivery("suppressed", suppressionReason ?? "silent");
   }
-  if (status === "error" || error) {
-    return hookDelivery("failed", null, error);
-  }
   if (suppressionReason) {
     return hookDelivery("suppressed", suppressionReason);
+  }
+  if (status === "error" || error) {
+    return hookDelivery("failed", null, error);
   }
   if (
     status === "ok" &&

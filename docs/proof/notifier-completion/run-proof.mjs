@@ -14,6 +14,7 @@ const responses = {
   delivered: { status: "ok", delivered: true, deliveryAttempted: true, replyDisposition: "visible" },
   suppressed: { status: "error", delivered: false, deliveryAttempted: false, replyDisposition: "silent" },
   "channel-transform": { status: "ok", delivered: false, deliveryAttempted: true, replyDisposition: "visible", deliverySuppressionReason: "channel_transform" },
+  "channel-transform-error": { status: "error", delivered: false, deliveryAttempted: true, replyDisposition: "visible", deliverySuppressionReason: "channel_transform", deliveryError: "later terminal failure" },
   failed: { status: "error", delivered: false, deliveryAttempted: true, deliveryError: "synthetic delivery failure" },
   unknown: { status: "skipped", delivered: false },
   "unacknowledged-empty": { status: "ok", delivered: false, deliveryAttempted: true, replyDisposition: "empty" },
@@ -93,7 +94,7 @@ async function scenario(surface, outcome) {
       return JSON.parse(readFileSync(report, "utf8"));
     };
     const first = await execute();
-    const expected = outcome.startsWith("unacknowledged-") || outcome.startsWith("missing-") ? "unknown" : outcome === "channel-transform" ? "suppressed" : outcome === "not-requested" && ledgered ? "unknown" : outcome;
+    const expected = outcome.startsWith("unacknowledged-") || outcome.startsWith("missing-") ? "unknown" : outcome.startsWith("channel-transform") ? "suppressed" : outcome === "not-requested" && ledgered ? "unknown" : outcome;
     const actual = ledgered ? first.actions[0].delivery.status : first.delivery.status;
     assert.equal(actual, expected, `${surface}/${outcome}`);
     assert.equal(hooks.length, 1);
@@ -120,7 +121,7 @@ async function scenario(surface, outcome) {
 
 try {
   for (const surface of ["merge", "events", "maintainer-report", "github-activity"])
-    for (const outcome of ["delivered", "suppressed", "channel-transform", "failed", "unknown", "unacknowledged-empty", "unacknowledged-visible", "missing-flags", "missing-attempted", "missing-delivered", "admitted", "not-requested"])
+    for (const outcome of ["delivered", "suppressed", "channel-transform", "channel-transform-error", "failed", "unknown", "unacknowledged-empty", "unacknowledged-visible", "missing-flags", "missing-attempted", "missing-delivered", "admitted", "not-requested"])
       await scenario(surface, outcome);
   const receipt = { runtime: process.version, source_sha256: createHash("sha256").update(readFileSync(join(repo, "src/repair/openclaw-hook.ts"))).digest("hex"), real_built_clis: 4, scenarios: results.length, results, production_mutations: 0, limits: "Synthetic Gateway responses over real loopback HTTP; deployed OpenClaw compatibility and Discord delivery are not established." };
   mkdirSync(join(repo, ".artifacts"), { recursive: true });

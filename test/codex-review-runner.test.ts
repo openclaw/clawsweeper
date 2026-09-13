@@ -14,6 +14,7 @@ import {
 import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
+import { TRUFFLEHOG_VERSION } from "../dist/review-tool-bootstrap.js";
 
 import {
   codexFailureDecisionForTest,
@@ -107,7 +108,7 @@ ${fakeManagedDecision}
       join(binDir, "trufflehog"),
       scanner === "missing"
         ? "#!/missing/scanner\n"
-        : `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(scanner === "error" ? "" : '{"Raw":"fixture-sensitive-value"}')} ); process.stderr.write('fixture-sensitive-value'); process.exit(${scanner === "error" ? 2 : scanner === "finding" ? 183 : 0});\n`,
+        : `#!${process.execPath}\nif (process.argv[2] === '--version') { console.log('trufflehog ${TRUFFLEHOG_VERSION}'); process.exit(0); }\nprocess.stdout.write(${JSON.stringify(scanner === "error" ? "" : '{"Raw":"fixture-sensitive-value"}')} ); process.stderr.write('fixture-sensitive-value'); process.exit(${scanner === "error" ? 2 : scanner === "finding" ? 183 : 0});\n`,
       { mode: 0o755 },
     );
     const originalPath = process.env.PATH;

@@ -21,6 +21,21 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Keep Codex turn state updates in order so a slow `active` write cannot overwrite `validating` after completion; stop late heartbeats and abort queued telemetry when the worker exits.
+
+- Refresh pnpm to 12.4.1 and Wrangler to 4.131.0, pin setup-node v7, share workflow setup, and expose a test-concurrency environment override while preserving the adaptive CI default, full suite, coverage gates, Node 24 floor, and 48-hour release-age policy.
+
+- Prepare the target's reviewed Knip helper for selected OpenClaw changed-gate scans, including current TypeScript runners and native pnpm 12 cache keys. Restore its offline cache between attempts without weakening frozen dependency or release-age checks.
+- Refresh the hosted review tools to Codex and its Responses proxy 0.154.0, OpenClaw 2026.9.3, and checksum-pinned TruffleHog 3.97.4; use the qualified managed scanner when an older release remains on PATH.
+- Compatibility: the optional OpenClaw runner now requires Node 24.16+ within Node 24 (or Node 26.1+), matching its upstream CLI requirement; hosted workflows already install the latest Node 24. ClawSweeper's own Node floor is unchanged.
+- Preserve the original validation failure or timeout when a checkout identity rejection also occurs, keeping protected-input and publication gates intact.
+- Retain blocked execution reports and recovery requests when a validation-fix worker times out or exits without diagnostics, while preserving failed validation and publication gates.
+- Fetch and materialize the pinned commit before creating or resuming replacement repair branches, preserving dirty-checkout and concurrent-head safeguards.
+- Keep dashboard publication counts and time windows through refresh and cached reload, preserving explicit zeroes and incomplete data; thanks @vincentkoc.
+- Preserve PR versus issue identity and retained source provenance in failed-shard recovery; thanks @yetval.
+- Extend strict TypeScript checks over review-failure telemetry and source/storage helpers without changing their runtime behavior.
+- Restore Vite config scratch after OpenClaw changed-gate validation so a successful cold run does not fail checkout identity checks; preserve cache and disposable-output permissions under restrictive umasks and cross-device moves without weakening unrelated runtime-input protection.
+
 - Refresh Node 24 type definitions, the Oxc lint/format toolchain, and immutable checkout pins to v7.0.1 while retaining the 48-hour release-age policy and Node 24 minimum.
 
 - Isolate the GitHub ETag cache in repository-sharded Durable Objects so cache reads and writes no longer compete with exact-review admission, claims, or webhooks.
@@ -143,6 +158,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Fixed
 
+- Keep comment and automerge timeline previews within their requested character limits, including the ellipsis and tiny caps.
+
 - Keep quoted rating-list labels and evidence/owner fields from replacing structured rank-up moves, evidence links, or attribution when durable reports are parsed again; thanks @Yigtwxx.
 - Stop the OpenClaw child process group when its worker is interrupted, including signal-ignoring descendants; thanks @Yigtwxx.
 - Retry replay-safe lifecycle receipts and terminal dispositions after transient queue failures while preserving newer requeues and leaving publication enqueue single-attempt.
@@ -182,6 +199,7 @@ checkpoint, and status-only commits are intentionally omitted.
 - Terminalize stale command publications after batch expiry without losing shared acknowledgement obligations; thanks @vincentkoc.
 - Bound GitHub activity hook prompts to one received event and filtered trusted self-authored review chatter before model intake.
 - Replay durable scheduled enqueue dispositions after transient response loss while preserving signed delivery identity, rejecting mismatched bytes, failing closed on legacy ambiguous receipts, and leaving publication post-effects single-attempt.
+- Report completed notification delivery, suppression, failure, and unknown acknowledgements; keep inconclusive attempts retryable and preserve legacy admission deduplication. Thanks @vincentkoc.
 - Use the producer Actions run URL in failed-review retry receipts so ledger validation no longer prevents dispatch and fails the retry command.
 - Preserve canonical repository slugs when reading persisted apply records, including dots, underscores, and repeated or trailing hyphens.
 - Make timeout tests tolerate loaded macOS hosts by isolating checkout timing, synchronizing lock contention, and budgeting snapshot admission fixtures separately from deadline tests.

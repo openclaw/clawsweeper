@@ -149,6 +149,6 @@ test("report metadata audit workflow is dispatch-only and read-only", () => {
   assert.match(source, /\.\/\.github\/actions\/setup-pnpm/);
   assert.match(source, /CLAWSWEEPER_WEBHOOK_SECRET/);
   assert.match(source, /CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL/);
-  assert.match(source, /actions\/upload-artifact@v6/);
+  assert.match(source, /actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/);
   assert.doesNotMatch(source, /(?:permissions:[\s\S]*?)(?:write|id-token)/);
 });

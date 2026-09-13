@@ -190,6 +190,19 @@ test("postOpenClawAgentHook classifies bounded completion results", async () => 
       expected: { status: "suppressed", suppressionReason: "channel_transform", error: null },
     },
     {
+      name: "explicit channel suppression wins over later terminal errors",
+      deliver: true,
+      completion: {
+        status: "error",
+        replyDisposition: "visible",
+        delivered: false,
+        deliveryAttempted: true,
+        deliverySuppressionReason: "channel_transform",
+        deliveryError: "later terminal failure",
+      },
+      expected: { status: "suppressed", suppressionReason: "channel_transform", error: null },
+    },
+    {
       name: "verified delivery wins over terminal errors",
       deliver: true,
       completion: {

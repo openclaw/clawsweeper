@@ -18,7 +18,11 @@ import {
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { reviewToolCacheRoot } from "./review-tool-bootstrap.js";
+import {
+  readTruffleHogVersion,
+  reviewToolCacheRoot,
+  TRUFFLEHOG_VERSION,
+} from "./review-tool-bootstrap.js";
 import type { AgentInputScanFailureReason } from "./exact-review-failure-reason.js";
 import { readReviewGit, reviewMergeBase, type ReviewGitReadOptions } from "./pr-review-evidence.js";
 import {
@@ -190,26 +194,48 @@ export function reviewToolBootstrapEnvironment(env: NodeJS.ProcessEnv): NodeJS.P
 }
 
 function trustedScanner(cwd: string, lexicalCwd: string, timeoutMs: number): string {
+  const deadlineAt = Date.now() + timeoutMs;
+  const remaining = () => {
+    const ms = deadlineAt - Date.now();
+    if (ms <= 0) throw new AgentInputScanError("deadline");
+    return ms;
+  };
+  let candidate: string | undefined;
   try {
-    return trustedExecutable("trufflehog", cwd, lexicalCwd);
+    candidate = trustedExecutable("trufflehog", cwd, lexicalCwd);
   } catch (error) {
     if (!(error instanceof AgentInputScanError) || error.reason !== "scanner_unavailable")
       throw error;
   }
+  if (candidate) {
+    let version: string;
+    try {
+      version = readTruffleHogVersion(candidate, remaining());
+    } catch {
+      remaining();
+      throw new AgentInputScanError("scanner_failed");
+    }
+    if (version === TRUFFLEHOG_VERSION) return candidate;
+  }
   const cacheRoot = managedScannerCacheRoot(process.env, cwd, lexicalCwd);
   const installer = join(hostRoot, "scripts", "setup-review-tools.mjs");
-  const result = spawnSync(process.execPath, [installer, "--timeout-ms", String(timeoutMs)], {
-    encoding: "utf8",
-    env: {
-      ...reviewToolBootstrapEnvironment(process.env),
-      // The child receives only the parent-validated absolute location, so it
-      // cannot create a managed cache inside either checkout before refusal.
-      CLAWSWEEPER_REVIEW_TOOLS_DIR: cacheRoot,
+  const bootstrapTimeoutMs = remaining();
+  const result = spawnSync(
+    process.execPath,
+    [installer, "--timeout-ms", String(bootstrapTimeoutMs)],
+    {
+      encoding: "utf8",
+      env: {
+        ...reviewToolBootstrapEnvironment(process.env),
+        // The child receives only the parent-validated absolute location, so it
+        // cannot create a managed cache inside either checkout before refusal.
+        CLAWSWEEPER_REVIEW_TOOLS_DIR: cacheRoot,
+      },
+      timeout: bootstrapTimeoutMs,
+      maxBuffer: 4096,
+      windowsHide: true,
     },
-    timeout: timeoutMs,
-    maxBuffer: 4096,
-    windowsHide: true,
-  });
+  );
   const path = result.status === 0 ? result.stdout.trim() : "";
   if (!path || !isAbsolute(path) || path.includes("\0"))
     throw new AgentInputScanError("scanner_unavailable");
