@@ -20,6 +20,22 @@ commands, finalizers, self-heal, gates, and ledgers, see
 For the trusted ClawSweeper-to-ClawSweeper PR repair loop, see
 [`docs/repair/auto-update-prs.md`](auto-update-prs.md).
 
+## Validation recovery
+
+OpenClaw changed-gate validation restores generated output, compiler caches,
+and extension-package-boundary receipts together. It removes newly created
+empty ownership directories only after the command and its descendants have
+joined; existing or unfinished ownership records remain intact.
+
+A `Validation recovery required` error means completion or restoration could
+not be verified. The worker stops validation, retries, and pinned-base
+reproduction and lists the checkout, profile, and backup paths for recovery.
+Do not restart work in that checkout. First stop and verify all target
+processes have exited, then inspect the retained paths and restore the saved
+outputs and caches together, or discard the disposable checkout and start
+from a fresh one. Keep the retained paths until recovery is complete. A base
+reproduction that requires recovery retains its own checkout as well.
+
 ## Cluster Repair Operations Counters
 
 The README dashboard and hosted live dashboard expose passive counters for the

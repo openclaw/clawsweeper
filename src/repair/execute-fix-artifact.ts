@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { validationRecoveryRequired } from "./validation-recovery.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import { repositoryManagedPullRequestCloseReason } from "../repository-profiles.js";
 import fs from "node:fs";
@@ -2873,6 +2874,7 @@ function validateAndReviewLoop({
         };
       }
     } catch (error) {
+      if (validationRecoveryRequired(error)) throw error;
       const baseError = reproduceValidationFailureAtPinnedBase({
         commands: validationPlan.commands,
         targetDir,
@@ -3035,6 +3037,7 @@ function validateAndReviewSynchronizedTree({
     validationCommands = validationExecution.commands;
     checkoutBinding = validationExecution.checkoutBinding;
   } catch (error) {
+    if (validationRecoveryRequired(error)) throw error;
     const baseError = reproduceValidationFailureAtPinnedBase({
       commands: validationPlan.commands,
       targetDir,

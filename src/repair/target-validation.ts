@@ -27,6 +27,12 @@ import { AgentInputScanError, type AgentScanSource } from "../agent-input-scan.j
 
 import { runCommand as run, runContainedCommand } from "./command-runner.js";
 import {
+  ValidationRecoveryRequiredError,
+  validationRecoveryRequired,
+  withDisposableValidationState,
+  type DisposableValidationState,
+} from "./validation-recovery.js";
+import {
   ensureMergeBaseAvailable,
   gitChangedFiles,
   gitStatusPaths,
@@ -79,6 +85,7 @@ const MIN_VALIDATION_IDENTITY_WINDOW_MS = 10_000;
 const MIN_VALIDATION_COMMAND_BUDGET_MS = 25;
 const verifiedRustupToolchainBins = new Map<string, VerifiedRustupToolchain>();
 const preparedTargetPnpmRuntimes = new Map<string, PreparedTargetPnpmRuntime>();
+const unresolvedValidationRecovery = new Map<string, ValidationRecoveryRequiredError>();
 const validationCheckoutRuntimeRootDigests = new WeakMap<
   ValidationCheckoutIdentity,
   ReadonlyMap<string, string>
@@ -241,6 +248,7 @@ export function reproduceValidationFailureAtPinnedBase({
   options: TargetValidationOptions;
   baseBranch?: string;
 }): unknown | null {
+  assertNoUnresolvedValidationRecovery(targetDir);
   if (!options.pinnedBaseRef) return null;
   let changedFromPinnedBase: string[];
   try {
@@ -251,6 +259,7 @@ export function reproduceValidationFailureAtPinnedBase({
   if (changedFromPinnedBase.some(isDependencyOrToolchainInputPath)) return null;
   if (fs.existsSync(path.join(targetDir, "node_modules")) && !options.installTargetDeps)
     return null;
+  let preserveCheckout = false;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-base-validation-"));
   const checkout = path.join(root, "target");
   try {
@@ -336,7 +345,8 @@ export function reproduceValidationFailureAtPinnedBase({
     }
     try {
       prepareTargetToolchain(checkout, options, commands);
-    } catch {
+    } catch (error) {
+      if (validationRecoveryRequired(error)) throw error;
       return null;
     }
     try {
@@ -348,10 +358,20 @@ export function reproduceValidationFailureAtPinnedBase({
       );
       return null;
     } catch (error) {
+      if (validationRecoveryRequired(error)) throw error;
       return error;
     }
+  } catch (error) {
+    const recovery = validationRecoveryRequired(error);
+    if (recovery) {
+      preserveCheckout = true;
+      recovery.retain([root]);
+      unresolvedValidationRecovery.set(path.resolve(targetDir), recovery);
+      unresolvedValidationRecovery.set(targetPnpmRuntimeKey(targetDir), recovery);
+    }
+    throw error;
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    if (!preserveCheckout) fs.rmSync(root, { recursive: true, force: true });
   }
 }
 
@@ -369,6 +389,7 @@ export function prepareTargetToolchain(
   options: TargetValidationOptions,
   validationCommands?: LooseRecord[],
 ) {
+  assertNoUnresolvedValidationRecovery(cwd);
   clearPreparedTargetPnpmRuntime(cwd);
   if (!options.installTargetDeps) return;
   const packagePath = path.join(cwd, "package.json");
@@ -388,6 +409,7 @@ export function prepareTargetToolchain(
   const sourceIdentity = validationSourceIdentity(cwd, deadlineAt);
   const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
   const toolchain = getToolchain(options);
+  const validationContext = { cwd };
   return withTargetValidationEnvironment((validationEnv) => {
     const installRegistry = assertTargetInstallNetworkPolicy(
       cwd,
@@ -446,6 +468,7 @@ export function prepareTargetToolchain(
         });
       }
     } catch (error) {
+      if (validationRecoveryRequired(error)) throw error;
       setupError = error as Error;
     }
     let preparedSourceIdentity: ValidationSourceIdentity;
@@ -465,7 +488,7 @@ export function prepareTargetToolchain(
         sourceIdentity: preparedSourceIdentity,
       });
     }
-  });
+  }, validationContext);
 }
 
 function preparePnpmToolchain({
@@ -526,6 +549,7 @@ function preparePnpmToolchain({
   try {
     runPnpmInstall(installArgs, "pnpm install");
   } catch (error) {
+    if (validationRecoveryRequired(error)) throw error;
     if (!/ERR_PNPM_OUTDATED_LOCKFILE/i.test(String(error.message))) throw error;
     runPnpmInstall(
       installArgs.map((arg) => (arg === "--frozen-lockfile" ? "--no-frozen-lockfile" : arg)),
@@ -687,6 +711,7 @@ function prepareBunToolchain({
   try {
     runBunInstall(installArgs, "bun install");
   } catch (error) {
+    if (validationRecoveryRequired(error)) throw error;
     const message = String(error?.message ?? "");
     if (!/lockfile|frozen|out of date|out-of-date/i.test(message)) throw error;
     runBunInstall(
@@ -1356,10 +1381,12 @@ export function runAllowedValidationCommandsWithBinding(
   options: TargetValidationOptions,
   baseBranch: string = DEFAULT_BASE_BRANCH,
 ): TargetValidationExecution {
+  assertNoUnresolvedValidationRecovery(cwd);
   const baseRef = validationBaseRef(cwd, baseBranch, options);
   const requiredCommands = requiredValidationCommands(commands, cwd, options);
   const needsRustToolchain = targetValidationNeedsRustToolchain(cwd, requiredCommands);
   const preparedPnpmRuntime = preparedPnpmRuntimeForValidation(cwd, options);
+  const validationContext = { cwd, preparedPnpmRuntime };
   return withTargetValidationEnvironment((validationEnv, resetValidationEnvironment) => {
     if (options.targetRepo === "openclaw/openclaw") {
       // Vitest's scheduling telemetry rewrites an existing ignored artifact, which
@@ -1482,55 +1509,19 @@ export function runAllowedValidationCommandsWithBinding(
               validationIdentityProofDeadlineAt(deadlineAt),
             );
           }
-          const restoreChangedGateState =
-            options.targetRepo === "openclaw/openclaw" && isChangedGateCommand(parts, options)
-              ? prepareDisposableChangedGateState(
-                  cwd,
-                  validationEnv,
-                  ignoredValidationInputs,
-                  pendingRuntimeBuild ? [] : runtimeArtifactBuildOutputRoots(cwd),
-                )
-              : null;
-          let restoreValidationCache: (() => void) | null;
-          try {
-            restoreValidationCache = runtimeBuild
-              ? prepareDisposableRuntimeBuildCache(cwd, validationEnv, ignoredValidationInputs)
-              : options.targetRepo === "openclaw/openclaw" && isChangedGateCommand(parts, options)
-                ? prepareDisposableRuntimeBuildCache(
-                    cwd,
-                    validationEnv,
-                    ignoredValidationInputs,
-                    "tsgo-cache",
-                    "changed-gate validation",
-                  )
-                : null;
-          } catch (error) {
-            restoreChangedGateState?.();
-            throw error;
-          }
-          const executionBudgetMs = remainingCommandBudget(deadlineAt, identityReserveMs);
-          if (executionBudgetMs < MIN_VALIDATION_COMMAND_BUDGET_MS) {
-            try {
-              restoreChangedGateState?.();
-            } finally {
-              restoreValidationCache?.();
-            }
-            throw validationCommandBudgetError(rendered);
-          }
-          try {
-            runContainedCommand(executionParts[0]!, executionParts.slice(1), {
-              cwd,
-              env: validationEnv,
-              timeoutMs: executionBudgetMs,
-              writableRoots: [cwd, path.dirname(String(validationEnv.HOME))],
-            });
-          } finally {
-            try {
-              restoreChangedGateState?.();
-            } finally {
-              restoreValidationCache?.();
-            }
-          }
+          runRestorableValidationCommand({
+            parts,
+            executionParts,
+            cwd,
+            options,
+            validationEnv,
+            ignoredValidationInputs,
+            outputRoots: pendingRuntimeBuild ? [] : runtimeArtifactBuildOutputRoots(cwd),
+            runtimeBuild: Boolean(runtimeBuild),
+            deadlineAt,
+            identityReserveMs,
+            rendered,
+          });
           if (runtimeBuild) {
             assertGeneratedRuntimeBuildOutput(cwd);
             runtimeBuild.outputSha256 = runtimeArtifactBuildOutputSha256(
@@ -1547,6 +1538,7 @@ export function runAllowedValidationCommandsWithBinding(
             );
           }
         } catch (error) {
+          if (validationRecoveryRequired(error)) throw error;
           executionError = error as Error;
         }
         try {
@@ -1601,56 +1593,24 @@ export function runAllowedValidationCommandsWithBinding(
             let fallbackError: Error | null = null;
             try {
               resetValidationEnvironment(deadlineAt - identityReserveMs);
-              const restoreFallbackChangedGateState =
-                options.targetRepo === "openclaw/openclaw" &&
-                isChangedGateCommand(fallbackParts, options)
-                  ? prepareDisposableChangedGateState(
-                      cwd,
-                      validationEnv,
-                      ignoredValidationInputs,
-                      pendingRuntimeBuild ? [] : runtimeArtifactBuildOutputRoots(cwd),
-                    )
-                  : null;
-              let restoreFallbackValidationCache: (() => void) | null;
-              try {
-                restoreFallbackValidationCache =
-                  options.targetRepo === "openclaw/openclaw" &&
-                  isChangedGateCommand(fallbackParts, options)
-                    ? prepareDisposableRuntimeBuildCache(
-                        cwd,
-                        validationEnv,
-                        ignoredValidationInputs,
-                        "tsgo-cache",
-                        "changed-gate validation",
-                      )
-                    : null;
-              } catch (error) {
-                restoreFallbackChangedGateState?.();
-                throw error;
-              }
-              try {
-                const fallbackBudgetMs = remainingCommandBudget(deadlineAt, identityReserveMs);
-                if (fallbackBudgetMs < MIN_VALIDATION_COMMAND_BUDGET_MS) {
-                  throw validationCommandBudgetError(rendered, executionError);
-                }
-                const executionParts = validationCommandWithDisposableArchive(
+              runRestorableValidationCommand({
+                parts: fallbackParts,
+                executionParts: validationCommandWithDisposableArchive(
                   validationCommandForExecution(fallbackParts),
                   validationEnv,
-                );
-                runContainedCommand(executionParts[0]!, executionParts.slice(1), {
-                  cwd,
-                  env: validationEnv,
-                  timeoutMs: fallbackBudgetMs,
-                  writableRoots: [cwd, path.dirname(String(validationEnv.HOME))],
-                });
-              } finally {
-                try {
-                  restoreFallbackChangedGateState?.();
-                } finally {
-                  restoreFallbackValidationCache?.();
-                }
-              }
+                ),
+                cwd,
+                options,
+                validationEnv,
+                ignoredValidationInputs,
+                outputRoots: pendingRuntimeBuild ? [] : runtimeArtifactBuildOutputRoots(cwd),
+                runtimeBuild: false,
+                deadlineAt,
+                identityReserveMs,
+                rendered: fallbackRendered,
+              });
             } catch (error) {
+              if (validationRecoveryRequired(error)) throw error;
               fallbackError = error as Error;
             }
             try {
@@ -1672,6 +1632,7 @@ export function runAllowedValidationCommandsWithBinding(
                   fallbackRendered,
                 );
               } catch (error) {
+                if (validationRecoveryRequired(error)) throw error;
                 fallbackError = error as Error;
               }
             }
@@ -1709,7 +1670,7 @@ export function runAllowedValidationCommandsWithBinding(
       commands: executed,
       checkoutBinding: sourceIdentityFromCheckout(checkoutIdentity),
     };
-  }, preparedPnpmRuntime);
+  }, validationContext);
 }
 
 export function preflightTargetValidationPlan(
@@ -3058,13 +3019,85 @@ function runtimeArtifactBuildOutputRoots(cwd: string): string[] {
   return roots;
 }
 
+function runRestorableValidationCommand({
+  parts,
+  executionParts,
+  cwd,
+  options,
+  validationEnv,
+  ignoredValidationInputs,
+  outputRoots,
+  runtimeBuild,
+  deadlineAt,
+  identityReserveMs,
+  rendered,
+}: {
+  parts: string[];
+  executionParts: string[];
+  cwd: string;
+  options: TargetValidationOptions;
+  validationEnv: NodeJS.ProcessEnv;
+  ignoredValidationInputs: string[];
+  outputRoots: string[];
+  runtimeBuild: boolean;
+  deadlineAt: number;
+  identityReserveMs: number;
+  rendered: string;
+}) {
+  const changedGate =
+    options.targetRepo === "openclaw/openclaw" && isChangedGateCommand(parts, options);
+  return withDisposableValidationState(
+    (save) => {
+      if (changedGate) {
+        save(
+          prepareDisposableChangedGateState(
+            cwd,
+            validationEnv,
+            ignoredValidationInputs,
+            outputRoots,
+          ),
+        );
+      }
+      if (runtimeBuild || changedGate) {
+        save(
+          prepareDisposableRuntimeBuildCache(
+            cwd,
+            validationEnv,
+            ignoredValidationInputs,
+            runtimeBuild ? "build-all-cache" : "tsgo-cache",
+            runtimeBuild ? "runtime artifact build" : "changed-gate validation",
+          ),
+        );
+      }
+    },
+    () => {
+      const timeoutMs = remainingCommandBudget(deadlineAt, identityReserveMs);
+      if (timeoutMs < MIN_VALIDATION_COMMAND_BUDGET_MS)
+        throw validationCommandBudgetError(rendered);
+      return runContainedCommand(executionParts[0]!, executionParts.slice(1), {
+        cwd,
+        env: validationEnv,
+        timeoutMs,
+        writableRoots: [cwd, path.dirname(String(validationEnv.HOME))],
+      });
+    },
+    rendered,
+  );
+}
+
 const OPENCLAW_CHANGED_GATE_CACHE_PATHS = [
   // Only these tool-owned caches are disposable; sibling ignored inputs stay
   // identity-bound so dependency or configuration poisoning still fails closed.
   ".cache/vitest",
+  ".artifacts/extension-package-boundary",
   "node_modules/.cache",
   "node_modules/.vite",
   "node_modules/.vite-temp",
+] as const;
+
+const OPENCLAW_CHANGED_GATE_OWNERSHIP_PATHS = [
+  ".artifacts/dist-artifacts.lock",
+  ".artifacts/vitest-workers",
 ] as const;
 
 function prepareDisposableChangedGateState(
@@ -3072,7 +3105,7 @@ function prepareDisposableChangedGateState(
   validationEnv: NodeJS.ProcessEnv,
   ignoredValidationInputs: readonly string[],
   disposableOutputRoots: readonly string[],
-) {
+): DisposableValidationState {
   const checkout = fs.realpathSync(cwd);
   const backupRoot = fs.realpathSync(
     fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-changed-gate-state-")),
@@ -3089,8 +3122,10 @@ function prepareDisposableChangedGateState(
   }
   const snapshots: Array<{
     relativePath: string;
-    kind: "cache" | "output";
+    kind: "cache" | "output" | "ownership";
+    missingParents: string[];
     existed: boolean;
+    parentPath: string;
     parentRealPath: string;
     parentDevice: number;
     parentInode: number;
@@ -3102,6 +3137,10 @@ function prepareDisposableChangedGateState(
         relativePath,
         kind: "output" as const,
       })),
+      ...OPENCLAW_CHANGED_GATE_OWNERSHIP_PATHS.map((relativePath) => ({
+        relativePath,
+        kind: "ownership" as const,
+      })),
       ...OPENCLAW_CHANGED_GATE_CACHE_PATHS.map((relativePath) => ({
         relativePath,
         kind: "cache" as const,
@@ -3109,9 +3148,14 @@ function prepareDisposableChangedGateState(
     ];
     for (const { relativePath, kind } of disposablePaths) {
       const output = path.join(checkout, relativePath);
-      const parent = path.dirname(output);
-      const parentStat = fs.lstatSync(parent, { throwIfNoEntry: false });
-      if (!parentStat) continue;
+      let parent = path.dirname(output);
+      const missingParents: string[] = [];
+      let parentStat = fs.lstatSync(parent, { throwIfNoEntry: false });
+      while (!parentStat) {
+        missingParents.unshift(parent);
+        parent = path.dirname(parent);
+        parentStat = fs.lstatSync(parent, { throwIfNoEntry: false });
+      }
       if (!parentStat.isDirectory() || parentStat.isSymbolicLink()) {
         throw new Error(`changed-gate validation has an unsafe ${kind} parent: ${relativePath}`);
       }
@@ -3124,7 +3168,7 @@ function prepareDisposableChangedGateState(
       if (outputStat && (!isIgnored || !outputStat.isDirectory() || outputStat.isSymbolicLink())) {
         throw new Error(`changed-gate validation has an unsafe existing ${kind}: ${relativePath}`);
       }
-      if (outputStat) {
+      if (outputStat && kind !== "ownership") {
         const backup = path.join(backupRoot, relativePath);
         fs.mkdirSync(path.dirname(backup), { recursive: true });
         copyRuntimeTreeWithModes(output, backup);
@@ -3132,7 +3176,9 @@ function prepareDisposableChangedGateState(
       snapshots.push({
         relativePath,
         kind,
+        missingParents,
         existed: Boolean(outputStat),
+        parentPath: parent,
         parentRealPath,
         parentDevice: parentStat.dev,
         parentInode: parentStat.ino,
@@ -3142,45 +3188,75 @@ function prepareDisposableChangedGateState(
     fs.rmSync(backupRoot, { recursive: true, force: true });
     throw error;
   }
-  return () => {
-    let restorationFailure: unknown = null;
-    let preserveBackup = false;
-    for (const snapshot of snapshots) {
-      try {
-        const { kind } = snapshot;
-        const output = path.join(checkout, snapshot.relativePath);
-        const parent = path.dirname(output);
-        const parentStat = fs.lstatSync(parent, { throwIfNoEntry: false });
-        if (
-          !parentStat?.isDirectory() ||
-          parentStat.isSymbolicLink() ||
-          parentStat.dev !== snapshot.parentDevice ||
-          parentStat.ino !== snapshot.parentInode ||
-          fs.realpathSync(parent) !== snapshot.parentRealPath
-        ) {
-          throw new Error(
-            `changed-gate validation changed its protected ${kind} parent: ${snapshot.relativePath}`,
-          );
+  return {
+    recoveryPaths: [backupRoot],
+    restore: () => {
+      let restorationFailure: unknown = null;
+      let preserveBackup = false;
+      for (const snapshot of snapshots) {
+        try {
+          const { kind } = snapshot;
+          const output = path.join(checkout, snapshot.relativePath);
+          const parent = snapshot.parentPath;
+          const parentStat = fs.lstatSync(parent, { throwIfNoEntry: false });
+          if (
+            !parentStat?.isDirectory() ||
+            parentStat.isSymbolicLink() ||
+            parentStat.dev !== snapshot.parentDevice ||
+            parentStat.ino !== snapshot.parentInode ||
+            fs.realpathSync(parent) !== snapshot.parentRealPath
+          ) {
+            throw new Error(
+              `changed-gate validation changed its protected ${kind} parent: ${snapshot.relativePath}`,
+            );
+          }
+          for (const missingParent of snapshot.missingParents) {
+            const stat = fs.lstatSync(missingParent, { throwIfNoEntry: false });
+            if (stat && (!stat.isDirectory() || stat.isSymbolicLink())) {
+              throw new Error(
+                `changed-gate validation changed its protected ${kind} parent: ${snapshot.relativePath}`,
+              );
+            }
+          }
+          const outputStat = fs.lstatSync(output, { throwIfNoEntry: false });
+          if (kind === "ownership") {
+            if (snapshot.existed || !outputStat) continue;
+            if (
+              !outputStat.isDirectory() ||
+              outputStat.isSymbolicLink() ||
+              fs.readdirSync(output).length > 0
+            ) {
+              throw new Error(
+                `changed-gate validation left unfinished ownership state: ${snapshot.relativePath}`,
+              );
+            }
+            fs.rmdirSync(output);
+            continue;
+          }
+          if (outputStat && (!outputStat.isDirectory() || outputStat.isSymbolicLink())) {
+            restorationFailure ??= new Error(
+              `changed-gate validation produced an unsafe ${kind}: ${snapshot.relativePath}`,
+            );
+          }
+          fs.rmSync(output, { recursive: true, force: true });
+          if (snapshot.existed) {
+            copyRuntimeTreeWithModes(path.join(backupRoot, snapshot.relativePath), output);
+          }
+        } catch (error) {
+          restorationFailure ??= error;
+          preserveBackup = true;
         }
-        const outputStat = fs.lstatSync(output, { throwIfNoEntry: false });
-        if (outputStat && (!outputStat.isDirectory() || outputStat.isSymbolicLink())) {
-          restorationFailure ??= new Error(
-            `changed-gate validation produced an unsafe ${kind}: ${snapshot.relativePath}`,
-          );
-        }
-        fs.rmSync(output, { recursive: true, force: true });
-        if (snapshot.existed) {
-          copyRuntimeTreeWithModes(path.join(backupRoot, snapshot.relativePath), output);
-        }
-      } catch (error) {
-        restorationFailure ??= error;
-        preserveBackup = true;
       }
-    }
-    if (!preserveBackup) {
-      fs.rmSync(backupRoot, { recursive: true, force: true });
-    }
-    if (restorationFailure) throw restorationFailure;
+      if (!preserveBackup) {
+        for (const parent of [
+          ...new Set(snapshots.flatMap((snapshot) => snapshot.missingParents)),
+        ].reverse()) {
+          if (fs.existsSync(parent) && fs.readdirSync(parent).length === 0) fs.rmdirSync(parent);
+        }
+        fs.rmSync(backupRoot, { recursive: true, force: true });
+      }
+      if (restorationFailure) throw restorationFailure;
+    },
   };
 }
 
@@ -3190,7 +3266,7 @@ function prepareDisposableRuntimeBuildCache(
   ignoredValidationInputs: readonly string[],
   cacheName: "build-all-cache" | "tsgo-cache" = "build-all-cache",
   context = "runtime artifact build",
-) {
+): DisposableValidationState {
   const artifacts = path.join(cwd, ".artifacts");
   const cache = path.join(artifacts, cacheName);
   const artifactsStat = fs.lstatSync(artifacts, { throwIfNoEntry: false });
@@ -3211,25 +3287,28 @@ function prepareDisposableRuntimeBuildCache(
     `build-cache-${randomUUID()}`,
   );
   if (cacheStat) moveRuntimeBuildCache(cache, savedCache);
-  return () => {
-    const currentArtifactsStat = fs.lstatSync(artifacts, { throwIfNoEntry: false });
-    if (
-      currentArtifactsStat &&
-      (!currentArtifactsStat.isDirectory() ||
-        currentArtifactsStat.isSymbolicLink() ||
-        (artifactsStat &&
-          (currentArtifactsStat.dev !== artifactsStat.dev ||
-            currentArtifactsStat.ino !== artifactsStat.ino)))
-    ) {
-      throw new Error(`${context} changed its protected artifacts directory`);
-    }
-    fs.rmSync(cache, { recursive: true, force: true });
-    if (cacheStat) {
-      fs.mkdirSync(artifacts, { recursive: true });
-      moveRuntimeBuildCache(savedCache, cache);
-    } else if (!artifactsStat && fs.existsSync(artifacts)) {
-      if (fs.readdirSync(artifacts).length === 0) fs.rmdirSync(artifacts);
-    }
+  return {
+    recoveryPaths: cacheStat ? [savedCache] : [],
+    restore: () => {
+      const currentArtifactsStat = fs.lstatSync(artifacts, { throwIfNoEntry: false });
+      if (
+        currentArtifactsStat &&
+        (!currentArtifactsStat.isDirectory() ||
+          currentArtifactsStat.isSymbolicLink() ||
+          (artifactsStat &&
+            (currentArtifactsStat.dev !== artifactsStat.dev ||
+              currentArtifactsStat.ino !== artifactsStat.ino)))
+      ) {
+        throw new Error(`${context} changed its protected artifacts directory`);
+      }
+      fs.rmSync(cache, { recursive: true, force: true });
+      if (cacheStat) {
+        fs.mkdirSync(artifacts, { recursive: true });
+        moveRuntimeBuildCache(savedCache, cache);
+      } else if (!artifactsStat && fs.existsSync(artifacts)) {
+        if (fs.readdirSync(artifacts).length === 0) fs.rmdirSync(artifacts);
+      }
+    },
   };
 }
 
@@ -4643,8 +4722,13 @@ function targetValidationEnv() {
 
 function withTargetValidationEnvironment<T>(
   callback: (env: NodeJS.ProcessEnv, reset: (deadlineAt: number) => void) => T,
-  preparedPnpmRuntime?: PreparedTargetPnpmRuntime | null,
+  {
+    cwd,
+    preparedPnpmRuntime,
+  }: { cwd: string; preparedPnpmRuntime?: PreparedTargetPnpmRuntime | null },
 ): T {
+  const checkoutKeys = [path.resolve(cwd), targetPnpmRuntimeKey(cwd)];
+  let preserveProfile = false;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-target-user-"));
   const rootIdentity = fs.lstatSync(root);
   const home = path.join(root, "home");
@@ -4729,8 +4813,16 @@ function withTargetValidationEnvironment<T>(
   try {
     resetProfile(Number.POSITIVE_INFINITY, false);
     return callback(env, (deadlineAt) => resetProfile(deadlineAt, true));
+  } catch (error) {
+    const recovery = validationRecoveryRequired(error);
+    if (recovery) {
+      preserveProfile = true;
+      recovery.retain([cwd, root, ...(preparedPnpmRuntime ? [preparedPnpmRuntime.root] : [])]);
+      for (const key of checkoutKeys) unresolvedValidationRecovery.set(key, recovery);
+    }
+    throw error;
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    if (!preserveProfile) fs.rmSync(root, { recursive: true, force: true });
   }
 }
 
@@ -4977,6 +5069,13 @@ function externalCorepackShim(runtimeRoot: string, symlinkPath: string) {
   };
 }
 
+function assertNoUnresolvedValidationRecovery(cwd: string) {
+  const recovery =
+    unresolvedValidationRecovery.get(path.resolve(cwd)) ??
+    unresolvedValidationRecovery.get(targetPnpmRuntimeKey(cwd));
+  if (recovery) throw recovery;
+}
+
 function clearPreparedTargetPnpmRuntime(cwd: string) {
   const key = targetPnpmRuntimeKey(cwd);
   const prepared = preparedTargetPnpmRuntimes.get(key);
@@ -5005,7 +5104,8 @@ function registerPreparedTargetPnpmRuntimeCleanup() {
   if (preparedTargetPnpmRuntimeCleanupRegistered) return;
   preparedTargetPnpmRuntimeCleanupRegistered = true;
   process.once("exit", () => {
-    for (const prepared of preparedTargetPnpmRuntimes.values()) {
+    for (const [key, prepared] of preparedTargetPnpmRuntimes) {
+      if (unresolvedValidationRecovery.has(key)) continue;
       fs.rmSync(prepared.root, { recursive: true, force: true });
     }
     preparedTargetPnpmRuntimes.clear();
@@ -5421,7 +5521,8 @@ function isChangedGateCommand(parts: readonly string[], options: TargetValidatio
   if (!gate) return false;
   const gateParts = gate.command.split(/\s+/).filter(Boolean);
   return (
-    gateParts.length === parts.length && gateParts.every((part, index) => part === parts[index])
+    gateParts.every((part, index) => part === parts[index]) &&
+    (gateParts.length === parts.length || parts[gateParts.length] === "--")
   );
 }
 
