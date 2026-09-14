@@ -1,4 +1,5 @@
 import { AgentInputScanError } from "./agent-input-scan.js";
+import { GitHubOperationDeadlineError } from "./clawsweeper-github-runtime.js";
 import { ReviewSourcePreparationError } from "./review-source-preparation.js";
 import {
   BULK_FILED_LABEL,
@@ -37,6 +38,7 @@ import type {
   ClosingPullRequestReference,
   ContextHydration,
   GoodFirstIssueHumanLabelState,
+  GitHubDeadlineOptions,
   Item,
   ItemKind,
   PreviousClawSweeperReview,
@@ -61,7 +63,7 @@ interface CreateContextHydrationDependencies {
   effectiveReviewStatus: (markdown: string) => string;
   fetchIssueReviewComments: (number: number) => Record<string, unknown>[];
   frontMatterValue: (markdown: string, key: string) => string | undefined;
-  ghJson: <T>(args: string[]) => T;
+  ghJson: <T>(args: string[], options?: GitHubDeadlineOptions) => T;
   ghJsonOnce: <T>(args: string[], timeoutMs: number) => T;
   githubCount: (value: unknown) => number | null;
   GitHubRuntimeBudgetError: new (reason: string) => Error & { readonly reason: string };
@@ -985,13 +987,13 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
         );
       }
       const remoteTreeSizes = new Map<string, ReadonlyMap<string, number>>();
-      const treeSizes = (revision: string): ReadonlyMap<string, number> => {
+      const treeSizes = (revision: string, deadlineAt: number): ReadonlyMap<string, number> => {
         const cached = remoteTreeSizes.get(revision);
         if (cached) return cached;
         const sizes = githubReviewTreeBlobSizes({
           repository: targetRepo(),
           headSha: revision,
-          request: (path) => ghJson(reviewTreeMetadataArgs(path)),
+          request: (path) => ghJson(reviewTreeMetadataArgs(path), { deadlineAt }),
         });
         remoteTreeSizes.set(revision, sizes);
         return sizes;
@@ -1001,15 +1003,22 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
           targetDir: options.targetDir,
           baseSha: revision,
           headSha,
-          resolveBlobSizes: (objectIds) => {
-            const baseSizes = treeSizes(revision);
-            const headSizes = revision === headSha ? baseSizes : treeSizes(headSha);
-            return new Map(
-              objectIds.flatMap((objectId) => {
-                const bytes = headSizes.get(objectId) ?? baseSizes.get(objectId);
-                return bytes === undefined ? [] : [[objectId, bytes]];
-              }),
-            );
+          resolveBlobSizes: (objectIds, deadlineAt) => {
+            try {
+              const baseSizes = treeSizes(revision, deadlineAt);
+              const headSizes = revision === headSha ? baseSizes : treeSizes(headSha, deadlineAt);
+              return new Map(
+                objectIds.flatMap((objectId) => {
+                  const bytes = headSizes.get(objectId) ?? baseSizes.get(objectId);
+                  return bytes === undefined ? [] : [[objectId, bytes]];
+                }),
+              );
+            } catch (error) {
+              if (error instanceof GitHubOperationDeadlineError) {
+                throw new AgentInputScanError("deadline");
+              }
+              throw error;
+            }
           },
         });
       hydrateBlobs(mergeBaseSha);

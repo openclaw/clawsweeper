@@ -891,12 +891,20 @@ export function hydratePullRequestReviewBlobs({
   targetDir: string;
   baseSha: string;
   headSha: string;
-  resolveBlobSizes?: (objectIds: readonly string[]) => ReadonlyMap<string, number>;
+  resolveBlobSizes?: (
+    objectIds: readonly string[],
+    deadlineAt: number,
+  ) => ReadonlyMap<string, number>;
 }): number {
   if (!GIT_OBJECT_ID.test(baseSha) || !GIT_OBJECT_ID.test(headSha)) {
     throw new AgentInputScanError("incomplete_source");
   }
   const deadlineAt = Date.now() + 30_000;
+  const remainingMs = () => {
+    const remaining = deadlineAt - Date.now();
+    if (remaining <= 0) throw new AgentInputScanError("deadline");
+    return remaining;
+  };
   const readOptions = { deadlineAt, maxBytes: MAX_GIT_OUTPUT_BYTES };
   const raw = readReviewGit(
     targetDir,
@@ -976,7 +984,7 @@ export function hydratePullRequestReviewBlobs({
         GIT_NO_REPLACE_OBJECTS: "1",
       },
       maxBuffer: MAX_GIT_OUTPUT_BYTES,
-      timeout: Math.max(1, deadlineAt - Date.now()),
+      timeout: remainingMs(),
     },
   );
   if (objectAvailability.error || objectAvailability.status !== 0) {
@@ -1017,7 +1025,8 @@ export function hydratePullRequestReviewBlobs({
     if (!resolveBlobSizes) throwBlobMetadataUnavailable();
     let remoteSizes: ReadonlyMap<string, number>;
     try {
-      remoteSizes = resolveBlobSizes([...missing]);
+      remainingMs();
+      remoteSizes = resolveBlobSizes([...missing], deadlineAt);
     } catch (error) {
       if (error instanceof AgentInputScanError) throw error;
       throwBlobMetadataUnavailable();
@@ -1039,7 +1048,7 @@ export function hydratePullRequestReviewBlobs({
     objectBytes += bytes;
   }
 
-  if (Date.now() >= deadlineAt) throw new AgentInputScanError("deadline");
+  remainingMs();
   if (missing.size > 0) {
     const fetched = spawnSync(
       "git",
@@ -1059,7 +1068,7 @@ export function hydratePullRequestReviewBlobs({
         encoding: "utf8",
         env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
         input: `${[...missing].join("\n")}\n`,
-        timeout: Math.max(1, deadlineAt - Date.now()),
+        timeout: remainingMs(),
         maxBuffer: MAX_GIT_OUTPUT_BYTES,
       },
     );
@@ -1068,6 +1077,7 @@ export function hydratePullRequestReviewBlobs({
       throw new ReviewGitError("review_blobs_unavailable", fetched);
     }
   }
+  remainingMs();
   return objectIds.size;
 }
 

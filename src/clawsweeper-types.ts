@@ -1107,7 +1107,20 @@ export interface GitHubRuntimeBudget {
   yieldReason?: string;
 }
 
-export type GitHubRetryOptions = {
+export type GitHubDeadlineOptions = {
+  deadlineAt?: number | undefined;
+};
+
+export type GitHubRequestReservation = {
+  onDispatch: () => void;
+  releaseIfUndispatched: () => boolean;
+};
+
+export type GitHubFallbackClaim = GitHubRequestReservation & {
+  env: NodeJS.ProcessEnv;
+};
+
+export type GitHubRetryOptions = GitHubDeadlineOptions & {
   request?: ((args: string[], attempt: number) => string) | undefined;
   sleepBeforeRetry?: ((waitMs: number) => void) | undefined;
 };
