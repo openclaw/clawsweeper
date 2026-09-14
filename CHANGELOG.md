@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Admit the existing OpenClaw browser CDP proxy and target fixtures through exact URI, source-line, decoder, and source-path bindings so unrelated test imports do not block exact review.
+
 - Recognize the existing approved browser documentation fixture after its page split, preserving exact-value and source-path restrictions.
 
 - Keep repair-result publication within its job budget by hydrating only the operational Git state it consumes, without loading unrelated canonical review records.
