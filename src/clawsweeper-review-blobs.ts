@@ -1073,8 +1073,13 @@ export function hydratePullRequestReviewBlobs({
       },
     );
     if (fetched.error || fetched.status !== 0) {
-      if (Date.now() >= deadlineAt) throw new AgentInputScanError("deadline");
-      throw new ReviewGitError("review_blobs_unavailable", fetched);
+      const cause = new ReviewGitError("review_blobs_unavailable", fetched);
+      if (Date.now() >= deadlineAt) {
+        const error = new AgentInputScanError("deadline");
+        error.cause = cause;
+        throw error;
+      }
+      throw cause;
     }
   }
   remainingMs();
