@@ -1,7 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { appendFileSync, closeSync, openSync } from "node:fs";
-import type { GitHubRuntimeBudget } from "./clawsweeper-types.js";
+import { appendFileSync, closeSync, fstatSync, lstatSync, openSync, unlinkSync } from "node:fs";
+import type {
+  GitHubFallbackClaim,
+  GitHubRequestReservation,
+  GitHubRuntimeBudget,
+} from "./clawsweeper-types.js";
 import { codexEnv } from "./codex-env.js";
 import { resolveCommand } from "./command.js";
 import {
@@ -36,6 +40,62 @@ const claimedPublicReadFallbackTokens = new Set<string>();
 const RATE_LIMIT_LOOKUP_TIMEOUT_MS = 20_000;
 const ETAG_BROKER_TIMEOUT_MS = 7_000;
 const ETAG_BROKER_BUDGET_RESERVE_MS = 10_000;
+
+export class GitHubOperationDeadlineError extends Error {
+  constructor(readonly deadlineAt: number) {
+    super("GitHub operation deadline exhausted.");
+    this.name = "GitHubOperationDeadlineError";
+  }
+}
+
+function reserveGitHubRequest<Key>(
+  claims: Set<Key>,
+  key: Key,
+  lockPath?: string,
+): GitHubRequestReservation | null {
+  if (claims.has(key)) return null;
+  let lock: { path: string; dev: number; ino: number } | undefined;
+  if (lockPath) {
+    try {
+      const descriptor = openSync(lockPath, "wx");
+      try {
+        const identity = fstatSync(descriptor);
+        lock = { path: lockPath, dev: identity.dev, ino: identity.ino };
+      } finally {
+        closeSync(descriptor);
+      }
+    } catch {
+      return null;
+    }
+  }
+  claims.add(key);
+  // Admission can expire after the lock is acquired but before transport starts.
+  let state: "reserved" | "dispatched" | "released" = "reserved";
+  return {
+    onDispatch: () => {
+      if (state === "released") throw new Error("GitHub reservation was released before dispatch");
+      state = "dispatched";
+    },
+    releaseIfUndispatched: () => {
+      if (state !== "reserved") return true;
+      if (lock) {
+        try {
+          const identity = lstatSync(lock.path);
+          if (!identity.isFile() || identity.dev !== lock.dev || identity.ino !== lock.ino) {
+            return false;
+          }
+          unlinkSync(lock.path);
+        } catch {
+          // Uncertain lock ownership must retain the process-local exclusion too.
+          return false;
+        }
+      }
+      claims.delete(key);
+      state = "released";
+      return true;
+    },
+  };
+}
 
 export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencies) {
   const { ROOT, run, targetRepo } = dependencies;
@@ -85,23 +145,38 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
     return reason ? new GitHubRuntimeBudgetError(reason) : null;
   }
 
-  function githubCommandTimeoutMs(requestedTimeoutMs?: number): number | undefined {
+  function ensureOperationDelayFits(waitMs: number, deadlineAt?: number): void {
+    if (deadlineAt !== undefined && deadlineAt - Date.now() <= waitMs) {
+      throw new GitHubOperationDeadlineError(deadlineAt);
+    }
+  }
+
+  function githubCommandTimeoutMs(
+    requestedTimeoutMs?: number,
+    deadlineAt?: number,
+  ): number | undefined {
     const pendingError = pendingGitHubRuntimeBudgetError();
     if (pendingError) throw pendingError;
     const remainingMs = githubRuntimeRemainingMs();
-    if (remainingMs === null) return requestedTimeoutMs;
-    if (remainingMs <= 0) throw githubRuntimeBudgetError("before GitHub operation");
-    return Math.max(
-      1,
-      requestedTimeoutMs === undefined ? remainingMs : Math.min(requestedTimeoutMs, remainingMs),
-    );
+    if (remainingMs !== null && remainingMs <= 0) {
+      throw githubRuntimeBudgetError("before GitHub operation");
+    }
+    let requested = requestedTimeoutMs;
+    if (deadlineAt !== undefined) {
+      const operationTimeoutMs = deadlineAt - Date.now();
+      if (operationTimeoutMs <= 0) throw new GitHubOperationDeadlineError(deadlineAt);
+      requested = Math.min(requestedTimeoutMs ?? operationTimeoutMs, operationTimeoutMs);
+    }
+    if (remainingMs === null) return requested;
+    return Math.max(1, requested === undefined ? remainingMs : Math.min(requested, remainingMs));
   }
 
-  function ensureGitHubRuntimeAvailable(phase: string): void {
+  function ensureGitHubRuntimeAvailable(phase: string, deadlineAt?: number): void {
     const pendingError = pendingGitHubRuntimeBudgetError();
     if (pendingError) throw pendingError;
     const remainingMs = githubRuntimeRemainingMs();
     if (remainingMs !== null && remainingMs <= 0) throw githubRuntimeBudgetError(phase);
+    ensureOperationDelayFits(0, deadlineAt);
   }
 
   function ensureRuntimeDelayFits(waitMs: number, phase: string): void {
@@ -113,12 +188,14 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
     }
   }
 
-  function ensureGitHubRetryFits(waitMs: number): void {
+  function ensureGitHubRetryFits(waitMs: number, deadlineAt?: number): void {
+    if (deadlineAt !== undefined) ensureGitHubRuntimeAvailable("before GitHub retry");
+    ensureOperationDelayFits(waitMs, deadlineAt);
     ensureRuntimeDelayFits(waitMs, "before GitHub retry");
   }
 
-  function sleepBeforeGitHubRetry(waitMs: number): void {
-    ensureGitHubRetryFits(waitMs);
+  function sleepBeforeGitHubRetry(waitMs: number, deadlineAt?: number): void {
+    ensureGitHubRetryFits(waitMs, deadlineAt);
     sleepMs(waitMs);
   }
 
@@ -256,38 +333,58 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
     });
   }
 
-  function rateLimitStatusRetryAt(scope: GitHubCredentialScope, token: string): number | null {
+  function rateLimitStatusRetryAt(
+    scope: GitHubCredentialScope,
+    token: string,
+    deadlineAt?: number,
+  ): number | null {
     if (!rateLimitObservationPath() || inspectedRateLimitScopes.has(scope) || !token) return null;
-    inspectedRateLimitScopes.add(scope);
-    try {
-      closeSync(openSync(`${rateLimitObservationPath()}.lookup-${scope}.lock`, "wx"));
-    } catch {
-      return null;
+    if (deadlineAt !== undefined) {
+      try {
+        githubCommandTimeoutMs(RATE_LIMIT_LOOKUP_TIMEOUT_MS, deadlineAt);
+      } catch (error) {
+        if (
+          error instanceof GitHubOperationDeadlineError ||
+          error instanceof GitHubRuntimeBudgetError
+        ) {
+          return null;
+        }
+        throw error;
+      }
     }
+    const reservation = reserveGitHubRequest(
+      inspectedRateLimitScopes,
+      scope,
+      `${rateLimitObservationPath()}.lookup-${scope}.lock`,
+    );
+    if (!reservation) return null;
+    let requestStarted = false;
     try {
-      const raw = run(
-        "gh",
-        [
-          "api",
-          "rate_limit",
-          "--jq",
-          "{remaining:.resources.core.remaining,reset:.resources.core.reset}",
-        ],
-        {
-          timeoutMs: RATE_LIMIT_LOOKUP_TIMEOUT_MS,
-          env: {
-            ...process.env,
-            GH_TOKEN: token,
-            ...githubEgressEnvironment(["api", "rate_limit"], { GH_TOKEN: token }),
-          },
-        },
-      );
+      const commandArgs = [
+        "api",
+        "rate_limit",
+        "--jq",
+        "{remaining:.resources.core.remaining,reset:.resources.core.reset}",
+      ];
+      const commandEnv = {
+        ...process.env,
+        GH_TOKEN: token,
+        ...githubEgressEnvironment(["api", "rate_limit"], { GH_TOKEN: token }),
+      };
+      const timeoutMs =
+        deadlineAt === undefined
+          ? RATE_LIMIT_LOOKUP_TIMEOUT_MS
+          : githubCommandTimeoutMs(RATE_LIMIT_LOOKUP_TIMEOUT_MS, deadlineAt);
+      reservation.onDispatch();
+      requestStarted = true;
+      const raw = run("gh", commandArgs, { timeoutMs, env: commandEnv });
       recordGitHubRequest(["api", "rate_limit"], scope, "success");
       const status = JSON.parse(raw) as { remaining?: unknown; reset?: unknown };
       const remaining = Number(status.remaining);
       const reset = Number(status.reset);
       return remaining <= 0 && Number.isSafeInteger(reset) && reset > 0 ? reset * 1_000 : null;
     } catch (error) {
+      if (!requestStarted) return null;
       const kind = ghRetryKind(error);
       recordGitHubRequest(
         ["api", "rate_limit"],
@@ -295,6 +392,12 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
         kind === "throttle" ? "throttle" : kind === "transient" ? "transient" : "error",
       );
       return null;
+    } finally {
+      if (!reservation.releaseIfUndispatched()) {
+        console.error(
+          "GitHub rate-limit lookup reservation could not be released; one-shot claim retained.",
+        );
+      }
     }
   }
 
@@ -302,6 +405,7 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
     cause: unknown,
     args: readonly string[],
     overrides: NodeJS.ProcessEnv = {},
+    deadlineAt?: number,
   ): GitHubRateLimitError {
     const scope = githubRequestScope(args, overrides);
     const prepared = preparedGitHubEnv(args, overrides) ?? overrides;
@@ -312,7 +416,9 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
       process.env.GITHUB_TOKEN?.trim() ||
       "";
     const hinted = new GitHubRateLimitError(cause, Date.now(), { scope });
-    const statusRetryAt = hinted.authoritative ? null : rateLimitStatusRetryAt(scope, token);
+    const statusRetryAt = hinted.authoritative
+      ? null
+      : rateLimitStatusRetryAt(scope, token, deadlineAt);
     const error = statusRetryAt
       ? new GitHubRateLimitError(cause, Date.now(), {
           scope,
@@ -335,7 +441,7 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
     return error;
   }
 
-  function claimPublicReadFallback(args: readonly string[]): NodeJS.ProcessEnv | null {
+  function claimPublicReadFallback(args: readonly string[]): GitHubFallbackClaim | null {
     const publicToken =
       publicReadToken(args) ?? exactPublicationPublicReadToken(args, targetRepo(), process.env);
     const appToken = process.env.GH_TOKEN?.trim();
@@ -348,28 +454,35 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
       return null;
     }
     const observationPath = rateLimitObservationPath();
-    if (observationPath) {
-      try {
-        closeSync(openSync(`${observationPath}.fallback-target_app.lock`, "wx"));
-      } catch {
-        return null;
-      }
-    }
-    claimedPublicReadFallbackTokens.add(appToken);
-    return { GH_TOKEN: appToken };
+    const reservation = reserveGitHubRequest(
+      claimedPublicReadFallbackTokens,
+      appToken,
+      observationPath ? `${observationPath}.fallback-target_app.lock` : undefined,
+    );
+    return reservation ? { ...reservation, env: { GH_TOKEN: appToken } } : null;
   }
 
   function ghWithPreparedTimeout(
     args: string[],
     timeoutMs: number | undefined,
     env: NodeJS.ProcessEnv = {},
+    deadlineAt?: number,
+    onDispatch?: () => void,
   ): string {
     const resolvedArgs = args[0] === "api" ? args : ["--repo", targetRepo(), ...args];
     const preparedEnv = preparedGitHubEnv(resolvedArgs, env);
     const scope = githubRequestScope(resolvedArgs, env);
     const etagKey = githubEtagKeyForArgs(resolvedArgs, preparedEnv, env);
     if (etagKey && githubEtagBrokerConfigured()) {
-      return ghWithDurableEtag(resolvedArgs, timeoutMs, preparedEnv, scope, etagKey);
+      return ghWithDurableEtag(
+        resolvedArgs,
+        timeoutMs,
+        preparedEnv,
+        scope,
+        etagKey,
+        deadlineAt,
+        onDispatch,
+      );
     }
     if (etagKey) {
       recordGithubEgressBrokerEvent(resolvedArgs, {
@@ -378,11 +491,15 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
         env: { ...process.env, ...preparedEnv },
       });
     }
+    const commandTimeoutMs =
+      deadlineAt === undefined ? timeoutMs : githubCommandTimeoutMs(timeoutMs, deadlineAt);
+    const commandOptions = {
+      timeoutMs: commandTimeoutMs,
+      ...(preparedEnv ? { env: preparedEnv } : {}),
+    };
+    onDispatch?.();
     try {
-      const result = run("gh", resolvedArgs, {
-        timeoutMs,
-        ...(preparedEnv ? { env: preparedEnv } : {}),
-      });
+      const result = run("gh", resolvedArgs, commandOptions);
       recordGitHubRequest(resolvedArgs, scope, "success");
       return result;
     } catch (error) {
@@ -488,6 +605,8 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
     preparedEnv: NodeJS.ProcessEnv | undefined,
     scope: GitHubCredentialScope,
     key: NonNullable<ReturnType<typeof githubEtagCacheKey>>,
+    deadlineAt?: number,
+    onDispatch?: () => void,
   ): string {
     const requestBody = githubEtagCacheRequestBody(key, "apply");
     const record = (event: Parameters<typeof recordGithubEgressBrokerEvent>[1]) =>
@@ -495,7 +614,7 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
     return durableGithubEtagReadSync({
       key,
       lookup: () => {
-        const response = signedEtagBrokerPost("lookup", requestBody);
+        const response = signedEtagBrokerPost("lookup", requestBody, deadlineAt);
         return {
           hit: response.hit === true,
           ...(response.entry && typeof response.entry === "object"
@@ -509,18 +628,15 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
         };
       },
       store200: (_cacheKey, response) => {
-        const stored = signedEtagBrokerPost("store", {
-          ...requestBody,
-          ...response,
-        });
+        const stored = signedEtagBrokerPost("store", { ...requestBody, ...response }, deadlineAt);
         return { stored: stored.stored === true };
       },
       confirm304: (_cacheKey, expected) => {
-        const confirmed = signedEtagBrokerPost("confirm", {
-          ...requestBody,
-          etag: expected.etag,
-          body_digest: expected.bodyDigest,
-        });
+        const confirmed = signedEtagBrokerPost(
+          "confirm",
+          { ...requestBody, etag: expected.etag, body_digest: expected.bodyDigest },
+          deadlineAt,
+        );
         const entry = objectValue(confirmed.entry);
         return {
           confirmed: confirmed.confirmed === true,
@@ -536,7 +652,7 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
         };
       },
       githubRequest: (ifNoneMatch) =>
-        ghIncludedRequest(args, timeoutMs, preparedEnv, scope, ifNoneMatch),
+        ghIncludedRequest(args, timeoutMs, preparedEnv, scope, ifNoneMatch, deadlineAt, onDispatch),
       record,
     });
   }
@@ -544,6 +660,7 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
   function signedEtagBrokerPost(
     operation: "lookup" | "store" | "confirm",
     value: Record<string, unknown>,
+    deadlineAt?: number,
   ): Record<string, unknown> {
     const baseUrl = etagBrokerBaseUrl();
     const secret = process.env.CLAWSWEEPER_WEBHOOK_SECRET?.trim() || "";
@@ -576,7 +693,10 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
       input: body,
       maxBuffer: 2 * 1024 * 1024,
       stdio: ["pipe", "pipe", "pipe"],
-      timeout: Math.min(ETAG_BROKER_TIMEOUT_MS, githubCommandTimeoutMs(ETAG_BROKER_TIMEOUT_MS)!),
+      timeout: Math.min(
+        ETAG_BROKER_TIMEOUT_MS,
+        githubCommandTimeoutMs(ETAG_BROKER_TIMEOUT_MS, deadlineAt)!,
+      ),
     });
     if (result.error || result.status !== 0) {
       throw result.error ?? new Error(String(result.stderr || "ETag broker request failed"));
@@ -605,13 +725,16 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
     preparedEnv: NodeJS.ProcessEnv | undefined,
     scope: GitHubCredentialScope,
     ifNoneMatch?: string,
+    deadlineAt?: number,
+    onDispatch?: () => void,
   ): GithubConditionalResponse {
     const includeArgs = [args[0]!, "-i"];
     if (ifNoneMatch) includeArgs.push("-H", `If-None-Match: ${ifNoneMatch}`);
     includeArgs.push(...args.slice(1));
     const commandEnv = { ...process.env, ...preparedEnv, GIT_OPTIONAL_LOCKS: "0" };
     const command = resolveCommand("gh", includeArgs, commandEnv);
-    const commandTimeoutMs = githubCommandTimeoutMs(timeoutMs);
+    const commandTimeoutMs = githubCommandTimeoutMs(timeoutMs, deadlineAt);
+    onDispatch?.();
     const result = spawnSync(command.command, command.args, {
       cwd: ROOT,
       encoding: "utf8",

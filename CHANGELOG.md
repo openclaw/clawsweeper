@@ -9,6 +9,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 - Give OpenClaw's combined changed-gate command 25 minutes so lint can finish after its long core-test typecheck, and log successful typecheck/lint stage timings, while retaining the eight-minute default elsewhere and the overall repair deadline.
 
+- Keep PR source hydration's GitHub metadata requests, retries, and rate-limit checks within its existing deadline.
+
 - Keep confirmed validation timeouts primary when the subsequent checkout identity proof is inconclusive, retaining both errors and blocking reuse until recovery.
 
 - Report confirmed validation timeouts after reaping command trees and cleaning newly generated ownership locks.

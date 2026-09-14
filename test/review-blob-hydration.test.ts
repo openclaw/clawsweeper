@@ -32,6 +32,7 @@ import {
 import { MAX_SCAN_BYTES } from "../dist/agent-input-scan.js";
 import { createContextHydration } from "../dist/clawsweeper-context-hydration.js";
 import { createGitHubRuntime } from "../dist/clawsweeper-github-runtime.js";
+import { createGitHubExecution } from "../dist/clawsweeper-github-execution.js";
 import { asRecord } from "../dist/clawsweeper-item-policy.js";
 import { createReviewRuntime } from "../dist/clawsweeper-review-runtime.js";
 import { main, reviewPolicyHashForTest } from "../dist/clawsweeper-runtime.js";
@@ -1504,6 +1505,83 @@ test("review hydration rejects aggregate scan budget overflow and incomplete siz
     );
     assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), false);
   } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("introduced blob hydration does not start metadata work after its deadline", (t) => {
+  const fixture = partialCloneFixture();
+  const startedAt = Date.now();
+  let now = startedAt;
+  const requests: Array<{ revision: string; elapsedMs: number }> = [];
+  const unavailable = () => {
+    throw new Error("Unexpected dependency in hydration deadline fixture");
+  };
+  const runtime = createGitHubRuntime({
+    ROOT: fixture.root,
+    targetRepo: () => "fixture/repository",
+    run: (command, args) => {
+      assert.equal(command, "gh");
+      assert.equal(args[0], "api");
+      const revision = args[1]?.match(/\/git\/trees\/([0-9a-f]+)\?recursive=1$/)?.[1];
+      assert.ok(revision);
+      requests.push({ revision, elapsedMs: now - startedAt });
+      const tree = git(fixture.source, "ls-tree", "-r", "-l", revision)
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => {
+          const match = line.match(/^\d+ (\w+) ([0-9a-f]+)\s+(-|\d+)\t/);
+          assert.ok(match);
+          return match[1] === "blob"
+            ? { type: "blob", sha: match[2], size: Number(match[3]) }
+            : { type: match[1], sha: match[2] };
+        });
+      now = startedAt + 30_001;
+      return JSON.stringify({ truncated: false, tree });
+    },
+  });
+  const execution = createGitHubExecution({
+    ROOT: fixture.root,
+    gitHubRuntime: runtime,
+    labelAlreadyExistsError: () => false,
+  });
+  const context = createContextHydration(
+    new Proxy(
+      {
+        asRecord,
+        stringOrUndefined: (value: unknown) => (typeof value === "string" ? value : undefined),
+        isSafeGitBranchName: (branch: string) => branch === "main",
+        targetRepo: () => "fixture/repository",
+        ghJson: execution.ghJson,
+        ghJsonOnce: execution.ghJsonOnce,
+      },
+      { get: (target, key) => Reflect.get(target, key) ?? unavailable },
+    ) as Parameters<typeof createContextHydration>[0],
+  );
+  try {
+    t.mock.method(Date, "now", () => now);
+    assert.throws(
+      () =>
+        context.hydratePullRequestReviewSource({
+          itemNumber: 982,
+          targetDir: fixture.target,
+          pullRequest: {
+            base: { ref: "main", sha: fixture.baseSha },
+            head: { sha: fixture.headSha },
+          },
+        }),
+      { name: "AgentInputScanError", reason: "deadline", retryable: false },
+    );
+    const addedBlobStillMissing = !objectExistsOffline(fixture.target, fixture.addedBlobSha);
+    t.diagnostic(JSON.stringify({ requests, addedBlobStillMissing }));
+    assert.deepEqual(
+      requests.map((request) => request.revision),
+      [fixture.baseSha],
+      "metadata work must stop before another request after the owner deadline",
+    );
+    assert.equal(addedBlobStillMissing, true);
+  } finally {
+    t.mock.restoreAll();
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });

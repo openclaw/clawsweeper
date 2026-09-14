@@ -8,11 +8,15 @@ import {
   summarizeGhArgs,
 } from "./github-retry.js";
 import type {
+  GitHubDeadlineOptions,
   GitHubDispatchOutcome,
   GitHubRetryOptions,
   MutationRunner,
 } from "./clawsweeper-types.js";
-import type { createGitHubRuntime } from "./clawsweeper-github-runtime.js";
+import {
+  GitHubOperationDeadlineError,
+  type createGitHubRuntime,
+} from "./clawsweeper-github-runtime.js";
 
 interface CreateGitHubExecutionDependencies {
   ROOT: string;
@@ -44,14 +48,40 @@ export function createGitHubExecution(dependencies: CreateGitHubExecutionDepende
   ): string {
     let activeEnv: NodeJS.ProcessEnv | undefined;
     let lastError: unknown;
+    const deadlineAt = options.deadlineAt;
+    const request = (onDispatch?: () => void) => {
+      const result =
+        activeEnv || deadlineAt !== undefined
+          ? ghWithPreparedTimeout(
+              args,
+              githubCommandTimeoutMs(undefined, deadlineAt),
+              activeEnv,
+              deadlineAt,
+              onDispatch,
+            )
+          : gh(args);
+      if (deadlineAt !== undefined) {
+        ensureGitHubRuntimeAvailable("after GitHub operation", deadlineAt);
+      }
+      return result;
+    };
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       try {
-        return (
-          options.request?.(args, attempt) ??
-          (activeEnv ? ghWithPreparedTimeout(args, githubCommandTimeoutMs(), activeEnv) : gh(args))
-        );
+        if (deadlineAt !== undefined) {
+          ensureGitHubRuntimeAvailable("before GitHub operation", deadlineAt);
+        }
+        const result = options.request?.(args, attempt) ?? request();
+        if (deadlineAt !== undefined) {
+          ensureGitHubRuntimeAvailable("after GitHub operation", deadlineAt);
+        }
+        return result;
       } catch (error) {
-        if (error instanceof GitHubRuntimeBudgetError) throw error;
+        if (
+          error instanceof GitHubRuntimeBudgetError ||
+          error instanceof GitHubOperationDeadlineError
+        ) {
+          throw error;
+        }
         lastError = error;
         const retryKind = ghRetryKind(error);
         // Preserve the exhausted credential observation even when the current
@@ -59,44 +89,64 @@ export function createGitHubExecution(dependencies: CreateGitHubExecutionDepende
         // fallback is deliberately one-shot; later batch members must collapse
         // instead of probing the same exhausted credential again.
         const rateLimitError =
-          retryKind === "throttle" ? githubRateLimitError(error, args, activeEnv ?? {}) : null;
+          retryKind === "throttle"
+            ? githubRateLimitError(error, args, activeEnv ?? {}, deadlineAt)
+            : null;
+        if (deadlineAt !== undefined) {
+          ensureGitHubRuntimeAvailable("after GitHub operation", deadlineAt);
+        }
         const fallback =
           retryKind === "throttle" && !options.request ? claimPublicReadFallback(args) : null;
         if (retryKind === "throttle" && fallback) {
-          activeEnv = fallback;
+          activeEnv = fallback.env;
           try {
-            return ghWithPreparedTimeout(args, githubCommandTimeoutMs(), fallback);
+            return request(fallback.onDispatch);
           } catch (fallbackError) {
-            if (fallbackError instanceof GitHubRuntimeBudgetError) throw fallbackError;
+            if (
+              fallbackError instanceof GitHubRuntimeBudgetError ||
+              fallbackError instanceof GitHubOperationDeadlineError
+            ) {
+              throw fallbackError;
+            }
             lastError = fallbackError;
             const fallbackRetryKind = ghRetryKind(fallbackError);
             if (fallbackRetryKind === "throttle") {
-              throw githubRateLimitError(fallbackError, args, fallback);
+              const limited = githubRateLimitError(fallbackError, args, fallback.env, deadlineAt);
+              if (deadlineAt !== undefined) {
+                ensureGitHubRuntimeAvailable("after GitHub operation", deadlineAt);
+              }
+              throw limited;
             }
-            ensureGitHubRuntimeAvailable("after GitHub operation");
+            ensureGitHubRuntimeAvailable("after GitHub operation", deadlineAt);
             if (fallbackRetryKind === "none" || attempt === attempts - 1) {
               throw fallbackError;
             }
             const waitMs = ghRetryWaitMs(fallbackRetryKind, attempt);
-            ensureGitHubRetryFits(waitMs);
+            ensureGitHubRetryFits(waitMs, deadlineAt);
             console.error(
               `Transient GitHub API failure; retrying ${summarizeGhArgs(args)} in ${Math.round(waitMs / 1000)}s`,
             );
             if (options.sleepBeforeRetry) options.sleepBeforeRetry(waitMs);
-            else sleepBeforeGitHubRetry(waitMs);
+            else sleepBeforeGitHubRetry(waitMs, deadlineAt);
             continue;
+          } finally {
+            if (!fallback.releaseIfUndispatched()) {
+              console.error(
+                "GitHub fallback reservation could not be released; one-shot claim retained.",
+              );
+            }
           }
         }
         if (rateLimitError) throw rateLimitError;
-        ensureGitHubRuntimeAvailable("after GitHub operation");
+        ensureGitHubRuntimeAvailable("after GitHub operation", deadlineAt);
         if (retryKind === "none" || attempt === attempts - 1) throw error;
         const waitMs = ghRetryWaitMs(retryKind, attempt);
-        ensureGitHubRetryFits(waitMs);
+        ensureGitHubRetryFits(waitMs, deadlineAt);
         console.error(
           `Transient GitHub API failure; retrying ${summarizeGhArgs(args)} in ${Math.round(waitMs / 1000)}s`,
         );
         if (options.sleepBeforeRetry) options.sleepBeforeRetry(waitMs);
-        else sleepBeforeGitHubRetry(waitMs);
+        else sleepBeforeGitHubRetry(waitMs, deadlineAt);
       }
     }
     throw lastError;
@@ -334,16 +384,23 @@ export function createGitHubExecution(dependencies: CreateGitHubExecutionDepende
     return { outcome: "accepted", output: (result.stdout ?? "").trim() };
   }
 
-  function ghJson<T>(args: string[]): T {
-    return parseGhJsonWithRetry<T>(() => ghWithRetry(args), args, {
+  function ghJson<T>(args: string[], options: GitHubDeadlineOptions = {}): T {
+    const result = parseGhJsonWithRetry<T>(() => ghWithRetry(args, undefined, options), args, {
       onRetry: (_error, attempt) => {
         const waitMs = ghRetryWaitMs("transient", attempt - 1);
+        if (options.deadlineAt !== undefined) {
+          ensureGitHubRetryFits(waitMs, options.deadlineAt);
+        }
         console.error(
           `Malformed GitHub JSON response; retrying ${summarizeGhArgs(args)} in ${Math.round(waitMs / 1000)}s`,
         );
-        sleepBeforeGitHubRetry(waitMs);
+        sleepBeforeGitHubRetry(waitMs, options.deadlineAt);
       },
     });
+    if (options.deadlineAt !== undefined) {
+      ensureGitHubRuntimeAvailable("after GitHub JSON response", options.deadlineAt);
+    }
+    return result;
   }
 
   function ghJsonOnce<T>(args: string[], timeoutMs: number): T {
