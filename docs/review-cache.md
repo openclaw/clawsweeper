@@ -114,8 +114,9 @@ are excluded. Diagnostic metadata never authorizes a finding or removes scanned 
 Blob-size metadata uses batches of at most 160 objects; one explicit fetch per
 delta retrieves missing blobs only after the complete set fits the scanner's
 shared 256 MiB upper bound. Local metadata reads remain bounded to 4 MiB, and
-each blob hydration pass has a 30-second deadline for Git work. Metadata
-requests retain the existing GitHub transport timeout policy.
+each blob hydration pass shares one 30-second deadline across Git work and
+GitHub blob-size metadata requests, including retries and rate-limit inspection.
+Metadata requests also retain any tighter outer GitHub runtime budget.
 The scanner separately enforces its aggregate budget, including prompts and the
 binary patch, and still refuses incomplete or unsupported source without fetching.
 
