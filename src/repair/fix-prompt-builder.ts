@@ -40,12 +40,12 @@ export function buildFixPrompt({
     "- establish one base snapshot for this Codex edit pass: use the supplied deterministic pre-edit rebase when it already succeeded, otherwise fetch origin/main once and rebase or otherwise sync once;",
     "- pin that base SHA while editing and validating; do not refetch, rebase, or rerun validation solely because origin/main advances during this edit pass;",
     "- rebasing can temporarily stale the prepared dependencies when package manifests or lockfiles change; never install or refresh them yourself; ClawSweeper refreshes them through its trusted isolated installer before independent validation, so treat earlier dependency-resolution failures as provisional;",
-    "- after validation passes against the pinned base, return the repair; ClawSweeper performs one deterministic final base sync, then exact-head review and GitHub checks provide the final proof;",
+    "- after focused checks against the pinned base, return the repair for deterministic acceptance; ClawSweeper performs one deterministic final base sync, then exact-head review and GitHub checks provide the final proof;",
     "- keep built runtime outputs needed for validation, but place generated archives under TMPDIR and remove checkout-local temporary archives or incremental validation caches you created before returning; independent validation must preserve the target checkout identity;",
     "- run local git status/diff/log/rebase/merge commands needed to reconcile this branch with the pinned base;",
     "- use the dependency toolchain ClawSweeper already prepared; never run an unrestricted package-manager install, hook installer, git config, or git config write; every package-manager install or deploy must include --ignore-scripts; never change core.hooksPath or other Git callback settings;",
     "- when git conflicts exist, resolve every conflict marker and leave the checkout in a normal non-rebasing state;",
-    "- use one repair loop against the pinned base: inspect review comments and failing checks, make the narrowest fix, run validation, and repeat only for actionable failures until the branch is merge-ready or a concrete external blocker is proven;",
+    "- use one repair loop against the pinned base: inspect review comments and failing checks, make the narrowest fix, run focused checks, and repeat only for actionable failures or a concrete external blocker;",
     "- preserve contributor credit in the PR body or commit history; edit a changelog only when the artifact explicitly requires it and repository policy permits it;",
     "- address review-bot concerns named in the artifact;",
     "- resolve actionable human review comments, bot comments, and requested changes named in the artifact;",
@@ -224,6 +224,15 @@ function renderAutomergeRepairGuidance() {
   ].join("\n");
 }
 
+export function renderWorkerValidationGuidance(): string {
+  return [
+    "- ClawSweeper's executor owns the full acceptance gate after your last edit; do not run `pnpm check:changed`, its full-gate aliases, or the full validation command list yourself;",
+    "- run only focused tests or checks needed to develop and diagnose the patch; fix actionable failures and report concrete external blockers;",
+    "- return after edits and focused checks so the executor can run acceptance once with containment and checkout identity verification;",
+    "- report exact focused commands and results; full acceptance remains pending until the executor records it.",
+  ].join("\n");
+}
+
 function renderValidationLoopGuidance({
   fixArtifact,
   validationCommands = [],
@@ -236,30 +245,15 @@ function renderValidationLoopGuidance({
     .map((command) => String(command).trim())
     .filter(Boolean)
     .filter((command, index, all) => all.indexOf(command) === index);
-  if (isAutomergeRepair) {
-    return [
-      "Validation loop:",
-      "- run the tests/checks needed to prove this automerge PR should go green before returning;",
-      "- if `pnpm check:changed` is available or listed below, run it; it is the default OpenClaw changed-surface gate;",
-      commands.length > 0
-        ? `- validation command hints: ${commands.join(" ; ")}`
-        : "- validation command hints: discover the narrow changed-surface command from package scripts, PR comments, check logs, and the artifact;",
-      "- treat artifact validation commands as hints unless they reproduce or prove the failing PR checks;",
-      "- if validation fails, fix the failure and rerun until it passes or an external blocker is proven;",
-      "- do not report validation as passed unless it passed after your last edit in this checkout;",
-      "- include the exact validation commands and final pass/fail result in your final message.",
-    ].join("\n");
-  }
   return [
     "Validation loop:",
-    "- after editing, run the changed-surface validation in this checkout before returning;",
-    "- if `pnpm check:changed` is available or listed below, run it; it is the default OpenClaw changed-surface gate;",
+    renderWorkerValidationGuidance(),
     commands.length > 0
-      ? `- expected validation commands: ${commands.join(" ; ")}`
-      : "- expected validation commands: discover the narrow changed-surface command from package scripts and the artifact;",
-    "- if validation fails, fix the failure and rerun until it passes or an external blocker is proven;",
-    "- do not report validation as passed unless it passed after your last edit in this checkout;",
-    "- include the exact validation commands and final pass/fail result in your final message.",
+      ? `- executor acceptance command hints: ${commands.join(" ; ")}`
+      : "- the executor resolves the changed-surface gate from package scripts and the artifact;",
+    isAutomergeRepair
+      ? "- treat artifact validation commands as hints unless they reproduce or prove the failing PR checks;"
+      : "",
   ].join("\n");
 }
 

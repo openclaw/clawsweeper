@@ -74,7 +74,7 @@ test("contributor branch repairs never edit release-owned changelogs", () => {
   assert.match(prompt, /existing PR body or commit history instead/);
 });
 
-test("fix prompt makes Codex own the validation loop", () => {
+test("fix prompt leaves full acceptance to the executor once after worker edits", () => {
   const prompt = buildFixPrompt({
     fixArtifact: {
       summary: "Repair the stuck automerge branch.",
@@ -106,10 +106,11 @@ test("fix prompt makes Codex own the validation loop", () => {
   assert.match(prompt, /every package-manager install or deploy must include --ignore-scripts/);
   assert.match(prompt, /never change core\.hooksPath/);
   assert.doesNotMatch(prompt, /always fetch latest origin\/main/);
-  assert.match(prompt, /run the changed-surface validation in this checkout before returning/);
-  assert.match(prompt, /expected validation commands: pnpm check:changed ; pnpm test:repair/);
-  assert.match(prompt, /fix the failure and rerun until it passes/);
-  assert.match(prompt, /do not report validation as passed unless it passed after your last edit/);
+  assert.match(prompt, /executor owns the full acceptance gate after your last edit/);
+  assert.match(prompt, /do not run `pnpm check:changed`, its full-gate aliases/);
+  assert.match(prompt, /executor acceptance command hints: pnpm check:changed ; pnpm test:repair/);
+  assert.match(prompt, /run acceptance once with containment and checkout identity verification/);
+  assert.match(prompt, /full acceptance remains pending until the executor records it/);
 });
 
 test("fix prompt uses Telegram as the primary surface for applicable core behavior", () => {
@@ -163,7 +164,8 @@ test("automerge fix prompt makes Codex own PR repair, rebase, and CI discovery",
   assert.match(prompt, /outside likely_files/);
   assert.match(prompt, /fix the narrow failure against the pinned base/);
   assert.doesNotMatch(prompt, /first rebase to latest main/);
-  assert.match(prompt, /validation command hints: pnpm check:changed ; pnpm build/);
+  assert.match(prompt, /executor acceptance command hints: pnpm check:changed ; pnpm build/);
+  assert.match(prompt, /do not run `pnpm check:changed`, its full-gate aliases/);
   assert.match(prompt, /treat artifact validation commands as hints/);
   assert.doesNotMatch(prompt, /do not push, open PRs, close PRs, or call gh/);
 });

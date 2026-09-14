@@ -64,13 +64,26 @@ configuration, then the eight-minute default. Local executor calls use the
 same environment variable. Blank or invalid values fall back to configuration.
 Each top-level validation command receives a fresh budget. OpenClaw's
 `pnpm check:changed` is one command whose internal typecheck, lint, and other
-stages share that budget. The existing 70-minute overall fix-step deadline
-still bounds the repair; checkout identity proof
+stages share that budget. The overall executor budget is the larger of 70 minutes
+and 10 minutes of setup + the configured edit-worker budget + twice the validation
+budget + 10 minutes for review/reporting, capped at 110 minutes. With the default
+30-minute worker budget, OpenClaw receives 100 minutes. An explicit
+`CLAWSWEEPER_FIX_STEP_TIMEOUT_MS` overrides that derivation within the existing
+15-minute floor and new 110-minute ceiling. Actions resolves the same budget and
+adds two minutes for executor shutdown; the job retains its 120-minute ceiling.
+Checkout identity proof
 reserves a small part of its budget. The lower-level
 `CLAWSWEEPER_TARGET_VALIDATION_TIMEOUT_MS` can further shorten that budget.
 The repair executor requests OpenClaw's `--timed` summary and records core
 typecheck, core-test typecheck, and core lint durations in Actions logs, including
 successful validation. Other command output is not echoed by this timing logger.
+
+Edit, validation-fix, and review-fix workers run focused checks and return the
+patch for one full executor acceptance pass. Worker claims and shell transcripts
+are not acceptance receipts. The contained executor gate and checkout identity
+checks remain required; a failed gate, subsequent edit, or final base synchronization
+can require another pass. The doubled validation allowance covers such a repeat,
+not a mandatory worker/executor duplicate.
 
 On a confirmed timeout, the containment supervisor terminates and reaps the
 command tree before the validator removes newly created OpenClaw ownership

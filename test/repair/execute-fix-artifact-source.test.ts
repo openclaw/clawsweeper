@@ -10,7 +10,10 @@ test("repair workflow and executor share coherent production timeout defaults", 
     path.join(process.cwd(), ".github/workflows/repair-cluster-worker.yml"),
   );
 
-  assert.match(source, /repairTimeoutBudgetFromEnv\(\s*process\.env,?\s*\)/);
+  assert.match(
+    source,
+    /repairTimeoutBudgetFromEnv\(\s*process\.env,\s*resolveTargetRepoToolchain\(job\.frontmatter\.repo\)\.validationTimeoutMs/,
+  );
   assert.match(source, /currentCodexTimeoutMs\(true\)/);
   assert.match(
     source,
@@ -27,13 +30,31 @@ test("repair workflow and executor share coherent production timeout defaults", 
   );
   assert.match(
     workflow,
-    /CLAWSWEEPER_FIX_STEP_TIMEOUT_MS: \$\{\{ vars\.CLAWSWEEPER_FIX_STEP_TIMEOUT_MS \|\| '4200000' \}\}/,
+    /CLAWSWEEPER_FIX_STEP_TIMEOUT_MS: \$\{\{ vars\.CLAWSWEEPER_FIX_STEP_TIMEOUT_MS \|\| '' \}\}/,
   );
   assert.match(
     workflow,
     /CLAWSWEEPER_FIX_TIMEOUT_RESERVE_MS: \$\{\{ vars\.CLAWSWEEPER_FIX_TIMEOUT_RESERVE_MS \|\| '1800000' \}\}/,
   );
-  assert.match(workflow, /name: Execute credited fix artifact[\s\S]*timeout-minutes: 70/);
+  assert.match(
+    workflow,
+    /run: node scripts\/resolve-repair-timeout-budget\.mjs "\$CLUSTER_JOB_PATH"/,
+  );
+  assert.match(
+    workflow,
+    /name: Execute credited fix artifact[\s\S]*timeout-minutes: \$\{\{ fromJSON\(steps\.repair_budget\.outputs\.timeout_minutes\) \}\}/,
+  );
+});
+
+test("validation-fix and review-fix workers defer full acceptance to the executor", () => {
+  const source = readText(path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"));
+  for (const name of ["runCodexReviewFix", "runCodexValidationFix"]) {
+    const start = source.indexOf(`function ${name}({`);
+    const end = source.indexOf("\nfunction ", start + 1);
+    const worker = source.slice(start, end);
+    assert.match(worker, /renderWorkerValidationGuidance\(\)/);
+    assert.doesNotMatch(worker, /run it before returning|rerun the failed validation command/);
+  }
 });
 
 test("repair review preserves the checkout accepted by changed-surface validation", () => {

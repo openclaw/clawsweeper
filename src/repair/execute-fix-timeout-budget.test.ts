@@ -9,6 +9,7 @@ import {
   repairTimeoutBudgetFromEnv,
   repairWorkerTimeoutMs,
   repairTargetValidationTimeoutMs,
+  repairActionsStepTimeoutMinutes,
 } from "./execute-fix-timeout-budget.js";
 import { resolveTargetRepoToolchain } from "./target-toolchain-config.js";
 
@@ -87,10 +88,26 @@ test("repair timeout budget falls back or clamps unsafe repository variables", (
     }),
     {
       codexTimeoutMs: 60 * 60_000,
-      fixStepTimeoutMs: 70 * 60_000,
+      fixStepTimeoutMs: 110 * 60_000,
       lateWorkerReserveMs: 60 * 60_000,
     },
   );
+});
+
+test("overall repair and Actions budgets follow validation configuration with a hard ceiling", () => {
+  const configured = resolveTargetRepoToolchain("openclaw/openclaw").validationTimeoutMs;
+  for (const [environment, expectedMinutes] of [
+    [{}, 100],
+    [{ CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS: "1200000" }, 90],
+    [{ CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS: "9007199254740991" }, 110],
+    [{ CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS: "invalid" }, 100],
+    [{ CLAWSWEEPER_FIX_STEP_TIMEOUT_MS: "4200000" }, 70],
+    [{ CLAWSWEEPER_FIX_STEP_TIMEOUT_MS: "invalid" }, 100],
+  ] as const) {
+    const budget = repairTimeoutBudgetFromEnv(environment, configured);
+    assert.equal(budget.fixStepTimeoutMs, expectedMinutes * 60_000);
+    assert.equal(repairActionsStepTimeoutMinutes(budget), expectedMinutes + 2);
+  }
 });
 
 test("repair timeout budget preserves one full later worker after a long edit", () => {

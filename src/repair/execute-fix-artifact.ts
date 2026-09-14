@@ -92,6 +92,7 @@ import {
   buildFixPrompt,
   buildRepositoryContext,
   renderFixArtifactForPrompt,
+  renderWorkerValidationGuidance,
 } from "./fix-prompt-builder.js";
 import { canTreatRebaseAsCompleteRepair } from "./fix-edit-policy.js";
 import {
@@ -184,9 +185,6 @@ const deferPublication = Boolean(args["defer-publication"]);
 const publishReportOnly = Boolean(args["publish-report-only"]);
 const model = String(args.model ?? process.env.CLAWSWEEPER_MODEL ?? "internal");
 const executionModelArgs = codexModelArgs(model);
-const { codexTimeoutMs, fixStepTimeoutMs, lateWorkerReserveMs } = repairTimeoutBudgetFromEnv(
-  process.env,
-);
 const codexReasoningEffort = repairCodexReasoningEffort(
   undefined,
   /^jobs\/[^/]+\/inbox\/issue-/.test(String(jobPath ?? "")),
@@ -301,6 +299,10 @@ const automergeTargetValidation =
   String(job.frontmatter.source ?? "") === "pr_automerge" ||
   String(job.frontmatter.cluster_id ?? "").startsWith("automerge-");
 const targetValidationTimeoutMs = repairTargetValidationTimeoutMs(
+  process.env,
+  resolveTargetRepoToolchain(job.frontmatter.repo).validationTimeoutMs,
+);
+const { codexTimeoutMs, fixStepTimeoutMs, lateWorkerReserveMs } = repairTimeoutBudgetFromEnv(
   process.env,
   resolveTargetRepoToolchain(job.frontmatter.repo).validationTimeoutMs,
 );
@@ -2829,6 +2831,19 @@ function parseBooleanEnv(value: string | undefined, fallback: boolean): boolean 
   return fallback;
 }
 
+function runRepairAcceptance(...args: Parameters<typeof runAllowedValidationCommandsWithBinding>) {
+  const startedAt = Date.now();
+  logProgress("starting deterministic acceptance", { remaining_ms: remainingFixStepBudgetMs() });
+  try {
+    const acceptance = runAllowedValidationCommandsWithBinding(...args);
+    logProgress("deterministic acceptance passed", { elapsed_ms: Date.now() - startedAt });
+    return acceptance;
+  } catch (error) {
+    logProgress("deterministic acceptance failed", { elapsed_ms: Date.now() - startedAt });
+    throw error;
+  }
+}
+
 function validateAndReviewLoop({
   fixArtifact,
   targetDir,
@@ -2852,7 +2867,7 @@ function validateAndReviewLoop({
     );
     prepareTargetToolchain(targetDir, validationPlan.options, validationPlan.commands);
     try {
-      const validationExecution = runAllowedValidationCommandsWithBinding(
+      const validationExecution = runRepairAcceptance(
         validationPlan.commands,
         targetDir,
         validationPlan.options,
@@ -2969,7 +2984,7 @@ function validateAndReviewLoop({
         validationOptions,
       );
       prepareTargetToolchain(targetDir, finalValidationPlan.options, finalValidationPlan.commands);
-      const validationExecution = runAllowedValidationCommandsWithBinding(
+      const validationExecution = runRepairAcceptance(
         finalValidationPlan.commands,
         targetDir,
         finalValidationPlan.options,
@@ -3032,7 +3047,7 @@ function validateAndReviewSynchronizedTree({
   let validationCommands;
   let checkoutBinding;
   try {
-    const validationExecution = runAllowedValidationCommandsWithBinding(
+    const validationExecution = runRepairAcceptance(
       validationPlan.commands,
       targetDir,
       validationPlan.options,
@@ -3257,10 +3272,7 @@ function runCodexReviewFix({
     "- keep the patch narrow;",
     "- keep shell output bounded; inspect targeted files and avoid broad repo-wide dumps;",
     "- do not commit, push, open PRs, close PRs, or call gh;",
-    "- after edits, run the changed-surface validation command yourself before returning;",
-    "- if `pnpm check:changed` is available, run it before returning;",
-    "- if validation fails, fix and rerun until it passes or an external blocker is proven;",
-    "- include the exact validation command and final pass/fail result in your final message;",
+    renderWorkerValidationGuidance(),
     "- if a finding is false-positive, adjust comments/tests only when that makes the proof clearer.",
     "",
     "Codex /review findings:",
@@ -3313,10 +3325,7 @@ function runCodexValidationFix({
     "- fix only issues introduced by the current repair branch or required to make its changed gate pass;",
     "- keep shell output bounded; inspect targeted files and avoid broad repo-wide dumps;",
     "- do not commit, push, open PRs, close PRs, or call gh;",
-    "- after edits, rerun the failed validation command yourself before returning;",
-    "- if `pnpm check:changed` is available, run it before returning;",
-    "- if validation still fails, keep fixing and rerunning until it passes or an external blocker is proven;",
-    "- include the exact validation command and final pass/fail result in your final message;",
+    renderWorkerValidationGuidance(),
     "- prefer the smallest lint/typecheck/test fix over broad rewrites.",
     "",
     `Validation commands attempted: ${validationCommands.join("; ") || "none"}`,

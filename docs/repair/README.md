@@ -434,11 +434,12 @@ The workflow needs:
 - ClawSweeper commit-finding repair PRs are labeled `clawsweeper:commit-finding`
 - optional `CLAWSWEEPER_CODEX_TIMEOUT_MS`, `CLAWSWEEPER_FIX_CODEX_TIMEOUT_MS`,
   and `CLAWSWEEPER_FIX_STEP_TIMEOUT_MS` variables; worker planning defaults to
-  30 minutes, while fix execution defaults to a 20 minute per-Codex-call budget
-  inside a 40 minute executor budget. The cluster execute job keeps a 45 minute
-  timeout and a 40 minute execute-step cap so long edit/test passes still leave
-  room for internal `/review`, post-flight, and timeout artifact upload instead
-  of falling into a 30-second review floor near the end of the run.
+  30 minutes, as does each fix Codex call. The executor derives its budget from
+  setup, the edit-worker allowance, twice the configured validation budget, and
+  review/report margin: 70 minutes by default, 100 minutes for OpenClaw, with a
+  110-minute hard ceiling. Actions adds two minutes of step headroom inside the
+  120-minute job. See [target budget configuration](../target-repositories.md).
+  Edit workers use focused checks; the executor owns full deterministic acceptance.
 - optional `CLAWSWEEPER_CODEX_RETRY_DELAY_MS` variable for edit-worker backoff
   after retryable Codex transport or TPM rate-limit exits; default is `15000`.
 - If a contributor branch changes while a repair is preparing its push, the

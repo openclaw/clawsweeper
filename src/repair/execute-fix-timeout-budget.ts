@@ -8,7 +8,9 @@ export const DEFAULT_FIX_LATE_WORKER_RESERVE_MS = 30 * MINUTE_MS;
 const MIN_CODEX_TIMEOUT_MS = 5 * MINUTE_MS;
 const MAX_CODEX_TIMEOUT_MS = 60 * MINUTE_MS;
 const MIN_FIX_STEP_TIMEOUT_MS = 15 * MINUTE_MS;
-const MAX_FIX_STEP_TIMEOUT_MS = 70 * MINUTE_MS;
+export const MAX_FIX_STEP_TIMEOUT_MS = 110 * MINUTE_MS;
+const FIX_SETUP_ALLOWANCE_MS = 10 * MINUTE_MS;
+const FIX_REVIEW_REPORT_MARGIN_MS = 10 * MINUTE_MS;
 
 type RepairTimeoutEnvironment = Record<string, string | undefined>;
 
@@ -41,18 +43,33 @@ function boundedInteger(
 
 export function repairTimeoutBudgetFromEnv(
   environment: RepairTimeoutEnvironment,
+  repositoryValidationTimeoutMs?: number,
 ): RepairTimeoutBudget {
-  const fixStepTimeoutMs = boundedInteger(
-    environment.CLAWSWEEPER_FIX_STEP_TIMEOUT_MS,
-    DEFAULT_FIX_STEP_TIMEOUT_MS,
-    MIN_FIX_STEP_TIMEOUT_MS,
-    MAX_FIX_STEP_TIMEOUT_MS,
+  const validationTimeoutMs = repairTargetValidationTimeoutMs(
+    environment,
+    repositoryValidationTimeoutMs,
   );
   const requestedCodexTimeoutMs = boundedInteger(
     environment.CLAWSWEEPER_FIX_CODEX_TIMEOUT_MS,
     DEFAULT_FIX_CODEX_TIMEOUT_MS,
     MIN_CODEX_TIMEOUT_MS,
     MAX_CODEX_TIMEOUT_MS,
+  );
+  const derivedStepTimeoutMs = Math.min(
+    MAX_FIX_STEP_TIMEOUT_MS,
+    Math.max(
+      DEFAULT_FIX_STEP_TIMEOUT_MS,
+      FIX_SETUP_ALLOWANCE_MS +
+        requestedCodexTimeoutMs +
+        2 * validationTimeoutMs +
+        FIX_REVIEW_REPORT_MARGIN_MS,
+    ),
+  );
+  const fixStepTimeoutMs = boundedInteger(
+    environment.CLAWSWEEPER_FIX_STEP_TIMEOUT_MS,
+    derivedStepTimeoutMs,
+    MIN_FIX_STEP_TIMEOUT_MS,
+    MAX_FIX_STEP_TIMEOUT_MS,
   );
   const codexTimeoutMs = Math.min(requestedCodexTimeoutMs, fixStepTimeoutMs - MIN_CODEX_TIMEOUT_MS);
   const requestedReserveMs = boundedInteger(
@@ -67,6 +84,11 @@ export function repairTimeoutBudgetFromEnv(
   );
 
   return { codexTimeoutMs, fixStepTimeoutMs, lateWorkerReserveMs };
+}
+
+export function repairActionsStepTimeoutMinutes(budget: RepairTimeoutBudget): number {
+  // Allow the executor to finish its report before Actions terminates the step.
+  return Math.ceil(budget.fixStepTimeoutMs / MINUTE_MS) + 2;
 }
 
 export function remainingRepairBudgetMs({

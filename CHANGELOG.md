@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Run full repair acceptance in the executor instead of duplicating it in edit workers, and derive the overall repair budget from validation allowances with a hard ceiling and report headroom.
+
 - Give OpenClaw's combined changed-gate command 25 minutes so lint can finish after its long core-test typecheck, and log successful typecheck/lint stage timings, while retaining the eight-minute default elsewhere and the overall repair deadline.
 
 - Keep PR source hydration's GitHub metadata requests, retries, and rate-limit checks within its existing deadline.
