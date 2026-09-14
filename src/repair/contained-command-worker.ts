@@ -119,7 +119,12 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
   const requestTermination = () => {
     terminateProcessTree(child.pid);
     if (process.platform !== "win32" && child.pid && !forcedTermination) {
-      forcedTermination = setTimeout(() => forceTerminateProcessTree(child.pid!), 250);
+      // Linux init owns escalation and reaping, including detached descendants.
+      // Give it time to publish completion before the outer fail-closed kill.
+      forcedTermination = setTimeout(
+        () => forceTerminateProcessTree(child.pid!),
+        useLinuxNamespace ? 3_000 : 250,
+      );
       forcedTermination.unref();
     }
   };

@@ -690,11 +690,15 @@ def signal_target_processes(signum):
 
 
 termination_signal = None
+termination_deadline = None
 
 
 def request_termination(signum, _frame):
-    global termination_signal
-    termination_signal = signal.SIGKILL if signum == signal.SIGUSR1 else signal.SIGTERM
+    global termination_signal, termination_deadline
+    if termination_deadline is None:
+        termination_deadline = time.monotonic() + 0.25
+    if termination_signal != signal.SIGKILL:
+        termination_signal = signal.SIGKILL if signum == signal.SIGUSR1 else signal.SIGTERM
     signal_target_processes(termination_signal)
 
 
@@ -803,7 +807,9 @@ def main():
         if return_code is not None:
             break
         if termination_signal is not None:
-            signal_target_processes(termination_signal)
+            signal_target_processes(
+                signal.SIGKILL if time.monotonic() >= termination_deadline else termination_signal
+            )
         time.sleep(0.01)
     background_processes = terminate_and_reap_descendants(child.pid, background_pids)
     write_protocol(

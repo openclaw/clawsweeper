@@ -2,6 +2,7 @@ const MINUTE_MS = 60_000;
 
 export const DEFAULT_FIX_CODEX_TIMEOUT_MS = 30 * MINUTE_MS;
 export const DEFAULT_FIX_STEP_TIMEOUT_MS = 70 * MINUTE_MS;
+export const DEFAULT_FIX_TARGET_VALIDATION_TIMEOUT_MS = 8 * MINUTE_MS;
 export const DEFAULT_FIX_LATE_WORKER_RESERVE_MS = 30 * MINUTE_MS;
 
 const MIN_CODEX_TIMEOUT_MS = 5 * MINUTE_MS;
@@ -10,6 +11,15 @@ const MIN_FIX_STEP_TIMEOUT_MS = 15 * MINUTE_MS;
 const MAX_FIX_STEP_TIMEOUT_MS = 70 * MINUTE_MS;
 
 type RepairTimeoutEnvironment = Record<string, string | undefined>;
+
+export function repairTargetValidationTimeoutMs(
+  environment: RepairTimeoutEnvironment,
+  repositoryTimeoutMs?: number,
+): number {
+  const requested = Number(environment.CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS);
+  if (Number.isSafeInteger(requested) && requested > 0) return requested;
+  return repositoryTimeoutMs ?? DEFAULT_FIX_TARGET_VALIDATION_TIMEOUT_MS;
+}
 
 export type RepairTimeoutBudget = {
   codexTimeoutMs: number;

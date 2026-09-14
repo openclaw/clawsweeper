@@ -8,7 +8,41 @@ import {
   remainingRepairBudgetMs,
   repairTimeoutBudgetFromEnv,
   repairWorkerTimeoutMs,
+  repairTargetValidationTimeoutMs,
 } from "./execute-fix-timeout-budget.js";
+import { resolveTargetRepoToolchain } from "./target-toolchain-config.js";
+
+test("repair validation budget defaults to eight minutes with an OpenClaw-only pilot", () => {
+  for (const repo of ["openclaw/clawsweeper", "openclaw/clawhub", "steipete/example"]) {
+    assert.equal(
+      repairTargetValidationTimeoutMs({}, resolveTargetRepoToolchain(repo).validationTimeoutMs),
+      480_000,
+    );
+  }
+  const configured = resolveTargetRepoToolchain("openclaw/openclaw").validationTimeoutMs;
+  assert.equal(configured, 1_200_000);
+  assert.equal(repairTargetValidationTimeoutMs({}, configured), 1_200_000);
+  assert.equal(
+    repairTargetValidationTimeoutMs(
+      { CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS: "900000" },
+      configured,
+    ),
+    900_000,
+  );
+  for (const value of ["", "0", "-1", "NaN", "Infinity", "1.5", "9007199254740992"]) {
+    assert.equal(
+      repairTargetValidationTimeoutMs(
+        { CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS: value },
+        configured,
+      ),
+      1_200_000,
+    );
+    assert.equal(
+      repairTargetValidationTimeoutMs({ CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS: value }),
+      480_000,
+    );
+  }
+});
 
 test("repair timeout budget uses coherent production defaults", () => {
   assert.deepEqual(repairTimeoutBudgetFromEnv({}), {

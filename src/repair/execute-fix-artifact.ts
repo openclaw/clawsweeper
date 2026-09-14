@@ -22,8 +22,10 @@ import { runIsolatedGitNetwork } from "./git-network-isolation.js";
 import {
   remainingRepairBudgetMs,
   repairTimeoutBudgetFromEnv,
+  repairTargetValidationTimeoutMs,
   repairWorkerTimeoutMs,
 } from "./execute-fix-timeout-budget.js";
+import { resolveTargetRepoToolchain } from "./target-toolchain-config.js";
 import {
   codexJsonlFailureDetail,
   codexRetryDelayMs,
@@ -213,9 +215,6 @@ const maxAutonomousFixSurfaces = Math.max(
   Number(process.env.CLAWSWEEPER_MAX_AUTONOMOUS_FIX_SURFACES ?? 4),
 );
 const maxActivePrsPerArea = Number(process.env.CLAWSWEEPER_MAX_ACTIVE_PRS_PER_AREA ?? 50);
-const targetValidationTimeoutMs = Number(
-  process.env.CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS ?? 8 * 60 * 1000,
-);
 const targetInstallTimeoutMs = Number(
   process.env.CLAWSWEEPER_FIX_TARGET_INSTALL_TIMEOUT_MS ?? 8 * 60 * 1000,
 );
@@ -301,6 +300,10 @@ if (result.mode !== job.frontmatter.mode) {
 const automergeTargetValidation =
   String(job.frontmatter.source ?? "") === "pr_automerge" ||
   String(job.frontmatter.cluster_id ?? "").startsWith("automerge-");
+const targetValidationTimeoutMs = repairTargetValidationTimeoutMs(
+  process.env,
+  resolveTargetRepoToolchain(job.frontmatter.repo).validationTimeoutMs,
+);
 const targetValidationOptions: TargetValidationOptions = {
   allowExpensiveValidation,
   installTargetDeps,

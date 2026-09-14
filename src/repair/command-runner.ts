@@ -7,6 +7,11 @@ import { ValidationRecoveryRequiredError } from "./validation-recovery.js";
 
 const DEFAULT_COMMAND_MAX_BUFFER = 64 * 1024 * 1024;
 
+/** Only emitted after the containment supervisor verifies command-tree completion. */
+export class ContainedCommandTimeoutError extends Error {
+  readonly code = "ETIMEDOUT";
+}
+
 export type CommandRunOptions = {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
@@ -51,7 +56,7 @@ export function runContainedCommand(
     if (child.error.code === "ETIMEDOUT") {
       const rendered = [command, ...commandArgs].join(" ");
       const message = `command timed out after ${options.timeoutMs}ms: ${rendered}`;
-      throw new Error(detail ? `${message}\n${detail}` : message);
+      throw new ContainedCommandTimeoutError(detail ? `${message}\n${detail}` : message);
     }
     throw new Error(detail ? `${child.error.message}\n${detail}` : child.error.message);
   }

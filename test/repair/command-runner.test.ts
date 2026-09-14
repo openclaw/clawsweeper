@@ -14,7 +14,11 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { resolveSpawnCommand } from "../../dist/command.js";
-import { runCommand, runContainedCommand } from "../../dist/repair/command-runner.js";
+import {
+  ContainedCommandTimeoutError,
+  runCommand,
+  runContainedCommand,
+} from "../../dist/repair/command-runner.js";
 import { mockCommandBinEnv } from "../helpers.ts";
 
 const WRITE_MARKER_AFTER_DELAY_SCRIPT = [
@@ -63,6 +67,58 @@ test("contained commands allow worst-case serialized output within each stream l
 
   assert.equal(Buffer.byteLength(output), bytesPerStream);
 });
+
+for (const namespace of [false, true])
+  test(
+    `contained timeout reaps TERM-resistant descendants before returning (namespace=${namespace})`,
+    { skip: process.platform === "win32" || (namespace && process.platform !== "linux") },
+    (context) => {
+      if (namespace && !linuxValidationNamespacesAvailable()) {
+        context.skip("runner does not provide delegated validation namespaces");
+        return;
+      }
+      const root = mkdtempSync(join(tmpdir(), "clawsweeper-timeout-tree-"));
+      const marker = join(root, "escaped");
+      try {
+        assert.throws(
+          () =>
+            runContainedCommand(
+              process.execPath,
+              [
+                "-e",
+                [
+                  'const { spawn } = require("node:child_process");',
+                  'process.on("SIGTERM", () => {});',
+                  `spawn(process.execPath, ["-e", 'process.on("SIGTERM", () => {}); console.log("descendant ready"); setTimeout(() => require("node:fs").writeFileSync(process.argv[1], "escaped"), 1800);', process.argv[1]], { detached: ${namespace}, stdio: "inherit" });`,
+                  'console.log("tree started");',
+                  "setInterval(() => {}, 1000);",
+                ].join("\n"),
+                marker,
+              ],
+              {
+                timeoutMs: 750,
+                cwd: root,
+                writableRoots: [root],
+                env: {
+                  ...process.env,
+                  ...(namespace ? { CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT: "1" } : {}),
+                },
+              },
+            ),
+          (error: Error) => {
+            assert.ok(error instanceof ContainedCommandTimeoutError);
+            assert.match(error.message, /tree started/);
+            assert.match(error.message, /descendant ready/);
+            return true;
+          },
+        );
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_000);
+        assert.equal(existsSync(marker), false);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
 test(
   "contained command overflow force-kills commands that ignore graceful termination",

@@ -12,6 +12,14 @@ test("repair workflow and executor share coherent production timeout defaults", 
 
   assert.match(source, /repairTimeoutBudgetFromEnv\(\s*process\.env,?\s*\)/);
   assert.match(source, /currentCodexTimeoutMs\(true\)/);
+  assert.match(
+    source,
+    /repairTargetValidationTimeoutMs\(\s*process\.env,\s*resolveTargetRepoToolchain\(job\.frontmatter\.repo\)\.validationTimeoutMs/,
+  );
+  assert.match(
+    workflow,
+    /CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS: \$\{\{ inputs\.target_validation_timeout_ms \|\| vars\.CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS \|\| '' \}\}/,
+  );
   assert.match(workflow, /timeout-minutes: 120/);
   assert.match(
     workflow,

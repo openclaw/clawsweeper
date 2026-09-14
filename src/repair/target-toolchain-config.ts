@@ -15,6 +15,8 @@ export interface TargetChangedGate {
 
 export interface TargetRepoToolchain {
   packageManager: TargetPackageManager;
+  /** Per-command repair validation budget; omitted repositories keep the executor default. */
+  validationTimeoutMs?: number;
   /** Base validation commands to always include before fixArtifact-supplied ones. */
   baseValidationCommands: readonly string[];
   /** Optional incremental gate (e.g. OpenClaw's pnpm check:changed). */
@@ -22,6 +24,7 @@ export interface TargetRepoToolchain {
 }
 
 interface ToolchainConfigEntry {
+  validation_timeout_ms?: unknown;
   package_manager?: unknown;
   validation_commands?: unknown;
   changed_gate?: unknown;
@@ -154,6 +157,9 @@ function parseToolchainEntry(
     packageManager,
     baseValidationCommands,
     changedGate,
+    ...(Number.isSafeInteger(entry.validation_timeout_ms) && Number(entry.validation_timeout_ms) > 0
+      ? { validationTimeoutMs: Number(entry.validation_timeout_ms) }
+      : {}),
   };
 }
 

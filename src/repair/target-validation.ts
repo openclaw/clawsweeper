@@ -25,7 +25,11 @@ import path from "node:path";
 import { parseAllDocuments } from "yaml";
 import { AgentInputScanError, type AgentScanSource } from "../agent-input-scan.js";
 
-import { runCommand as run, runContainedCommand } from "./command-runner.js";
+import {
+  ContainedCommandTimeoutError,
+  runCommand as run,
+  runContainedCommand,
+} from "./command-runner.js";
 import {
   ValidationRecoveryRequiredError,
   validationRecoveryRequired,
@@ -1571,6 +1575,9 @@ export function runAllowedValidationCommandsWithBinding(
           break;
         }
 
+        // A verified timeout is terminal for this command budget. Preserve its
+        // diagnostic instead of replacing it with the now-exhausted retry budget.
+        if (executionError instanceof ContainedCommandTimeoutError) throw executionError;
         const fallbackCommands = validationFallbackCommands({
           parts,
           error: executionError,
@@ -3042,6 +3049,7 @@ function runRestorableValidationCommand({
   const changedGate =
     options.targetRepo === "openclaw/openclaw" &&
     (isChangedGateCommand(parts, options) || isRootPnpmScript(parts, "check:changed"));
+  let confirmedTimeout = false;
   return withDisposableValidationState(
     (save) => {
       if (changedGate) {
@@ -3051,6 +3059,7 @@ function runRestorableValidationCommand({
             validationEnv,
             ignoredValidationInputs,
             outputRoots,
+            () => confirmedTimeout,
           ),
         );
       }
@@ -3070,12 +3079,17 @@ function runRestorableValidationCommand({
       const timeoutMs = remainingCommandBudget(deadlineAt, identityReserveMs);
       if (timeoutMs < MIN_VALIDATION_COMMAND_BUDGET_MS)
         throw validationCommandBudgetError(rendered);
-      return runContainedCommand(executionParts[0]!, executionParts.slice(1), {
-        cwd,
-        env: validationEnv,
-        timeoutMs,
-        writableRoots: [cwd, path.dirname(String(validationEnv.HOME))],
-      });
+      try {
+        return runContainedCommand(executionParts[0]!, executionParts.slice(1), {
+          cwd,
+          env: validationEnv,
+          timeoutMs,
+          writableRoots: [cwd, path.dirname(String(validationEnv.HOME))],
+        });
+      } catch (error) {
+        confirmedTimeout = error instanceof ContainedCommandTimeoutError;
+        throw error;
+      }
     },
     rendered,
   );
@@ -3101,6 +3115,7 @@ function prepareDisposableChangedGateState(
   validationEnv: NodeJS.ProcessEnv,
   ignoredValidationInputs: readonly string[],
   disposableOutputRoots: readonly string[],
+  confirmedTimeout: () => boolean,
 ): DisposableValidationState {
   const checkout = fs.realpathSync(cwd);
   const backupRoot = fs.realpathSync(
@@ -3220,13 +3235,15 @@ function prepareDisposableChangedGateState(
             if (
               !outputStat.isDirectory() ||
               outputStat.isSymbolicLink() ||
-              fs.readdirSync(output).length > 0
+              (!confirmedTimeout() && fs.readdirSync(output).length > 0)
             ) {
               throw new Error(
                 `changed-gate validation left unfinished ownership state: ${snapshot.relativePath}`,
               );
             }
-            fs.rmdirSync(output);
+            // The supervisor has reaped the timed-out tree. Remove only newly
+            // created tool-owned locks; existing ownership remains identity-bound.
+            fs.rmSync(output, { recursive: true });
             continue;
           }
           if (outputStat && (!outputStat.isDirectory() || outputStat.isSymbolicLink())) {

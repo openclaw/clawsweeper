@@ -53,6 +53,11 @@ on:
         required: true
         default: blacksmith-16vcpu-ubuntu-2404
         type: string
+      target_validation_timeout_ms:
+        description: "Per-command validation budget in ms; blank uses repository config, then 480000"
+        required: false
+        default: ""
+        type: string
       planner_sandbox:
         description: "Codex planning sandbox; danger-full-access is for trusted ephemeral runner fallback only"
         required: true
@@ -473,6 +478,7 @@ jobs:
       CLAWSWEEPER_CODEX_REASONING_EFFORT: ${{ contains(inputs.job, '/inbox/issue-') && (vars.CLAWSWEEPER_FIX_PR_REASONING_EFFORT || 'xhigh') || vars.CLAWSWEEPER_CODEX_REASONING_EFFORT || 'high' }}
       CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS: ${{ vars.CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS || '4' }}
       CLAWSWEEPER_FIX_CODEX_TIMEOUT_MS: ${{ vars.CLAWSWEEPER_FIX_CODEX_TIMEOUT_MS || '1800000' }}
+      CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS: ${{ inputs.target_validation_timeout_ms || vars.CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS || '' }}
       CLAWSWEEPER_FIX_STEP_TIMEOUT_MS: ${{ vars.CLAWSWEEPER_FIX_STEP_TIMEOUT_MS || '4200000' }}
       CLAWSWEEPER_FIX_TIMEOUT_RESERVE_MS: ${{ vars.CLAWSWEEPER_FIX_TIMEOUT_RESERVE_MS || '1800000' }}
       CLAWSWEEPER_RESOLVE_REVIEW_THREADS: ${{ vars.CLAWSWEEPER_RESOLVE_REVIEW_THREADS || '1' }}

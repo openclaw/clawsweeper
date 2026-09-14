@@ -5381,6 +5381,70 @@ test("changed gates preserve existing receipts and ownership records", () => {
   }
 });
 
+test("confirmed changed-gate timeouts remove new ownership but preserve identity guards", () => {
+  for (const scenario of ["new", "existing", "mutation"] as const) {
+    const cwd = gitPackageFixture({ "check:changed": "node scripts/check-changed.mjs" });
+    fs.appendFileSync(path.join(cwd, ".gitignore"), ".artifacts/\n");
+    fs.writeFileSync(path.join(cwd, "source.txt"), "original\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "initial");
+    attachOrigin(cwd);
+    const owner = path.join(cwd, ".artifacts/dist-artifacts.lock");
+    fs.mkdirSync(path.join(cwd, ".artifacts"));
+    fs.writeFileSync(path.join(cwd, ".artifacts/retained"), "protected");
+    if (scenario === "existing") {
+      fs.mkdirSync(owner);
+      fs.writeFileSync(path.join(owner, "owner.json"), "previous ownership");
+    }
+    const binDir = makeFixtureDir("clawsweeper-timeout-ownership-");
+    writeNodeCommandShim(
+      binDir,
+      "pnpm",
+      [
+        'const fs = require("node:fs");',
+        'fs.mkdirSync(".artifacts/dist-artifacts.lock", { recursive: true });',
+        ...(scenario === "existing"
+          ? []
+          : [
+              'fs.writeFileSync(".artifacts/dist-artifacts.lock/owner.json", "unfinished ownership");',
+            ]),
+        ...(scenario === "mutation" ? ['fs.writeFileSync("source.txt", "mutated\\n");'] : []),
+        'process.on("SIGTERM", () => {});',
+        'console.log("ownership fixture started");',
+        "setInterval(() => {}, 1000);",
+      ].join("\n"),
+    );
+    assert.throws(
+      () =>
+        withPathOnlyPrefix(binDir, () =>
+          runAllowedValidationCommands(
+            ["pnpm check:changed"],
+            cwd,
+            validationOptions("openclaw/openclaw", {
+              validationTimeoutMs: 2_000,
+              pinnedBaseRef: "origin/main",
+            }),
+          ),
+        ),
+      (error: Error) => {
+        if (scenario !== "mutation") {
+          assert.match(error.message, /ownership fixture started/);
+          assert.match(error.message, /command timed out after/);
+        }
+        assert.equal(Boolean(validationRecoveryRequired(error)), false);
+        if (scenario === "mutation")
+          assert.match(error.message, /unsafe validation command mutated checkout identity/);
+        else assert.doesNotMatch(error.message, /unsafe validation command/);
+        return true;
+      },
+    );
+    assert.equal(fs.readFileSync(path.join(cwd, ".artifacts/retained"), "utf8"), "protected");
+    if (scenario === "existing")
+      assert.equal(fs.readFileSync(path.join(owner, "owner.json"), "utf8"), "previous ownership");
+    else assert.equal(fs.existsSync(owner), false);
+  }
+});
+
 test("unverified validation completion retains state and blocks every reuse path", (t) => {
   const cwd = gitPackageFixture({ "check:changed": "node scripts/check-changed.mjs" });
   fs.appendFileSync(path.join(cwd, ".gitignore"), ".artifacts/\ndist/\n");

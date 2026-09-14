@@ -54,6 +54,24 @@ OpenClaw fallback's close rules, empty validation commands, and absent changed
 gate; selecting target-native setup does not broaden apply policy or inherit
 the core OpenClaw policy.
 
+Repair validation defaults to 480,000 ms per command. Set `validation_timeout_ms`
+in an exact repository entry (or `core_target_overrides`) to override it:
+`openclaw/openclaw` uses 1,200,000 ms (20 minutes) for its cold changed gate.
+Other repositories retain eight minutes. The repair workflow's optional
+`target_validation_timeout_ms` input takes precedence over the ClawSweeper
+repository variable `CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS`, then this
+configuration, then the eight-minute default. Local executor calls use the
+same environment variable. Blank or invalid values fall back to configuration.
+The overall fix-step deadline still caps each command; checkout identity proof
+reserves a small part of its budget. The lower-level
+`CLAWSWEEPER_TARGET_VALIDATION_TIMEOUT_MS` can further shorten that budget.
+
+On a confirmed timeout, the containment supervisor terminates and reaps the
+command tree before the validator removes newly created OpenClaw ownership
+directories (`.artifacts/dist-artifacts.lock` and `.artifacts/vitest-workers`).
+Pre-existing ownership, unrelated artifacts, unsafe path replacements, and
+unverified process completion retain the existing recovery and identity guards.
+
 Dashboard targets are configured separately with `TARGET_REPOS` in
 `dashboard/wrangler.toml`. Scheduled target selection comes from
 `target_inventory`, and apply-enabled targets use the dashboard's
