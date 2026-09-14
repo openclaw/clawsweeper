@@ -71,6 +71,9 @@ command tree before the validator removes newly created OpenClaw ownership
 directories (`.artifacts/dist-artifacts.lock` and `.artifacts/vitest-workers`).
 Pre-existing ownership, unrelated artifacts, unsafe path replacements, and
 unverified process completion retain the existing recovery and identity guards.
+If post-timeout identity verification is inconclusive, the timeout remains the
+primary diagnostic, both errors are retained, and the checkout requires recovery
+before reuse. A proven checkout mutation still takes precedence.
 
 Dashboard targets are configured separately with `TARGET_REPOS` in
 `dashboard/wrangler.toml`. Scheduled target selection comes from
