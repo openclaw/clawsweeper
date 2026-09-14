@@ -67,6 +67,22 @@ const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
     ],
   },
   {
+    // OpenClaw loopback CDP proxy-bypass fixture introduced by a37ebb2d496c.
+    fixtureSha256: "c10384849acffcfd5e4a8c5c7e368a9822425fbd631b1b51e74e48fd974b76d0",
+    rawSha256: "6eff40b9b295cc8f78a2a7762888d6884610d3399a676b6c648fd1f8a71c1d58",
+    lineSha256s: ["389cd151272bf0c7005e544b01a6c173a008af9bec42fb9d5c4de577b6113c32"],
+    decoders: ["PLAIN", "HTML"],
+    sources: ["extensions/browser/src/browser/cdp.helpers.internal.test.ts"],
+  },
+  {
+    // OpenClaw credential-bearing CDP target fixture moved by 9a7ceceffaa8.
+    fixtureSha256: "996b19a5512866475ab05efe0308921cadf916d8a506b76ea1a4204ad1e1193c",
+    rawSha256: "996b19a5512866475ab05efe0308921cadf916d8a506b76ea1a4204ad1e1193c",
+    lineSha256s: ["f0fa784540b0d2421ae27c655b5648cf5c94a1d24e29d8058fdcf26c0ba2375a"],
+    decoders: ["PLAIN", "HTML"],
+    sources: ["extensions/browser/src/browser/cdp.test.ts"],
+  },
+  {
     // Profile-status redaction repeats this synthetic URI in config and a mocked-call assertion.
     fixtureSha256: "d15184614e748450d49a726f84955ca7745b87d0728afbd6bb6b50d84cce4fe0",
     sources: ["extensions/browser/src/browser/server-context.list-profiles.test.ts"],
