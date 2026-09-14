@@ -2,6 +2,7 @@ import { stringOrEmpty as stringValue } from "./value-coerce.js";
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { AgentInputScanError } from "./agent-input-scan.js";
+import { ReviewGitError } from "./clawsweeper-review-blobs.js";
 import { agentInputScanFailureReason } from "./exact-review-failure-reason.js";
 import { codexJsonlFailureDetail } from "./codex-transient.js";
 
@@ -46,6 +47,14 @@ export function writeExactReviewFailureDiagnostics(options: {
 }): string {
   const error = record(options.error);
   const scanFailure = options.error instanceof AgentInputScanError ? options.error : undefined;
+  // Scanner output stays private; only the native source fetch supplies this cause.
+  const gitFailure =
+    scanFailure?.reason === "deadline" &&
+    scanFailure.cause instanceof ReviewGitError &&
+    scanFailure.cause.diagnosticReason === "review_blobs_unavailable"
+      ? scanFailure.cause
+      : undefined;
+  const processError = gitFailure ?? error;
   const diagnosticStage = scanFailure
     ? "agent_input_scan"
     : safeCode(error.diagnosticStage, /^source_preparation$/);
@@ -61,7 +70,7 @@ export function writeExactReviewFailureDiagnostics(options: {
   const inputs = {
     "error.txt": options.error instanceof Error ? options.error.message : String(options.error),
     "stdout.error.txt": scanFailure ? "" : codexJsonlFailureDetail(stringValue(error.stdout)),
-    "stderr.tail.txt": scanFailure ? "" : stringValue(error.stderr),
+    "stderr.tail.txt": gitFailure?.stderr ?? (scanFailure ? "" : stringValue(error.stderr)),
   };
   const files = Object.entries(inputs).map(([name, value]) => {
     const result = sanitize(value, values, FILE_LIMITS[name as keyof typeof FILE_LIMITS]);
@@ -84,9 +93,12 @@ export function writeExactReviewFailureDiagnostics(options: {
         ...(scanFailure?.scanDiagnostic ? { scan: scanFailure.scanDiagnostic } : {}),
       },
       process: {
-        status: Number.isInteger(error.status) && Number(error.status) >= 0 ? error.status : null,
-        signal: safeCode(error.signal, /^SIG[A-Z0-9]+$/),
-        error_code: safeCode(error.errorCode, /^[A-Z][A-Z0-9_]{1,63}$/),
+        status:
+          Number.isInteger(processError.status) && Number(processError.status) >= 0
+            ? processError.status
+            : null,
+        signal: safeCode(processError.signal, /^SIG[A-Z0-9]+$/),
+        error_code: safeCode(processError.errorCode, /^[A-Z][A-Z0-9_]{1,63}$/),
         workflow_exit: options.workflowExit,
       },
       source: {

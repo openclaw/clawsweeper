@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Preserve bounded native Git diagnostics when a source-blob fetch exhausts the hydration deadline, without changing the terminal refusal or exposing scanner output.
+
 - Give OpenClaw's combined changed-gate command 25 minutes so lint can finish after its long core-test typecheck, and log successful typecheck/lint stage timings, while retaining the eight-minute default elsewhere and the overall repair deadline.
 
 - Keep PR source hydration's GitHub metadata requests, retries, and rate-limit checks within its existing deadline.

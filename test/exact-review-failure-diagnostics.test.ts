@@ -215,6 +215,59 @@ test("scan diagnostics retain refusal identity without scanner output", () => {
   }
 });
 
+test("scan refusals do not expose unrelated or nested process causes", () => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-diagnostics-"));
+  const native = spawnSync(process.execPath, ["-e", "process.exit(23)"], { encoding: "utf8" });
+  const blobFailure = new ReviewGitError("review_blobs_unavailable", {
+    ...native,
+    stderr: "raw scanner verification detail",
+  });
+  const causes = [
+    Object.assign(new Error("untyped process failure"), {
+      status: 23,
+      stderr: "raw scanner verification detail",
+    }),
+    new Error("nested process failure", { cause: blobFailure }),
+    new ReviewGitError("review_commit_fetch_failed", {
+      ...native,
+      stderr: "raw scanner verification detail",
+    }),
+  ];
+  try {
+    for (const [index, cause] of causes.entries()) {
+      const error = new AgentInputScanError("deadline");
+      error.cause = cause;
+      const output = write(join(root, String(index)), error);
+      const manifest = JSON.parse(readFileSync(join(output, "manifest.json"), "utf8"));
+      assert.deepEqual(manifest.process, {
+        status: null,
+        signal: null,
+        error_code: null,
+        workflow_exit: 1,
+      });
+      assert.equal(
+        readFileSync(join(output, "stderr.tail.txt"), "utf8"),
+        "[no diagnostic detail]\n",
+      );
+    }
+    for (const reason of AGENT_INPUT_SCAN_FAILURE_REASONS.filter(
+      (reason) => reason !== "deadline",
+    )) {
+      const error = new AgentInputScanError(reason);
+      error.cause = blobFailure;
+      const output = write(join(root, reason), error);
+      assert.equal(
+        readFileSync(join(output, "stderr.tail.txt"), "utf8"),
+        "[no diagnostic detail]\n",
+      );
+      const manifest = JSON.parse(readFileSync(join(output, "manifest.json"), "utf8"));
+      assert.equal(manifest.process.status, null);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("incompatible source diagnostics retain their structured terminal identity", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-diagnostics-"));
   try {

@@ -29,7 +29,12 @@ import {
   REVIEW_TREE_MAX_BYTES,
   ReviewGitError,
 } from "../dist/clawsweeper-review-blobs.js";
-import { MAX_SCAN_BYTES } from "../dist/agent-input-scan.js";
+import {
+  AgentInputScanError,
+  agentInputScanFailureExitCode,
+  MAX_SCAN_BYTES,
+} from "../dist/agent-input-scan.js";
+import { writeExactReviewFailureDiagnostics } from "../dist/clawsweeper-review-failure-diagnostics.js";
 import { createContextHydration } from "../dist/clawsweeper-context-hydration.js";
 import { createGitHubRuntime } from "../dist/clawsweeper-github-runtime.js";
 import { createGitHubExecution } from "../dist/clawsweeper-github-execution.js";
@@ -1505,6 +1510,102 @@ test("review hydration rejects aggregate scan budget overflow and incomplete siz
     );
     assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), false);
   } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("expired blob fetch retains native diagnostics without changing the scan refusal", (t) => {
+  const fixture = partialCloneFixture();
+  const originalSpawnSync = childProcess.spawnSync;
+  const realNow = Date.now.bind(Date);
+  const childMarker = join(fixture.root, "fetch-child");
+  let clockOffset = 0;
+  let fetchCount = 0;
+  let fetchTimeout = 0;
+  try {
+    t.mock.method(Date, "now", () => realNow() + clockOffset);
+    t.mock.method(childProcess, "spawnSync", (command, args, options) => {
+      if (command === "git" && args.includes("fetch") && args.includes("--stdin")) {
+        fetchCount++;
+        fetchTimeout = options.timeout;
+        return originalSpawnSync(
+          process.execPath,
+          [
+            "-e",
+            `require("node:fs").writeFileSync(process.argv[1], String(process.pid));
+             process.stderr.write("fatal: synthetic Git transport stalled\\nAUTH_TOKEN=synthetic-private-value\\n");
+             process.stdout.write("raw transport payload must stay private\\n");
+             setInterval(() => {}, 1000);`,
+            childMarker,
+          ],
+          options,
+        );
+      }
+      return originalSpawnSync(command, args, options);
+    });
+    syncBuiltinESMExports();
+    let failure: Error | undefined;
+    assert.throws(
+      () =>
+        hydratePullRequestReviewBlobs({
+          targetDir: fixture.target,
+          baseSha: fixture.baseSha,
+          headSha: fixture.headSha,
+          resolveBlobSizes: (ids, deadlineAt) => {
+            const sizes = resolveFixtureBlobSizes(fixture.source)(ids);
+            clockOffset = deadlineAt - realNow() - 1000;
+            return sizes;
+          },
+        }),
+      (error) => {
+        assert.ok(error instanceof AgentInputScanError);
+        failure = error;
+        assert.equal(error.name, "AgentInputScanError");
+        assert.equal(error.reason, "deadline");
+        assert.equal(error.retryable, false);
+        assert.equal(agentInputScanFailureExitCode(error) ?? 1, 1);
+        return true;
+      },
+    );
+    assert.equal(fetchCount, 1);
+    assert.ok(fetchTimeout > 0 && fetchTimeout <= 1000);
+    const childPid = Number(readFileSync(childMarker, "utf8"));
+    assert.throws(() => process.kill(childPid, 0), { code: "ESRCH" });
+    assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), false);
+    const output = writeExactReviewFailureDiagnostics({
+      artifactDir: join(fixture.root, "diagnostics"),
+      error: failure,
+      prompt: "synthetic prompt",
+      model: "fixture-model",
+      classification: "agent_input_scan",
+      repo: "fixture/repository",
+      itemKind: "pull_request",
+      itemNumber: 1,
+      sourceSha: fixture.headSha,
+      retryable: false,
+      workflowExit: 1,
+      env: {},
+    });
+    const manifest = JSON.parse(readFileSync(join(output, "manifest.json"), "utf8"));
+    assert.equal(manifest.classification, "agent_input_scan");
+    assert.equal(manifest.retryable, false);
+    assert.deepEqual(manifest.failure, { stage: "agent_input_scan", reason_code: "deadline" });
+    assert.deepEqual(manifest.process, {
+      status: null,
+      signal: "SIGTERM",
+      error_code: "ETIMEDOUT",
+      workflow_exit: 1,
+    });
+    const stderr = readFileSync(join(output, "stderr.tail.txt"), "utf8");
+    assert.match(stderr, /synthetic Git transport stalled/);
+    assert.doesNotMatch(stderr, /synthetic-private-value/);
+    assert.equal(
+      readFileSync(join(output, "stdout.error.txt"), "utf8"),
+      "[no diagnostic detail]\n",
+    );
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });
