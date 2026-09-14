@@ -2955,6 +2955,16 @@ function assertValidationCheckoutIdentityWithinCommand(
       if (cause !== undefined) (error as Error).cause = cause;
       throw error;
     }
+    if (cause instanceof ContainedCommandTimeoutError) {
+      throw new ValidationRecoveryRequiredError(
+        `${cause.message}\nPost-timeout checkout identity verification failed (${rendered}): ${String(error)}`,
+        new AggregateError(
+          [cause, error],
+          "Validation timed out and checkout identity is unverified",
+        ),
+        [cwd],
+      );
+    }
     // oxlint-disable-next-line preserve-caught-error -- A caller-supplied command failure owns the public cause.
     throw new Error(
       `unsafe validation command checkout identity could not be verified (${rendered})`,

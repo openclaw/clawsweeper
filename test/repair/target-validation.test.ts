@@ -9479,6 +9479,71 @@ test("changed validation shares one timeout with checkout identity proof", (t) =
   }
 });
 
+test("a confirmed timeout remains primary when subsequent identity proof is inconclusive", (t) => {
+  const cwd = gitPackageFixture({ verify: "node verify.js" });
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+  let timedOut = false;
+  let recovery: ReturnType<typeof validationRecoveryRequired>;
+  try {
+    withVirtualDeadlineCommands(
+      t,
+      () => 10_000,
+      ({ command, args, contained }) => {
+        if (command === "git") {
+          if (timedOut && args.includes("write-tree"))
+            throw new Error("synthetic identity probe failure");
+          return undefined;
+        }
+        assert.equal(contained, true);
+        timedOut = true;
+        return {
+          status: null,
+          error: { code: "ETIMEDOUT", message: "validation command timed out" },
+        };
+      },
+      () =>
+        assert.throws(
+          () =>
+            runAllowedValidationCommands(
+              ["pnpm verify"],
+              cwd,
+              validationOptions("steipete/example", {
+                validationTimeoutMs: 4_000,
+                pinnedBaseRef: "origin/main",
+              }),
+            ),
+          (error) => {
+            recovery = validationRecoveryRequired(error);
+            assert.ok(recovery);
+            assert.match(recovery.message, /^command timed out after/);
+            assert.match(
+              recovery.message,
+              /Post-timeout checkout identity verification failed.*synthetic identity probe failure/,
+            );
+            assert.match(recovery.message, /do not retry this checkout/);
+            assert.ok(recovery.recoveryPaths.has(cwd));
+            assert.ok(recovery.cause instanceof AggregateError);
+            assert.equal(recovery.cause.errors.length, 2);
+            assert.match(recovery.cause.errors[0].message, /command timed out after/);
+            assert.match(recovery.cause.errors[1].message, /synthetic identity probe failure/);
+            return true;
+          },
+        ),
+    );
+    assert.throws(
+      () =>
+        runAllowedValidationCommands(["pnpm verify"], cwd, validationOptions("steipete/example")),
+      /do not retry this checkout/,
+    );
+  } finally {
+    for (const root of recovery?.recoveryPaths ?? []) {
+      if (root !== cwd) fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
 test("validation reserves deadline to prove checkout mutation after command timeout", (t) => {
   const fixture = makeFixtureDir("clawsweeper-validation-timeout-");
   const marker = path.join(fixture, "phases");
@@ -10065,7 +10130,12 @@ function withVirtualDeadlineCommands(t, now, onCommand, callback) {
       output: [null, output.stdout, output.stderr],
       ...output,
       ...(contained
-        ? { status: 0, stderr: "", stdout: JSON.stringify({ ...output, backgroundProcesses: 0 }) }
+        ? {
+            error: undefined,
+            status: 0,
+            stderr: "",
+            stdout: JSON.stringify({ ...output, backgroundProcesses: 0 }),
+          }
         : {}),
     };
   });
