@@ -5393,7 +5393,7 @@ test("OpenClaw timing summaries retain only typecheck and lint durations", (t) =
     [
       'if (!process.argv.includes("--timed")) process.exit(2);',
       'console.log("  99s ok typecheck core");',
-      'console.error("[check:changed] summary\\n  1.25s ok typecheck core\\n  40ms ok typecheck core tests\\n  2.50s ok lint core changed files\\n  3ms ok lint core changed file\\n  99s ok unrelated output\\n unrelated text");',
+      'console.error("[check:changed] summary\\n  1.25s ok typecheck core\\n  40ms ok typecheck core tests\\n  2.50s ok lint core changed files\\n  3ms ok lint core changed file\\n  4.75s ok lint core\\n  99s ok unrelated output\\n unrelated text");',
     ].join("\n"),
   );
   const messages: string[] = [];
@@ -5414,6 +5414,7 @@ test("OpenClaw timing summaries retain only typecheck and lint durations", (t) =
     "[target-validation] 40ms ok typecheck core tests",
     "[target-validation] 2.50s ok lint core changed files",
     "[target-validation] 3ms ok lint core changed file",
+    "[target-validation] 4.75s ok lint core",
   ]);
 });
 

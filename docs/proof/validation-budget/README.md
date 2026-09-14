@@ -33,7 +33,8 @@ damage caused that pilot's inconclusive proof.
 
 The timing-summary scenario runs a successful real pnpm script that requires
 `--timed` and emits known synthetic stage durations on stderr. It verifies that
-the validator logs only core typecheck, core-test typecheck, and core lint rows,
+the validator logs only core typecheck, core-test typecheck, and core lint rows
+(full-lane, single-file, and multiple-file labels),
 while preserving checkout identity. Those fixture numbers prove plumbing, not
 compiler performance; the real pilot supplies measured stage durations.
 

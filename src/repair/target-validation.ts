@@ -3112,7 +3112,7 @@ function runRestorableValidationCommand({
           const summary = summaryIndex < 0 ? "" : output.slice(summaryIndex);
           for (const line of summary.split(/\r?\n/)) {
             const timing =
-              /^\s*(\d+(?:\.\d+)?(?:ms|s))\s+(ok|failed:\d+)\s+(typecheck core|typecheck core tests|lint core changed files?)\s*$/.exec(
+              /^\s*(\d+(?:\.\d+)?(?:ms|s))\s+(ok|failed:\d+)\s+(typecheck core|typecheck core tests|lint core(?: changed files?)?)\s*$/.exec(
                 line,
               );
             if (timing) console.log(`[target-validation] ${timing[1]} ${timing[2]} ${timing[3]}`);
