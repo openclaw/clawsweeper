@@ -22,6 +22,11 @@ export type CommandRunOptions = {
   writableRoots?: readonly string[];
 };
 
+type ContainedCommandOptions = CommandRunOptions & {
+  /** Include successful stderr output for callers consuming diagnostic summaries. */
+  includeStderr?: boolean;
+};
+
 export type ContainedCommandResult = {
   backgroundProcesses: number;
   capabilitySummary?: ContainmentCapabilitySummary;
@@ -48,7 +53,7 @@ export function runCommand(
 export function runContainedCommand(
   command: string,
   commandArgs: string[],
-  options: CommandRunOptions = {},
+  options: ContainedCommandOptions = {},
 ): string {
   const child = runContainedCommandResult(command, commandArgs, options);
   const detail = [child.stderr, child.stdout].filter(Boolean).join("\n").trim();
@@ -68,7 +73,9 @@ export function runContainedCommand(
       `validation command left ${child.backgroundProcesses} background process(es) after exit`,
     );
   }
-  return child.stdout;
+  return options.includeStderr
+    ? [child.stdout, child.stderr].filter(Boolean).join("\n")
+    : child.stdout;
 }
 
 export function runContainedCommandResult(

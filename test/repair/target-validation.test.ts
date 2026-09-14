@@ -5381,6 +5381,42 @@ test("changed gates preserve existing receipts and ownership records", () => {
   }
 });
 
+test("OpenClaw timing summaries retain only typecheck and lint durations", (t) => {
+  const cwd = gitPackageFixture({ "check:changed": "node scripts/check-changed.mjs" });
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "initial");
+  attachOrigin(cwd);
+  const binDir = makeFixtureDir("clawsweeper-timed-gate-");
+  writeNodeCommandShim(
+    binDir,
+    "pnpm",
+    [
+      'if (!process.argv.includes("--timed")) process.exit(2);',
+      'console.log("  99s ok typecheck core");',
+      'console.error("[check:changed] summary\\n  1.25s ok typecheck core\\n  40ms ok typecheck core tests\\n  2.50s ok lint core changed files\\n  3ms ok lint core changed file\\n  99s ok unrelated output\\n unrelated text");',
+    ].join("\n"),
+  );
+  const messages: string[] = [];
+  t.mock.method(console, "log", (message: string) => messages.push(message));
+  const result = withPathOnlyPrefix(binDir, () =>
+    runAllowedValidationCommands(
+      ["pnpm check:changed"],
+      cwd,
+      validationOptions("openclaw/openclaw", {
+        pinnedBaseRef: "origin/main",
+        logOpenClawTimingSummary: true,
+      }),
+    ),
+  );
+  assert.deepEqual(result, ["pnpm check:changed"]);
+  assert.deepEqual(messages, [
+    "[target-validation] 1.25s ok typecheck core",
+    "[target-validation] 40ms ok typecheck core tests",
+    "[target-validation] 2.50s ok lint core changed files",
+    "[target-validation] 3ms ok lint core changed file",
+  ]);
+});
+
 test("confirmed changed-gate timeouts remove new ownership but preserve identity guards", () => {
   for (const scenario of ["new", "existing", "mutation"] as const) {
     const cwd = gitPackageFixture({ "check:changed": "node scripts/check-changed.mjs" });

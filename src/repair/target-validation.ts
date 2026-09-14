@@ -97,6 +97,7 @@ const validationCheckoutRuntimeRootDigests = new WeakMap<
 let preparedTargetPnpmRuntimeCleanupRegistered = false;
 
 export type TargetValidationOptions = {
+  logOpenClawTimingSummary?: boolean;
   additionalValidationCommands?: string[];
   allowExpensiveValidation: boolean;
   installTimeoutMs?: number;
@@ -3090,12 +3091,34 @@ function runRestorableValidationCommand({
       if (timeoutMs < MIN_VALIDATION_COMMAND_BUDGET_MS)
         throw validationCommandBudgetError(rendered);
       try {
-        return runContainedCommand(executionParts[0]!, executionParts.slice(1), {
+        const logTimings =
+          options.logOpenClawTimingSummary === true &&
+          options.targetRepo === "openclaw/openclaw" &&
+          isRootPnpmScript(parts, "check:changed");
+        const timedParts =
+          logTimings && !executionParts.includes("--timed")
+            ? executionParts.toSpliced(executionParts.indexOf("check:changed") + 1, 0, "--timed")
+            : executionParts;
+        const output = runContainedCommand(timedParts[0]!, timedParts.slice(1), {
           cwd,
           env: validationEnv,
           timeoutMs,
           writableRoots: [cwd, path.dirname(String(validationEnv.HOME))],
+          includeStderr: logTimings,
         });
+        if (logTimings) {
+          // Ignore similarly formatted output from earlier nested tools.
+          const summaryIndex = output.lastIndexOf("[check:changed] summary");
+          const summary = summaryIndex < 0 ? "" : output.slice(summaryIndex);
+          for (const line of summary.split(/\r?\n/)) {
+            const timing =
+              /^\s*(\d+(?:\.\d+)?(?:ms|s))\s+(ok|failed:\d+)\s+(typecheck core|typecheck core tests|lint core changed files?)\s*$/.exec(
+                line,
+              );
+            if (timing) console.log(`[target-validation] ${timing[1]} ${timing[2]} ${timing[3]}`);
+          }
+        }
+        return output;
       } catch (error) {
         confirmedTimeout = error instanceof ContainedCommandTimeoutError;
         throw error;

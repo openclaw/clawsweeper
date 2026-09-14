@@ -20,8 +20,8 @@ test("repair validation budget defaults to eight minutes with an OpenClaw-only p
     );
   }
   const configured = resolveTargetRepoToolchain("openclaw/openclaw").validationTimeoutMs;
-  assert.equal(configured, 1_200_000);
-  assert.equal(repairTargetValidationTimeoutMs({}, configured), 1_200_000);
+  assert.equal(configured, 1_500_000);
+  assert.equal(repairTargetValidationTimeoutMs({}, configured), 1_500_000);
   assert.equal(
     repairTargetValidationTimeoutMs(
       { CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS: "900000" },
@@ -35,7 +35,7 @@ test("repair validation budget defaults to eight minutes with an OpenClaw-only p
         { CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS: value },
         configured,
       ),
-      1_200_000,
+      1_500_000,
     );
     assert.equal(
       repairTargetValidationTimeoutMs({ CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS: value }),

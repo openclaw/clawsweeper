@@ -7,9 +7,11 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Give OpenClaw's combined changed-gate command 25 minutes so lint can finish after its long core-test typecheck, and log successful typecheck/lint stage timings, while retaining the eight-minute default elsewhere and the overall repair deadline.
+
 - Keep confirmed validation timeouts primary when the subsequent checkout identity proof is inconclusive, retaining both errors and blocking reuse until recovery.
 
-- Give OpenClaw repairs a configurable 20-minute validation budget while retaining the eight-minute default elsewhere, and report confirmed timeouts after reaping command trees and cleaning newly generated ownership locks.
+- Report confirmed validation timeouts after reaping command trees and cleaning newly generated ownership locks.
 
 - Admit the existing OpenClaw browser CDP proxy and target fixtures through exact URI, source-line, decoder, and source-path bindings so unrelated test imports do not block exact review.
 

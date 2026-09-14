@@ -68,6 +68,12 @@ test("contained commands allow worst-case serialized output within each stream l
   assert.equal(Buffer.byteLength(output), bytesPerStream);
 });
 
+test("contained successful stderr is opt-in for diagnostic consumers", () => {
+  const args = ["-e", 'process.stdout.write("out"); process.stderr.write("err");'];
+  assert.equal(runContainedCommand(process.execPath, args), "out");
+  assert.equal(runContainedCommand(process.execPath, args, { includeStderr: true }), "out\nerr");
+});
+
 for (const namespace of [false, true])
   test(
     `contained timeout reaps TERM-resistant descendants before returning (namespace=${namespace})`,

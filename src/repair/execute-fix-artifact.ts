@@ -305,6 +305,7 @@ const targetValidationTimeoutMs = repairTargetValidationTimeoutMs(
   resolveTargetRepoToolchain(job.frontmatter.repo).validationTimeoutMs,
 );
 const targetValidationOptions: TargetValidationOptions = {
+  logOpenClawTimingSummary: result.repo === "openclaw/openclaw",
   allowExpensiveValidation,
   installTargetDeps,
   strictTargetValidation: configuredStrictTargetValidation || automergeTargetValidation,

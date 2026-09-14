@@ -816,7 +816,7 @@ Core steerable-session configuration:
 | `CLAWSWEEPER_CODEX_TIMEOUT_MS` | Planning Codex call timeout. |
 | `CLAWSWEEPER_FIX_CODEX_TIMEOUT_MS` | Per-call execution Codex timeout. |
 | `CLAWSWEEPER_FIX_STEP_TIMEOUT_MS` | Overall fix executor step budget. |
-| `CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS` | Per-command target validation override; defaults to repository configuration, then 480,000 ms. OpenClaw uses 1,200,000 ms. See [repository overrides](target-repositories.md). |
+| `CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS` | Per-command target validation override; defaults to repository configuration, then 480,000 ms. OpenClaw uses 1,500,000 ms for the complete changed gate. See [repository overrides](target-repositories.md). |
 
 Issue implementation controls:
 

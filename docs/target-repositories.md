@@ -56,15 +56,21 @@ the core OpenClaw policy.
 
 Repair validation defaults to 480,000 ms per command. Set `validation_timeout_ms`
 in an exact repository entry (or `core_target_overrides`) to override it:
-`openclaw/openclaw` uses 1,200,000 ms (20 minutes) for its cold changed gate.
+`openclaw/openclaw` uses 1,500,000 ms (25 minutes) for its cold changed gate.
 Other repositories retain eight minutes. The repair workflow's optional
 `target_validation_timeout_ms` input takes precedence over the ClawSweeper
 repository variable `CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS`, then this
 configuration, then the eight-minute default. Local executor calls use the
 same environment variable. Blank or invalid values fall back to configuration.
-The overall fix-step deadline still caps each command; checkout identity proof
+Each top-level validation command receives a fresh budget. OpenClaw's
+`pnpm check:changed` is one command whose internal typecheck, lint, and other
+stages share that budget. The existing 70-minute overall fix-step deadline
+still bounds the repair; checkout identity proof
 reserves a small part of its budget. The lower-level
 `CLAWSWEEPER_TARGET_VALIDATION_TIMEOUT_MS` can further shorten that budget.
+The repair executor requests OpenClaw's `--timed` summary and records core
+typecheck, core-test typecheck, and core lint durations in Actions logs, including
+successful validation. Other command output is not echoed by this timing logger.
 
 On a confirmed timeout, the containment supervisor terminates and reaps the
 command tree before the validator removes newly created OpenClaw ownership
