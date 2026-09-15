@@ -202,7 +202,7 @@ export function createReportCommentPresentation(
             ? "Codex review: passed."
             : isPullRequest
               ? "Codex review: needs maintainer review before merge."
-              : "Codex review: keeping this open for maintainer follow-up; there is still a little grit to resolve.";
+              : "Codex review: this still needs some work.";
     const reviewHistory = reviewHistoryForRender(markdown, options.previousReviewCommentBody);
     const revision = reviewHistory.totalCompletedCycles + 1;
     const lines = [`${verdictLine}${reviewFreshnessText(markdown, revision)}`, ""];
