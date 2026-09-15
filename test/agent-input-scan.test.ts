@@ -2955,9 +2955,11 @@ test("approved URI findings in unchanged patch context require both exact Git wi
 });
 
 test("patch admission keeps legacy duplicate records and rejects coherent non-context occurrences", () => {
+  const username = "openclaw";
+  const password = "relay-token";
   const url = new URL("http://127.0.0.1:9222");
-  url.username = "openclaw";
-  url.password = "relay-token";
+  url.username = username;
+  url.password = password;
   const raw = url.href.slice(0, -1);
   const entry: ExactCase = {
     detectorType: 17,
@@ -2966,7 +2968,7 @@ test("patch admission keeps legacy duplicate records and rejects coherent non-co
     raw,
     rawV2: raw,
     line: `const fixture = ${JSON.stringify(raw)};`,
-    secretParts: { host: url.host, username: url.username, password: url.password },
+    secretParts: { host: url.host, username, password },
     extraData: null,
   };
   const fixture = contextPatchFixture(entry, { source: browserProfilesSource });
@@ -3014,12 +3016,14 @@ test("patch admission keeps legacy duplicate records and rejects coherent non-co
 });
 
 test("create-profile redaction qualification binds the full line and observed native decoders", () => {
+  const username = "browser-user";
+  const password = "browser-password";
   const url = new URL("http://127.0.0.1:9222/");
-  url.username = "browser-user";
-  url.password = "browser-password";
+  url.username = username;
+  url.password = password;
   url.searchParams.set("token", "browser-token");
   const line = `    const cdpUrl = "${url.href}";`;
-  const raw = `${url.protocol}//${url.username}:${url.password}@${url.host}`;
+  const raw = `${url.protocol}//${username}:${password}@${url.host}`;
   const entry: ExactCase = {
     detectorType: 17,
     detectorName: "URI",
@@ -3027,7 +3031,7 @@ test("create-profile redaction qualification binds the full line and observed na
     raw,
     rawV2: raw,
     line,
-    secretParts: { host: url.host, username: url.username, password: url.password },
+    secretParts: { host: url.host, username, password },
     extraData: null,
   };
   const fixture = exactFixture([entry]);
