@@ -27,7 +27,8 @@ const checks = [],
   masterMeasurements = [],
   networks = [],
   errors = [];
-let completed = false;
+let completed = false,
+  executedCases = 0;
 const browser = await chromium.launch({
   executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE,
   headless: true,
@@ -41,6 +42,60 @@ const post = async (server, route, value) => {
   });
   assert.ok(response.ok, route + ": " + response.status);
   return response.json();
+};
+const assertExpandedMotionBounds = async (page, target, name) => {
+  const wasReduced = await page.evaluate(
+    () => matchMedia("(prefers-reduced-motion: reduce)").matches,
+  );
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.waitForFunction(() => !document.body.classList.contains("reduce-motion"));
+  assert.equal(await page.locator("body.reduce-motion").count(), 0, name + " normal motion active");
+  const samples = await target.evaluate(async (node) => {
+    const rows = [],
+      start = performance.now();
+    await new Promise((resolve) => {
+      const frame = () => {
+        const face = node.querySelector(".critter-face").getBoundingClientRect();
+        const beach = document.querySelector("#beach").getBoundingClientRect();
+        rows.push({
+          x: face.x,
+          y: face.y,
+          width: face.width,
+          height: face.height,
+          bounded:
+            face.x >= Math.max(0, beach.x) &&
+            face.right <= Math.min(innerWidth, beach.right) &&
+            face.y >= Math.max(0, beach.y) &&
+            face.bottom <= Math.min(innerHeight, beach.bottom),
+          animation: getComputedStyle(node).animationName,
+        });
+        if (performance.now() - start < 2500) requestAnimationFrame(frame);
+        else resolve();
+      };
+      requestAnimationFrame(frame);
+    });
+    return rows;
+  });
+  assert.ok(
+    samples.length > 2 && samples.every((r) => r.bounded && r.animation === "none"),
+    name +
+      " expanded anchor isolated across found/breathe cycles: " +
+      JSON.stringify(samples.filter((r) => !r.bounded || r.animation !== "none").slice(0, 3)),
+  );
+  assert.ok(
+    samples.every(
+      (r) =>
+        r.x === samples[0].x &&
+        r.y === samples[0].y &&
+        r.width === samples[0].width &&
+        r.height === samples[0].height,
+    ),
+    name + " expanded geometry stable through normal motion",
+  );
+  if (wasReduced) {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.waitForFunction(() => document.body.classList.contains("reduce-motion"));
+  }
 };
 const get = async (server) => {
   const response = await fetch(server + "/api/status");
@@ -218,14 +273,25 @@ try {
     { width: 768, height: 1024 },
     { width: 430, height: 932 },
   ]) {
+    if (
+      process.env.BAY_PROOF_WIDTHS &&
+      !process.env.BAY_PROOF_WIDTHS.split(",").includes(String(viewport.width))
+    )
+      continue;
     for (const scenario of scenarios) {
+      if (
+        process.env.BAY_PROOF_SCENARIOS &&
+        !process.env.BAY_PROOF_SCENARIOS.split(",").includes(scenario)
+      )
+        continue;
       // The full existing matrix runs at its five original breakpoints; extra
       // wide/short canvases target the changed sparse/crowded geometry.
       if (
         [2400, 1920, 1200].includes(viewport.width) &&
-        !["normal", "crowded", "busy-neighbors"].includes(scenario)
+        !["normal", "crowded", "busy-neighbors", "dense20", "over-cap"].includes(scenario)
       )
         continue;
+      executedCases++;
       const epoch = Date.now() - 1000;
       await post(origin, "/fixture/snapshot", { scenario, epoch });
       await post(baseOrigin, "/fixture/snapshot", { scenario, epoch });
@@ -436,6 +502,29 @@ try {
             await refreshed;
             await page.waitForFunction(() => window.__bayRefreshRendered === true);
             assert.deepEqual(await positions(), initialPositions, name + " stable repeat snapshot");
+            if (scenario === "dense20") {
+              await post(origin, "/fixture/snapshot", { scenario: "dense20-reordered", epoch });
+              await page.evaluate(() => {
+                window.__bayReordered = false;
+                const observer = new MutationObserver(() => {
+                  window.__bayReordered = true;
+                  observer.disconnect();
+                });
+                observer.observe(document.querySelector("#stage-grid"), { childList: true });
+              });
+              await page.locator("#refresh-bay").click();
+              await page.waitForFunction(() => window.__bayReordered);
+              assert.deepEqual(
+                await positions(),
+                initialPositions,
+                name + " stable after real reordered snapshot",
+              );
+            }
+            for (const target of geometry.firstItems)
+              assert.ok(
+                target.width >= 44 && target.height >= 44,
+                name + " real 44px minimum target",
+              );
             for (let i = 0; i < geometry.firstItems.length; i++)
               for (let j = i + 1; j < geometry.firstItems.length; j++) {
                 const a = geometry.firstItems[i],
@@ -456,20 +545,92 @@ try {
                 name + " more than three busy cards",
               );
             }
-            if (["normal", "crowded", "busy-neighbors"].includes(scenario)) {
+            if (["normal", "crowded", "busy-neighbors", "dense20", "over-cap"].includes(scenario)) {
               const card = page.locator(".critter:visible").first();
               if (await card.count()) {
-                await card.hover();
-                assert.equal(
-                  await card.evaluate((node) => getComputedStyle(node).outlineWidth),
-                  "2px",
+                const restBox = await card.boundingBox(),
+                  stable = await positions();
+                const hoverCapable = await page.evaluate(
+                  () => matchMedia("(any-hover: hover)").matches,
                 );
-                await page.screenshot({
-                  path: output + "/" + name + "-hover.png",
-                  fullPage: true,
-                  animations: "disabled",
-                });
-                await page.mouse.move(0, 0);
+                if (viewport.width >= 1200)
+                  assert.ok(hoverCapable, name + " desktop hover capability exercised");
+                if (hoverCapable) {
+                  await card.hover();
+                  const face = card.locator(".critter-face"),
+                    expanded = await face.boundingBox();
+                  assert.ok(
+                    expanded.width > restBox.width && expanded.height > restBox.height,
+                    name + " enlarges visual item",
+                  );
+                  const shore = await page.locator("#beach").boundingBox();
+                  assert.ok(
+                    expanded.x >= shore.x &&
+                      expanded.x + expanded.width <= shore.x + shore.width &&
+                      expanded.y >= shore.y &&
+                      expanded.y + expanded.height <= shore.y + shore.height,
+                    name + " expanded face not clipped",
+                  );
+                  await page.mouse.move(
+                    expanded.x + expanded.width - 8,
+                    expanded.y + expanded.height / 2,
+                  );
+                  await page.waitForTimeout(250);
+                  assert.ok(
+                    await card.evaluate((n) => n.matches(":hover")),
+                    name + " pointer can enter enlarged bounds without flicker",
+                  );
+                  assert.deepEqual(await positions(), stable, name + " hover does not repack");
+                  if (scenario === "dense20") {
+                    await page.evaluate(() => {
+                      window.__bayHoverRefresh = false;
+                      const observer = new MutationObserver(() => {
+                        window.__bayHoverRefresh = true;
+                        observer.disconnect();
+                      });
+                      observer.observe(document.querySelector("#stage-grid"), { childList: true });
+                      document.querySelector("#refresh-bay").click();
+                    });
+                    await page.waitForFunction(() => window.__bayHoverRefresh);
+                    await page.waitForTimeout(250);
+                    assert.ok(
+                      await card.evaluate(
+                        (n) => n.matches(":hover") && n.classList.contains("hovered"),
+                      ),
+                      name + " hovered identity survives real refreshed render",
+                    );
+                    assert.deepEqual(
+                      await positions(),
+                      stable,
+                      name + " hovered refresh stable positions",
+                    );
+                  }
+                  assert.ok(
+                    await face.evaluate((n) => {
+                      const r = n.getBoundingClientRect();
+                      return n.contains(
+                        document.elementFromPoint(r.right - 8, r.top + r.height / 2),
+                      );
+                    }),
+                    name + " floats above neighbors",
+                  );
+                  assert.equal(
+                    await card.evaluate(
+                      (node) => getComputedStyle(node.querySelector(".critter-face")).outlineWidth,
+                    ),
+                    "2px",
+                  );
+                  await page.screenshot({
+                    path: output + "/" + name + "-hover.png",
+                    fullPage: false,
+                    animations: "disabled",
+                  });
+                  assert.ok(
+                    (await face.boundingBox()).width > restBox.width,
+                    name + " expansion remains open after capture",
+                  );
+                  await page.mouse.move(0, 0);
+                }
                 await card.focus();
                 await page.keyboard.press("Tab");
                 await page.keyboard.press("Shift+Tab");
@@ -478,11 +639,40 @@ try {
                     (node) =>
                       document.activeElement === node &&
                       node.matches(":focus-visible") &&
-                      Number.parseFloat(getComputedStyle(node).outlineWidth) >= 2 &&
-                      getComputedStyle(node).outlineStyle !== "none",
+                      Number.parseFloat(
+                        getComputedStyle(node.querySelector(".critter-face")).outlineWidth,
+                      ) >= 2 &&
+                      getComputedStyle(node.querySelector(".critter-face")).outlineStyle !== "none",
                   ),
                   name + " visible keyboard focus outline",
                 );
+                const focusedFace = await card.locator(".critter-face").boundingBox();
+                assert.ok(
+                  focusedFace.width > restBox.width && focusedFace.height > restBox.height,
+                  name + " keyboard expands without hover capability",
+                );
+                await page.screenshot({
+                  path: output + "/" + name + "-focus.png",
+                  fullPage: true,
+                  animations: "disabled",
+                });
+                if (viewport.width < 1200) {
+                  for (const id of ["previous-stage", "focused-stage", "next-stage"]) {
+                    assert.ok(
+                      await page.locator("#" + id).evaluate((n) => {
+                        const r = n.getBoundingClientRect();
+                        const hit = document.elementFromPoint(
+                          r.left + r.width / 2,
+                          r.top + r.height / 2,
+                        );
+                        return n === hit || n.contains(hit);
+                      }),
+                      name + " expanded preview does not intercept " + id,
+                    );
+                  }
+                }
+                await card.evaluate((n) => n.blur());
+                await page.mouse.move(0, 0);
               }
             }
             assert.equal(await page.locator("#review-paths").inputValue(), "all");
@@ -539,7 +729,148 @@ try {
               );
               assert.ok(geometry.plot.width >= prior.plot.width, "chart must remain wide");
             }
+            if (scenario === "dense20" && [1440, 1200].includes(viewport.width)) {
+              for (const edge of ["top", "bottom"]) {
+                await page.mouse.move(0, 0);
+                const candidates = page.locator(selector("reviewing") + " .critter");
+                const target = edge === "top" ? candidates.first() : candidates.last();
+                await target.evaluate(
+                  (n, edge) =>
+                    window.scrollTo({
+                      top:
+                        window.scrollY +
+                        n.getBoundingClientRect().top -
+                        (edge === "top" ? 8 : window.innerHeight - 56),
+                      behavior: "instant",
+                    }),
+                  edge,
+                );
+                await target.hover({ position: { x: 20, y: 20 } });
+                await page.waitForTimeout(100);
+                await assertExpandedMotionBounds(page, target, name + " edge " + edge);
+                const face = await target.locator(".critter-face").boundingBox();
+                assert.ok(
+                  face.y >= 0 && face.y + face.height <= viewport.height,
+                  name +
+                    " " +
+                    edge +
+                    " scrolled preview remains in viewport: " +
+                    JSON.stringify({
+                      face,
+                      target: await target.boundingBox(),
+                      state: await target.evaluate((n) => ({
+                        scrollY,
+                        height: innerHeight,
+                        hover: n.matches(":hover"),
+                        classes: n.className,
+                        detailY: n.style.getPropertyValue("--detail-y"),
+                        header: document
+                          .querySelector(".masthead")
+                          .getBoundingClientRect()
+                          .toJSON(),
+                        nav: document.querySelector(".focus-nav").getBoundingClientRect().toJSON(),
+                        beach: document.getElementById("beach").getBoundingClientRect().toJSON(),
+                      })),
+                    }),
+                );
+                await page.screenshot({
+                  path: output + "/" + name + "-edge-" + edge + ".png",
+                  animations: "disabled",
+                });
+              }
+              await page.mouse.move(0, 0);
+              await page.evaluate(() => window.scrollTo(0, 0));
+            }
             const initialRows = allRows(current.status);
+            if (["dense20", "over-cap"].includes(scenario)) {
+              const target = page.locator(selector("reviewing") + " .critter").last();
+              const reference = await target.evaluate(
+                (n) => n.dataset.repository + "#" + n.dataset.number,
+              );
+              await page.locator("#finder-input").fill(reference);
+              await page.locator("#finder-input").press("Enter");
+              const located = page.locator(".critter.located"),
+                face = located.locator(".critter-face");
+              assert.equal(await located.count(), 1, name + " finder identifies drawn match");
+              await assertExpandedMotionBounds(page, located, name + " finder");
+              const bounds = await face.boundingBox();
+              assert.ok(
+                bounds.width >= 200 &&
+                  bounds.height === 200 &&
+                  bounds.x >= 0 &&
+                  bounds.y >= 0 &&
+                  bounds.x + bounds.width <= viewport.width &&
+                  bounds.y + bounds.height <= viewport.height,
+                name + " finder expansion visible in viewport",
+              );
+              await page.screenshot({
+                path: output + "/" + name + "-finder.png",
+                animations: "disabled",
+              });
+              if (viewport.width < 1200) {
+                await page.selectOption("#focused-stage", "arriving");
+                const update = page.waitForResponse((r) => r.url() === origin + "/api/status");
+                await page.locator("#refresh-bay").click();
+                await update;
+                // This case tests hidden-area remeasurement, not a mode switch.
+                // The separate navigation cases below exercise crossing into desktop.
+                const resizedWidth = viewport.width === 1199 ? 1198 : viewport.width + 1;
+                await page.setViewportSize({ width: resizedWidth, height: viewport.height });
+                await page.waitForTimeout(150);
+                await page.selectOption("#focused-stage", "reviewing");
+                const revealed = await page.locator(".critter.located .critter-face").boundingBox();
+                assert.ok(
+                  revealed &&
+                    revealed.x >= 0 &&
+                    revealed.x + revealed.width <= resizedWidth &&
+                    revealed.y >= 0 &&
+                    revealed.y + revealed.height <= viewport.height,
+                  name + " located preview recalculates after hidden refresh/resize/reveal",
+                );
+                await page.setViewportSize(viewport);
+                await page.waitForTimeout(150);
+              }
+              if (viewport.width <= 768) await page.locator("#finder-clear").tap();
+              else await page.locator("#finder-clear").click();
+              if (viewport.width <= 768) {
+                const card = page.locator(".critter:visible").first();
+                const tapped = await card.evaluate(
+                  (n) => n.dataset.repository + "#" + n.dataset.number,
+                );
+                await card.tap();
+                assert.ok(
+                  await page.locator("#drawer").evaluate((n) => n.open),
+                  name + " tap opens inspector without hover",
+                );
+                assert.equal(await page.locator("#drawer-title").textContent(), tapped);
+                await page.screenshot({
+                  path: output + "/" + name + "-touch-inspector.png",
+                  animations: "disabled",
+                });
+                await page.locator("#drawer-close").tap();
+                assert.equal(
+                  await page.locator(".critter.hovered").count(),
+                  0,
+                  name + " touch does not latch hover",
+                );
+                assert.ok(
+                  (await card.locator(".critter-face").boundingBox()).width <=
+                    (await card.boundingBox()).width,
+                  name + " no sticky touch expansion after inspector",
+                );
+                const neighbor = page.locator(".critter:visible").nth(1);
+                const nextReference = await neighbor.evaluate(
+                  (n) => n.dataset.repository + "#" + n.dataset.number,
+                );
+                await neighbor.tap();
+                assert.equal(
+                  await page.locator("#drawer-title").textContent(),
+                  nextReference,
+                  name + " next tap reaches neighbor without mouse reset",
+                );
+                await page.locator("#drawer-close").tap();
+              }
+            }
             if (scenario === "mixed") {
               const repository = repositories[0];
               const timingBefore = await page.locator(".journey-summary").innerText();
@@ -607,7 +938,18 @@ try {
               const rows = initialRows.filter((row) => row.stage === area),
                 section = page.locator(selector(area));
               const limit = await section.locator(".critter").count();
-              assert.ok(limit <= rows.length, "drawn cannot exceed public sample");
+              assert.ok(
+                limit <= rows.length && limit <= 20,
+                "drawn cap cannot exceed20 or public sample",
+              );
+              if (stages.includes(area))
+                assert.equal(
+                  limit,
+                  Math.min(20, rows.length),
+                  name + " all available up to20 " + area,
+                );
+              if (scenario === "dense20" && stages.includes(area))
+                assert.equal(rows.length, 20, name + " real public twenty per lane " + area);
               if (stages.includes(area) && rows.length > 3)
                 assert.ok(limit > 3, name + " adaptive active capacity " + area);
               assert.match(
@@ -674,6 +1016,27 @@ try {
                     name + " preserves specific terminal outcome",
                   );
                 }
+              }
+              if (scenario === "over-cap" && area === "reviewing") {
+                const off = await page
+                  .locator("#queue-sample-body li")
+                  .evaluateAll((nodes) =>
+                    nodes
+                      .filter((n) => n.textContent.includes("not drawn"))
+                      .map((n) => n.querySelector("button").textContent),
+                  );
+                assert.equal(off.length, 4, name + " exactly four beyond20");
+                await page.locator("#queue-sample-close").click();
+                await page.locator("#finder-input").fill(off[0]);
+                await page.locator("#finder-input").press("Enter");
+                assert.ok(
+                  await page.locator("#drawer").evaluate((n) => n.open),
+                  name + " finder opens off-cap inspector",
+                );
+                assert.equal(await page.locator("#drawer-title").textContent(), off[0]);
+                await page.locator("#drawer-close").click();
+                await page.locator("#finder-clear").click();
+                await section.locator("[data-overflow-stage]").click();
               }
               const entry = page.locator("#queue-sample-body [data-overflow-reference]").last();
               await entry.focus();
@@ -838,9 +1201,16 @@ try {
               assert.match(await plot.getAttribute("aria-valuetext"), /UTC.*median.*mean.*sample/);
               await page.keyboard.press("Escape");
               const bounds = await plot.boundingBox();
-              await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + 20);
+              // Keyboard navigation can leave the chart beneath the sticky masthead.
+              // Element actions scroll and hit-test the actual plot, not stale screen coordinates.
+              await plot.hover({ position: { x: bounds.width / 2, y: 20 } });
               if (viewport.width <= 768)
-                await page.touchscreen.tap(bounds.x + bounds.width / 2, bounds.y + 20);
+                await plot.tap({ position: { x: bounds.width / 2, y: 20 } });
+              assert.equal(
+                new URL(page.url()).pathname,
+                "/bay",
+                name + " chart interaction stays on Bay",
+              );
               const refreshedEpoch = Math.max(Date.now() - 1000, epoch + 1000);
               const seed = await post(origin, "/fixture/snapshot", {
                 scenario,
@@ -937,8 +1307,8 @@ try {
                   .locator(".critter.located")
                   .first()
                   .evaluate((node) => getComputedStyle(node).animationName),
-                "found",
-                "real finder action retains its pulse with motion enabled",
+                "none",
+                "real finder action freezes its expanded anchor with motion enabled",
               );
               assert.equal(
                 await page.evaluate(() => document.activeElement?.getAttribute("data-number")),
@@ -1060,6 +1430,122 @@ try {
                   " system motion preference changes synchronize control and retain manual choice",
               );
             }
+            if (scenario === "dense20" && viewport.width === 1440) {
+              await page.emulateMedia({ reducedMotion: "no-preference" });
+              await page.locator(".view-menu > summary").click();
+              await page.locator("#reduce-motion").uncheck();
+              await page.locator('[data-brush="change"]').click();
+              await page.keyboard.press("Escape");
+              await post(origin, "/fixture/snapshot", {
+                scenario: "dense-forward",
+                epoch: Date.now() - 1000,
+              });
+              const refreshed = page.waitForResponse((r) => r.url() === origin + "/api/status");
+              await page.locator("#refresh-bay").click();
+              assert.equal((await (await refreshed).json()).public_projection_complete, true);
+              const ready = page.locator('.critter.ready[data-number="91005"]');
+              await ready.waitFor({ state: "visible", timeout: 15000 });
+              await ready.focus();
+              await page.keyboard.press("Tab");
+              await page.keyboard.press("Shift+Tab");
+              assert.match(await ready.getAttribute("aria-description"), /Ready/);
+              await assertExpandedMotionBounds(page, ready, name + " ready focus");
+              assert.ok(
+                await ready.locator(".ready-flag").isVisible(),
+                name + " real dense READY visible on focus",
+              );
+              await page.screenshot({
+                path: output + "/" + name + "-ready.png",
+                animations: "disabled",
+              });
+              const transitionKey = await ready.getAttribute("data-key");
+              const transitionSamples = await page.evaluate(async (key) => {
+                const rows = [],
+                  start = performance.now();
+                await new Promise((resolve) => {
+                  const frame = () => {
+                    const node = Array.from(document.querySelectorAll(".critter")).find(
+                      (n) => n.dataset.key === key,
+                    );
+                    const face = node?.querySelector(".critter-face").getBoundingClientRect();
+                    const beach = document.querySelector("#beach").getBoundingClientRect();
+                    rows.push({
+                      stage: node?.closest(".stage")?.dataset.stage,
+                      sweeping: node?.classList.contains("being-swept"),
+                      scripted: node
+                        ?.getAnimations()
+                        .some(
+                          (a) =>
+                            a.playState === "running" &&
+                            a.effect.getKeyframes().some((k) => k.transform),
+                        ),
+                      transform: node && getComputedStyle(node).transform,
+                      bounded:
+                        !!face &&
+                        face.width >= 200 &&
+                        face.height === 200 &&
+                        face.x >= Math.max(0, beach.x) &&
+                        face.right <= Math.min(innerWidth, beach.right) &&
+                        face.y >= Math.max(0, beach.y) &&
+                        face.bottom <= Math.min(innerHeight, beach.bottom),
+                    });
+                    if (performance.now() - start < 11000) requestAnimationFrame(frame);
+                    else resolve();
+                  };
+                  requestAnimationFrame(frame);
+                });
+                return rows;
+              }, transitionKey);
+              await writeFile(
+                output + "/" + name + "-inspected-transition.json",
+                JSON.stringify(transitionSamples, null, 2),
+              );
+              assert.ok(
+                transitionSamples.every((r) => r.bounded && r.transform === "none"),
+                name +
+                  " inspected sweep/landing stays bounded: " +
+                  JSON.stringify(
+                    transitionSamples
+                      .filter((r) => !r.bounded || r.transform !== "none")
+                      .slice(0, 3),
+                  ),
+              );
+              assert.ok(
+                transitionSamples.some((r) => r.sweeping && r.scripted),
+                name + " real scripted sweep exercised",
+              );
+              assert.ok(
+                transitionSamples.some((r) => r.stage === "reviewing" && r.scripted),
+                name + " real scripted landing exercised",
+              );
+              check(name + " inspected scripted sweep and landing retain bounded expanded detail");
+              await page.waitForSelector(
+                '.stage[data-stage="reviewing"] .critter[data-number="91005"]',
+                { timeout: 15000 },
+              );
+              await post(origin, "/fixture/snapshot", {
+                scenario: "dense-confirming",
+                epoch: Date.now() - 1000,
+              });
+              const confirmed = page.waitForResponse((r) => r.url() === origin + "/api/status");
+              await page.locator("#refresh-bay").click();
+              await confirmed;
+              const confirming = page.locator('.critter.confirming[data-number="91405"]');
+              await confirming.waitFor({ state: "visible", timeout: 10000 });
+              await confirming.focus();
+              await page.keyboard.press("Tab");
+              await page.keyboard.press("Shift+Tab");
+              assert.match(await confirming.getAttribute("aria-label"), /confirming outcome/);
+              assert.ok(
+                await confirming.locator(".confirming-flag").isVisible(),
+                name + " real dense CHECKING visible on focus",
+              );
+              await page.screenshot({
+                path: output + "/" + name + "-confirming.png",
+                animations: "disabled",
+              });
+              check(name + " real dense READY and CHECKING disclosures remain accessible");
+            }
             check(
               name +
                 " current-page samples, areas, chart, cohorts, controls, focus and observer-only motion",
@@ -1093,6 +1579,7 @@ try {
       }
     }
   }
+  assert.ok(executedCases > 0, "Proof filters selected no browser cases");
   assert.deepEqual(errors, []);
   check("all browser traffic stays same-origin GET; no queue/workflow/GitHub mutation attempts");
   completed = true;
@@ -1111,6 +1598,9 @@ try {
         image: process.env.BAY_PROOF_IMAGE,
         lease: process.env.BAY_PROOF_LEASE,
         checks,
+        executedCases,
+        selectedWidths: process.env.BAY_PROOF_WIDTHS || "full",
+        selectedScenarios: process.env.BAY_PROOF_SCENARIOS || "full",
         errors,
         limits:
           "Controlled fixture snapshots persist through real StatusStore DO and production cached /api/status projection. Separate real ExactReviewQueue admission/finalization exercised. No live producers or upstream workflow behavior proved. Human screenshot inspection remains required.",

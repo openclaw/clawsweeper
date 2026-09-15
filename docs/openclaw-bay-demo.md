@@ -96,8 +96,11 @@ list is not the backlog and cannot retrieve unsampled identities.
 The finder is compact and left-aligned beside its actions and filters. Cards
 use deterministic, key-seeded offsets within nonoverlapping cells rather than
 perfect rows. Desktop lanes borrow spare width from quieter areas; crowded
-areas shrink sprites, not labels or hit targets. Capacity follows available
-geometry instead of a three-card limit. Resizing, filtering or changed sample
+areas show up to 20 sampled creatures with compact number labels and 44px-or-larger
+hit targets. Hover, keyboard focus and finder expand the creature and readable
+identity above its neighbors without repacking; touch opens the same inspector.
+Active scenes grow vertically when needed rather than silently dropping back to
+eight cards. Records beyond 20 remain in the read-only list and finder. Resizing, filtering or changed sample
 membership may rearrange cards; repeating an unchanged snapshot does not.
 Labels show the short repository name and item number on separate lines, with
 full owner/repository identity in the inspector. All available sample records

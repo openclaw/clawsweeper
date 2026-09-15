@@ -51,9 +51,9 @@ test("drawn slots are bounded independently of aggregate counts, without losing 
     stage: "reviewing",
   }));
   const { helpers } = harness(items);
-  assert.deepEqual(helpers.areaCounts("reviewing"), { sampled: 24, drawn: 12, aggregate: "500" });
+  assert.deepEqual(helpers.areaCounts("reviewing"), { sampled: 24, drawn: 20, aggregate: "500" });
   assert.equal(helpers.areaRows("reviewing").length, 24);
-  assert.match(helpers.sampleControl("reviewing"), /\+12 sampled items/);
+  assert.match(helpers.sampleControl("reviewing"), /\+4 sampled items/);
   assert.doesNotMatch(helpers.sampleControl("reviewing"), /497/);
   assert.equal(helpers.drawnLimit("completed"), 0);
   assert.equal(helpers.drawnLimit("attention"), 0);
@@ -63,7 +63,8 @@ test("adaptive geometry keeps full hit targets disjoint and jitter deterministic
   const helpers = new Function(
     "STAGES",
     "hash",
-    bayLayoutScript + ";return {planBayArea,bayCardPosition,bayLaneWidths};",
+    bayLayoutScript +
+      ";return {planBayArea,bayCardPosition,bayLaneWidths,bayDetailPosition,positionBayDetail};",
   )(stages, (key: string) => {
     let h = 2166136261;
     for (const ch of key) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
@@ -77,14 +78,15 @@ test("adaptive geometry keeps full hit targets disjoint and jitter deterministic
           helpers.bayCardPosition(plan, "public-reference-" + index, index),
         );
         assert.equal(plan.limit <= count, true);
-        assert.ok(plan.cardWidth >= 80 && plan.cardHeight >= 44);
+        assert.ok(plan.cardWidth >= 44 && plan.cardHeight >= 44);
+        assert.equal(plan.limit, Math.min(20, count));
         boxes.forEach((a, index) => {
           assert.deepEqual(a, helpers.bayCardPosition(plan, "public-reference-" + index, index));
           assert.ok(
             a.x >= 0 &&
               a.y >= 0 &&
               a.x + plan.cardWidth <= width &&
-              a.y + plan.cardHeight <= height,
+              a.y + plan.cardHeight <= plan.height,
           );
           boxes
             .slice(index + 1)
@@ -104,15 +106,54 @@ test("adaptive geometry keeps full hit targets disjoint and jitter deterministic
     bayLayoutCss,
     /\.beach \.critter:not\(\.located\):not\(\.ready\):not\(\.retriggered\):not\(\.being-swept\):not\(\.tunneling\)\{animation:none\}/,
   );
+  assert.doesNotThrow(() =>
+    helpers.positionBayDetail({
+      classList: { contains: () => true },
+      getClientRects: () => [],
+      getBoundingClientRect: () => {
+        throw new Error("hidden cards must not be measured");
+      },
+    }),
+  );
+  for (const top of [4, 740]) {
+    const box = { left: 100, top, width: 44, height: 48 };
+    const face = helpers.bayDetailPosition(
+      box,
+      { left: 0, right: 360, top: -500, bottom: 1400 },
+      { width: 360, height: 800 },
+    );
+    assert.ok(box.left + face.x >= 0 && box.left + face.x + face.width <= 360);
+    assert.ok(box.top + face.y >= 0 && box.top + face.y + face.height <= 800);
+  }
+  const navBox = { left: 100, top: 350, width: 44, height: 48 };
+  const belowNavigation = helpers.bayDetailPosition(
+    navBox,
+    { left: 0, right: 360, top: -100, bottom: 1400 },
+    { width: 360, height: 800, top: 400 },
+  );
+  assert.ok(navBox.top + belowNavigation.y >= 404, "expanded face clears visible navigation");
+  assert.ok(navBox.top + belowNavigation.y + belowNavigation.height <= 792);
+  assert.match(bayLayoutCss, /\.focus-nav\{display:grid;position:absolute;z-index:150/);
+  const shortViewBox = { left: 357, top: 476.859375, width: 44, height: 48 };
+  const shortViewFace = helpers.bayDetailPosition(
+    shortViewBox,
+    { left: 0, right: 1200, top: 312.3125, bottom: 1353.3125 },
+    { width: 1200, height: 525, top: 56 },
+  );
+  assert.ok(shortViewBox.top + shortViewFace.y >= 316.3125);
+  assert.ok(shortViewBox.top + shortViewFace.y + shortViewFace.height <= 521);
   const phone = helpers.planBayArea(328, 266, 2);
   phone.firstRowJitter = 0;
   for (const key of ["public-a", "public-b", "public-c"]) {
-    assert.equal(helpers.bayCardPosition(phone, key, 0).y, 10);
+    assert.equal(helpers.bayCardPosition(phone, key, 0).y, 9);
   }
   const widths = helpers.bayLaneWidths(1051, [1, 1, 20, 1, 1, 1]);
   assert.ok(widths[2] > widths[1]);
   assert.ok(Math.abs(widths.reduce((a: number, b: number) => a + b, 0) + 50 - 1051) < 0.001);
-  assert.ok(helpers.planBayArea(widths[2], 441, 20).limit >= 8);
+  assert.equal(helpers.planBayArea(widths[2], 441, 24).limit, 20);
+  for (const laneWidth of helpers.bayLaneWidths(826, [20, 20, 20, 20, 20, 20])) {
+    assert.equal(helpers.planBayArea(laneWidth, 415, 20).limit, 20);
+  }
 });
 
 test("same bounded sample has stable ordering across input reordering", () => {
@@ -924,6 +965,10 @@ test("finder flushes pending transitions and focuses a freshly queried result", 
               focus() {
                 focusedGeneration = createdAt;
               },
+              scrollIntoView(options: { block: string; inline: string }) {
+                assert.deepEqual(options, { block: "center", inline: "nearest" });
+                order.push("scroll");
+              },
             },
           ]
         : [];
@@ -966,6 +1011,9 @@ test("finder flushes pending transitions and focuses a freshly queried result", 
       opened = id;
     },
     showToast() {},
+    positionBayDetail() {
+      order.push("position-detail");
+    },
   };
   const flush = bayLayoutScript
     .split("\n")
@@ -976,7 +1024,7 @@ test("finder flushes pending transitions and focuses a freshly queried result", 
   find({ preventDefault() {} });
   assert.equal(state.pendingItems, null);
   assert.equal(selectedArea, "publishing");
-  assert.deepEqual(order, ["park", "apply", "resume"]);
+  assert.deepEqual(order, ["park", "apply", "resume", "scroll", "position-detail"]);
   assert.equal(state.masterPhase, "resting");
   assert.equal(state.masterPending, false);
   assert.equal(state.masterSequence, 5);

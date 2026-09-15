@@ -5,7 +5,7 @@ set -euo pipefail
 : "${BAY_PROOF_LEASE:?record actual lease}"
 : "${BAY_PROOF_IMAGE:?record actual image}"
 : "${PLAYWRIGHT_CHROMIUM_EXECUTABLE:?record sandbox-capable browser path}"
-export BAY_PROOF_BASE="${BAY_PROOF_BASE:-4d43f8f5a62215e41ba180930e2ee72f21bf5ace}"
+export BAY_PROOF_BASE="${BAY_PROOF_BASE:-8e008cbc0b4c9153f46a1b90167b215dea9ccdad}"
 : "${BAY_PROOF_CANDIDATE:?record candidate commit and dirty patch digest explicitly}"
 export BAY_PROOF_CANDIDATE
 export BAY_PROOF_OUTPUT="${BAY_PROOF_OUTPUT:-.artifacts/bay-readable-layout}"
@@ -39,13 +39,16 @@ pnpm install --frozen-lockfile
 (cd "$scratch/base" && pnpm install --frozen-lockfile)
 pids=()
 cleanup() {
-  for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
+  # pnpm may exit without terminating Wrangler/workerd children. Kill only
+  # the separate process groups created by this proof, never unrelated servers.
+  for pid in "${pids[@]}"; do kill -TERM -- "-$pid" 2>/dev/null || true; done
   for pid in "${pids[@]}"; do wait "$pid" 2>/dev/null || true; done
 }
 trap cleanup EXIT
-pnpm dlx wrangler@4.107.0 dev --config docs/proof/bay-readable-layout/wrangler.toml --local --ip 127.0.0.1 --port 8794 --inspector-ip 127.0.0.1 --inspector-port 8796 --persist-to "$scratch/after-state" > "$BAY_PROOF_OUTPUT/after-worker.log" 2>&1 &
+# Prebuilt optional binaries suffice; do not approve dependency install scripts.
+setsid pnpm --config.ignore-scripts=true dlx wrangler@4.107.0 dev --config docs/proof/bay-readable-layout/wrangler.toml --local --ip 127.0.0.1 --port 8794 --inspector-ip 127.0.0.1 --inspector-port 8796 --persist-to "$scratch/after-state" > "$BAY_PROOF_OUTPUT/after-worker.log" 2>&1 &
 pids+=("$!")
-(cd "$scratch/base" && exec pnpm dlx wrangler@4.107.0 dev --config docs/proof/bay-readable-layout/wrangler.toml --local --ip 127.0.0.1 --port 8795 --inspector-ip 127.0.0.1 --inspector-port 8797 --persist-to "$scratch/before-state") > "$BAY_PROOF_OUTPUT/before-worker.log" 2>&1 &
+(cd "$scratch/base" && exec setsid pnpm --config.ignore-scripts=true dlx wrangler@4.107.0 dev --config docs/proof/bay-readable-layout/wrangler.toml --local --ip 127.0.0.1 --port 8795 --inspector-ip 127.0.0.1 --inspector-port 8797 --persist-to "$scratch/before-state") > "$BAY_PROOF_OUTPUT/before-worker.log" 2>&1 &
 pids+=("$!")
 for port in 8794 8795; do
   ready=false

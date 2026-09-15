@@ -16,6 +16,8 @@ export const scenarios = [
   "normal",
   "crowded",
   "busy-neighbors",
+  "dense20",
+  "over-cap",
   "mixed",
   "long",
   "empty",
@@ -58,7 +60,15 @@ function timingSet(now, durations) {
   };
 }
 export function statusFixture(scenario, epoch) {
-  if (!scenarios.includes(scenario) || !Number.isSafeInteger(epoch))
+  if (scenario === "dense20-reordered") {
+    const snapshot = statusFixture("dense20", epoch);
+    snapshot.exact_review_queue.bay_projection.activity.items.reverse();
+    return snapshot;
+  }
+  if (
+    ![...scenarios, "dense-forward", "dense-confirming"].includes(scenario) ||
+    !Number.isSafeInteger(epoch)
+  )
     throw new Error("invalid proof fixture");
   const now = epoch - (scenario === "stale" ? 600000 : 0),
     generated = new Date(now).toISOString();
@@ -71,15 +81,30 @@ export function statusFixture(scenario, epoch) {
       ? 0
       : ["normal", "forward"].includes(scenario)
         ? 2
-        : 8;
+        : ["dense20", "dense-forward", "dense-confirming"].includes(scenario)
+          ? 20
+          : 8;
   const items = [];
   for (const [stageIndex, stage] of stages.entries()) {
     for (
       let i = 0;
-      i < (scenario === "busy-neighbors" ? (stage === "reviewing" ? 20 : 1) : count);
+      i <
+      (scenario === "busy-neighbors"
+        ? stage === "reviewing"
+          ? 20
+          : 1
+        : scenario === "over-cap"
+          ? stage === "reviewing"
+            ? 24
+            : 1
+          : count);
       i++
     ) {
-      const source = i % 3 === 0 ? "queue" : "live",
+      const source = (
+          ["dense20", "dense-forward", "dense-confirming"].includes(scenario) ? i < 4 : i % 3 === 0
+        )
+          ? "queue"
+          : "live",
         legacy = stage === "publishing" && i % 2 === 0;
       (source === "queue" ? queue : live)[stage]++;
       if (legacy) (source === "queue" ? legacyQueue : legacyLive)[stage]++;
@@ -105,11 +130,18 @@ export function statusFixture(scenario, epoch) {
       });
     }
   }
-  if (scenario === "forward") {
-    const moved = items.find((item) => item.item_number === 91001);
+  if (["forward", "dense-forward", "dense-confirming"].includes(scenario)) {
+    const moved = items.find(
+      (item) => item.item_number === (scenario === "forward" ? 91001 : 91005),
+    );
     live[moved.stage]--;
     moved.stage = "reviewing";
     live.reviewing++;
+  }
+  if (scenario === "dense-confirming") {
+    const index = items.findIndex((item) => item.item_number === 91405);
+    live.applying--;
+    items.splice(index, 1);
   }
   // Unsampled aggregate work deliberately has no accessible invented identity.
   if (count > 2) queue.reviewing += 40;

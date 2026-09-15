@@ -25,11 +25,15 @@ mutation policies are unchanged.
 Active proof harness owned by Bay maintainers; source of truth is the production
 page/layout plus this executable matrix. Update when geometry, navigation,
 projection, cache schema or fixture contracts change. This follow-up compares
-the post-1523 layout at base 4d43f8f5a62215e41ba180930e2ee72f21bf5ace.
+the pre-density layout after the main-branch integration at base
+8e008cbc0b4c9153f46a1b90167b215dea9ccdad. The baseline must be present locally;
+fetch that mainline commit first when using a shallow checkout.
 Use the repository-resolved Crabbox provider and an explicitly authorized existing
 lease. This task uses Linux AWS proof, not an assumed Windows or local Docker
 host. Use --no-hydrate to avoid Actions dispatch. Node >=24 and a sandbox-capable
-Chromium installation are prerequisites; no TLS or browser-sandbox bypass is
+Chromium installation and `setsid` are prerequisites. Each local Worker owns
+a separate process group; cleanup terminates its pnpm/Wrangler/workerd tree so
+subsequent runs cannot reuse an old fixture store. No TLS or browser-sandbox bypass is
 permitted. Record actual provider, lease, image and tool versions with each run.
 
 Stage intended source additions before proof. Crabbox sync transports working
@@ -76,13 +80,21 @@ Both pages receive the same scenario epoch and source data. Both pages default t
 The matrix covers normal, crowded, mixed-repository, long-reference, empty,
 stale, partial-diagnostic, unknown-participation, terminal, active batch-fallback,
 missing-timing, partial-activity and forward-transition fixtures, plus 20 active
-cards in Reviewing with one in each neighboring lane. Viewports are 2400x1050,
+cards in Reviewing with one in each neighboring lane, 20 in every active lane
+(24 queue plus 96 live references within the existing 124-reference public
+contract), and 24 in one lane to prove the 20-card cap and off-beach finder. Viewports are 2400x1050,
 1920x1080, 1440x1000, 1200x525, 1199x900, 768x1024, 430x932 and 360x800.
 The full scenario matrix runs at the original five breakpoints; additional
-2400/1920/1200 canvases exercise normal, crowded and sparse-neighbor density.
+2400/1920/1200 canvases exercise normal, crowded, sparse-neighbor, 20-per-lane
+and over-cap density. `BAY_PROOF_WIDTHS` and `BAY_PROOF_SCENARIOS` can select a
+narrow debugging subset; receipts record that scope, which is not full-matrix proof.
 
-It checks adaptive geometry-derived capacity, deterministic repeat-snapshot
-placement, compact finder width, quiet-lane borrowing, hover/focus outlines and
+It checks the genuine 20-card active-lane cap, responsive 44px target packing,
+deterministic repeat-snapshot placement, compact finder width, quiet-lane
+borrowing, enlarged hover/focus faces with outlines, edge clearance and pointer
+continuity into the enlarged bounds without repacking, normal-motion finder,
+edge-hover and ready-focus bounds across complete animation cycles, plus actual
+scripted sweep/landing bounds while the creature stays inspected, and
 pairwise disjoint hit targets while every available sample stays reachable;
 aggregate/sample/drawn distinctions; all six active stages and both outcomes;
 repository filters that leave timing unchanged; all inline-proof cohorts and
