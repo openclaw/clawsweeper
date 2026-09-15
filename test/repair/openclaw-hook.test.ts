@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 import {
@@ -25,6 +26,42 @@ const post = {
   idempotencyKey: "github-activity:test",
   deliver: false,
 };
+
+test("standalone hook retries keep the process alive until success or exhaustion", () => {
+  for (const exhausted of [false, true]) {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `import { postOpenClawAgentHook } from ${JSON.stringify(new URL("../../dist/repair/openclaw-hook.js", import.meta.url).href)};
+let attempts = 0;
+postOpenClawAgentHook({
+  config: ${JSON.stringify({ ...config, retryAttempts: 2 })},
+  post: ${JSON.stringify(post)},
+  retryDelaysMs: [20],
+  fetcher: async () => {
+    attempts += 1;
+    return attempts === 1 || ${exhausted}
+      ? new Response("temporary", { status: 503 })
+      : Response.json({ ok: true, runId: "synthetic-run" });
+  },
+}).then(
+  result => console.log(JSON.stringify({ attempts, runId: result.runId })),
+  () => { console.log(JSON.stringify({ attempts, failed: true })); process.exitCode = 1; },
+);`,
+      ],
+      { encoding: "utf8", timeout: 10_000 },
+    );
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, exhausted ? 1 : 0, result.stderr);
+    assert.ok(result.stdout.trim(), "The hook must settle before the process exits");
+    assert.deepEqual(
+      JSON.parse(result.stdout),
+      exhausted ? { attempts: 2, failed: true } : { attempts: 2, runId: "synthetic-run" },
+    );
+  }
+});
 
 test("postOpenClawAgentHook retries transient hook failures with the same idempotency key", async () => {
   const calls: string[] = [];

@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Keep standalone notification commands alive during transient hook retry backoff so they finish retries and write their report instead of silently exiting successfully.
+
 - Run full repair acceptance in the executor instead of duplicating it in edit workers, and derive the overall repair budget from validation allowances with a hard ceiling and report headroom.
 
 - Preserve bounded native Git diagnostics when a source-blob fetch exhausts the hydration deadline, without changing the terminal refusal or exposing scanner output.

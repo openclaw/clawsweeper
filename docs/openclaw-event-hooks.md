@@ -134,7 +134,9 @@ Default behavior:
 
 - missing hook URL, token, or delivery target: skip notification and keep the
   workflow green;
-- transient OpenClaw HTTP/network failure: retry with the same idempotency key;
+- transient OpenClaw HTTP/network failure: retry with the same idempotency key,
+  keeping standalone notifier commands alive through backoff until the attempt
+  succeeds or the configured attempts are exhausted;
 - persistent OpenClaw HTTP failure: record the failed attempt and keep the
   workflow green;
 - a valid legacy `{ok:true,runId}` admission without `completion`: classify as

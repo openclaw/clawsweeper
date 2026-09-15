@@ -329,7 +329,7 @@ function boundedText(
 function delay(ms: number): Promise<void> {
   if (ms <= 0) return Promise.resolve();
   return new Promise((resolve) => {
-    const timeout = setTimeout(resolve, ms);
-    timeout.unref?.();
+    // Pending retries must keep standalone notifier CLIs alive until they settle.
+    setTimeout(resolve, ms);
   });
 }
