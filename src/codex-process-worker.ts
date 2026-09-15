@@ -71,7 +71,12 @@ child.once("error", (error) => {
   spawnError = error;
 });
 child.once("close", (status, signal) => {
-  if (forceKillTimer) clearTimeout(forceKillTimer);
+  if (forceKillTimer) {
+    clearTimeout(forceKillTimer);
+    // The direct child is gone, but detached descendants in its process group may
+    // still be running; finish the escalation before this worker exits.
+    terminateCodexProcessTree(child, "SIGKILL");
+  }
   clearTimeout(timeout);
   closeCodexOutputCapture(stdout);
   closeCodexOutputCapture(stderr);
@@ -115,8 +120,10 @@ child.once("close", (status, signal) => {
   process.exit(0);
 });
 
+// Keep the handlers installed: a second signal during the one-second escalation
+// window must not fall through to the default action and leave the tree running.
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-  process.once(signal, () => {
+  process.on(signal, () => {
     if (terminating) return;
     terminating = true;
     process.stdin.unpipe(child.stdin);
