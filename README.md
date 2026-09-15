@@ -695,9 +695,28 @@ Markdown and sentence punctuation. The original context is preserved, and change
 paths, credentials, or additional query text remain untouched. This omission does not classify a native finding or prove
 its verification status. Source blobs, introduced patches, and scanner admission
 retain their existing checks.
-Findings attributed to prompt, schema, diff, additional-input, other-path, or
-encoded-only blobs remain blocking, as do other findings, verified findings,
-and incomplete scans. Unverified findings alone never qualify: every finding must
+The create-profile response-redaction fixture in OpenClaw's
+`extensions/browser/src/browser/profiles-service.test.ts` also binds its exact
+URI identity, complete source line, regular-file mode, and committed base/head
+references. Native 3.97.4 scans observed only `PLAIN` and `HTML` attribution;
+the policy accepts those two variants.
+
+The full generated patch remains scanned. A URI finding attributed to its
+unchanged context may qualify only when **every literal occurrence** in that
+patch maps to the identical full line in both committed regular-file blobs.
+Canonical same-path headers, full Git object IDs, hunk coordinates, counts, and
+source bytes must agree. Every logical blob reference must independently pass
+the existing fixture policy. Added/removed lines, headers, binary patches,
+ambiguous paths, mode changes, uncommitted endpoints, and encoded-only matches
+remain blocking. Decoder line coordinates are diagnostic only; source matching
+does not rely on them. Patch notices retain the original material ID, scanner
+line, decoder, and literal line, with `patch` provenance recording the two
+revisions and each source blob/line. The prompt omission helper is never applied
+to scan input. See [the reproducible admission proof](docs/proof/agent-input-scan-context/README.md).
+
+Findings attributed to prompt, schema, raw diff, additional-input, other-path,
+or unqualified patch material remain blocking, as do other findings, verified
+findings, and incomplete scans. Unverified findings alone never qualify: every finding must
 match the exact bytes, source association, and strict detector contract. This
 classification does not expand TruffleHog's detection coverage.
 The classification is pinned to TruffleHog 3.97.4's output contract; scanner

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
 import { TRUFFLEHOG_VERSION } from "./review-tool-bootstrap.js";
+import { resolvePatchContextWitnesses } from "./agent-input-scan-patch.js";
 
 interface ReviewedFixture {
   fixtureSha256: string;
@@ -246,6 +247,9 @@ const CRABBOX_POSTGRES_DOC_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  // Existing OpenClaw create-profile redaction fixture; native PLAIN/HTML findings in PR #149354.
+  [17, "URI", "PLAIN", "9052f1f4f392d163174d33f5069883336c7a9da094f773f83b719685f4b9a239", "9052f1f4f392d163174d33f5069883336c7a9da094f773f83b719685f4b9a239", "160d09c72a4cc728dde5d883acd48d170878bbb79d05c06e533517c2afe64138", "extensions/browser/src/browser/profiles-service.test.ts", "100644"],
+  [17, "URI", "HTML", "9052f1f4f392d163174d33f5069883336c7a9da094f773f83b719685f4b9a239", "9052f1f4f392d163174d33f5069883336c7a9da094f773f83b719685f4b9a239", "160d09c72a4cc728dde5d883acd48d170878bbb79d05c06e533517c2afe64138", "extensions/browser/src/browser/profiles-service.test.ts", "100644"],
   [17, "URI", "PLAIN", "e26b2ccf9953c3e0e675998528577649327e1d3e1072233ff86cad586ca5c05d", "e26b2ccf9953c3e0e675998528577649327e1d3e1072233ff86cad586ca5c05d", "04e4f717532e6f38582816622367e020b28d8db6ced6e714667328853a422484", "extensions/matrix/src/matrix/client.test.ts", "100644"],
   [17, "URI", "HTML", "e26b2ccf9953c3e0e675998528577649327e1d3e1072233ff86cad586ca5c05d", "e26b2ccf9953c3e0e675998528577649327e1d3e1072233ff86cad586ca5c05d", "04e4f717532e6f38582816622367e020b28d8db6ced6e714667328853a422484", "extensions/matrix/src/matrix/client.test.ts", "100644"],
   [17, "URI", "ESCAPED_UNICODE", "31ff9f3ec446cbcc27e6fc08f3cd96b5d95d8b436b4144f3a098d7c524a863f7", "0d9e27039ed24044fe06ab5145d7b04569ced32d3ff6fe8eb9acf04a75663919", "47171b920ebd0800ac107a92ad80b7279677f0096fad5a367f82fe3b1955c790", "src/logging/redact.test.ts", "100644"],
@@ -284,6 +288,10 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
         (source === "src/logging/redact.test.ts" &&
           (decoder === "PLAIN" || decoder === "ESCAPED_UNICODE")) ||
         (source === "extensions/matrix/src/matrix/client.test.ts" &&
+          detectorType === 17 &&
+          detectorName === "URI" &&
+          (decoder === "PLAIN" || decoder === "HTML")) ||
+        (source === "extensions/browser/src/browser/profiles-service.test.ts" &&
           detectorType === 17 &&
           detectorName === "URI" &&
           (decoder === "PLAIN" || decoder === "HTML")) ||
@@ -409,6 +417,7 @@ interface ClassifiedFinding {
   decoder: string;
   occurrences: number;
   role?: ScanSourceRole;
+  patch?: { from: string; to: string; sourceBlob: string; sourceLine: number };
 }
 
 function object(value: unknown): Record<string, unknown> | undefined {
@@ -521,7 +530,19 @@ export function classifyReviewedFixtureScan(
   )
     return nativeFailure("completion_mismatch");
 
-  const literalLines = new Map<string, number>();
+  return classifyReviewedFindings(findings, inputs, reviewedAttributions);
+}
+
+function classifyReviewedFindings(
+  findings: Record<string, unknown>[],
+  inputs: ReadonlyMap<string, StagedScanInput>,
+  reviewedAttributions: readonly ReviewedAttribution[],
+  literalLines = new Map<string, number>(),
+): { kind: "classified"; notices: ReviewedFixtureNotice[] } | RefusedScan {
+  const patchWitnesses = new Map<
+    string,
+    NonNullable<ReturnType<typeof resolvePatchContextWitnesses>>
+  >();
   const classified = new Map<
     string,
     {
@@ -581,6 +602,82 @@ export function classifyReviewedFixtureScan(
             ([, , , expectedRaw, expectedRawV2]) =>
               expectedRaw === rawDigest && expectedRawV2 === rawV2Digest,
           );
+    if (staged?.kind === "patch") {
+      if (typeof file !== "string" || scannerLine === null) return refuse("metadata_mismatch");
+      if (
+        finding.DetectorType !== 17 ||
+        !rawV2 ||
+        (finding.DecoderName !== "PLAIN" && finding.DecoderName !== "HTML")
+      )
+        return refuse("material_not_reviewed");
+      if (exactCandidates.length) {
+        const key = [
+          file,
+          scannerLine,
+          finding.DetectorType,
+          finding.DetectorName,
+          finding.DecoderName,
+          rawDigest,
+          rawV2Digest,
+        ].join("\0");
+        if (exactFindings.has(key)) return refuse("duplicate_finding");
+        exactFindings.add(key);
+      }
+      const witnessKey = `${file}:${rawV2Digest}`;
+      const witnesses =
+        patchWitnesses.get(witnessKey) ?? resolvePatchContextWitnesses(staged, rawV2, inputs);
+      if (!witnesses) return refuse("material_not_reviewed");
+      patchWitnesses.set(witnessKey, witnesses);
+      for (const witness of witnesses) {
+        // Reuse source policy against the original full blob and every logical
+        // reference. This derived attribution never replaces scanned patch bytes.
+        const result = classifyReviewedFindings(
+          [
+            {
+              ...finding,
+              SourceMetadata: {
+                Data: { Filesystem: { file: witness.file, line: witness.sourceLine } },
+              },
+            },
+          ],
+          inputs,
+          reviewedAttributions,
+          literalLines,
+        );
+        if (result.kind === "refused")
+          return refuse(
+            result.diagnostic.kind === "unclassified_finding"
+              ? result.diagnostic.reason
+              : "finding_not_reviewed",
+          );
+        for (const notice of result.notices) {
+          const key = `patch:${notice.fixtureSha256}:${notice.source}`;
+          const group = classified.get(key) ?? {
+            ...notice,
+            findings: new Map<string, ClassifiedFinding>(),
+          };
+          for (const attributed of notice.findings) {
+            const findingKey = `${staged.id}:${scannerLine}:${finding.DecoderName}:${witness.patchLine}:${attributed.blob}:${attributed.role ?? ""}`;
+            const previous = group.findings.get(findingKey);
+            group.findings.set(findingKey, {
+              ...attributed,
+              occurrences: (previous?.occurrences ?? 0) + attributed.occurrences,
+              blob: staged.id,
+              scannerLine,
+              literalLine: witness.patchLine,
+              patch: {
+                from: staged.from,
+                to: staged.to,
+                sourceBlob: attributed.blob,
+                sourceLine: witness.sourceLine,
+              },
+            });
+          }
+          classified.set(key, group);
+        }
+      }
+      continue;
+    }
     if (exactCandidates.length > 0) {
       if (
         raw === undefined ||

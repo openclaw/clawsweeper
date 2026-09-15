@@ -2793,3 +2793,279 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
     assert.equal(existsSync(readFileSync(receipt, "utf8")), false, "private staging is removed");
   });
 }
+
+function contextPatchFixture(
+  entry: ExactCase,
+  options: {
+    source?: string;
+    beforeTail?: string;
+    afterTail?: string;
+    crlf?: boolean;
+    finalNewline?: boolean;
+  } = {},
+) {
+  const source = options.source ?? exactSource;
+  const beforeTail = options.beforeTail ?? "const version = 1;";
+  const afterTail = options.afterTail ?? "const version = 2;";
+  const ending = options.crlf ? "\r\n" : "\n";
+  const before = Buffer.from(
+    ["// context", entry.line, beforeTail].join(ending) +
+      (options.finalNewline === false ? "" : ending),
+  );
+  const after = Buffer.from(
+    ["// context", entry.line, afterTail].join(ending) +
+      (options.finalNewline === false ? "" : ending),
+  );
+  const oid = (bytes: Buffer) =>
+    createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+  const from = "a".repeat(40);
+  const to = "b".repeat(40);
+  const beforeId = oid(before);
+  const afterId = oid(after);
+  const suffix = options.crlf ? "\r" : "";
+  const patch = [
+    `diff --git a/${source} b/${source}`,
+    `index ${beforeId}..${afterId} 100644`,
+    `--- a/${source}`,
+    `+++ b/${source}`,
+    "@@ -1,3 +1,3 @@",
+    ` // context${suffix}`,
+    ` ${entry.line}${suffix}`,
+    `-${beforeTail}${options.finalNewline === false ? "" : suffix}`,
+    ...(options.finalNewline === false ? ["\\ No newline at end of file"] : []),
+    `+${afterTail}${options.finalNewline === false ? "" : suffix}`,
+    ...(options.finalNewline === false ? ["\\ No newline at end of file"] : []),
+    "",
+  ].join("\n");
+  const file = "/private/scanner/patch";
+  const finding = {
+    ...exactFixture([entry]).findings[0]!,
+    SourceMetadata: { Data: { Filesystem: { file, line: 7 } } },
+  };
+  const inputs = new Map<string, StagedScanInput>([
+    [file, { kind: "patch", id: "patch", bytes: Buffer.from(patch), from, to }],
+    [
+      `/private/scanner/${beforeId}`,
+      {
+        kind: "blob",
+        id: beforeId,
+        bytes: before,
+        references: [{ source, mode: "100644", revision: from, role: "base" }],
+      },
+    ],
+    [
+      `/private/scanner/${afterId}`,
+      {
+        kind: "blob",
+        id: afterId,
+        bytes: after,
+        references: [{ source, mode: "100644", revision: to, role: "head" }],
+      },
+    ],
+  ]);
+  return { finding, inputs, patch, beforeId, afterId, file };
+}
+
+test("approved URI findings in unchanged patch context require both exact Git witnesses", () => {
+  const entry = exactCase("URI", "PLAIN");
+  const policy = exactFixture([entry]).policy;
+  const fixture = contextPatchFixture(entry);
+  const classify = (inputs = fixture.inputs, findings = [fixture.finding]) =>
+    classifyExact(findings, inputs, policy);
+  const accepted = classify();
+  assert.equal(accepted.kind, "classified");
+  if (accepted.kind === "classified") {
+    const witnesses = accepted.notices.flatMap((notice) => notice.findings);
+    assert.equal(witnesses.length, 2);
+    assert.ok(witnesses.every((witness) => witness.blob === "patch" && witness.literalLine === 7));
+    assert.deepEqual(
+      witnesses.map((witness) => witness.patch?.sourceBlob).sort(),
+      [fixture.beforeId, fixture.afterId].sort(),
+    );
+  }
+  // Decoder coordinates may shift; independently prove every literal occurrence.
+  assert.equal(
+    classify(fixture.inputs, [
+      {
+        ...fixture.finding,
+        SourceMetadata: { Data: { Filesystem: { file: fixture.file, line: 99 } } },
+      },
+    ]).kind,
+    "classified",
+  );
+  const duplicate = classify(fixture.inputs, [fixture.finding, fixture.finding]);
+  assert.equal(duplicate.kind, "refused");
+  if (duplicate.kind === "refused") assert.equal(duplicate.diagnostic.reason, "duplicate_finding");
+  for (const [name, mutate] of [
+    [
+      "header occurrence",
+      (text: string) => text.replace("@@ -1,3 +1,3 @@", `@@ -1,3 +1,3 @@ ${entry.rawV2}`),
+    ],
+    ["wrong coordinates", (text: string) => text.replace("@@ -1,3 +1,3 @@", "@@ -2,3 +1,3 @@")],
+    ["unfinished hunk", (text: string) => text.replace("@@ -1,3 +1,3 @@", "@@ -1,4 +1,3 @@")],
+    ["wrong path", (text: string) => text.replace(`+++ b/${exactSource}`, "+++ b/another.test.ts")],
+    ["wrong mode", (text: string) => text.replace(" 100644\n", " 100755\n")],
+    ["wrong object", (text: string) => text.replace(fixture.beforeId, "c".repeat(40))],
+    ["encoded-only content", (text: string) => text.replace(entry.rawV2, "encoded fixture")],
+  ] as const) {
+    const inputs = new Map(fixture.inputs);
+    inputs.set(fixture.file, {
+      ...inputs.get(fixture.file)!,
+      bytes: Buffer.from(mutate(fixture.patch)),
+    });
+    const result = classify(inputs);
+    assert.equal(result.kind, "refused", name);
+    if (result.kind === "refused" && result.diagnostic.kind === "unclassified_finding")
+      assert.equal(result.diagnostic.material?.kind, "patch", name);
+  }
+  for (const name of [
+    "changed bytes",
+    "mixed source references",
+    "wrong role",
+    "wrong revision",
+    "missing blob",
+  ] as const) {
+    const inputs = new Map(fixture.inputs);
+    const key = `/private/scanner/${fixture.afterId}`;
+    const input = inputs.get(key)!;
+    if (input.kind !== "blob") throw new Error("expected blob fixture");
+    if (name === "missing blob") inputs.delete(key);
+    else if (name === "changed bytes")
+      inputs.set(key, { ...input, bytes: Buffer.from("different bytes\n") });
+    else
+      inputs.set(key, {
+        ...input,
+        references:
+          name === "mixed source references"
+            ? [...input.references, { ...input.references[0]!, source: "another.test.ts" }]
+            : input.references.map((reference) => ({
+                ...reference,
+                ...(name === "wrong role"
+                  ? { role: "worktree" as const }
+                  : { revision: "c".repeat(40) }),
+              })),
+      });
+    assert.equal(classify(inputs).kind, "refused", name);
+  }
+  assert.equal(classify(fixture.inputs, [{ ...fixture.finding, Verified: true }]).kind, "refused");
+  assert.equal(
+    classify(fixture.inputs, [{ ...fixture.finding, DecoderName: "BASE64" }]).kind,
+    "refused",
+  );
+});
+
+test("patch admission keeps legacy duplicate records and rejects coherent non-context occurrences", () => {
+  const url = new URL("http://127.0.0.1:9222");
+  url.username = "openclaw";
+  url.password = "relay-token";
+  const raw = url.href.slice(0, -1);
+  const entry: ExactCase = {
+    detectorType: 17,
+    detectorName: "URI",
+    decoder: "PLAIN",
+    raw,
+    rawV2: raw,
+    line: `const fixture = ${JSON.stringify(raw)};`,
+    secretParts: { host: url.host, username: url.username, password: url.password },
+    extraData: null,
+  };
+  const fixture = contextPatchFixture(entry, { source: browserProfilesSource });
+  const classify = (value: ReturnType<typeof contextPatchFixture>, findings = [value.finding]) =>
+    classifyWithProductionPolicy(findings, value.inputs);
+  for (const options of [{}, { crlf: true }, { finalNewline: false }]) {
+    const value = contextPatchFixture(entry, { source: browserProfilesSource, ...options });
+    assert.equal(classify(value).kind, "classified");
+  }
+  const records = [fixture.finding, { ...fixture.finding, DecoderName: "HTML" }, fixture.finding];
+  const accepted = classify(fixture, records);
+  assert.equal(accepted.kind, "classified");
+  if (accepted.kind === "classified") {
+    const findings = accepted.notices.flatMap((notice) => notice.findings);
+    assert.equal(findings.length, 4);
+    assert.deepEqual(
+      findings
+        .filter((finding) => finding.decoder === "PLAIN")
+        .map((finding) => finding.occurrences),
+      [2, 2],
+    );
+    assert.deepEqual(
+      findings
+        .filter((finding) => finding.decoder === "HTML")
+        .map((finding) => finding.occurrences),
+      [1, 1],
+    );
+  }
+  for (const [name, options] of [
+    ["added occurrence", { afterTail: entry.line, source: browserProfilesSource }],
+    ["removed occurrence", { beforeTail: entry.line, source: browserProfilesSource }],
+    ["unapproved source", { source: "another.test.ts" }],
+  ] as const) {
+    const coherent = contextPatchFixture(entry, options);
+    // Every source byte, OID and hunk coordinate agrees; only the admission contract fails.
+    const result = classify(coherent);
+    assert.equal(result.kind, "refused", name);
+    if (result.kind === "refused")
+      assert.equal(
+        result.diagnostic.reason,
+        name === "unapproved source" ? "source_not_reviewed" : "material_not_reviewed",
+        name,
+      );
+  }
+});
+
+test("create-profile redaction qualification binds the full line and observed native decoders", () => {
+  const url = new URL("http://127.0.0.1:9222/");
+  url.username = "browser-user";
+  url.password = "browser-password";
+  url.searchParams.set("token", "browser-token");
+  const line = `    const cdpUrl = "${url.href}";`;
+  const raw = `${url.protocol}//${url.username}:${url.password}@${url.host}`;
+  const entry: ExactCase = {
+    detectorType: 17,
+    detectorName: "URI",
+    decoder: "PLAIN",
+    raw,
+    rawV2: raw,
+    line,
+    secretParts: { host: url.host, username: url.username, password: url.password },
+    extraData: null,
+  };
+  const fixture = exactFixture([entry]);
+  const file = fixture.inputs.keys().next().value!;
+  const input = fixture.inputs.get(file)!;
+  if (input.kind !== "blob") throw new Error("expected blob fixture");
+  const scoped = {
+    ...input,
+    references: input.references.map((reference) => ({
+      ...reference,
+      source: "extensions/browser/src/browser/profiles-service.test.ts",
+    })),
+  };
+  for (const decoder of ["PLAIN", "HTML"]) {
+    const finding = { ...fixture.findings[0]!, DecoderName: decoder };
+    const classify = (value: StagedScanInput, record = finding) =>
+      classifyWithProductionPolicy([record], new Map([[file, value]]));
+    assert.equal(classify(scoped).kind, "classified", decoder);
+    for (const [name, changed] of [
+      [
+        "query drift",
+        { ...scoped, bytes: Buffer.from(`${line.replace("?token=", "?changed=")}\n`) },
+      ],
+      ["duplicate literal", { ...scoped, bytes: Buffer.from(`${line}\n${line}\n`) }],
+      [
+        "uncommitted",
+        {
+          ...scoped,
+          references: scoped.references.map((reference) => ({
+            ...reference,
+            role: "worktree" as const,
+          })),
+        },
+      ],
+      ["wrong source", input],
+    ] as const)
+      assert.equal(classify(changed).kind, "refused", `${decoder}: ${name}`);
+    assert.equal(classify(scoped, { ...finding, Verified: true }).kind, "refused");
+    assert.equal(classify(scoped, { ...finding, DecoderName: "BASE64" }).kind, "refused");
+  }
+});

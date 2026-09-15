@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Admit approved synthetic URI fixtures in unchanged patch context only with exact before/after Git source witnesses, and qualify the existing OpenClaw create-profile redaction fixture without hiding raw scan input.
+
 - Keep standalone notification commands alive during transient hook retry backoff so they finish retries and write their report instead of silently exiting successfully.
 
 - Run full repair acceptance in the executor instead of duplicating it in edit workers, and derive the overall repair budget from validation allowances with a hard ceiling and report headroom.
