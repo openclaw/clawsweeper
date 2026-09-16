@@ -726,6 +726,30 @@ line, decoder, and literal line, with `patch` provenance recording the two
 revisions and each source blob/line. The prompt omission helper is never applied
 to scan input. See [the reproducible admission proof](docs/proof/agent-input-scan-context/README.md).
 
+CloudflareGlobalApiKey detector 58 can pair Git's generated 40-character blob
+IDs with nearby email context. An unverified `PLAIN`/`HTML` finding in a patch
+requires a separate provenance scan only when every literal occurrence is an exact
+object-ID field in canonical same-path regular-file patch/raw-diff headers.
+The two endpoint revisions, paths, modes, and full staged blobs must agree;
+the host independently rehashes each blob. The matched bytes must be absent
+from every staged prompt, schema, additional input, raw working file, and full
+blob, preventing detector deduplication from hiding a content occurrence.
+Missing retained bytes, unsupported metadata, malformed native fields, verified
+findings, and scanner errors still refuse. The complete patch, raw diff, and
+blobs remain scanned unchanged. Metadata notices identify their classification
+and use a SHA-256 digest in the existing notice identity field; matched object
+IDs and verification values are never emitted. OpenClaw Bay is unaffected.
+
+Those witnesses alone never admit a review: HTML decoding can create another
+matching value from source content while its reported line differs from the
+original bytes. The host scans a second complete patch copy with only the proven
+object-ID fields masked at their original lengths. All filename context and
+content bytes remain unchanged, and the staged bytes record that actual masked
+copy. The same pinned scanner, verification flags, completion checks, and shared
+deadline apply. Any remaining unclassified finding or request for metadata proof
+refuses admission; success notices are emitted only after this replay and the
+final source fences. Existing URI-only reviews retain their original single scan.
+
 Findings attributed to prompt, schema, raw diff, additional-input, other-path,
 or unqualified patch material remain blocking, as do other findings, verified
 findings, and incomplete scans. Unverified findings alone never qualify: every finding must

@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 import type { StagedScanInput } from "./agent-input-scan-fixtures.js";
+import { resolveScannedGitBlob } from "./agent-input-scan-git-metadata.js";
 
 interface ContextWitness {
   file: string;
@@ -24,37 +24,11 @@ export function resolvePatchContextWitnesses(
   }
   const witnesses: ContextWitness[] = [];
   const blob = (id: string, source: string, revision: string, role: "base" | "head") => {
-    const matches = [...inputs].filter(([, input]) => input.kind === "blob" && input.id === id);
-    if (matches.length !== 1) return undefined;
-    const [file, input] = matches[0]!;
-    if (
-      input.kind !== "blob" ||
-      !input.bytes ||
-      input.references.some(
-        (reference) =>
-          reference.mode !== "100644" ||
-          !(
-            (reference.role === "base" && reference.revision === patch.from) ||
-            (reference.role === "head" && reference.revision === patch.to)
-          ),
-      ) ||
-      !input.references.some(
-        (reference) =>
-          reference.source === source &&
-          reference.revision === revision &&
-          reference.role === role &&
-          reference.mode === "100644",
-      )
-    )
-      return undefined;
-    const identity = createHash(id.length === 64 ? "sha256" : "sha1")
-      .update(`blob ${input.bytes.length}\0`)
-      .update(input.bytes)
-      .digest("hex");
-    if (identity !== id) return undefined;
+    const input = resolveScannedGitBlob(patch, id, source, revision, role, inputs);
+    if (!input) return undefined;
     try {
       const text = decode(input.bytes);
-      return { file, text, lines: text.split("\n") };
+      return { file: input.file, text, lines: text.split("\n") };
     } catch {
       return undefined;
     }
