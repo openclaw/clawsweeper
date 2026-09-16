@@ -33,6 +33,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 - Keep repair-result publication within its job budget by hydrating only the operational Git state it consumes, without loading unrelated canonical review records.
 
+- Bound dashboard status collection to 18 seconds so stalled dependencies show unavailable freshness and the next Dashboard or Bay poll can recover; retain complete snapshots without persisting timeout results or blocking later writes, and avoid showing a synthetic age when freshness is unavailable.
+
 - Wait for the exact-review queue to become available before declaring a dashboard deployment ready, while retaining the deployment deadline and all smoke checks.
 
 - Fix OpenClaw Bay refusing to load inside the Team dashboard while continuing to block embedding by other sites.

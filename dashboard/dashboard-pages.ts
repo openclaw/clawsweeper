@@ -4113,7 +4113,7 @@ async function load() {
     cacheState === "stale"
       ? "Refreshing live status in the background."
       : hasErrors
-        ? "Updated with partial GitHub telemetry."
+        ? "GitHub telemetry is incomplete."
         : "",
   );
   loadHealthHistory(activeHealthRange, false).catch(() => undefined);
@@ -4161,12 +4161,10 @@ function renderDashboard(data, note) {
     fmt.format(workerCount) + " claw worker" + (workerCount === 1 ? "" : "s") + " sweeping " +
     fmt.format(repoCount) + " " + (repoCount === 1 ? "repository" : "repositories");
   document.getElementById("subtitle").textContent = "Identity-safe public status";
-  const freshnessCopy = data.freshness?.state === "stale"
-    ? " · stale snapshot"
-    : data.freshness?.state === "unavailable"
-      ? " · freshness unavailable"
-      : "";
-  document.getElementById("updated").textContent = "Updated " + since(data.generated_at) + freshnessCopy + (note ? " \u00b7 " + note : "");
+  const freshnessCaption = data.freshness.state === "unavailable"
+    ? "Status freshness unavailable"
+    : "Updated " + since(data.freshness.generated_at) + (data.freshness.state === "stale" ? " · stale snapshot" : "");
+  document.getElementById("updated").textContent = freshnessCaption + (note ? " \u00b7 " + note : "");
   const fleet = data.fleet;
   const attempts = typeof data.health?.attempts === "number" ? data.health.attempts : NaN;
   const failedAttempts = typeof data.health?.failed_attempts === "number" ? data.health.failed_attempts : NaN;

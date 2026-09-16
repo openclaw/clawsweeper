@@ -23,7 +23,7 @@ the Chromium build matching `playwright-core` available locally:
 node docs/proof/status-publication-outcomes/run-proof.mjs 49446cd30622e642efceb80e1c0347b2602a0117
 ```
 
-The runner archives the baseline, starts isolated local Wrangler 4.107.0
+The runner archives the baseline, starts isolated local Wrangler 4.131.1
 previews, and compares them with the candidate. It writes receipts and
 desktop/mobile PNGs to `.artifacts/status-publication-outcomes/`.
 It closes its browsers, process groups and temporary state on success or failure.
@@ -77,3 +77,51 @@ tests accompany the API and browser regressions.
 Named follow-up: `publicationSource` may accept null bucket counts in an
 otherwise complete zero-count source. That preexisting server-validator issue
 is not changed or certified by this composition repair.
+
+## Status collection lifetime
+
+The lifetime mode compares the frozen pre-repair source against the candidate:
+
+```sh
+node docs/proof/status-publication-outcomes/run-proof.mjs 02cd682921ca0c796212319c1a28c9b1e4bfac58 --lifetime
+```
+
+It holds a local SQLite-backed StatusStore read or its response body. The
+baseline remains pending past 19.5 seconds. The candidate must return the
+existing unavailable projection within that boundary, admit no later read,
+persist no timeout result, and complete its next healthy refresh. The same
+served Dashboard and Bay must display unavailable status and recover on their
+ordinary poll (Dashboard: 15 seconds; Bay: 20 seconds) without a reload or substituted browser response.
+Publication counts remain intact on recovery. The Dashboard must show
+"Status freshness unavailable" on the unavailable response and restore its
+timestamp caption on recovery.
+
+A separate candidate case holds the first final StatusStore PUT while a newer
+healthy response publishes to the same real SQLite binding. Releasing the old
+PUT may replace the durable body; its original timestamp must remain intact.
+The receipt labels the direct stored-body freshness calculation as a
+complementary canonical-function check and separately records the next actual
+HTTP status response. A unit test covers late Cache API replacement through
+the normal status response and stale classification. Publication remains
+best-effort; the cache has no cross-isolate monotonic ordering guarantee.
+The local runtime does not reproduce the hosted platform's 30-second
+post-response cancellation limit.
+
+The recipe uses the same secretless Wrangler transport and local SQLite
+binding. It adds one JSON receipt and four PNGs in the existing artifact
+directory; retain them for the PR review. This controlled stall proves the
+lifetime contract, not which production dependency stalled.
+
+For a raw Crabbox checkout without Git metadata, prepare a bounded capsule in
+the verified owning checkout, transfer it through the native Crabbox script
+upload, and pass `--capsule /temporary/capsule.json` with `--lifetime`:
+
+```sh
+node docs/proof/status-publication-outcomes/run-proof.mjs 02cd682921ca0c796212319c1a28c9b1e4bfac58 --prepare-capsule /temporary/capsule.json
+```
+
+The capsule contains only the archived source owners needed by the Worker,
+their Git blob and file digests, and the candidate source/proof manifest.
+The runner verifies archive bytes and members, baseline file bytes, and
+candidate file bytes before execution; it verifies candidate bytes again
+before emitting the receipt. It creates no Git history in the isolated box.

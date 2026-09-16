@@ -1974,7 +1974,7 @@ test("dashboard refreshes a durable snapshot that predates the legacy timing agg
   }
 });
 
-test("dashboard rewrites a malformed durable root to a fixed incomplete snapshot", async () => {
+test("dashboard does not publish a malformed durable root as the current snapshot", async () => {
   const originalFetch = globalThis.fetch;
   const originalCaches = globalThis.caches;
   const cache = new MemoryCache();
@@ -2014,9 +2014,12 @@ test("dashboard rewrites a malformed durable root to a fixed incomplete snapshot
     assert.equal(body.public_projection_complete, false);
     assert.equal(body.diagnostics.error_count, 1);
     assert.equal(JSON.stringify(body).includes(marker), false);
-    const persisted = String(await statusStore.get("snapshot:bay-scope:v1:_"));
-    assert.equal(persisted.includes(marker), false);
-    assert.equal(JSON.parse(persisted).public_projection_complete, false);
+    assert.equal(body.freshness.state, "unavailable");
+    assert.equal(await statusStore.get("snapshot:bay-scope:v1:_"), null);
+    assert.equal(
+      await cache.match(new Request("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/stale")),
+      undefined,
+    );
     assert.equal(
       await cache.match(new Request("https://clawsweeper.openclaw.ai/api/status-cache/v7/_/fresh")),
       undefined,
