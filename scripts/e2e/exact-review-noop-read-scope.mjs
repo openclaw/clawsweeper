@@ -70,7 +70,7 @@ function buildInputs() {
   };
 }
 
-function snapshot(ref, capsule) {
+function snapshot(ref, capsule, runtimes) {
   const input = (path) => (capsule ? capsule.files[path].text : source(ref, path));
   const workflowSource = input(workflowPath);
   const workflow = YAML.parse(workflowSource);
@@ -102,6 +102,8 @@ function snapshot(ref, capsule) {
     }),
   );
   const directory = mkdtempSync(join(tmpdir(), "exact-review-read-runtime-"));
+  // Register before copying so partial construction shares the proof cleanup.
+  runtimes.push(directory);
   cpSync(join(root, "dist"), join(directory, "dist"), { recursive: true });
   cpSync(join(root, "config"), join(directory, "config"), { recursive: true });
   // pnpm verifies dependencies before running a script and may reinstall.
@@ -660,147 +662,152 @@ export function runReadScopeProof({
     command("pnpm", ["run", "build:all"], { cwd: root, timeout: 600_000 });
     assert.deepEqual(buildInputs(), inputs, "source changed during build");
   }
-  const candidate = snapshot(candidateRef);
-  const buildReceipt = build
-    ? { command: "pnpm run build:all", inputs, compiled: candidate.hashes.compiled }
-    : undefined;
-  const baseline = baselineRef ? snapshot(baselineRef, capsule) : undefined;
-  const cases = scenarios();
-  for (const { kind, target } of liveTargets) {
-    const match = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9][0-9]*)$/.exec(target);
-    assert.ok(match, "live target must be owner/repo#number");
-    const [, repo, number] = match;
-    assert.equal(
-      liveGet(`repos/${repo}`).body.private,
-      false,
-      "live proof requires a public repository",
-    );
-    cases.push({
-      name: `live:${kind}`,
-      repo,
-      number,
-      live: true,
-      decision: { sourceAction: "scheduled_normal_backfill", targetBranch: "main" },
-      expected: { proceed: "true", item_kind: kind, scheduled_semantic_noop: "false" },
-    });
-  }
-  const results = [];
-  for (const name of scenarioNames) {
-    assert.ok(
-      cases.some((scenario) => scenario.name === name),
-      "unknown proof scenario",
-    );
-  }
-  for (const scenario of cases.filter(
-    (entry) => scenarioNames.length === 0 || scenarioNames.includes(entry.name),
-  )) {
-    const before =
-      baseline && (!scenario.candidateOnly || scenario.baselineExpected)
-        ? execute(
-            baseline,
-            scenario.baselineExpected
-              ? { ...scenario, expected: scenario.baselineExpected, warnings: [] }
-              : scenario,
-          )
-        : undefined;
-    const after = execute(candidate, scenario);
-    if (scenario.credentials)
-      assert.deepEqual(
-        after.trace
-          .filter((event) => event.kind !== "classifier")
-          .map((event) => `${event.credential}:${event.kind}`),
-        scenario.credentials,
-        `${scenario.name}: credential sequence`,
-      );
-    const isHot = scenario.decision.sourceAction === hotAction;
-    const hydration = after.trace.filter((event) =>
-      ["comments", "classifier"].includes(event.kind),
-    );
-    if (!isHot)
+  const runtimes = [];
+  try {
+    const candidate = snapshot(candidateRef, undefined, runtimes);
+    const buildReceipt = build
+      ? { command: "pnpm run build:all", inputs, compiled: candidate.hashes.compiled }
+      : undefined;
+    const baseline = baselineRef ? snapshot(baselineRef, capsule, runtimes) : undefined;
+    const cases = scenarios();
+    for (const { kind, target } of liveTargets) {
+      const match = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9][0-9]*)$/.exec(target);
+      assert.ok(match, "live target must be owner/repo#number");
+      const [, repo, number] = match;
       assert.equal(
-        hydration.length,
-        0,
-        `${scenario.name}: wasted non-hot no-op reads/classification`,
+        liveGet(`repos/${repo}`).body.private,
+        false,
+        "live proof requires a public repository",
       );
-    if (
-      !scenario.candidateOnly &&
-      after.outputs.item_kind === "pull_request" &&
-      (scenario.live || (scenario.issue.state === "open" && !scenario.issue.locked))
-    ) {
-      assert.equal(
-        after.trace.filter((event) => event.kind === "head").length,
-        1,
-        `${scenario.name}: PR size admission reads metadata exactly once`,
+      cases.push({
+        name: `live:${kind}`,
+        repo,
+        number,
+        live: true,
+        decision: { sourceAction: "scheduled_normal_backfill", targetBranch: "main" },
+        expected: { proceed: "true", item_kind: kind, scheduled_semantic_noop: "false" },
+      });
+    }
+    const results = [];
+    for (const name of scenarioNames) {
+      assert.ok(
+        cases.some((scenario) => scenario.name === name),
+        "unknown proof scenario",
       );
     }
-    if (before && scenario.baselineExpected) {
-      assert.deepEqual(
-        before.trace.map((event) => `${event.credential}:${event.kind}`),
-        ["actions:issue"],
+    for (const scenario of cases.filter(
+      (entry) => scenarioNames.length === 0 || scenarioNames.includes(entry.name),
+    )) {
+      const before =
+        baseline && (!scenario.candidateOnly || scenario.baselineExpected)
+          ? execute(
+              baseline,
+              scenario.baselineExpected
+                ? { ...scenario, expected: scenario.baselineExpected, warnings: [] }
+                : scenario,
+            )
+          : undefined;
+      const after = execute(candidate, scenario);
+      if (scenario.credentials)
+        assert.deepEqual(
+          after.trace
+            .filter((event) => event.kind !== "classifier")
+            .map((event) => `${event.credential}:${event.kind}`),
+          scenario.credentials,
+          `${scenario.name}: credential sequence`,
+        );
+      const isHot = scenario.decision.sourceAction === hotAction;
+      const hydration = after.trace.filter((event) =>
+        ["comments", "classifier"].includes(event.kind),
       );
-    }
-    if (before && !scenario.candidateOnly) {
-      if (scenario.live) {
-        assert.equal(before.outputs.scheduled_noop_reason, "not_scheduled_hot");
-        for (const kind of [
-          "issue",
-          "comments",
-          ...(scenario.expected.item_kind === "pull_request" ? ["head"] : []),
-        ]) {
-          assert.ok(
-            before.trace.some((event) => event.kind === kind && event.status === 200),
-            `live ${kind} read must succeed`,
-          );
-        }
+      if (!isHot)
+        assert.equal(
+          hydration.length,
+          0,
+          `${scenario.name}: wasted non-hot no-op reads/classification`,
+        );
+      if (
+        !scenario.candidateOnly &&
+        after.outputs.item_kind === "pull_request" &&
+        (scenario.live || (scenario.issue.state === "open" && !scenario.issue.locked))
+      ) {
+        assert.equal(
+          after.trace.filter((event) => event.kind === "head").length,
+          1,
+          `${scenario.name}: PR size admission reads metadata exactly once`,
+        );
       }
-      assert.deepEqual(
-        admission(after.outputs),
-        admission(before.outputs),
-        `${scenario.name}: admission drift`,
-      );
-      if (isHot)
+      if (before && scenario.baselineExpected) {
         assert.deepEqual(
-          after.trace.filter((event) => event.kind !== "classifier"),
-          before.trace.filter((event) => event.kind !== "classifier"),
-          `${scenario.name}: hot path drift`,
+          before.trace.map((event) => `${event.credential}:${event.kind}`),
+          ["actions:issue"],
         );
-      else
+      }
+      if (before && !scenario.candidateOnly) {
+        if (scenario.live) {
+          assert.equal(before.outputs.scheduled_noop_reason, "not_scheduled_hot");
+          for (const kind of [
+            "issue",
+            "comments",
+            ...(scenario.expected.item_kind === "pull_request" ? ["head"] : []),
+          ]) {
+            assert.ok(
+              before.trace.some((event) => event.kind === kind && event.status === 200),
+              `live ${kind} read must succeed`,
+            );
+          }
+        }
         assert.deepEqual(
-          after.trace.filter((event) => !["head", "comments", "classifier"].includes(event.kind)),
-          before.trace.filter((event) => !["head", "comments", "classifier"].includes(event.kind)),
-          `${scenario.name}: required reads changed`,
+          admission(after.outputs),
+          admission(before.outputs),
+          `${scenario.name}: admission drift`,
         );
+        if (isHot)
+          assert.deepEqual(
+            after.trace.filter((event) => event.kind !== "classifier"),
+            before.trace.filter((event) => event.kind !== "classifier"),
+            `${scenario.name}: hot path drift`,
+          );
+        else
+          assert.deepEqual(
+            after.trace.filter((event) => !["head", "comments", "classifier"].includes(event.kind)),
+            before.trace.filter(
+              (event) => !["head", "comments", "classifier"].includes(event.kind),
+            ),
+            `${scenario.name}: required reads changed`,
+          );
+      }
+      results.push({
+        name: scenario.name,
+        ...(before ? { baseline: before } : {}),
+        candidate: after,
+      });
     }
-    results.push({
-      name: scenario.name,
-      ...(before ? { baseline: before } : {}),
-      candidate: after,
-    });
+    assert.equal(
+      treeHash("dist", ".js"),
+      candidate.hashes.compiled,
+      "compiled owner changed during proof",
+    );
+    assert.deepEqual(buildInputs(), inputs, "source changed during proof");
+    return {
+      build: buildReceipt,
+      environment: {
+        node: process.version,
+        platform: process.platform,
+        bash: command("bash", ["--version"]).split("\n")[0],
+      },
+      sources: {
+        baselineRef,
+        baselineCapsule: capsule ? hash(JSON.stringify(capsule)) : undefined,
+        candidateRef: candidateRef ?? "working-tree",
+        baseline: baseline?.hashes,
+        candidate: candidate.hashes,
+      },
+      results,
+    };
+  } finally {
+    for (const directory of runtimes) rmSync(directory, { recursive: true, force: true });
   }
-  assert.equal(
-    treeHash("dist", ".js"),
-    candidate.hashes.compiled,
-    "compiled owner changed during proof",
-  );
-  assert.deepEqual(buildInputs(), inputs, "source changed during proof");
-  rmSync(candidate.directory, { recursive: true, force: true });
-  if (baseline) rmSync(baseline.directory, { recursive: true, force: true });
-  return {
-    build: buildReceipt,
-    environment: {
-      node: process.version,
-      platform: process.platform,
-      bash: command("bash", ["--version"]).split("\n")[0],
-    },
-    sources: {
-      baselineRef,
-      baselineCapsule: capsule ? hash(JSON.stringify(capsule)) : undefined,
-      candidateRef: candidateRef ?? "working-tree",
-      baseline: baseline?.hashes,
-      candidate: candidate.hashes,
-    },
-    results,
-  };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === scriptPath) {
