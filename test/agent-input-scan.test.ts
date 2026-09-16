@@ -1834,7 +1834,7 @@ test("exact attribution policy rejects duplicate and malformed rows", () => {
   assert.deepEqual(nativeFailure, {
     kind: "refused",
     reason: "scanner_failed",
-    diagnostic: { kind: "native_contract", reason: "unexpected_exit" },
+    diagnostic: { kind: "native_contract", reason: "incomplete_scan" },
   });
   assert.throws(
     () =>
