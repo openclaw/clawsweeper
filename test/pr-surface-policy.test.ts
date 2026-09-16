@@ -1198,6 +1198,22 @@ test("Markdown persistence contracts and structured frontmatter remain detectabl
 
 for (const { name, file, surfaces, pullFilesTruncated, sqliteSchemaChange } of [
   {
+    name: "doctor persistence documentation",
+    file: {
+      filename: "docs/reference/runtime.md",
+      patch: "@@\n+The database schema now requires `doctor` to rewrite existing rows.",
+    },
+    surfaces: ["migration/backfill/repair: docs/reference/runtime.md"],
+  },
+  {
+    name: "doctor diagnostic documentation",
+    file: {
+      filename: "docs/reference/runtime.md",
+      patch: "@@\n+Run `doctor` to inspect browser status.",
+    },
+    surfaces: [],
+  },
+  {
     name: "doctor endpoint dispatch without persistence evidence",
     file: {
       filename: "extensions/browser/src/browser-tool.lifecycle.ts",

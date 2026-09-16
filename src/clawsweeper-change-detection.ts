@@ -502,7 +502,7 @@ function dataModelSurfacesFromPatch(
   }
   if (
     /\b(?:migration|migrate|upgrade|backfill|repair|reindex|rehydrat\w*)\b/i.test(text) ||
-    (pathOwner?.strong && /\bdoctor\b/i.test(text))
+    ((options.docsOnly || pathOwner?.strong) && /\bdoctor\b/i.test(text))
   ) {
     add("migration/backfill/repair");
   }

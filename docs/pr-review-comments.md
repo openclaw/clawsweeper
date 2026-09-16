@@ -282,7 +282,8 @@ changes in the same patch.
 The word `doctor` can name a read-only diagnostic route. It requires a known
 persistence owner or storage evidence in the same diff hunk before producing a
 migration warning; unrelated storage elsewhere in the file does not qualify.
-Explicit migration, backfill, repair, and persisted-shape evidence remain eligible.
+Documentation describing an explicit persisted contract also retains doctor
+warnings. Explicit migration, backfill, repair, and persisted-shape evidence remain eligible.
 
 SQLite table detection retains directly changed table DDL and `sqliteTable(...)`
 declarations. Unchanged SQL or ORM table context must share a diff hunk with a
