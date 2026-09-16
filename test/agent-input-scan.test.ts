@@ -3024,6 +3024,7 @@ function changedPatchFixture(
   entry: ExactCase,
   change: "add" | "remove" | "new" | "delete",
   finalNewline = true,
+  content?: { before: string; after: string; context?: number },
 ) {
   const repo = fixture(t);
   const source = exactSource;
@@ -3032,13 +3033,15 @@ function changedPatchFixture(
     change === "new"
       ? undefined
       : Buffer.from(
-          `// before\n${change === "add" ? "" : entry.line + (finalNewline ? "\n" : "")}`,
+          content?.before ??
+            `// before\n${change === "add" ? "" : entry.line + (finalNewline ? "\n" : "")}`,
         );
   const after =
     change === "delete"
       ? undefined
       : Buffer.from(
-          `// after\n${change === "remove" ? "" : entry.line + (finalNewline ? "\n" : "")}`,
+          content?.after ??
+            `// after\n${change === "remove" ? "" : entry.line + (finalNewline ? "\n" : "")}`,
         );
   writeFileSync(join(repo.cwd, "anchor.txt"), "unchanged\n");
   mkdirSync(dirname(target), { recursive: true });
@@ -3055,7 +3058,12 @@ function changedPatchFixture(
     );
   const file = "/private/scanner/patch";
   const rawFile = "/private/scanner/raw";
-  const patch = diff("--patch", "--binary", "--full-index");
+  const patch = diff(
+    "--patch",
+    "--binary",
+    "--full-index",
+    ...(content?.context === undefined ? [] : [`--unified=${content.context}`]),
+  );
   const inputs = new Map<string, StagedScanInput>([
     [file, { kind: "patch", id: "patch", bytes: patch, from, to }],
     [rawFile, { kind: "raw_diff", id: "raw", bytes: diff("--raw", "--no-abbrev", "-z"), from, to }],
@@ -3254,6 +3262,95 @@ test("changed fixture admission rejects malformed patches and unreviewed source 
     // whole-line witness fails, including occurrences elsewhere in the blob.
     const f = changedPatchFixture(t, { ...entry, line: line! }, "add");
     assert.equal(classifyExact([f.finding], f.inputs, policy).kind, "refused", name);
+  }
+});
+
+test("modified-file fixture hunks validate empty-side coordinates", (t) => {
+  const entry = exactCase("URI", "PLAIN");
+  const policy = exactFixture([entry]).policy;
+  for (const change of ["add", "remove"] as const) {
+    for (const finalNewline of [true, false]) {
+      const text = entry.line + (finalNewline ? "\n" : "");
+      const f = changedPatchFixture(t, entry, change, finalNewline, {
+        before: change === "add" ? "" : text,
+        after: change === "remove" ? "" : text,
+      });
+      assert.equal(classifyExact([f.finding], f.inputs, policy).kind, "classified");
+      const patch = f.inputs.get(f.file)!;
+      const inputs = new Map(f.inputs);
+      inputs.set(f.file, {
+        ...patch,
+        bytes: Buffer.from(
+          patch
+            .bytes!.toString()
+            .replace(change === "add" ? "-0,0" : "+0,0", change === "add" ? "-99,0" : "+99,0"),
+        ),
+      });
+      assert.equal(
+        classifyExact([f.finding], inputs, policy).kind,
+        "refused",
+        `${change}/${finalNewline}`,
+      );
+    }
+  }
+});
+
+test("modified-file fixture hunks stay ordered and do not overlap", (t) => {
+  const entry = exactCase("URI", "PLAIN");
+  const policy = exactFixture([entry]).policy;
+  const middle = Array.from({ length: 20 }, (_, i) => `// unchanged ${i}`).join("\n");
+  const f = changedPatchFixture(t, entry, "add", true, {
+    before: `// before\n${middle}\n// old end\n`,
+    after: `${entry.line}\n${middle}\n// new end\n// added tail\n`,
+  });
+  assert.equal(classifyExact([f.finding], f.inputs, policy).kind, "classified");
+  const patch = f.inputs.get(f.file)!;
+  const parts = patch.bytes!.toString().split(/(?=^@@ )/m);
+  assert.equal(parts.length, 3, "Git emitted two separated hunks");
+  for (const [name, text] of [
+    ["reverse order", parts[0]! + parts[2]! + parts[1]!],
+    ["overlapping hunk", parts[0]! + parts[1]! + parts[1]! + parts[2]!],
+    ["omitted final hunk", parts[0]! + parts[1]!],
+  ]) {
+    const inputs = new Map(f.inputs);
+    inputs.set(f.file, { ...patch, bytes: Buffer.from(text!) });
+    assert.equal(classifyExact([f.finding], inputs, policy).kind, "refused", name);
+  }
+});
+
+test("zero-context fixture hunks bind the same insertion boundary in both blobs", (t) => {
+  const entry = exactCase("URI", "PLAIN");
+  const policy = exactFixture([entry]).policy;
+  const unchanged = ["// first", "// last"];
+  for (const change of ["add", "remove"] as const) {
+    for (const position of [0, 1, 2]) {
+      const changed = [...unchanged];
+      changed.splice(position, 0, entry.line);
+      const f = changedPatchFixture(t, entry, change, true, {
+        before: (change === "add" ? unchanged : changed).join("\n") + "\n",
+        after: (change === "remove" ? unchanged : changed).join("\n") + "\n",
+        context: 0,
+      });
+      assert.equal(
+        classifyExact([f.finding], f.inputs, policy).kind,
+        "classified",
+        `${change}/${position}`,
+      );
+      const patch = f.inputs.get(f.file)!;
+      const side = change === "add" ? "-" : "+";
+      const inputs = new Map(f.inputs);
+      inputs.set(f.file, {
+        ...patch,
+        bytes: Buffer.from(
+          patch.bytes!.toString().replace(`${side}${position},0`, `${side}${(position + 1) % 3},0`),
+        ),
+      });
+      assert.equal(
+        classifyExact([f.finding], inputs, policy).kind,
+        "refused",
+        `${change}/${position}: shifted boundary`,
+      );
+    }
   }
 });
 

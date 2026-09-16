@@ -114,6 +114,8 @@ export function resolvePatchWitnesses(
     let newLine = 0;
     let oldRemaining = 0;
     let newRemaining = 0;
+    let oldEnd = 0;
+    let newEnd = 0;
     let inHunk = false;
     let previous: string | undefined;
     let needsNewlineMarker = false;
@@ -137,21 +139,23 @@ export function resolvePatchWitnesses(
         ];
         if (![oldLine, oldRemaining, newLine, newRemaining].every(Number.isSafeInteger))
           return undefined;
-        // A/D patches cover the entire present file in one hunk. Zero counts
-        // on the absent side cannot stand in for an omitted present-file tail.
+        // Zero-count coordinates name the insertion boundary, not a source
+        // line. Both ranges must advance over the same unchanged gap.
+        const oldOffset = oldLine - Number(oldRemaining > 0);
+        const newOffset = newLine - Number(newRemaining > 0);
         if (
-          (added &&
-            (oldLine !== 0 ||
-              oldRemaining !== 0 ||
-              newLine !== 1 ||
-              newRemaining !== after!.lines.length)) ||
-          (removed &&
-            (newLine !== 0 ||
-              newRemaining !== 0 ||
-              oldLine !== 1 ||
-              oldRemaining !== before!.lines.length))
+          oldOffset < oldEnd ||
+          newOffset < newEnd ||
+          oldOffset + oldRemaining > (before?.lines.length ?? 0) ||
+          newOffset + newRemaining > (after?.lines.length ?? 0) ||
+          oldOffset - oldEnd !== newOffset - newEnd ||
+          ((added || removed) &&
+            (oldRemaining !== (before?.lines.length ?? 0) ||
+              newRemaining !== (after?.lines.length ?? 0)))
         )
           return undefined;
+        oldEnd = oldOffset + oldRemaining;
+        newEnd = newOffset + newRemaining;
         inHunk = true;
         previous = undefined;
         continue;
@@ -200,6 +204,9 @@ export function resolvePatchWitnesses(
         (prefix !== "-" && !after!.text.endsWith("\n") && newLine - 1 === after!.lines.length);
     }
     if (!inHunk || oldRemaining || newRemaining || needsNewlineMarker) return undefined;
+    // The final unchanged gap must not hide an omitted size-changing hunk.
+    if ((before?.lines.length ?? 0) - oldEnd !== (after?.lines.length ?? 0) - newEnd)
+      return undefined;
     start = end;
   }
   return witnesses.length ? witnesses : undefined;
