@@ -249,7 +249,7 @@ test("review failure telemetry deduplicates attempts and detects repeated source
     },
   });
 
-  const inventory = store.listSync({ limit: 1 });
+  const inventory = store.listSync({ limit: 1, now: NOW });
   assert.equal(inventory.attempts.length, 1);
   assert.equal(inventory.attempts[0]?.target, "openclaw/openclaw#135798");
   assert.equal(inventory.attempts[0]?.reason_code, "findings");
