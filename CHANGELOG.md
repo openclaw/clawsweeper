@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Let exact-review admission use the existing one-shot scoped read-token fallback when the public Actions quota is exhausted, while preserving private-repository access and retry behavior.
+
 - Avoid migration-proof blockers for read-only doctor dispatch changes while retaining doctor warnings under persistence owners and beside same-hunk storage evidence.
 
 - Allow reviewed browser configuration URL fixtures through input scanning with exact occurrence witnesses, preserving native explicit-default-port metadata and rejection of changed or unrelated input.

@@ -370,6 +370,6 @@ test("sweep workflow preserves one claimed target branch through exact review", 
     workflow,
     /CLAIM_TARGET_BRANCH: \$\{\{ fromJSON\(steps\.claim-exact-review-queue\.outputs\.decision\)\.targetBranch \}\}/,
   );
-  assert.match(workflow, /target_branch="\$CLAIM_TARGET_BRANCH"/);
+  assert.match(workflow, /workflow -- exact-review-admission/);
   assert.match(workflow, /target_branch="\$\{\{ steps\.live-item\.outputs\.target_branch \}\}"/);
 });

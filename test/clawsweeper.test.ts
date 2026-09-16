@@ -2638,7 +2638,7 @@ test("sweep review recovery uses explicit failed shard artifacts", () => {
   assert.doesNotMatch(recoveryJob, /workflow run sweep\.yml/);
   assert.doesNotMatch(recoveryJob, /repos\/\$GITHUB_REPOSITORY\/dispatches/);
   assert.match(eventReviewJob, /CLAIM_TARGET_BRANCH:/);
-  assert.match(eventReviewJob, /target_branch="\$CLAIM_TARGET_BRANCH"/);
+  assert.match(eventReviewJob, /workflow -- exact-review-admission/);
   assert.match(eventReviewJob, /REVIEW_ONLY:/);
   const reviewOnly = parseYaml(workflow).jobs["event-review-apply"].steps.find(
     (entry: { id?: string }) => entry.id === "prepare-direct-exact-review-publication",
