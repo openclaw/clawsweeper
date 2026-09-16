@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
 import { TRUFFLEHOG_VERSION } from "./review-tool-bootstrap.js";
-import { resolvePatchContextWitnesses } from "./agent-input-scan-patch.js";
+import { resolvePatchWitnesses } from "./agent-input-scan-patch.js";
 import { resolveGitObjectMetadata } from "./agent-input-scan-git-metadata.js";
 
 interface ReviewedFixture {
@@ -248,6 +248,11 @@ const CRABBOX_POSTGRES_DOC_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  // Plugin-help redaction fixtures: bind every literal occurrence, including object keys and the unsaved URL query.
+  [17, "URI", "PLAIN", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", ["3835950cbb9c584ba2c052e76ba31ac1c83cf48ec422c588fd00605dfec4b082", "0452c2176a2ce671ae67942c523f65774d9fbaa672ac973968844d00fcf44852"], "ui/src/pages/custodian/custodian-session-store.test.ts", "100644"],
+  [17, "URI", "HTML", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", ["3835950cbb9c584ba2c052e76ba31ac1c83cf48ec422c588fd00605dfec4b082", "0452c2176a2ce671ae67942c523f65774d9fbaa672ac973968844d00fcf44852"], "ui/src/pages/custodian/custodian-session-store.test.ts", "100644"],
+  [17, "URI", "PLAIN", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "bd8755761c1bc3e97de6db5abbb63b57bd89237423154144de2bc16c03dd96a7", "ui/src/e2e/plugins-help.e2e.test.ts", "100644"],
+  [17, "URI", "HTML", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "bd8755761c1bc3e97de6db5abbb63b57bd89237423154144de2bc16c03dd96a7", "ui/src/e2e/plugins-help.e2e.test.ts", "100644"],
   // Existing browser URL-port fixtures from OpenClaw #83707; repeated input/assertion lines form one exact witness.
   [17, "URI", "PLAIN", "fe30fb721f4e8b1d50f281ae338da254a0e34dba6804776c231b8666d5856055", "3d66d0da353b12cda6548577a624bbb7803b9110255d998a07e5e772dfc5781e", "484aa826bff427f81ddc9e65a3c931d198fee4ca469b51f2a1bec72d669aa7bf", "extensions/browser/src/browser/config.test.ts", "100644"],
   [17, "URI", "HTML", "fe30fb721f4e8b1d50f281ae338da254a0e34dba6804776c231b8666d5856055", "3d66d0da353b12cda6548577a624bbb7803b9110255d998a07e5e772dfc5781e", "484aa826bff427f81ddc9e65a3c931d198fee4ca469b51f2a1bec72d669aa7bf", "extensions/browser/src/browser/config.test.ts", "100644"],
@@ -304,7 +309,9 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           detectorName === "URI" &&
           (decoder === "PLAIN" || decoder === "HTML")) ||
         ((source === "extensions/browser/src/browser/profiles-service.test.ts" ||
-          source === "extensions/browser/src/browser/config.test.ts") &&
+          source === "extensions/browser/src/browser/config.test.ts" ||
+          source === "ui/src/pages/custodian/custodian-session-store.test.ts" ||
+          source === "ui/src/e2e/plugins-help.e2e.test.ts") &&
           detectorType === 17 &&
           detectorName === "URI" &&
           (decoder === "PLAIN" || decoder === "HTML")) ||
@@ -572,10 +579,7 @@ function classifyReviewedFindings(
   reviewedAttributions: readonly ReviewedAttribution[],
   literalLines = new Map<string, number>(),
 ): ClassifiedScan | RefusedScan {
-  const patchWitnesses = new Map<
-    string,
-    NonNullable<ReturnType<typeof resolvePatchContextWitnesses>>
-  >();
+  const patchWitnesses = new Map<string, NonNullable<ReturnType<typeof resolvePatchWitnesses>>>();
   const objectWitnesses = new Map<
     string,
     NonNullable<ReturnType<typeof resolveGitObjectMetadata>>
@@ -721,10 +725,14 @@ function classifyReviewedFindings(
       }
       const witnessKey = `${file}:${rawV2Digest}`;
       const witnesses =
-        patchWitnesses.get(witnessKey) ?? resolvePatchContextWitnesses(staged, rawV2, inputs);
+        patchWitnesses.get(witnessKey) ?? resolvePatchWitnesses(staged, rawV2, inputs);
       if (!witnesses) return refuse("material_not_reviewed");
       patchWitnesses.set(witnessKey, witnesses);
       for (const witness of witnesses) {
+        // Changed lines need exact full-line policy; legacy URI rows remain
+        // context-only even when their value and source path are reviewed.
+        if (witness.kind !== "context" && !exactCandidates.length)
+          return refuse("material_not_reviewed");
         // Reuse source policy against the original full blob and every logical
         // reference. This derived attribution never replaces scanned patch bytes.
         const result = classifyReviewedFindings(

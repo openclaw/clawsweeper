@@ -1,16 +1,23 @@
-# Exact fixture and unchanged-context admission
+# Exact fixture admission in committed patches
 
-The scanner must admit a reviewed synthetic URI in unchanged patch context while
-continuing to scan the complete patch. The context line must match both committed
-regular-file blobs through canonical path, full object ID, and hunk coordinates.
-Every literal occurrence and every logical source reference must qualify.
+The scanner admits reviewed synthetic URIs in context, added, and removed patch
+lines while continuing to scan the complete patch. Context binds both committed
+regular-file blobs; added and removed lines bind the head and base respectively.
+Changed lines require exact ordered full-line attribution policy. Legacy rows
+remain context-only. Every literal occurrence and every retained source reference
+must qualify through canonical paths, full object IDs, and hunk coordinates.
 
-The regression suite exercises the public classifier with complete source blobs
-and matching Git object IDs. It rejects coherent added/removed occurrences,
-unapproved sources, malformed coordinates/counts, mismatched bytes, mode/role
-changes, encoded-only content, verified results, and duplicate exact-attribution
-records. It preserves separate decoder/line attribution and legacy duplicate
-counts. CRLF bytes and files without a final newline are covered.
+New and deleted files also require an unambiguous host-captured raw Git A/D
+record proving the absent endpoint. The full present-file hunk and rehashed blob
+must agree. Missing blobs and textual `/dev/null` headers alone cannot qualify.
+
+The regression suite uses the public classifier and real Git-generated patches
+for additions, removals, new files, and deletions. It rejects missing, conflicting,
+and malformed raw endpoint evidence; incomplete hunks; wrong newline markers;
+unapproved full lines, aliases, modes, roles, and revisions; encoded-only content;
+verified or mixed findings; and duplicate exact-attribution records. It preserves
+legacy changed-line refusal, separate decoder/line attribution, and legacy
+duplicate counts. CRLF bytes and files without a final newline are covered.
 
 ```bash
 pnpm build:node
@@ -38,3 +45,20 @@ not change in this browser repair.
 
 OpenClaw Bay is unaffected: this changes scanner admission and host-side proof
 notices, not the dashboard API or public action surfaces.
+
+The plugin settings stack adds a committed-range case with both a new test file
+and added fixture lines in an existing test file:
+
+```bash
+node docs/proof/agent-input-scan-context/run-proof.mjs \
+  /path/to/trusted/openclaw \
+  3a4f9db62ee46701c3e7c494d981b07c74170c8f \
+  598dc5aebd5aee9488f39898b2d6041f3993cc46 \
+  /path/to/plugin-fixture-admission-proof.json
+```
+
+This is the complete source range for OpenClaw PR
+[149330](https://github.com/openclaw/openclaw/pull/149330) at that head. It exercises
+both exact source-blob attribution and added-line attribution, including the
+new file's captured absence evidence. Native verification and completion checks
+remain unchanged.

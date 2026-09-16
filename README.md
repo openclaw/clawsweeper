@@ -713,18 +713,32 @@ URI identity, complete source line, regular-file mode, and committed base/head
 references. Native 3.97.4 scans observed only `PLAIN` and `HTML` attribution;
 the policy accepts those two variants.
 
-The full generated patch remains scanned. A URI finding attributed to its
-unchanged context may qualify only when **every literal occurrence** in that
-patch maps to the identical full line in both committed regular-file blobs.
-Canonical same-path headers, full Git object IDs, hunk coordinates, counts, and
-source bytes must agree. Every logical blob reference must independently pass
-the existing fixture policy. Added/removed lines, headers, binary patches,
-ambiguous paths, mode changes, uncommitted endpoints, and encoded-only matches
-remain blocking. Decoder line coordinates are diagnostic only; source matching
-does not rely on them. Patch notices retain the original material ID, scanner
-line, decoder, and literal line, with `patch` provenance recording the two
-revisions and each source blob/line. The prompt omission helper is never applied
-to scan input. See [the reproducible admission proof](docs/proof/agent-input-scan-context/README.md).
+The plugin settings redaction fixtures in OpenClaw's
+`ui/src/pages/custodian/custodian-session-store.test.ts` and
+`ui/src/e2e/plugins-help.e2e.test.ts` bind their exact synthetic URI, ordered
+complete source lines, regular-file mode, and committed base/head references.
+Native 3.97.4 scans observed `PLAIN` and `HTML` attribution for these fixtures;
+only those exact tuples qualify.
+
+The full generated patch remains scanned. Every literal occurrence of an
+eligible URI must bind to committed regular-file bytes through canonical
+same-path headers, full Git object IDs, hunk coordinates, counts, and newline
+markers. Unchanged context requires the identical full line in both blobs.
+Added lines require the head blob; removed lines require the base blob, and
+both require exact ordered full-line attribution policy. Legacy value/path-only
+rows remain context-only. Every retained blob reference must independently pass
+the existing fixture policy.
+New and deleted files additionally require one matching host-captured raw Git
+diff record proving the absent endpoint, correct zero object ID and mode, and
+the complete present-file hunk. A textual `/dev/null` header or missing blob is
+not absence proof; contradictory captured references refuse admission.
+Headers containing the URI, binary patches, ambiguous paths, mode changes,
+uncommitted endpoints, and encoded-only matches remain blocking. Decoder line
+coordinates are diagnostic only; source matching does not rely on them.
+Patch notices retain the original material ID, scanner line, decoder, and literal
+line, with `patch` provenance recording both revisions and each source blob/line.
+The prompt omission helper is never applied to scan input. See
+[the reproducible admission proof](docs/proof/agent-input-scan-context/README.md).
 
 CloudflareGlobalApiKey detector 58 can pair Git's generated 40-character blob
 IDs with nearby email context. An unverified `PLAIN`/`HTML` finding in a patch
