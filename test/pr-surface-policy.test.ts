@@ -1197,6 +1197,51 @@ test("Markdown persistence contracts and structured frontmatter remain detectabl
 });
 
 for (const { name, file, surfaces, pullFilesTruncated, sqliteSchemaChange } of [
+  {
+    name: "doctor endpoint dispatch without persistence evidence",
+    file: {
+      filename: "extensions/browser/src/browser-tool.lifecycle.ts",
+      patch:
+        '@@ -103,8 +103,3 @@\n     case "doctor":\n-      return jsonResult(\n-        proxyRequest\n-          ? await proxyRequest({ method: "GET", path: "/doctor", profile })\n-          : await browserDoctor(baseUrl, { profile, signal }),\n-      );\n+      return jsonResult(await browserDoctor(proxyRequest ?? baseUrl, { profile, signal }));',
+    },
+    surfaces: [],
+  },
+  {
+    name: "doctor dispatch beside persistence in a different hunk",
+    file: {
+      filename: "src/runtime/diagnostics.ts",
+      patch:
+        "@@ -1,3 +1,3 @@\n const state = JSON.parse(readFile(statePath));\n-refresh();\n+refresh(true);\n@@ -40,1 +40,1 @@\n-return doctor();\n+return doctor({ verbose: true });",
+    },
+    surfaces: [],
+  },
+  {
+    name: "doctor invocation with same-hunk persistence evidence",
+    file: {
+      filename: "src/runtime/startup.ts",
+      patch: "@@\n const state = JSON.parse(readFile(statePath));\n+await doctor(state);",
+    },
+    surfaces: ["migration/backfill/repair: src/runtime/startup.ts"],
+  },
+  {
+    name: "doctor invocation under a persistence owner",
+    file: {
+      filename: "src/storage/startup.ts",
+      patch: "@@\n+await doctor(state);",
+    },
+    surfaces: [
+      "durable storage schema: src/storage/startup.ts",
+      "migration/backfill/repair: src/storage/startup.ts",
+    ],
+  },
+  {
+    name: "doctor implementation with explicit migration ownership",
+    file: {
+      filename: "src/doctor/backfill.ts",
+      patch: "@@\n+await doctor(records);",
+    },
+    surfaces: ["migration/backfill/repair: src/doctor/backfill.ts"],
+  },
   ...[
     { filename: "src/cache/sqlite-store.ts" },
     { filename: "src/cache/sqlite.ts" },

@@ -484,6 +484,8 @@ function dataModelSurfacesFromPatch(
       .filter((line) => dataModelLineLooksSemantic(line, options))
       .join("\n");
     for (const surface of dataModelStorageContext(hunk, pathOwner?.strong ?? false)) {
+      // Doctor also names read-only diagnostic routes; require a persistence boundary.
+      if (/\bdoctor\b/i.test(changedText)) add("migration/backfill/repair");
       if (
         dataModelTextLooksLikePersistedShapeField(changedText, surface) ||
         dataModelTextHasJsonConversion(changedText)
@@ -498,7 +500,10 @@ function dataModelSurfacesFromPatch(
   ) {
     add("database schema");
   }
-  if (/\b(?:migration|migrate|upgrade|backfill|doctor|repair|reindex|rehydrat\w*)\b/i.test(text)) {
+  if (
+    /\b(?:migration|migrate|upgrade|backfill|repair|reindex|rehydrat\w*)\b/i.test(text) ||
+    (pathOwner?.strong && /\bdoctor\b/i.test(text))
+  ) {
     add("migration/backfill/repair");
   }
   if (

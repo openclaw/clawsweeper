@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Avoid migration-proof blockers for read-only doctor dispatch changes while retaining doctor warnings under persistence owners and beside same-hunk storage evidence.
+
 - Allow reviewed browser configuration URL fixtures through input scanning with exact occurrence witnesses, preserving native explicit-default-port metadata and rejection of changed or unrelated input.
 
 - Admit approved synthetic URI fixtures in unchanged patch context only with exact before/after Git source witnesses, and qualify the existing OpenClaw create-profile redaction fixture without hiding raw scan input.
