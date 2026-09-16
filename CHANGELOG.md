@@ -54,6 +54,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ### Changed
 
+- Attribute GitHub CLI throttles to the credential used by the failed request, preserving one-shot public-read recovery and the original command diagnostics.
+
 - Restore OpenClaw changed-gate receipts, caches, and disposable outputs for strict `pnpm run`, selector, and environment-prefixed commands without granting root artifact exemptions to workspace scripts.
 
 - Automatically enroll eligible Endor Pro PRs in the dedicated test repository’s autofix loop while retaining human merge and proof-approval gates. Thanks @jesse-merhi.

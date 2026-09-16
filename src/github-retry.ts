@@ -9,6 +9,18 @@ export type GitHubRateLimitProvenance =
   | "rate_limit_status"
   | "fallback";
 
+export function githubCredentialScopeForToken(
+  selectedToken: string,
+  identityEnv: NodeJS.ProcessEnv,
+): GitHubCredentialScope {
+  const repositoryTokens = [
+    identityEnv.CLAWSWEEPER_PUBLIC_GH_TOKEN?.trim(),
+    identityEnv.REPO_TOKEN?.trim(),
+    identityEnv.GITHUB_TOKEN?.trim(),
+  ].filter((token): token is string => Boolean(token));
+  return repositoryTokens.includes(selectedToken) ? "repository_actions" : "target_app";
+}
+
 type GitHubRateLimitOptions = {
   scope?: GitHubCredentialScope;
   retryAt?: string | number;
