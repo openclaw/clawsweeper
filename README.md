@@ -664,8 +664,12 @@ only their observed `PLAIN` or `ESCAPED_UNICODE` variants; the Crabbox
 documentation row permits only its observed `PLAIN` or `HTML` variants. These
 exact attribution rows are role-neutral; every logical staged reference must
 independently match the row and have a committed `base` or `head` role. URI
-findings require one literal `RawV2` witness and derived host, username, and
-password fields. MongoDB and Postgres findings bind the scanner-reported line
+findings require one literal `RawV2` witness unless the row declares an exact
+ordered sequence of complete source-line digests. A declared sequence must match
+every occurrence exactly; missing, extra, reordered, or changed lines refuse
+admission. Derived host, username, and password fields must match native metadata;
+the host preserves explicit default ports and original spelling, as TruffleHog
+does. MongoDB and Postgres findings bind the scanner-reported line
 and their exact native metadata shape. Any emitted subset and order may qualify;
 duplicate exact findings, unknown variants, lossy decoder buckets, or an
 unqualified deduplicated blob reference refuse admission.
@@ -679,6 +683,14 @@ hosted refusal identified HTML for its first finding but did not retain the
 second finding's details. Constructed HTML regression records are not recovered
 hosted evidence. Qualification does not waive that unknown finding or replace
 fresh whole-input admission and a completed review.
+
+The same table qualifies the existing OpenClaw [browser URL-port precedence
+fixtures](https://github.com/openclaw/openclaw/blob/3e6f7494af752db12ee8f1f9160a8c950158174d/extensions/browser/src/browser/config.test.ts).
+The HTTPS input and assertion require their exact two-line sequence; the two
+loopback fixtures each require one complete source line. Only URI detector 17,
+`PLAIN`/`HTML`, the pinned raw-value identities, regular-file mode, and committed
+base/head references qualify. The native proof for PR #149651 observed `PLAIN`
+findings; `HTML` is separately covered by constructed classifier records.
 
 One source path may contain multiple independently reviewed fixtures; each
 digest/path/mode tuple must match exactly, so source membership alone never

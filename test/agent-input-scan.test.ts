@@ -3073,3 +3073,113 @@ test("create-profile redaction qualification binds the full line and observed na
     assert.equal(classify(scoped, { ...finding, DecoderName: "BASE64" }).kind, "refused");
   }
 });
+
+for (const { name, protocol, host, suffix, lines } of [
+  {
+    name: "explicit HTTPS default port",
+    protocol: "https:",
+    host: "remote-browser.example.com:443",
+    suffix: "?token=abc#frag",
+    lines: (value: string) => [`            cdpUrl: "${value}",`, `        "${value}",`],
+  },
+  {
+    name: "userinfo without a port",
+    protocol: "http:",
+    host: "127.0.0.1",
+    suffix: "",
+    lines: (value: string) => [`            cdpUrl: "${value}",`],
+  },
+  {
+    name: "configured port insertion",
+    protocol: "http:",
+    host: "127.0.0.1:18800",
+    suffix: "",
+    lines: (value: string) => [`      expect(profile?.cdpUrl).toBe("${value}");`],
+  },
+]) {
+  test(`browser config fixture qualification preserves ${name}`, () => {
+    const username = "user";
+    const password = "pass";
+    const raw = `${protocol}//${username}:${password}@${host}`;
+    const rawV2 = `${raw}/json/version`;
+    const sourceLines = lines(`${rawV2}${suffix}`);
+    const fixture = exactFixture([
+      {
+        detectorType: 17,
+        detectorName: "URI",
+        decoder: "PLAIN",
+        raw,
+        rawV2,
+        line: sourceLines[0]!,
+        secretParts: { host, username, password },
+        extraData: null,
+      },
+    ]);
+    const file = fixture.inputs.keys().next().value!;
+    const input = fixture.inputs.get(file)!;
+    if (input.kind !== "blob") throw new Error("expected blob fixture");
+    for (const role of ["base", "head"] as const) {
+      const scoped = {
+        ...input,
+        bytes: Buffer.from(`${sourceLines.join("\n")}\n`),
+        references: input.references.map((reference) => ({
+          ...reference,
+          role,
+          source: "extensions/browser/src/browser/config.test.ts",
+        })),
+      };
+      for (const decoder of ["PLAIN", "HTML"]) {
+        const finding = { ...fixture.findings[0]!, DecoderName: decoder };
+        const classify = (value: StagedScanInput, record = finding) =>
+          classifyWithProductionPolicy([record], new Map([[file, value]]));
+        assert.equal(classify(scoped).kind, "classified", `${role}/${decoder}`);
+        for (const changedLines of [
+          [...sourceLines, sourceLines[0]!],
+          sourceLines.slice(1),
+          sourceLines.map((line) => `${line} // changed`),
+          sourceLines.map((line) => line.replace("/json/version", "/json/version?changed")),
+          ...(sourceLines.length > 1
+            ? [[...sourceLines].reverse(), [sourceLines[0]!, sourceLines[0]!]]
+            : []),
+        ]) {
+          assert.equal(
+            classify({ ...scoped, bytes: Buffer.from(`${changedLines.join("\n")}\n`) }).kind,
+            "refused",
+          );
+        }
+        for (const update of [
+          { role: "worktree" as const },
+          { source: "another.test.ts" },
+          { mode: "100755" },
+        ]) {
+          assert.equal(
+            classify({
+              ...scoped,
+              references: scoped.references.map((reference) => ({ ...reference, ...update })),
+            }).kind,
+            "refused",
+          );
+        }
+        assert.equal(classify(scoped, { ...finding, Verified: true }).kind, "refused");
+        assert.equal(classify(scoped, { ...finding, DecoderName: "BASE64" }).kind, "refused");
+        assert.equal(classify(scoped, { ...finding, VerificationError: "" }).kind, "refused");
+        assert.equal(
+          classify(scoped, {
+            ...finding,
+            SecretParts: { host: "wrong.example", username, password },
+          }).kind,
+          "refused",
+        );
+        if (host.endsWith(":443")) {
+          assert.equal(
+            classify(scoped, {
+              ...finding,
+              SecretParts: { host: new URL(rawV2).host, username, password },
+            }).kind,
+            "refused",
+          );
+        }
+      }
+    }
+  });
+}

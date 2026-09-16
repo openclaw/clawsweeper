@@ -19,7 +19,7 @@ export type ReviewedAttribution = readonly [
   decoder: "PLAIN" | "HTML" | "ESCAPED_UNICODE",
   rawSha256: string,
   rawV2Sha256: string,
-  lineSha256: string,
+  lineSha256: string | readonly string[],
   source: string,
   mode: "100644",
 ];
@@ -247,6 +247,13 @@ const CRABBOX_POSTGRES_DOC_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  // Existing browser URL-port fixtures from OpenClaw #83707; repeated input/assertion lines form one exact witness.
+  [17, "URI", "PLAIN", "fe30fb721f4e8b1d50f281ae338da254a0e34dba6804776c231b8666d5856055", "3d66d0da353b12cda6548577a624bbb7803b9110255d998a07e5e772dfc5781e", "484aa826bff427f81ddc9e65a3c931d198fee4ca469b51f2a1bec72d669aa7bf", "extensions/browser/src/browser/config.test.ts", "100644"],
+  [17, "URI", "HTML", "fe30fb721f4e8b1d50f281ae338da254a0e34dba6804776c231b8666d5856055", "3d66d0da353b12cda6548577a624bbb7803b9110255d998a07e5e772dfc5781e", "484aa826bff427f81ddc9e65a3c931d198fee4ca469b51f2a1bec72d669aa7bf", "extensions/browser/src/browser/config.test.ts", "100644"],
+  [17, "URI", "PLAIN", "f5accb521ff7c6ffce0ecd2fb4cb9c05475a832e44c8ac4d336c3cab8e79cfa2", "c81f3e0d5d8aae13f7084e4f5cee483b12b08fb7a4e91f2f7d21072c51b7baa8", ["c016f2251f34393b8dd84f20652f89c4acf457015d6fbc92aa440d6fa1854854", "c753a0542e4bdec89fdd79181e0efa82120253a4c56de4cf0b4365d3f3cb1d76"], "extensions/browser/src/browser/config.test.ts", "100644"],
+  [17, "URI", "HTML", "f5accb521ff7c6ffce0ecd2fb4cb9c05475a832e44c8ac4d336c3cab8e79cfa2", "c81f3e0d5d8aae13f7084e4f5cee483b12b08fb7a4e91f2f7d21072c51b7baa8", ["c016f2251f34393b8dd84f20652f89c4acf457015d6fbc92aa440d6fa1854854", "c753a0542e4bdec89fdd79181e0efa82120253a4c56de4cf0b4365d3f3cb1d76"], "extensions/browser/src/browser/config.test.ts", "100644"],
+  [17, "URI", "PLAIN", "e34573089185e607a0cf66ed5635da4375033afb255217b6a0999973c96edf6d", "714a0731adfb5b5f3c8c54d5432adaef98a11bccd8d78695cd7c51a9df33eb15", "1ac5194292c5dd0ac2ffb35da904e610bfa6253bd87b233ed147ca1c8cc6d528", "extensions/browser/src/browser/config.test.ts", "100644"],
+  [17, "URI", "HTML", "e34573089185e607a0cf66ed5635da4375033afb255217b6a0999973c96edf6d", "714a0731adfb5b5f3c8c54d5432adaef98a11bccd8d78695cd7c51a9df33eb15", "1ac5194292c5dd0ac2ffb35da904e610bfa6253bd87b233ed147ca1c8cc6d528", "extensions/browser/src/browser/config.test.ts", "100644"],
   // Existing OpenClaw create-profile redaction fixture; native PLAIN/HTML findings in PR #149354.
   [17, "URI", "PLAIN", "9052f1f4f392d163174d33f5069883336c7a9da094f773f83b719685f4b9a239", "9052f1f4f392d163174d33f5069883336c7a9da094f773f83b719685f4b9a239", "160d09c72a4cc728dde5d883acd48d170878bbb79d05c06e533517c2afe64138", "extensions/browser/src/browser/profiles-service.test.ts", "100644"],
   [17, "URI", "HTML", "9052f1f4f392d163174d33f5069883336c7a9da094f773f83b719685f4b9a239", "9052f1f4f392d163174d33f5069883336c7a9da094f773f83b719685f4b9a239", "160d09c72a4cc728dde5d883acd48d170878bbb79d05c06e533517c2afe64138", "extensions/browser/src/browser/profiles-service.test.ts", "100644"],
@@ -280,10 +287,14 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
   const seen = new Set<string>();
   for (const row of rows) {
     const [detectorType, detectorName, decoder, raw, rawV2, line, source, mode] = row;
+    const lines = typeof line === "string" ? [line] : line;
     if (
       row.length !== 8 ||
       detectorNames[detectorType] !== detectorName ||
-      ![raw, rawV2, line].every((digest) => sha256Pattern.test(digest)) ||
+      !Array.isArray(lines) ||
+      !lines.length ||
+      new Set(lines).size !== lines.length ||
+      ![raw, rawV2, ...lines].every((digest) => sha256Pattern.test(digest)) ||
       !(
         (source === "src/logging/redact.test.ts" &&
           (decoder === "PLAIN" || decoder === "ESCAPED_UNICODE")) ||
@@ -291,7 +302,8 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           detectorType === 17 &&
           detectorName === "URI" &&
           (decoder === "PLAIN" || decoder === "HTML")) ||
-        (source === "extensions/browser/src/browser/profiles-service.test.ts" &&
+        ((source === "extensions/browser/src/browser/profiles-service.test.ts" ||
+          source === "extensions/browser/src/browser/config.test.ts") &&
           detectorType === 17 &&
           detectorName === "URI" &&
           (decoder === "PLAIN" || decoder === "HTML")) ||
@@ -533,6 +545,17 @@ export function classifyReviewedFixtureScan(
   return classifyReviewedFindings(findings, inputs, reviewedAttributions);
 }
 
+function nativeUriParts(value: string) {
+  const uri = new URL(value);
+  // TruffleHog's Go URL host retains explicit default ports and original spelling.
+  const authority = /^[^:]+:\/\/([^/?#]*)/.exec(value)?.[1];
+  return {
+    host: authority?.slice(authority.lastIndexOf("@") + 1),
+    username: uri.username,
+    password: uri.password,
+  };
+}
+
 function classifyReviewedFindings(
   findings: Record<string, unknown>[],
   inputs: ReadonlyMap<string, StagedScanInput>,
@@ -706,9 +729,9 @@ function classifyReviewedFindings(
       if (staged?.kind !== "blob" || !staged.bytes) return refuse("material_not_reviewed");
       const parts = object(finding.SecretParts);
       if (detectorType === 17) {
-        let uri: URL;
+        let uri: ReturnType<typeof nativeUriParts>;
         try {
-          uri = new URL(rawV2);
+          uri = nativeUriParts(rawV2);
         } catch {
           return refuse("metadata_mismatch");
         }
@@ -747,9 +770,12 @@ function classifyReviewedFindings(
       }
       let lineStart = 0;
       let lineNumber = 1;
-      let witnessLine: string | undefined;
       let witnessLineNumber: number | undefined;
-      let literalOccurrences = 0;
+      const witnessDigests: string[] = [];
+      const expectedDigests = matchingMetadata.map(([, , , , , line]) =>
+        typeof line === "string" ? [line] : line,
+      );
+      const maxOccurrences = Math.max(...expectedDigests.map((lines) => lines.length));
       while (lineStart <= text.length) {
         const newline = text.indexOf("\n", lineStart);
         const lineEnd = newline === -1 ? text.length : newline;
@@ -757,27 +783,23 @@ function classifyReviewedFindings(
         if (detectorType === 17 && line.includes(rawV2)) {
           let occurrence = line.indexOf(rawV2);
           while (occurrence !== -1) {
-            literalOccurrences++;
+            if (witnessDigests.length >= maxOccurrences) return refuse("literal_mismatch");
+            witnessDigests.push(createHash("sha256").update(line).digest("hex"));
             occurrence = line.indexOf(rawV2, occurrence + rawV2.length);
           }
-          witnessLine ??= line;
           witnessLineNumber ??= lineNumber;
         } else if (detectorType !== 17 && lineNumber === scannerLine) {
-          witnessLine = line;
+          witnessDigests.push(createHash("sha256").update(line).digest("hex"));
           witnessLineNumber = lineNumber;
         }
         if (newline === -1) break;
         lineStart = newline + 1;
         lineNumber++;
       }
-      if (
-        witnessLine === undefined ||
-        witnessLineNumber === undefined ||
-        (detectorType === 17 && literalOccurrences !== 1)
-      )
-        return refuse("literal_mismatch");
-      const lineDigest = createHash("sha256").update(witnessLine).digest("hex");
-      if (!matchingMetadata.some(([, , , , , expectedLine]) => expectedLine === lineDigest))
+      const matchesWitness = (lines: readonly string[]) =>
+        lines.length === witnessDigests.length &&
+        lines.every((digest, index) => digest === witnessDigests[index]);
+      if (witnessLineNumber === undefined || !expectedDigests.some(matchesWitness))
         return refuse("literal_mismatch");
       if (
         !staged.references.length ||
@@ -785,8 +807,10 @@ function classifyReviewedFindings(
           ({ source, mode, role }) =>
             (role !== "base" && role !== "head") ||
             matchingMetadata.every(
-              ([, , , , , expectedLine, expectedSource, expectedMode]) =>
-                expectedLine !== lineDigest || expectedSource !== source || expectedMode !== mode,
+              ([, , , , , , expectedSource, expectedMode], index) =>
+                !matchesWitness(expectedDigests[index]!) ||
+                expectedSource !== source ||
+                expectedMode !== mode,
             ),
         )
       )
@@ -860,7 +884,7 @@ function classifyReviewedFindings(
       )
     )
       return refuse("source_not_reviewed");
-    const uri = new URL(finding.RawV2);
+    const uri = nativeUriParts(finding.RawV2);
     const parts = object(finding.SecretParts);
     if (
       !parts ||
