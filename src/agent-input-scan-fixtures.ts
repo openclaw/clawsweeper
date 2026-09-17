@@ -287,6 +287,13 @@ const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
   [17, "URI", "PLAIN", "609f5f8c987b35e0d48b35e8463574db63b84c087e79d4189ef6fea5979f7609", "8074e19d513f3bdb60156065af46081e407232026590b37476c5b7745db3d776", ["f0144dec37814ca30e23745ffff253f710c20e51e4ac2fbdf3ae4b82afb17e10", "b59f02752a9188dc4d89ebf86442a3af3c2c49a64a217614fb29e9d0d1b88f88"], "internal/cli/repo_test.go", "100644"],
   [17, "URI", "PLAIN", "4b113e9ace3e5b41991d62d947eb1bb8251c904aded634c011eac87f7011c518", "4b113e9ace3e5b41991d62d947eb1bb8251c904aded634c011eac87f7011c518", ["f0144dec37814ca30e23745ffff253f710c20e51e4ac2fbdf3ae4b82afb17e10", "b59f02752a9188dc4d89ebf86442a3af3c2c49a64a217614fb29e9d0d1b88f88"], "internal/cli/repo_test.go", "100644"],
   [17, "URI", "PLAIN", "609f5f8c987b35e0d48b35e8463574db63b84c087e79d4189ef6fea5979f7609", "8074e19d513f3bdb60156065af46081e407232026590b37476c5b7745db3d776", "35f038c31f598ead2d83273f87972633d956fd55395644cf722d963121a0f999", "internal/cli/ssh_test.go", "100644"],
+  // Scanner regression/proof controls: exact owned source lines, including the deliberate rejection case.
+  [17, "URI", "PLAIN", "dab81a433bea3f155bdd2e6568380c6e21c4a629096e29443c949fcab4ab8adc", "dab81a433bea3f155bdd2e6568380c6e21c4a629096e29443c949fcab4ab8adc", ["e7173a8ac7ee26ee3846d6487ea01f33027e226087f561866b009f60dc34178e", "508ded3f91728edcc7d4ee16d478fae1afd678604e85a9c1f5b701faead11057"], "test/agent-input-scan-git-metadata.test.ts", "100644"],
+  [17, "URI", "PLAIN", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "3cd99e06be80f0f01f21d20433c9e1fa20245f0fac149007b0e45b1738f4a327", "test/agent-input-scan-git-metadata.test.ts", "100644"],
+  [17, "URI", "HTML", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "3cd99e06be80f0f01f21d20433c9e1fa20245f0fac149007b0e45b1738f4a327", "test/agent-input-scan-git-metadata.test.ts", "100644"],
+  [17, "URI", "HTML", "dab81a433bea3f155bdd2e6568380c6e21c4a629096e29443c949fcab4ab8adc", "dab81a433bea3f155bdd2e6568380c6e21c4a629096e29443c949fcab4ab8adc", ["e7173a8ac7ee26ee3846d6487ea01f33027e226087f561866b009f60dc34178e", "508ded3f91728edcc7d4ee16d478fae1afd678604e85a9c1f5b701faead11057"], "test/agent-input-scan-git-metadata.test.ts", "100644"],
+  [17, "URI", "PLAIN", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "a271d1f3d9e105af4a08d27cb5372f891021a0e254241ee23ea257863300a9fd", "docs/proof/agent-input-scan-git-metadata/run-shared-oid-proof.mjs", "100644"],
+  [17, "URI", "HTML", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "a271d1f3d9e105af4a08d27cb5372f891021a0e254241ee23ea257863300a9fd", "docs/proof/agent-input-scan-git-metadata/run-shared-oid-proof.mjs", "100644"],
   ...CRABBOX_POSTGRES_DOC_ATTRIBUTIONS,
 ];
 
@@ -323,6 +330,11 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           detectorType === 17 &&
           detectorName === "URI" &&
           decoder === "PLAIN") ||
+        ((source === "test/agent-input-scan-git-metadata.test.ts" ||
+          source === "docs/proof/agent-input-scan-git-metadata/run-shared-oid-proof.mjs") &&
+          detectorType === 17 &&
+          detectorName === "URI" &&
+          (decoder === "PLAIN" || decoder === "HTML")) ||
         (source === "docs/operations.md" &&
           detectorType === 968 &&
           detectorName === "Postgres" &&

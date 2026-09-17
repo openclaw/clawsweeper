@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Bind scanner regression and native-proof fixture findings to their exact owned source lines and observed decoders, preserving rejection of the same control at unrelated sources.
+
 - Qualify the exact reviewed Crabbox remote-credential rejection fixtures with native URI and complete source-line witnesses, while retaining all scan and verification gates.
 
 - Preserve approved URI source witnesses when a native metadata replay masks Git object IDs in the same patch, while rejecting altered replay inputs and unclassified findings.
