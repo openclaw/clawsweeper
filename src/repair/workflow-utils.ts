@@ -20,6 +20,7 @@ import {
 } from "../apply-close-actions.js";
 import { repositoryProfileFor, slugForRepo } from "../repository-profiles.js";
 import { recoverReviewShard } from "../review-recovery.js";
+import { exactReviewAdmission } from "./exact-review-admission.js";
 
 type ApplyAction = {
   action: string;
@@ -172,6 +173,9 @@ async function runCli(): Promise<void> {
   if (!command) throw new Error("workflow utility command is required");
 
   switch (command) {
+    case "exact-review-admission":
+      exactReviewAdmission(printOutput);
+      break;
     case "plan-output":
       printPlanOutput();
       break;

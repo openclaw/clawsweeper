@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
 import { TRUFFLEHOG_VERSION } from "./review-tool-bootstrap.js";
-import { resolvePatchContextWitnesses } from "./agent-input-scan-patch.js";
+import { resolvePatchWitnesses } from "./agent-input-scan-patch.js";
+import { resolveGitObjectMetadata } from "./agent-input-scan-git-metadata.js";
 
 interface ReviewedFixture {
   fixtureSha256: string;
@@ -247,6 +248,11 @@ const CRABBOX_POSTGRES_DOC_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  // Plugin-help redaction fixtures: bind every literal occurrence, including object keys and the unsaved URL query.
+  [17, "URI", "PLAIN", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", ["3835950cbb9c584ba2c052e76ba31ac1c83cf48ec422c588fd00605dfec4b082", "0452c2176a2ce671ae67942c523f65774d9fbaa672ac973968844d00fcf44852"], "ui/src/pages/custodian/custodian-session-store.test.ts", "100644"],
+  [17, "URI", "HTML", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", ["3835950cbb9c584ba2c052e76ba31ac1c83cf48ec422c588fd00605dfec4b082", "0452c2176a2ce671ae67942c523f65774d9fbaa672ac973968844d00fcf44852"], "ui/src/pages/custodian/custodian-session-store.test.ts", "100644"],
+  [17, "URI", "PLAIN", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "bd8755761c1bc3e97de6db5abbb63b57bd89237423154144de2bc16c03dd96a7", "ui/src/e2e/plugins-help.e2e.test.ts", "100644"],
+  [17, "URI", "HTML", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "bd8755761c1bc3e97de6db5abbb63b57bd89237423154144de2bc16c03dd96a7", "ui/src/e2e/plugins-help.e2e.test.ts", "100644"],
   // Existing browser URL-port fixtures from OpenClaw #83707; repeated input/assertion lines form one exact witness.
   [17, "URI", "PLAIN", "fe30fb721f4e8b1d50f281ae338da254a0e34dba6804776c231b8666d5856055", "3d66d0da353b12cda6548577a624bbb7803b9110255d998a07e5e772dfc5781e", "484aa826bff427f81ddc9e65a3c931d198fee4ca469b51f2a1bec72d669aa7bf", "extensions/browser/src/browser/config.test.ts", "100644"],
   [17, "URI", "HTML", "fe30fb721f4e8b1d50f281ae338da254a0e34dba6804776c231b8666d5856055", "3d66d0da353b12cda6548577a624bbb7803b9110255d998a07e5e772dfc5781e", "484aa826bff427f81ddc9e65a3c931d198fee4ca469b51f2a1bec72d669aa7bf", "extensions/browser/src/browser/config.test.ts", "100644"],
@@ -303,7 +309,9 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           detectorName === "URI" &&
           (decoder === "PLAIN" || decoder === "HTML")) ||
         ((source === "extensions/browser/src/browser/profiles-service.test.ts" ||
-          source === "extensions/browser/src/browser/config.test.ts") &&
+          source === "extensions/browser/src/browser/config.test.ts" ||
+          source === "ui/src/pages/custodian/custodian-session-store.test.ts" ||
+          source === "ui/src/e2e/plugins-help.e2e.test.ts") &&
           detectorType === 17 &&
           detectorName === "URI" &&
           (decoder === "PLAIN" || decoder === "HTML")) ||
@@ -410,6 +418,7 @@ export type ScanRefusalDiagnostic =
     };
 
 export interface ReviewedFixtureNotice {
+  classification?: "git_object_id";
   fixtureSha256: string;
   source: string;
   detector: string;
@@ -421,6 +430,14 @@ interface RefusedScan {
   reason: "scanner_failed" | "findings";
   diagnostic: ScanRefusalDiagnostic;
 }
+
+type ClassifiedScan =
+  | { kind: "classified"; notices: ReviewedFixtureNotice[] }
+  | {
+      kind: "git_metadata_proof_required";
+      notices: ReviewedFixtureNotice[];
+      proofPatches: ReadonlyMap<string, Buffer>;
+    };
 
 interface ClassifiedFinding {
   blob: string;
@@ -494,7 +511,7 @@ export function classifyReviewedFixtureScan(
   stderr: Buffer,
   inputs: ReadonlyMap<string, StagedScanInput>,
   reviewedAttributions: readonly ReviewedAttribution[] = REVIEWED_ATTRIBUTIONS,
-): { kind: "classified"; notices: ReviewedFixtureNotice[] } | RefusedScan {
+): ClassifiedScan | RefusedScan {
   validateReviewedAttributions(reviewedAttributions);
   const nativeFailure = (
     reason: Extract<ScanRefusalDiagnostic, { kind: "native_contract" }>["reason"],
@@ -503,9 +520,9 @@ export function classifyReviewedFixtureScan(
     reason: "scanner_failed",
     diagnostic: { kind: "native_contract", reason },
   });
-  if (status !== 183) return nativeFailure("unexpected_exit");
+  if (status !== 183 && (status !== 0 || stdout.length)) return nativeFailure("unexpected_exit");
   const findings = records(stdout);
-  if (!findings?.length) return nativeFailure("invalid_stdout");
+  if (!findings || (status === 183 && !findings.length)) return nativeFailure("invalid_stdout");
   const logs = records(stderr);
   if (!logs) return nativeFailure("invalid_stderr");
   // TruffleHog can log detector failures and still exit 183. Its exit status
@@ -561,14 +578,17 @@ function classifyReviewedFindings(
   inputs: ReadonlyMap<string, StagedScanInput>,
   reviewedAttributions: readonly ReviewedAttribution[],
   literalLines = new Map<string, number>(),
-): { kind: "classified"; notices: ReviewedFixtureNotice[] } | RefusedScan {
-  const patchWitnesses = new Map<
+): ClassifiedScan | RefusedScan {
+  const patchWitnesses = new Map<string, NonNullable<ReturnType<typeof resolvePatchWitnesses>>>();
+  const objectWitnesses = new Map<
     string,
-    NonNullable<ReturnType<typeof resolvePatchContextWitnesses>>
+    NonNullable<ReturnType<typeof resolveGitObjectMetadata>>
   >();
+  const proofPatches = new Map<string, Buffer>();
   const classified = new Map<
     string,
     {
+      classification?: "git_object_id";
       fixtureSha256: string;
       source: string;
       detector: string;
@@ -627,6 +647,63 @@ function classifyReviewedFindings(
           );
     if (staged?.kind === "patch") {
       if (typeof file !== "string" || scannerLine === null) return refuse("metadata_mismatch");
+      if (finding.DetectorType === 58) {
+        const parts = object(finding.SecretParts);
+        if (
+          finding.DetectorName !== "CloudflareGlobalApiKey" ||
+          finding.SourceType !== 15 ||
+          finding.Verified !== false ||
+          typeof finding.VerificationError !== "string" ||
+          !finding.VerificationError ||
+          (finding.DecoderName !== "PLAIN" && finding.DecoderName !== "HTML") ||
+          finding.ExtraData !== null ||
+          finding.StructuredData !== null ||
+          !raw ||
+          !rawDigest ||
+          !exactStringRecord(parts, ["key", "email"]) ||
+          parts?.key !== raw ||
+          rawV2 !== raw + parts.email ||
+          finding.Redacted !== parts.email
+        )
+          return refuse("metadata_mismatch");
+        const witnessKey = `${file}:${rawDigest}`;
+        const witnesses =
+          objectWitnesses.get(witnessKey) ?? resolveGitObjectMetadata(staged, raw, inputs);
+        if (!witnesses) return refuse("material_not_reviewed");
+        objectWitnesses.set(witnessKey, witnesses);
+        // Only independently proven metadata fields change in this second input.
+        // The original complete patch remains part of the primary native scan.
+        const proof = proofPatches.get(file) ?? Buffer.from(staged.bytes!);
+        const literal = Buffer.from(raw);
+        for (
+          let offset = proof.indexOf(literal);
+          offset !== -1;
+          offset = proof.indexOf(literal, offset + literal.length)
+        )
+          proof.fill("_", offset, offset + literal.length);
+        proofPatches.set(file, proof);
+        for (const witness of witnesses) {
+          const key = `git-object:${rawDigest}:${witness.source}`;
+          const group = classified.get(key) ?? {
+            classification: "git_object_id" as const,
+            fixtureSha256: rawDigest,
+            source: witness.source,
+            detector: "CloudflareGlobalApiKey",
+            findings: new Map<string, ClassifiedFinding>(),
+          };
+          const findingKey = `${staged.id}:${scannerLine}:${finding.DecoderName}:${witness.patchLine}`;
+          const previous = group.findings.get(findingKey);
+          group.findings.set(findingKey, {
+            blob: staged.id,
+            scannerLine,
+            literalLine: witness.patchLine,
+            decoder: finding.DecoderName,
+            occurrences: (previous?.occurrences ?? 0) + 1,
+          });
+          classified.set(key, group);
+        }
+        continue;
+      }
       if (
         finding.DetectorType !== 17 ||
         !rawV2 ||
@@ -648,10 +725,14 @@ function classifyReviewedFindings(
       }
       const witnessKey = `${file}:${rawV2Digest}`;
       const witnesses =
-        patchWitnesses.get(witnessKey) ?? resolvePatchContextWitnesses(staged, rawV2, inputs);
+        patchWitnesses.get(witnessKey) ?? resolvePatchWitnesses(staged, rawV2, inputs);
       if (!witnesses) return refuse("material_not_reviewed");
       patchWitnesses.set(witnessKey, witnesses);
       for (const witness of witnesses) {
+        // Changed lines need exact full-line policy; legacy URI rows remain
+        // context-only even when their value and source path are reviewed.
+        if (witness.kind !== "context" && !exactCandidates.length)
+          return refuse("material_not_reviewed");
         // Reuse source policy against the original full blob and every logical
         // reference. This derived attribution never replaces scanned patch bytes.
         const result = classifyReviewedFindings(
@@ -667,9 +748,9 @@ function classifyReviewedFindings(
           reviewedAttributions,
           literalLines,
         );
-        if (result.kind === "refused")
+        if (result.kind !== "classified")
           return refuse(
-            result.diagnostic.kind === "unclassified_finding"
+            result.kind === "refused" && result.diagnostic.kind === "unclassified_finding"
               ? result.diagnostic.reason
               : "finding_not_reviewed",
           );
@@ -959,17 +1040,18 @@ function classifyReviewedFindings(
       classified.set(groupKey, group);
     }
   }
-  return {
-    kind: "classified",
-    notices: [...classified.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([, group]) => ({
-        fixtureSha256: group.fixtureSha256,
-        source: group.source,
-        detector: group.detector,
-        findings: [...group.findings.entries()]
-          .sort(([a], [b]) => a.localeCompare(b))
-          .map(([, value]) => value),
-      })),
-  };
+  const notices = [...classified.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([, group]) => ({
+      ...(group.classification ? { classification: group.classification } : {}),
+      fixtureSha256: group.fixtureSha256,
+      source: group.source,
+      detector: group.detector,
+      findings: [...group.findings.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([, value]) => value),
+    }));
+  return proofPatches.size
+    ? { kind: "git_metadata_proof_required", notices, proofPatches }
+    : { kind: "classified", notices };
 }

@@ -713,18 +713,56 @@ URI identity, complete source line, regular-file mode, and committed base/head
 references. Native 3.97.4 scans observed only `PLAIN` and `HTML` attribution;
 the policy accepts those two variants.
 
-The full generated patch remains scanned. A URI finding attributed to its
-unchanged context may qualify only when **every literal occurrence** in that
-patch maps to the identical full line in both committed regular-file blobs.
-Canonical same-path headers, full Git object IDs, hunk coordinates, counts, and
-source bytes must agree. Every logical blob reference must independently pass
-the existing fixture policy. Added/removed lines, headers, binary patches,
-ambiguous paths, mode changes, uncommitted endpoints, and encoded-only matches
-remain blocking. Decoder line coordinates are diagnostic only; source matching
-does not rely on them. Patch notices retain the original material ID, scanner
-line, decoder, and literal line, with `patch` provenance recording the two
-revisions and each source blob/line. The prompt omission helper is never applied
-to scan input. See [the reproducible admission proof](docs/proof/agent-input-scan-context/README.md).
+The plugin settings redaction fixtures in OpenClaw's
+`ui/src/pages/custodian/custodian-session-store.test.ts` and
+`ui/src/e2e/plugins-help.e2e.test.ts` bind their exact synthetic URI, ordered
+complete source lines, regular-file mode, and committed base/head references.
+Native 3.97.4 scans observed `PLAIN` and `HTML` attribution for these fixtures;
+only those exact tuples qualify.
+
+The full generated patch remains scanned. Every literal occurrence of an
+eligible URI must bind to committed regular-file bytes through canonical
+same-path headers, full Git object IDs, hunk coordinates, counts, and newline
+markers. Unchanged context requires the identical full line in both blobs.
+Added lines require the head blob; removed lines require the base blob, and
+both require exact ordered full-line attribution policy. Legacy value/path-only
+rows remain context-only. Every retained blob reference must independently pass
+the existing fixture policy.
+New and deleted files additionally require one matching host-captured raw Git
+diff record proving the absent endpoint, correct zero object ID and mode, and
+the complete present-file hunk. A textual `/dev/null` header or missing blob is
+not absence proof; contradictory captured references refuse admission.
+Headers containing the URI, binary patches, ambiguous paths, mode changes,
+uncommitted endpoints, and encoded-only matches remain blocking. Decoder line
+coordinates are diagnostic only; source matching does not rely on them.
+Patch notices retain the original material ID, scanner line, decoder, and literal
+line, with `patch` provenance recording both revisions and each source blob/line.
+The prompt omission helper is never applied to scan input. See
+[the reproducible admission proof](docs/proof/agent-input-scan-context/README.md).
+
+CloudflareGlobalApiKey detector 58 can pair Git's generated 40-character blob
+IDs with nearby email context. An unverified `PLAIN`/`HTML` finding in a patch
+requires a separate provenance scan only when every literal occurrence is an exact
+object-ID field in canonical same-path regular-file patch/raw-diff headers.
+The two endpoint revisions, paths, modes, and full staged blobs must agree;
+the host independently rehashes each blob. The matched bytes must be absent
+from every staged prompt, schema, additional input, raw working file, and full
+blob, preventing detector deduplication from hiding a content occurrence.
+Missing retained bytes, unsupported metadata, malformed native fields, verified
+findings, and scanner errors still refuse. The complete patch, raw diff, and
+blobs remain scanned unchanged. Metadata notices identify their classification
+and use a SHA-256 digest in the existing notice identity field; matched object
+IDs and verification values are never emitted. OpenClaw Bay is unaffected.
+
+Those witnesses alone never admit a review: HTML decoding can create another
+matching value from source content while its reported line differs from the
+original bytes. The host scans a second complete patch copy with only the proven
+object-ID fields masked at their original lengths. All filename context and
+content bytes remain unchanged, and the staged bytes record that actual masked
+copy. The same pinned scanner, verification flags, completion checks, and shared
+deadline apply. Any remaining unclassified finding or request for metadata proof
+refuses admission; success notices are emitted only after this replay and the
+final source fences. Existing URI-only reviews retain their original single scan.
 
 Findings attributed to prompt, schema, raw diff, additional-input, other-path,
 or unqualified patch material remain blocking, as do other findings, verified

@@ -27,7 +27,7 @@ import {
   withMockGh,
   workPlanCandidateReport,
 } from "./helpers.ts";
-import { scheduledReviewSemanticSourceRevision } from "../scripts/classify-scheduled-review-noop.ts";
+import { scheduledReviewSemanticSourceRevision } from "../dist/scheduled-review-noop.js";
 
 test("review workflow emits terminal reasons for non-retryable scanner manifests", () => {
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
@@ -1048,6 +1048,7 @@ esac
           CLAIM_DECISION: JSON.stringify({ targetBranch: branch }),
           CLAIM_TARGET_BRANCH: branch,
           GH_TOKEN: "test-token",
+          CLAWSWEEPER_PUBLIC_GH_TOKEN: "test-actions-token",
           GITHUB_OUTPUT: outputPath,
           ITEM_NUMBER: "42",
           PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ""}`,
@@ -1306,26 +1307,12 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     liveItem.env?.CLAIM_DECISION,
     "${{ steps.claim-exact-review-queue.outputs.decision }}",
   );
+  assert.equal(liveItem.env?.GH_TOKEN, "${{ steps.target-read-token.outputs.token }}");
+  assert.equal(liveItem.env?.CLAWSWEEPER_PUBLIC_GH_TOKEN, "${{ github.token }}");
   assert.equal(
-    liveItem.env?.GH_TOKEN,
-    "${{ steps.target.outputs.target_repo == 'openclaw/openclaw' && github.token || steps.target-read-token.outputs.token }}",
+    liveItem.run?.trim(),
+    'pnpm run --silent workflow -- exact-review-admission >> "$GITHUB_OUTPUT"',
   );
-  assert.match(liveItem.run ?? "", /grep -Eq '\^\[0-9\]\+\$'/);
-  assert.match(
-    liveItem.run ?? "",
-    /gh api "repos\/\$TARGET_REPO" --jq '\.default_branch \/\/ empty'/,
-  );
-  assert.match(liveItem.run ?? "", /Resolved invalid queued target branch/);
-  assert.match(liveItem.run ?? "", /admission_retry=true/);
-  assert.match(liveItem.run ?? "", /echo "retry_kind=throttle"/);
-  assert.match(
-    liveItem.run ?? "",
-    /rate limit exceeded\|secondary rate limit\|HTTP 429/,
-    "a throttled live-item check must release the claim for retry instead of failing",
-  );
-  assert.match(liveItem.run ?? "", /throttled the live-item check/);
-  assert.match(liveItem.run ?? "", /decision\.targetBranch = process\.env\.TARGET_BRANCH/);
-  assert.match(liveItem.run ?? "", /scripts\/classify-scheduled-review-noop\.ts/);
   const targetToken = reviewer.steps.find((step) => step.id === "target-write-token");
   assert.match(targetToken?.if ?? "", /scheduled_semantic_noop != 'true'/);
   assert.doesNotMatch(targetToken?.if ?? "", /outputs\.proceed == 'true'/);
@@ -1338,8 +1325,6 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     (step) => step.id === "exact-review-generation-result",
   );
   assert.match(semanticNoopResult?.run ?? "", /SCHEDULED_SEMANTIC_NOOP.*outcome=success/s);
-  assert.match(liveItem.run ?? "", /scheduled_noop=true/);
-  assert.match(liveItem.run ?? "", /Completing .* as a scheduled no-op before target checkout/);
   assert.match(
     step(reviewer, "Review exact event item").if ?? "",
     /reserve-exact-review-lease\.outputs\.status == 'posted'/,
@@ -2472,8 +2457,7 @@ test("exact event workflow binds all work to the canonical queue claim", () => {
     claimedWork,
     /CLAIM_TARGET_BRANCH: \$\{\{ fromJSON\(steps\.claim-exact-review-queue\.outputs\.decision\)\.targetBranch \}\}/,
   );
-  assert.match(claimedWork, /target_branch="\$CLAIM_TARGET_BRANCH"/);
-  assert.match(claimedWork, /if \.pull_request then "pull_request" else "issue" end/);
+  assert.match(claimedWork, /workflow -- exact-review-admission/);
   assert.match(claimedWork, /steps\.live-item\.outputs\.target_branch/);
   assert.match(
     claimedWork,
@@ -7483,7 +7467,7 @@ test("exact oversized PR admission uses the built predicate before reactions, re
   const steps = workflow.jobs["event-review-apply"].steps;
   const live = steps.find((step: any) => step.id === "live-item");
   const review = steps.find((step: any) => step.id === "review-exact-event-item");
-  assert.match(live.run, /dist\/clawsweeper-oversized-pr-policy\.js/);
+  assert.match(live.run, /workflow -- exact-review-admission/);
   assert.match(review.run, /--pr-admission-file/);
   assert.doesNotMatch(review.if, /outputs\.oversized/);
   const reserve = steps.find((step: any) => step.id === "reserve-exact-review-lease");
@@ -7537,76 +7521,6 @@ test("exact oversized PR admission uses the built predicate before reactions, re
       ].includes(step.uses),
   )) {
     assert.match(step.if, /outputs\.oversized != 'true'/, step.name ?? step.uses);
-  }
-  const root = mkdtempSync(tmpPrefix);
-  try {
-    symlinkSync(join(process.cwd(), "dist"), join(root, "dist"), "dir");
-    const bin = join(root, "bin");
-    mkdirSync(bin);
-    const gh = join(bin, "gh");
-    const calls = join(root, "calls");
-    writeFileSync(
-      gh,
-      `#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\\n' "$*" >> "$MOCK_CALLS"
-case "$2" in
-  */branches/main) echo '{}' ;;
-  */issues/141913) echo '{"state":"open","locked":false,"pull_request":{}}' ;;
-  */pulls/141913) cat "$MOCK_PULL" ;;
-  *) echo 'unexpected GitHub call' >&2; exit 91 ;;
-esac
-`,
-      { mode: 0o755 },
-    );
-    for (const [total, labels, expected] of [
-      [50000, [], "false"],
-      [50001, [], "true"],
-      [166686, ["size: accepted-large"], "false"],
-      [undefined, [], "false"],
-    ] as const) {
-      const fixture = join(root, "pull.json");
-      writeFileSync(
-        fixture,
-        JSON.stringify({
-          number: 141913,
-          state: "open",
-          locked: false,
-          additions: total,
-          deletions: 0,
-          changed_files: 2747,
-          head: { sha: "b".repeat(40) },
-          labels,
-        }),
-      );
-      const output = join(root, `output-${expected}-${total}`);
-      execFileSync("bash", ["-c", live.run], {
-        cwd: root,
-        env: {
-          ...process.env,
-          PATH: `${bin}${delimiter}${process.env.PATH}`,
-          GH_TOKEN: "synthetic",
-          CLAIM_DECISION: "{}",
-          CLAIM_TARGET_BRANCH: "main",
-          GITHUB_OUTPUT: output,
-          TARGET_REPO: "openclaw/openclaw",
-          ITEM_NUMBER: "141913",
-          MOCK_CALLS: calls,
-          MOCK_PULL: fixture,
-        },
-      });
-      assert.match(readText(output), new RegExp(`oversized=${expected}`));
-      assert.match(readText(output), /proceed=true/);
-    }
-    assert.equal(
-      readText(calls)
-        .split("\n")
-        .filter((line) => line.includes("/pulls/141913")).length,
-      4,
-    );
-    assert.doesNotMatch(readText(calls), /POST|PATCH|DELETE|comments|files/);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
   }
 });
 

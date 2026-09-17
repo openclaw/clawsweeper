@@ -7,6 +7,10 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Classify generated Git blob IDs mistaken for Cloudflare credentials only after complete source witnesses and an independent native patch replay rule out decoded content matches, while keeping verified or incomplete scans blocked.
+
+- Let exact-review admission use the existing one-shot scoped read-token fallback when the public Actions quota is exhausted, while preserving private-repository access and retry behavior.
+
 - Avoid migration-proof blockers for read-only doctor dispatch changes while retaining doctor warnings under persistence owners and beside same-hunk storage evidence.
 
 - Allow reviewed browser configuration URL fixtures through input scanning with exact occurrence witnesses, preserving native explicit-default-port metadata and rejection of changed or unrelated input.
@@ -55,6 +59,8 @@ checkpoint, and status-only commits are intentionally omitted.
 - Deleted the monthly `state-compaction.yml` history rewrite of `openclaw/clawsweeper-state`, removing one of the last writers ahead of that repository's retirement.
 
 ### Changed
+
+- Attribute GitHub CLI throttles to the credential used by the failed request, preserving one-shot public-read recovery and the original command diagnostics.
 
 - Restore OpenClaw changed-gate receipts, caches, and disposable outputs for strict `pnpm run`, selector, and environment-prefixed commands without granting root artifact exemptions to workspace scripts.
 

@@ -1834,7 +1834,7 @@ test("exact attribution policy rejects duplicate and malformed rows", () => {
   assert.deepEqual(nativeFailure, {
     kind: "refused",
     reason: "scanner_failed",
-    diagnostic: { kind: "native_contract", reason: "unexpected_exit" },
+    diagnostic: { kind: "native_contract", reason: "incomplete_scan" },
   });
   assert.throws(
     () =>
@@ -2903,6 +2903,10 @@ test("approved URI findings in unchanged patch context require both exact Git wi
     ],
     ["wrong coordinates", (text: string) => text.replace("@@ -1,3 +1,3 @@", "@@ -2,3 +1,3 @@")],
     ["unfinished hunk", (text: string) => text.replace("@@ -1,3 +1,3 @@", "@@ -1,4 +1,3 @@")],
+    [
+      "invented trailing blank context",
+      (text: string) => text.replace("@@ -1,3 +1,3 @@", "@@ -1,4 +1,4 @@") + " \n",
+    ],
     ["wrong path", (text: string) => text.replace(`+++ b/${exactSource}`, "+++ b/another.test.ts")],
     ["wrong mode", (text: string) => text.replace(" 100644\n", " 100755\n")],
     ["wrong object", (text: string) => text.replace(fixture.beforeId, "c".repeat(40))],
@@ -3015,6 +3019,341 @@ test("patch admission keeps legacy duplicate records and rejects coherent non-co
   }
 });
 
+function changedPatchFixture(
+  t: test.TestContext,
+  entry: ExactCase,
+  change: "add" | "remove" | "new" | "delete",
+  finalNewline = true,
+  content?: { before: string; after: string; context?: number },
+) {
+  const repo = fixture(t);
+  const source = exactSource;
+  const target = join(repo.cwd, source);
+  const before =
+    change === "new"
+      ? undefined
+      : Buffer.from(
+          content?.before ??
+            `// before\n${change === "add" ? "" : entry.line + (finalNewline ? "\n" : "")}`,
+        );
+  const after =
+    change === "delete"
+      ? undefined
+      : Buffer.from(
+          content?.after ??
+            `// after\n${change === "remove" ? "" : entry.line + (finalNewline ? "\n" : "")}`,
+        );
+  writeFileSync(join(repo.cwd, "anchor.txt"), "unchanged\n");
+  mkdirSync(dirname(target), { recursive: true });
+  if (before) writeFileSync(target, before);
+  const from = repo.commit();
+  if (after) writeFileSync(target, after);
+  else rmSync(target);
+  const to = repo.commit();
+  const diff = (...args: string[]) =>
+    execFileSync(
+      "git",
+      ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", ...args, from, to, "--"],
+      { cwd: repo.cwd },
+    );
+  const file = "/private/scanner/patch";
+  const rawFile = "/private/scanner/raw";
+  const patch = diff(
+    "--patch",
+    "--binary",
+    "--full-index",
+    ...(content?.context === undefined ? [] : [`--unified=${content.context}`]),
+  );
+  const inputs = new Map<string, StagedScanInput>([
+    [file, { kind: "patch", id: "patch", bytes: patch, from, to }],
+    [rawFile, { kind: "raw_diff", id: "raw", bytes: diff("--raw", "--no-abbrev", "-z"), from, to }],
+  ]);
+  for (const [bytes, revision, role] of [
+    [before, from, "base"],
+    [after, to, "head"],
+  ] as const) {
+    if (!bytes) continue;
+    const id = repo.git("rev-parse", `${revision}:${source}`);
+    inputs.set(`/private/scanner/${id}`, {
+      kind: "blob",
+      id,
+      bytes,
+      references: [{ source, mode: "100644", revision, role }],
+    });
+  }
+  const finding = {
+    ...exactFixture([entry]).findings[0]!,
+    SourceMetadata: {
+      Data: {
+        Filesystem: {
+          file,
+          line:
+            patch
+              .toString()
+              .split("\n")
+              .findIndex((line) => line.includes(entry.rawV2)) + 1,
+        },
+      },
+    },
+  };
+  return { inputs, finding, file, rawFile, from, to, source };
+}
+
+for (const change of ["add", "remove", "new", "delete"] as const) {
+  test(`exact reviewed patch fixtures qualify ${change} with committed Git witnesses`, (t) => {
+    const entry = exactCase("URI", "PLAIN");
+    const policy = exactFixture([entry]).policy;
+    for (const finalNewline of [true, false]) {
+      const f = changedPatchFixture(t, entry, change, finalNewline);
+      const result = classifyExact([f.finding], f.inputs, policy);
+      assert.equal(result.kind, "classified", `${change}/${finalNewline}`);
+      if (result.kind === "classified") {
+        const findings = result.notices.flatMap((notice) => notice.findings);
+        assert.equal(findings.length, 1);
+        assert.equal(findings[0]!.role, change === "add" || change === "new" ? "head" : "base");
+        assert.equal(findings[0]!.patch?.sourceLine, 2);
+      }
+    }
+  });
+}
+
+for (const change of ["new", "delete"] as const) {
+  test(`exact reviewed ${change} fixtures require unambiguous raw endpoint evidence`, (t) => {
+    const entry = exactCase("URI", "PLAIN");
+    const policy = exactFixture([entry]).policy;
+    const f = changedPatchFixture(t, entry, change);
+    const raw = f.inputs.get(f.rawFile)!;
+    const text = raw.bytes!.toString();
+    const classify = (inputs: Map<string, StagedScanInput>) =>
+      classifyExact([f.finding], inputs, policy);
+    for (const [name, mutate] of [
+      ["wrong path", (value: string) => value.replace(f.source, "another.test.ts")],
+      ["wrong status", (value: string) => value.replace(/ [AD]\0/, " M\0")],
+      ["wrong mode", (value: string) => value.replace("100644", "100755")],
+      ["invented endpoint", (value: string) => value.replace("0".repeat(40), "c".repeat(40))],
+      ["duplicate record", (value: string) => value + value],
+      ["incomplete record", (value: string) => value.slice(0, -1)],
+    ] as const) {
+      const inputs = new Map(f.inputs);
+      inputs.set(f.rawFile, { ...raw, bytes: Buffer.from(mutate(text)) });
+      assert.equal(classify(inputs).kind, "refused", name);
+    }
+    for (const name of [
+      "missing raw",
+      "wrong revision",
+      "duplicate raw",
+      "contrary endpoint",
+    ] as const) {
+      const inputs = new Map(f.inputs);
+      if (name === "missing raw") inputs.delete(f.rawFile);
+      else if (name === "wrong revision") {
+        if (raw.kind !== "raw_diff") throw new Error("expected raw diff");
+        inputs.set(f.rawFile, { ...raw, from: "c".repeat(40) });
+      } else if (name === "duplicate raw") inputs.set(`${f.rawFile}-duplicate`, raw);
+      else {
+        const blob = [...inputs.values()].find((input) => input.kind === "blob")!;
+        if (blob.kind !== "blob") throw new Error("expected blob");
+        inputs.set("/private/scanner/contrary", {
+          ...blob,
+          id: "c".repeat(40),
+          references: [
+            {
+              source: f.source,
+              mode: "100644",
+              revision: change === "new" ? f.from : f.to,
+              role: change === "new" ? "base" : "head",
+            },
+          ],
+        });
+      }
+      assert.equal(classify(inputs).kind, "refused", name);
+    }
+  });
+}
+
+test("changed fixture admission rejects malformed patches and unreviewed source evidence", (t) => {
+  const entry = exactCase("URI", "PLAIN");
+  const policy = exactFixture([entry]).policy;
+  for (const change of ["add", "remove", "new", "delete"] as const) {
+    const f = changedPatchFixture(t, entry, change, false);
+    const patch = f.inputs.get(f.file)!;
+    const text = patch.bytes!.toString();
+    for (const [name, mutate] of [
+      ["wrong counts", (value: string) => value.replace(/(@@ -\d+)(?:,\d+)?/, "$1,99")],
+      ["wrong coordinates", (value: string) => value.replace(/@@ -\d+/, "@@ -99")],
+      [
+        "missing newline marker",
+        (value: string) => value.replaceAll("\\ No newline at end of file\n", ""),
+      ],
+      ["extra newline marker", (value: string) => value + "\\ No newline at end of file\n"],
+      [
+        "truncated present file",
+        (value: string) => value.replace(/^[-+]\/\/ (before|after)\n/m, ""),
+      ],
+      ["wrong header mode", (value: string) => value.replace("100644", "100755")],
+      ["wrong object", (value: string) => value.replace(/[a-f0-9]{40}/, "c".repeat(40))],
+      ["ambiguous path", (value: string) => value.replace(`b/${f.source}`, "b/another.test.ts")],
+      ["encoded-only match", (value: string) => value.replace(entry.rawV2, "encoded fixture")],
+    ] as const) {
+      const inputs = new Map(f.inputs);
+      inputs.set(f.file, { ...patch, bytes: Buffer.from(mutate(text)) });
+      assert.equal(
+        classifyExact([f.finding], inputs, policy).kind,
+        "refused",
+        `${change}: ${name}`,
+      );
+    }
+    const [key, blob] = [...f.inputs].find(
+      ([, input]) => input.kind === "blob" && input.bytes?.includes(entry.rawV2),
+    )!;
+    if (blob.kind !== "blob") throw new Error("expected blob");
+    for (const name of [
+      "missing blob",
+      "changed bytes",
+      "wrong role",
+      "wrong revision",
+      "wrong mode",
+      "unreviewed alias",
+    ] as const) {
+      const inputs = new Map(f.inputs);
+      if (name === "missing blob") inputs.delete(key);
+      else if (name === "changed bytes")
+        inputs.set(key, { ...blob, bytes: Buffer.from("other bytes\n") });
+      else
+        inputs.set(key, {
+          ...blob,
+          references:
+            name === "unreviewed alias"
+              ? [...blob.references, { ...blob.references[0]!, source: "another.test.ts" }]
+              : blob.references.map((reference) => ({
+                  ...reference,
+                  ...(name === "wrong role"
+                    ? { role: "index" as const }
+                    : name === "wrong revision"
+                      ? { revision: "c".repeat(40) }
+                      : { mode: "100755" }),
+                })),
+        });
+      assert.equal(
+        classifyExact([f.finding], inputs, policy).kind,
+        "refused",
+        `${change}: ${name}`,
+      );
+    }
+    for (const finding of [
+      { ...f.finding, Verified: true },
+      { ...f.finding, DecoderName: "BASE64" },
+      { ...f.finding, SecretParts: { ...entry.secretParts, username: "other-user" } },
+      { ...f.finding, DetectorType: 9999 },
+    ])
+      assert.equal(classifyExact([finding], f.inputs, policy).kind, "refused");
+    assert.equal(
+      classifyExact([f.finding, { ...f.finding, Verified: true }], f.inputs, policy).kind,
+      "refused",
+      "mixed verified findings",
+    );
+  }
+  for (const [name, line] of [
+    ["changed full line", `// different ${entry.line}`],
+    ["additional query", entry.line.replace("/path", "/path?extra=value")],
+    ["duplicate occurrence", `${entry.line}\n${entry.line}`],
+  ]) {
+    // The patch and both Git endpoints remain coherent; only the reviewed
+    // whole-line witness fails, including occurrences elsewhere in the blob.
+    const f = changedPatchFixture(t, { ...entry, line: line! }, "add");
+    assert.equal(classifyExact([f.finding], f.inputs, policy).kind, "refused", name);
+  }
+});
+
+test("modified-file fixture hunks validate empty-side coordinates", (t) => {
+  const entry = exactCase("URI", "PLAIN");
+  const policy = exactFixture([entry]).policy;
+  for (const change of ["add", "remove"] as const) {
+    for (const finalNewline of [true, false]) {
+      const text = entry.line + (finalNewline ? "\n" : "");
+      const f = changedPatchFixture(t, entry, change, finalNewline, {
+        before: change === "add" ? "" : text,
+        after: change === "remove" ? "" : text,
+      });
+      assert.equal(classifyExact([f.finding], f.inputs, policy).kind, "classified");
+      const patch = f.inputs.get(f.file)!;
+      const inputs = new Map(f.inputs);
+      inputs.set(f.file, {
+        ...patch,
+        bytes: Buffer.from(
+          patch
+            .bytes!.toString()
+            .replace(change === "add" ? "-0,0" : "+0,0", change === "add" ? "-99,0" : "+99,0"),
+        ),
+      });
+      assert.equal(
+        classifyExact([f.finding], inputs, policy).kind,
+        "refused",
+        `${change}/${finalNewline}`,
+      );
+    }
+  }
+});
+
+test("modified-file fixture hunks stay ordered and do not overlap", (t) => {
+  const entry = exactCase("URI", "PLAIN");
+  const policy = exactFixture([entry]).policy;
+  const middle = Array.from({ length: 20 }, (_, i) => `// unchanged ${i}`).join("\n");
+  const f = changedPatchFixture(t, entry, "add", true, {
+    before: `// before\n${middle}\n// old end\n`,
+    after: `${entry.line}\n${middle}\n// new end\n// added tail\n`,
+  });
+  assert.equal(classifyExact([f.finding], f.inputs, policy).kind, "classified");
+  const patch = f.inputs.get(f.file)!;
+  const parts = patch.bytes!.toString().split(/(?=^@@ )/m);
+  assert.equal(parts.length, 3, "Git emitted two separated hunks");
+  for (const [name, text] of [
+    ["reverse order", parts[0]! + parts[2]! + parts[1]!],
+    ["overlapping hunk", parts[0]! + parts[1]! + parts[1]! + parts[2]!],
+    ["omitted final hunk", parts[0]! + parts[1]!],
+  ]) {
+    const inputs = new Map(f.inputs);
+    inputs.set(f.file, { ...patch, bytes: Buffer.from(text!) });
+    assert.equal(classifyExact([f.finding], inputs, policy).kind, "refused", name);
+  }
+});
+
+test("zero-context fixture hunks bind the same insertion boundary in both blobs", (t) => {
+  const entry = exactCase("URI", "PLAIN");
+  const policy = exactFixture([entry]).policy;
+  const unchanged = ["// first", "// last"];
+  for (const change of ["add", "remove"] as const) {
+    for (const position of [0, 1, 2]) {
+      const changed = [...unchanged];
+      changed.splice(position, 0, entry.line);
+      const f = changedPatchFixture(t, entry, change, true, {
+        before: (change === "add" ? unchanged : changed).join("\n") + "\n",
+        after: (change === "remove" ? unchanged : changed).join("\n") + "\n",
+        context: 0,
+      });
+      assert.equal(
+        classifyExact([f.finding], f.inputs, policy).kind,
+        "classified",
+        `${change}/${position}`,
+      );
+      const patch = f.inputs.get(f.file)!;
+      const side = change === "add" ? "-" : "+";
+      const inputs = new Map(f.inputs);
+      inputs.set(f.file, {
+        ...patch,
+        bytes: Buffer.from(
+          patch.bytes!.toString().replace(`${side}${position},0`, `${side}${(position + 1) % 3},0`),
+        ),
+      });
+      assert.equal(
+        classifyExact([f.finding], inputs, policy).kind,
+        "refused",
+        `${change}/${position}: shifted boundary`,
+      );
+    }
+  }
+});
+
 test("create-profile redaction qualification binds the full line and observed native decoders", () => {
   const username = "browser-user";
   const password = "browser-password";
@@ -3074,7 +3413,17 @@ test("create-profile redaction qualification binds the full line and observed na
   }
 });
 
-for (const { name, protocol, host, suffix, lines } of [
+for (const {
+  name,
+  protocol,
+  host,
+  suffix,
+  path = "/json/version",
+  username = "user",
+  password = "pass",
+  source = "extensions/browser/src/browser/config.test.ts",
+  lines,
+} of [
   {
     name: "explicit HTTPS default port",
     protocol: "https:",
@@ -3096,12 +3445,32 @@ for (const { name, protocol, host, suffix, lines } of [
     suffix: "",
     lines: (value: string) => [`      expect(profile?.cdpUrl).toBe("${value}");`],
   },
+  {
+    name: "plugin setting draft redaction",
+    protocol: "https:",
+    host: "example.invalid",
+    username: "fixture-user",
+    password: "fixture-password",
+    path: "",
+    suffix: "/",
+    source: "ui/src/pages/custodian/custodian-session-store.test.ts",
+    lines: (value: string) => [`      "${value}",`, `      { "${value}": "route" },`],
+  },
+  {
+    name: "plugin help unsaved credential redaction",
+    protocol: "https:",
+    host: "example.invalid",
+    username: "fixture-user",
+    password: "fixture-password",
+    path: "",
+    suffix: "/?token=fixture-token",
+    source: "ui/src/e2e/plugins-help.e2e.test.ts",
+    lines: (value: string) => [`          "${value}";`],
+  },
 ]) {
-  test(`browser config fixture qualification preserves ${name}`, () => {
-    const username = "user";
-    const password = "pass";
+  test(`reviewed URI fixture qualification preserves ${name}`, () => {
     const raw = `${protocol}//${username}:${password}@${host}`;
-    const rawV2 = `${raw}/json/version`;
+    const rawV2 = `${raw}${path}`;
     const sourceLines = lines(`${rawV2}${suffix}`);
     const fixture = exactFixture([
       {
@@ -3125,7 +3494,7 @@ for (const { name, protocol, host, suffix, lines } of [
         references: input.references.map((reference) => ({
           ...reference,
           role,
-          source: "extensions/browser/src/browser/config.test.ts",
+          source,
         })),
       };
       for (const decoder of ["PLAIN", "HTML"]) {
@@ -3137,7 +3506,7 @@ for (const { name, protocol, host, suffix, lines } of [
           [...sourceLines, sourceLines[0]!],
           sourceLines.slice(1),
           sourceLines.map((line) => `${line} // changed`),
-          sourceLines.map((line) => line.replace("/json/version", "/json/version?changed")),
+          sourceLines.map((line) => line.replace(rawV2, `${rawV2}?changed`)),
           ...(sourceLines.length > 1
             ? [[...sourceLines].reverse(), [sourceLines[0]!, sourceLines[0]!]]
             : []),

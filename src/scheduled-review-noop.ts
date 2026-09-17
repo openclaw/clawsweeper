@@ -1,6 +1,4 @@
 import { createHash } from "node:crypto";
-import { appendFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
 
 const TRUSTED_AUTHORS = new Set(
   [
@@ -143,17 +141,3 @@ export function classifyScheduledReviewNoop(options: {
   }
   return { noop: false, reason: "missing_or_changed_durable_source" };
 }
-
-function run(): void {
-  const result = classifyScheduledReviewNoop({
-    decision: JSON.parse(process.env.CLAIM_DECISION || "{}"),
-    issue: JSON.parse(process.env.LIVE_ITEM || "{}"),
-    comments: JSON.parse(process.env.LIVE_COMMENTS || "[]"),
-    liveHeadSha: process.env.LIVE_HEAD_SHA,
-  });
-  const output = `scheduled_noop=${result.noop}\nscheduled_noop_reason=${result.reason}\n`;
-  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, output);
-  else process.stdout.write(output);
-}
-
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) run();

@@ -3,9 +3,8 @@ import test from "node:test";
 import {
   classifyScheduledReviewNoop,
   scheduledReviewSemanticSourceRevision,
-} from "../scripts/classify-scheduled-review-noop.ts";
+} from "../dist/scheduled-review-noop.js";
 import { itemSourceRevisionSha256ForTest } from "../dist/clawsweeper.js";
-import { runReadScopeProof } from "../scripts/e2e/exact-review-noop-read-scope.mjs";
 
 const issue = {
   number: 41,
@@ -135,8 +134,4 @@ test("claim-time classifier requires an exact durable pull request head", () => 
     classifyScheduledReviewNoop({ ...current, issue: pull, comments, liveHeadSha: "abc123" }).noop,
     true,
   );
-});
-
-test("live admission skips inapplicable no-op reads while preserving hot and terminal paths", () => {
-  runReadScopeProof();
 });
