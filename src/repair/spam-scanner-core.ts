@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import { compactText } from "./text-utils.js";
+import { PUBLIC_CODEX_MODEL, redactInternalCodexModel } from "../codex-env.js";
 
 export type SpamScanComment = {
   kind: "issue_comment" | "pull_request_review_comment";
@@ -363,4 +364,15 @@ function redactUrl(value: string) {
 function stringOrNull(value: JsonValue) {
   const text = String(value ?? "").trim();
   return text ? text : null;
+}
+
+// The OpenAI error body echoes the requested model id ("The model `x` does not exist",
+// "Rate limit reached for x"). The audit record already masks the model as
+// PUBLIC_CODEX_MODEL; the failure text must not reintroduce it before publication.
+export function redactSpamModelError(error: unknown, internalModel: string): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const redacted = redactInternalCodexModel(message);
+  const model = internalModel.trim();
+  if (!model || model === PUBLIC_CODEX_MODEL) return redacted;
+  return redacted.replaceAll(model, "[REDACTED_INTERNAL_MODEL]");
 }
