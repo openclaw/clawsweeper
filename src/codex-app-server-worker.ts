@@ -135,6 +135,7 @@ let turnStarted: Promise<Record<string, unknown>> | undefined;
 let turnActivation: Promise<void> | undefined;
 let turnCompleted = false;
 let settled = false;
+let terminating = false;
 let forceKillTimer: NodeJS.Timeout | undefined;
 let terminal: WebSocket | null = null;
 let terminalInput = "";
@@ -186,9 +187,12 @@ lines.on("line", (line) => {
     );
 });
 
+// Keep the handlers installed: a second signal during the one-second escalation
+// window must not fall through to the default action and leave the tree running.
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-  process.once(signal, () => {
-    if (settled) return;
+  process.on(signal, () => {
+    if (settled || terminating) return;
+    terminating = true;
     proofAbort.abort();
     forceKillTimer = terminateCodexProcessTree(child, signal);
   });
@@ -549,7 +553,15 @@ async function finish(status: number, signal: NodeJS.Signals | null, error?: Err
   proofAbort.abort();
   clearTimeout(timeout);
   if (heartbeat) clearInterval(heartbeat);
-  if (forceKillTimer) clearTimeout(forceKillTimer);
+  if (forceKillTimer) {
+    clearTimeout(forceKillTimer);
+    forceKillTimer = undefined;
+    if (child.exitCode !== null || child.signalCode !== null) {
+      // The direct child is gone, but detached descendants in its process group may
+      // still be running; finish the escalation before this worker exits.
+      terminateCodexProcessTree(child, "SIGKILL");
+    }
+  }
   for (const waiter of pending.values())
     waiter.reject(error ?? new Error("Codex app-server closed."));
   pending.clear();
