@@ -1,4 +1,6 @@
 import { projectExactReviewHandoff, summarizeExactReviewPressure } from "./exact-review-health.ts";
+import { currentReviewFailure } from "./exact-review-observed-failure.ts";
+import type { PublicReviewFailure } from "../src/review-failure-explanation.ts";
 import {
   exactReviewQueueIsBatchablePublication,
   exactReviewQueueIsPublication,
@@ -179,6 +181,7 @@ const EXACT_REVIEW_BAY_STAGES = [
 ] as const;
 type ExactReviewBayStage = (typeof EXACT_REVIEW_BAY_STAGES)[number];
 type ExactReviewBayProjectionItem = {
+  review_failure?: PublicReviewFailure;
   item_key: string;
   repository: string;
   item_number: number;
@@ -775,7 +778,9 @@ function exactReviewQueueBayProjectionFromCensus(
       }
     }
     const batch = batchByItemKey.get(selected.item.key);
+    const failure = currentReviewFailure(selected.item);
     const row: ExactReviewBayProjectionItem = {
+      ...(failure ? { review_failure: failure } : {}),
       item_key: selected.itemKey,
       repository: selected.repository,
       item_number: selected.itemNumber,

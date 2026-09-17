@@ -1,5 +1,6 @@
 import {
   assert,
+  createHash,
   test,
   createExactReviewAdmissionHarness,
   buildExactReviewQueueRequest,
@@ -7,6 +8,8 @@ import {
   ExactReviewQueue,
 } from "./dashboard-worker-harness.ts";
 import type { ExactReviewQueueState } from "../dashboard/exact-review-queue.ts";
+import { reviewFailureDecisionFingerprint } from "../dashboard/exact-review-observed-failure.ts";
+import { exactReviewSourceRevisionMaterial } from "../dashboard/exact-review-source-revision.ts";
 
 const number = 990001;
 const key = `openclaw/gogcli#${number}`;
@@ -18,11 +21,18 @@ const closed = {
   state: "closed",
   closed_at: "2026-09-01T00:00:00Z",
   head: { sha: head },
+  base: { sha: "b".repeat(40) },
+  draft: false,
+  title: "Controlled source",
+  body: "Controlled review body",
+  labels: [] as Array<{ name: string }>,
+  locked: false,
 };
 async function fixture(
   variant: "marker" | "comment",
   target: () => Response | Promise<Response>,
   options: Parameters<typeof createExactReviewAdmissionHarness>[1] = {},
+  itemKind: "issue" | "pull_request" = "pull_request",
 ) {
   const harness = createExactReviewAdmissionHarness(target, options);
   const response = await harness.queue.fetch(
@@ -30,10 +40,15 @@ async function fixture(
       "synthetic-parked-command",
       number,
       "legacy_dispatch",
-      "pull_request",
+      itemKind,
       undefined,
       {
-        sourceHeadSha: head,
+        ...(itemKind === "pull_request"
+          ? { sourceHeadSha: head, sourceBaseSha: closed.base.sha, sourceIsDraft: false }
+          : {}),
+        sourceContentRevision: createHash("sha256")
+          .update(JSON.stringify(exactReviewSourceRevisionMaterial(closed)))
+          .digest("hex"),
         ...(variant === "marker" ? { commandStatusMarker: marker } : { statusCommentId: 990002 }),
       },
     ),
@@ -797,4 +812,332 @@ for (const interference of ["none", "reason", "deadline", "revision"] as const) 
       h.restore();
     }
   });
+}
+
+const stableOpen = {
+  ...closed,
+  state: "open",
+  closed_at: null,
+  updated_at: "2026-09-17T00:00:00Z",
+};
+for (const receiptKind of ["observed", "locked_conversation", "missing_status_comment"] as const) {
+  test(
+    "open exhausted command retains producer after " + receiptKind + " and restart",
+    async () => {
+      let targetOpen = true;
+      const h = await fixture("marker", () => jsonResponse(targetOpen ? stableOpen : closed));
+      try {
+        if (receiptKind === "observed") {
+          const state = await stateOf(h);
+          state.items[key].reviewFailure = { stage: "provider_or_model", reason: "timeout" };
+          state.items[key].reviewFailureDecisionFingerprint = reviewFailureDecisionFingerprint(
+            state.items[key].decision,
+          );
+          await h.storage.put("exact-review-queue", state);
+        }
+        const tuple = await claimDriver(h);
+        const begun = await (
+          await h.queue.fetch(
+            new Request("https://queue/terminal-finalization/attempt", {
+              method: "POST",
+              body: JSON.stringify({ ...tuple, status_marker: marker }),
+            }),
+          )
+        ).json();
+        assert.equal(begun.allowed, true);
+        assert.equal(begun.status_state, "Failed");
+        assert.equal(begun.terminal_disposition, "failure");
+        assert.match(begun.status_detail, /Stopped:.*operator attention/);
+        assert.match(
+          begun.status_detail,
+          receiptKind === "observed" ? /review timed out/ : /historical reason unavailable/,
+        );
+        const verify = await h.queue.fetch(
+          new Request("https://queue/terminal-finalization/attempt", {
+            method: "POST",
+            body: JSON.stringify({
+              ...tuple,
+              status_marker: marker,
+              attempt_id: begun.attempt_id,
+              verify_only: true,
+            }),
+          }),
+        );
+        assert.equal(verify.status, 200);
+        const receipt =
+          receiptKind === "observed"
+            ? new Request("https://queue/lifecycle/command-ack/observed", {
+                method: "POST",
+                body: JSON.stringify({
+                  canonical_target_key: key,
+                  fence_key: key,
+                  revision: tuple.lease_revision,
+                  status_marker: marker,
+                  command_comment_id: 990010,
+                  completion_comment_id: 990011,
+                  observed_at: Date.now(),
+                }),
+              })
+            : new Request("https://queue/terminal-finalization/skip", {
+                method: "POST",
+                body: JSON.stringify({
+                  ...tuple,
+                  status_marker: marker,
+                  attempt_id: begun.attempt_id,
+                  reason: receiptKind,
+                }),
+              });
+        const saved = receipt.clone();
+        const result = await h.queue.fetch(receipt);
+        assert.equal(result.status, 200, await result.clone().text());
+        if (receiptKind === "observed") assert.equal((await result.json()).accepted, true);
+        const state = await stateOf(h);
+        assert.equal(Object.keys(state.items).length, 1);
+        assert.equal(state.items[key].state, "parked");
+        assert.equal(state.items[key].reviewFailureAttempts, 8);
+        assert.equal(state.items[key].parkedRecoveryAttempts, 3);
+        assert.equal(state.items[key].attempts, 8);
+        const restored = new ExactReviewQueue({ storage: h.storage }, {});
+        const duplicate = await restored.fetch(saved);
+        assert.equal(duplicate.status, receiptKind === "observed" ? 200 : 409);
+        const due = await stateOf(h);
+        due.items[key].parkedTerminalCheckedAt = 0;
+        if (due.dispatcher) due.dispatcher.parkedTerminalCheckedAt = 0;
+        await h.storage.put("exact-review-queue", due);
+        await h.queue.alarm();
+        assert.equal(Object.keys((await stateOf(h)).items).length, 1);
+        assert.equal(h.dispatched.length, 1);
+        // A later closure gets fresh fenced cleanup, without restarting review.
+        targetOpen = false;
+        const closing = await stateOf(h);
+        closing.items[key].parkedTerminalCheckedAt = 0;
+        if (closing.dispatcher) closing.dispatcher.parkedTerminalCheckedAt = 0;
+        await h.storage.put("exact-review-queue", closing);
+        const closedTuple = await claimDriver(h);
+        assert.ok(closedTuple.lease_revision! > tuple.lease_revision!);
+        const closedAttempt = await (
+          await h.queue.fetch(
+            new Request("https://queue/terminal-finalization/attempt", {
+              method: "POST",
+              body: JSON.stringify({ ...closedTuple, status_marker: marker }),
+            }),
+          )
+        ).json();
+        assert.equal(closedAttempt.terminal_disposition, "target_closed");
+        assert.equal((await stateOf(h)).items[key].reviewFailureAttempts, 8);
+        const cleanup = await h.queue.fetch(
+          new Request("https://queue/terminal-finalization/skip", {
+            method: "POST",
+            body: JSON.stringify({
+              ...closedTuple,
+              status_marker: marker,
+              attempt_id: closedAttempt.attempt_id,
+              reason: "missing_status_comment",
+            }),
+          }),
+        );
+        assert.equal(cleanup.status, 200);
+        assert.equal((await stateOf(h)).items[key], undefined);
+      } finally {
+        h.restore();
+      }
+    },
+  );
+}
+for (const change of [
+  "head",
+  "closed",
+  "command",
+  "body",
+  "title",
+  "labels",
+  "locked",
+  "base",
+  "draft",
+] as const) {
+  test(
+    "open command post-lookup fence cancels stale " + change + " without restarting",
+    async () => {
+      let target = { ...stableOpen };
+      const h = await fixture("marker", () => jsonResponse(target));
+      try {
+        const tuple = await claimDriver(h);
+        const begun = await (
+          await h.queue.fetch(
+            new Request("https://queue/terminal-finalization/attempt", {
+              method: "POST",
+              body: JSON.stringify({ ...tuple, status_marker: marker }),
+            }),
+          )
+        ).json();
+        if (change === "head") target = { ...target, head: { sha: "b".repeat(40) } };
+        if (change === "closed") target = { ...closed } as typeof target;
+        if (change === "body") target = { ...target, body: "Changed after plan" };
+        if (change === "title") target = { ...target, title: "Changed after plan" };
+        if (change === "labels") target = { ...target, labels: [{ name: "bug" }] };
+        if (change === "locked") target = { ...target, locked: true };
+        if (change === "base") target = { ...target, base: { sha: "c".repeat(40) } };
+        if (change === "draft") target = { ...target, draft: true };
+        if (change === "command") {
+          const state = await stateOf(h);
+          state.items[key].decision.commandStatusMarker = marker + "superseded";
+          state.items[key].revision++;
+          await h.storage.put("exact-review-queue", state);
+        }
+        const response = await h.queue.fetch(
+          new Request("https://queue/terminal-finalization/attempt", {
+            method: "POST",
+            body: JSON.stringify({
+              ...tuple,
+              status_marker: marker,
+              attempt_id: begun.attempt_id,
+              verify_only: true,
+            }),
+          }),
+        );
+        assert.equal(response.status, 409, await response.clone().text());
+        assert.equal((await stateOf(h)).items[key].state, "parked");
+        assert.equal((await stateOf(h)).items[key].reviewFailureAttempts, 8);
+        assert.equal((await stateOf(h)).items[key].parkedRecoveryAttempts, 3);
+        assert.equal((await stateOf(h)).items[tuple.item_key], undefined);
+        const late = await h.queue.fetch(
+          new Request("https://queue/lifecycle/command-ack/observed", {
+            method: "POST",
+            body: JSON.stringify({
+              canonical_target_key: key,
+              fence_key: key,
+              revision: tuple.lease_revision,
+              status_marker: marker,
+              command_comment_id: 990010,
+              completion_comment_id: 990011,
+              observed_at: Date.now(),
+            }),
+          }),
+        );
+        assert.equal((await late.json()).accepted, false);
+        assert.equal(h.dispatched.length, 1);
+      } finally {
+        h.restore();
+      }
+    },
+  );
+}
+
+test("open stopped acknowledgement retry tolerates its own comment timestamp churn", async () => {
+  let target = { ...stableOpen };
+  const h = await fixture("marker", () => jsonResponse(target));
+  try {
+    const tuple = await claimDriver(h);
+    const request = () =>
+      new Request("https://queue/terminal-finalization/attempt", {
+        method: "POST",
+        body: JSON.stringify({ ...tuple, status_marker: marker }),
+      });
+    const begun = await (await h.queue.fetch(request())).json();
+    target = { ...target, updated_at: "2026-09-17T01:00:00Z" };
+    const verify = await h.queue.fetch(
+      new Request("https://queue/terminal-finalization/attempt", {
+        method: "POST",
+        body: JSON.stringify({
+          ...tuple,
+          status_marker: marker,
+          attempt_id: begun.attempt_id,
+          verify_only: true,
+        }),
+      }),
+    );
+    assert.equal(verify.status, 200, await verify.clone().text());
+    const busy = await h.queue.fetch(request());
+    assert.equal(
+      (await busy.json()).allowed,
+      false,
+      "the existing attempt keeps exclusive ownership",
+    );
+    const failed = await h.queue.fetch(
+      new Request("https://queue/lifecycle/command-ack/failed", {
+        method: "POST",
+        body: JSON.stringify({
+          canonical_target_key: key,
+          fence_key: key,
+          revision: tuple.lease_revision,
+          status_marker: marker,
+          attempt_id: begun.attempt_id,
+        }),
+      }),
+    );
+    assert.equal(failed.status, 200);
+    const retry = await h.queue.fetch(request());
+    assert.equal(retry.status, 200, await retry.clone().text());
+    assert.equal((await retry.json()).allowed, true);
+    const state = await stateOf(h);
+    assert.ok(state.items[tuple.item_key]);
+    assert.equal(state.items[key].revision, tuple.lease_revision);
+    assert.equal(state.items[key].reviewFailureAttempts, 8);
+    assert.equal(state.items[key].parkedRecoveryAttempts, 3);
+    assert.equal(h.dispatched.length, 1);
+  } finally {
+    h.restore();
+  }
+});
+
+for (const field of ["sourceContentRevision", "sourceBaseSha", "sourceIsDraft"] as const) {
+  test(
+    "open legacy command missing " + field + " remains parked without a write plan",
+    async () => {
+      const h = await fixture("marker", () => jsonResponse(stableOpen));
+      try {
+        const state = await stateOf(h);
+        delete state.items[key].decision[field];
+        await h.storage.put("exact-review-queue", state);
+        await h.queue.alarm();
+        const after = await stateOf(h);
+        assert.equal(Object.keys(after.items).length, 1);
+        assert.equal(after.items[key].state, "parked");
+        assert.equal(after.items[key].reviewFailureAttempts, 8);
+        assert.equal(h.dispatched.length, 0);
+      } finally {
+        h.restore();
+      }
+    },
+  );
+}
+for (const changed of [false, true]) {
+  test(
+    "open issue acknowledgement fences body while tolerating comment timestamps: " + changed,
+    async () => {
+      let target = { ...stableOpen };
+      const h = await fixture("marker", () => jsonResponse(target), {}, "issue");
+      try {
+        const tuple = await claimDriver(h);
+        const begun = await (
+          await h.queue.fetch(
+            new Request("https://queue/terminal-finalization/attempt", {
+              method: "POST",
+              body: JSON.stringify({ ...tuple, status_marker: marker }),
+            }),
+          )
+        ).json();
+        target = {
+          ...target,
+          updated_at: "2026-09-17T02:00:00Z",
+          ...(changed ? { body: "Changed issue content" } : {}),
+        };
+        const checked = await h.queue.fetch(
+          new Request("https://queue/terminal-finalization/attempt", {
+            method: "POST",
+            body: JSON.stringify({
+              ...tuple,
+              status_marker: marker,
+              attempt_id: begun.attempt_id,
+              verify_only: true,
+            }),
+          }),
+        );
+        assert.equal(checked.status, changed ? 409 : 200, await checked.clone().text());
+        assert.equal((await stateOf(h)).items[key].reviewFailureAttempts, 8);
+      } finally {
+        h.restore();
+      }
+    },
+  );
 }

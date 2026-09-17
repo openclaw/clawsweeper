@@ -86,7 +86,16 @@ carry a separate timing descriptor containing only `kind=queue` with the
 validated queue creation time or `kind=run` with the validated public action
 start time. These clocks are elapsed queue/run context, not inferred visual
 lane-entry times. The same sample feeds Bay and Overview cards, search,
-overflow lists, and detail blades. Titles,
+overflow lists, and detail blades. Queue references may additionally carry
+`review_failure: { stage, reason }`: closed, allowlisted categories from the
+observed failure of that review identity. This is not raw diagnostic text or a
+root cause inferred from exhaustion. Missing legacy evidence remains unavailable;
+new review identities must not inherit an earlier identity's cause. The field is
+not carried on live repair or terminal-outcome references. Live references may
+carry `activity_kind: review | repair` from the producer's closed work
+classification, independently of their current visual stage; absent evidence
+remains an unspecified live workflow. Queue and terminal references do not
+carry this live-only identity. Titles,
 raw step names, source URLs, queries, opaque keys, failure payloads, credentials,
 tokens, and non-allowlisted repositories are not projected. The lifecycle
 route applies the same allowlist to its bounded 24-card sample and retains only

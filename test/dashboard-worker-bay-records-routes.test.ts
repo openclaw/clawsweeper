@@ -1,3 +1,4 @@
+import { bayReviewStatusScript } from "../dashboard/bay-review-status.ts";
 import {
   assert,
   createHash,
@@ -6676,7 +6677,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
   assert.doesNotMatch(bayRendered, new RegExp(bayMarker, "i"));
   assert.doesNotMatch(bayRendered, /invalid\.example|repo=|token=/i);
   assert.match(body, /function expandQueue/);
-  assert.match(body, /Repair cove/);
+  assert.match(body, /Repair & attention/);
   assert.match(body, /"publishing":"Publishing"/);
   assert.match(body, /Waiting to publish final reviews/);
   assert.match(body, /bounded result-publication queue/);
@@ -7359,7 +7360,7 @@ test("OpenClaw Bay is a public, indexable, hardened canonical route", async () =
     },
   });
   new Script(
-    `${body.slice(body.indexOf("var focusedStage="), body.indexOf("var repoPalette="))}${body.slice(drawerSourceStart, drawerSourceEnd)};openDrawer("queue:openclaw/openclaw#77");`,
+    `${bayReviewStatusScript}${body.slice(body.indexOf("var focusedStage="), body.indexOf("var repoPalette="))}${body.slice(drawerSourceStart, drawerSourceEnd)};openDrawer("queue:openclaw/openclaw#77");`,
   ).runInContext(drawerContext);
   const drawerText = [...drawerElements.values()]
     .map((element) => `${element.textContent} ${element.innerHTML}`)

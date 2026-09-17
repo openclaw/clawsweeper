@@ -3,7 +3,11 @@ import http from "node:http";
 
 import { ExactReviewCommandIntakeStore } from "../dashboard/exact-review-command-intake.ts";
 import { convergeCommandAcknowledgement } from "../dashboard/exact-review-queue.ts";
-import { directReReviewIntake } from "../src/repair/direct-re-review-admission.ts";
+import {
+  directReReviewIntake,
+  validateDirectReReviewIntake,
+} from "../src/repair/direct-re-review-admission.ts";
+import { exactReviewSourceRevisionMaterial } from "../dashboard/exact-review-source-revision.ts";
 import {
   assert,
   ExactReviewQueue,
@@ -21,6 +25,15 @@ const COMMAND_UPDATED_AT = "2026-08-12T16:25:26Z";
 const COMMAND_COMMENT_ID = 9_001;
 const ITEM_NUMBER = 42;
 const HEAD_SHA = "a".repeat(40);
+const REVIEW_SOURCE = {
+  number: ITEM_NUMBER,
+  title: "Controlled intake item",
+  body: "Controlled body",
+  labels: [],
+  locked: false,
+  base: { sha: "b".repeat(40) },
+  draft: false,
+};
 
 test("command intake migrations, watermarks, receipts, and revisions stay idempotent", () => {
   const storage = new MemoryDurableStorage();
@@ -430,6 +443,14 @@ test("durable command intake survives target throttling before queue admission",
   assert.equal(item.decision.sourceDeliveryId, commandVersionId());
   assert.equal(item.decision.sourceHeadSha, HEAD_SHA);
   assert.equal(item.decision.sourceCommentVerified, true);
+  assert.equal(item.decision.sourceBaseSha, REVIEW_SOURCE.base.sha);
+  assert.equal(item.decision.sourceIsDraft, false);
+  assert.equal(
+    item.decision.sourceContentRevision,
+    createHash("sha256")
+      .update(JSON.stringify(exactReviewSourceRevisionMaterial(REVIEW_SOURCE)))
+      .digest("hex"),
+  );
   assert.equal(commandReceiptOutcome(storage), "completed");
   assert.equal(fixture.acknowledgements.length, 1);
   assert.match(
@@ -871,6 +892,7 @@ async function startGithubLoopback() {
     }
     if (url.pathname === `/repos/openclaw/openclaw/pulls/${ITEM_NUMBER}`) {
       return sendJson(response, 200, {
+        ...REVIEW_SOURCE,
         state: "open",
         updated_at: COMMAND_UPDATED_AT,
         head: { sha: HEAD_SHA },
@@ -981,3 +1003,20 @@ function sendJson(response: http.ServerResponse, status: number, value: unknown)
   response.writeHead(status, { "content-type": "application/json" });
   response.end(JSON.stringify(value));
 }
+
+test("command clients cannot provide server-derived review source identity", () => {
+  const intake = intakeFixture({ updatedAt: COMMAND_UPDATED_AT, body: COMMAND_BODY });
+  for (const [field, value] of [
+    ["sourceContentRevision", "a".repeat(64)],
+    ["sourceBaseSha", "b".repeat(40)],
+    ["sourceIsDraft", false],
+  ]) {
+    assert.equal(
+      validateDirectReReviewIntake({
+        ...intake,
+        decision: { ...intake.decision, [String(field)]: value },
+      }),
+      null,
+    );
+  }
+});

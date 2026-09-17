@@ -679,7 +679,7 @@ export class ExactReviewLifecycleProjectionStore {
         !projection.admission.commandOriginated ||
         projection.acknowledgement.observed ||
         (projection.terminalDisposition &&
-          !["target_closed", "requeue"].includes(projection.terminalDisposition.kind))
+          !["target_closed", "requeue", "failure"].includes(projection.terminalDisposition.kind))
       ) {
         throw new Error("invalid parked command closure cancellation");
       }

@@ -36,6 +36,17 @@ outputs and caches together, or discard the disposable checkout and start
 from a fresh one. Keep the retained paths until recovery is complete. A base
 reproduction that requires recovery retains its own checkout as well.
 
+## Stopped review attention is not a repair attempt
+
+The dashboard's Repair & attention area can contain exhausted exact-review
+records as well as live repair activity. An exhausted review does not establish
+that a code-repair worker ran or that the target patch is invalid. Its
+acknowledgement-only explanation uses observed closed failure categories, or
+explicitly states that historical detail is unavailable. Settling that status
+does not authorize a retry, reset a budget, or start autofix/automerge. See
+[exhausted command review records](../live-dashboard.md#exhausted-command-review-records-in-bay)
+for ownership and receipt boundaries.
+
 ## Cluster Repair Operations Counters
 
 The README dashboard and hosted live dashboard expose passive counters for the

@@ -74,6 +74,7 @@ test("browser reference sanitizer preserves only bounded queue dispositions", as
   const html = bayHtml();
   const names = [
     "bayObject",
+    "strictBayReviewFailure",
     "strictBayCount",
     "strictBayTimestamp",
     "strictBayRepository",
@@ -82,15 +83,22 @@ test("browser reference sanitizer preserves only bounded queue dispositions", as
     "strictBayReferenceTiming",
     "strictBayReference",
   ];
-  const source = names
-    .map((name) => {
-      const line = html
-        .split("\n")
-        .find((line) => line.trimStart().startsWith(`function ${name}(`));
-      assert.ok(line, name);
-      return line;
-    })
-    .join("\n");
+  const dictionary = html
+    .split("\n")
+    .find((line) => line.trimStart().startsWith("var BAY_REVIEW_FAILURE_EXPLANATIONS="));
+  assert.ok(dictionary);
+  const source =
+    dictionary +
+    "\n" +
+    names
+      .map((name) => {
+        const line = html
+          .split("\n")
+          .find((line) => line.trimStart().startsWith(`function ${name}(`));
+        assert.ok(line, name);
+        return line;
+      })
+      .join("\n");
   const parse = runInNewContext(source + "\nstrictBayReference", {
     STAGES: ["repairing", "reviewing"],
     MAX_BAY_COUNT: 10000,

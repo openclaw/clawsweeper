@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { bayLayoutCss, bayLayoutScript } from "../dashboard/bay-layout.ts";
 import { bayHtml } from "../dashboard/bay-page.ts";
+import { bayReviewStatusScript } from "../dashboard/bay-review-status.ts";
 import { publicStatusProjection, publicStatusFreshness } from "../dashboard/worker.ts";
 
 test("review paths label stays accessible without occupying toolbar space", () => {
@@ -219,7 +220,7 @@ test("attention sample rows display each exact terminal outcome", () => {
     "areaForItem",
     "LABELS",
     "esc",
-    source + ';openQueueSampleDrawer("attention");',
+    bayReviewStatusScript + source + ';openQueueSampleDrawer("attention");',
   )(
     document,
     ["attention"],

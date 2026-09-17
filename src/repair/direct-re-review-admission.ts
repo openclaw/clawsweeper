@@ -31,6 +31,9 @@ export type DirectReReviewDecision = {
   proofAllowedScenarios?: InlineProofScenario[];
   statusCommentId?: number;
   sourceHeadSha?: string;
+  sourceBaseSha?: string;
+  sourceIsDraft?: boolean;
+  sourceContentRevision?: string;
   sourceUpdatedAt?: string;
   sourceHeadVerified?: boolean;
   sourceCommentVerified?: boolean;
@@ -47,7 +50,13 @@ export type DirectReReviewIntake = {
   commandOrigin: DirectReReviewOrigin;
   decision: Omit<
     DirectReReviewDecision,
-    "sourceAuthoritySeq" | "sourceCommentVerified" | "sourceHeadVerified" | "sourceUpdatedAt"
+    | "sourceAuthoritySeq"
+    | "sourceCommentVerified"
+    | "sourceHeadVerified"
+    | "sourceUpdatedAt"
+    | "sourceBaseSha"
+    | "sourceIsDraft"
+    | "sourceContentRevision"
   >;
 };
 
@@ -182,7 +191,10 @@ export function validateDirectReReviewIntake(value: unknown): DirectReReviewInta
     Object.hasOwn(decision, "sourceHeadVerified") ||
     Object.hasOwn(decision, "sourceCommentVerified") ||
     Object.hasOwn(decision, "sourceAuthoritySeq") ||
-    Object.hasOwn(decision, "sourceUpdatedAt")
+    Object.hasOwn(decision, "sourceUpdatedAt") ||
+    Object.hasOwn(decision, "sourceBaseSha") ||
+    Object.hasOwn(decision, "sourceIsDraft") ||
+    Object.hasOwn(decision, "sourceContentRevision")
   ) {
     return null;
   }

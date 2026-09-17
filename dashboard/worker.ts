@@ -1,4 +1,13 @@
 import { publicTimestamp } from "./public-timestamp.ts";
+import {
+  publicBayActivityKind,
+  normalizePublicBayActivityKind,
+  type PublicBayActivityKind,
+} from "./bay-activity-kind.ts";
+import {
+  normalizePublicReviewFailure,
+  type PublicReviewFailure,
+} from "../src/review-failure-explanation.ts";
 import { MAX_TRIAGE_ITEMS_PER_VIEW, publicTriageProjection } from "./public-triage.ts";
 import { githubEtagCacheShard } from "./github-etag-cache.ts";
 export { GithubEtagCache } from "./github-etag-cache.ts";
@@ -2363,6 +2372,8 @@ type PublicBayAction = {
   job_id?: number;
 };
 type PublicBayReference = {
+  activity_kind?: PublicBayActivityKind;
+  review_failure?: PublicReviewFailure;
   queue_disposition?: "parked_exhausted" | "parked" | "retry_scheduled";
   repository: string;
   item_number: number;
@@ -2610,6 +2621,10 @@ function publicBayReference(
     ["parked_exhausted", "parked", "retry_scheduled"].includes(source.queue_disposition)
       ? (source.queue_disposition as PublicBayReference["queue_disposition"])
       : undefined;
+  const reviewFailure =
+    referenceSource === "queue" ? normalizePublicReviewFailure(source.review_failure) : null;
+  const activityKind =
+    referenceSource === "live" ? normalizePublicBayActivityKind(source.activity_kind) : undefined;
   const projectedTiming = objectValue(source.timing);
   const explicitTimingKind = String(projectedTiming.kind || "");
   const explicitTimingStartedAt = publicTimestamp(projectedTiming.started_at);
@@ -2632,6 +2647,8 @@ function publicBayReference(
     stage: stage as (typeof PUBLIC_BAY_STAGES)[number],
     source: referenceSource,
     ...(disposition ? { queue_disposition: disposition } : {}),
+    ...(reviewFailure ? { review_failure: reviewFailure } : {}),
+    ...(activityKind ? { activity_kind: activityKind } : {}),
     legacy_batch_path: legacyBatchPath === true,
     ...(timing ? { timing } : {}),
     ...(action ? { action } : {}),
@@ -3151,6 +3168,7 @@ function publicBayActiveTargets(
       stage: (typeof PUBLIC_BAY_STAGES)[number];
       startedAt: number;
       action: PublicBayAction | null;
+      activityKind?: PublicBayActivityKind;
       legacyBatchPath: boolean;
     }
   >();
@@ -3169,6 +3187,7 @@ function publicBayActiveTargets(
     }
     const startedAt = Date.parse(String(record.started_at || ""));
     const action = publicBayActionFromWorker(record, allowedRepositories);
+    const activityKind = publicBayActivityKind(record);
     const legacyBatchPath = publicWorkerLegacyBatchPath(record);
     if (!Number.isFinite(startedAt)) complete = false;
     for (const itemKey of targets.keys) {
@@ -3186,6 +3205,7 @@ function publicBayActiveTargets(
           stage,
           startedAt: Number.isFinite(startedAt) ? startedAt : 0,
           action,
+          ...(activityKind ? { activityKind } : {}),
           legacyBatchPath,
         });
       }
@@ -3217,6 +3237,7 @@ function publicBayActiveTargets(
         item_number: Number(match[2]),
         stage: selectedItem.stage,
         source: "live" as const,
+        ...(selectedItem.activityKind ? { activity_kind: selectedItem.activityKind } : {}),
         legacy_batch_path: selectedItem.legacyBatchPath,
         ...(selectedItem.action?.started_at
           ? { timing: { kind: "run" as const, started_at: selectedItem.action.started_at } }

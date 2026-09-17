@@ -1,3 +1,5 @@
+import { bayReviewStatusScript } from "./bay-review-status.ts";
+
 export type DashboardEnv = Record<string, unknown>;
 
 const DEFAULT_CRABFLEET_URL = "https://crabfleet.openclaw.ai";
@@ -2067,6 +2069,8 @@ function dashboardStatusValue(value, field, depth) {
   }
   return result;
 }
+${bayReviewStatusScript}
+function strictBayAction(value) { return dashboardPublicBayAction(value); }
 function dashboardPublicBayReferences(value) {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.length > 124) return [];
@@ -2092,11 +2096,15 @@ function dashboardPublicBayReferences(value) {
     if (seen.has(key)) continue;
     seen.add(key);
     const action = dashboardPublicBayAction(entry.action);
+    const failure = entry.source === "queue" ? strictBayReviewFailure(entry.review_failure) : null;
     references.push({
       repository,
       item_number: itemNumber,
       stage: entry.stage,
       source: entry.source,
+      ...(entry.source === "queue" && ["parked_exhausted", "parked", "retry_scheduled"].includes(entry.queue_disposition) ? {queue_disposition: entry.queue_disposition} : {}),
+      ...(failure ? {review_failure: failure} : {}),
+      ...(entry.source === "live" && ["review", "repair"].includes(entry.activity_kind) ? {activity_kind: entry.activity_kind} : {}),
       ...(action ? { action } : {})
     });
   }
@@ -3904,7 +3912,8 @@ function renderPublicReferences(data) {
     const key = row.repository + "#" + row.item_number;
     const label = esc(key);
     const display = publicReferenceQuery ? "<mark>" + label + "</mark>" : label;
-    return '<button type="button" class="work-row public-reference-row" data-public-reference-key="' + esc(key) + '" aria-label="Open public reference details for ' + esc(key) + '"><div class="work-main"><div class="row-top"><span class="pill">' + esc(row.source) + '</span><span class="item-link">' + display + '</span></div><div class="muted work-title">Verified public repository and issue/PR reference only</div></div><div class="work-state"><div class="stage-block"><strong>' + esc(row.stage) + '</strong><span class="muted">Bay stage</span></div></div></button>';
+    const review = bayReviewStatus(row);
+    return '<button type="button" class="work-row public-reference-row" data-public-reference-key="' + esc(key) + '" aria-label="Open public reference details for ' + esc(key) + '"><div class="work-main"><div class="row-top"><span class="pill">' + esc(row.source) + '</span><span class="item-link">' + display + '</span></div><div class="muted work-title">Verified public repository and issue/PR reference only</div></div><div class="work-state"><div class="stage-block"><strong>' + esc(review ? review.type + ' · ' + review.status : row.stage) + '</strong><span class="muted">Bay status</span></div></div></button>';
   }).join("") + '</div>';
 }
 function renderPublicReferenceDialog(row, key) {
@@ -3912,6 +3921,8 @@ function renderPublicReferenceDialog(row, key) {
   const repositoryUrl = "https://github.com/" + row.repository;
   const itemUrl = repositoryUrl + "/issues/" + row.item_number;
   const source = row.source === "queue" ? "Bounded queue sample" : "Bounded live sample";
+  const review = bayReviewStatus(row);
+  const stage = row.stage === "repairing" ? "Repair & attention" : row.stage;
   const action = dashboardPublicBayAction(row.action);
   const completedSteps = action ? action.steps.filter(step => step.status === "completed").length : 0;
   const actionRepositoryUrl = action ? "https://github.com/" + action.repository : null;
@@ -3921,18 +3932,20 @@ function renderPublicReferenceDialog(row, key) {
     '<li class="step-row ' + esc(step.status) + '"><i class="step-mark"></i><strong>' + esc(PUBLIC_ACTION_STEP_LABELS[step.kind]) + '</strong><span>' + esc((step.conclusion || step.status).replaceAll("_", " ")) + '</span></li>'
   ).join("") || "";
   document.getElementById("worker-dialog-heading").innerHTML =
-    '<div><span class="pill">' + esc(row.source) + '</span> <span class="pill">' + esc(row.stage) + '</span></div>' +
+    '<div><span class="pill">' + esc(row.source) + '</span> <span class="pill">' + esc(stage) + '</span></div>' +
     '<h3 id="worker-dialog-title">' + esc(key) + '</h3>' +
     '<div class="muted">Verified public GitHub issue or pull request</div>';
   document.getElementById("worker-dialog-body").innerHTML =
     '<div class="drawer-grid">' +
-      '<div class="drawer-stat"><span>Current stage</span><strong>' + esc(row.stage) + '</strong></div>' +
+      '<div class="drawer-stat"><span>Current stage</span><strong>' + esc(stage) + '</strong></div>' +
+      (review ? '<div class="drawer-stat"><span>Type</span><strong>' + esc(review.type) + '</strong></div><div class="drawer-stat"><span>Status</span><strong>' + esc(review.status) + '</strong></div>' : '') +
       '<div class="drawer-stat"><span>Source</span><strong>' + esc(source) + '</strong></div>' +
       '<div class="drawer-stat"><span>Repository</span><strong>' + esc(row.repository) + '</strong></div>' +
       '<div class="drawer-stat"><span>Reference</span><strong>#' + esc(row.item_number) + '</strong></div>' +
       (action ? '<div class="drawer-stat"><span>Action status</span><strong>' + esc(action.status.replaceAll("_", " ")) + '</strong></div>' : '') +
       (action ? '<div class="drawer-stat"><span>Progress</span><strong>' + esc(completedSteps) + ' / ' + esc(action.steps.length) + ' steps</strong></div>' : '') +
     '</div>' +
+    (review?.explanation ? '<p class="drawer-stat">' + esc(review.explanation) + '</p>' : '') +
     '<div class="drawer-links">' +
       linkClass(itemUrl, "Open issue or pull request", "pill run-link") +
       linkClass(repositoryUrl, "Open repository", "pill run-link") +

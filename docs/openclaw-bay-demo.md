@@ -65,7 +65,7 @@ Bay uses one closed set of six active stages:
 - Reviewing
 - Publishing
 - Applying & writing
-- Repair cove
+- Repair & attention
 
 Each complete public activity snapshot contains exactly those six queue counts,
 the same six live counts, and a total equal to their sum. Counts are bounded
@@ -74,6 +74,13 @@ The Worker privately correlates queue and live state long enough to subtract
 active overlaps from the queue counts. It drops that correlation material
 before serialization, so the two public maps are disjoint without publishing a
 join key.
+
+The Repair & attention area retains the existing `repairing` stage identifier.
+It distinguishes stopped review records requiring operator attention, scheduled
+review retries, and live repair activity; its aggregate is not a count of running
+code repairs. Review cards and their detail blades use only observed, closed
+failure categories. Legacy records without stored cause say the detailed
+historical reason is unavailable, rather than guessing from retry exhaustion.
 
 The page draws the bounded verified-public reference sample as cards. Each card
 contains only a canonical `owner/repository`, positive issue or pull-request

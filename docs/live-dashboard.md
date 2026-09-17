@@ -905,7 +905,8 @@ is serving that route.
 
 ## Exhausted command review records in Bay
 
-Repair Cove counts retained exception records, not running repair workers. Its
+Repair & attention counts retained exception records alongside live repair
+activity, not running repair workers alone. Its
 public references may carry the bounded `queue_disposition` values
 `parked_exhausted`, `parked`, or `retry_scheduled`. Both the server and browser
 sanitizers retain only these values, and only for queue references. Exhausted
@@ -915,7 +916,21 @@ This remains an observer-only surface with the existing public repository
 allowlist and sampling/freshness limits.
 
 The queue's globally bounded parked-terminal check also observes exhausted
-command producers. An explicit closed GitHub item, observed twice with the same
+command producers. An eligible still-open exhausted review may receive a
+separate, acknowledgement-only stopped-status explanation. Its producer stays
+parked and visible for operator attention after that receipt; acknowledgement
+settlement does not reset the budget, dispatch another review or repair, or
+claim that review succeeded. Current command, revision and canonical source
+(title/body/review labels/lock plus PR head/base/draft) fences apply before the
+comment update. Repeated settlement is idempotent despite bot-comment timestamp
+churn. Missing recorded source identity or live source drift keeps the legacy
+record parked without a status write; it is not guessed or backfilled. New
+commands capture that canonical source identity during verified command intake;
+clients cannot supply those server-owned identity fields. A stored
+closed failure category can explain the observed failure; legacy records without
+it retain an explicit unavailable historical reason.
+
+Closed-target cleanup remains distinct. An explicit closed GitHub item, observed twice with the same
 node/head/closure identity, may create a separate acknowledgement-only driver.
 The producer remains parked until its own receipt is observed or its trusted
 receipt is explicitly missing/locked. The driver rechecks the live closed
@@ -926,8 +941,9 @@ Closed failed commands retain a failure acknowledgement, not a fabricated
 successful review. Ordinary reconciliation now includes command exclusions
 in its bounded skip-reason accounting.
 
-The local Worker/SQLite/HTTP and Chromium proof is documented in
-`docs/proof/parked-command-finalization/README.md`.
+The current stopped-review, source-fenced acknowledgement and Bay proof uses
+real local Worker/SQLite/HTTP and Chromium; see
+`docs/proof/review-failure-attention/README.md`.
 
 Parked-command finalizers reserve status-write ownership while their receipt is
 looked up, then re-fence immediately before the status PATCH. A successor may be

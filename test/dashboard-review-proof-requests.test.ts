@@ -783,7 +783,17 @@ test("manual proof head binding cannot be silently replaced by latest PR head", 
             updated_at: updatedAt,
             body,
           }
-        : { state: "open", head: { sha: "b".repeat(40) }, updated_at: updatedAt },
+        : {
+            state: "open",
+            head: { sha: "b".repeat(40) },
+            base: { sha: "c".repeat(40) },
+            draft: false,
+            title: "Controlled proof request",
+            body: "Controlled source body",
+            labels: [],
+            locked: false,
+            updated_at: updatedAt,
+          },
     )) as typeof fetch;
   try {
     assert.equal(
@@ -796,6 +806,9 @@ test("manual proof head binding cannot be silently replaced by latest PR head", 
       Promise.resolve("fixture-token"),
     );
     assert.equal(ordinary.sourceHeadSha, "b".repeat(40));
+    assert.equal(ordinary.sourceBaseSha, "c".repeat(40));
+    assert.equal(ordinary.sourceIsDraft, false);
+    assert.match(ordinary.sourceContentRevision, /^[0-9a-f]{64}$/);
   } finally {
     globalThis.fetch = originalFetch;
   }
