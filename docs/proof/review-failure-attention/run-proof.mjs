@@ -149,9 +149,9 @@ const stub = createServer(async (req, res) => {
     if (u.pathname.includes("/actions/runs/"))
       return reply({ id: 990003, run_attempt: 1, status: "in_progress" });
     return reply({ message: "unhandled fixture route" }, 404);
-  } catch (error) {
+  } catch {
     res.writeHead(500);
-    res.end(JSON.stringify({ error: String(error) }));
+    res.end(JSON.stringify({ error: "fixture_request_failed" }));
   }
 });
 async function call(route, body, expected = 200) {
