@@ -13,12 +13,19 @@ import { TRUFFLEHOG_VERSION } from "../dist/review-tool-bootstrap.js";
 import { AgentInputScanError, scanAgentInput } from "../dist/agent-input-scan.js";
 import { useFakeScanner } from "./agent-input-scan-helpers.ts";
 
-function fixture() {
+const reviewedUri = "https://fixture-user:fixture-password@example.invalid";
+const reviewedUriLines = [`      "${reviewedUri}/",`, `      { "${reviewedUri}/": "route" },`];
+const reviewedUriSource = "ui/src/pages/custodian/custodian-session-store.test.ts";
+
+function fixture(withUri = false) {
   const from = "a".repeat(40);
   const to = "b".repeat(40);
-  const source = "scripts/cloudflare/Dockerfile";
-  const before = Buffer.from("FROM example:1\n");
-  const after = Buffer.from("FROM example:2\n");
+  const source = withUri ? reviewedUriSource : "scripts/cloudflare/Dockerfile";
+  const beforeLine = withUri ? "// before" : "FROM example:1";
+  const afterLine = withUri ? "// after" : "FROM example:2";
+  const context = withUri ? reviewedUriLines : [];
+  const before = Buffer.from([beforeLine, ...context, ""].join("\n"));
+  const after = Buffer.from([afterLine, ...context, ""].join("\n"));
   const oid = (bytes: Buffer) =>
     createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
   const oldId = oid(before);
@@ -29,9 +36,10 @@ function fixture() {
     `index ${oldId}..${newId} 100644`,
     `--- a/${source}`,
     `+++ b/${source}`,
-    "@@ -1 +1 @@",
-    "-FROM example:1",
-    "+FROM example:2",
+    withUri ? "@@ -1,3 +1,3 @@" : "@@ -1 +1 @@",
+    `-${beforeLine}`,
+    `+${afterLine}`,
+    ...context.map((line) => ` ${line}`),
     "",
   ].join("\n");
   const inputs = new Map<string, StagedScanInput>([
@@ -76,7 +84,21 @@ function fixture() {
     StructuredData: null,
     SourceMetadata: { Data: { Filesystem: { file, line: 2 } } },
   };
-  return { finding, inputs, file, oldId, newId, source, from, to };
+  const uriFinding = {
+    ...finding,
+    DetectorType: 17,
+    DetectorName: "URI",
+    Raw: reviewedUri,
+    RawV2: reviewedUri,
+    Redacted: "",
+    SecretParts: {
+      host: "example.invalid",
+      username: "fixture-user",
+      password: "fixture-password",
+    },
+    SourceMetadata: { Data: { Filesystem: { file, line: 8 } } },
+  };
+  return { finding, uriFinding, inputs, file, oldId, newId, source, from, to };
 }
 
 function classify(
@@ -357,4 +379,278 @@ process.exit(finding ? 183 : 0);
     }
     assert.equal(readFileSync(calls, "utf8"), "primary\nsupplemental\n");
   });
+}
+
+function supplementalFixture() {
+  const f = fixture(true);
+  const primary = classify([f.finding, f.uriFinding], f.inputs);
+  assert.equal(primary.kind, "git_metadata_proof_required");
+  if (primary.kind !== "git_metadata_proof_required") throw new Error("expected metadata proof");
+  const original = f.inputs.get(f.file)!;
+  const bytes = primary.proofPatches.get(f.file)!;
+  const proofFile = "/private/metadata-proof/patch";
+  const proof = {
+    kind: "patch" as const,
+    id: original.id,
+    from: f.from,
+    to: f.to,
+    bytes: Buffer.from(bytes),
+    metadataProof: { file: proofFile, originalFile: f.file, original, bytes: Buffer.from(bytes) },
+  };
+  f.inputs.set(proofFile, proof);
+  const finding = {
+    ...f.uriFinding,
+    SourceMetadata: { Data: { Filesystem: { file: proofFile, line: 8 } } },
+  };
+  return { ...f, proofFile, proof, original, finding };
+}
+
+test("metadata replay retains original URI witnesses in either primary detector order", () => {
+  for (const uriFirst of [false, true]) {
+    const f = fixture(true);
+    const findings = uriFirst ? [f.uriFinding, f.finding] : [f.finding, f.uriFinding];
+    assert.equal(classify(findings, f.inputs).kind, "git_metadata_proof_required");
+  }
+  const f = supplementalFixture();
+  const masked = Buffer.from(f.proof.bytes);
+  assert.equal(classify([f.finding], f.inputs).kind, "classified");
+  assert.deepEqual(f.proof.bytes, masked);
+  assert.equal(f.proof.bytes.includes(Buffer.from(f.oldId)), false);
+  assert.equal(f.original.bytes!.includes(Buffer.from(f.oldId)), true);
+});
+
+test("metadata replay rejects stale, unrelated, or altered original-patch associations", () => {
+  type Fixture = ReturnType<typeof supplementalFixture>;
+  const cases: Array<[string, (f: Fixture) => void]> = [
+    [
+      "missing original",
+      (f) => {
+        f.inputs.delete(f.file);
+      },
+    ],
+    [
+      "replaced original identity",
+      (f) => {
+        f.inputs.set(f.file, { ...f.original });
+      },
+    ],
+    [
+      "wrong original path",
+      (f) => {
+        f.proof.metadataProof.originalFile = "/private/other";
+      },
+    ],
+    [
+      "wrong proof path",
+      (f) => {
+        f.proof.metadataProof.file = "/private/other";
+      },
+    ],
+    [
+      "same proof/original path",
+      (f) => {
+        f.proof.metadataProof.file = f.file;
+      },
+    ],
+    [
+      "wrong proof id",
+      (f) => {
+        f.proof.id = "other";
+      },
+    ],
+    [
+      "wrong base",
+      (f) => {
+        f.proof.from = "c".repeat(40);
+      },
+    ],
+    [
+      "wrong head",
+      (f) => {
+        f.proof.to = "c".repeat(40);
+      },
+    ],
+    [
+      "missing original bytes",
+      (f) => {
+        f.original.bytes = undefined;
+      },
+    ],
+    [
+      "wrong original kind",
+      (f) => {
+        Object.assign(f.original, { kind: "raw_diff" });
+      },
+    ],
+    [
+      "nested proof",
+      (f) => {
+        Object.assign(f.original, { metadataProof: f.proof.metadataProof });
+      },
+    ],
+    [
+      "changed hunk",
+      (f) => {
+        f.proof.bytes = Buffer.from(f.proof.bytes.toString().replace("+// after", "+// other"));
+      },
+    ],
+    [
+      "changed expected proof",
+      (f) => {
+        f.proof.metadataProof.bytes = Buffer.from("other");
+      },
+    ],
+    [
+      "changed original hunk",
+      (f) => {
+        f.original.bytes = Buffer.from(
+          f.original.bytes!.toString().replace("+// after", "+// other"),
+        );
+      },
+    ],
+    [
+      "missing original blob",
+      (f) => {
+        f.inputs.delete(`/private/scanner/${f.newId}`);
+      },
+    ],
+    [
+      "no association",
+      (f) => {
+        Reflect.deleteProperty(f.proof, "metadataProof");
+      },
+    ],
+  ];
+  for (const [name, mutate] of cases) {
+    const f = supplementalFixture();
+    mutate(f);
+    assert.equal(classify([f.finding], f.inputs).kind, "refused", name);
+  }
+});
+
+test("metadata replay still rejects unknown, verified, residual, and incomplete findings", () => {
+  const f = supplementalFixture();
+  for (const change of [
+    { Verified: true, VerificationError: null },
+    { Raw: "unreviewed", RawV2: "https://other:unknown@example.invalid" },
+    { DecoderName: "BASE64" },
+    {
+      ...fixture().finding,
+      SourceMetadata: { Data: { Filesystem: { file: f.proofFile, line: 2 } } },
+    },
+  ]) {
+    assert.equal(classify([{ ...f.finding, ...change }], f.inputs).kind, "refused");
+  }
+  assert.equal(classify([f.finding], f.inputs, true).kind, "refused");
+  assert.equal(
+    classifyReviewedFixtureScan(
+      183,
+      Buffer.from(JSON.stringify(f.finding)),
+      Buffer.alloc(0),
+      f.inputs,
+    ).kind,
+    "refused",
+  );
+});
+
+for (const uriFirst of [false, true]) {
+  for (const outcome of ["reviewed", "unknown", "verified"] as const) {
+    test(`metadata owner replays same-patch URI: ${outcome}, URI first=${uriFirst}`, (t) => {
+      const root = mkdtempSync(join(tmpdir(), "clawsweeper-mixed-owner-test-"));
+      t.after(() => rmSync(root, { recursive: true, force: true }));
+      const cwd = join(root, "target");
+      mkdirSync(join(cwd, "ui/src/pages/custodian"), { recursive: true });
+      const git = (...args: string[]) =>
+        execFileSync("git", args, {
+          cwd,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        }).trim();
+      git("init", "-q");
+      git("config", "user.name", "Scanner fixture");
+      git("config", "user.email", "scanner@example.invalid");
+      git("config", "commit.gpgsign", "false");
+      const before = ["// before", ...reviewedUriLines, ""].join("\n");
+      const after = ["// after", ...reviewedUriLines, ""].join("\n");
+      writeFileSync(join(cwd, reviewedUriSource), before);
+      git("add", ".");
+      git("commit", "-qm", "fixture base");
+      const baseSha = git("rev-parse", "HEAD");
+      const key = git("hash-object", reviewedUriSource);
+      writeFileSync(join(cwd, reviewedUriSource), after);
+      git("add", ".");
+      git("commit", "-qm", "fixture head");
+      const headSha = git("rev-parse", "HEAD");
+      const calls = join(root, "calls");
+      const original = join(root, "original.patch");
+      useFakeScanner(
+        t,
+        `
+const key = ${JSON.stringify(key)};
+const outcome = ${JSON.stringify(outcome)};
+const uriFirst = ${uriFirst};
+const primary = inputs.some(input => input.name === 'prompt');
+fs.appendFileSync(${JSON.stringify(calls)}, primary ? 'primary\\n' : 'supplemental\\n');
+const patch = inputs.find(input => input.bytes.toString().startsWith('diff --git '));
+assert.ok(patch);
+if (primary) {
+  assert.ok(inputs.some(input => input.bytes.toString() === ${JSON.stringify(before)}));
+  assert.ok(inputs.some(input => input.bytes.toString() === ${JSON.stringify(after)}));
+  assert.ok(inputs.some(input => input.bytes.toString().startsWith(':100644')));
+  fs.writeFileSync(${JSON.stringify(original)}, patch.bytes);
+} else {
+  assert.equal(inputs.length, 1);
+  const original = fs.readFileSync(${JSON.stringify(original)}, 'utf8');
+  assert.equal(patch.bytes.toString(), original.replace(key, '_'.repeat(key.length)));
+}
+const metadata = {
+  DetectorType:58, DetectorName:'CloudflareGlobalApiKey', DecoderName:'PLAIN',
+  SourceType:15, Verified:false, VerificationError:'synthetic unavailable verifier',
+  Raw:key, RawV2:key+'scanner@1.2.3', Redacted:'scanner@1.2.3',
+  SecretParts:{key,email:'scanner@1.2.3'}, ExtraData:null, StructuredData:null,
+  SourceMetadata:{Data:{Filesystem:{file:path.join(inputDir,patch.name),line:2}}}
+};
+const uri = {
+  ...metadata, DetectorType:17, DetectorName:'URI', DecoderName:primary ? 'PLAIN' : 'HTML',
+  Raw:${JSON.stringify(reviewedUri)}, RawV2:${JSON.stringify(reviewedUri)}, Redacted:'',
+  SecretParts:{host:'example.invalid',username:'fixture-user',password:'fixture-password'},
+  SourceMetadata:{Data:{Filesystem:{file:path.join(inputDir,patch.name),line:8}}}
+};
+if (!primary && outcome === 'unknown') uri.Raw = uri.RawV2 = 'https://other:unknown@example.invalid';
+if (!primary && outcome === 'verified') {
+  uri.Verified = true;
+  uri.VerificationError = null;
+}
+const findings = primary ? (uriFirst ? [uri,metadata] : [metadata,uri]) : [uri];
+for (const finding of findings) console.log(JSON.stringify(finding));
+console.error(JSON.stringify({
+  level:'info-0',logger:'trufflehog',msg:'finished scanning',trufflehog_version:'${TRUFFLEHOG_VERSION}',
+  chunks:1,bytes:patch.bytes.length,verified_secrets:findings.filter(x => x.Verified).length,
+  unverified_secrets:findings.filter(x => !x.Verified).length
+}));
+process.exit(183);
+`,
+      );
+      const notices: unknown[] = [];
+      t.mock.method(console, "error", (value: unknown) => notices.push(value));
+      const scan = () =>
+        scanAgentInput({
+          cwd,
+          prompt: "Review dependencies.",
+          source: { kind: "committed", baseSha, headSha },
+          timeoutMs: 30_000,
+        });
+      if (outcome === "reviewed") {
+        scan();
+        assert.equal(notices.length, 2);
+      } else {
+        assert.throws(
+          scan,
+          (error: unknown) => error instanceof AgentInputScanError && error.reason === "findings",
+        );
+        assert.deepEqual(notices, []);
+      }
+      assert.equal(readFileSync(calls, "utf8"), "primary\nsupplemental\n");
+    });
+  }
 }
