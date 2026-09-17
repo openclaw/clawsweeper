@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Qualify one reviewed synthetic source-fetch diagnostic fixture only for its exact committed material set, retaining strict native metadata and rejection of changed or additional source inputs.
+
 - Restore adaptive publication capacity from newly accepted batch publications after cooldown, while preserving quota backoff and replay safety.
 
 - Classify the reviewed Git-remote rejection and scanner-proof fixtures using exact native detector, decoder, source-line, and regular-file attribution.

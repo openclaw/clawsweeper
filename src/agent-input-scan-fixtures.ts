@@ -3,6 +3,11 @@ import { basename } from "node:path";
 import { TRUFFLEHOG_VERSION } from "./review-tool-bootstrap.js";
 import { resolvePatchWitnesses } from "./agent-input-scan-patch.js";
 import { resolveGitObjectMetadata } from "./agent-input-scan-git-metadata.js";
+import {
+  qualifyReviewedMaterial,
+  REVIEWED_SOURCE_MATERIAL,
+  type ReviewedMaterialPolicy,
+} from "./agent-input-scan-reviewed-material.js";
 
 interface ReviewedFixture {
   fixtureSha256: string;
@@ -531,6 +536,7 @@ export function classifyReviewedFixtureScan(
   stderr: Buffer,
   inputs: ReadonlyMap<string, StagedScanInput>,
   reviewedAttributions: readonly ReviewedAttribution[] = REVIEWED_ATTRIBUTIONS,
+  reviewedMaterial: ReviewedMaterialPolicy = REVIEWED_SOURCE_MATERIAL,
 ): ClassifiedScan | RefusedScan {
   validateReviewedAttributions(reviewedAttributions);
   const nativeFailure = (
@@ -579,7 +585,16 @@ export function classifyReviewedFixtureScan(
   )
     return nativeFailure("completion_mismatch");
 
-  return classifyReviewedFindings(findings, inputs, reviewedAttributions);
+  const materialAttributions = qualifyReviewedMaterial(inputs, reviewedMaterial);
+  return classifyReviewedFindings(
+    findings,
+    inputs,
+    materialAttributions
+      ? [...reviewedAttributions, ...materialAttributions]
+      : reviewedAttributions,
+    new Map(),
+    materialAttributions,
+  );
 }
 
 function nativeUriParts(value: string) {
@@ -598,6 +613,7 @@ function classifyReviewedFindings(
   inputs: ReadonlyMap<string, StagedScanInput>,
   reviewedAttributions: readonly ReviewedAttribution[],
   literalLines = new Map<string, number>(),
+  materialAttributions?: readonly ReviewedAttribution[],
 ): ClassifiedScan | RefusedScan {
   const patchWitnesses = new Map<string, NonNullable<ReturnType<typeof resolvePatchWitnesses>>>();
   const objectWitnesses = new Map<
@@ -665,6 +681,40 @@ function classifyReviewedFindings(
             ([, , , expectedRaw, expectedRawV2]) =>
               expectedRaw === rawDigest && expectedRawV2 === rawV2Digest,
           );
+    const materialAttribution = materialAttributions?.find(
+      (row) =>
+        exactCandidates.includes(row) &&
+        row[0] === finding.DetectorType &&
+        row[1] === finding.DetectorName &&
+        row[2] === finding.DecoderName,
+    );
+    const materialCandidate = materialAttribution !== undefined;
+    if (materialCandidate) {
+      const patchEntry = [...inputs].find(([, input]) => input.kind === "patch");
+      const witnesses =
+        patchEntry?.[1].kind === "patch" && rawV2
+          ? resolvePatchWitnesses(patchEntry[1], rawV2, inputs)
+          : undefined;
+      // Even a blob-only native result needs the canonical added-head witness.
+      // This proves literal provenance, not which decoded occurrence was scanned.
+      if (
+        !witnesses ||
+        witnesses.length !== 1 ||
+        witnesses[0]?.kind !== "add" ||
+        (file !== patchEntry?.[0] && file !== witnesses[0].file) ||
+        [...inputs.values()].some(
+          (input) =>
+            input.kind === "blob" &&
+            input.references.some(
+              (reference) =>
+                reference.source === materialAttribution[6] && reference.role === "base",
+            ) &&
+            input.bytes?.includes(Buffer.from(rawV2!)),
+        )
+      )
+        return refuse("material_not_reviewed");
+      patchWitnesses.set(`${patchEntry![0]}:${rawV2Digest}`, witnesses);
+    }
     if (staged?.kind === "patch") {
       if (typeof file !== "string" || scannerLine === null) return refuse("metadata_mismatch");
       if (finding.DetectorType === 58) {
@@ -727,7 +777,9 @@ function classifyReviewedFindings(
       if (
         finding.DetectorType !== 17 ||
         !rawV2 ||
-        (finding.DecoderName !== "PLAIN" && finding.DecoderName !== "HTML")
+        (finding.DecoderName !== "PLAIN" &&
+          finding.DecoderName !== "HTML" &&
+          !(materialCandidate && finding.DecoderName === "ESCAPED_UNICODE"))
       )
         return refuse("material_not_reviewed");
       if (exactCandidates.length) {
@@ -767,6 +819,7 @@ function classifyReviewedFindings(
           inputs,
           reviewedAttributions,
           literalLines,
+          materialAttributions,
         );
         if (result.kind !== "classified")
           return refuse(
