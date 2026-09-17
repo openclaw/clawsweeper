@@ -4,7 +4,13 @@ import { promisify } from "node:util";
 import { stripAnsi } from "./comment-router-utils.js";
 import { ghCliEnv as ghEnv } from "./process-env.js";
 import { repoRoot } from "./paths.js";
-import { GitHubRateLimitError, ghRetryKind, ghRetryWaitMs } from "../github-retry.js";
+import {
+  GitHubRateLimitError,
+  githubCredentialScopeForToken,
+  ghRetryKind,
+  ghRetryWaitMs,
+  type GitHubCredentialScope,
+} from "../github-retry.js";
 import { parseGhJsonWithRetry, parseGhJsonWithRetryAsync } from "../github-json.js";
 import { isPublicOpenClawReadOnlyRequest } from "../github-public-read.js";
 import { resolveCommand } from "../command.js";
@@ -28,6 +34,10 @@ type PublicReadFallback = {
 };
 
 const claimedPublicReadFallbackTokens = new Set<string>();
+
+// Preserve the dispatched credential without changing native errors or retaining tokens.
+// A later call may use a different token, and async callers can change process.env.
+const failedCommandScopes = new WeakMap<object, GitHubCredentialScope>();
 
 export function ghJson<T = JsonValue>(ghArgs: string[], options: GhRunOptions = {}): T {
   return JSON.parse(ghText(ghArgs, options) || "null") as T;
@@ -152,7 +162,7 @@ export function ghPagedLimitWithRetry<T = JsonValue>(
     } catch (error) {
       lastError = error;
       const retryKind = ghRetryKind(error);
-      if (retryKind === "throttle") throw new GitHubRateLimitError(error);
+      if (retryKind === "throttle") throw commandRateLimitError(error);
       if (attempt >= attempts || retryKind === "none") throw error;
       sleepMs(ghRetryWaitMs(retryKind, attempt - 1));
     }
@@ -163,16 +173,22 @@ export function ghPagedLimitWithRetry<T = JsonValue>(
 export function ghText(ghArgs: string[], options: GhRunOptions = {}): string {
   const env = ghCommandEnv(ghArgs, options);
   const command = ghCommand(ghArgs, env);
-  const text = execFileSync(command.command, command.args, {
-    cwd: options.cwd ?? repoRoot(),
-    timeout: ghRunTimeoutMs(options, env),
-    env,
-    encoding: "utf8",
-    input: options.input,
-    maxBuffer: 64 * 1024 * 1024,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  return stripAnsi(text).trim();
+  const scope = commandCredentialScope(ghArgs, env);
+  try {
+    const text = execFileSync(command.command, command.args, {
+      cwd: options.cwd ?? repoRoot(),
+      timeout: ghRunTimeoutMs(options, env),
+      env,
+      encoding: "utf8",
+      input: options.input,
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return stripAnsi(text).trim();
+  } catch (error) {
+    if (scope && error !== null && typeof error === "object") failedCommandScopes.set(error, scope);
+    throw error;
+  }
 }
 
 export function ghTextWithRetry(ghArgs: string[], options: GhRetryOptions | number = {}): string {
@@ -197,14 +213,14 @@ export function ghTextWithRetry(ghArgs: string[], options: GhRetryOptions | numb
           lastError = fallbackError;
           const fallbackRetryKind = ghRetryKind(fallbackError);
           if (fallbackRetryKind === "throttle") {
-            throw new GitHubRateLimitError(fallbackError);
+            throw commandRateLimitError(fallbackError);
           }
           if (attempt >= attempts || fallbackRetryKind === "none") throw fallbackError;
           sleepMs(ghRetryWaitMs(fallbackRetryKind, attempt - 1));
           continue;
         }
       }
-      if (retryKind === "throttle") throw new GitHubRateLimitError(error);
+      if (retryKind === "throttle") throw commandRateLimitError(error);
       if (attempt >= attempts || retryKind === "none") throw error;
       sleepMs(ghRetryWaitMs(retryKind, attempt - 1));
     }
@@ -237,14 +253,14 @@ export async function ghTextWithRetryAsync(
           lastError = fallbackError;
           const fallbackRetryKind = ghRetryKind(fallbackError);
           if (fallbackRetryKind === "throttle") {
-            throw new GitHubRateLimitError(fallbackError);
+            throw commandRateLimitError(fallbackError);
           }
           if (attempt >= attempts || fallbackRetryKind === "none") throw fallbackError;
           await sleepAsync(ghRetryWaitMs(fallbackRetryKind, attempt - 1));
           continue;
         }
       }
-      if (retryKind === "throttle") throw new GitHubRateLimitError(error);
+      if (retryKind === "throttle") throw commandRateLimitError(error);
       if (attempt >= attempts || retryKind === "none") throw error;
       await sleepAsync(ghRetryWaitMs(retryKind, attempt - 1));
     }
@@ -256,14 +272,20 @@ export async function ghTextAsync(ghArgs: string[], options: GhRunOptions = {}):
   if (options.input !== undefined) return ghText(ghArgs, options);
   const env = ghCommandEnv(ghArgs, options);
   const command = ghCommand(ghArgs, env);
-  const { stdout } = await execFileAsync(command.command, command.args, {
-    cwd: options.cwd ?? repoRoot(),
-    timeout: ghRunTimeoutMs(options, env),
-    env,
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  return stripAnsi(String(stdout)).trim();
+  const scope = commandCredentialScope(ghArgs, env);
+  try {
+    const { stdout } = await execFileAsync(command.command, command.args, {
+      cwd: options.cwd ?? repoRoot(),
+      timeout: ghRunTimeoutMs(options, env),
+      env,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    return stripAnsi(String(stdout)).trim();
+  } catch (error) {
+    if (scope && error !== null && typeof error === "object") failedCommandScopes.set(error, scope);
+    throw error;
+  }
 }
 
 export function ghBestEffortWithRetry(
@@ -288,6 +310,33 @@ export function ghSpawn(ghArgs: string[], options: GhRunOptions = {}) {
     input: options.input,
     stdio: "pipe",
   });
+}
+
+function commandCredentialScope(
+  ghArgs: readonly string[],
+  env: NodeJS.ProcessEnv,
+): GitHubCredentialScope | undefined {
+  // Native gh resolves alternate hosts and high-level repo commands itself.
+  // Preserve legacy attribution where the GitHub.com token pair is not established.
+  if (
+    ghArgs[0] !== "api" ||
+    (env.GH_HOST && env.GH_HOST.toLowerCase() !== "github.com") ||
+    ghArgs.some(
+      (arg) => arg === "--hostname" || arg.startsWith("--hostname=") || /^https?:\/\//i.test(arg),
+    )
+  ) {
+    return undefined;
+  }
+  return githubCredentialScopeForToken(
+    (env.GH_TOKEN || env.GITHUB_TOKEN || "").trim(),
+    process.env,
+  );
+}
+
+function commandRateLimitError(cause: unknown): GitHubRateLimitError {
+  const scope =
+    cause !== null && typeof cause === "object" ? failedCommandScopes.get(cause) : undefined;
+  return new GitHubRateLimitError(cause, Date.now(), scope ? { scope } : {});
 }
 
 function ghCommandEnv(ghArgs: readonly string[], options: GhRunOptions): NodeJS.ProcessEnv {

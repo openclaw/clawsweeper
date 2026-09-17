@@ -284,15 +284,20 @@ export function scanAgentInput(options: {
     const inputs = new Map<string, StagedScanInput>();
     let staged = 0;
     let ordinal = 0;
-    const stage = (bytes: Buffer, origin: ScanInputOrigin, name = String(ordinal++)) => {
+    const stage = (
+      bytes: Buffer,
+      origin: ScanInputOrigin,
+      name = String(ordinal++),
+      directory = inputDir,
+    ) => {
       remaining();
       staged += bytes.length;
       if (staged > MAX_SCAN_BYTES) throw new AgentInputScanError("staging_limit");
-      writeFileSync(join(inputDir, name), bytes, { mode: 0o600, flag: "wx" });
-      inputs.set(join(inputDir, name), {
+      writeFileSync(join(directory, name), bytes, { mode: 0o600, flag: "wx" });
+      inputs.set(join(directory, name), {
         ...origin,
         id: name,
-        ...(origin.kind === "blob" || origin.kind === "patch" ? { bytes } : {}),
+        bytes,
       });
     };
     stage(Buffer.from(options.prompt), { kind: "prompt" }, "prompt");
@@ -658,36 +663,40 @@ export function scanAgentInput(options: {
         }
       }
     }
-    const result = spawnSync(
-      scanner,
-      [
-        "filesystem",
-        inputDir,
-        "--results=verified,unknown",
-        "--fail",
-        "--fail-on-scan-errors",
-        "--no-update",
-        "--json",
-        "--no-color",
-      ],
-      {
-        cwd: root,
-        env: {
-          HOME: root,
-          TMPDIR: root,
-          TMP: root,
-          TEMP: root,
-          SystemRoot: process.env.SystemRoot,
+    const scan = (directory: string) => {
+      const result = spawnSync(
+        scanner,
+        [
+          "filesystem",
+          directory,
+          "--results=verified,unknown",
+          "--fail",
+          "--fail-on-scan-errors",
+          "--no-update",
+          "--json",
+          "--no-color",
+        ],
+        {
+          cwd: root,
+          env: {
+            HOME: root,
+            TMPDIR: root,
+            TMP: root,
+            TEMP: root,
+            SystemRoot: process.env.SystemRoot,
+          },
+          timeout: remaining(),
+          killSignal: "SIGKILL",
+          maxBuffer: 1024 * 1024,
         },
-        timeout: remaining(),
-        killSignal: "SIGKILL",
-        maxBuffer: 1024 * 1024,
-      },
-    );
-    if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT")
-      throw new AgentInputScanError("deadline");
-    if (result.error || result.signal || (result.status !== 0 && result.status !== 183))
-      throw new AgentInputScanError("scanner_failed");
+      );
+      if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT")
+        throw new AgentInputScanError("deadline");
+      if (result.error || result.signal || (result.status !== 0 && result.status !== 183))
+        throw new AgentInputScanError("scanner_failed");
+      return result;
+    };
+    const result = scan(inputDir);
     if (result.status === 183 || result.stdout?.length) {
       const classification = classifyReviewedFixtureScan(
         result.status!,
@@ -697,6 +706,32 @@ export function scanAgentInput(options: {
       );
       if (classification.kind === "refused")
         throw new AgentInputScanError(classification.reason, classification.diagnostic);
+      if (classification.kind === "git_metadata_proof_required") {
+        const proofDir = join(root, "metadata-proof");
+        mkdirSync(proofDir, { mode: 0o700 });
+        for (const [file, bytes] of classification.proofPatches) {
+          const original = inputs.get(file);
+          if (original?.kind !== "patch") throw new AgentInputScanError("incomplete_source");
+          stage(
+            bytes,
+            { kind: "patch", from: original.from, to: original.to },
+            original.id,
+            proofDir,
+          );
+        }
+        // Decoder coordinates do not identify original bytes. A complete native
+        // replay with metadata masked must independently clear decoded content.
+        const proof = scan(proofDir);
+        const confirmation = classifyReviewedFixtureScan(
+          proof.status!,
+          proof.stdout,
+          proof.stderr,
+          inputs,
+        );
+        if (confirmation.kind === "refused")
+          throw new AgentInputScanError(confirmation.reason, confirmation.diagnostic);
+        if (confirmation.kind !== "classified") throw new AgentInputScanError("findings");
+      }
       classified = classification.notices;
     }
     remaining();
@@ -722,7 +757,10 @@ export function scanAgentInput(options: {
     console.error(
       JSON.stringify({
         event: "agent_input_scan_classified",
-        notice: "Reviewed synthetic fixture findings classified as non-sensitive.",
+        notice:
+          classification.classification === "git_object_id"
+            ? "Canonical Git object metadata classified as non-sensitive."
+            : "Reviewed synthetic fixture findings classified as non-sensitive.",
         ...classification,
       }),
     );

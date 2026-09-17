@@ -23,7 +23,12 @@ import {
   type GithubConditionalResponse,
 } from "./github-etag-read-broker.js";
 import { recordGithubEgressBrokerEvent } from "./github-egress-observer.js";
-import { GitHubRateLimitError, ghRetryKind, type GitHubCredentialScope } from "./github-retry.js";
+import {
+  GitHubRateLimitError,
+  githubCredentialScopeForToken,
+  ghRetryKind,
+  type GitHubCredentialScope,
+} from "./github-retry.js";
 import { recordOrEmpty as objectValue } from "./value-coerce.js";
 
 interface CreateGitHubRuntimeDependencies {
@@ -285,12 +290,7 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
       process.env.GH_TOKEN?.trim() ||
       process.env.GITHUB_TOKEN?.trim() ||
       "";
-    const repositoryTokens = [
-      process.env.CLAWSWEEPER_PUBLIC_GH_TOKEN?.trim(),
-      process.env.REPO_TOKEN?.trim(),
-      process.env.GITHUB_TOKEN?.trim(),
-    ].filter((token): token is string => Boolean(token));
-    return repositoryTokens.includes(selectedToken) ? "repository_actions" : "target_app";
+    return githubCredentialScopeForToken(selectedToken, process.env);
   }
 
   function rateLimitObservationPath(): string | null {
