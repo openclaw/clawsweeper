@@ -4,6 +4,13 @@ import { bayLayoutCss, bayLayoutScript } from "../dashboard/bay-layout.ts";
 import { bayHtml } from "../dashboard/bay-page.ts";
 import { publicStatusProjection, publicStatusFreshness } from "../dashboard/worker.ts";
 
+test("review paths label stays accessible without occupying toolbar space", () => {
+  assert.match(
+    bayHtml(),
+    /<label class="review-path-select" for="review-paths"><span class="sr-only">Review paths<\/span><select id="review-paths" aria-describedby="review-path-note"/,
+  );
+});
+
 const stages = ["arriving", "setting-up", "reviewing", "publishing", "applying", "repairing"];
 const labels = Object.fromEntries(stages.concat(["completed"]).map((stage) => [stage, stage]));
 function harness(items: Array<{ key: string; stage: string; repository?: string }> = []) {

@@ -306,7 +306,7 @@ ${bayLayoutCss}
   </form>
   <div class="repo-bar" id="repo-bar"><span>Waters</span></div>
   <div class="toolbar-right">
-    <label class="review-path-select" for="review-paths">Review paths<select id="review-paths" aria-describedby="review-path-note" title="All paths includes active batch fallback. Direct-only excludes the existing batch/artifact/shard/history classification, not old work or proof use."><option value="all">All review paths</option><option value="direct">Direct-review paths only</option></select></label>
+    <label class="review-path-select" for="review-paths"><span class="sr-only">Review paths</span><select id="review-paths" aria-describedby="review-path-note" title="All paths includes active batch fallback. Direct-only excludes the existing batch/artifact/shard/history classification, not old work or proof use."><option value="all">All review paths</option><option value="direct">Direct-review paths only</option></select></label>
     <details class="view-menu"><summary>View options</summary><div class="view-panel">
       <label><input type="checkbox" id="reduce-motion">Reduce motion</label>
       <div class="segmented" role="group" aria-label="Master sweeper mode"><span>Sweeper</span><button type="button" class="active" data-brush="patrol" aria-pressed="true">Patrol</button><button type="button" data-brush="change" aria-pressed="false">On change</button></div>
