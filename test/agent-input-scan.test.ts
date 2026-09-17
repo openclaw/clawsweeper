@@ -3552,3 +3552,62 @@ for (const {
     }
   });
 }
+
+for (const source of ["internal/cli/repo_test.go", "internal/cli/ssh_test.go"]) {
+  test(`remote-rejection attribution requires exact PLAIN regular-file witnesses: ${source}`, () => {
+    const entry = exactCase("URI", "PLAIN");
+    const fixture = exactFixture([entry], [["base", "head"]]);
+    const file = fixture.inputs.keys().next().value!;
+    const original = fixture.inputs.get(file)!;
+    assert.ok(original.kind === "blob");
+    const input = {
+      ...original,
+      references: original.references.map((reference) => ({ ...reference, source })),
+    };
+    const inputs = new Map([[file, input]]);
+    const row: ReviewedAttribution = [
+      ...fixture.policy[0]!.slice(0, 6),
+      source,
+      "100644",
+    ] as ReviewedAttribution;
+    const finding = fixture.findings[0]!;
+    assert.equal(classifyExact([finding], inputs, [row]).kind, "classified");
+    for (const decoder of ["HTML", "ESCAPED_UNICODE"]) {
+      const changed = [...row];
+      changed[2] = decoder;
+      assert.throws(
+        () => classifyExact([finding], inputs, [changed as unknown as ReviewedAttribution]),
+        /invalid reviewed attribution policy/,
+      );
+    }
+    for (const patch of [
+      { Raw: entry.raw + "changed" },
+      { RawV2: entry.rawV2 + "changed" },
+      { Verified: true },
+      { DecoderName: "HTML" },
+      { SecretParts: { ...entry.secretParts, host: "other" } },
+    ])
+      assert.equal(classifyExact([{ ...finding, ...patch }], inputs, [row]).kind, "refused");
+    for (const bytes of [
+      Buffer.from(entry.line + " changed\n"),
+      Buffer.from(entry.line + "\n" + entry.line + "\n"),
+    ])
+      assert.equal(
+        classifyExact([finding], new Map([[file, { ...input, bytes }]]), [row]).kind,
+        "refused",
+      );
+    for (const reference of [
+      { ...input.references[0]!, source: "internal/cli/other_test.go" },
+      { ...input.references[0]!, mode: "100755" },
+      { ...input.references[0]!, role: "worktree" as const },
+    ])
+      assert.equal(
+        classifyExact(
+          [finding],
+          new Map([[file, { ...input, references: [...input.references, reference] }]]),
+          [row],
+        ).kind,
+        "refused",
+      );
+  });
+}

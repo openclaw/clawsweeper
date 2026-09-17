@@ -283,6 +283,10 @@ const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
   [968, "Postgres", "PLAIN", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "252d197820142c40bc8701a8b1400f28a3224f305f37fd65cd2e6bfbe48d9fb1", "src/logging/redact.test.ts", "100644"],
   [968, "Postgres", "PLAIN", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "6a9d1339c87f11af0ba4e7ef89a77ea8eb8e7f7ac48fdec0abb19d9138821d18", "src/logging/redact.test.ts", "100644"],
   [968, "Postgres", "PLAIN", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "2020783f7b14c74d2d6960efca4ca82727980494ddef883f15ae9980141662ec", "src/logging/redact.test.ts", "100644"],
+  // Maintainer-qualified Git-remote rejection fixtures; only observed native PLAIN tuples.
+  [17, "URI", "PLAIN", "609f5f8c987b35e0d48b35e8463574db63b84c087e79d4189ef6fea5979f7609", "8074e19d513f3bdb60156065af46081e407232026590b37476c5b7745db3d776", ["f0144dec37814ca30e23745ffff253f710c20e51e4ac2fbdf3ae4b82afb17e10", "b59f02752a9188dc4d89ebf86442a3af3c2c49a64a217614fb29e9d0d1b88f88"], "internal/cli/repo_test.go", "100644"],
+  [17, "URI", "PLAIN", "4b113e9ace3e5b41991d62d947eb1bb8251c904aded634c011eac87f7011c518", "4b113e9ace3e5b41991d62d947eb1bb8251c904aded634c011eac87f7011c518", ["f0144dec37814ca30e23745ffff253f710c20e51e4ac2fbdf3ae4b82afb17e10", "b59f02752a9188dc4d89ebf86442a3af3c2c49a64a217614fb29e9d0d1b88f88"], "internal/cli/repo_test.go", "100644"],
+  [17, "URI", "PLAIN", "609f5f8c987b35e0d48b35e8463574db63b84c087e79d4189ef6fea5979f7609", "8074e19d513f3bdb60156065af46081e407232026590b37476c5b7745db3d776", "35f038c31f598ead2d83273f87972633d956fd55395644cf722d963121a0f999", "internal/cli/ssh_test.go", "100644"],
   ...CRABBOX_POSTGRES_DOC_ATTRIBUTIONS,
 ];
 
@@ -315,6 +319,10 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           detectorType === 17 &&
           detectorName === "URI" &&
           (decoder === "PLAIN" || decoder === "HTML")) ||
+        ((source === "internal/cli/repo_test.go" || source === "internal/cli/ssh_test.go") &&
+          detectorType === 17 &&
+          detectorName === "URI" &&
+          decoder === "PLAIN") ||
         (source === "docs/operations.md" &&
           detectorType === 968 &&
           detectorName === "Postgres" &&
