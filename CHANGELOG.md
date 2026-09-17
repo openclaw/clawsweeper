@@ -9,6 +9,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 - Restore adaptive publication capacity from newly accepted batch publications after cooldown, while preserving quota backoff and replay safety.
 
+- Classify the reviewed Git-remote rejection and scanner-proof fixtures using exact native detector, decoder, source-line, and regular-file attribution.
+
 - Classify generated Git blob IDs mistaken for Cloudflare credentials only after complete source witnesses and an independent native patch replay rule out decoded content matches, while keeping verified or incomplete scans blocked.
 
 - Let exact-review admission use the existing one-shot scoped read-token fallback when the public Actions quota is exhausted, while preserving private-repository access and retry behavior.
