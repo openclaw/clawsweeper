@@ -254,6 +254,10 @@ production range. Admission enforces a 16-slot control-plane reserve inside
 `EXACT_REVIEW_ACTIONS_BUDGET`; with 32 active exact reviews and the current
 production maximum of 32 publisher slots, another 114 slots remain as configuration
 headroom rather than protected reserve.
+Newly accepted, published batch members contribute one recovery success each
+after cooldown, only when publication completes without requeueing. Replays, superseded
+members, and requeued revisions earn no credit. A batch carrying quota
+observations earns no positive credit, so its negative feedback takes precedence.
 Its checkout, artifact handling, comment sync, and result routing are
 deterministic control-plane work: they consume GitHub runners, but not Codex
 slots. The comment router and the singleton lease reconciler follow the same

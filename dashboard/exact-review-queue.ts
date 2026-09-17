@@ -8939,6 +8939,20 @@ export class ExactReviewQueue {
             item.backoffReason = undefined;
             item.updatedAt = now;
           }
+          // Accepted membership owns exactly-once recovery in this transaction.
+          // Quota feedback for this envelope must reduce the pre-recovery ceiling.
+          if (
+            completion.terminalOutcome === "published" &&
+            !result.requeued &&
+            !result.parked &&
+            !rateLimitObservations?.length
+          ) {
+            this.applyPublicationFeedbackSync({
+              at: now,
+              capacity: this.publicationControlSync().capacityCeiling,
+              outcome: "success",
+            });
+          }
           if (!result.requeued) completed += 1;
           if (completion.terminalOutcome === "published") published += 1;
           else if (completion.terminalOutcome === "superseded") superseded += 1;

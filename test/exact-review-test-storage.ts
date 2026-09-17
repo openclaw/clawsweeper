@@ -52,6 +52,7 @@ export class TestStorage {
   };
 
   transactionSync<T>(callback: () => T) {
+    const valuesBefore = structuredClone(this.values);
     this.database.exec("BEGIN IMMEDIATE");
     try {
       const result = callback();
@@ -59,6 +60,9 @@ export class TestStorage {
       return result;
     } catch (error) {
       this.database.exec("ROLLBACK");
+      // Workerd stores synchronous KV in the same SQLite transaction.
+      this.values.clear();
+      for (const [key, value] of valuesBefore) this.values.set(key, value);
       throw error;
     }
   }

@@ -5831,3 +5831,277 @@ test("batch completion schedules the remaining partial batch at its departure de
   assert.equal(completion.status, 200);
   assert.equal(storage.scheduledAlarm(), 6_060_000);
 });
+
+function capacityRecoveryQueue(t: import("node:test").TestContext) {
+  const h = admissionQueue(t, {
+    EXACT_REVIEW_QUEUE_MAX_CONCURRENT: "32",
+    EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT: "8",
+    EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT: "32",
+    EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT: "32",
+    EXACT_REVIEW_PUBLICATION_BATCH_SIZE: "8",
+    EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT: "8",
+  });
+  h.now = Date.parse("2026-09-17T00:00:00.000Z");
+  return h;
+}
+
+async function recoveryBatch(
+  h: ReturnType<typeof capacityRecoveryQueue>,
+  label: string,
+  numbers: number[],
+) {
+  for (const number of numbers) assert.equal((await h.enqueue(number)).status, 202);
+  const claim = await h.claim({ claim_id: label, max_items: numbers.length });
+  assert.equal(claim.claimed, true, JSON.stringify(claim));
+  assert.equal(claim.batch.items.length, numbers.length);
+  return claim.batch;
+}
+
+function completeRecoveryBatch(
+  h: ReturnType<typeof capacityRecoveryQueue>,
+  batch,
+  items = batch.items.map((member) => ({ ...member, terminal_outcome: "published" })),
+  extra = {},
+) {
+  return h.post("/publication-batches/complete", {
+    batch_id: batch.batch_id,
+    lease_owner: "worker-1",
+    items,
+    ...extra,
+  });
+}
+
+function recoveryQuota(h: ReturnType<typeof capacityRecoveryQueue>, receipt: string) {
+  return {
+    github_telemetry_id: receipt.repeat(64),
+    github_rate_limit_observations: [
+      {
+        scope: "repository_actions",
+        observed_at: new Date(h.now).toISOString(),
+        retry_at: new Date(h.now + 60_000).toISOString(),
+        provenance: "retry_after",
+        authoritative: true,
+      },
+    ],
+  };
+}
+
+async function throttleRecoveryQueue(
+  h: ReturnType<typeof capacityRecoveryQueue>,
+  ceiling: 8 | 16 = 8,
+) {
+  const batch = await recoveryBatch(h, "initial-pressure", [8000]);
+  const result = await completeRecoveryBatch(
+    h,
+    batch,
+    batch.items.map((member) => ({ ...member, terminal_outcome: "superseded" })),
+    recoveryQuota(h, "a"),
+  );
+  assert.equal(result.accepted, 1);
+  if (ceiling === 8) await completeRecoveryBatch(h, batch, [], recoveryQuota(h, "b"));
+  const control = (await h.publicationStats()).capacity_control;
+  assert.equal(control.ceiling, ceiling);
+  assert.equal(control.recovery_successes, 0);
+  assert.equal(control.last_failure_kind, "github_rate_limit");
+  return batch;
+}
+
+test("batch capacity recovers after ten accepted publications and persists across restart", async (t) => {
+  const h = capacityRecoveryQueue(t);
+  await throttleRecoveryQueue(h);
+  // The credential circuit clears before the global ceiling cooldown ends.
+  h.now += 120_000;
+  const cooling = await recoveryBatch(h, "during-cooldown", [8100]);
+  assert.equal((await completeRecoveryBatch(h, cooling)).accepted, 1);
+  assert.equal((await h.publicationStats()).capacity_control.recovery_successes, 0);
+  h.now += 15 * 60_000;
+  const first = await recoveryBatch(
+    h,
+    "recovery-eight",
+    [8101, 8102, 8103, 8104, 8105, 8106, 8107, 8108],
+  );
+  const firstHalf = first.items
+    .slice(0, 4)
+    .map((member) => ({ ...member, terminal_outcome: "published" }));
+  assert.equal((await completeRecoveryBatch(h, first, firstHalf)).accepted, 4);
+  assert.equal((await completeRecoveryBatch(h, first, firstHalf)).accepted, 0);
+  assert.equal((await completeRecoveryBatch(h, first)).accepted, 4);
+  const afterEight = (await h.publicationStats()).capacity_control;
+  h.restart();
+  const afterRestart = (await h.publicationStats()).capacity_control;
+  const last = await recoveryBatch(h, "recovery-two", [8109, 8110]);
+  const stale = last.items.map((member) => ({
+    ...member,
+    claim_generation: member.claim_generation + 1,
+    terminal_outcome: "published",
+  }));
+  assert.equal((await completeRecoveryBatch(h, last, stale)).accepted, 0);
+  const duplicate = await h.queue.fetch(
+    batchRequest("/publication-batches/complete", {
+      batch_id: last.batch_id,
+      lease_owner: "worker-1",
+      items: [last.items[0], last.items[0]].map((member) => ({
+        ...member,
+        terminal_outcome: "published",
+      })),
+    }),
+  );
+  assert.equal(duplicate.status, 400);
+  assert.deepEqual(await duplicate.json(), { error: "invalid_batch_completions" });
+  const beforeLast = (await h.publicationStats()).capacity_control;
+  assert.equal((await completeRecoveryBatch(h, last)).accepted, 2);
+  assert.equal((await completeRecoveryBatch(h, last)).accepted, 0);
+  const control = (await h.publicationStats()).capacity_control;
+  assert.equal(control.ceiling, 16);
+  assert.equal(control.recovery_successes, 0);
+  assert.equal(afterEight.ceiling, 8);
+  assert.equal(afterEight.recovery_successes, 8);
+  assert.deepEqual(afterRestart, afterEight);
+  assert.equal(beforeLast.recovery_successes, 8);
+  assert.equal((await h.publicationStats()).published_total, 11);
+});
+
+for (const outcome of [
+  "superseded",
+  "newer revision",
+  "retryable",
+  "missing",
+  "expired",
+  "command",
+] as const) {
+  test(`batch capacity does not confuse ${outcome} with fresh recovery credit`, async (t) => {
+    const h = capacityRecoveryQueue(t);
+    await throttleRecoveryQueue(h, 16);
+    h.now += 16 * 60_000;
+    const request = await publicationRequest("eligibility", 8200, "15200").json();
+    if (outcome === "command")
+      Object.assign(request.decision.publication.producerDecision, {
+        commandStatusMarker:
+          "<!-- clawsweeper-command-status:8200:re_review:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->",
+        statusCommentId: 82000,
+      });
+    assert.equal((await h.queue.fetch(batchRequest("/enqueue", request))).status, 202);
+    const claim = await h.claim({ claim_id: "eligibility", max_items: 1 });
+    assert.equal(claim.claimed, true, JSON.stringify(claim));
+    const batch = claim.batch;
+    const member = batch.items[0];
+    if (outcome === "command") {
+      // The publisher commits routing before batch completion retains its acknowledgement driver.
+      const lifecycle = new ExactReviewLifecycleProjectionStore(h.storage);
+      const identity = {
+        canonicalTargetKey: "openclaw/openclaw#8200",
+        fenceKey: member.item_key,
+        revision: member.revision,
+        observedAt: h.now,
+      };
+      lifecycle.recordCanonicalReceipt({
+        ...identity,
+        outcome: "accepted",
+        receiptId: "recovery-canonical",
+      });
+      lifecycle.recordRouterReceipt({
+        ...identity,
+        outcome: "durable",
+        receiptId: "recovery-router",
+      });
+      lifecycle.recordTerminalDisposition({ ...identity, kind: "review_completed_routed" });
+    }
+    if (outcome === "newer revision") {
+      assert.equal((await h.queue.fetch(publicationRequest("newer", 8200, "15200"))).status, 202);
+    } else if (outcome === "missing") {
+      const state = h.queue["readStateSync"]();
+      delete state.items[member.item_key];
+      await h.queue["writeState"](state);
+    } else if (outcome === "expired") h.now += 3 * 60 * 60_000;
+    const items = [
+      {
+        ...member,
+        terminal_outcome:
+          outcome === "superseded"
+            ? "superseded"
+            : outcome === "retryable"
+              ? "retryable_failure"
+              : "published",
+        ...(outcome === "retryable" ? { reason_code: "artifact_unavailable" } : {}),
+      },
+    ];
+    const result = await completeRecoveryBatch(h, batch, items);
+    assert.equal(result.accepted, outcome === "expired" ? 0 : 1);
+    const expected = outcome === "command" ? 1 : 0;
+    assert.equal((await h.publicationStats()).capacity_control.recovery_successes, expected);
+    if (outcome === "newer revision") {
+      assert.equal(h.queue["readStateSync"]().items[member.item_key].revision, 2);
+      assert.equal((await h.publicationStats()).published_total, 1);
+    }
+    if (outcome === "command") {
+      assert.equal(
+        h.queue["readStateSync"]().items[member.item_key].terminalFinalization?.disposition,
+        "review_completed_routed",
+      );
+    }
+    assert.equal((await completeRecoveryBatch(h, batch, items)).accepted, 0);
+    h.restart();
+    assert.equal((await h.publicationStats()).capacity_control.recovery_successes, expected);
+  });
+}
+
+test("batch quota feedback dominates a success at the recovery threshold and dedupes replay", async (t) => {
+  const h = capacityRecoveryQueue(t);
+  await throttleRecoveryQueue(h, 16);
+  h.now += 16 * 60_000;
+  await completeRecoveryBatch(
+    h,
+    await recoveryBatch(h, "prior-eight", [8301, 8302, 8303, 8304, 8305, 8306, 8307, 8308]),
+  );
+  await completeRecoveryBatch(h, await recoveryBatch(h, "prior-one", [8309]));
+  const before = (await h.publicationStats()).capacity_control;
+  assert.equal(before.ceiling, 16);
+  assert.equal(before.recovery_successes, 9);
+  const batch = await recoveryBatch(h, "mixed-quota", [8310, 8311]);
+  const items = batch.items.map((member, index) => ({
+    ...member,
+    terminal_outcome: index === 0 ? "published" : "retryable_failure",
+    ...(index === 0 ? {} : { reason_code: "github_rate_limit" }),
+  }));
+  const quota = recoveryQuota(h, "c");
+  assert.equal((await completeRecoveryBatch(h, batch, items, quota)).accepted, 2);
+  const after = (await h.publicationStats()).capacity_control;
+  assert.equal(after.ceiling, 8);
+  assert.equal(after.recovery_successes, 0);
+  assert.equal((await completeRecoveryBatch(h, batch, items, quota)).accepted, 0);
+  h.restart();
+  assert.deepEqual((await h.publicationStats()).capacity_control, after);
+});
+
+test("batch capacity credit rolls back with late membership failure and earns once on replay", async (t) => {
+  const h = capacityRecoveryQueue(t);
+  await throttleRecoveryQueue(h, 16);
+  h.now += 16 * 60_000;
+  await completeRecoveryBatch(
+    h,
+    await recoveryBatch(h, "rollback-eight", [8401, 8402, 8403, 8404, 8405, 8406, 8407, 8408]),
+  );
+  await completeRecoveryBatch(h, await recoveryBatch(h, "rollback-one", [8409]));
+  const batch = await recoveryBatch(h, "rollback-two", [8410, 8411]);
+  const beforeControl = structuredClone(h.storage.kv.get("exact-review-publication-control:v1"));
+  assert.equal((await h.publicationStats()).capacity_control.recovery_successes, 9);
+  const beforeState = h.queue["readStateSync"]();
+  const beforePublished = (await h.publicationStats()).published_total;
+  h.storage.failSqlMatchingAfter(/UPDATE exact_review_publication_batch_items/, 1);
+  await assert.rejects(completeRecoveryBatch(h, batch), /injected telemetry state write failure/);
+  assert.deepEqual(h.storage.kv.get("exact-review-publication-control:v1"), beforeControl);
+  assert.deepEqual(h.queue["readStateSync"](), beforeState);
+  assert.equal((await h.publicationStats()).published_total, beforePublished);
+  assert.equal(
+    h.storage.scalar(
+      "SELECT COUNT(*) AS value FROM exact_review_publication_batch_items WHERE terminal_outcome IS NULL",
+    ),
+    2,
+  );
+  h.restart();
+  assert.equal((await completeRecoveryBatch(h, batch)).accepted, 2);
+  assert.equal((await completeRecoveryBatch(h, batch)).accepted, 0);
+  const after = (await h.publicationStats()).capacity_control;
+  assert.equal(after.ceiling, 24);
+  assert.equal(after.recovery_successes, 1);
+});
