@@ -791,7 +791,8 @@ function exactReviewQueueBayProjectionFromCensus(
             queue_disposition:
               exactReviewParkedRecoveryAt(selected.item) !== null
                 ? ("retry_scheduled" as const)
-                : exactReviewParkedOperatorEligible(selected.item)
+                : selected.item.parkedReason === "review_retry_exhausted" &&
+                    exactReviewParkedOperatorEligible(selected.item)
                   ? ("parked_exhausted" as const)
                   : ("parked" as const),
           }

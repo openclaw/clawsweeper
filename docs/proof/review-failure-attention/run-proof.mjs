@@ -512,7 +512,7 @@ async function settle(f, race) {
   });
 }
 
-function browserSnapshot(queue) {
+function browserSnapshot(queue, prefix = "") {
   // Queue rows/counts come unchanged from the real Worker, not handwritten
   // stopped-review JSON. Only the separate live workflow census is controlled.
   const now = new Date().toISOString(),
@@ -615,9 +615,9 @@ function browserSnapshot(queue) {
     JSON.stringify(publicStatusProjection(unsafe, allowed)),
     /PRIVATE_DIAGNOSTIC_SENTINEL/,
   );
-  jsonFile("private-projection.json", privateView);
-  jsonFile("browser-input.json", raw);
-  jsonFile("browser-snapshot.json", projected);
+  jsonFile(prefix + "private-projection.json", privateView);
+  jsonFile(prefix + "browser-input.json", raw);
+  jsonFile(prefix + "browser-snapshot.json", projected);
   return projected;
 }
 async function browserProof(snapshot) {
@@ -754,6 +754,34 @@ async function browserProof(snapshot) {
   await page.keyboard.press("Escape");
   await openReference(120887);
   await page.screenshot({ path: path.join(dir, "drawer-legacy-mobile.png") });
+  const dispatchRejected = await seed(990096, "dispatch rejected without a review", false);
+  await call("/__proof/park", { key: dispatchRejected.key });
+  await call("/__proof/dispatch-rejected", { key: dispatchRejected.key });
+  const dispatchQueue = await call("/api/exact-review-queue");
+  const dispatchRow = dispatchQueue.bay_projection.items.find((row) => row.item_number === 990096);
+  assert.equal(dispatchRow.queue_disposition, baseline ? "parked_exhausted" : "parked");
+  Object.assign(snapshot, browserSnapshot(dispatchQueue, "dispatch-"));
+  const dispatchPage = page;
+  await dispatchPage.setViewportSize({ width: 1440, height: 1000 });
+  await dispatchPage.reload();
+  await dispatchPage.keyboard.press("Escape");
+  const dispatchControl = dispatchPage.locator('[data-number="990096"]');
+  await dispatchControl.focus();
+  await dispatchControl.press("Enter");
+  await dispatchPage.waitForFunction(() =>
+    document.getElementById("drawer-body")?.textContent?.includes("#990096"),
+  );
+  const dispatchText = await dispatchPage.locator("#drawer-body").innerText();
+  if (!baseline) {
+    assert.match(dispatchText, /Stopped queue work/);
+    assert.doesNotMatch(dispatchText, /Stopped review|Review stopped|Retries exhausted/);
+  }
+  await dispatchPage.screenshot({ path: path.join(dir, "drawer-dispatch-desktop.png") });
+  jsonFile("dispatch-browser-observations.json", { dispatchText });
+  results.push({
+    scenario: "dispatch rejected without review",
+    neutral_queue_attention: !baseline,
+  });
   assert.deepEqual(external, [], "Bay attempted non-loopback traffic");
   assert.deepEqual(errors, [], "browser runtime errors");
   jsonFile("browser-observations.json", {

@@ -908,7 +908,9 @@ is serving that route.
 Repair & attention counts retained exception records alongside live repair
 activity, not running repair workers alone. Its
 public references may carry the bounded `queue_disposition` values
-`parked_exhausted`, `parked`, or `retry_scheduled`. Both the server and browser
+`parked_exhausted`, `parked`, or `retry_scheduled`. `parked_exhausted` is reserved
+for exhausted review attempts; dispatch-rejected work uses neutral `parked`
+attention even after its recovery budget ends, because no review may have run. Both the server and browser
 sanitizers retain only these values, and only for queue references. Exhausted
 records show operator attention instead of an increasing queued-worker clock;
 the sampled header separates live references from queue/attention records.

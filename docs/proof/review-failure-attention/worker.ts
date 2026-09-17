@@ -38,6 +38,10 @@ export class ExactReviewQueue extends ProductionQueue {
     } else if (path === "/__proof/ready") {
       if (item.state !== "pending") return Response.json({ error: "not_pending" }, { status: 409 });
       item.nextAttemptAt = Date.now() - 1;
+    } else if (path === "/__proof/dispatch-rejected") {
+      item.parkedReason = "dispatch_rejected";
+      item.reviewFailureAttempts = 0;
+      item.parkedRecoveryAttempts = 3;
     } else if (path === "/__proof/retry-control") {
       item.parkedRecoveryAttempts = 1;
       item.parkedRecoveryAt = Date.now() + 24 * 60 * 60_000;

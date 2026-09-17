@@ -110,7 +110,9 @@ races change command identity, revision or head before the compiled CLI's final
 fence, expecting zero PATCHes. Duplicate receipts plus Worker restart must not
 produce duplicate writes/dispatches. A repository visibility revocation prevents
 settlement dispatch. A scheduled review retry and a controlled live repair
-descriptor must not render as stopped review records.
+descriptor must not render as stopped review records. An exhausted dispatch-rejected
+record with zero review attempts is projected and opened in the real Bay browser
+as neutral queue attention, never as an exhausted review.
 
 ## Artifacts and limits
 

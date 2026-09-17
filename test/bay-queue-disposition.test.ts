@@ -128,3 +128,21 @@ test("browser reference sanitizer preserves only bounded queue dispositions", as
     undefined,
   );
 });
+
+test("dispatch recovery exhaustion stays neutral queue attention without claiming a review ran", async () => {
+  const item = unclaimedExactReviewQueueItem(990097, "990097");
+  item.state = "parked";
+  item.parkedReason = "dispatch_rejected";
+  item.parkedRecoveryAttempts = 3;
+  item.reviewFailureAttempts = 0;
+  const projection = exactReviewQueueBayProjection([item]);
+  assert.equal(projection.items[0]?.queue_disposition, "parked");
+  const { bayReviewStatusScript } = await import("../dashboard/bay-review-status.ts");
+  const { runInNewContext } = await import("node:vm");
+  const status = runInNewContext(bayReviewStatusScript + ";bayReviewStatus")({
+    ...projection.items[0],
+    source: "queue",
+  });
+  assert.equal(status.type, "Stopped queue work");
+  assert.doesNotMatch(JSON.stringify(status), /Stopped review|Review stopped|Retries exhausted/);
+});
