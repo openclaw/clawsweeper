@@ -20,7 +20,11 @@ import {
   jsonResponse,
   buildExactReviewQueueRequest,
 } from "./dashboard-worker-harness.ts";
-import { publicHealthHistoryContract } from "../dashboard/worker.ts";
+import {
+  publicHealthHistoryContract,
+  STATUS_REFRESH_TIMEOUT_MS,
+  githubJsonForTest,
+} from "../dashboard/worker.ts";
 import { publicRecentDurablePublicationEventsProjection } from "../dashboard/public-observability.ts";
 import {
   publicationEventsFixture,
@@ -1832,6 +1836,48 @@ test("dashboard hero treats apply and exact-review handoff health as attention",
   });
   new Script(script).runInContext(context);
   await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const freshnessTimestamp = new Date(Date.now() - 1_000).toISOString();
+  for (const state of ["fresh", "stale"]) {
+    context.renderDashboard(
+      {
+        ...status,
+        generated_at: freshnessTimestamp,
+        freshness: {
+          state,
+          cache_state: state,
+          generated_at: freshnessTimestamp,
+          age_ms: 1_000,
+          maximum_age_ms: 60_000,
+        },
+      },
+      "",
+    );
+    assert.equal(
+      elementFor("updated").textContent,
+      "Updated " +
+        context.since(freshnessTimestamp) +
+        (state === "stale" ? " · stale snapshot" : ""),
+    );
+  }
+  context.renderDashboard(
+    {
+      ...status,
+      freshness: {
+        state: "unavailable",
+        cache_state: "miss",
+        generated_at: null,
+        age_ms: null,
+        maximum_age_ms: 60_000,
+      },
+    },
+    "GitHub telemetry is incomplete.",
+  );
+  assert.equal(
+    elementFor("updated").textContent,
+    "Status freshness unavailable · GitHub telemetry is incomplete.",
+  );
+  context.renderDashboard(status, "");
 
   const projectedDiagnostics = context.dashboardStatusSnapshot({
     schema_version: 1,
@@ -4131,7 +4177,10 @@ for (const sources of [
           waitUntilPromises.push(promise);
         },
       };
-      const request = new Request("https://clawsweeper.openclaw.ai/api/status");
+      const caller = new AbortController();
+      const request = new Request("https://clawsweeper.openclaw.ai/api/status", {
+        signal: caller.signal,
+      });
       const [first, second] = await Promise.all([
         worker.fetch(
           request,
@@ -4153,11 +4202,12 @@ for (const sources of [
       assert.equal(firstStatus.freshness.maximum_age_ms, 20_000);
       assert.equal(secondStatus.exact_review_queue.handoff_health.status, "stalled");
       assert.equal(queueReads, 0);
-      assert.equal(waitUntilPromises.length, 2);
+      const refreshes = sources[0] === "poll" && sources[1] === "webhook" ? 2 : 1;
+      assert.equal(waitUntilPromises.length, refreshes, "each refresh owns its Worker lifetime");
 
+      caller.abort();
       releaseFetch();
       await Promise.all(waitUntilPromises);
-      const refreshes = sources[0] === "poll" && sources[1] === "webhook" ? 2 : 1;
       assert.equal(unfilteredRunRequests, refreshes);
       assert.equal(queueReads, 3 * refreshes);
 
@@ -6077,6 +6127,314 @@ test("triage fails closed for malformed, nested, and over-cap cached input", asy
       assert.doesNotMatch(JSON.stringify(snapshot), new RegExp(marker, "i"));
     }
   } finally {
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
+function statusTurn() {
+  return new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+function statusGate<T>() {
+  let release!: (value: T) => void;
+  const promise = new Promise<T>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
+
+for (const stalled of ["cache-read", "cache-body"] as const) {
+  test(`status deadline covers a stalled ${stalled} and permits the next refresh`, async (context) => {
+    const originalFetch = globalThis.fetch;
+    const originalCaches = globalThis.caches;
+    const gate = statusGate<Response | undefined>();
+    const bodyGate = statusGate<string>();
+    let stalledNow = true;
+    let reads = 0;
+    const cache = {
+      async match() {
+        reads += 1;
+        if (!stalledNow) return undefined;
+        if (stalled === "cache-read") return gate.promise;
+        return {
+          clone: () => ({ json: async () => JSON.parse(await bodyGate.promise) }),
+        } as unknown as Response;
+      },
+      put: async () => undefined,
+    };
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: { default: cache } });
+    globalThis.fetch = activePrFetch;
+    context.mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() });
+    try {
+      const request = new Request("https://clawsweeper.openclaw.ai/api/status");
+      const env = Object.freeze({ CACHE_TTL_SECONDS: "0" });
+      const pending = worker.fetch(request, env);
+      await statusTurn();
+      context.mock.timers.tick(STATUS_REFRESH_TIMEOUT_MS);
+      const response = await pending;
+      const status = await response.json();
+      assert.equal(response.status, 200);
+      assert.equal(status.public_projection_complete, false);
+      assert.equal(status.freshness.state, "unavailable");
+      assert.equal(reads, 1, "expired cache work must not admit a second read");
+      stalledNow = false;
+      gate.release(undefined);
+      bodyGate.release("{}");
+      await statusTurn();
+      assert.equal(reads, 1);
+      const healthy = await (await worker.fetch(request, env)).json();
+      assert.equal(healthy.fleet.active_workflow_runs, 1);
+      assert.equal(healthy.public_projection_complete, true);
+    } finally {
+      stalledNow = false;
+      gate.release(undefined);
+      bodyGate.release("{}");
+      await statusTurn();
+      context.mock.timers.reset();
+      globalThis.fetch = originalFetch;
+      Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+    }
+  });
+}
+
+test("cold status deadline releases its owner and stops additional job waves and pages", async (context) => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  const gates: Array<ReturnType<typeof statusGate<Response>>> = [];
+  let jobRequests = 0;
+  let abortedRequests = 0;
+  let collecting = true;
+  const background: Promise<unknown>[] = [];
+  const runs = Array.from({ length: 13 }, (_, index) => ({
+    id: 8000 + index,
+    name: "Review ClawSweeper items",
+    display_title: `Review event item openclaw/openclaw#${9000 + index}`,
+    status: "in_progress",
+    conclusion: null,
+    created_at: isoAgo(1000),
+    updated_at: isoAgo(1000),
+  }));
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: new MemoryCache() },
+  });
+  globalThis.fetch = async (input, init) => {
+    if (!collecting) return activePrFetch(input);
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/actions/runs")) {
+      const status = url.searchParams.get("status");
+      return jsonResponse({ workflow_runs: !status || status === "in_progress" ? runs : [] });
+    }
+    if (url.pathname.endsWith("/jobs")) {
+      jobRequests += 1;
+      init?.signal?.addEventListener(
+        "abort",
+        () => {
+          abortedRequests += 1;
+        },
+        { once: true },
+      );
+      const gate = statusGate<Response>();
+      gates.push(gate);
+      return gate.promise;
+    }
+    return activePrFetch(input);
+  };
+  context.mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() });
+  try {
+    const request = new Request("https://clawsweeper.openclaw.ai/api/status");
+    const env = {
+      CACHE_TTL_SECONDS: "0",
+      WORKER_JOB_FETCH_CONCURRENCY: "12",
+      WORKER_DETAIL_RUN_LIMIT: "128",
+    };
+    const ctx = { waitUntil: (promise: Promise<unknown>) => background.push(promise) };
+    const pending = worker.fetch(request, env, ctx);
+    const follower = worker.fetch(request, { ...env }, ctx);
+    await statusTurn();
+    assert.equal(jobRequests, 12);
+    assert.equal(background.length, 1, "cold refresh cleanup belongs to the Worker context");
+    context.mock.timers.tick(STATUS_REFRESH_TIMEOUT_MS);
+    const status = await (await pending).json();
+    assert.equal(status.public_projection_complete, false);
+    assert.equal((await (await follower).json()).public_projection_complete, false);
+    assert.equal(abortedRequests, 12);
+    await Promise.all(background);
+    for (const gate of gates)
+      gate.release(
+        jsonResponse({
+          total_count: 101,
+          jobs: Array.from({ length: 100 }, (_, index) => ({
+            id: index + 1,
+            name: "Review item",
+            status: "in_progress",
+            steps: [],
+          })),
+        }),
+      );
+    await statusTurn();
+    assert.equal(jobRequests, 12, "neither another run nor another page may start after expiry");
+    collecting = false;
+    for (const callerEnv of [env, { ...env }]) {
+      const healthy = await (await worker.fetch(request, callerEnv, ctx)).json();
+      assert.equal(healthy.public_projection_complete, true);
+      assert.equal(healthy.fleet.active_workflow_runs, 1);
+    }
+  } finally {
+    for (const gate of gates) gate.release(jsonResponse({ total_count: 0, jobs: [] }));
+    await statusTurn();
+    context.mock.timers.reset();
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
+test("stalled final publication cannot suppress a later healthy snapshot", async (context) => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  const gate = statusGate<void>();
+  let count = 17;
+  let storeWrites = 0;
+  let cacheWrites = 0;
+  let published: any = null;
+  let serveCache = false;
+  const memoryCache = new MemoryCache();
+  const pending: Promise<unknown>[] = [];
+  const store = {
+    async get(key: string) {
+      assert.equal(this, store, "cloned status env must retain the binding object");
+      if (!key.startsWith("snapshot:bay-scope:v1:")) return null;
+      return JSON.stringify({
+        ...publicationStatusFixture(),
+        fleet: { active_workflow_runs: 1, active_codex_jobs: count },
+      });
+    },
+    async put(key: string, body: string) {
+      assert.equal(this, store);
+      assert.equal(key, "snapshot:bay-scope:v1:_");
+      storeWrites += 1;
+      if (storeWrites === 1) await gate.promise;
+      published = JSON.parse(body);
+    },
+  };
+  const cache = {
+    match: async (request: Request) => (serveCache ? memoryCache.match(request) : undefined),
+    async put(request: Request, response: Response) {
+      cacheWrites += 1;
+      if (cacheWrites <= 2) await gate.promise;
+      await memoryCache.put(request, response);
+    },
+  };
+  Object.defineProperty(globalThis, "caches", { configurable: true, value: { default: cache } });
+  globalThis.fetch = async () => {
+    throw new Error("durable reuse must not call GitHub");
+  };
+  context.mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() });
+  try {
+    const env = Object.freeze({ STATUS_STORE: store, CACHE_TTL_SECONDS: "60" });
+    const ctx = { waitUntil: (promise: Promise<unknown>) => pending.push(promise) };
+    const request = new Request("https://clawsweeper.openclaw.ai/api/status");
+    const first = await (await worker.fetch(request, env, ctx)).json();
+    assert.equal(first.fleet.active_codex_jobs, 17);
+    assert.equal(storeWrites, 1);
+    assert.equal(cacheWrites, 2);
+    context.mock.timers.tick(STATUS_REFRESH_TIMEOUT_MS + 60_000);
+    count = 18;
+    const second = await (await worker.fetch(request, { ...env }, ctx)).json();
+    assert.equal(second.fleet.active_codex_jobs, 18);
+    await statusTurn();
+    assert.equal(storeWrites, 2, "a pending write must not suppress later publication");
+    assert.equal(cacheWrites, 4);
+    assert.equal(published.fleet.active_codex_jobs, 18);
+    serveCache = true;
+    assert.equal(
+      (await (await worker.fetch(request, env, ctx)).json()).fleet.active_codex_jobs,
+      18,
+    );
+    gate.release();
+    await Promise.all(pending);
+    assert.equal(
+      published.fleet.active_codex_jobs,
+      17,
+      "accepted final write survives collection close",
+    );
+    const late = await (await worker.fetch(request, env, ctx)).json();
+    assert.equal(late.fleet.active_codex_jobs, 17);
+    assert.equal(late.generated_at, first.generated_at);
+    assert.equal(late.freshness.state, "stale", "late complete writes retain their actual age");
+  } finally {
+    gate.release();
+    await Promise.allSettled(pending);
+    context.mock.timers.reset();
+    globalThis.fetch = originalFetch;
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  }
+});
+
+test("status timeout does not cancel shared GitHub App token acquisition", async (context) => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  const tokenGate = statusGate<Response>();
+  const tokenStarted = statusGate<void>();
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  let tokenRequests = 0;
+  let tokenSignal: AbortSignal | null | undefined;
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: { match: async () => undefined, put: async () => undefined } },
+  });
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/app/installations/456789/access_tokens") {
+      tokenRequests += 1;
+      tokenSignal = init?.signal;
+      tokenStarted.release();
+      return tokenGate.promise;
+    }
+    if (url.pathname === "/auth-probe") return jsonResponse({ ok: true });
+    if (url.pathname.includes("/actions/")) return jsonResponse({ workflow_runs: [] });
+    if (url.pathname === "/search/issues") return jsonResponse({ items: [] });
+    if (url.pathname.endsWith("/issues")) return jsonResponse([]);
+    throw new Error(`unexpected fetch ${url.pathname}`);
+  };
+  context.mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() });
+  const env = Object.freeze({
+    CLAWSWEEPER_APP_CLIENT_ID: "status-lifetime-test",
+    CLAWSWEEPER_APP_INSTALLATION_ID: "456789",
+    CLAWSWEEPER_APP_PRIVATE_KEY: String(privateKey),
+    TARGET_REPOS: "openclaw/openclaw",
+    CACHE_TTL_SECONDS: "0",
+  });
+  try {
+    const statusRequest = worker.fetch(
+      new Request("https://clawsweeper.openclaw.ai/api/status"),
+      env,
+    );
+    await tokenStarted.promise;
+    const unscopedReader = githubJsonForTest(env, "/auth-probe");
+    context.mock.timers.tick(STATUS_REFRESH_TIMEOUT_MS);
+    const status = await (await statusRequest).json();
+    assert.equal(status.public_projection_complete, false);
+    assert.equal(tokenRequests, 1);
+    assert.equal(tokenSignal?.aborted, false, "status owns the wait, not shared authentication");
+    tokenGate.release(
+      jsonResponse({
+        token: "synthetic-status-token",
+        expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+      }),
+    );
+    assert.deepEqual(await unscopedReader, { ok: true });
+    await worker.fetch(new Request("https://clawsweeper.openclaw.ai/api/status"), { ...env });
+    assert.equal(tokenRequests, 1, "subsequent status reuses the same value-keyed token");
+  } finally {
+    tokenGate.release(jsonResponse({ token: "synthetic-status-token" }));
+    await statusTurn();
+    context.mock.timers.reset();
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
   }

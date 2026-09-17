@@ -68,7 +68,11 @@ const tool = path.basename(process.argv[1]);
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.TRACE, JSON.stringify({tool,args: tool === 'curl' ? ['POST',args.at(-1)] : args})+'\\n');
 if (tool === 'pnpm') {
-  assert.deepEqual(args.slice(0,6), ['run','--silent','workflow','--','apply-requeue-review-item-numbers','--report']);
+  if (args[4] === 'exact-review-admission') {
+    assert.deepEqual(args, ['run','--silent','workflow','--','exact-review-admission']);
+  } else {
+    assert.deepEqual(args.slice(0,6), ['run','--silent','workflow','--','apply-requeue-review-item-numbers','--report']);
+  }
   const result = spawnSync(process.execPath, [process.env.WORKFLOW_UTILS,...args.slice(4)], {encoding:'utf8',env:process.env});
   process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || ''); process.exit(result.status ?? 1);
 }
@@ -118,6 +122,7 @@ process.stdout.write(args.includes('--jq') ? (pr ? 'pull_request' : 'issue') : J
     QUEUE_URL: "http://queue.invalid",
     CLAWSWEEPER_WEBHOOK_SECRET: "public-proof-fixture-only",
     GH_TOKEN: "public-proof-fixture-only",
+    CLAWSWEEPER_PUBLIC_GH_TOKEN: "public-proof-actions-only",
   };
   let sequence = 0;
   function run(script: string, overrides: Record<string, string> = {}) {

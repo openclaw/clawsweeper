@@ -652,7 +652,92 @@ const PR_PROOF_VIEWS = [
 ];
 
 let githubAppTokenCache = null;
-let statusRefresh = null;
+let statusRefresh: { key: string; promise: ReturnType<typeof refreshStatusCaches> } | null = null;
+export const STATUS_REFRESH_TIMEOUT_MS = 18_000;
+type StatusCollectionPhase = "cache" | "refresh" | "github" | "github_auth" | "queue" | "store";
+
+// Only a cloned status env owns this lifetime. Keep the closed scope attached:
+// a late continuation must not become an unbounded ordinary helper call.
+const statusCollections = new WeakMap<object, StatusCollection>();
+
+class StatusCollection {
+  readonly controller = new AbortController();
+  readonly deadline: number;
+  private readonly timer: ReturnType<typeof setTimeout>;
+  private readonly cancelled: Promise<never>;
+  private readonly pending = new Map<StatusCollectionPhase, number>();
+
+  constructor(deadline = Date.now() + STATUS_REFRESH_TIMEOUT_MS) {
+    this.deadline = deadline;
+    this.cancelled = new Promise((_, reject) => {
+      this.controller.signal.addEventListener(
+        "abort",
+        () => reject(this.controller.signal.reason),
+        {
+          once: true,
+        },
+      );
+    });
+    this.cancelled.catch(() => undefined);
+    this.timer = setTimeout(() => this.expire(), Math.max(0, deadline - Date.now()));
+  }
+
+  private expire() {
+    if (this.controller.signal.aborted) return;
+    console.warn("status_refresh_deadline", { pending_phases: [...this.pending.keys()].sort() });
+    this.controller.abort(new Error("status refresh deadline"));
+  }
+
+  check() {
+    if (Date.now() >= this.deadline) this.expire();
+    this.controller.signal.throwIfAborted();
+  }
+
+  async run<T>(phase: StatusCollectionPhase, operation: () => Promise<T>): Promise<T> {
+    this.check();
+    this.pending.set(phase, (this.pending.get(phase) || 0) + 1);
+    try {
+      const result = await Promise.race([operation(), this.cancelled]);
+      this.check();
+      return result;
+    } finally {
+      const count = (this.pending.get(phase) || 1) - 1;
+      if (count) this.pending.set(phase, count);
+      else this.pending.delete(phase);
+    }
+  }
+
+  close() {
+    clearTimeout(this.timer);
+    this.controller.abort(new Error("status refresh closed"));
+  }
+}
+
+function statusCollectionEnv(env, collection: StatusCollection) {
+  const scoped = { ...env };
+  statusCollections.set(scoped, collection);
+  return scoped;
+}
+
+function statusOperation<T>(
+  env,
+  phase: StatusCollectionPhase,
+  operation: (signal?: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const collection = statusCollections.get(env);
+  return collection
+    ? collection.run(phase, () => operation(collection.controller.signal))
+    : operation();
+}
+
+function statusRequestSignal(env, signal?: AbortSignal): AbortSignal | undefined {
+  const collection = statusCollections.get(env);
+  if (!collection) return signal;
+  collection.check();
+  return signal
+    ? AbortSignal.any([collection.controller.signal, signal])
+    : collection.controller.signal;
+}
 
 export class StatusStore {
   private storage;
@@ -1413,20 +1498,42 @@ export default {
 };
 
 async function statusJson(request, env, ctx) {
-  const cache = caches.default;
-  const publicBayScope = publicBayRepositoryScope(verifiedPublicBayRepositories(env));
-  const cached = await cache.match(statusCacheRequest(request, "fresh", publicBayScope));
-  if (cached) return cachedStatusResponse(cached, "fresh", env);
-
-  const stale = await cache.match(statusCacheRequest(request, "stale", publicBayScope));
-  if (stale && ctx?.waitUntil) {
-    ctx.waitUntil(refreshStatus(request, env).catch(() => undefined));
-    return cachedStatusResponse(stale, "stale", env);
+  const collection = new StatusCollection();
+  env = statusCollectionEnv(env, collection);
+  let staleResponse: Response | null = null;
+  try {
+    const cache = caches.default;
+    const publicBayScope = publicBayRepositoryScope(verifiedPublicBayRepositories(env));
+    const cached = await statusOperation(env, "cache", () =>
+      cache.match(statusCacheRequest(request, "fresh", publicBayScope)),
+    );
+    if (cached) {
+      return await statusOperation(env, "cache", () => cachedStatusResponse(cached, "fresh", env));
+    }
+    const stale = await statusOperation(env, "cache", () =>
+      cache.match(statusCacheRequest(request, "stale", publicBayScope)),
+    );
+    if (stale) {
+      staleResponse = await statusOperation(env, "cache", () =>
+        cachedStatusResponse(stale, "stale", env),
+      );
+    }
+    if (staleResponse && ctx?.waitUntil) {
+      refreshStatus(request, env, ctx, collection.deadline).catch(() => undefined);
+      return staleResponse;
+    }
+    const refreshed = await statusOperation(env, "refresh", () =>
+      refreshStatus(request, env, ctx, collection.deadline),
+    );
+    if (refreshed.looksEmpty && staleResponse) return staleResponse;
+    return statusSnapshotResponse(refreshed.snapshot, "miss", env);
+  } catch {
+    return (
+      staleResponse || statusSnapshotResponse(unavailablePublicStatusProjection(), "miss", env)
+    );
+  } finally {
+    collection.close();
   }
-
-  const refreshed = await refreshStatus(request, env);
-  if (refreshed.looksEmpty && stale) return cachedStatusResponse(stale, "stale", env);
-  return statusSnapshotResponse(refreshed.snapshot, "miss", env);
 }
 
 async function healthHistoryJson(request: Request, env: DashboardEnv) {
@@ -3459,7 +3566,7 @@ export function publicStatusFreshness(
   };
 }
 
-function refreshStatus(request, env) {
+function refreshStatus(request, env, ctx?: DashboardContext, deadline?: number) {
   const key = [
     new URL(request.url).origin,
     env.CLAWSWEEPER_REPO || "openclaw/clawsweeper",
@@ -3475,17 +3582,26 @@ function refreshStatus(request, env) {
   ].join("|");
   if (statusRefresh?.key === key) return statusRefresh.promise;
 
-  const promise = refreshStatusCaches(request, env);
+  // A follower may stop waiting independently; only this owner closes the
+  // shared refresh. Its deadline includes the initiating request's cache reads.
+  const collection = new StatusCollection(deadline);
+  const scopedEnv = statusCollectionEnv(env, collection);
+  const promise = collection
+    .run("refresh", () => refreshStatusCaches(request, scopedEnv, ctx))
+    .finally(() => collection.close());
   statusRefresh = { key, promise };
-  promise
+  const completed = promise
     .finally(() => {
       if (statusRefresh?.promise === promise) statusRefresh = null;
     })
     .catch(() => undefined);
+  // The cold response can time out before this owner's timer. Keep its cleanup
+  // alive so Workerd cannot leave a canceled promise in the single-flight slot.
+  ctx?.waitUntil?.(completed);
   return promise;
 }
 
-async function refreshStatusCaches(request, env) {
+async function refreshStatusCaches(request, env, ctx?: DashboardContext) {
   const ttl = numberFrom(env.CACHE_TTL_SECONDS, 60);
   const staleTtl = numberFrom(env.STALE_CACHE_TTL_SECONDS, STALE_CACHE_TTL_SECONDS);
   const allowedRepositories = verifiedPublicBayRepositories(env);
@@ -3498,6 +3614,7 @@ async function refreshStatusCaches(request, env) {
     await attachExactReviewQueueStatus(baseSnapshot, env),
     allowedRepositories,
   );
+  statusCollections.get(env)?.check();
   const body = JSON.stringify(snapshot, null, 2);
   const hasErrors = Number(snapshot.diagnostics?.error_count || 0) > 0;
   const looksEmpty =
@@ -3505,9 +3622,8 @@ async function refreshStatusCaches(request, env) {
     ((!Array.isArray(snapshot.pipeline) || snapshot.pipeline.length === 0) &&
       Number(snapshot.fleet?.active_workflow_runs || 0) === 0 &&
       hasErrors);
-  if (snapshot.public_projection_complete !== true && env.STATUS_STORE) {
-    await writeCachedStatusSnapshot(env.STATUS_STORE, body, publicBayScope);
-  }
+  // Final publication is best-effort and only uses a terminal, usable body.
+  // Request cancellation must not leave process-global state blocking later writes.
   if (!looksEmpty) {
     const writes = [
       caches.default.put(
@@ -3532,7 +3648,8 @@ async function refreshStatusCaches(request, env) {
     if (env.STATUS_STORE) {
       writes.push(writeCachedStatusSnapshot(env.STATUS_STORE, body, publicBayScope));
     }
-    await Promise.allSettled(writes);
+    const persistence = Promise.allSettled(writes);
+    ctx?.waitUntil?.(persistence);
   }
   return { snapshot, body, looksEmpty };
 }
@@ -4342,45 +4459,32 @@ async function revalidateStaleWorkflowHealthRuns({
     }),
   );
 
-  const outcomes = await mapWithConcurrency(recheckBatch, 5, async (value) => {
-    const snapshotRun = objectValue(value);
-    const runId = Number(snapshotRun.id);
-    if (!Number.isSafeInteger(runId) || runId <= 0) {
-      return { runId, error: "snapshot run has no valid id" };
-    }
-    const verificationStartedAt = new Date().toISOString();
-    try {
-      const liveRun = objectValue(await github(`/repos/${repo}/actions/runs/${runId}`));
-      if (Number(liveRun.id) !== runId) {
-        return { runId, error: "live workflow response id mismatch" };
+  const outcomes = await mapWithConcurrency(
+    recheckBatch,
+    5,
+    async (value) => {
+      const snapshotRun = objectValue(value);
+      const runId = Number(snapshotRun.id);
+      if (!Number.isSafeInteger(runId) || runId <= 0) {
+        return { runId, error: "snapshot run has no valid id" };
       }
-      if (isActiveWorkflowRun(liveRun)) {
-        const object = githubWebhookReadModelWorkflowObject(repo, "workflow_run", liveRun);
-        if (object) {
-          await githubWebhookReadModelQueuePost(env, "repair", {
-            repository: repo,
-            repair_kind: "workflows",
-            objects: [object],
-          }).catch(() => null);
+      const verificationStartedAt = new Date().toISOString();
+      try {
+        const liveRun = objectValue(await github(`/repos/${repo}/actions/runs/${runId}`));
+        if (Number(liveRun.id) !== runId) {
+          return { runId, error: "live workflow response id mismatch" };
         }
-        return { runId, liveRun };
-      }
-      const repair = await githubWebhookReadModelQueuePost(env, "repair", {
-        repository: repo,
-        repair_kind: "workflows",
-        workflow_run_verification_started_at: verificationStartedAt,
-        evict_workflow_run_ids: [runId],
-        objects: [],
-      }).catch(() => null);
-      const verdict = String(liveRun.status || "completed");
-      reportGithubReadModelWorkflowRunEvicted({
-        snapshotRun,
-        verdict,
-        evicted: Number(repair?.evicted_workflow_runs || 0) > 0,
-      });
-      return { runId, evicted: true };
-    } catch (error) {
-      if (/GitHub 404 for /.test(String(error instanceof Error ? error.message : error))) {
+        if (isActiveWorkflowRun(liveRun)) {
+          const object = githubWebhookReadModelWorkflowObject(repo, "workflow_run", liveRun);
+          if (object) {
+            await githubWebhookReadModelQueuePost(env, "repair", {
+              repository: repo,
+              repair_kind: "workflows",
+              objects: [object],
+            }).catch(() => null);
+          }
+          return { runId, liveRun };
+        }
         const repair = await githubWebhookReadModelQueuePost(env, "repair", {
           repository: repo,
           repair_kind: "workflows",
@@ -4388,16 +4492,34 @@ async function revalidateStaleWorkflowHealthRuns({
           evict_workflow_run_ids: [runId],
           objects: [],
         }).catch(() => null);
+        const verdict = String(liveRun.status || "completed");
         reportGithubReadModelWorkflowRunEvicted({
           snapshotRun,
-          verdict: "absent",
+          verdict,
           evicted: Number(repair?.evicted_workflow_runs || 0) > 0,
         });
         return { runId, evicted: true };
+      } catch (error) {
+        if (/GitHub 404 for /.test(String(error instanceof Error ? error.message : error))) {
+          const repair = await githubWebhookReadModelQueuePost(env, "repair", {
+            repository: repo,
+            repair_kind: "workflows",
+            workflow_run_verification_started_at: verificationStartedAt,
+            evict_workflow_run_ids: [runId],
+            objects: [],
+          }).catch(() => null);
+          reportGithubReadModelWorkflowRunEvicted({
+            snapshotRun,
+            verdict: "absent",
+            evicted: Number(repair?.evicted_workflow_runs || 0) > 0,
+          });
+          return { runId, evicted: true };
+        }
+        return { runId, error: error instanceof Error ? error.message : String(error) };
       }
-      return { runId, error: error instanceof Error ? error.message : String(error) };
-    }
-  });
+    },
+    statusRequestSignal(env),
+  );
   const byRunId = new Map(outcomes.map((outcome) => [outcome.runId, outcome]));
   return {
     runs: runs.flatMap((value) => {
@@ -5122,6 +5244,7 @@ async function exactReviewQueueFetch(
     const response = await queue.fetch(
       new Request(`https://clawsweeper-exact-review-queue${path}`, {
         method: request?.method || "GET",
+        signal: request?.signal,
         headers,
         ...(body ? { body } : {}),
       }),
@@ -5180,7 +5303,15 @@ async function exactReviewQueueRequest(env, path, request?: Request) {
   const queue = exactReviewQueueStub(env);
   if (!queue) return json({ error: "exact_review_queue_not_configured" }, 503);
   try {
-    const { response, malformedServerResponse } = await exactReviewQueueFetch(queue, path, request);
+    const { response, malformedServerResponse } = await statusOperation(env, "queue", (signal) =>
+      exactReviewQueueFetch(
+        queue,
+        path,
+        signal
+          ? new Request(request || `https://clawsweeper-exact-review-queue${path}`, { signal })
+          : request,
+      ),
+    );
     return malformedServerResponse
       ? json({ error: "exact_review_queue_unavailable" }, response.status)
       : response;
@@ -6539,6 +6670,7 @@ async function githubEtagCacheRequest(env, path: string, body: string) {
         method: "POST",
         headers: { "content-type": "application/json" },
         body,
+        signal: statusRequestSignal(env),
       }),
       "github_etag_cache",
     );
@@ -7701,6 +7833,7 @@ async function statusSnapshot(env) {
     readModelJobs,
     activeRunErrors.length === 0,
   );
+  statusCollections.get(env)?.check();
   const [
     workerHealth,
     pipeline,
@@ -7777,6 +7910,7 @@ async function statusSnapshot(env) {
   ]);
   errors.push(...activeJobs.errors);
   errors.push(...workerHealth.errors);
+  statusCollections.get(env)?.check();
   const authoritativeBay = await withTimeout(
     exactReviewBayLifecycleMetricsSnapshot(env),
     OPTIONAL_SECTION_TIMEOUT_MS,
@@ -8659,39 +8793,44 @@ async function activeWorkerSnapshot(
     Math.floor(numberFrom(env.WORKER_JOB_FETCH_CONCURRENCY, DEFAULT_WORKER_JOB_FETCH_CONCURRENCY)),
   );
   const detailRuns: WorkflowRunSummary[] = runs.slice(0, detailRunLimit);
-  const results = await mapWithConcurrency(detailRuns, fetchConcurrency, async (run) => {
-    try {
-      const jobSnapshot = await workflowJobsForRunSnapshot(
-        env,
-        repo,
-        run.id,
-        github,
-        run,
-        readModelJobs,
-      );
-      const jobs = jobSnapshot.jobs;
-      const activeJobs = jobs.filter((job) => isActiveWorkflowJob(job));
-      return {
-        run,
-        workers: activeJobs
-          .filter((job) => isDashboardWorkerJob(job, run))
-          .map((job) => normalizeWorkerJob(run, job)),
-        codexWorkers: activeJobs.filter((job) => isCodexWorkerJob(job)).length,
-        hasWorkerJobs: jobs.some((job) => isDashboardWorkerJob(job, run)),
-        complete: jobSnapshot.complete,
-        error: null,
-      };
-    } catch (error) {
-      return {
-        run,
-        workers: [],
-        codexWorkers: 0,
-        hasWorkerJobs: false,
-        complete: false,
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
-  });
+  const results = await mapWithConcurrency(
+    detailRuns,
+    fetchConcurrency,
+    async (run) => {
+      try {
+        const jobSnapshot = await workflowJobsForRunSnapshot(
+          env,
+          repo,
+          run.id,
+          github,
+          run,
+          readModelJobs,
+        );
+        const jobs = jobSnapshot.jobs;
+        const activeJobs = jobs.filter((job) => isActiveWorkflowJob(job));
+        return {
+          run,
+          workers: activeJobs
+            .filter((job) => isDashboardWorkerJob(job, run))
+            .map((job) => normalizeWorkerJob(run, job)),
+          codexWorkers: activeJobs.filter((job) => isCodexWorkerJob(job)).length,
+          hasWorkerJobs: jobs.some((job) => isDashboardWorkerJob(job, run)),
+          complete: jobSnapshot.complete,
+          error: null,
+        };
+      } catch (error) {
+        return {
+          run,
+          workers: [],
+          codexWorkers: 0,
+          hasWorkerJobs: false,
+          complete: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+    statusRequestSignal(env),
+  );
   const workers = [];
   const errors = [];
   let fallbacks = 0;
@@ -8773,24 +8912,29 @@ async function recentWorkerHealth(
 
   const completedRuns = recentWorkerHealthRunSample(runs);
   const fetchConcurrency = workerHealthFetchConcurrency(env);
-  const results = await mapWithConcurrency(completedRuns, fetchConcurrency, async (run) => {
-    try {
-      return {
-        attempts: (await workflowJobsForRun(env, repo, run.id, github, run, readModelJobs))
-          .filter((job) => isCodexWorkerJob(job))
-          .map((job) => workerHealthAttempt(run, job))
-          .filter(Boolean),
-        error: null,
-      };
-    } catch (error) {
-      return {
-        attempts: [],
-        error: `worker health run ${run.id}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      };
-    }
-  });
+  const results = await mapWithConcurrency(
+    completedRuns,
+    fetchConcurrency,
+    async (run) => {
+      try {
+        return {
+          attempts: (await workflowJobsForRun(env, repo, run.id, github, run, readModelJobs))
+            .filter((job) => isCodexWorkerJob(job))
+            .map((job) => workerHealthAttempt(run, job))
+            .filter(Boolean),
+          error: null,
+        };
+      } catch (error) {
+        return {
+          attempts: [],
+          error: `worker health run ${run.id}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        };
+      }
+    },
+    statusRequestSignal(env),
+  );
   const attempts = results.flatMap((result) => result.attempts);
   const successfulByKey = new Map();
   for (const attempt of attempts) {
@@ -9968,6 +10112,7 @@ function ratePercent(numerator, denominator) {
 }
 
 async function attachWorkerTargets(env, workers, errors) {
+  statusCollections.get(env)?.check();
   const references = new Map();
   for (const worker of workers) {
     for (const number of worker.item_numbers || []) {
@@ -9991,6 +10136,7 @@ async function attachWorkerTargets(env, workers, errors) {
     }),
   );
 
+  statusCollections.get(env)?.check();
   const missingByRepository = new Map();
   for (const [key, reference] of references) {
     if (targets.has(key)) continue;
@@ -10003,8 +10149,10 @@ async function attachWorkerTargets(env, workers, errors) {
     await Promise.all(
       [...missingByRepository.entries()].flatMap(([repository, repoReferences]) =>
         chunk(repoReferences, WORKER_TARGET_BATCH_SIZE).map(async (batch) => {
+          statusCollections.get(env)?.check();
           try {
             const fetched = await fetchWorkerTargetBatch(env, repository, batch);
+            statusCollections.get(env)?.check();
             for (const target of fetched) {
               const key = workerTargetKey(target.repository, target.number);
               targets.set(key, target);
@@ -10092,6 +10240,7 @@ async function mapWithConcurrency<Item, Result>(
   items: Item[],
   concurrency: number,
   mapper: (item: Item, index: number) => Promise<Result>,
+  signal?: AbortSignal,
 ): Promise<Result[]> {
   if (!items.length) return [];
   const results = Array.from({ length: items.length }) as Result[];
@@ -10100,6 +10249,7 @@ async function mapWithConcurrency<Item, Result>(
   await Promise.all(
     Array.from({ length: workerCount }, async () => {
       while (nextIndex < items.length) {
+        signal?.throwIfAborted();
         const index = nextIndex;
         nextIndex += 1;
         results[index] = await mapper(items[index], index);
@@ -11713,7 +11863,9 @@ export async function readCachedSnapshot(env, ttlSeconds, expectedBayScope?: str
     expectedBayScope === undefined
       ? STATUS_SNAPSHOT_KEY
       : cachedStatusSnapshotKey(expectedBayScope);
-  const text = await readStatusStoreText(env.STATUS_STORE, key);
+  const text = await statusOperation(env, "store", (signal) =>
+    readStatusStoreText(env.STATUS_STORE, key, signal),
+  );
   if (!text) return null;
   let snapshot;
   try {
@@ -11777,7 +11929,9 @@ function ciStatusKey(repository, itemNumber) {
 
 async function readStoredJson(env, key) {
   if (!env.STATUS_STORE) return null;
-  const text = await readStatusStoreText(env.STATUS_STORE, key);
+  const text = await statusOperation(env, "store", (signal) =>
+    readStatusStoreText(env.STATUS_STORE, key, signal),
+  );
   return text ? JSON.parse(text) : null;
 }
 
@@ -11789,7 +11943,9 @@ async function writeStoredJson(
 ) {
   if (!env.STATUS_STORE) return;
   const body = JSON.stringify(value);
-  await writeStatusStoreText(env.STATUS_STORE, key, body, ttlSeconds);
+  await statusOperation(env, "store", (signal) =>
+    writeStatusStoreText(env.STATUS_STORE, key, body, ttlSeconds, signal),
+  );
 }
 
 async function prependStoredEvent(env, event) {
@@ -11818,20 +11974,21 @@ async function prependStoredEvent(env, event) {
   );
 }
 
-async function readStatusStoreText(store, key) {
+async function readStatusStoreText(store, key, signal?: AbortSignal) {
   if (!isDurableStatusStore(store)) return store.get(key);
-  const response = await durableStatusStoreStub(store).fetch(statusStoreRequest(key));
+  const response = await durableStatusStoreStub(store).fetch(statusStoreRequest(key), { signal });
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`status store read failed: ${response.status}`);
   return response.text();
 }
 
-async function writeStatusStoreText(store, key, value, ttlSeconds?) {
+async function writeStatusStoreText(store, key, value, ttlSeconds?, signal?: AbortSignal) {
   if (!isDurableStatusStore(store)) {
     return store.put(key, value, ttlSeconds ? { expirationTtl: ttlSeconds } : undefined);
   }
   const response = await durableStatusStoreStub(store).fetch(statusStoreRequest(key, "PUT"), {
     method: "PUT",
+    signal,
     body: JSON.stringify({
       value,
       ...(ttlSeconds ? { expires_at: Date.now() + ttlSeconds * 1000 } : {}),
@@ -11857,10 +12014,11 @@ function statusStoreRequest(key, method = "GET") {
 function createGithubJsonCache(env): GithubJsonReader {
   const cache = new Map<string, ReturnType<typeof githubJson>>();
   return (path: string) => {
+    statusCollections.get(env)?.check();
     const key = String(path);
     let request = cache.get(key);
     if (!request) {
-      request = githubJson(env, key);
+      request = statusOperation(env, "github", () => githubJson(env, key));
       cache.set(key, request);
     }
     return request;
@@ -11868,7 +12026,7 @@ function createGithubJsonCache(env): GithubJsonReader {
 }
 
 async function githubJson(env, path) {
-  const token = await githubAuthToken(env);
+  const token = await statusOperation(env, "github_auth", () => githubAuthToken(env));
   const key = githubEtagCacheKey({
     credentialPool: env.GITHUB_TOKEN ? "repository_actions" : "target_app",
     route: path,
@@ -11929,7 +12087,7 @@ export const githubJsonForTest = githubJson;
 
 function githubJsonResponse(env, path, token: string, ifNoneMatch: string) {
   return fetch(githubApiUrl(env, path), {
-    signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
+    signal: statusRequestSignal(env, AbortSignal.timeout(GITHUB_TIMEOUT_MS)),
     headers: {
       Accept: "application/vnd.github+json",
       "User-Agent": "openclaw-clawsweeper-status",
@@ -11940,14 +12098,16 @@ function githubJsonResponse(env, path, token: string, ifNoneMatch: string) {
 }
 
 async function githubEtagCachePost(env, operation: "lookup" | "store" | "confirm", body) {
-  const response = await githubEtagCacheRequest(
-    env,
-    `/github-etag-cache/${operation}`,
-    JSON.stringify(body),
-  );
-  const result = objectValue(await response.json().catch(() => null));
-  if (!response.ok) throw new Error(String(result.error || "GitHub ETag cache unavailable"));
-  return result;
+  return statusOperation(env, "github", async () => {
+    const response = await githubEtagCacheRequest(
+      env,
+      `/github-etag-cache/${operation}`,
+      JSON.stringify(body),
+    );
+    const result = objectValue(await response.json().catch(() => null));
+    if (!response.ok) throw new Error(String(result.error || "GitHub ETag cache unavailable"));
+    return result;
+  });
 }
 
 function parseGithubJsonBody(body: string, path: string) {
@@ -11964,11 +12124,11 @@ async function sha256Utf8(value: string): Promise<string> {
 }
 
 async function githubGraphql(env, query, variables) {
-  const token = await githubAuthToken(env);
+  const token = await statusOperation(env, "github_auth", () => githubAuthToken(env));
   if (!token) throw new Error("GitHub auth is required for GraphQL");
   const response = await fetch(githubApiUrl(env, "/graphql"), {
     method: "POST",
-    signal: AbortSignal.timeout(OPTIONAL_SECTION_TIMEOUT_MS),
+    signal: statusRequestSignal(env, AbortSignal.timeout(OPTIONAL_SECTION_TIMEOUT_MS)),
     headers: {
       Accept: "application/vnd.github+json",
       "Content-Type": "application/json",

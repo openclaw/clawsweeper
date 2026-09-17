@@ -7,13 +7,13 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
-- Bind scanner regression and native-proof fixture findings to their exact owned source lines and observed decoders, preserving rejection of the same control at unrelated sources.
-
-- Qualify the exact reviewed Crabbox remote-credential rejection fixtures with native URI and complete source-line witnesses, while retaining all scan and verification gates.
+- Classify the reviewed Git-remote rejection and scanner-proof fixtures using exact native detector, decoder, source-line, and regular-file attribution.
 
 - Preserve approved URI source witnesses when a native metadata replay masks Git object IDs in the same patch, while rejecting altered replay inputs and unclassified findings.
 
 - Classify generated Git blob IDs mistaken for Cloudflare credentials only after complete source witnesses and an independent native patch replay rule out decoded content matches, while keeping verified or incomplete scans blocked.
+
+- Let exact-review admission use the existing one-shot scoped read-token fallback when the public Actions quota is exhausted, while preserving private-repository access and retry behavior.
 
 - Avoid migration-proof blockers for read-only doctor dispatch changes while retaining doctor warnings under persistence owners and beside same-hunk storage evidence.
 
@@ -40,6 +40,8 @@ checkpoint, and status-only commits are intentionally omitted.
 - Recognize the existing approved browser documentation fixture after its page split, preserving exact-value and source-path restrictions.
 
 - Keep repair-result publication within its job budget by hydrating only the operational Git state it consumes, without loading unrelated canonical review records.
+
+- Bound dashboard status collection to 18 seconds so stalled dependencies show unavailable freshness and the next Dashboard or Bay poll can recover; retain complete snapshots without persisting timeout results or blocking later writes, and avoid showing a synthetic age when freshness is unavailable.
 
 - Wait for the exact-review queue to become available before declaring a dashboard deployment ready, while retaining the deployment deadline and all smoke checks.
 
