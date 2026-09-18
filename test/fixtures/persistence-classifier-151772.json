@@ -1,0 +1,56 @@
+{
+  "pr": "https://github.com/openclaw/openclaw/pull/151772",
+  "headSha": "c7f59b13f1cfabe3cee11ead2095032d42b802ed",
+  "reviewUrl": "https://github.com/openclaw/openclaw/pull/151772#issuecomment-5729853197",
+  "reviewConclusion": "The previous migration checkpoint was a false positive: this patch changes no persisted data model or operator state. No actionable correctness or security findings remain, and the Bun launcher fix is still needed on inspected main.",
+  "pullFiles": [
+    {
+      "additions": 3,
+      "changes": 3,
+      "deletions": 0,
+      "filename": "docs/reference/test/local.md",
+      "patch": "@@ -64,6 +64,9 @@ reconcile dependencies before the remote wrapper starts.\n Run the test toolchain on Node 24.16+ or Node 26.1+, matching the packaged\n runtime floor. Older Node bindings can truncate SQLite TEXT values at embedded NUL characters.\n \n+The script erasability gate uses Node's strip-only parser, including when package\n+checks run under Bun. It selects an installed Node runtime and skips Bun's `node` shim.\n+\n The test toolchain pins stable Vitest `5.0.0`, including its browser and coverage\n packages. Use `describe(name, { concurrent: false }, callback)` for ordered\n suites. Await asynchronous assertions, keep `vi.mock`/`vi.hoisted` at module",
+      "status": "modified"
+    },
+    {
+      "additions": 23,
+      "changes": 26,
+      "deletions": 3,
+      "filename": "scripts/check-script-erasability.mjs",
+      "patch": "@@ -2,7 +2,7 @@\n \n // Verifies that script TypeScript uses Node's transformation-free syntax subset.\n import fs from \"node:fs\";\n-import { stripTypeScriptTypes } from \"node:module\";\n+import nodeModule from \"node:module\";\n import path from \"node:path\";\n import { fileURLToPath } from \"node:url\";\n \n@@ -71,6 +71,9 @@ function diagnosticLine(error, sourceUrl) {\n  * Checks each TypeScript implementation file under a scripts tree without resolving imports.\n  */\n export function checkScriptErasability(rootDir = SCRIPT_ROOT) {\n+  if (process.versions.bun) {\n+    throw new Error(\"Script erasability must be checked with Node's strip-only parser.\");\n+  }\n   const files = listTypeScriptImplementationFiles(rootDir);\n   const rootLabel = path.basename(rootDir);\n   const errors = [];\n@@ -79,7 +82,7 @@ export function checkScriptErasability(rootDir = SCRIPT_ROOT) {\n     const relativePath = path.relative(rootDir, filePath).split(path.sep).join(\"/\");\n     const sourceUrl = `${rootLabel}/${relativePath}`;\n     try {\n-      stripTypeScriptTypes(fs.readFileSync(filePath, \"utf8\"), {\n+      nodeModule.stripTypeScriptTypes(fs.readFileSync(filePath, \"utf8\"), {\n         mode: \"strip\",\n         sourceUrl,\n       });\n@@ -115,5 +118,22 @@ export function main() {\n }\n \n if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {\n-  main();\n+  if (process.versions.bun) {\n+    const require = nodeModule.createRequire(import.meta.url);\n+    const { resolveNodeRuntimeExecutable } = require(\"../src/infra/node-runtime-executable.ts\");\n+    const { runNodeCliShim } = require(\"./lib/tsx-cli-shim.mjs\");\n+    const executable = resolveNodeRuntimeExecutable();\n+    if (!executable) {\n+      throw new Error(\n+        \"A Node executable is required for script erasability checks; add node to PATH.\",\n+      );\n+    }\n+    void runNodeCliShim(import.meta.url, {\n+      implementation: \"./check-script-erasability.mjs\",\n+      executable,\n+      execArgv: [\"--disable-warning=ExperimentalWarning\"],\n+    });\n+  } else {\n+    main();\n+  }\n }",
+      "status": "modified"
+    },
+    {
+      "additions": 11,
+      "changes": 18,
+      "deletions": 7,
+      "filename": "scripts/lib/tsx-cli-shim.mjs",
+      "patch": "@@ -125,13 +125,17 @@ async function runCliShimInner(moduleUrl, options, nodeArgs) {\n     }\n     const implementationUrl = new URL(options.implementation, moduleUrl);\n     const implementationPath = fileURLToPath(implementationUrl);\n-    const nodeExecutable = process.versions.bun ? \"node\" : process.execPath;\n-    child = spawn(nodeExecutable, [...nodeArgs, implementationPath, ...process.argv.slice(2)], {\n-      cwd: process.cwd(),\n-      detached,\n-      env: process.env,\n-      stdio: \"inherit\",\n-    });\n+    const nodeExecutable = options.executable ?? (process.versions.bun ? \"node\" : process.execPath);\n+    child = spawn(\n+      nodeExecutable,\n+      [...nodeArgs, ...(options.execArgv ?? []), implementationPath, ...process.argv.slice(2)],\n+      {\n+        cwd: process.cwd(),\n+        detached,\n+        env: process.env,\n+        stdio: \"inherit\",\n+      },\n+    );\n     const result = await new Promise((resolve, reject) => {\n       child.once(\"error\", reject);\n       child.once(\"close\", (code, signal) => resolve({ code, signal }));",
+      "status": "modified"
+    },
+    {
+      "additions": 4,
+      "changes": 4,
+      "deletions": 0,
+      "filename": "test/helpers/node-toolchain.ts",
+      "patch": "@@ -1,9 +1,13 @@\n import { execFileSync } from \"node:child_process\";\n import path from \"node:path\";\n import { resolveExecutablePath } from \"../../src/infra/executable-path.js\";\n+import { resolveTestNodeExecPath } from \"../../src/test-utils/node-process.js\";\n \n /** Resolve explicit Node tools instead of substituting the test runner's runtime. */\n export function requireNodeTool(command: \"node\" | \"npm\"): string {\n+  if (command === \"node\") {\n+    return resolveTestNodeExecPath();\n+  }\n   const executable = resolveExecutablePath(command);\n   if (!executable) {\n     throw new Error(`Node tool fixture requires ${command} on PATH.`);",
+      "status": "modified"
+    },
+    {
+      "additions": 51,
+      "changes": 52,
+      "deletions": 1,
+      "filename": "test/scripts/check-script-erasability.test.ts",
+      "patch": "@@ -1,5 +1,5 @@\n // Script erasability tests cover Node's transformation-free TypeScript boundary.\n-import { execFileSync } from \"node:child_process\";\n+import { execFileSync, spawnSync } from \"node:child_process\";\n import fs from \"node:fs\";\n import path from \"node:path\";\n import { describe, expect, it } from \"vitest\";\n@@ -38,6 +38,56 @@ function writeScriptsTree(files: Record<string, string>): string {\n }\n \n describe(\"check-script-erasability\", () => {\n+  it.each([\n+    { file: \"input.ts\", source: \"export const value: string = 'ready';\", status: 0 },\n+    { file: \"input.ts\", source: \"enum State { Ready }\", status: 1 },\n+    { file: \"lib/local-check-runtime.mts\", source: \"enum State { Ready }\", status: 1 },\n+  ])(\n+    \"preserves CLI diagnostics for $file and exit status $status on the current runtime\",\n+    ({ file, source, status }) => {\n+      const scriptsRoot = writeScriptsTree({ \"input.ts\": \"\" });\n+      const fixtureRoot = path.dirname(scriptsRoot);\n+      for (const relativePath of [\n+        \"scripts/check-script-erasability.mjs\",\n+        \"scripts/lib/tsx-cli-shim.mjs\",\n+        \"scripts/lib/local-check-runtime.mts\",\n+        \"src/infra/node-runtime-executable.ts\",\n+      ]) {\n+        const destination = path.join(fixtureRoot, relativePath);\n+        fs.mkdirSync(path.dirname(destination), { recursive: true });\n+        fs.copyFileSync(path.resolve(relativePath), destination);\n+      }\n+      const sourcePath = path.join(scriptsRoot, file);\n+      const existingSource = fs.readFileSync(sourcePath, \"utf8\");\n+      const prefix = existingSource ? `${existingSource}\\n` : \"\";\n+      const line = prefix.split(\"\\n\").length;\n+      fs.writeFileSync(sourcePath, `${prefix}${source}\\n`);\n+      const result = spawnSync(\n+        process.execPath,\n+        [\n+          \"--disable-warning=ExperimentalWarning\",\n+          path.join(scriptsRoot, \"check-script-erasability.mjs\"),\n+        ],\n+        { encoding: \"utf8\", timeout: 10_000 },\n+      );\n+      expect(result.error).toBeUndefined();\n+      if (status === 0) {\n+        expect(result.stdout).toBe(\n+          \"[script-erasability] checked 2 TypeScript implementation files\\n\",\n+        );\n+        expect(result.stderr).toBe(\"\");\n+      } else {\n+        expect(result.stdout).toBe(\"\");\n+        expect(result.stderr).toContain(\n+          \"TypeScript syntax under scripts/ must be erasable by Node without transformation:\",\n+        );\n+        expect(result.stderr).toContain(`- scripts/${file}:${line}: `);\n+        expect(result.stderr).toMatch(/enum.*strip-only/u);\n+      }\n+      expect(result.status).toBe(status);\n+    },\n+  );\n+\n   it(\"accepts erasable annotations and enum-like string content\", () => {\n     const scriptsRoot = writeScriptsTree({\n       \"annotations.ts\": `",
+      "status": "modified"
+    },
+    {
+      "additions": 1,
+      "changes": 2,
+      "deletions": 1,
+      "filename": "test/scripts/local-check-runtime.test.ts",
+      "patch": "@@ -659,7 +659,7 @@ describe(\"Tooling bootstrap dependency ownership\", () => {\n       if (fallback) {\n         expect(result.stdout.trim()).toBe(\"configured\");\n       } else {\n-        expect(result.stderr).toContain(\"ERR_MODULE_NOT_FOUND\");\n+        expect(result.stderr).toContain(\"Cannot find package 'fixture-dependency'\");\n         expect(fs.existsSync(path.join(checkout, \"node_modules\"))).toBe(false);\n       }\n     },",
+      "status": "modified"
+    }
+  ]
+}

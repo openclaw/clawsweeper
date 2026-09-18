@@ -90,7 +90,9 @@ export function dataModelChangeFromContext(repo: string, context: ItemContext): 
     const candidates = [path, previousPath].filter(isDataModelCandidatePath);
     const patch = typeof file.patch === "string" ? file.patch : null;
     const lines = patch === null ? [] : changedPatchLines(patch);
-    const storageContext = dataModelStorageContext(patch ?? "");
+    const storageContext = (patch ?? "")
+      .split(/^@@.*$/m)
+      .flatMap((hunk) => dataModelStorageContext(hunk));
     const likelyPath =
       candidates.find(
         (candidate) =>
@@ -488,7 +490,8 @@ function dataModelSurfacesFromPatch(
       if (/\bdoctor\b/i.test(changedText)) add("migration/backfill/repair");
       if (
         dataModelTextLooksLikePersistedShapeField(changedText, surface) ||
-        dataModelTextHasJsonConversion(changedText)
+        dataModelTextHasJsonConversion(changedText) ||
+        (surface === "serialized state" && dataModelTextHasFileRead(changedText))
       )
         add(surface);
     }
@@ -533,11 +536,15 @@ function dataModelTextHasJsonConversion(text: string): boolean {
   return /\bJSON\.(?:parse|stringify)\b/i.test(text);
 }
 
+function dataModelTextHasFileRead(text: string): boolean {
+  return /\breadFile(?:Sync)?\b/i.test(text);
+}
+
 function dataModelTextHasSerializedStateBoundary(text: string): boolean {
   // JSON conversion and a variable named "serialized" also occur in transient
   // diagnostics and IPC; neither supplies a storage boundary on its own.
   return (
-    /\b(?:readFile(?:Sync)?|writeFile(?:Sync)?|localStorage|sessionStorage|indexedDB|IDBObjectStore|workspaceState|globalState|persisted?|statePath)\b/i.test(
+    /\b(?:writeFile(?:Sync)?|localStorage|sessionStorage|indexedDB|IDBObjectStore|workspaceState|globalState|persisted?|statePath)\b/i.test(
       text,
     ) || /\bserialized\s+(?:data\s+)?(?:format|schema|layout|identity|namespace)\b/i.test(text)
   );
@@ -559,7 +566,9 @@ function dataModelStorageContext(patch: string, hasPersistenceOwner = false): st
   const surfaces: string[] = [];
   if (
     dataModelTextHasSerializedStateBoundary(text) ||
-    (hasPersistenceOwner && dataModelTextHasJsonConversion(text))
+    (hasPersistenceOwner && dataModelTextHasJsonConversion(text)) ||
+    // Reading source or media is not a stored format; require decoding or its owner.
+    (dataModelTextHasFileRead(text) && (hasPersistenceOwner || /\bJSON\.parse\b/i.test(text)))
   ) {
     surfaces.push("serialized state");
   }

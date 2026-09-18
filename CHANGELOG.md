@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Avoid migration-proof blockers for plain source-file reads while retaining gates for persisted readers, storage writes, and schema changes.
+
 - Qualify the existing marketplace entries telemetry fixture using both exact source-line witnesses while preserving the refresh fixture’s separate approval.
 
 - Restore adaptive publication capacity from newly accepted batch publications after cooldown, while preserving quota backoff and replay safety.

@@ -310,8 +310,11 @@ persistence boundary; component-local maps, promises, and abort signals do not
 supply one. JSON parse/stringify syntax and a bare `serialized` variable do not
 establish persistence, unchanged storage context, or truncated-patch uncertainty.
 Transient stdout/stderr diagnostics, IPC, and in-memory JSON conversion need a
-durable boundary. Explicit serialized-format contracts, disk read/write APIs
-(including synchronous variants), browser/VSCode storage, durable storage, and
+durable boundary. File reads can inspect source or media and need a persistence
+owner, explicit stored-state evidence, or JSON decoding in the same diff hunk.
+Unrelated hunks cannot combine a file read and decoding into storage evidence.
+Explicit serialized-format contracts, disk write APIs (including synchronous
+variants), browser/VSCode storage, durable storage, and
 schema/migration evidence remain eligible in UI code too. An explicit persistence
 owner path or unchanged storage boundary in the same diff hunk retains warnings
 for changed stored fields and JSON formatting/argument edits. Unrelated hunks

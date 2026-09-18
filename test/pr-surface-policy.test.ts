@@ -272,6 +272,7 @@ for (const [name, fixturePath, normalizationTruncates] of [
   ["worker input layout fields", "./fixtures/persistence-classifier-132839-workers.json", true],
   ["hovercard promise cancellation", "./fixtures/persistence-classifier-136772.json", false],
   ["SQLite worker diagnostic suffix", "./fixtures/persistence-classifier-138520.json", true],
+  ["script source parser routing", "./fixtures/persistence-classifier-151772.json", true],
   [
     "JSON Schema value validation",
     "./fixtures/persistence-classifier-131624-json-schema.json",
@@ -353,6 +354,62 @@ test("transient JSON and serialized variables do not establish storage or trunca
         assert.match(comment, /clawsweeper-review-state:ready/);
         assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:pass/);
       }
+    }
+  }
+});
+
+test("plain file reads do not establish a persisted format or truncated-patch uncertainty", () => {
+  for (const api of ["readFile", "readFileSync"]) {
+    for (const patch of [
+      `@@\n+const source = fs.${api}(filePath, "utf8");`,
+      `@@\n-parseSource(fs.${api}(filePath, "utf8"));\n+parser.parseSource(fs.${api}(filePath, "utf8"));`,
+      `@@\n const source = fs.${api}(filePath, "utf8");\n const diagnostic = {\n+  message: detail,\n };`,
+      `@@\n+const source = fs.${api}(filePath, "utf8");\n@@\n+const response = JSON.parse(stdout);`,
+    ]) {
+      for (const evidence of [patch, `${patch}\n\n[truncated 90 chars]`]) {
+        const detection = dataModelChangeFromPullFilesForTest({
+          pullFiles: [{ filename: "src/runtime/source-checker.ts", patch: evidence }],
+        });
+        assert.deepEqual(detection, { change: false, surfaces: [] }, evidence);
+      }
+    }
+  }
+});
+
+test("file readers retain migration gates with same-hunk decoding or persistence ownership", () => {
+  for (const api of ["readFile", "readFileSync"]) {
+    for (const file of [
+      {
+        filename: "src/runtime/codec.ts",
+        patch: `@@\n-const value = JSON.parse(fs.${api}(target, "utf8"));\n+const value = JSON.parse(fs.${api}(target, "utf8"), revive);`,
+      },
+      {
+        filename: "src/runtime/codec.ts",
+        patch: `@@\n-const raw = fs.${api}(oldTarget, "utf8");\n+const raw = fs.${api}(target, "utf8");\n const value = JSON.parse(raw);`,
+      },
+      {
+        filename: "src/persistence/reader.ts",
+        patch: `@@\n+const raw = fs.${api}(target, "utf8");`,
+      },
+      {
+        filename: "src/storage/binary-reader.ts",
+        patch: `@@\n+const value = decodeBinary(fs.${api}(target));`,
+      },
+      {
+        filename: "src/runtime/reader.ts",
+        patch: `@@\n const persisted = parseYaml(\n-  fs.${api}(oldTarget, "utf8"),\n+  fs.${api}(target, "utf8"),\n );`,
+      },
+      {
+        filename: "src/runtime/reader.ts",
+        patch: `@@\n+const value = decodeBinary(fs.${api}(statePath));`,
+      },
+    ]) {
+      const report = renderPersistenceReport([file], "a".repeat(40));
+      assert.match(
+        renderReviewCommentFromReport(report, "none"),
+        /Add data-model compatibility proof/,
+      );
+      assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:needs-human/);
     }
   }
 });
@@ -555,7 +612,7 @@ test("storage evidence still warns and gates browser, runtime, and schema change
     ...["readFile", "readFileSync", "writeFile", "writeFileSync"].flatMap((api) => {
       const call = api.endsWith("Sync") ? `fs.${api}` : `await fs.promises.${api}`;
       const boundary = api.startsWith("read")
-        ? `const raw = ${call}(target, "utf8");`
+        ? `const raw = ${call}(statePath, "utf8");`
         : `${call}(target, raw);`;
       return [
         `@@\n+${boundary}`,
@@ -815,7 +872,7 @@ test("strong persistence evidence remains unknown when production normalization 
     { filename: "ui/src/display.ts", patch: '@@\n localStorage.getItem("preferences");\n' },
     ...["readFile", "readFileSync", "writeFile", "writeFileSync"].map((api) => ({
       filename: "src/runtime/conversion.ts",
-      patch: `@@\n ${api}(target);\n`,
+      patch: `@@\n ${api}(${api.startsWith("read") ? "statePath" : "target"});\n`,
     })),
     { filename: "src/vector/records.ts" },
     { filename: "src/embedding/records.ts" },
