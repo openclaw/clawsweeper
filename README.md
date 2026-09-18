@@ -692,6 +692,8 @@ loopback fixtures each require one complete source line. Only URI detector 17,
 base/head references qualify. The native proof for PR #149651 observed `PLAIN`
 findings; `HTML` is separately covered by constructed classifier records.
 
+The marketplace entries telemetry test uses the same reviewed feed URI twice, in live and snapshot metadata. Its exact attribution binds both complete source lines in order, URI detector 17, observed PLAIN or HTML decoding, regular-file mode, and committed base/head roles. The refresh test keeps its existing legacy approval and repair roles. Policy selection follows the staged source references, including each patch witness, so a shared URI does not transfer changed-line approval or duplicate-record rules between these sources. See [the native proof](docs/proof/marketplace-telemetry-fixtures/README.md).
+
 One source path may contain multiple independently reviewed fixtures; each
 digest/path/mode tuple must match exactly, so source membership alone never
 qualifies a finding.

@@ -1109,6 +1109,88 @@ function classifyWithProductionPolicy(
   );
 }
 
+function marketplaceTelemetryCase(twoOccurrences: boolean): ExactCase {
+  const uri = new URL("https://packages.acme.example/openclaw/feed");
+  uri.username = "user";
+  uri.password = "secret";
+  const rawV2 = uri.href;
+  uri.pathname = "";
+  const value = JSON.stringify(`${rawV2}?token=leak#frag`);
+  return {
+    detectorType: 17,
+    detectorName: "URI",
+    decoder: "PLAIN",
+    raw: uri.href.slice(0, -1),
+    rawV2,
+    line: `        url: ${value},${twoOccurrences ? `\n          url: ${value},` : ""}`,
+    secretParts: { host: uri.host, username: uri.username, password: uri.password },
+    extraData: null,
+  };
+}
+
+for (const source of [marketplaceFeedSource, "src/cli/plugins-cli.marketplace-entries.test.ts"]) {
+  for (const role of ["base", "head", "index", "tree", "worktree"] as const) {
+    for (const decoder of ["PLAIN", "HTML"] as const) {
+      test(`marketplace telemetry attribution preserves ${source} ${role} ${decoder}`, () => {
+        const entries = source !== marketplaceFeedSource;
+        const fixture = exactFixture([marketplaceTelemetryCase(entries)], [[role]]);
+        for (const input of fixture.inputs.values()) {
+          if (input.kind !== "blob") throw new Error("expected blob");
+          input.references = input.references.map((reference) => ({ ...reference, source }));
+        }
+        const result = classifyWithProductionPolicy(
+          fixture.findings.map((finding) => ({ ...finding, DecoderName: decoder })),
+          fixture.inputs,
+        );
+        assert.equal(
+          result.kind,
+          (entries ? role === "base" || role === "head" : decoder === "PLAIN")
+            ? "classified"
+            : "refused",
+        );
+      });
+    }
+  }
+}
+
+for (const mutation of [
+  "missing",
+  "reordered",
+  "extra",
+  "query",
+  "mode",
+  "refresh alias",
+  "unknown alias",
+] as const) {
+  test(`marketplace entries attribution refuses ${mutation}`, () => {
+    const fixture = exactFixture([marketplaceTelemetryCase(true)]);
+    for (const input of fixture.inputs.values()) {
+      if (input.kind !== "blob" || !input.bytes) throw new Error("expected blob");
+      input.references = input.references.map((reference) => ({
+        ...reference,
+        source: "src/cli/plugins-cli.marketplace-entries.test.ts",
+        mode: mutation === "mode" ? "100755" : "100644",
+      }));
+      const lines = input.bytes.toString().trimEnd().split("\n");
+      if (mutation === "missing") lines.pop();
+      if (mutation === "reordered") [lines[1], lines[2]] = [lines[2]!, lines[1]!];
+      if (mutation === "extra") lines.push(lines[1]!);
+      if (mutation === "query") lines[2] = lines[2]!.replace("#frag", "#changed");
+      input.bytes = Buffer.from(lines.join("\n") + "\n");
+      if (mutation.endsWith("alias")) {
+        input.references = [
+          ...input.references,
+          {
+            ...input.references[0]!,
+            source: mutation === "refresh alias" ? marketplaceFeedSource : "another.test.ts",
+          },
+        ];
+      }
+    }
+    assert.equal(classifyWithProductionPolicy(fixture.findings, fixture.inputs).kind, "refused");
+  });
+}
+
 function matrixCredentialFixture(decoder: "PLAIN" | "HTML" = "PLAIN") {
   const source = "extensions/matrix/src/matrix/client.test.ts";
   const uri = new URL("https://matrix.example.org");
@@ -2866,6 +2948,20 @@ function contextPatchFixture(
   return { finding, inputs, patch, beforeId, afterId, file };
 }
 
+test("marketplace refresh keeps legacy context and duplicate-record admission", () => {
+  const value = contextPatchFixture(marketplaceTelemetryCase(false), {
+    source: marketplaceFeedSource,
+  });
+  const result = classifyWithProductionPolicy([value.finding, value.finding], value.inputs);
+  assert.equal(result.kind, "classified");
+  if (result.kind === "classified") {
+    assert.deepEqual(
+      result.notices.flatMap((notice) => notice.findings.map((finding) => finding.occurrences)),
+      [2, 2],
+    );
+  }
+});
+
 test("approved URI findings in unchanged patch context require both exact Git witnesses", () => {
   const entry = exactCase("URI", "PLAIN");
   const policy = exactFixture([entry]).policy;
@@ -3024,10 +3120,10 @@ function changedPatchFixture(
   entry: ExactCase,
   change: "add" | "remove" | "new" | "delete",
   finalNewline = true,
-  content?: { before: string; after: string; context?: number },
+  content?: { before?: string; after?: string; context?: number; source?: string },
 ) {
   const repo = fixture(t);
-  const source = exactSource;
+  const source = content?.source ?? exactSource;
   const target = join(repo.cwd, source);
   const before =
     change === "new"
@@ -3097,6 +3193,63 @@ function changedPatchFixture(
     },
   };
   return { inputs, finding, file, rawFile, from, to, source };
+}
+
+for (const change of ["add", "remove", "new", "delete"] as const) {
+  test(`marketplace refresh still refuses ${change} beside an exact entries patch`, (t) => {
+    const refresh = changedPatchFixture(t, marketplaceTelemetryCase(false), change, true, {
+      source: marketplaceFeedSource,
+    });
+    const entries = changedPatchFixture(t, marketplaceTelemetryCase(true), change, true, {
+      source: "src/cli/plugins-cli.marketplace-entries.test.ts",
+    });
+    assert.equal(
+      classifyWithProductionPolicy([entries.finding], entries.inputs).kind,
+      "classified",
+    );
+    assert.equal(classifyWithProductionPolicy([refresh.finding], refresh.inputs).kind, "refused");
+    // Both coherent file diffs share one staged revision pair, as a multi-file scan does.
+    const combine = (refreshInputs: Map<string, StagedScanInput>) => {
+      const inputs = new Map<string, StagedScanInput>();
+      for (const sourceInputs of [entries.inputs, refreshInputs]) {
+        for (const [file, input] of sourceInputs) {
+          if (input.kind === "blob") {
+            const previous = inputs.get(file);
+            if (previous?.kind === "blob") assert.deepEqual(previous.bytes, input.bytes);
+            inputs.set(file, {
+              ...input,
+              references: [
+                ...(previous?.kind === "blob" ? previous.references : []),
+                ...input.references.map((reference) => ({
+                  ...reference,
+                  revision: reference.role === "base" ? "a".repeat(40) : "b".repeat(40),
+                })),
+              ],
+            });
+          } else if (input.kind === "patch" || input.kind === "raw_diff") {
+            inputs.set(file, {
+              ...input,
+              from: "a".repeat(40),
+              to: "b".repeat(40),
+              bytes: Buffer.concat([inputs.get(file)?.bytes ?? Buffer.alloc(0), input.bytes!]),
+            });
+          }
+        }
+      }
+      return inputs;
+    };
+    const context = contextPatchFixture(marketplaceTelemetryCase(false), {
+      source: marketplaceFeedSource,
+    });
+    assert.equal(
+      classifyWithProductionPolicy([entries.finding], combine(context.inputs)).kind,
+      "classified",
+    );
+    const refused = classifyWithProductionPolicy([entries.finding], combine(refresh.inputs));
+    assert.equal(refused.kind, "refused");
+    if (refused.kind === "refused")
+      assert.equal(refused.diagnostic.reason, "material_not_reviewed");
+  });
 }
 
 for (const change of ["add", "remove", "new", "delete"] as const) {

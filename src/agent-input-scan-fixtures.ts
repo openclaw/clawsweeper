@@ -248,6 +248,9 @@ const CRABBOX_POSTGRES_DOC_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  // The listing fixture repeats the approved feed URL in live and snapshot metadata.
+  [17, "URI", "PLAIN", "a9bdc2ad7ded74870594f1addb8c4f86a5a075516bc840235ed7cc74ed306959", "838f16c9fef468c069583811edaac840bd0378ff46b59008793c552bfbf1c77b", ["6b9804d61dcc7c7c1f9220403787eb71b340645797a7a7926297db085f36c4d5", "6cebd78792a012243cedb635efb44b01181cbd474fd135ebc5112f260284ee43"], "src/cli/plugins-cli.marketplace-entries.test.ts", "100644"],
+  [17, "URI", "HTML", "a9bdc2ad7ded74870594f1addb8c4f86a5a075516bc840235ed7cc74ed306959", "838f16c9fef468c069583811edaac840bd0378ff46b59008793c552bfbf1c77b", ["6b9804d61dcc7c7c1f9220403787eb71b340645797a7a7926297db085f36c4d5", "6cebd78792a012243cedb635efb44b01181cbd474fd135ebc5112f260284ee43"], "src/cli/plugins-cli.marketplace-entries.test.ts", "100644"],
   // Plugin-help redaction fixtures: bind every literal occurrence, including object keys and the unsaved URL query.
   [17, "URI", "PLAIN", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", ["3835950cbb9c584ba2c052e76ba31ac1c83cf48ec422c588fd00605dfec4b082", "0452c2176a2ce671ae67942c523f65774d9fbaa672ac973968844d00fcf44852"], "ui/src/pages/custodian/custodian-session-store.test.ts", "100644"],
   [17, "URI", "HTML", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", ["3835950cbb9c584ba2c052e76ba31ac1c83cf48ec422c588fd00605dfec4b082", "0452c2176a2ce671ae67942c523f65774d9fbaa672ac973968844d00fcf44852"], "ui/src/pages/custodian/custodian-session-store.test.ts", "100644"],
@@ -315,6 +318,10 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
       !(
         (source === "src/logging/redact.test.ts" &&
           (decoder === "PLAIN" || decoder === "ESCAPED_UNICODE")) ||
+        (source === "src/cli/plugins-cli.marketplace-entries.test.ts" &&
+          detectorType === 17 &&
+          detectorName === "URI" &&
+          (decoder === "PLAIN" || decoder === "HTML")) ||
         (source === "extensions/matrix/src/matrix/client.test.ts" &&
           detectorType === 17 &&
           detectorName === "URI" &&
@@ -665,6 +672,22 @@ function classifyReviewedFindings(
             ([, , , expectedRaw, expectedRawV2]) =>
               expectedRaw === rawDigest && expectedRawV2 === rawV2Digest,
           );
+    const fixture = REVIEWED_FIXTURES.find(
+      (entry) =>
+        entry.fixtureSha256 === rawV2Digest &&
+        (entry.rawSha256 ?? entry.fixtureSha256) === rawDigest,
+    );
+    // Shared fixture values must not replace another source's existing policy.
+    // Mixed references still take the exact path and must all qualify there.
+    const usesExactPolicy = (input: StagedScanInput | undefined) =>
+      exactCandidates.length > 0 &&
+      (input?.kind !== "blob" ||
+        !fixture ||
+        input.references.length === 0 ||
+        input.references.some(({ source }) =>
+          exactCandidates.some((candidate) => candidate[6] === source),
+        ) ||
+        input.references.some(({ source }) => !fixture.sources.includes(source)));
     if (staged?.kind === "patch") {
       if (typeof file !== "string" || scannerLine === null) return refuse("metadata_mismatch");
       if (finding.DetectorType === 58) {
@@ -730,7 +753,12 @@ function classifyReviewedFindings(
         (finding.DecoderName !== "PLAIN" && finding.DecoderName !== "HTML")
       )
         return refuse("material_not_reviewed");
-      if (exactCandidates.length) {
+      const witnessKey = `${file}:${rawV2Digest}`;
+      const witnesses =
+        patchWitnesses.get(witnessKey) ?? resolvePatchWitnesses(staged, rawV2, inputs);
+      if (!witnesses) return refuse("material_not_reviewed");
+      patchWitnesses.set(witnessKey, witnesses);
+      if (witnesses.some((witness) => usesExactPolicy(inputs.get(witness.file)))) {
         const key = [
           file,
           scannerLine,
@@ -743,15 +771,10 @@ function classifyReviewedFindings(
         if (exactFindings.has(key)) return refuse("duplicate_finding");
         exactFindings.add(key);
       }
-      const witnessKey = `${file}:${rawV2Digest}`;
-      const witnesses =
-        patchWitnesses.get(witnessKey) ?? resolvePatchWitnesses(staged, rawV2, inputs);
-      if (!witnesses) return refuse("material_not_reviewed");
-      patchWitnesses.set(witnessKey, witnesses);
       for (const witness of witnesses) {
         // Changed lines need exact full-line policy; legacy URI rows remain
         // context-only even when their value and source path are reviewed.
-        if (witness.kind !== "context" && !exactCandidates.length)
+        if (witness.kind !== "context" && !usesExactPolicy(inputs.get(witness.file)))
           return refuse("material_not_reviewed");
         // Reuse source policy against the original full blob and every logical
         // reference. This derived attribution never replaces scanned patch bytes.
@@ -802,7 +825,7 @@ function classifyReviewedFindings(
       }
       continue;
     }
-    if (exactCandidates.length > 0) {
+    if (usesExactPolicy(staged)) {
       if (
         raw === undefined ||
         rawV2 === undefined ||
@@ -967,12 +990,6 @@ function classifyReviewedFindings(
       return refuse("finding_not_reviewed");
     // URI Raw omits the path; bind both native outputs to the reviewed match.
     const digest = createHash("sha256").update(finding.RawV2).digest("hex");
-    const legacyRawDigest = createHash("sha256").update(finding.Raw).digest("hex");
-    const fixture = REVIEWED_FIXTURES.find(
-      (entry) =>
-        entry.fixtureSha256 === digest &&
-        (entry.rawSha256 ?? entry.fixtureSha256) === legacyRawDigest,
-    );
     if (!fixture) return refuse("literal_not_reviewed");
     if (!(fixture.decoders ?? ["PLAIN", "HTML"]).some((decoder) => decoder === finding.DecoderName))
       return refuse("finding_not_reviewed");
