@@ -1,0 +1,138 @@
+[
+  {
+    "detector": 17,
+    "name": "URI",
+    "decoder": "PLAIN",
+    "verified": false,
+    "rawSha256": "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83",
+    "rawV2Sha256": "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83",
+    "witnesses": [
+      {
+        "line": 4277,
+        "sha256": "1a0920c31a227ead081fd2e6582572dfee060995e266a5520f66021acaa918c9"
+      }
+    ],
+    "qualifiedDecoders": [
+      "PLAIN",
+      "HTML"
+    ],
+    "sources": [
+      "skills/autoreview/tests/test_autoreview_hardening.py",
+      ".agents/skills/autoreview/tests/test_autoreview_hardening.py"
+    ],
+    "mode": "100644"
+  },
+  {
+    "detector": 17,
+    "name": "URI",
+    "decoder": "PLAIN",
+    "verified": false,
+    "rawSha256": "2d082b79ad4da55704d07af5754a91f9a677bfbbdc626d93a58291f11edf53c5",
+    "rawV2Sha256": "2d082b79ad4da55704d07af5754a91f9a677bfbbdc626d93a58291f11edf53c5",
+    "witnesses": [
+      {
+        "line": 6596,
+        "sha256": "cb345a378aff388d79a0457d58f542b96eac6a985ec45b3427f6ed796686330d"
+      }
+    ],
+    "qualifiedDecoders": [
+      "PLAIN"
+    ],
+    "sources": [
+      "skills/autoreview/tests/test_autoreview_hardening.py",
+      ".agents/skills/autoreview/tests/test_autoreview_hardening.py"
+    ],
+    "mode": "100644"
+  },
+  {
+    "detector": 17,
+    "name": "URI",
+    "decoder": "PLAIN",
+    "verified": false,
+    "rawSha256": "fe36092bead3bd47192a05374917c4614ce7642137dc83b9685ab6b5a37d8736",
+    "rawV2Sha256": "fe36092bead3bd47192a05374917c4614ce7642137dc83b9685ab6b5a37d8736",
+    "witnesses": [
+      {
+        "line": 6609,
+        "sha256": "fd0e2849810c912b53dafd71eb60b4a9e2a3bb25bbd7d2dbd67136b207393d9b"
+      }
+    ],
+    "qualifiedDecoders": [
+      "PLAIN",
+      "HTML"
+    ],
+    "sources": [
+      "skills/autoreview/tests/test_autoreview_hardening.py",
+      ".agents/skills/autoreview/tests/test_autoreview_hardening.py"
+    ],
+    "mode": "100644"
+  },
+  {
+    "detector": 17,
+    "name": "URI",
+    "decoder": "PLAIN",
+    "verified": false,
+    "rawSha256": "80842079cf4e73add753d25a74646356617b39c399e77d38b34bb21818e303d2",
+    "rawV2Sha256": "80842079cf4e73add753d25a74646356617b39c399e77d38b34bb21818e303d2",
+    "witnesses": [
+      {
+        "line": 6621,
+        "sha256": "3099aae4bfd434977aa185a0b73674b3238305b0c94b9f36255cf1ad9d9a66ac"
+      }
+    ],
+    "qualifiedDecoders": [
+      "PLAIN",
+      "HTML"
+    ],
+    "sources": [
+      "skills/autoreview/tests/test_autoreview_hardening.py",
+      ".agents/skills/autoreview/tests/test_autoreview_hardening.py"
+    ],
+    "mode": "100644"
+  },
+  {
+    "detector": 17,
+    "name": "URI",
+    "decoder": "PLAIN",
+    "verified": false,
+    "rawSha256": "05ac498c28c2d5ac33d1623fa344fa9dfc5e74ac56fef091df3ab4886ad44de1",
+    "rawV2Sha256": "05ac498c28c2d5ac33d1623fa344fa9dfc5e74ac56fef091df3ab4886ad44de1",
+    "witnesses": [
+      {
+        "line": 6591,
+        "sha256": "05a6e4a950742dd959c778c15c81c9c6a12a24c76bc77349d8779ea4d0c3b71e"
+      }
+    ],
+    "qualifiedDecoders": [
+      "PLAIN",
+      "HTML"
+    ],
+    "sources": [
+      "skills/autoreview/tests/test_autoreview_hardening.py",
+      ".agents/skills/autoreview/tests/test_autoreview_hardening.py"
+    ],
+    "mode": "100644"
+  },
+  {
+    "detector": 17,
+    "name": "URI",
+    "decoder": "PLAIN",
+    "verified": false,
+    "rawSha256": "b12f4f7ee1e8ec1c544b81f14b0252734d816bd79ced79d342dbca650c4f6c31",
+    "rawV2Sha256": "b12f4f7ee1e8ec1c544b81f14b0252734d816bd79ced79d342dbca650c4f6c31",
+    "witnesses": [
+      {
+        "line": 6609,
+        "sha256": "fd0e2849810c912b53dafd71eb60b4a9e2a3bb25bbd7d2dbd67136b207393d9b"
+      }
+    ],
+    "qualifiedDecoders": [
+      "PLAIN"
+    ],
+    "sources": [
+      "skills/autoreview/tests/test_autoreview_hardening.py",
+      ".agents/skills/autoreview/tests/test_autoreview_hardening.py"
+    ],
+    "mode": "100644"
+  }
+]

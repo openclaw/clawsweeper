@@ -1,0 +1,78 @@
+{
+  "targetHead": "b2d3d0f86be704f80a04c11110aa1a7082a961a6",
+  "base": "a9fea70fcba242ff715cf248291c19c2e469de4c",
+  "source": "complete committed range, controlled prompt, canonical pinned native scanner",
+  "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
+  "verification": "canonical enabled",
+  "result": "admitted",
+  "elapsedMs": 2682,
+  "notices": [
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+      "fixtureSha256": "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83",
+      "source": ".agents/skills/autoreview/tests/test_autoreview_hardening.py",
+      "detector": "URI",
+      "findings": [
+        {
+          "blob": "f44aefe7a8ec6069339dad3a76073c4f235c3e82",
+          "scannerLine": 4204,
+          "literalLine": 4204,
+          "decoder": "PLAIN",
+          "role": "base",
+          "occurrences": 1
+        }
+      ]
+    },
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+      "fixtureSha256": "80842079cf4e73add753d25a74646356617b39c399e77d38b34bb21818e303d2",
+      "source": ".agents/skills/autoreview/tests/test_autoreview_hardening.py",
+      "detector": "URI",
+      "findings": [
+        {
+          "blob": "6870d862a2faacbff1144c1c34431efcb38def8e",
+          "scannerLine": 6621,
+          "literalLine": 6621,
+          "decoder": "PLAIN",
+          "role": "head",
+          "occurrences": 1
+        },
+        {
+          "blob": "f44aefe7a8ec6069339dad3a76073c4f235c3e82",
+          "scannerLine": 6548,
+          "literalLine": 6548,
+          "decoder": "PLAIN",
+          "role": "base",
+          "occurrences": 1
+        }
+      ]
+    },
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+      "fixtureSha256": "fe36092bead3bd47192a05374917c4614ce7642137dc83b9685ab6b5a37d8736",
+      "source": ".agents/skills/autoreview/tests/test_autoreview_hardening.py",
+      "detector": "URI",
+      "findings": [
+        {
+          "blob": "6870d862a2faacbff1144c1c34431efcb38def8e",
+          "scannerLine": 6609,
+          "literalLine": 6609,
+          "decoder": "PLAIN",
+          "role": "head",
+          "occurrences": 1
+        },
+        {
+          "blob": "f44aefe7a8ec6069339dad3a76073c4f235c3e82",
+          "scannerLine": 6536,
+          "literalLine": 6536,
+          "decoder": "PLAIN",
+          "role": "base",
+          "occurrences": 1
+        }
+      ]
+    }
+  ]
+}

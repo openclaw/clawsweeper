@@ -722,6 +722,17 @@ complete source lines, regular-file mode, and committed base/head references.
 Native 3.97.4 scans observed `PLAIN` and `HTML` attribution for these fixtures;
 only those exact tuples qualify.
 
+The autoreview hardening negative-test fixtures in
+`skills/autoreview/tests/test_autoreview_hardening.py` and its OpenClaw mirror at
+[.agents/skills/autoreview/tests/test_autoreview_hardening.py](https://github.com/openclaw/openclaw/blob/b2d3d0f86be704f80a04c11110aa1a7082a961a6/.agents/skills/autoreview/tests/test_autoreview_hardening.py) use the same exact
+attribution table. URI detector 17, each row's qualified `PLAIN` or `HTML` decoder, both pinned
+raw-value digests, every complete source line in order, regular-file mode, and
+committed base/head references qualify. The existing legacy value-only row stays
+available for review-context omission; changed patch lines require these exact
+tuples. No other literal or source line in either test file is implicitly approved.
+The additional empty-username and encoded-NUL identities permit only their
+observed `PLAIN` decoding. See [the repeated native proof](docs/proof/agent-input-scan-context/README.md#autoreview-hardening-fixtures).
+
 The full generated patch remains scanned. Every literal occurrence of an
 eligible URI must bind to committed regular-file bytes through canonical
 same-path headers, full Git object IDs, hunk coordinates, counts, and newline

@@ -248,6 +248,28 @@ const CRABBOX_POSTGRES_DOC_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  // Additional native PLAIN variants in the same reviewed negative-test source.
+  [17, "URI", "PLAIN", "2d082b79ad4da55704d07af5754a91f9a677bfbbdc626d93a58291f11edf53c5", "2d082b79ad4da55704d07af5754a91f9a677bfbbdc626d93a58291f11edf53c5", "cb345a378aff388d79a0457d58f542b96eac6a985ec45b3427f6ed796686330d", "skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
+  [17, "URI", "PLAIN", "b12f4f7ee1e8ec1c544b81f14b0252734d816bd79ced79d342dbca650c4f6c31", "b12f4f7ee1e8ec1c544b81f14b0252734d816bd79ced79d342dbca650c4f6c31", "fd0e2849810c912b53dafd71eb60b4a9e2a3bb25bbd7d2dbd67136b207393d9b", "skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
+  [17, "URI", "PLAIN", "2d082b79ad4da55704d07af5754a91f9a677bfbbdc626d93a58291f11edf53c5", "2d082b79ad4da55704d07af5754a91f9a677bfbbdc626d93a58291f11edf53c5", "cb345a378aff388d79a0457d58f542b96eac6a985ec45b3427f6ed796686330d", ".agents/skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
+  [17, "URI", "PLAIN", "b12f4f7ee1e8ec1c544b81f14b0252734d816bd79ced79d342dbca650c4f6c31", "b12f4f7ee1e8ec1c544b81f14b0252734d816bd79ced79d342dbca650c4f6c31", "fd0e2849810c912b53dafd71eb60b4a9e2a3bb25bbd7d2dbd67136b207393d9b", ".agents/skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
+  // Maintainer-reviewed autoreview hardening fixtures from agent-skills a7e91e188fa0.
+  [17, "URI", "PLAIN", "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83", "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83", "1a0920c31a227ead081fd2e6582572dfee060995e266a5520f66021acaa918c9", "skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
+  [17, "URI", "HTML", "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83", "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83", "1a0920c31a227ead081fd2e6582572dfee060995e266a5520f66021acaa918c9", "skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
+  [17, "URI", "PLAIN", "05ac498c28c2d5ac33d1623fa344fa9dfc5e74ac56fef091df3ab4886ad44de1", "05ac498c28c2d5ac33d1623fa344fa9dfc5e74ac56fef091df3ab4886ad44de1", "05a6e4a950742dd959c778c15c81c9c6a12a24c76bc77349d8779ea4d0c3b71e", "skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
+  [17, "URI", "HTML", "05ac498c28c2d5ac33d1623fa344fa9dfc5e74ac56fef091df3ab4886ad44de1", "05ac498c28c2d5ac33d1623fa344fa9dfc5e74ac56fef091df3ab4886ad44de1", "05a6e4a950742dd959c778c15c81c9c6a12a24c76bc77349d8779ea4d0c3b71e", "skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
+  [17, "URI", "PLAIN", "80842079cf4e73add753d25a74646356617b39c399e77d38b34bb21818e303d2", "80842079cf4e73add753d25a74646356617b39c399e77d38b34bb21818e303d2", "3099aae4bfd434977aa185a0b73674b3238305b0c94b9f36255cf1ad9d9a66ac", "skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
+  [17, "URI", "HTML", "80842079cf4e73add753d25a74646356617b39c399e77d38b34bb21818e303d2", "80842079cf4e73add753d25a74646356617b39c399e77d38b34bb21818e303d2", "3099aae4bfd434977aa185a0b73674b3238305b0c94b9f36255cf1ad9d9a66ac", "skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
+  [17, "URI", "PLAIN", "fe36092bead3bd47192a05374917c4614ce7642137dc83b9685ab6b5a37d8736", "fe36092bead3bd47192a05374917c4614ce7642137dc83b9685ab6b5a37d8736", "fd0e2849810c912b53dafd71eb60b4a9e2a3bb25bbd7d2dbd67136b207393d9b", "skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
+  [17, "URI", "HTML", "fe36092bead3bd47192a05374917c4614ce7642137dc83b9685ab6b5a37d8736", "fe36092bead3bd47192a05374917c4614ce7642137dc83b9685ab6b5a37d8736", "fd0e2849810c912b53dafd71eb60b4a9e2a3bb25bbd7d2dbd67136b207393d9b", "skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
+  [17, "URI", "PLAIN", "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83", "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83", "1a0920c31a227ead081fd2e6582572dfee060995e266a5520f66021acaa918c9", ".agents/skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
+  [17, "URI", "HTML", "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83", "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83", "1a0920c31a227ead081fd2e6582572dfee060995e266a5520f66021acaa918c9", ".agents/skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
+  [17, "URI", "PLAIN", "05ac498c28c2d5ac33d1623fa344fa9dfc5e74ac56fef091df3ab4886ad44de1", "05ac498c28c2d5ac33d1623fa344fa9dfc5e74ac56fef091df3ab4886ad44de1", "05a6e4a950742dd959c778c15c81c9c6a12a24c76bc77349d8779ea4d0c3b71e", ".agents/skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
+  [17, "URI", "HTML", "05ac498c28c2d5ac33d1623fa344fa9dfc5e74ac56fef091df3ab4886ad44de1", "05ac498c28c2d5ac33d1623fa344fa9dfc5e74ac56fef091df3ab4886ad44de1", "05a6e4a950742dd959c778c15c81c9c6a12a24c76bc77349d8779ea4d0c3b71e", ".agents/skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
+  [17, "URI", "PLAIN", "80842079cf4e73add753d25a74646356617b39c399e77d38b34bb21818e303d2", "80842079cf4e73add753d25a74646356617b39c399e77d38b34bb21818e303d2", "3099aae4bfd434977aa185a0b73674b3238305b0c94b9f36255cf1ad9d9a66ac", ".agents/skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
+  [17, "URI", "HTML", "80842079cf4e73add753d25a74646356617b39c399e77d38b34bb21818e303d2", "80842079cf4e73add753d25a74646356617b39c399e77d38b34bb21818e303d2", "3099aae4bfd434977aa185a0b73674b3238305b0c94b9f36255cf1ad9d9a66ac", ".agents/skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
+  [17, "URI", "PLAIN", "fe36092bead3bd47192a05374917c4614ce7642137dc83b9685ab6b5a37d8736", "fe36092bead3bd47192a05374917c4614ce7642137dc83b9685ab6b5a37d8736", "fd0e2849810c912b53dafd71eb60b4a9e2a3bb25bbd7d2dbd67136b207393d9b", ".agents/skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
+  [17, "URI", "HTML", "fe36092bead3bd47192a05374917c4614ce7642137dc83b9685ab6b5a37d8736", "fe36092bead3bd47192a05374917c4614ce7642137dc83b9685ab6b5a37d8736", "fd0e2849810c912b53dafd71eb60b4a9e2a3bb25bbd7d2dbd67136b207393d9b", ".agents/skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
   // The listing fixture repeats the approved feed URL in live and snapshot metadata.
   [17, "URI", "PLAIN", "a9bdc2ad7ded74870594f1addb8c4f86a5a075516bc840235ed7cc74ed306959", "838f16c9fef468c069583811edaac840bd0378ff46b59008793c552bfbf1c77b", ["6b9804d61dcc7c7c1f9220403787eb71b340645797a7a7926297db085f36c4d5", "6cebd78792a012243cedb635efb44b01181cbd474fd135ebc5112f260284ee43"], "src/cli/plugins-cli.marketplace-entries.test.ts", "100644"],
   [17, "URI", "HTML", "a9bdc2ad7ded74870594f1addb8c4f86a5a075516bc840235ed7cc74ed306959", "838f16c9fef468c069583811edaac840bd0378ff46b59008793c552bfbf1c77b", ["6b9804d61dcc7c7c1f9220403787eb71b340645797a7a7926297db085f36c4d5", "6cebd78792a012243cedb635efb44b01181cbd474fd135ebc5112f260284ee43"], "src/cli/plugins-cli.marketplace-entries.test.ts", "100644"],
@@ -329,7 +351,9 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
         ((source === "extensions/browser/src/browser/profiles-service.test.ts" ||
           source === "extensions/browser/src/browser/config.test.ts" ||
           source === "ui/src/pages/custodian/custodian-session-store.test.ts" ||
-          source === "ui/src/e2e/plugins-help.e2e.test.ts") &&
+          source === "ui/src/e2e/plugins-help.e2e.test.ts" ||
+          source === "skills/autoreview/tests/test_autoreview_hardening.py" ||
+          source === ".agents/skills/autoreview/tests/test_autoreview_hardening.py") &&
           detectorType === 17 &&
           detectorName === "URI" &&
           (decoder === "PLAIN" || decoder === "HTML")) ||

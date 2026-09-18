@@ -62,3 +62,68 @@ This is the complete source range for OpenClaw PR
 both exact source-blob attribution and added-line attribution, including the
 new file's captured absence evidence. Native verification and completion checks
 remain unchanged.
+
+## Autoreview hardening fixtures
+
+Claim: the maintainer-reviewed synthetic URI fixtures in the canonical autoreview
+hardening test and its OpenClaw mirror admit through exact source attribution,
+including Git-generated changed lines; a one-byte literal change still refuses.
+This qualifies six identities at both exact paths without changing scanner,
+verification, completion, source, mode, or patch-provenance gates.
+
+The canonical file at agent-skills
+`a7e91e188fa0c3d692ac69b3137f24c6c3a2d2c9` and the mirror in OpenClaw PR
+[152039](https://github.com/openclaw/openclaw/pull/152039) at
+`b2d3d0f86be704f80a04c11110aa1a7082a961a6` are byte-identical: 325358 bytes,
+SHA-256 `87f42dcab4063224e75202ea0b47520c56ed7e283772a63572b332a1394893d8`.
+[The identity evidence](autoreview-hardening/identities.json) records full
+Raw/RawV2 and complete source-line digests, source paths, modes, and decoders.
+Every identity occurs once in that file. The encoded-newline and encoded-NUL
+identities share one complete source line.
+
+Native scans emitted different finding subsets for identical bytes. In addition
+to the four originally reported identities, they observed the empty-username
+proxy fixture on head line 6596 and the encoded-NUL rejection fixture on line
+6609. Both are in `AuthenticatedProxyTests`; neither comes from material outside
+the reviewed autoreview test. These additional rows permit only observed PLAIN
+decoding. Native evidence retained here is PLAIN; HTML coverage for the original
+four identities uses constructed classifier records, not recovered native evidence.
+
+The controlled runtime proof uses the complete committed range, the canonical
+pinned TruffleHog 3.97.4 scanner, and enabled verification. It ran on September 18,
+2026 using native macOS arm64, Node 26.8.2, and pnpm 12.4.1 (provider: local host;
+no container image or lease). The trusted OpenClaw checkout stayed unchanged;
+a disposable shared-object checkout was pinned to the PR head because committed
+admission requires the checkout HEAD to match. The base is the merge base obtained
+from the trusted checkout's origin/main.
+
+```bash
+pnpm build:node
+node docs/proof/agent-input-scan-context/run-proof.mjs \
+  /path/to/disposable/openclaw-at-pr-head \
+  a9fea70fcba242ff715cf248291c19c2e469de4c \
+  b2d3d0f86be704f80a04c11110aa1a7082a961a6 \
+  /path/to/admission-proof.json
+```
+
+[Before qualification](autoreview-hardening/before.json), the proof refused with
+`findings / literal_not_reviewed` and no success notices. After qualification,
+three consecutive runs of the same range admitted with zero refusals:
+[run 1](autoreview-hardening/after-1.json),
+[run 2](autoreview-hardening/after-2.json), and
+[run 3](autoreview-hardening/after-3.json). They retained four, three, and three
+bounded success notices respectively. An external observation hook recorded only
+native finding hashes and line witnesses; it left scanner arguments, output,
+exit status, and classification unchanged.
+
+The regression suite separately exercises additions and removals using real Git
+patches at both paths, all qualified decoder variants, every one-byte literal
+mutation, and changed source lines for the existing legacy value. Retaining the
+legacy row for review-context omission does not restore value-only changed-line
+admission.
+
+Limits: this proof runs no model and does not replace admission of the hosted
+review's own prompt, schema, and source inputs. Three successful repetitions
+establish the requested bounded repeatability evidence, not a guarantee about
+every future scanner finding. OpenClaw Bay is unaffected: only host-side fixture
+attribution changes; there is no dashboard API, telemetry, or public-action change.
