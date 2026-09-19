@@ -3705,3 +3705,154 @@ for (const {
     }
   });
 }
+
+for (const source of ["internal/cli/repo_test.go", "internal/cli/ssh_test.go"]) {
+  test(`remote-rejection attribution requires exact PLAIN regular-file witnesses: ${source}`, () => {
+    const entry = exactCase("URI", "PLAIN");
+    const fixture = exactFixture([entry], [["base", "head"]]);
+    const file = fixture.inputs.keys().next().value!;
+    const original = fixture.inputs.get(file)!;
+    assert.ok(original.kind === "blob");
+    const input = {
+      ...original,
+      references: original.references.map((reference) => ({ ...reference, source })),
+    };
+    const inputs = new Map([[file, input]]);
+    const row: ReviewedAttribution = [
+      ...fixture.policy[0]!.slice(0, 6),
+      source,
+      "100644",
+    ] as ReviewedAttribution;
+    const finding = fixture.findings[0]!;
+    assert.equal(classifyExact([finding], inputs, [row]).kind, "classified");
+    for (const decoder of ["HTML", "ESCAPED_UNICODE"]) {
+      const changed = [...row];
+      changed[2] = decoder;
+      assert.throws(
+        () => classifyExact([finding], inputs, [changed as unknown as ReviewedAttribution]),
+        /invalid reviewed attribution policy/,
+      );
+    }
+    for (const patch of [
+      { Raw: entry.raw + "changed" },
+      { RawV2: entry.rawV2 + "changed" },
+      { Verified: true },
+      { DecoderName: "HTML" },
+      { SecretParts: { ...entry.secretParts, host: "other" } },
+    ])
+      assert.equal(classifyExact([{ ...finding, ...patch }], inputs, [row]).kind, "refused");
+    for (const bytes of [
+      Buffer.from(entry.line + " changed\n"),
+      Buffer.from(entry.line + "\n" + entry.line + "\n"),
+    ])
+      assert.equal(
+        classifyExact([finding], new Map([[file, { ...input, bytes }]]), [row]).kind,
+        "refused",
+      );
+    for (const reference of [
+      { ...input.references[0]!, source: "internal/cli/other_test.go" },
+      { ...input.references[0]!, mode: "100755" },
+      { ...input.references[0]!, role: "worktree" as const },
+    ])
+      assert.equal(
+        classifyExact(
+          [finding],
+          new Map([[file, { ...input, references: [...input.references, reference] }]]),
+          [row],
+        ).kind,
+        "refused",
+      );
+  });
+}
+
+for (const { source, pattern, decoders } of [
+  {
+    source: "test/agent-input-scan-git-metadata.test.ts",
+    pattern: /const reviewedUri = "([^"]+)";/,
+    decoders: ["PLAIN", "HTML"],
+  },
+  {
+    source: "test/agent-input-scan-git-metadata.test.ts",
+    pattern: /RawV2: "(https:[^"]+)"/,
+    decoders: ["PLAIN", "HTML"],
+  },
+  {
+    source: "docs/proof/agent-input-scan-git-metadata/run-shared-oid-proof.mjs",
+    pattern: /const uri = "([^"]+)";/,
+    decoders: ["PLAIN", "HTML"],
+  },
+]) {
+  test(`owned scanner fixture policy preserves exact source and decoder: ${source} ${pattern.source}`, () => {
+    const bytes = readFileSync(new URL(`../${source}`, import.meta.url));
+    const raw = pattern.exec(bytes.toString())?.[1];
+    assert.ok(raw);
+    const uri = new URL(raw);
+    const id = createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+    const file = `/private/scanner/${id}`;
+    const references = (["base", "head"] as const).map((role) => ({
+      source,
+      mode: "100644",
+      revision: role === "base" ? "a".repeat(40) : "b".repeat(40),
+      role,
+    }));
+    const input: StagedScanInput = { kind: "blob", id, bytes, references };
+    const inputs = new Map([[file, input]]);
+    const finding = {
+      SourceType: 15,
+      DetectorType: 17,
+      DetectorName: "URI",
+      DecoderName: "PLAIN",
+      Verified: false,
+      VerificationError: "synthetic verification error",
+      Raw: raw,
+      RawV2: raw,
+      ExtraData: null,
+      StructuredData: null,
+      SecretParts: { host: uri.host, username: uri.username, password: uri.password },
+      SourceMetadata: { Data: { Filesystem: { file, line: 1 } } },
+    };
+    for (const decoder of ["PLAIN", "HTML", "ESCAPED_UNICODE"]) {
+      const record = { ...finding, DecoderName: decoder };
+      assert.equal(
+        classifyWithProductionPolicy([record], inputs).kind,
+        decoders.includes(decoder) ? "classified" : "refused",
+      );
+    }
+    for (const change of [
+      { Verified: true },
+      { Raw: raw + "changed" },
+      { RawV2: raw + "changed" },
+      { SecretParts: { ...finding.SecretParts, host: "other" } },
+    ])
+      assert.equal(
+        classifyWithProductionPolicy([{ ...finding, ...change }], inputs).kind,
+        "refused",
+      );
+    for (const reference of [
+      { ...references[0]!, source: "ui/src/pages/custodian/custodian-session-store.test.ts" },
+      { ...references[0]!, source: "other.test.ts" },
+      { ...references[0]!, mode: "100755" },
+      { ...references[0]!, role: "worktree" as const },
+    ]) {
+      const altered = { ...input, kind: "blob" as const, references: [...references, reference] };
+      assert.equal(
+        classifyWithProductionPolicy([finding], new Map([[file, altered]])).kind,
+        "refused",
+      );
+    }
+    const copiedBytes = Buffer.concat([bytes, Buffer.from(`\n${raw}\n`)]);
+    const copiedId = createHash("sha1")
+      .update(`blob ${copiedBytes.length}\0`)
+      .update(copiedBytes)
+      .digest("hex");
+    const copiedFile = `/private/scanner/${copiedId}`;
+    const copied = { ...input, id: copiedId, bytes: copiedBytes };
+    const copiedFinding = {
+      ...finding,
+      SourceMetadata: { Data: { Filesystem: { file: copiedFile, line: 1 } } },
+    };
+    const rejected = classifyWithProductionPolicy([copiedFinding], new Map([[copiedFile, copied]]));
+    assert.equal(rejected.kind, "refused");
+    if (rejected.kind === "refused") assert.equal(rejected.diagnostic.reason, "literal_mismatch");
+  });
+}
