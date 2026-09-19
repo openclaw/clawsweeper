@@ -16,6 +16,7 @@ import {
   normalizeModelResults,
   normalizeSpamComment,
   prioritizeSpamScanComments,
+  redactSpamModelError,
   renderSpamAuditRecord,
   shouldSendToCheapModel,
   spamAuditKey,
@@ -79,7 +80,7 @@ if (candidates.length > 0) {
   try {
     modelResults = await scanWithModel(candidates, model);
   } catch (error) {
-    modelError = compactText(error instanceof Error ? error.message : String(error), 500);
+    modelError = compactText(redactSpamModelError(error, internalCodexModel(model)), 500);
     console.warn(
       `[spam-scanner] cheap model scan failed; writing deterministic audit only: ${modelError}`,
     );
