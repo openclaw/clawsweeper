@@ -127,3 +127,51 @@ review's own prompt, schema, and source inputs. Three successful repetitions
 establish the requested bounded repeatability evidence, not a guarantee about
 every future scanner finding. OpenClaw Bay is unaffected: only host-side fixture
 attribution changes; there is no dashboard API, telemetry, or public-action change.
+
+## Question URL rejection fixture
+
+Maintainer-approved qualification: admit only the existing
+synthetic userinfo-rejection fixture in `ui/src/app/question-prompt.test.ts`.
+The fixture was introduced by OpenClaw commit
+`a37eb17fdfd688e0ed7e7be31950381cf15fb9bd` and is unchanged at line 220 in both
+endpoints of [PR 152096](https://github.com/openclaw/openclaw/pull/152096).
+[Identity evidence](question-prompt/identities.json) records both full blob IDs,
+the regular-file mode, complete source-line digest, and native match digests.
+
+Native TruffleHog 3.97.4 reports the same fixture through PLAIN or HTML decoding.
+Its Raw value omits the path and RawV2 stops before the hyphen in `/sign-in`.
+Both proposed attribution tuples therefore bind the complete original source
+line as well as the native Raw/RawV2 pair, detector 17, exact path, and mode
+`100644`. No value-only fixture row, scanner option, verification check, source
+binding, or patch-attribution rule changes.
+
+The controlled native proof ran on macOS arm64 with Node 24.21.0 and pnpm 12.4.1,
+using a disposable OpenClaw worktree pinned to the requested head. It exercises
+the complete PR source range with verification enabled:
+
+```bash
+pnpm build:node
+node docs/proof/agent-input-scan-context/run-proof.mjs \
+  /path/to/disposable/openclaw-at-pr-head \
+  24caac494ee4858989e58300925c5775a4dd45b2 \
+  1db1bd5c9289f5c348e2c06ce0253aa9f5533584 \
+  /path/to/question-fixture-proof.json
+```
+
+[Before qualification](question-prompt/before.json), the native proof refuses
+with `literal_not_reviewed`, matching the hosted review diagnostic. The same
+range admits in three consecutive runs:
+[run 1](question-prompt/after-1.json), [run 2](question-prompt/after-2.json), and
+[run 3](question-prompt/after-3.json). Adjacent `.native.json` observations retain
+only finding hashes, coordinates, and bounded native metadata; the observation
+hook does not alter scanner arguments, results, exit status, or classification.
+
+The focused regression exercises real Git-generated added, removed, and context
+lines for both decoders. It also refuses a one-byte literal change, changed full
+source line, different path, executable mode, verified finding, and unqualified
+decoder. Existing scanner tests retain all other admission guards.
+
+Limits: no model runs, no hosted review is bypassed, and no runtime policy is
+published by this proof. Hosted review must scan its own complete inputs after
+an approved rollout. OpenClaw Bay is unaffected; only host-side fixture
+qualification changes, with no dashboard API or action surface change.

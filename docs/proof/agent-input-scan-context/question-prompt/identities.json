@@ -1,0 +1,48 @@
+{
+  "introducedBy": "a37eb17fdfd688e0ed7e7be31950381cf15fb9bd",
+  "fixture": "synthetic URI in unsafe external question URL rejection test",
+  "sourcePathSha256": "ed6fc6477de228b398b0b36f04f1a3022e626cdda6c82c914a4c14befba59bfa",
+  "rawSha256": "056ba31f89867351c82b216a148b00bc322977c7da7a4aec9e0a1c222d239b50",
+  "records": [
+    {
+      "role": "base",
+      "revision": "24caac494ee4858989e58300925c5775a4dd45b2",
+      "blob": "dad88baf9c870d7303e13a58d777a8da0fc1bd51",
+      "source": "ui/src/app/question-prompt.test.ts",
+      "mode": "100644",
+      "bytes": 37532,
+      "sha256": "5b6fa407c1d94dcf1f1aa402c199461bc1d99442fb63f776c9dcae5b20eb525b",
+      "witnesses": [
+        {
+          "line": 220,
+          "sha256": "87861ba38fa50d5190bf1b03c8fb631cf929f99b16bd73b786933aa1a1c40add"
+        }
+      ]
+    },
+    {
+      "role": "head",
+      "revision": "1db1bd5c9289f5c348e2c06ce0253aa9f5533584",
+      "blob": "4763aa07fdc39179acfe21d19a439743d5cbcd4a",
+      "source": "ui/src/app/question-prompt.test.ts",
+      "mode": "100644",
+      "bytes": 37165,
+      "sha256": "c8b9ff2eb29825450693ff6f4200ef56aa427bc8ddd31fadbed39c583cbd1938",
+      "witnesses": [
+        {
+          "line": 220,
+          "sha256": "87861ba38fa50d5190bf1b03c8fb631cf929f99b16bd73b786933aa1a1c40add"
+        }
+      ]
+    }
+  ],
+  "sourceLiteralSha256": "8bdf0c767f37e7ebb6b85372911e1c79ded4f7a492744d0630923b9514fe8078",
+  "rawV2Sha256": "a62b014a9aedc9b5b538eed1f6fc5825be583d195348a11ff94076b4a6b4f55b",
+  "detector": 17,
+  "detectorName": "URI",
+  "qualifiedDecoders": [
+    "PLAIN",
+    "HTML"
+  ],
+  "verified": false,
+  "nativeMatch": "Raw omits the path; RawV2 stops before the hyphen in /sign-in. The policy binds the complete original source line."
+}

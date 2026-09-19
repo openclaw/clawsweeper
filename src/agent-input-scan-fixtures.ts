@@ -248,6 +248,9 @@ const CRABBOX_POSTGRES_DOC_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  // Question URL-rejection fixture: native matching stops at the hyphen; bind the full source line.
+  [17, "URI", "PLAIN", "056ba31f89867351c82b216a148b00bc322977c7da7a4aec9e0a1c222d239b50", "a62b014a9aedc9b5b538eed1f6fc5825be583d195348a11ff94076b4a6b4f55b", "87861ba38fa50d5190bf1b03c8fb631cf929f99b16bd73b786933aa1a1c40add", "ui/src/app/question-prompt.test.ts", "100644"],
+  [17, "URI", "HTML", "056ba31f89867351c82b216a148b00bc322977c7da7a4aec9e0a1c222d239b50", "a62b014a9aedc9b5b538eed1f6fc5825be583d195348a11ff94076b4a6b4f55b", "87861ba38fa50d5190bf1b03c8fb631cf929f99b16bd73b786933aa1a1c40add", "ui/src/app/question-prompt.test.ts", "100644"],
   // Additional native PLAIN variants in the same reviewed negative-test source.
   [17, "URI", "PLAIN", "2d082b79ad4da55704d07af5754a91f9a677bfbbdc626d93a58291f11edf53c5", "2d082b79ad4da55704d07af5754a91f9a677bfbbdc626d93a58291f11edf53c5", "cb345a378aff388d79a0457d58f542b96eac6a985ec45b3427f6ed796686330d", "skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
   [17, "URI", "PLAIN", "b12f4f7ee1e8ec1c544b81f14b0252734d816bd79ced79d342dbca650c4f6c31", "b12f4f7ee1e8ec1c544b81f14b0252734d816bd79ced79d342dbca650c4f6c31", "fd0e2849810c912b53dafd71eb60b4a9e2a3bb25bbd7d2dbd67136b207393d9b", "skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
@@ -352,6 +355,7 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           source === "extensions/browser/src/browser/config.test.ts" ||
           source === "ui/src/pages/custodian/custodian-session-store.test.ts" ||
           source === "ui/src/e2e/plugins-help.e2e.test.ts" ||
+          source === "ui/src/app/question-prompt.test.ts" ||
           source === "skills/autoreview/tests/test_autoreview_hardening.py" ||
           source === ".agents/skills/autoreview/tests/test_autoreview_hardening.py") &&
           detectorType === 17 &&

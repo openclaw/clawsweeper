@@ -224,7 +224,11 @@ async function commandProofRetryHarness(
 test("compiled consumer CLI reopens SQL claims and completes only verified independent-review handoffs", async () => {
   const { stdout } = await promisify(execFile)(
     process.execPath,
-    ["scripts/e2e/command-proof-consumer-loopback.mjs"],
+    [
+      "--import",
+      "./test/helpers/expire-reused-loopback-sockets.mjs",
+      "scripts/e2e/command-proof-consumer-loopback.mjs",
+    ],
     { timeout: 120000 },
   );
   const receipt = JSON.parse(stdout);
@@ -284,7 +288,13 @@ test("compiled consumer CLI reopens SQL claims and completes only verified indep
 test("compiled Telegram consumer preserves exact runtime outcomes across replay, stale and cross-evidence cases", async () => {
   const { stdout } = await promisify(execFile)(
     process.execPath,
-    ["scripts/e2e/command-proof-consumer-loopback.mjs", "--scenario", "telegram-bot-e2e-proof"],
+    [
+      "--import",
+      "./test/helpers/expire-reused-loopback-sockets.mjs",
+      "scripts/e2e/command-proof-consumer-loopback.mjs",
+      "--scenario",
+      "telegram-bot-e2e-proof",
+    ],
     { timeout: 180000 },
   );
   const receipt = JSON.parse(stdout);

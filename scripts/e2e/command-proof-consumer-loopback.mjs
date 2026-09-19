@@ -298,7 +298,7 @@ try {
         base + "/repos/openclaw/openclaw/actions/workflows/" + workflowFile + "/dispatches",
         {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: { "content-type": "application/json", connection: "close" },
           body: attackerHtml,
         },
       );
@@ -325,8 +325,11 @@ try {
     );
     const unauthorized = await fetch(base + "/internal/command-proof/claim", {
       method: "POST",
+      // Child CLI phases can outlive an idle pooled connection between probes.
+      headers: { connection: "close" },
       body: "{}",
     });
+    await unauthorized.arrayBuffer();
     assert.equal(unauthorized.status, 401);
     const requested = JSON.parse(await runCli(["request", input], base));
     const lookupFailed = scenario === "ref-lookup-failure";

@@ -1,0 +1,39 @@
+{
+  "exitCode": 183,
+  "signal": null,
+  "scannerArguments": [
+    "filesystem",
+    "--results=verified,unknown",
+    "--fail",
+    "--fail-on-scan-errors",
+    "--no-update",
+    "--json",
+    "--no-color"
+  ],
+  "findings": [
+    {
+      "detector": 17,
+      "name": "URI",
+      "decoder": "PLAIN",
+      "verified": false,
+      "rawSha256": "056ba31f89867351c82b216a148b00bc322977c7da7a4aec9e0a1c222d239b50",
+      "rawV2Sha256": "a62b014a9aedc9b5b538eed1f6fc5825be583d195348a11ff94076b4a6b4f55b",
+      "rawV2Length": 43,
+      "rawV2Suffix": "/sign",
+      "blob": "dad88baf9c870d7303e13a58d777a8da0fc1bd51",
+      "scannerLine": 220
+    },
+    {
+      "detector": 17,
+      "name": "URI",
+      "decoder": "PLAIN",
+      "verified": false,
+      "rawSha256": "056ba31f89867351c82b216a148b00bc322977c7da7a4aec9e0a1c222d239b50",
+      "rawV2Sha256": "a62b014a9aedc9b5b538eed1f6fc5825be583d195348a11ff94076b4a6b4f55b",
+      "rawV2Length": 43,
+      "rawV2Suffix": "/sign",
+      "blob": "4763aa07fdc39179acfe21d19a439743d5cbcd4a",
+      "scannerLine": 220
+    }
+  ]
+}

@@ -60,6 +60,7 @@ test("WebVNC fixture policy retains both exact native identities and source witn
 
 function autoreviewFixtures(): {
   raw: string;
+  rawV2?: string;
   line: string;
   decoders: readonly ("PLAIN" | "HTML")[];
 }[] {
@@ -90,13 +91,13 @@ function autoreviewFixtures(): {
   ];
 }
 
-function autoreviewPatch(
+function fixturePatch(
   t: test.TestContext,
   source: string,
   entries: ReturnType<typeof autoreviewFixtures>,
-  change: "add" | "remove" = "add",
+  change: "add" | "remove" | "context" = "add",
 ) {
-  const cwd = mkdtempSync(join(tmpdir(), "clawsweeper-autoreview-fixtures-"));
+  const cwd = mkdtempSync(join(tmpdir(), "clawsweeper-reviewed-fixtures-"));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
   const git = (...args: string[]) => execFileSync("git", args, { cwd, timeout: 30_000 });
   git("init", "-q");
@@ -108,7 +109,12 @@ function autoreviewPatch(
   const path = join(cwd, source);
   mkdirSync(dirname(path), { recursive: true });
   const content = `# fixture\n${[...new Set(entries.map(({ line }) => line))].join("\n")}\n`;
-  const versions = change === "add" ? ["# fixture\n", content] : [content, "# fixture\n"];
+  const versions =
+    change === "context"
+      ? [`${content}# before\n`, `${content}# after\n`]
+      : change === "add"
+        ? ["# fixture\n", content]
+        : [content, "# fixture\n"];
   const revisions = versions.map((bytes) => {
     writeFileSync(path, bytes, { mode: 0o644 });
     git("add", "--", source);
@@ -130,8 +136,8 @@ function autoreviewPatch(
   const inputs = new Map<string, StagedScanInput>([
     [patchFile, { kind: "patch", id: "patch", bytes: patch, from, to }],
   ]);
-  const role = change === "add" ? "head" : "base";
-  const revision = change === "add" ? to : from;
+  const role = change === "remove" ? "base" : "head";
+  const revision = change === "remove" ? from : to;
   const blobId = git("rev-parse", `${revision}:${source}`).toString().trim();
   for (const [index, ref] of revisions.entries()) {
     const id = git("rev-parse", `${ref}:${source}`).toString().trim();
@@ -142,11 +148,11 @@ function autoreviewPatch(
       references: [{ source, mode: "100644", revision: ref, role: index === 0 ? "base" : "head" }],
     });
   }
-  const classify = (decoder: "PLAIN" | "HTML") => {
+  const classify = (decoder: "PLAIN" | "HTML", overrides: Record<string, unknown> = {}) => {
     const findings = entries
       .filter((entry) => entry.decoders.includes(decoder))
-      .flatMap(({ raw }) => {
-        const url = new URL(raw);
+      .flatMap(({ raw, rawV2 = raw }) => {
+        const url = new URL(rawV2);
         return [patchFile, `/scanner/${blobId}`].map((file) => ({
           SourceType: 15,
           DetectorType: 17,
@@ -155,7 +161,7 @@ function autoreviewPatch(
           Verified: false,
           VerificationError: "synthetic verification error",
           Raw: raw,
-          RawV2: raw,
+          RawV2: rawV2,
           SourceMetadata: {
             Data: {
               Filesystem: {
@@ -165,13 +171,14 @@ function autoreviewPatch(
                     .get(file)!
                     .bytes!.toString()
                     .split("\n")
-                    .findIndex((line) => line.includes(raw)) + 1,
+                    .findIndex((line) => line.includes(rawV2)) + 1,
               },
             },
           },
           SecretParts: { host: url.host, username: url.username, password: url.password },
           ExtraData: null,
           StructuredData: null,
+          ...overrides,
         }));
       });
     return classifyReviewedFixtureScan(
@@ -185,14 +192,14 @@ function autoreviewPatch(
           trufflehog_version: "3.97.4",
           chunks: 1,
           bytes: content.length,
-          verified_secrets: 0,
-          unverified_secrets: findings.length,
+          verified_secrets: findings.filter((finding) => finding.Verified === true).length,
+          unverified_secrets: findings.filter((finding) => finding.Verified !== true).length,
         }) + "\n",
       ),
       inputs,
     );
   };
-  return { classify, role };
+  return { classify, role, inputs };
 }
 
 for (const source of [
@@ -201,7 +208,7 @@ for (const source of [
 ]) {
   for (const change of ["add", "remove"] as const) {
     test(`autoreview fixtures admit exact Git-generated ${change} lines at ${source}`, (t) => {
-      const patch = autoreviewPatch(t, source, autoreviewFixtures(), change);
+      const patch = fixturePatch(t, source, autoreviewFixtures(), change);
       for (const decoder of ["PLAIN", "HTML"] as const) {
         const result = patch.classify(decoder);
         assert.equal(result.kind, "classified", JSON.stringify(result));
@@ -230,7 +237,7 @@ for (const source of [
         raw: candidate === index ? changed : value.raw,
         line: value.line.replace(entry.raw, changed),
       }));
-      const patch = autoreviewPatch(t, source, entries);
+      const patch = fixturePatch(t, source, entries);
       for (const decoder of entry.decoders) {
         assert.equal(patch.classify(decoder).kind, "refused", `${index}/${decoder}`);
       }
@@ -240,11 +247,77 @@ for (const source of [
   test(`autoreview exact lines supersede legacy value-only admission at ${source}`, (t) => {
     const entries = autoreviewFixtures();
     entries[0]!.line += " ";
-    const patch = autoreviewPatch(t, source, entries);
+    const patch = fixturePatch(t, source, entries);
     for (const decoder of ["PLAIN", "HTML"] as const) {
       const result = patch.classify(decoder);
       assert.equal(result.kind, "refused");
       if (result.kind === "refused") assert.equal(result.diagnostic.reason, "literal_mismatch");
     }
+  });
+}
+
+function questionPromptFixture(): ReturnType<typeof autoreviewFixtures>[number] {
+  const raw = ["https://", "operator", ":", "password", "@", "example.test"].join("");
+  const rawV2 = `${raw}/sign`;
+  return { raw, rawV2, line: `    "${rawV2}-in",`, decoders: ["PLAIN", "HTML"] };
+}
+
+const questionPromptSource = "ui/src/app/question-prompt.test.ts";
+
+for (const change of ["add", "remove", "context"] as const) {
+  test(`question URL rejection fixture admits exact Git-generated ${change} attribution`, (t) => {
+    const patch = fixturePatch(t, questionPromptSource, [questionPromptFixture()], change);
+    for (const decoder of ["PLAIN", "HTML"] as const) {
+      const result = patch.classify(decoder);
+      assert.equal(result.kind, "classified", JSON.stringify(result));
+      if (result.kind !== "classified") continue;
+      assert.ok(result.notices.every((notice) => notice.source === questionPromptSource));
+      const findings = result.notices.flatMap((notice) => notice.findings);
+      assert.ok(findings.some((finding) => finding.patch));
+      assert.ok(findings.every((finding) => finding.decoder === decoder));
+      if (change === "context") {
+        assert.ok(findings.some((finding) => finding.role === "base"));
+        assert.ok(findings.some((finding) => finding.role === "head"));
+      } else {
+        assert.ok(findings.every((finding) => finding.role === patch.role));
+      }
+    }
+  });
+}
+
+for (const variant of ["literal", "line", "path", "mode", "verified", "decoder"] as const) {
+  test(`question URL rejection fixture still refuses changed ${variant}`, (t) => {
+    const entry = questionPromptFixture();
+    if (variant === "literal") {
+      entry.raw = entry.raw.replace("password", "passwore");
+      entry.rawV2 = entry.rawV2!.replace("password", "passwore");
+      entry.line = entry.line.replace("password", "passwore");
+    } else if (variant === "line") {
+      entry.line += " ";
+    }
+    const patch = fixturePatch(
+      t,
+      variant === "path" ? "ui/src/app/another-question.test.ts" : questionPromptSource,
+      [entry],
+    );
+    if (variant === "mode") {
+      for (const [file, input] of patch.inputs) {
+        if (input.kind === "blob") {
+          patch.inputs.set(file, {
+            ...input,
+            references: input.references.map((reference) => ({ ...reference, mode: "100755" })),
+          });
+        }
+      }
+    }
+    const result = patch.classify(
+      "HTML",
+      variant === "verified"
+        ? { Verified: true }
+        : variant === "decoder"
+          ? { DecoderName: "BASE64" }
+          : {},
+    );
+    assert.equal(result.kind, "refused", JSON.stringify(result));
   });
 }

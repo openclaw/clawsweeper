@@ -1,0 +1,36 @@
+{
+  "targetHead": "1db1bd5c9289f5c348e2c06ce0253aa9f5533584",
+  "base": "24caac494ee4858989e58300925c5775a4dd45b2",
+  "source": "complete committed range, controlled prompt, canonical pinned native scanner",
+  "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
+  "verification": "canonical enabled",
+  "result": "admitted",
+  "elapsedMs": 3882,
+  "notices": [
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+      "fixtureSha256": "a62b014a9aedc9b5b538eed1f6fc5825be583d195348a11ff94076b4a6b4f55b",
+      "source": "ui/src/app/question-prompt.test.ts",
+      "detector": "URI",
+      "findings": [
+        {
+          "blob": "4763aa07fdc39179acfe21d19a439743d5cbcd4a",
+          "scannerLine": 220,
+          "literalLine": 220,
+          "decoder": "PLAIN",
+          "role": "head",
+          "occurrences": 1
+        },
+        {
+          "blob": "dad88baf9c870d7303e13a58d777a8da0fc1bd51",
+          "scannerLine": 220,
+          "literalLine": 220,
+          "decoder": "PLAIN",
+          "role": "base",
+          "occurrences": 1
+        }
+      ]
+    }
+  ]
+}
