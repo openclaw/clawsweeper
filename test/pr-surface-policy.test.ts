@@ -273,6 +273,7 @@ for (const [name, fixturePath, normalizationTruncates] of [
   ["hovercard promise cancellation", "./fixtures/persistence-classifier-136772.json", false],
   ["SQLite worker diagnostic suffix", "./fixtures/persistence-classifier-138520.json", true],
   ["script source parser routing", "./fixtures/persistence-classifier-151772.json", true],
+  ["Console stream routing", "./fixtures/persistence-classifier-152888.json", true],
   [
     "JSON Schema value validation",
     "./fixtures/persistence-classifier-131624-json-schema.json",
@@ -609,6 +610,49 @@ test("generic metadata, cache keys, versions, and TTL do not warn or gate withou
 
 test("storage evidence still warns and gates browser, runtime, and schema changes", () => {
   const cases = [
+    ...[
+      {
+        filename: "src/runtime/console.ts",
+        patch:
+          '@@\n import { Console } from "./console.js";\n+const output = new Console({ stdout: process.stdout, stderr: process.stderr });\n writeFileSync(target, raw);',
+      },
+      ...[
+        '-import { Console } from "node:console";\n+import { Console } from "./console.js";\n+const output = new Console({ stdout: process.stdout, stderr: process.stderr });',
+        '-import { Console } from "./console.js";\n+import { Console } from "node:console";\n-const output = new Console({ stdout: process.stdout, stderr: process.stderr });',
+        ' import { Console } from "node:console";\n function route(Console) {\n+const output = new Console({ stdout: process.stdout, stderr: process.stderr });',
+        ' import { Console } from "node:console";\n@@ -10,2 +10,3 @@ function route(Console) {\n+const output = new Console({ stdout: process.stdout, stderr: process.stderr });',
+        ' import { Console } from "node:console";\n const { Console } = plugin;\n+const output = new Console({ stdout: process.stdout, stderr: process.stderr });',
+      ].map((bindingPatch) => ({
+        filename: "src/runtime/console.ts",
+        patch: `@@\n${bindingPatch}\n writeFileSync(target, raw);`,
+      })),
+      {
+        filename: "src/runtime/console.ts",
+        patch:
+          "@@\n+const output = new Console({ stdout: process.stdout, stderr: process.stderr });\n writeFileSync(target, raw);",
+      },
+      {
+        filename: "src/runtime/console.ts",
+        patch:
+          '@@\n import { Console } from "node:console";\n+const output = new Console({ stdout: outputStream, stderr: errorStream });\n writeFileSync(target, raw);',
+      },
+      {
+        filename: "src/persistence/console.ts",
+        patch:
+          '@@\n import { Console } from "node:console";\n+const output = new Console({ stdout: process.stdout, stderr: process.stderr });',
+      },
+      ...[
+        " writeFileSync(target, JSON.stringify({\n+  revision: 2,\n }));",
+        " const raw = JSON.stringify({\n+  revision: 2,\n });\n writeFileSync(target, raw);",
+        "+writeFileSync(target, raw);",
+        "-const raw = JSON.stringify(payload);\n+const raw = JSON.stringify(payload, null, 2);\n writeFileSync(target, raw);",
+      ].map((storagePatch) => ({
+        filename: "src/runtime/console.ts",
+        patch:
+          '@@\n import { Console } from "node:console";\n+const output = new Console({ stdout: process.stdout, stderr: process.stderr });\n' +
+          storagePatch,
+      })),
+    ].map((file) => ({ ...file, surface: "serialized state" })),
     ...["readFile", "readFileSync", "writeFile", "writeFileSync"].flatMap((api) => {
       const call = api.endsWith("Sync") ? `fs.${api}` : `await fs.promises.${api}`;
       const boundary = api.startsWith("read")

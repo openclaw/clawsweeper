@@ -310,7 +310,14 @@ persistence boundary; component-local maps, promises, and abort signals do not
 supply one. JSON parse/stringify syntax and a bare `serialized` variable do not
 establish persistence, unchanged storage context, or truncated-patch uncertainty.
 Transient stdout/stderr diagnostics, IPC, and in-memory JSON conversion need a
-durable boundary. File reads can inspect source or media and need a persistence
+durable boundary. A complete single-line `const` declaration constructing the directly imported
+`node:console` `Console` with `stdout` and `stderr` bound to process streams is
+stream routing, not a changed stored field. An adjacent unchanged storage call
+does not make those options persistent. The import must belong to the same diff
+side, and other visible `Console` uses leave the binding conservative. Explicit
+storage changes, other changed fields, and known persistence-owner paths still
+retain their warnings.
+File reads can inspect source or media and need a persistence
 owner, explicit stored-state evidence, or JSON decoding in the same diff hunk.
 Unrelated hunks cannot combine a file read and decoding into storage evidence.
 Explicit serialized-format contracts, disk write APIs (including synchronous

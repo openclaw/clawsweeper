@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Avoid migration-proof blockers when Node Console stream routing shares a patch hunk with unchanged storage, while retaining gates for real stored-field and persistence changes.
+
 - Qualify the exact OpenClaw Gateway readiness privacy-test fixture using observed native URI identities and its complete source-line witness, without changing scanner enforcement.
 
 - Qualify the existing OpenClaw question URL-rejection fixture using exact native identities, the complete source-line witness, and its original test path without weakening input scanning.

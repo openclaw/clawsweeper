@@ -479,17 +479,50 @@ function dataModelSurfacesFromPatch(
   )
     add(pathHint);
   if (pathHint && dataModelTextLooksLikePersistedShapeField(text, pathHint)) add(pathHint);
+  const nodeConsoleImport = /^import\s+\{\s*Console\s*\}\s+from\s+["']node:console["'];?$/;
+  const consoleStreamDeclaration =
+    /^const\s+(?!Console\b)[$A-Z_a-z][$\w]*\s*=\s*new\s+Console\(\{\s*stdout:\s*process\.(?:stdout|stderr),\s*stderr:\s*process\.(?:stdout|stderr)\s*\}\);?$/;
+  const consoleStreamSides = ["+", "-"].filter((side) => {
+    const sideLines = (options.patch ?? "")
+      .split("\n")
+      .filter((line) => !line.startsWith(side === "+" ? "-" : "+"))
+      .map((line) => line.replace(/^[ +-]/, "").trim())
+      .filter((line) => dataModelLineLooksSemantic(line, options));
+    return (
+      sideLines.some((line) => nodeConsoleImport.test(line)) &&
+      sideLines.every(
+        (line) =>
+          !/\bConsole\b/.test(line) ||
+          nodeConsoleImport.test(line) ||
+          consoleStreamDeclaration.test(line),
+      )
+    );
+  });
   // Storage context establishes changed fields or JSON conversion only within
   // the same hunk, including formatting/argument edits with no field declaration.
   for (const hunk of (options.patch ?? "").split(/^@@.*$/m)) {
     const changedText = changedPatchLines(hunk)
       .filter((line) => dataModelLineLooksSemantic(line, options))
       .join("\n");
+    // Node Console consumes these fields as process stream routing, even when
+    // an unrelated storage callback shares the hunk. Require a same-side import
+    // with no visible binding ambiguity, and keep all direct storage evidence.
+    const fieldPatch = hunk
+      .split("\n")
+      .filter(
+        (line) =>
+          !consoleStreamSides.includes(line[0] ?? "") ||
+          !consoleStreamDeclaration.test(line.slice(1).trim()),
+      )
+      .join("\n");
+    const changedFieldText = changedPatchLines(fieldPatch)
+      .filter((line) => dataModelLineLooksSemantic(line, options))
+      .join("\n");
     for (const surface of dataModelStorageContext(hunk, pathOwner?.strong ?? false)) {
       // Doctor also names read-only diagnostic routes; require a persistence boundary.
       if (/\bdoctor\b/i.test(changedText)) add("migration/backfill/repair");
       if (
-        dataModelTextLooksLikePersistedShapeField(changedText, surface) ||
+        dataModelTextLooksLikePersistedShapeField(changedFieldText, surface) ||
         dataModelTextHasJsonConversion(changedText) ||
         (surface === "serialized state" && dataModelTextHasFileRead(changedText))
       )
