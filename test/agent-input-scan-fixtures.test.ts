@@ -6,6 +6,8 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import {
   classifyReviewedFixtureScan,
+  omitReviewedFixtureReferences,
+  serializeReviewContext,
   type StagedScanInput,
 } from "../dist/agent-input-scan-fixtures.js";
 
@@ -409,5 +411,44 @@ for (const variant of [
       );
       assert.equal(result.kind, "refused", JSON.stringify(result));
     }
+  });
+}
+
+for (const prefix of ["", "+", "-", " "]) {
+  test(
+    "readiness context uses the exact source-line reference with prefix " + JSON.stringify(prefix),
+    () => {
+      const entry = readinessPrivacyFixture();
+      const reference =
+        "[reviewed synthetic source line omitted; inspect " + readinessPrivacySource + "]";
+      const text = "before\n" + prefix + entry.line + "\nafter";
+      const expected = "before\n" + prefix + reference + "\nafter";
+      assert.equal(omitReviewedFixtureReferences(text), expected);
+      const context = { nested: [{ patch: text }], unrelated: "retained" };
+      assert.deepEqual(JSON.parse(serializeReviewContext(context)), {
+        nested: [{ patch: expected }],
+        unrelated: "retained",
+      });
+      assert.equal(context.nested[0]!.patch, text);
+    },
+  );
+}
+for (const variant of ["suffix", "expression", "indent", "quoted", "extra-marker", "unbound-uri"]) {
+  test("readiness context preserves unqualified " + variant + " for native scanning", () => {
+    const entry = readinessPrivacyFixture();
+    const text =
+      variant === "suffix"
+        ? entry.line + " "
+        : variant === "expression"
+          ? entry.line.replace("2_048", "2_049")
+          : variant === "indent"
+            ? entry.line.trimStart()
+            : variant === "quoted"
+              ? "> " + entry.line
+              : variant === "extra-marker"
+                ? "++" + entry.line
+                : entry.raw;
+    assert.equal(omitReviewedFixtureReferences(text), text);
+    assert.equal(JSON.parse(serializeReviewContext({ text })).text, text);
   });
 }

@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Reference the exact qualified readiness-fixture source line in generated review context so its template expression is not mistaken for an unbound prompt credential; raw prompts and all source inputs stay fully scanned.
+
 - Qualify the exact OpenClaw Gateway readiness privacy-test fixture using observed native URI identities and its complete source-line witness, without changing scanner enforcement.
 
 - Qualify the existing OpenClaw question URL-rejection fixture using exact native identities, the complete source-line witness, and its original test path without weakening input scanning.

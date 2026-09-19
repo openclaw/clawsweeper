@@ -699,7 +699,12 @@ The Gateway readiness error-privacy fixture in OpenClaw's
 The exact URI detector 17 identities, complete source line (including the
 surrounding synthetic payload expression), regular-file mode, and committed
 base/head references must match. Native 3.97.4 scans observed `PLAIN` and `HTML`;
-only those two variants qualify. See [the native proof](docs/proof/readiness-privacy-fixture/README.md).
+only those two variants qualify. Its generated context reference is derived from
+that exact source-line witness: a bare source line or one canonical Git diff
+marker is replaced with a visible source-file reference. Changed lines and
+unbound URI copies remain untouched, raw maintainer requests remain scanner-visible,
+and original source/diff scan inputs are never changed. This does not authorize
+findings in prompts. See [the native proof](docs/proof/readiness-privacy-fixture/README.md).
 
 One source path may contain multiple independently reviewed fixtures; each
 digest/path/mode tuple must match exactly, so source membership alone never

@@ -391,6 +391,21 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
 
 validateReviewedAttributions(REVIEWED_ATTRIBUTIONS);
 
+// Reference hygiene is a projection of the exact source qualification, not
+// permission to admit findings in prompts. Keep this limited to the reviewed
+// readiness line whose template expression prevents whole-URI token matching.
+const REVIEWED_CONTEXT_LINES: ReadonlyMap<string, string> = new Map(
+  REVIEWED_ATTRIBUTIONS.flatMap((entry): [string, string][] => {
+    if (
+      entry[0] !== 17 ||
+      entry[6] !== "test/helpers/openclaw-test-instance.test.ts" ||
+      typeof entry[5] !== "string"
+    )
+      return [];
+    return [[entry[5], entry[6]]];
+  }),
+);
+
 export function serializeReviewContext(context: object): string {
   return JSON.stringify(
     context,
@@ -400,9 +415,26 @@ export function serializeReviewContext(context: object): string {
 }
 
 export function omitReviewedFixtureReferences(text: string): string {
+  const referenced = text
+    .split("\n")
+    .map((line) => {
+      if (!line.includes("://")) return line;
+      // A canonical Git patch prefixes one marker to the exact source line.
+      const prefixes = /^[ +-]/.test(line) ? ["", line[0]!] : [""];
+      for (const prefix of prefixes) {
+        const candidate = line.slice(prefix.length);
+        const source = REVIEWED_CONTEXT_LINES.get(
+          createHash("sha256").update(candidate).digest("hex"),
+        );
+        if (source)
+          return prefix + "[reviewed synthetic source line omitted; inspect " + source + "]";
+      }
+      return line;
+    })
+    .join("\n");
   // Match whole scheme tokens once; retrying at every character is quadratic.
   // Strip only terminal punctuation; internal punctuation may belong to a URI.
-  return text.replace(/(?<![A-Za-z0-9+.-])[A-Za-z0-9+.-]+:\/\/[^\s<>"\x60]+/g, (uri) => {
+  return referenced.replace(/(?<![A-Za-z0-9+.-])[A-Za-z0-9+.-]+:\/\/[^\s<>"\x60]+/g, (uri) => {
     let end = uri.length;
     while (end > 0 && ")]}.,;!'".includes(uri.charAt(end - 1))) {
       end -= 1;

@@ -1,0 +1,29 @@
+{
+  "source": "production introduction-evidence builder and context serializer with unchanged complete committed scan inputs",
+  "baseSha": "233e1a2f102da0c9fa882b01dade8be89c915841",
+  "headSha": "27913cfe9700b554a3d00dd72b877b7b299ce892",
+  "verification": "canonical enabled",
+  "mode": "raw",
+  "hostSourceSha256": "efb58bdeab0b7b2bb3ee059a24ee1438adc4ffa6077cb5327542e0e8a6e0dc51",
+  "hostCompiledSha256": "827780a09828263402b63a9e9bb27300773245f1e9b87d75d700838ef4f7606d",
+  "result": "refused",
+  "notices": [],
+  "failure": {
+    "reason": "findings",
+    "diagnostic": {
+      "kind": "unclassified_finding",
+      "reason": "material_not_reviewed",
+      "findingCount": 3,
+      "findingIndex": 1,
+      "detectorType": 17,
+      "decoder": "PLAIN",
+      "verified": false,
+      "scannerLine": 38,
+      "material": {
+        "kind": "prompt",
+        "id": "prompt"
+      }
+    }
+  },
+  "elapsedMs": 3212
+}

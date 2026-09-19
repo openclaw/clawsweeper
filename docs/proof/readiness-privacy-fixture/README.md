@@ -57,3 +57,40 @@ No OpenClaw Bay, queue, status, or publication schema changes are involved. Re-r
 this proof when the exact source line/value/path, scanner version, source-binding
 contract, or host classification owner changes. Do not broaden the entry to make
 a changed fixture pass.
+
+## Generated-context follow-up
+
+The original qualification fixed committed source and patch findings. Hosted run
+[35420006300](https://github.com/openclaw/clawsweeper/actions/runs/35420006300)
+then reported four findings, with the first remaining refusal in generated
+`prompt` material. That manifest did not preserve raw matched values.
+
+A controlled reproduction uses the production introduction-evidence builder
+and context serializer, not a hand-written imitation of their output:
+`buildPullRequestReviewEvidence` → `serializeReviewContext` → `scanAgentInput`.
+It exercises OpenClaw base `233e1a2f102da0c9fa882b01dade8be89c915841` and
+head `27913cfe9700b554a3d00dd72b877b7b299ce892`, retaining the unchanged source
+and full patch in the canonical scan. The old serializer fails at prompt material
+([before](context-before.json)); the source fixture includes a template expression,
+so the old whole-URI reference matcher cannot safely treat it as a complete URI.
+
+The repair derives one exact-line context reference from the already approved
+attribution rows. It does not add or relax native classifications. Three runs
+admit the serialized evidence while retaining two source/patch notices each
+([first](context-after-1.json), [second](context-after-2.json),
+[third](context-after-3.json)). The receipts bind the producer's source and compiled
+SHA-256 values. Node 26.8.2 and checksum-qualified native TruffleHog 3.97.4 were used
+with verification enabled.
+
+Native negative controls still refuse prompt material when the serializer is
+not used ([raw](context-raw.json)), when the quoted source expression changes
+([drifted](context-drifted.json)), or when the raw line is appended as a maintainer
+request after serialization ([maintainer](context-maintainer.json)). Ten additional
+unit cases cover bare/added/removed/context-line prefixes, nested serialization,
+input preservation, and changed or unbound text.
+
+This controlled evidence is not a reconstruction of the entire hosted prompt or
+its four finding records, and does not claim model execution or hosted publication.
+A new hosted review remains the final integration check. Changes to the full
+source-line witness, context producer, or scanner contract require fresh proof;
+never admit prompt findings merely because they resemble a test fixture.
