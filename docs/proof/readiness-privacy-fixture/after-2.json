@@ -1,0 +1,51 @@
+{
+  "targetHead": "876b4c34f16b46bb4cbff8569d6cb2ba39ee0e59",
+  "base": "26c2f997d81b0745d0819ba803c185fde247b72d",
+  "source": "complete committed range, controlled prompt, canonical pinned native scanner",
+  "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
+  "verification": "canonical enabled",
+  "result": "admitted",
+  "elapsedMs": 3525,
+  "notices": [
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+      "fixtureSha256": "630affa5ad9abd80845b370cfee593f079ea56cf2907e2e0135d154bb7d30fcb",
+      "source": "test/helpers/openclaw-test-instance.test.ts",
+      "detector": "URI",
+      "findings": [
+        {
+          "blob": "fb56a237c6d8f1f9a59cdb89072838e5ede881fe",
+          "scannerLine": 2002,
+          "literalLine": 2002,
+          "decoder": "PLAIN",
+          "role": "head",
+          "occurrences": 1
+        }
+      ]
+    },
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+      "fixtureSha256": "630affa5ad9abd80845b370cfee593f079ea56cf2907e2e0135d154bb7d30fcb",
+      "source": "test/helpers/openclaw-test-instance.test.ts",
+      "detector": "URI",
+      "findings": [
+        {
+          "blob": "1",
+          "scannerLine": 1047,
+          "literalLine": 1047,
+          "decoder": "HTML",
+          "role": "head",
+          "occurrences": 1,
+          "patch": {
+            "from": "26c2f997d81b0745d0819ba803c185fde247b72d",
+            "to": "876b4c34f16b46bb4cbff8569d6cb2ba39ee0e59",
+            "sourceBlob": "fb56a237c6d8f1f9a59cdb89072838e5ede881fe",
+            "sourceLine": 2002
+          }
+        }
+      ]
+    }
+  ]
+}

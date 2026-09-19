@@ -321,3 +321,93 @@ for (const variant of ["literal", "line", "path", "mode", "verified", "decoder"]
     assert.equal(result.kind, "refused", JSON.stringify(result));
   });
 }
+
+function readinessPrivacyFixture(): ReturnType<typeof autoreviewFixtures>[number] {
+  const raw = ["http://", "fixture-user", ":", "fixture-secret", "@", "proxy.invalid"].join("");
+  return {
+    raw,
+    rawV2: raw,
+    line: "      const privateDetail = `" + raw + '/${"x".repeat(2_048)}`;',
+    decoders: ["PLAIN", "HTML"],
+  };
+}
+
+const readinessPrivacySource = "test/helpers/openclaw-test-instance.test.ts";
+for (const change of ["add", "remove", "context"] as const) {
+  test("readiness privacy fixture admits exact Git-generated " + change + " attribution", (t) => {
+    const patch = fixturePatch(t, readinessPrivacySource, [readinessPrivacyFixture()], change);
+    for (const decoder of ["PLAIN", "HTML"] as const) {
+      const result = patch.classify(decoder);
+      assert.equal(result.kind, "classified", JSON.stringify(result));
+      if (result.kind !== "classified") continue;
+      assert.ok(result.notices.every((notice) => notice.source === readinessPrivacySource));
+      const findings = result.notices.flatMap((notice) => notice.findings);
+      assert.ok(findings.some((finding) => finding.patch));
+      assert.ok(findings.every((finding) => finding.decoder === decoder));
+      if (change === "context") {
+        assert.ok(findings.some((finding) => finding.role === "base"));
+        assert.ok(findings.some((finding) => finding.role === "head"));
+      } else {
+        assert.ok(findings.every((finding) => finding.role === patch.role));
+      }
+    }
+  });
+}
+for (const variant of [
+  "literal",
+  "line",
+  "path",
+  "mode",
+  "role",
+  "verified",
+  "decoder",
+  "surrounding-expression",
+  "extra-occurrence",
+] as const) {
+  test("readiness privacy fixture refuses changed " + variant, (t) => {
+    const entry = readinessPrivacyFixture();
+    if (variant === "literal") {
+      const original = entry.raw;
+      entry.raw = original.replace("proxy.invalid", "proxz.invalid");
+      entry.rawV2 = entry.raw;
+      entry.line = entry.line.replace(original, entry.raw);
+    } else if (variant === "line") {
+      entry.line += " ";
+    } else if (variant === "surrounding-expression") {
+      entry.line = entry.line.replace("2_048", "2_049");
+    }
+    const entries =
+      variant === "extra-occurrence"
+        ? [entry, { ...entry, line: entry.line + " // additional occurrence" }]
+        : [entry];
+    const patch = fixturePatch(
+      t,
+      variant === "path" ? "test/helpers/another-instance.test.ts" : readinessPrivacySource,
+      entries,
+    );
+    if (variant === "mode" || variant === "role") {
+      for (const [file, input] of patch.inputs) {
+        if (input.kind !== "blob") continue;
+        patch.inputs.set(file, {
+          ...input,
+          references: input.references.map((reference) =>
+            variant === "mode"
+              ? { ...reference, mode: "100755" }
+              : { ...reference, role: "worktree" as const },
+          ),
+        });
+      }
+    }
+    for (const decoder of ["PLAIN", "HTML"] as const) {
+      const result = patch.classify(
+        decoder,
+        variant === "verified"
+          ? { Verified: true }
+          : variant === "decoder"
+            ? { DecoderName: "BASE64" }
+            : {},
+      );
+      assert.equal(result.kind, "refused", JSON.stringify(result));
+    }
+  });
+}

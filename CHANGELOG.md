@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Qualify the exact OpenClaw Gateway readiness privacy-test fixture using observed native URI identities and its complete source-line witness, without changing scanner enforcement.
+
 - Qualify the existing OpenClaw question URL-rejection fixture using exact native identities, the complete source-line witness, and its original test path without weakening input scanning.
 
 - Qualify reviewed autoreview hardening URI fixtures at both canonical and mirrored source paths using exact native identities and complete source-line witnesses.

@@ -1,0 +1,15 @@
+[
+  {
+    "detector": 17,
+    "name": "URI",
+    "decoder": "PLAIN",
+    "rawSha256": "630affa5ad9abd80845b370cfee593f079ea56cf2907e2e0135d154bb7d30fcb",
+    "rawV2Sha256": "630affa5ad9abd80845b370cfee593f079ea56cf2907e2e0135d154bb7d30fcb",
+    "lineSha256": "135365663033f668caf9d6e3fc27b905e8ffaef8ad43bc587e43fceb055bad59",
+    "source": "test/helpers/openclaw-test-instance.test.ts",
+    "mode": "100644",
+    "head": "876b4c34f16b46bb4cbff8569d6cb2ba39ee0e59",
+    "blob": "fb56a237c6d8f1f9a59cdb89072838e5ede881fe",
+    "occurrences": 1
+  }
+]
