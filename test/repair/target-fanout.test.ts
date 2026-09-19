@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import childProcess, { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHmac } from "node:crypto";
+import { syncBuiltinESMExports } from "node:module";
 import {
   chmodSync,
   existsSync,
@@ -1364,4 +1365,128 @@ test("audit fanout requires batch-aware storage before advancing the cursor", as
     }),
     /does not support resumable batches/,
   );
+});
+
+test("scheduled target-fanout inventory and coverage gh calls honor the shared deadline", async (t) => {
+  const nativeExec = childProcess.execFileSync;
+  const timeouts: Array<number | undefined> = [];
+  t.mock.method(childProcess, "execFileSync", (file, args, options) => {
+    timeouts.push(options.timeout);
+    return nativeExec(file, args, { ...options, timeout: 250 });
+  });
+  syncBuiltinESMExports();
+  const previous = {
+    GH_BIN: process.env.GH_BIN,
+    GH_BIN_ARGS: process.env.GH_BIN_ARGS,
+    CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS: process.env.CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS,
+    CLAWSWEEPER_NETWORK_COMMAND_TIMEOUT_MS: process.env.CLAWSWEEPER_NETWORK_COMMAND_TIMEOUT_MS,
+    CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: process.env.CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW,
+    GITHUB_ACTIONS: process.env.GITHUB_ACTIONS,
+  };
+  const dir = mkdtempSync(join(tmpdir(), "clawsweeper-fanout-timeout-"));
+  const script = join(dir, "gh.cjs");
+  writeFileSync(
+    script,
+    `const args = process.argv.slice(2);
+if (process.env.FANOUT_TEST_STALL) {
+  setInterval(() => {}, 1000);
+  return;
+}
+if (args[0] === "repo" && args[1] === "list") {
+  process.stdout.write(JSON.stringify([{
+    nameWithOwner: "openclaw/clawhub",
+    isArchived: false,
+    isFork: false,
+    hasIssuesEnabled: true,
+    visibility: "PUBLIC",
+    defaultBranchRef: { name: "main" },
+  }]));
+  process.exit(0);
+}
+if (args.includes("/installation/repositories?per_page=100")) {
+  process.stdout.write(JSON.stringify({
+    full_name: "openclaw/clawhub",
+    archived: false,
+    disabled: false,
+    fork: false,
+    has_issues: true,
+    visibility: "public",
+    default_branch: "main",
+  }));
+  process.exit(0);
+}
+process.exit(2);
+`,
+  );
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    delete process.env.FANOUT_TEST_STALL;
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  Object.assign(process.env, {
+    GH_BIN: process.execPath,
+    GH_BIN_ARGS: JSON.stringify([script]),
+    GITHUB_ACTIONS: "true",
+  });
+
+  const cases = [
+    {
+      env: { CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS: "90000" },
+      token: "inventory-openclaw",
+      expected: 90_000,
+    },
+    {
+      env: { CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS: "90000" },
+      token: "__public__",
+      expected: 90_000,
+    },
+    {
+      env: {
+        CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS: undefined,
+        CLAWSWEEPER_NETWORK_COMMAND_TIMEOUT_MS: undefined,
+      },
+      token: "inventory-openclaw",
+      expected: 120_000,
+    },
+    {
+      env: { CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS: "10" },
+      token: "inventory-openclaw",
+      expected: 30_000,
+    },
+  ] as const;
+  for (const fixture of cases) {
+    timeouts.length = 0;
+    process.env.CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW = fixture.token;
+    if (fixture.env.CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS === undefined) {
+      delete process.env.CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS;
+    } else {
+      process.env.CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS = fixture.env.CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS;
+    }
+    if (
+      "CLAWSWEEPER_NETWORK_COMMAND_TIMEOUT_MS" in fixture.env &&
+      fixture.env.CLAWSWEEPER_NETWORK_COMMAND_TIMEOUT_MS === undefined
+    ) {
+      delete process.env.CLAWSWEEPER_NETWORK_COMMAND_TIMEOUT_MS;
+    }
+    const listed = await loadEligibleRepositories(config, ["openclaw"]);
+    assert.deepEqual(listed, [
+      { targetRepo: "openclaw/clawhub", defaultBranch: "main", visibility: "PUBLIC" },
+    ]);
+    assert.deepEqual(timeouts, [fixture.expected]);
+  }
+
+  process.env.CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS = "90000";
+  process.env.CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW = "inventory-openclaw";
+  process.env.FANOUT_TEST_STALL = "1";
+  await assert.rejects(loadEligibleRepositories(config, ["openclaw"]), {
+    code: "ETIMEDOUT",
+  });
+
+  const source = readFileSync("src/repair/target-fanout.ts", "utf8");
+  assert.match(source, /runGh\(command, dispatchEnv\(\), 30_000\)/);
 });
