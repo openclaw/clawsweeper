@@ -382,8 +382,9 @@ test("decision parser enforces required schema-shaped evidence", () => {
       parseDecision({
         ...closeDecision(),
         mergeRiskLabels: ["merge-risk: 🚨 compatibility"],
+        risks: ["The upgrade behavior remains unproven."],
       }),
-    /decision\.mergeRiskOptions must include 1-3 options when mergeRiskLabels is not empty/,
+    /decision\.mergeRiskOptions must include 1-3 options when labeled risks remain unresolved/,
   );
   assert.throws(
     () =>

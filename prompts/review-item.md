@@ -745,8 +745,10 @@ Treat plugin API surface changes as compatibility-sensitive. If a PR adds,
 removes, renames, deprecates, changes behavior for, or adds new similar/parallel
 calls to a plugin API, require explicit maintainer-visible discussion, existing
 maintainer approval, or a narrow repair path before merge. Use
-`merge-risk: 🚨 compatibility`, name the plugin API concern in `risks`, and make
-`mergeRiskOptions` spell out the maintainer choices or repair path. Prefer a
+`merge-risk: 🚨 compatibility` for the affected surface. When the plugin API
+concern remains unresolved, name it in `risks` and make `mergeRiskOptions` spell
+out the maintainer choices or repair path; retain already-accepted tradeoffs in
+evidence under the acceptance contract above. Prefer a
 resolvable P1 review finding when the problem can be fixed mechanically by
 preserving the existing API, removing the duplicate/parallel call, adding a
 clear deprecation path, documenting the upgrade behavior, or adding focused
@@ -1277,10 +1279,11 @@ than merge risk. They do not replace
 Always fill `mergeRiskLabels` too. Use `[]` for issues and for PRs whose merge
 risk is adequately covered by normal review/CI. For PRs with non-obvious
 compatibility, delivery, session-state, auth-provider, security-boundary,
-availability, or automation risk, add the matching `merge-risk:*` labels,
-explain why the risk matters in `risks`, and fill `mergeRiskOptions` with
-decision-useful maintainer options. Use `mergeRiskOptions: []` whenever
-`mergeRiskLabels` is empty. Avoid making ClawSweeper sound more certain than the
+availability, or automation risk, add the matching `merge-risk:*` labels and
+explain their scope in label rationale. Only unresolved concerns belong in
+`risks` and need decision-useful `mergeRiskOptions`; accepted tradeoffs stay in
+evidence. Use `mergeRiskOptions: []` when `mergeRiskLabels` is empty or no
+unresolved risk remains. Avoid making ClawSweeper sound more certain than the
 evidence supports.
 
 Always fill `reviewMetrics`. Use `[]` unless a PR has concise quantified facts

@@ -367,7 +367,7 @@
           }
         }
       },
-      "description": "Risk-specific maintainer options for the Risk before merge section. Use [] when mergeRiskLabels is []. When mergeRiskLabels is non-empty, provide 1-3 prose-first options. Do not use a fixed menu: tailor titles and bodies to this PR. Mark at most one option recommended, and only when evidence supports a clear best path. Include pause_or_close when the PR may not be worth the risk. Put only the special-instructions payload in automergeInstruction for a recommended fix_before_merge option suitable for automation; do not include @clawsweeper automerge, @clawsweeper autofix, or this PR command text."
+      "description": "Risk-specific maintainer options for the Risk before merge section. Use [] when mergeRiskLabels is []. When mergeRiskLabels is non-empty and unresolved risks remain, provide 1-3 prose-first options. Labels may retain an explicitly accepted tradeoff as context; use [] when risks is [] and keep the accepted decision in evidence and label rationale. Do not use a fixed menu: tailor titles and bodies to this PR. Mark at most one option recommended, and only when evidence supports a clear best path. Include pause_or_close when the PR may not be worth the risk. Put only the special-instructions payload in automergeInstruction for a recommended fix_before_merge option suitable for automation; do not include @clawsweeper automerge, @clawsweeper autofix, or this PR command text."
     },
     "reviewMetrics": {
       "type": "array",

@@ -34,7 +34,12 @@ import { createReportParser } from "../dist/clawsweeper-report-parser.js";
 import { createRecordMetadata } from "../dist/clawsweeper-record-metadata.js";
 import { createReportHelpers } from "../dist/clawsweeper-report-helpers.js";
 import { normalizeRepo, repositoryProfileFor } from "../dist/repository-profiles.js";
-import type { DecisionKind, Evidence, NextStepAssessment } from "../dist/clawsweeper-types.js";
+import type {
+  Decision,
+  DecisionKind,
+  Evidence,
+  NextStepAssessment,
+} from "../dist/clawsweeper-types.js";
 
 function markdownLinkDestinations(markdown: string): Set<string> {
   const destinations = new Set<string>();
@@ -91,6 +96,7 @@ function evidenceReport(
   evidence: Evidence[],
   decisionKind: DecisionKind = "close",
   nextStep?: NextStepAssessment,
+  overrides: Partial<Decision> = {},
 ) {
   const document = createReportDocumentRendering({
     ...evidenceLinks,
@@ -117,6 +123,7 @@ function evidenceReport(
           decision: decisionKind,
           closeReason: decisionKind === "close" ? "implemented_on_main" : "none",
           ...(nextStep === undefined ? {} : { nextStep }),
+          ...overrides,
         }),
       ),
       // The host stamps checkout access after parsing model output.
@@ -130,6 +137,8 @@ function evidenceReport(
     contentDigest: "synthetic-content",
     reviewPolicy: "synthetic-policy",
     runtime: { model: "Codex", reasoningEffort: "high" },
+    reviewLeaseOwner: "github-run-123456-1",
+    reviewLeaseCommentId: 123456,
   } as Parameters<typeof document.markdownFor>[0]);
 }
 
@@ -238,6 +247,91 @@ test("canonical next-step report round-trip preserves explicit intent and legacy
     if (nextStep?.kind === "required")
       assert.match(publicSection(comment, "Before merge"), /Owner approval\./);
   }
+});
+
+test("accepted labeled risk survives decision and report parsing without reopening a blocker", () => {
+  const accepted = "The maintainer accepted the documented fresh-ref requirement for this change.";
+  const decision: Partial<Decision> = {
+    mergeRiskLabels: ["merge-risk: 🚨 compatibility"],
+    mergeRiskOptions: [],
+    risks: [],
+    labelJustifications: [
+      { label: "P2", reason: "Bounded compatibility correction." },
+      { label: "merge-risk: 🚨 compatibility", reason: accepted },
+    ],
+    overallCorrectness: "patch is correct",
+    realBehaviorProof: {
+      status: "sufficient",
+      evidenceKind: "terminal",
+      needsContributorAction: false,
+      summary: "The actual browser path rejected stale refs and accepted newly captured refs.",
+    },
+    prRating: {
+      proofTier: "B",
+      patchTier: "B",
+      overallTier: "B",
+      summary: "The corrected behavior has direct runtime proof.",
+      nextSteps: [],
+    },
+  };
+  const evidence: Evidence[] = [
+    {
+      repo: "openclaw/openclaw",
+      label: "Accepted compatibility tradeoff",
+      detail: accepted,
+      file: null,
+      line: null,
+      command: null,
+      sha: "c".repeat(40),
+    },
+  ];
+  const report = evidenceReport(evidence, "keep_open", { kind: "none", text: "" }, decision);
+  const comment = renderReviewCommentFromReport(report, "none");
+  assert.match(report, /^merge_risk_labels: .*compatibility/m);
+  assert.match(report, /^merge_risk_options: \[\]$/m);
+  assert.ok(comment.includes(accepted));
+  assert.equal(publicSection(comment, "Before merge"), "None.");
+  assert.match(comment, /clawsweeper-review-state:ready/);
+  assert.doesNotMatch(comment, /### Merge-risk options/);
+
+  const unresolved = "The new requirement also affects an unreviewed second workflow.";
+  const unresolvedDecision = { ...decision, risks: [unresolved] };
+  assert.throws(
+    () => evidenceReport(evidence, "keep_open", { kind: "none", text: "" }, unresolvedDecision),
+    /mergeRiskOptions must include 1-3 options/,
+  );
+  const blockedReport = evidenceReport(
+    evidence,
+    "keep_open",
+    { kind: "none", text: "" },
+    {
+      ...unresolvedDecision,
+      mergeRiskOptions: [
+        {
+          title: "Prove the second workflow",
+          body: "Exercise the second workflow before deciding whether to accept its impact.",
+          category: "fix_before_merge",
+          recommended: true,
+          automergeInstruction: "",
+        },
+      ],
+    },
+  );
+  const blocked = renderReviewCommentFromReport(blockedReport, "none");
+  assert.ok(publicSection(blocked, "Before merge").includes(unresolved));
+  assert.match(blocked, /clawsweeper-review-state:blocked/);
+
+  const independent = renderReviewCommentFromReport(
+    evidenceReport(
+      evidence,
+      "keep_open",
+      { kind: "required", text: "Resolve the separate owner decision." },
+      decision,
+    ),
+    "none",
+  );
+  assert.match(publicSection(independent, "Before merge"), /Resolve the separate owner decision/);
+  assert.doesNotMatch(independent, /clawsweeper-review-state:ready/);
 });
 
 test("absent, malformed, duplicate and spoofed next-step metadata cannot suppress legacy action", () => {

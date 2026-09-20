@@ -203,8 +203,9 @@ The producer keeps only unresolved concerns in `risks`: each entry becomes a
 blocking checklist item. Explicit maintainer acceptance resolves only the
 specific tradeoff it covers at the reviewed change. The limitation and cited
 decision remain visible in evidence and any applicable merge-risk label rationale;
-they do not reopen the same decision or populate `mergeRiskOptions`. Proposed or
-conditional acceptance, contributor assertions, and changed scope remain
+they do not reopen the same decision or populate `mergeRiskOptions`. A nonempty
+merge-risk label list therefore permits empty options when `risks` is empty;
+labeled unresolved risks still require options. Proposed or conditional acceptance, contributor assertions, and changed scope remain
 unresolved. The renderer does not infer acceptance from prose or labels, and
 historical reports require a fresh review to change their assessment. Acceptance
 does not grant merge authority or waive enforced gates.
