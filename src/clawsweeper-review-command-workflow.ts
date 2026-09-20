@@ -556,7 +556,17 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             const inspection = runReviewCheckoutInspection({
               // Structural reuse has no model payload. Hydrated reuse scans the
               // current context too, including source comments.
-              initialPrompt: serializeReviewContext(context ?? item),
+              initialPrompt: serializeReviewContext(
+                context ?? item,
+                item.kind === "pull_request"
+                  ? [
+                      ...(context?.pullFiles ?? []),
+                      ...(context?.prHydrationSnapshot?.version === 3
+                        ? context.prHydrationSnapshot.files.items
+                        : []),
+                    ]
+                  : [],
+              ),
               scanSource: item.kind === "pull_request"
                 ? { kind: "committed", baseSha: typeof baseSha === "string" ? baseSha : "", headSha: headSha ?? "" }
                 : { kind: "prompt" },

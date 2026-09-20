@@ -480,9 +480,9 @@ export function createReviewRuntime({
     return reviewDecisionSchemaCache;
   }
 
-  function contextJsonForPrompt(context: ItemContext): string {
+  function contextJsonForPrompt(context: ItemContext, kind: Item["kind"]): string {
     const { pullCommitsRevision: __, prHydrationSnapshot: ___, ...promptContext } = context;
-    return serializeReviewContext(promptContext);
+    return serializeReviewContext(promptContext, kind === "pull_request" ? context.pullFiles : []);
   }
 
   function buildReviewPrompt(
@@ -493,17 +493,20 @@ export function createReviewRuntime({
     runtimeHints: ReviewPromptRuntimeHints = {},
   ): ReviewPromptBuild {
     const prompt = reviewPromptTemplate();
-    const contextJson = contextJsonForPrompt(context);
-    const introductionEvidence =
+    const contextJson = contextJsonForPrompt(context, item.kind);
+    const prEvidence =
       item.kind === "pull_request"
-        ? `\n\n## PR Introduction Evidence\n\n\`\`\`json\n${serializeReviewContext(
-            buildPullRequestReviewEvidence({
-              ...(runtimeHints.targetDir ? { targetDir: runtimeHints.targetDir } : {}),
-              context,
-              mainSha: git.mainSha,
-            }),
-          )}\n\`\`\`\n`
-        : "";
+        ? buildPullRequestReviewEvidence({
+            ...(runtimeHints.targetDir ? { targetDir: runtimeHints.targetDir } : {}),
+            context,
+            mainSha: git.mainSha,
+          })
+        : null;
+    const introductionEvidence = prEvidence
+      ? `\n\n## PR Introduction Evidence\n\n\`\`\`json\n${serializeReviewContext(prEvidence, [
+          prEvidence.introduced,
+        ])}\n\`\`\`\n`
+      : "";
     const schema = reviewDecisionSchemaText();
     const profile = repositoryProfileFor(item.repo);
     const proofScratchDir = runtimeHints.proofScratchDir?.trim();

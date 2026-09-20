@@ -399,10 +399,19 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
 
 validateReviewedAttributions(REVIEWED_ATTRIBUTIONS);
 
-export function serializeReviewContext(context: object): string {
+export function serializeReviewContext(
+  context: object,
+  sourcePatchRecords: readonly unknown[] = [],
+): string {
+  const sourceRecords = new Set(sourcePatchRecords);
   return JSON.stringify(
     context,
-    (_key, value) => (typeof value === "string" ? omitReviewedFixtureReferences(value) : value),
+    function (this: unknown, key: string, value: unknown) {
+      // Source patches are scanned with their committed provenance. Copying them
+      // into prompt text loses that attribution; retain their identities instead.
+      if (sourceRecords.has(this) && (key === "patch" || key === "patchComplete")) return undefined;
+      return typeof value === "string" ? omitReviewedFixtureReferences(value) : value;
+    },
     2,
   );
 }

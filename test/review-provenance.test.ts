@@ -108,7 +108,7 @@ test("real Git graph distinguishes introduced changes from main-only upgrades an
         git(f.root, "rev-parse", `${f.T}:${path}`),
       );
     }
-    const { evidence } = promptEvidence(f);
+    const { evidence, prompt } = promptEvidence(f);
     assert.deepEqual(evidence.checkout, {
       role: "actual_checkout",
       status: "verified",
@@ -127,9 +127,17 @@ test("real Git graph distinguishes introduced changes from main-only upgrades an
     assert.equal(evidence.introduced.role, "pr_introduced");
     assert.deepEqual(evidence.introduced.files, ["docs/hooks.md"]);
     assert.equal(evidence.introduced.filesComplete, true);
-    assert.equal(evidence.introduced.patchComplete, true);
-    assert.match(evidence.introduced.patch, /\+Clarified guide/);
-    assert.doesNotMatch(evidence.introduced.patch, /Codex/);
+    assert.equal(Object.hasOwn(evidence.introduced, "patch"), false);
+    assert.equal(Object.hasOwn(evidence.introduced, "patchComplete"), false);
+    const introducedPatch = git(
+      f.root,
+      "diff",
+      evidence.introduced.fromSha,
+      evidence.introduced.toSha,
+    );
+    assert.match(introducedPatch, /\+Clarified guide/);
+    assert.doesNotMatch(introducedPatch, /Codex/);
+    assert.ok(!prompt.includes("+Clarified guide"));
     assert.equal(evidence.endpointDrift.role, "endpoint_drift_not_introduction");
     assert.deepEqual(evidence.baseOnlyFiles, [...upgradeFiles].sort());
     assert.equal(evidence.testMerge.status, "verified");
@@ -330,7 +338,11 @@ test("introduced downgrade and cross-file trigger remain reviewer-owned evidence
     const H = f.commit("real introduced downgrade and caller regression");
     const { evidence, prompt } = promptEvidence({ ...f, H }, { mergeCommitSha: undefined });
     assert.equal(evidence.mergeBase.sha, f.M);
-    assert.match(evidence.introduced.patch, /-Codex 0\.150\.1\n\+Codex 0\.149\.1/);
+    assert.match(
+      git(f.root, "diff", evidence.introduced.fromSha, evidence.introduced.toSha),
+      /-Codex 0\.150\.1\n\+Codex 0\.149\.1/,
+    );
+    assert.equal(Object.hasOwn(evidence.introduced, "patch"), false);
     assert.ok(evidence.introduced.files.includes("src/caller.ts"));
     assert.ok(!evidence.introduced.files.includes("src/consumer.ts"));
     assert.match(prompt, /untouched affected file/);
@@ -367,7 +379,7 @@ test("missing or shallow ancestry cannot turn endpoint drift into introduced evi
     const missing = promptEvidence(f, { head: { sha: "f".repeat(40) } }).evidence;
     assert.equal(missing.mergeBase.status, "unavailable");
     assert.equal(missing.introduced.filesComplete, false);
-    assert.equal(missing.introduced.patch, null);
+    assert.equal(Object.hasOwn(missing.introduced, "patch"), false);
     writeFileSync(join(f.root, ".git", "shallow"), `${f.H}\n`);
     const shallow = promptEvidence(f).evidence;
     assert.equal(shallow.mergeBase.status, "unavailable");
@@ -457,7 +469,7 @@ test("production source preparation recovers a shallow PR tip and fetches the pi
   }
 });
 
-test("bounded evidence marks oversized patches and file lists incomplete", () => {
+test("bounded prompt manifests retain incomplete file-list evidence without inline patches", () => {
   const f = fixture();
   try {
     for (let index = 0; index < 81; index++)
@@ -466,8 +478,8 @@ test("bounded evidence marks oversized patches and file lists incomplete", () =>
     const { evidence } = promptEvidence({ ...f, H });
     assert.equal(evidence.introduced.files.length, 80);
     assert.equal(evidence.introduced.filesComplete, false);
-    assert.equal(evidence.introduced.patch.length, 24_000);
-    assert.equal(evidence.introduced.patchComplete, false);
+    assert.equal(Object.hasOwn(evidence.introduced, "patch"), false);
+    assert.equal(Object.hasOwn(evidence.introduced, "patchComplete"), false);
     assert.equal(evidence.baseOnlyFiles, null);
   } finally {
     rmSync(f.root, { recursive: true, force: true });
@@ -486,7 +498,7 @@ test("criss-cross ancestry does not guess a single introduced delta", () => {
     assert.equal(evidence.mergeBase.status, "ambiguous");
     assert.equal(evidence.mergeBase.sha, null);
     assert.equal(evidence.introduced.filesComplete, false);
-    assert.equal(evidence.introduced.patch, null);
+    assert.equal(Object.hasOwn(evidence.introduced, "patch"), false);
     assert.equal(evidence.baseOnlyFiles, null);
   } finally {
     rmSync(f.root, { recursive: true, force: true });

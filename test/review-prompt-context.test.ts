@@ -705,3 +705,42 @@ test("review context ledger records ordered section budgets", () => {
   assert.match(renderReviewContextBudgetForTest(context), /- timeline events: 1\/1 hydrated/);
   assert.match(renderReviewContextBudgetForTest(context), /- previous ClawSweeper review: 1 entry/);
 });
+
+test("PR prompt omits only source patch fields without mutating policy evidence", () => {
+  const context = {
+    issue: { body: "DISCUSSION_BODY", patch: "UNATTRIBUTED_PATCH_FIELD" },
+    comments: [{ body: "DISCUSSION_COMMENT", patch: "COMMENT_PATCH_FIELD" }],
+    timeline: [],
+    pullFiles: [
+      {
+        filename: "src/example.ts",
+        status: "modified",
+        additions: 2,
+        deletions: 1,
+        patch: "SOURCE_PATCH_SENTINEL",
+        patchComplete: true,
+      },
+    ],
+  };
+  const original = JSON.stringify(context);
+  const prompt = reviewPromptForTest(
+    item({ kind: "pull_request" }),
+    context,
+    git,
+    "MAINTAINER_REQUEST",
+  );
+  const jsonText = prompt
+    .split("## GitHub Context\n")[1]!
+    .match(/\x60{3}json\n([\s\S]*?)\n\x60{3}/)![1]!;
+  const rendered = JSON.parse(jsonText);
+  assert.deepEqual(rendered.pullFiles, [
+    { filename: "src/example.ts", status: "modified", additions: 2, deletions: 1 },
+  ]);
+  assert.deepEqual(rendered.issue, context.issue);
+  assert.deepEqual(rendered.comments, context.comments);
+  assert.ok(prompt.includes("MAINTAINER_REQUEST"));
+  assert.ok(!prompt.includes("SOURCE_PATCH_SENTINEL"));
+  assert.equal(JSON.stringify(context), original);
+  const issuePrompt = reviewPromptForTest(item({ kind: "issue" }), context, git);
+  assert.ok(issuePrompt.includes("SOURCE_PATCH_SENTINEL"));
+});

@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import {
   classifyReviewedFixtureScan,
+  serializeReviewContext,
   type StagedScanInput,
 } from "../dist/agent-input-scan-fixtures.js";
 
@@ -517,3 +518,25 @@ exactUriFixtureTests(
   "extensions/browser/src/browser/pw-session.connections.test.ts",
   browserSessionFixture,
 );
+
+test("source projection removes only host-selected patch fields and preserves input records", () => {
+  const current = {
+    filename: "source.ts",
+    patch: "CURRENT_SOURCE",
+    patchComplete: true,
+    changes: 1,
+  };
+  const cached = { filename: "source.ts", patch: "CACHED_SOURCE", status: "modified" };
+  const context = {
+    pullFiles: [current],
+    snapshot: { files: { items: [cached] } },
+    comment: { patch: "UNATTRIBUTED_TEXT", body: "COMMENT_BODY" },
+  };
+  const before = JSON.stringify(context);
+  const projected = JSON.parse(serializeReviewContext(context, [current, cached]));
+  assert.deepEqual(projected.pullFiles, [{ filename: "source.ts", changes: 1 }]);
+  assert.deepEqual(projected.snapshot.files.items, [{ filename: "source.ts", status: "modified" }]);
+  assert.deepEqual(projected.comment, context.comment);
+  assert.equal(JSON.stringify(context), before);
+  assert.deepEqual(JSON.parse(serializeReviewContext(context)), context);
+});

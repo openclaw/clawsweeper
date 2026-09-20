@@ -1,0 +1,30 @@
+{
+  "head": "4df6f54115cde20d9225f791805a82b4bfcf3898",
+  "base": "d1a550d938cba934d5cf2cd7bd0dc8a06c5da073",
+  "mode": "source",
+  "promptSha256": "c10dad45a9994fb931d57ab36a07e8d1264fa106169afa730af93d8c578b7da4",
+  "promptChars": 174923,
+  "contextPreserved": true,
+  "verification": "canonical enabled",
+  "producer": "production buildReviewPrompt through its exported test entrypoint",
+  "result": "refused",
+  "notices": [],
+  "limits": "Controlled captured-source context, no model execution or hosted publication; complete committed source remains independently scanned.",
+  "failure": {
+    "reason": "findings",
+    "diagnostic": {
+      "kind": "unclassified_finding",
+      "reason": "material_not_reviewed",
+      "findingCount": 5,
+      "findingIndex": 1,
+      "detectorType": 17,
+      "decoder": "HTML",
+      "verified": false,
+      "scannerLine": 1371,
+      "material": {
+        "kind": "prompt",
+        "id": "prompt"
+      }
+    }
+  }
+}

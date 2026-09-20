@@ -1,0 +1,32 @@
+{
+  "head": "4a398abbc813290bca52ce3effba9c5849f23213",
+  "base": "d1a550d938cba934d5cf2cd7bd0dc8a06c5da073",
+  "mode": "source",
+  "promptSha256": "da74020e824e54c18e8bd386919b4406d9597931fb29fb58ee85f29cf4e766d8",
+  "promptChars": 131235,
+  "contextPreserved": true,
+  "verification": "canonical enabled",
+  "producer": "production buildReviewPrompt through its exported test entrypoint",
+  "result": "refused",
+  "notices": [],
+  "limits": "Controlled captured-source context, no model execution or hosted publication; complete committed source remains independently scanned.",
+  "failure": {
+    "reason": "findings",
+    "diagnostic": {
+      "kind": "unclassified_finding",
+      "reason": "material_not_reviewed",
+      "findingCount": 3,
+      "findingIndex": 0,
+      "detectorType": 17,
+      "decoder": "PLAIN",
+      "verified": false,
+      "scannerLine": 512,
+      "material": {
+        "kind": "patch",
+        "id": "1",
+        "from": "6f3aa8d6bc409bd4502902382c0055ed489ace38",
+        "to": "4a398abbc813290bca52ce3effba9c5849f23213"
+      }
+    }
+  }
+}

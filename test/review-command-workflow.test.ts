@@ -1255,6 +1255,11 @@ else {
       assert.equal(cachedCompletions, 1);
       assert.equal(checkoutInspectionCalls, 1);
       const inspectedContext = JSON.parse(inspectedPrompt);
+      if (hydrated && isPullRequest) {
+        assert.equal(inspectedContext.pullFiles[0].filename, "value.ts");
+        assert.equal(Object.hasOwn(inspectedContext.pullFiles[0], "patch"), false);
+        assert.equal(context.pullFiles?.[0]?.patch, patch);
+      }
       assert.equal(
         hydrated ? inspectedContext.issue.body : inspectedContext.title,
         hydrated ? safeFixtureQuote : `Scheduled cache proof. ${safeFixtureQuote}`,

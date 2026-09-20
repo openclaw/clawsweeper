@@ -1,0 +1,68 @@
+{
+  "head": "4df6f54115cde20d9225f791805a82b4bfcf3898",
+  "base": "d1a550d938cba934d5cf2cd7bd0dc8a06c5da073",
+  "mode": "source",
+  "promptSha256": "38b001058516b2cbd7037eeaa12f480a93813a18fa7e3cc0e39239575e16c1e2",
+  "promptChars": 131235,
+  "contextPreserved": true,
+  "verification": "canonical enabled",
+  "producer": "production buildReviewPrompt through its exported test entrypoint",
+  "result": "admitted",
+  "notices": [
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+      "fixtureSha256": "e10c3a5ca351377dab596260b30d87d26337a91bb3bb7b8f8d1fecda7285a125",
+      "source": "extensions/github/src/detail-checks.test.ts",
+      "detector": "URI",
+      "findings": [
+        {
+          "blob": "f9b2ba51f9bf293292e2b71b457839a09242af1a",
+          "scannerLine": 388,
+          "literalLine": 388,
+          "decoder": "HTML",
+          "role": "head",
+          "occurrences": 1
+        }
+      ]
+    },
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+      "fixtureSha256": "e10c3a5ca351377dab596260b30d87d26337a91bb3bb7b8f8d1fecda7285a125",
+      "source": "extensions/github/src/detail-checks.test.ts",
+      "detector": "URI",
+      "findings": [
+        {
+          "blob": "1",
+          "scannerLine": 511,
+          "literalLine": 512,
+          "decoder": "HTML",
+          "role": "head",
+          "occurrences": 1,
+          "patch": {
+            "from": "6f3aa8d6bc409bd4502902382c0055ed489ace38",
+            "to": "4df6f54115cde20d9225f791805a82b4bfcf3898",
+            "sourceBlob": "f9b2ba51f9bf293292e2b71b457839a09242af1a",
+            "sourceLine": 388
+          }
+        },
+        {
+          "blob": "1",
+          "scannerLine": 512,
+          "literalLine": 512,
+          "decoder": "PLAIN",
+          "role": "head",
+          "occurrences": 1,
+          "patch": {
+            "from": "6f3aa8d6bc409bd4502902382c0055ed489ace38",
+            "to": "4df6f54115cde20d9225f791805a82b4bfcf3898",
+            "sourceBlob": "f9b2ba51f9bf293292e2b71b457839a09242af1a",
+            "sourceLine": 388
+          }
+        }
+      ]
+    }
+  ],
+  "limits": "Controlled captured-source context, no model execution or hosted publication; complete committed source remains independently scanned."
+}

@@ -374,9 +374,17 @@ does not erase recorded parents or prove their objects are available. Neither
 workspace/test-merge ancestry nor fetched main or the merge base may substitute
 for original parentage; raw parents do not establish causality or authorship.
 
-The reviewer also receives fetched main, the unique merge base, introduced files
-and patch from merge-base to head, base-branch changes, and a separately labeled
-base-to-head endpoint comparison. A file that differs only because main advanced is not
+The reviewer also receives fetched main, the unique merge base, introduced-file
+metadata from merge-base to head, base-branch changes, and a separately labeled
+base-to-head endpoint comparison. Prompt serialization omits only the `patch` and
+`patchComplete` fields of host-selected source records: introduced evidence and
+PR pull-file records. Captured patches remain unchanged for deterministic policy
+and hydration; the input scanner still scans complete committed patches and blobs
+with their provenance. Reviewers read hunks from the checkout using the supplied
+immutable bounds. Discussion, review comments, maintainer requests, and issue-only
+context remain scanner-visible. Hydrated PR cache preflight uses the same projection
+for current and persisted file records while retaining complete discussion evidence.
+A file that differs only because main advanced is not
 automatically a PR edit. Findings in untouched files remain valid when an
 introduced hunk elsewhere causes the failure; risks, labels, scores, and fixups
 must use that same ownership boundary.
@@ -398,6 +406,8 @@ merges and final merge commits cannot establish what this merge would change.
 A clean merge does not rule out semantic regressions.
 
 This is reviewer input, not a new persistent decision or repair contract.
+The [source-prompt proof](proof/review-source-prompt/README.md) records native
+admission and prompt/source refusal controls for the projection boundary.
 OpenClaw Bay is unaffected: no observer fields, routes, or controls change.
 
 Security defaults to `None.` when there are no concerns. Do not spend public

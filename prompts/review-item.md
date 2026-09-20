@@ -96,8 +96,12 @@ For PR ownership, start with the host-computed `PR Introduction Evidence`.
 and is not introduction evidence. `baseChanges` and `baseOnlyFiles` identify
 base-branch work, not edits by this PR. `checkout.sha` records the actual local
 revision; `fetchedMainSha` is behavioral context and may differ from both the
-checkout and the pinned PR base. GitHub `pullFiles` supplies bounded PR patches,
-not an endpoint comparison; check truncation and pinned identities before use.
+checkout and the pinned PR base. GitHub `pullFiles` supplies bounded file metadata.
+Source patch text is intentionally not copied into this prompt: the input gate
+scans the complete committed patches and blobs with their source attribution.
+Read the introduced hunks from the checkout with `git diff --no-ext-diff
+--no-textconv --no-renames <introduced.fromSha> <introduced.toSha> --`, and inspect
+the corresponding original blobs. Retain the pinned identities and ownership roles.
 When host evidence is unavailable, ambiguous, or incomplete, say what is missing
 and use only independently verified introduced hunks. Never guess ownership from
 an older head's contents or a current-main comparison.
