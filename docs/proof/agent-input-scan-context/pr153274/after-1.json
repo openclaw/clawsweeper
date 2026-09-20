@@ -1,0 +1,65 @@
+{
+  "targetHead": "4df6f54115cde20d9225f791805a82b4bfcf3898",
+  "base": "6f3aa8d6bc409bd4502902382c0055ed489ace38",
+  "source": "complete committed range, controlled prompt, canonical pinned native scanner",
+  "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
+  "verification": "canonical enabled",
+  "result": "admitted",
+  "elapsedMs": 4441,
+  "notices": [
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+      "fixtureSha256": "e10c3a5ca351377dab596260b30d87d26337a91bb3bb7b8f8d1fecda7285a125",
+      "source": "extensions/github/src/detail-checks.test.ts",
+      "detector": "URI",
+      "findings": [
+        {
+          "blob": "f9b2ba51f9bf293292e2b71b457839a09242af1a",
+          "scannerLine": 388,
+          "literalLine": 388,
+          "decoder": "PLAIN",
+          "role": "head",
+          "occurrences": 1
+        }
+      ]
+    },
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+      "fixtureSha256": "e10c3a5ca351377dab596260b30d87d26337a91bb3bb7b8f8d1fecda7285a125",
+      "source": "extensions/github/src/detail-checks.test.ts",
+      "detector": "URI",
+      "findings": [
+        {
+          "blob": "1",
+          "scannerLine": 511,
+          "literalLine": 512,
+          "decoder": "HTML",
+          "role": "head",
+          "occurrences": 1,
+          "patch": {
+            "from": "6f3aa8d6bc409bd4502902382c0055ed489ace38",
+            "to": "4df6f54115cde20d9225f791805a82b4bfcf3898",
+            "sourceBlob": "f9b2ba51f9bf293292e2b71b457839a09242af1a",
+            "sourceLine": 388
+          }
+        },
+        {
+          "blob": "1",
+          "scannerLine": 512,
+          "literalLine": 512,
+          "decoder": "PLAIN",
+          "role": "head",
+          "occurrences": 1,
+          "patch": {
+            "from": "6f3aa8d6bc409bd4502902382c0055ed489ace38",
+            "to": "4df6f54115cde20d9225f791805a82b4bfcf3898",
+            "sourceBlob": "f9b2ba51f9bf293292e2b71b457839a09242af1a",
+            "sourceLine": 388
+          }
+        }
+      ]
+    }
+  ]
+}

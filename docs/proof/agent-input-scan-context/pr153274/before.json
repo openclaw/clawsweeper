@@ -1,0 +1,29 @@
+{
+  "targetHead": "4df6f54115cde20d9225f791805a82b4bfcf3898",
+  "base": "6f3aa8d6bc409bd4502902382c0055ed489ace38",
+  "source": "complete committed range, controlled prompt, canonical pinned native scanner",
+  "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
+  "verification": "canonical enabled",
+  "result": "refused",
+  "elapsedMs": 4393,
+  "notices": [],
+  "failure": {
+    "reason": "findings",
+    "diagnostic": {
+      "kind": "unclassified_finding",
+      "reason": "material_not_reviewed",
+      "findingCount": 3,
+      "findingIndex": 0,
+      "detectorType": 17,
+      "decoder": "HTML",
+      "verified": false,
+      "scannerLine": 512,
+      "material": {
+        "kind": "patch",
+        "id": "1",
+        "from": "6f3aa8d6bc409bd4502902382c0055ed489ace38",
+        "to": "4df6f54115cde20d9225f791805a82b4bfcf3898"
+      }
+    }
+  }
+}

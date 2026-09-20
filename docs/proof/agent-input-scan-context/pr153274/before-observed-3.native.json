@@ -1,0 +1,42 @@
+{
+  "note": "Native hashes and reported coordinates only. Canonical literal-line attribution is recorded in admission notices and identities.json; decoded scanner coordinates are not source-line authority.",
+  "calls": [
+    {
+      "status": 183,
+      "signal": null,
+      "observationErrors": 0,
+      "findings": [
+        {
+          "detectorType": 17,
+          "detectorName": "URI",
+          "decoder": "PLAIN",
+          "verified": false,
+          "rawSha256": "148db1b794aa55e895c253fc95230148dd8cf58b8f97bac16c3db0147df7f457",
+          "rawV2Sha256": "e10c3a5ca351377dab596260b30d87d26337a91bb3bb7b8f8d1fecda7285a125",
+          "blob": "1",
+          "scannerLine": 512
+        },
+        {
+          "detectorType": 17,
+          "detectorName": "URI",
+          "decoder": "PLAIN",
+          "verified": false,
+          "rawSha256": "148db1b794aa55e895c253fc95230148dd8cf58b8f97bac16c3db0147df7f457",
+          "rawV2Sha256": "e10c3a5ca351377dab596260b30d87d26337a91bb3bb7b8f8d1fecda7285a125",
+          "blob": "f9b2ba51f9bf293292e2b71b457839a09242af1a",
+          "scannerLine": 388
+        },
+        {
+          "detectorType": 17,
+          "detectorName": "URI",
+          "decoder": "HTML",
+          "verified": false,
+          "rawSha256": "148db1b794aa55e895c253fc95230148dd8cf58b8f97bac16c3db0147df7f457",
+          "rawV2Sha256": "e10c3a5ca351377dab596260b30d87d26337a91bb3bb7b8f8d1fecda7285a125",
+          "blob": "1",
+          "scannerLine": 511
+        }
+      ]
+    }
+  ]
+}

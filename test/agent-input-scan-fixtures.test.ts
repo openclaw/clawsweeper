@@ -411,3 +411,84 @@ for (const variant of [
     }
   });
 }
+
+function githubCheckLinkFixture(): ReturnType<typeof autoreviewFixtures>[number] {
+  // Match the approved external fixture without adding another scan literal here.
+  const raw = ["https://", "user", ":", "password", "@", "ci.example.com"].join("");
+  const rawV2 = raw + "/log";
+  return { raw, rawV2, line: '    "' + rawV2 + '",', decoders: ["PLAIN", "HTML"] };
+}
+
+const githubCheckLinkSource = "extensions/github/src/detail-checks.test.ts";
+for (const change of ["add", "remove", "context"] as const) {
+  test("GitHub check-link fixture admits exact Git-generated " + change + " attribution", (t) => {
+    const patch = fixturePatch(t, githubCheckLinkSource, [githubCheckLinkFixture()], change);
+    for (const decoder of ["PLAIN", "HTML"] as const) {
+      const result = patch.classify(decoder);
+      assert.equal(result.kind, "classified", JSON.stringify(result));
+      if (result.kind !== "classified") continue;
+      assert.ok(result.notices.every((notice) => notice.source === githubCheckLinkSource));
+      const findings = result.notices.flatMap((notice) => notice.findings);
+      assert.ok(findings.some((finding) => finding.patch));
+      assert.ok(findings.every((finding) => finding.decoder === decoder));
+      if (change === "context") {
+        assert.ok(findings.some((finding) => finding.role === "base"));
+        assert.ok(findings.some((finding) => finding.role === "head"));
+      } else {
+        assert.ok(findings.every((finding) => finding.role === patch.role));
+      }
+    }
+  });
+}
+for (const variant of [
+  "literal",
+  "line",
+  "path",
+  "mode",
+  "role",
+  "verified",
+  "decoder",
+  "extra-occurrence",
+] as const) {
+  test("GitHub check-link fixture refuses changed " + variant, (t) => {
+    const entry = githubCheckLinkFixture();
+    if (variant === "literal") {
+      const original = entry.raw;
+      entry.raw = original.slice(0, -1) + "x";
+      entry.rawV2 = entry.rawV2!.replace(original, entry.raw);
+      entry.line = entry.line.replace(original, entry.raw);
+    } else if (variant === "line") {
+      entry.line += " ";
+    }
+    const entries =
+      variant === "extra-occurrence"
+        ? [entry, { ...entry, line: entry.line + " // extra" }]
+        : [entry];
+    const patch = fixturePatch(
+      t,
+      variant === "path" ? "extensions/github/src/another-check.test.ts" : githubCheckLinkSource,
+      entries,
+    );
+    if (variant === "mode" || variant === "role") {
+      for (const [file, input] of patch.inputs) {
+        if (input.kind !== "blob") continue;
+        patch.inputs.set(file, {
+          ...input,
+          references: input.references.map((reference) => ({
+            ...reference,
+            ...(variant === "mode" ? { mode: "100755" } : { role: "worktree" as const }),
+          })),
+        });
+      }
+    }
+    const result = patch.classify(
+      "HTML",
+      variant === "verified"
+        ? { Verified: true }
+        : variant === "decoder"
+          ? { DecoderName: "BASE64" }
+          : {},
+    );
+    assert.equal(result.kind, "refused", JSON.stringify(result));
+  });
+}

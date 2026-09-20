@@ -175,3 +175,60 @@ Limits: no model runs, no hosted review is bypassed, and no runtime policy is
 published by this proof. Hosted review must scan its own complete inputs after
 an approved rollout. OpenClaw Bay is unaffected; only host-side fixture
 qualification changes, with no dashboard API or action surface change.
+
+## GitHub unsafe-check-link fixture
+
+Maintainer-approved qualification for the single synthetic userinfo-rejection
+fixture in `extensions/github/src/detail-checks.test.ts`, introduced by
+[OpenClaw PR 153274](https://github.com/openclaw/openclaw/pull/153274). The test
+asserts that unsafe check-run and commit-status URLs are omitted. Its reserved
+example hostname and synthetic userinfo are test data, not live credentials.
+
+[Identity evidence](pr153274/identities.json) binds the complete source line,
+regular-file mode, source blob, native Raw/RawV2 hashes, and captured Git A record
+for this new file. The qualification adds only the observed URI detector's PLAIN
+and HTML variants at that exact source path. It does not add a value-only row or
+a directory-wide exemption.
+
+The controlled proof ran on Linux x64 with Node 26.8.2, pnpm 12.4.1, and the
+canonical pinned TruffleHog 3.97.4 scanner, with verification enabled. A disposable
+shared-object checkout was pinned to the real PR head; the canonical source
+checkout was not changed. From a built ClawSweeper checkout:
+
+```bash
+pnpm run build:node
+node docs/proof/agent-input-scan-context/run-proof.mjs \
+  /path/to/disposable/openclaw-at-pr-head \
+  6f3aa8d6bc409bd4502902382c0055ed489ace38 \
+  4df6f54115cde20d9225f791805a82b4bfcf3898 \
+  /path/to/fixture-admission-proof.json
+```
+
+[Before qualification](pr153274/before.json), the full committed range refused
+with `findings / material_not_reviewed`. Native observations retained only
+finding hashes and coordinates; scanner arguments, output, status, and
+classification were unchanged. All observed findings had the same Raw/RawV2
+identity. HTML decoding can report patch line 511 while the literal is on line
+512; the existing owner resolves that literal to committed source line 388.
+The qualification binds the actual complete source line, never the neighboring
+line or the scanner coordinate alone.
+
+The same range admitted in three consecutive runs:
+[run 1](pr153274/after-1.json), [run 2](pr153274/after-2.json), and
+[run 3](pr153274/after-3.json). Adjacent `.native.json` files record the bounded
+observations. Each successful scan retained exact source-attribution notices.
+
+A separate disposable commit changed one ASCII byte of the fixture password,
+with the path, mode, and test structure otherwise unchanged. The canonical native
+scan [refused that mutation](pr153274/negative-one-byte.json) with
+`findings / literal_not_reviewed`; that local proof commit is not a published
+OpenClaw change. The focused scanner/fixture suite passes 365 tests, including
+new real-Git added, removed, and context-line cases for both observed decoders
+and refusal controls for literal, full-line, path, mode, role, verified status,
+unqualified decoder, and an additional occurrence.
+
+Limits: no model runs and no hosted review is replaced. Hosted ClawSweeper must
+rescan its own current prompt, schema, and complete source inputs after the
+normal policy landing. Existing scanner, verification, completion, source,
+mode, and patch-provenance gates remain enabled. OpenClaw Bay is unaffected: no
+dashboard API, telemetry schema, or public action surface changes.
