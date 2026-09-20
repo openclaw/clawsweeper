@@ -82,12 +82,13 @@ export function codexEnv(options: CodexEnvOptions = {}): NodeJS.ProcessEnv {
   delete env.CLAWSWEEPER_CRABFLEET_RUNNER_PTY_URL;
   delete env.CLAWSWEEPER_CRABFLEET_WORK_STATE_URL;
   for (const key of Object.keys(env)) {
+    const normalizedKey = key.toUpperCase();
     // Trusted preparation may inject process-local Git config. Do not forward
     // that numbered/parameter override mechanism into the model process.
     if (
-      key === "GIT_CONFIG_COUNT" ||
-      key === "GIT_CONFIG_PARAMETERS" ||
-      /^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key)
+      normalizedKey === "GIT_CONFIG_COUNT" ||
+      normalizedKey === "GIT_CONFIG_PARAMETERS" ||
+      /^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(normalizedKey)
     ) {
       delete env[key];
     }

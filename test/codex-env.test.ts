@@ -38,3 +38,20 @@ test("codex subprocess env strips process-local Git config overrides", () => {
     process.env = originalEnv;
   }
 });
+
+test("codex subprocess env strips case-variant Git config overrides", () => {
+  const originalEnv = { ...process.env };
+  try {
+    process.env.git_config_count = "1";
+    process.env.git_config_key_0 = "user.name";
+    process.env.git_config_value_0 = "sentinel-lowercase-name";
+
+    const env = codexEnv();
+
+    assert.equal(env.git_config_count, undefined);
+    assert.equal(env.git_config_key_0, undefined);
+    assert.equal(env.git_config_value_0, undefined);
+  } finally {
+    process.env = originalEnv;
+  }
+});

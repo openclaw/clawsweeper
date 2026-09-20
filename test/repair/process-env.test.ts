@@ -15,6 +15,64 @@ import {
   repairCodexServiceTier,
 } from "../../dist/repair/process-env.js";
 
+test("codexSubprocessEnv strips process-local Git config overrides", () => {
+  withEnv(
+    {
+      GIT_CONFIG_COUNT: "2",
+      GIT_CONFIG_KEY_0: "user.name",
+      GIT_CONFIG_VALUE_0: "sentinel-clawsweeper-git-auth-boundary-20260920",
+      GIT_CONFIG_KEY_1: "user.email",
+      GIT_CONFIG_VALUE_1: "sentinel-count@invalid.example",
+      GIT_CONFIG_KEY_10: "alias.sentinel",
+      GIT_CONFIG_VALUE_10: "status",
+      GIT_CONFIG_PARAMETERS: "'user.email=sentinel-params@invalid.example'",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_SYSTEM: "/dev/null",
+      CLAWSWEEPER_GIT_USER_NAME: "clawsweeper-repair",
+      CLAWSWEEPER_GIT_USER_EMAIL: "bot@example.invalid",
+      GH_TOKEN: "synthetic-negative-control-gh",
+    },
+    () => {
+      const env = codexSubprocessEnv();
+
+      assert.equal(env.GIT_CONFIG_COUNT, undefined);
+      assert.equal(env.GIT_CONFIG_PARAMETERS, undefined);
+      assert.equal(env.GIT_CONFIG_KEY_0, undefined);
+      assert.equal(env.GIT_CONFIG_VALUE_0, undefined);
+      assert.equal(env.GIT_CONFIG_KEY_1, undefined);
+      assert.equal(env.GIT_CONFIG_VALUE_1, undefined);
+      assert.equal(env.GIT_CONFIG_KEY_10, undefined);
+      assert.equal(env.GIT_CONFIG_VALUE_10, undefined);
+      assert.equal(env.GIT_CONFIG_GLOBAL, "/dev/null");
+      assert.equal(env.GIT_CONFIG_NOSYSTEM, "1");
+      assert.equal(env.GIT_CONFIG_SYSTEM, "/dev/null");
+      assert.equal(env.GIT_AUTHOR_NAME, "clawsweeper");
+      assert.equal(env.GIT_AUTHOR_EMAIL, "bot@example.invalid");
+      assert.equal(env.GIT_COMMITTER_NAME, "clawsweeper");
+      assert.equal(env.GIT_COMMITTER_EMAIL, "bot@example.invalid");
+      assert.equal(env.GH_TOKEN, undefined);
+    },
+  );
+});
+
+test("codexSubprocessEnv strips case-variant Git config overrides", () => {
+  withEnv(
+    {
+      git_config_count: "1",
+      git_config_key_0: "user.name",
+      git_config_value_0: "sentinel-lowercase-name",
+    },
+    () => {
+      const env = codexSubprocessEnv();
+
+      assert.equal(env.git_config_count, undefined);
+      assert.equal(env.git_config_key_0, undefined);
+      assert.equal(env.git_config_value_0, undefined);
+    },
+  );
+});
+
 test("codexSubprocessEnv forces ClawSweeper git identity and strips tokens", () => {
   withEnv(
     {

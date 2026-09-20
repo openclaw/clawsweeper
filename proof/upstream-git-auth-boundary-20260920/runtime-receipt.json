@@ -1,0 +1,71 @@
+{
+  "parentSourceHead": "e80cc9a0c057d46803945b688bb29a256a6553c3",
+  "candidateStatus": "parent-plus-relevant-source-test-diff",
+  "relevantSourceTestDiffSha256": "4a0ca81ad021bceb32bd533fffed27775ff1e6b6ee4b0868a2dcfe50c4c145eb",
+  "base": "a09e6cefb31adcd12bba10e1658cae5fced08c80",
+  "node": "v24.5.0",
+  "claim": "Synthetic process-local Git config overrides are absent from both constructed model environments.",
+  "review": {
+    "retainedGitKeys": [],
+    "retainedCaseVariantGitKeys": [],
+    "ghTokenStripped": true,
+    "gitConfigGlobalPreserved": true,
+    "gitOptionalLocks": "0",
+    "child": {
+      "presentGitKeys": [],
+      "presentCaseVariantGitKeys": [],
+      "nameStatus": 1,
+      "emailStatus": 1,
+      "nameMatchesSentinel": false,
+      "emailMatchesSentinel": false
+    }
+  },
+  "repair": {
+    "retainedGitKeys": [],
+    "retainedCaseVariantGitKeys": [],
+    "ghTokenStripped": true,
+    "gitConfigGlobalPreserved": true,
+    "gitOptionalLocks": null,
+    "child": {
+      "presentGitKeys": [],
+      "presentCaseVariantGitKeys": [],
+      "nameStatus": 1,
+      "emailStatus": 1,
+      "nameMatchesSentinel": false,
+      "emailMatchesSentinel": false
+    },
+    "authorName": "clawsweeper",
+    "authorEmailMatchesConfigured": true,
+    "committerName": "clawsweeper",
+    "committerEmailMatchesConfigured": true
+  },
+  "pathCases": {
+    "normal": {
+      "containsSpace": false,
+      "containsPercent": false,
+      "oldCwdExists": true,
+      "candidateCwdExists": true,
+      "oldImportSucceeded": true,
+      "candidateImportSucceeded": true
+    },
+    "tempEncoded": {
+      "containsSpace": true,
+      "containsPercent": true,
+      "oldCwdExists": false,
+      "candidateCwdExists": true,
+      "oldImportCode": "ERR_MODULE_NOT_FOUND",
+      "candidateImportSucceeded": true,
+      "compiledHelpersExercised": true,
+      "encodedReviewRetainedGitKeys": [],
+      "encodedRepairRetainedGitKeys": []
+    }
+  },
+  "repositoryGitStatusExit": 0,
+  "explicitCliOverrideWorks": true,
+  "limits": [
+    "Synthetic sentinels only; no credential stores, .env files, auth logs, private keys, or real tokens were read.",
+    "The children are Node stand-ins using the same environment handoff; no Codex/OpenClaw model was started.",
+    "This does not claim comprehensive Git authentication isolation or production secret exposure.",
+    "Only the numbered/parameter Git config override mechanism is filtered; isolation keys such as GIT_CONFIG_GLOBAL remain."
+  ]
+}
