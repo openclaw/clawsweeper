@@ -1008,7 +1008,7 @@ test("managed local review source stays checkout-free while preserving pull requ
 
     mkdirSync(join(root, "artifacts", "local-review-357"), { recursive: true });
     execFileSync("git", ["clone", "--filter=blob:none", "--no-checkout", origin, targetDir], {
-      stdio: "ignore",
+      stdio: ["ignore", "pipe", "pipe"],
     });
     execFileSync("git", ["fetch", "origin", "refs/pull/357/head", "--depth=50"], {
       cwd: targetDir,
