@@ -103,6 +103,21 @@ export function createReportCommentPresentation(
     triagePriorityFromReport,
   } = dependencies;
 
+  function hasConfirmableCurrentLabels(
+    markdown: string,
+    options: ReviewCommentRenderOptions,
+  ): boolean {
+    if (options.previousLabels !== undefined) return true;
+    const raw = frontMatterValue(markdown, "labels");
+    if (raw === undefined || raw === "none") return false;
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      return Array.isArray(parsed) && parsed.every((entry) => typeof entry === "string");
+    } catch {
+      return false;
+    }
+  }
+
   function renderKeepOpenCommentFromReport(
     markdown: string,
     options: ReviewCommentRenderOptions = {},
@@ -238,6 +253,14 @@ export function createReportCommentPresentation(
         "",
         labelTransitionJustificationsMarkdown(labelTransitionJustifications),
       );
+    } else if (
+      hasConfirmableCurrentLabels(markdown, options) &&
+      frontMatterValue(markdown, "review_status") !== "failed" &&
+      labelJustifications.length > 0
+    ) {
+      // An explicit empty plan is only for a confirmed current==desired
+      // owned-label snapshot, not absent, invalid, or unowned-only metadata.
+      labelDetails.push("Label changes:", "", "No label changes.");
     }
     if (labelJustifications.length) {
       if (labelDetails.length) labelDetails.push("");

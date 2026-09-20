@@ -873,3 +873,249 @@ Full review comments:
   );
   assert.doesNotMatch(comment, /remove `status: 📣 needs proof`/);
 });
+
+test("known current==desired labels are the only explicit empty label plan", () => {
+  const currentLabels = [
+    "merge-risk: 🚨 security-boundary",
+    "proof: sufficient",
+    "rating: 🐚 platinum hermit",
+    "status: 👀 ready for maintainer look",
+  ];
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "180",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify(currentLabels),
+    work_candidate: "none",
+    pull_head_sha: REVIEW_HEAD_SHA,
+    triage_priority: "none",
+    impact_labels: JSON.stringify([]),
+    merge_risk_labels: JSON.stringify(["merge-risk: 🚨 security-boundary"]),
+    label_justifications: JSON.stringify([
+      {
+        label: "merge-risk: 🚨 security-boundary",
+        reason: "The default engine can use GitHub App authority after merge.",
+      },
+    ]),
+  })}
+
+## Summary
+
+Keep this PR open for maintainer review.
+
+## What This Changes
+
+Keeps the reviewed labels already present on the pull request.
+
+## Best Possible Solution
+
+Leave the current labels in place.
+
+${realBehaviorProofReportSection({
+  status: "sufficient",
+  evidenceKind: "linked_artifact",
+  needsContributorAction: false,
+  summary: "Linked artifact proof covers the reviewed behavior.",
+})}
+
+${prRatingReportSection({
+  overallTier: "B",
+  proofTier: "A",
+  patchTier: "B",
+})}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.9
+
+Full review comments:
+
+- none
+`;
+
+  const comment = renderReviewCommentFromReport(report, "none", {
+    previousLabels: currentLabels,
+    prStatusKind: "ready_for_maintainer_look",
+  });
+  const labelDetails = detailsBody(comment, "Label changes");
+
+  assert.match(labelDetails, /Label changes:\n\nNo label changes\./);
+  assert.match(labelDetails, /Label justifications:/);
+  assert.doesNotMatch(labelDetails, /^- add |^- remove /m);
+});
+
+test("nonempty current-to-desired label transitions still render add and remove instructions", () => {
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "181",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "complete",
+    confidence: "high",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    labels: JSON.stringify([]),
+    work_candidate: "none",
+    pull_head_sha: REVIEW_HEAD_SHA,
+    triage_priority: "P1",
+    impact_labels: JSON.stringify([]),
+    merge_risk_labels: JSON.stringify(["merge-risk: 🚨 compatibility"]),
+    label_justifications: JSON.stringify([
+      {
+        label: "P1",
+        reason: "The PR changes an active channel workflow affecting real users.",
+      },
+      {
+        label: "merge-risk: 🚨 compatibility",
+        reason: "Merging changes the default upgrade behavior for existing configs.",
+      },
+    ]),
+  })}
+
+## Summary
+
+Keep this PR open for maintainer review.
+
+## What This Changes
+
+Changes message delivery behavior.
+
+## Best Possible Solution
+
+Review the compatibility impact before merge.
+
+${realBehaviorProofReportSection({
+  status: "insufficient",
+  needsContributorAction: true,
+  summary: "The PR has tests but no real setup proof yet.",
+})}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.8
+
+Full review comments:
+
+- none
+`;
+
+  const comment = renderReviewCommentFromReport(report, "none", {
+    previousLabels: ["P2"],
+  });
+  const labelDetails = detailsBody(comment, "Label changes");
+
+  assert.match(labelDetails, /Label changes:/);
+  assert.match(
+    labelDetails,
+    /- add `P1`: The PR changes an active channel workflow affecting real users\./,
+  );
+  assert.match(
+    labelDetails,
+    /- add `merge-risk: 🚨 compatibility`: Merging changes the default upgrade behavior for existing configs\./,
+  );
+  assert.match(labelDetails, /- remove `P2`: Current review triage priority is P1/);
+  assert.doesNotMatch(labelDetails, /No label changes\./);
+});
+
+test("absent or invalid label metadata does not invent an empty label plan", () => {
+  for (const fixture of [
+    {},
+    {
+      labels: "not-a-json-array",
+      label_justifications: "not-json",
+    },
+  ]) {
+    const report = `${reportFrontMatter({
+      type: "pull_request",
+      number: "182",
+      decision: "keep_open",
+      close_reason: "none",
+      review_status: "complete",
+      confidence: "high",
+      author: "contributor",
+      author_association: "CONTRIBUTOR",
+      work_candidate: "none",
+      pull_head_sha: REVIEW_HEAD_SHA,
+      triage_priority: "P1",
+      impact_labels: JSON.stringify([]),
+      merge_risk_labels: JSON.stringify(["merge-risk: 🚨 compatibility"]),
+      ...fixture,
+    })}
+
+## Summary
+
+Keep this PR open for maintainer review.
+
+## What This Changes
+
+Changes message delivery behavior.
+
+## Best Possible Solution
+
+Review the compatibility impact before merge.
+
+${realBehaviorProofReportSection({
+  status: "insufficient",
+  needsContributorAction: true,
+  summary: "The PR has tests but no real setup proof yet.",
+})}
+
+## Review Findings
+
+Overall correctness: patch is correct
+
+Overall confidence: 0.8
+
+Full review comments:
+
+- none
+`;
+
+    const comment = renderReviewCommentFromReport(report, "none");
+    const labelDetails = detailsBody(comment, "Label changes");
+
+    assert.match(labelDetails, /Label changes:/);
+    assert.match(labelDetails, /^- add `/m);
+    assert.doesNotMatch(labelDetails, /No label changes\./);
+    assert.doesNotMatch(labelDetails, /add `not-a-json-array`|remove `not-a-json-array`/);
+  }
+});
+
+test("zero-transition unknown label metadata does not invent an empty label plan", () => {
+  const report = `${reportFrontMatter({
+    type: "pull_request",
+    number: "183",
+    decision: "keep_open",
+    close_reason: "none",
+    review_status: "failed",
+    confidence: "low",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    work_candidate: "none",
+    pull_head_sha: REVIEW_HEAD_SHA,
+  })}
+
+## Summary
+
+Codex review failed: retryable codex transport failure (network).
+
+## What This Changes
+
+Review failed before ClawSweeper could summarize the requested change.
+`;
+
+  const comment = renderReviewCommentFromReport(report, "none");
+  const labelDetails = detailsBody(comment, "Label changes");
+
+  assert.doesNotMatch(comment, /No label changes\./);
+  assert.doesNotMatch(labelDetails, /^- add |^- remove /m);
+});
