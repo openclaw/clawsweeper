@@ -120,7 +120,7 @@ for (const [kind, name, lateUrl] of (["issue", "pull_request"] as const).flatMap
 }
 
 for (const [name, url] of Object.entries(mediaFixtureUrls)) {
-  test(`PR patch-only ${name} media stays in reviewer context without host fetches`, () => {
+  test(`PR patch-only ${name} media stays captured without prompt copies or host fetches`, () => {
     const patch = `@@ -0,0 +1 @@\n+const proof = "${url}";`;
     const pullFiles = [{ filename: "test/proof-fixture.ts", status: "added", patch }];
     const fixture = hydratePrimaryBody("Patch-only media.", "pull_request", { pullFiles });
@@ -131,10 +131,11 @@ for (const [name, url] of Object.entries(mediaFixtureUrls)) {
     });
     const json = prompt.split("## GitHub Context\n")[1]?.match(/```json\n([\s\S]*?)\n```/)?.[1];
     assert.ok(json);
-    assert.deepEqual(
-      JSON.parse(json).pullFiles,
-      JSON.parse(JSON.stringify(fixture.context.pullFiles)),
-    );
+    assert.deepEqual(JSON.parse(json).pullFiles, [
+      { filename: "test/proof-fixture.ts", status: "added" },
+    ]);
+    assert.equal(fixture.context.pullFiles[0].patch, patch);
+    assert.ok(!prompt.includes(url));
     const dir = mkdtempSync(join(tmpdir(), "clawsweeper-patch-media-"));
     const calls: string[][] = [];
     const runner = (command: string, args: readonly string[]) => {
