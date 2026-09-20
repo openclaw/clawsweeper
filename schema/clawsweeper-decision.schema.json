@@ -201,6 +201,7 @@
       }
     },
     "risks": {
+      "description": "Unresolved concerns only. For PRs, each entry becomes a blocking Before-merge item. Keep a maintainer's explicitly accepted tradeoff in evidence and label rationale when acceptance still covers the current change, not in this array. Proposed or conditional acceptance, a contributor assertion, and acceptance of different behavior do not resolve a concern. Independent findings, proof, security requirements, and merge authorization remain separate. Use [] when no unresolved concern remains.",
       "type": "array",
       "items": {
         "type": "string"

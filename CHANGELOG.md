@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Keep explicitly accepted PR tradeoffs visible as evidence without asking maintainers to resolve them again, while retaining blockers for unresolved or changed risks.
+
 - Qualify the existing OpenClaw browser CDP discovery fixture using exact native identities, its complete source line, and committed source references while preserving scanner enforcement.
 
 - Avoid migration-proof blockers when Node Console stream routing shares a patch hunk with unchanged storage, while retaining gates for real stored-field and persistence changes.

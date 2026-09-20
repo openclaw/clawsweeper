@@ -446,9 +446,24 @@ but leave `reviewFindings` and `mergeRiskLabels` focused on defects or risks
 that survive the actual three-way merge result. Use deletion/drop wording for
 current-base behavior only when a merge result, merge ref, conflict, or concrete
 patch evidence shows that the merged PR would remove or regress it.
-When merge risk is present, explain it in `risks` in maintainer-facing language
-and make `bestSolution` the best end state. Fill `mergeRiskOptions` with 1-3
-risk-specific maintainer options. Do not use a fixed menu. Each option needs a
+For PRs, `risks` is remaining merge work: every entry becomes a blocking
+Before-merge checkbox. Include only unresolved concerns. A risk label describes
+impact, not whether a maintainer decision remains open. When a maintainer has
+explicitly accepted a specific tradeoff and that decision still covers the
+current change, retain the limitation and the cited decision in `evidence` and
+label rationale, not `risks`. Do not ask for the same acceptance again through
+`nextStep`, `maintainerDecision`, or `mergeRiskOptions`.
+
+Check the decision's scope against the current diff. A proposed acceptance,
+unmet condition, contributor assertion, or acceptance for different behavior
+does not resolve the concern. New defects, expanded impact, and independent
+proof, security, or review requirements still need their own assessment. A
+recorded tradeoff does not grant merge authority or waive enforced gates.
+
+When unresolved merge risk remains, explain it in `risks` in maintainer-facing
+language and make `bestSolution` the best end state. Fill `mergeRiskOptions`
+with 1-3 risk-specific maintainer options; use [] when none remains. Do not use
+a fixed menu. Each option needs a
 short title and one concrete sentence. Mark exactly one option `recommended:
 true` only when the evidence supports a clear best path; otherwise leave every
 option `recommended: false`. Use `category: "fix_before_merge"` for repair

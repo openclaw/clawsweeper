@@ -199,6 +199,16 @@ report; it cannot supply repair or merge permission. Only a unique valid
 value in leading canonical frontmatter counts; body or fenced examples cannot
 supply it. This compatibility limit means old false-positive prose needs a fresh
 producer assessment, not a guess from its summary, rating, or automation markers.
+The producer keeps only unresolved concerns in `risks`: each entry becomes a
+blocking checklist item. Explicit maintainer acceptance resolves only the
+specific tradeoff it covers at the reviewed change. The limitation and cited
+decision remain visible in evidence and any applicable merge-risk label rationale;
+they do not reopen the same decision or populate `mergeRiskOptions`. Proposed or
+conditional acceptance, contributor assertions, and changed scope remain
+unresolved. The renderer does not infer acceptance from prose or labels, and
+historical reports require a fresh review to change their assessment. Acceptance
+does not grant merge authority or waive enforced gates.
+
 Independent findings, security concerns, risks, contributor proof, historical
 verification, decisions, failed reviews, and low-quality remediation still render
 and count. Scores retain their existing policy. A required action prevents a pass,
