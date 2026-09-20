@@ -32,6 +32,13 @@ import { writeFakeScanner } from "./agent-input-scan-helpers.ts";
 
 const CLI = fileURLToPath(new URL("../dist/clawsweeper.js", import.meta.url));
 
+test("synthetic GitHub commands preserve arguments without polluting production coverage", () => {
+  const output = execFileSync(process.execPath, ["scripts/e2e/fixture-coverage.mjs"], {
+    encoding: "utf8",
+  });
+  assert.equal(JSON.parse(output).result, "passed");
+});
+
 test("expire-review-lease patches the queued placeholder and preserves unrelated comments", (t) => {
   const repo = "openclaw/openclaw";
   const root = mkdtempSync(join(tmpdir(), "cmd-expire-lease-"));

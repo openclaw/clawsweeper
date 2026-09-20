@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Keep POSIX synthetic GitHub CLI fixtures out of inherited Node coverage so interrupted fixture shutdown cannot corrupt the coverage report; real ClawSweeper subprocesses remain covered.
+
 - Keep explicitly accepted PR tradeoffs visible as evidence without asking maintainers to resolve them again, while retaining blockers for unresolved or changed risks.
 
 - Qualify the existing OpenClaw browser CDP discovery fixture using exact native identities, its complete source line, and committed source references while preserving scanner enforcement.

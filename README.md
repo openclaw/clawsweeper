@@ -1130,6 +1130,12 @@ absent, allowing controlled concurrency experiments through package scripts.
 CI retains the adaptive default. Crabbox diagnostic bundles under `.crabbox/` are generated scratch
 and are ignored by Git.
 
+On Linux and macOS, the shared synthetic GitHub CLI fixtures clear
+`NODE_V8_COVERAGE` before starting their Node stand-ins. Those fixtures do not
+execute ClawSweeper source; interrupting their profile writes must not break the
+real coverage report. Production subprocesses keep inherited coverage. Other
+fixture launchers and Windows retain their existing behavior.
+
 ## GitHub Actions Setup
 
 Required secrets:

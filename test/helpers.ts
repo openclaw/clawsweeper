@@ -1179,8 +1179,9 @@ export function withMockGh(root: string, script: string, run: () => void): void 
   const ghPath = join(binDir, "gh.js");
   writeFileSync(ghPath, script, { mode: 0o755 });
   try {
-    process.env.GH_BIN = process.execPath;
-    process.env.GH_BIN_ARGS = JSON.stringify([ghPath]);
+    const override = mockGhBinEnv(ghPath);
+    process.env.GH_BIN = override.GH_BIN;
+    process.env.GH_BIN_ARGS = override.GH_BIN_ARGS;
     run();
   } finally {
     if (originalGhBin === undefined) delete process.env.GH_BIN;
@@ -1199,8 +1200,15 @@ export function mockCommandBinEnv(command: string, commandPath: string): NodeJS.
 }
 
 export function mockGhBinEnv(ghPath: string, binDir?: string): NodeJS.ProcessEnv {
+  // These scripts simulate the external CLI, not ClawSweeper. A deadline can
+  // interrupt Node's profile write and poison the real workers' coverage report.
   return {
-    ...mockCommandBinEnv("gh", ghPath),
+    ...(process.platform === "win32"
+      ? mockCommandBinEnv("gh", ghPath)
+      : {
+          GH_BIN: "/usr/bin/env",
+          GH_BIN_ARGS: JSON.stringify(["-u", "NODE_V8_COVERAGE", process.execPath, ghPath]),
+        }),
     ...(binDir ? { PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}` } : {}),
   };
 }
