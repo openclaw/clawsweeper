@@ -248,6 +248,9 @@ const CRABBOX_POSTGRES_DOC_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  // Approved browser CDP discovery fixture: https://github.com/openclaw/openclaw/pull/153597.
+  [17, "URI", "HTML", "58e5399334d925e239b1b4777a226340f84778101809699897154e2a3c750a42", "a2b7cdba4afae496b99e64423837887e56340606268f28b7edef5a33e22cdc0f", "285d12ccfcf9b9547713f38140953dde8763b2ddccd234f8deed19b04c4b6f42", "extensions/browser/src/browser/pw-session.connections.test.ts", "100644"],
+  [17, "URI", "PLAIN", "58e5399334d925e239b1b4777a226340f84778101809699897154e2a3c750a42", "a2b7cdba4afae496b99e64423837887e56340606268f28b7edef5a33e22cdc0f", "285d12ccfcf9b9547713f38140953dde8763b2ddccd234f8deed19b04c4b6f42", "extensions/browser/src/browser/pw-session.connections.test.ts", "100644"],
   // Approved synthetic unsafe-link fixture: https://github.com/openclaw/openclaw/pull/153274.
   [17, "URI", "PLAIN", "148db1b794aa55e895c253fc95230148dd8cf58b8f97bac16c3db0147df7f457", "e10c3a5ca351377dab596260b30d87d26337a91bb3bb7b8f8d1fecda7285a125", "9b986f89b4bc448cd97566a1512992e765197fe5be1333cbb79681b1c25d95e4", "extensions/github/src/detail-checks.test.ts", "100644"],
   [17, "URI", "HTML", "148db1b794aa55e895c253fc95230148dd8cf58b8f97bac16c3db0147df7f457", "e10c3a5ca351377dab596260b30d87d26337a91bb3bb7b8f8d1fecda7285a125", "9b986f89b4bc448cd97566a1512992e765197fe5be1333cbb79681b1c25d95e4", "extensions/github/src/detail-checks.test.ts", "100644"],
@@ -359,6 +362,7 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           (decoder === "PLAIN" || decoder === "HTML")) ||
         ((source === "extensions/browser/src/browser/profiles-service.test.ts" ||
           source === "extensions/browser/src/browser/config.test.ts" ||
+          source === "extensions/browser/src/browser/pw-session.connections.test.ts" ||
           source === "extensions/github/src/detail-checks.test.ts" ||
           source === "ui/src/pages/custodian/custodian-session-store.test.ts" ||
           source === "ui/src/e2e/plugins-help.e2e.test.ts" ||

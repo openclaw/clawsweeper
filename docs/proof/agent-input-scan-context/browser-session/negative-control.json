@@ -1,0 +1,14 @@
+{
+  "kind": "one-byte synthetic URI negative control",
+  "originalHead": "2d674c57c1d9e5e174c0cecc6961763cf4230157",
+  "negativeHead": "d848ea0950ab2141e7d6a4b150132ed25d55a432",
+  "source": "extensions/browser/src/browser/pw-session.connections.test.ts",
+  "mode": "100644",
+  "line": 354,
+  "changedBytes": 1,
+  "originalBlob": "71dd9635b52a7dbe4c81c9f290fd997864bd77cc",
+  "negativeBlob": "74bd69af6308366ac1038054b6c68f0de506275d",
+  "originalLineSha256": "285d12ccfcf9b9547713f38140953dde8763b2ddccd234f8deed19b04c4b6f42",
+  "negativeLineSha256": "50e31cf4dad151f0683e7b11b7b2249355cc8a00684db86ac576e66f23011095",
+  "published": false
+}

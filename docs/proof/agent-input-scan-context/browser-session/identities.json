@@ -1,0 +1,29 @@
+{
+  "source": "extensions/browser/src/browser/pw-session.connections.test.ts",
+  "baseBlob": "20c6d8d113c2d647a514c8a06a6a45a60e38fa04",
+  "headBlob": "71dd9635b52a7dbe4c81c9f290fd997864bd77cc",
+  "baseLine": 352,
+  "headLine": 354,
+  "reviewedAttributions": [
+    [
+      17,
+      "URI",
+      "HTML",
+      "58e5399334d925e239b1b4777a226340f84778101809699897154e2a3c750a42",
+      "a2b7cdba4afae496b99e64423837887e56340606268f28b7edef5a33e22cdc0f",
+      "285d12ccfcf9b9547713f38140953dde8763b2ddccd234f8deed19b04c4b6f42",
+      "extensions/browser/src/browser/pw-session.connections.test.ts",
+      "100644"
+    ],
+    [
+      17,
+      "URI",
+      "PLAIN",
+      "58e5399334d925e239b1b4777a226340f84778101809699897154e2a3c750a42",
+      "a2b7cdba4afae496b99e64423837887e56340606268f28b7edef5a33e22cdc0f",
+      "285d12ccfcf9b9547713f38140953dde8763b2ddccd234f8deed19b04c4b6f42",
+      "extensions/browser/src/browser/pw-session.connections.test.ts",
+      "100644"
+    ]
+  ]
+}

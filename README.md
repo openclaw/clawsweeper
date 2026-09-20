@@ -701,6 +701,12 @@ surrounding synthetic payload expression), regular-file mode, and committed
 base/head references must match. Native 3.97.4 scans observed `PLAIN` and `HTML`;
 only those two variants qualify. See [the native proof](docs/proof/readiness-privacy-fixture/README.md).
 
+The browser CDP discovery fixture in
+`extensions/browser/src/browser/pw-session.connections.test.ts` uses the same
+exact table for its observed URI detector 17 `PLAIN` and `HTML` findings. Both
+raw-value digests, the complete source line, original path, regular-file mode,
+and committed base/head references must match. See [the native proof](docs/proof/agent-input-scan-context/README.md#browser-cdp-discovery-fixture).
+
 One source path may contain multiple independently reviewed fixtures; each
 digest/path/mode tuple must match exactly, so source membership alone never
 qualifies a finding.

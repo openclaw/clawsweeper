@@ -1,0 +1,59 @@
+{
+  "targetHead": "2d674c57c1d9e5e174c0cecc6961763cf4230157",
+  "base": "ca128370df1057f5d1169e5918dfe551ac212a81",
+  "source": "complete committed range, controlled prompt, canonical pinned native scanner",
+  "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
+  "verification": "canonical enabled",
+  "result": "admitted",
+  "elapsedMs": 6408,
+  "notices": [
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+      "fixtureSha256": "e6907dddaccdec944b0f02e14fe9186293e2d513ff753db0a95b3460aa5dc1d9",
+      "source": "docs/tools/browser/remote.md",
+      "detector": "URI",
+      "findings": [
+        {
+          "blob": "81ef20b4b46dd46e39c3f8d3d0c7b66c312c01c4",
+          "scannerLine": 39,
+          "literalLine": 39,
+          "decoder": "PLAIN",
+          "occurrences": 1
+        },
+        {
+          "blob": "fa5d44812646fae3980e6eac6d1ec3b9b3c45b31",
+          "scannerLine": 39,
+          "literalLine": 39,
+          "decoder": "PLAIN",
+          "occurrences": 1
+        }
+      ]
+    },
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+      "fixtureSha256": "a2b7cdba4afae496b99e64423837887e56340606268f28b7edef5a33e22cdc0f",
+      "source": "extensions/browser/src/browser/pw-session.connections.test.ts",
+      "detector": "URI",
+      "findings": [
+        {
+          "blob": "20c6d8d113c2d647a514c8a06a6a45a60e38fa04",
+          "scannerLine": 352,
+          "literalLine": 352,
+          "decoder": "PLAIN",
+          "role": "base",
+          "occurrences": 1
+        },
+        {
+          "blob": "71dd9635b52a7dbe4c81c9f290fd997864bd77cc",
+          "scannerLine": 354,
+          "literalLine": 354,
+          "decoder": "PLAIN",
+          "role": "head",
+          "occurrences": 1
+        }
+      ]
+    }
+  ]
+}

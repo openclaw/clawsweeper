@@ -419,76 +419,101 @@ function githubCheckLinkFixture(): ReturnType<typeof autoreviewFixtures>[number]
   return { raw, rawV2, line: '    "' + rawV2 + '",', decoders: ["PLAIN", "HTML"] };
 }
 
-const githubCheckLinkSource = "extensions/github/src/detail-checks.test.ts";
-for (const change of ["add", "remove", "context"] as const) {
-  test("GitHub check-link fixture admits exact Git-generated " + change + " attribution", (t) => {
-    const patch = fixturePatch(t, githubCheckLinkSource, [githubCheckLinkFixture()], change);
-    for (const decoder of ["PLAIN", "HTML"] as const) {
-      const result = patch.classify(decoder);
-      assert.equal(result.kind, "classified", JSON.stringify(result));
-      if (result.kind !== "classified") continue;
-      assert.ok(result.notices.every((notice) => notice.source === githubCheckLinkSource));
-      const findings = result.notices.flatMap((notice) => notice.findings);
-      assert.ok(findings.some((finding) => finding.patch));
-      assert.ok(findings.every((finding) => finding.decoder === decoder));
-      if (change === "context") {
-        assert.ok(findings.some((finding) => finding.role === "base"));
-        assert.ok(findings.some((finding) => finding.role === "head"));
-      } else {
-        assert.ok(findings.every((finding) => finding.role === patch.role));
-      }
-    }
-  });
+function browserSessionFixture(): ReturnType<typeof autoreviewFixtures>[number] {
+  const raw = [
+    "https://",
+    "browser-user",
+    ":",
+    "browser-password",
+    "@",
+    "browserless.example",
+  ].join("");
+  const rawV2 = raw + "/cdp";
+  return { raw, rawV2, line: '    const cdpUrl = "' + rawV2 + '";', decoders: ["PLAIN", "HTML"] };
 }
-for (const variant of [
-  "literal",
-  "line",
-  "path",
-  "mode",
-  "role",
-  "verified",
-  "decoder",
-  "extra-occurrence",
-] as const) {
-  test("GitHub check-link fixture refuses changed " + variant, (t) => {
-    const entry = githubCheckLinkFixture();
-    if (variant === "literal") {
-      const original = entry.raw;
-      entry.raw = original.slice(0, -1) + "x";
-      entry.rawV2 = entry.rawV2!.replace(original, entry.raw);
-      entry.line = entry.line.replace(original, entry.raw);
-    } else if (variant === "line") {
-      entry.line += " ";
-    }
-    const entries =
-      variant === "extra-occurrence"
-        ? [entry, { ...entry, line: entry.line + " // extra" }]
-        : [entry];
-    const patch = fixturePatch(
-      t,
-      variant === "path" ? "extensions/github/src/another-check.test.ts" : githubCheckLinkSource,
-      entries,
-    );
-    if (variant === "mode" || variant === "role") {
-      for (const [file, input] of patch.inputs) {
-        if (input.kind !== "blob") continue;
-        patch.inputs.set(file, {
-          ...input,
-          references: input.references.map((reference) => ({
-            ...reference,
-            ...(variant === "mode" ? { mode: "100755" } : { role: "worktree" as const }),
-          })),
-        });
+
+function exactUriFixtureTests(
+  name: string,
+  source: string,
+  makeFixture: () => ReturnType<typeof autoreviewFixtures>[number],
+) {
+  for (const change of ["add", "remove", "context"] as const) {
+    test(name + " fixture admits exact Git-generated " + change + " attribution", (t) => {
+      const patch = fixturePatch(t, source, [makeFixture()], change);
+      for (const decoder of ["PLAIN", "HTML"] as const) {
+        const result = patch.classify(decoder);
+        assert.equal(result.kind, "classified", JSON.stringify(result));
+        if (result.kind !== "classified") continue;
+        assert.ok(result.notices.every((notice) => notice.source === source));
+        const findings = result.notices.flatMap((notice) => notice.findings);
+        assert.ok(findings.some((finding) => finding.patch));
+        assert.ok(findings.every((finding) => finding.decoder === decoder));
+        if (change === "context") {
+          assert.ok(findings.some((finding) => finding.role === "base"));
+          assert.ok(findings.some((finding) => finding.role === "head"));
+        } else {
+          assert.ok(findings.every((finding) => finding.role === patch.role));
+        }
       }
-    }
-    const result = patch.classify(
-      "HTML",
-      variant === "verified"
-        ? { Verified: true }
-        : variant === "decoder"
-          ? { DecoderName: "BASE64" }
-          : {},
-    );
-    assert.equal(result.kind, "refused", JSON.stringify(result));
-  });
+    });
+  }
+  for (const variant of [
+    "literal",
+    "line",
+    "path",
+    "mode",
+    "role",
+    "verified",
+    "decoder",
+    "extra-occurrence",
+  ] as const) {
+    test(name + " fixture refuses changed " + variant, (t) => {
+      const entry = makeFixture();
+      if (variant === "literal") {
+        const original = entry.raw;
+        entry.raw = original.slice(0, -1) + "x";
+        entry.rawV2 = entry.rawV2!.replace(original, entry.raw);
+        entry.line = entry.line.replace(original, entry.raw);
+      } else if (variant === "line") {
+        entry.line += " ";
+      }
+      const entries =
+        variant === "extra-occurrence"
+          ? [entry, { ...entry, line: entry.line + " // extra" }]
+          : [entry];
+      const patch = fixturePatch(t, variant === "path" ? source + ".other" : source, entries);
+      if (variant === "mode" || variant === "role") {
+        for (const [file, input] of patch.inputs) {
+          if (input.kind !== "blob") continue;
+          patch.inputs.set(file, {
+            ...input,
+            references: input.references.map((reference) => ({
+              ...reference,
+              ...(variant === "mode" ? { mode: "100755" } : { role: "worktree" as const }),
+            })),
+          });
+        }
+      }
+      const result = patch.classify(
+        "HTML",
+        variant === "verified"
+          ? { Verified: true }
+          : variant === "decoder"
+            ? { DecoderName: "BASE64" }
+            : {},
+      );
+      assert.equal(result.kind, "refused", JSON.stringify(result));
+    });
+  }
 }
+
+exactUriFixtureTests(
+  "GitHub check-link",
+  "extensions/github/src/detail-checks.test.ts",
+  githubCheckLinkFixture,
+);
+exactUriFixtureTests(
+  "browser session",
+  "extensions/browser/src/browser/pw-session.connections.test.ts",
+  browserSessionFixture,
+);

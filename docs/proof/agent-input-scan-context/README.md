@@ -232,3 +232,52 @@ rescan its own current prompt, schema, and complete source inputs after the
 normal policy landing. Existing scanner, verification, completion, source,
 mode, and patch-provenance gates remain enabled. OpenClaw Bay is unaffected: no
 dashboard API, telemetry schema, or public action surface changes.
+
+## Browser CDP discovery fixture
+
+Claim: the approved synthetic credentialed-CDP discovery fixture in
+`extensions/browser/src/browser/pw-session.connections.test.ts` admits through
+exact source attribution; a one-byte mutation still refuses. This unblocks
+[OpenClaw PR 153597](https://github.com/openclaw/openclaw/pull/153597), whose
+browser changes retain the existing fixture unchanged.
+
+[Identity evidence](browser-session/identities.json) records the two observed
+URI detector 17 tuples, for `PLAIN` and `HTML`. Each binds both native value
+digests, the complete source line,
+original path, regular-file mode, and committed base/head references. The
+scanner's verification and complete-input admission checks stay enabled.
+
+The controlled proof runs the actual `scanAgentInput` entry point with pinned
+TruffleHog 3.97.4 against the complete committed PR range on macOS arm64,
+Node 26.8.2, and pnpm 12.4.1. Provider: local host; no image or lease.
+
+```bash
+pnpm run build:node
+node docs/proof/agent-input-scan-context/run-proof.mjs \
+  /path/to/disposable/openclaw-at-pr-head \
+  ca128370df1057f5d1169e5918dfe551ac212a81 \
+  2d674c57c1d9e5e174c0cecc6961763cf4230157 \
+  /path/to/browser-session-admission.json
+```
+
+[Before qualification](browser-session/before.json), ClawSweeper main
+`20e7ed8e9aab5e58217708f4aebe89d3af157b8f` refused with
+`findings / literal_not_reviewed`. [After qualification](browser-session/after-1.json),
+the identical range admitted in 6.4 seconds, classifying the browser fixture at
+both endpoints and the separately approved browser documentation fixture. This
+run observed PLAIN; the earlier native fixture scan observed HTML as well.
+
+A disposable commit changed exactly one byte of the fixture, preserving the
+path and mode. The same canonical scan [refused it](browser-session/negative.json)
+with `findings / literal_not_reviewed`.
+[The negative-control record](browser-session/negative-control.json) binds its
+original and changed blobs and line digests; the mutation was not published.
+
+The regression suite uses real Git-generated added, removed, and context lines
+for both qualified decoders. Negative controls cover changed values, full lines,
+paths, modes, uncommitted roles, verified findings, other decoders, and extra
+occurrences. The three positive browser cases fail on the unqualified policy.
+
+Limits: no model runs. Hosted review must rescan its own complete prompt, schema,
+and source inputs. OpenClaw Bay is unaffected; there is no dashboard API,
+telemetry, or public action surface change.

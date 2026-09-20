@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Qualify the existing OpenClaw browser CDP discovery fixture using exact native identities, its complete source line, and committed source references while preserving scanner enforcement.
+
 - Avoid migration-proof blockers when Node Console stream routing shares a patch hunk with unchanged storage, while retaining gates for real stored-field and persistence changes.
 
 - Qualify the exact OpenClaw Gateway readiness privacy-test fixture using observed native URI identities and its complete source-line witness, without changing scanner enforcement.
