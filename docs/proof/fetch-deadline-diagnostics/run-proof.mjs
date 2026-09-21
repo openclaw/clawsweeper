@@ -151,6 +151,7 @@ async function main() {
     "agent-input-scan",
     "clawsweeper-review-blobs",
     "clawsweeper-review-failure-diagnostics",
+    "clawsweeper-review-runtime",
     "review-source-preparation",
     "pr-review-evidence",
   ];
@@ -258,6 +259,27 @@ async function main() {
     const { writeExactReviewFailureDiagnostics } = await import(
       pathToFileURL(join(sourceRoot, "dist/clawsweeper-review-failure-diagnostics.js"))
     );
+    const { createReviewRuntime } = await import(
+      pathToFileURL(join(sourceRoot, "dist/clawsweeper-review-runtime.js"))
+    );
+    const unavailable = () => {
+      throw new Error("Unexpected dependency in native fetch classification proof.");
+    };
+    const runtime = createReviewRuntime({
+      reviewItemPromptPath: "",
+      decisionSchemaPath: "",
+      prCloseCoverageProofPromptPath: "",
+      targetRepo: unavailable,
+      run: unavailable,
+      ghJson: unavailable,
+      evidenceEntry: unavailable,
+      untrustedCodexEnv: unavailable,
+      asRecord: unavailable,
+      defaultRootCauseCluster: unavailable,
+      parseDecision: unavailable,
+      ensureDir: unavailable,
+      stringOrUndefined: unavailable,
+    });
     let caught;
     const startedAt = Date.now(),
       startedNs = process.hrtime.bigint();
@@ -274,13 +296,20 @@ async function main() {
     }
     result.wallElapsedMs = Date.now() - startedAt;
     result.monotonicElapsedMs = Number(process.hrtime.bigint() - startedNs) / 1e6;
-    assert.ok(caught instanceof AgentInputScanError);
-    assert.equal(caught.reason, "deadline");
-    assert.equal(caught.retryable, false);
+    const baseline = options["--expect"] === "baseline";
+    const retryable = runtime.codexReviewFailureRetryable(caught);
+    if (baseline) {
+      assert.ok(caught instanceof AgentInputScanError);
+      assert.equal(caught.reason, "deadline");
+    } else {
+      assert.ok(caught instanceof ReviewGitError);
+      assert.equal(caught.diagnosticReason, "review_blobs_unavailable");
+    }
+    assert.equal(retryable, !baseline);
     result.refusal = {
       name: caught.name,
-      reason: caught.reason,
-      retryable: caught.retryable,
+      reason: baseline ? caught.reason : caught.diagnosticReason,
+      retryable,
       workflowExit: agentInputScanFailureExitCode(caught) ?? 1,
     };
     assert.equal(result.refusal.workflowExit, 1);
@@ -336,7 +365,7 @@ async function main() {
       itemKind: "pull_request",
       itemNumber: 1,
       sourceSha: headSha,
-      retryable: caught.retryable,
+      retryable,
       workflowExit: result.refusal.workflowExit,
       env: { FIXTURE_TOKEN: secretFixture },
     });
@@ -357,13 +386,13 @@ async function main() {
     ])
       assert.equal(combined.includes(value), false);
     assert.equal(stdout, "[no diagnostic detail]\n");
-    assert.equal(result.diagnostics.classification, "agent_input_scan");
-    assert.equal(result.diagnostics.retryable, false);
-    assert.deepEqual(result.diagnostics.failure, {
-      stage: "agent_input_scan",
-      reason_code: "deadline",
-    });
-    if (options["--expect"] === "baseline") {
+    const expectedFailure = baseline
+      ? { stage: "agent_input_scan", reason_code: "deadline" }
+      : { stage: "source_preparation", reason_code: "review_blobs_unavailable" };
+    assert.equal(result.diagnostics.classification, expectedFailure.stage);
+    assert.equal(result.diagnostics.retryable, retryable);
+    assert.deepEqual(result.diagnostics.failure, expectedFailure);
+    if (baseline) {
       assert.equal(caught.cause, undefined);
       assert.equal(stderr, "[no diagnostic detail]\n");
       assert.deepEqual(result.diagnostics.process, {
@@ -373,11 +402,9 @@ async function main() {
         workflow_exit: 1,
       });
     } else {
-      assert.ok(caught.cause instanceof ReviewGitError);
-      assert.equal(caught.cause.diagnosticReason, "review_blobs_unavailable");
-      assert.equal(caught.cause.status, null);
-      assert.equal(caught.cause.signal, "SIGTERM");
-      assert.equal(caught.cause.errorCode, "ETIMEDOUT");
+      assert.equal(caught.status, null);
+      assert.equal(caught.signal, "SIGTERM");
+      assert.equal(caught.errorCode, "ETIMEDOUT");
       assert.ok(stderr.includes(diagnostic));
       assert.ok(stderr.includes("[REDACTED]"));
       assert.deepEqual(result.diagnostics.process, {

@@ -85,8 +85,10 @@ It prepares the exact raw Git delta for the pinned merge-base/head, including
 deleted and historical blobs. Current main never replaces the pinned REST base.
 Unavailable commits, ancestry, blob-size metadata, or required blob fetches stop
 preparation with a specific source-preparation failure before restricted
-inspection. Invalid source, unsafe paths, unsupported content, size limits, and
-deadlines retain the scanner's terminal refusal classifications.
+inspection. Native Git fetch failures, including transport timeouts, use the
+existing bounded source-preparation retry schedule. Invalid source, unsafe paths,
+unsupported content, size limits, and scanner or metadata deadlines retain the
+scanner's terminal refusal classifications.
 
 The distinct pinned base/head comparison remains optional inspection support.
 Its blob preparation is bounded and warns if unavailable; it cannot make an
@@ -102,8 +104,9 @@ error code, and bounded redacted stderr. Public errors omit raw process output;
 scanner output and verification details are never retained. Scan refusals
 remain terminal and retain their workflow exit code. Source-blob fetches that
 fail after the hydration deadline retain their native Git process diagnostics
-while preserving the terminal `deadline` refusal. These
-diagnostics do not establish retry eligibility or a completed input scan.
+as retryable `source_preparation` / `review_blobs_unavailable` failures. The failed
+attempt still exits unsuccessfully; a retry must prepare complete input and pass
+the canonical scan. Diagnostics alone do not establish a completed input scan.
 Incomplete or inconsistent native output uses `scanner_failed`; a complete scan
 with an unclassified finding
 uses `findings`. The manifest's optional `failure.scan` carries closed diagnostic
