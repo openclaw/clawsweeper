@@ -39,11 +39,13 @@ export function codexModelArgs(requestedModel: string): string[] {
 export function redactInternalCodexModel(
   value: string | null | undefined,
   codexHome = process.env.CODEX_HOME?.trim() || join(homedir(), ".codex"),
+  additionalModels: readonly string[] = [],
 ): string {
   let redacted = value ?? "";
   const configuredModels = [
     process.env.CLAWSWEEPER_INTERNAL_MODEL?.trim() ?? "",
     process.env.CLAWSWEEPER_OPENCLAW_MODEL?.trim() ?? "",
+    ...additionalModels,
   ];
   const configPath = codexHome ? join(codexHome, "config.toml") : "";
   if (configPath && existsSync(configPath)) {
@@ -58,7 +60,8 @@ export function redactInternalCodexModel(
       }
     }
   }
-  for (const model of configuredModels.filter(Boolean)) {
+  // Replacing a prefix first would expose the remainder of a longer private ID.
+  for (const model of configuredModels.filter(Boolean).sort((a, b) => b.length - a.length)) {
     redacted = redacted.replaceAll(model, "[REDACTED_INTERNAL_MODEL]");
   }
   return redacted.replace(

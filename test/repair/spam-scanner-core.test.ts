@@ -9,6 +9,7 @@ import {
   legitimateTechnicalContextSignals,
   normalizeModelResults,
   prioritizeSpamScanComments,
+  redactSpamModelError,
   shouldSendToCheapModel,
   SPAM_MODEL_SYSTEM_PROMPT,
   type SpamScanComment,
@@ -262,4 +263,62 @@ test("graphql nodes fail when the payload carries no data", () => {
     /no data payload/,
   );
   assert.throws(() => graphqlNodesToleratingNotFound(null), /no data payload/);
+});
+
+test("spam model errors redact the configured internal model from OpenAI error bodies", () => {
+  const previous = process.env.CLAWSWEEPER_INTERNAL_MODEL;
+  process.env.CLAWSWEEPER_INTERNAL_MODEL = "gpt-secret-model";
+  try {
+    const notFound = new Error(
+      'OpenAI spam scan failed: HTTP 404 {"error":{"message":"The model `gpt-secret-model` does not exist or you do not have access to it.","code":"model_not_found"}}',
+    );
+    const redacted = redactSpamModelError(notFound, "gpt-secret-model");
+    assert.doesNotMatch(redacted, /gpt-secret-model/);
+    assert.match(redacted, /HTTP 404 .*The model `\[REDACTED_INTERNAL_MODEL\]` does not exist/);
+  } finally {
+    if (previous === undefined) delete process.env.CLAWSWEEPER_INTERNAL_MODEL;
+    else process.env.CLAWSWEEPER_INTERNAL_MODEL = previous;
+  }
+});
+
+test("spam model errors redact a model that only the scan request knows", () => {
+  const previous = process.env.CLAWSWEEPER_INTERNAL_MODEL;
+  delete process.env.CLAWSWEEPER_INTERNAL_MODEL;
+  try {
+    const rateLimited = new Error(
+      "OpenAI spam scan failed: HTTP 429 Rate limit reached for gpt-secret-model in organization org-x on tokens per min (TPM): Limit 30000, Used 30000, Requested 1000.",
+    );
+    const redacted = redactSpamModelError(rateLimited, "gpt-secret-model");
+    assert.doesNotMatch(redacted, /gpt-secret-model/);
+    assert.match(redacted, /Rate limit reached for \[REDACTED_INTERNAL_MODEL\] in organization/);
+    assert.equal(redactSpamModelError("plain failure", "gpt-secret-model"), "plain failure");
+  } finally {
+    if (previous !== undefined) process.env.CLAWSWEEPER_INTERNAL_MODEL = previous;
+  }
+});
+
+test("spam model errors keep the public model name untouched", () => {
+  assert.equal(
+    redactSpamModelError(new Error("internal server error"), "internal"),
+    "internal server error",
+  );
+});
+
+test("spam model errors redact overlapping requested and configured identifiers completely", () => {
+  const previous = process.env.CLAWSWEEPER_OPENCLAW_MODEL;
+  try {
+    for (const [requested, configured] of [
+      ["gpt-private", "gpt-private-tenant-secret"],
+      ["gpt-private-tenant-secret", "gpt-private"],
+    ]) {
+      process.env.CLAWSWEEPER_OPENCLAW_MODEL = configured;
+      assert.equal(
+        redactSpamModelError(`requested=${requested}; configured=${configured}`, requested),
+        "requested=[REDACTED_INTERNAL_MODEL]; configured=[REDACTED_INTERNAL_MODEL]",
+      );
+    }
+  } finally {
+    if (previous === undefined) delete process.env.CLAWSWEEPER_OPENCLAW_MODEL;
+    else process.env.CLAWSWEEPER_OPENCLAW_MODEL = previous;
+  }
 });

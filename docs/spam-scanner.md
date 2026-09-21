@@ -133,7 +133,9 @@ investigation lane should prioritize the comment.
 
 If the configured model is missing or the model call fails, the workflow still
 publishes deterministic audit records with `model_error` instead of failing the
-spam lane. Model failures must not block monitoring.
+spam lane. The stored error text passes through the same internal-model
+redaction the review runtime applies, so an OpenAI error body never publishes
+the configured model id. Model failures must not block monitoring.
 
 ## Safety
 

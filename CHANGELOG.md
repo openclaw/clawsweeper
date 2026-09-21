@@ -9,6 +9,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 - Use plain language for issue follow-up and preserve Codex's requested next action without inventing generic reproduction checklists. Thanks @PollyBot13.
 
+- Redact private model identifiers from spam-scanner errors before publishing logs, audit records, reports, and ledger entries. Thanks @Yigtwxx.
+
 - Raise the worker budget to 128, exact-review capacity to 80 with 64 reviews per repository, and scheduled concurrency to 32 while retaining scheduled intake pacing, publication headroom, and the separate imported-cluster cap.
 
 - fix(dashboard): report bounded status diagnostics when the deployment smoke rejects the Bay contract, while preserving its failure gate.
