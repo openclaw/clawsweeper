@@ -7,9 +7,9 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
-- Stop superseded review workers from repeatedly posting start comments, and reuse the same worker's active comment when queue checks temporarily fail.
-
 - fix(dashboard): report bounded status diagnostics when the deployment smoke rejects the Bay contract, while preserving its failure gate.
+
+- Stop superseded review workers from repeatedly posting start comments, and reuse the same worker's active comment when queue checks temporarily fail.
 
 - Qualify the approved TypeSafe local URL-rejection fixture using its exact native identity and source line while retaining complete input scanning.
 
