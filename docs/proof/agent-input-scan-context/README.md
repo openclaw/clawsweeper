@@ -281,3 +281,44 @@ occurrences. The three positive browser cases fail on the unqualified policy.
 Limits: no model runs. Hosted review must rescan its own complete prompt, schema,
 and source inputs. OpenClaw Bay is unaffected; there is no dashboard API,
 telemetry, or public action surface change.
+
+## TypeSafe local transport fixture
+
+Claim: the approved synthetic loopback credential-rejection fixture in
+`extensions/typesafe/src/local.transport.test.ts` admits through exact source
+attribution, while a one-byte mutation still refuses. This unblocks the
+input scan for [OpenClaw PR 154059](https://github.com/openclaw/openclaw/pull/154059).
+It adds no model-side instructions or scanning bypass.
+
+[Native identity evidence](typesafe/native-observed.json) records URI detector 17,
+both observed `PLAIN` and `HTML` decoders, and the exact Raw/RawV2 digests.
+The policy also pins the complete source line, original path, regular-file mode,
+and committed base/head witnesses. No other fixture in the file is qualified.
+
+The actual `scanAgentInput` entry point scanned the complete committed range
+with pinned TruffleHog 3.97.4 and enabled verification on macOS arm64,
+Node 26.8.2, pnpm 12.4.1 (local host, no container or lease):
+
+```bash
+pnpm run build:node
+node docs/proof/agent-input-scan-context/run-proof.mjs \
+  /path/to/disposable/openclaw-at-pr-head \
+  7d14778dc23424b7763f4e47e87aca2b63d6b363 \
+  3ee5b1050b7f94ba65dc596ef13188b6ea7a602f \
+  /path/to/typesafe-admission.json
+```
+
+[Before qualification](typesafe/before.json), ClawSweeper
+`a09e6cefb31adcd12bba10e1658cae5fced08c80` refused with
+`findings / literal_not_reviewed`. [After qualification](typesafe/after.json),
+the same range admitted in 2.24 seconds, with independently attributed source
+and added-patch findings. A disposable commit changed one byte in the fixture;
+[that control](typesafe/negative-control.json) was [refused](typesafe/negative.json).
+The control commit is not published.
+
+The shared real-Git fixture suite covers added, removed, and context lines plus
+changed literal, line, path, mode, role, verification status, decoder, and extra
+occurrence refusals. Scanner completion and verification checks remain unchanged.
+No model runs in this proof; hosted review must rescan its current prompt, schema,
+and complete source inputs. OpenClaw Bay is unaffected: no dashboard API,
+telemetry, or public action surface changes.

@@ -472,7 +472,7 @@ function exactUriFixtureTests(
       const entry = makeFixture();
       if (variant === "literal") {
         const original = entry.raw;
-        entry.raw = original.slice(0, -1) + "x";
+        entry.raw = original.replace("://", "://x");
         entry.rawV2 = entry.rawV2!.replace(original, entry.raw);
         entry.line = entry.line.replace(original, entry.raw);
       } else if (variant === "line") {
@@ -517,6 +517,15 @@ exactUriFixtureTests(
   "browser session",
   "extensions/browser/src/browser/pw-session.connections.test.ts",
   browserSessionFixture,
+);
+
+exactUriFixtureTests(
+  "TypeSafe local transport",
+  "extensions/typesafe/src/local.transport.test.ts",
+  () => {
+    const raw = ["http://", "user", ":", "password", "@", "localhost:8009"].join("");
+    return { raw, rawV2: raw, line: '  "' + raw + '",', decoders: ["PLAIN", "HTML"] };
+  },
 );
 
 test("source projection removes only host-selected patch fields and preserves input records", () => {

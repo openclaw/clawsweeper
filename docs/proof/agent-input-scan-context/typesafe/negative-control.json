@@ -1,0 +1,9 @@
+{
+  "originalHead": "3ee5b1050b7f94ba65dc596ef13188b6ea7a602f",
+  "controlHead": "185d73f9d45307712a98e8ac35d76f124f2d4b0f",
+  "source": "extensions/typesafe/src/local.transport.test.ts",
+  "originalLineSha256": "e6a2587ba99aab4b1437d4382b043f2253065508d5ab038841fd4262ce0b0a6f",
+  "changedLineSha256": "44a6117acde743725eef207a97186b9d4013e2352a97fb2f2330a8ece173e7f1",
+  "changedBytes": 1,
+  "published": false
+}

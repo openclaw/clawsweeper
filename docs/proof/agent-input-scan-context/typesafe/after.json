@@ -1,0 +1,51 @@
+{
+  "targetHead": "3ee5b1050b7f94ba65dc596ef13188b6ea7a602f",
+  "base": "7d14778dc23424b7763f4e47e87aca2b63d6b363",
+  "source": "complete committed range, controlled prompt, canonical pinned native scanner",
+  "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
+  "verification": "canonical enabled",
+  "result": "admitted",
+  "elapsedMs": 2235,
+  "notices": [
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+      "fixtureSha256": "923d03ede473d23a81840727f6af65897692c61133596ca2a59d52d88fd6775f",
+      "source": "extensions/typesafe/src/local.transport.test.ts",
+      "detector": "URI",
+      "findings": [
+        {
+          "blob": "dc398c6988cdca8379950e913e015ab0514a77cf",
+          "scannerLine": 211,
+          "literalLine": 211,
+          "decoder": "HTML",
+          "role": "head",
+          "occurrences": 1
+        }
+      ]
+    },
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+      "fixtureSha256": "923d03ede473d23a81840727f6af65897692c61133596ca2a59d52d88fd6775f",
+      "source": "extensions/typesafe/src/local.transport.test.ts",
+      "detector": "URI",
+      "findings": [
+        {
+          "blob": "1",
+          "scannerLine": 915,
+          "literalLine": 915,
+          "decoder": "PLAIN",
+          "role": "head",
+          "occurrences": 1,
+          "patch": {
+            "from": "7d14778dc23424b7763f4e47e87aca2b63d6b363",
+            "to": "3ee5b1050b7f94ba65dc596ef13188b6ea7a602f",
+            "sourceBlob": "dc398c6988cdca8379950e913e015ab0514a77cf",
+            "sourceLine": 211
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "exit": 183,
+  "completion": {
+    "chunks": 101,
+    "bytes": 810005,
+    "verified_secrets": 0,
+    "unverified_secrets": 2,
+    "trufflehog_version": "3.97.4"
+  },
+  "findings": [
+    {
+      "detectorType": 17,
+      "detector": "URI",
+      "decoder": "HTML",
+      "verified": false,
+      "rawSha256": "923d03ede473d23a81840727f6af65897692c61133596ca2a59d52d88fd6775f",
+      "rawV2Sha256": "923d03ede473d23a81840727f6af65897692c61133596ca2a59d52d88fd6775f"
+    },
+    {
+      "detectorType": 17,
+      "detector": "URI",
+      "decoder": "PLAIN",
+      "verified": false,
+      "rawSha256": "923d03ede473d23a81840727f6af65897692c61133596ca2a59d52d88fd6775f",
+      "rawV2Sha256": "923d03ede473d23a81840727f6af65897692c61133596ca2a59d52d88fd6775f"
+    }
+  ]
+}

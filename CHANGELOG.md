@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Qualify the approved TypeSafe local URL-rejection fixture using its exact native identity and source line while retaining complete input scanning.
+
 - Keep POSIX synthetic GitHub CLI fixtures out of inherited Node coverage so interrupted fixture shutdown cannot corrupt the coverage report; real ClawSweeper subprocesses remain covered.
 
 - Keep explicitly accepted PR tradeoffs visible as evidence without asking maintainers to resolve them again, while retaining blockers for unresolved or changed risks.

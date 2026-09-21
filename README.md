@@ -707,6 +707,12 @@ exact table for its observed URI detector 17 `PLAIN` and `HTML` findings. Both
 raw-value digests, the complete source line, original path, regular-file mode,
 and committed base/head references must match. See [the native proof](docs/proof/agent-input-scan-context/README.md#browser-cdp-discovery-fixture).
 
+The TypeSafe local-transport URL-rejection fixture in
+`extensions/typesafe/src/local.transport.test.ts` binds its exact URI detector 17
+identities, full source line, regular-file mode, and committed base/head references.
+Native 3.97.4 scans observed `PLAIN` and `HTML`; only those variants qualify.
+See [the native proof](docs/proof/agent-input-scan-context/README.md#typesafe-local-transport-fixture).
+
 One source path may contain multiple independently reviewed fixtures; each
 digest/path/mode tuple must match exactly, so source membership alone never
 qualifies a finding.

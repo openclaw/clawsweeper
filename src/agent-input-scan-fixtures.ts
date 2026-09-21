@@ -248,6 +248,9 @@ const CRABBOX_POSTGRES_DOC_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  // Approved TypeSafe loopback URL-rejection fixture: OpenClaw #154059.
+  [17, "URI", "HTML", "923d03ede473d23a81840727f6af65897692c61133596ca2a59d52d88fd6775f", "923d03ede473d23a81840727f6af65897692c61133596ca2a59d52d88fd6775f", "e6a2587ba99aab4b1437d4382b043f2253065508d5ab038841fd4262ce0b0a6f", "extensions/typesafe/src/local.transport.test.ts", "100644"],
+  [17, "URI", "PLAIN", "923d03ede473d23a81840727f6af65897692c61133596ca2a59d52d88fd6775f", "923d03ede473d23a81840727f6af65897692c61133596ca2a59d52d88fd6775f", "e6a2587ba99aab4b1437d4382b043f2253065508d5ab038841fd4262ce0b0a6f", "extensions/typesafe/src/local.transport.test.ts", "100644"],
   // Approved browser CDP discovery fixture: https://github.com/openclaw/openclaw/pull/153597.
   [17, "URI", "HTML", "58e5399334d925e239b1b4777a226340f84778101809699897154e2a3c750a42", "a2b7cdba4afae496b99e64423837887e56340606268f28b7edef5a33e22cdc0f", "285d12ccfcf9b9547713f38140953dde8763b2ddccd234f8deed19b04c4b6f42", "extensions/browser/src/browser/pw-session.connections.test.ts", "100644"],
   [17, "URI", "PLAIN", "58e5399334d925e239b1b4777a226340f84778101809699897154e2a3c750a42", "a2b7cdba4afae496b99e64423837887e56340606268f28b7edef5a33e22cdc0f", "285d12ccfcf9b9547713f38140953dde8763b2ddccd234f8deed19b04c4b6f42", "extensions/browser/src/browser/pw-session.connections.test.ts", "100644"],
@@ -361,6 +364,7 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           detectorName === "URI" &&
           (decoder === "PLAIN" || decoder === "HTML")) ||
         ((source === "extensions/browser/src/browser/profiles-service.test.ts" ||
+          source === "extensions/typesafe/src/local.transport.test.ts" ||
           source === "extensions/browser/src/browser/config.test.ts" ||
           source === "extensions/browser/src/browser/pw-session.connections.test.ts" ||
           source === "extensions/github/src/detail-checks.test.ts" ||
