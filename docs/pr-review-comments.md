@@ -461,6 +461,8 @@ still read as `Codex review: passed.` in the durable review comment.
 
 Issues use `**Next step**` instead of the PR-specific `**Next step before
 merge**` heading. Non-PR comments are never repair triggers.
+Reproduction requests come from the model's assessment and next action; the
+renderer does not invent additional evidence requests from keywords in its prose.
 
 ## History Attribution
 

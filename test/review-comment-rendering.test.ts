@@ -1943,7 +1943,45 @@ test("pull request close comments emit close-required automation markers", () =>
   assert.doesNotMatch(comment, /clawsweeper-verdict:needs-human/);
 });
 
-test("issue keep-open review comments suggest concrete reproduction help", () => {
+test("design issue reviews preserve the model's decision without inventing reproduction requests", () => {
+  const comment = renderReviewCommentFromReport(
+    `${reportFrontMatter({
+      type: "issue",
+      number: "1624",
+      decision: "keep_open",
+      close_reason: "none",
+      work_candidate: "manual_review",
+      reproduction_status: "not_applicable",
+      reproduction_confidence: "high",
+    })}
+
+## Summary
+
+The external artifact contract needs a maintainer design decision.
+
+## Reproduction Assessment
+
+Not applicable. This proposes a new integration contract and reports no broken existing behavior.
+
+## Work Candidate
+
+Candidate: manual_review
+
+Reason: Decide whether to support the external artifact contract.
+`,
+    "none",
+  );
+
+  assert.match(comment, /The external artifact contract needs a maintainer design decision\./);
+  assert.match(comment, /Not applicable\. This proposes a new integration contract/);
+  assert.match(
+    comment,
+    /\*\*Next step\*\*\nDecide whether to support the external artifact contract\./,
+  );
+  assert.doesNotMatch(comment, /Ways to help us reproduce|screenshot|expected vs actual/);
+});
+
+test("issue reviews retain specific model-authored reproduction requests", () => {
   const comment = renderReviewCommentFromReport(
     `${reportFrontMatter({
       type: "issue",
@@ -1963,20 +2001,21 @@ Keep open. The app sometimes does the wrong thing.
 
 Unclear. The report describes an intermittent visible failure but does not include enough information to reproduce it.
 
-## Best Possible Solution
+## Work Candidate
 
-Ask for enough details to reproduce the issue before planning a fix.
+Candidate: manual_review
+
+Reason: Provide the failing command and redacted error output.
 `,
     "none",
   );
 
-  assert.match(comment, /\*\*Ways to help us reproduce this\*\*/);
-  assert.match(comment, /- Add a screenshot or short recording showing the behavior\./);
-  assert.match(comment, /- Include the exact command, prompt, or workflow that triggered it\./);
-  assert.match(comment, /- Add expected vs actual behavior\./);
-  assert.ok(
-    comment.indexOf("**Ways to help us reproduce this**") < comment.indexOf("**Next step**"),
+  assert.match(
+    comment,
+    /\*\*Next step\*\*\nProvide the failing command and redacted error output\./,
   );
+  assert.match(comment, /does not include enough information to reproduce it/);
+  assert.doesNotMatch(comment, /Ways to help us reproduce|screenshot|expected vs actual/);
 });
 
 test("pull request review comments include dedicated security review", () => {
