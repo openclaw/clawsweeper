@@ -9,9 +9,13 @@ checkpoint, and status-only commits are intentionally omitted.
 
 - Retry timed-out review blob fetches through the existing bounded source-preparation recovery instead of permanently rejecting the unchanged review as a scanner refusal.
 
+- Use plain language for issue follow-up and preserve Codex's requested next action without inventing generic reproduction checklists. Thanks @PollyBot13.
+
 - Raise the worker budget to 128, exact-review capacity to 80 with 64 reviews per repository, and scheduled concurrency to 32 while retaining scheduled intake pacing, publication headroom, and the separate imported-cluster cap.
 
 - fix(dashboard): report bounded status diagnostics when the deployment smoke rejects the Bay contract, while preserving its failure gate.
+
+- Stop superseded review workers from repeatedly posting start comments, and reuse the same worker's active comment when queue checks temporarily fail.
 
 - Qualify the approved TypeSafe local URL-rejection fixture using its exact native identity and source line while retaining complete input scanning.
 

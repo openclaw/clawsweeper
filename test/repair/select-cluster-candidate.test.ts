@@ -332,7 +332,10 @@ else console.log(JSON.stringify(process.argv.at(-1).includes('/pulls/') ? {draft
   t.mock.method(childProcess, "execFileSync", (file, args, options) => {
     assert.equal(options.timeout, 90_000);
     calls.push(args.at(-1));
-    return nativeExec(file, args, { ...options, timeout: 250 });
+    return nativeExec(file, args, {
+      ...options,
+      timeout: process.env.SELECTOR_TEST_STALL ? 250 : options.timeout,
+    });
   });
   syncBuiltinESMExports();
   t.after(() => {

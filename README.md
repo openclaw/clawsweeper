@@ -91,9 +91,10 @@ and videos are probed and converted to contact sheets. PR patches and supplement
 body excerpts never supply host download URLs.
 
 ClawSweeper syncs one marker-backed public review comment per item and edits it
-in place instead of posting repeated comments. If a review starts before a
-completed comment exists, it first posts a short status placeholder, then
-replaces that same comment with the final review. Pull request comments include
+in place instead of posting repeated completed reviews. Review workers use a
+separate temporary status comment for lease coordination; exact-review workers
+verify queue ownership before posting and reuse their own lease on transient
+retries. The temporary comment is removed after publication. Pull request comments include
 hidden verdict/action markers so trusted repair and automerge flows can continue
 without scraping visible prose. See
 [`docs/pr-review-comments.md`](docs/pr-review-comments.md).
