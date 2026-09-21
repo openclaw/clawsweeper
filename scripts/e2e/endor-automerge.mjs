@@ -24,6 +24,11 @@ try {
     fs.mkdirSync(workspace);
     const runtime = createCandidateRuntime(workspace, candidate);
     const fixture = createTargetFixture(workspace, { fixture: "tiny" });
+    const currentMain = () =>
+      execFileSync("/usr/bin/git", ["--git-dir", fixture.remote, "rev-parse", "refs/heads/main"], {
+        encoding: "utf8",
+      }).trim();
+    const initialMain = currentMain();
     const statePath = path.join(workspace, "github-state.json");
     const initial = initialGitHubState(fixture);
     initial.repo = repo;
@@ -106,6 +111,7 @@ try {
       );
     }
     const after = state();
+    const finalMain = currentMain();
     const mergeCalls = (value) =>
       value.calls.filter((call) => call.args[0] === "pr" && call.args[1] === "merge");
     if (verdict === "pass") {
@@ -113,14 +119,10 @@ try {
       assert.ok(after.pr.mergedAt, JSON.stringify(commands));
       assert.equal(mergeCalls(after).length, 1);
       assert.ok(mergeCalls(after)[0].args.includes(fixture.headSha));
-      const mergedMain = execFileSync(
-        "/usr/bin/git",
-        ["--git-dir", fixture.remote, "rev-parse", "refs/heads/main"],
-        { encoding: "utf8" },
-      ).trim();
-      assert.equal(mergedMain, after.pr.mergeCommitSha);
-      assert.notEqual(mergedMain, fixture.baseSha);
+      assert.equal(finalMain, after.pr.mergeCommitSha);
+      assert.notEqual(finalMain, initialMain);
     } else {
+      assert.equal(finalMain, initialMain);
       assert.equal(after.pr.state, "open");
       assert.equal(after.pr.mergedAt, null);
       assert.equal(mergeCalls(after).length, 0);
@@ -143,6 +145,8 @@ try {
       verdict,
       reviewRequested: true,
       prState: after.pr.state,
+      initialMain,
+      finalMain,
       mergeCommit: after.pr.mergeCommitSha,
       mergeCalls: mergeCalls(after).length,
       replay: verdict === "pass" ? "closed PR excluded" : "skipped",
