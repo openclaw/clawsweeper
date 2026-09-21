@@ -86,10 +86,14 @@ Trailing marker recovery stops at visible prose, including prose ending in
 `-->`. An already-closed HTML comment cannot extend across that prose into the
 final marker block; valid contiguous trailing markers remain recoverable.
 
-When review starts and no ClawSweeper-owned comment exists yet, the review
-shard posts a short status placeholder with the same durable identity marker.
-The placeholder is intentionally light and crustacean-friendly, then the final
-review sync edits that exact comment in place.
+Review workers coordinate through a separate temporary `clawsweeper-review-lease`
+comment; final publication updates the durable review and removes the owned
+lease. Exact-review workers check queue ownership before creating or cleaning up
+comments and again after acquisition. A definitive ownership rejection completes
+as superseded without retrying. A transport or service failure retries the check;
+the same authorized run reuses its own active lease instead of posting another
+status comment. Exhausted service failures remain failures for normal queue
+recovery, not successful supersession. Other workers' leases remain protected.
 
 Interactive re-review commands have a separate durable intake marker. The
 ExactReviewQueue records the exact source-comment version before creating or

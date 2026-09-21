@@ -18,6 +18,13 @@ import type { createReviewCommentIdentity } from "./clawsweeper-review-comment-i
 import type { createReviewCommentState } from "./clawsweeper-review-comment-state.js";
 import type { createReviewCommentPublication } from "./clawsweeper-review-comment-publication.js";
 
+export class ReviewLeaseSupersededError extends Error {
+  constructor() {
+    super("Exact-review queue authority is no longer active; completing as superseded.");
+    this.name = "ReviewLeaseSupersededError";
+  }
+}
+
 export function createReviewCommentLeases(
   dependencies: ReviewCommentWorkflowDependencies &
     ReturnType<typeof createReviewCommentIdentity> &
@@ -122,7 +129,7 @@ export function createReviewCommentLeases(
     };
   }
 
-  function exactReviewQueueAuthorityIsLive(authority: ExactReviewQueueAuthority): boolean {
+  function assertExactReviewQueueAuthority(authority: ExactReviewQueueAuthority): void {
     const payload = JSON.stringify({
       item_key: authority.itemKey,
       lease_id: authority.leaseId,
@@ -155,7 +162,12 @@ export function createReviewCommentLeases(
       ],
       { encoding: "utf8" },
     );
-    return result.status === 0 && result.stdout.trim() === "200";
+    const httpStatus = result.stdout?.trim();
+    if (result.status === 0 && httpStatus === "200") return;
+    if (result.status === 0 && httpStatus === "409") throw new ReviewLeaseSupersededError();
+    throw new Error(
+      `exact-review queue authority unavailable (${result.status === 0 ? `HTTP ${httpStatus}` : "transport failure"}); retry required`,
+    );
   }
 
   function freshDedicatedReviewStartLeases(options: {
@@ -239,6 +251,8 @@ export function createReviewCommentLeases(
     const normalizedHead = String(options.headSha ?? "")
       .trim()
       .toLowerCase();
+    // Reject a stale queue owner before public comments or expired-lease cleanup.
+    if (options.queueAuthority) assertExactReviewQueueAuthority(options.queueAuthority);
     const initialState = issueReviewCommentState(options.item.number);
     if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(normalizedHead)) {
       throw new Error(
@@ -252,6 +266,16 @@ export function createReviewCommentLeases(
       nowMs: startedAtMs,
     })[0];
     if (initialLease) {
+      const id = commentId(initialLease.comment);
+      if (options.queueAuthority && initialLease.owner === leaseOwner && id !== null) {
+        const acquired = { owner: leaseOwner, commentId: id, headSha: normalizedHead };
+        confirmQueueAuthority(acquired);
+        return {
+          status: "posted",
+          lease: { ...acquired, comment: initialLease.comment },
+          didMutate: true,
+        };
+      }
       return heldReviewStartStatusCommentResult(initialLease.expiresAt, false);
     }
     reapExpiredDedicatedReviewStartLeases(
@@ -261,10 +285,11 @@ export function createReviewCommentLeases(
     );
     const body = renderReviewStartStatusComment(leaseOptions);
     const payload = writeCommentPayload(options.item.number, body);
-    // Every acquisition POSTs a fresh comment: the lowest-server-id election
+    // Every new acquisition POSTs a fresh comment: the lowest-server-id election
     // needs distinct ids per contender, so refreshing a leftover placeholder in
     // place would let two racing workers both validate ownership of the same
-    // comment. Publication never deletes competing lease comments because a
+    // comment. Only the same authorized run may reuse its own active lease.
+    // Publication never deletes competing lease comments because a
     // rolling-version worker may still renew them.
     const createArgs = [
       "api",
@@ -316,19 +341,7 @@ export function createReviewCommentLeases(
       return heldReviewStartStatusCommentResult(winner.expiresAt, true);
     }
     if (options.queueAuthority) {
-      const authoritativeHead = currentReviewRevision(options.item);
-      if (authoritativeHead !== normalizedHead) {
-        deleteOwnedDedicatedReviewStartLease(options.item.number, acquired);
-        throw new Error(
-          `review revision changed while reserving #${options.item.number}; retry required`,
-        );
-      }
-      if (!exactReviewQueueAuthorityIsLive(options.queueAuthority)) {
-        deleteOwnedDedicatedReviewStartLease(options.item.number, acquired);
-        throw new Error(
-          `exact-review queue authority changed while reserving #${options.item.number}; retry required`,
-        );
-      }
+      const authoritativeHead = confirmQueueAuthority(acquired);
       // The candidate snapshot predates both authority checks. A newer worker
       // cannot be selected by a stale caller: if its lease is already present,
       // the live revision/queue tuple has moved; if it starts later, it is absent
@@ -352,6 +365,22 @@ export function createReviewCommentLeases(
       lease: { ...acquired, comment: winner.comment },
       didMutate: true,
     };
+
+    function confirmQueueAuthority(lease: AcquiredReviewStartLease): string {
+      const authoritativeHead = currentReviewRevision(options.item);
+      try {
+        if (authoritativeHead !== normalizedHead) throw new ReviewLeaseSupersededError();
+        assertExactReviewQueueAuthority(options.queueAuthority!);
+      } catch (error) {
+        // Keep our lease on transport failure so this run retries the check,
+        // not the public POST. A definitive loss of ownership releases it.
+        if (error instanceof ReviewLeaseSupersededError) {
+          deleteOwnedDedicatedReviewStartLease(options.item.number, lease);
+        }
+        throw error;
+      }
+      return authoritativeHead;
+    }
   }
 
   function deleteOwnedDedicatedReviewStartLease(
@@ -471,7 +500,6 @@ export function createReviewCommentLeases(
     newReviewStartLeaseOwner,
     newReviewStartLeaseOwnerForTest,
     exactReviewQueueAuthorityFromEnv,
-    exactReviewQueueAuthorityIsLive,
     freshDedicatedReviewStartLeases,
     reviewStartLeaseWinnerCommentIdForTest,
     postReviewStartStatusComment,

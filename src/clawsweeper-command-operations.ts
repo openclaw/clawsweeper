@@ -15,6 +15,7 @@ import { createApplyActionLedger } from "./clawsweeper-apply-ledger.js";
 import { boolArg, numberArg, stringArg, type Args } from "./clawsweeper-args.js";
 import { createFailedReviewRetryWorkflow } from "./clawsweeper-failed-review-retry.js";
 import { expireReviewStartStatusLease } from "./clawsweeper-review-comment-state.js";
+import { ReviewLeaseSupersededError } from "./clawsweeper-review-comment-leases.js";
 import type {
   ExactReviewQueueAuthority,
   ExpectedIssueSourceRevisionOptions,
@@ -361,18 +362,26 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
       queueAuthority && item.kind === "pull_request" && !queueAuthority.sourceHeadSha
         ? { ...queueAuthority, sourceHeadSha: currentRevision }
         : queueAuthority;
-    const result = postReviewStartStatusComment({
-      item,
-      headSha: currentRevision,
-      reviewTimeoutMs,
-      position: 1,
-      total: 1,
-      shardIndex: 0,
-      shardCount: 1,
-      queueAuthority: reservationAuthority,
-      allowSupersededLeaseCleanup:
-        item.kind !== "pull_request" || Boolean(queueAuthority?.sourceHeadSha),
-    });
+    let result: ReviewStartStatusCommentResult;
+    try {
+      result = postReviewStartStatusComment({
+        item,
+        headSha: currentRevision,
+        reviewTimeoutMs,
+        position: 1,
+        total: 1,
+        shardIndex: 0,
+        shardCount: 1,
+        queueAuthority: reservationAuthority,
+        allowSupersededLeaseCleanup:
+          item.kind !== "pull_request" || Boolean(queueAuthority?.sourceHeadSha),
+      });
+    } catch (error) {
+      if (!(error instanceof ReviewLeaseSupersededError)) throw error;
+      console.error(error.message);
+      console.log(JSON.stringify({ status: "superseded", reason: "queue_authority_lost" }));
+      return;
+    }
     if (result.status === "held") {
       console.log(JSON.stringify({ status: "held", retryAt: result.retryAt }));
       return;

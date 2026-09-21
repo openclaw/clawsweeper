@@ -189,7 +189,7 @@ export function createReviewCommentState(
       "",
       purpose === "apply"
         ? "This transient lease prevents a newer review from overlapping label, comment, or close mutations."
-        : "This placeholder means the worker is alive and reading the current context. I will edit this same comment with the actual review when the claws are done clicking.",
+        : "This temporary status tracks the active review worker. The completed review will appear in the durable ClawSweeper review comment.",
       "",
       "Crustacean status: shell secured, claws on keyboard, evidence pebbles being sorted.",
       "",
