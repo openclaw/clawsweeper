@@ -83,6 +83,13 @@ exact-review queue response within the same default 180-second readiness budget.
 verifies the queue schema, unsigned-request rejection, Bay policy, and assets.
 A persistently unavailable queue still fails readiness.
 
+A status contract failure keeps its original error and nonzero smoke exit, with
+one bounded diagnostic summary: projection completeness, freshness, cache state,
+Bay tide classification, and validated numeric tide, diagnostic count, and fetch
+duration. It excludes response text, timestamps, and diagnostic error messages.
+These are observed fields; an unavailable projection does not identify which
+upstream request or cache entry caused it. The smoke adds no status retry.
+
 When a change updates both the Worker and a GitHub Actions workflow, keep the
 cross-component protocol compatible in both deployment orders. The exact-review
 v2 rollout dispatches the immutable lease tuple under `queue_claim` plus a bounded v1 snapshot; the

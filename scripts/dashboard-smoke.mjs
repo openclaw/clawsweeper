@@ -33,24 +33,13 @@ async function main() {
   const status = await statusResponse.json();
   const statusFetchMs = Date.now() - statusStartedAt;
   const cacheState = statusResponse.headers.get("x-clawsweeper-cache") || "unknown";
-  if (status.schema_version !== 1) throw new Error("unexpected status schema");
-  if (!status.fleet || typeof status.fleet.active_workflow_runs !== "number") {
-    throw new Error("status response is missing fleet metrics");
-  }
-  if (!Array.isArray(status.workers)) throw new Error("status response is missing worker details");
-  if (!Array.isArray(status.pipeline)) throw new Error("status response is missing pipeline rows");
-  if (!status.bay || status.bay.tide_threshold !== 20) {
-    throw new Error("status response is missing the bounded Bay tide contract");
-  }
-  if (!Array.isArray(status.bay.terminal_buffer) || !Array.isArray(status.bay.recently_washed)) {
-    throw new Error("status response is missing Bay terminal outcome arrays");
-  }
-  if (
-    status.bay.timings?.sample_kind !== "completed_review_journeys" ||
-    status.bay.timings?.source !== "durable_exact_review_lifecycles" ||
-    status.bay.timings?.completion_source !== "verified_final_review_receipts"
-  ) {
-    throw new Error("status response is missing the durable Bay timing provenance");
+  try {
+    validateStatus(status);
+  } catch (error) {
+    console.error(
+      `status diagnostic: ${JSON.stringify(statusDiagnostic(status, cacheState, statusFetchMs))}`,
+    );
+    throw error;
   }
 
   const exactReviewQueue = await fetchJson(`${baseUrl}/api/exact-review-queue`);
@@ -160,6 +149,49 @@ async function main() {
       2,
     ),
   );
+}
+
+function validateStatus(status) {
+  if (status.schema_version !== 1) throw new Error("unexpected status schema");
+  if (!status.fleet || typeof status.fleet.active_workflow_runs !== "number") {
+    throw new Error("status response is missing fleet metrics");
+  }
+  if (!Array.isArray(status.workers)) throw new Error("status response is missing worker details");
+  if (!Array.isArray(status.pipeline)) throw new Error("status response is missing pipeline rows");
+  if (!status.bay || status.bay.tide_threshold !== 20) {
+    throw new Error("status response is missing the bounded Bay tide contract");
+  }
+  if (!Array.isArray(status.bay.terminal_buffer) || !Array.isArray(status.bay.recently_washed)) {
+    throw new Error("status response is missing Bay terminal outcome arrays");
+  }
+  if (
+    status.bay.timings?.sample_kind !== "completed_review_journeys" ||
+    status.bay.timings?.source !== "durable_exact_review_lifecycles" ||
+    status.bay.timings?.completion_source !== "verified_final_review_receipts"
+  ) {
+    throw new Error("status response is missing the durable Bay timing provenance");
+  }
+}
+
+function statusDiagnostic(status, cacheState, statusFetchMs) {
+  const complete = status?.public_projection_complete;
+  const freshness = status?.freshness?.state;
+  const tide = status?.bay?.tide_threshold;
+  // Match the bounded Bay metric and diagnostic counts; never copy response text.
+  const boundedTide = Number.isSafeInteger(tide) && tide >= 0 && tide <= 100;
+  const errorCount = status?.diagnostics?.error_count;
+  return {
+    projection: complete === true ? "complete" : complete === false ? "unavailable" : "invalid",
+    freshness: ["fresh", "stale", "unavailable"].includes(freshness) ? freshness : "invalid",
+    cache_state: ["fresh", "stale", "miss"].includes(cacheState) ? cacheState : "unknown",
+    tide:
+      tide === 20 ? "valid" : tide === undefined ? "missing" : boundedTide ? "mismatch" : "invalid",
+    tide_threshold: boundedTide ? tide : null,
+    diagnostic_error_count:
+      Number.isSafeInteger(errorCount) && errorCount >= 0 && errorCount <= 20 ? errorCount : null,
+    status_fetch_ms:
+      Number.isSafeInteger(statusFetchMs) && statusFetchMs >= 0 ? statusFetchMs : null,
+  };
 }
 
 export async function waitForDashboardDeployment({
