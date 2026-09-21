@@ -15,6 +15,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 - Retry timed-out review blob fetches through the existing bounded source-preparation recovery instead of permanently rejecting the unchanged review as a scanner refusal.
 
+- Finish Codex worker process-group cleanup after repeated cancellation, early child exit, or app-server turn completion, preventing orphaned descendants. Thanks @Yigtwxx.
+
 - Use plain language for issue follow-up and preserve Codex's requested next action without inventing generic reproduction checklists. Thanks @PollyBot13.
 
 - Redact private model identifiers from spam-scanner errors before publishing logs, audit records, reports, and ledger entries. Thanks @Yigtwxx.

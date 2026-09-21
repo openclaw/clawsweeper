@@ -71,7 +71,11 @@ child.once("error", (error) => {
   spawnError = error;
 });
 child.once("close", (status, signal) => {
-  if (forceKillTimer) clearTimeout(forceKillTimer);
+  if (forceKillTimer) {
+    clearTimeout(forceKillTimer);
+    // The direct child can exit before its signal-ignoring descendants.
+    terminateCodexProcessTree(child, "SIGKILL");
+  }
   clearTimeout(timeout);
   closeCodexOutputCapture(stdout);
   closeCodexOutputCapture(stderr);
@@ -116,7 +120,7 @@ child.once("close", (status, signal) => {
 });
 
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-  process.once(signal, () => {
+  process.on(signal, () => {
     if (terminating) return;
     terminating = true;
     process.stdin.unpipe(child.stdin);

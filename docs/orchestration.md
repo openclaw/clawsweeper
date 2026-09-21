@@ -53,6 +53,11 @@ ClawSweeper preserves the final error classification and lets the durable queue
 own any fresh review attempt. The repair lane's review/fix iteration budget is
 separate from transport recovery.
 
+On POSIX, the worker owns its Codex process group through cancellation and
+timeout cleanup. Repeated signals do not interrupt escalation, and a direct
+child's exit does not cancel cleanup of its descendants. The app-server worker
+also finishes group cleanup after completed or failed turns before it exits.
+
 A batch publisher hydrates only the complete record tuples named by its review
 artifacts, reconciles those selected tuples against current GitHub state, then
 publishes the records and synchronizes their comments in the same job. It does not download the repository-wide snapshot, pull source Git

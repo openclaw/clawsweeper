@@ -135,6 +135,7 @@ let turnStarted: Promise<Record<string, unknown>> | undefined;
 let turnActivation: Promise<void> | undefined;
 let turnCompleted = false;
 let settled = false;
+let terminating = false;
 let forceKillTimer: NodeJS.Timeout | undefined;
 let terminal: WebSocket | null = null;
 let terminalInput = "";
@@ -187,8 +188,9 @@ lines.on("line", (line) => {
 });
 
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-  process.once(signal, () => {
-    if (settled) return;
+  process.on(signal, () => {
+    if (settled || terminating) return;
+    terminating = true;
     proofAbort.abort();
     forceKillTimer = terminateCodexProcessTree(child, signal);
   });
@@ -549,14 +551,18 @@ async function finish(status: number, signal: NodeJS.Signals | null, error?: Err
   proofAbort.abort();
   clearTimeout(timeout);
   if (heartbeat) clearInterval(heartbeat);
-  if (forceKillTimer) clearTimeout(forceKillTimer);
   for (const waiter of pending.values())
     waiter.reject(error ?? new Error("Codex app-server closed."));
   pending.clear();
   if (child.exitCode === null && child.signalCode === null) {
     child.stdin.end();
-    forceKillTimer = terminateCodexProcessTree(child);
+    forceKillTimer ??= terminateCodexProcessTree(child);
     await waitForCodexProcessExit(child);
+  }
+  if (forceKillTimer) {
+    clearTimeout(forceKillTimer);
+    // A closed direct child does not prove that the whole process group exited.
+    terminateCodexProcessTree(child, "SIGKILL");
   }
   terminal?.close(1000, "turn complete");
   closeCodexOutputCapture(stdout);
