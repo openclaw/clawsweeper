@@ -40,7 +40,13 @@ Worker can then complete the lease under its existing retry policy; compatible
 Workers receive the terminal reason on the first request. Other errors retain
 the existing failure and retry handling. A terminal
 reason removes the unchanged queue revision while allowing an already queued
-newer revision to proceed; it does not turn the failed workflow green.
+newer revision to proceed; it does not turn the failed workflow green. Native
+blob-fetch transport failures, including the hydration deadline killing a Git
+fetch, remain `source_preparation` / `review_blobs_unavailable` with
+`retryable: true`. They enter the existing bounded retry schedule without a
+terminal scanner reason. Every retry must still prepare complete input and
+pass the canonical input scan; scanner refusals and staging limits remain
+terminal for the unchanged revision.
 
 Scheduled and manual explicit queue admissions use the same exact-event review
 step. Aggregate shard recovery uses its per-item terminal ledger instead of

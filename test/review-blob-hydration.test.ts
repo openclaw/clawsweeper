@@ -29,11 +29,7 @@ import {
   REVIEW_TREE_MAX_BYTES,
   ReviewGitError,
 } from "../dist/clawsweeper-review-blobs.js";
-import {
-  AgentInputScanError,
-  agentInputScanFailureExitCode,
-  MAX_SCAN_BYTES,
-} from "../dist/agent-input-scan.js";
+import { agentInputScanFailureExitCode, MAX_SCAN_BYTES } from "../dist/agent-input-scan.js";
 import { writeExactReviewFailureDiagnostics } from "../dist/clawsweeper-review-failure-diagnostics.js";
 import { createContextHydration } from "../dist/clawsweeper-context-hydration.js";
 import { createGitHubRuntime } from "../dist/clawsweeper-github-runtime.js";
@@ -340,7 +336,7 @@ function prepareFixtureCommits(fixture: { target: string; baseSha: string; headS
   );
 }
 
-function reviewGitInfo(releaseTag?: string) {
+function reviewRuntime(releaseTag?: string) {
   const unavailable = (): never => {
     throw new Error("Unexpected dependency in native Git preparation fixture");
   };
@@ -358,7 +354,7 @@ function reviewGitInfo(releaseTag?: string) {
     parseDecision: unavailable,
     ensureDir: unavailable,
     stringOrUndefined: unavailable,
-  }).gitInfo;
+  });
 }
 
 for (const withRelease of [false, true]) {
@@ -376,7 +372,7 @@ for (const withRelease of [false, true]) {
         git(fixture.source, "-c", "tag.gpgsign=false", "tag", releaseTag, fixture.branchPoint);
         git(fixture.source, "push", "-q", "origin", `refs/tags/${releaseTag}`);
       }
-      const gitInfo = reviewGitInfo(withRelease ? releaseTag : undefined);
+      const gitInfo = reviewRuntime(withRelease ? releaseTag : undefined).gitInfo;
       const expectedAncestors = reachable(fixture.source, fixture.baseSha);
       assert.equal(git(fixture.target, "rev-parse", "--is-shallow-repository"), "false");
       const info = gitInfo(fixture.target);
@@ -1514,7 +1510,7 @@ test("review hydration rejects aggregate scan budget overflow and incomplete siz
   }
 });
 
-test("expired blob fetch retains native diagnostics without changing the scan refusal", (t) => {
+test("expired blob fetch remains a retryable source preparation failure", (t) => {
   const fixture = partialCloneFixture();
   const originalSpawnSync = childProcess.spawnSync;
   const realNow = Date.now.bind(Date);
@@ -1558,11 +1554,10 @@ test("expired blob fetch retains native diagnostics without changing the scan re
           },
         }),
       (error) => {
-        assert.ok(error instanceof AgentInputScanError);
+        assert.ok(error instanceof ReviewGitError);
         failure = error;
-        assert.equal(error.name, "AgentInputScanError");
-        assert.equal(error.reason, "deadline");
-        assert.equal(error.retryable, false);
+        assert.equal(error.diagnosticReason, "review_blobs_unavailable");
+        assert.equal(reviewRuntime().codexReviewFailureRetryable(error), true);
         assert.equal(agentInputScanFailureExitCode(error) ?? 1, 1);
         return true;
       },
@@ -1577,19 +1572,22 @@ test("expired blob fetch retains native diagnostics without changing the scan re
       error: failure,
       prompt: "synthetic prompt",
       model: "fixture-model",
-      classification: "agent_input_scan",
+      classification: "codex_execution",
       repo: "fixture/repository",
       itemKind: "pull_request",
       itemNumber: 1,
       sourceSha: fixture.headSha,
-      retryable: false,
+      retryable: reviewRuntime().codexReviewFailureRetryable(failure),
       workflowExit: 1,
       env: {},
     });
     const manifest = JSON.parse(readFileSync(join(output, "manifest.json"), "utf8"));
-    assert.equal(manifest.classification, "agent_input_scan");
-    assert.equal(manifest.retryable, false);
-    assert.deepEqual(manifest.failure, { stage: "agent_input_scan", reason_code: "deadline" });
+    assert.equal(manifest.classification, "source_preparation");
+    assert.equal(manifest.retryable, true);
+    assert.deepEqual(manifest.failure, {
+      stage: "source_preparation",
+      reason_code: "review_blobs_unavailable",
+    });
     assert.deepEqual(manifest.process, {
       status: null,
       signal: "SIGTERM",

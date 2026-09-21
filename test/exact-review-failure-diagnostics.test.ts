@@ -250,9 +250,7 @@ test("scan refusals do not expose unrelated or nested process causes", () => {
         "[no diagnostic detail]\n",
       );
     }
-    for (const reason of AGENT_INPUT_SCAN_FAILURE_REASONS.filter(
-      (reason) => reason !== "deadline",
-    )) {
+    for (const reason of AGENT_INPUT_SCAN_FAILURE_REASONS) {
       const error = new AgentInputScanError(reason);
       error.cause = blobFailure;
       const output = write(join(root, reason), error);
