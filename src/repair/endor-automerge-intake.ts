@@ -2,11 +2,7 @@ import { pathToFileURL } from "node:url";
 import { isRecord, requirePositiveInteger, requireRecord, requireString } from "../value-coerce.js";
 import { ghJsonWithRetry, type GhRetryOptions } from "./github-cli.js";
 import { parseArgs } from "./lib.js";
-import {
-  AUTOMERGE_BLOCKING_LABEL_NAMES,
-  AUTOMERGE_LABEL,
-  AUTOFIX_LABEL,
-} from "./exact-review-guard-labels.js";
+import { AUTOMERGE_BLOCKING_LABEL_NAMES, AUTOMERGE_LABEL } from "./exact-review-guard-labels.js";
 
 type GitHub = (args: string[], options?: GhRetryOptions) => unknown;
 const TARGET_REPO = "openclaw/endor-clawsweeper-e2e";
@@ -23,7 +19,8 @@ export function enrollEndorPullRequests({
   execute?: boolean;
   github?: GitHub;
 }): { number: number; status: "enrolled" | "planned" | "skipped" }[] {
-  if (repo !== TARGET_REPO) throw new Error(`Endor autofix intake is restricted to ${TARGET_REPO}`);
+  if (repo !== TARGET_REPO)
+    throw new Error(`Endor automerge intake is restricted to ${TARGET_REPO}`);
   const repository = requireRecord(github(["api", `repos/${repo}`]), "repository");
   if (
     repository.full_name !== repo ||
@@ -33,7 +30,7 @@ export function enrollEndorPullRequests({
     repository.has_issues !== true
   ) {
     throw new Error(
-      "Endor autofix intake requires an active public repository with Issues enabled",
+      "Endor automerge intake requires an active public repository with Issues enabled",
     );
   }
   const defaultBranch = requireString(repository.default_branch, "default branch");
@@ -64,7 +61,7 @@ export function enrollEndorPullRequests({
           "--method",
           "POST",
           "-f",
-          `labels[]=${AUTOFIX_LABEL}`,
+          `labels[]=${AUTOMERGE_LABEL}`,
         ],
         { attempts: 1 },
       );

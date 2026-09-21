@@ -14,10 +14,12 @@ import { createTargetFixture } from "../../test/e2e/automerge/target-fixtures.mj
 
 const candidate = path.resolve(import.meta.dirname, "../..");
 const repo = "openclaw/endor-clawsweeper-e2e";
-const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "endor-autofix-proof-")));
+const root = fs.realpathSync.native(
+  fs.mkdtempSync(path.join(os.tmpdir(), "endor-automerge-proof-")),
+);
 const results = [];
 try {
-  for (const verdict of ["pass", "needs-human"]) {
+  for (const verdict of ["pass", "needs-human", "stale-pass"]) {
     const workspace = path.join(root, verdict);
     fs.mkdirSync(workspace);
     const runtime = createCandidateRuntime(workspace, candidate);
@@ -52,7 +54,7 @@ try {
       CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT: path.join(workspace, "event-output"),
       GITHUB_REPOSITORY: "openclaw/clawsweeper",
       GITHUB_SHA: "a".repeat(40),
-      GITHUB_WORKFLOW: "Endor autofix proof",
+      GITHUB_WORKFLOW: "Endor automerge proof",
       GITHUB_JOB: "proof",
       GITHUB_RUN_ID: "42",
       GITHUB_RUN_ATTEMPT: "1",
@@ -61,10 +63,11 @@ try {
     };
     fs.mkdirSync(env.CLAWSWEEPER_ACTION_LEDGER_ROOT);
     fs.mkdirSync(env.CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT);
+    let invocation = 0;
     const run = (script, args) => {
       const result = spawnSync(process.execPath, [path.join(runtime, script), ...args], {
         cwd: runtime,
-        env,
+        env: { ...env, CLAWSWEEPER_ACTION_LEDGER_INVOCATION: `step-${++invocation}` },
         encoding: "utf8",
         timeout: 120000,
         maxBuffer: 8 * 1024 * 1024,
@@ -74,21 +77,25 @@ try {
       return result.stdout;
     };
     const intake = () =>
-      JSON.parse(run("dist/repair/endor-autofix-intake.js", ["--repo", repo, "--execute"]));
+      JSON.parse(run("dist/repair/endor-automerge-intake.js", ["--repo", repo, "--execute"]));
     assert.deepEqual(intake(), [{ number: 42, status: "enrolled" }]);
-    assert.deepEqual(state().pr.labels, ["clawsweeper:autofix"]);
+    assert.deepEqual(state().pr.labels, ["clawsweeper:automerge"]);
+    const route = () =>
+      run("dist/repair/comment-router.js", ["--repo", repo, "--max-comments", "20", "--execute"]);
+    route();
+    assert.equal(state().dispatches.length, 1, "the new label must request review automatically");
+    assert.equal(state().pr.mergedAt, null, "no merge before the review result");
+    assert.deepEqual(intake(), [{ number: 42, status: "skipped" }]);
     if (verdict === "pass") addExactHeadVerdict(statePath, fixture.headSha);
-    else addCanonicalNeedsHumanVerdict(statePath, fixture.headSha);
-    run("dist/repair/comment-router.js", ["--repo", repo, "--max-comments", "20", "--execute"]);
+    else if (verdict === "needs-human") addCanonicalNeedsHumanVerdict(statePath, fixture.headSha);
+    else addExactHeadVerdict(statePath, "0".repeat(40));
+    route();
     const report = JSON.parse(
       fs.readFileSync(path.join(runtime, "results/comment-router-latest.json"), "utf8"),
     );
     const commands = report.commands.filter((value) => Number(value.issue_number) === 42);
     assert.ok(commands.length, `router must process the enrolled PR: ${JSON.stringify(report)}`);
-    const completed = commands.some((command) => command.autofix_complete === true);
-    if (verdict === "pass") assert.equal(completed, true, JSON.stringify(commands));
-    else {
-      assert.equal(completed, false);
+    if (verdict === "needs-human") {
       assert.ok(
         commands.some((command) =>
           command.actions.some(
@@ -99,28 +106,46 @@ try {
       );
     }
     const after = state();
-    if (verdict === "pass") assert.equal(after.pr.labels.includes("clawsweeper:autofix"), false);
-    else assert.equal(after.pr.labels.includes("clawsweeper:human-review"), true);
-    assert.equal(after.pr.state, "open");
-    assert.equal(after.pr.mergedAt, null);
+    const mergeCalls = (value) =>
+      value.calls.filter((call) => call.args[0] === "pr" && call.args[1] === "merge");
+    if (verdict === "pass") {
+      assert.equal(after.pr.state, "closed");
+      assert.ok(after.pr.mergedAt, JSON.stringify(commands));
+      assert.equal(mergeCalls(after).length, 1);
+      assert.ok(mergeCalls(after)[0].args.includes(fixture.headSha));
+      const mergedMain = execFileSync(
+        "/usr/bin/git",
+        ["--git-dir", fixture.remote, "rev-parse", "refs/heads/main"],
+        { encoding: "utf8" },
+      ).trim();
+      assert.equal(mergedMain, after.pr.mergeCommitSha);
+      assert.notEqual(mergedMain, fixture.baseSha);
+    } else {
+      assert.equal(after.pr.state, "open");
+      assert.equal(after.pr.mergedAt, null);
+      assert.equal(mergeCalls(after).length, 0);
+      if (verdict === "needs-human")
+        assert.equal(after.pr.labels.includes("clawsweeper:human-review"), true);
+    }
     assert.deepEqual(
       after.workflowDispatches,
       [],
       "review-only outcomes must not dispatch a repair",
     );
+    route();
     assert.equal(
-      after.calls.some((call) => call.args[0] === "pr" && call.args[1] === "merge"),
-      false,
+      mergeCalls(state()).length,
+      mergeCalls(after).length,
+      "replay must not merge again",
     );
-    after.pr.labels = [];
-    save(after);
-    assert.deepEqual(intake(), [{ number: 42, status: "skipped" }]);
+    assert.deepEqual(intake(), verdict === "pass" ? [] : [{ number: 42, status: "skipped" }]);
     results.push({
       verdict,
-      autofixComplete: completed,
-      prOpen: true,
-      mergeCalls: 0,
-      replay: "skipped",
+      reviewRequested: true,
+      prState: after.pr.state,
+      mergeCommit: after.pr.mergeCommitSha,
+      mergeCalls: mergeCalls(after).length,
+      replay: verdict === "pass" ? "closed PR excluded" : "skipped",
       globalMergeEnabled: true,
     });
   }
@@ -130,7 +155,7 @@ try {
         runtime: process.version,
         results,
         limits:
-          "Real intake/router CLIs and persisted state; synthetic GitHub, no Endor scan or model repair.",
+          "Real intake/router CLIs, persisted state and local Git merge; synthetic GitHub and review results, no live Endor scan or model repair.",
       },
       null,
       2,

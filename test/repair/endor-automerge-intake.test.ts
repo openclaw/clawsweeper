@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { enrollEndorPullRequests } from "../../dist/repair/endor-autofix-intake.js";
+import { enrollEndorPullRequests } from "../../dist/repair/endor-automerge-intake.js";
 
 const repo = "openclaw/endor-clawsweeper-e2e";
 const author = { login: "endor-labs-pro[bot]", id: 179191674, type: "Bot" };
@@ -33,8 +33,8 @@ function fixture(
     const endpoint = args[1];
     if (args.includes("POST")) {
       writes.push(args);
-      events.push([{ event: "labeled", label: { name: "clawsweeper:autofix" } }]);
-      return [{ name: "clawsweeper:autofix" }];
+      events.push([{ event: "labeled", label: { name: "clawsweeper:automerge" } }]);
+      return [{ name: "clawsweeper:automerge" }];
     }
     if (endpoint === `repos/${repo}`) {
       return {
@@ -63,7 +63,7 @@ function fixture(
   return { github, writes, events };
 }
 
-test("enrols an Endor Pro test PR using only the existing autofix label", () => {
+test("enrols an Endor Pro test PR using only the existing automerge label", () => {
   const { github, writes } = fixture();
   assert.deepEqual(enrollEndorPullRequests({ repo, execute: true, github }), [
     { number: 42, status: "enrolled" },
@@ -75,7 +75,7 @@ test("enrols an Endor Pro test PR using only the existing autofix label", () => 
       "--method",
       "POST",
       "-f",
-      "labels[]=clawsweeper:autofix",
+      "labels[]=clawsweeper:automerge",
     ],
   ]);
 });
@@ -89,7 +89,7 @@ test("preview is read-only and reports the intended enrolment", () => {
 test("repeated runs and manual removal do not re-enrol a previously handled PR", () => {
   const { github, writes, events } = fixture();
   enrollEndorPullRequests({ repo, execute: true, github });
-  events.push([{ event: "unlabeled", label: { name: "clawsweeper:autofix" } }]);
+  events.push([{ event: "unlabeled", label: { name: "clawsweeper:automerge" } }]);
   // The live PR has no mode label, but GitHub retains the label events.
   assert.deepEqual(enrollEndorPullRequests({ repo, execute: true, github }), [
     { number: 42, status: "skipped" },

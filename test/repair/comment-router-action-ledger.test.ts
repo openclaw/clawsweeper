@@ -23,9 +23,9 @@ function routerWorkflowSteps(source: string) {
   return Object.values(workflow.jobs).flatMap((job) => job.steps ?? []);
 }
 
-test("scheduled Endor enrolment routes only the test repository into autofix without recursion", () => {
+test("scheduled Endor enrolment routes only the test repository into automerge without recursion", () => {
   const steps = routerWorkflowSteps(readText(".github/workflows/repair-comment-router.yml"));
-  const schedule = steps.find((step) => step.name === "Schedule Endor test repository autofix");
+  const schedule = steps.find((step) => step.name === "Schedule Endor test repository automerge");
   const intake = steps.find((step) => step.name === "Enrol Endor remediation PRs");
   assert.ok(schedule?.run);
   assert.ok(intake);
@@ -68,7 +68,7 @@ test("scheduled Endor enrolment routes only the test repository into autofix wit
   );
   assert.equal(
     intake.run,
-    'node dist/repair/endor-autofix-intake.js --repo "$TARGET_REPO" --execute',
+    'node dist/repair/endor-automerge-intake.js --repo "$TARGET_REPO" --execute',
   );
   assert.equal(intake["continue-on-error"], true);
 });
