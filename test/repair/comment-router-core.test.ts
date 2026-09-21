@@ -2435,6 +2435,18 @@ test("manual-only holds block merge before maintainer approval exemptions", () =
   );
 });
 
+test("fresh merge readiness checks the full blocking-label policy", () => {
+  const source = readFileSync("src/repair/comment-router.ts", "utf8");
+  const readiness = source.slice(
+    source.indexOf("function validateAutomergeReadiness"),
+    source.indexOf("function authoritativeMaintainerHumanApprovalTime"),
+  );
+  assert.match(readiness, /AUTOMERGE_BLOCKING_LABEL_NAMES\.find/);
+  assert.match(readiness, /return hasLabel\(target, label\)/);
+  assert.match(readiness, /label === MERGE_READY_LABEL/);
+  assert.match(readiness, /protected or paused repair label/);
+});
+
 test("proof override authorization is durable before merge while pause labels remain success-only", () => {
   const source = readFileSync("src/repair/comment-router.ts", "utf8");
   const mergeExecution = source.slice(

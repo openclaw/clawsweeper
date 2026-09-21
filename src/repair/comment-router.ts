@@ -5,7 +5,11 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { readRepairLoopComments } from "./comment-router-read-model.js";
 import { adaptiveReviewBudgetForPullRequest } from "./adaptive-review-budget.js";
-import { CLOSE_PROTECTED_LABEL_NAMES, MANUAL_ONLY_LABEL } from "./exact-review-guard-labels.js";
+import {
+  AUTOMERGE_BLOCKING_LABEL_NAMES,
+  CLOSE_PROTECTED_LABEL_NAMES,
+  MANUAL_ONLY_LABEL,
+} from "./exact-review-guard-labels.js";
 import {
   activeRepairWorkflowRunForJobAfterDispatchRecheck,
   assertLiveWorkerCapacity,
@@ -4349,6 +4353,18 @@ function validateAutomergeReadiness({ command, view, target, comments }: LooseRe
   ) {
     return "PR is paused for human review";
   }
+  const blockedLabel = AUTOMERGE_BLOCKING_LABEL_NAMES.find((label) => {
+    // Explicit approval can resolve the existing human/merge-ready pause, not safety holds.
+    if (label === HUMAN_REVIEW_LABEL) return false;
+    if (
+      label === MERGE_READY_LABEL &&
+      (command.intent === "maintainer_approve_automerge" ||
+        command.validated_maintainer_human_approval === true)
+    )
+      return false;
+    return hasLabel(target, label);
+  });
+  if (blockedLabel) return `protected or paused repair label: ${blockedLabel}`;
   if (view.state && view.state !== "OPEN")
     return `pull request is ${String(view.state).toLowerCase()}`;
   if (view.isDraft) return "pull request is draft";
