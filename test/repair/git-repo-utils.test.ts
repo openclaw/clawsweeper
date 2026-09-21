@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import childProcess, { spawnSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
@@ -14,9 +15,19 @@ import {
 } from "../../dist/repair/git-repo-utils.js";
 import { mockCommandBinEnv } from "../helpers.ts";
 
-test("git helper bounds execution and terminates the timed-out process", async () => {
+test("git helper bounds execution and terminates the timed-out process", async (t) => {
   const fixture = fakeGitFixture();
+  t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
+  const controlMarker = path.join(fixture.root, "control-marker");
   const marker = path.join(fixture.root, "late-marker");
+
+  const control = runGitCommand(["stall", controlMarker], {
+    targetDir: fixture.root,
+    env: fixture.env,
+  });
+  assert.equal(control.status, 0);
+  assert.match(control.stderr, /waiting for timeout/);
+  assert.equal(fs.readFileSync(controlMarker, "utf8"), "late\n");
 
   assert.throws(
     () =>
@@ -25,10 +36,30 @@ test("git helper bounds execution and terminates the timed-out process", async (
         timeoutMs: 250,
         env: fixture.env,
       }),
-    /command timed out after 250ms: git stall.*waiting for timeout/s,
+    /command timed out after 250ms: git stall/,
   );
   await delay(750);
   assert.equal(fs.existsSync(marker), false);
+});
+
+test("git helper preserves stderr in timeout errors", (t) => {
+  t.mock.method(childProcess, "spawnSync", () => ({
+    error: Object.assign(new Error("spawnSync git ETIMEDOUT"), { code: "ETIMEDOUT" }),
+    status: null,
+    signal: "SIGTERM",
+    stdout: "",
+    stderr: "waiting for timeout\n",
+  }));
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+
+  assert.throws(
+    () => runGitCommand(["stall"], { targetDir: process.cwd(), timeoutMs: 250 }),
+    /command timed out after 250ms: git stall\nwaiting for timeout/,
+  );
 });
 
 test("git helper preserves ordinary nonzero status and stderr", () => {
