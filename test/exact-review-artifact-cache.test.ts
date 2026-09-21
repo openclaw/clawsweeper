@@ -159,6 +159,69 @@ test("Worker artifact receipt endpoints use publisher scope, not operator scope"
   assert.equal((await lookup.json()).hit, true);
 });
 
+test("overlapping receipt lookups share cleanup and release it after success or failure", async (t) => {
+  for (const failCleanup of [false, true]) {
+    await t.test(failCleanup ? "failed cleanup" : "successful cleanup", async () => {
+      const storage = new MemoryDurableStorage();
+      const bucket = new ArtifactBucket();
+      const content = Buffer.from("concurrent publication bundle");
+      const digest = sha256(content);
+      bucket.seed(digest, content, Date.now());
+      const queue = new ExactReviewQueue({ storage }, { STATE_SNAPSHOTS: bucket });
+      const request = (path: string, body: unknown) =>
+        queue.fetch(
+          new Request(`https://queue${path}`, {
+            method: "POST",
+            body: JSON.stringify(body),
+          }),
+        );
+      assert.equal(
+        (
+          await request("/artifact-cache/receipt/store", {
+            ...tuple,
+            digest,
+            bytes: content.length,
+          })
+        ).status,
+        201,
+      );
+
+      const originalList = bucket.list.bind(bucket);
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      let cleanupCalls = 0;
+      bucket.list = async (options) => {
+        cleanupCalls++;
+        entered.resolve();
+        await release.promise;
+        if (failCleanup) throw new Error("synthetic R2 list failure");
+        return originalList(options);
+      };
+      const lookups = Array.from({ length: 8 }, () =>
+        request("/artifact-cache/receipt/lookup", tuple),
+      );
+      await entered.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      release.resolve();
+      for (const response of await Promise.all(lookups)) {
+        assert.equal(response.status, 200);
+        const result = await response.json();
+        assert.equal(result.hit, true);
+        assert.equal(result.receipt.digest, digest);
+      }
+      assert.equal(cleanupCalls, 1, "overlapping lookups must not scan the same cleanup page");
+
+      bucket.list = async (options) => {
+        cleanupCalls++;
+        return originalList(options);
+      };
+      assert.equal((await request("/artifact-cache/receipt/lookup", tuple)).status, 200);
+      assert.equal(cleanupCalls, 2, "settled cleanup must not suppress the next cleanup pass");
+      assert.deepEqual(bucket.keys(), [`${EXACT_REVIEW_ARTIFACT_CACHE_PREFIX}${digest}`]);
+    });
+  }
+});
+
 class ArtifactBucket {
   private readonly objects = new Map<
     string,

@@ -95,6 +95,7 @@ export function exactReviewArtifactObjectKey(digest: string): string | null {
 export class ExactReviewArtifactReceiptStore {
   private readonly storage: ArtifactReceiptStorage;
   private readonly bucket: ArtifactR2Bucket | null;
+  private pruneInFlight: Promise<{ receiptsDeleted: number; objectsDeleted: number }> | null = null;
 
   constructor(storage: ArtifactReceiptStorage, bucketBinding: unknown) {
     this.storage = storage;
@@ -224,7 +225,17 @@ export class ExactReviewArtifactReceiptStore {
     };
   }
 
-  async prune(now: number): Promise<{ receiptsDeleted: number; objectsDeleted: number }> {
+  prune(now: number): Promise<{ receiptsDeleted: number; objectsDeleted: number }> {
+    // Concurrent receipt requests must not prune the same R2 page independently.
+    this.pruneInFlight ??= this.prunePage(now).finally(() => {
+      this.pruneInFlight = null;
+    });
+    return this.pruneInFlight;
+  }
+
+  private async prunePage(
+    now: number,
+  ): Promise<{ receiptsDeleted: number; objectsDeleted: number }> {
     const receiptsDeleted = this.deleteExpiredReceiptsSync(now);
     if (!this.bucket) return { receiptsDeleted, objectsDeleted: 0 };
     const cursorRow = firstRow(
