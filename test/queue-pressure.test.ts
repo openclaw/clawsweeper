@@ -218,18 +218,18 @@ test("worker limits scale every background lane and leave priority lanes unchang
     assert.equal(workerLimit(lane, { pressureLevel: "hard" }), workerLimit(lane));
     assert.equal(workerLimit(lane, { pressureLevel: "unknown" }), workerLimit(lane));
   }
-  assert.equal(workerLimit("normal_review"), 8);
+  assert.equal(workerLimit("normal_review"), 89);
 });
 
-test("an unavailable probe reduces the eight-slot background allowance", () => {
+test("an unavailable probe reduces the expanded background allowance", () => {
   const normal = workerLimit("normal_review", { pressureLevel: "none" });
   const conservative = workerLimit("normal_review", { pressureLevel: "unknown" });
 
-  assert.equal(normal, 8);
+  assert.equal(normal, 89);
   assert.equal(conservative, workerLimit("normal_review", { pressureLevel: "hard" }));
   assert.ok(conservative >= 1);
   assert.ok(conservative < normal);
-  assert.equal(conservative, 1);
+  assert.equal(conservative, 8);
   assert.equal(workerLimit("exact_item", { pressureLevel: "unknown" }), 1);
 });
 

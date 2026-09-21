@@ -3,15 +3,15 @@
     "max_parallel_targets": 3
   },
   "workers": {
-    "max": 32,
+    "max": 128,
     "reserve_for_interactive": 16,
     "expansion_reserve": 8,
-    "minimum_background": 8
+    "minimum_background": 16
   },
   "lanes": {
     "exact_review": {
-      "max_concurrent": 32,
-      "target_max_concurrent": 24,
+      "max_concurrent": 80,
+      "target_max_concurrent": 64,
       "actions_budget": 194
     },
     "assist": {

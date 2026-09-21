@@ -54,11 +54,11 @@ ClawSweeper has three issue/PR scheduler paths:
 
 The lanes share report storage and apply rules, but they intentionally do not
 share throughput. Event review and hot intake keep new maintainer-visible work
-fast. Manual normal backfill has a configured ceiling of 22 concurrent Codex
-review shards; reservations reduce its effective quiet allowance to eight.
-Scheduled hot intake and normal backfill share an eight-slot queue cap.
-Manual normal review has an active floor of nine requested shards: due items
-win first, and if fewer than 9 items are due, the planner can fill from older
+fast. Manual normal backfill has a configured ceiling of 89 concurrent Codex
+review shards within the 104 background slots available after reservations.
+Scheduled hot intake and normal backfill share a 32-slot queue cap.
+Manual normal review has an active floor of 38 requested shards: due items
+win first, and if fewer than 38 items are due, the planner can fill from older
 eligible reviews. The smaller worker allowance always wins. Scheduled planning
 does not use this floor.
 
@@ -273,8 +273,8 @@ retry it. This applies to comment-only sync and close-mode apply. Folder
 reconciliation also defers before mutation when its open-item scan is
 rate-limited; ordinary non-rate-limit failures remain fatal.
 The source fallback publication minimum, base, and maximum are 4, 24, and 48,
-but production overrides them to 8, 32, and 32, matching the review ceiling that
-also bounds legacy publication. The adaptive controller
+but production overrides them to 8, 32, and 32, independently of the larger
+80-review ceiling. The adaptive controller
 classifies GitHub pressure:
 a 403/429 or
 explicit rate-limit failure records a 15-minute cooldown, while GitHub 5xx
@@ -591,7 +591,7 @@ Current defaults:
   receives its own parallel workflow
 - total review admission target: 60 items/hour across the fleet; organic work
   consumes the budget first and scheduled backfill fills the remainder, split
-  35% hot intake and 65% normal backfill, with a 6-item burst and at most eight
+  35% hot intake and 65% normal backfill, with a 6-item burst and at most 32
   scheduled reviews dispatching or leased across both lanes
 - review admission and pressure are computed independently from publication;
   top-level queue health describes reviews while `lanes.publication` retains
@@ -599,12 +599,12 @@ Current defaults:
 - fleet fanout: 20 hot targets every 20 minutes as temporary self-feedback
   containment, and 12 normal targets hourly;
   each target cycle can offer up to 50 due items to the shared admission budget
-- manual broad hot intake: configured ceiling of 11 shards, at most eight when quiet
-- manual normal backfill: defaults to 22 requested shards, at most eight when quiet, batch size 3, and scans up to
+- manual broad hot intake: configured ceiling of 44 shards when quiet
+- manual normal backfill: defaults to 89 requested shards when quiet, batch size 3, and scans up to
   250 GitHub pages unless overridden
 
-The hard planner cap is 32 shards. The workflow clamps invalid or larger
-`shard_count` inputs to 32.
+The hard planner cap is 128 shards. The workflow clamps invalid or larger
+`shard_count` inputs to 128.
 
 Broad background review clamps manual `shard_count` input to the current
 lane allowance from `worker-limit`. Pending or planning background sweeps reserve
@@ -655,10 +655,10 @@ live Codex count past the global budget.
 
 The manual active floor is not a separate lane and does not change close/apply safety.
 It only changes normal planning when due backlog is below the desired floor:
-after selecting all due candidates, the planner fills up to nine nonempty shards
+after selecting all due candidates, the planner fills up to 38 nonempty shards
 with eligible items whose latest complete review is at least 6 hours old.
 Capacity status reports this as `floor: due backlog below active floor`. If the
-central worker scheduler returns fewer than nine allowed shards, the smaller
+central worker scheduler returns fewer than 38 allowed shards, the smaller
 worker allowance wins.
 
 Scheduled planning does not use the active-floor backfill. It selects only due
@@ -694,7 +694,7 @@ shared token bucket fed despite dedupe or uneven fleet distribution. The queue
 admits at most 60 scheduled reviews/hour, which needs
 about `60 * 4.1 / 60 = 4.1` concurrent review workers at a 4.1-minute mean
 service time and budgets roughly 1,800 GitHub requests/hour. The separate
-eight-slot scheduled cap also bounds old queued work and slower reviews while
+32-slot scheduled cap also bounds old queued work and slower reviews while
 organic/manual requests retain admission priority. Rate and burst reduce request
 and inference demand; the pending soft limit remains a separate queue
 backpressure bound and should change only when queue-memory or latency evidence

@@ -231,7 +231,7 @@ twenty-way fanout and caches error/recovery telemetry for 120 seconds. That leav
 enough distinct completed-item evidence to drive a 20-outcome tide despite
 repeated targets or excluded runs while still bounding telemetry pressure.
 This bounds
-telemetry pressure without changing the 32-worker fleet budget. Worker details
+telemetry pressure independently of the 128-worker fleet budget. Worker details
 paginate up to 300 jobs per workflow run so retained large matrix runs contribute to a
 complete internal census. Titles, job names, raw URLs, opaque target keys, and
 raw errors are removed before the status snapshot is persisted or returned.
@@ -389,7 +389,7 @@ Do not move these into the dashboard:
 
 The dashboard Worker owns durable exact-review admission only: it deduplicates
 webhook deliveries, coalesces each repository/item pair, and leases at most
-32 Actions executors, with up to 24 active leases per target repository. It does
+80 Actions executors, with up to 64 active leases per target repository. It does
 not decide review outcomes or perform target repository mutations. For
 command-triggered reviews, the queue retains the bounded review prompt and
 command-status identifiers so the leased GitHub Actions executor can update the

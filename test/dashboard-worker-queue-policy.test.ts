@@ -261,9 +261,9 @@ test("live activity fails closed for stale, mixed, unavailable, and over-bound s
 test("production bounds review demand and preserves canonical publication batches", () => {
   const wrangler = fs.readFileSync("dashboard/wrangler.toml", "utf8");
   assert.match(wrangler, /CLAWSWEEPER_ENABLE_CLAWHUB = "1"/);
-  assert.match(wrangler, /EXACT_REVIEW_QUEUE_MAX_CONCURRENT = "32"/);
-  assert.match(wrangler, /EXACT_REVIEW_TARGET_MAX_CONCURRENT = "24"/);
-  assert.match(wrangler, /EXACT_REVIEW_SCHEDULED_MAX_CONCURRENT = "8"/);
+  assert.match(wrangler, /EXACT_REVIEW_QUEUE_MAX_CONCURRENT = "80"/);
+  assert.match(wrangler, /EXACT_REVIEW_TARGET_MAX_CONCURRENT = "64"/);
+  assert.match(wrangler, /EXACT_REVIEW_SCHEDULED_MAX_CONCURRENT = "32"/);
   assert.match(wrangler, /EXACT_REVIEW_ACTIONS_BUDGET = "194"/);
   assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_BATCH_SIZE = "8"/);
   assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT = "8"/);

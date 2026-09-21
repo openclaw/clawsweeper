@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Raise the worker budget to 128, exact-review capacity to 80 with 64 reviews per repository, and scheduled concurrency to 32 while retaining scheduled intake pacing, publication headroom, and the separate imported-cluster cap.
+
 - fix(dashboard): report bounded status diagnostics when the deployment smoke rejects the Bay contract, while preserving its failure gate.
 
 - Qualify the approved TypeSafe local URL-rejection fixture using its exact native identity and source line while retaining complete input scanning.
