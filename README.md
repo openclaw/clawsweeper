@@ -298,7 +298,7 @@ Common commands:
   The controlled intake/router proof is `node scripts/e2e/endor-automerge.mjs`
   after `pnpm run build:node`; it uses synthetic GitHub state and verifies
   review dispatch, automatic merge, human-review pause, stale-review rejection,
-  and replay without duplicate merge calls.
+  late manual-only holds, and replay without duplicate merge calls.
 - `implement issue` on an open issue creates or reuses one issue implementation
   job and dispatches the issue-to-PR lane. OpenClaw organization members may
   request this explicitly even without repository write permission.

@@ -57,6 +57,16 @@ if (args[0] === "pr" && args[1] === "checks") {
 
 if (args[0] === "pr" && args[1] === "view") {
   assertReadToken();
+  const hold = state.finalManualHold;
+  if (hold && !hold.applied) {
+    hold.viewReads = Number(hold.viewReads ?? 0) + 1;
+    if (hold.viewReads === hold.triggerViewRead) {
+      state.pr.labels.push("clawsweeper:manual-only");
+      hold.applied = true;
+      hold.appliedAtCall = state.calls.length;
+    }
+    saveState();
+  }
   const number = Number(args[2]);
   assertPr(number);
   const fields = new Set(String(optionValue("--json") || "").split(","));

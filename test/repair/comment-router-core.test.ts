@@ -2419,6 +2419,22 @@ test("review dispatch coordination guards label sweeps and maintainer mode comma
   assert.match(trustedVerdictGuard, /trustedAutomationPredatesReviewStartLease\(\{/);
 });
 
+test("manual-only holds block merge before maintainer approval exemptions", () => {
+  const source = readFileSync("src/repair/comment-router.ts", "utf8");
+  const readiness = source.slice(
+    source.indexOf("function validateAutomergeReadiness"),
+    source.indexOf("function authoritativeMaintainerHumanApprovalTime"),
+  );
+  assert.match(
+    readiness,
+    /if \(hasLabel\(target, MANUAL_ONLY_LABEL\)\) return "PR is marked manual-only; merge is disabled";/,
+  );
+  assert.ok(
+    readiness.indexOf("MANUAL_ONLY_LABEL") <
+      readiness.indexOf("validated_maintainer_human_approval"),
+  );
+});
+
 test("proof override authorization is durable before merge while pause labels remain success-only", () => {
   const source = readFileSync("src/repair/comment-router.ts", "utf8");
   const mergeExecution = source.slice(

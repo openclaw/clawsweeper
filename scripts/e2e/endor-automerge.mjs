@@ -11,6 +11,7 @@ import {
   initialGitHubState,
 } from "../../test/e2e/automerge/run.mjs";
 import { createTargetFixture } from "../../test/e2e/automerge/target-fixtures.mjs";
+import { issueSourceRevisionSha256 } from "../../dist/repair/issue-source-guard.js";
 
 const candidate = path.resolve(import.meta.dirname, "../..");
 const repo = "openclaw/endor-clawsweeper-e2e";
@@ -19,7 +20,7 @@ const root = fs.realpathSync.native(
 );
 const results = [];
 try {
-  for (const verdict of ["pass", "needs-human", "stale-pass"]) {
+  for (const verdict of ["pass", "needs-human", "stale-pass", "late-manual-hold"]) {
     const workspace = path.join(root, verdict);
     fs.mkdirSync(workspace);
     const runtime = createCandidateRuntime(workspace, candidate);
@@ -91,9 +92,22 @@ try {
     assert.equal(state().dispatches.length, 1, "the new label must request review automatically");
     assert.equal(state().pr.mergedAt, null, "no merge before the review result");
     assert.deepEqual(intake(), [{ number: 42, status: "skipped" }]);
-    if (verdict === "pass") addExactHeadVerdict(statePath, fixture.headSha);
-    else if (verdict === "needs-human") addCanonicalNeedsHumanVerdict(statePath, fixture.headSha);
-    else addExactHeadVerdict(statePath, "0".repeat(40));
+    const current = state();
+    const sourceRevision = issueSourceRevisionSha256(current.pr, current.comments);
+    if (verdict === "needs-human") addCanonicalNeedsHumanVerdict(statePath, fixture.headSha);
+    else {
+      addExactHeadVerdict(
+        statePath,
+        verdict === "stale-pass" ? "0".repeat(40) : fixture.headSha,
+        sourceRevision,
+      );
+    }
+    if (verdict === "late-manual-hold") {
+      const held = state();
+      // The seventh post-verdict PR read is the final snapshot, after source freshness checks.
+      held.finalManualHold = { viewReads: 0, triggerViewRead: 7, applied: false };
+      save(held);
+    }
     route();
     const report = JSON.parse(
       fs.readFileSync(path.join(runtime, "results/comment-router-latest.json"), "utf8"),
@@ -112,6 +126,23 @@ try {
     }
     const after = state();
     const finalMain = currentMain();
+    if (verdict === "late-manual-hold") {
+      assert.equal(after.finalManualHold.applied, true);
+      assert.ok(after.pr.labels.includes("clawsweeper:manual-only"));
+      const merge = commands
+        .flatMap((command) => command.actions)
+        .find((action) => action.action === "merge");
+      assert.equal(merge?.status, "blocked");
+      assert.equal(merge?.reason, "PR is marked manual-only; merge is disabled");
+      const beforeHold = after.calls.slice(0, after.finalManualHold.appliedAtCall - 1);
+      assert.deepEqual(
+        beforeHold.slice(-2).map((call) => call.args.slice(0, 2)),
+        [
+          ["pr", "view"],
+          ["api", `repos/${repo}/issues/42/comments?per_page=100`],
+        ],
+      );
+    }
     const mergeCalls = (value) =>
       value.calls.filter((call) => call.args[0] === "pr" && call.args[1] === "merge");
     if (verdict === "pass") {
@@ -149,6 +180,7 @@ try {
       finalMain,
       mergeCommit: after.pr.mergeCommitSha,
       mergeCalls: mergeCalls(after).length,
+      ...(verdict === "late-manual-hold" ? { finalManualHold: after.finalManualHold } : {}),
       replay: verdict === "pass" ? "closed PR excluded" : "skipped",
       globalMergeEnabled: true,
     });
