@@ -1,0 +1,202 @@
+{
+  "status": "historical controlled proof",
+  "clawsweeperBase": "591bc0d699b3276fc68d9dfd65e6c1c57e9596ee",
+  "runtime": "Node 24.20.0, Linux x64",
+  "scanner": "TruffleHog 3.97.4",
+  "sourceOrigin": "a37eb17fdfd688e0ed7e7be31950381cf15fb9bd",
+  "source": "src/gateway/server-methods/question.test.ts",
+  "before": {
+    "targetHead": "0688c464ba61caff8492d4d0f95ed7c27e7eecac",
+    "base": "2c23442435e829a868fbc69f9e26ab747a4fd7fa",
+    "source": "complete committed range, controlled prompt, canonical pinned native scanner",
+    "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
+    "verification": "canonical enabled",
+    "result": "refused",
+    "elapsedMs": 3268,
+    "notices": [],
+    "failure": {
+      "reason": "findings",
+      "diagnostic": {
+        "kind": "unclassified_finding",
+        "reason": "literal_not_reviewed",
+        "findingCount": 2,
+        "findingIndex": 0,
+        "detectorType": 17,
+        "decoder": "PLAIN",
+        "verified": false,
+        "scannerLine": 338,
+        "material": {
+          "kind": "blob",
+          "id": "25aefb85fc6f59c96d671c68b3b879c061511f0d",
+          "referenceCount": 1,
+          "references": [
+            {
+              "revision": "0688c464ba61caff8492d4d0f95ed7c27e7eecac",
+              "pathSha256": "af719ea8436dc4d292b3a9137c62ee522bdd27e63c49994a5bdd6a35d678d22e",
+              "mode": "100644",
+              "role": "head"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "nativeFindingsBefore": {
+    "exitCode": 183,
+    "signal": null,
+    "scannerArguments": [
+      "filesystem",
+      "--results=verified,unknown",
+      "--fail",
+      "--fail-on-scan-errors",
+      "--no-update",
+      "--json",
+      "--no-color"
+    ],
+    "findings": [
+      {
+        "detector": 17,
+        "name": "URI",
+        "decoder": "PLAIN",
+        "verified": false,
+        "rawSha256": "2c45f25f2626ac90554ac699f6b285846faf497f796f3d1c05acb7fef231d0a9",
+        "rawV2Sha256": "c914cd0ca5fb29af5f36f2e92ac43bf9fa59e1a729049dcbdd5b09cee50d4b28",
+        "rawLength": 50,
+        "rawV2Length": 58,
+        "blob": "25aefb85fc6f59c96d671c68b3b879c061511f0d",
+        "scannerLine": 338,
+        "witnesses": [
+          {
+            "line": 338,
+            "sha256": "61b6dd9a49e1ba2bbbb38735e6227c34642f606603cf41999cd99be24a1fa011"
+          }
+        ]
+      },
+      {
+        "detector": 17,
+        "name": "URI",
+        "decoder": "PLAIN",
+        "verified": false,
+        "rawSha256": "2c45f25f2626ac90554ac699f6b285846faf497f796f3d1c05acb7fef231d0a9",
+        "rawV2Sha256": "c914cd0ca5fb29af5f36f2e92ac43bf9fa59e1a729049dcbdd5b09cee50d4b28",
+        "rawLength": 50,
+        "rawV2Length": 58,
+        "blob": "1eb55da01a793e7b6b870db50e4f561617b2d7a0",
+        "scannerLine": 338,
+        "witnesses": [
+          {
+            "line": 338,
+            "sha256": "61b6dd9a49e1ba2bbbb38735e6227c34642f606603cf41999cd99be24a1fa011"
+          }
+        ]
+      }
+    ]
+  },
+  "after": {
+    "targetHead": "0688c464ba61caff8492d4d0f95ed7c27e7eecac",
+    "base": "2c23442435e829a868fbc69f9e26ab747a4fd7fa",
+    "source": "complete committed range, controlled prompt, canonical pinned native scanner",
+    "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
+    "verification": "canonical enabled",
+    "result": "admitted",
+    "elapsedMs": 2236,
+    "notices": [
+      {
+        "event": "agent_input_scan_classified",
+        "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+        "fixtureSha256": "c914cd0ca5fb29af5f36f2e92ac43bf9fa59e1a729049dcbdd5b09cee50d4b28",
+        "source": "src/gateway/server-methods/question.test.ts",
+        "detector": "URI",
+        "findings": [
+          {
+            "blob": "1eb55da01a793e7b6b870db50e4f561617b2d7a0",
+            "scannerLine": 338,
+            "literalLine": 338,
+            "decoder": "PLAIN",
+            "role": "base",
+            "occurrences": 1
+          },
+          {
+            "blob": "25aefb85fc6f59c96d671c68b3b879c061511f0d",
+            "scannerLine": 338,
+            "literalLine": 338,
+            "decoder": "PLAIN",
+            "role": "head",
+            "occurrences": 1
+          }
+        ]
+      }
+    ]
+  },
+  "sourceWitnessMutation": {
+    "change": "Replace the first indentation space on fixture line 338 with one tab; URI bytes unchanged.",
+    "result": {
+      "targetHead": "d3ed0b247ad5e85abb03b83d64be47c88dc3af36",
+      "base": "2c23442435e829a868fbc69f9e26ab747a4fd7fa",
+      "source": "complete committed range, controlled prompt, canonical pinned native scanner",
+      "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
+      "verification": "canonical enabled",
+      "result": "refused",
+      "elapsedMs": 2228,
+      "notices": [],
+      "failure": {
+        "reason": "findings",
+        "diagnostic": {
+          "kind": "unclassified_finding",
+          "reason": "literal_mismatch",
+          "findingCount": 3,
+          "findingIndex": 1,
+          "detectorType": 17,
+          "decoder": "PLAIN",
+          "verified": false,
+          "scannerLine": 338,
+          "material": {
+            "kind": "blob",
+            "id": "77eed87c20670acb2c930d1a34ea89ea27ced4be",
+            "referenceCount": 1,
+            "references": [
+              {
+                "revision": "d3ed0b247ad5e85abb03b83d64be47c88dc3af36",
+                "pathSha256": "af719ea8436dc4d292b3a9137c62ee522bdd27e63c49994a5bdd6a35d678d22e",
+                "mode": "100644",
+                "role": "head"
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  "detectionLimit": {
+    "change": "Substitute the first username byte in a separate disposable source clone.",
+    "result": {
+      "targetHead": "92b57cd893fecb0fc6af749b42507c202b0d3f2b",
+      "base": "2c23442435e829a868fbc69f9e26ab747a4fd7fa",
+      "source": "complete committed range, controlled prompt, canonical pinned native scanner",
+      "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
+      "verification": "canonical enabled",
+      "result": "admitted",
+      "elapsedMs": 2209,
+      "notices": [
+        {
+          "event": "agent_input_scan_classified",
+          "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+          "fixtureSha256": "c914cd0ca5fb29af5f36f2e92ac43bf9fa59e1a729049dcbdd5b09cee50d4b28",
+          "source": "src/gateway/server-methods/question.test.ts",
+          "detector": "URI",
+          "findings": [
+            {
+              "blob": "1eb55da01a793e7b6b870db50e4f561617b2d7a0",
+              "scannerLine": 338,
+              "literalLine": 338,
+              "decoder": "PLAIN",
+              "role": "base",
+              "occurrences": 1
+            }
+          ]
+        }
+      ]
+    },
+    "interpretation": "Native scanning reported only the unchanged base fixture, not the mutated head URI. This is not a changed-literal refusal proof. Classifier regressions independently reject a changed literal when reported by the scanner."
+  }
+}

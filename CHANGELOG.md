@@ -9,6 +9,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 - Retry transient terminal-review telemetry publication failures with the same signed run identity, preserving bounded deadlines and duplicate suppression.
 
+- Qualify the existing Gateway question URL-rejection fixture by exact native identities, complete source line, and original test path while preserving full input scanning.
+
 - Keep passive review-run telemetry writes independent of queue size by removing the retired per-item reconciliation alarm scan.
 
 - Share artifact-cache cleanup across overlapping publication requests to avoid duplicate R2 scans and cursor writes.

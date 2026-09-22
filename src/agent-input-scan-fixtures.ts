@@ -260,6 +260,9 @@ const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
   // Maintainer-qualified Gateway readiness error privacy fixture from OpenClaw #152309.
   [17,"URI","PLAIN","630affa5ad9abd80845b370cfee593f079ea56cf2907e2e0135d154bb7d30fcb","630affa5ad9abd80845b370cfee593f079ea56cf2907e2e0135d154bb7d30fcb","135365663033f668caf9d6e3fc27b905e8ffaef8ad43bc587e43fceb055bad59","test/helpers/openclaw-test-instance.test.ts","100644"],
   [17,"URI","HTML","630affa5ad9abd80845b370cfee593f079ea56cf2907e2e0135d154bb7d30fcb","630affa5ad9abd80845b370cfee593f079ea56cf2907e2e0135d154bb7d30fcb","135365663033f668caf9d6e3fc27b905e8ffaef8ad43bc587e43fceb055bad59","test/helpers/openclaw-test-instance.test.ts","100644"],
+  // Gateway sibling of the reviewed question URL-rejection fixture; exact source bytes differ.
+  [17, "URI", "PLAIN", "2c45f25f2626ac90554ac699f6b285846faf497f796f3d1c05acb7fef231d0a9", "c914cd0ca5fb29af5f36f2e92ac43bf9fa59e1a729049dcbdd5b09cee50d4b28", "61b6dd9a49e1ba2bbbb38735e6227c34642f606603cf41999cd99be24a1fa011", "src/gateway/server-methods/question.test.ts", "100644"],
+  [17, "URI", "HTML", "2c45f25f2626ac90554ac699f6b285846faf497f796f3d1c05acb7fef231d0a9", "c914cd0ca5fb29af5f36f2e92ac43bf9fa59e1a729049dcbdd5b09cee50d4b28", "61b6dd9a49e1ba2bbbb38735e6227c34642f606603cf41999cd99be24a1fa011", "src/gateway/server-methods/question.test.ts", "100644"],
   // Question URL-rejection fixture: native matching stops at the hyphen; bind the full source line.
   [17, "URI", "PLAIN", "056ba31f89867351c82b216a148b00bc322977c7da7a4aec9e0a1c222d239b50", "a62b014a9aedc9b5b538eed1f6fc5825be583d195348a11ff94076b4a6b4f55b", "87861ba38fa50d5190bf1b03c8fb631cf929f99b16bd73b786933aa1a1c40add", "ui/src/app/question-prompt.test.ts", "100644"],
   [17, "URI", "HTML", "056ba31f89867351c82b216a148b00bc322977c7da7a4aec9e0a1c222d239b50", "a62b014a9aedc9b5b538eed1f6fc5825be583d195348a11ff94076b4a6b4f55b", "87861ba38fa50d5190bf1b03c8fb631cf929f99b16bd73b786933aa1a1c40add", "ui/src/app/question-prompt.test.ts", "100644"],
@@ -371,6 +374,7 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           source === "ui/src/pages/custodian/custodian-session-store.test.ts" ||
           source === "ui/src/e2e/plugins-help.e2e.test.ts" ||
           source === "ui/src/app/question-prompt.test.ts" ||
+          source === "src/gateway/server-methods/question.test.ts" ||
           source === "test/helpers/openclaw-test-instance.test.ts" ||
           source === "skills/autoreview/tests/test_autoreview_hardening.py" ||
           source === ".agents/skills/autoreview/tests/test_autoreview_hardening.py") &&

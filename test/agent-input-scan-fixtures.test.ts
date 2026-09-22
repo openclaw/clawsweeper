@@ -528,6 +528,12 @@ exactUriFixtureTests(
   },
 );
 
+exactUriFixtureTests("Gateway question", "src/gateway/server-methods/question.test.ts", () => {
+  const raw = ["https://", "fixture-user", ":", "fixture-password", "@", "example.test"].join("");
+  const rawV2 = raw + "/connect";
+  return { raw, rawV2, line: '    ["credentials", "' + rawV2 + '"],', decoders: ["PLAIN", "HTML"] };
+});
+
 test("source projection removes only host-selected patch fields and preserves input records", () => {
   const current = {
     filename: "source.ts",

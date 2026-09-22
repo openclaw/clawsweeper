@@ -322,3 +322,38 @@ occurrence refusals. Scanner completion and verification checks remain unchanged
 No model runs in this proof; hosted review must rescan its current prompt, schema,
 and complete source inputs. OpenClaw Bay is unaffected: no dashboard API,
 telemetry, or public action surface changes.
+
+## Gateway question rejection fixture
+
+This historical proof qualifies the Gateway sibling of the UI question fixture,
+introduced by the same OpenClaw commit
+`a37eb17fdfd688e0ed7e7be31950381cf15fb9bd`. Its bytes and source path differ,
+so the existing UI qualification correctly refused it. The Gateway test rejects
+a synthetic credentialed URL on the reserved `example.test` domain before
+publishing a question, with no manager entry or broadcast. The fixture is unchanged.
+
+OpenClaw PR [155339](https://github.com/openclaw/openclaw/pull/155339) at
+`0688c464ba61caff8492d4d0f95ed7c27e7eecac` was refused by hosted review
+[35678098402](https://github.com/openclaw/clawsweeper/actions/runs/35678098402):
+URI detector 17, HTML decoder, unverified. The complete committed range from
+`2c23442435e829a868fbc69f9e26ab747a4fd7fa` reproduced two findings locally: the
+same exact fixture in base and head blobs, reported through PLAIN. Both decoder
+rows bind exact Raw/RawV2 identities, complete line bytes, regular-file mode,
+and `src/gateway/server-methods/question.test.ts`; scanner verification, source
+references, and patch/hunk validation remain unchanged.
+
+On Linux x64 with Node 24.20.0 and pinned TruffleHog 3.97.4, the existing
+`run-proof.mjs` command above, using these base/head arguments, changed from
+refusal in 3.268 seconds to admission in 2.236 seconds. A disposable committed
+clone replacing one indentation space with a tab on line 338 still refused in
+2.228 seconds, while retaining the URI bytes. The public classifier tests cover
+both decoders and real Git-generated added, removed, and context attribution,
+plus changed literal, line, path, mode, role, decoder, verification, and occurrence.
+
+[The sanitized receipt](question-gateway/proof.json) preserves source identities,
+native hashes, and results. A separate one-byte username mutation was not emitted
+by the native detector; its admission is recorded as a detection limitation, not
+negative proof. The changed-literal classifier regression still rejects emitted
+mutations. This proof uses a controlled prompt, runs no model, and does not replace
+the hosted review's own complete prompt/schema/source scan. OpenClaw Bay remains
+unaffected: no dashboard, queue, publication, or observer contract changes.
