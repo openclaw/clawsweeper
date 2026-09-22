@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { enrollEndorPullRequests } from "../../dist/repair/endor-automerge-intake.js";
+import {
+  deferAutomaticEndorReview,
+  enrollEndorPullRequests,
+} from "../../dist/repair/endor-automerge-intake.js";
+import { AUTOMERGE_BLOCKING_LABEL_NAMES } from "../../dist/repair/exact-review-guard-labels.js";
 
 const repo = "openclaw/endor-clawsweeper-e2e";
 const author = { login: "endor-labs-pro[bot]", id: 179191674, type: "Bot" };
@@ -17,6 +21,64 @@ const pull = {
     repo: { full_name: repo },
   },
 };
+
+test("automatic Endor reviews wait for unheld automerge enrollment, not an ordinary verdict", () => {
+  const issue = { ...pull, pull_request: {} };
+  for (const sourceAction of [
+    "opened",
+    "reopened",
+    "synchronize",
+    "ready_for_review",
+    "converted_to_draft",
+    "unlocked",
+    "edited",
+    "labeled",
+    "unlabeled",
+    "scheduled_hot_intake",
+    "scheduled_normal_backfill",
+  ]) {
+    assert.equal(deferAutomaticEndorReview(repo, issue, { sourceAction }), true);
+    const enrolled = { ...issue, labels: [{ name: "clawsweeper:automerge" }] };
+    assert.equal(deferAutomaticEndorReview(repo, enrolled, { sourceAction }), false);
+    for (const name of AUTOMERGE_BLOCKING_LABEL_NAMES) {
+      assert.equal(
+        deferAutomaticEndorReview(
+          repo,
+          {
+            ...enrolled,
+            labels: [...enrolled.labels, { name }],
+          },
+          { sourceAction },
+        ),
+        true,
+        name,
+      );
+    }
+  }
+});
+
+test("Endor admission leaves explicit requests and unrelated items unchanged", () => {
+  const issue = { ...pull, pull_request: {}, labels: [{ name: "clawsweeper:human-review" }] };
+  for (const decision of [
+    { sourceAction: "re_review" },
+    { sourceAction: "manual_explicit_review" },
+    { sourceAction: "opened", commandStatusMarker: "command-bound-review" },
+    { sourceAction: "opened", statusCommentId: 123 },
+  ])
+    assert.equal(deferAutomaticEndorReview(repo, issue, decision), false);
+  const decision = { sourceAction: "opened" };
+  assert.equal(deferAutomaticEndorReview("openclaw/openclaw", issue, decision), false);
+  assert.equal(
+    deferAutomaticEndorReview(repo, { ...issue, pull_request: undefined }, decision),
+    false,
+  );
+  for (const user of [
+    { ...author, login: "another[bot]" },
+    { ...author, id: 42 },
+    { ...author, type: "User" },
+  ])
+    assert.equal(deferAutomaticEndorReview(repo, { ...issue, user }, decision), false);
+});
 
 function fixture(
   options: {

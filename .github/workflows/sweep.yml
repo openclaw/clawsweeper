@@ -2169,6 +2169,7 @@ jobs:
         env:
           SOURCE_CHECKOUT_OUTCOME: ${{ steps.source-checkout.outcome }}
           PRIMARY_OUTCOME: ${{ steps.exact-review-generation-result.outputs.outcome || 'failure' }}
+          SCHEDULED_SEMANTIC_NOOP: ${{ steps.live-item.outputs.scheduled_semantic_noop || 'false' }}
           CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
           ITEM_KEY: ${{ steps.claim-exact-review-queue.outputs.item_key }}
           PROTOCOL_VERSION: ${{ steps.claim-exact-review-queue.outputs.protocol_version }}
@@ -2274,6 +2275,9 @@ jobs:
               run_attempt: runAttempt,
               outcome,
               ...(requeueLatest ? { requeue_latest: true } : {}),
+              ...(process.env.SCHEDULED_SEMANTIC_NOOP === "true" && outcome === "success" && !requeueLatest && !retryKind
+                ? { lifecycle_terminal_disposition: "policy_noop" }
+                : {}),
               ...(retryKind ? { retry_kind: retryKind } : {}),
               ...(directPublicationCompleted
                 ? directPublicationSuperseded

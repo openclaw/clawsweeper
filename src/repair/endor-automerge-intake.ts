@@ -10,6 +10,42 @@ const ENDOR_LOGIN = "endor-labs-pro[bot]";
 const ENDOR_USER_ID = 179191674;
 const CONTROL_LABELS = new Set<string>([AUTOMERGE_LABEL, ...AUTOMERGE_BLOCKING_LABEL_NAMES]);
 
+export function deferAutomaticEndorReview(
+  repo: string,
+  issue: Record<string, unknown>,
+  decision: { sourceAction?: unknown; commandStatusMarker?: unknown; statusCommentId?: unknown },
+): boolean {
+  if (
+    repo !== TARGET_REPO ||
+    !issue.pull_request ||
+    !isEndor(issue.user) ||
+    decision.commandStatusMarker ||
+    decision.statusCommentId ||
+    ![
+      "opened",
+      "reopened",
+      "synchronize",
+      "ready_for_review",
+      "converted_to_draft",
+      "unlocked",
+      "edited",
+      "labeled",
+      "unlabeled",
+      "scheduled_hot_intake",
+      "scheduled_normal_backfill",
+    ].includes(String(decision.sourceAction))
+  )
+    return false;
+  if (!Array.isArray(issue.labels)) throw new Error("Invalid PR labels");
+  const labels = issue.labels.map(labelName);
+  // The existing intake and label sweep own activation; never turn an early
+  // ordinary review into a human-review hold before that activation.
+  return (
+    !labels.includes(AUTOMERGE_LABEL) ||
+    AUTOMERGE_BLOCKING_LABEL_NAMES.some((label) => labels.includes(label))
+  );
+}
+
 export function enrollEndorPullRequests({
   repo,
   execute = false,

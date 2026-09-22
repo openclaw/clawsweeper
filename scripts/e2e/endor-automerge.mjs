@@ -85,10 +85,10 @@ try {
     fs.mkdirSync(env.CLAWSWEEPER_ACTION_LEDGER_ROOT);
     fs.mkdirSync(env.CLAWSWEEPER_ACTION_LEDGER_OUTPUT_ROOT);
     let invocation = 0;
-    const run = (script, args) => {
+    const run = (script, args, extraEnv = {}) => {
       const result = spawnSync(process.execPath, [path.join(runtime, script), ...args], {
         cwd: runtime,
-        env: { ...env, CLAWSWEEPER_ACTION_LEDGER_INVOCATION: `step-${++invocation}` },
+        env: { ...env, ...extraEnv, CLAWSWEEPER_ACTION_LEDGER_INVOCATION: `step-${++invocation}` },
         encoding: "utf8",
         timeout: 120000,
         maxBuffer: 8 * 1024 * 1024,
@@ -99,12 +99,39 @@ try {
     };
     const intake = () =>
       JSON.parse(run("dist/repair/endor-automerge-intake.js", ["--repo", repo, "--execute"]));
+    const admission = (decision) =>
+      run("dist/repair/workflow-utils.js", ["exact-review-admission"], {
+        TARGET_REPO: repo,
+        ITEM_NUMBER: "42",
+        CLAIM_TARGET_BRANCH: "main",
+        CLAIM_DECISION: JSON.stringify(decision),
+      });
+    assert.match(admission({ sourceAction: "opened" }), /^scheduled_semantic_noop=true$/m);
+    assert.deepEqual(
+      state().comments,
+      initial.comments,
+      "early admission must not publish a verdict or hold",
+    );
+    assert.deepEqual(state().pr.labels, []);
+    assert.deepEqual(state().dispatches, []);
+    assert.ok(
+      state().calls.every((call) => !call.args.includes("POST") && !call.args.includes("PATCH")),
+    );
     assert.deepEqual(intake(), [{ number: 42, status: "enrolled" }]);
     assert.deepEqual(state().pr.labels, ["clawsweeper:automerge"]);
     const route = () =>
       run("dist/repair/comment-router.js", ["--repo", repo, "--max-comments", "20", "--execute"]);
     route();
     assert.equal(state().dispatches.length, 1, "the new label must request review automatically");
+    const dispatch = state().dispatches[0].client_payload;
+    assert.ok(dispatch.command_status_marker, "existing label sweep owns the review");
+    assert.match(
+      admission({
+        sourceAction: "internal",
+        commandStatusMarker: dispatch.command_status_marker,
+      }),
+      /^proceed=true$/m,
+    );
     assert.equal(state().pr.mergedAt, null, "no merge before the review result");
     assert.deepEqual(intake(), [{ number: 42, status: "skipped" }]);
     const current = state();

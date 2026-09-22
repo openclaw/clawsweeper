@@ -1,3 +1,6 @@
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import YAML from "yaml";
 import {
   assert,
   createHash,
@@ -26,6 +29,78 @@ import {
   leasedExactReviewPublicationItem,
   type ExactReviewQueueItem,
 } from "./dashboard-worker-harness.ts";
+
+test("early policy no-op workflow completion finishes the queue and Bay lifecycle without publication", async () => {
+  const workflow: {
+    jobs: Record<string, { steps: { id: string; run?: string; env?: Record<string, string> }[] }>;
+  } = YAML.parse(readFileSync(".github/workflows/sweep.yml", "utf8"));
+  const step = workflow.jobs["event-review-apply"]!.steps.find(
+    (step) => step.id === "complete-exact-review-queue",
+  )!;
+  const payloadScript = step.run?.match(/payload="\$\(node -e '([\s\S]*?)'\)"/)?.[1];
+  assert.ok(payloadScript);
+  const storage = new MemoryDurableStorage();
+  const leased = leasedExactReviewQueueItem(42, "420");
+  const lifecycle = new ExactReviewLifecycleProjectionStore(storage);
+  const identity = {
+    canonicalTargetKey: leased.key,
+    fenceKey: leased.key,
+    revision: leased.revision,
+  };
+  await storage.put("exact-review-queue", { deliveries: {}, items: { [leased.key]: leased } });
+  lifecycle.recordAdmission({
+    ...identity,
+    deliveryId: "early-review",
+    sourceAction: "opened",
+    commandOriginated: false,
+    statusMarker: null,
+    statusCommentId: null,
+    observedAt: Date.now(),
+  });
+  const payload = (overrides: Record<string, string> = {}) =>
+    execFileSync(process.execPath, ["-e", payloadScript], {
+      encoding: "utf8",
+      env: {
+        PROTOCOL_VERSION: "2",
+        QUEUE_LEASE_ID: leased.leaseId,
+        ITEM_KEY: leased.key,
+        QUEUE_LEASE_REVISION: "1",
+        CLAIM_GENERATION: "1",
+        GITHUB_RUN_ID: "420",
+        RUN_ATTEMPT: "1",
+        PRIMARY_OUTCOME: "success",
+        SCHEDULED_SEMANTIC_NOOP: "true",
+        ...overrides,
+      },
+    });
+  for (const overrides of [
+    { SCHEDULED_SEMANTIC_NOOP: "false" },
+    { PRIMARY_OUTCOME: "failure" },
+    { REQUEUE_LATEST: "true" },
+    { RETRY_KIND: "coordination", RETRY_AT: new Date().toISOString() },
+  ])
+    assert.equal(JSON.parse(payload(overrides)).lifecycle_terminal_disposition, undefined);
+  const queue = publicPublicationQueue(storage);
+  const result = await queue.fetch(
+    new Request("https://queue/complete", { method: "POST", body: payload() }),
+  );
+  assert.equal(result.status, 200);
+  assert.equal((await result.json()).requeued, false);
+  const projection = lifecycle.read(
+    identity.canonicalTargetKey,
+    identity.fenceKey,
+    identity.revision,
+  );
+  assert.ok(projection);
+  assert.equal(lifecycleState(projection), "policy_noop");
+  assert.deepEqual(
+    projection.canonicalReceipts,
+    [],
+    "a skipped review must not pretend it was published",
+  );
+  const state = storage.sql.readNormalizedQueue() as { items: Record<string, unknown> };
+  assert.equal(state.items[leased.key], undefined);
+});
 
 function publicationPlan(
   itemNumber: number,

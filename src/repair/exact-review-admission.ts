@@ -3,6 +3,7 @@ import { oversizedPullRequestAdmission } from "../clawsweeper-oversized-pr-polic
 import { classifyScheduledReviewNoop } from "../scheduled-review-noop.js";
 import { ghRetryKind } from "../github-retry.js";
 import { ghErrorText, ghTextWithRetry } from "./github-cli.js";
+import { deferAutomaticEndorReview } from "./endor-automerge-intake.js";
 
 type Output = (values: Record<string, string>) => void;
 
@@ -104,6 +105,14 @@ export function exactReviewAdmission(output: Output): void {
   const locked = issue.locked === true;
   const pullRequest = Boolean(issue.pull_request);
   output({ item_kind: pullRequest ? "pull_request" : "issue" });
+  if (open && !locked && deferAutomaticEndorReview(repo, issue, decision)) {
+    // Reuse the early policy no-op path: no write token, checkout or review lease.
+    output({ ...terminal, scheduled_semantic_noop: "true" });
+    console.error(
+      `::notice::Deferring automatic review of ${repo}#${number} to Endor automerge enrollment.`,
+    );
+    return;
+  }
   let liveHeadSha = "";
   if (open && !locked && pullRequest) {
     const observedAt = new Date().toISOString();
