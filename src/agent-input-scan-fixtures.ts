@@ -248,6 +248,8 @@ const CRABBOX_POSTGRES_DOC_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  // OpenClaw mocked status-redaction fixture introduced by b6a94d4ef94c; native PLAIN findings in #154508/#154607.
+  [17, "URI", "PLAIN", "1d71159c56ca84a71d1b34c10e8d645f3ced3c75a5ac818104338ff58bb95993", "1d71159c56ca84a71d1b34c10e8d645f3ced3c75a5ac818104338ff58bb95993", "5b94a943db86311a9fad2e77bc395ce0a94cde5c73a04cf17943ab5b29928110", "extensions/browser/src/browser/routes/basic.existing-session.test.ts", "100644"],
   // Approved TypeSafe loopback URL-rejection fixture: OpenClaw #154059.
   [17, "URI", "HTML", "923d03ede473d23a81840727f6af65897692c61133596ca2a59d52d88fd6775f", "923d03ede473d23a81840727f6af65897692c61133596ca2a59d52d88fd6775f", "e6a2587ba99aab4b1437d4382b043f2253065508d5ab038841fd4262ce0b0a6f", "extensions/typesafe/src/local.transport.test.ts", "100644"],
   [17, "URI", "PLAIN", "923d03ede473d23a81840727f6af65897692c61133596ca2a59d52d88fd6775f", "923d03ede473d23a81840727f6af65897692c61133596ca2a59d52d88fd6775f", "e6a2587ba99aab4b1437d4382b043f2253065508d5ab038841fd4262ce0b0a6f", "extensions/typesafe/src/local.transport.test.ts", "100644"],
@@ -367,6 +369,7 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           detectorName === "URI" &&
           (decoder === "PLAIN" || decoder === "HTML")) ||
         ((source === "extensions/browser/src/browser/profiles-service.test.ts" ||
+          source === "extensions/browser/src/browser/routes/basic.existing-session.test.ts" ||
           source === "extensions/typesafe/src/local.transport.test.ts" ||
           source === "extensions/browser/src/browser/config.test.ts" ||
           source === "extensions/browser/src/browser/pw-session.connections.test.ts" ||

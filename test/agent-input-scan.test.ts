@@ -3507,6 +3507,68 @@ test("zero-context fixture hunks bind the same insertion boundary in both blobs"
   }
 });
 
+test("browser status-redaction qualification preserves exact fixture boundaries", () => {
+  const username = "openclaw";
+  const password = "relay-token";
+  const host = "127.0.0.1:18800";
+  const raw = `http://${username}:${password}@${host}`;
+  const line = `        cdpUrl: "${raw}",`;
+  const entry: ExactCase = {
+    detectorType: 17,
+    detectorName: "URI",
+    decoder: "PLAIN",
+    raw,
+    rawV2: raw,
+    line,
+    secretParts: { host, username, password },
+    extraData: null,
+  };
+  for (const role of ["base", "head"] as const) {
+    const fixture = exactFixture([entry], [[role]]);
+    const file = fixture.inputs.keys().next().value!;
+    const input = fixture.inputs.get(file)!;
+    if (input.kind !== "blob") throw new Error("expected blob fixture");
+    const scoped = {
+      ...input,
+      references: input.references.map((reference) => ({
+        ...reference,
+        source: "extensions/browser/src/browser/routes/basic.existing-session.test.ts",
+      })),
+    };
+    const finding = fixture.findings[0]!;
+    const classify = (value: StagedScanInput, record = finding) =>
+      classifyWithProductionPolicy([record], new Map([[file, value]]));
+    assert.equal(classify(scoped).kind, "classified", role);
+    for (const [name, changed] of [
+      ["line drift", { ...scoped, bytes: Buffer.from(`${line.replace("cdpUrl", "otherUrl")}\n`) }],
+      ["duplicate literal", { ...scoped, bytes: Buffer.from(`${line}\n${line}\n`) }],
+      [
+        "uncommitted",
+        {
+          ...scoped,
+          references: scoped.references.map((reference) => ({
+            ...reference,
+            role: "worktree" as const,
+          })),
+        },
+      ],
+      ["wrong source", input],
+      ["mixed source", { ...scoped, references: [...scoped.references, ...input.references] }],
+    ] as const)
+      assert.equal(classify(changed).kind, "refused", `${role}: ${name}`);
+    assert.equal(classify(scoped, { ...finding, Verified: true }).kind, "refused");
+    assert.equal(classify(scoped, { ...finding, DecoderName: "HTML" }).kind, "refused");
+    assert.equal(classify(scoped, { ...finding, RawV2: `${raw}/different` }).kind, "refused");
+    assert.equal(
+      classifyWithProductionPolicy(
+        [finding, { ...finding, Raw: "unknown", RawV2: "unknown" }],
+        new Map([[file, scoped]]),
+      ).kind,
+      "refused",
+    );
+  }
+});
+
 test("create-profile redaction qualification binds the full line and observed native decoders", () => {
   const username = "browser-user";
   const password = "browser-password";
