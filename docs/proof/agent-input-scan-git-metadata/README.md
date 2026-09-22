@@ -11,12 +11,17 @@ the same pinned native scanner, verification flags, completion checks, and share
 deadline. Any unclassified finding, further metadata request, or incomplete scan
 refuses admission. Success notices follow both scans, cleanup, and source fences.
 
+When the same patch contains an approved URI, its source witness uses the retained
+primary patch only after the host binds the supplemental path, input identity,
+revisions, and exact derived masked bytes. The native input remains masked. Changed
+hunks, stale associations, and unreviewed or verified URI findings still refuse.
+
 ```bash
 pnpm install --frozen-lockfile
 pnpm run build:node
-node scripts/setup-review-tools.mjs --timeout-ms 120000
-node --test --test-name-pattern='^(Git object metadata|metadata admission|approved URI findings in unchanged patch context|patch admission keeps)' test/agent-input-scan.test.ts test/agent-input-scan-git-metadata.test.ts
-node docs/proof/agent-input-scan-git-metadata/run-proof.mjs /path/to/proof.json
+csw_scanner="$(node scripts/setup-review-tools.mjs --timeout-ms 120000)"
+node --test --test-name-pattern='^(Git object metadata|metadata admission|metadata replay|metadata owner|approved URI findings in unchanged patch context|patch admission keeps)' test/agent-input-scan.test.ts test/agent-input-scan-git-metadata.test.ts
+PATH="$(dirname "$csw_scanner"):$PATH" node docs/proof/agent-input-scan-git-metadata/run-proof.mjs /path/to/proof.json
 ```
 
 To include the original dependency update, append its isolated checkout and exact
@@ -33,6 +38,27 @@ supplies the detector keyword, so full-blob scanning alone cannot protect agains
 decoded patch finding being attributed to an unrelated metadata occurrence.
 Owner tests also require the supplemental invocation, unchanged primary bytes,
 preserved content, and refusal of verified results, missing completion, and scan errors.
+The shared-object proof uses two modified files with the same URI-free old blob.
+One path supplies Cloudflare detector context; the other adds the existing approved
+URI lines in its unique new blob. Metadata masking therefore reaches both patch
+sections without adding an unapproved URI alias or changing fixture policy.
+
+[The shared-object driver](run-shared-oid-proof.mjs) requires both native detector
+classes and a primary metadata-proof classification before it invokes the unchanged
+baseline and candidate owners against the complete committed source:
+
+```bash
+PATH="$(dirname "$csw_scanner"):$PATH" node docs/proof/agent-input-scan-git-metadata/run-shared-oid-proof.mjs /path/to/shared-oid-proof.json /path/to/baseline-runtime "$csw_scanner"
+```
+
+The driver verifies the scanner against the existing checksum-pinned bootstrap
+for the current platform and records the actual executable digest. Keep its cache
+outside the candidate and separately built baseline checkouts. It requires both
+native detector classes, no verified findings, baseline refusal as
+`material_not_reviewed`, and candidate admission after complete primary and replay
+scans. Verification flags stay unchanged. The receipt records counts, notices,
+source identities and results; a single-path probe without both detectors is not
+a reproduction of this composition bug.
 
 The existing failure is tracked upstream in
 [TruffleHog issue 3266](https://github.com/trufflesecurity/trufflehog/issues/3266).

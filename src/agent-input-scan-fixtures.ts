@@ -460,7 +460,18 @@ export interface ScanSourceReference {
 
 export type ScanInputOrigin =
   | { kind: "prompt" | "schema" | "additional" }
-  | { kind: "raw_diff" | "patch"; from: string; to: string }
+  | { kind: "raw_diff"; from: string; to: string }
+  | {
+      kind: "patch";
+      from: string;
+      to: string;
+      metadataProof?: {
+        file: string;
+        originalFile: string;
+        original: StagedScanInput;
+        bytes: Buffer;
+      };
+    }
   | { kind: "worktree" | "blob"; references: readonly ScanSourceReference[] };
 
 export type StagedScanInput = ScanInputOrigin & { id: string; bytes?: Buffer };

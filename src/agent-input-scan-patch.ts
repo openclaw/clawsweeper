@@ -16,10 +16,32 @@ export function resolvePatchWitnesses(
 ): PatchWitness[] | undefined {
   if (patch.kind !== "patch" || !patch.bytes || !literal || /[\r\n]/.test(literal))
     return undefined;
+  let sourceBytes = patch.bytes;
+  if (patch.metadataProof) {
+    const proof = patch.metadataProof;
+    const original = proof.original;
+    if (
+      proof.file === proof.originalFile ||
+      inputs.get(proof.file) !== patch ||
+      inputs.get(proof.originalFile) !== original ||
+      original.kind !== "patch" ||
+      original.metadataProof ||
+      !original.bytes ||
+      patch.id !== original.id ||
+      patch.from !== original.from ||
+      patch.to !== original.to ||
+      !patch.bytes.equals(proof.bytes)
+    )
+      return undefined;
+    // Native replay scans the exact masked bytes; only URI source attribution
+    // needs the primary patch's intact Git index and committed blob witnesses.
+    patch = original;
+    sourceBytes = original.bytes;
+  }
   const decode = (bytes: Buffer) => new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   let lines: string[];
   try {
-    lines = decode(patch.bytes).split("\n");
+    lines = decode(sourceBytes).split("\n");
   } catch {
     return undefined;
   }

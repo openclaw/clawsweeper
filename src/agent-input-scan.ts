@@ -714,7 +714,17 @@ export function scanAgentInput(options: {
           if (original?.kind !== "patch") throw new AgentInputScanError("incomplete_source");
           stage(
             bytes,
-            { kind: "patch", from: original.from, to: original.to },
+            {
+              kind: "patch",
+              from: original.from,
+              to: original.to,
+              metadataProof: {
+                file: join(proofDir, original.id),
+                originalFile: file,
+                original,
+                bytes: Buffer.from(bytes),
+              },
+            },
             original.id,
             proofDir,
           );

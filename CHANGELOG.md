@@ -17,6 +17,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 - Retry timed-out review blob fetches through the existing bounded source-preparation recovery instead of permanently rejecting the unchanged review as a scanner refusal.
 
+- Preserve approved URI provenance when scanner replay masks Git object IDs, while keeping the replay byte and source-identity checks intact. Thanks @vincentkoc.
+
 - Defer automatic Endor reviews until the existing automerge enrollment is ready, preserving explicit requests and holds and finishing skipped review lifecycles as policy no-ops. Thanks @jesse-merhi.
 
 - Use Codex's explicit stored-data compatibility assessment instead of English proof-matching rules; retain compatibility holds for unassessed historical reports and preserve independent proof gates. Thanks @fuller-stack-dev.
