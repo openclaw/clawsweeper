@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Qualify the existing Crabbox Azure endpoint-rejection fixture by exact native URI identity and committed source witnesses while retaining full input scanning and refusal controls.
+
 - Qualify six existing Crabbox scope and redaction fixtures by exact URI identities, complete ordered source lines, and committed source references while retaining full input scanning.
 
 - Show an explicit no-op label plan when the publisher confirms unchanged labels, without inferring confirmation from report metadata. Thanks @saariuslystoned.

@@ -559,6 +559,12 @@ test("source projection removes only host-selected patch fields and preserves in
 // Reassemble qualified synthetic literals so this policy test adds no contiguous URI credentials.
 const crabboxConfigFixtures = [
   {
+    source: "internal/providers/azuredynamicsessions/client_test.go",
+    raw: ["https", "user:pass@pool.env.eastus.azurecontainerapps.io"].join("://"),
+    rawV2: ["https", "user:pass@pool.env.eastus.azurecontainerapps.io"].join("://"),
+    lines: [['\t\t"https', 'user:pass@pool.env.eastus.azurecontainerapps.io",'].join("://")],
+  },
+  {
     source: "internal/cli/config_test.go",
     raw: ["https", "alice:secret@example.test"].join("://"),
     rawV2: ["https", "alice:secret@example.test/images/ubuntu"].join("://"),
@@ -657,6 +663,7 @@ for (const [index, entry] of crabboxConfigFixtures.entries()) {
       ],
       overrides: Record<string, unknown> = {},
       duplicate = false,
+      complete = true,
     ) => {
       const observed = { ...finding, ...overrides };
       const findings = duplicate ? [observed, observed] : [observed];
@@ -665,16 +672,18 @@ for (const [index, entry] of crabboxConfigFixtures.entries()) {
         183,
         Buffer.from(findings.map((value) => JSON.stringify(value)).join("\n") + "\n"),
         Buffer.from(
-          JSON.stringify({
-            level: "info-0",
-            logger: "trufflehog",
-            msg: "finished scanning",
-            trufflehog_version: "3.97.4",
-            chunks: 1,
-            bytes: bytes.length,
-            verified_secrets: findings.filter((value) => value.Verified).length,
-            unverified_secrets: findings.filter((value) => !value.Verified).length,
-          }) + "\n",
+          complete
+            ? JSON.stringify({
+                level: "info-0",
+                logger: "trufflehog",
+                msg: "finished scanning",
+                trufflehog_version: "3.97.4",
+                chunks: 1,
+                bytes: bytes.length,
+                verified_secrets: findings.filter((value) => value.Verified).length,
+                unverified_secrets: findings.filter((value) => !value.Verified).length,
+              }) + "\n"
+            : "",
         ),
         new Map([[file, { kind: "blob", id: "a".repeat(40), bytes, references }]]),
       );
@@ -706,6 +715,7 @@ for (const [index, entry] of crabboxConfigFixtures.entries()) {
       classify(undefined, [reference, { ...reference, source: "unreviewed.go" }]),
     );
     refused("duplicate native record", classify(undefined, undefined, {}, true));
+    refused("incomplete scan", classify(undefined, undefined, {}, false, false));
     if (entry.lines.length > 1) {
       refused("ordered witnesses", classify([...entry.lines].reverse()));
       refused("missing witness", classify(entry.lines.slice(0, 1)));

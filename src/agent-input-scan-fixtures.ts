@@ -340,6 +340,8 @@ const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
   [17, "URI", "PLAIN", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "a271d1f3d9e105af4a08d27cb5372f891021a0e254241ee23ea257863300a9fd", "docs/proof/agent-input-scan-git-metadata/run-shared-oid-proof.mjs", "100644"],
   [17, "URI", "HTML", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "a271d1f3d9e105af4a08d27cb5372f891021a0e254241ee23ea257863300a9fd", "docs/proof/agent-input-scan-git-metadata/run-shared-oid-proof.mjs", "100644"],
   // Maintainer-qualified Crabbox config/routing fixtures: exact native PLAIN identities and full lines.
+  // Azure Dynamic Sessions rejects this synthetic userinfo endpoint before token acquisition.
+  [17, "URI", "PLAIN", "18b8a05caad228f56cfded41e0ce2f513f859be0da13c3a688b169ded93637d1", "18b8a05caad228f56cfded41e0ce2f513f859be0da13c3a688b169ded93637d1", "ef440d51ff51ec8f5275825de6b2076ba44cecffb83ac00ee44f84b13e345ae4", "internal/providers/azuredynamicsessions/client_test.go", "100644"],
   [17, "URI", "PLAIN", "6b167ea4a777545dcca0e4d425aafccd750a6c6fca8a5b2b370f16491f3a8a4d", "0ff6fd85d257fff2c1caed69eb7aae2c67aed01380cb46e34d557984e27fa54c", "40bbc6377ab4eb23719df798cc9b1679686090fba77d4a382be0afb4657d1d8a", "internal/cli/config_test.go", "100644"],
   [17, "URI", "PLAIN", "a89628da8274772f7fa0afe708243ae49b6791bdedb1750677427cc9d5a5a000", "14c716479d52c028b8fb328b96101ede45e16dd037240e7c47a81ec43090ab9e", "ac71824a6b75fdfd7f008ef1daa6ada48b1610e2b7dc1f1ae9805a93a7f17b52", "internal/providers/all/command_routing_test.go", "100644"],
   [17, "URI", "PLAIN", "074f22e4df02459f0d76314ba50dace1f636490fe1c46c529b5937af3e7b132a", "feb035cc8ff180121b5b0c9632560ea099625ff64cad056624cefaa345493304", ["68ac16cb2abadc3f53f40db689be2eb91b3d6999b22ceb2a461f9fb6805b992b", "7b5b808586aae3f8ed29071a60f463104e9dbdeae40fb38b74c299c850bd523a"], "internal/providers/all/command_routing_test.go", "100644"],
@@ -394,6 +396,7 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
         ((source === "internal/cli/repo_test.go" ||
           source === "internal/cli/ssh_test.go" ||
           source === "internal/cli/config_test.go" ||
+          source === "internal/providers/azuredynamicsessions/client_test.go" ||
           source === "internal/providers/all/command_routing_test.go" ||
           source === "internal/providers/all/claim_scope_test.go") &&
           detectorType === 17 &&
