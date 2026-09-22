@@ -7035,7 +7035,7 @@ export class ExactReviewQueue {
     });
   }
 
-  private async recordReviewRunTelemetry(value: unknown) {
+  private recordReviewRunTelemetry(value: unknown) {
     const record = normalizeReviewRunTelemetry(value);
     if (!record) return json({ error: "invalid_review_run_telemetry" }, 400);
     const completedAt = Date.parse(record.completed_at);
@@ -7057,7 +7057,6 @@ export class ExactReviewQueue {
         JSON.stringify(record),
       );
     });
-    await this.scheduleNext(this.readStateSync(), Date.now());
     return json({ ok: true });
   }
 
