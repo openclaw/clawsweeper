@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Keep passive review-run telemetry writes independent of queue size by removing the retired per-item reconciliation alarm scan.
+
 - Share artifact-cache cleanup across overlapping publication requests to avoid duplicate R2 scans and cursor writes.
 
 - Retry timed-out review blob fetches through the existing bounded source-preparation recovery instead of permanently rejecting the unchanged review as a scanner refusal.

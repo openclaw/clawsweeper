@@ -288,3 +288,82 @@ test("review observer write is signed while aggregate telemetry remains read-onl
   assert.equal(JSON.stringify(body).includes(publicQueryMarker), false);
   assert.equal(Object.hasOwn(body, "repo"), false);
 });
+
+for (const hasAlarm of [false, true]) {
+  test(`passive run telemetry avoids queue reads and preserves alarm=${hasAlarm}`, async (t) => {
+    const storage = new MemoryDurableStorage();
+    t.after(() => storage.sql.close());
+    const queue = new ExactReviewQueue({ storage }, {});
+    const post = (value: unknown) =>
+      queue.fetch(
+        new Request("https://queue/review-run-telemetry", {
+          method: "POST",
+          body: JSON.stringify(value),
+        }),
+      );
+    assert.equal((await post({})).status, 400);
+    const items = Object.fromEntries(
+      Array.from({ length: 32 }, (_, index) => {
+        const item = leasedExactReviewQueueItem(980_000 + index, String(980_000 + index));
+        return [item.key, item];
+      }),
+    );
+    await storage.put("exact-review-queue", { items });
+    const alarm = hasAlarm ? Date.now() + 60_000 : null;
+    if (alarm !== null) await storage.setAlarm(alarm);
+    const record = {
+      run_id: "60000",
+      run_attempt: 1,
+      workflow_outcome: "success",
+      trigger_lane: "normal_backfill",
+      trigger_origin: "schedule",
+      target_repo: "openclaw/openclaw",
+      started_at: new Date(Date.now() - 60_000).toISOString(),
+      completed_at: new Date().toISOString(),
+      run_url: "https://github.com/openclaw/clawsweeper/actions/runs/60000",
+      plan_count: 1,
+      item_count: 4,
+      publication_count: 1,
+    };
+    storage.sql.resetQueryHistory();
+    assert.equal((await post(record)).status, 200);
+    assert.deepEqual(storage.sql.queriesMatching(/\bFROM\s+exact_review_queue_items\b/i), []);
+    assert.equal(await storage.getAlarm(), alarm);
+    assert.equal((await post({ ...record, workflow_outcome: "failure" })).status, 200);
+    assert.deepEqual(
+      Array.from(storage.sql.exec("SELECT workflow_outcome FROM exact_review_run_telemetry")).map(
+        (row) => row.workflow_outcome,
+      ),
+      ["success"],
+    );
+    assert.equal((await post({ ...record, run_attempt: 0 })).status, 400);
+
+    const expired = {
+      ...record,
+      run_id: "60001",
+      run_url: "https://github.com/openclaw/clawsweeper/actions/runs/60001",
+      started_at: new Date(Date.now() - 32 * 86_400_000).toISOString(),
+      completed_at: new Date(Date.now() - 31 * 86_400_000).toISOString(),
+    };
+    assert.equal((await post(expired)).status, 200);
+    storage.sql.failNext(
+      /INSERT OR IGNORE INTO exact_review_run_telemetry/,
+      new Error("synthetic telemetry store failure"),
+    );
+    await assert.rejects(post(record), /synthetic telemetry store failure/);
+    assert.equal(
+      Array.from(storage.sql.exec("SELECT run_id FROM exact_review_run_telemetry")).length,
+      2,
+      "failed storage transaction must roll back its retention prune",
+    );
+    assert.equal((await post(record)).status, 200);
+    assert.deepEqual(
+      Array.from(storage.sql.exec("SELECT run_id FROM exact_review_run_telemetry")).map(
+        (row) => row.run_id,
+      ),
+      ["60000"],
+    );
+    assert.equal(await storage.getAlarm(), alarm);
+    assert.deepEqual(storage.sql.queriesMatching(/\bFROM\s+exact_review_queue_items\b/i), []);
+  });
+}

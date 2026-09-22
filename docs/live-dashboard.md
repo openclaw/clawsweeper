@@ -270,6 +270,13 @@ their backing store. Unsupported identifying query parameters are ignored; a
 malformed or inconsistent backing document fails closed with a fixed
 unavailable response.
 
+Run-level observer writes validate and retain the first terminal tuple per run
+attempt without reading queue items or rescheduling work. Their existing 30-day
+retention cleanup runs on telemetry writes and queue status computation; actual
+queue and auxiliary work retain ownership of alarm scheduling.
+The [controlled local proof](../scripts/proof-review-run-telemetry.mjs) exercises
+the signed HTTP route and file-backed SQLite after `pnpm run build:node`.
+
 - `/api/review-observability` returns the four closed review lanes and global
   health, completeness, run counts, item counts, and timestamps for a normalized
   `6h`, `24h`, or `7d` range. It does not return repository filters or labels.
