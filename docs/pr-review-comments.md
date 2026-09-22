@@ -245,6 +245,12 @@ review metrics, stored-data warnings, root-cause clusters, proof suggestions,
 merge-risk options, full review comments, labels, evidence, optional rank-up
 moves, the rank legend, workflow notes, and review history.
 
+The label section explicitly says `No label changes.` when the publisher supplies
+confirmed previous labels, the review is not failed, and owned-label
+justifications remain but there are no add/remove transitions. Report metadata
+alone does not establish this no-op claim. Existing nonempty transitions and
+automation markers are unchanged.
+
 For OpenClaw, the PR surface table and config detector share explicit test-role
 names: test/spec code leaves, Go `*_test.go` files, terminal dotted or hyphenated
 `test-support`, `test-helpers`, `test-utils`, `test-harness`, and `test-fixtures`

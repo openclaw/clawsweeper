@@ -237,6 +237,12 @@ export function createReportCommentPresentation(
         "",
         labelTransitionJustificationsMarkdown(labelTransitionJustifications),
       );
+    } else if (
+      options.previousLabels !== undefined &&
+      !reviewFailed &&
+      labelJustifications.length > 0
+    ) {
+      labelDetails.push("Label changes:", "", "No label changes.");
     }
     if (labelJustifications.length) {
       if (labelDetails.length) labelDetails.push("");

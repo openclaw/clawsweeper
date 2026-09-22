@@ -20,6 +20,94 @@ import {
 
 const REVIEW_HEAD_SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
+test("explicit no-op label plans require publisher confirmation and a completed owned plan", () => {
+  const desiredLabels = [
+    "P2",
+    "proof: sufficient",
+    "rating: 🐚 platinum hermit",
+    "status: 👀 ready for maintainer look",
+  ];
+  const report = (overrides = {}) => `${reportFrontMatter({
+    type: "pull_request",
+    number: "180",
+    review_status: "complete",
+    author: "contributor",
+    author_association: "CONTRIBUTOR",
+    pull_head_sha: REVIEW_HEAD_SHA,
+    triage_priority: "P2",
+    labels: JSON.stringify(desiredLabels),
+    label_justifications: JSON.stringify([{ label: "P2", reason: "A bounded presentation fix." }]),
+    ...overrides,
+  })}
+${realBehaviorProofReportSection()}
+${prRatingReportSection()}
+## Review Findings
+
+Overall correctness: patch is correct
+
+Full review comments:
+
+- none
+`;
+  for (const fixture of [
+    { name: "equal", markdown: report(), previousLabels: desiredLabels, noOp: true },
+    { name: "different", markdown: report(), previousLabels: ["P1"], noOp: false },
+    { name: "metadata only", markdown: report(), previousLabels: undefined, noOp: false },
+    {
+      name: "failed with retained justification",
+      markdown: report({ review_status: "failed", labels: '["P2"]' }),
+      previousLabels: ["P2"],
+      publishedLabels: ["P2"],
+      noOp: false,
+    },
+    {
+      name: "unowned issue labels",
+      markdown: report({
+        type: "issue",
+        triage_priority: "none",
+        label_justifications: "[]",
+        labels: '["bug"]',
+      }),
+      previousLabels: ["bug"],
+      publishedLabels: ["bug"],
+      noOp: false,
+    },
+    {
+      name: "unowned justification",
+      markdown: report({
+        type: "issue",
+        triage_priority: "none",
+        label_justifications: JSON.stringify([{ label: "bug", reason: "Unowned label." }]),
+        labels: '["bug"]',
+      }),
+      previousLabels: ["bug"],
+      publishedLabels: ["bug"],
+      noOp: false,
+    },
+  ]) {
+    const comment = renderReviewCommentFromReport(fixture.markdown, "none", {
+      previousLabels: fixture.previousLabels,
+      publishedLabels: fixture.publishedLabels,
+      prStatusKind: "ready_for_maintainer_look",
+    });
+    const labels = fixture.name.startsWith("unowned") ? "" : detailsBody(comment, "Label changes");
+    if (fixture.name.startsWith("unowned")) {
+      assert.doesNotMatch(comment, /Label changes:|Label justifications:|No label changes\./);
+    }
+    assert.equal(labels.includes("No label changes."), fixture.noOp, fixture.name);
+    if (fixture.name === "different") {
+      assert.match(labels, /- add `P2`:/);
+      assert.match(labels, /- remove `P1`:/);
+    } else {
+      assert.doesNotMatch(labels, /- (add|remove) `/, fixture.name);
+    }
+    if (fixture.name === "failed with retained justification") {
+      assert.match(labels, /`P2`: A bounded presentation fix\./);
+    }
+    assert.ok(comment.includes(reviewAutomationMarkersFromReport(fixture.markdown)), fixture.name);
+  }
+});
+
 for (const proofStatus of ["missing", "not_applicable"] as const) {
   test(`failed ${proofStatus} reports do not retain positive public status labels`, () => {
     const oldStatuses = ["status: 🚀 automerge armed", "status: 👀 ready for maintainer look"];
