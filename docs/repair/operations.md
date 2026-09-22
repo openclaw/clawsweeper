@@ -312,6 +312,11 @@ local `setup-codex` action's `auth-mode: login` input.
 
 Codex runs in a read-only sandbox for classification and receives no GitHub token. GitHub read access is scoped to deterministic preflight scripts. For reviewed fix artifacts, `execute-fix-artifact` gives Codex a temporary target checkout without GitHub credentials, then the deterministic executor commits, pushes, opens the replacement PR, and closes uneditable source PRs only after the replacement exists. When a replacement carries contributor work forward, non-bot source PR authors are added as `Co-authored-by` trailers and named in the replacement PR body and source close comment. Remaining write access is scoped to `apply-result`.
 
+Both review and repair Codex environments remove inherited process-local Git
+configuration (`GIT_CONFIG_COUNT`, numbered keys/values, and
+`GIT_CONFIG_PARAMETERS`). Git isolation settings, explicit command-line
+configuration, and the repair commit identity remain available.
+
 The repair worker wrapper emits a heartbeat while Codex is running. Execute-side
 edit, review, and final rebase subprocesses emit the same
 heartbeat. If a model call is slow, Actions logs should show
