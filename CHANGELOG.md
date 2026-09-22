@@ -17,6 +17,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 - Retry timed-out review blob fetches through the existing bounded source-preparation recovery instead of permanently rejecting the unchanged review as a scanner refusal.
 
+- Bound scheduled target-fanout GitHub CLI calls with the existing shared timeout, preserving explicit audit-wave deadlines. Thanks @SebTardif.
+
 - Strip inherited process-local Git configuration from review and repair model environments while preserving Git isolation and repair identity. Thanks @saariuslystoned.
 
 - Finish Codex worker process-group cleanup after repeated cancellation, early child exit, or app-server turn completion, preventing orphaned descendants. Thanks @Yigtwxx.

@@ -455,10 +455,13 @@ The workflow needs:
   environment for these settings, default to two minutes, and enforce a
   30-second minimum for environment-configured budgets. An explicit `timeoutMs`
   call option takes precedence and may select a shorter positive deadline.
-  Cluster dispatch uses the same two-minute default; automatic worker target
-  clones default to three minutes. Both honor the same environment overrides
-  and report child-process timeout failures. A timed-out dispatch keeps its
-  durable claim for observation/recovery rather than immediately dispatching again.
+  Cluster dispatch and scheduled target-fanout inventory, coverage GraphQL, and
+  ordinary dispatch use the same two-minute default; automatic worker target
+  clones default to three minutes. Their default budgets honor these environment
+  overrides; audit-wave dispatch retains its explicit 30-second bound.
+  Cluster dispatch preserves its durable claim after timeout. Audit waves persist
+  the in-flight target before dispatch; ordinary fanout persists its cursor
+  afterward and may revisit targets when a call fails.
   Cluster-selector evidence and final-open checks use these shared GitHub CLI
   budgets. Its Responses API request has a two-minute deadline covering both
   response headers and body delivery; a timeout fails selection without publishing

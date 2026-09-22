@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import childProcess, { execFileSync, spawn, spawnSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { createHmac } from "node:crypto";
 import {
   chmodSync,
@@ -1364,4 +1365,39 @@ test("audit fanout requires batch-aware storage before advancing the cursor", as
     }),
     /does not support resumable batches/,
   );
+});
+
+test("scheduled inventory forwards default and configured GitHub CLI budgets", async (t) => {
+  const original = process.env;
+  const timeouts: unknown[] = [];
+  t.mock.method(childProcess, "execFileSync", (_file, _args, options) => {
+    timeouts.push(options.timeout);
+    return JSON.stringify({
+      full_name: "openclaw/clawhub",
+      has_issues: true,
+      visibility: "public",
+      default_branch: "main",
+    });
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    process.env = original;
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  process.env = {
+    ...original,
+    GH_BIN: process.execPath,
+    GH_BIN_ARGS: "[]",
+    CLAWSWEEPER_INVENTORY_TOKEN_OPENCLAW: "synthetic-inventory-token",
+  };
+  delete process.env.CLAWSWEEPER_NETWORK_COMMAND_TIMEOUT_MS;
+  delete process.env.CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS;
+  for (const budget of [undefined, "90000"]) {
+    if (budget) process.env.CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS = budget;
+    assert.deepEqual(await loadEligibleRepositories(config, ["openclaw"]), [
+      { targetRepo: "openclaw/clawhub", defaultBranch: "main", visibility: "PUBLIC" },
+    ]);
+  }
+  assert.deepEqual(timeouts, [120_000, 90_000]);
 });
