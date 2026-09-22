@@ -185,15 +185,17 @@ export function createItemContext(dependencies: CreateItemContextDependencies) {
 
     const issue = readJson<unknown>(["api", `repos/${targetRepo()}/issues/${item.number}`]);
     const issueRecord = asRecord(issue);
-    const commentsWindow = readContextWindow<unknown>(
-      `repos/${targetRepo()}/issues/${item.number}/comments`,
-      issueRecord.comments,
-      24,
-    );
+    const commentsPath = `repos/${targetRepo()}/issues/${item.number}/comments`;
+    let completeComments: unknown[] | undefined;
+    const readCompleteComments = () => (completeComments ??= readPaged<unknown>(commentsPath));
+    // Source revision needs the whole thread anyway. Derive the prompt window
+    // locally so its first/tail pages and later generation reads are not fetched twice.
+    const commentsWindow = ghPagedContextWindow<unknown>(commentsPath, issueRecord.comments, 24, {
+      page: (_path, page) => readCompleteComments().slice((page - 1) * 100, page * 100),
+      paged: readCompleteComments,
+    });
     const comments = commentsWindow.items;
-    const sourceRevisionComments = commentsWindow.truncated
-      ? readPaged<unknown>(`repos/${targetRepo()}/issues/${item.number}/comments`)
-      : comments;
+    const sourceRevisionComments = completeComments ?? comments;
     const filteredComments = filterReviewContextComments(comments, item.number);
     const previousClawSweeperReview = extractLatestClawSweeperReviewFromHydration(
       commentsWindow,

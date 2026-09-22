@@ -101,6 +101,12 @@ Actions run/job health reads. Publication reads continue to use the existing
 in-generation memoizer; the broker is consulted only when a real cross-run or
 new-generation GitHub request is about to be sent.
 
+Issue-comment context hydration reads the complete thread once for its source
+revision and derives the bounded prompt window locally. That complete read also
+serves later comment consumers in the same apply generation, avoiding duplicate
+first/tail-page requests. Explicit freshness barriers bypass the generation and
+mutations invalidate it, so this does not reuse stale comments before writes.
+
 The version-1 key is the canonical JSON tuple
 `[1, credential_pool, route_with_sorted_query, media_type]`. Collection routes
 materialize default `per_page` and `page=1`, so every page is independent and a

@@ -159,7 +159,11 @@ export function hydratePrimaryBody(
       if (args[1] === `repos/${target.repo}/pulls/${target.number}`) return rawPull as T;
       return unavailable();
     },
-    ghPaged: unavailable,
+    ghPaged: <T>(path: string): T[] => {
+      if (path.endsWith(`/issues/${target.number}/comments`))
+        return (options.comments ?? []) as T[];
+      return unavailable();
+    },
     ghPagedContextWindow: <T>(path: string) => {
       const items = path.endsWith(`/issues/${target.number}/comments`)
         ? (options.comments ?? [])

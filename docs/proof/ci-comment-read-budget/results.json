@@ -1,0 +1,85 @@
+{
+  "baseline_commit": "94ba5bab34580600132ad21297c078f36f217676",
+  "candidate_runtime_sha256": "53db701ce200ad347b42b4438929f7376a6546ab8187a8e9a0a89d3f7e5dd356",
+  "environment": {
+    "platform": "macOS",
+    "node": "v24.21.0",
+    "pnpm": "12.4.1"
+  },
+  "baseline": {
+    "mode": "baseline",
+    "scenarios": [
+      {
+        "count": 0,
+        "unknown": false,
+        "comment_reads": 1,
+        "source_revision": "4b883afc4400af112967bb30f915c53a9e1b9c12bd3435457b5f12101ce38387"
+      },
+      {
+        "count": 10,
+        "unknown": false,
+        "comment_reads": 2,
+        "source_revision": "8df0d8dcdd3d97bfade5597bc2fd697e201d4bab99f965c2514c9336dc4e55bf"
+      },
+      {
+        "count": 40,
+        "unknown": false,
+        "comment_reads": 2,
+        "source_revision": "c625414f57b7e2b3f8aa67acf28a17d7eb6dfc8ee48416ea3ae125dc1540f62c",
+        "middle_edit_detected_after_bypass_and_invalidation": true
+      },
+      {
+        "count": 250,
+        "unknown": false,
+        "comment_reads": 5,
+        "source_revision": "f825683921091c5f1b2f407fe6f071370990bccfb30e53e857380642c247b352",
+        "middle_edit_detected_after_bypass_and_invalidation": true
+      },
+      {
+        "count": 40,
+        "unknown": true,
+        "comment_reads": 1,
+        "source_revision": "c625414f57b7e2b3f8aa67acf28a17d7eb6dfc8ee48416ea3ae125dc1540f62c",
+        "middle_edit_detected_after_bypass_and_invalidation": true
+      }
+    ]
+  },
+  "candidate": {
+    "mode": "candidate",
+    "scenarios": [
+      {
+        "count": 0,
+        "unknown": false,
+        "comment_reads": 1,
+        "source_revision": "4b883afc4400af112967bb30f915c53a9e1b9c12bd3435457b5f12101ce38387"
+      },
+      {
+        "count": 10,
+        "unknown": false,
+        "comment_reads": 1,
+        "source_revision": "8df0d8dcdd3d97bfade5597bc2fd697e201d4bab99f965c2514c9336dc4e55bf"
+      },
+      {
+        "count": 40,
+        "unknown": false,
+        "comment_reads": 1,
+        "source_revision": "c625414f57b7e2b3f8aa67acf28a17d7eb6dfc8ee48416ea3ae125dc1540f62c",
+        "middle_edit_detected_after_bypass_and_invalidation": true
+      },
+      {
+        "count": 250,
+        "unknown": false,
+        "comment_reads": 3,
+        "source_revision": "f825683921091c5f1b2f407fe6f071370990bccfb30e53e857380642c247b352",
+        "middle_edit_detected_after_bypass_and_invalidation": true
+      },
+      {
+        "count": 40,
+        "unknown": true,
+        "comment_reads": 1,
+        "source_revision": "c625414f57b7e2b3f8aa67acf28a17d7eb6dfc8ee48416ea3ae125dc1540f62c",
+        "middle_edit_detected_after_bypass_and_invalidation": true
+      }
+    ]
+  }
+}

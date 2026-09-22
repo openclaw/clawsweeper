@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Reduce CI review/publication REST calls by hydrating comment threads once per read generation and deriving prompt windows locally, while preserving fresh mutation guards.
+
 - Retry transient terminal-review telemetry publication failures with the same signed run identity, preserving bounded deadlines and duplicate suppression.
 
 - Qualify the existing Gateway question URL-rejection fixture by exact native identities, complete source line, and original test path while preserving full input scanning.

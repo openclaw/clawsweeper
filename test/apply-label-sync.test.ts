@@ -3860,7 +3860,7 @@ for (const scenario of [
           title: "Render work plans",
           labels: ["maintainer"],
         },
-        [[]],
+        [],
       );
       const closeReport = `${workPlanCandidateReport({
         type: "pull_request",
@@ -4081,7 +4081,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
         body: readFileSync(pairedIssueLeasePath, "utf8")
       });
     }
-    console.log(JSON.stringify([comments]));
+    console.log(JSON.stringify(args.includes("--slurp") ? [comments] : comments));
   }
 } else if (args[0] === "api" && /\\/issues\\/321\\/comments(?:\\?|$)/.test(path)) {
   if (args.includes("--method") && args.includes("POST")) {
@@ -4120,7 +4120,7 @@ if (args[0] === "api" && args[1] === "-i" && /\\/issues\\/321\\/timeline(?:\\?|$
         body: "Please keep this PR open."
       });
     }
-    console.log(JSON.stringify([comments]));
+    console.log(JSON.stringify(args.includes("--slurp") ? [comments] : comments));
   }
 } else if (args[0] === "api" && /\\/issues\\/comments\\/9456$/.test(path) && args.includes("PATCH")) {
   const input = args[args.indexOf("--input") + 1];

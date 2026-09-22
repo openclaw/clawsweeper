@@ -1,5 +1,21 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import test from "node:test";
+
+test("comment hydration shares complete REST pagination without weakening fresh reads", () => {
+  const result = JSON.parse(
+    execFileSync(process.execPath, ["scripts/e2e/ci-comment-read-budget.mjs"], {
+      encoding: "utf8",
+    }),
+  );
+  assert.deepEqual(
+    result.scenarios.map((scenario: { comment_reads: number }) => scenario.comment_reads),
+    [1, 1, 1, 3, 1],
+  );
+  for (const scenario of result.scenarios.filter((entry: { count: number }) => entry.count > 24)) {
+    assert.equal(scenario.middle_edit_detected_after_bypass_and_invalidation, true);
+  }
+});
 
 import {
   assistIssueUrlMatchesForTest,
