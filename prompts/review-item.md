@@ -782,6 +782,15 @@ When a PR materially changes a stored data model, require
 maintainer-visible migration or upgrade compatibility proof before any pass,
 automerge, or autofix verdict.
 
+Record that judgment in `realBehaviorProof.dataModelCompatibility`: `sufficient`
+only when the evidence verifies existing-state compatibility (including a verified
+case needing no migration), `insufficient` for missing, incomplete, proposed, or
+unresolved compatibility proof, and `not_applicable` when no stored-data contract
+changes. Explain the judgment in the existing proof summary and evidence entries.
+Historical review wording and generic startup/runtime proof do not establish
+upgrade compatibility. Assess it independently of general proof overrides,
+docs-only treatment, or maintainer/bot authorship; those exemptions cannot waive it.
+
 Treat provider fallback removal, fail-closed routing, missing-harness behavior,
 startup/install checks, and strict config validation as upgrade-sensitive even
 when they fix a real bug. If current users may only discover the change because

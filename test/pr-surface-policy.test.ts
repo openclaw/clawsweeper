@@ -2190,6 +2190,7 @@ test("data model reports can pass when migration proof is recorded", () => {
     repository: "openclaw/openclaw",
     type: "pull_request",
     number: "74458",
+    real_behavior_proof_data_model_compatibility: "sufficient",
     decision: "keep_open",
     close_reason: "none",
     review_status: "complete",
@@ -2236,7 +2237,7 @@ Full review comments:
   assert.doesNotMatch(comment, /clawsweeper-verdict:needs-human/);
 });
 
-test("data model proof reads its recorded summary with and without an override", () => {
+test("typed compatibility is independent of general proof metadata and override", () => {
   for (const [labels, proofStatus, proofStatusLine] of [
     [["clawsweeper:automerge"], undefined, "Status: sufficient"],
     [["clawsweeper:automerge", "proof: override"], undefined, "Status: sufficient"],
@@ -2246,6 +2247,7 @@ test("data model proof reads its recorded summary with and without an override",
       repository: "openclaw/openclaw",
       type: "pull_request",
       number: "74464",
+      real_behavior_proof_data_model_compatibility: "sufficient",
       decision: "keep_open",
       close_reason: "none",
       review_status: "complete",
@@ -2354,6 +2356,7 @@ test("data model reports can pass when no migration is required and compatibilit
     repository: "openclaw/openclaw",
     type: "pull_request",
     number: "74460",
+    real_behavior_proof_data_model_compatibility: "sufficient",
     decision: "keep_open",
     close_reason: "none",
     review_status: "complete",

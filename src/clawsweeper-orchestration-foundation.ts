@@ -1,4 +1,3 @@
-import { hasDataModelUpgradeProof } from "./clawsweeper-change-detection.js";
 import { createLabelSynchronization } from "./clawsweeper-label-sync.js";
 import type {
   CloseReason,
@@ -42,10 +41,10 @@ export function createReportOrchestrationFoundation(
     publicReviewTextDiffers,
     publicTableCell,
     repoUrlFor,
+    reportRealBehaviorProof,
     reportRealBehaviorProofPolicy,
     reportSecurityReview,
     reviewSectionValue,
-    sectionLineValue,
     sentence,
     targetProfile,
     targetRepo,
@@ -265,19 +264,9 @@ export function createReportOrchestrationFoundation(
   }
 
   function dataModelUpgradeProofFromReport(markdown: string): boolean {
-    if (!dataModelSurfaceChangeFromReport(markdown)) return false;
-    const proofSection = reviewSectionValue(markdown, "realBehaviorProof");
-    const proofStatus =
-      frontMatterValue(markdown, "real_behavior_proof_status") ??
-      sectionLineValue(proofSection, "Status");
-    const proofSummary =
-      proofStatus === "sufficient" ? sectionLineValue(proofSection, "Summary") : undefined;
-    return hasDataModelUpgradeProof(
-      [
-        proofSummary,
-        reviewSectionValue(markdown, "solutionAssessment"),
-        reviewSectionValue(markdown, "evidence"),
-      ].join("\n"),
+    return (
+      dataModelSurfaceChangeFromReport(markdown) &&
+      reportRealBehaviorProof(markdown).dataModelCompatibility === "sufficient"
     );
   }
 

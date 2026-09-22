@@ -4,6 +4,7 @@ import {
   ALL_REASONS,
   AUTO_IMPLEMENTATION_CANDIDATES,
   CONFIDENCES,
+  DATA_MODEL_COMPATIBILITY_STATUSES,
   DECISIONS,
   DECISION_SCHEMA_KEYS,
   EVIDENCE_SCHEMA_KEYS,
@@ -611,6 +612,15 @@ export function createDecisionParser({
         record.needsContributorAction,
         `${path}.needsContributorAction`,
       ),
+      ...(record.dataModelCompatibility === undefined
+        ? {}
+        : {
+            dataModelCompatibility: requireEnum(
+              record.dataModelCompatibility,
+              DATA_MODEL_COMPATIBILITY_STATUSES,
+              `${path}.dataModelCompatibility`,
+            ),
+          }),
     };
   }
 

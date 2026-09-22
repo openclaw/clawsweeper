@@ -714,7 +714,7 @@ auto_implementation_candidate: ${options.decision.autoImplementationCandidate}
 real_behavior_proof_status: ${options.decision.realBehaviorProof.status}
 real_behavior_proof_evidence_kind: ${options.decision.realBehaviorProof.evidenceKind}
 real_behavior_proof_needs_contributor_action: ${options.decision.realBehaviorProof.needsContributorAction}
-pr_rating_overall: ${options.decision.prRating.overallTier}
+${options.decision.realBehaviorProof.dataModelCompatibility ? `real_behavior_proof_data_model_compatibility: ${options.decision.realBehaviorProof.dataModelCompatibility}\n` : ""}pr_rating_overall: ${options.decision.prRating.overallTier}
 pr_rating_proof: ${options.decision.prRating.proofTier}
 pr_rating_patch: ${options.decision.prRating.patchTier}
 telegram_visible_proof_status: ${options.decision.telegramVisibleProof.status}

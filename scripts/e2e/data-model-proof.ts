@@ -1,92 +1,104 @@
 #!/usr/bin/env node
-
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { renderReviewCommentFromReport } from "../../dist/clawsweeper.js";
-import { reviewReportFrontMatter } from "../../test/helpers.ts";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+  renderReviewCommentFromReport,
+  reviewAutomationMarkersFromReport,
+} from "../../dist/clawsweeper.js";
+import {
+  compatibilityField,
+  compatibilityReport,
+  generatedCompatibilityReport,
+  neutralCompatibility,
+} from "../../test/compatibility-proof-fixture.ts";
 
 const baseline = process.argv.includes("--baseline");
 assert.ok(process.argv.slice(2).every((arg) => arg === "--baseline"));
-const receipts = [];
-for (const override of [false, true]) {
-  for (const status of ["sufficient", "missing"]) {
-    const report = `${reviewReportFrontMatter({
-      repository: "openclaw/openclaw",
-      type: "pull_request",
-      number: "74464",
-      decision: "keep_open",
-      close_reason: "none",
-      review_status: "complete",
-      confidence: "high",
-      labels: JSON.stringify(["clawsweeper:automerge", ...(override ? ["proof: override"] : [])]),
-      work_candidate: "none",
-      pull_head_sha: "a".repeat(40),
-      real_behavior_proof_status: status,
-      data_model_change: "true",
-      data_model_surfaces: JSON.stringify(["database schema: packages/database/schema.ts"]),
-    })}
-
-## Summary
-
-Synthetic compatibility rendering scenario.
-
-## What This Changes
-
-Adds a stored database column.
-
-## Real Behavior Proof
-
-Status: ${status}
-
-Evidence kind: terminal
-
-Needs contributor action: false
-
-Summary: Upgrade compatibility is verified against an existing database.
-
-## Review Findings
-
-Overall correctness: patch is correct
-
-Overall confidence: 0.9
-
-Full review comments:
-
-- none
-`;
-    const comment = renderReviewCommentFromReport(report, "none");
-    const observed = {
-      compatibilityBlocker: comment.includes("Add data-model compatibility proof"),
-      compatibilityRecorded: comment.includes(
-        "Migration or upgrade compatibility proof is recorded",
-      ),
-      passMarker: comment.includes("clawsweeper-verdict:pass"),
-    };
-    const accepted = !baseline && status === "sufficient";
-    assert.equal(observed.compatibilityBlocker, !accepted);
-    assert.equal(observed.compatibilityRecorded, accepted);
-    assert.equal(observed.passMarker, accepted);
-    receipts.push({ status, override, observed });
+const directory = join(
+  ".artifacts",
+  "typed-compatibility-proof",
+  baseline ? "baseline" : "candidate",
+);
+mkdirSync(directory, { recursive: true });
+const receipts: unknown[] = [];
+function observe(name: string, report: string, accepted: boolean) {
+  const comment = renderReviewCommentFromReport(report, "none");
+  const markers = reviewAutomationMarkersFromReport(report);
+  const result = {
+    compatibilityBlocker: comment.includes("Add data-model compatibility proof"),
+    compatibilityRecorded: comment.includes("Migration or upgrade compatibility proof is recorded"),
+    pass: markers.includes("clawsweeper-verdict:pass"),
+  };
+  assert.deepEqual(
+    result,
+    { compatibilityBlocker: !accepted, compatibilityRecorded: accepted, pass: accepted },
+    name,
+  );
+  writeFileSync(join(directory, `${name}.report.md`), report);
+  writeFileSync(join(directory, `${name}.comment.md`), comment);
+  receipts.push({ name, ...result });
+}
+observe(
+  "sufficient-neutral-prose",
+  compatibilityReport({ compatibility: "sufficient", summary: neutralCompatibility }),
+  !baseline,
+);
+observe(
+  "insufficient-affirmative-prose",
+  compatibilityReport({ compatibility: "insufficient" }),
+  baseline,
+);
+observe("legacy-affirmative-prose", compatibilityReport(), baseline);
+if (!baseline) {
+  for (const compatibility of ["sufficient", "insufficient", "not_applicable"] as const) {
+    const report = generatedCompatibilityReport(compatibility);
+    assert.match(report, new RegExp(`^${compatibilityField}: ${compatibility}$`, "m"));
+    assert.match(report, /^data_model_change: true$/m);
+    observe(`producer-roundtrip-${compatibility}`, report, compatibility === "sufficient");
+  }
+  for (const [name, metadata] of [
+    ["override", { labels: '["clawsweeper:automerge","proof: override"]' }],
+    ["maintainer", { author_association: "MEMBER" }],
+    ["docs-only", { pull_files: '["docs/example.md"]', pull_files_truncated: "false" }],
+  ] as const) {
+    for (const compatibility of [undefined, "insufficient", "sufficient"]) {
+      observe(
+        `${name}-${compatibility ?? "missing"}`,
+        compatibilityReport({
+          compatibility,
+          summary: neutralCompatibility,
+          metadata: {
+            ...metadata,
+            real_behavior_proof_status: "missing",
+            real_behavior_proof_needs_contributor_action: "true",
+          },
+        }),
+        compatibility === "sufficient",
+      );
+    }
   }
 }
-console.log(
-  JSON.stringify(
-    {
-      mode: baseline ? "baseline" : "candidate",
-      node: process.version,
-      ownerSha256: createHash("sha256")
-        .update(
-          readFileSync(
-            new URL("../../dist/clawsweeper-orchestration-foundation.js", import.meta.url),
-          ),
-        )
+const receipt = {
+  mode: baseline ? "baseline" : "candidate",
+  node: process.version,
+  owners: Object.fromEntries(
+    [
+      "clawsweeper-orchestration-foundation",
+      "clawsweeper-report-parser",
+      "clawsweeper-decision-parser",
+      "clawsweeper-report-document",
+    ].map((name) => [
+      name,
+      createHash("sha256")
+        .update(readFileSync(new URL(`../../dist/${name}.js`, import.meta.url)))
         .digest("hex"),
-      surface: "compiled production report renderer with synthetic serialized reports",
-      receipts,
-      limits: "No live GitHub publication, canonical report, or actual database upgrade exercised.",
-    },
-    null,
-    2,
+    ]),
   ),
-);
+  receipts,
+  limits:
+    "Compiled decision/report/renderer boundary with synthetic assessments and reports. No model judgment, live GitHub publication, canonical report rewrite, or actual database upgrade is exercised.",
+};
+writeFileSync(join(directory, "receipt.json"), JSON.stringify(receipt, null, 2) + "\n");
+console.log(JSON.stringify(receipt, null, 2));

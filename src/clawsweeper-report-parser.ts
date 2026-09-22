@@ -9,6 +9,7 @@ import {
   AGENTS_POLICY_STATUSES,
   AUTHORITY_CHAIN_PROOF_MARKER,
   AUTO_IMPLEMENTATION_CANDIDATES,
+  DATA_MODEL_COMPATIBILITY_STATUSES,
   FEATURE_SHOWCASE_STATUSES,
   IMPLEMENTATION_COMPLEXITIES,
   IMPACT_LABEL_NAMES,
@@ -39,6 +40,7 @@ import type {
   AgentsPolicyStatusKind,
   AutoImplementationCandidate,
   Confidence,
+  DataModelCompatibility,
   Decision,
   Evidence,
   FeatureShowcase,
@@ -576,6 +578,21 @@ export function createReportParser({
   }
 
   function reportRealBehaviorProof(markdown: string): RealBehaviorProof {
+    const compatibility = frontMatterField(
+      markdown,
+      "real_behavior_proof_data_model_compatibility",
+    );
+    // Generic proof exemptions must neither grant nor discard this independent assessment.
+    return {
+      ...reportGeneralBehaviorProof(markdown),
+      ...(compatibility.status === "value" &&
+      DATA_MODEL_COMPATIBILITY_STATUSES.has(compatibility.value as DataModelCompatibility)
+        ? { dataModelCompatibility: compatibility.value as DataModelCompatibility }
+        : {}),
+    };
+  }
+
+  function reportGeneralBehaviorProof(markdown: string): RealBehaviorProof {
     // Historical execution receipts do not assess relevance to the changed behavior.
     const defaultProof = defaultRealBehaviorProof(markdown);
     if (defaultProof.status === "override" || isDocsOnlyPullRequestReport(markdown)) {

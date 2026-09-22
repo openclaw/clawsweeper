@@ -17,6 +17,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 - Retry timed-out review blob fetches through the existing bounded source-preparation recovery instead of permanently rejecting the unchanged review as a scanner refusal.
 
+- Use Codex's explicit stored-data compatibility assessment instead of English proof-matching rules; retain compatibility holds for unassessed historical reports and preserve independent proof gates. Thanks @fuller-stack-dev.
+
 - Bound scheduled target-fanout GitHub CLI calls with the existing shared timeout, preserving explicit audit-wave deadlines. Thanks @SebTardif.
 
 - Strip inherited process-local Git configuration from review and repair model environments while preserving Git isolation and repair identity. Thanks @saariuslystoned.

@@ -9,6 +9,7 @@ import type {
   AutoImplementationCandidate,
   CloseReason,
   Confidence,
+  DataModelCompatibility,
   DecisionKind,
   FeatureShowcaseStatus,
   ImpactLabelName,
@@ -642,6 +643,12 @@ export const REVIEW_LABEL_VALUES = new Set<ReviewLabelName>([
   ...MERGE_RISK_LABELS.map((label) => label.name),
   ...MATURITY_LABELS.map((label) => label.name),
 ]);
+export const DATA_MODEL_COMPATIBILITY_STATUSES = new Set<DataModelCompatibility>([
+  "sufficient",
+  "insufficient",
+  "not_applicable",
+]);
+
 export const REAL_BEHAVIOR_PROOF_STATUSES = new Set<RealBehaviorProofStatus>([
   "sufficient",
   "missing",
@@ -818,6 +825,7 @@ export const REAL_BEHAVIOR_PROOF_SCHEMA_KEYS = new Set([
   "summary",
   "evidenceKind",
   "needsContributorAction",
+  "dataModelCompatibility",
 ]);
 export const PR_RATING_SCHEMA_KEYS = new Set([
   "proofTier",

@@ -37,6 +37,7 @@ export function normalizeRealBehaviorProof(proof: RealBehaviorProof): RealBehavi
     screenshotProofNeedsRuntimeOutput(proof.summary)
   ) {
     return {
+      ...proof,
       status: "insufficient",
       summary:
         "The screenshot proof is not enough for browser runtime or security behavior; include console, network, terminal, live output, or logs showing the changed behavior after the fix.",

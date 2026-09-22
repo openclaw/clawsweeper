@@ -405,11 +405,14 @@ export interface SecurityReview {
   concerns: SecurityConcern[];
 }
 
+export type DataModelCompatibility = "sufficient" | "insufficient" | "not_applicable";
+
 export interface RealBehaviorProof {
   status: RealBehaviorProofStatus;
   summary: string;
   evidenceKind: RealBehaviorProofEvidenceKind;
   needsContributorAction: boolean;
+  dataModelCompatibility?: DataModelCompatibility;
 }
 
 export interface PrRating {
