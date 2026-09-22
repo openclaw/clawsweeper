@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Retry transient terminal-review telemetry publication failures with the same signed run identity, preserving bounded deadlines and duplicate suppression.
+
 - Share artifact-cache cleanup across overlapping publication requests to avoid duplicate R2 scans and cursor writes.
 
 - Retry timed-out review blob fetches through the existing bounded source-preparation recovery instead of permanently rejecting the unchanged review as a scanner refusal.

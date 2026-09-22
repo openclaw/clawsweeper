@@ -221,17 +221,83 @@ async function publish(record) {
     throw new Error("CLAWSWEEPER_WEBHOOK_SECRET and QUEUE_URL are required");
   const body = JSON.stringify(record);
   const signature = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
-  const response = await fetch(`${queueUrl}/internal/exact-review/review-run-telemetry`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-clawsweeper-exact-review-signature": signature,
-    },
-    body,
-    signal: AbortSignal.timeout(20_000),
-  });
-  if (!response.ok)
-    throw new Error(`review telemetry write returned ${response.status}: ${await response.text()}`);
+  // The durable owner ignores duplicate run/attempt tuples, including a lost commit response.
+  // Keep the exact bytes and signature across attempts; never rebuild the observed event.
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(new DOMException("Review telemetry request timeout", "TimeoutError")),
+      20_000,
+    );
+    let response;
+    let failure;
+    let retryable;
+    try {
+      response = await fetch(`${queueUrl}/internal/exact-review/review-run-telemetry`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-clawsweeper-exact-review-signature": signature,
+        },
+        body,
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        failure = new Error(`review telemetry write returned ${response.status}`);
+        retryable =
+          [408, 429].includes(response.status) ||
+          (response.status >= 500 && response.status <= 599);
+      }
+      await response.body?.cancel();
+      if (!failure) return;
+    } catch (error) {
+      if (response?.ok) {
+        controller.abort(error);
+        throw new Error("review telemetry was acknowledged but response cleanup failed", {
+          cause: error,
+        });
+      }
+      failure ??= error;
+      retryable ??= controller.signal.aborted || transientTelemetryTransport(error);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!retryable || attempt === 3) throw failure;
+    const delay = telemetryRetryDelay(response?.headers.get("retry-after"), attempt);
+    process.stderr.write(
+      `review telemetry retry attempt=${attempt + 1}/3 reason=${response ? `HTTP_${response.status}` : "transport"} delay_ms=${delay}\n`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+}
+
+function transientTelemetryTransport(error) {
+  const code = error?.code ?? error?.cause?.code;
+  return [
+    "ECONNRESET",
+    "ECONNREFUSED",
+    "EPIPE",
+    "ETIMEDOUT",
+    "EAI_AGAIN",
+    "ENETUNREACH",
+    "EHOSTUNREACH",
+    "UND_ERR_CONNECT_TIMEOUT",
+    "UND_ERR_HEADERS_TIMEOUT",
+    "UND_ERR_BODY_TIMEOUT",
+    "UND_ERR_SOCKET",
+  ].includes(code);
+}
+
+function telemetryRetryDelay(value, attempt) {
+  const seconds =
+    value && /^\d+$/.test(value.trim())
+      ? Number(value.trim())
+      : value
+        ? Math.ceil((Date.parse(value) - Date.now()) / 1_000)
+        : NaN;
+  return Number.isFinite(seconds)
+    ? Math.min(10_000, Math.max(0, seconds * 1_000))
+    : 1_000 * 2 ** (attempt - 1);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {

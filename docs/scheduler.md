@@ -101,6 +101,26 @@ when checkout failed or was skipped, including direct-lifecycle recovery.
 The bootstrap never changes workspace Git configuration: an early sparse
 checkout can otherwise leave later checkouts sparse and omit local actions.
 
+The terminal-run observer (`scripts/review-run-observer.mjs`) uses plain Node
+after checkout and retries its telemetry POST up to three times. Each attempt
+retains the 20-second deadline. Connection resets and other recognized transient
+transport failures, timeouts, HTTP 408/429, and HTTP 5xx can retry; other HTTP
+4xx responses and configuration or certificate failures remain terminal.
+Fallback waits are one and two seconds. A valid `Retry-After` value (seconds or
+HTTP-date) replaces that wait, capped at ten seconds, so publication has at most
+60 seconds of request time and 20 seconds of backoff. GitHub job discovery is
+unchanged and remains subject to the enclosing workflow timeout.
+
+The observer serializes and signs once, then reuses those exact bytes. The
+existing telemetry owner records the first `(run_id, run_attempt)` tuple and
+ignores duplicates, including retries after a committed response is lost.
+Responses are cancelled before retry. An acknowledged write whose response
+cleanup fails is reported separately and is never replayed. Retry diagnostics
+include the attempt, status or transport category, and delay; upstream response
+bodies are not logged. Exhaustion remains a failed workflow. This improves
+completeness of the existing review-observability data used by OpenClaw Bay;
+its schema, observer-only UI, and mutation boundaries do not change.
+
 ## Workflow
 
 Explicit `workflow_dispatch` `item_number`/`item_numbers` selections, excluding
