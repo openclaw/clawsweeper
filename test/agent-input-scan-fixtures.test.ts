@@ -555,3 +555,160 @@ test("source projection removes only host-selected patch fields and preserves in
   assert.equal(JSON.stringify(context), before);
   assert.deepEqual(JSON.parse(serializeReviewContext(context)), context);
 });
+
+// Reassemble qualified synthetic literals so this policy test adds no contiguous URI credentials.
+const crabboxConfigFixtures = [
+  {
+    source: "internal/cli/config_test.go",
+    raw: ["https", "alice:secret@example.test"].join("://"),
+    rawV2: ["https", "alice:secret@example.test/images/ubuntu"].join("://"),
+    lines: [
+      ['\t\t"https', 'alice:secret@example.test/images/ubuntu.img?token=private#fragment",'].join(
+        "://",
+      ),
+    ],
+  },
+  {
+    source: "internal/providers/all/command_routing_test.go",
+    raw: ["https", "user:secret@api.example"].join("://"),
+    rawV2: ["https", "user:secret@api.example/root"].join("://"),
+    lines: [
+      [
+        '\t\tcfg.Proxmox.APIURL = "https',
+        'user:secret@api.example/root?view=1&api%5Fkey=secret&signature=secret#secret"',
+      ].join("://"),
+    ],
+  },
+  {
+    source: "internal/providers/all/command_routing_test.go",
+    raw: ["https", "api-user:api-secret@provider.example.test"].join("://"),
+    rawV2: ["https", "api-user:api-secret@provider.example.test/path"].join("://"),
+    lines: [
+      ['\tconst rawURL = "https', 'api-user:api-secret@provider.example.test/path?view=1"'].join(
+        "://",
+      ),
+      [
+        '\t\t{"morph", "https',
+        'api-user:api-secret@provider.example.test/path?view=1", "--morph-api-url"},',
+      ].join("://"),
+    ],
+  },
+  {
+    source: "internal/providers/all/command_routing_test.go",
+    raw: ["https", "user:secret@api.example.test"].join("://"),
+    rawV2: ["https", "user:secret@api.example.test/path"].join("://"),
+    lines: [['\t\t\tEndpoint: "https', 'user:secret@api.example.test/path",'].join("://")],
+  },
+  {
+    source: "internal/providers/all/command_routing_test.go",
+    raw: ["https", "pool-user:pool-pass@xcp-ng.example.test"].join("://"),
+    rawV2: ["https", "pool-user:pool-pass@xcp-ng.example.test/path"].join("://"),
+    lines: [
+      ['\t\t\tAPIURL:       "https', 'pool-user:pool-pass@xcp-ng.example.test/path?view=1",'].join(
+        "://",
+      ),
+    ],
+  },
+  {
+    source: "internal/providers/all/claim_scope_test.go",
+    raw: ["https", "user:pass@API.EXAMPLE"].join("://"),
+    rawV2: ["https", "user:pass@API.EXAMPLE/graphql"].join("://"),
+    lines: [
+      [
+        '\t\t{"railway legacy case and query", "rail", core.Config{Railway: core.RailwayConfig{APIURL: " https',
+        'user:pass@API.EXAMPLE/graphql/?view=1 ", ProjectID: " proj ", EnvironmentID: " env "}}, "endpoint:https',
+        'API.EXAMPLE/graphql/?view=1|project:proj|environment:env"},',
+      ].join("://"),
+    ],
+  },
+];
+
+for (const [index, entry] of crabboxConfigFixtures.entries()) {
+  test(`Crabbox config fixture ${index + 1} binds exact committed source witnesses`, () => {
+    const file = "/scanner/crabbox-fixture";
+    const reference = {
+      source: entry.source,
+      mode: "100644",
+      revision: "a".repeat(40),
+      role: "base" as const,
+    };
+    const nativeURL = new URL(entry.rawV2);
+    // WHATWG URL normalizes host case; the scanner retains the original authority.
+    const host = entry.rawV2.split("@")[1]!.split("/")[0]!;
+    const finding = {
+      SourceType: 15,
+      DetectorType: 17,
+      DetectorName: "URI",
+      DecoderName: "PLAIN",
+      Verified: false,
+      VerificationError: "synthetic verification error",
+      Raw: entry.raw,
+      RawV2: entry.rawV2,
+      SourceMetadata: { Data: { Filesystem: { file, line: 1 } } },
+      SecretParts: { host, username: nativeURL.username, password: nativeURL.password },
+      ExtraData: null,
+      StructuredData: null,
+    };
+    const classify = (
+      lines = entry.lines,
+      references: Extract<StagedScanInput, { kind: "blob" | "worktree" }>["references"] = [
+        reference,
+        { ...reference, revision: "b".repeat(40), role: "head" },
+      ],
+      overrides: Record<string, unknown> = {},
+      duplicate = false,
+    ) => {
+      const observed = { ...finding, ...overrides };
+      const findings = duplicate ? [observed, observed] : [observed];
+      const bytes = Buffer.from(lines.join("\n") + "\n");
+      return classifyReviewedFixtureScan(
+        183,
+        Buffer.from(findings.map((value) => JSON.stringify(value)).join("\n") + "\n"),
+        Buffer.from(
+          JSON.stringify({
+            level: "info-0",
+            logger: "trufflehog",
+            msg: "finished scanning",
+            trufflehog_version: "3.97.4",
+            chunks: 1,
+            bytes: bytes.length,
+            verified_secrets: findings.filter((value) => value.Verified).length,
+            unverified_secrets: findings.filter((value) => !value.Verified).length,
+          }) + "\n",
+        ),
+        new Map([[file, { kind: "blob", id: "a".repeat(40), bytes, references }]]),
+      );
+    };
+    assert.equal(classify().kind, "classified");
+    const refused = (label: string, result: ReturnType<typeof classify>) => {
+      assert.equal(result.kind, "refused", label);
+    };
+    refused("line bytes", classify(entry.lines.map((line) => line + " ")));
+    refused(
+      "literal bytes",
+      classify(
+        entry.lines.map((line) => line.replace(entry.rawV2, entry.rawV2 + "x")),
+        undefined,
+        { RawV2: entry.rawV2 + "x" },
+      ),
+    );
+    refused(
+      "source path",
+      classify(undefined, [{ ...reference, source: "internal/cli/unreviewed_test.go" }]),
+    );
+    refused("mode", classify(undefined, [{ ...reference, mode: "100755" }]));
+    refused("role", classify(undefined, [{ ...reference, role: "worktree" }]));
+    refused("decoder", classify(undefined, undefined, { DecoderName: "HTML" }));
+    refused("verified", classify(undefined, undefined, { Verified: true }));
+    refused("extra occurrence", classify([...entry.lines, entry.lines[0]!]));
+    refused(
+      "mixed references",
+      classify(undefined, [reference, { ...reference, source: "unreviewed.go" }]),
+    );
+    refused("duplicate native record", classify(undefined, undefined, {}, true));
+    if (entry.lines.length > 1) {
+      refused("ordered witnesses", classify([...entry.lines].reverse()));
+      refused("missing witness", classify(entry.lines.slice(0, 1)));
+    }
+  });
+}

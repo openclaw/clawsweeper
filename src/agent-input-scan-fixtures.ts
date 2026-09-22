@@ -339,6 +339,13 @@ const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
   [17, "URI", "HTML", "dab81a433bea3f155bdd2e6568380c6e21c4a629096e29443c949fcab4ab8adc", "dab81a433bea3f155bdd2e6568380c6e21c4a629096e29443c949fcab4ab8adc", ["e7173a8ac7ee26ee3846d6487ea01f33027e226087f561866b009f60dc34178e", "508ded3f91728edcc7d4ee16d478fae1afd678604e85a9c1f5b701faead11057"], "test/agent-input-scan-git-metadata.test.ts", "100644"],
   [17, "URI", "PLAIN", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "a271d1f3d9e105af4a08d27cb5372f891021a0e254241ee23ea257863300a9fd", "docs/proof/agent-input-scan-git-metadata/run-shared-oid-proof.mjs", "100644"],
   [17, "URI", "HTML", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "a271d1f3d9e105af4a08d27cb5372f891021a0e254241ee23ea257863300a9fd", "docs/proof/agent-input-scan-git-metadata/run-shared-oid-proof.mjs", "100644"],
+  // Maintainer-qualified Crabbox config/routing fixtures: exact native PLAIN identities and full lines.
+  [17, "URI", "PLAIN", "6b167ea4a777545dcca0e4d425aafccd750a6c6fca8a5b2b370f16491f3a8a4d", "0ff6fd85d257fff2c1caed69eb7aae2c67aed01380cb46e34d557984e27fa54c", "40bbc6377ab4eb23719df798cc9b1679686090fba77d4a382be0afb4657d1d8a", "internal/cli/config_test.go", "100644"],
+  [17, "URI", "PLAIN", "a89628da8274772f7fa0afe708243ae49b6791bdedb1750677427cc9d5a5a000", "14c716479d52c028b8fb328b96101ede45e16dd037240e7c47a81ec43090ab9e", "ac71824a6b75fdfd7f008ef1daa6ada48b1610e2b7dc1f1ae9805a93a7f17b52", "internal/providers/all/command_routing_test.go", "100644"],
+  [17, "URI", "PLAIN", "074f22e4df02459f0d76314ba50dace1f636490fe1c46c529b5937af3e7b132a", "feb035cc8ff180121b5b0c9632560ea099625ff64cad056624cefaa345493304", ["68ac16cb2abadc3f53f40db689be2eb91b3d6999b22ceb2a461f9fb6805b992b", "7b5b808586aae3f8ed29071a60f463104e9dbdeae40fb38b74c299c850bd523a"], "internal/providers/all/command_routing_test.go", "100644"],
+  [17, "URI", "PLAIN", "07968c00c423fd77a0ee19bd8a05e59e9365a48342e66818eee4b34b1c3ee087", "bbc496f1b46b968ed3dc0e1e794c3ab7e65f59720270b2a3c2cccc74d7374953", "ca4ab725d43ebe7996e64ed6ff9297fc356ce07de90dddb77b7b4b020ad5f22b", "internal/providers/all/command_routing_test.go", "100644"],
+  [17, "URI", "PLAIN", "843c5932c66afbc53056c0249de449e9b24bc4ce8a289d88ff1e0505c95a43b2", "e3904bc450ae63f438013ea8c33377e09f2cecc8135fcb8c23eb61f27bc44f07", "7c8e7f2230a2fb9f35048c860ec30ff66bf975e56aad6732e11fac322c6243da", "internal/providers/all/command_routing_test.go", "100644"],
+  [17, "URI", "PLAIN", "59357e59c291991c90b270b631c211824c280da20067aab43514642be03e9638", "5cb65d249cba9bb31b78f257134608da51cbe7adef0236dc641a9ce33e7f6fb3", "29d6a35a441309fc081af0bf3f1c053f82318f4af113458a928ac3de66c51e96", "internal/providers/all/claim_scope_test.go", "100644"],
   ...CRABBOX_POSTGRES_DOC_ATTRIBUTIONS,
 ];
 
@@ -384,7 +391,11 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           detectorType === 17 &&
           detectorName === "URI" &&
           (decoder === "PLAIN" || decoder === "HTML")) ||
-        ((source === "internal/cli/repo_test.go" || source === "internal/cli/ssh_test.go") &&
+        ((source === "internal/cli/repo_test.go" ||
+          source === "internal/cli/ssh_test.go" ||
+          source === "internal/cli/config_test.go" ||
+          source === "internal/providers/all/command_routing_test.go" ||
+          source === "internal/providers/all/claim_scope_test.go") &&
           detectorType === 17 &&
           detectorName === "URI" &&
           decoder === "PLAIN") ||

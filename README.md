@@ -699,6 +699,8 @@ findings; `HTML` is separately covered by constructed classifier records.
 
 The marketplace entries telemetry test uses the same reviewed feed URI twice, in live and snapshot metadata. Its exact attribution binds both complete source lines in order, URI detector 17, observed PLAIN or HTML decoding, regular-file mode, and committed base/head roles. The refresh test keeps its existing legacy approval and repair roles. Policy selection follows the staged source references, including each patch witness, so a shared URI does not transfer changed-line approval or duplicate-record rules between these sources. See [the native proof](docs/proof/marketplace-telemetry-fixtures/README.md).
 
+Six existing Crabbox scope-normalization and redaction fixtures use the same exact attribution table, limited to their observed URI detector 17 / PLAIN results. Both raw digests, each complete source line (including the ordered pair for the repeated fixture), the three original test paths, regular-file mode, and every committed base/head reference must match. No test file is exempt from scanning. See [the qualification contract and native proof](docs/proof/crabbox-config-fixtures/README.md).
+
 The Gateway readiness error-privacy fixture in OpenClaw's
 [readiness test](https://github.com/openclaw/openclaw/blob/876b4c34f16b46bb4cbff8569d6cb2ba39ee0e59/test/helpers/openclaw-test-instance.test.ts#L2002) is also qualified by this table.
 The exact URI detector 17 identities, complete source line (including the

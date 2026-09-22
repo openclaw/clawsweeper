@@ -1,0 +1,25 @@
+{
+  "date": "2026-09-22",
+  "platform": "darwin",
+  "node": "v24.21.0",
+  "scanner": "3.97.4",
+  "baseSha": "4c57142affd408a57ee25260c97c95b83a42a84a",
+  "headSha": "9990dc65a0073522198e7c653f26e2e8f7357f4f",
+  "baseline": {
+    "result": "refused",
+    "reason": "literal_not_reviewed",
+    "emittedFindings": 12
+  },
+  "candidate": {
+    "result": "admitted",
+    "classifiedIdentities": 6,
+    "emittedFindings": 11,
+    "sources": [
+      "internal/cli/config_test.go",
+      "internal/providers/all/claim_scope_test.go",
+      "internal/providers/all/command_routing_test.go"
+    ]
+  },
+  "policySourceSHA256": "4d96574fd1963177230a986bedcb8b15b7250622a91b067d8efcefaf1aeaf875",
+  "limits": "Complete source range with controlled prompt and normal native verification; observed finding subsets can vary. Not a hosted review and no model invocation."
+}

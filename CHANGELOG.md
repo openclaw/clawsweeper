@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Qualify six existing Crabbox scope and redaction fixtures by exact URI identities, complete ordered source lines, and committed source references while retaining full input scanning.
+
 - Show an explicit no-op label plan when the publisher confirms unchanged labels, without inferring confirmation from report metadata. Thanks @saariuslystoned.
 
 - Reduce CI review/publication REST calls by hydrating comment threads once per read generation and deriving prompt windows locally, while preserving fresh mutation guards.
