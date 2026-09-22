@@ -48,9 +48,13 @@ require('node:assert/strict').deepEqual(args.slice(0,3), ['repo','clone','opencl
 require('node:assert/strict').deepEqual(args.slice(4), ['--','--depth=1']);
 fs.mkdirSync(args[3]); fs.writeFileSync(require('node:path').join(args[3], 'marker'), 'cloned');
 if (process.env.STALL) {
- const child = spawn(process.execPath, ['-e', 'process.on("SIGTERM",()=>{});setInterval(()=>{},1000)'], {stdio:'inherit'});
- fs.writeFileSync(process.env.TRACE, JSON.stringify({parent:process.pid,pid:child.pid,target:args[3]}));
  process.on('SIGTERM',()=>{}); setInterval(()=>{},1000);
+ const child = spawn(process.execPath, ['-e', 'process.on("SIGTERM",()=>{});setInterval(()=>{},1000);process.send("ready")'], {stdio:['ignore','inherit','inherit','ipc']});
+ child.once('message', () => {
+  const pending = process.env.TRACE + '.tmp';
+  fs.writeFileSync(pending, JSON.stringify({parent:process.pid,pid:child.pid,target:args[3]}));
+  fs.renameSync(pending, process.env.TRACE);
+ });
 }`,
   );
   const listenerCounts = ["SIGINT", "SIGTERM", "SIGHUP", "exit"].map((signal) =>
