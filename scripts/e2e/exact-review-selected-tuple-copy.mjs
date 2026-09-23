@@ -289,6 +289,7 @@ export function runCopyProof({
   assertSelected = true,
   invalidDecision,
   benchmark = false,
+  concurrency = 1,
 } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "selected-tuple-proof-")));
   try {
@@ -413,7 +414,7 @@ export function runCopyProof({
         GITHUB_REPOSITORY: "openclaw/clawsweeper",
         REPO_TOKEN: "synthetic-fixture-token",
         EXACT_REVIEW_BATCH_MANIFEST: join(workspace, "manifest.json"),
-        EXACT_REVIEW_BATCH_PREPARE_CONCURRENCY: "1",
+        EXACT_REVIEW_BATCH_PREPARE_CONCURRENCY: String(concurrency),
         GITHUB_OUTPUT: join(root, "github-output"),
       },
     });
@@ -429,8 +430,11 @@ export function runCopyProof({
       .split("\n")
       .filter(Boolean)
       .map(JSON.parse);
-    const workers = events.filter((event) => event.kind === "worker");
-    const publishers = events.filter((event) => event.kind === "publisher");
+    const memberOrder = new Map(items.map((item, index) => [item.itemKey, index]));
+    const byMember = (left, right) =>
+      memberOrder.get(left.itemKey) - memberOrder.get(right.itemKey);
+    const workers = events.filter((event) => event.kind === "worker").sort(byMember);
+    const publishers = events.filter((event) => event.kind === "publisher").sort(byMember);
     const outcomes = items.map((item) => json(join(workspace, item.outcomePath)));
     const telemetry = json(join(workspace, ".artifacts/exact-review-batch/prepare-telemetry.json"));
     assert.deepEqual(inventory(join(workspace, "records"), !benchmark), before);
@@ -511,12 +515,13 @@ export function runCopyProof({
         );
         assert.equal(publishers.length, 0);
       } else if (mode === "circuit") {
-        assert.equal(events.filter((event) => event.kind === "download").length, 1);
+        const downloads = events.filter((event) => event.kind === "download").length;
+        assert.ok(downloads >= 1 && downloads <= concurrency);
         assert.equal(events.filter((event) => event.kind === "rate-status").length, 1);
-        assert.equal(outcomes[0].attempted, true);
-        assert.ok(outcomes.slice(1).every((outcome) => outcome.attempted === false));
+        assert.equal(outcomes.filter((outcome) => outcome.attempted === true).length, downloads);
+        assert.ok(outcomes.slice(concurrency).every((outcome) => outcome.attempted === false));
         assert.ok(outcomes.every((outcome) => outcome.reasonCode === "github_rate_limit"));
-        assert.equal(telemetry.collapsed, 7);
+        assert.equal(telemetry.collapsed, items.length - downloads);
       }
     }
     assert.ok(

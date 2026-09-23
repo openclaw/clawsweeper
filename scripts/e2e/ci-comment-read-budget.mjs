@@ -6,7 +6,9 @@ import { fileURLToPath } from "node:url";
 
 const repo = "fixture/repository";
 const issuePath = `repos/${repo}/issues/123`;
-const commentsPath = `${issuePath}/comments`;
+const inline = process.argv.includes("--inline");
+const pullPath = `repos/${repo}/pulls/123`;
+const commentsPath = inline ? `${pullPath}/comments` : `${issuePath}/comments`;
 
 if (process.argv.includes("--server")) {
   let comments = [];
@@ -38,38 +40,63 @@ if (process.argv.includes("--server")) {
       return send({ ok: true });
     }
     requests.push(url.pathname + url.search);
-    if (url.pathname === `/${issuePath}`) {
+    if (url.pathname === `/${issuePath}` || url.pathname === `/${pullPath}`) {
       return send({
         number: 123,
         title: "Comment hydration proof",
         body: "Synthetic issue",
         state: "open",
         locked: false,
+        updated_at: "2026-09-21T00:00:00Z",
         user: { login: "contributor" },
         author_association: "NONE",
         labels: [],
-        comments: declaredCount,
+        comments: inline ? 0 : declaredCount,
+        ...(inline
+          ? {
+              head: { sha: "b".repeat(40) },
+              base: { sha: "c".repeat(40) },
+              changed_files: 0,
+              commits: 0,
+              review_comments: declaredCount,
+            }
+          : {}),
       });
     }
     if (url.pathname === `/${commentsPath}`) {
       const page = Number(url.searchParams.get("page") || 1);
       return send(comments.slice((page - 1) * 100, page * 100));
     }
+    if (
+      inline &&
+      [`/${issuePath}/comments`, `/${pullPath}/files`, `/${pullPath}/commits`].includes(
+        url.pathname,
+      )
+    )
+      return send([]);
     response.statusCode = 404;
     send({ error: "unexpected proof route" });
   });
   server.listen(0, "127.0.0.1", () => console.log(server.address().port));
 } else {
   const { createGitHubContext } = await import("../../dist/clawsweeper-github-context.js");
-  const { createItemContext } = await import("../../dist/clawsweeper-item-context.js");
+  const { createItemContext } = await import(
+    inline && process.argv.includes("--baseline")
+      ? "../../dist/clawsweeper-item-context-baseline.js"
+      : "../../dist/clawsweeper-item-context.js"
+  );
   const { LiveReadGeneration, generationReadKey } =
     await import("../../dist/live-read-generation.js");
   const { asRecord } = await import("../../dist/clawsweeper-item-policy.js");
   const { hydration, sourceTools, sha256 } = await import("../../test/primary-body-fixture.ts");
   const baseline = process.argv.includes("--baseline");
-  const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "--server"], {
-    stdio: ["ignore", "pipe", "inherit"],
-  });
+  const child = spawn(
+    process.execPath,
+    [fileURLToPath(import.meta.url), "--server", ...(inline ? ["--inline"] : [])],
+    {
+      stdio: ["ignore", "pipe", "inherit"],
+    },
+  );
   const port = Number(String((await once(child.stdout, "data"))[0]).trim());
   assert.ok(port > 0);
   const base = `http://127.0.0.1:${port}`;
@@ -104,11 +131,13 @@ if (process.argv.includes("--server")) {
     closingPullRequestsForIssue: () => [],
     referencingMergedPullRequestsForIssue: () => [],
     relatedItemsContext: () => [],
+    fetchReviewedPrActivityCursor: () => null,
+    pullChecksContext: () => ({ complete: true, checkRuns: [], statuses: [] }),
   });
   const target = {
     repo,
     number: 123,
-    kind: "issue",
+    kind: inline ? "pull_request" : "issue",
     title: "Comment hydration proof",
     url: "https://github.com/fixture/repository/issues/123",
     createdAt: "2026-09-21T00:00:00Z",
@@ -124,11 +153,18 @@ if (process.argv.includes("--server")) {
       [10, false],
       [40, false],
       [250, false],
-      [40, true],
+      ...(!inline ? [[40, true]] : []),
     ]) {
       get(`reset?count=${count}${unknown ? "&unknown=1" : ""}`);
       const generation = new LiveReadGeneration();
-      const options = { liveReadGeneration: generation };
+      const options = {
+        liveReadGeneration: generation,
+        ...(inline ? { reviewCacheDigest: true } : {}),
+      };
+      const revision = (value) =>
+        inline ? value.pullReviewCommentsRevision : value.sourceRevision;
+      const window = (value) => (inline ? value.pullReviewComments : value.comments);
+      const windowLimit = inline ? 40 : 24;
       const context = collectItemContext(target, options);
       const readComments = () =>
         generation.read(generationReadKey("paged", [commentsPath]), () =>
@@ -137,21 +173,25 @@ if (process.argv.includes("--server")) {
       const complete = readComments();
       assert.equal(complete.length, count);
       assert.equal(
-        context.sourceRevision,
-        sourceTools.itemSourceRevisionSha256(get(issuePath), complete),
+        revision(context),
+        inline
+          ? sourceTools.reviewCommentContentRevision(complete.map(hydration.compactComment))
+          : sourceTools.itemSourceRevisionSha256(get(issuePath), complete),
       );
-      const retained = context.comments.filter((comment) => typeof comment.id === "number");
+      const retained = window(context).filter((comment) => typeof comment.id === "number");
       const expected =
-        !unknown && count > 24 ? [...complete.slice(0, 12), ...complete.slice(-12)] : complete;
+        !unknown && count > windowLimit
+          ? [...complete.slice(0, windowLimit / 2), ...complete.slice(-windowLimit / 2)]
+          : complete;
       // Unknown counts retain all comments before the existing prompt compactor.
       const compacted = hydration.compactMappedWindow(
         expected,
         expected.length,
-        24,
+        windowLimit,
         hydration.compactComment,
       );
-      assert.deepEqual(context.comments, compacted);
-      assert.ok(retained.length <= 24);
+      assert.deepEqual(window(context), compacted);
+      assert.ok(retained.length <= windowLimit);
       const requests = get("counts");
       const commentReads = requests.filter((path) => path.startsWith(`/${commentsPath}?`)).length;
       const expectedReads =
@@ -162,21 +202,21 @@ if (process.argv.includes("--server")) {
               ? 5
               : 2
             : Math.floor(count / 100) + 1;
-      assert.equal(commentReads, expectedReads);
+      assert.equal(commentReads, expectedReads, JSON.stringify({ count, requests }));
       const row = {
         count,
         unknown,
         comment_reads: commentReads,
-        source_revision: context.sourceRevision,
+        source_revision: revision(context),
       };
-      if (count > 24) {
+      if (count > windowLimit) {
         get("edit");
-        assert.equal(collectItemContext(target, options).sourceRevision, context.sourceRevision);
+        assert.equal(revision(collectItemContext(target, options)), revision(context));
         const fresh = collectItemContext(target, { ...options, bypassGenerationCache: true });
-        assert.notEqual(fresh.sourceRevision, context.sourceRevision);
-        assert.equal(collectItemContext(target, options).sourceRevision, context.sourceRevision);
+        assert.notEqual(revision(fresh), revision(context));
+        assert.equal(revision(collectItemContext(target, options)), revision(context));
         generation.invalidate();
-        assert.equal(collectItemContext(target, options).sourceRevision, fresh.sourceRevision);
+        assert.equal(revision(collectItemContext(target, options)), revision(fresh));
         row.middle_edit_detected_after_bypass_and_invalidation = true;
       }
       output.scenarios.push(row);

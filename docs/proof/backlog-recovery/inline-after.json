@@ -1,0 +1,30 @@
+{
+  "mode": "candidate",
+  "scenarios": [
+    {
+      "count": 0,
+      "unknown": false,
+      "comment_reads": 1,
+      "source_revision": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "count": 10,
+      "unknown": false,
+      "comment_reads": 1,
+      "source_revision": "d7d8f03ad07e09cc5948d26d70e9a314082a67bbbf7989a6cba2501cafe948c1"
+    },
+    {
+      "count": 40,
+      "unknown": false,
+      "comment_reads": 1,
+      "source_revision": "aa228e60f2e96801714467c53eb9684a3849c376010fd7e33b06be7749a81614"
+    },
+    {
+      "count": 250,
+      "unknown": false,
+      "comment_reads": 3,
+      "source_revision": "9f5ae3fdfe8b71762f6456c03ad4a7faf8bf309930155ff37fe0e65cd37e763c",
+      "middle_edit_detected_after_bypass_and_invalidation": true
+    }
+  ]
+}

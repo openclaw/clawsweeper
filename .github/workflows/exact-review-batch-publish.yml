@@ -48,7 +48,7 @@ jobs:
       CLAWSWEEPER_GITHUB_REQUEST_METRICS_PATH: .artifacts/exact-review-batch/github-request-metrics.jsonl
       # Scan the full queue window so owner filtering can still fill the 32-item lease cap.
       EXACT_REVIEW_BATCH_MAX_ITEMS: "50"
-      EXACT_REVIEW_BATCH_PREPARE_CONCURRENCY: "1"
+      EXACT_REVIEW_BATCH_PREPARE_CONCURRENCY: "2"
       CLAWSWEEPER_APP_CLIENT_ID: Iv23liOECG0slfuhz093
       CLAWSWEEPER_APP_PRIVATE_KEY: ${{ secrets.CLAWSWEEPER_APP_PRIVATE_KEY }}
     steps:

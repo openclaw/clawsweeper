@@ -26,6 +26,8 @@ const REVIEW_ATTRIBUTE_BLOB_MAX_BYTES = 16 * 1024 * 1024;
 const REVIEW_ATTRIBUTE_INDEX_MAX_FILES = 2;
 const REVIEW_ATTRIBUTE_INDEX_MAX_BYTES = 128 * 1024 * 1024;
 const REVIEW_TREE_METADATA_DEADLINE_MS = 30_000;
+const REVIEW_FETCH_ATTEMPT_MS = 60_000;
+const REVIEW_FETCH_DEADLINE_MS = 120_000;
 const GIT_NULL_DEVICE = process.platform === "win32" ? "NUL" : devNull;
 const GIT_OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
 export const REVIEW_TREE_MAX_FILES = 200_000;
@@ -96,6 +98,69 @@ function checkedReviewGit(
   return result.stdout;
 }
 
+function retryableReviewFetch(result: SpawnSyncReturns<string>): boolean {
+  if (
+    /(?:HTTP (?:401|403|404)|authentication failed|couldn't find remote ref|not our ref)/i.test(
+      result.stderr ?? "",
+    )
+  )
+    return false;
+  return (
+    (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT" ||
+    /(?:HTTP (?:500|502|503|504)|remote end hung up|connection (?:reset|timed out)|early EOF|RPC failed|could not resolve (?:host|proxy)|failed to connect|TLS connection was non-properly terminated|SSL_ERROR_SYSCALL)/i.test(
+      result.stderr ?? "",
+    )
+  );
+}
+
+function fetchReviewObjects({
+  targetDir,
+  args,
+  reason,
+  remainingInput,
+  complete,
+}: {
+  targetDir: string;
+  args: string[];
+  reason: ReviewGitFailureReason;
+  remainingInput?: () => string;
+  complete: () => boolean;
+}): void {
+  const deadlineAt = Date.now() + REVIEW_FETCH_DEADLINE_MS;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    // A failed transport may still have installed a valid pack. Reuse only
+    // locally verified objects, and never make Git lazily fetch during this check.
+    if (complete()) return;
+    const input = remainingInput?.();
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) {
+      throw new ReviewGitError(
+        reason,
+        Object.assign(new Error("fetch deadline"), {
+          error: Object.assign(new Error("fetch deadline"), { code: "ETIMEDOUT" }),
+        }),
+      );
+    }
+    const fetched = spawnSync("git", args, {
+      cwd: targetDir,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" },
+      encoding: "utf8",
+      input,
+      maxBuffer: MAX_GIT_OUTPUT_BYTES,
+      timeout: Math.min(REVIEW_FETCH_ATTEMPT_MS, remainingMs),
+      killSignal: "SIGKILL",
+    });
+    if (complete()) return;
+    if (fetched.error || fetched.status !== 0) {
+      if (attempt === 0 && Date.now() < deadlineAt && retryableReviewFetch(fetched)) continue;
+      throw new ReviewGitError(reason, fetched);
+    }
+    // A successful command that did not supply the pinned objects is not a
+    // transient transport failure; callers must reject the incomplete source.
+    return;
+  }
+}
+
 function gitCommitExists(targetDir: string, sha: string): boolean {
   return (
     spawnSync("git", ["cat-file", "-e", `${sha}^{commit}`], {
@@ -130,9 +195,11 @@ export function ensureReviewTreeCommit({
   if (!GIT_OBJECT_ID.test(sha)) return false;
   const shallow = gitRepositoryIsShallow(targetDir);
   if (gitCommitExists(targetDir, sha) && !shallow) return true;
-  const fetched = spawnSync(
-    "git",
-    [
+  fetchReviewObjects({
+    targetDir,
+    reason: "review_commit_fetch_failed",
+    complete: () => gitCommitExists(targetDir, sha) && !gitRepositoryIsShallow(targetDir),
+    args: [
       "fetch",
       "--force",
       "--filter=blob:none",
@@ -143,15 +210,7 @@ export function ensureReviewTreeCommit({
       "origin",
       `${sourceRef}:${destinationRef}`,
     ],
-    {
-      cwd: targetDir,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-      encoding: "utf8",
-      maxBuffer: MAX_GIT_OUTPUT_BYTES,
-      timeout: 30_000,
-    },
-  );
-  checkedReviewGit(fetched, "review_commit_fetch_failed");
+  });
   return gitCommitExists(targetDir, sha) && !gitRepositoryIsShallow(targetDir);
 }
 
@@ -1050,9 +1109,28 @@ export function hydratePullRequestReviewBlobs({
 
   remainingMs();
   if (missing.size > 0) {
-    const fetched = spawnSync(
-      "git",
-      [
+    const pending = new Set(missing);
+    const complete = () => {
+      const checked = spawnSync("git", ["cat-file", "--batch-check=%(objectname) %(objecttype)"], {
+        cwd: targetDir,
+        encoding: "utf8",
+        env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
+        input: `${[...pending].join("\n")}\n`,
+        timeout: REVIEW_TREE_METADATA_DEADLINE_MS,
+        maxBuffer: MAX_GIT_OUTPUT_BYTES,
+      });
+      for (const line of checkedReviewGit(checked, "review_git_inspection_failed").split("\n")) {
+        const [oid, type] = line.split(" ");
+        if (oid && type === "blob") pending.delete(oid);
+      }
+      return pending.size === 0;
+    };
+    fetchReviewObjects({
+      targetDir,
+      reason: "review_blobs_unavailable",
+      complete,
+      remainingInput: () => `${[...pending].join("\n")}\n`,
+      args: [
         "-c",
         "fetch.negotiationAlgorithm=noop",
         "fetch",
@@ -1063,21 +1141,9 @@ export function hydratePullRequestReviewBlobs({
         "--filter=blob:none",
         "--stdin",
       ],
-      {
-        cwd: targetDir,
-        encoding: "utf8",
-        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-        input: `${[...missing].join("\n")}\n`,
-        timeout: remainingMs(),
-        maxBuffer: MAX_GIT_OUTPUT_BYTES,
-      },
-    );
-    if (fetched.error || fetched.status !== 0) {
-      // Transport timeouts remain source failures; the scanner has not run yet.
-      throw new ReviewGitError("review_blobs_unavailable", fetched);
-    }
+    });
+    if (pending.size > 0) throw new AgentInputScanError("incomplete_source");
   }
-  remainingMs();
   return objectIds.size;
 }
 

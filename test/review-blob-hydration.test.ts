@@ -1534,7 +1534,7 @@ test("expired blob fetch remains a retryable source preparation failure", (t) =>
              setInterval(() => {}, 1000);`,
             childMarker,
           ],
-          options,
+          { ...options, timeout: 100 },
         );
       }
       return originalSpawnSync(command, args, options);
@@ -1562,8 +1562,8 @@ test("expired blob fetch remains a retryable source preparation failure", (t) =>
         return true;
       },
     );
-    assert.equal(fetchCount, 1);
-    assert.ok(fetchTimeout > 0 && fetchTimeout <= 1000);
+    assert.equal(fetchCount, 2);
+    assert.ok(fetchTimeout > 30_000 && fetchTimeout <= 60_000);
     const childPid = Number(readFileSync(childMarker, "utf8"));
     assert.throws(() => process.kill(childPid, 0), { code: "ESRCH" });
     assert.equal(objectExistsOffline(fixture.target, fixture.addedBlobSha), false);
@@ -1590,7 +1590,7 @@ test("expired blob fetch remains a retryable source preparation failure", (t) =>
     });
     assert.deepEqual(manifest.process, {
       status: null,
-      signal: "SIGTERM",
+      signal: "SIGKILL",
       error_code: "ETIMEDOUT",
       workflow_exit: 1,
     });
@@ -1601,6 +1601,88 @@ test("expired blob fetch remains a retryable source preparation failure", (t) =>
       readFileSync(join(output, "stdout.error.txt"), "utf8"),
       "[no diagnostic detail]\n",
     );
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+for (const [message, retry] of [
+  ["Could not resolve host: example.invalid", true],
+  ["Could not resolve proxy: example.invalid", true],
+  ["Failed to connect to example.invalid", true],
+  ["gnutls_handshake() failed: The TLS connection was non-properly terminated.", true],
+  ["OpenSSL SSL_connect: SSL_ERROR_SYSCALL", true],
+  ["RPC failed; HTTP 403", false],
+  ["Authentication failed", false],
+  ["SSL certificate problem: unable to get local issuer certificate", false],
+] as const) {
+  test(`blob transport retry classification: ${message}`, (t) => {
+    const fixture = partialCloneFixture();
+    const nativeSpawn = childProcess.spawnSync;
+    let fetches = 0;
+    try {
+      t.mock.method(childProcess, "spawnSync", (command, args, options) => {
+        if (
+          command === "git" &&
+          args.includes("fetch") &&
+          args.includes("--stdin") &&
+          ++fetches === 1
+        ) {
+          return { status: 128, signal: null, stdout: "", stderr: message };
+        }
+        return nativeSpawn(command, args, options);
+      });
+      syncBuiltinESMExports();
+      const run = () =>
+        hydratePullRequestReviewBlobs({
+          targetDir: fixture.target,
+          baseSha: fixture.baseSha,
+          headSha: fixture.headSha,
+          resolveBlobSizes: resolveFixtureBlobSizes(fixture.source),
+        });
+      if (retry) assert.ok(run() > 0);
+      else assert.throws(run, { diagnosticReason: "review_blobs_unavailable" });
+      assert.equal(fetches, retry ? 2 : 1);
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("blob retry reuses installed objects after a transient partial fetch", (t) => {
+  const fixture = partialCloneFixture();
+  const nativeSpawn = childProcess.spawnSync;
+  const inputs: string[][] = [];
+  try {
+    t.mock.method(childProcess, "spawnSync", (command, args, options) => {
+      if (command === "git" && args.includes("fetch") && args.includes("--stdin")) {
+        const ids = String(options.input).trim().split("\n");
+        inputs.push(ids);
+        if (inputs.length === 1) {
+          const result = nativeSpawn(command, args, { ...options, input: `${ids[0]}\n` });
+          assert.equal(result.status, 0, result.stderr);
+          return { ...result, status: 128, stderr: "fatal: HTTP 503" };
+        }
+      }
+      return nativeSpawn(command, args, options);
+    });
+    syncBuiltinESMExports();
+    const options = {
+      targetDir: fixture.target,
+      baseSha: fixture.baseSha,
+      headSha: fixture.headSha,
+      resolveBlobSizes: resolveFixtureBlobSizes(fixture.source),
+    };
+    const count = hydratePullRequestReviewBlobs(options);
+    assert.ok(count > 1);
+    assert.equal(inputs.length, 2);
+    assert.deepEqual(inputs[1], inputs[0]!.slice(1));
+    assert.equal(hydratePullRequestReviewBlobs(options), count);
+    assert.equal(inputs.length, 2, "verified local objects require no new fetch");
   } finally {
     t.mock.restoreAll();
     syncBuiltinESMExports();

@@ -1,0 +1,23 @@
+{
+  "provider": "local-native-sqlite",
+  "unrelatedRows": 1000,
+  "unrelatedPayloadBytes": 32768000,
+  "observations": [
+    {
+      "reason": "eligible",
+      "membershipKeys": 2,
+      "activePayloadScans": 0
+    },
+    {
+      "reason": "publication_item_active",
+      "membershipKeys": 2,
+      "activePayloadScans": 0
+    },
+    {
+      "reason": "fresh_review_already_active",
+      "membershipKeys": 2,
+      "activePayloadScans": 0
+    }
+  ],
+  "limits": "Native SQLite plus production handler; Cloudflare platform failures are not reproduced."
+}

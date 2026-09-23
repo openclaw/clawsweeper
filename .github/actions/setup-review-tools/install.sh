@@ -21,6 +21,7 @@ cleanup() {
 trap cleanup EXIT
 
 curl --fail --show-error --silent --location \
+  --connect-timeout 15 --max-time 60 --retry 2 --retry-delay 2 --retry-max-time 120 \
   "https://github.com/trufflesecurity/trufflehog/releases/download/v3.97.4/trufflehog_3.97.4_linux_amd64.tar.gz" \
   --output "$review_tools_root/archive.tar.gz"
 printf '%s  %s\n' \

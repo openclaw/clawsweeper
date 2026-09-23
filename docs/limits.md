@@ -270,6 +270,13 @@ shared Git writer constraint, so production now admits 8 preparation
 batches (up to 64 publication members) while retaining the Durable Object's
 transactional SQLite ownership boundaries.
 
+Each batch now prepares at most two members concurrently. This changes only
+per-batch preparation: publication maximum 32, eight batch owners, review and
+worker budgets, and intake limits are unchanged. A quota observation still
+defers later members without charging their retry budgets; at most the two
+already-started members may have requests in flight. The controlled trial and
+rollback criteria are in [backlog recovery proof](proof/backlog-recovery/README.md).
+
 The durable control plane owns reset-aware GitHub credential circuits for both
 review authority reads and publication batching. The
 repository Actions pool is identified only as `actions:openclaw/clawsweeper`;

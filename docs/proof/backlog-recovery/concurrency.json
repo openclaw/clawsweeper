@@ -1,0 +1,322 @@
+{
+  "serial": {
+    "wallMs": 5326.331459,
+    "telemetry": {
+      "configuredConcurrency": 1,
+      "observedPeakWorkers": 1,
+      "prepareDurationMs": 5235,
+      "workerMaximumMs": 773,
+      "workerP95Ms": 773,
+      "admitted": 8,
+      "collapsed": 0,
+      "cacheHits": 0,
+      "cacheFallbacks": 0,
+      "githubArtifactRequests": 8,
+      "completedOutcomes": 8,
+      "timeouts": 0,
+      "heartbeatFailed": false,
+      "cleanupFailures": 0,
+      "limits": {
+        "maxItems": 32,
+        "itemTimeoutMs": 480000,
+        "totalTimeoutMs": 1200000,
+        "maxArtifactBytes": 67108864
+      }
+    },
+    "outcomes": [
+      {
+        "kind": "eligible",
+        "disposition": {
+          "stateBaseCommit": null,
+          "guardedOpenAction": null,
+          "requeueLatestExpected": true,
+          "routableSyncExpected": false,
+          "deferredCloseCoverageExpected": false,
+          "terminalClosedExpected": false,
+          "terminalMissingExpected": false
+        }
+      },
+      {
+        "kind": "eligible",
+        "disposition": {
+          "stateBaseCommit": null,
+          "guardedOpenAction": null,
+          "requeueLatestExpected": true,
+          "routableSyncExpected": false,
+          "deferredCloseCoverageExpected": false,
+          "terminalClosedExpected": false,
+          "terminalMissingExpected": false
+        }
+      },
+      {
+        "kind": "superseded",
+        "disposition": {
+          "requeueLatestExpected": true
+        }
+      },
+      {
+        "kind": "superseded",
+        "disposition": {
+          "requeueLatestExpected": false
+        }
+      },
+      {
+        "kind": "eligible",
+        "disposition": {
+          "stateBaseCommit": null,
+          "guardedOpenAction": null,
+          "requeueLatestExpected": true,
+          "routableSyncExpected": false,
+          "deferredCloseCoverageExpected": false,
+          "terminalClosedExpected": false,
+          "terminalMissingExpected": false
+        }
+      },
+      {
+        "kind": "eligible",
+        "disposition": {
+          "stateBaseCommit": null,
+          "guardedOpenAction": null,
+          "requeueLatestExpected": true,
+          "routableSyncExpected": false,
+          "deferredCloseCoverageExpected": false,
+          "terminalClosedExpected": false,
+          "terminalMissingExpected": false
+        }
+      },
+      {
+        "kind": "superseded",
+        "disposition": {
+          "requeueLatestExpected": true
+        }
+      },
+      {
+        "kind": "superseded",
+        "disposition": {
+          "requeueLatestExpected": false
+        }
+      }
+    ],
+    "publisherCount": 8
+  },
+  "parallel": {
+    "wallMs": 2667.7177089999996,
+    "telemetry": {
+      "configuredConcurrency": 2,
+      "observedPeakWorkers": 2,
+      "prepareDurationMs": 2578,
+      "workerMaximumMs": 778,
+      "workerP95Ms": 778,
+      "admitted": 8,
+      "collapsed": 0,
+      "cacheHits": 0,
+      "cacheFallbacks": 0,
+      "githubArtifactRequests": 8,
+      "completedOutcomes": 8,
+      "timeouts": 0,
+      "heartbeatFailed": false,
+      "cleanupFailures": 0,
+      "limits": {
+        "maxItems": 32,
+        "itemTimeoutMs": 480000,
+        "totalTimeoutMs": 1200000,
+        "maxArtifactBytes": 67108864
+      }
+    },
+    "outcomes": [
+      {
+        "kind": "eligible",
+        "disposition": {
+          "stateBaseCommit": null,
+          "guardedOpenAction": null,
+          "requeueLatestExpected": true,
+          "routableSyncExpected": false,
+          "deferredCloseCoverageExpected": false,
+          "terminalClosedExpected": false,
+          "terminalMissingExpected": false
+        }
+      },
+      {
+        "kind": "eligible",
+        "disposition": {
+          "stateBaseCommit": null,
+          "guardedOpenAction": null,
+          "requeueLatestExpected": true,
+          "routableSyncExpected": false,
+          "deferredCloseCoverageExpected": false,
+          "terminalClosedExpected": false,
+          "terminalMissingExpected": false
+        }
+      },
+      {
+        "kind": "superseded",
+        "disposition": {
+          "requeueLatestExpected": true
+        }
+      },
+      {
+        "kind": "superseded",
+        "disposition": {
+          "requeueLatestExpected": false
+        }
+      },
+      {
+        "kind": "eligible",
+        "disposition": {
+          "stateBaseCommit": null,
+          "guardedOpenAction": null,
+          "requeueLatestExpected": true,
+          "routableSyncExpected": false,
+          "deferredCloseCoverageExpected": false,
+          "terminalClosedExpected": false,
+          "terminalMissingExpected": false
+        }
+      },
+      {
+        "kind": "eligible",
+        "disposition": {
+          "stateBaseCommit": null,
+          "guardedOpenAction": null,
+          "requeueLatestExpected": true,
+          "routableSyncExpected": false,
+          "deferredCloseCoverageExpected": false,
+          "terminalClosedExpected": false,
+          "terminalMissingExpected": false
+        }
+      },
+      {
+        "kind": "superseded",
+        "disposition": {
+          "requeueLatestExpected": true
+        }
+      },
+      {
+        "kind": "superseded",
+        "disposition": {
+          "requeueLatestExpected": false
+        }
+      }
+    ],
+    "publisherCount": 8
+  },
+  "circuit": {
+    "wallMs": 540.199208,
+    "telemetry": {
+      "configuredConcurrency": 2,
+      "observedPeakWorkers": 2,
+      "prepareDurationMs": 453,
+      "workerMaximumMs": 186,
+      "workerP95Ms": 186,
+      "admitted": 2,
+      "collapsed": 6,
+      "cacheHits": 0,
+      "cacheFallbacks": 0,
+      "githubArtifactRequests": 2,
+      "completedOutcomes": 8,
+      "timeouts": 0,
+      "heartbeatFailed": false,
+      "cleanupFailures": 0,
+      "limits": {
+        "maxItems": 32,
+        "itemTimeoutMs": 480000,
+        "totalTimeoutMs": 1200000,
+        "maxArtifactBytes": 67108864
+      }
+    },
+    "outcomes": [
+      {
+        "kind": "retryable_failure",
+        "reasonCode": "github_rate_limit"
+      },
+      {
+        "kind": "retryable_failure",
+        "reasonCode": "github_rate_limit"
+      },
+      {
+        "kind": "retryable_failure",
+        "reasonCode": "github_rate_limit"
+      },
+      {
+        "kind": "retryable_failure",
+        "reasonCode": "github_rate_limit"
+      },
+      {
+        "kind": "retryable_failure",
+        "reasonCode": "github_rate_limit"
+      },
+      {
+        "kind": "retryable_failure",
+        "reasonCode": "github_rate_limit"
+      },
+      {
+        "kind": "retryable_failure",
+        "reasonCode": "github_rate_limit"
+      },
+      {
+        "kind": "retryable_failure",
+        "reasonCode": "github_rate_limit"
+      }
+    ],
+    "publisherCount": 0
+  },
+  "heartbeat": {
+    "wallMs": 93.5154169999987,
+    "telemetry": {
+      "configuredConcurrency": 2,
+      "observedPeakWorkers": 2,
+      "prepareDurationMs": 4,
+      "workerMaximumMs": 0,
+      "workerP95Ms": 0,
+      "admitted": 0,
+      "collapsed": 0,
+      "cacheHits": 0,
+      "cacheFallbacks": 0,
+      "githubArtifactRequests": 0,
+      "completedOutcomes": 8,
+      "timeouts": 0,
+      "heartbeatFailed": true,
+      "cleanupFailures": 0,
+      "limits": {
+        "maxItems": 32,
+        "itemTimeoutMs": 480000,
+        "totalTimeoutMs": 1200000,
+        "maxArtifactBytes": 67108864
+      }
+    },
+    "outcomes": [
+      {
+        "kind": "retryable_failure",
+        "reasonCode": "unknown_failure"
+      },
+      {
+        "kind": "retryable_failure",
+        "reasonCode": "unknown_failure"
+      },
+      {
+        "kind": "retryable_failure",
+        "reasonCode": "unknown_failure"
+      },
+      {
+        "kind": "retryable_failure",
+        "reasonCode": "unknown_failure"
+      },
+      {
+        "kind": "retryable_failure",
+        "reasonCode": "unknown_failure"
+      },
+      {
+        "kind": "retryable_failure",
+        "reasonCode": "unknown_failure"
+      },
+      {
+        "kind": "retryable_failure",
+        "reasonCode": "unknown_failure"
+      },
+      {
+        "kind": "retryable_failure",
+        "reasonCode": "unknown_failure"
+      }
+    ],
+    "publisherCount": 0
+  }
+}

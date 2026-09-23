@@ -2,6 +2,19 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import test from "node:test";
 
+test("inline review comments share full pagination and retain fresh revision checks", () => {
+  const result = JSON.parse(
+    execFileSync(process.execPath, ["scripts/e2e/ci-comment-read-budget.mjs", "--inline"], {
+      encoding: "utf8",
+    }),
+  );
+  assert.deepEqual(
+    result.scenarios.map((row: { comment_reads: number }) => row.comment_reads),
+    [1, 1, 1, 3],
+  );
+  assert.equal(result.scenarios.at(-1).middle_edit_detected_after_bypass_and_invalidation, true);
+});
+
 test("comment hydration shares complete REST pagination without weakening fresh reads", () => {
   const result = JSON.parse(
     execFileSync(process.execPath, ["scripts/e2e/ci-comment-read-budget.mjs"], {

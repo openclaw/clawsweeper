@@ -6325,14 +6325,40 @@ export class ExactReviewQueue {
       ) as Iterable<Record<string, unknown>>,
     );
     const page = rows.slice(0, limit);
-    const state = this.readStateSync();
+    const candidates = page.map((row) => {
+      const item = exactReviewDeadLetterItem(String(row.item_json || ""));
+      return {
+        row,
+        item,
+        recovery: item ? exactReviewFreshRecoveryFromPublicationItem(item) : null,
+      };
+    });
+    // Inventory needs only two membership checks per row, not every active
+    // item's retained artifact/decision payload. Keep work bounded by this page.
+    const keys = [
+      ...new Set(
+        candidates.flatMap(({ item, recovery }) =>
+          [item?.key, recovery?.key].filter((key): key is string => Boolean(key)),
+        ),
+      ),
+    ];
+    const activeKeys = new Set(
+      keys.length
+        ? Array.from(
+            this.storage.sql.exec(
+              `SELECT item_key FROM ${EXACT_REVIEW_QUEUE_ITEM_TABLE}
+          WHERE item_key IN (SELECT value FROM json_each(?))`,
+              JSON.stringify(keys),
+            ) as Iterable<{ item_key: string }>,
+            (row) => row.item_key,
+          )
+        : [],
+    );
     return json({
       ok: true,
-      dead_letters: page.map((row) => {
-        const item = exactReviewDeadLetterItem(String(row.item_json || ""));
-        const recovery = item ? exactReviewFreshRecoveryFromPublicationItem(item) : null;
-        const activePublication = item ? state.items[item.key] : undefined;
-        const activeRecovery = recovery ? state.items[recovery.key] : undefined;
+      dead_letters: candidates.map(({ row, item, recovery }) => {
+        const activePublication = item && activeKeys.has(item.key);
+        const activeRecovery = recovery && activeKeys.has(recovery.key);
         const recoveryReason = !item
           ? "invalid_dead_letter_item"
           : !recovery

@@ -9,6 +9,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 - Stop POSIX Codex descendants when their leader exits naturally, including descendants holding output pipes, without turning clean exits into review timeouts. Thanks @SebTardif.
 
+- Reduce publication backlog churn with shared inline-comment reads, bounded source-fetch retries that reuse verified Git objects, transient scanner-download retries, page-bounded dead-letter membership reads, and two isolated preparation workers per batch.
+
 - Bound conflict self-heal, failed-run self-heal, and issue-implementation workflow dispatches with the existing GitHub CLI deadline. Thanks @SebTardif.
 
 - Qualify the existing Crabbox Azure endpoint-rejection fixture by exact native URI identity and committed source witnesses while retaining full input scanning and refusal controls.

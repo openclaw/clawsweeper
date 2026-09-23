@@ -1,0 +1,13 @@
+{
+  "provider": "local-native-git-and-loopback-http",
+  "node": "v24.21.0",
+  "objects": 3,
+  "fetchObjects": [
+    3,
+    2
+  ],
+  "warmFetches": 0,
+  "scannerDownloads": 2,
+  "corruptScannerRejected": true,
+  "limits": "Synthetic local transport faults; no GitHub writes or production throughput claim."
+}

@@ -264,7 +264,7 @@ test("batch publisher is event-driven and queue-bounded instead of workflow-seri
     "dispatched_at",
   ]);
   assert.equal(workflow.jobs.publish!.env.EXACT_REVIEW_BATCH_MAX_ITEMS, "50");
-  assert.equal(workflow.jobs.publish!.env.EXACT_REVIEW_BATCH_PREPARE_CONCURRENCY, "1");
+  assert.equal(workflow.jobs.publish!.env.EXACT_REVIEW_BATCH_PREPARE_CONCURRENCY, "2");
   assert.equal(workflow.jobs.publish!.env.CLAWSWEEPER_APP_CLIENT_ID, "Iv23liOECG0slfuhz093");
   assert.equal(workflow.concurrency, undefined);
   assert.deepEqual(workflow.permissions, { actions: "write", contents: "read" });
