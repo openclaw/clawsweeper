@@ -101,7 +101,7 @@ refresh_cache() {
 }
 
 fetch_tag() {
-  git -C "$cache_dir" fetch --force --depth=1 origin \
+  node "$(dirname "$setup_script")/fetch.mjs" -C "$cache_dir" fetch --force --depth=1 origin \
     "refs/tags/$tag:refs/tags/$tag"
 }
 

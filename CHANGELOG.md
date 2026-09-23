@@ -9,6 +9,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 - Qualify three synthetic OpenClaw model-egress URI fixtures by exact native identities, complete source lines, and committed paths while preserving input scanning and refusal controls.
 
+- Bound pinned Codex source fetches at their shared setup owner, stopping native Git and transport descendants while preserving retry classification and Git low-speed settings. Thanks @SebTardif.
+
 - Stop POSIX Codex descendants when their leader exits naturally, including descendants holding output pipes, without turning clean exits into review timeouts. Thanks @SebTardif.
 
 - Bound conflict self-heal, failed-run self-heal, and issue-implementation workflow dispatches with the existing GitHub CLI deadline. Thanks @SebTardif.

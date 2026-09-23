@@ -61,6 +61,16 @@ capture still waits for stdio to close. Repeated signals do not interrupt
 escalation, and the app-server worker also finishes group cleanup after
 completed or failed turns before it exits.
 
+The shared OpenClaw source setup script bounds only its network Codex tag fetch.
+Its default deadline is two minutes; the first present setting among
+`CLAWSWEEPER_OPENCLAW_CODEX_SOURCE_TIMEOUT_MS`,
+`CLAWSWEEPER_GH_COMMAND_TIMEOUT_MS`, and
+`CLAWSWEEPER_NETWORK_COMMAND_TIMEOUT_MS` overrides it. Invalid or unsupported
+timer values use the default. Both the composite Action and review runtime use
+this one fetch owner, which stops Git's process group before returning and leaves
+Git low-speed settings untouched. Existing cache, pin validation, and retry
+classification remain unchanged.
+
 A batch publisher hydrates only the complete record tuples named by its review
 artifacts, reconciles those selected tuples against current GitHub state, then
 publishes the records and synchronizes their comments in the same job. It does not download the repository-wide snapshot, pull source Git

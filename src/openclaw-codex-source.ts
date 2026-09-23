@@ -25,7 +25,8 @@ export function prepareOpenClawCodexSourceForReview(options: {
   const targetDir = requiredEnvironmentPath(env, "CLAWSWEEPER_OPENCLAW_CODEX_TARGET_DIR");
   const cacheDir = requiredEnvironmentPath(env, "CLAWSWEEPER_OPENCLAW_CODEX_CACHE_DIR");
   const sourceUrl = env.CLAWSWEEPER_OPENCLAW_CODEX_SOURCE_URL?.trim() || DEFAULT_CODEX_SOURCE_URL;
-  const run = options.spawn ?? ((command, args) => spawnSync(command, args, { encoding: "utf8" }));
+  const run =
+    options.spawn ?? ((command, args) => spawnSync(command, args, { encoding: "utf8", env }));
   const result = run("bash", [
     script,
     OPENCLAW_REPOSITORY,
@@ -36,7 +37,7 @@ export function prepareOpenClawCodexSourceForReview(options: {
     options.reviewTreeRoot ?? "",
   ]);
   if (result.error || result.status !== 0) {
-    const detail = result.stderr.trim() || result.error?.message || `exit ${result.status}`;
+    const detail = (result.stderr ?? "").trim() || result.error?.message || `exit ${result.status}`;
     throw new ReviewSourcePreparationError(
       result.status === OPENCLAW_CODEX_SOURCE_INCOMPATIBLE_EXIT_CODE
         ? "source_incompatible"

@@ -185,6 +185,28 @@ test("source preparation failures carry safe diagnostic identity", () => {
   );
 });
 
+test("source preparation applies its supplied environment and classifies spawn failure", () => {
+  assert.throws(
+    () =>
+      prepareOpenClawCodexSourceForReview({
+        targetRepo: "openclaw/openclaw",
+        reviewDir: "/unused/review",
+        env: {
+          PATH: "/nonexistent-clawsweeper-proof-bin",
+          CLAWSWEEPER_OPENCLAW_CODEX_SETUP_SCRIPT: "/unused/install.sh",
+          CLAWSWEEPER_OPENCLAW_CODEX_TARGET_DIR: "/unused/target",
+          CLAWSWEEPER_OPENCLAW_CODEX_CACHE_DIR: "/unused/cache",
+        },
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /Could not prepare the PR-pinned Codex source:.*ENOENT/);
+      assert.equal(openClawCodexSourcePreparationFailureRetryable(error), true);
+      return true;
+    },
+  );
+});
+
 test("only an incompatible immutable source pin is non-retryable", () => {
   for (const [status, reason, retryable] of [
     [OPENCLAW_CODEX_SOURCE_INCOMPATIBLE_EXIT_CODE, "source_incompatible", false],
