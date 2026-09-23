@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Avoid migration-proof blockers for in-memory `statePath` routing fields while preserving actual file-read, persisted-format, and incomplete-storage checks.
+
 - Route maintainer-authored issues and pull requests to GPT-6 Sol with high reasoning and fast service while other items use medium reasoning and standard service, retiring the legacy per-run profile overrides.
 
 - Qualify the relocated Gateway config CDP-redaction fixture by its exact old and new source lines while preserving complete input scanning and changed-input refusal.

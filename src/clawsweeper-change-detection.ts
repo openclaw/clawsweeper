@@ -489,9 +489,12 @@ function dataModelTextHasSerializedStateBoundary(text: string): boolean {
   // JSON conversion and a variable named "serialized" also occur in transient
   // diagnostics and IPC; neither supplies a storage boundary on its own.
   return (
-    /\b(?:writeFile(?:Sync)?|localStorage|sessionStorage|indexedDB|IDBObjectStore|workspaceState|globalState|persisted?|statePath)\b/i.test(
+    /\b(?:writeFile(?:Sync)?|localStorage|sessionStorage|indexedDB|IDBObjectStore|workspaceState|globalState|persisted?)\b/i.test(
       text,
-    ) || /\bserialized\s+(?:data\s+)?(?:format|schema|layout|identity|namespace)\b/i.test(text)
+    ) ||
+    // A state path can be in-memory read routing; require its actual file-read boundary.
+    /\breadFile(?:Sync)?\s*(?:\?\.\s*)?\(\s*statePath\b/i.test(text) ||
+    /\bserialized\s+(?:data\s+)?(?:format|schema|layout|identity|namespace)\b/i.test(text)
   );
 }
 

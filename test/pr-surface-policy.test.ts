@@ -274,6 +274,7 @@ for (const [name, fixturePath, normalizationTruncates] of [
   ["SQLite worker diagnostic suffix", "./fixtures/persistence-classifier-138520.json", true],
   ["script source parser routing", "./fixtures/persistence-classifier-151772.json", true],
   ["Console stream routing", "./fixtures/persistence-classifier-152888.json", true],
+  ["tool construction read routing", "./fixtures/persistence-classifier-156686.json", true],
   [
     "JSON Schema value validation",
     "./fixtures/persistence-classifier-131624-json-schema.json",
@@ -552,6 +553,20 @@ test("runtime state names and typed parameters alone do not establish stored dat
         /clawsweeper-review-state:ready/,
       );
     }
+  }
+});
+
+test("an unrelated state path cannot turn a source read into stored-format evidence", () => {
+  const patch =
+    "@@\n+const statePath = options.databasePath;\n+const source = readFileSync(sourcePath, 'utf8');\n+return { statePath, source };";
+  for (const evidence of [patch, `${patch}\n\n[truncated 90 chars]`]) {
+    const pullFiles = [{ filename: "src/runtime/source-reader.ts", patch: evidence }];
+    const report = renderPersistenceReport(pullFiles, "a".repeat(40));
+    assert.doesNotMatch(
+      renderReviewCommentFromReport(report, "none"),
+      /Stored data model|Add data-model compatibility proof/,
+    );
+    assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:pass/);
   }
 });
 

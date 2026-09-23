@@ -347,6 +347,9 @@ does not make those options persistent. The import must belong to the same diff
 side, and other visible `Console` uses leave the binding conservative. Explicit
 storage changes, other changed fields, and known persistence-owner paths still
 retain their warnings.
+An in-memory `statePath` field or read-routing argument does not itself define a
+stored format. A file read whose input is `statePath` retains storage evidence;
+an unrelated `statePath` declaration cannot supply it for a source or media read.
 File reads can inspect source or media and need a persistence
 owner, explicit stored-state evidence, or JSON decoding in the same diff hunk.
 Unrelated hunks cannot combine a file read and decoding into storage evidence.
