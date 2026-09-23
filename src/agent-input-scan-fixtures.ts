@@ -213,14 +213,6 @@ const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
     decoders: ["PLAIN"],
     sources: ["src/cli/plugins-cli.marketplace-refresh.test.ts"],
   },
-  {
-    // OpenClaw Gateway config CDP-redaction fixture introduced by 4b5987829d0f.
-    fixtureSha256: "3699f73147f6969e1a3273a5809e2dd7886b95fad51315008b75bb20c4c9832f",
-    rawSha256: "3699f73147f6969e1a3273a5809e2dd7886b95fad51315008b75bb20c4c9832f",
-    lineSha256s: ["fab950a882e7e3d2f50a68a07fa6adec03baeecf9f604321ebe80098dba167ec"],
-    decoders: ["PLAIN"],
-    sources: ["src/gateway/server.config-patch.test.ts"],
-  },
 ];
 
 const CRABBOX_POSTGRES_DOC_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
@@ -248,6 +240,11 @@ const CRABBOX_POSTGRES_DOC_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  // Existing Gateway config CDP-redaction fixture relocated by OpenClaw #156637.
+  [17, "URI", "PLAIN", "3699f73147f6969e1a3273a5809e2dd7886b95fad51315008b75bb20c4c9832f", "3699f73147f6969e1a3273a5809e2dd7886b95fad51315008b75bb20c4c9832f", "fab950a882e7e3d2f50a68a07fa6adec03baeecf9f604321ebe80098dba167ec", "src/gateway/server.config-patch.test.ts", "100644"],
+  [17, "URI", "HTML", "3699f73147f6969e1a3273a5809e2dd7886b95fad51315008b75bb20c4c9832f", "3699f73147f6969e1a3273a5809e2dd7886b95fad51315008b75bb20c4c9832f", "fab950a882e7e3d2f50a68a07fa6adec03baeecf9f604321ebe80098dba167ec", "src/gateway/server.config-patch.test.ts", "100644"],
+  [17, "URI", "PLAIN", "3699f73147f6969e1a3273a5809e2dd7886b95fad51315008b75bb20c4c9832f", "3699f73147f6969e1a3273a5809e2dd7886b95fad51315008b75bb20c4c9832f", "323f6e356cdfd4034df8542199adef7805e594cb27ecebecc550131cb29c721a", "src/gateway/server.config-patch.test.ts", "100644"],
+  [17, "URI", "HTML", "3699f73147f6969e1a3273a5809e2dd7886b95fad51315008b75bb20c4c9832f", "3699f73147f6969e1a3273a5809e2dd7886b95fad51315008b75bb20c4c9832f", "323f6e356cdfd4034df8542199adef7805e594cb27ecebecc550131cb29c721a", "src/gateway/server.config-patch.test.ts", "100644"],
   // OpenClaw model-egress mocks and endpoint rejection in PR #156207; observed native decoder variants only.
   [17, "URI", "PLAIN", "5657f4461d80dbe503e3d0574f255ceb19be6b2c247df97467bd352c3a02d871", "5657f4461d80dbe503e3d0574f255ceb19be6b2c247df97467bd352c3a02d871", "da5878d386aed630ee515720e9fe0b407baf71277f4ed3412008a2fa96b0e178", "extensions/crabbox/src/crabbox-model-run.test.ts", "100644"],
   [17, "URI", "HTML", "5657f4461d80dbe503e3d0574f255ceb19be6b2c247df97467bd352c3a02d871", "5657f4461d80dbe503e3d0574f255ceb19be6b2c247df97467bd352c3a02d871", "da5878d386aed630ee515720e9fe0b407baf71277f4ed3412008a2fa96b0e178", "extensions/crabbox/src/crabbox-model-run.test.ts", "100644"],
@@ -396,6 +393,7 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           source === "ui/src/e2e/plugins-help.e2e.test.ts" ||
           source === "ui/src/app/question-prompt.test.ts" ||
           source === "src/gateway/server-methods/question.test.ts" ||
+          source === "src/gateway/server.config-patch.test.ts" ||
           source === "test/helpers/openclaw-test-instance.test.ts" ||
           source === "skills/autoreview/tests/test_autoreview_hardening.py" ||
           source === ".agents/skills/autoreview/tests/test_autoreview_hardening.py") &&

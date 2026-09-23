@@ -534,6 +534,22 @@ exactUriFixtureTests("Gateway question", "src/gateway/server-methods/question.te
   return { raw, rawV2, line: '    ["credentials", "' + rawV2 + '"],', decoders: ["PLAIN", "HTML"] };
 });
 
+for (const indentation of [14, 16]) {
+  exactUriFixtureTests(
+    `Gateway config CDP at ${indentation} spaces`,
+    "src/gateway/server.config-patch.test.ts",
+    () => {
+      const raw = ["https://", "alice", ":", "secret", "@", "chrome.remote.example.com"].join("");
+      return {
+        raw,
+        rawV2: raw,
+        line: " ".repeat(indentation) + 'cdpUrl: "' + raw + '?token=profile-secret",',
+        decoders: ["PLAIN", "HTML"],
+      };
+    },
+  );
+}
+
 exactUriFixtureTests(
   "Crabbox model proxy",
   "extensions/crabbox/src/crabbox-model-run.test.ts",

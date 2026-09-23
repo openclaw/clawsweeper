@@ -2153,7 +2153,7 @@ for (const scenarioName of [
     `mac dashboard ${scenario}`,
     `mcp apps ${scenario}`,
     `marketplace feed ${scenario}`,
-    `gateway config ${scenario}`,
+    `gateway config ${scenario === "unreviewed HTML" ? "reviewed HTML" : scenario}`,
   ]),
   "marketplace feed query mutation",
   "gateway config query mutation",
@@ -2231,6 +2231,7 @@ for (const scenarioName of [
       ? "BASE64"
       : scenario === "browser CDP encoded HTML fixture" ||
           scenario === "unreviewed HTML" ||
+          scenario === "reviewed HTML" ||
           (browserProfilesFixture && scenario === "HTML repeated literal")
         ? "HTML"
         : "PLAIN";
@@ -2635,9 +2636,39 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
       }
       return f.run(source);
     };
-    if (
+    if (gatewayConfigFixture && scenario === "diff") {
+      assert.equal(run().status, 0);
+      assert.equal(readFileSync(f.calls, "utf8"), "called");
+      const classified = notices.map(([message]) => JSON.parse(String(message)));
+      assert.equal(classified.length, 2);
+      for (const notice of classified) {
+        assert.equal(notice.event, "agent_input_scan_classified");
+        assert.equal(notice.source, gatewayConfigSource);
+        assert.equal(notice.fixtureSha256, createHash("sha256").update(uri).digest("hex"));
+        assert.equal(notice.detector, "URI");
+        assert.equal(notice.findings.length, 1);
+        assert.equal(notice.findings[0].role, "head");
+        assert.equal(notice.findings[0].decoder, "PLAIN");
+        assert.equal(notice.findings[0].occurrences, 1);
+      }
+      const findings = classified.flatMap((notice) => notice.findings);
+      const blob = findings.find((finding) => !finding.patch);
+      assert.equal(blob?.literalLine, literalLine);
+      const patch = findings.find((finding) => finding.patch);
+      assert.deepEqual(patch?.patch, {
+        from: baseSha,
+        to: headSha,
+        sourceBlob: f.git("rev-parse", `${headSha}:${gatewayConfigSource}`),
+        sourceLine: literalLine,
+      });
+      assert.equal(
+        findingValues.some((value) => JSON.stringify(notices).includes(value)),
+        false,
+      );
+    } else if (
       [
         "reviewed fixture",
+        "reviewed HTML",
         "HTML repeated literal",
         "browser local Chrome fixture",
         "browser remote Chrome fixture",
@@ -2710,7 +2741,11 @@ process.exit(scenario === 'unexpected successful output' ? 0 : 183);
               },
               ...(scenario === "HTML duplicate" ? [{ scannerLine: 42, decoder: "HTML" }] : []),
             ]
-      ).map((location) => ({ ...location, literalLine }));
+      ).map((location, index) => ({
+        ...location,
+        literalLine,
+        ...(gatewayConfigFixture ? { role: index === 0 ? "base" : "head" } : {}),
+      }));
       const expectedFindings = expectedLocations.length;
       assert.equal(
         notice.findings.reduce(
