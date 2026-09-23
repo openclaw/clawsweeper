@@ -796,6 +796,10 @@ else {
           assert.equal(reasoningEffort, "medium");
           assert.equal(serviceTier, "");
         }
+        if (scenario === "changed-pr-proof-maintainer-change") {
+          assert.equal(reasoningEffort, "high");
+          assert.equal(serviceTier, "fast");
+        }
         generationCalls += 1;
         if (isPullRequest) {
           assert.equal(reviewTreeRoot, realpathSync(dirname(openclawDir)));

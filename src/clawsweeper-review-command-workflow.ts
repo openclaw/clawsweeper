@@ -461,7 +461,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       const reviewTreeCleanupFailures: string[] = [];
       // oxfmt-ignore
       for (const item of candidates) {
-        const itemCodexProfile = codexItemProfile(item.authorAssociation);
         const itemReadonlyModeSnapshots: ReturnType<typeof makeTreeReadOnly> = [];
         let reviewOpenclawDir = openclawDir;
         let pullRequestReviewTreeDir: string | null = null;
@@ -588,6 +587,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           restoreVerifiedMaintainerPullRequestAuthorAssociation(item, (author) =>
             bulkFilerRepositoryPermission(author, bulkFilerRepositoryPermissionCache),
           );
+        const itemCodexProfile = codexItemProfile(item.authorAssociation);
         activeReviewItem = item;
         let reviewItemFailed = false;
         const previousReviewMutationRunner = dependencies.activeReviewMutationRunner;

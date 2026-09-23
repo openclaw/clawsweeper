@@ -36,8 +36,10 @@ export function canonicalItemAuthorAssociations(
 }
 
 function normalizeItemRef(value: string): string {
-  const match = value.trim().match(/^#?([1-9]\d*)$/);
-  return match ? `#${match[1]}` : value;
+  const match = value.trim().match(/^#?(\d+)$/);
+  if (!match) return value;
+  const digits = (match[1] ?? "").replace(/^0+(?=\d)/, "");
+  return `#${digits}`;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
