@@ -71,11 +71,7 @@ child.once("error", (error) => {
   spawnError = error;
 });
 child.once("close", (status, signal) => {
-  if (forceKillTimer) {
-    clearTimeout(forceKillTimer);
-    // The direct child can exit before its signal-ignoring descendants.
-    terminateCodexProcessTree(child, "SIGKILL");
-  }
+  if (forceKillTimer) clearTimeout(forceKillTimer);
   clearTimeout(timeout);
   closeCodexOutputCapture(stdout);
   closeCodexOutputCapture(stderr);

@@ -101,7 +101,7 @@ export function spawnCodex(
   },
 ): ChildProcessWithoutNullStreams {
   const invocation = codexSpawnInvocation(args, options.env, process.platform, options.cwd);
-  return spawn(invocation.command, invocation.args, {
+  const child = spawn(invocation.command, invocation.args, {
     cwd: options.cwd,
     env: options.env,
     stdio: ["pipe", "pipe", "pipe"],
@@ -109,6 +109,11 @@ export function spawnCodex(
     windowsHide: true,
     ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
   });
+  if (process.platform !== "win32") {
+    // Descendants can keep stdio open after the leader exits; do not wait for close.
+    child.once("exit", () => signalPosixProcessGroup(child, "SIGKILL"));
+  }
+  return child;
 }
 
 function signalPosixProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
