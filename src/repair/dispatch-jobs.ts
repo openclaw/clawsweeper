@@ -14,6 +14,7 @@ import {
   validateJob,
   waitForLiveWorkerCapacity,
 } from "./lib.js";
+import { githubCommandTimeoutMs } from "./github-cli.js";
 import { sleepMs } from "./timing.js";
 import { REPAIR_CLUSTER_WORKFLOW } from "./constants.js";
 import { AUTOMATION_LIMITS, workerLimit, type WorkerLane } from "../limits.js";
@@ -134,7 +135,13 @@ function dispatchJob(relative: JsonValue, position: JsonValue, total: JsonValue)
       "-f",
       `model=${model}`,
     ],
-    { cwd: repoRoot(), encoding: "utf8", stdio: "pipe" },
+    {
+      cwd: repoRoot(),
+      encoding: "utf8",
+      stdio: "pipe",
+      timeout: githubCommandTimeoutMs(process.env),
+      killSignal: "SIGKILL",
+    },
   );
   if (result.status !== 0) {
     failed = true;

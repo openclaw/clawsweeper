@@ -13,7 +13,7 @@ import {
   validateJob,
   waitForLiveWorkerCapacity,
 } from "./lib.js";
-import { ghErrorText, ghJson, ghText } from "./github-cli.js";
+import { ghErrorText, ghJson, ghText, githubCommandTimeoutMs } from "./github-cli.js";
 import { sleepMs } from "./timing.js";
 import { REPAIR_CLUSTER_WORKFLOW } from "./constants.js";
 import { currentMainHeadSha } from "./git-repo-utils.js";
@@ -304,7 +304,13 @@ function dispatchCandidate(candidate: LooseRecord) {
       "-f",
       `model=${model}`,
     ],
-    { cwd: repoRoot(), encoding: "utf8", stdio: "pipe" },
+    {
+      cwd: repoRoot(),
+      encoding: "utf8",
+      stdio: "pipe",
+      timeout: githubCommandTimeoutMs(process.env),
+      killSignal: "SIGKILL",
+    },
   );
   if (result.status !== 0) {
     throw new Error(

@@ -455,7 +455,8 @@ The workflow needs:
   environment for these settings, default to two minutes, and enforce a
   30-second minimum for environment-configured budgets. An explicit `timeoutMs`
   call option takes precedence and may select a shorter positive deadline.
-  Cluster dispatch and scheduled target-fanout inventory, coverage GraphQL, and
+  Cluster dispatch, conflict self-heal, failed-run self-heal, issue-implementation
+  dispatch, and scheduled target-fanout inventory, coverage GraphQL, and
   ordinary dispatch use the same two-minute default; automatic worker target
   clones default to three minutes. Their default budgets honor these environment
   overrides; audit-wave dispatch retains its explicit 30-second bound.

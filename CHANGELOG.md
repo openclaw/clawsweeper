@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Bound conflict self-heal, failed-run self-heal, and issue-implementation workflow dispatches with the existing GitHub CLI deadline. Thanks @SebTardif.
+
 - Qualify the existing Crabbox Azure endpoint-rejection fixture by exact native URI identity and committed source witnesses while retaining full input scanning and refusal controls.
 
 - Qualify six existing Crabbox scope and redaction fixtures by exact URI identities, complete ordered source lines, and committed source references while retaining full input scanning.

@@ -15,7 +15,7 @@ import {
   waitForLiveWorkerCapacity,
 } from "./lib.js";
 import { publishMainCommit, publishRoot } from "./git-publish.js";
-import { ghJson, ghJsonWithRetry, ghPaged, ghText } from "./github-cli.js";
+import { ghJson, ghJsonWithRetry, ghPaged, ghText, githubCommandTimeoutMs } from "./github-cli.js";
 import { DEFAULT_TARGET_REPO, REPAIR_CLUSTER_WORKFLOW } from "./constants.js";
 import { writePayload } from "./comment-router-utils.js";
 import {
@@ -434,7 +434,13 @@ function dispatchRepair(candidate: LooseRecord) {
       "-f",
       `model=${model}`,
     ],
-    { cwd: repoRoot(), encoding: "utf8", stdio: "pipe" },
+    {
+      cwd: repoRoot(),
+      encoding: "utf8",
+      stdio: "pipe",
+      timeout: githubCommandTimeoutMs(process.env),
+      killSignal: "SIGKILL",
+    },
   );
   if (result.status !== 0) {
     throw new Error(`failed to dispatch ${candidate.job_path}: ${result.stderr || result.stdout}`);
