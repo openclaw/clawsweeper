@@ -1536,7 +1536,11 @@ test("expired blob fetch remains a retryable source preparation failure", (t) =>
              setInterval(() => {}, 1000);`,
             childMarker,
           ],
-          { ...options, timeout: 100 },
+          {
+            ...options,
+            timeout: 5_000,
+            env: { ...options.env, NODE_V8_COVERAGE: undefined },
+          },
         );
       }
       return originalSpawnSync(command, args, options);
