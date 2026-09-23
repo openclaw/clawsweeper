@@ -1611,6 +1611,13 @@ test("expired blob fetch remains a retryable source preparation failure", (t) =>
 });
 
 for (const [message, retry] of [
+  ["The requested URL returned error: 500", true],
+  ["The requested URL returned error: 502", true],
+  ["The requested URL returned error: 503", true],
+  ["The requested URL returned error: 504", true],
+  ["The requested URL returned error: 403", false],
+  ["The requested URL returned error: 404", false],
+  ["The requested URL returned error: 429", false],
   ["Could not resolve host: example.invalid", true],
   ["Could not resolve proxy: example.invalid", true],
   ["Failed to connect to example.invalid", true],
@@ -1619,6 +1626,7 @@ for (const [message, retry] of [
   ["RPC failed; HTTP 403", false],
   ["Authentication failed", false],
   ["SSL certificate problem: unable to get local issuer certificate", false],
+  ["RPC failed; SSL certificate problem: unable to get local issuer certificate", false],
 ] as const) {
   test(`blob transport retry classification: ${message}`, (t) => {
     const fixture = partialCloneFixture();

@@ -24,7 +24,7 @@ if (process.argv.includes("--server")) {
     const port = server.address().port;
     server.close(() => {
       console.log(port);
-      setTimeout(() => server.listen(port, "127.0.0.1"), 1000);
+      process.once("message", () => server.listen(port, "127.0.0.1"));
     });
   });
 } else {
@@ -90,7 +90,7 @@ if(args.includes('fetch') && args.includes('--stdin')) {
   if(partial) input=input.split('\\n')[0]+'\\n';
 }
 const r=spawnSync(${JSON.stringify(nativeGit)},args,{input,stdio:input===undefined?'inherit':['pipe','inherit','inherit']});
-if(partial && r.status===0){console.error('fatal: HTTP 503 after installed pack');process.exit(128);}
+if(partial && r.status===0){console.error('fatal: The requested URL returned error: 503');process.exit(128);}
 process.exit(r.status??1);
 `,
       { mode: 0o700 },
@@ -122,7 +122,7 @@ process.exit(r.status??1);
     process.env.PATH = previousPath;
 
     server = spawn(process.execPath, [fileURLToPath(import.meta.url), "--server"], {
-      stdio: ["ignore", "pipe", "inherit"],
+      stdio: ["ignore", "pipe", "inherit", "ipc"],
     });
     const port = Number(String((await once(server.stdout, "data"))[0]).trim());
     assert.ok(port > 0);
@@ -145,9 +145,8 @@ process.exit(r.status??1);
       });
     const runnerTemp = join(root, "runner-temp");
     mkdirSync(runnerTemp);
-    let refused = false;
-    try {
-      execFileSync("/bin/bash", ["-c", scannerScript], {
+    const scanner = await new Promise((resolve, reject) => {
+      const child = spawn("/bin/bash", ["-c", scannerScript], {
         env: {
           PATH: `${bin}:${previousPath}`,
           RUNNER_TEMP: runnerTemp,
@@ -156,12 +155,26 @@ process.exit(r.status??1);
         },
         stdio: ["ignore", "pipe", "pipe"],
       });
-    } catch (error) {
-      assert.match(String(error.stdout) + String(error.stderr), /FAILED|did NOT match/);
-      assert.match(String(error.stderr), /curl: \(7\)/);
-      refused = true;
-    }
-    assert.equal(refused, true);
+      let stdout = "";
+      let stderr = "";
+      let listening = false;
+      child.stdout.on("data", (data) => {
+        stdout += data;
+      });
+      child.stderr.on("data", (data) => {
+        stderr += data;
+        // A timer can race a loaded runner and skip the refused connection.
+        if (!listening && /curl: \(7\)/.test(stderr)) {
+          listening = true;
+          server.send("listen");
+        }
+      });
+      child.once("error", reject);
+      child.once("close", (code) => resolve({ code, stdout, stderr }));
+    });
+    assert.notEqual(scanner.code, 0);
+    assert.match(scanner.stdout + scanner.stderr, /FAILED|did NOT match/);
+    assert.match(scanner.stderr, /curl: \(7\)/);
     const downloads = Number(execFileSync("curl", ["-fsS", `${url}/count`], { encoding: "utf8" }));
     assert.equal(downloads, 2);
     console.log(

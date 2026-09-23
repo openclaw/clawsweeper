@@ -13,13 +13,13 @@
   "limits": "Synthetic local transport faults; no GitHub writes or production throughput claim.",
   "crabbox": {
     "provider": "aws",
-    "leaseId": "cbx_d8cf271b730b",
-    "runId": "run_069bd9adb990d386467ac4b2d86d116c",
-    "url": "https://crabbox.openclaw.ai/portal/runs/run_069bd9adb990d386467ac4b2d86d116c",
+    "leaseId": "cbx_60711a84a0c5",
+    "runId": "run_d12c06776f33ae027a6d0c20556235e5",
+    "url": "https://crabbox.openclaw.ai/portal/runs/run_d12c06776f33ae027a6d0c20556235e5",
     "image": "node:24-bookworm",
     "gitVersion": "2.39.5",
     "exitCode": 0,
-    "focusedTestsPassed": 9,
-    "sourceSha256": "ebc9ec00d18b23fed7f2901cc3b3ac00a267557474497d718fabaa282258f338"
+    "focusedTestsPassed": 18,
+    "sourceSha256": "2a09512714b3a890eaa3764dae3eb4652d8959edd8ef8726e33c665b0045597d"
   }
 }

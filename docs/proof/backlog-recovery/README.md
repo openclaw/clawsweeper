@@ -63,11 +63,13 @@ unnecessary queue-wide read, without asserting it caused those failures.
 
 ClawSweeper identified a regression in the initial completion probe. The corrected
 production source and native proof also pass on Git 2.39.5 / Node 24.18.1 in
-`node:24-bookworm` on Crabbox provider `aws`, lease `cbx_d8cf271b730b`,
-[run `run_069bd9adb990d386467ac4b2d86d116c`](https://crabbox.openclaw.ai/portal/runs/run_069bd9adb990d386467ac4b2d86d116c),
-exit 0 with nine focused retry tests passed. [Retained result](source-old-git.json)
+`node:24-bookworm` on Crabbox provider `aws`, lease `cbx_60711a84a0c5`,
+[run `run_d12c06776f33ae027a6d0c20556235e5`](https://crabbox.openclaw.ai/portal/runs/run_d12c06776f33ae027a6d0c20556235e5),
+exit 0 with 18 focused retry tests passed. [Retained result](source-old-git.json)
 binds the corrected source hash and records partial-pack reuse, zero warm
-fetches, connection-refusal/503 recovery, and corrupt-archive refusal. The
+fetches, connection-refusal/503 recovery, and corrupt-archive refusal. The native
+source failure uses Git's standard `returned error: 503` wording. The scanner
+server starts only after observing curl's connection refusal, avoiding a timer race. The
 existing Git trace regression also requires every availability probe to use
 exact tree roots, with zero nested lazy fetches and one explicit successful fetch.
 

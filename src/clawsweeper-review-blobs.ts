@@ -99,16 +99,19 @@ function checkedReviewGit(
 }
 
 function retryableReviewFetch(result: SpawnSyncReturns<string>): boolean {
+  const stderr = result.stderr ?? "";
+  const httpStatus = /(?:HTTP\s+|returned error:\s*)(\d{3})\b/i.exec(stderr);
+  if (httpStatus) return [500, 502, 503, 504].includes(Number(httpStatus[1]));
   if (
-    /(?:HTTP (?:401|403|404)|authentication failed|couldn't find remote ref|not our ref)/i.test(
-      result.stderr ?? "",
+    /(?:authentication failed|couldn't find remote ref|not our ref|certificate (?:problem|verification failed|verify failed))/i.test(
+      stderr,
     )
   )
     return false;
   return (
     (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT" ||
-    /(?:HTTP (?:500|502|503|504)|remote end hung up|connection (?:reset|timed out)|early EOF|RPC failed|could not resolve (?:host|proxy)|failed to connect|TLS connection was non-properly terminated|SSL_ERROR_SYSCALL)/i.test(
-      result.stderr ?? "",
+    /(?:remote end hung up|connection (?:reset|timed out)|early EOF|RPC failed|could not resolve (?:host|proxy)|failed to connect|TLS connection was non-properly terminated|SSL_ERROR_SYSCALL)/i.test(
+      stderr,
     )
   );
 }
