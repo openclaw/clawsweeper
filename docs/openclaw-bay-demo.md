@@ -172,8 +172,10 @@ item link. Revision identifiers, target keys, facts, titles, raw URLs, and
 failure detail remain private. Historical growth does not cap the inventory:
 the store counts identities in SQL and streams every selected repository row
 through the lifecycle validator and reducer in one synchronous read transaction.
-It retains at most 24 candidate cards per lane and resolves current revisions
-only for the final 24-card sample. Validation still costs a linear scan of that
+It retains at most 24 candidate cards per lane, skips sorting candidates that
+cannot enter a full sample, and resolves current revisions only for the final
+24-card sample. Equal-ranked candidates preserve their original order.
+Validation still costs a linear scan of that
 history; it does not retain a history-sized JavaScript array or identity set.
 An invalid historical row makes the whole projection unavailable even when it
 would not appear in the sample. Reads never prune or rewrite durable facts.
