@@ -578,10 +578,12 @@ test("exact publication records the Actions reset before one bounded App fallbac
       .trim()
       .split(/\r?\n/)
       .map((line) => JSON.parse(line));
-    assert.deepEqual(observations, [
+    assert.equal(observations[0].provenance, "fallback");
+    assert.equal(observations[0].authoritative, false);
+    assert.deepEqual(observations.slice(1), [
       {
         scope: "repository_actions",
-        observed_at: observations[0].observed_at,
+        observed_at: observations[1].observed_at,
         retry_at: new Date(reset * 1_000).toISOString(),
         provenance: "rate_limit_status",
         authoritative: true,
@@ -648,10 +650,12 @@ test("inherited GitHub Actions credentials open the repository quota circuit", (
       .trim()
       .split(/\r?\n/)
       .map((line) => JSON.parse(line));
-    assert.deepEqual(observations, [
+    assert.equal(observations[0].provenance, "fallback");
+    assert.equal(observations[0].authoritative, false);
+    assert.deepEqual(observations.slice(1), [
       {
         scope: "repository_actions",
-        observed_at: observations[0].observed_at,
+        observed_at: observations[1].observed_at,
         retry_at: new Date(reset * 1_000).toISOString(),
         provenance: "rate_limit_status",
         authoritative: true,

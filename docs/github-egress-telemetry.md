@@ -107,6 +107,18 @@ serves later comment consumers in the same apply generation, avoiding duplicate
 first/tail-page requests. Explicit freshness barriers bypass the generation and
 mutations invalidate it, so this does not reuse stale comments before writes.
 
+Exact-publication public OpenClaw metadata and comment reads also consult the
+batch's shared credential reset observations before transport. A throttle records
+its provisional reset before the bounded rate-status lookup, so sibling publishers
+can defer immediately. A valid unexpired observation suppresses repeated calls
+only for the matching credential scope; App observations additionally require the
+same target owner. The existing one-shot App fallback remains available when that
+credential is not exhausted. Expired or malformed observations never supply a
+response: the next permitted read still goes to GitHub. Mutation routing and
+freshness barriers are unchanged. These deferrals increment the version-1
+`skipped_by_circuit` counter without inventing wire attempts or new throttle
+observations, and do not perform another rate-status lookup or extend the reset.
+
 The version-1 key is the canonical JSON tuple
 `[1, credential_pool, route_with_sorted_query, media_type]`. Collection routes
 materialize default `per_page` and `page=1`, so every page is independent and a

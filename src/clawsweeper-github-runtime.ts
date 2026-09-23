@@ -24,6 +24,10 @@ import {
 } from "./github-etag-read-broker.js";
 import { recordGithubEgressBrokerEvent } from "./github-egress-observer.js";
 import {
+  activeGitHubRateLimitCircuit,
+  GitHubRateLimitCircuitError,
+} from "./github-rate-limit-circuit.js";
+import {
   GitHubRateLimitError,
   githubCredentialScopeForToken,
   ghRetryKind,
@@ -321,7 +325,7 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
   function recordGitHubRequest(
     args: readonly string[],
     scope: GitHubCredentialScope,
-    outcome: "success" | "throttle" | "transient" | "error",
+    outcome: "success" | "throttle" | "transient" | "error" | "skipped_by_circuit",
   ): void {
     appendJsonLine(githubRequestMetricsPath(), {
       scope,
@@ -407,6 +411,7 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
     overrides: NodeJS.ProcessEnv = {},
     deadlineAt?: number,
   ): GitHubRateLimitError {
+    if (cause instanceof GitHubRateLimitCircuitError) return cause;
     const scope = githubRequestScope(args, overrides);
     const prepared = preparedGitHubEnv(args, overrides) ?? overrides;
     const token =
@@ -416,6 +421,10 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
       process.env.GITHUB_TOKEN?.trim() ||
       "";
     const hinted = new GitHubRateLimitError(cause, Date.now(), { scope });
+    // Publish before a bounded reset lookup so sibling workers stop spending
+    // this credential while the lookup is in flight.
+    publishRateLimitObservation(hinted);
+    recordGitHubRequest(args, scope, "throttle");
     const statusRetryAt = hinted.authoritative
       ? null
       : rateLimitStatusRetryAt(scope, token, deadlineAt);
@@ -427,18 +436,21 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
           authoritative: true,
         })
       : hinted;
+    if (statusRetryAt) publishRateLimitObservation(error);
+    return error;
+  }
+
+  function publishRateLimitObservation(error: GitHubRateLimitError): void {
     appendJsonLine(rateLimitObservationPath(), {
       scope: error.scope,
       ...(error.scope === "target_app"
         ? { target_owner: targetRepo().split("/", 1)[0]?.toLowerCase() }
         : {}),
-      observed_at: new Date().toISOString(),
+      observed_at: new Date(Date.now()).toISOString(),
       retry_at: error.retryAt,
       provenance: error.provenance,
       authoritative: error.authoritative,
     });
-    recordGitHubRequest(args, scope, "throttle");
-    return error;
   }
 
   function claimPublicReadFallback(args: readonly string[]): GitHubFallbackClaim | null {
@@ -472,6 +484,23 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
     const resolvedArgs = args[0] === "api" ? args : ["--repo", targetRepo(), ...args];
     const preparedEnv = preparedGitHubEnv(resolvedArgs, env);
     const scope = githubRequestScope(resolvedArgs, env);
+    const observationPath = rateLimitObservationPath();
+    if (
+      process.env.EXACT_EVENT_PUBLICATION === "true" &&
+      observationPath &&
+      isPublicOpenClawReadOnlyRequest(resolvedArgs)
+    ) {
+      ensureGitHubRuntimeAvailable("before GitHub operation", deadlineAt);
+      const circuit = activeGitHubRateLimitCircuit(
+        observationPath,
+        scope,
+        targetRepo().split("/", 1)[0] || "",
+      );
+      if (circuit) {
+        recordGitHubRequest(resolvedArgs, scope, "skipped_by_circuit");
+        throw circuit;
+      }
+    }
     const etagKey = githubEtagKeyForArgs(resolvedArgs, preparedEnv, env);
     if (etagKey && githubEtagBrokerConfigured()) {
       return ghWithDurableEtag(

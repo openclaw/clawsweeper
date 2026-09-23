@@ -1,0 +1,19 @@
+{
+  "base": "74df933aeed3f01eddcf027150f1484fdcb57904",
+  "provider": "aws",
+  "lease": "cbx_ba682171e2d0",
+  "run": "run_1ce115249f201d871658f100a5a62b15",
+  "image": "ami-0461d919be7deb53c",
+  "node": "v24.18.1",
+  "platform": "linux",
+  "sourceHashes": {
+    "src/clawsweeper-github-runtime.ts": "db4ff010007d9d09002164de2fda9cb0f6ceaf8cf0db806857fd5af6d8e003ce",
+    "src/github-rate-limit-circuit.ts": "ebbcebf8ee8e14a86f802f0e2dac4b107be8dacae07fd838f3fb7ad17b606223"
+  },
+  "focusedTestsPassed": 90,
+  "publishers": 8,
+  "baseline": { "requests": 11, "publicReads": 9, "appReads": 1, "resetLookups": 1, "deferred": 8, "authoritativeResetPreserved": false },
+  "fixed": { "requests": 3, "publicReads": 1, "appReads": 1, "resetLookups": 1, "deferred": 8, "authoritativeResetPreserved": true },
+  "afterReset": { "requests": 2, "kind": "fresh", "itemVersion": 2, "commentBody": "changed while deferred" },
+  "limits": "Controlled native loopback HTTP transport; no live credentials, GitHub mutations, production throughput claim, or healthy-publication request-budget claim."
+}
