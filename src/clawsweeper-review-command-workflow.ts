@@ -19,6 +19,7 @@ import {
   isBulkFilerExemptRepositoryPermission as isVerifiedMaintainerRepositoryPermission,
   isMaintainerAuthorAssociation,
   labelNames,
+  verifiedMaintainerAuthorAssociation,
 } from "./clawsweeper-item-policy.js";
 import { mediaProofRuntimeHints, prepareMediaProofArtifacts } from "./clawsweeper-media-proof.js";
 import type {
@@ -158,7 +159,12 @@ export function restoreVerifiedMaintainerPullRequestAuthorAssociation(
     return false;
   }
   if (!isVerifiedMaintainerRepositoryPermission(permission)) return false;
-  item.authorAssociation = "MEMBER";
+  item.authorAssociation = verifiedMaintainerAuthorAssociation({
+    kind: item.kind,
+    labels: item.labels,
+    authorAssociation: item.authorAssociation,
+    repositoryPermission: permission,
+  });
   return true;
 }
 

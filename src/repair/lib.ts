@@ -365,6 +365,7 @@ function compactPlanItem(item: LooseRecord) {
     url: item.url,
     author: item.author,
     author_association: item.author_association,
+    author_repository_permission: item.author_repository_permission,
     labels: item.labels,
     updated_at: item.updated_at,
     closed_at: item.closed_at,

@@ -63,6 +63,24 @@ export function isBulkFilerExemptRepositoryPermission(value: unknown): boolean {
   );
 }
 
+export function verifiedMaintainerAuthorAssociation(options: {
+  kind: unknown;
+  labels: readonly string[];
+  authorAssociation: unknown;
+  repositoryPermission: unknown;
+}): string {
+  const association = normalizeAuthorAssociation(options.authorAssociation);
+  if (
+    options.kind === "pull_request" &&
+    !isMaintainerAuthorAssociation(association) &&
+    options.labels.some((label) => normalizeLabelName(label) === "maintainer") &&
+    isBulkFilerExemptRepositoryPermission(options.repositoryPermission)
+  ) {
+    return "MEMBER";
+  }
+  return association;
+}
+
 export function isMaintainerAuthored(item: Pick<Item, "authorAssociation">): boolean {
   return isMaintainerAuthorAssociation(item.authorAssociation);
 }

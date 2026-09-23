@@ -1,5 +1,9 @@
 #!/usr/bin/env node
-import { normalizeAuthorAssociation } from "../clawsweeper-item-policy.js";
+import {
+  isMaintainerAuthorAssociation,
+  normalizeAuthorAssociation,
+  verifiedMaintainerAuthorAssociation,
+} from "../clawsweeper-item-policy.js";
 import type { JsonValue, LooseRecord } from "./json-types.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -80,6 +84,7 @@ const seedNumbers = seedRefs
 
 const items = new Map();
 const linkedRefs = new Map();
+const repositoryPermissionCache = new Map<string, string | null>();
 const pending = [...new Set(seedNumbers)].map((number: string) => ({ number, depth: 0 }));
 let linkedHydrateCount = 0;
 const branch = offline
@@ -214,6 +219,18 @@ function hydrateItem(repo: string, number: JsonValue) {
   const changedFilesCount = countValue(pullRequest?.changed_files, files.length);
   const commitsCount = countValue(pullRequest?.commits, commits.length);
   const checks = pullRequest ? ghPrChecks(repo, number) : [];
+  const labels = (issue.labels ?? [])
+    .map((label: JsonValue) => label.name ?? label)
+    .filter(Boolean);
+  const author = issue.user?.login;
+  const rawAuthorAssociation = issue.author_association;
+  const authorRepositoryPermission =
+    pullRequest &&
+    typeof author === "string" &&
+    !isMaintainerAuthorAssociation(rawAuthorAssociation) &&
+    labels.some((label: JsonValue) => String(label).trim().toLowerCase() === "maintainer")
+      ? repositoryPermission(repo, author)
+      : null;
 
   return {
     repo,
@@ -223,9 +240,15 @@ function hydrateItem(repo: string, number: JsonValue) {
     state: issue.state,
     title: issue.title,
     html_url: issue.html_url,
-    author: issue.user?.login,
-    author_association: issue.author_association,
-    labels: (issue.labels ?? []).map((label: JsonValue) => label.name ?? label).filter(Boolean),
+    author,
+    author_association: verifiedMaintainerAuthorAssociation({
+      kind: pullRequest ? "pull_request" : "issue",
+      labels: labels.map(String),
+      authorAssociation: rawAuthorAssociation,
+      repositoryPermission: authorRepositoryPermission,
+    }),
+    author_repository_permission: authorRepositoryPermission,
+    labels,
     created_at: issue.created_at,
     updated_at: issue.updated_at,
     closed_at: issue.closed_at,
@@ -337,6 +360,23 @@ function countValue(value: JsonValue, fallback = 0) {
   return Number.isFinite(number) && number >= 0 ? Math.floor(number) : fallback;
 }
 
+function repositoryPermission(repo: string, author: string): string | null {
+  const key = `${repo.toLowerCase()}:${author.toLowerCase()}`;
+  if (repositoryPermissionCache.has(key)) return repositoryPermissionCache.get(key) ?? null;
+  let permission: string | null = null;
+  try {
+    const result = ghJson([
+      "api",
+      `repos/${repo}/collaborators/${encodeURIComponent(author)}/permission`,
+    ]);
+    permission = typeof result.permission === "string" ? result.permission.toLowerCase() : null;
+  } catch {
+    permission = null;
+  }
+  repositoryPermissionCache.set(key, permission);
+  return permission;
+}
+
 function summarizeItem(item: LooseRecord, job: LooseRecord) {
   return {
     repo: item.repo,
@@ -348,6 +388,7 @@ function summarizeItem(item: LooseRecord, job: LooseRecord) {
     url: item.html_url,
     author: item.author,
     author_association: item.author_association,
+    author_repository_permission: item.author_repository_permission,
     labels: item.labels,
     created_at: item.created_at,
     updated_at: item.updated_at,

@@ -68,11 +68,11 @@ rule. The receiver workflow is
 and the admission implementation is
 [`src/repair/issue-implementation-intake.ts`](https://github.com/openclaw/clawsweeper/blob/main/src/repair/issue-implementation-intake.ts).
 
-| Candidate route | Where it can run | Required enablement | Extra evidence required |
-| --- | --- | --- | --- |
-| High-confidence bug | `openclaw/openclaw` | `CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES=1` | High-confidence reproduced bug, or small source-proven bug; no feature/config expansion; a high-confidence `queue_fix_pr` recommendation, repair prompt, and validation plan |
-| Vision-fit issue | `openclaw/openclaw` | `CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES=1` and `CLAWSWEEPER_AUTO_IMPLEMENT_VISION_FIT=1` | Clear VISION alignment, small implementation complexity, evidence, repair prompt, and validation plan |
-| Viable reviewed issue | Supported targets other than `openclaw/openclaw` and `openclaw/clawhub` | `CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES=1` plus target App write access | A completed `keep_open` issue review with no product-decision, protection, pause, security, or duplicate-PR blocker |
+| Candidate route       | Where it can run                                                        | Required enablement                                                                 | Extra evidence required                                                                                                                                                      |
+| --------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| High-confidence bug   | `openclaw/openclaw`                                                     | `CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES=1`                                               | High-confidence reproduced bug, or small source-proven bug; no feature/config expansion; a high-confidence `queue_fix_pr` recommendation, repair prompt, and validation plan |
+| Vision-fit issue      | `openclaw/openclaw`                                                     | `CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES=1` and `CLAWSWEEPER_AUTO_IMPLEMENT_VISION_FIT=1` | Clear VISION alignment, small implementation complexity, evidence, repair prompt, and validation plan                                                                        |
+| Viable reviewed issue | Supported targets other than `openclaw/openclaw` and `openclaw/clawhub` | `CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES=1` plus target App write access                  | A completed `keep_open` issue review with no product-decision, protection, pause, security, or duplicate-PR blocker                                                          |
 
 The scheduled route is capacity-bounded. It selects only a small configured
 number of candidates per sweep and waits for the issue-implementation worker
@@ -106,8 +106,9 @@ before it pushes. If current-main verification shows that the request is already
 fixed, unsafe, or cannot be validated, the correct outcome is a blocked
 result—not a PR.
 
-The actual issue fix and PR-creation step uses `gpt-5.6-sol` with `xhigh`
-reasoning. The normal review/planning model remains unchanged.
+Issue fix and PR-creation steps use `gpt-6-sol`. Maintainer-authored canonical
+items use high reasoning with fast service; other items use medium reasoning
+with standard service. Per-run reasoning and service-tier overrides are retired.
 
 ## Maintainer commands versus automatic selection
 
