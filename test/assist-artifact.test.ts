@@ -323,12 +323,7 @@ test("assist workflow isolates Codex generation from the fresh write-token publi
   );
   assert.equal(workflow.match(/uses: actions\/checkout@v7/g)?.length, 4);
   assert.equal(workflow.match(/persist-credentials: false/g)?.length, 4);
-  assert.equal(
-    workflow.match(
-      /REASONING_EFFORT: \$\{\{ vars\.CLAWSWEEPER_CODEX_REASONING_EFFORT \|\| 'medium' \}\}/g,
-    )?.length,
-    3,
-  );
+  assert.doesNotMatch(workflow, /REASONING_EFFORT|--codex-reasoning-effort/);
   assert.doesNotMatch(workflow, /inputs\.reasoning_effort|client_payload\.reasoning_effort/);
 
   assert.match(generation, /Create read-only GitHub App token/);

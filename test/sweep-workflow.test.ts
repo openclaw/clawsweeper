@@ -236,7 +236,7 @@ function runCommentSyncShell(root: string, commands: string[]): string {
   );
 }
 
-test("sweep commands honor configured reasoning effort with the ordinary medium default", () => {
+test("item review commands use fixed author profiles without a global override", () => {
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
   const commands = Object.values(workflow.jobs).flatMap((job: any) =>
     (job.steps ?? []).flatMap((step: any) =>
@@ -245,26 +245,16 @@ test("sweep commands honor configured reasoning effort with the ordinary medium 
         .filter((line: string) => line.includes("--codex-reasoning-effort")),
     ),
   );
-  assert.equal(commands.length, 4);
-  assert.equal(
-    workflow.env.CLAWSWEEPER_CODEX_REASONING_EFFORT,
-    "${{ vars.CLAWSWEEPER_CODEX_REASONING_EFFORT || 'medium' }}",
-  );
-  for (const effort of ["medium", "high"]) {
-    for (const command of commands) {
-      const argv = execFileSync(
-        "bash",
-        ["-c", `printf '%s\\n' ${command.trim().replace(/\\$/, "")}`],
-        {
-          encoding: "utf8",
-          env: { ...process.env, CLAWSWEEPER_CODEX_REASONING_EFFORT: effort },
-        },
-      )
-        .trim()
-        .split("\n");
-      assert.deepEqual(argv, ["--codex-reasoning-effort", effort]);
-    }
-  }
+  assert.equal(commands.length, 1);
+  assert.equal(workflow.env.CLAWSWEEPER_CODEX_REASONING_EFFORT, undefined);
+  const argv = execFileSync(
+    "bash",
+    ["-c", `printf '%s\\n' ${commands[0].trim().replace(/\\$/, "")}`],
+    { encoding: "utf8" },
+  )
+    .trim()
+    .split("\n");
+  assert.deepEqual(argv, ["--codex-reasoning-effort", "medium"]);
 });
 
 test("queued publication expires only its posted review lease after successful handoff", () => {

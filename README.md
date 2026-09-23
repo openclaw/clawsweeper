@@ -932,8 +932,8 @@ source ~/.profile
 corepack enable
 pnpm install
 pnpm run build
-pnpm run plan -- --target-repo openclaw/openclaw --batch-size 5 --shard-count 89 --max-pages 250 --codex-model internal --codex-reasoning-effort high
-pnpm run review -- --target-repo openclaw/openclaw --target-dir ../openclaw --batch-size 5 --max-pages 250 --artifact-dir artifacts/reviews --output-retention debug --codex-model internal --codex-reasoning-effort high --codex-timeout-ms 600000
+pnpm run plan -- --target-repo openclaw/openclaw --batch-size 5 --shard-count 89 --max-pages 250 --codex-model internal
+pnpm run review -- --target-repo openclaw/openclaw --target-dir ../openclaw --batch-size 5 --max-pages 250 --artifact-dir artifacts/reviews --output-retention debug --codex-model internal --codex-timeout-ms 600000
 pnpm run apply-artifacts -- --target-repo openclaw/openclaw --artifact-dir artifacts/reviews --skip-dashboard
 pnpm run audit -- --target-repo openclaw/openclaw --max-pages 250 --sample-limit 25 --update-dashboard
 pnpm run reconcile -- --target-repo openclaw/openclaw --dry-run

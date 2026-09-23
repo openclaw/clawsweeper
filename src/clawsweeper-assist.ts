@@ -20,7 +20,6 @@ import {
   type AssistRequestBinding,
 } from "./assist-artifact.js";
 import { numberArg, stringArg, type Args } from "./clawsweeper-args.js";
-import { DEFAULT_SERVICE_TIER } from "./clawsweeper-policy.js";
 import { safeOutputTail } from "./clawsweeper-text.js";
 import type {
   AssistSourceCommentSnapshot,
@@ -261,9 +260,6 @@ export function createAssistWorkflow({
       ...(options.lens === undefined ? {} : { lens: options.lens }),
     });
     const codexConfig = [codexLoginConfig(), 'approval_policy="never"'];
-    if (DEFAULT_SERVICE_TIER) {
-      codexConfig.push(`service_tier=${JSON.stringify(DEFAULT_SERVICE_TIER)}`);
-    }
     const emptyGitHubConfigDir = join(options.workDir, ".gh-empty");
     ensureDir(emptyGitHubConfigDir);
     const result = runAgentProcess({
@@ -511,16 +507,13 @@ export function createAssistWorkflow({
       sourceCommentId: stringArg(args.comment_id, "").trim(),
       sourceCommentUrl: stringArg(args.comment_url, "").trim(),
       author: stringArg(args.author, "").trim(),
-      reasoningEffort: stringArg(args.codex_reasoning_effort, "high").trim(),
+      reasoningEffort: "medium",
     };
     if (Buffer.byteLength(request.sourceCommentUrl, "utf8") > 1_000) {
       throw new Error("--comment-url exceeds the 1000-byte assist limit");
     }
     if (Buffer.byteLength(request.author, "utf8") > 100) {
       throw new Error("--author exceeds the 100-byte assist limit");
-    }
-    if (!/^(?:low|medium|high|xhigh)$/.test(request.reasoningEffort)) {
-      throw new Error("--codex-reasoning-effort is invalid for assist");
     }
     return request;
   }

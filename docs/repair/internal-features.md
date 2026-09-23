@@ -615,15 +615,13 @@ Important defaults:
 
 - `CLAWSWEEPER_MODEL`: GitHub Actions secret containing the actual worker model.
   Public workflow inputs and generated state use only `internal`.
-- `CLAWSWEEPER_CODEX_REASONING_EFFORT`: ordinary-item reasoning effort,
-  default `medium`. OWNER, MEMBER, and COLLABORATOR-authored canonical items
-  are promoted to `high`.
-- `CLAWSWEEPER_FIX_PR_MODEL` and `CLAWSWEEPER_FIX_PR_REASONING_EFFORT`:
-  automatic issue fix/PR execution uses the configured `gpt-6-sol` and the
-  ordinary `medium` profile before the canonical item's author routing is
-  applied.
-- `CLAWSWEEPER_CODEX_SERVICE_TIER`: ordinary-item service tier. Empty means
-  standard service; maintainer-authored canonical items use `fast`.
+- Item review and repair profiles are fixed by author association. OWNER,
+  MEMBER, and COLLABORATOR-authored canonical items use `high` reasoning with
+  `fast` service; all other items use `medium` reasoning and standard service.
+  `CLAWSWEEPER_CODEX_REASONING_EFFORT`, `CLAWSWEEPER_CODEX_SERVICE_TIER`, and
+  `CLAWSWEEPER_FIX_PR_REASONING_EFFORT` are retired; remove them from repository
+  variables and local environments. `CLAWSWEEPER_FIX_PR_MODEL` still selects
+  the automatic issue fix/PR model and defaults to `gpt-6-sol`.
 - `CLAWSWEEPER_CODEX_LOGIN_METHOD`: Codex login mode for local runs. Defaults
   to `api`; set `chatgpt` to preserve an existing Codex OAuth session. Any other
   non-empty value fails before Codex starts.

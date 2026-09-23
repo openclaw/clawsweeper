@@ -318,12 +318,7 @@ export interface CreateReviewCommandWorkflowDependencies {
     leaseHeadSha: string,
   ) => boolean;
   reviewMutationRunner: (ledger: ReviewActionLedger, item: Item) => MutationRunner;
-  reviewPolicyHash: (options: {
-    model?: string;
-    reasoningEffort?: string;
-    sandboxMode?: string;
-    serviceTier?: string;
-  }) => string;
+  reviewPolicyHash: (options: { model?: string; sandboxMode?: string }) => string;
   reviewStructuralPullStateFromContext: (context: ItemContext) => ReviewStructuralPullState | null;
   runReviewCheckoutInspection: (options: {
     scanSource: AgentScanSource;

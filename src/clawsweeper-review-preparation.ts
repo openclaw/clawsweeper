@@ -2,12 +2,7 @@ import { readPrAdmissionInput } from "./clawsweeper-pr-admission-input.js";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { boolArg, itemNumbersArg, numberArg, stringArg } from "./clawsweeper-args.js";
-import {
-  DEFAULT_CODEX_MODEL,
-  DEFAULT_REASONING_EFFORT,
-  DEFAULT_REVIEW_CODEX_TIMEOUT_MS,
-  DEFAULT_SERVICE_TIER,
-} from "./clawsweeper-policy.js";
+import { DEFAULT_CODEX_MODEL, DEFAULT_REVIEW_CODEX_TIMEOUT_MS } from "./clawsweeper-policy.js";
 import type { GitInfo } from "./clawsweeper-types.js";
 import { UserFacingCommandError } from "./command.js";
 import {
@@ -156,12 +151,12 @@ export function prepareReviewCommand(
     const batchSize = numberArg(args.batch_size, DEFAULT_PLAN_BATCH_SIZE);
     const maxPages = numberArg(args.max_pages, 250);
     const model = stringArg(args.codex_model, DEFAULT_CODEX_MODEL);
-    const reasoningEffort = stringArg(args.codex_reasoning_effort, DEFAULT_REASONING_EFFORT);
+    if (args.codex_reasoning_effort !== undefined || args.codex_service_tier !== undefined) {
+      throw new UserFacingCommandError(
+        "--codex-reasoning-effort and --codex-service-tier are retired for item reviews; author association selects the fixed profile.",
+      );
+    }
     const sandboxMode = stringArg(args.codex_sandbox, "read-only");
-    const serviceTier = stringArg(
-      args.codex_service_tier,
-      localOnly ? "fast" : DEFAULT_SERVICE_TIER,
-    );
     const timeoutMs = numberArg(args.codex_timeout_ms, DEFAULT_REVIEW_CODEX_TIMEOUT_MS);
     const expectedSourceRevision = stringArg(args.expected_source_revision, "").trim();
     if (expectedSourceRevision && !/^[0-9a-f]{64}$/.test(expectedSourceRevision)) {
@@ -292,7 +287,7 @@ export function prepareReviewCommand(
       }
       throw error;
     }
-    const reviewPolicy = reviewPolicyHash({ model, reasoningEffort, sandboxMode, serviceTier });
+    const reviewPolicy = reviewPolicyHash({ model, sandboxMode });
     const explicitDispatch = isExplicitReviewDispatch(
       args,
       itemNumber !== undefined || itemNumbers !== undefined,
@@ -314,9 +309,7 @@ export function prepareReviewCommand(
       batchSize,
       maxPages,
       model,
-      reasoningEffort,
       sandboxMode,
-      serviceTier,
       timeoutMs,
       expectedSourceRevision,
       additionalPrompt,

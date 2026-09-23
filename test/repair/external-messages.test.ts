@@ -232,13 +232,6 @@ test("external message provenance preserves selected issue-execution xhigh reaso
   assert.doesNotMatch(body, /model model-test/);
 });
 
-test("external message provenance keeps ordinary implicit reasoning normalized", () => {
-  const previous = process.env.CLAWSWEEPER_CODEX_REASONING_EFFORT;
-  process.env.CLAWSWEEPER_CODEX_REASONING_EFFORT = "xhigh";
-  try {
-    assert.equal(externalMessageProvenance({ model: "model-test" }).reasoning, "high");
-  } finally {
-    if (previous === undefined) delete process.env.CLAWSWEEPER_CODEX_REASONING_EFFORT;
-    else process.env.CLAWSWEEPER_CODEX_REASONING_EFFORT = previous;
-  }
+test("external message provenance defaults ordinary implicit reasoning to medium", () => {
+  assert.equal(externalMessageProvenance({ model: "model-test" }).reasoning, "medium");
 });

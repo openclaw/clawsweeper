@@ -12,7 +12,6 @@ import {
   codexSubprocessEnv,
   internalCodexModel,
   repairCodexReasoningEffort,
-  repairCodexServiceTier,
 } from "../../dist/repair/process-env.js";
 
 test("codexSubprocessEnv forces ClawSweeper git identity and strips tokens", () => {
@@ -347,7 +346,7 @@ test("Codex subprocess fails closed when Bun repair would run on Windows", () =>
   }
 });
 
-test("repair Codex config reserves xhigh for explicit issue-fix execution", () => {
+test("repair reasoning normalization does not read legacy profile environment", () => {
   assert.equal(repairCodexReasoningEffort(undefined), "medium");
   assert.equal(repairCodexReasoningEffort(""), "medium");
   assert.equal(repairCodexReasoningEffort("xhigh"), "high");
@@ -355,10 +354,6 @@ test("repair Codex config reserves xhigh for explicit issue-fix execution", () =
   assert.equal(repairCodexReasoningEffort("xhigh", true), "xhigh");
   assert.equal(repairCodexReasoningEffort("XHIGH", true), "xhigh");
   assert.equal(repairCodexReasoningEffort("medium"), "medium");
-
-  assert.equal(repairCodexServiceTier(undefined), "");
-  assert.equal(repairCodexServiceTier(""), "");
-  assert.equal(repairCodexServiceTier("fast"), "fast");
 });
 
 function withEnv(values: Record<string, string>, callback: () => void) {

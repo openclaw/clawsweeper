@@ -75,7 +75,6 @@ import { createRepositoryLinks } from "./clawsweeper-links.js";
 import { createLocalRangeReviewer } from "./clawsweeper-local-review.js";
 import { createPlanCommand } from "./clawsweeper-plan-command.js";
 import {
-  DEFAULT_REASONING_EFFORT,
   EVENT_GUARDED_OPEN_ACTIONS,
   FRESH_DAYS,
   REVIEW_SECTIONS,
@@ -391,12 +390,7 @@ const {
   reviewCommentContentRevision,
 } = sourceRevisionTools;
 
-function reviewPolicyHash(options: {
-  model?: string;
-  reasoningEffort?: string;
-  sandboxMode?: string;
-  serviceTier?: string;
-}): string {
+function reviewPolicyHash(options: { model?: string; sandboxMode?: string }): string {
   const policyTargetRepo = targetRepo();
   return sha256(
     stableJson({
@@ -405,7 +399,7 @@ function reviewPolicyHash(options: {
       // Model changes roll through normal review cadence. Keep this sentinel
       // stable; bump REVIEW_POLICY_VERSION to invalidate stored reviews.
       model: "model-excluded-2026-07",
-      reasoningEffort: options.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
+      reasoningEffort: "per-item-author-profile-v1",
       itemExecutionProfile: "maintainer-high-fast-otherwise-medium-standard-v1",
       sandboxMode: options.sandboxMode ?? "read-only",
       // Keep the historical hash value so service tier changes do not invalidate reviews.
@@ -424,9 +418,7 @@ function reviewPolicyHash(options: {
 export function reviewPolicyHashForTest(
   options: {
     model?: string;
-    reasoningEffort?: string;
     sandboxMode?: string;
-    serviceTier?: string;
   } = {},
 ): string {
   return reviewPolicyHash(options);

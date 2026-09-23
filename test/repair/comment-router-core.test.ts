@@ -4102,10 +4102,7 @@ test("assist workflow preserves flat field fallbacks after nested dispatch field
     workflow,
     /CLAWSWEEPER_INTERNAL_MODEL: \$\{\{ vars\.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets\.CLAWSWEEPER_MODEL \|\| '' \}\}/,
   );
-  assert.match(
-    workflow,
-    /REASONING_EFFORT: \$\{\{ vars\.CLAWSWEEPER_CODEX_REASONING_EFFORT \|\| 'medium' \}\}/,
-  );
+  assert.doesNotMatch(workflow, /REASONING_EFFORT|--codex-reasoning-effort/);
   assert.doesNotMatch(workflow, /client_payload\.(?:assist\.)?reasoning_effort/);
   assert.match(
     workflow,
