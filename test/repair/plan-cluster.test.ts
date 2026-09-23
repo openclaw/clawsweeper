@@ -510,7 +510,6 @@ if (endpoint === "repos/openclaw/openclaw/pulls/74742") {
 console.error("unexpected endpoint: " + endpoint);
 process.exit(1);
 function issue(number, labels, body) {
-  if (process.env.FAKE_GH_MAINTAINER_PROFILE === "1") labels = [...labels, "maintainer"];
   return {
     state: "open",
     title: "PR #" + number,

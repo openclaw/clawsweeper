@@ -21,7 +21,7 @@ import {
   renderReviewCommentFromReport,
   reviewAutomationMarkersFromReport,
 } from "../dist/clawsweeper.js";
-import { restoreVerifiedMaintainerPullRequestAuthorAssociation } from "../dist/clawsweeper-review-command-workflow.js";
+import { restoreVerifiedMaintainerAuthorAssociation } from "../dist/clawsweeper-review-command-workflow.js";
 import { LIVE_VERIFICATION_MARKER } from "../dist/clawsweeper-policy.js";
 import type { LiveProofPlan } from "../dist/clawsweeper-types.js";
 import {
@@ -708,7 +708,7 @@ Full review comments:
       number: 113345,
       author: "steipete",
       authorAssociation: "CONTRIBUTOR",
-      labels: ["maintainer", "size: XS", "status: 📣 needs proof"],
+      labels: ["size: XS", "status: 📣 needs proof"],
     });
     const redactedReport = reportFor({
       author: canary.author,
@@ -721,7 +721,7 @@ Full review comments:
     );
     let lookups = 0;
     assert.equal(
-      restoreVerifiedMaintainerPullRequestAuthorAssociation(canary, (author) => {
+      restoreVerifiedMaintainerAuthorAssociation(canary, (author) => {
         lookups += 1;
         assert.equal(author, "steipete");
         return permission;
@@ -743,6 +743,18 @@ Full review comments:
     assert.match(reviewAutomationMarkersFromReport(correctedReport), /clawsweeper-verdict:pass/);
   }
 
+  const issueCanary = item({
+    kind: "issue",
+    author: "steipete",
+    authorAssociation: "CONTRIBUTOR",
+    labels: [],
+  });
+  assert.equal(
+    restoreVerifiedMaintainerAuthorAssociation(issueCanary, () => "admin"),
+    true,
+  );
+  assert.equal(issueCanary.authorAssociation, "MEMBER");
+
   for (const permission of ["write", "read", null]) {
     const unverified = item({
       kind: "pull_request",
@@ -751,7 +763,7 @@ Full review comments:
       labels: ["maintainer"],
     });
     assert.equal(
-      restoreVerifiedMaintainerPullRequestAuthorAssociation(unverified, () => permission),
+      restoreVerifiedMaintainerAuthorAssociation(unverified, () => permission),
       false,
       String(permission),
     );
@@ -764,7 +776,7 @@ Full review comments:
     labels: ["maintainer"],
   });
   assert.equal(
-    restoreVerifiedMaintainerPullRequestAuthorAssociation(unavailable, () => {
+    restoreVerifiedMaintainerAuthorAssociation(unavailable, () => {
       throw new Error("GitHub permission lookup failed");
     }),
     false,
@@ -772,8 +784,6 @@ Full review comments:
   assert.equal(unavailable.authorAssociation, "CONTRIBUTOR");
 
   for (const ineligible of [
-    item({ kind: "issue", authorAssociation: "CONTRIBUTOR", labels: ["maintainer"] }),
-    item({ kind: "pull_request", authorAssociation: "CONTRIBUTOR", labels: [] }),
     item({ kind: "pull_request", authorAssociation: "OWNER", labels: ["maintainer"] }),
     item({ kind: "pull_request", authorAssociation: "MEMBER", labels: ["maintainer"] }),
     item({ kind: "pull_request", authorAssociation: "COLLABORATOR", labels: ["maintainer"] }),
@@ -781,7 +791,7 @@ Full review comments:
   ]) {
     let lookups = 0;
     assert.equal(
-      restoreVerifiedMaintainerPullRequestAuthorAssociation(ineligible, () => {
+      restoreVerifiedMaintainerAuthorAssociation(ineligible, () => {
         lookups += 1;
         return "admin";
       }),

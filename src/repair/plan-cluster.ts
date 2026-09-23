@@ -225,10 +225,7 @@ function hydrateItem(repo: string, number: JsonValue) {
   const author = issue.user?.login;
   const rawAuthorAssociation = issue.author_association;
   const authorRepositoryPermission =
-    pullRequest &&
-    typeof author === "string" &&
-    !isMaintainerAuthorAssociation(rawAuthorAssociation) &&
-    labels.some((label: JsonValue) => String(label).trim().toLowerCase() === "maintainer")
+    typeof author === "string" && !isMaintainerAuthorAssociation(rawAuthorAssociation)
       ? repositoryPermission(repo, author)
       : null;
 
@@ -242,8 +239,6 @@ function hydrateItem(repo: string, number: JsonValue) {
     html_url: issue.html_url,
     author,
     author_association: verifiedMaintainerAuthorAssociation({
-      kind: pullRequest ? "pull_request" : "issue",
-      labels: labels.map(String),
       authorAssociation: rawAuthorAssociation,
       repositoryPermission: authorRepositoryPermission,
     }),
