@@ -3,7 +3,13 @@ import { join } from "node:path";
 
 // These API models expose 1,050,000 total tokens and reserve 128,000 for output.
 // Other model selections retain their native limits and existing setup behavior.
-const longContextModels = new Set(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
+const longContextModels = new Set([
+  "gpt-6-astra",
+  "gpt-6-sol",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+]);
 
 function withApiContext(model, version) {
   if (!longContextModels.has(model?.slug)) return model;
@@ -42,7 +48,7 @@ async function configure() {
   }
   const home = process.env.CODEX_HOME;
   const version = process.argv[2];
-  if (!home || !/^\d+\.\d+\.\d+$/.test(version ?? "")) {
+  if (!home || !/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(version ?? "")) {
     throw new Error("Missing setup inputs.");
   }
   const response = await fetch(

@@ -698,8 +698,8 @@ pnpm run apply-decisions -- --target-repo openclaw/openclaw --sync-comments-only
 
 Hosted Codex issue/PR review tools use the `clawsweeper-review` permission profile in
 `.github/actions/setup-codex/review-permissions.toml`, owned by ClawSweeper
-maintainers and verified with Codex 0.154.0. Update this guidance when the pinned
-CLI, profile, credential handling, or setup smoke changes. The active profile
+maintainers and verified with Codex 0.158.0-alpha.2. Update this guidance when
+the pinned CLI, profile, credential handling, or setup smoke changes. The active profile
 extends read-only filesystem access and enables the managed proxy in limited
 mode for its explicit GitHub, npm, Node, MDN, and OpenClaw documentation hosts.
 Other hosts are blocked; blocked access is not evidence against the PR. The
