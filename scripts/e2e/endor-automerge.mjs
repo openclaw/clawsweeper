@@ -123,6 +123,18 @@ try {
       run("dist/repair/comment-router.js", ["--repo", repo, "--max-comments", "20", "--execute"]);
     route();
     assert.equal(state().dispatches.length, 1, "the new label must request review automatically");
+    const enrolled = state();
+    for (const sourceAction of ["synchronize", "scheduled_hot_intake"]) {
+      assert.match(admission({ sourceAction }), /^scheduled_semantic_noop=true$/m);
+    }
+    assert.deepEqual(state().comments, enrolled.comments, "ordinary reviews must not publish");
+    assert.deepEqual(state().pr, enrolled.pr, "ordinary reviews must not alter the enrolled PR");
+    assert.deepEqual(state().dispatches, enrolled.dispatches, "no competing review dispatch");
+    assert.ok(
+      state()
+        .calls.slice(enrolled.calls.length)
+        .every((call) => !call.args.includes("POST") && !call.args.includes("PATCH")),
+    );
     const dispatch = state().dispatches[0].client_payload;
     assert.ok(dispatch.command_status_marker, "existing label sweep owns the review");
     assert.match(

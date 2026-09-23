@@ -5,6 +5,7 @@ import {
 } from "../src/repair/direct-re-review-admission.ts";
 import {
   COMMAND_PROOF_BATCH_CONTEXT_MAX,
+  COMMAND_PROOF_SOURCE_ACTION,
   commandProofBatchBinding,
 } from "../src/command-proof-contract.ts";
 import {
@@ -770,6 +771,16 @@ export function mergePendingExactReviewDecision(
       if (current.additionalPrompt === undefined) delete merged.additionalPrompt;
       else merged.additionalPrompt = current.additionalPrompt;
     }
+  }
+  // Proof context is trusted only with its proof-result source action. An
+  // ordinary event keeps the command lifecycle, but must not reuse proof
+  // evidence. An explicitly supplied successor prompt remains its own input.
+  if (
+    current.sourceAction === COMMAND_PROOF_SOURCE_ACTION &&
+    next.sourceAction !== COMMAND_PROOF_SOURCE_ACTION &&
+    !Object.hasOwn(next, "additionalPrompt")
+  ) {
+    delete merged.additionalPrompt;
   }
   const commandMarkerChanged =
     Object.hasOwn(next, "commandStatusMarker") &&

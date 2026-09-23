@@ -4022,7 +4022,13 @@ function appendAutomergeRepairOutcomeComment(report: LooseRecord, resultPath: st
     return;
   }
 
-  const continuation = continueAutomergeAfterNoopRepair({ target });
+  const comments = issueCommentsFor(target);
+  const existingStatus = findAutomergeStatusComment(target, comments);
+  const continuation = continueAutomergeAfterNoopRepair({
+    target,
+    comments,
+    statusComment: existingStatus,
+  });
   const reviewedSha = continuation.head_sha ?? automergeOutcomeReviewedSha();
   const body = automergeRepairOutcomeComment({
     marker,
@@ -4035,7 +4041,6 @@ function appendAutomergeRepairOutcomeComment(report: LooseRecord, resultPath: st
       reviewedSha,
     }),
   });
-  const existingStatus = findAutomergeStatusComment(target);
   const bodyWithTimeline = mergeAutomergeTimelineSection({
     body,
     existingBody: existingStatus?.body,
@@ -4072,11 +4077,10 @@ function appendAutomergeRepairOutcomeComment(report: LooseRecord, resultPath: st
   });
 }
 
-function continueAutomergeAfterNoopRepair({ target }: LooseRecord) {
+function continueAutomergeAfterNoopRepair({ target, comments, statusComment }: LooseRecord) {
   const view = fetchPullRequestViewForRepo({ repo: result.repo, number: target });
   const commit = automergeOutcomeReviewedSha({ target, targetView: view });
   if (!commit) return { status: "skipped", reason: "missing reviewed head SHA" };
-  const comments = issueCommentsFor(target);
   const readiness = automergeShepherdReadiness({
     view,
     comments,
@@ -4115,7 +4119,11 @@ function continueAutomergeAfterNoopRepair({ target }: LooseRecord) {
     return {
       status: readiness.status,
       reason: readiness.reason,
-      review_dispatch: dispatchAutomergeReviewAfterBranchRepair({ target, commit }),
+      review_dispatch: dispatchAutomergeReviewAfterBranchRepair({
+        target,
+        commit,
+        statusComment,
+      }),
       head_sha: commit,
     };
   }
@@ -4172,7 +4180,11 @@ function updateAutomergeStatusCommentForBranchRepair({
   if (Number(target) !== Number(automergeOutcomeTargetPrNumber())) return false;
   const existingStatus = findAutomergeStatusComment(target);
   const runUrl = currentActionsRunUrl();
-  const reviewDispatch = dispatchAutomergeReviewAfterBranchRepair({ target, commit });
+  const reviewDispatch = dispatchAutomergeReviewAfterBranchRepair({
+    target,
+    commit,
+    statusComment: existingStatus,
+  });
   const body = [
     "🦞🔧",
     "ClawSweeper applied a repair to this PR branch.",
@@ -4350,9 +4362,18 @@ function dispatchAutomergeCommentRouter({
   }
 }
 
-function dispatchAutomergeReviewAfterBranchRepair({ target, commit }: LooseRecord) {
+function dispatchAutomergeReviewAfterBranchRepair({ target, commit, statusComment }: LooseRecord) {
   const reviewRepo = String(process.env.CLAWSWEEPER_REVIEW_REPO ?? "openclaw/clawsweeper").trim();
   const dispatchedAt = new Date().toISOString();
+  const commandStatusMarker = automergeStatusMarkerFromBody(statusComment?.body, target);
+  const statusCommentId = Number(statusComment?.id ?? 0);
+  const commandContext =
+    commandStatusMarker && Number.isSafeInteger(statusCommentId) && statusCommentId > 0
+      ? {
+          command_status_marker: commandStatusMarker,
+          status_comment_id: statusCommentId,
+        }
+      : {};
   let reviewBudget = null;
   try {
     reviewBudget = adaptiveReviewBudgetForPullRequest(
@@ -4373,6 +4394,7 @@ function dispatchAutomergeReviewAfterBranchRepair({ target, commit }: LooseRecor
       source_event: "repair_completed",
       source_action: "branch_repaired",
       supersedes_in_progress: true,
+      ...commandContext,
       ...(reviewBudget
         ? {
             codex_timeout_ms: reviewBudget.codexTimeoutMs,
@@ -4476,13 +4498,11 @@ function issueHasCommentMarker(number: JsonValue, marker: LooseRecord) {
   );
 }
 
-function findAutomergeStatusComment(number: JsonValue) {
-  return issueCommentsFor(number)
-    .reverse()
-    .find((comment: LooseRecord) => {
-      if (!isTrustedStatusComment(comment)) return false;
-      return hasAutomergeStatusMarker(comment.body, number);
-    });
+function findAutomergeStatusComment(number: JsonValue, comments = issueCommentsFor(number)) {
+  return [...comments].reverse().find((comment: LooseRecord) => {
+    if (!isTrustedStatusComment(comment)) return false;
+    return Boolean(automergeStatusMarkerFromBody(comment.body, number));
+  });
 }
 
 function issueCommentsFor(number: JsonValue) {
@@ -4534,14 +4554,16 @@ function isTrustedStatusComment(comment: LooseRecord) {
   return isTrustedStatusCommentAuthor(comment, REPAIR_TRUSTED_STATUS_AUTHORS);
 }
 
-function hasAutomergeStatusMarker(body: JsonValue, number: JsonValue) {
+function automergeStatusMarkerFromBody(body: JsonValue, number: JsonValue) {
   const issueNumber = Number(number);
-  const prefix = `<!-- clawsweeper-command-status:${Number.isFinite(issueNumber) ? issueNumber : "unknown"}:`;
+  if (!Number.isSafeInteger(issueNumber) || issueNumber < 1) return null;
   return (
-    String(body ?? "").includes(prefix) &&
-    /clawsweeper-command-status:\d+:(?:automerge|clawsweeper_auto_repair|clawsweeper_auto_merge|maintainer_approve_automerge|clawsweeper_self_rebase):/i.test(
-      String(body ?? ""),
-    )
+    String(body ?? "").match(
+      new RegExp(
+        `<!-- clawsweeper-command-status:${issueNumber}:(?:automerge|clawsweeper_auto_repair|clawsweeper_auto_merge|maintainer_approve_automerge|clawsweeper_self_rebase):[^<>\\r\\n]{1,120} -->`,
+        "i",
+      ),
+    )?.[0] ?? null
   );
 }
 

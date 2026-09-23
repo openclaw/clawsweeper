@@ -44,6 +44,64 @@ import {
   exactReviewDecisionFrom,
   mergePendingExactReviewDecision,
 } from "../dashboard/exact-review-decision.ts";
+import { COMMAND_PROOF_SOURCE_ACTION } from "../src/command-proof-contract.ts";
+
+test("ordinary successors do not inherit proof-only review context", () => {
+  const commandStatusMarker =
+    "<!-- clawsweeper-command-status:72:request_proof:" + "a".repeat(64) + " -->";
+  const proofDecision = {
+    targetRepo: "openclaw/openclaw",
+    targetBranch: "main",
+    itemNumber: 72,
+    itemKind: "pull_request" as const,
+    sourceEvent: "pull_request" as const,
+    sourceAction: COMMAND_PROOF_SOURCE_ACTION,
+    supersedesInProgress: false,
+    sourceHeadSha: "b".repeat(40),
+    sourceCommentId: 7200,
+    sourceCommentUpdatedAt: "2026-09-23T01:00:00Z",
+    commandBodyDigest: "c".repeat(64),
+    commandOrigin: "comment_router" as const,
+    sourceCommentVerified: true,
+    sourceDeliveryId: "command-proof-72",
+    additionalPrompt: "Verified proof context.",
+    commandStatusMarker,
+  };
+  const successor = {
+    targetRepo: proofDecision.targetRepo,
+    targetBranch: proofDecision.targetBranch,
+    itemNumber: proofDecision.itemNumber,
+    itemKind: proofDecision.itemKind,
+    sourceEvent: proofDecision.sourceEvent,
+    sourceAction: "synchronize",
+    supersedesInProgress: true,
+    sourceHeadSha: "b".repeat(40),
+    sourceHeadVerified: true,
+    sourceAuthoritySeq: 1,
+  };
+
+  const merged = mergePendingExactReviewDecision(proofDecision, successor);
+  assert.equal(merged.sourceAction, "synchronize");
+  assert.equal(merged.additionalPrompt, undefined);
+  assert.equal(merged.commandStatusMarker, commandStatusMarker);
+  assert.equal(merged.sourceCommentId, proofDecision.sourceCommentId);
+
+  const explicitPrompt = "Review the authoritative successor without prior proof context.";
+  assert.equal(
+    mergePendingExactReviewDecision(proofDecision, {
+      ...successor,
+      additionalPrompt: explicitPrompt,
+    }).additionalPrompt,
+    explicitPrompt,
+  );
+  assert.equal(
+    mergePendingExactReviewDecision(proofDecision, {
+      ...successor,
+      sourceAction: COMMAND_PROOF_SOURCE_ACTION,
+    }).additionalPrompt,
+    proofDecision.additionalPrompt,
+  );
+});
 
 test("manual queue policy cannot be widened by coalescing or ambiguous decision fields", async () => {
   const decision = {

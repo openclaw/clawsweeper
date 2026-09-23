@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  deferAutomaticEndorReview,
   enrollEndorPullRequests,
+  skipAutomaticEndorReview,
 } from "../../dist/repair/endor-automerge-intake.js";
 import { AUTOMERGE_BLOCKING_LABEL_NAMES } from "../../dist/repair/exact-review-guard-labels.js";
 
@@ -22,7 +22,7 @@ const pull = {
   },
 };
 
-test("automatic Endor reviews wait for unheld automerge enrollment, not an ordinary verdict", () => {
+test("ordinary automatic Endor reviews always skip, before and after enrollment or a hold", () => {
   const issue = { ...pull, pull_request: {} };
   for (const sourceAction of [
     "opened",
@@ -37,12 +37,12 @@ test("automatic Endor reviews wait for unheld automerge enrollment, not an ordin
     "scheduled_hot_intake",
     "scheduled_normal_backfill",
   ]) {
-    assert.equal(deferAutomaticEndorReview(repo, issue, { sourceAction }), true);
+    assert.equal(skipAutomaticEndorReview(repo, issue, { sourceAction }), true);
     const enrolled = { ...issue, labels: [{ name: "clawsweeper:automerge" }] };
-    assert.equal(deferAutomaticEndorReview(repo, enrolled, { sourceAction }), false);
+    assert.equal(skipAutomaticEndorReview(repo, enrolled, { sourceAction }), true);
     for (const name of AUTOMERGE_BLOCKING_LABEL_NAMES) {
       assert.equal(
-        deferAutomaticEndorReview(
+        skipAutomaticEndorReview(
           repo,
           {
             ...enrolled,
@@ -65,11 +65,11 @@ test("Endor admission leaves explicit requests and unrelated items unchanged", (
     { sourceAction: "opened", commandStatusMarker: "command-bound-review" },
     { sourceAction: "opened", statusCommentId: 123 },
   ])
-    assert.equal(deferAutomaticEndorReview(repo, issue, decision), false);
+    assert.equal(skipAutomaticEndorReview(repo, issue, decision), false);
   const decision = { sourceAction: "opened" };
-  assert.equal(deferAutomaticEndorReview("openclaw/openclaw", issue, decision), false);
+  assert.equal(skipAutomaticEndorReview("openclaw/openclaw", issue, decision), false);
   assert.equal(
-    deferAutomaticEndorReview(repo, { ...issue, pull_request: undefined }, decision),
+    skipAutomaticEndorReview(repo, { ...issue, pull_request: undefined }, decision),
     false,
   );
   for (const user of [
@@ -77,7 +77,7 @@ test("Endor admission leaves explicit requests and unrelated items unchanged", (
     { ...author, id: 42 },
     { ...author, type: "User" },
   ])
-    assert.equal(deferAutomaticEndorReview(repo, { ...issue, user }, decision), false);
+    assert.equal(skipAutomaticEndorReview(repo, { ...issue, user }, decision), false);
 });
 
 function fixture(
