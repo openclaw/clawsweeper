@@ -26,9 +26,18 @@ export function canonicalItemAuthorAssociations(
     canonicalRefs.length > 0 ? canonicalRefs : Array.isArray(job.candidates) ? job.candidates : []
   ).filter((ref): ref is string => typeof ref === "string");
   return refs.flatMap((ref) => {
-    const association = items.find((candidate) => candidate.ref === ref)?.author_association;
+    const normalizedRef = normalizeItemRef(ref);
+    const association = items.find(
+      (candidate) =>
+        typeof candidate.ref === "string" && normalizeItemRef(candidate.ref) === normalizedRef,
+    )?.author_association;
     return typeof association === "string" ? [association] : [];
   });
+}
+
+function normalizeItemRef(value: string): string {
+  const match = value.trim().match(/^#?([1-9]\d*)$/);
+  return match ? `#${match[1]}` : value;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

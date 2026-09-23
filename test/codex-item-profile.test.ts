@@ -52,3 +52,15 @@ test("repair routing promotes a cluster when any canonical item is maintainer-au
     serviceTier: "fast",
   });
 });
+
+test("repair routing normalizes bare numeric canonical refs", () => {
+  const associations = canonicalItemAuthorAssociations(
+    { canonical: ["11"] },
+    { items: [{ ref: "#11", author_association: "MEMBER" }] },
+  );
+  assert.deepEqual(associations, ["MEMBER"]);
+  assert.deepEqual(codexItemProfile(associations), {
+    reasoningEffort: "high",
+    serviceTier: "fast",
+  });
+});
