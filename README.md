@@ -723,6 +723,12 @@ See [the native proof](docs/proof/agent-input-scan-context/README.md#typesafe-lo
 One source path may contain multiple independently reviewed fixtures; each
 digest/path/mode tuple must match exactly, so source membership alone never
 qualifies a finding.
+The model-egress fixtures in OpenClaw's
+[Crabbox model runner](https://github.com/openclaw/openclaw/blob/15c14e982fd7640a77b0c2b9bab6e5b4b168f705/extensions/crabbox/src/crabbox-model-run.test.ts) and
+[configured model egress](https://github.com/openclaw/openclaw/blob/15c14e982fd7640a77b0c2b9bab6e5b4b168f705/src/secrets/model-egress.test.ts) tests qualify three synthetic URI identities using
+their complete source lines and committed regular-file references. Native
+TruffleHog 3.97.4 observed `PLAIN` and `HTML` for each identity; only those
+variants qualify. See [the native proof](docs/proof/agent-input-scan-context/README.md#model-egress-fixtures).
 Deduplicated blobs retain every scanned logical endpoint's role, path, and Git
 mode, including mode-only transitions and shared-path aliases. Every captured
 reference must qualify under the same exact attribution policy before any source

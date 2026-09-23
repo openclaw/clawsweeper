@@ -534,6 +534,45 @@ exactUriFixtureTests("Gateway question", "src/gateway/server-methods/question.te
   return { raw, rawV2, line: '    ["credentials", "' + rawV2 + '"],', decoders: ["PLAIN", "HTML"] };
 });
 
+exactUriFixtureTests(
+  "Crabbox model proxy",
+  "extensions/crabbox/src/crabbox-model-run.test.ts",
+  () => {
+    const raw = ["http://", "openclaw", ":", "proxy-password-fixture", "@", "127.0.0.1:43210"].join(
+      "",
+    );
+    return {
+      raw,
+      rawV2: raw,
+      line: '  hostEnv: { HTTPS_PROXY: "' + raw + '" },',
+      decoders: ["PLAIN", "HTML"],
+    };
+  },
+);
+
+exactUriFixtureTests("configured model proxy", "src/secrets/model-egress.test.ts", () => {
+  const raw = ["http://", "openclaw", ":", "synthetic-proxy-token", "@", "127.0.0.1:12345"].join(
+    "",
+  );
+  return {
+    raw,
+    rawV2: raw,
+    line: '        HTTPS_PROXY: "' + raw + '",',
+    decoders: ["PLAIN", "HTML"],
+  };
+});
+
+exactUriFixtureTests("configured model endpoint", "src/secrets/model-egress.test.ts", () => {
+  const raw = ["https://", "user", ":", "password", "@", "inference.example.test"].join("");
+  const rawV2 = raw + "/v1";
+  return {
+    raw,
+    rawV2,
+    line: '    ["credential-bearing endpoint", { baseUrl: "' + rawV2 + '" }],',
+    decoders: ["PLAIN", "HTML"],
+  };
+});
+
 test("source projection removes only host-selected patch fields and preserves input records", () => {
   const current = {
     filename: "source.ts",

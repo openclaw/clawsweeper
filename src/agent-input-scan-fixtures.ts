@@ -248,6 +248,13 @@ const CRABBOX_POSTGRES_DOC_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  // OpenClaw model-egress mocks and endpoint rejection in PR #156207; observed native decoder variants only.
+  [17, "URI", "PLAIN", "5657f4461d80dbe503e3d0574f255ceb19be6b2c247df97467bd352c3a02d871", "5657f4461d80dbe503e3d0574f255ceb19be6b2c247df97467bd352c3a02d871", "da5878d386aed630ee515720e9fe0b407baf71277f4ed3412008a2fa96b0e178", "extensions/crabbox/src/crabbox-model-run.test.ts", "100644"],
+  [17, "URI", "HTML", "5657f4461d80dbe503e3d0574f255ceb19be6b2c247df97467bd352c3a02d871", "5657f4461d80dbe503e3d0574f255ceb19be6b2c247df97467bd352c3a02d871", "da5878d386aed630ee515720e9fe0b407baf71277f4ed3412008a2fa96b0e178", "extensions/crabbox/src/crabbox-model-run.test.ts", "100644"],
+  [17, "URI", "PLAIN", "7291e1dd92191deb23a9d7852746d0d0666812f209be34fca14125096404deae", "7291e1dd92191deb23a9d7852746d0d0666812f209be34fca14125096404deae", "559665840b585b1a2f32fd62aebe48356d53925905e10558bda002cfb5a39243", "src/secrets/model-egress.test.ts", "100644"],
+  [17, "URI", "HTML", "7291e1dd92191deb23a9d7852746d0d0666812f209be34fca14125096404deae", "7291e1dd92191deb23a9d7852746d0d0666812f209be34fca14125096404deae", "559665840b585b1a2f32fd62aebe48356d53925905e10558bda002cfb5a39243", "src/secrets/model-egress.test.ts", "100644"],
+  [17, "URI", "PLAIN", "6b67867fb8dd166b1fd7dcadb0a415a1453b3d4f9206e19d9a13fed21d6fa902", "beed93909cda1de00e65435a362281e7e8924bcc82cda6605699a451a80606ff", "e374bd128400917ff50afb22e3aadb4de2a6d4480d11e8ac259651220ce31bc5", "src/secrets/model-egress.test.ts", "100644"],
+  [17, "URI", "HTML", "6b67867fb8dd166b1fd7dcadb0a415a1453b3d4f9206e19d9a13fed21d6fa902", "beed93909cda1de00e65435a362281e7e8924bcc82cda6605699a451a80606ff", "e374bd128400917ff50afb22e3aadb4de2a6d4480d11e8ac259651220ce31bc5", "src/secrets/model-egress.test.ts", "100644"],
   // OpenClaw mocked status-redaction fixture introduced by b6a94d4ef94c; native PLAIN findings in #154508/#154607.
   [17, "URI", "PLAIN", "1d71159c56ca84a71d1b34c10e8d645f3ced3c75a5ac818104338ff58bb95993", "1d71159c56ca84a71d1b34c10e8d645f3ced3c75a5ac818104338ff58bb95993", "5b94a943db86311a9fad2e77bc395ce0a94cde5c73a04cf17943ab5b29928110", "extensions/browser/src/browser/routes/basic.existing-session.test.ts", "100644"],
   // Approved TypeSafe loopback URL-rejection fixture: OpenClaw #154059.
@@ -378,6 +385,8 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           detectorName === "URI" &&
           (decoder === "PLAIN" || decoder === "HTML")) ||
         ((source === "extensions/browser/src/browser/profiles-service.test.ts" ||
+          source === "extensions/crabbox/src/crabbox-model-run.test.ts" ||
+          source === "src/secrets/model-egress.test.ts" ||
           source === "extensions/browser/src/browser/routes/basic.existing-session.test.ts" ||
           source === "extensions/typesafe/src/local.transport.test.ts" ||
           source === "extensions/browser/src/browser/config.test.ts" ||

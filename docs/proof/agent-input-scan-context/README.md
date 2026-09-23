@@ -34,6 +34,37 @@ canonical verification, complete committed source range, and a controlled prompt
 Only safe classifier notices and a bounded result are retained. It does not run
 a model or replace the hosted review's own prompt/schema/source admission.
 
+## Model-egress fixtures
+
+OpenClaw [PR 156207](https://github.com/openclaw/openclaw/pull/156207) adds two
+mock loopback proxy credentials and an endpoint-rejection URI. The input scan in
+[run 35822733897](https://github.com/openclaw/clawsweeper/actions/runs/35822733897)
+refused these unqualified fixtures before model execution. The host policy binds
+each native Raw/RawV2 digest, complete source-line digest, original test path,
+regular-file mode, and observed `PLAIN` or `HTML` decoder. No target ignore rule,
+fixture-name pattern, scanner-verification change, or production credential is involved.
+
+The controlled proof uses the complete committed source range that failed:
+
+```bash
+node docs/proof/agent-input-scan-context/run-proof.mjs \
+  /path/to/disposable/openclaw-at-pr-head \
+  8868f7ed8c1e340c5eb70d796b58955d042638d4 \
+  15c14e982fd7640a77b0c2b9bab6e5b4b168f705 \
+  /path/to/model-egress-admission-proof.json
+```
+
+Native macOS arm64, Node 26.8.2, and pinned TruffleHog 3.97.4 reproduced six
+unverified URI findings across source blobs and the generated patch before
+qualification. The same range admits after qualification with verification
+enabled. The existing exact-attribution regression harness now covers all three
+identities in additions, removals, and unchanged context; changed values, lines,
+paths, modes, roles, verification status, unsupported decoders, and additional
+literal occurrences remain refused.
+
+OpenClaw Bay is unaffected: the change only qualifies host-side scanner input;
+it changes no dashboard API, queue lifecycle, or public action surface.
+
 OpenClaw PR [149354](https://github.com/openclaw/openclaw/pull/149354) supplies the
 real regression source. Hosted runs
 [35012046356](https://github.com/openclaw/clawsweeper/actions/runs/35012046356)
@@ -83,8 +114,7 @@ identities share one complete source line.
 
 Native scans emitted different finding subsets for identical bytes. In addition
 to the four originally reported identities, they observed the empty-username
-proxy fixture on head line 6596 and the encoded-NUL rejection fixture on line
-6609. Both are in `AuthenticatedProxyTests`; neither comes from material outside
+proxy fixture on head line 6596 and the encoded-NUL rejection fixture on line 6609. Both are in `AuthenticatedProxyTests`; neither comes from material outside
 the reviewed autoreview test. These additional rows permit only observed PLAIN
 decoding. Native evidence retained here is PLAIN; HTML coverage for the original
 four identities uses constructed classifier records, not recovered native evidence.
