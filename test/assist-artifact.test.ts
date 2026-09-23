@@ -87,7 +87,6 @@ fs.writeFileSync(process.argv[process.argv.indexOf('--output-last-message') + 1]
       workflow.assistGenerateCommand({
         item_number: "42",
         question: "Explain this change.",
-        codex_reasoning_effort: "medium",
         run_id: "123",
         run_attempt: "1",
         artifact: artifactPath,
@@ -98,6 +97,24 @@ fs.writeFileSync(process.argv[process.argv.indexOf('--output-last-message') + 1]
       assert.equal(existsSync(providerInput), false);
       assert.equal(existsSync(artifactPath), false);
     } else {
+      for (const retiredProfileArg of [
+        { codex_reasoning_effort: "high" },
+        { codex_service_tier: "fast" },
+      ]) {
+        assert.throws(
+          () =>
+            workflow.assistGenerateCommand({
+              item_number: "42",
+              question: "Explain this change.",
+              ...retiredProfileArg,
+              run_id: "123",
+              run_attempt: "1",
+              artifact: artifactPath,
+              work_dir: root,
+            }),
+          /--codex-reasoning-effort and --codex-service-tier are retired for assist/,
+        );
+      }
       run();
       assert.match(readFileSync(providerInput, "utf8"), /Explain this change\./);
       const args = JSON.parse(readFileSync(providerArgs, "utf8"));

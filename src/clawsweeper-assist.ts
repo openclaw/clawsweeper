@@ -498,6 +498,11 @@ export function createAssistWorkflow({
     if (requestedLens !== "auto" && !VISUAL_LENSES.has(requestedLens)) {
       throw new Error("--lens is invalid for assist");
     }
+    if (args.codex_reasoning_effort !== undefined || args.codex_service_tier !== undefined) {
+      throw new Error(
+        "--codex-reasoning-effort and --codex-service-tier are retired for assist; assist uses the fixed medium profile.",
+      );
+    }
     const request: AssistRequestBinding = {
       targetRepo: targetRepo(),
       itemNumber,
