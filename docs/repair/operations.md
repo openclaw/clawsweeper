@@ -484,6 +484,8 @@ five-minute router scan is the recovery producer. Both converge on the same
 comment-version receipt, so a throttled router cannot lose the command and a
 redelivery cannot start the same version twice. The queue verifies the source
 comment and current PR head before it creates the marker-backed acknowledgement.
+The queue also owns acknowledgement updates after intake; the recovery router
+records the handoff without posting another reply or replacing terminal progress.
 Issue implementation commands (`implement`, `fix`, `build`, `create pr`, `fix issue`)
 dispatch the repair worker for one open issue and ask it to create or update a
 single ClawSweeper implementation PR. The generated job uses

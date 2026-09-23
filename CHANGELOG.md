@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Keep re-review acknowledgements owned by the durable queue so a delayed recovery router cannot overwrite a completed or failed status.
+
 - Qualify three synthetic OpenClaw model-egress URI fixtures by exact native identities, complete source lines, and committed paths while preserving input scanning and refusal controls.
 
 - Bound pinned Codex source fetches at their shared setup owner, stopping native Git and transport descendants while preserving retry classification and Git low-speed settings. Thanks @SebTardif.

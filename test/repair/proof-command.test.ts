@@ -37,6 +37,20 @@ test("compiled proof command preserves inconclusive status and replay protection
 
 const head = "a".repeat(40);
 
+test("re-review recovery leaves queue-owned terminal acknowledgements intact", async () => {
+  const { stdout } = await promisify(execFile)(
+    process.execPath,
+    ["scripts/e2e/proof-command-loopback.mjs", "--ack-ownership"],
+    { timeout: 60000 },
+  );
+  const receipt = JSON.parse(stdout);
+  assert.equal(receipt.ok, true);
+  assert.equal(receipt.baseline, false);
+  assert.equal(receipt.receipts.length, 10);
+  assert.equal(receipt.intakeFailurePropagated, true);
+  assert.equal(receipt.diskLedgerRecorded, true);
+});
+
 test("maintainer proof CLI routes selected scenarios and current head to one inline review", async () => {
   const { stdout } = await promisify(execFile)(
     process.execPath,

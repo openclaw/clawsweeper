@@ -2323,7 +2323,9 @@ function executeCommand(command: LooseRecord) {
       shouldDispatchClawSweeper
     ) {
       const clawsweeper = dispatchClawSweeperReview(command);
-      if (command.intent === "request_proof") {
+      const stale = clawsweeper.admission === "stale";
+      if (stale) command.reason = clawsweeper.reason;
+      if (command.intent === "request_proof" && !stale) {
         command.proof_admission = {
           ...command.proof_admission,
           status: "queued",
@@ -2336,15 +2338,25 @@ function executeCommand(command: LooseRecord) {
         if (action.action === "dispatch_clawsweeper") {
           return {
             ...action,
-            ...dispatchedActionStatus(clawsweeper),
+            ...(stale
+              ? { ...clawsweeper, status: "skipped" }
+              : dispatchedActionStatus(clawsweeper)),
+          };
+        }
+        if (action.action === "comment") {
+          return {
+            ...action,
+            status: "skipped",
+            reason: stale
+              ? clawsweeper.reason
+              : "The durable review queue owns this command acknowledgement.",
           };
         }
         return action;
       });
-      if (clawsweeper.status === "claimed") {
-        keepCommandClaimed(command);
-        return;
-      }
+      // A recovery producer must not overwrite a queue-owned terminal reply.
+      command.status = stale ? "skipped" : "executed";
+      return;
     }
     if (
       AUTOCLOSE_INTENTS.has(command.intent) &&
@@ -3519,6 +3531,8 @@ function enqueueClawSweeperReReview(command: LooseRecord): LooseRecord {
     item_number: command.issue_number,
     dispatch_key: dispatchKey,
     command_version_id: intake.commandVersionId,
+    admission: result.kind,
+    ...(result.kind === "stale" ? { reason: result.reason } : {}),
     deduped: result.kind === "accepted" && result.deduped,
   };
 }

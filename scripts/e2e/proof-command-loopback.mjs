@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -20,7 +21,9 @@ const proxy = path.join(temporary, "gh-loopback.mjs");
 fs.writeFileSync(proxy, "#!/usr/bin/env node\n(" + loopbackGh.toString() + ")();\n", {
   mode: 0o755,
 });
-const inline = process.argv.includes("--inline");
+const ackOwnership = process.argv.includes("--ack-ownership");
+const expectRouterWrite = process.argv.includes("--expect-router-write");
+const inline = process.argv.includes("--inline") || ackOwnership;
 const repository = inline ? "openclaw/openclaw" : "openclaw/proof-admission-fixture";
 const intakes = [];
 const head = "a".repeat(40);
@@ -31,6 +34,11 @@ let selected = comment(100, 1);
 const posted = [];
 const requests = [];
 const observations = {};
+let admission = "accepted";
+let terminalState = null;
+let terminalBody = null;
+let finalizerOutput = null;
+let apiUrl;
 const server = http.createServer(async (request, response) => {
   const url = new URL(request.url, "http://127.0.0.1");
   let raw = "";
@@ -39,10 +47,20 @@ const server = http.createServer(async (request, response) => {
   requests.push({ method: request.method, path: url.pathname });
   if (url.pathname === "/internal/exact-review/command-intake") {
     intakes.push(body);
+    if (admission === "unavailable") {
+      response.writeHead(503, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "exact_review_queue_unavailable" }));
+      return;
+    }
+    if (terminalState) {
+      await runFinalizer(body.decision.commandStatusMarker, terminalState);
+      terminalBody = posted.at(-1).body;
+    }
     return json(response, {
       ok: true,
-      accepted: true,
-      deduped: false,
+      accepted: admission !== "stale",
+      deduped: admission === "deduped",
+      ...(admission === "stale" ? { reason: "source_comment_changed" } : {}),
       command_version_id: body.commandVersionId,
     });
   }
@@ -68,8 +86,10 @@ const server = http.createServer(async (request, response) => {
   }
   if (url.pathname === prefix + "/issues/comments/" + selected.id) return json(response, selected);
   const existing = posted.find((entry) => url.pathname === prefix + "/issues/comments/" + entry.id);
+  if (existing && request.method === "GET") return json(response, existing);
   if (existing && request.method === "PATCH") {
     existing.body = body.body;
+    existing.updated_at = new Date().toISOString();
     return json(response, existing);
   }
   if (url.pathname === prefix + "/issues") return json(response, []);
@@ -108,8 +128,84 @@ const server = http.createServer(async (request, response) => {
 try {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
-  const apiUrl = "http://127.0.0.1:" + address.port;
-  if (inline) {
+  apiUrl = "http://127.0.0.1:" + address.port;
+  if (ackOwnership) {
+    const receipts = [];
+    for (const intent of ["re-review", "proof"]) {
+      for (const outcome of ["accepted", "deduped"]) {
+        for (const state of ["Complete", "Failed"]) {
+          selected = { ...comment(300 + receipts.length, 1), body: `@clawsweeper ${intent}` };
+          admission = outcome;
+          terminalState = state;
+          const ack = seedAcknowledgement();
+          const start = requests.length;
+          const routed = (await runRouter(apiUrl)).commands[0];
+          const writes = requests.slice(start).filter(isCommentWrite);
+          assert.equal(routed.status, "executed");
+          assert.match(finalizerOutput, /terminal_status_verified=true/);
+          const baselineOverwrites = expectRouterWrite && intent === "re-review";
+          assert.equal(ack.body === terminalBody, !baselineOverwrites);
+          assert.equal(writes.length, expectRouterWrite ? 2 : 1);
+          assert.equal(writes[0].method, "PATCH");
+          const duplicateReplies = writes.filter((write) => write.method === "POST").length;
+          assert.equal(duplicateReplies, expectRouterWrite && intent === "proof" ? 1 : 0);
+          assert.equal(posted.filter((entry) => entry.id === ack.id).length, 1);
+          const commentAction = routed.actions.find((action) => action.action === "comment");
+          assert.equal(commentAction.status, expectRouterWrite ? "executed" : "skipped");
+          receipts.push({
+            intent,
+            admission,
+            state,
+            terminalPreserved: ack.body === terminalBody,
+            finalizerVerified: true,
+            commentWrites: writes.length,
+            duplicateReplies,
+            routerStatus: routed.status,
+          });
+        }
+      }
+    }
+    terminalState = null;
+    for (const outcome of ["accepted", "stale"]) {
+      selected = { ...comment(400 + receipts.length, 1), body: "@clawsweeper re-review" };
+      admission = outcome;
+      const start = requests.length;
+      const routed = (await runRouter(apiUrl)).commands[0];
+      const writes = requests.slice(start).filter(isCommentWrite);
+      assert.equal(writes.length, expectRouterWrite ? 1 : 0);
+      assert.equal(
+        routed.status,
+        outcome === "stale" && !expectRouterWrite ? "skipped" : "executed",
+      );
+      if (outcome === "stale" && !expectRouterWrite)
+        assert.equal(routed.reason, "source_comment_changed");
+      receipts.push({ admission, scenario: "ack-not-yet-created", commentWrites: writes.length });
+    }
+    selected = { ...comment(500, 1), body: "@clawsweeper re-review" };
+    admission = "unavailable";
+    const beforeFailure = requests.length;
+    await assert.rejects(runRouter(apiUrl), /503|exact_review_queue_unavailable/);
+    assert.equal(requests.slice(beforeFailure).filter(isCommentWrite).length, 0);
+    const ledger = JSON.parse(
+      fs.readFileSync(path.join(root, "results/comment-router.json"), "utf8"),
+    );
+    assert.ok(
+      ledger.commands.some(
+        (entry) => String(entry.comment_id) === "300" && entry.status === "executed",
+      ),
+    );
+    console.log(
+      JSON.stringify({
+        ok: true,
+        baseline: expectRouterWrite,
+        receipts,
+        intakeFailurePropagated: true,
+        diskLedgerRecorded: true,
+        limits:
+          "Production router/finalizer CLIs and signed curl intake; synthetic loopback GitHub and admission responses, no live queue scheduling or GitHub mutation.",
+      }),
+    );
+  } else if (inline) {
     for (const [index, selection] of [
       "",
       "web-ui-chat-proof",
@@ -265,6 +361,72 @@ function comment(id, issueNumber) {
 function json(response, body) {
   response.writeHead(200, { "content-type": "application/json" });
   response.end(JSON.stringify(body));
+}
+
+function isCommentWrite(request) {
+  return (
+    request.method !== "GET" && /\/issues\/(?:comments\/\d+|\d+\/comments)$/.test(request.path)
+  );
+}
+
+function seedAcknowledgement() {
+  const digest = createHash("sha256").update(selected.body).digest("hex");
+  const version = `command-${selected.id}-${Date.parse(selected.updated_at).toString(36)}-${digest}`;
+  const ack = {
+    ...comment(10000 + posted.length, selected.issueNumber),
+    user: { login: "clawsweeper[bot]" },
+    body: `<!-- clawsweeper-command-ack:${selected.id} -->\n<!-- clawsweeper-command-status:1:re_review:${version} -->\nReview requested.`,
+  };
+  posted.push(ack);
+  return ack;
+}
+
+async function runFinalizer(marker, state) {
+  const output = path.join(temporary, `finalizer-${selected.id}.txt`);
+  const child = spawn(
+    process.execPath,
+    [
+      path.join(root, "dist/repair/update-command-status.js"),
+      "--repo",
+      repository,
+      "--item-number",
+      String(selected.issueNumber),
+      "--marker",
+      marker,
+      "--state",
+      state,
+      "--detail",
+      "Synthetic terminal result.",
+      "--require-mutation",
+      "--verify-terminal-status-receipt",
+    ],
+    {
+      cwd: root,
+      timeout: 10000,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        PATH: process.env.PATH,
+        HOME: temporary,
+        GH_BIN: process.execPath,
+        GH_BIN_ARGS: JSON.stringify([proxy]),
+        GITHUB_API_URL: apiUrl,
+        CLAWSWEEPER_REPO: repository,
+        GITHUB_OUTPUT: output,
+      },
+    },
+  );
+  let diagnostics = "";
+  child.stdout.on("data", (data) => {
+    diagnostics += data;
+  });
+  child.stderr.on("data", (data) => {
+    diagnostics += data;
+  });
+  await new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code) => (code === 0 ? resolve() : reject(new Error(diagnostics))));
+  });
+  finalizerOutput = fs.readFileSync(output, "utf8");
 }
 
 function runRouter(apiUrl) {
