@@ -15,6 +15,8 @@ import {
 
 export type CodexSpawnInvocation = CommandInvocation;
 
+const gracefulTerminations = new WeakSet<ChildProcess>();
+
 export function codexProcessCommand(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
@@ -74,6 +76,7 @@ export function terminateCodexProcessTree(
     return undefined;
   }
 
+  if (signal !== "SIGKILL") gracefulTerminations.add(child);
   signalPosixProcessGroup(child, signal);
   if (signal === "SIGKILL") return undefined;
   const timer = setTimeout(() => signalPosixProcessGroup(child, "SIGKILL"), forceAfterMs);
@@ -110,8 +113,10 @@ export function spawnCodex(
     ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
   });
   if (process.platform !== "win32") {
-    // Descendants can keep stdio open after the leader exits; do not wait for close.
-    child.once("exit", () => signalPosixProcessGroup(child, "SIGKILL"));
+    // Natural exits must not wait for descendant-held pipes; requested stops retain their grace.
+    child.once("exit", () => {
+      if (!gracefulTerminations.has(child)) signalPosixProcessGroup(child, "SIGKILL");
+    });
   }
   return child;
 }

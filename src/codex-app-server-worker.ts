@@ -559,7 +559,11 @@ async function finish(status: number, signal: NodeJS.Signals | null, error?: Err
     forceKillTimer ??= terminateCodexProcessTree(child);
     await waitForCodexProcessExit(child);
   }
-  if (forceKillTimer) clearTimeout(forceKillTimer);
+  if (forceKillTimer) {
+    clearTimeout(forceKillTimer);
+    // A closed direct child does not prove that the whole process group exited.
+    terminateCodexProcessTree(child, "SIGKILL");
+  }
   terminal?.close(1000, "turn complete");
   closeCodexOutputCapture(stdout);
   closeCodexOutputCapture(stderr);
