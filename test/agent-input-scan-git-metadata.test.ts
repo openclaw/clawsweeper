@@ -125,6 +125,147 @@ function classify(
   );
 }
 
+function rawMetadataFixture(change: "M" | "A" | "D") {
+  const f = fixture();
+  const rawFile = "/private/scanner/raw";
+  const zero = "0".repeat(40);
+  if (change !== "M") {
+    const added = change === "A";
+    const oldId = added ? zero : f.oldId;
+    const newId = added ? f.newId : zero;
+    f.inputs.delete(`/private/scanner/${added ? f.oldId : f.newId}`);
+    f.inputs.set(rawFile, {
+      kind: "raw_diff",
+      id: "raw",
+      from: f.from,
+      to: f.to,
+      bytes: Buffer.from(
+        `:${added ? "000000 100644" : "100644 000000"} ${oldId} ${newId} ${change}\0${f.source}\0`,
+      ),
+    });
+    f.inputs.set(f.file, {
+      kind: "patch",
+      id: "patch",
+      from: f.from,
+      to: f.to,
+      bytes: Buffer.from(
+        [
+          `diff --git a/${f.source} b/${f.source}`,
+          `${added ? "new" : "deleted"} file mode 100644`,
+          `index ${oldId}..${newId}`,
+          added ? "--- /dev/null" : `--- a/${f.source}`,
+          added ? `+++ b/${f.source}` : "+++ /dev/null",
+          added ? "@@ -0,0 +1 @@" : "@@ -1 +0,0 @@",
+          added ? "+FROM example:2" : "-FROM example:1",
+          "",
+        ].join("\n"),
+      ),
+    });
+  }
+  const key = change === "A" ? f.newId : f.oldId;
+  const email = "vitest@5.0.1.patch";
+  return {
+    ...f,
+    rawFile,
+    key,
+    finding: {
+      ...f.finding,
+      Raw: key,
+      RawV2: key + email,
+      Redacted: email,
+      SecretParts: { key, email },
+      SourceMetadata: { Data: { Filesystem: { file: rawFile, line: 1 } } },
+    },
+  };
+}
+
+test("Git object metadata in raw diffs requires header-only replay for modified, added, and deleted files", () => {
+  for (const change of ["M", "A", "D"] as const) {
+    const f = rawMetadataFixture(change);
+    const original = Buffer.from(f.inputs.get(f.rawFile)!.bytes!);
+    const result = classify([f.finding], f.inputs);
+    assert.equal(result.kind, "git_metadata_proof_required", change);
+    if (result.kind !== "git_metadata_proof_required") throw new Error("expected metadata proof");
+    assert.deepEqual(
+      result.proofInputs.get(f.rawFile),
+      Buffer.from(original.toString().replaceAll(f.key, "_".repeat(f.key.length))),
+    );
+    assert.deepEqual(f.inputs.get(f.rawFile)!.bytes, original);
+    assert.equal(result.notices[0]?.source, f.source);
+    assert.equal(result.notices[0]?.findings[0]?.literalLine, 1);
+  }
+});
+
+test("Git object metadata raw diffs reject ambiguous records and unproven absent endpoints", () => {
+  type Fixture = ReturnType<typeof rawMetadataFixture>;
+  const cases: Array<[string, (f: Fixture) => void]> = [
+    [
+      "duplicate raw record",
+      (f) => {
+        const raw = f.inputs.get(f.rawFile)!;
+        raw.bytes = Buffer.concat([raw.bytes!, raw.bytes!]);
+      },
+    ],
+    [
+      "invalid unrelated raw record",
+      (f) => {
+        const raw = f.inputs.get(f.rawFile)!;
+        raw.bytes = Buffer.concat([raw.bytes!, Buffer.from("invalid\0other.txt\0")]);
+      },
+    ],
+    [
+      "missing patch",
+      (f) => {
+        f.inputs.delete(f.file);
+      },
+    ],
+    [
+      "wrong reported line",
+      (f) => {
+        f.finding.SourceMetadata.Data.Filesystem.line = 2;
+      },
+    ],
+    [
+      "unexpected file mode",
+      (f) => {
+        const raw = f.inputs.get(f.rawFile)!;
+        raw.bytes = Buffer.from(raw.bytes!.toString().replace("100644", "100755"));
+      },
+    ],
+    [
+      "missing raw terminator",
+      (f) => {
+        const raw = f.inputs.get(f.rawFile)!;
+        raw.bytes = raw.bytes!.subarray(0, -1);
+      },
+    ],
+  ];
+  for (const change of ["M", "A", "D"] as const) {
+    for (const [name, mutate] of cases) {
+      const f = rawMetadataFixture(change);
+      mutate(f);
+      assert.equal(classify([f.finding], f.inputs).kind, "refused", `${change}: ${name}`);
+    }
+    if (change !== "M") {
+      const f = rawMetadataFixture(change);
+      f.inputs.set("/private/scanner/unexpected-endpoint", {
+        kind: "blob",
+        id: "unexpected-endpoint",
+        bytes: Buffer.from("unexpected"),
+        references: [
+          {
+            source: f.source,
+            mode: "100644",
+            revision: change === "A" ? f.from : f.to,
+            role: change === "A" ? "base" : "head",
+          },
+        ],
+      });
+      assert.equal(classify([f.finding], f.inputs).kind, "refused", `${change}: false absence`);
+    }
+  }
+});
+
 test("Git object metadata findings require full canonical patch, raw diff, and blob witnesses", () => {
   const f = fixture();
   for (const decoder of ["PLAIN", "HTML"]) {
@@ -255,9 +396,18 @@ test("Git object metadata never clears content occurrences or incomplete provena
     ],
   ];
   for (const [name, mutate] of cases) {
-    const f = fixture();
-    mutate(f);
-    assert.equal(classify([f.finding], f.inputs).kind, "refused", name);
+    for (const material of ["patch", "raw_diff"]) {
+      const f = fixture();
+      mutate(f);
+      const finding =
+        material === "patch"
+          ? f.finding
+          : {
+              ...f.finding,
+              SourceMetadata: { Data: { Filesystem: { file: "/private/scanner/raw", line: 1 } } },
+            };
+      assert.equal(classify([finding], f.inputs).kind, "refused", `${material}: ${name}`);
+    }
   }
 });
 
@@ -286,58 +436,61 @@ test("Git object metadata keeps verified, unknown-contract, and failed native sc
   assert.equal(classify([f.finding, { ...f.finding, DetectorType: 17 }], f.inputs).kind, "refused");
 });
 
-for (const outcome of [
-  "clean",
-  "decoded-content",
-  "verified",
-  "incomplete",
-  "scan-error",
-] as const) {
-  test(`metadata admission requires a complete supplemental scan: ${outcome}`, (t) => {
-    const root = mkdtempSync(join(tmpdir(), "clawsweeper-metadata-owner-test-"));
-    t.after(() => rmSync(root, { recursive: true, force: true }));
-    const cwd = join(root, "target");
-    mkdirSync(cwd);
-    const git = (...args: string[]) =>
-      execFileSync("git", args, {
-        cwd,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-      }).trim();
-    git("init", "-q");
-    git("config", "user.name", "Scanner fixture");
-    git("config", "user.email", "scanner@example.invalid");
-    git("config", "commit.gpgsign", "false");
-    writeFileSync(join(cwd, "cloudflare.txt"), "before\n");
-    git("add", ".");
-    git("commit", "-qm", "fixture base");
-    const baseSha = git("rev-parse", "HEAD");
-    const key = git("hash-object", "cloudflare.txt");
-    writeFileSync(join(cwd, "cloudflare.txt"), "after\n");
-    git("add", ".");
-    git("commit", "-qm", "fixture head");
-    const headSha = git("rev-parse", "HEAD");
-    const calls = join(root, "calls");
-    const original = join(root, "original.patch");
-    useFakeScanner(
-      t,
-      `
+for (const material of ["patch", "raw_diff"] as const) {
+  for (const outcome of [
+    "clean",
+    "decoded-content",
+    "verified",
+    "incomplete",
+    "scan-error",
+  ] as const) {
+    test(`metadata admission requires a complete supplemental scan: ${material} ${outcome}`, (t) => {
+      const root = mkdtempSync(join(tmpdir(), "clawsweeper-metadata-owner-test-"));
+      t.after(() => rmSync(root, { recursive: true, force: true }));
+      const cwd = join(root, "target");
+      mkdirSync(cwd);
+      const git = (...args: string[]) =>
+        execFileSync("git", args, {
+          cwd,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        }).trim();
+      git("init", "-q");
+      git("config", "user.name", "Scanner fixture");
+      git("config", "user.email", "scanner@example.invalid");
+      git("config", "commit.gpgsign", "false");
+      writeFileSync(join(cwd, "cloudflare.txt"), "before\n");
+      git("add", ".");
+      git("commit", "-qm", "fixture base");
+      const baseSha = git("rev-parse", "HEAD");
+      const key = git("hash-object", "cloudflare.txt");
+      writeFileSync(join(cwd, "cloudflare.txt"), "after\n");
+      git("add", ".");
+      git("commit", "-qm", "fixture head");
+      const headSha = git("rev-parse", "HEAD");
+      const calls = join(root, "calls");
+      const original = join(root, "original.patch");
+      useFakeScanner(
+        t,
+        `
 const key = ${JSON.stringify(key)};
 const outcome = ${JSON.stringify(outcome)};
+const material = ${JSON.stringify(material)};
 const primary = inputs.some(input => input.name === 'prompt');
 fs.appendFileSync(${JSON.stringify(calls)}, primary ? 'primary\\n' : 'supplemental\\n');
-const patch = inputs.find(input => input.bytes.toString().startsWith('diff --git '));
-assert.ok(patch);
+const metadata = inputs.find(input => input.bytes.toString().startsWith(material === 'patch' ? 'diff --git ' : ':100644'));
+assert.ok(metadata);
 if (primary) {
-  assert.ok(patch.bytes.includes(Buffer.from(key)));
+  assert.ok(metadata.bytes.includes(Buffer.from(key)));
+  assert.ok(inputs.some(input => input.bytes.toString().startsWith('diff --git ')));
   assert.ok(inputs.some(input => input.bytes.toString().startsWith(':100644')));
   assert.ok(inputs.some(input => input.bytes.toString() === 'before\\n'));
   assert.ok(inputs.some(input => input.bytes.toString() === 'after\\n'));
-  fs.writeFileSync(${JSON.stringify(original)}, patch.bytes);
+  fs.writeFileSync(${JSON.stringify(original)}, metadata.bytes);
 } else {
   assert.equal(inputs.length, 1);
   const before = fs.readFileSync(${JSON.stringify(original)}, 'utf8');
-  assert.equal(patch.bytes.toString(), before.replace(key, '_'.repeat(key.length)));
+  assert.equal(metadata.bytes.toString(), before.replace(key, '_'.repeat(key.length)));
 }
 const finding = primary || outcome === 'decoded-content' || outcome === 'verified';
 const verified = !primary && outcome === 'verified';
@@ -345,40 +498,43 @@ if (finding) console.log(JSON.stringify({
   DetectorType:58, DetectorName:'CloudflareGlobalApiKey', DecoderName:primary ? 'PLAIN' : 'HTML',
   SourceType:15, Verified:verified, VerificationError:verified ? null : 'synthetic unavailable verifier',
   Raw:key, RawV2:key+'scanner@1.2.3', Redacted:'scanner@1.2.3', SecretParts:{key,email:'scanner@1.2.3'}, ExtraData:null, StructuredData:null,
-  SourceMetadata:{Data:{Filesystem:{file:path.join(inputDir,patch.name),line:primary ? 2 : 10}}}
+  SourceMetadata:{Data:{Filesystem:{file:path.join(inputDir,metadata.name),line:material === 'raw_diff' ? 1 : primary ? 2 : 10}}}
 }));
 if (primary || outcome !== 'incomplete') console.error(JSON.stringify({
   level:'info-0',logger:'trufflehog',msg:'finished scanning',trufflehog_version:'${TRUFFLEHOG_VERSION}',
-  chunks:1,bytes:patch.bytes.length,verified_secrets:verified ? 1 : 0,unverified_secrets:finding && !verified ? 1 : 0,
+  chunks:1,bytes:metadata.bytes.length,verified_secrets:verified ? 1 : 0,unverified_secrets:finding && !verified ? 1 : 0,
   ...(!primary && outcome === 'scan-error' ? {error:'synthetic scan failure'} : {})
 }));
 process.exit(finding ? 183 : 0);
 `,
-    );
-    const notices: unknown[] = [];
-    t.mock.method(console, "error", (value: unknown) => notices.push(value));
-    const scan = () =>
-      scanAgentInput({
-        cwd,
-        prompt: "Review dependencies.",
-        source: { kind: "committed", baseSha, headSha },
-        timeoutMs: 30_000,
-      });
-    if (outcome === "clean") {
-      scan();
-      assert.equal(notices.length, 1);
-    } else {
-      assert.throws(
-        scan,
-        (error: unknown) =>
-          error instanceof AgentInputScanError &&
-          error.reason ===
-            (outcome === "incomplete" || outcome === "scan-error" ? "scanner_failed" : "findings"),
       );
-      assert.deepEqual(notices, []);
-    }
-    assert.equal(readFileSync(calls, "utf8"), "primary\nsupplemental\n");
-  });
+      const notices: unknown[] = [];
+      t.mock.method(console, "error", (value: unknown) => notices.push(value));
+      const scan = () =>
+        scanAgentInput({
+          cwd,
+          prompt: "Review dependencies.",
+          source: { kind: "committed", baseSha, headSha },
+          timeoutMs: 30_000,
+        });
+      if (outcome === "clean") {
+        scan();
+        assert.equal(notices.length, 1);
+      } else {
+        assert.throws(
+          scan,
+          (error: unknown) =>
+            error instanceof AgentInputScanError &&
+            error.reason ===
+              (outcome === "incomplete" || outcome === "scan-error"
+                ? "scanner_failed"
+                : "findings"),
+        );
+        assert.deepEqual(notices, []);
+      }
+      assert.equal(readFileSync(calls, "utf8"), "primary\nsupplemental\n");
+    });
+  }
 }
 
 function supplementalFixture() {
@@ -387,7 +543,7 @@ function supplementalFixture() {
   assert.equal(primary.kind, "git_metadata_proof_required");
   if (primary.kind !== "git_metadata_proof_required") throw new Error("expected metadata proof");
   const original = f.inputs.get(f.file)!;
-  const bytes = primary.proofPatches.get(f.file)!;
+  const bytes = primary.proofInputs.get(f.file)!;
   const proofFile = "/private/metadata-proof/patch";
   const proof = {
     kind: "patch" as const,

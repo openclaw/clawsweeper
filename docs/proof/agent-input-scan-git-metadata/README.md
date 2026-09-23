@@ -5,11 +5,57 @@ that native decoding reconstructs from source content. The host keeps its comple
 primary scan unchanged. Exact raw-diff, endpoint, path, mode, and rehashed full-blob
 witnesses only request another native scan; they never admit a review by themselves.
 
-The supplemental complete patch masks only proven object-ID fields at their
+The supplemental complete patch or raw diff masks only proven object-ID fields at their
 original lengths. Filename context and all content bytes remain unchanged. It uses
 the same pinned native scanner, verification flags, completion checks, and shared
 deadline. Any unclassified finding, further metadata request, or incomplete scan
 refuses admission. Success notices follow both scans, cleanup, and source fences.
+
+Raw-diff findings use the same witness owner, including canonical added and deleted
+regular files. Both materials must agree on full object IDs, file modes, paths,
+change status, and endpoint presence; every present blob is independently rehashed.
+Matching bytes in content or paths, malformed or duplicate records, unexpected
+references at an absent endpoint, and missing patch witnesses still refuse.
+The complete original raw diff remains in the primary scan and retained provenance.
+Its supplemental copy is marked as proof material and cannot qualify another finding.
+
+The regression from OpenClaw PR 156363 was reported by hosted TruffleHog 3.97.4 as
+detector 58, PLAIN decoding, unverified, raw-diff line 1. The safe hosted artifact
+does not retain matched digests, so exact hosted Raw/RawV2 identity cannot be recovered.
+A verification-enabled local scan of that original hosted range with the normal
+results filter emitted no findings; a diagnostic scan that also reported unverified
+results matched complete Git blob IDs with versioned patch filenames. That diagnostic
+does not prove hosted admission or recover the hosted finding identities.
+
+The controlled native added/deleted-file fixture does reproduce the raw-diff
+rejection. On macOS arm64 with Node 26.9.0 and checksum-qualified TruffleHog 3.97.4,
+the pristine `60a77566c685fbe18600595a28964e5bd8135878` owner refused the same
+committed fixture as detector 58 / PLAIN / raw-diff line 1 in 2.06 seconds; the
+candidate admitted after replay in 3.34 seconds with a native raw-diff finding.
+A literal additional-input collision still refused in 1.82 seconds. Tag-split
+and hexadecimal-entity additional inputs also refused as separate HTML findings
+in 2.16 and 1.81 seconds. Verification flags were unchanged.
+
+Build the candidate and a trusted checkout of the pinned baseline, then run:
+
+```bash
+node docs/proof/agent-input-scan-git-metadata/run-raw-diff-proof.mjs \
+  /path/to/raw-diff-proof.json /path/to/built-baseline
+```
+
+The driver requires an actual native raw-diff finding; a finding-free scan cannot
+stand in for the admission proof. Owner tests separately inject the native report
+shape to cover residual/verified findings, scan errors, and incomplete completion.
+
+A review concern about a raw-diff finding hiding a decoded finding in another input
+was rejected against the pinned native implementation and the cross-input proof.
+[The v3.97.4 deduplication key](https://github.com/trufflesecurity/trufflehog/blob/v3.97.4/pkg/engine/engine.go#L1339)
+includes detector, Raw, RawV2, and source metadata;
+[the filesystem source](https://github.com/trufflesecurity/trufflehog/blob/v3.97.4/pkg/sources/filesystem/filesystem.go#L396)
+stores each staged filename in that metadata. Separate raw-diff, patch, blob,
+prompt, and additional-input files therefore cannot erase one another's findings.
+The existing replay still protects same-input decoded content and metadata ambiguity.
+OpenClaw Bay and public action surfaces are unchanged.
 
 When the same patch contains an approved URI, its source witness uses the retained
 primary patch only after the host binds the supplemental path, input identity,

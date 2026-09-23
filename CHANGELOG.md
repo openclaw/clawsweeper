@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Admit generated Git object metadata findings in raw diffs only after canonical source witnesses and a complete supplemental scan, including added and deleted files, while preserving all primary source scanning.
+
 - Keep re-review acknowledgements owned by the durable queue so a delayed recovery router cannot overwrite a completed or failed status.
 
 - Qualify three synthetic OpenClaw model-egress URI fixtures by exact native identities, complete source lines, and committed paths while preserving input scanning and refusal controls.

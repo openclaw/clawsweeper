@@ -42,10 +42,16 @@ export function resolveGitObjectMetadata(
   oid: string,
   inputs: ReadonlyMap<string, StagedScanInput>,
 ): Array<{ source: string; patchLine: number }> | undefined {
-  if (patch.kind !== "patch" || !/^[0-9a-f]{40}$/.test(oid)) return undefined;
+  if (
+    (patch.kind !== "patch" && patch.kind !== "raw_diff") ||
+    !/^[0-9a-f]{40}$/.test(oid) ||
+    /^0+$/.test(oid)
+  )
+    return undefined;
   const literal = Buffer.from(oid);
   const decode = (bytes: Buffer) => new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   const records = new Set<string>();
+  const matchedRecords = new Set<string>();
   const witnesses: Array<{ source: string; patchLine: number }> = [];
   try {
     // Native deduplication must never hide an identical credential in another
@@ -57,20 +63,58 @@ export function resolveGitObjectMetadata(
       if (input.kind !== "raw_diff") continue;
       const fields = decode(input.bytes).split("\0");
       if (fields.pop() !== "" || fields.length % 2 !== 0) return undefined;
+      const paths = new Set<string>();
       for (let i = 0; i < fields.length; i += 2) {
         const header = fields[i]!;
         const source = fields[i + 1]!;
-        if (source.includes(oid)) return undefined;
-        if (!header.includes(oid)) continue;
-        const match = /^:100644 100644 ([0-9a-f]{40}) ([0-9a-f]{40}) M$/.exec(header);
         if (
-          !match ||
-          (match[1] !== oid && match[2] !== oid) ||
-          !resolveScannedGitBlob(input, match[1]!, source, input.from, "base", inputs) ||
-          !resolveScannedGitBlob(input, match[2]!, source, input.to, "head", inputs)
+          !/^:\d{6} \d{6} [0-9a-f]{40} [0-9a-f]{40} [AMDT]$/.test(header) ||
+          !source ||
+          paths.has(source) ||
+          source.includes(oid) ||
+          Buffer.from(source).some((byte) => byte < 32 || byte === 92) ||
+          source.startsWith("/") ||
+          /^[A-Za-z]:/.test(source) ||
+          source
+            .split("/")
+            .some((part) => !part || part === "." || part === ".." || part.toLowerCase() === ".git")
         )
           return undefined;
-        records.add([input.from, input.to, source, match[1], match[2]].join("\0"));
+        paths.add(source);
+        if (!header.includes(oid)) continue;
+        const match =
+          /^:(100644|000000) (100644|000000) ([0-9a-f]{40}) ([0-9a-f]{40}) ([MAD])$/.exec(header);
+        const added = match?.[5] === "A";
+        const removed = match?.[5] === "D";
+        if (
+          !match ||
+          (match[3] !== oid && match[4] !== oid) ||
+          (match[1] === "000000") !== added ||
+          (match[2] === "000000") !== removed ||
+          /^0+$/.test(match[3]!) !== added ||
+          /^0+$/.test(match[4]!) !== removed ||
+          (!added &&
+            !resolveScannedGitBlob(input, match[3]!, source, input.from, "base", inputs)) ||
+          (!removed && !resolveScannedGitBlob(input, match[4]!, source, input.to, "head", inputs))
+        )
+          return undefined;
+        if (
+          (added || removed) &&
+          [...inputs.values()].some(
+            (candidate) =>
+              "references" in candidate &&
+              candidate.references.some(
+                (reference) =>
+                  reference.source === source &&
+                  reference.revision === (added ? input.from : input.to),
+              ),
+          )
+        )
+          return undefined;
+        const record = [input.from, input.to, source, match[3], match[4], match[5]].join("\0");
+        if (records.has(record)) return undefined;
+        records.add(record);
+        if (input === patch) witnesses.push({ source, patchLine: 1 });
       }
     }
     for (const input of inputs.values()) {
@@ -78,23 +122,41 @@ export function resolveGitObjectMetadata(
       const lines = decode(input.bytes).split("\n");
       for (const [i, line] of lines.entries()) {
         if (!line.includes(oid)) continue;
-        const match = /^index ([0-9a-f]{40})\.\.([0-9a-f]{40}) 100644$/.exec(line);
-        const source = lines[i + 1]?.startsWith("--- a/") ? lines[i + 1]!.slice(6) : undefined;
+        const match = /^index ([0-9a-f]{40})\.\.([0-9a-f]{40})( 100644)?$/.exec(line);
+        const added = lines[i - 1] === "new file mode 100644";
+        const removed = lines[i - 1] === "deleted file mode 100644";
+        const source = added ? lines[i + 2]?.slice(6) : lines[i + 1]?.slice(6);
+        const record = [
+          input.from,
+          input.to,
+          source,
+          match?.[1],
+          match?.[2],
+          added ? "A" : removed ? "D" : "M",
+        ].join("\0");
         if (
           !match ||
           !source ||
           (match[1] !== oid && match[2] !== oid) ||
-          lines[i - 1] !== `diff --git a/${source} b/${source}` ||
-          lines[i + 2] !== `+++ b/${source}` ||
+          Boolean(match[3]) === (added || removed) ||
+          /^0+$/.test(match[1]!) !== added ||
+          /^0+$/.test(match[2]!) !== removed ||
+          lines[i - (added || removed ? 2 : 1)] !== `diff --git a/${source} b/${source}` ||
+          lines[i + 1] !== (added ? "--- /dev/null" : `--- a/${source}`) ||
+          lines[i + 2] !== (removed ? "+++ /dev/null" : `+++ b/${source}`) ||
           !lines[i + 3]?.startsWith("@@ ") ||
-          !records.has([input.from, input.to, source, match[1], match[2]].join("\0"))
+          !records.has(record) ||
+          matchedRecords.has(record)
         )
           return undefined;
+        matchedRecords.add(record);
         if (input === patch) witnesses.push({ source, patchLine: i + 1 });
       }
     }
   } catch {
     return undefined;
   }
-  return witnesses.length ? witnesses : undefined;
+  return witnesses.length && [...records].every((record) => matchedRecords.has(record))
+    ? witnesses
+    : undefined;
 }

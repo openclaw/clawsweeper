@@ -484,6 +484,7 @@ export interface ScanSourceReference {
 export type ScanInputOrigin =
   | { kind: "prompt" | "schema" | "additional" }
   | { kind: "raw_diff"; from: string; to: string }
+  | { kind: "raw_diff_proof"; from: string; to: string }
   | {
       kind: "patch";
       from: string;
@@ -557,7 +558,7 @@ type ClassifiedScan =
   | {
       kind: "git_metadata_proof_required";
       notices: ReviewedFixtureNotice[];
-      proofPatches: ReadonlyMap<string, Buffer>;
+      proofInputs: ReadonlyMap<string, Buffer>;
     };
 
 interface ClassifiedFinding {
@@ -705,7 +706,7 @@ function classifyReviewedFindings(
     string,
     NonNullable<ReturnType<typeof resolveGitObjectMetadata>>
   >();
-  const proofPatches = new Map<string, Buffer>();
+  const proofInputs = new Map<string, Buffer>();
   const classified = new Map<
     string,
     {
@@ -782,12 +783,13 @@ function classifyReviewedFindings(
           exactCandidates.some((candidate) => candidate[6] === source),
         ) ||
         input.references.some(({ source }) => !fixture.sources.includes(source)));
-    if (staged?.kind === "patch") {
+    if (staged?.kind === "patch" || staged?.kind === "raw_diff") {
       if (typeof file !== "string" || scannerLine === null) return refuse("metadata_mismatch");
       if (finding.DetectorType === 58) {
         const parts = object(finding.SecretParts);
         if (
           finding.DetectorName !== "CloudflareGlobalApiKey" ||
+          (staged.kind === "raw_diff" && scannerLine !== 1) ||
           finding.SourceType !== 15 ||
           finding.Verified !== false ||
           typeof finding.VerificationError !== "string" ||
@@ -810,7 +812,7 @@ function classifyReviewedFindings(
         objectWitnesses.set(witnessKey, witnesses);
         // Only independently proven metadata fields change in this second input.
         // The original complete patch remains part of the primary native scan.
-        const proof = proofPatches.get(file) ?? Buffer.from(staged.bytes!);
+        const proof = proofInputs.get(file) ?? Buffer.from(staged.bytes!);
         const literal = Buffer.from(raw);
         for (
           let offset = proof.indexOf(literal);
@@ -818,7 +820,7 @@ function classifyReviewedFindings(
           offset = proof.indexOf(literal, offset + literal.length)
         )
           proof.fill("_", offset, offset + literal.length);
-        proofPatches.set(file, proof);
+        proofInputs.set(file, proof);
         for (const witness of witnesses) {
           const key = `git-object:${rawDigest}:${witness.source}`;
           const group = classified.get(key) ?? {
@@ -841,6 +843,7 @@ function classifyReviewedFindings(
         }
         continue;
       }
+      if (staged.kind === "raw_diff") return refuse("material_not_reviewed");
       if (
         finding.DetectorType !== 17 ||
         !rawV2 ||
@@ -1182,7 +1185,7 @@ function classifyReviewedFindings(
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([, value]) => value),
     }));
-  return proofPatches.size
-    ? { kind: "git_metadata_proof_required", notices, proofPatches }
+  return proofInputs.size
+    ? { kind: "git_metadata_proof_required", notices, proofInputs }
     : { kind: "classified", notices };
 }

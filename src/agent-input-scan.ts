@@ -709,22 +709,31 @@ export function scanAgentInput(options: {
       if (classification.kind === "git_metadata_proof_required") {
         const proofDir = join(root, "metadata-proof");
         mkdirSync(proofDir, { mode: 0o700 });
-        for (const [file, bytes] of classification.proofPatches) {
+        for (const [file, bytes] of classification.proofInputs) {
           const original = inputs.get(file);
-          if (original?.kind !== "patch") throw new AgentInputScanError("incomplete_source");
+          if (original?.kind !== "patch" && original?.kind !== "raw_diff")
+            throw new AgentInputScanError("incomplete_source");
           stage(
             bytes,
-            {
-              kind: "patch",
-              from: original.from,
-              to: original.to,
-              metadataProof: {
-                file: join(proofDir, original.id),
-                originalFile: file,
-                original,
-                bytes: Buffer.from(bytes),
-              },
-            },
+            // Raw metadata replay has no fixture-attribution route: every remaining
+            // finding refuses, while the original raw bytes remain provenance.
+            original.kind === "raw_diff"
+              ? {
+                  kind: "raw_diff_proof",
+                  from: original.from,
+                  to: original.to,
+                }
+              : {
+                  kind: "patch",
+                  from: original.from,
+                  to: original.to,
+                  metadataProof: {
+                    file: join(proofDir, original.id),
+                    originalFile: file,
+                    original,
+                    bytes: Buffer.from(bytes),
+                  },
+                },
             original.id,
             proofDir,
           );
