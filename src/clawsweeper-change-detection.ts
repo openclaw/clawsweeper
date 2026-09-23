@@ -493,7 +493,9 @@ function dataModelTextHasSerializedStateBoundary(text: string): boolean {
       text,
     ) ||
     // A state path can be in-memory read routing; require its actual file-read boundary.
-    /\breadFile(?:Sync)?\s*(?:\?\.\s*)?\(\s*statePath\b/i.test(text) ||
+    /\breadFile(?:Sync)?\s*(?:\?\.\s*)?\(\s*(?:await\s+|\(\s*)*(?:[$A-Z_a-z][$\w]*\s*(?:\?\.|\.)\s*)*statePath\b/i.test(
+      text,
+    ) ||
     /\bserialized\s+(?:data\s+)?(?:format|schema|layout|identity|namespace)\b/i.test(text)
   );
 }

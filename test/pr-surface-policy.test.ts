@@ -401,10 +401,18 @@ test("file readers retain migration gates with same-hunk decoding or persistence
         filename: "src/runtime/reader.ts",
         patch: `@@\n const persisted = parseYaml(\n-  fs.${api}(oldTarget, "utf8"),\n+  fs.${api}(target, "utf8"),\n );`,
       },
-      {
+      ...[
+        "statePath",
+        "options.statePath",
+        "this.statePath",
+        "options?.statePath",
+        "await options.statePath",
+        "(this.statePath)",
+        "(await options.statePath)",
+      ].map((input) => ({
         filename: "src/runtime/reader.ts",
-        patch: `@@\n+const value = decodeBinary(fs.${api}(statePath));`,
-      },
+        patch: `@@\n+const value = decodeBinary(fs.${api}(${input}));`,
+      })),
     ]) {
       const report = renderPersistenceReport([file], "a".repeat(40));
       assert.match(

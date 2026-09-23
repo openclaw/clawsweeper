@@ -348,7 +348,8 @@ side, and other visible `Console` uses leave the binding conservative. Explicit
 storage changes, other changed fields, and known persistence-owner paths still
 retain their warnings.
 An in-memory `statePath` field or read-routing argument does not itself define a
-stored format. A file read whose input is `statePath` retains storage evidence;
+stored format. A file read whose input is `statePath` or a member such as
+`options.statePath` retains storage evidence, including awaited or parenthesized inputs;
 an unrelated `statePath` declaration cannot supply it for a source or media read.
 File reads can inspect source or media and need a persistence
 owner, explicit stored-state evidence, or JSON decoding in the same diff hunk.
