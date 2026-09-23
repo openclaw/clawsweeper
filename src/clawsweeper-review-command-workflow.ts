@@ -581,12 +581,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           );
           return cachePreflightState === "passed";
         };
-        const restoredMaintainerAssociation =
-          !localOnly &&
-          restoreVerifiedMaintainerAuthorAssociation(item, (author) =>
-            bulkFilerRepositoryPermission(author, bulkFilerRepositoryPermissionCache),
-          );
-        const itemCodexProfile = codexItemProfile(item.authorAssociation);
         activeReviewItem = item;
         let reviewItemFailed = false;
         const previousReviewMutationRunner = dependencies.activeReviewMutationRunner;
@@ -632,6 +626,12 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             continue;
           }
         }
+        const restoredMaintainerAssociation =
+          !localOnly &&
+          restoreVerifiedMaintainerAuthorAssociation(item, (author) =>
+            bulkFilerRepositoryPermission(author, bulkFilerRepositoryPermissionCache),
+          );
+        const itemCodexProfile = codexItemProfile(item.authorAssociation);
         const bulkFilerDetection =
           !localOnly && item.kind === "issue"
             ? detectBulkFiler({
