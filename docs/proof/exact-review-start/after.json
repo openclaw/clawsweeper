@@ -1,0 +1,119 @@
+{
+  "provider": "local-shell-loopback-http",
+  "node": "v26.8.2",
+  "sourceCommit": "7f2457e92c6d88969477d4686f83ff9c7ba9f9c7",
+  "workingTree": true,
+  "workflowSha256": "fe812d2ba9877d5406ab2aa85fa68a590d5ecdf0461c3c4ead96b84aa3bebc16",
+  "guarded": true,
+  "cases": [
+    {
+      "scenario": "stale",
+      "code": 0,
+      "launched": false,
+      "requests": 1,
+      "superseded": true,
+      "mayPublish": false,
+      "processesReaped": true
+    },
+    {
+      "scenario": "stale-oversized",
+      "code": 0,
+      "launched": false,
+      "requests": 1,
+      "superseded": true,
+      "mayPublish": false,
+      "processesReaped": true
+    },
+    {
+      "scenario": "revoked-during-oversized-setup",
+      "code": 0,
+      "launched": false,
+      "requests": 1,
+      "superseded": true,
+      "mayPublish": false,
+      "processesReaped": true
+    },
+    {
+      "scenario": "inactive",
+      "code": 0,
+      "launched": false,
+      "requests": 1,
+      "superseded": true,
+      "mayPublish": false,
+      "processesReaped": true
+    },
+    {
+      "scenario": "unknown-conflict",
+      "code": 1,
+      "launched": false,
+      "requests": 1,
+      "superseded": false,
+      "mayPublish": false,
+      "processesReaped": true
+    },
+    {
+      "scenario": "service-failure",
+      "code": 1,
+      "launched": false,
+      "requests": 4,
+      "superseded": false,
+      "mayPublish": false,
+      "processesReaped": true
+    },
+    {
+      "scenario": "transport-failure",
+      "code": 1,
+      "launched": false,
+      "requests": 4,
+      "superseded": false,
+      "mayPublish": false,
+      "processesReaped": true
+    },
+    {
+      "scenario": "retry-current",
+      "code": 0,
+      "launched": true,
+      "requests": 4,
+      "superseded": false,
+      "mayPublish": true,
+      "processesReaped": true
+    },
+    {
+      "scenario": "invalid-tuple",
+      "code": 1,
+      "launched": false,
+      "requests": 0,
+      "superseded": false,
+      "mayPublish": false,
+      "processesReaped": true
+    },
+    {
+      "scenario": "current",
+      "code": 0,
+      "launched": true,
+      "requests": 3,
+      "superseded": false,
+      "mayPublish": true,
+      "processesReaped": true
+    },
+    {
+      "scenario": "current-oversized",
+      "code": 0,
+      "launched": true,
+      "requests": 2,
+      "superseded": false,
+      "mayPublish": true,
+      "processesReaped": true
+    },
+    {
+      "scenario": "revoked-after-start",
+      "code": 0,
+      "launched": true,
+      "requests": 2,
+      "superseded": true,
+      "mayPublish": false,
+      "processesReaped": true
+    }
+  ],
+  "limits": "Actual workflow shell, curl, process groups and harmless review process fixtures; synthetic queue responses, no model, hosted Actions, production queue or GitHub publication."
+}

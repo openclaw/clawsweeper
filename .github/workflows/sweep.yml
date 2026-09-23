@@ -1261,7 +1261,7 @@ jobs:
               sleep 60
             done
           }
-          start_heartbeat() {
+          prepare_heartbeat() {
             # Heartbeat authenticates by the full lease tuple (same capability model as
             # claim/complete), so this Codex-adjacent step never sees the webhook secret.
             heartbeat_payload="$(node -e '
@@ -1283,7 +1283,9 @@ jobs:
                 run_attempt: runAttempt,
                 ...(sourceHeadSha ? { source_head_sha: sourceHeadSha } : {}),
               }));
-            ')" || return 0
+            ')" || return 1
+          }
+          start_heartbeat() {
             heartbeat_loop &
             heartbeat_pid=$!
           }
@@ -1317,6 +1319,32 @@ jobs:
             return 1
           }
           trap cleanup_heartbeat EXIT
+          prepare_heartbeat
+          verify_startup_authority() {
+            # Run after branch-specific setup, immediately before generation.
+            startup_response="$(mktemp)"
+            startup_status="$(control_plane_curl --silent --connect-timeout 5 --max-time 20 \
+              --output "$startup_response" \
+              --write-out '%{http_code}' \
+              --request POST \
+              --header "content-type: application/json" \
+              --data-binary "$heartbeat_payload" \
+              "${QUEUE_URL%/}/internal/exact-review/heartbeat")" || startup_status=""
+            if [ "$startup_status" = "409" ] && jq -e '.error == "lease_superseded" or .error == "lease_not_active"' "$startup_response" >/dev/null; then
+              rm -f "$startup_response"
+              echo "superseded=true" >> "$GITHUB_OUTPUT"
+              echo "exit_code=0" >> "$GITHUB_OUTPUT"
+              echo "::notice::Exact review lost queue authority during setup; skipping generation."
+              exit 0
+            fi
+            rm -f "$startup_response"
+            if [ "$startup_status" != "200" ]; then
+              echo "control_plane_unavailable=true" >> "$GITHUB_OUTPUT"
+              echo "exit_code=1" >> "$GITHUB_OUTPUT"
+              echo "::error::Exact-review startup ownership could not be verified."
+              exit 1
+            fi
+          }
           admission_args=()
           if [ -n "$PR_ADMISSION_FILE" ]; then
             admission_args=(--pr-admission-file "$PR_ADMISSION_FILE")
@@ -1345,6 +1373,7 @@ jobs:
               exit 0
             fi
             rm -f "$refreshed_pull" "$refreshed_pull.ready"
+            verify_startup_authority
             pnpm run review -- --target-repo "${{ steps.target.outputs.target_repo }}" \
               --artifact-dir artifacts/event --item-number "${{ steps.target.outputs.item_number }}" \
               --output-retention debug \
@@ -1378,6 +1407,7 @@ jobs:
           media_preprocessing_reserve_seconds=480
           review_timeout_seconds=$((codex_timeout_seconds + media_preprocessing_reserve_seconds + 180))
           echo "::notice::Exact event review timeout is ${review_timeout_seconds}s for per-item Codex timeout ${codex_timeout_seconds}s, reserved media preprocessing ${media_preprocessing_reserve_seconds}s, and detected media allowance ${media_proof_timeout_seconds}s."
+          verify_startup_authority
           set +e
           setsid timeout --kill-after=30s "${review_timeout_seconds}s" pnpm run review -- \
             --target-repo "${{ steps.target.outputs.target_repo }}" \

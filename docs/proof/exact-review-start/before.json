@@ -1,0 +1,38 @@
+{
+  "provider": "local-shell-loopback-http",
+  "node": "v26.8.2",
+  "sourceCommit": "6500b62dfd4c4efb0e2b821c1e9c427e128febef",
+  "workingTree": false,
+  "workflowSha256": "4ff26b0d1d7402f2cb620547d424bfc84f7d267c184972e9e9cee8de4b2dbedd",
+  "guarded": false,
+  "cases": [
+    {
+      "scenario": "stale",
+      "code": 0,
+      "launched": true,
+      "requests": 1,
+      "superseded": true,
+      "mayPublish": false,
+      "processesReaped": true
+    },
+    {
+      "scenario": "stale-oversized",
+      "code": 0,
+      "launched": true,
+      "requests": 1,
+      "superseded": true,
+      "mayPublish": false,
+      "processesReaped": true
+    },
+    {
+      "scenario": "revoked-during-oversized-setup",
+      "code": 0,
+      "launched": true,
+      "requests": 1,
+      "superseded": true,
+      "mayPublish": false,
+      "processesReaped": true
+    }
+  ],
+  "limits": "Actual workflow shell, curl, process groups and harmless review process fixtures; synthetic queue responses, no model, hosted Actions, production queue or GitHub publication."
+}

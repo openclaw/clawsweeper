@@ -2509,7 +2509,7 @@ test("exact event review heartbeats its queue lease while Codex runs", () => {
   assert.doesNotMatch(review.run ?? "", /CLAWSWEEPER_WEBHOOK_SECRET/);
   assert.match(review.run ?? "", /internal\/exact-review\/heartbeat/);
   assert.match(review.run ?? "", /^\s*sleep 60\s*$/m);
-  assert.match(review.run ?? "", /heartbeat_payload=.*\|\| return 0/s);
+  assert.match(review.run ?? "", /heartbeat_payload=.*\|\| return 1/s);
   assert.doesNotMatch(review.run ?? "", /test -n "\$CLAWSWEEPER_WEBHOOK_SECRET"/);
   assert.match(review.run ?? "", /trap cleanup_heartbeat EXIT/);
   assert.match(review.run ?? "", /kill "\$heartbeat_pid" 2>\/dev\/null \|\| true/);
@@ -7574,6 +7574,7 @@ for (const scenario of [
         gh() { cat "$MOCK_PULL"; }
         sleep() { return 0; }
         start_heartbeat() { return 0; }
+        verify_startup_authority() { return 0; }
         cleanup_heartbeat() { return 0; }
         control_plane_curl() { printf '%s' "$MOCK_HTTP_STATUS"; }
         heartbeat_payload='{}'
