@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { runAgentProcess } from "../agent-runner.js";
-import { canonicalItemAuthorAssociation, codexItemProfile } from "../codex-item-profile.js";
+import { canonicalItemAuthorAssociations, codexItemProfile } from "../codex-item-profile.js";
 import { codexAppServerProcessOptionsFromEnv } from "../codex-process.js";
 import { deterministicAutomergeResult } from "./deterministic-automerge-result.js";
 import {
@@ -16,13 +16,7 @@ import {
   repoRoot,
   validateJob,
 } from "./lib.js";
-import {
-  codexLoginConfig,
-  codexSubprocessEnv,
-  codexModelArgs,
-  repairCodexReasoningEffort,
-  repairCodexServiceTier,
-} from "./process-env.js";
+import { codexLoginConfig, codexSubprocessEnv, codexModelArgs } from "./process-env.js";
 import { prepareTargetCheckout } from "./target-checkout.js";
 import { sanitizeResultEvidence } from "./url-safety.js";
 
@@ -149,11 +143,7 @@ const clusterPlan = fs.existsSync(clusterPlanPath)
   ? JSON.parse(fs.readFileSync(clusterPlanPath, "utf8"))
   : null;
 const codexProfile = codexItemProfile(
-  canonicalItemAuthorAssociation(job.frontmatter, clusterPlan),
-  {
-    reasoningEffort: repairCodexReasoningEffort(),
-    serviceTier: repairCodexServiceTier(),
-  },
+  canonicalItemAuthorAssociations(job.frontmatter, clusterPlan),
 );
 const codexReasoningEffort = codexProfile.reasoningEffort;
 const codexServiceTier = codexProfile.serviceTier;

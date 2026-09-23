@@ -5,19 +5,19 @@ export interface CodexItemProfile {
   serviceTier: string;
 }
 
-export function codexItemProfile(
-  authorAssociation: unknown,
-  defaults: CodexItemProfile,
-): CodexItemProfile {
-  return isMaintainerAuthorAssociation(authorAssociation)
+export function codexItemProfile(authorAssociations: unknown): CodexItemProfile {
+  const associations = Array.isArray(authorAssociations)
+    ? authorAssociations
+    : [authorAssociations];
+  return associations.some(isMaintainerAuthorAssociation)
     ? { reasoningEffort: "high", serviceTier: "fast" }
-    : defaults;
+    : { reasoningEffort: "medium", serviceTier: "" };
 }
 
-export function canonicalItemAuthorAssociation(
+export function canonicalItemAuthorAssociations(
   frontmatter: unknown,
   clusterPlan: unknown,
-): string | undefined {
+): string[] {
   const job = asRecord(frontmatter);
   const plan = asRecord(clusterPlan);
   const items = Array.isArray(plan.items) ? plan.items.map(asRecord) : [];
@@ -25,11 +25,10 @@ export function canonicalItemAuthorAssociation(
   const refs = (
     canonicalRefs.length > 0 ? canonicalRefs : Array.isArray(job.candidates) ? job.candidates : []
   ).filter((ref): ref is string => typeof ref === "string");
-  for (const ref of refs) {
-    const item = items.find((candidate) => candidate.ref === ref);
-    if (typeof item?.author_association === "string") return item.author_association;
-  }
-  return undefined;
+  return refs.flatMap((ref) => {
+    const association = items.find((candidate) => candidate.ref === ref)?.author_association;
+    return typeof association === "string" ? [association] : [];
+  });
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

@@ -124,7 +124,7 @@ test("issue PR execution uses Sol with the ordinary item profile before author r
   );
   assert.match(
     fs.readFileSync("src/repair/execute-fix-artifact.ts", "utf8"),
-    /canonicalItemAuthorAssociation\(job\.frontmatter, clusterPlan\)/,
+    /canonicalItemAuthorAssociations\(job\.frontmatter, clusterPlan\)/,
   );
 });
 

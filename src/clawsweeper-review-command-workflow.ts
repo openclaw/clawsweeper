@@ -258,9 +258,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       batchSize,
       maxPages,
       model,
-      reasoningEffort,
       sandboxMode,
-      serviceTier,
       timeoutMs,
       expectedSourceRevision,
       allowClosed,
@@ -463,10 +461,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       const reviewTreeCleanupFailures: string[] = [];
       // oxfmt-ignore
       for (const item of candidates) {
-        const itemCodexProfile = codexItemProfile(item.authorAssociation, {
-          reasoningEffort,
-          serviceTier,
-        });
+        const itemCodexProfile = codexItemProfile(item.authorAssociation);
         const itemReadonlyModeSnapshots: ReturnType<typeof makeTreeReadOnly> = [];
         let reviewOpenclawDir = openclawDir;
         let pullRequestReviewTreeDir: string | null = null;
