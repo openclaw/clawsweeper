@@ -52,6 +52,13 @@ run `node scripts/e2e/ci-comment-read-budget.mjs --inline --baseline`.
   The real controller, validator, apply and publisher paths use synthetic GitHub
   transport and artifacts. Quota failure admits only the two in-flight members;
   the other six defer without attempts. Heartbeat failure admits zero members.
+- [Mixed circuit regression](mixed-circuit.json): one initial download is throttled
+  while its sibling succeeds. The quota lookup is held until the next member
+  reaches an outcome. At baseline `4f75de1dc7fec35e006f2781eafc3620df7fcf3a`, that member made a third artifact request;
+  afterward only the original two download, the successful sibling prepares its
+  result, and six members defer without attempts. A provisional circuit is written
+  before awaiting the reset lookup, which is bounded to 30 seconds. Authoritative
+  reset data can subsequently extend the initial one-minute fallback.
 
 These controlled measurements establish behavior, not production throughput or
 resolution of every historical HTTP 500. A bounded production error tail did not

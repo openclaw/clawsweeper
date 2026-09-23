@@ -8,5 +8,6 @@ assert.deepEqual(parallel.outcomes, serial.outcomes);
 assert.deepEqual(parallel.actions, serial.actions);
 assert.equal(parallel.telemetry.observedPeakWorkers, 2);
 const circuit = runCopyProof({ concurrency: 2, mode: "circuit" });
+const mixedCircuit = runCopyProof({ concurrency: 2, mode: "mixed-circuit" });
 const heartbeat = runCopyProof({ concurrency: 2, mode: "heartbeat" });
-console.log(JSON.stringify({ serial, parallel, circuit, heartbeat }, null, 2));
+console.log(JSON.stringify({ serial, parallel, circuit, mixedCircuit, heartbeat }, null, 2));

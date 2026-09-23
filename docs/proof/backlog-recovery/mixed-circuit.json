@@ -1,0 +1,75 @@
+{
+  "baseline": {
+    "regressionDetected": true,
+    "baselineDownloads": 3,
+    "allowedInflightDownloads": 2,
+    "commit": "4f75de1dc7fec35e006f2781eafc3620df7fcf3a"
+  },
+  "after": {
+    "telemetry": {
+      "configuredConcurrency": 2,
+      "observedPeakWorkers": 2,
+      "prepareDurationMs": 5089,
+      "workerMaximumMs": 3734,
+      "workerP95Ms": 3734,
+      "admitted": 2,
+      "collapsed": 6,
+      "cacheHits": 0,
+      "cacheFallbacks": 0,
+      "githubArtifactRequests": 2,
+      "completedOutcomes": 8,
+      "timeouts": 0,
+      "heartbeatFailed": false,
+      "cleanupFailures": 0,
+      "limits": {
+        "maxItems": 32,
+        "itemTimeoutMs": 480000,
+        "totalTimeoutMs": 1200000,
+        "maxArtifactBytes": 67108864
+      }
+    },
+    "outcomes": [
+      {
+        "kind": "retryable_failure",
+        "reasonCode": "github_rate_limit"
+      },
+      {
+        "kind": "eligible",
+        "disposition": {
+          "stateBaseCommit": null,
+          "guardedOpenAction": null,
+          "requeueLatestExpected": true,
+          "routableSyncExpected": false,
+          "deferredCloseCoverageExpected": false,
+          "terminalClosedExpected": false,
+          "terminalMissingExpected": false
+        }
+      },
+      {
+        "kind": "retryable_failure",
+        "reasonCode": "github_rate_limit"
+      },
+      {
+        "kind": "retryable_failure",
+        "reasonCode": "github_rate_limit"
+      },
+      {
+        "kind": "retryable_failure",
+        "reasonCode": "github_rate_limit"
+      },
+      {
+        "kind": "retryable_failure",
+        "reasonCode": "github_rate_limit"
+      },
+      {
+        "kind": "retryable_failure",
+        "reasonCode": "github_rate_limit"
+      },
+      {
+        "kind": "retryable_failure",
+        "reasonCode": "github_rate_limit"
+      }
+    ],
+    "publisherCount": 1
+  }
+}

@@ -231,11 +231,26 @@ export function fixtureGh() {
   const raw = process.argv.slice(2);
   const args = raw[0] === "--repo" ? raw.slice(2) : raw;
   const log = (value) => fs.appendFileSync(config.trace, `${JSON.stringify(value)}\n`, "utf8");
+  const waitFor = (path) => {
+    const deadline = Date.now() + 25_000;
+    while (!fs.existsSync(path)) {
+      if (Date.now() >= deadline) throw new Error("mixed circuit proof handshake timed out");
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+  };
   if (args[0] === "run" && args[1] === "download") {
     const bundleDir = args[args.indexOf("--dir") + 1];
     const artifact = args[args.indexOf("--name") + 1];
     log({ kind: "download", artifact });
-    if (config.mode === "circuit") {
+    if (config.mode === "mixed-circuit" && artifact === "exact-review-0") {
+      waitFor(join(config.workspace, "second-download-started"));
+      console.error("API rate limit exceeded");
+      process.exitCode = 1;
+    } else if (config.mode === "mixed-circuit" && artifact === "exact-review-1") {
+      write(join(config.workspace, "second-download-started"), "ready");
+      waitFor(join(config.workspace, "rate-status-pending"));
+      fs.cpSync(join(config.bundles, artifact), bundleDir, { recursive: true });
+    } else if (config.mode === "circuit") {
       console.error("API rate limit exceeded");
       process.exitCode = 1;
     } else if (config.benchmark || config.mode === "copy") {
@@ -248,6 +263,10 @@ export function fixtureGh() {
   }
   if (args[0] === "api" && args[1] === "rate_limit") {
     log({ kind: "rate-status" });
+    if (config.mode === "mixed-circuit") {
+      write(join(config.workspace, "rate-status-pending"), "ready");
+      waitFor(join(config.workspace, ".artifacts/exact-review-batch/outcomes/2.json"));
+    }
     console.log(JSON.stringify({ remaining: 0, reset: Math.ceil(Date.now() / 1000) + 3600 }));
     return;
   }
@@ -361,7 +380,7 @@ export function runCopyProof({
     if (mode === "heartbeat") {
       write(join(workspace, ".artifacts/exact-review-batch/heartbeat-failed"), "expired\n");
     }
-    if (mode === "publication" || mode === "file-source") {
+    if (mode === "publication" || mode === "file-source" || mode === "mixed-circuit") {
       const bundleModule = join(codeRoot, "dist/repair/exact-review-bundle.js");
       // Bundle creation uses the compiled owner, just like the producer.
       const create = `
@@ -514,6 +533,15 @@ export function runCopyProof({
           ),
         );
         assert.equal(publishers.length, 0);
+      } else if (mode === "mixed-circuit") {
+        assert.equal(events.filter((event) => event.kind === "download").length, 2);
+        assert.equal(events.filter((event) => event.kind === "rate-status").length, 1);
+        assert.equal(outcomes[0].attempted, true);
+        assert.equal(outcomes[0].rateLimitAuthoritative, true);
+        assert.equal(outcomes[1].kind, "eligible");
+        assert.ok(outcomes.slice(2).every((outcome) => outcome.attempted === false));
+        assert.equal(telemetry.collapsed, 6);
+        assert.equal(publishers.length, 1);
       } else if (mode === "circuit") {
         const downloads = events.filter((event) => event.kind === "download").length;
         assert.ok(downloads >= 1 && downloads <= concurrency);
