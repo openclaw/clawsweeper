@@ -8,6 +8,7 @@
   ],
   "warmFetches": 0,
   "scannerDownloads": 2,
+  "scannerConnectionRefusalRecovered": true,
   "corruptScannerRejected": true,
   "limits": "Synthetic local transport faults; no GitHub writes or production throughput claim."
 }

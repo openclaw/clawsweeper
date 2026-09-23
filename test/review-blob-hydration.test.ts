@@ -1444,13 +1444,15 @@ test("missing partial-clone objects are fetched in one bounded network request",
       (event) => event.event === "start" && event.argv?.includes("fetch"),
     );
     assert.equal(result, 18);
-    assert.equal(revLists.length, 1);
-    assert.ok(revLists[0]!.argv?.includes(`${fixture.baseSha}^{tree}`));
-    assert.ok(revLists[0]!.argv?.includes(`${fixture.headSha}^{tree}`));
-    assert.equal(
-      revLists[0]!.argv?.some((argument) => argument.startsWith("--no-walk")),
-      false,
-    );
+    assert.equal(revLists.length, 3);
+    for (const probe of revLists) {
+      assert.ok(probe.argv?.includes(`${fixture.baseSha}^{tree}`));
+      assert.ok(probe.argv?.includes(`${fixture.headSha}^{tree}`));
+      assert.equal(
+        probe.argv?.some((argument) => argument.startsWith("--no-walk")),
+        false,
+      );
+    }
     assert.equal(nestedFetches.length, 0, "availability probe must not lazy-fetch blobs");
     assert.equal(explicitFetches.length, 1, "hydration must perform one explicit bounded fetch");
     assert.ok(explicitFetches[0]!.argv?.includes("--stdin"));

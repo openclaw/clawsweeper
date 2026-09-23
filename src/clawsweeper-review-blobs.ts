@@ -1021,43 +1021,48 @@ export function hydratePullRequestReviewBlobs({
   // Git before 2.45 exits without batch output when GIT_NO_LAZY_FETCH blocks a promisor fetch.
   // Traverse only the two commit trees: this emits their blobs without walking either history.
   // rev-list's missing-object mode suppresses lazy fetches and reports them on older clients too.
-  const objectAvailability = spawnSync(
-    "git",
-    [
-      "--literal-pathspecs",
-      "rev-list",
-      "--objects",
-      "--missing=print",
-      `${baseSha}^{tree}`,
-      `${headSha}^{tree}`,
-      "--",
-      ...paths,
-    ],
-    {
-      cwd: targetDir,
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        GIT_OPTIONAL_LOCKS: "0",
-        GIT_NO_LAZY_FETCH: "1",
-        GIT_NO_REPLACE_OBJECTS: "1",
+  const readMissingObjects = (timeoutMs: number) => {
+    const objectAvailability = spawnSync(
+      "git",
+      [
+        "--literal-pathspecs",
+        "rev-list",
+        "--objects",
+        "--missing=print",
+        `${baseSha}^{tree}`,
+        `${headSha}^{tree}`,
+        "--",
+        ...paths,
+      ],
+      {
+        cwd: targetDir,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GIT_OPTIONAL_LOCKS: "0",
+          GIT_NO_LAZY_FETCH: "1",
+          GIT_NO_REPLACE_OBJECTS: "1",
+        },
+        maxBuffer: MAX_GIT_OUTPUT_BYTES,
+        timeout: timeoutMs,
       },
-      maxBuffer: MAX_GIT_OUTPUT_BYTES,
-      timeout: remainingMs(),
-    },
-  );
-  if (objectAvailability.error || objectAvailability.status !== 0) {
-    throw new AgentInputScanError(Date.now() >= deadlineAt ? "deadline" : "incomplete_source");
-  }
-  const observed = new Set<string>();
-  const missing = new Set<string>();
-  for (const entry of objectAvailability.stdout.split("\n")) {
-    const match = entry.match(/^(\??)([0-9a-f]{40,64})(?: |$)/i);
-    if (!match || !objectIds.has(match[2]!)) continue;
-    observed.add(match[2]!);
-    if (match[1] === "?") missing.add(match[2]!);
-  }
-  if (observed.size !== objectIds.size) throw new AgentInputScanError("incomplete_source");
+    );
+    if (objectAvailability.error || objectAvailability.status !== 0) {
+      throw new AgentInputScanError("incomplete_source");
+    }
+    const observed = new Set<string>();
+    const missing = new Set<string>();
+    for (const entry of objectAvailability.stdout.split("\n")) {
+      const match = entry.match(/^(\??)([0-9a-f]{40,64})(?: |$)/i);
+      if (!match || !objectIds.has(match[2]!)) continue;
+      observed.add(match[2]!);
+      if (match[1] === "?") missing.add(match[2]!);
+    }
+    if (observed.size !== objectIds.size) throw new AgentInputScanError("incomplete_source");
+
+    return missing;
+  };
+  const missing = readMissingObjects(remainingMs());
 
   const sizes = new Map<string, number>();
   const localObjectIds = [...objectIds].filter((objectId) => !missing.has(objectId));
@@ -1111,17 +1116,9 @@ export function hydratePullRequestReviewBlobs({
   if (missing.size > 0) {
     const pending = new Set(missing);
     const complete = () => {
-      const checked = spawnSync("git", ["cat-file", "--batch-check=%(objectname) %(objecttype)"], {
-        cwd: targetDir,
-        encoding: "utf8",
-        env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
-        input: `${[...pending].join("\n")}\n`,
-        timeout: REVIEW_TREE_METADATA_DEADLINE_MS,
-        maxBuffer: MAX_GIT_OUTPUT_BYTES,
-      });
-      for (const line of checkedReviewGit(checked, "review_git_inspection_failed").split("\n")) {
-        const [oid, type] = line.split(" ");
-        if (oid && type === "blob") pending.delete(oid);
+      const stillMissing = readMissingObjects(REVIEW_TREE_METADATA_DEADLINE_MS);
+      for (const oid of pending) {
+        if (!stillMissing.has(oid)) pending.delete(oid);
       }
       return pending.size === 0;
     };

@@ -7,7 +7,8 @@ for (const surface of ["source-recovery", "dead-letter-inventory", "batch-concur
     const result = JSON.parse(
       execFileSync(process.execPath, [`scripts/e2e/backlog-${surface}.mjs`], {
         encoding: "utf8",
-        timeout: 60_000,
+        timeout: 180_000,
+        env: { ...process.env, NODE_V8_COVERAGE: undefined },
       }),
     );
     assert.ok(result && typeof result === "object");

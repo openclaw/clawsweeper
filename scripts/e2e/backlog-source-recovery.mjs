@@ -20,7 +20,13 @@ if (process.argv.includes("--server")) {
     response.statusCode = requests === 1 ? 503 : 200;
     response.end(requests === 1 ? "unavailable" : "corrupt archive");
   });
-  server.listen(0, "127.0.0.1", () => console.log(server.address().port));
+  server.listen(0, "127.0.0.1", () => {
+    const port = server.address().port;
+    server.close(() => {
+      console.log(port);
+      setTimeout(() => server.listen(port, "127.0.0.1"), 1000);
+    });
+  });
 } else {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "backlog-source-proof-")));
   const previousPath = process.env.PATH;
@@ -152,6 +158,7 @@ process.exit(r.status??1);
       });
     } catch (error) {
       assert.match(String(error.stdout) + String(error.stderr), /FAILED|did NOT match/);
+      assert.match(String(error.stderr), /curl: \(7\)/);
       refused = true;
     }
     assert.equal(refused, true);
@@ -166,6 +173,7 @@ process.exit(r.status??1);
           fetchObjects: fetches.map((ids) => ids.length),
           warmFetches: 0,
           scannerDownloads: downloads,
+          scannerConnectionRefusalRecovered: true,
           corruptScannerRejected: true,
           limits:
             "Synthetic local transport faults; no GitHub writes or production throughput claim.",

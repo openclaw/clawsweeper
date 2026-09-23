@@ -36,8 +36,10 @@ run `node scripts/e2e/ci-comment-read-budget.mjs --inline --baseline`.
   generation invalidation. The transport is a loopback HTTP fixture, not GitHub.
 - [Source recovery](source.json): real partial Git clone and native fetch install
   one of three missing blobs before an injected transport failure. The retry
-  fetches only the remaining two. A warm rerun fetches nothing. Real curl retries
-  one loopback 503, then the unchanged pinned checksum refuses a corrupt archive.
+  fetches only the remaining two. A warm rerun fetches nothing. The completion checks reuse the older-Git-safe
+  tree-scoped missing-object probe; they never feed known-missing promisor blobs
+  to `cat-file`. Real curl retries
+  a refused connection and one loopback 503, then the unchanged pinned checksum refuses a corrupt archive.
   The fixture redirects the scanner URL and supplies Linux platform detection on
   macOS; it does not execute a synthetic scanner or weaken production validation.
 - [Inventory](inventory.json): the production dead-letter handler uses two key
@@ -57,6 +59,18 @@ reproduce the intermittent claim failures; existing claim retries and ownership
 checks remain unchanged. The bounded inventory lookup removes an observed
 unnecessary queue-wide read, without asserting it caused those failures.
 
+## Older Git compatibility
+
+ClawSweeper identified a regression in the initial completion probe. The corrected
+production source and native proof also pass on Git 2.39.5 / Node 24.18.1 in
+`node:24-bookworm` on Crabbox provider `aws`, lease `cbx_d8cf271b730b`,
+[run `run_069bd9adb990d386467ac4b2d86d116c`](https://crabbox.openclaw.ai/portal/runs/run_069bd9adb990d386467ac4b2d86d116c),
+exit 0 with nine focused retry tests passed. [Retained result](source-old-git.json)
+binds the corrected source hash and records partial-pack reuse, zero warm
+fetches, connection-refusal/503 recovery, and corrupt-archive refusal. The
+existing Git trace regression also requires every availability probe to use
+exact tree roots, with zero nested lazy fetches and one explicit successful fetch.
+
 ## Rollout and rollback
 
 Worker/review limits remain 128 total, 80 exact globally, 64 per target and 32
@@ -74,4 +88,4 @@ of 60 seconds, and local object verification between attempts. History completen
 is still required; shallow repositories are unshallowed. Only transport failures
 retry; authentication/ref failures fail normally. Timed-out fetches are killed.
 Scanner download uses 15-second connection and 60-second request deadlines with
-at most two curl transient retries; digest, version and benign scan gates remain.
+at most two curl retries, including failures before an HTTP response; digest, version and benign scan gates remain.
