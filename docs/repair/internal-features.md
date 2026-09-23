@@ -618,7 +618,7 @@ Important defaults:
 - `CLAWSWEEPER_CODEX_REASONING_EFFORT`: model reasoning effort. Repair workers
   default to `high`; ordinary planning and repair normalize `xhigh` to `high`.
 - `CLAWSWEEPER_FIX_PR_MODEL` and `CLAWSWEEPER_FIX_PR_REASONING_EFFORT`:
-  automatic issue fix/PR execution defaults to `gpt-5.6-sol` with `xhigh`
+  automatic issue fix/PR execution uses the configured `gpt-6-sol` with `high`
   reasoning without changing the normal planning or automerge repair model.
 - `CLAWSWEEPER_CODEX_SERVICE_TIER`: Codex service tier. Repair workers default
   to `fast`.

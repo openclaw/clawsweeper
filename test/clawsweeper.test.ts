@@ -2276,6 +2276,7 @@ test("sweep workflow gives high-context Codex reviews twenty minutes by default"
 test("agent workflows install pinned CLI releases and keep runner models secret", () => {
   const action = readText(".github/actions/setup-codex/action.yml");
   const openclawAction = readText(".github/actions/setup-openclaw/action.yml");
+  const ciWorkflow = readText(".github/workflows/ci.yml");
   const localCheck = readText("scripts/check-local-codex.mjs");
   const workflows = [
     ".github/workflows/assist.yml",
@@ -2284,8 +2285,9 @@ test("agent workflows install pinned CLI releases and keep runner models secret"
     ".github/workflows/sweep.yml",
   ].map((file) => readText(file));
 
-  assert.match(action, /codex-version:[\s\S]*default: "0\.154\.0"/);
-  assert.match(action, /proxy-version:[\s\S]*default: "0\.154\.0"/);
+  assert.match(action, /codex-version:[\s\S]*default: "0\.158\.0-alpha\.2"/);
+  assert.match(action, /proxy-version:[\s\S]*default: "0\.158\.0-alpha\.2"/);
+  assert.ok(ciWorkflow.includes("(?:-[\\w.-]+)?"));
   assert.doesNotMatch(action, /@latest/);
   assert.match(localCheck, /CLAWSWEEPER_LOCAL_CODEX_MODEL \?\? "gpt-5\.6-sol"/);
   assert.match(localCheck, /model_reasoning_effort="high"/);

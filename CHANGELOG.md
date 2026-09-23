@@ -9,6 +9,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 - Qualify the relocated Gateway config CDP-redaction fixture by its exact old and new source lines while preserving complete input scanning and changed-input refusal.
 
+- Move ClawSweeper review and fix lanes to GPT-6 Sol with high reasoning and fast service, and refresh the hosted Codex tools to the latest green main snapshot.
+
 - Admit generated Git object metadata findings in raw diffs only after canonical source witnesses and a complete supplemental scan, including added and deleted files, while preserving all primary source scanning.
 
 - Keep re-review acknowledgements owned by the durable queue so a delayed recovery router cannot overwrite a completed or failed status.
