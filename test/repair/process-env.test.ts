@@ -348,16 +348,16 @@ test("Codex subprocess fails closed when Bun repair would run on Windows", () =>
 });
 
 test("repair Codex config reserves xhigh for explicit issue-fix execution", () => {
-  assert.equal(repairCodexReasoningEffort(undefined), "high");
-  assert.equal(repairCodexReasoningEffort(""), "high");
+  assert.equal(repairCodexReasoningEffort(undefined), "medium");
+  assert.equal(repairCodexReasoningEffort(""), "medium");
   assert.equal(repairCodexReasoningEffort("xhigh"), "high");
   assert.equal(repairCodexReasoningEffort("XHIGH"), "high");
   assert.equal(repairCodexReasoningEffort("xhigh", true), "xhigh");
   assert.equal(repairCodexReasoningEffort("XHIGH", true), "xhigh");
   assert.equal(repairCodexReasoningEffort("medium"), "medium");
 
-  assert.equal(repairCodexServiceTier(undefined), "fast");
-  assert.equal(repairCodexServiceTier(""), "fast");
+  assert.equal(repairCodexServiceTier(undefined), "");
+  assert.equal(repairCodexServiceTier(""), "");
   assert.equal(repairCodexServiceTier("fast"), "fast");
 });
 

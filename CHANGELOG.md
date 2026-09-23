@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Route maintainer-authored issues and pull requests to GPT-6 Sol with high reasoning and fast service while other items use medium reasoning and standard service.
+
 - Qualify the relocated Gateway config CDP-redaction fixture by its exact old and new source lines while preserving complete input scanning and changed-input refusal.
 
 - Move ClawSweeper review and fix lanes to GPT-6 Sol with high reasoning and fast service, and refresh the hosted Codex tools to the latest green main snapshot.

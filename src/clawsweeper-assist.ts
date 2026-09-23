@@ -260,11 +260,10 @@ export function createAssistWorkflow({
       ...(options.mode === undefined ? {} : { mode: options.mode }),
       ...(options.lens === undefined ? {} : { lens: options.lens }),
     });
-    const codexConfig = [
-      codexLoginConfig(),
-      'approval_policy="never"',
-      `service_tier=${JSON.stringify(DEFAULT_SERVICE_TIER)}`,
-    ];
+    const codexConfig = [codexLoginConfig(), 'approval_policy="never"'];
+    if (DEFAULT_SERVICE_TIER) {
+      codexConfig.push(`service_tier=${JSON.stringify(DEFAULT_SERVICE_TIER)}`);
+    }
     const emptyGitHubConfigDir = join(options.workDir, ".gh-empty");
     ensureDir(emptyGitHubConfigDir);
     const result = runAgentProcess({

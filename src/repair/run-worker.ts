@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { runAgentProcess } from "../agent-runner.js";
+import { canonicalItemAuthorAssociation, codexItemProfile } from "../codex-item-profile.js";
 import { codexAppServerProcessOptionsFromEnv } from "../codex-process.js";
 import { deterministicAutomergeResult } from "./deterministic-automerge-result.js";
 import {
@@ -38,8 +39,6 @@ const resultRepairAttempts = Math.max(
 const resultRepairTimeoutMs = Number(
   process.env.CLAWSWEEPER_RESULT_REPAIR_TIMEOUT_MS ?? 10 * 60 * 1000,
 );
-const codexReasoningEffort = repairCodexReasoningEffort();
-const codexServiceTier = repairCodexServiceTier();
 const codexPlannerSandbox =
   process.env.CLAWSWEEPER_CODEX_PLANNER_SANDBOX === "danger-full-access"
     ? "danger-full-access"
@@ -144,6 +143,20 @@ if (!dryRun) {
   promptContext.clusterPlanPath = path.join(runDir, "cluster-plan.json");
   promptContext.fixArtifactPath = path.join(runDir, "fix-artifact.json");
 }
+
+const clusterPlanPath = path.join(runDir, "cluster-plan.json");
+const clusterPlan = fs.existsSync(clusterPlanPath)
+  ? JSON.parse(fs.readFileSync(clusterPlanPath, "utf8"))
+  : null;
+const codexProfile = codexItemProfile(
+  canonicalItemAuthorAssociation(job.frontmatter, clusterPlan),
+  {
+    reasoningEffort: repairCodexReasoningEffort(),
+    serviceTier: repairCodexServiceTier(),
+  },
+);
+const codexReasoningEffort = codexProfile.reasoningEffort;
+const codexServiceTier = codexProfile.serviceTier;
 
 const prompt = renderPrompt(job, mode, promptContext);
 

@@ -406,6 +406,7 @@ function reviewPolicyHash(options: {
       // stable; bump REVIEW_POLICY_VERSION to invalidate stored reviews.
       model: "model-excluded-2026-07",
       reasoningEffort: options.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
+      itemExecutionProfile: "maintainer-high-fast-otherwise-medium-standard-v1",
       sandboxMode: options.sandboxMode ?? "read-only",
       // Keep the historical hash value so service tier changes do not invalidate reviews.
       serviceTier: "",

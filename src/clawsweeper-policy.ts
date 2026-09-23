@@ -79,12 +79,12 @@ export const LOW_SIGNAL_UNMERGEABLE_PR_MIN_INACTIVE_DAYS = 30;
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const RECENT_MISSING_OPEN_MS = DAY_MS;
 export const DEFAULT_CODEX_MODEL = PUBLIC_CODEX_MODEL;
-export const DEFAULT_REASONING_EFFORT = "high";
-// Priority service tier for Codex calls (maintainer decision 2026-07-17:
-// "gpt 5.6 sol high fast"). Latency-only; excluded from review-policy hashing.
-export const DEFAULT_SERVICE_TIER = "fast";
+export const DEFAULT_REASONING_EFFORT = "medium";
+// Ordinary items use standard service. Maintainer-authored items are promoted
+// per item to high reasoning and fast service.
+export const DEFAULT_SERVICE_TIER = "";
 export const DEFAULT_REVIEW_CODEX_TIMEOUT_MS = 1_200_000;
-export const REVIEW_POLICY_VERSION = "2026-08-28-policy-v25";
+export const REVIEW_POLICY_VERSION = "2026-09-23-policy-v26";
 export const REVIEW_COMMENT_MARKER_PREFIX = "<!-- clawsweeper-review";
 export const REVIEW_START_STATUS_MARKER_PREFIX = "<!-- clawsweeper-review-status";
 export const ACCEPTED_LARGE_LABEL_DEFINITION = {

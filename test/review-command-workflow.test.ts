@@ -777,13 +777,25 @@ else {
           });
         throw new Error("scan refusal must not become a decision");
       },
-      runCodex: ({ item: reviewItem, openclawDir, reviewTreeRoot, reviewEnv, prompt }) => {
+      runCodex: ({
+        item: reviewItem,
+        openclawDir,
+        reviewTreeRoot,
+        reviewEnv,
+        prompt,
+        reasoningEffort,
+        serviceTier,
+      }) => {
         assert.equal(
           prompt,
           "Review the current item.",
           "workflow supplies the runtime prompt; media fallback is unreachable",
         );
         assert.equal(reviewEnv.GH_TOKEN, "synthetic-inspection-token");
+        if (scenario === "changed-pr-clean" && !outputCase && !publicationCase) {
+          assert.equal(reasoningEffort, "medium");
+          assert.equal(serviceTier, "");
+        }
         generationCalls += 1;
         if (isPullRequest) {
           assert.equal(reviewTreeRoot, realpathSync(dirname(openclawDir)));

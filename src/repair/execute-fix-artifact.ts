@@ -170,6 +170,7 @@ import {
   sourceContributorCredits,
   supersededReplacementSources,
 } from "./execute-fix-github.js";
+import { canonicalItemAuthorAssociation, codexItemProfile } from "../codex-item-profile.js";
 
 const FIX_ACTIONS = new Set(["fix_needed", "build_fix_artifact", "open_fix_pr"]);
 const NON_EXECUTABLE_REPAIR_STRATEGIES = new Set(["already_fixed_on_main", "needs_human"]);
@@ -185,12 +186,7 @@ const deferPublication = Boolean(args["defer-publication"]);
 const publishReportOnly = Boolean(args["publish-report-only"]);
 const model = String(args.model ?? process.env.CLAWSWEEPER_MODEL ?? "internal");
 const executionModelArgs = codexModelArgs(model);
-const codexReasoningEffort = repairCodexReasoningEffort(
-  undefined,
-  /^jobs\/[^/]+\/inbox\/issue-/.test(String(jobPath ?? "")),
-);
 const scriptStartedAt = new Date();
-const codexServiceTier = repairCodexServiceTier();
 const codexHeartbeatMs = Math.max(
   10_000,
   Number(process.env.CLAWSWEEPER_CODEX_HEARTBEAT_MS ?? 60_000),
@@ -283,6 +279,19 @@ if (process.env.CLAWSWEEPER_ALLOW_EXECUTE !== "1") {
 
 const resultPath = resultPathArg ? path.resolve(resultPathArg) : findLatestResultPath();
 const result = JSON.parse(fs.readFileSync(resultPath, "utf8"));
+const clusterPlanPath = path.join(path.dirname(resultPath), "cluster-plan.json");
+const clusterPlan = fs.existsSync(clusterPlanPath)
+  ? JSON.parse(fs.readFileSync(clusterPlanPath, "utf8"))
+  : null;
+const codexProfile = codexItemProfile(
+  canonicalItemAuthorAssociation(job.frontmatter, clusterPlan),
+  {
+    reasoningEffort: repairCodexReasoningEffort(),
+    serviceTier: repairCodexServiceTier(),
+  },
+);
+const codexReasoningEffort = codexProfile.reasoningEffort;
+const codexServiceTier = codexProfile.serviceTier;
 if (result.repo !== job.frontmatter.repo) {
   throw new Error(`result repo ${result.repo} does not match job repo ${job.frontmatter.repo}`);
 }

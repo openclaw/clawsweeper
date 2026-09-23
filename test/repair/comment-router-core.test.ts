@@ -4104,7 +4104,7 @@ test("assist workflow preserves flat field fallbacks after nested dispatch field
   );
   assert.match(
     workflow,
-    /REASONING_EFFORT: \$\{\{ vars\.CLAWSWEEPER_CODEX_REASONING_EFFORT \|\| 'high' \}\}/,
+    /REASONING_EFFORT: \$\{\{ vars\.CLAWSWEEPER_CODEX_REASONING_EFFORT \|\| 'medium' \}\}/,
   );
   assert.doesNotMatch(workflow, /client_payload\.(?:assist\.)?reasoning_effort/);
   assert.match(

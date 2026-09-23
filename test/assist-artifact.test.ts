@@ -101,7 +101,10 @@ fs.writeFileSync(process.argv[process.argv.indexOf('--output-last-message') + 1]
       run();
       assert.match(readFileSync(providerInput, "utf8"), /Explain this change\./);
       const args = JSON.parse(readFileSync(providerArgs, "utf8"));
-      assert.ok(args.includes('service_tier="fast"'));
+      assert.equal(
+        args.some((arg: string) => arg.startsWith("service_tier=")),
+        false,
+      );
       assert.ok(args.includes('model_reasoning_effort="medium"'));
       assert.equal(
         JSON.parse(readFileSync(artifactPath, "utf8")).output.answer,
@@ -322,7 +325,7 @@ test("assist workflow isolates Codex generation from the fresh write-token publi
   assert.equal(workflow.match(/persist-credentials: false/g)?.length, 4);
   assert.equal(
     workflow.match(
-      /REASONING_EFFORT: \$\{\{ vars\.CLAWSWEEPER_CODEX_REASONING_EFFORT \|\| 'high' \}\}/g,
+      /REASONING_EFFORT: \$\{\{ vars\.CLAWSWEEPER_CODEX_REASONING_EFFORT \|\| 'medium' \}\}/g,
     )?.length,
     3,
   );

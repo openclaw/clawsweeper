@@ -236,7 +236,7 @@ function runCommentSyncShell(root: string, commands: string[]): string {
   );
 }
 
-test("sweep commands honor configured reasoning effort with the shared high default", () => {
+test("sweep commands honor configured reasoning effort with the ordinary medium default", () => {
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
   const commands = Object.values(workflow.jobs).flatMap((job: any) =>
     (job.steps ?? []).flatMap((step: any) =>
@@ -248,7 +248,7 @@ test("sweep commands honor configured reasoning effort with the shared high defa
   assert.equal(commands.length, 4);
   assert.equal(
     workflow.env.CLAWSWEEPER_CODEX_REASONING_EFFORT,
-    "${{ vars.CLAWSWEEPER_CODEX_REASONING_EFFORT || 'high' }}",
+    "${{ vars.CLAWSWEEPER_CODEX_REASONING_EFFORT || 'medium' }}",
   );
   for (const effort of ["medium", "high"]) {
     for (const command of commands) {

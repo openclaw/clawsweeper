@@ -33,6 +33,7 @@ import type {
   ReviewActionLedger,
 } from "./clawsweeper-types.js";
 import { PUBLIC_CODEX_MODEL } from "./codex-env.js";
+import { codexItemProfile } from "./codex-item-profile.js";
 import { UserFacingCommandError } from "./command.js";
 import { LOCAL_REVIEW_WEB_SEARCH_CONFIG } from "./commit-sweeper.js";
 import { isReviewedPrActivityCursor } from "./review-activity-cursor.js";
@@ -462,6 +463,10 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       const reviewTreeCleanupFailures: string[] = [];
       // oxfmt-ignore
       for (const item of candidates) {
+        const itemCodexProfile = codexItemProfile(item.authorAssociation, {
+          reasoningEffort,
+          serviceTier,
+        });
         const itemReadonlyModeSnapshots: ReturnType<typeof makeTreeReadOnly> = [];
         let reviewOpenclawDir = openclawDir;
         let pullRequestReviewTreeDir: string | null = null;
@@ -1489,9 +1494,9 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             model,
             openclawDir: reviewOpenclawDir,
             reviewTreeRoot: reviewTreesDir,
-            reasoningEffort,
+            reasoningEffort: itemCodexProfile.reasoningEffort,
             sandboxMode,
-            serviceTier,
+            serviceTier: itemCodexProfile.serviceTier,
             forcedLoginMethod,
             preserveCodexAuth: localOnly,
             timeoutMs,
@@ -1545,9 +1550,9 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         decision = verifyRegressionProvenance(decision, item, context, reviewOpenclawDir, git);
         const runtime = {
           model: PUBLIC_CODEX_MODEL,
-          reasoningEffort,
+          reasoningEffort: itemCodexProfile.reasoningEffort,
           sandboxMode,
-          serviceTier,
+          serviceTier: itemCodexProfile.serviceTier,
           ...prompt.telemetry,
           contextElapsedMs,
           codexElapsedMs,

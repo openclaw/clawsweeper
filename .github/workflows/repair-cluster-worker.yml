@@ -198,7 +198,7 @@ jobs:
       CLAWSWEEPER_MAX_LINKED_REFS: ${{ vars.CLAWSWEEPER_MAX_LINKED_REFS || '20' }}
       CLAWSWEEPER_MAX_REVIEW_COMMENTS_PER_PR: ${{ vars.CLAWSWEEPER_MAX_REVIEW_COMMENTS_PER_PR || '50' }}
       CLAWSWEEPER_CODEX_TIMEOUT_MS: ${{ vars.CLAWSWEEPER_CODEX_TIMEOUT_MS || '1800000' }}
-      CLAWSWEEPER_CODEX_REASONING_EFFORT: ${{ vars.CLAWSWEEPER_CODEX_REASONING_EFFORT || 'high' }}
+      CLAWSWEEPER_CODEX_REASONING_EFFORT: ${{ vars.CLAWSWEEPER_CODEX_REASONING_EFFORT || 'medium' }}
       CLAWSWEEPER_CODEX_PLANNER_SANDBOX: ${{ inputs.planner_sandbox }}
       CLAWSWEEPER_STEERABLE_CODEX: ${{ vars.CLAWSWEEPER_STEERABLE_CODEX || '0' }}
       CLAWSWEEPER_CRABFLEET_URL: ${{ vars.CLAWSWEEPER_CRABFLEET_URL || 'https://crabfleet.openclaw.ai' }}
@@ -474,8 +474,8 @@ jobs:
       CLAWSWEEPER_ALLOW_EXECUTE: ${{ needs.cluster.outputs.allow_execute == '1' && '1' || '0' }}
       CLAWSWEEPER_ALLOW_FIX_PR: ${{ needs.cluster.outputs.allow_fix_pr == '1' && '1' || '0' }}
       CLAWSWEEPER_ALLOW_MERGE: ${{ !contains(inputs.job, '/inbox/issue-') && needs.cluster.outputs.allow_merge || '0' }}
-      CLAWSWEEPER_OPENCLAW_MODEL: ${{ contains(inputs.job, '/inbox/issue-') && format('openai/{0}', vars.CLAWSWEEPER_FIX_PR_MODEL || 'gpt-5.6-sol') || secrets.CLAWSWEEPER_OPENCLAW_MODEL }}
-      CLAWSWEEPER_CODEX_REASONING_EFFORT: ${{ contains(inputs.job, '/inbox/issue-') && (vars.CLAWSWEEPER_FIX_PR_REASONING_EFFORT || 'xhigh') || vars.CLAWSWEEPER_CODEX_REASONING_EFFORT || 'high' }}
+      CLAWSWEEPER_OPENCLAW_MODEL: ${{ contains(inputs.job, '/inbox/issue-') && format('openai/{0}', vars.CLAWSWEEPER_FIX_PR_MODEL || 'gpt-6-sol') || secrets.CLAWSWEEPER_OPENCLAW_MODEL }}
+      CLAWSWEEPER_CODEX_REASONING_EFFORT: ${{ contains(inputs.job, '/inbox/issue-') && (vars.CLAWSWEEPER_FIX_PR_REASONING_EFFORT || 'medium') || vars.CLAWSWEEPER_CODEX_REASONING_EFFORT || 'medium' }}
       CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS: ${{ vars.CLAWSWEEPER_CODEX_REVIEW_ATTEMPTS || '4' }}
       CLAWSWEEPER_FIX_CODEX_TIMEOUT_MS: ${{ vars.CLAWSWEEPER_FIX_CODEX_TIMEOUT_MS || '1800000' }}
       CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS: ${{ inputs.target_validation_timeout_ms || vars.CLAWSWEEPER_FIX_TARGET_VALIDATION_TIMEOUT_MS || '' }}
@@ -594,7 +594,7 @@ jobs:
         if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' }}
         env:
           OPENAI_API_KEY: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.OPENAI_API_KEY || '' }}
-          CLAWSWEEPER_INTERNAL_MODEL: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && (contains(inputs.job, '/inbox/issue-') && (vars.CLAWSWEEPER_FIX_PR_MODEL || 'gpt-5.6-sol') || secrets.CLAWSWEEPER_MODEL) || '' }}
+          CLAWSWEEPER_INTERNAL_MODEL: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && (contains(inputs.job, '/inbox/issue-') && (vars.CLAWSWEEPER_FIX_PR_MODEL || 'gpt-6-sol') || secrets.CLAWSWEEPER_MODEL) || '' }}
           CLAWSWEEPER_CLAWROUTER_CONFIG: ${{ secrets.CLAWSWEEPER_CLAWROUTER_CONFIG }}
         with:
           auth-mode: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE || 'proxy' }}
