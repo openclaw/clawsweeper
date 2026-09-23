@@ -1,0 +1,228 @@
+{
+  "policy": "6500b62dfd4c4efb0e2b821c1e9c427e128febef",
+  "sourceIdentities": [
+    {
+      "path": "extensions/session-share/src/session-catalog.test.ts",
+      "head": "26c03d2466f7b95e3c77da9912377e115d65f24d",
+      "role": "head",
+      "mode": "100644",
+      "blob": "b018d18acd4686a7dafa1899c4f20653c06ee42c",
+      "line": 124,
+      "lineSha256": "4eaa188aa62167bab9ffb1ef558222f557cfbb82b7bf480aec3fcb29482604d4",
+      "fileSha256": "faff230751ae21e2fcf2050d6d2d96d450b8a28569a353a4da8e40b5e2d4a199",
+      "pathSha256": "a00705e8f498032d87776710011b194c2795d91f0b55add9b3a9c897c37e8e9c",
+      "context": {
+        "firstLine": 120,
+        "lastLine": 148,
+        "sha256": "3e802646889951ae27be5bf6c608f40c659668081e4e66aa1a3e34e7468a126d",
+        "purpose": "Reject credentialed source origin",
+        "syntheticDomain": "reserved example.com subdomain",
+        "userinfo": "generic placeholders, unchanged from reviewed original fixture"
+      }
+    },
+    {
+      "path": "ui/src/components/app-sidebar-catalog-menu.test.ts",
+      "head": "26c03d2466f7b95e3c77da9912377e115d65f24d",
+      "role": "head",
+      "mode": "100644",
+      "blob": "089e5257e0f16553e3f5b5e4b61ab4a145c109a0",
+      "line": 13,
+      "lineSha256": "324b82ec0c03a429c0255cca71ee35cf44d7b73d1aed27ad56a1eb9671714571",
+      "fileSha256": "5ef7ae3a6b83657359bea22b0c977ad96d56b91e6ccbffecf6b4b23e67f97ca3",
+      "pathSha256": "bacd219169b955002285b071be68e9f4baaa312c304a31f0320ec2f917142ede",
+      "context": {
+        "firstLine": 8,
+        "lastLine": 36,
+        "sha256": "55cde9e94a82ff47a114be50d01030c8bbdb5f1acc958f413ec0a87eaf0781fe",
+        "purpose": "Reject unsafe sidebar source links without navigation",
+        "syntheticDomain": "reserved example.com subdomain",
+        "userinfo": "generic placeholders, unchanged from reviewed original fixture"
+      }
+    }
+  ],
+  "runtimeComparison": {
+    "scannerVersionBoth": "3.97.4",
+    "platformBoth": "linux-x64",
+    "pinnedArchiveSha256Both": "dc24007c2f233bd61c05beabeb44aa27ea9b43288166279209abe0458c5ce76b",
+    "localBinarySha256": "95c2a42bce979fce6dd73cc629b37ae4d72731b0dc16e047fba41a77bc765620",
+    "hostedBinaryDigest": "not separately recorded; checksum-verified identical official archive installation proved",
+    "nodePriorAndCurrentLocal": "26.7.0",
+    "nodeHosted": "24.21.0",
+    "optionsBoth": [
+      "filesystem",
+      "<input-directory>",
+      "--results=verified,unknown",
+      "--fail",
+      "--fail-on-scan-errors",
+      "--no-update",
+      "--json",
+      "--no-color"
+    ],
+    "verification": "on",
+    "environment": "isolated HOME/TMPDIR/TMP/TEMP; no inherited detector, proxy, or decoder flags",
+    "priorPrompt": "controlled/no schema",
+    "hostedPrompt": "full buildReviewPrompt + decision schema, exact prompt not retained",
+    "materialBoundary": "prompt and schema separate files; canonical raw diff, full binary patch, and deduplicated OID-named committed blobs are separate files, not concatenated",
+    "sameFinalSource": "base bc6fedbe4633d3ccc0e4bb84ef323fa62794c6fd; merge-base 0052923d044f0e44664c9b2d352e0db84525dc14; head 26c03d2466f7b95e3c77da9912377e115d65f24d",
+    "hostedManifest": "not retained"
+  },
+  "hostedFindingAccounting": [
+    {
+      "index": 0,
+      "identity": "unavailable",
+      "evidence": "classifier reached index3 without terminal refusal; exact identity and complete outcome not retained; cannot invent"
+    },
+    {
+      "index": 1,
+      "identity": "unavailable",
+      "evidence": "classifier reached index3 without terminal refusal; exact identity and complete outcome not retained; cannot invent"
+    },
+    {
+      "index": 2,
+      "identity": "unavailable",
+      "evidence": "classifier reached index3 without terminal refusal; exact identity and complete outcome not retained; cannot invent"
+    },
+    {
+      "index": 3,
+      "detectorType": 17,
+      "decoder": "HTML",
+      "verified": false,
+      "blob": "b018d18acd4686a7dafa1899c4f20653c06ee42c",
+      "scannerLine": 124,
+      "rawDigests": "not retained",
+      "fullIdentity": "Reproduced native HTML finding matches all retained hosted fields; Raw/RawV2 d64fb4... proved by representative full-input scan, not recovered hosted stdout."
+    }
+  ],
+  "rootCauseEvidence": {
+    "HTMLeligibility": "Pinned html.go looksLikeHTML accepts TypeScript generics in exact source; <typeof at line16 and <unknown>/<void> later",
+    "decoderVariation": "Pinned engine.go concurrent workers; dedupe key Raw/RawV2/source metadata excludes decoder, first arrival wins",
+    "subsetVariation": "Pinned uri.go hostNotFoundCache skips later same-host candidates after DNS IsNotFound",
+    "limit": "These are verified mechanisms explaining possible observed variability, not recovered scheduling/DNS traces. Prompt/schema difference is not established as causal for HTML blob finding."
+  },
+  "qualificationChanges": 2,
+  "reproducedFindings": [
+    {
+      "index": 0,
+      "detectorType": 17,
+      "detector": "URI",
+      "decoder": "PLAIN",
+      "verified": false,
+      "rawSha256": "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738",
+      "rawV2Sha256": "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738",
+      "rawBytes": 36,
+      "rawV2Bytes": 36,
+      "domainClassification": "reserved-example-domain",
+      "stagedInput": "1",
+      "stagedLine": 537,
+      "matches": [
+        {
+          "path": "extensions/session-share/src/session-catalog.test.ts",
+          "ref": "26c03d2466f7b95e3c77da9912377e115d65f24d",
+          "role": "head",
+          "mode": "100644",
+          "blob": "b018d18acd4686a7dafa1899c4f20653c06ee42c",
+          "line": 124,
+          "lineSha256": "4eaa188aa62167bab9ffb1ef558222f557cfbb82b7bf480aec3fcb29482604d4"
+        },
+        {
+          "path": "ui/src/components/app-sidebar-catalog-menu.test.ts",
+          "ref": "26c03d2466f7b95e3c77da9912377e115d65f24d",
+          "role": "head",
+          "mode": "100644",
+          "blob": "089e5257e0f16553e3f5b5e4b61ab4a145c109a0",
+          "line": 13,
+          "lineSha256": "324b82ec0c03a429c0255cca71ee35cf44d7b73d1aed27ad56a1eb9671714571"
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "detectorType": 17,
+      "detector": "URI",
+      "decoder": "HTML",
+      "verified": false,
+      "rawSha256": "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738",
+      "rawV2Sha256": "a5998ca156abbebcd91afd8e3b66dd07dc510a0e5c2bc37660f72572e7e1d08d",
+      "rawBytes": 36,
+      "rawV2Bytes": 41,
+      "domainClassification": "reserved-example-domain",
+      "stagedInput": "089e5257e0f16553e3f5b5e4b61ab4a145c109a0",
+      "stagedLine": 13,
+      "matches": [
+        {
+          "path": "ui/src/components/app-sidebar-catalog-menu.test.ts",
+          "ref": "26c03d2466f7b95e3c77da9912377e115d65f24d",
+          "role": "head",
+          "mode": "100644",
+          "blob": "089e5257e0f16553e3f5b5e4b61ab4a145c109a0",
+          "line": 13,
+          "lineSha256": "324b82ec0c03a429c0255cca71ee35cf44d7b73d1aed27ad56a1eb9671714571"
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "detectorType": 17,
+      "detector": "URI",
+      "decoder": "HTML",
+      "verified": false,
+      "rawSha256": "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738",
+      "rawV2Sha256": "a5998ca156abbebcd91afd8e3b66dd07dc510a0e5c2bc37660f72572e7e1d08d",
+      "rawBytes": 36,
+      "rawV2Bytes": 41,
+      "domainClassification": "reserved-example-domain",
+      "stagedInput": "1",
+      "stagedLine": 1378,
+      "matches": [
+        {
+          "path": "ui/src/components/app-sidebar-catalog-menu.test.ts",
+          "ref": "26c03d2466f7b95e3c77da9912377e115d65f24d",
+          "role": "head",
+          "mode": "100644",
+          "blob": "089e5257e0f16553e3f5b5e4b61ab4a145c109a0",
+          "line": 13,
+          "lineSha256": "324b82ec0c03a429c0255cca71ee35cf44d7b73d1aed27ad56a1eb9671714571"
+        }
+      ]
+    },
+    {
+      "index": 3,
+      "detectorType": 17,
+      "detector": "URI",
+      "decoder": "HTML",
+      "verified": false,
+      "rawSha256": "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738",
+      "rawV2Sha256": "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738",
+      "rawBytes": 36,
+      "rawV2Bytes": 36,
+      "domainClassification": "reserved-example-domain",
+      "stagedInput": "b018d18acd4686a7dafa1899c4f20653c06ee42c",
+      "stagedLine": 124,
+      "matches": [
+        {
+          "path": "extensions/session-share/src/session-catalog.test.ts",
+          "ref": "26c03d2466f7b95e3c77da9912377e115d65f24d",
+          "role": "head",
+          "mode": "100644",
+          "blob": "b018d18acd4686a7dafa1899c4f20653c06ee42c",
+          "line": 124,
+          "lineSha256": "4eaa188aa62167bab9ffb1ef558222f557cfbb82b7bf480aec3fcb29482604d4"
+        },
+        {
+          "path": "ui/src/components/app-sidebar-catalog-menu.test.ts",
+          "ref": "26c03d2466f7b95e3c77da9912377e115d65f24d",
+          "role": "head",
+          "mode": "100644",
+          "blob": "089e5257e0f16553e3f5b5e4b61ab4a145c109a0",
+          "line": 13,
+          "lineSha256": "324b82ec0c03a429c0255cca71ee35cf44d7b73d1aed27ad56a1eb9671714571"
+        }
+      ]
+    }
+  ],
+  "upstreamSourceBlobs": {
+    "pkg/decoders/html.go": "4abba781814ca69fd7114f2242ca92867654acfe",
+    "pkg/detectors/uri/uri.go": "e36ccdf56d77fed5a4790cda8f3a92aeff07326d",
+    "pkg/engine/engine.go": "b1a9dd64205942f781ed708a4156250ae9a62e1a"
+  }
+}

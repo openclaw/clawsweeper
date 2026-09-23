@@ -423,7 +423,7 @@ shorter native identity in the full sidebar source line.
 The real-Git regression harness covers additions, removals, and unchanged
 context, and refuses changed literal bytes, whole lines, source paths, modes,
 roles, source revisions, verified findings, unsupported decoders, and additional
-occurrences. The receiver's unobserved HTML decoder remains refused. Scanner
+occurrences. At that first qualification, the receiver's unobserved HTML decoder remained refused. Scanner
 execution, verification, source freshness, and patch validation remain enabled.
 
 Native detector results can vary: another observation of the same range emitted
@@ -443,3 +443,82 @@ sidebar findings; this is complete-range admission, not a claim that every
 native detector emits every synthetic value on every run. The
 [final source identities](session-share/final-identities.json) verify both exact
 qualified lines unchanged (receiver line 124, sidebar line 13). No model ran.
+
+### Session Share HTML follow-up: complete-material proof
+
+[Hosted run 35921576228](https://github.com/openclaw/clawsweeper/actions/runs/35921576228)
+used policy `6500b62dfd4c4efb0e2b821c1e9c427e128febef` and refused URI detector
+17, HTML, unverified at receiver blob `b018d18acd4686a7dafa1899c4f20653c06ee42c`,
+line 124. The source head and base were unchanged from the final proof above.
+The diagnostic retained finding 3 of 4, but no raw-value digests, other finding
+records, or original prompt. No model ran and no unchanged hosted retry followed.
+
+Before changing policy, a representative full-input scan on that same policy
+[reproduced the exact diagnostic](session-share-html/before.json). It used the
+host review template, captured PR metadata and discussion through
+`serializeReviewContext`, the actual decision schema, and the complete committed
+range. All four reproduced native records are accounted for:
+
+| Material                          | Native line | Decoder | Identity |
+| --------------------------------- | ----------- | ------- | -------- |
+| Complete patch, receiver addition | 537         | PLAIN   | Receiver |
+| Sidebar committed blob            | 13          | HTML    | Sidebar  |
+| Complete patch, sidebar addition  | 1378        | HTML    | Sidebar  |
+| Receiver committed blob           | 124         | HTML    | Receiver |
+
+[Full identity receipts](session-share-html/identities.json) retain detector,
+decoder, unverified state, Raw/RawV2 digests, exact source line/path/ref/mode, and
+all literal source witnesses. Both identities are existing generic userinfo
+rejection fixtures on the reserved `team.example.com` domain. The first three
+records are reproduced evidence, **not recovered hosted records**. The receiver
+HTML record matches every retained hosted field, including index/count. The
+original hosted prompt and first three exact identities remain unavailable.
+
+The two new attribution tuples qualify only the observed receiver HTML identity
+at its exact receiver line and the same identity's exact shared-prefix witness
+in the sidebar line. The latter is required when that receiver finding occurs
+in the complete patch containing both files. It is a source witness, not a claim
+that the scanner emitted a separate shorter sidebar URI. There is no new
+value-only exemption or classifier algorithm change.
+
+Why did the earlier local proof pass? The
+[identical-input comparison](session-share-html/same-input-variability.json)
+shows two scans with the same binary, arguments, prompt hash, and complete staged
+manifest: four findings/refusal, then only two sidebar findings/admission, **both
+before qualification**. Pinned TruffleHog 3.97.4 recognizes TypeScript generics in
+the receiver blob as HTML-like input. Its concurrent engine deduplicates identical
+Raw/RawV2/source metadata without including the decoder in the key; its URI
+detector also skips later candidates after caching DNS `IsNotFound` for that
+host. These verified mechanisms explain the observed subset/decoder variability;
+per-run scheduling and DNS traces were not retained. A missing finding is not
+negative proof. The prompt/schema difference is a proof gap, not established
+cause of HTML decoding in a separately staged blob.
+
+The prior controlled proof omitted the hosted schema and used a short prompt.
+The existing runner now accepts optional prompt and schema files and records
+their hashes without publishing their contents:
+
+```bash
+node docs/proof/agent-input-scan-context/run-proof.mjs \
+  /path/to/openclaw-at-pr-head \
+  bc6fedbe4633d3ccc0e4bb84ef323fa62794c6fd \
+  26c03d2466f7b95e3c77da9912377e115d65f24d \
+  /path/to/admission.json \
+  /path/to/representative-review-prompt.txt \
+  schema/clawsweeper-decision.schema.json
+```
+
+The deterministic regression builds a real two-file Git range and supplies its
+full patch, raw metadata, both endpoint blobs, prompt, and schema together. It
+always exercises both observed decoders and the cross-file shared-prefix witness,
+independently of native sampling. The existing adversarial cases cover changed
+literal, complete line, path, mode, role, revision, verified state, unsupported
+decoder, and extra occurrence; the full-material case also refuses an altered
+sidebar witness. Scanner and verification remain enabled.
+
+The [post-qualification native receipt](session-share-html/after.json) uses the
+same complete representative input. No model execution, deployment, OpenClaw
+source edit, or hosted-review replacement is claimed. The exact original hosted
+prompt was not retained; this is representative full-input proof, not its
+byte-for-byte recovery. OpenClaw Bay is unaffected: no dashboard, queue,
+publication, telemetry schema, or public action surface changes.

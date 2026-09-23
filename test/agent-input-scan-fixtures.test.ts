@@ -97,6 +97,7 @@ function fixturePatch(
   source: string,
   entries: ReturnType<typeof autoreviewFixtures>,
   change: "add" | "remove" | "context" = "add",
+  companions: { source: string; entries: ReturnType<typeof autoreviewFixtures> }[] = [],
 ) {
   const cwd = mkdtempSync(join(tmpdir(), "clawsweeper-reviewed-fixtures-"));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
@@ -107,18 +108,24 @@ function fixturePatch(
   git("config", "commit.gpgsign", "false");
   git("config", "core.autocrlf", "false");
   git("config", "core.hooksPath", devNull);
-  const path = join(cwd, source);
-  mkdirSync(dirname(path), { recursive: true });
-  const content = `# fixture\n${[...new Set(entries.map(({ line }) => line))].join("\n")}\n`;
-  const versions =
-    change === "context"
-      ? [`${content}# before\n`, `${content}# after\n`]
-      : change === "add"
-        ? ["# fixture\n", content]
-        : [content, "# fixture\n"];
-  const revisions = versions.map((bytes) => {
-    writeFileSync(path, bytes, { mode: 0o644 });
-    git("add", "--", source);
+  const fixtures = [{ source, entries }, ...companions];
+  const contentFor = (rows: ReturnType<typeof autoreviewFixtures>) =>
+    `# fixture\n${[...new Set(rows.map(({ line }) => line))].join("\n")}\n`;
+  const content = fixtures.map(({ entries }) => contentFor(entries)).join("");
+  const revisions = [0, 1].map((index) => {
+    for (const fixture of fixtures) {
+      const path = join(cwd, fixture.source);
+      mkdirSync(dirname(path), { recursive: true });
+      const body = contentFor(fixture.entries);
+      const bytes =
+        change === "context"
+          ? `${body}# ${index === 0 ? "before" : "after"}\n`
+          : (change === "add") === (index === 1)
+            ? body
+            : "# fixture\n";
+      writeFileSync(path, bytes, { mode: 0o644 });
+      git("add", "--", fixture.source);
+    }
     git("commit", "-qm", "fixture");
     return git("rev-parse", "HEAD").toString().trim();
   });
@@ -139,49 +146,85 @@ function fixturePatch(
   ]);
   const role = change === "remove" ? "base" : "head";
   const revision = change === "remove" ? from : to;
-  const blobId = git("rev-parse", `${revision}:${source}`).toString().trim();
-  for (const [index, ref] of revisions.entries()) {
-    const id = git("rev-parse", `${ref}:${source}`).toString().trim();
-    inputs.set(`/scanner/${id}`, {
-      kind: "blob",
-      id,
-      bytes: git("show", `${ref}:${source}`),
-      references: [{ source, mode: "100644", revision: ref, role: index === 0 ? "base" : "head" }],
-    });
+  const blobIds = new Map<string, string>();
+  for (const fixture of fixtures) {
+    blobIds.set(
+      fixture.source,
+      git("rev-parse", `${revision}:${fixture.source}`).toString().trim(),
+    );
+    for (const [index, ref] of revisions.entries()) {
+      const id = git("rev-parse", `${ref}:${fixture.source}`).toString().trim();
+      const file = `/scanner/${id}`;
+      const previous = inputs.get(file);
+      inputs.set(file, {
+        kind: "blob",
+        id,
+        bytes: git("show", `${ref}:${fixture.source}`),
+        references: [
+          ...(previous?.kind === "blob" ? previous.references : []),
+          {
+            source: fixture.source,
+            mode: "100644",
+            revision: ref,
+            role: index === 0 ? "base" : "head",
+          },
+        ],
+      });
+    }
   }
+  inputs.set("/scanner/raw", {
+    kind: "raw_diff",
+    id: "raw",
+    from,
+    to,
+    bytes: git(
+      "diff",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--no-renames",
+      "--raw",
+      "--no-abbrev",
+      "-z",
+      from,
+      to,
+      "--",
+    ),
+  });
   const classify = (decoder: "PLAIN" | "HTML", overrides: Record<string, unknown> = {}) => {
-    const findings = entries
-      .filter((entry) => entry.decoders.includes(decoder))
-      .flatMap(({ raw, rawV2 = raw }) => {
-        const url = new URL(rawV2);
-        return [patchFile, `/scanner/${blobId}`].map((file) => ({
-          SourceType: 15,
-          DetectorType: 17,
-          DetectorName: "URI",
-          DecoderName: decoder,
-          Verified: false,
-          VerificationError: "synthetic verification error",
-          Raw: raw,
-          RawV2: rawV2,
-          SourceMetadata: {
-            Data: {
-              Filesystem: {
-                file,
-                line:
-                  inputs
-                    .get(file)!
-                    .bytes!.toString()
-                    .split("\n")
-                    .findIndex((line) => line.includes(rawV2)) + 1,
+    const findings = fixtures.flatMap((fixture) =>
+      fixture.entries
+        .filter((entry) => entry.decoders.includes(decoder))
+        .flatMap(({ raw, rawV2 = raw }) => {
+          const url = new URL(rawV2);
+          return [patchFile, `/scanner/${blobIds.get(fixture.source)!}`].map((file) => ({
+            SourceType: 15,
+            DetectorType: 17,
+            DetectorName: "URI",
+            DecoderName: decoder,
+            Verified: false,
+            VerificationError: "synthetic verification error",
+            Raw: raw,
+            RawV2: rawV2,
+            SourceMetadata: {
+              Data: {
+                Filesystem: {
+                  file,
+                  line:
+                    inputs
+                      .get(file)!
+                      .bytes!.toString()
+                      .split("\n")
+                      .findIndex((line) => line.includes(rawV2)) + 1,
+                },
               },
             },
-          },
-          SecretParts: { host: url.host, username: url.username, password: url.password },
-          ExtraData: null,
-          StructuredData: null,
-          ...overrides,
-        }));
-      });
+            SecretParts: { host: url.host, username: url.username, password: url.password },
+            ExtraData: null,
+            StructuredData: null,
+            ...overrides,
+          }));
+        }),
+    );
     return classifyReviewedFixtureScan(
       183,
       Buffer.from(findings.map((finding) => JSON.stringify(finding)).join("\n") + "\n"),
@@ -522,7 +565,7 @@ function sessionShareLinkFixture(menu: boolean): ReturnType<typeof autoreviewFix
     raw,
     rawV2,
     line: menu ? '    ["' + rawV2 + '", false],' : '    "' + rawV2 + '",',
-    decoders: menu ? ["PLAIN", "HTML"] : ["PLAIN"],
+    decoders: ["PLAIN", "HTML"],
   };
 }
 
@@ -542,15 +585,53 @@ exactUriFixtureTests(
   "ui/src/components/app-sidebar-catalog-menu.test.ts",
   () => {
     const entry = sessionShareLinkFixture(true);
-    return { ...entry, rawV2: entry.raw, decoders: ["PLAIN"] };
+    return { ...entry, rawV2: entry.raw, decoders: ["PLAIN", "HTML"] };
   },
 );
 
-test("Session Share receiver fixture refuses an unobserved native decoder", (t) => {
-  const entry = sessionShareLinkFixture(false);
-  entry.decoders = ["HTML"];
-  const patch = fixturePatch(t, "extensions/session-share/src/session-catalog.test.ts", [entry]);
-  assert.equal(patch.classify("HTML").kind, "refused");
+for (const alteredWitness of [false, true]) {
+  test(`Session Share complete material ${alteredWitness ? "refuses changed" : "admits exact"} HTML shared-prefix witness`, (t) => {
+    const sidebar = sessionShareLinkFixture(true);
+    if (alteredWitness) sidebar.line += " // not qualified";
+    const patch = fixturePatch(
+      t,
+      "extensions/session-share/src/session-catalog.test.ts",
+      [sessionShareLinkFixture(false)],
+      "add",
+      [{ source: "ui/src/components/app-sidebar-catalog-menu.test.ts", entries: [sidebar] }],
+    );
+    patch.inputs.set("/scanner/prompt", {
+      kind: "prompt",
+      id: "prompt",
+      bytes: Buffer.from("Read-only full-material review."),
+    });
+    patch.inputs.set("/scanner/schema", {
+      kind: "schema",
+      id: "schema",
+      bytes: readFileSync(new URL("../schema/clawsweeper-decision.schema.json", import.meta.url)),
+    });
+    for (const decoder of ["PLAIN", "HTML"] as const) {
+      const result = patch.classify(decoder);
+      assert.equal(result.kind, alteredWitness ? "refused" : "classified", JSON.stringify(result));
+      if (result.kind === "classified") {
+        assert.deepEqual(
+          new Set(result.notices.map(({ source }) => source)),
+          new Set([
+            "extensions/session-share/src/session-catalog.test.ts",
+            "ui/src/components/app-sidebar-catalog-menu.test.ts",
+          ]),
+        );
+        assert.ok(result.notices.flatMap(({ findings }) => findings).some(({ patch }) => patch));
+      }
+    }
+  });
+}
+
+test("Session Share receiver fixture refuses an unqualified native decoder", (t) => {
+  const patch = fixturePatch(t, "extensions/session-share/src/session-catalog.test.ts", [
+    sessionShareLinkFixture(false),
+  ]);
+  assert.equal(patch.classify("HTML", { DecoderName: "ESCAPED_UNICODE" }).kind, "refused");
 });
 
 exactUriFixtureTests(

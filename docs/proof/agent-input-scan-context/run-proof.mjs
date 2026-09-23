@@ -1,18 +1,30 @@
-import { writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { scanAgentInput } from "../../../dist/agent-input-scan.js";
 
-const [target, baseSha, headSha, output] = process.argv.slice(2);
-if (!target || !baseSha || !headSha || !output) {
-  throw new Error("Pass target checkout, base SHA, head SHA, and output JSON path");
+const [target, baseSha, headSha, output, promptFile, schemaFile, ...extra] = process.argv.slice(2);
+if (!target || !baseSha || !headSha || !output || extra.length) {
+  throw new Error(
+    "Pass target checkout, base SHA, head SHA, output JSON path, and optional prompt/schema files",
+  );
 }
+const prompt = promptFile
+  ? readFileSync(promptFile, "utf8")
+  : "Read-only browser lifecycle code review. No additional source excerpts.";
+const identity = (bytes) => ({
+  bytes: Buffer.byteLength(bytes),
+  sha256: createHash("sha256").update(bytes).digest("hex"),
+});
 const notices = [];
 const stderr = console.error;
 const started = Date.now();
 const report = {
   targetHead: headSha,
   base: baseSha,
-  source: "complete committed range, controlled prompt, canonical pinned native scanner",
+  source: "complete committed range, canonical pinned native scanner",
+  prompt: { kind: promptFile ? "supplied" : "controlled", ...identity(prompt) },
+  schema: schemaFile ? identity(readFileSync(schemaFile)) : null,
   limits:
     "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
   verification: "canonical enabled",
@@ -28,7 +40,8 @@ try {
   };
   scanAgentInput({
     cwd: resolve(target),
-    prompt: "Read-only browser lifecycle code review. No additional source excerpts.",
+    prompt,
+    ...(schemaFile ? { schemaPath: resolve(schemaFile) } : {}),
     source: { kind: "committed", baseSha, headSha },
     timeoutMs: 180_000,
   });
