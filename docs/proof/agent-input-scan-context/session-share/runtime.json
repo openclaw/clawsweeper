@@ -1,0 +1,11 @@
+{
+  "platform": "linux",
+  "architecture": "x86_64",
+  "node": "v26.7.0",
+  "scannerVersion": "3.97.4",
+  "scannerSha256": "95c2a42bce979fce6dd73cc629b37ae4d72731b0dc16e047fba41a77bc765620",
+  "clawsweeperBase": "549143746fd2f0012b31121b8996c74ddee8afd9",
+  "verification": "canonical enabled",
+  "limits": "Controlled prompt; no model; hosted full-input rescan still required.",
+  "qualifiedFixtureLinesChanged": false
+}

@@ -1,0 +1,114 @@
+{
+  "targetHead": "6a6946b800f21a8f6b09f0bb7426b9c35ff32422",
+  "base": "bc6fedbe4633d3ccc0e4bb84ef323fa62794c6fd",
+  "source": "complete committed range, controlled prompt, canonical pinned native scanner",
+  "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
+  "verification": "canonical enabled",
+  "result": "admitted",
+  "elapsedMs": 3994,
+  "notices": [
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+      "fixtureSha256": "a5998ca156abbebcd91afd8e3b66dd07dc510a0e5c2bc37660f72572e7e1d08d",
+      "source": "ui/src/components/app-sidebar-catalog-menu.test.ts",
+      "detector": "URI",
+      "findings": [
+        {
+          "blob": "089e5257e0f16553e3f5b5e4b61ab4a145c109a0",
+          "scannerLine": 13,
+          "literalLine": 13,
+          "decoder": "PLAIN",
+          "role": "head",
+          "occurrences": 1
+        }
+      ]
+    },
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+      "fixtureSha256": "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738",
+      "source": "extensions/session-share/src/session-catalog.test.ts",
+      "detector": "URI",
+      "findings": [
+        {
+          "blob": "a327de2d1fa875cdb569bfea24f0750f1ba70fd7",
+          "scannerLine": 118,
+          "literalLine": 118,
+          "decoder": "PLAIN",
+          "role": "head",
+          "occurrences": 1
+        }
+      ]
+    },
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+      "fixtureSha256": "a5998ca156abbebcd91afd8e3b66dd07dc510a0e5c2bc37660f72572e7e1d08d",
+      "source": "ui/src/components/app-sidebar-catalog-menu.test.ts",
+      "detector": "URI",
+      "findings": [
+        {
+          "blob": "1",
+          "scannerLine": 1242,
+          "literalLine": 1242,
+          "decoder": "PLAIN",
+          "role": "head",
+          "occurrences": 1,
+          "patch": {
+            "from": "0052923d044f0e44664c9b2d352e0db84525dc14",
+            "to": "6a6946b800f21a8f6b09f0bb7426b9c35ff32422",
+            "sourceBlob": "089e5257e0f16553e3f5b5e4b61ab4a145c109a0",
+            "sourceLine": 13
+          }
+        }
+      ]
+    },
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+      "fixtureSha256": "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738",
+      "source": "extensions/session-share/src/session-catalog.test.ts",
+      "detector": "URI",
+      "findings": [
+        {
+          "blob": "1",
+          "scannerLine": 488,
+          "literalLine": 488,
+          "decoder": "PLAIN",
+          "role": "head",
+          "occurrences": 1,
+          "patch": {
+            "from": "0052923d044f0e44664c9b2d352e0db84525dc14",
+            "to": "6a6946b800f21a8f6b09f0bb7426b9c35ff32422",
+            "sourceBlob": "a327de2d1fa875cdb569bfea24f0750f1ba70fd7",
+            "sourceLine": 118
+          }
+        }
+      ]
+    },
+    {
+      "event": "agent_input_scan_classified",
+      "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+      "fixtureSha256": "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738",
+      "source": "ui/src/components/app-sidebar-catalog-menu.test.ts",
+      "detector": "URI",
+      "findings": [
+        {
+          "blob": "1",
+          "scannerLine": 488,
+          "literalLine": 1242,
+          "decoder": "PLAIN",
+          "role": "head",
+          "occurrences": 1,
+          "patch": {
+            "from": "0052923d044f0e44664c9b2d352e0db84525dc14",
+            "to": "6a6946b800f21a8f6b09f0bb7426b9c35ff32422",
+            "sourceBlob": "089e5257e0f16553e3f5b5e4b61ab4a145c109a0",
+            "sourceLine": 13
+          }
+        }
+      ]
+    }
+  ]
+}

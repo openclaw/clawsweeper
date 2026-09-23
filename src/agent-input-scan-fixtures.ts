@@ -240,6 +240,12 @@ const CRABBOX_POSTGRES_DOC_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  // Session Share negative userinfo-link fixtures in OpenClaw PR #156736; observed decoders only.
+  [17, "URI", "PLAIN", "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738", "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738", "4eaa188aa62167bab9ffb1ef558222f557cfbb82b7bf480aec3fcb29482604d4", "extensions/session-share/src/session-catalog.test.ts", "100644"],
+  [17, "URI", "PLAIN", "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738", "a5998ca156abbebcd91afd8e3b66dd07dc510a0e5c2bc37660f72572e7e1d08d", "324b82ec0c03a429c0255cca71ee35cf44d7b73d1aed27ad56a1eb9671714571", "ui/src/components/app-sidebar-catalog-menu.test.ts", "100644"],
+  [17, "URI", "HTML", "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738", "a5998ca156abbebcd91afd8e3b66dd07dc510a0e5c2bc37660f72572e7e1d08d", "324b82ec0c03a429c0255cca71ee35cf44d7b73d1aed27ad56a1eb9671714571", "ui/src/components/app-sidebar-catalog-menu.test.ts", "100644"],
+  // The receiver's native patch finding also witnesses this exact shared URI prefix in the sidebar line.
+  [17, "URI", "PLAIN", "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738", "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738", "324b82ec0c03a429c0255cca71ee35cf44d7b73d1aed27ad56a1eb9671714571", "ui/src/components/app-sidebar-catalog-menu.test.ts", "100644"],
   // Existing Gateway config CDP-redaction fixture relocated by OpenClaw #156637.
   [17, "URI", "PLAIN", "3699f73147f6969e1a3273a5809e2dd7886b95fad51315008b75bb20c4c9832f", "3699f73147f6969e1a3273a5809e2dd7886b95fad51315008b75bb20c4c9832f", "fab950a882e7e3d2f50a68a07fa6adec03baeecf9f604321ebe80098dba167ec", "src/gateway/server.config-patch.test.ts", "100644"],
   [17, "URI", "HTML", "3699f73147f6969e1a3273a5809e2dd7886b95fad51315008b75bb20c4c9832f", "3699f73147f6969e1a3273a5809e2dd7886b95fad51315008b75bb20c4c9832f", "fab950a882e7e3d2f50a68a07fa6adec03baeecf9f604321ebe80098dba167ec", "src/gateway/server.config-patch.test.ts", "100644"],
@@ -383,6 +389,8 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           (decoder === "PLAIN" || decoder === "HTML")) ||
         ((source === "extensions/browser/src/browser/profiles-service.test.ts" ||
           source === "extensions/crabbox/src/crabbox-model-run.test.ts" ||
+          source === "extensions/session-share/src/session-catalog.test.ts" ||
+          source === "ui/src/components/app-sidebar-catalog-menu.test.ts" ||
           source === "src/secrets/model-egress.test.ts" ||
           source === "extensions/browser/src/browser/routes/basic.existing-session.test.ts" ||
           source === "extensions/typesafe/src/local.transport.test.ts" ||

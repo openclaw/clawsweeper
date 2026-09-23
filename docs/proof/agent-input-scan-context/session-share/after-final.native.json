@@ -1,0 +1,66 @@
+{
+  "base": "bc6fedbe4633d3ccc0e4bb84ef323fa62794c6fd",
+  "head": "26c03d2466f7b95e3c77da9912377e115d65f24d",
+  "mergeBase": "0052923d044f0e44664c9b2d352e0db84525dc14",
+  "observed": [
+    {
+      "exit": 183,
+      "verificationEnabled": true,
+      "completion": {
+        "chunks": 336,
+        "bytes": 3954968,
+        "verified_secrets": 0,
+        "unverified_secrets": 2,
+        "trufflehog_version": "3.97.4"
+      },
+      "findings": [
+        {
+          "index": 0,
+          "detectorType": 17,
+          "detector": "URI",
+          "decoder": "PLAIN",
+          "verified": false,
+          "rawSha256": "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738",
+          "rawV2Sha256": "a5998ca156abbebcd91afd8e3b66dd07dc510a0e5c2bc37660f72572e7e1d08d",
+          "domainClassification": "reserved-example-domain",
+          "stagedInput": "089e5257e0f16553e3f5b5e4b61ab4a145c109a0",
+          "stagedLine": 13,
+          "matches": [
+            {
+              "source": "ui/src/components/app-sidebar-catalog-menu.test.ts",
+              "role": "head",
+              "ref": "26c03d2466f7b95e3c77da9912377e115d65f24d",
+              "mode": "100644",
+              "blob": "089e5257e0f16553e3f5b5e4b61ab4a145c109a0",
+              "line": 13,
+              "lineSha256": "324b82ec0c03a429c0255cca71ee35cf44d7b73d1aed27ad56a1eb9671714571"
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "detectorType": 17,
+          "detector": "URI",
+          "decoder": "PLAIN",
+          "verified": false,
+          "rawSha256": "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738",
+          "rawV2Sha256": "a5998ca156abbebcd91afd8e3b66dd07dc510a0e5c2bc37660f72572e7e1d08d",
+          "domainClassification": "reserved-example-domain",
+          "stagedInput": "1",
+          "stagedLine": 1378,
+          "matches": [
+            {
+              "source": "ui/src/components/app-sidebar-catalog-menu.test.ts",
+              "role": "head",
+              "ref": "26c03d2466f7b95e3c77da9912377e115d65f24d",
+              "mode": "100644",
+              "blob": "089e5257e0f16553e3f5b5e4b61ab4a145c109a0",
+              "line": 13,
+              "lineSha256": "324b82ec0c03a429c0255cca71ee35cf44d7b73d1aed27ad56a1eb9671714571"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

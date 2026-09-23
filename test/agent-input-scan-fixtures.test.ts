@@ -441,7 +441,7 @@ function exactUriFixtureTests(
   for (const change of ["add", "remove", "context"] as const) {
     test(name + " fixture admits exact Git-generated " + change + " attribution", (t) => {
       const patch = fixturePatch(t, source, [makeFixture()], change);
-      for (const decoder of ["PLAIN", "HTML"] as const) {
+      for (const decoder of makeFixture().decoders) {
         const result = patch.classify(decoder);
         assert.equal(result.kind, "classified", JSON.stringify(result));
         if (result.kind !== "classified") continue;
@@ -464,6 +464,7 @@ function exactUriFixtureTests(
     "path",
     "mode",
     "role",
+    "revision",
     "verified",
     "decoder",
     "extra-occurrence",
@@ -483,30 +484,74 @@ function exactUriFixtureTests(
           ? [entry, { ...entry, line: entry.line + " // extra" }]
           : [entry];
       const patch = fixturePatch(t, variant === "path" ? source + ".other" : source, entries);
-      if (variant === "mode" || variant === "role") {
+      if (variant === "mode" || variant === "role" || variant === "revision") {
         for (const [file, input] of patch.inputs) {
           if (input.kind !== "blob") continue;
           patch.inputs.set(file, {
             ...input,
             references: input.references.map((reference) => ({
               ...reference,
-              ...(variant === "mode" ? { mode: "100755" } : { role: "worktree" as const }),
+              ...(variant === "mode"
+                ? { mode: "100755" }
+                : variant === "revision"
+                  ? { revision: "f".repeat(40) }
+                  : { role: "worktree" as const }),
             })),
           });
         }
       }
-      const result = patch.classify(
-        "HTML",
-        variant === "verified"
-          ? { Verified: true }
-          : variant === "decoder"
-            ? { DecoderName: "BASE64" }
-            : {},
-      );
-      assert.equal(result.kind, "refused", JSON.stringify(result));
+      for (const decoder of entry.decoders) {
+        const result = patch.classify(
+          decoder,
+          variant === "verified"
+            ? { Verified: true }
+            : variant === "decoder"
+              ? { DecoderName: "BASE64" }
+              : {},
+        );
+        assert.equal(result.kind, "refused", JSON.stringify(result));
+      }
     });
   }
 }
+
+function sessionShareLinkFixture(menu: boolean): ReturnType<typeof autoreviewFixtures>[number] {
+  const raw = ["https://", "user", ":", "secret", "@", "team.example.com"].join("");
+  const rawV2 = raw + (menu ? "/chat" : "");
+  return {
+    raw,
+    rawV2,
+    line: menu ? '    ["' + rawV2 + '", false],' : '    "' + rawV2 + '",',
+    decoders: menu ? ["PLAIN", "HTML"] : ["PLAIN"],
+  };
+}
+
+exactUriFixtureTests(
+  "Session Share receiver-origin rejection",
+  "extensions/session-share/src/session-catalog.test.ts",
+  () => sessionShareLinkFixture(false),
+);
+exactUriFixtureTests(
+  "Session Share sidebar-link rejection",
+  "ui/src/components/app-sidebar-catalog-menu.test.ts",
+  () => sessionShareLinkFixture(true),
+);
+
+exactUriFixtureTests(
+  "Session Share sidebar shared-prefix witness",
+  "ui/src/components/app-sidebar-catalog-menu.test.ts",
+  () => {
+    const entry = sessionShareLinkFixture(true);
+    return { ...entry, rawV2: entry.raw, decoders: ["PLAIN"] };
+  },
+);
+
+test("Session Share receiver fixture refuses an unobserved native decoder", (t) => {
+  const entry = sessionShareLinkFixture(false);
+  entry.decoders = ["HTML"];
+  const patch = fixturePatch(t, "extensions/session-share/src/session-catalog.test.ts", [entry]);
+  assert.equal(patch.classify("HTML").kind, "refused");
+});
 
 exactUriFixtureTests(
   "GitHub check-link",

@@ -1,0 +1,116 @@
+{
+  "base": "bc6fedbe4633d3ccc0e4bb84ef323fa62794c6fd",
+  "head": "6a6946b800f21a8f6b09f0bb7426b9c35ff32422",
+  "mergeBase": "0052923d044f0e44664c9b2d352e0db84525dc14",
+  "observed": [
+    {
+      "exit": 183,
+      "verificationEnabled": true,
+      "completion": {
+        "chunks": 334,
+        "bytes": 3940545,
+        "verified_secrets": 0,
+        "unverified_secrets": 4,
+        "trufflehog_version": "3.97.4"
+      },
+      "findings": [
+        {
+          "index": 0,
+          "detectorType": 17,
+          "detector": "URI",
+          "decoder": "PLAIN",
+          "verified": false,
+          "rawSha256": "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738",
+          "rawV2Sha256": "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738",
+          "domainClassification": "reserved-example-domain",
+          "stagedInput": "a327de2d1fa875cdb569bfea24f0750f1ba70fd7",
+          "stagedLine": 118,
+          "matches": [
+            {
+              "source": "extensions/session-share/src/session-catalog.test.ts",
+              "role": "head",
+              "ref": "6a6946b800f21a8f6b09f0bb7426b9c35ff32422",
+              "mode": "100644",
+              "blob": "a327de2d1fa875cdb569bfea24f0750f1ba70fd7",
+              "line": 118,
+              "lineSha256": "4eaa188aa62167bab9ffb1ef558222f557cfbb82b7bf480aec3fcb29482604d4"
+            }
+          ],
+          "attribution": "Native location resolved against exact committed blob or canonical generated patch line."
+        },
+        {
+          "index": 1,
+          "detectorType": 17,
+          "detector": "URI",
+          "decoder": "PLAIN",
+          "verified": false,
+          "rawSha256": "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738",
+          "rawV2Sha256": "a5998ca156abbebcd91afd8e3b66dd07dc510a0e5c2bc37660f72572e7e1d08d",
+          "domainClassification": "reserved-example-domain",
+          "stagedInput": "1",
+          "stagedLine": 1242,
+          "matches": [
+            {
+              "source": "ui/src/components/app-sidebar-catalog-menu.test.ts",
+              "role": "head",
+              "ref": "6a6946b800f21a8f6b09f0bb7426b9c35ff32422",
+              "mode": "100644",
+              "blob": "089e5257e0f16553e3f5b5e4b61ab4a145c109a0",
+              "line": 13,
+              "lineSha256": "324b82ec0c03a429c0255cca71ee35cf44d7b73d1aed27ad56a1eb9671714571"
+            }
+          ],
+          "attribution": "Native location resolved against exact committed blob or canonical generated patch line."
+        },
+        {
+          "index": 2,
+          "detectorType": 17,
+          "detector": "URI",
+          "decoder": "HTML",
+          "verified": false,
+          "rawSha256": "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738",
+          "rawV2Sha256": "a5998ca156abbebcd91afd8e3b66dd07dc510a0e5c2bc37660f72572e7e1d08d",
+          "domainClassification": "reserved-example-domain",
+          "stagedInput": "089e5257e0f16553e3f5b5e4b61ab4a145c109a0",
+          "stagedLine": 13,
+          "matches": [
+            {
+              "source": "ui/src/components/app-sidebar-catalog-menu.test.ts",
+              "role": "head",
+              "ref": "6a6946b800f21a8f6b09f0bb7426b9c35ff32422",
+              "mode": "100644",
+              "blob": "089e5257e0f16553e3f5b5e4b61ab4a145c109a0",
+              "line": 13,
+              "lineSha256": "324b82ec0c03a429c0255cca71ee35cf44d7b73d1aed27ad56a1eb9671714571"
+            }
+          ],
+          "attribution": "Native location resolved against exact committed blob or canonical generated patch line."
+        },
+        {
+          "index": 3,
+          "detectorType": 17,
+          "detector": "URI",
+          "decoder": "PLAIN",
+          "verified": false,
+          "rawSha256": "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738",
+          "rawV2Sha256": "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738",
+          "domainClassification": "reserved-example-domain",
+          "stagedInput": "1",
+          "stagedLine": 488,
+          "matches": [
+            {
+              "source": "extensions/session-share/src/session-catalog.test.ts",
+              "role": "head",
+              "ref": "6a6946b800f21a8f6b09f0bb7426b9c35ff32422",
+              "mode": "100644",
+              "blob": "a327de2d1fa875cdb569bfea24f0750f1ba70fd7",
+              "line": 118,
+              "lineSha256": "4eaa188aa62167bab9ffb1ef558222f557cfbb82b7bf480aec3fcb29482604d4"
+            }
+          ],
+          "attribution": "Native location resolved against exact committed blob or canonical generated patch line."
+        }
+      ]
+    }
+  ]
+}

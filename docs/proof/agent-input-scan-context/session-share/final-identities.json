@@ -1,0 +1,18 @@
+[
+  {
+    "source": "extensions/session-share/src/session-catalog.test.ts",
+    "mode": "100644",
+    "blob": "b018d18acd4686a7dafa1899c4f20653c06ee42c",
+    "head": "26c03d2466f7b95e3c77da9912377e115d65f24d",
+    "line": 124,
+    "lineSha256": "4eaa188aa62167bab9ffb1ef558222f557cfbb82b7bf480aec3fcb29482604d4"
+  },
+  {
+    "source": "ui/src/components/app-sidebar-catalog-menu.test.ts",
+    "mode": "100644",
+    "blob": "089e5257e0f16553e3f5b5e4b61ab4a145c109a0",
+    "head": "26c03d2466f7b95e3c77da9912377e115d65f24d",
+    "line": 13,
+    "lineSha256": "324b82ec0c03a429c0255cca71ee35cf44d7b73d1aed27ad56a1eb9671714571"
+  }
+]

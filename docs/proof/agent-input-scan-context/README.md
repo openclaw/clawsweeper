@@ -387,3 +387,59 @@ negative proof. The changed-literal classifier regression still rejects emitted
 mutations. This proof uses a controlled prompt, runs no model, and does not replace
 the hosted review's own complete prompt/schema/source scan. OpenClaw Bay remains
 unaffected: no dashboard, queue, publication, or observer contract changes.
+
+## Session Share rejected userinfo links
+
+OpenClaw [PR 156736](https://github.com/openclaw/openclaw/pull/156736) adds
+receiver-origin and sidebar-link rejection cases on the reserved
+`team.example.com` domain. Both use generic placeholder userinfo solely to
+assert rejection. The source tests and their meaningful negative coverage remain
+unchanged.
+
+The complete committed range refused in hosted
+[run 35911889455](https://github.com/openclaw/clawsweeper/actions/runs/35911889455)
+is reproduced by the existing proof command using base
+`bc6fedbe4633d3ccc0e4bb84ef323fa62794c6fd` and head
+`6a6946b800f21a8f6b09f0bb7426b9c35ff32422`. Its merge base is
+`0052923d044f0e44664c9b2d352e0db84525dc14`.
+
+[The pre-qualification receipt](session-share/before.json) records refusal.
+[Sanitized native evidence](session-share/before.native.json) accounts for all
+four reproduced findings: the receiver test line 118 in the committed blob and added patch
+(PLAIN), and the sidebar test line 13 in its committed blob (HTML) and added
+patch (PLAIN). Hosted diagnostics retain only the first finding; the other
+identities here come from complete-range native reproduction, not omitted hosted
+records. Each retains detector/decoder, Raw/RawV2 digests, full-line digest,
+canonical source path, regular-file mode, and committed source identity. Native
+location metadata is resolved against the exact blob or canonical generated
+patch line; no raw credential-shaped values are retained.
+
+The four host-owned rows qualify only those observed identities and decoders,
+including the receiver URI's exact shared-prefix occurrence in the sidebar line.
+The first full-range proof correctly [refused that missing witness](session-share/before-shared-prefix.json)
+until its complete sidebar line was separately qualified; the classifier's
+all-occurrences requirement is unchanged. The regression suite includes this
+shorter native identity in the full sidebar source line.
+The real-Git regression harness covers additions, removals, and unchanged
+context, and refuses changed literal bytes, whole lines, source paths, modes,
+roles, source revisions, verified findings, unsupported decoders, and additional
+occurrences. The receiver's unobserved HTML decoder remains refused. Scanner
+execution, verification, source freshness, and patch validation remain enabled.
+
+Native detector results can vary: another observation of the same range emitted
+only the two sidebar findings. A missing native finding is not negative proof.
+Classifier mutations supply deterministic refusal coverage; native complete-range
+admission still does not replace hosted review's prompt/schema/source scan.
+OpenClaw Bay is unaffected: no dashboard, queue, or publication behavior changes.
+
+On Linux x64, Node 26.7.0, and pinned TruffleHog 3.97.4
+([runtime identity](session-share/runtime.json)), the same original complete range
+[admits after qualification](session-share/after-original.json) in 3.994 seconds,
+including the receiver's shared-prefix patch witness. The parent-confirmed final
+OpenClaw head `26c03d2466f7b95e3c77da9912377e115d65f24d` also
+[admits](session-share/after-final.json) in 3.890 seconds using the same base.
+[Its native observation](session-share/after-final.native.json) reports two
+sidebar findings; this is complete-range admission, not a claim that every
+native detector emits every synthetic value on every run. The
+[final source identities](session-share/final-identities.json) verify both exact
+qualified lines unchanged (receiver line 124, sidebar line 13). No model ran.
