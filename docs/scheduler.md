@@ -40,7 +40,15 @@ Worker can then complete the lease under its existing retry policy; compatible
 Workers receive the terminal reason on the first request. Other errors retain
 the existing failure and retry handling. A terminal
 reason removes the unchanged queue revision while allowing an already queued
-newer revision to proceed; it does not turn the failed workflow green. Native
+newer revision to proceed; it does not turn the failed workflow green. An
+automatic PR review with a recorded head SHA and `source_incompatible` instead
+retains a parked queue item: the exact source pin cannot improve on that head,
+so scheduled intake must not repeat its preparation. This state has no timed
+retry. Existing parked-item reconciliation recovers changed head, base, or body
+identity and removes closed targets; an explicit maintainer re-review can retry
+unchanged source. The failure remains visible in lifecycle and Bay status.
+Issue reviews follow moving main, and scanner failures can recover after
+external changes, so neither uses this pinned-PR stop. Native
 blob-fetch transport failures, including the hydration deadline killing a Git
 fetch, remain `source_preparation` / `review_blobs_unavailable` with
 `retryable: true`. They enter the existing bounded retry schedule without a

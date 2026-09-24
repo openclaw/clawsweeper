@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Stop scheduled sweeps from repeatedly preparing an unchanged PR with an incompatible pinned Codex version, while preserving source-change recovery and explicit maintainer re-review.
+
 - Avoid migration-proof blockers for newly captured in-memory `statePath` routing while preserving existing path edits, file-read, persisted-format, and incomplete-storage checks.
 
 - Route maintainer-authored issues and pull requests to GPT-6 Sol with high reasoning and fast service while other items use medium reasoning and standard service, retiring the legacy per-run profile overrides.

@@ -1578,6 +1578,15 @@ test("public queue projection retains only closed operational aggregates", () =>
   assert.equal(projected.lanes.review.capacity, 12);
   assert.equal(projected.lanes.review.backoff_reasons.review_retry, 2);
   assert.equal(projected.lanes.review.parked_reasons.unknown, 1);
+  const pinnedSource = publicExactReviewQueueProjection({
+    ...source,
+    lanes: {
+      ...source.lanes,
+      review: { ...source.lanes.review, parked_reasons: { source_incompatible: 1 } },
+    },
+  });
+  assert.equal(pinnedSource.lanes.review.parked_reasons.source_incompatible, 1);
+  assert.equal(pinnedSource.collection.state, "complete");
   assert.equal(projected.handoff_health.status, "healthy");
   assert.equal(projected.pressure.status, "congested");
   assert.deepEqual(projected.review_failure_health, {

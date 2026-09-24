@@ -98,9 +98,11 @@ export function exactReviewParkedOperatorEligible(item: ExactReviewQueueItem) {
   return (
     item.state === "parked" &&
     !exactReviewQueueIsPublication(item) &&
-    (item.parkedReason === "dispatch_rejected" || item.parkedReason === "review_retry_exhausted") &&
-    exactReviewParkedRecoveryAttempts(item.parkedRecoveryAttempts) >=
-      EXACT_REVIEW_PARKED_RECOVERY_LIMIT
+    (item.parkedReason === "source_incompatible" ||
+      ((item.parkedReason === "dispatch_rejected" ||
+        item.parkedReason === "review_retry_exhausted") &&
+        exactReviewParkedRecoveryAttempts(item.parkedRecoveryAttempts) >=
+          EXACT_REVIEW_PARKED_RECOVERY_LIMIT))
   );
 }
 
