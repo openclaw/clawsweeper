@@ -59,8 +59,7 @@ type CommandStatusUpdateOutcome =
   | "locked_conversation"
   | "missing_status_comment"
   | "terminal_state"
-  | "queue_superseded"
-  | "coordination_held";
+  | "queue_superseded";
 
 type TerminalStatusReceipt = {
   commandCommentId: number;
@@ -94,6 +93,14 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
   }
   validateRepo(options.repo);
   validateItemNumber(options.itemNumber);
+  if (options.requireQueueAuthorityFence && !(await exactReviewQueueAuthorityFence(process.env))) {
+    recordCommandProgress(lifecycle, {
+      state: "superseded",
+      status: "skipped",
+      mutation: false,
+    });
+    return { outcome: "queue_superseded" };
+  }
   let comment: LooseRecord | null;
   try {
     comment = await findCommandStatusComment(options, lifecycle);
@@ -198,23 +205,9 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
       expiresAt: new Date(startedAtMs + 2 * 60 * 60_000).toISOString(),
     };
   })();
-  const activeLeaseOwner = commandReviewLeaseOwnerFromBody(comment.body);
-  if (queueLease && activeLeaseOwner && activeLeaseOwner !== queueLease.owner) {
-    recordCommandProgress(lifecycle, {
-      state: "Waiting",
-      status: "skipped",
-      mutation: false,
-    });
-    return { outcome: "coordination_held" };
-  }
   const body = mergeCommandProgressSection(comment.body, {
     ...options,
     ...(queueLease ? { queueLease } : {}),
-    ...(options.requireQueueAuthorityFence
-      ? {
-          queueLeaseOwner: `github-run-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`,
-        }
-      : {}),
   });
   if (body === comment.body) {
     recordCommandProgress(lifecycle, {
@@ -532,7 +525,6 @@ export function mergeCommandProgressSection(
   body: string,
   options: Pick<Options, "state" | "detail" | "runUrl"> & {
     verifyTerminalStatusReceipt?: boolean;
-    queueLeaseOwner?: string;
     queueLease?: {
       itemNumber: number;
       headSha: string;
@@ -542,22 +534,12 @@ export function mergeCommandProgressSection(
     };
   },
 ) {
-  const activeOwner = commandReviewLeaseOwnerFromBody(body);
-  if (options.queueLease) {
-    if (activeOwner && activeOwner !== options.queueLease.owner) return body;
-  }
-  const mayRemoveLease =
-    options.verifyTerminalStatusReceipt ||
-    !activeOwner ||
-    (Boolean(options.queueLeaseOwner) && options.queueLeaseOwner === activeOwner);
-  const sourceBody = (
-    mayRemoveLease
-      ? body.replace(
-          /\n*<!--\s*clawsweeper-review-status:started\b[^>]*-->\s*<!--\s*clawsweeper-command-review-lease\s+item=[1-9]\d*\s*-->\s*$/i,
-          "",
-        )
-      : body
-  ).trimEnd();
+  const sourceBody = body
+    .replace(
+      /\n*<!--\s*clawsweeper-review-status:started\b[^>]*-->\s*<!--\s*clawsweeper-command-review-lease\s+item=[1-9]\d*\s*-->\s*$/i,
+      "",
+    )
+    .trimEnd();
   const section = renderCommandProgressSection(options);
   const start = sourceBody.indexOf(PROGRESS_START);
   const end = sourceBody.indexOf(PROGRESS_END);
@@ -578,15 +560,6 @@ export function mergeCommandProgressSection(
     throw new Error("invalid queue-owned command review lease");
   }
   return `${merged.trimEnd()}\n\n<!-- clawsweeper-review-status:started item=${lease.itemNumber} sha=${lease.headSha} started_at=${lease.startedAt} lease_expires_at=${lease.expiresAt} owner=${lease.owner} v=1 -->\n<!-- clawsweeper-command-review-lease item=${lease.itemNumber} -->`;
-}
-
-export function commandReviewLeaseOwnerFromBody(body: string): string | null {
-  const leaseSuffix = new RegExp(
-    "<!--\\s*clawsweeper-review-status:started\\b([^>]*)-->\\s*" +
-      "<!--\\s*clawsweeper-command-review-lease\\s+item=[1-9]\\d*\\s*-->\\s*$",
-    "i",
-  );
-  return leaseSuffix.exec(body)?.[1]?.match(/\bowner=([^\s>]+)/i)?.[1] ?? null;
 }
 
 export function verifiedTerminalStatusReceipt(

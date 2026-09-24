@@ -6,7 +6,6 @@ import path from "node:path";
 import test from "node:test";
 
 import {
-  commandReviewLeaseOwnerFromBody,
   exactReviewQueueAuthorityFence,
   mergeCommandProgressSection,
   parseOptions,
@@ -1237,39 +1236,27 @@ test("queue-owned command progress exposes one hidden lease and failure removes 
   });
   assert.match(active, /clawsweeper-review-status:started item=42/);
   assert.match(active, /clawsweeper-command-review-lease item=42/);
-  assert.equal(commandReviewLeaseOwnerFromBody(active), "github-run-1-1");
   const failed = mergeCommandProgressSection(active, {
     state: "Failed",
     detail: "Retry later.",
     runUrl: "https://github.com/openclaw/clawsweeper/actions/runs/1",
-    queueLeaseOwner: "github-run-1-1",
   });
   assert.doesNotMatch(failed, /clawsweeper-(?:review-status:started|command-review-lease)/);
   assert.match(failed, /- State: Failed/);
 
   const foreign = active.replace("owner=github-run-1-1", "owner=github-run-2-1");
-  assert.equal(
-    mergeCommandProgressSection(foreign, {
-      state: "Review in progress",
-      detail: "Reviewing again.",
-      runUrl: "https://github.com/openclaw/clawsweeper/actions/runs/2",
-      queueLease: {
-        itemNumber: 42,
-        headSha: "a".repeat(40),
-        owner: "github-run-1-1",
-        startedAt: "2026-09-24T00:01:00.000Z",
-        expiresAt: "2026-09-24T02:01:00.000Z",
-      },
-    }),
-    foreign,
-  );
-  const foreignWaiting = mergeCommandProgressSection(foreign, {
-    state: "Waiting",
-    detail: "Another review is active.",
-    runUrl: "https://github.com/openclaw/clawsweeper/actions/runs/1",
-    queueLeaseOwner: "github-run-1-1",
+  const refreshed = mergeCommandProgressSection(foreign, {
+    state: "Review in progress",
+    detail: "Reviewing again.",
+    runUrl: "https://github.com/openclaw/clawsweeper/actions/runs/2",
+    queueLease: {
+      itemNumber: 42,
+      headSha: "a".repeat(40),
+      owner: "github-run-1-1",
+      startedAt: "2026-09-24T00:01:00.000Z",
+      expiresAt: "2026-09-24T02:01:00.000Z",
+    },
   });
-  assert.match(foreignWaiting, /owner=github-run-2-1/);
-  assert.match(foreignWaiting, /clawsweeper-command-review-lease item=42/);
-  assert.match(foreignWaiting, /- State: Waiting/);
+  assert.match(refreshed, /owner=github-run-1-1/);
+  assert.doesNotMatch(refreshed, /owner=github-run-2-1/);
 });
