@@ -988,12 +988,22 @@ jobs:
           EXACT_REVIEW_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
           EXACT_REVIEW_CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
           EXACT_REVIEW_SOURCE_HEAD_SHA: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceHeadSha || '' }}
-          STATUS_COMMENT_ID: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).statusCommentId || '' }}
-          COMMAND_STATUS_MARKER: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).commandStatusMarker || '' }}
+          RESOLVED_STATUS_COMMENT_ID: ${{ steps.mark-re-review-command-in-progress.outputs.status_comment_id || '' }}
           EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
+          if [ -n "$RESOLVED_STATUS_COMMENT_ID" ]; then
+            if ! [[ "$RESOLVED_STATUS_COMMENT_ID" =~ ^[1-9][0-9]*$ ]]; then
+              echo "Invalid resolved command status comment id: $RESOLVED_STATUS_COMMENT_ID" >&2
+              exit 1
+            fi
+            echo "status=posted" >> "$GITHUB_OUTPUT"
+            echo "owner=github-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+            echo "comment_id=$RESOLVED_STATUS_COMMENT_ID" >> "$GITHUB_OUTPUT"
+            echo "queue_only=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if ! [[ "$CODEX_TIMEOUT_MS" =~ ^[0-9]+$ ]] || [ "$CODEX_TIMEOUT_MS" -lt 1 ]; then
             echo "Invalid Codex timeout: $CODEX_TIMEOUT_MS" >&2
             exit 1
@@ -1005,27 +1015,18 @@ jobs:
           codex_timeout_seconds=$(((CODEX_TIMEOUT_MS + 999) / 1000))
           media_preprocessing_reserve_seconds=480
           review_timeout_ms=$(((codex_timeout_seconds + media_preprocessing_reserve_seconds + 180) * 1000))
-          status_comment_args=()
-          if [ -n "$STATUS_COMMENT_ID" ]; then
-            if ! [[ "$STATUS_COMMENT_ID" =~ ^[1-9][0-9]*$ ]]; then
-              echo "Invalid command status comment id: $STATUS_COMMENT_ID" >&2
-              exit 1
-            fi
-            status_comment_args=(--status-comment-id "$STATUS_COMMENT_ID")
-          fi
-          if [ -n "$COMMAND_STATUS_MARKER" ]; then
-            status_comment_args+=(--command-status-marker "$COMMAND_STATUS_MARKER")
-          fi
+          reservation_args=(
+            --target-repo "$TARGET_REPO"
+            --item-number "$ITEM_NUMBER"
+            --review-timeout-ms "$review_timeout_ms"
+          )
           reservation=""
           reservation_error="$(mktemp)"
           trap 'rm -f "$reservation_error"' EXIT
           for attempt in 1 2 3 4 5; do
             : > "$reservation_error"
             if reservation="$(pnpm run --silent reserve-review-lease -- \
-              --target-repo "$TARGET_REPO" \
-              --item-number "$ITEM_NUMBER" \
-              --review-timeout-ms "$review_timeout_ms" \
-              "${status_comment_args[@]}" 2>"$reservation_error")"; then
+              "${reservation_args[@]}" 2>"$reservation_error")"; then
               break
             else
               reserve_exit=$?
@@ -1067,6 +1068,7 @@ jobs:
             append("status", "posted");
             append("owner", owner);
             append("comment_id", String(commentId));
+            append("queue_only", "false");
             process.exit(0);
           }
           if (reservation.status === "held") {
@@ -1225,6 +1227,7 @@ jobs:
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           REVIEW_LEASE_OWNER: ${{ steps.reserve-exact-review-lease.outputs.owner }}
           REVIEW_LEASE_COMMENT_ID: ${{ steps.reserve-exact-review-lease.outputs.comment_id }}
+          REVIEW_LEASE_QUEUE_ONLY: ${{ steps.reserve-exact-review-lease.outputs.queue_only || 'false' }}
           SOURCE_ACTION: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceAction || '' }}
           EXACT_REVIEW_DECISION: ${{ steps.claim-exact-review-queue.outputs.decision }}
         run: |
@@ -1364,6 +1367,13 @@ jobs:
           if [ -n "$PR_ADMISSION_FILE" ]; then
             admission_args=(--pr-admission-file "$PR_ADMISSION_FILE")
           fi
+          review_lease_args=(
+            --review-lease-owner "$REVIEW_LEASE_OWNER"
+            --review-lease-comment-id "$REVIEW_LEASE_COMMENT_ID"
+          )
+          if [ "$REVIEW_LEASE_QUEUE_ONLY" = "true" ]; then
+            review_lease_args+=(--trust-supplied-review-lease)
+          fi
           if [ "$OVERSIZED_PR" = "true" ]; then
             # GitHub updated_at has one-second granularity; let the reservation write precede the fresh observation and its clock margin.
             sleep 2
@@ -1392,8 +1402,7 @@ jobs:
             pnpm run review -- --target-repo "${{ steps.target.outputs.target_repo }}" \
               --artifact-dir artifacts/event --item-number "${{ steps.target.outputs.item_number }}" \
               --output-retention debug \
-              --review-lease-owner "$REVIEW_LEASE_OWNER" \
-              --review-lease-comment-id "$REVIEW_LEASE_COMMENT_ID" \
+              "${review_lease_args[@]}" \
               --skip-start-comment "${admission_args[@]}"
             start_heartbeat
             cleanup_heartbeat
@@ -1437,8 +1446,7 @@ jobs:
             --item-numbers "${{ steps.target.outputs.item_number }}" \
             --readonly-openclaw \
             --skip-start-comment \
-            --review-lease-owner "$REVIEW_LEASE_OWNER" \
-            --review-lease-comment-id "$REVIEW_LEASE_COMMENT_ID" \
+            "${review_lease_args[@]}" \
             --shard-index 0 \
             --shard-count 1 \
             --review-source-action "$SOURCE_ACTION" \
@@ -1960,7 +1968,7 @@ jobs:
           exit 1
 
       - name: Expire queued exact review lease
-        if: ${{ always() && !cancelled() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.queue-exact-review-publication.outcome == 'success' && steps.direct-exact-review-publication.outputs.accepted != 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' }}
+        if: ${{ always() && !cancelled() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.queue-exact-review-publication.outcome == 'success' && steps.direct-exact-review-publication.outputs.accepted != 'true' && steps.reserve-exact-review-lease.outputs.status == 'posted' && steps.reserve-exact-review-lease.outputs.queue_only != 'true' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
@@ -1991,8 +1999,6 @@ jobs:
             [ -n "$lease_id" ] || continue
             lease_body="$(gh api "repos/$TARGET_REPO/issues/comments/$lease_id" --jq .body)"
             if grep -Eqi '<!--[[:space:]]*clawsweeper-command-(ack|status):' <<< "$lease_body"; then
-              node dist/clawsweeper.js expire-review-lease \
-                --repo "$TARGET_REPO" --item-number "$ITEM_NUMBER" --comment-id "$lease_id"
               continue
             fi
             gh api "repos/$TARGET_REPO/issues/comments/$lease_id" --method DELETE
@@ -3376,8 +3382,6 @@ jobs:
             [ -n "$lease_id" ] || continue
             lease_body="$(gh api "repos/$TARGET_REPO/issues/comments/$lease_id" --jq .body)"
             if grep -Eqi '<!--[[:space:]]*clawsweeper-command-(ack|status):' <<< "$lease_body"; then
-              node dist/clawsweeper.js expire-review-lease \
-                --repo "$TARGET_REPO" --item-number "$ITEM_NUMBER" --comment-id "$lease_id"
               continue
             fi
             gh api "repos/$TARGET_REPO/issues/comments/$lease_id" --method DELETE
@@ -3443,8 +3447,6 @@ jobs:
             [ -n "$lease_id" ] || continue
             lease_body="$(gh api "repos/$TARGET_REPO/issues/comments/$lease_id" --jq .body)"
             if grep -Eqi '<!--[[:space:]]*clawsweeper-command-(ack|status):' <<< "$lease_body"; then
-              node dist/clawsweeper.js expire-review-lease \
-                --repo "$TARGET_REPO" --item-number "$ITEM_NUMBER" --comment-id "$lease_id"
               continue
             fi
             gh api "repos/$TARGET_REPO/issues/comments/$lease_id" --method DELETE

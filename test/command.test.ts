@@ -523,7 +523,6 @@ test("reserve-review-lease hydrates a legacy queue claim without cross-head clea
   const curlLogPath = join(root, "curl.log");
   const headSha = "0123456789abcdef0123456789abcdef01234567";
   const oldHeadSha = "f".repeat(40);
-  const statusCommentId = 9988;
   try {
     mkdirSync(binDir, { recursive: true });
     writeFileSync(
@@ -535,8 +534,6 @@ const deleteLogPath = ${JSON.stringify(deleteLogPath)};
 const headSha = ${JSON.stringify(headSha)};
 const oldHeadSha = ${JSON.stringify(oldHeadSha)};
 const leaseExpiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
-const statusComment = { id: ${statusCommentId}, created_at: "2026-07-15T00:00:01Z", updated_at: "2026-07-15T00:00:01Z", user: { login: "clawsweeper[bot]" }, body: "<!-- clawsweeper-command-ack:7000 -->\\n<!-- clawsweeper-command-status:357:re_review:test -->\\nExact review queued.\\n<!-- clawsweeper-command-progress:start -->\\n- State: Failed\\n<!-- clawsweeper-command-progress:end -->" };
-const humanSpoof = { id: 9986, user: { login: "contributor" }, body: "<!-- clawsweeper-command-status:357:re_review:test -->" };
 const args = process.argv.slice(2);
 const path = args[1] || "";
 const oldLease = {
@@ -553,7 +550,7 @@ const oldLease = {
 };
 const comments = () => existsSync(leasePath)
   ? [oldLease, JSON.parse(readFileSync(leasePath, "utf8"))]
-  : [oldLease, humanSpoof, statusComment];
+  : [oldLease];
 if (args[0] === "api" && path === "repos/openclaw/openclaw/issues/357") {
   console.log(JSON.stringify({
     number: 357,
@@ -575,10 +572,10 @@ if (args[0] === "api" && path === "repos/openclaw/openclaw/issues/357") {
 } else if (args[0] === "api" && path.startsWith("repos/openclaw/openclaw/issues/357/comments") && !args.includes("--method")) {
   const value = comments();
   console.log(JSON.stringify(args.includes("--slurp") ? [value] : value));
-} else if (args[0] === "api" && path === "repos/openclaw/openclaw/issues/comments/${statusCommentId}" && args.includes("PATCH")) {
+} else if (args[0] === "api" && path === "repos/openclaw/openclaw/issues/357/comments" && args.includes("--method")) {
   const body = JSON.parse(readFileSync(args[args.indexOf("--input") + 1], "utf8")).body;
   const lease = {
-    ...statusComment,
+    id: 9991,
     html_url: "https://github.com/openclaw/openclaw/pull/357#issuecomment-9991",
     created_at: "2026-07-15T00:00:00Z",
     updated_at: "2026-07-15T00:00:00Z",
@@ -617,8 +614,6 @@ process.stdout.write("200");
         "357",
         "--review-timeout-ms",
         "600000",
-        "--command-status-marker",
-        "<!-- clawsweeper-command-status:357:re_review:test -->",
       ],
       {
         encoding: "utf8",
@@ -640,12 +635,11 @@ process.stdout.write("200");
     const reservation = JSON.parse(result.stdout);
     assert.equal(reservation.status, "posted");
     assert.match(reservation.owner, /^[a-zA-Z0-9._-]{1,200}$/);
-    assert.equal(reservation.commentId, statusCommentId);
+    assert.equal(reservation.commentId, 9991);
     assert.equal(reservation.headSha, headSha);
     const lease = JSON.parse(readFileSync(leasePath, "utf8"));
     assert.match(lease.body, /clawsweeper-review-status:started/);
-    assert.match(lease.body, /clawsweeper-command-review-lease item=357/);
-    assert.match(lease.body, /clawsweeper-command-ack:7000/);
+    assert.match(lease.body, /clawsweeper-review-lease item=357/);
     assert.match(lease.body, new RegExp(`sha=${headSha}`));
     assert.match(readFileSync(curlLogPath, "utf8"), new RegExp(`source_head_sha.*${headSha}`));
     assert.equal(existsSync(deleteLogPath), false);

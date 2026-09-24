@@ -216,6 +216,7 @@ export function prepareReviewCommand(
     const readonlyOpenclaw = boolArg(args.readonly_openclaw);
     const skipStartComment = boolArg(args.skip_start_comment) || localOnly || localRange;
     const suppliedReviewLease = suppliedReviewStartLeaseFromArgs(args);
+    const trustSuppliedReviewLease = boolArg(args.trust_supplied_review_lease);
     if (suppliedReviewLease && !skipStartComment) {
       throw new UserFacingCommandError(
         "A supplied review lease requires --skip-start-comment to prevent a second lease from being created.",
@@ -224,6 +225,19 @@ export function prepareReviewCommand(
     if (suppliedReviewLease && localOnly) {
       throw new UserFacingCommandError(
         "A supplied review lease cannot be used with local-only review.",
+      );
+    }
+    if (trustSuppliedReviewLease && !suppliedReviewLease) {
+      throw new UserFacingCommandError(
+        "--trust-supplied-review-lease requires a supplied review lease identity.",
+      );
+    }
+    if (
+      trustSuppliedReviewLease &&
+      (!process.env.EXACT_REVIEW_ITEM_KEY || !process.env.EXACT_REVIEW_LEASE_ID)
+    ) {
+      throw new UserFacingCommandError(
+        "--trust-supplied-review-lease requires exact-review queue authority.",
       );
     }
     const forcedLoginMethod = reviewCodexForcedLoginMethod(args);
@@ -323,6 +337,7 @@ export function prepareReviewCommand(
       readonlyOpenclaw,
       skipStartComment,
       suppliedReviewLease,
+      trustSuppliedReviewLease,
       forcedLoginMethod,
       loadReviewGitInfo,
       git,

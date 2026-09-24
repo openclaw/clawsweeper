@@ -38,15 +38,12 @@ export function createReviewCommentLeases(
     currentReviewRevision,
     pullRequestHeadSha,
     renderReviewStartStatusComment,
-    commandReviewStartLeaseCommentMarker,
-    withReviewStartStatusLeaseIdentity,
     issueReviewCommentState,
     commentId,
     commentBody,
     PATCHABLE_REVIEW_COMMENT_AUTHORS,
     writeCommentPayload,
     reviewCommentFromMutationResponse,
-    canPatchReviewComment,
   } = dependencies;
 
   function reviewStartLeaseOwner(comment: Record<string, unknown> | undefined): string | null {
@@ -232,8 +229,6 @@ export function createReviewCommentLeases(
     purpose?: "review" | "apply";
     queueAuthority?: ExactReviewQueueAuthority | null;
     allowSupersededLeaseCleanup?: boolean;
-    reuseCommentId?: number;
-    reuseCommentMarker?: string;
   }): ReviewStartStatusCommentResult {
     const startedAtMs = Date.now();
     const leaseOwner = newReviewStartLeaseOwner();
@@ -256,61 +251,16 @@ export function createReviewCommentLeases(
     const normalizedHead = String(options.headSha ?? "")
       .trim()
       .toLowerCase();
-    const wantsCommentReuse =
-      options.reuseCommentId !== undefined || Boolean(options.reuseCommentMarker);
     // Reject a stale queue owner before public comments or expired-lease cleanup.
     if (options.queueAuthority) assertExactReviewQueueAuthority(options.queueAuthority);
     const initialState = issueReviewCommentState(options.item.number);
-    if (wantsCommentReuse && !options.queueAuthority) {
-      throw new Error(
-        "an existing status comment can be reused only with exact-review queue authority",
-      );
-    }
     if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(normalizedHead)) {
       throw new Error(
         `cannot acquire a review lease without the current item revision for #${options.item.number}`,
       );
     }
-    reapExpiredDedicatedReviewStartLeases(
-      options.item.number,
-      initialState.dedicatedLeaseComments,
-      startedAtMs,
-    );
-    if (wantsCommentReuse) assertExactReviewQueueAuthority(options.queueAuthority!);
-    const reservationState = !wantsCommentReuse
-      ? initialState
-      : issueReviewCommentState(options.item.number);
-    const reusableComment = !wantsCommentReuse
-      ? undefined
-      : ((options.reuseCommentId === undefined
-          ? undefined
-          : reservationState.comments.find(
-              (comment) =>
-                commentId(comment) === options.reuseCommentId &&
-                (!options.reuseCommentMarker ||
-                  (commentBody(comment) ?? "").includes(options.reuseCommentMarker)),
-            )) ??
-        (options.reuseCommentMarker
-          ? reservationState.comments.find(
-              (comment) =>
-                canPatchReviewComment(comment) &&
-                (commentBody(comment) ?? "").includes(options.reuseCommentMarker!),
-            )
-          : undefined));
-    const reusableCommentId = commentId(reusableComment);
-    const reusableBody = commentBody(reusableComment) ?? "";
-    if (
-      reusableComment &&
-      (reusableCommentId === null ||
-        !canPatchReviewComment(reusableComment) ||
-        !/<!--\s*clawsweeper-command-(?:ack|status):/i.test(reusableBody))
-    ) {
-      throw new Error(
-        `command status comment ${options.reuseCommentId} cannot carry the review lease for #${options.item.number}`,
-      );
-    }
     const initialLease = freshDedicatedReviewStartLeases({
-      comments: reservationState.leaseComments,
+      comments: initialState.leaseComments,
       itemNumber: options.item.number,
       headSha: normalizedHead,
       nowMs: startedAtMs,
@@ -328,13 +278,12 @@ export function createReviewCommentLeases(
       }
       return heldReviewStartStatusCommentResult(initialLease.expiresAt, false);
     }
-    const body = reusableComment
-      ? withReviewStartStatusLeaseIdentity(
-          reusableBody,
-          leaseOptions,
-          commandReviewStartLeaseCommentMarker(options.item.number),
-        )
-      : renderReviewStartStatusComment(leaseOptions);
+    reapExpiredDedicatedReviewStartLeases(
+      options.item.number,
+      initialState.dedicatedLeaseComments,
+      startedAtMs,
+    );
+    const body = renderReviewStartStatusComment(leaseOptions);
     const payload = writeCommentPayload(options.item.number, body);
     // Every new acquisition POSTs a fresh comment: the lowest-server-id election
     // needs distinct ids per contender, so refreshing a leftover placeholder in
@@ -342,26 +291,17 @@ export function createReviewCommentLeases(
     // comment. Only the same authorized run may reuse its own active lease.
     // Publication never deletes competing lease comments because a
     // rolling-version worker may still renew them.
-    const createArgs = reusableComment
-      ? [
-          "api",
-          `repos/${targetRepo()}/issues/comments/${reusableCommentId}`,
-          "--method",
-          "PATCH",
-          "--input",
-          payload,
-        ]
-      : [
-          "api",
-          `repos/${targetRepo()}/issues/${options.item.number}/comments`,
-          "--method",
-          "POST",
-          "--input",
-          payload,
-        ];
+    const createArgs = [
+      "api",
+      `repos/${targetRepo()}/issues/${options.item.number}/comments`,
+      "--method",
+      "POST",
+      "--input",
+      payload,
+    ];
     const created = reviewCommentFromMutationResponse(
       ghObservedMutationCommand({
-        identity: `review_lease_${reusableComment ? "reuse" : "post"}:${options.item.number}:${leaseOwner}`,
+        identity: `review_lease_post:${options.item.number}:${leaseOwner}`,
         args: createArgs,
       }),
       createArgs,

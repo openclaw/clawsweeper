@@ -180,6 +180,7 @@ try {
           EXACT_REVIEW_LEASE_REVISION: "3",
           EXACT_REVIEW_CLAIM_GENERATION: "1",
           EXACT_REVIEW_SOURCE_HEAD_SHA: head,
+          RESOLVED_STATUS_COMMENT_ID: "",
         },
         stdio: ["ignore", "pipe", "pipe"],
       });

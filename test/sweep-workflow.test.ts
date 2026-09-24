@@ -273,21 +273,30 @@ test("queued publication expires only its posted review lease after successful h
   for (const queued of ["success", "failure"]) {
     for (const accepted of ["true", "false"]) {
       for (const reservation of ["posted", "held", "superseded"]) {
-        const expression = expiry.if
-          .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
-          .replace("always()", "true")
-          .replace("cancelled()", "false")
-          .replace("steps.claim-exact-review-queue.outputs.claimed", "'true'")
-          .replace("steps.queue-exact-review-publication.outcome", JSON.stringify(queued))
-          .replace(
-            "steps.direct-exact-review-publication.outputs.accepted",
-            JSON.stringify(accepted),
-          )
-          .replace("steps.reserve-exact-review-lease.outputs.status", JSON.stringify(reservation));
-        assert.equal(
-          Function(`return (${expression});`)(),
-          queued === "success" && accepted !== "true" && reservation === "posted",
-        );
+        for (const queueOnly of ["true", "false"]) {
+          const expression = expiry.if
+            .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
+            .replace("always()", "true")
+            .replace("cancelled()", "false")
+            .replace("steps.claim-exact-review-queue.outputs.claimed", "'true'")
+            .replace("steps.queue-exact-review-publication.outcome", JSON.stringify(queued))
+            .replace(
+              "steps.direct-exact-review-publication.outputs.accepted",
+              JSON.stringify(accepted),
+            )
+            .replace("steps.reserve-exact-review-lease.outputs.status", JSON.stringify(reservation))
+            .replace(
+              "steps.reserve-exact-review-lease.outputs.queue_only",
+              JSON.stringify(queueOnly),
+            );
+          assert.equal(
+            Function(`return (${expression});`)(),
+            queued === "success" &&
+              accepted !== "true" &&
+              reservation === "posted" &&
+              queueOnly !== "true",
+          );
+        }
       }
     }
   }
@@ -1270,11 +1279,16 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(reserveLease.run ?? "", /pnpm run --silent reserve-review-lease/);
   assert.match(reserveLease.run ?? "", /review-timeout-ms/);
   assert.equal(
-    reserveLease.env?.STATUS_COMMENT_ID,
-    "${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).statusCommentId || '' }}",
+    reserveLease.env?.RESOLVED_STATUS_COMMENT_ID,
+    "${{ steps.mark-re-review-command-in-progress.outputs.status_comment_id || '' }}",
   );
-  assert.match(reserveLease.run ?? "", /--status-comment-id/);
-  assert.match(reserveLease.run ?? "", /--command-status-marker/);
+  assert.match(reserveLease.run ?? "", /queue_only=true/);
+  assert.doesNotMatch(reserveLease.run ?? "", /--status-comment-id|--command-status-marker/);
+  assert.equal(
+    step(reviewer, "Review exact event item").env?.REVIEW_LEASE_QUEUE_ONLY,
+    "${{ steps.reserve-exact-review-lease.outputs.queue_only || 'false' }}",
+  );
+  assert.match(step(reviewer, "Review exact event item").run ?? "", /trust-supplied-review-lease/);
   assert.match(reserveLease.run ?? "", /for attempt in 1 2 3 4 5/);
   assert.match(reserveLease.run ?? "", /RANDOM % 4/);
   assert.match(reserveLease.run ?? "", /status.*superseded/);
@@ -1761,7 +1775,6 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(releaseGeneration.if ?? "", /terminal_state != 'true'/);
   assert.match(markUnsuccessful.if ?? "", /terminal_state != 'true'/);
   assert.match(markUnsuccessful.run ?? "", /--refuse-terminal-state/);
-  assert.match(releaseGeneration.run ?? "", /expire-review-lease/);
   assert.match(releaseGeneration.run ?? "", /content == "eyes"/);
   for (const cleanup of [releaseGeneration, step(reviewer, "Mark unsuccessful re-review")]) {
     for (const kind of ["github_rate_limit", "github_transient"]) {
@@ -2028,8 +2041,6 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(releaseUnsuccessful.run ?? "", /\.user\.login == \\"clawsweeper\[bot\]\\"/);
   assert.match(releaseTerminal.run ?? "", /clawsweeper-command-review-lease/);
   assert.match(releaseUnsuccessful.run ?? "", /clawsweeper-command-review-lease/);
-  assert.match(releaseTerminal.run ?? "", /expire-review-lease/);
-  assert.match(releaseUnsuccessful.run ?? "", /expire-review-lease/);
   assert.match(releaseUnsuccessful.run ?? "", /clawsweeper-command-/);
   assert.match(releaseUnsuccessful.run ?? "", /continue/);
   assert.match(releaseUnsuccessful.run ?? "", /content == "eyes"/);
@@ -7514,8 +7525,7 @@ test("exact oversized PR admission uses the built predicate before reactions, re
     review.run.indexOf('codex_timeout_ms="'),
   );
   assert.match(oversizedBranch, /--output-retention debug/);
-  assert.match(oversizedBranch, /--review-lease-owner "\$REVIEW_LEASE_OWNER"/);
-  assert.match(oversizedBranch, /--review-lease-comment-id "\$REVIEW_LEASE_COMMENT_ID"/);
+  assert.match(oversizedBranch, /review_lease_args\[@\]/);
   for (const reservation of ["posted", "held", "superseded", ""]) {
     for (const authorized of [true, false]) {
       const condition = review.if
@@ -7624,6 +7634,7 @@ for (const scenario of [
         heartbeat_payload='{}'
         superseded_marker="$TEST_ROOT/superseded"
         admission_args=(--pr-admission-file "$PR_ADMISSION_FILE")
+        review_lease_args=(--review-lease-owner "$REVIEW_LEASE_OWNER" --review-lease-comment-id "$REVIEW_LEASE_COMMENT_ID")
         ${finalize}
         ${branch}
         exit 91

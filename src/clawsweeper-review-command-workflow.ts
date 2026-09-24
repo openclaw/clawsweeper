@@ -270,6 +270,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       readonlyOpenclaw,
       skipStartComment,
       suppliedReviewLease,
+      trustSuppliedReviewLease,
       forcedLoginMethod,
       loadReviewGitInfo,
       reviewPolicy,
@@ -338,6 +339,16 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       | { status: "stale" }
       | { status: "held"; retryAt: string } => {
       if (!suppliedReviewLease) return { status: "stale" };
+      if (trustSuppliedReviewLease) {
+        return {
+          status: "claimed",
+          lease: {
+            owner: suppliedReviewLease.owner,
+            commentId: suppliedReviewLease.commentId,
+            headSha: currentRevision,
+          },
+        };
+      }
       const freshLeases = freshDedicatedReviewStartLeases({
         comments: issueReviewCommentState(itemNumber).leaseComments,
         itemNumber,

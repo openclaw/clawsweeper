@@ -66,6 +66,7 @@ type TerminalStatusReceipt = {
 
 type CommandStatusUpdateResult = {
   outcome: CommandStatusUpdateOutcome;
+  statusCommentId?: number;
   terminalStatusReceipt?: TerminalStatusReceipt;
   terminalStatusCompletedAt?: string;
 };
@@ -134,6 +135,7 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
       throw new Error("command status mutation required but no comment was found");
     return { outcome: "skipped" };
   }
+  const statusCommentId = Number(comment.id);
   const terminalStatusReceipt = verifiedTerminalStatusReceipt(comment, options);
   if (terminalStatusReceipt) {
     recordCommandProgress(lifecycle, {
@@ -143,6 +145,7 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
     });
     return {
       outcome: options.refuseTerminalState ? "terminal_state" : "unchanged",
+      statusCommentId,
       terminalStatusReceipt,
       terminalStatusCompletedAt: verifiedTerminalStatusCompletedAt(comment),
     };
@@ -164,7 +167,7 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
         status: "unchanged",
         mutation: false,
       });
-      return { outcome: "terminal_state" };
+      return { outcome: "terminal_state", statusCommentId };
     }
   }
   const body = mergeCommandProgressSection(comment.body, options);
@@ -174,7 +177,7 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
       status: "unchanged",
       mutation: false,
     });
-    return { outcome: "unchanged" };
+    return { outcome: "unchanged", statusCommentId };
   }
   const payload = writePayload(repoRoot(), `command-status-progress-${comment.id}`, { body });
   let mutationResponse: string;
@@ -214,6 +217,7 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
   const verifiedReceipt = verifiedTerminalStatusReceipt({ ...comment, body }, options);
   return {
     outcome: "completed",
+    statusCommentId,
     ...(verifiedReceipt
       ? {
           terminalStatusReceipt: verifiedReceipt,
@@ -230,9 +234,11 @@ export async function runCommandStatusUpdate(options: Options) {
   let outcome: CommandStatusUpdateOutcome | null = null;
   let terminalStatusReceipt: TerminalStatusReceipt | undefined;
   let terminalStatusCompletedAt: string | undefined;
+  let statusCommentId: number | undefined;
   try {
     const result = await updateCommandStatus(options);
     outcome = result.outcome;
+    statusCommentId = result.statusCommentId;
     terminalStatusReceipt = result.terminalStatusReceipt;
     terminalStatusCompletedAt = result.terminalStatusCompletedAt;
   } catch (error) {
@@ -263,6 +269,9 @@ export async function runCommandStatusUpdate(options: Options) {
   }
   if (!commandError && outcome === "terminal_state" && process.env.GITHUB_OUTPUT) {
     appendFileSync(process.env.GITHUB_OUTPUT, "terminal_state=true\n");
+  }
+  if (!commandError && statusCommentId && process.env.GITHUB_OUTPUT) {
+    appendFileSync(process.env.GITHUB_OUTPUT, `status_comment_id=${statusCommentId}\n`);
   }
   if (!commandError && terminalStatusReceipt && process.env.GITHUB_OUTPUT) {
     appendFileSync(

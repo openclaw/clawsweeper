@@ -638,6 +638,7 @@ test("refusal mode exposes a verified terminal receipt as terminal state", () =>
 
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.output, /^terminal_state=true$/m);
+    assert.match(result.output, new RegExp(`^status_comment_id=${comment.id}$`, "m"));
     assert.match(result.output, /^terminal_status_verified=true$/m);
     assert.equal(result.patchedBody, null);
   } finally {
