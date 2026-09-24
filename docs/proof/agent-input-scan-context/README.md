@@ -158,6 +158,53 @@ establish the requested bounded repeatability evidence, not a guarantee about
 every future scanner finding. OpenClaw Bay is unaffected: only host-side fixture
 attribution changes; there is no dashboard API, telemetry, or public-action change.
 
+### Malformed proxy prefix qualification
+
+Historical qualification, September 24, 2026: agent-skills
+[PR 274](https://github.com/openclaw/agent-skills/pull/274) at
+`3cea808464166fa205092958b1da075334396bff` retained an unchanged synthetic
+malformed-proxy rejection fixture. It predates that PR, introduced by
+`567e63060e03503e965e91f0af06c5633be1221f`. The test supplies a reserved invalid
+host through a mocked environment and expects rejection before engine startup.
+
+The original hosted scan in
+[run 35954755271](https://github.com/openclaw/clawsweeper/actions/runs/35954755271)
+reported 11 findings and retained metadata identifying head blob
+`076472cab0910a2fc56620e82e76260269b01ad6`, line 4661, as an unqualified PLAIN URI.
+Its raw identities and original prompt were not retained. An unchanged-policy
+full-input reproduction observed nine findings and reproduced that exact source
+coordinate. Eight findings matched existing policy; the ninth was the malformed
+port's native prefix. The reproduced nine records do not recover the original 11.
+
+The native Raw and RawV2 digest is
+`7b8ee01b06a7e5b375164f2c45249bb258c75726a60b27e20a0ba6e42d5d0b27`.
+That prefix also occurs in the existing valid-proxy fixture. Both occurrences
+therefore require the exact ordered full-line digests
+`1a0920c31a227ead081fd2e6582572dfee060995e266a5520f66021acaa918c9` and
+`c445f98d7d20b87bca6fead0e081385981add30abd58123db8d8d71c799d14a9`.
+The two host-policy rows bind only the canonical test path and its OpenClaw
+mirror, regular-file mode, URI detector, and observed PLAIN decoding. HTML,
+changed suffixes outside the native match, missing or reordered witnesses,
+extra occurrences, and other unqualified findings remain refused.
+
+Qualification leaves the source fixtures, legacy omission policy, classifier,
+scanner arguments, enabled verification, and non-retryable refusal unchanged.
+The controlled native proof uses the complete committed range, the current
+public PR metadata and discussion through `serializeReviewContext`, the host
+review template, and the actual decision schema. It runs no model and cannot
+replace the hosted review's own admission of its exact prompt and source.
+OpenClaw Bay is unaffected; no queue, API, or public action surface changes.
+
+Native macOS arm64 proof used Node 26.7.0 and pinned TruffleHog 3.97.4. The
+canonical before/after runs had identical prompt, schema, all 14 staged input
+hashes, scanner binary, and arguments. The first admitted run omitted the new
+identity; one bounded follow-up admitted seven findings including that identity
+at both base and head. OpenClaw's byte-identical, then-unpublished mirror candidate
+`56f6f6a7210e77188c14b2e43d74388d54dd9b57`, against base
+`4f6eb26b1beda60044ee9b94cd352f37c63718e9`, admitted nine findings across 22 staged
+inputs, including the qualified prefix at both endpoints. The classifier's
+success notices confirmed the exact canonical and mirror source paths.
+
 ## Question URL rejection fixture
 
 Maintainer-approved qualification: admit only the existing

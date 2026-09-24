@@ -558,6 +558,65 @@ function exactUriFixtureTests(
   }
 }
 
+function malformedProxyFixture(): ReturnType<typeof autoreviewFixtures>[number] {
+  const raw = ["http://", "review-user", ":", "review-password", "@", "proxy.example.invalid"].join(
+    "",
+  );
+  return {
+    raw,
+    rawV2: raw,
+    // The native match stops before the invalid port and also prefixes the valid proxy.
+    line: [`            "${raw}:8080",`, `                    "${raw}:bad"`].join("\n"),
+    decoders: ["PLAIN"],
+  };
+}
+
+for (const source of [
+  "skills/autoreview/tests/test_autoreview_hardening.py",
+  ".agents/skills/autoreview/tests/test_autoreview_hardening.py",
+]) {
+  const name = `autoreview malformed proxy at ${source}`;
+  exactUriFixtureTests(name, source, malformedProxyFixture);
+  for (const variant of [
+    "missing-first",
+    "missing-second",
+    "reordered",
+    "first-suffix",
+    "second-suffix",
+    "raw-only",
+    "raw-v2-only",
+    "html",
+    "mixed-finding",
+  ] as const) {
+    test(`${name} refuses ${variant}`, (t) => {
+      const entry = malformedProxyFixture();
+      const lines = entry.line.split("\n");
+      if (variant === "missing-first") entry.line = lines[1]!;
+      if (variant === "missing-second") entry.line = lines[0]!;
+      if (variant === "reordered") entry.line = lines.reverse().join("\n");
+      if (variant === "first-suffix") entry.line = entry.line.replace(":8080", ":8081");
+      if (variant === "second-suffix") entry.line = entry.line.replace(":bad", ":badx");
+      const entries = [entry];
+      if (variant === "mixed-finding") {
+        const raw = entry.raw.replace("review-user", "unreviewed-user");
+        entries.push({ raw, rawV2: raw, line: `"${raw}"`, decoders: ["PLAIN"] });
+      }
+      const patch = fixturePatch(t, source, entries);
+      const result = patch.classify(
+        "PLAIN",
+        variant === "raw-only"
+          ? { Raw: entry.raw + "x" }
+          : variant === "raw-v2-only"
+            ? { RawV2: entry.rawV2 + "x" }
+            : variant === "html"
+              ? { DecoderName: "HTML" }
+              : {},
+      );
+      assert.equal(result.kind, "refused", JSON.stringify(result));
+    });
+  }
+}
+
 function sessionShareLinkFixture(menu: boolean): ReturnType<typeof autoreviewFixtures>[number] {
   const raw = ["https://", "user", ":", "secret", "@", "team.example.com"].join("");
   const rawV2 = raw + (menu ? "/chat" : "");
