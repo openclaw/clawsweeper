@@ -632,6 +632,28 @@ function isDataModelDocumentationPath(path: string): boolean {
   return isDocsPath(path) || isMarkdownConfigSurfacePath(path);
 }
 
+function memorySubsystemPathOwner(path: string): { surface: string; strong: boolean } | undefined {
+  if (!/(?:^|\/)memory-[^/]+(?:\/|$)/i.test(path)) return undefined;
+  const basename = path.split("/").at(-1) ?? "";
+  const stem = basename.replace(/\.[^.]+$/, "");
+  if (/(?:^|[-_.])(?:vector|embedding|vec)(?:[-_.]|$)/i.test(stem)) {
+    return { surface: "vector/embedding metadata", strong: true };
+  }
+  if (/(?:^|[-_.])(?:state|store|storage)(?:[-_.]|$)/i.test(stem)) {
+    return { surface: "serialized state", strong: true };
+  }
+  if (/(?:^|[-_.])cache(?:[-_.]|$)/i.test(stem)) {
+    return { surface: "persistent cache schema", strong: true };
+  }
+  if (/(?:^|[-_.])tombstones?(?:[-_.]|$)/i.test(stem)) {
+    return { surface: "database schema", strong: true };
+  }
+  if (/(?:^|[-_.])(?:schema|sqlite|database|db)(?:[-_.]|$)/i.test(stem)) {
+    return { surface: "database schema", strong: true };
+  }
+  return undefined;
+}
+
 function dataModelPathOwner(path: string): { surface: string; strong: boolean } | undefined {
   const sqliteRole = sqlitePathOwnerRole(path);
   if (sqliteRole === "codec") return { surface: "serialized state", strong: true };
@@ -645,9 +667,13 @@ function dataModelPathOwner(path: string): { surface: string; strong: boolean } 
   if (/(^|\/)persistence(?:\/|[-_.])|(?:serialized|persisted?)[-_.]?(?:state|json)/i.test(path)) {
     return { surface: "serialized state", strong: true };
   }
-  if (/vector|embedding|(?:^|\/)memory(?:\/|[-_.])/i.test(path)) {
+  // An exact memory directory or the known LanceDB backend can own persisted
+  // vectors; broad packages such as `memory-core` are not owners by themselves.
+  if (/vector|embedding|(?:^|\/)memory(?:\/)|(?:^|\/)memory-lancedb(?:\/|[-_.])/i.test(path)) {
     return { surface: "vector/embedding metadata", strong: true };
   }
+  const memoryOwner = memorySubsystemPathOwner(path);
+  if (memoryOwner) return memoryOwner;
   if (
     /(^|\/)(?:migrations?|backfill|doctor|repair|upgrade)(?:\/|[-_.])|(?:migration|backfill|doctor|repair|upgrade)\.(?:ts|js)$/i.test(
       path,
