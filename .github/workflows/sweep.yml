@@ -1051,22 +1051,15 @@ jobs:
           EXACT_REVIEW_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
           EXACT_REVIEW_CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
           EXACT_REVIEW_SOURCE_HEAD_SHA: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceHeadSha || '' }}
+          EXACT_REVIEW_SOURCE_REVISION: ${{ steps.live-item.outputs.source_revision || '' }}
           RESOLVED_STATUS_COMMENT_ID: ${{ steps.mark-re-review-command-in-progress.outputs.status_comment_id || '' }}
+          COMMAND_STATUS_MARKER: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).commandStatusMarker || '' }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
-          if [ -n "$RESOLVED_STATUS_COMMENT_ID" ]; then
-            if ! [[ "$RESOLVED_STATUS_COMMENT_ID" =~ ^[1-9][0-9]*$ ]]; then
-              echo "Invalid resolved command status comment id: $RESOLVED_STATUS_COMMENT_ID" >&2
-              exit 1
-            fi
-            echo "status=posted" >> "$GITHUB_OUTPUT"
-            echo "owner=github-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
-            echo "comment_id=$RESOLVED_STATUS_COMMENT_ID" >> "$GITHUB_OUTPUT"
-            echo "queue_only=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           if ! [[ "$CODEX_TIMEOUT_MS" =~ ^[0-9]+$ ]] || [ "$CODEX_TIMEOUT_MS" -lt 1 ]; then
             echo "Invalid Codex timeout: $CODEX_TIMEOUT_MS" >&2
             exit 1
@@ -1078,6 +1071,37 @@ jobs:
           codex_timeout_seconds=$(((CODEX_TIMEOUT_MS + 999) / 1000))
           media_preprocessing_reserve_seconds=480
           review_timeout_ms=$(((codex_timeout_seconds + media_preprocessing_reserve_seconds + 180) * 1000))
+          if [ -n "$RESOLVED_STATUS_COMMENT_ID" ]; then
+            if ! [[ "$RESOLVED_STATUS_COMMENT_ID" =~ ^[1-9][0-9]*$ ]]; then
+              echo "Invalid resolved command status comment id: $RESOLVED_STATUS_COMMENT_ID" >&2
+              exit 1
+            fi
+            refresh_output="$(mktemp)"
+            trap 'rm -f "$refresh_output"' EXIT
+            GITHUB_OUTPUT="$refresh_output" pnpm run repair:update-command-status -- \
+              --repo "$TARGET_REPO" \
+              --item-number "$ITEM_NUMBER" \
+              --marker "$COMMAND_STATUS_MARKER" \
+              --status-comment-id "$RESOLVED_STATUS_COMMENT_ID" \
+              --state "Review in progress" \
+              --detail "The exact-review reservation is active; Codex is reviewing the item." \
+              --run-url "$RUN_URL" \
+              --refuse-terminal-state \
+              --require-queue-authority-fence \
+              --require-mutation
+            if grep -qx 'queue_superseded=true' "$refresh_output" || grep -qx 'terminal_state=true' "$refresh_output"; then
+              echo "status=superseded" >> "$GITHUB_OUTPUT"
+              echo "queue_only=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            rm -f "$refresh_output"
+            trap - EXIT
+            echo "status=posted" >> "$GITHUB_OUTPUT"
+            echo "owner=github-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+            echo "comment_id=$RESOLVED_STATUS_COMMENT_ID" >> "$GITHUB_OUTPUT"
+            echo "queue_only=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           reservation_args=(
             --target-repo "$TARGET_REPO"
             --item-number "$ITEM_NUMBER"

@@ -311,12 +311,25 @@ test("queue-only command review proves allowed and superseded authority before G
   assert.match(markCommand.if, /command-status-fence\.outputs\.authorized == 'true'/);
   const root = mkdtempSync(`${tmpPrefix}queue-only-proof-`);
   try {
+    const bin = join(root, "bin");
+    const refreshLog = join(root, "status-refresh");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "pnpm"), '#!/bin/sh\nprintf \'%s\\n\' "$*" > "$REFRESH_LOG"\n');
+    chmodSync(join(bin, "pnpm"), 0o700);
     const reservationOutput = join(root, "reservation-output");
     execFileSync("bash", ["-e", "-u", "-c", reservation.run], {
       env: {
         ...process.env,
+        PATH: `${bin}${delimiter}${process.env.PATH}`,
         GH_TOKEN: "fixture-token",
+        TARGET_REPO: "openclaw/clawsweeper",
+        ITEM_NUMBER: "1675",
+        CODEX_TIMEOUT_MS: "2700000",
+        MEDIA_PROOF_TIMEOUT_MS: "480000",
         RESOLVED_STATUS_COMMENT_ID: "7001",
+        COMMAND_STATUS_MARKER: "<!-- clawsweeper-command-status:1675:re_review:fixture -->",
+        RUN_URL: "https://github.com/openclaw/clawsweeper/actions/runs/4242",
+        REFRESH_LOG: refreshLog,
         GITHUB_OUTPUT: reservationOutput,
         GITHUB_RUN_ID: "4242",
         GITHUB_RUN_ATTEMPT: "3",
@@ -327,6 +340,9 @@ test("queue-only command review proves allowed and superseded authority before G
     assert.match(reservationResult, /^owner=github-run-4242-3$/m);
     assert.match(reservationResult, /^comment_id=7001$/m);
     assert.match(reservationResult, /^queue_only=true$/m);
+    assert.match(readText(refreshLog), /repair:update-command-status/);
+    assert.match(readText(refreshLog), /--require-queue-authority-fence/);
+    assert.match(readText(refreshLog), /--require-mutation/);
 
     const fenceScript = commandFence.run.slice(commandFence.run.indexOf('echo "authorized=false"'));
     const supersededOutput = join(root, "superseded-output");
@@ -378,7 +394,10 @@ test("queue-only command review proves allowed and superseded authority before G
         JSON.stringify(
           {
             head: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
-            allowed: { output: reservationResult.trim().split("\n"), githubMutations: 0 },
+            allowed: {
+              output: reservationResult.trim().split("\n"),
+              statusRefreshInvocations: 1,
+            },
             superseded: { output: supersededResult.trim().split("\n"), githubMutations: 0 },
             surface: "production workflow shell extracted from .github/workflows/sweep.yml",
             limits: "Controlled queue and GitHub boundary; no production mutation or model review.",
@@ -1374,7 +1393,18 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     "${{ steps.mark-re-review-command-in-progress.outputs.status_comment_id || '' }}",
   );
   assert.match(reserveLease.run ?? "", /queue_only=true/);
-  assert.doesNotMatch(reserveLease.run ?? "", /--status-comment-id|--command-status-marker/);
+  assert.match(reserveLease.run ?? "", /repair:update-command-status/);
+  assert.match(reserveLease.run ?? "", /--status-comment-id "\$RESOLVED_STATUS_COMMENT_ID"/);
+  assert.match(reserveLease.run ?? "", /--require-queue-authority-fence/);
+  assert.match(reserveLease.run ?? "", /--require-mutation/);
+  assert.ok(
+    (reserveLease.run ?? "").indexOf("review_timeout_ms=") <
+      (reserveLease.run ?? "").indexOf('if [ -n "$RESOLVED_STATUS_COMMENT_ID" ]'),
+  );
+  assert.match(
+    readText("src/repair/update-command-status.ts"),
+    /COMMAND_REVIEW_LEASE_MS = 64 \* 60_000/,
+  );
   assert.equal(
     step(reviewer, "Review exact event item").env?.REVIEW_LEASE_QUEUE_ONLY,
     "${{ steps.reserve-exact-review-lease.outputs.queue_only || 'false' }}",

@@ -33,10 +33,10 @@ import {
 } from "./command-ack-convergence.js";
 
 const PROGRESS_END = "<!-- clawsweeper-command-progress:end -->";
-// The workflow admits at most 45 minutes of Codex time plus 11 minutes for
-// preprocessing and finalization. Match that reservation bound so a hard-killed
-// queue-only run cannot leave the acknowledgement blocking recovery for longer.
-const COMMAND_REVIEW_LEASE_MS = 56 * 60_000;
+// The 120-minute job reserves at most 56 minutes for review work. The remaining
+// 64 minutes cover setup before the reservation and finalization afterward. The
+// workflow refreshes this lease when reservation begins.
+const COMMAND_REVIEW_LEASE_MS = 64 * 60_000;
 
 type Options = {
   repo: string;
