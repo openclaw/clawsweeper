@@ -43,8 +43,10 @@ reason removes the unchanged queue revision while allowing an already queued
 newer revision to proceed; it does not turn the failed workflow green. An
 automatic PR review with a recorded head SHA and `source_incompatible` instead
 retains a parked queue item: the exact source pin cannot improve on that head,
-so scheduled intake must not repeat its preparation. This state has no timed
-retry. Existing parked-item reconciliation recovers changed head, base, or body
+so scheduled intake must not repeat its preparation. Scheduled PR intake binds
+the live head, base, draft state, and body identity before dispatch takes its
+lease snapshot. This state has no timed retry. Existing parked-item
+reconciliation recovers changed head, base, or body
 identity and removes closed targets; an explicit maintainer re-review can retry
 unchanged source. The failure remains visible in lifecycle and Bay status.
 Issue reviews follow moving main, and scanner failures can recover after

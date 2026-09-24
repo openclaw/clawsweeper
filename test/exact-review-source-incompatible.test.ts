@@ -13,9 +13,204 @@ import {
   exactReviewQueueBayProjection,
 } from "../dashboard/exact-review-read-model.ts";
 import { TestStorage } from "./exact-review-test-storage.ts";
+import {
+  buildExactReviewQueueRequest,
+  createExactReviewAdmissionHarness,
+  jsonResponse,
+  withExactReviewAdmissionHarness,
+} from "./dashboard-worker-harness.ts";
 
 const key = "openclaw/openclaw#42";
 const head = "a".repeat(40);
+
+test("scheduled-first PRs bind source identity before dispatch and remain stopped", async () => {
+  for (const lane of ["scheduled_hot_intake", "scheduled_normal_backfill"]) {
+    const reads: string[] = [];
+    const pull = {
+      state: "open",
+      title: "Scheduled PR",
+      body: "Original body",
+      locked: false,
+      labels: [],
+      head: { sha: head },
+      base: { sha: "b".repeat(40) },
+      draft: false,
+      updated_at: "2026-09-24T00:00:00Z",
+    };
+    const h = createExactReviewAdmissionHarness((_repo, _number, kind) => {
+      reads.push(kind);
+      return jsonResponse(pull);
+    });
+    await withExactReviewAdmissionHarness(h, async () => {
+      const enqueue = () =>
+        buildExactReviewQueueRequest(lane, 42, lane, "pull_request", "openclaw/openclaw", {
+          sourceUpdatedAt: pull.updated_at,
+        });
+      assert.equal((await h.queue.fetch(enqueue())).status, 202);
+      await h.queue.alarm();
+      const state = (await h.storage.get("exact-review-queue")) as ExactReviewQueueState;
+      const item = state.items[key];
+      assert.equal(item.leaseDecision?.sourceHeadSha, head);
+      assert.equal(item.leaseDecision?.sourceHeadVerified, true);
+      assert.equal(item.leaseDecision?.sourceBaseSha, pull.base.sha);
+      assert.equal(item.leaseDecision?.sourceIsDraft, false);
+      assert.match(item.leaseDecision?.sourceContentRevision ?? "", /^[0-9a-f]{64}$/);
+      assert.deepEqual(reads, ["pull_request"]);
+      const post = async (path: string, body: unknown) => {
+        const response = await h.queue.fetch(
+          new Request(`https://queue${path}`, {
+            method: "POST",
+            body: JSON.stringify(body),
+          }),
+        );
+        const result = await response.json();
+        assert.ok(response.ok, JSON.stringify(result));
+        return result;
+      };
+      const tuple = {
+        item_key: key,
+        lease_id: item.leaseId,
+        lease_revision: item.leaseRevision,
+        run_id: "4242",
+        run_attempt: 1,
+      };
+      const claim = await post("/claim", tuple);
+      assert.equal(claim.decision.sourceHeadSha, head);
+      await post("/heartbeat", {
+        ...tuple,
+        claim_generation: claim.claim_generation,
+        source_head_sha: head,
+      });
+      await post("/complete", {
+        ...tuple,
+        claim_generation: claim.claim_generation,
+        outcome: "failure",
+        review_failure_reason: "source_incompatible",
+      });
+      const parked = (await post("/parked-reviews/list", { limit: 10 })).parked_reviews[0];
+      assert.equal(parked.parked_reason, "source_incompatible");
+      const unchanged = await post("/parked-reviews/recover-fresh", {
+        idempotency_key: "same-source",
+        items: [parked],
+      });
+      assert.equal(unchanged.unchanged, 1);
+      const scheduled = await h.queue.fetch(
+        buildExactReviewQueueRequest(
+          `${lane}-repeat`,
+          42,
+          lane,
+          "pull_request",
+          "openclaw/openclaw",
+          { sourceUpdatedAt: pull.updated_at },
+        ),
+      );
+      assert.equal((await scheduled.json()).dedupe_reason, "source_incompatible");
+    });
+  }
+});
+
+test("scheduled source binding preserves issues, bound PRs, and closed-target cleanup", async () => {
+  for (const scenario of ["issue", "bound", "closed", "incomplete"] as const) {
+    const reads: string[] = [];
+    const h = createExactReviewAdmissionHarness((_repo, _number, kind) => {
+      reads.push(kind);
+      return jsonResponse(
+        scenario === "closed" ? { state: "closed" } : { state: "open", head: { sha: head } },
+      );
+    });
+    await withExactReviewAdmissionHarness(h, async () => {
+      const identity =
+        scenario === "bound"
+          ? {
+              sourceHeadSha: head,
+              sourceBaseSha: "e".repeat(40),
+              sourceContentRevision: "f".repeat(64),
+            }
+          : {};
+      await h.queue.fetch(
+        buildExactReviewQueueRequest(
+          scenario,
+          42,
+          "scheduled_hot_intake",
+          scenario === "issue" ? "issue" : "pull_request",
+          "openclaw/openclaw",
+          identity,
+        ),
+      );
+      await h.queue.alarm();
+      const item = ((await h.storage.get("exact-review-queue")) as ExactReviewQueueState).items[
+        key
+      ];
+      if (scenario === "closed") assert.equal(item, undefined);
+      else if (scenario === "incomplete") {
+        assert.equal(item.state, "pending");
+        assert.equal(item.decision.sourceHeadSha, undefined);
+      } else {
+        assert.equal(item.state, "dispatching");
+        assert.equal(item.leaseDecision?.sourceBaseSha, identity.sourceBaseSha);
+        assert.equal(item.leaseDecision?.sourceContentRevision, identity.sourceContentRevision);
+        if (scenario === "issue") assert.equal(item.leaseDecision?.sourceHeadSha, undefined);
+      }
+      assert.deepEqual(reads, [scenario === "issue" ? "issue" : "pull_request"]);
+      assert.equal(h.dispatched.length, scenario === "closed" || scenario === "incomplete" ? 0 : 1);
+    });
+  }
+});
+
+test("scheduled source lookup cannot overwrite a newer queued head", async () => {
+  let changed = false;
+  const newerHead = "d".repeat(40);
+  const h = createExactReviewAdmissionHarness(async () => {
+    if (!changed) {
+      changed = true;
+      const response = await h.queue.fetch(
+        buildExactReviewQueueRequest(
+          "newer-source",
+          42,
+          "synchronize",
+          "pull_request",
+          "openclaw/openclaw",
+          {
+            sourceHeadSha: newerHead,
+            sourceHeadVerified: true,
+            sourceAuthoritySeq: 1,
+            sourceUpdatedAt: "2026-09-24T01:00:00Z",
+          },
+        ),
+      );
+      assert.equal(response.status, 202);
+    }
+    return jsonResponse({
+      state: "open",
+      title: "Old source",
+      body: "",
+      locked: false,
+      labels: [],
+      head: { sha: head },
+      base: { sha: "b".repeat(40) },
+      draft: false,
+      updated_at: "2026-09-24T00:00:00Z",
+    });
+  });
+  await withExactReviewAdmissionHarness(h, async () => {
+    await h.queue.fetch(
+      buildExactReviewQueueRequest(
+        "scheduled-first",
+        42,
+        "scheduled_hot_intake",
+        "pull_request",
+        "openclaw/openclaw",
+        { sourceUpdatedAt: "2026-09-24T00:00:00Z" },
+      ),
+    );
+    await h.queue.alarm();
+    const item = ((await h.storage.get("exact-review-queue")) as ExactReviewQueueState).items[key];
+    assert.equal(item.decision.sourceHeadSha, newerHead);
+    assert.equal(item.decision.sourceAuthoritySeq, 1);
+    assert.equal(item.state, "pending");
+    assert.equal(h.dispatched.length, 0);
+  });
+});
 
 async function fixture(overrides: Partial<ExactReviewDecision> = {}, newer = false) {
   const storage = new TestStorage();

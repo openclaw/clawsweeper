@@ -5780,6 +5780,15 @@ export class ExactReviewQueue {
         supersessionAudits.push(audit);
         continue;
       }
+      if (
+        item.state === "pending" &&
+        candidate.state.state === "open" &&
+        candidate.state.sourceIdentity
+      ) {
+        // Scheduled intake has no PR source tuple. Bind the live read before
+        // taking the lease snapshot so completion and recovery share one identity.
+        item.decision = { ...item.decision, ...candidate.state.sourceIdentity };
+      }
       if (candidate.state.state === "unavailable") {
         if (item.state === "parked") {
           // A permanently exhausted item is only being checked for terminal
@@ -17563,7 +17572,14 @@ async function exactReviewTargetItemState(
   try {
     const isPullRequest = decision.itemKind === "pull_request";
     const queuedHeadSha = String(decision.sourceHeadSha || "").toLowerCase();
-    const readPullHead = isPullRequest && /^[0-9a-f]{40}$/.test(queuedHeadSha);
+    const bindScheduledSource =
+      isPullRequest &&
+      !queuedHeadSha &&
+      Boolean(exactReviewScheduledLane(decision)) &&
+      !decision.publication &&
+      !exactReviewDecisionHasCommandContext(decision);
+    const readPullHead =
+      isPullRequest && (/^[0-9a-f]{40}$/.test(queuedHeadSha) || bindScheduledSource);
     const item = await githubTokenJson({
       env,
       token,
@@ -17580,6 +17596,33 @@ async function exactReviewTargetItemState(
         .toLowerCase();
       if (!/^[0-9a-f]{40}$/.test(headSha)) {
         throw new Error("live pull request response missing head SHA");
+      }
+      if (bindScheduledSource) {
+        const baseSha = String(objectValue(item.base).sha || "").toLowerCase();
+        const material = exactReviewSourceRevisionMaterial(item);
+        const updatedAt = String(item.updated_at || "");
+        if (
+          !/^[0-9a-f]{40}$/.test(baseSha) ||
+          typeof item.draft !== "boolean" ||
+          !material ||
+          !Number.isFinite(Date.parse(updatedAt))
+        ) {
+          throw new Error("live scheduled pull request source identity is incomplete");
+        }
+        return {
+          state: "open",
+          headSha,
+          sourceIdentity: {
+            sourceHeadSha: headSha,
+            sourceHeadVerified: true,
+            sourceBaseSha: baseSha,
+            sourceIsDraft: item.draft,
+            sourceUpdatedAt: updatedAt,
+            sourceContentRevision: await sha256Hex(
+              new TextEncoder().encode(JSON.stringify(material)),
+            ),
+          },
+        };
       }
       return { state: "open", headSha };
     }
