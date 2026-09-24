@@ -71,7 +71,8 @@ function compileArm(name, sourceOverrides) {
 // Failing peers also log a stderr line so the proof covers the runtime preferring the
 // protocol's turn error over captured stderr.
 function writePeer(dir, scenario) {
-  const binary = join(dir, "codex");
+  // .cjs keeps the CommonJS peer working when --out sits under the ESM package root.
+  const binary = join(dir, "codex.cjs");
   const turn =
     scenario === "completed"
       ? { status: "completed", error: null }
