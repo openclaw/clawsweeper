@@ -11,7 +11,7 @@ test("command status mutations have exact attempt and outcome receipts", () => {
   assert.ok(patchIndex >= 0);
   assert.ok(receiptIndex > patchIndex);
   assert.match(source, /runCommandLifecycleMutation\(lifecycle,/);
-  assert.match(source, /kind: "ack_comment_delete"/);
+  assert.doesNotMatch(source, /kind: "ack_comment_delete"/);
   assert.match(source, /status: "unchanged"/);
   assert.match(source, /status: "skipped"/);
   assert.match(source, /recordCommandLifecycleFailure/);

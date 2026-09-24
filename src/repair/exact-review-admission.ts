@@ -105,11 +105,14 @@ export function exactReviewAdmission(output: Output): void {
   const open = issue.state === "open";
   const locked = issue.locked === true;
   const pullRequest = Boolean(issue.pull_request);
-  if (open && !locked && !pullRequest) {
+  const hasCommandContext = Boolean(decision.commandStatusMarker || decision.statusCommentId);
+  let issueComments: unknown[] | undefined;
+  if (open && !locked && !pullRequest && hasCommandContext) {
     const pages: unknown[] = JSON.parse(
       read(`issues/${number}/comments?per_page=100`, "--paginate", "--slurp"),
     );
-    output({ source_revision: issueSourceRevisionSha256(issue, pages.flat()) });
+    issueComments = pages.flat();
+    output({ source_revision: issueSourceRevisionSha256(issue, issueComments) });
   }
   output({ item_kind: pullRequest ? "pull_request" : "issue" });
   if (open && !locked && deferAutomaticEndorReview(repo, issue, decision)) {
@@ -149,10 +152,13 @@ export function exactReviewAdmission(output: Output): void {
   if (open && !locked && decision.sourceAction === "scheduled_hot_intake") {
     let comments: unknown[] | undefined;
     try {
-      const pages: unknown[] = JSON.parse(
-        read(`issues/${number}/comments?per_page=100`, "--paginate", "--slurp"),
-      );
-      comments = pages.flat();
+      if (issueComments) comments = issueComments;
+      else {
+        const pages: unknown[] = JSON.parse(
+          read(`issues/${number}/comments?per_page=100`, "--paginate", "--slurp"),
+        );
+        comments = pages.flat();
+      }
     } catch (error) {
       console.error(
         "::warning::Unable to read comments for scheduled no-op classification; preserving normal review admission.",

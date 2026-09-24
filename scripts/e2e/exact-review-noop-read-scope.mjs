@@ -181,7 +181,6 @@ function scenarios() {
     });
     for (const [name, action] of [
       ["normal", "scheduled_normal_backfill"],
-      ["command", "review"],
       ["event", "edited"],
       ["absent", undefined],
       ["near-match", `${hotAction} `],
@@ -189,6 +188,15 @@ function scenarios() {
     ]) {
       cases.push(make(name, action));
     }
+    cases.push(
+      make("command", "review", {
+        decision: {
+          sourceAction: "review",
+          targetBranch: "main",
+          commandStatusMarker: "<!-- clawsweeper-command-status:test -->",
+        },
+      }),
+    );
     cases.push(
       make("hot-unchanged", hotAction, {
         expected: { proceed: "false", scheduled_semantic_noop: "true" },
@@ -720,12 +728,24 @@ export function runReadScopeProof({
       const hydration = after.trace.filter((event) =>
         ["comments", "classifier"].includes(event.kind),
       );
-      if (!isHot)
+      const issueSourceRead =
+        after.outputs.item_kind === "issue" &&
+        scenario.issue.state === "open" &&
+        !scenario.issue.locked &&
+        Boolean(scenario.decision.commandStatusMarker || scenario.decision.statusCommentId);
+      if (issueSourceRead) assert.match(after.outputs.source_revision, /^[a-f0-9]{64}$/);
+      if (!isHot) {
         assert.equal(
-          hydration.length,
+          hydration.filter((event) => event.kind === "classifier").length,
           0,
-          `${scenario.name}: wasted non-hot no-op reads/classification`,
+          `${scenario.name}: wasted non-hot classification`,
         );
+        assert.equal(
+          hydration.filter((event) => event.kind === "comments").length,
+          issueSourceRead ? Math.ceil(scenario.comments.length / 100) : 0,
+          `${scenario.name}: unexpected non-hot comment reads`,
+        );
+      }
       if (
         !scenario.candidateOnly &&
         after.outputs.item_kind === "pull_request" &&
