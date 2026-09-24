@@ -50,6 +50,9 @@ export function expireReviewStartStatusLease(
     /\sitem=(\d+)(?=\s|-->)/.exec(marker)?.[1] !== identity[1]
   )
     return body;
+  if (/clawsweeper-command-review-lease/i.test(identity[0])) {
+    return body.slice(0, body.lastIndexOf(marker)).trimEnd();
+  }
   const rewritten = marker.replace(
     /(\slease_expires_at=)[^\s>]+/,
     (_match, prefix: string) => `${prefix}${expiresAt}`,

@@ -72,6 +72,21 @@ test("expireReviewStartStatusLease changes only the canonical expiry and release
   assert.equal(freshExactHeadReviewStartLease(options), null);
 });
 
+test("expireReviewStartStatusLease removes only a command-owned lease suffix", () => {
+  const marker = `<!-- clawsweeper-review-status:started item=${itemNumber} sha=${headSha} started_at=2026-09-02T21:00:00.000Z lease_expires_at=2026-09-02T21:41:00.000Z owner=worker-1 v=1 -->`;
+  const acknowledgement = [
+    "<!-- clawsweeper-command-ack:7000 -->",
+    `<!-- clawsweeper-command-status:${itemNumber}:re_review:test -->`,
+    "ClawSweeper re-review requested.",
+  ].join("\n");
+  const body = `${acknowledgement}\n${marker}\n<!-- clawsweeper-command-review-lease item=${itemNumber} -->\n`;
+
+  assert.equal(
+    expireReviewStartStatusLease(body, "2026-09-02T21:23:00.000Z", itemNumber),
+    acknowledgement,
+  );
+});
+
 test("expireReviewStartStatusLease leaves noncanonical markers and unrelated text byte-identical", () => {
   for (const body of [
     "No marker.  \r\n",

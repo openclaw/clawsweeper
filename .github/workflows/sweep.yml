@@ -1991,6 +1991,8 @@ jobs:
             [ -n "$lease_id" ] || continue
             lease_body="$(gh api "repos/$TARGET_REPO/issues/comments/$lease_id" --jq .body)"
             if grep -Eqi '<!--[[:space:]]*clawsweeper-command-(ack|status):' <<< "$lease_body"; then
+              node dist/clawsweeper.js expire-review-lease \
+                --repo "$TARGET_REPO" --item-number "$ITEM_NUMBER" --comment-id "$lease_id"
               continue
             fi
             gh api "repos/$TARGET_REPO/issues/comments/$lease_id" --method DELETE
@@ -3374,6 +3376,8 @@ jobs:
             [ -n "$lease_id" ] || continue
             lease_body="$(gh api "repos/$TARGET_REPO/issues/comments/$lease_id" --jq .body)"
             if grep -Eqi '<!--[[:space:]]*clawsweeper-command-(ack|status):' <<< "$lease_body"; then
+              node dist/clawsweeper.js expire-review-lease \
+                --repo "$TARGET_REPO" --item-number "$ITEM_NUMBER" --comment-id "$lease_id"
               continue
             fi
             gh api "repos/$TARGET_REPO/issues/comments/$lease_id" --method DELETE
@@ -3439,6 +3443,8 @@ jobs:
             [ -n "$lease_id" ] || continue
             lease_body="$(gh api "repos/$TARGET_REPO/issues/comments/$lease_id" --jq .body)"
             if grep -Eqi '<!--[[:space:]]*clawsweeper-command-(ack|status):' <<< "$lease_body"; then
+              node dist/clawsweeper.js expire-review-lease \
+                --repo "$TARGET_REPO" --item-number "$ITEM_NUMBER" --comment-id "$lease_id"
               continue
             fi
             gh api "repos/$TARGET_REPO/issues/comments/$lease_id" --method DELETE

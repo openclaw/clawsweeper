@@ -1761,6 +1761,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(releaseGeneration.if ?? "", /terminal_state != 'true'/);
   assert.match(markUnsuccessful.if ?? "", /terminal_state != 'true'/);
   assert.match(markUnsuccessful.run ?? "", /--refuse-terminal-state/);
+  assert.match(releaseGeneration.run ?? "", /expire-review-lease/);
   assert.match(releaseGeneration.run ?? "", /content == "eyes"/);
   for (const cleanup of [releaseGeneration, step(reviewer, "Mark unsuccessful re-review")]) {
     for (const kind of ["github_rate_limit", "github_transient"]) {
@@ -2027,6 +2028,8 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(releaseUnsuccessful.run ?? "", /\.user\.login == \\"clawsweeper\[bot\]\\"/);
   assert.match(releaseTerminal.run ?? "", /clawsweeper-command-review-lease/);
   assert.match(releaseUnsuccessful.run ?? "", /clawsweeper-command-review-lease/);
+  assert.match(releaseTerminal.run ?? "", /expire-review-lease/);
+  assert.match(releaseUnsuccessful.run ?? "", /expire-review-lease/);
   assert.match(releaseUnsuccessful.run ?? "", /clawsweeper-command-/);
   assert.match(releaseUnsuccessful.run ?? "", /continue/);
   assert.match(releaseUnsuccessful.run ?? "", /content == "eyes"/);
