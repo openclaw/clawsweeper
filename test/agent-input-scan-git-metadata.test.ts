@@ -125,6 +125,136 @@ function classify(
   );
 }
 
+function hunkLabelFixture(
+  beforeGap: string[],
+  afterGap = beforeGap,
+  label = beforeGap[0]!,
+  source = "test/agent-input-scan-git-metadata.test.ts",
+  uri = reviewedUri,
+) {
+  const f = fixture(true);
+  const context = ["// first", "// second", "// third"];
+  const before = Buffer.from([...beforeGap, ...context, "// before", ""].join("\n"));
+  const after = Buffer.from([...afterGap, ...context, "// after", ""].join("\n"));
+  const oid = (bytes: Buffer) =>
+    createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+  const oldId = oid(before);
+  const newId = oid(after);
+  const patch = Buffer.from(
+    [
+      `diff --git a/${source} b/${source}`,
+      `index ${oldId}..${newId} 100644`,
+      `--- a/${source}`,
+      `+++ b/${source}`,
+      `@@ -${beforeGap.length + 1},4 +${afterGap.length + 1},4 @@ ${label}`,
+      ...context.map((line) => ` ${line}`),
+      "-// before",
+      "+// after",
+      "",
+    ].join("\n"),
+  );
+  const inputs = new Map<string, StagedScanInput>([
+    [f.file, { kind: "patch", id: "patch", bytes: patch, from: f.from, to: f.to }],
+    ...(
+      [
+        [oldId, before, f.from, "base"],
+        [newId, after, f.to, "head"],
+      ] as const
+    ).map(([id, bytes, revision, role]): [string, StagedScanInput] => [
+      `/private/scanner/${id}`,
+      { kind: "blob", id, bytes, references: [{ source, mode: "100644", revision, role }] },
+    ]),
+  ]);
+  const parsedUri = new URL(uri);
+  return {
+    inputs,
+    finding: {
+      ...f.uriFinding,
+      Raw: uri,
+      RawV2: uri,
+      SecretParts: {
+        host: parsedUri.host,
+        username: parsedUri.username,
+        password: parsedUri.password,
+      },
+      SourceMetadata: { Data: { Filesystem: { file: f.file, line: 5 } } },
+    },
+  };
+}
+
+test("Git hunk labels require exact source qualification in both unchanged preceding gaps", () => {
+  const declaration = `const reviewedUri = "${reviewedUri}";`;
+  for (const gap of [[declaration], [declaration, "", "// unchanged"]]) {
+    const f = hunkLabelFixture(gap);
+    for (const decoder of ["PLAIN", "HTML"]) {
+      const result = classify([{ ...f.finding, DecoderName: decoder }], f.inputs);
+      assert.equal(result.kind, "classified", decoder);
+      if (result.kind !== "classified") throw new Error("expected qualified hunk label");
+      assert.equal(result.notices.length, 1);
+      assert.deepEqual(result.notices[0]?.findings.map((finding) => finding.role).sort(), [
+        "base",
+        "head",
+      ]);
+      for (const finding of result.notices[0]!.findings) {
+        assert.equal(finding.literalLine, 5);
+        assert.equal(finding.patch?.sourceLine, 1);
+      }
+    }
+  }
+});
+
+test("Git hunk labels reject altered, ambiguous, unbound, and unqualified declarations", () => {
+  const declaration = `const reviewedUri = "${reviewedUri}";`;
+  const changedUri = new URL(reviewedUri);
+  changedUri.password = "altered";
+  const modified = changedUri.href.slice(0, -1);
+  const modifiedDeclaration = `const reviewedUri = "${modified}";`;
+  const cases = [
+    ["altered label", hunkLabelFixture([declaration], undefined, `${declaration} // altered`)],
+    ["absent declaration", hunkLabelFixture(["// absent"], undefined, declaration)],
+    ["changed source line", hunkLabelFixture([` ${declaration}`])],
+    ["head mismatch", hunkLabelFixture([declaration], [` ${declaration}`])],
+    ["base mismatch", hunkLabelFixture([` ${declaration}`], [declaration], declaration)],
+    ["ambiguous declaration", hunkLabelFixture([declaration, declaration])],
+    ["spoofed unchanged gap", hunkLabelFixture([declaration, "// old"], [declaration, "// new"])],
+    ["unqualified path", hunkLabelFixture([declaration], undefined, declaration, "other.test.ts")],
+    [
+      "changed URI",
+      hunkLabelFixture([modifiedDeclaration], undefined, modifiedDeclaration, undefined, modified),
+    ],
+  ] as const;
+  for (const [name, f] of cases) {
+    assert.equal(classify([f.finding], f.inputs).kind, "refused", name);
+  }
+});
+
+test("Git hunk labels do not inherit legacy context-only URI qualification", () => {
+  const url = new URL("http://127.0.0.1:9222");
+  url.username = "openclaw";
+  url.password = "relay-token";
+  const uri = url.href.slice(0, -1);
+  const declaration = `const fixture = ${JSON.stringify(uri)};`;
+  const f = hunkLabelFixture(
+    [declaration],
+    undefined,
+    declaration,
+    "extensions/browser/src/browser/server-context.list-profiles.test.ts",
+    uri,
+  );
+  const blob = [...f.inputs].find(([, input]) => input.kind === "blob")!;
+  assert.equal(
+    classify(
+      [{ ...f.finding, SourceMetadata: { Data: { Filesystem: { file: blob[0], line: 1 } } } }],
+      f.inputs,
+    ).kind,
+    "classified",
+    "the unchanged source still has its legacy qualification",
+  );
+  const result = classify([f.finding], f.inputs);
+  assert.equal(result.kind, "refused");
+  if (result.kind === "refused") assert.equal(result.diagnostic.reason, "material_not_reviewed");
+});
+
 function rawMetadataFixture(change: "M" | "A" | "D", mode: "100644" | "100755" = "100644") {
   const f = fixture(false, mode);
   const rawFile = "/private/scanner/raw";

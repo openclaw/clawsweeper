@@ -780,7 +780,10 @@ New and deleted files additionally require one matching host-captured raw Git
 diff record proving the absent endpoint, correct zero object ID and mode, and
 the complete present-file hunk. A textual `/dev/null` header or missing blob is
 not absence proof; contradictory captured references refuse admission.
-Headers containing the URI, binary patches, ambiguous paths, mode changes,
+Hunk labels may copy one uniquely matching, exactly qualified full source line
+from the unchanged gap before the hunk. Both rehashed endpoint blobs and the
+complete gap must agree; legacy value/path-only policy does not qualify labels.
+Other headers containing the URI, binary patches, ambiguous paths, mode changes,
 uncommitted endpoints, and encoded-only matches remain blocking. Decoder line
 coordinates are diagnostic only; source matching does not rely on them.
 Patch notices retain the original material ID, scanner line, decoder, and literal

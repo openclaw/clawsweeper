@@ -5,7 +5,7 @@ interface PatchWitness {
   file: string;
   sourceLine: number;
   patchLine: number;
-  kind: "context" | "add" | "remove";
+  kind: "context" | "add" | "remove" | "hunk-label";
 }
 
 /** Bind every literal occurrence in a complete patch to its committed source bytes. */
@@ -144,15 +144,9 @@ export function resolvePatchWitnesses(
     for (let position = indexLine + 3; position < section.length; position++) {
       const line = section[position]!;
       if (needsNewlineMarker && line !== "\\ No newline at end of file") return undefined;
-      const hunk = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$/.exec(line);
+      const hunk = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: (.*))?$/.exec(line);
       if (hunk) {
-        if (
-          oldRemaining ||
-          newRemaining ||
-          line.includes(literal) ||
-          ((added || removed) && inHunk)
-        )
-          return undefined;
+        if (oldRemaining || newRemaining || ((added || removed) && inHunk)) return undefined;
         [oldLine, oldRemaining, newLine, newRemaining] = [
           Number(hunk[1]),
           Number(hunk[2] ?? 1),
@@ -176,6 +170,22 @@ export function resolvePatchWitnesses(
               newRemaining !== (after?.lines.length ?? 0)))
         )
           return undefined;
+        if (line.includes(literal)) {
+          const label = hunk[5];
+          if (!before || !after || !label?.includes(literal)) return undefined;
+          const oldGap = before.lines.slice(oldEnd, oldOffset);
+          const newGap = after.lines.slice(newEnd, newOffset);
+          if (oldGap.some((value, offset) => value !== newGap[offset])) return undefined;
+          const offset = oldGap.indexOf(label);
+          if (offset === -1 || oldGap.lastIndexOf(label) !== offset) return undefined;
+          const patchLine = start + position + 1;
+          // Git copies labels outside the hunk. Require both complete source lines;
+          // the distinct kind also requires exact fixture policy in the classifier.
+          witnesses.push(
+            { file: before.file, sourceLine: oldEnd + offset + 1, patchLine, kind: "hunk-label" },
+            { file: after.file, sourceLine: newEnd + offset + 1, patchLine, kind: "hunk-label" },
+          );
+        }
         oldEnd = oldOffset + oldRemaining;
         newEnd = newOffset + newRemaining;
         inHunk = true;

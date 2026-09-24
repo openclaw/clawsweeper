@@ -880,8 +880,8 @@ function classifyReviewedFindings(
         exactFindings.add(key);
       }
       for (const witness of witnesses) {
-        // Changed lines need exact full-line policy; legacy URI rows remain
-        // context-only even when their value and source path are reviewed.
+        // Changed lines and copied hunk labels need exact full-line policy;
+        // legacy URI rows remain context-only even when value and path are reviewed.
         if (witness.kind !== "context" && !usesExactPolicy(inputs.get(witness.file)))
           return refuse("material_not_reviewed");
         // Reuse source policy against the original full blob and every logical
