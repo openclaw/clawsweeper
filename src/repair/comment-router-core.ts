@@ -1937,7 +1937,7 @@ const REVIEW_START_LEASE_CLOCK_SKEW_MS = 5 * 60 * 1000;
 
 function canonicalReviewStartStatusMarker(body: string) {
   const identity = String(body ?? "").match(
-    /<!--\s*clawsweeper-review(?:-lease)?\s+item=(\d+)\s*-->\s*$/i,
+    /<!--\s*clawsweeper-(?:review(?:-lease)?|command-review-lease)\s+item=(\d+)\s*-->\s*$/i,
   );
   const itemNumber = Number(identity?.[1]);
   if (!identity || !Number.isInteger(itemNumber) || itemNumber <= 0) return null;
@@ -1949,6 +1949,13 @@ function canonicalReviewStartStatusMarker(body: string) {
   const marker = clawsweeperMarker(markerBody, "review-status");
   if (marker?.action !== "started" || Number(marker.attrs.item) !== itemNumber) return null;
   return { itemNumber, marker };
+}
+
+function hasDedicatedReviewStartLeaseMarker(body: string, itemNumber: number): boolean {
+  return [
+    `<!-- clawsweeper-review-lease item=${itemNumber} -->`,
+    `<!-- clawsweeper-command-review-lease item=${itemNumber} -->`,
+  ].some((marker) => body.includes(marker));
 }
 
 export function isTrustedReviewStartStatusComment({
@@ -2073,7 +2080,7 @@ export function expiredReviewStartStatusLeases({
     // Only dedicated lease comments are reapable. The durable review comment can
     // carry the same started marker via the legacy combined-lease path, and it
     // must never be deleted here.
-    if (!body.includes(`<!-- clawsweeper-review-lease item=${itemNumber} -->`)) continue;
+    if (!hasDedicatedReviewStartLeaseMarker(body, itemNumber)) continue;
     const canonical = canonicalReviewStartStatusMarker(body);
     if (!canonical || canonical.itemNumber !== itemNumber) continue;
     if (String(canonical.marker.attrs.v ?? "") !== "1") continue;
@@ -2123,7 +2130,7 @@ export function supersededReviewStartStatusLeases({
       .toLowerCase();
     if (!author || !trustedAuthors.has(author)) continue;
     const body = String(comment?.body ?? "");
-    if (!body.includes(`<!-- clawsweeper-review-lease item=${itemNumber} -->`)) continue;
+    if (!hasDedicatedReviewStartLeaseMarker(body, itemNumber)) continue;
     const canonical = canonicalReviewStartStatusMarker(body);
     if (!canonical || canonical.itemNumber !== itemNumber) continue;
     if (String(canonical.marker.attrs.v ?? "") !== "1") continue;

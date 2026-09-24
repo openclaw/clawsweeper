@@ -448,15 +448,28 @@ function commandAckComments(comments: LooseRecord[], marker: string, trustedBots
 
 export function mergeCommandProgressSection(
   body: string,
-  options: Pick<Options, "state" | "detail" | "runUrl">,
+  options: Pick<Options, "state" | "detail" | "runUrl"> & {
+    verifyTerminalStatusReceipt?: boolean;
+  },
 ) {
+  const sourceBody = options.verifyTerminalStatusReceipt
+    ? body
+        .replace(
+          /\n*<!--\s*clawsweeper-review-status:started\b[^>]*-->\s*<!--\s*clawsweeper-command-review-lease\s+item=[1-9]\d*\s*-->\s*$/i,
+          "",
+        )
+        .trimEnd()
+    : body;
   const section = renderCommandProgressSection(options);
-  const start = body.indexOf(PROGRESS_START);
-  const end = body.indexOf(PROGRESS_END);
+  const start = sourceBody.indexOf(PROGRESS_START);
+  const end = sourceBody.indexOf(PROGRESS_END);
+  let merged: string;
   if (start >= 0 && end > start) {
-    return `${body.slice(0, start).trimEnd()}\n\n${section}\n${body.slice(end + PROGRESS_END.length).trimStart()}`;
+    merged = `${sourceBody.slice(0, start).trimEnd()}\n\n${section}\n${sourceBody.slice(end + PROGRESS_END.length).trimStart()}`;
+  } else {
+    merged = `${sourceBody.trimEnd()}\n\n${section}`;
   }
-  return `${body.trimEnd()}\n\n${section}`;
+  return merged;
 }
 
 export function verifiedTerminalStatusReceipt(

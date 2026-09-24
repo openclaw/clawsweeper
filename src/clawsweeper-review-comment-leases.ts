@@ -396,6 +396,9 @@ export function createReviewCommentLeases(
           (commentBody(comment) ?? "").includes(`sha=${lease.headSha}`),
       );
       if (!matching) return false;
+      if (/<!--\s*clawsweeper-command-(?:ack|status):/i.test(commentBody(matching) ?? "")) {
+        return false;
+      }
       ghObservedMutationCommand({
         identity: `review_lease_delete:${itemNumber}:${lease.commentId}`,
         args: [
@@ -431,6 +434,12 @@ export function createReviewCommentLeases(
       nowMs,
     });
     for (const lease of expired) {
+      const leaseComment = dedicatedLeaseComments.find(
+        (comment) => commentId(comment) === lease.commentId,
+      );
+      if (/<!--\s*clawsweeper-command-(?:ack|status):/i.test(commentBody(leaseComment) ?? "")) {
+        continue;
+      }
       try {
         ghObservedMutationCommand({
           identity: `review_lease_reap:${itemNumber}:${lease.commentId}`,
@@ -471,6 +480,12 @@ export function createReviewCommentLeases(
       ),
     });
     for (const lease of superseded) {
+      const leaseComment = dedicatedLeaseComments.find(
+        (comment) => commentId(comment) === lease.commentId,
+      );
+      if (/<!--\s*clawsweeper-command-(?:ack|status):/i.test(commentBody(leaseComment) ?? "")) {
+        continue;
+      }
       try {
         ghObservedMutationCommand({
           identity: `review_lease_supersede:${itemNumber}:${lease.commentId}`,

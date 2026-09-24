@@ -1990,6 +1990,10 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.doesNotMatch(releaseTerminal.if ?? "", /publication-context.*live_terminal_noop/);
   assert.match(releaseTerminal.if ?? "", /publish-event-result.*terminal_noop/);
   assert.match(releaseUnsuccessful.run ?? "", /\.user\.login == \\"clawsweeper\[bot\]\\"/);
+  assert.match(releaseTerminal.run ?? "", /clawsweeper-command-review-lease/);
+  assert.match(releaseUnsuccessful.run ?? "", /clawsweeper-command-review-lease/);
+  assert.match(releaseUnsuccessful.run ?? "", /clawsweeper-command-/);
+  assert.match(releaseUnsuccessful.run ?? "", /continue/);
   assert.match(releaseUnsuccessful.run ?? "", /content == "eyes"/);
   assert.match(releaseUnsuccessful.if ?? "", /completion_kind == 'superseded'/);
   assert.doesNotMatch(releaseUnsuccessful.if ?? "", /completion_kind == 'deferred'/);

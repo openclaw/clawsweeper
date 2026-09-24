@@ -1081,3 +1081,47 @@ test("mergeCommandProgressSection replaces existing progress blocks in place", (
   assert.match(body, /- Detail: Updated detail/);
   assert.equal((body.match(/clawsweeper-command-progress:start/g) ?? []).length, 1);
 });
+
+test("terminal command progress releases its command-owned review lease", () => {
+  const body = mergeCommandProgressSection(
+    [
+      "<!-- clawsweeper-command-ack:4466201487 -->",
+      "Exact review queued.",
+      "<!-- clawsweeper-command-progress:start -->",
+      "Re-review progress:",
+      "- State: Review in progress",
+      "- Detail: Reviewing",
+      "<!-- clawsweeper-command-progress:end -->",
+      "<!-- clawsweeper-review-status:started item=42 sha=abc started_at=2026-09-23T00:00:00Z lease_expires_at=2026-09-23T01:00:00Z owner=worker-1 v=1 -->",
+      "<!-- clawsweeper-command-review-lease item=42 -->",
+    ].join("\n"),
+    {
+      state: "Complete",
+      detail: "Published",
+      runUrl: "https://github.com/openclaw/clawsweeper/actions/runs/1",
+      verifyTerminalStatusReceipt: true,
+    },
+  );
+
+  assert.match(body, /- State: Complete/);
+  assert.doesNotMatch(body, /clawsweeper-review-status:started/);
+  assert.doesNotMatch(body, /clawsweeper-command-review-lease/);
+  assert.match(body, /clawsweeper-command-ack:4466201487/);
+
+  const firstProgress = mergeCommandProgressSection(
+    [
+      "<!-- clawsweeper-command-ack:4466201487 -->",
+      "Exact review queued.",
+      "<!-- clawsweeper-review-status:started item=42 sha=abc started_at=2026-09-23T00:00:00Z lease_expires_at=2026-09-23T01:00:00Z owner=worker-1 v=1 -->",
+      "<!-- clawsweeper-command-review-lease item=42 -->",
+    ].join("\n"),
+    {
+      state: "Complete",
+      detail: "Published",
+      runUrl: "https://github.com/openclaw/clawsweeper/actions/runs/1",
+      verifyTerminalStatusReceipt: true,
+    },
+  );
+  assert.match(firstProgress, /- State: Complete/);
+  assert.doesNotMatch(firstProgress, /clawsweeper-command-review-lease/);
+});

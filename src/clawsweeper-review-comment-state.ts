@@ -38,9 +38,10 @@ export function expireReviewStartStatusLease(
   itemNumber?: number,
 ): string {
   const trailing = trailingHtmlComments(body);
-  const identity = /^<!--\s*clawsweeper-review(?:-lease)?\s+item=([1-9]\d*)\s*-->$/i.exec(
-    trailing.at(-1) ?? "",
-  );
+  const identity =
+    /^<!--\s*clawsweeper-(?:review(?:-lease)?|command-review-lease)\s+item=([1-9]\d*)\s*-->$/i.exec(
+      trailing.at(-1) ?? "",
+    );
   const marker = trailing.at(-2) ?? "";
   if (
     !identity ||
@@ -85,6 +86,10 @@ export function createReviewCommentState(
 
   function reviewStartLeaseCommentMarker(number: number): string {
     return `<!-- clawsweeper-review-lease item=${number} -->`;
+  }
+
+  function commandReviewStartLeaseCommentMarker(number: number): string {
+    return `<!-- clawsweeper-command-review-lease item=${number} -->`;
   }
 
   function markedReviewStartLeaseCommentBody(number: number, body: string): string {
@@ -333,9 +338,14 @@ export function createReviewCommentState(
     number: number,
     comments: Record<string, unknown>[],
   ): Record<string, unknown>[] {
-    const marker = reviewStartLeaseCommentMarker(number);
+    const markers = [
+      reviewStartLeaseCommentMarker(number),
+      commandReviewStartLeaseCommentMarker(number),
+    ];
     return comments.filter(
-      (candidate) => canPatchReviewComment(candidate) && commentBody(candidate)?.includes(marker),
+      (candidate) =>
+        canPatchReviewComment(candidate) &&
+        markers.some((marker) => commentBody(candidate)?.includes(marker)),
     );
   }
 
@@ -897,6 +907,7 @@ export function createReviewCommentState(
   return {
     markedReviewCommentBody,
     reviewStartLeaseCommentMarker,
+    commandReviewStartLeaseCommentMarker,
     markedReviewStartLeaseCommentBody,
     reviewStartStatusCommentMarker,
     withReviewStartStatusLease,

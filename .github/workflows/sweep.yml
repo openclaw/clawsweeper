@@ -1940,10 +1940,14 @@ jobs:
           lease_ids="$(
             gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER/comments?per_page=100" \
               --paginate \
-              --jq ".[] | select(.user.login == \"clawsweeper[bot]\" or .user.login == \"openclaw-clawsweeper[bot]\") | select(.body | contains(\"<!-- clawsweeper-review-lease item=$ITEM_NUMBER -->\")) | select(.body | contains(\"owner=$LEASE_OWNER \")) | .id"
+            --jq ".[] | select(.user.login == \"clawsweeper[bot]\" or .user.login == \"openclaw-clawsweeper[bot]\") | select(.body | contains(\"<!-- clawsweeper-review-lease item=$ITEM_NUMBER -->\") or contains(\"<!-- clawsweeper-command-review-lease item=$ITEM_NUMBER -->\")) | select(.body | contains(\"owner=$LEASE_OWNER \")) | .id"
           )"
           while IFS= read -r lease_id; do
             [ -n "$lease_id" ] || continue
+            lease_body="$(gh api "repos/$TARGET_REPO/issues/comments/$lease_id" --jq .body)"
+            if grep -Eqi '<!--[[:space:]]*clawsweeper-command-(ack|status):' <<< "$lease_body"; then
+              continue
+            fi
             gh api "repos/$TARGET_REPO/issues/comments/$lease_id" --method DELETE
           done <<< "$lease_ids"
           reaction_ids="$(gh api -X GET \
@@ -3316,9 +3320,13 @@ jobs:
           set -euo pipefail
           test -n "$GH_TOKEN"
           test "$(gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER" --jq .state)" = "closed"
-          lease_ids="$(gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER/comments?per_page=100" --paginate --jq ".[] | select(.user.login == \"clawsweeper[bot]\" or .user.login == \"openclaw-clawsweeper[bot]\") | select(.body | contains(\"<!-- clawsweeper-review-lease item=$ITEM_NUMBER -->\")) | .id")"
+          lease_ids="$(gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER/comments?per_page=100" --paginate --jq ".[] | select(.user.login == \"clawsweeper[bot]\" or .user.login == \"openclaw-clawsweeper[bot]\") | select(.body | contains(\"<!-- clawsweeper-review-lease item=$ITEM_NUMBER -->\") or contains(\"<!-- clawsweeper-command-review-lease item=$ITEM_NUMBER -->\")) | .id")"
           while IFS= read -r lease_id; do
             [ -n "$lease_id" ] || continue
+            lease_body="$(gh api "repos/$TARGET_REPO/issues/comments/$lease_id" --jq .body)"
+            if grep -Eqi '<!--[[:space:]]*clawsweeper-command-(ack|status):' <<< "$lease_body"; then
+              continue
+            fi
             gh api "repos/$TARGET_REPO/issues/comments/$lease_id" --method DELETE
           done <<< "$lease_ids"
           reaction_ids="$(gh api -X GET \
@@ -3377,9 +3385,13 @@ jobs:
           ITEM_NUMBER: ${{ steps.publication-context.outputs.item_number }}
           LEASE_OWNER: github-run-${{ steps.publication-context.outputs.producer_run_id }}-${{ steps.publication-context.outputs.generation_attempt }}
         run: |
-          lease_ids="$(gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER/comments?per_page=100" --paginate --jq ".[] | select(.user.login == \"clawsweeper[bot]\" or .user.login == \"openclaw-clawsweeper[bot]\") | select(.body | contains(\"<!-- clawsweeper-review-lease item=$ITEM_NUMBER -->\")) | select(.body | contains(\"owner=$LEASE_OWNER \")) | .id")"
+          lease_ids="$(gh api "repos/$TARGET_REPO/issues/$ITEM_NUMBER/comments?per_page=100" --paginate --jq ".[] | select(.user.login == \"clawsweeper[bot]\" or .user.login == \"openclaw-clawsweeper[bot]\") | select(.body | contains(\"<!-- clawsweeper-review-lease item=$ITEM_NUMBER -->\") or contains(\"<!-- clawsweeper-command-review-lease item=$ITEM_NUMBER -->\")) | select(.body | contains(\"owner=$LEASE_OWNER \")) | .id")"
           while IFS= read -r lease_id; do
             [ -n "$lease_id" ] || continue
+            lease_body="$(gh api "repos/$TARGET_REPO/issues/comments/$lease_id" --jq .body)"
+            if grep -Eqi '<!--[[:space:]]*clawsweeper-command-(ack|status):' <<< "$lease_body"; then
+              continue
+            fi
             gh api "repos/$TARGET_REPO/issues/comments/$lease_id" --method DELETE
           done <<< "$lease_ids"
           reaction_ids="$(gh api -X GET \
