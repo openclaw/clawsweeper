@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { setTimeout as sleep } from "node:timers/promises";
+import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { ghJsonWithRetry, ghPagedWithRetry, ghText } from "./github-cli.js";
 import { isLockedConversationCommentError } from "../github-retry.js";
@@ -26,7 +27,6 @@ import {
   commandAckMarkerFromBody,
   commandStatusMarkerFromBody,
   compareCommentsByCreatedAt,
-  isPrunableCommandAckDuplicate,
   legacyCommandCommentId,
   selectCommandAckKeeper,
   statusMarkerDiffersFromRequested,
@@ -103,7 +103,7 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
   }
   let comment: LooseRecord | null;
   try {
-    comment = await findCommandStatusComment(options, lifecycle);
+    comment = await findCommandStatusComment(options);
   } catch (error) {
     if (
       options.requireTerminalFinalizationFence &&
@@ -369,10 +369,7 @@ function commandStatusLifecycle(options: Options): CommandLifecycleInput {
   };
 }
 
-async function findCommandStatusComment(
-  options: Options,
-  lifecycle: CommandLifecycleInput,
-): Promise<LooseRecord | null> {
+async function findCommandStatusComment(options: Options): Promise<LooseRecord | null> {
   const deadline = Date.now() + Math.max(0, options.waitMs);
   while (true) {
     const exact = fetchExactStatusComment(options);
@@ -401,9 +398,6 @@ async function findCommandStatusComment(
         (!exact || statusMarkerDiffersFromRequested(exact.body, options.marker))
       ) {
         options.statusCommentId = Number(match.id);
-      }
-      if (!options.requireTerminalFinalizationFence) {
-        pruneDuplicateCommandAckComments({ comments, keep: match, options, lifecycle });
       }
       return match;
     }
@@ -474,40 +468,6 @@ function matchingAckCommentForStatus(
   if (sameStatus.length > 0) return selectCommandAckKeeper(sameStatus);
   if (matching.some((comment) => commandStatusMarkerFromBody(comment.body))) return null;
   return selectCommandAckKeeper(matching);
-}
-
-function pruneDuplicateCommandAckComments({
-  comments,
-  keep,
-  options,
-  lifecycle,
-}: {
-  comments: LooseRecord[];
-  keep: LooseRecord;
-  options: Pick<Options, "marker" | "repo" | "trustedBots">;
-  lifecycle: CommandLifecycleInput;
-}) {
-  const marker = commandAckMarkerFromBody(keep.body);
-  if (!marker) return;
-  const matching = commandAckComments(comments, marker, options.trustedBots);
-  const keepId = Number(keep.id ?? 0) || 0;
-  for (const comment of matching) {
-    const id = Number(comment.id ?? 0) || 0;
-    if (id <= 0 || id === keepId) continue;
-    if (!isPrunableCommandAckDuplicate(comment, options.marker)) continue;
-    try {
-      runCommandLifecycleMutation(lifecycle, {
-        kind: "ack_comment_delete",
-        identity: { repository: options.repo, commentId: id },
-        component: "command_status",
-        operation: () =>
-          ghText(["api", `repos/${options.repo}/issues/comments/${id}`, "--method", "DELETE"]),
-        knownNoMutation: (error) => /\b404\b|Not Found/i.test(String(error)),
-      });
-    } catch (error) {
-      if (!/\b404\b|Not Found/i.test(String(error))) throw error;
-    }
-  }
 }
 
 function commandAckComments(comments: LooseRecord[], marker: string, trustedBots: Set<string>) {
@@ -741,6 +701,11 @@ export function parseOptions(argv: string[]): Options {
 
 export async function exactReviewQueueAuthorityFence(
   env: NodeJS.ProcessEnv = process.env,
+  execute: (
+    file: string,
+    args: string[],
+    options: { encoding: "utf8"; maxBuffer: number },
+  ) => string = (file, args, options) => execFileSync(file, args, options),
 ): Promise<boolean> {
   const origin = new URL(env.QUEUE_URL || "");
   if (
@@ -771,30 +736,36 @@ export async function exactReviewQueueAuthorityFence(
   ) {
     throw new Error("missing exact-review queue fence tuple");
   }
-  const response = await fetch(new URL("/internal/exact-review/heartbeat", origin), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    signal: AbortSignal.timeout(15_000),
-    body: JSON.stringify({
-      item_key: env.EXACT_REVIEW_ITEM_KEY,
-      lease_id: env.EXACT_REVIEW_LEASE_ID,
-      lease_revision: leaseRevision,
-      claim_generation: claimGeneration,
-      run_id: runId,
-      run_attempt: runAttempt,
-      ...(sourceHeadSha ? { source_head_sha: sourceHeadSha } : {}),
-      phase: "status",
-    }),
+  const payload = writePayload(repoRoot(), `command-status-fence-${runId}-${runAttempt}`, {
+    item_key: env.EXACT_REVIEW_ITEM_KEY,
+    lease_id: env.EXACT_REVIEW_LEASE_ID,
+    lease_revision: leaseRevision,
+    claim_generation: claimGeneration,
+    run_id: runId,
+    run_attempt: runAttempt,
+    ...(sourceHeadSha ? { source_head_sha: sourceHeadSha } : {}),
+    phase: "status",
   });
-  const result = (await response.json()) as Record<string, JsonValue>;
-  if (
-    response.status === 409 &&
-    ["lease_superseded", "lease_not_active"].includes(String(result.error))
-  ) {
+  const output = execute(
+    "bash",
+    [
+      "-c",
+      'source "$1"; control_plane_curl --silent --show-error --connect-timeout 5 --max-time 20 --write-out "\\n%{http_code}" --request POST --header "content-type: application/json" --data-binary "@$2" "$3"',
+      "_",
+      `${repoRoot()}/scripts/control-plane-curl.sh`,
+      payload,
+      new URL("/internal/exact-review/heartbeat", origin).toString(),
+    ],
+    { encoding: "utf8", maxBuffer: 1024 * 1024 },
+  );
+  const separator = output.lastIndexOf("\n");
+  const status = Number(output.slice(separator + 1).trim());
+  const result = JSON.parse(output.slice(0, separator) || "{}") as Record<string, JsonValue>;
+  if (status === 409 && ["lease_superseded", "lease_not_active"].includes(String(result.error))) {
     return false;
   }
-  if (!response.ok || result.ok !== true) {
-    throw new Error(`exact-review queue fence failed (HTTP ${response.status})`);
+  if (status < 200 || status >= 300 || result.ok !== true) {
+    throw new Error(`exact-review queue fence failed (HTTP ${status})`);
   }
   return true;
 }

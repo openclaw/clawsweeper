@@ -74,16 +74,12 @@ test("parseOptions can refuse terminal command rewrites", () => {
 });
 
 test("exact review queue fence allows the owner and rejects supersession", async () => {
-  const originalFetch = globalThis.fetch;
   let responseStatus = 200;
-  let requestBody: Record<string, unknown> = {};
-  globalThis.fetch = (async (_input, init) => {
-    requestBody = JSON.parse(String(init?.body ?? "{}"));
-    return new Response(
-      JSON.stringify(responseStatus === 200 ? { ok: true } : { error: "lease_superseded" }),
-      { status: responseStatus, headers: { "content-type": "application/json" } },
-    );
-  }) as typeof fetch;
+  let invocation: { file: string; args: string[] } | undefined;
+  const execute = (file: string, args: string[]) => {
+    invocation = { file, args };
+    return `${JSON.stringify(responseStatus === 200 ? { ok: true } : { error: "lease_superseded" })}\n${responseStatus}`;
+  };
   const env = {
     QUEUE_URL: "https://clawsweeper.example",
     EXACT_REVIEW_ITEM_KEY: "openclaw/clawsweeper#1675",
@@ -94,23 +90,11 @@ test("exact review queue fence allows the owner and rejects supersession", async
     GITHUB_RUN_ID: "4242",
     GITHUB_RUN_ATTEMPT: "3",
   };
-  try {
-    assert.equal(await exactReviewQueueAuthorityFence(env), true);
-    assert.deepEqual(requestBody, {
-      item_key: "openclaw/clawsweeper#1675",
-      lease_id: "lease-1",
-      lease_revision: 8,
-      claim_generation: 2,
-      run_id: "4242",
-      run_attempt: 3,
-      source_head_sha: "a".repeat(40),
-      phase: "status",
-    });
-    responseStatus = 409;
-    assert.equal(await exactReviewQueueAuthorityFence(env), false);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  assert.equal(await exactReviewQueueAuthorityFence(env, execute), true);
+  assert.equal(invocation?.file, "bash");
+  assert.match(invocation?.args.join(" ") ?? "", /control-plane-curl\.sh/);
+  responseStatus = 409;
+  assert.equal(await exactReviewQueueAuthorityFence(env, execute), false);
 });
 
 test("terminal receipt verification is opt-in", () => {
@@ -478,9 +462,9 @@ test("parseOptions enables the terminal locked-conversation skip only when reque
   );
 });
 
-test("terminal locked-conversation skip covers status selection and duplicate cleanup", () => {
+test("terminal locked-conversation skip covers status selection", () => {
   const source = readText("src/repair/update-command-status.ts");
-  const selection = source.indexOf("comment = await findCommandStatusComment(options, lifecycle)");
+  const selection = source.indexOf("comment = await findCommandStatusComment(options)");
   const caught = source.indexOf(
     "recordTerminalLockedConversationSkip(options, lifecycle, error)",
     selection,
