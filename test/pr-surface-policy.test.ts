@@ -547,6 +547,57 @@ test("persistence-owner state-file relocations retain compatibility holds", () =
   }
 });
 
+test("changed existing statePath declarations retain compatibility holds", () => {
+  const declaration = "const statePath = path.resolve(cwd, resolveOpenClawStateSqlitePath(env));";
+  for (const patch of [
+    ...[
+      'const statePath = path.resolve(cwd, "alternate.sqlite");',
+      "const statePath = path.resolve(cwd, resolveOpenClawStateSqlitePath(alternateEnv));",
+      "const statePath = (path.resolve(cwd, resolveOpenClawStateSqlitePath(env)));",
+      "const statePath: string = path.resolve(cwd, resolveOpenClawStateSqlitePath(env));",
+    ].map((replacement) => `@@\n-${declaration}\n+${replacement}`),
+    `@@\n-${declaration}`,
+    `@@\n-${declaration}\n@@\n+const statePath = "alternate.sqlite";`,
+  ]) {
+    const report = renderPersistenceReport(
+      [
+        {
+          filename: "src/agents/tool-construction-preparation.ts",
+          patch,
+        },
+      ],
+      "a".repeat(40),
+    );
+    assert.match(
+      renderReviewCommentFromReport(report, "none"),
+      /Add data-model compatibility proof/,
+    );
+    assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:needs-human/);
+  }
+});
+
+test("new, unchanged, moved, and reference-only routing captures stay clear", () => {
+  const declaration = "const statePath = path.resolve(cwd, resolveOpenClawStateSqlitePath(env));";
+  for (const patch of [
+    `@@\n ${declaration}\n+const diagnosticsEnabled = true;`,
+    `@@\n+${declaration}`,
+    "@@\n-await observe(statePath);\n+await observe(statePath, options);",
+    `@@\n-${declaration}\n+  ${declaration}`,
+    `@@\n-${declaration}\n@@\n+${declaration}`,
+    `@@\n-const previousFlag = false;\n+${declaration}`,
+  ]) {
+    const report = renderPersistenceReport(
+      [{ filename: "src/agents/tool-construction-preparation.ts", patch }],
+      "a".repeat(40),
+    );
+    assert.doesNotMatch(
+      renderReviewCommentFromReport(report, "none"),
+      /Add data-model compatibility proof/,
+    );
+    assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:pass/);
+  }
+});
+
 test("generic non-file calls cannot establish storage beside unchanged state paths", () => {
   for (const patch of [
     ...["window.open(url)", "reader.read()", "writer.write(value)", "reader.READSYNC(value)"].map(

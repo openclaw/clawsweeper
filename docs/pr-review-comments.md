@@ -347,6 +347,8 @@ does not make those options persistent. The import must belong to the same diff
 side, and other visible `Console` uses leave the binding conservative. Explicit
 storage changes, other changed fields, and known persistence-owner paths still
 retain their warnings.
+Changing or removing an existing explicit `statePath` variable declaration retains the compatibility hold. The full-file patch owner pairs identical removed and added declaration lines after trimming indentation, including plain moves across hunks; unmatched removed declarations retain the hold. New captures, unchanged declarations, and reference-only awaits do not acquire a hold from this rule. It does not infer semantic equivalence: parentheses-only or other non-identical declaration rewrites may conservatively retain the prior hold.
+
 An in-memory `statePath` field or read-routing argument does not itself define a
 stored format. It needs a known persistence owner or file-I/O evidence in the same semantic diff hunk:
 file reads, read/write streams, append/truncate operations, or filesystem-qualified open/read/write calls. Generic browser and in-memory methods cannot establish storage context by themselves; generic handle calls can still count as changes once that context exists. Filesystem qualification is best-effort hunk evidence from known receivers and explicit named, default, namespace, or `promises` imports; it does not resolve arbitrary JavaScript data flow.

@@ -20,6 +20,8 @@ const fixtureBytes = readFileSync(
   new URL("../../test/fixtures/persistence-classifier-156686.json", import.meta.url),
 );
 const fixture = JSON.parse(fixtureBytes.toString("utf8"));
+const statePathDeclaration =
+  "const statePath = path.resolve(cwd, resolveOpenClawStateSqlitePath(env));";
 const cases = [
   { name: "reporting-full", files: fixture.pullFiles, negative: true },
   {
@@ -28,6 +30,40 @@ const cases = [
       .pullFiles,
     negative: true,
   },
+  ...[
+    'const statePath = path.resolve(cwd, "alternate.sqlite");',
+    "const statePath = path.resolve(cwd, resolveOpenClawStateSqlitePath(alternateEnv));",
+    "const statePath = (path.resolve(cwd, resolveOpenClawStateSqlitePath(env)));",
+    "const statePath: string = path.resolve(cwd, resolveOpenClawStateSqlitePath(env));",
+  ].map((replacement, index) => ({
+    name: "existing-declaration-change-" + index,
+    files: [
+      {
+        filename: "src/agents/tool-construction-preparation.ts",
+        patch: `@@\n-${statePathDeclaration}\n+${replacement}`,
+      },
+    ],
+  })),
+  ...[
+    `@@\n-${statePathDeclaration}`,
+    `@@\n-${statePathDeclaration}\n@@\n+const statePath = "alternate.sqlite";`,
+  ].map((patch, index) => ({
+    name: "removed-or-retargeted-declaration-" + index,
+    files: [{ filename: "src/agents/tool-construction-preparation.ts", patch }],
+  })),
+  ...[
+    `@@\n ${statePathDeclaration}\n+const diagnosticsEnabled = true;`,
+    `@@\n+${statePathDeclaration}`,
+    "@@\n-await observe(statePath);\n+await observe(statePath, options);",
+    `@@\n-${statePathDeclaration}\n+  ${statePathDeclaration}`,
+    `@@\n-${statePathDeclaration}\n@@\n+${statePathDeclaration}`,
+    `@@\n-const previousFlag = false;\n+${statePathDeclaration}`,
+  ].map((patch, index) => ({
+    name: "unchanged-routing-declaration-" + index,
+    files: [{ filename: "src/agents/tool-construction-preparation.ts", patch }],
+    negative: true,
+    baselineReady: index === 0,
+  })),
   ...[false, true].map((truncated) => ({
     name: "separate-hunks" + (truncated ? "-truncated" : ""),
     files: [

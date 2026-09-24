@@ -21,6 +21,8 @@ The baseline requires migration proof for both the full and production-normalize
 
 Browser and in-memory generic method controls remain ready beside unchanged state-path hints. Filesystem-qualified calls, imported filesystem operations, and handle reads within established storage context retain compatibility holds.
 
+Existing direct `statePath` declaration edits or removals retain their prior hold, including destination and resolver-argument changes. The full-file patch owner pairs identical lines, so identical declaration moves across hunks and new captures remain clear. Parentheses-only or type-annotation rewrites can conservatively remain blocked; this proof does not claim all refactors are recognized as equivalent.
+
 The descriptor control with an unchanged state-path hint records a prior omission: the baseline is ready, while the candidate correctly retains the compatibility hold when only the I/O operation changes.
 
 The checked-in compact receipts record the executed baseline and candidate cases, source/compiled/fixture hashes, runtime, and report/comment hashes. The synthetic ready/pass results establish only this reporting contract; they do not authorize a real PR merge or erase unrelated review findings.

@@ -383,6 +383,7 @@ function dataModelSurfacesFromPatch(
 
   const surfaces = new Set<string>();
   const add = (surface: string) => surfaces.add(dataModelSurfaceLabel(path, surface));
+  if (dataModelPatchChangesExistingStatePath(options.patch ?? "")) add("serialized state");
   const pathOwner = dataModelPathOwner(path);
   const pathHint = pathOwner?.surface ?? "";
   if (
@@ -546,6 +547,25 @@ function dataModelTextHasSerializedStateBoundary(text: string): boolean {
 
 function dataModelTextHasCacheSchema(text: string): boolean {
   return /\bcache[_-]?schema\b|\bcache\s+(?:data\s+)?(?:format|schema|layout)\b/i.test(text);
+}
+
+function dataModelPatchChangesExistingStatePath(patch: string): boolean {
+  const declaration = /^(?:export\s+)?(?:const|let|var)\s+statePath(?:\s|[:=;,]|$)/;
+  const lines = patch
+    .split("\n")
+    .filter((line) => /^[+-]/.test(line) && !/^(?:\+\+\+|---)/.test(line))
+    .map((line) => ({ side: line.charAt(0), text: line.slice(1).trim() }))
+    .filter((line) => declaration.test(line.text));
+  const added = lines.filter((line) => line.side === "+").map((line) => line.text);
+  // Pair identical declarations across hunks so plain moves do not imply retargeting.
+  return lines
+    .filter((line) => line.side === "-")
+    .some((line) => {
+      const unchanged = added.indexOf(line.text);
+      if (unchanged < 0) return true;
+      added.splice(unchanged, 1);
+      return false;
+    });
 }
 
 function dataModelStorageContext(patch: string, hasPersistenceOwner = false): string[] {
