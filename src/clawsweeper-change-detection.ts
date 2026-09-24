@@ -651,6 +651,12 @@ function memorySubsystemPathOwner(path: string): { surface: string; strong: bool
   if (/(?:^|[-_.])(?:schema|sqlite|database|db)(?:[-_.]|$)/i.test(stem)) {
     return { surface: "database schema", strong: true };
   }
+  if (stem === "standing-intents") {
+    return { surface: "database schema", strong: true };
+  }
+  if (stem === "dreaming-dreams-file") {
+    return { surface: "serialized state", strong: true };
+  }
   return undefined;
 }
 
@@ -667,7 +673,7 @@ function dataModelPathOwner(path: string): { surface: string; strong: boolean } 
   if (/(^|\/)persistence(?:\/|[-_.])|(?:serialized|persisted?)[-_.]?(?:state|json)/i.test(path)) {
     return { surface: "serialized state", strong: true };
   }
-  // An exact memory directory or the known LanceDB backend can own persisted
+  // Exact memory directories and known persistence owners can own stored
   // vectors; broad packages such as `memory-core` are not owners by themselves.
   if (/vector|embedding|(?:^|\/)memory(?:\/)|(?:^|\/)memory-lancedb(?:\/|[-_.])/i.test(path)) {
     return { surface: "vector/embedding metadata", strong: true };

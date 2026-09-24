@@ -1193,11 +1193,13 @@ test("broad memory subsystem paths need patch evidence for vector persistence", 
   });
 });
 
-test("memory vector persistence owners remain blocked when patch content is unavailable", () => {
+test("memory persistence owners remain blocked when patch content is unavailable", () => {
   for (const filename of [
     "src/memory/vector-store.ts",
     "extensions/memory-lancedb/lancedb-store.ts",
     "extensions/memory-core/src/dreaming-state.ts",
+    "extensions/memory-core/src/standing-intents.ts",
+    "extensions/memory-core/src/dreaming-dreams-file.ts",
     "extensions/memory-wiki/src/source-sync-state.ts",
     "extensions/memory-core/src/memory-session-tombstones.ts",
     "extensions/memory-wiki/src/compiled-cache.ts",
