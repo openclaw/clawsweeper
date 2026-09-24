@@ -337,7 +337,6 @@ export function prepareReviewCommand(
       readonlyOpenclaw,
       skipStartComment,
       suppliedReviewLease,
-      trustSuppliedReviewLease,
       forcedLoginMethod,
       loadReviewGitInfo,
       git,
