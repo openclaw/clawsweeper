@@ -349,7 +349,7 @@ storage changes, other changed fields, and known persistence-owner paths still
 retain their warnings.
 An in-memory `statePath` field or read-routing argument does not itself define a
 stored format. It needs file-I/O evidence in the same semantic diff hunk:
-file reads, read/write streams, append/truncate operations, or open/read/write descriptor calls.
+file reads, read/write streams, append/truncate operations, or filesystem-qualified open/read/write calls. Generic browser and in-memory methods cannot establish storage context by themselves; generic handle calls can still count as changes once that context exists. Filesystem qualification is best-effort hunk evidence from known receivers and explicit named, default, namespace, or `promises` imports; it does not resolve arbitrary JavaScript data flow.
 This preserves dot or bracket members, awaits, nested path builders, and other
 read spellings without parsing JavaScript argument syntax. The association is
 conservative: an unrelated state path and source read colocated in that hunk

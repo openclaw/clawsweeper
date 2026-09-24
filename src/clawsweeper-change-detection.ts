@@ -437,7 +437,7 @@ function dataModelSurfacesFromPatch(
         dataModelTextLooksLikePersistedShapeField(changedFieldText, surface) ||
         dataModelTextHasJsonConversion(changedText) ||
         (surface === "serialized state" &&
-          (dataModelTextHasFileIo(changedText) || /\bstatePath\b/i.test(changedText)))
+          (dataModelTextHasFileIo(changedText, true) || /\bstatePath\b/i.test(changedText)))
       )
         add(surface);
     }
@@ -486,14 +486,51 @@ function dataModelTextHasFileRead(text: string): boolean {
   return /\breadFile(?:Sync)?\b/i.test(text);
 }
 
-function dataModelTextHasFileIo(text: string): boolean {
-  return (
+function dataModelTextHasFileIo(text: string, hasStorageContext = false): boolean {
+  if (
     dataModelTextHasFileRead(text) ||
-    /\b(?:create(?:Read|Write)Stream|(?:appendFile|truncate|ftruncate)(?:Sync)?)\b/i.test(text) ||
-    /\b(?:open(?:Sync)?|readv?(?:Sync)?|writev?(?:Sync)?)(?:["'`]\s*\])?\s*(?:\?\.\s*)?\(/i.test(
+    /\b(?:create(?:Read|Write)Stream|(?:appendFile|truncate|ftruncate)(?:Sync)?|openSync|readSync|readv(?:Sync)?|writeSync|writev(?:Sync)?)\b/i.test(
       text,
     )
-  );
+  )
+    return true;
+  // Generic methods also belong to browsers and in-memory streams. They can
+  // count as a change inside storage context, but cannot establish it alone.
+  if (hasStorageContext) return /\b(?:open|read|write)(?:["'`]\s*\])?\s*(?:\?\.\s*)?\(/i.test(text);
+  const qualifiers = ["fs", "fsp", "fsPromises"];
+  for (const match of text.matchAll(
+    /\bimport\s+(?:([\w$]+)(?:\s*,\s*(?:\*\s+as\s+([\w$]+)|\{[^}]*\}))?|\*\s+as\s+([\w$]+))\s*from\s*["'](?:node:)?fs(?:\/promises)?["']/g,
+  )) {
+    for (const name of match.slice(1)) {
+      if (name) qualifiers.push(name);
+    }
+  }
+  for (const match of text.matchAll(
+    /\bimport\s+(?:[\w$]+\s*,\s*)?\{([^}]+)\}\s*from\s*["'](?:node:)?fs(?:\/promises)?["']/g,
+  )) {
+    const bindings = match[1];
+    if (!bindings) continue;
+    for (const binding of bindings.split(",")) {
+      const name = binding.trim().match(/^(open|read|write|promises)(?:\s+as\s+([\w$]+))?$/);
+      if (!name) continue;
+      const localName = name[2] ?? name[1];
+      if (!localName) continue;
+      if (name[1] === "promises") {
+        qualifiers.push(localName);
+        continue;
+      }
+      const callee = localName.replace(/[$]/g, "\\$");
+      if (new RegExp(`(?<![\\w$.])${callee}\\s*\\(`).test(text)) return true;
+    }
+  }
+  const receiver = qualifiers.map((name) => name.replace(/[$]/g, "\\$")).join("|");
+  if (
+    new RegExp(
+      String.raw`(?<![\w$.])(?:${receiver})(?:\s*\.\s*promises)?\s*(?:(?:\?\.|\.)\s*(?:open|read|write)|(?:\?\.)?\s*\[\s*["'\x60](?:open|read|write)["'\x60]\s*\])\s*(?:\?\.\s*)?\(`,
+    ).test(text)
+  )
+    return true;
+  return false;
 }
 
 function dataModelTextHasSerializedStateBoundary(text: string): boolean {

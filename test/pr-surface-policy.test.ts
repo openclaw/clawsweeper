@@ -498,6 +498,49 @@ test("unchanged state-path context guards changed I/O operations", () => {
   }
 });
 
+test("qualified filesystem and handle operations retain compatibility holds", () => {
+  for (const patch of [
+    ' const handle = await fs.promises.open(statePath, "r");\n+await handle.read(buffer);',
+    ' import { open as openFile } from "node:fs/promises";\n+await openFile(statePath, "r");',
+    '+await fs["open"](statePath, "r");',
+    '+await fs?.open(statePath, "r");',
+    ' import * as nodeFs from "node:fs";\n+nodeFs.write(statePath, payload, done);',
+    ' import disk from "node:fs/promises";\n+await disk.open(statePath, "r");',
+    ' import { promises as disk } from "node:fs";\n+await disk.open(statePath, "r");',
+    ' import disk, * as nodeFs from "node:fs";\n+await disk.open(statePath, "r");',
+    ' import disk, * as nodeFs from "node:fs";\n+nodeFs.write(statePath, payload, done);',
+  ]) {
+    const report = renderPersistenceReport(
+      [{ filename: "src/runtime/records.ts", patch: "@@\n" + patch }],
+      "a".repeat(40),
+    );
+    assert.match(
+      renderReviewCommentFromReport(report, "none"),
+      /Add data-model compatibility proof/,
+    );
+    assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:needs-human/);
+  }
+});
+
+test("generic non-file calls cannot establish storage beside unchanged state paths", () => {
+  for (const patch of [
+    ...["window.open(url)", "reader.read()", "writer.write(value)"].map(
+      (expression) => `@@\n const statePath = options.databasePath;\n+${expression};`,
+    ),
+    '@@\n import * as disk from "node:fs";\n const Disk = memoryReader;\n+Disk.read(statePath);',
+  ]) {
+    const report = renderPersistenceReport(
+      [{ filename: "src/runtime/view.ts", patch }],
+      "a".repeat(40),
+    );
+    assert.doesNotMatch(
+      renderReviewCommentFromReport(report, "none"),
+      /Add data-model compatibility proof/,
+    );
+    assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:pass/);
+  }
+});
+
 test("JSON conversion cannot borrow an unchanged storage boundary from another hunk", () => {
   for (const boundary of [
     'writeFile("snapshot.json", raw);',

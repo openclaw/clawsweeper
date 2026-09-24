@@ -143,6 +143,43 @@ const cases = [
     name: "stream-descriptor-" + index,
     files: [{ filename: "src/runtime/records.ts", patch: "@@\n+" + expression + ";" }],
   })),
+  ...["window.open(url)", "reader.read()", "writer.write(value)"].map((expression, index) => ({
+    name: "non-file-generic-" + index,
+    files: [
+      {
+        filename: "src/runtime/view.ts",
+        patch: "@@\n const statePath = options.databasePath;\n+" + expression + ";",
+      },
+    ],
+    negative: true,
+    baselineReady: true,
+  })),
+  ...[
+    ' const handle = await fs.promises.open(statePath, "r");\n+await handle.read(buffer);',
+    ' import { open as openFile } from "node:fs/promises";\n+await openFile(statePath, "r");',
+    '+await fs["open"](statePath, "r");',
+    '+await fs?.open(statePath, "r");',
+    ' import * as nodeFs from "node:fs";\n+nodeFs.write(statePath, payload, done);',
+    ' import disk from "node:fs/promises";\n+await disk.open(statePath, "r");',
+    ' import { promises as disk } from "node:fs";\n+await disk.open(statePath, "r");',
+    ' import disk, * as nodeFs from "node:fs";\n+await disk.open(statePath, "r");',
+    ' import disk, * as nodeFs from "node:fs";\n+nodeFs.write(statePath, payload, done);',
+  ].map((patch, index) => ({
+    name: "qualified-generic-" + index,
+    files: [{ filename: "src/runtime/records.ts", patch: "@@\n" + patch }],
+    baselineReady: index === 0,
+  })),
+  {
+    name: "case-sensitive-filesystem-binding",
+    files: [
+      {
+        filename: "src/runtime/view.ts",
+        patch:
+          '@@\n import * as disk from "node:fs";\n const Disk = memoryReader;\n+Disk.read(statePath);',
+      },
+    ],
+    negative: true,
+  },
   {
     name: "browser-storage",
     files: [
