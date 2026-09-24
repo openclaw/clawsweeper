@@ -504,6 +504,7 @@ test("qualified filesystem and handle operations retain compatibility holds", ()
     ' import { open as openFile } from "node:fs/promises";\n+await openFile(statePath, "r");',
     '+await fs["open"](statePath, "r");',
     '+await fs?.open(statePath, "r");',
+    '+await fs?.promises.open(statePath, "r");',
     ' import * as nodeFs from "node:fs";\n+nodeFs.write(statePath, payload, done);',
     ' import disk from "node:fs/promises";\n+await disk.open(statePath, "r");',
     ' import { promises as disk } from "node:fs";\n+await disk.open(statePath, "r");',
@@ -548,7 +549,7 @@ test("persistence-owner state-file relocations retain compatibility holds", () =
 
 test("generic non-file calls cannot establish storage beside unchanged state paths", () => {
   for (const patch of [
-    ...["window.open(url)", "reader.read()", "writer.write(value)"].map(
+    ...["window.open(url)", "reader.read()", "writer.write(value)", "reader.READSYNC(value)"].map(
       (expression) => `@@\n const statePath = options.databasePath;\n+${expression};`,
     ),
     '@@\n import * as disk from "node:fs";\n const Disk = memoryReader;\n+Disk.read(statePath);',

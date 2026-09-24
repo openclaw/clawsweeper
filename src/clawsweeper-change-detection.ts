@@ -490,7 +490,7 @@ function dataModelTextHasFileRead(text: string): boolean {
 function dataModelTextHasFileIo(text: string, hasStorageContext = false): boolean {
   if (
     dataModelTextHasFileRead(text) ||
-    /\b(?:create(?:Read|Write)Stream|(?:appendFile|truncate|ftruncate)(?:Sync)?|openSync|readSync|readv(?:Sync)?|writeSync|writev(?:Sync)?)\b/i.test(
+    /\b(?:create(?:Read|Write)Stream|(?:appendFile|truncate|ftruncate)(?:Sync)?|openSync|readSync|readv(?:Sync)?|writeSync|writev(?:Sync)?)\b/.test(
       text,
     )
   )
@@ -527,7 +527,7 @@ function dataModelTextHasFileIo(text: string, hasStorageContext = false): boolea
   const receiver = qualifiers.map(escapeRegExp).join("|");
   if (
     new RegExp(
-      String.raw`(?<![\w$.])(?:${receiver})(?:\s*\.\s*promises)?\s*(?:(?:\?\.|\.)\s*(?:open|read|write)|(?:\?\.)?\s*\[\s*["'\x60](?:open|read|write)["'\x60]\s*\])\s*(?:\?\.\s*)?\(`,
+      String.raw`(?<![\w$.])(?:${receiver})(?:\s*(?:\?\.|\.)\s*promises)?\s*(?:(?:\?\.|\.)\s*(?:open|read|write)|(?:\?\.)?\s*\[\s*["'\x60](?:open|read|write)["'\x60]\s*\])\s*(?:\?\.\s*)?\(`,
     ).test(text)
   )
     return true;
