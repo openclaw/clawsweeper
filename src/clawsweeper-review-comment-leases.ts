@@ -233,6 +233,7 @@ export function createReviewCommentLeases(
     queueAuthority?: ExactReviewQueueAuthority | null;
     allowSupersededLeaseCleanup?: boolean;
     reuseCommentId?: number;
+    reuseCommentMarker?: string;
   }): ReviewStartStatusCommentResult {
     const startedAtMs = Date.now();
     const leaseOwner = newReviewStartLeaseOwner();
@@ -255,10 +256,12 @@ export function createReviewCommentLeases(
     const normalizedHead = String(options.headSha ?? "")
       .trim()
       .toLowerCase();
+    const wantsCommentReuse =
+      options.reuseCommentId !== undefined || Boolean(options.reuseCommentMarker);
     // Reject a stale queue owner before public comments or expired-lease cleanup.
     if (options.queueAuthority) assertExactReviewQueueAuthority(options.queueAuthority);
     const initialState = issueReviewCommentState(options.item.number);
-    if (options.reuseCommentId !== undefined && !options.queueAuthority) {
+    if (wantsCommentReuse && !options.queueAuthority) {
       throw new Error(
         "an existing status comment can be reused only with exact-review queue authority",
       );
@@ -273,22 +276,30 @@ export function createReviewCommentLeases(
       initialState.dedicatedLeaseComments,
       startedAtMs,
     );
-    if (options.reuseCommentId !== undefined)
-      assertExactReviewQueueAuthority(options.queueAuthority!);
-    const reservationState =
-      options.reuseCommentId === undefined
-        ? initialState
-        : issueReviewCommentState(options.item.number);
-    const reusableComment =
-      options.reuseCommentId === undefined
-        ? undefined
-        : reservationState.comments.find(
-            (comment) => commentId(comment) === options.reuseCommentId,
-          );
+    if (wantsCommentReuse) assertExactReviewQueueAuthority(options.queueAuthority!);
+    const reservationState = !wantsCommentReuse
+      ? initialState
+      : issueReviewCommentState(options.item.number);
+    const reusableComment = !wantsCommentReuse
+      ? undefined
+      : ((options.reuseCommentId === undefined
+          ? undefined
+          : reservationState.comments.find(
+              (comment) => commentId(comment) === options.reuseCommentId,
+            )) ??
+        (options.reuseCommentMarker
+          ? reservationState.comments.find(
+              (comment) =>
+                canPatchReviewComment(comment) &&
+                (commentBody(comment) ?? "").includes(options.reuseCommentMarker!),
+            )
+          : undefined));
+    const reusableCommentId = commentId(reusableComment);
     const reusableBody = commentBody(reusableComment) ?? "";
     if (
-      options.reuseCommentId !== undefined &&
+      wantsCommentReuse &&
       (!reusableComment ||
+        reusableCommentId === null ||
         !canPatchReviewComment(reusableComment) ||
         !/<!--\s*clawsweeper-command-(?:ack|status):/i.test(reusableBody))
     ) {
@@ -344,7 +355,7 @@ export function createReviewCommentLeases(
     const createArgs = reusableComment
       ? [
           "api",
-          `repos/${targetRepo()}/issues/comments/${options.reuseCommentId}`,
+          `repos/${targetRepo()}/issues/comments/${reusableCommentId}`,
           "--method",
           "PATCH",
           "--input",

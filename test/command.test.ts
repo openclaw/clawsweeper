@@ -536,6 +536,7 @@ const headSha = ${JSON.stringify(headSha)};
 const oldHeadSha = ${JSON.stringify(oldHeadSha)};
 const leaseExpiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
 const statusComment = { id: ${statusCommentId}, created_at: "2026-07-15T00:00:01Z", updated_at: "2026-07-15T00:00:01Z", user: { login: "clawsweeper[bot]" }, body: "<!-- clawsweeper-command-ack:7000 -->\\n<!-- clawsweeper-command-status:357:re_review:test -->\\nExact review queued.\\n<!-- clawsweeper-command-progress:start -->\\n- State: Review in progress\\n<!-- clawsweeper-command-progress:end -->" };
+const humanSpoof = { id: 9986, user: { login: "contributor" }, body: "<!-- clawsweeper-command-status:357:re_review:test -->" };
 const args = process.argv.slice(2);
 const path = args[1] || "";
 const oldLease = {
@@ -552,7 +553,7 @@ const oldLease = {
 };
 const comments = () => existsSync(leasePath)
   ? [oldLease, JSON.parse(readFileSync(leasePath, "utf8"))]
-  : [oldLease, statusComment];
+  : [oldLease, humanSpoof, statusComment];
 if (args[0] === "api" && path === "repos/openclaw/openclaw/issues/357") {
   console.log(JSON.stringify({
     number: 357,
@@ -616,8 +617,8 @@ process.stdout.write("200");
         "357",
         "--review-timeout-ms",
         "600000",
-        "--status-comment-id",
-        String(statusCommentId),
+        "--command-status-marker",
+        "<!-- clawsweeper-command-status:357:re_review:test -->",
       ],
       {
         encoding: "utf8",

@@ -989,6 +989,7 @@ jobs:
           EXACT_REVIEW_CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
           EXACT_REVIEW_SOURCE_HEAD_SHA: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceHeadSha || '' }}
           STATUS_COMMENT_ID: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).statusCommentId || '' }}
+          COMMAND_STATUS_MARKER: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).commandStatusMarker || '' }}
           EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
@@ -1011,6 +1012,9 @@ jobs:
               exit 1
             fi
             status_comment_args=(--status-comment-id "$STATUS_COMMENT_ID")
+          fi
+          if [ -n "$COMMAND_STATUS_MARKER" ]; then
+            status_comment_args+=(--command-status-marker "$COMMAND_STATUS_MARKER")
           fi
           reservation=""
           reservation_error="$(mktemp)"

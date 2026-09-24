@@ -1260,6 +1260,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     "${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).statusCommentId || '' }}",
   );
   assert.match(reserveLease.run ?? "", /--status-comment-id/);
+  assert.match(reserveLease.run ?? "", /--command-status-marker/);
   assert.match(reserveLease.run ?? "", /for attempt in 1 2 3 4 5/);
   assert.match(reserveLease.run ?? "", /RANDOM % 4/);
   assert.match(reserveLease.run ?? "", /status.*superseded/);
