@@ -285,7 +285,10 @@ export function createReviewCommentLeases(
       : ((options.reuseCommentId === undefined
           ? undefined
           : reservationState.comments.find(
-              (comment) => commentId(comment) === options.reuseCommentId,
+              (comment) =>
+                commentId(comment) === options.reuseCommentId &&
+                (!options.reuseCommentMarker ||
+                  (commentBody(comment) ?? "").includes(options.reuseCommentMarker)),
             )) ??
         (options.reuseCommentMarker
           ? reservationState.comments.find(
@@ -297,9 +300,8 @@ export function createReviewCommentLeases(
     const reusableCommentId = commentId(reusableComment);
     const reusableBody = commentBody(reusableComment) ?? "";
     if (
-      wantsCommentReuse &&
-      (!reusableComment ||
-        reusableCommentId === null ||
+      reusableComment &&
+      (reusableCommentId === null ||
         !canPatchReviewComment(reusableComment) ||
         !/<!--\s*clawsweeper-command-(?:ack|status):/i.test(reusableBody))
     ) {

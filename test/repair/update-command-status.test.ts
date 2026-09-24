@@ -598,6 +598,53 @@ test("legacy command updates verify their receipt without creating duplicate ack
   }
 });
 
+test("refusal mode exposes a verified terminal receipt as terminal state", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-terminal-command-status-"));
+  try {
+    const marker = "<!-- clawsweeper-command-status:115286:re_review:80a1f1 -->";
+    const comment = {
+      id: 5_150_578_737,
+      user: { login: "clawsweeper[bot]" },
+      updated_at: "2026-08-01T08:13:59Z",
+      body: [
+        marker,
+        "<!-- clawsweeper-command:5150571675:2026-08-01T08:13:51Z:re_review:80a1f1 -->",
+        "<!-- clawsweeper-command-progress:start -->",
+        "- State: Complete",
+        "- Detail: Done.",
+        "<!-- clawsweeper-command-progress:end -->",
+      ].join("\n"),
+    };
+    const result = runUpdateCommandStatus(
+      tmp,
+      [
+        "--repo",
+        "openclaw/openclaw",
+        "--item-number",
+        "115286",
+        "--marker",
+        marker,
+        "--status-comment-id",
+        String(comment.id),
+        "--state",
+        "Complete",
+        "--detail",
+        "Done.",
+        "--verify-terminal-status-receipt",
+        "--refuse-terminal-state",
+      ],
+      comment,
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.output, /^terminal_state=true$/m);
+    assert.match(result.output, /^terminal_status_verified=true$/m);
+    assert.equal(result.patchedBody, null);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("mixed-generation legacy command updates finalize through the CLI", () => {
   for (const alreadyComplete of [false, true]) {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-mixed-command-status-"));

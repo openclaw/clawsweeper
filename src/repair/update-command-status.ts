@@ -56,7 +56,8 @@ type CommandStatusUpdateOutcome =
   | "unchanged"
   | "skipped"
   | "locked_conversation"
-  | "missing_status_comment";
+  | "missing_status_comment"
+  | "terminal_state";
 
 type TerminalStatusReceipt = {
   commandCommentId: number;
@@ -141,7 +142,7 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
       mutation: false,
     });
     return {
-      outcome: "unchanged",
+      outcome: options.refuseTerminalState ? "terminal_state" : "unchanged",
       terminalStatusReceipt,
       terminalStatusCompletedAt: verifiedTerminalStatusCompletedAt(comment),
     };
@@ -152,13 +153,18 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
         comment.body,
       )?.[1] ?? "";
     const currentState = /^- State:\s*(.+)$/im.exec(currentProgress)?.[1]?.trim();
-    if (currentState && !new Set(["Queued", "Waiting", "Review in progress"]).has(currentState)) {
+    if (
+      currentState &&
+      !new Set(["Queued", "Waiting", "Review in progress", "Failed", "Interrupted"]).has(
+        currentState,
+      )
+    ) {
       recordCommandProgress(lifecycle, {
         state: currentState,
         status: "unchanged",
         mutation: false,
       });
-      return { outcome: "unchanged" };
+      return { outcome: "terminal_state" };
     }
   }
   const body = mergeCommandProgressSection(comment.body, options);
@@ -254,6 +260,9 @@ export async function runCommandStatusUpdate(options: Options) {
   }
   if (!commandError && outcome === "missing_status_comment" && process.env.GITHUB_OUTPUT) {
     appendFileSync(process.env.GITHUB_OUTPUT, "missing_status_comment=true\n");
+  }
+  if (!commandError && outcome === "terminal_state" && process.env.GITHUB_OUTPUT) {
+    appendFileSync(process.env.GITHUB_OUTPUT, "terminal_state=true\n");
   }
   if (!commandError && terminalStatusReceipt && process.env.GITHUB_OUTPUT) {
     appendFileSync(

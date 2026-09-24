@@ -442,6 +442,10 @@ test("exact event review builds the admission predicate before signals and targe
       index((step) => step.name === "Create target write token", "write token"),
     ],
     [
+      "command terminal check",
+      index((step) => step.name === "Mark re-review command in progress", "command status"),
+    ],
+    [
       "eyes reaction",
       index((step) => step.name === "React to target item review start", "reaction"),
     ],
@@ -466,7 +470,7 @@ test("exact event review builds the admission predicate before signals and targe
     );
   }
   assert.equal(steps[ordered[2][1]]!["continue-on-error"], true);
-  assert.equal(steps[ordered[7][1]]!.id, "reserve-exact-review-lease");
+  assert.equal(steps[ordered[8][1]]!.id, "reserve-exact-review-lease");
 });
 
 test("OpenClaw review jobs provision the pinned sibling Codex source before review", () => {
@@ -1252,6 +1256,16 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   }
 
   const reserveLease = step(reviewer, "Reserve exact review lease");
+  const markCommandInProgress = step(reviewer, "Mark re-review command in progress");
+  const reactToReviewStart = step(reviewer, "React to target item review start");
+  assert.doesNotMatch(markCommandInProgress.if ?? "", /oversized/);
+  assert.match(markCommandInProgress.if ?? "", /has_command_context == 'true'/);
+  assert.notEqual(markCommandInProgress["continue-on-error"], true);
+  assert.ok(
+    reviewer.steps.indexOf(markCommandInProgress) < reviewer.steps.indexOf(reactToReviewStart),
+  );
+  assert.match(reactToReviewStart.if ?? "", /terminal_state != 'true'/);
+  assert.match(reserveLease.if ?? "", /terminal_state != 'true'/);
   assert.equal(reserveLease.env?.GH_TOKEN, "${{ steps.target-write-token.outputs.token }}");
   assert.match(reserveLease.run ?? "", /pnpm run --silent reserve-review-lease/);
   assert.match(reserveLease.run ?? "", /review-timeout-ms/);
@@ -1561,6 +1575,10 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     generationResult.env?.DIRECT_PUBLICATION_RETRY_AT,
     "${{ steps.prepare-direct-exact-review-publication.outputs.retry_at }}",
   );
+  assert.equal(
+    generationResult.env?.COMMAND_TERMINAL_STATE,
+    "${{ steps.mark-re-review-command-in-progress.outputs.terminal_state || 'false' }}",
+  );
   assert.match(
     generationResult.run ?? "",
     /DIRECT_PUBLICATION_FAILURE_KIND.*github_rate_limit.*PUBLICATION_QUEUE_OUTCOME.*!=.*success[\s\S]*retry_kind=throttle[\s\S]*retry_at="\$DIRECT_PUBLICATION_RETRY_AT"/,
@@ -1584,6 +1602,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
           DIRECT_PUBLICATION_RETRY_AT: "",
           TARGET_ENABLED: "true",
           LIVE_OUTCOME: "success",
+          COMMAND_TERMINAL_STATE: "false",
           REVIEW_OUTCOME: "success",
           REVIEW_SUPERSEDED: "false",
           RESERVATION_STATUS: "",
@@ -1610,6 +1629,13 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     }
   };
   const directRetryAt = "2026-08-06T00:00:00.000Z";
+  assert.deepEqual(runGenerationResult({ COMMAND_TERMINAL_STATE: "true" }), {
+    outcome: "success",
+    requeue_latest: "false",
+    direct_lifecycle_requeue: "false",
+    retry_kind: "",
+    retry_at: "",
+  });
   assert.deepEqual(
     runGenerationResult({
       DIRECT_PUBLICATION_FAILURE_KIND: "github_rate_limit",
@@ -1732,6 +1758,9 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     /exact-review-generation-result\.outputs\.retry_kind == ''/,
   );
   assert.match(releaseGeneration.if ?? "", /reserve-exact-review-lease\.outputs\.status != 'held'/);
+  assert.match(releaseGeneration.if ?? "", /terminal_state != 'true'/);
+  assert.match(markUnsuccessful.if ?? "", /terminal_state != 'true'/);
+  assert.match(markUnsuccessful.run ?? "", /--refuse-terminal-state/);
   assert.match(releaseGeneration.run ?? "", /content == "eyes"/);
   for (const cleanup of [releaseGeneration, step(reviewer, "Mark unsuccessful re-review")]) {
     for (const kind of ["github_rate_limit", "github_transient"]) {
@@ -7473,6 +7502,8 @@ test("exact oversized PR admission uses the built predicate before reactions, re
   const reserve = steps.find((step: any) => step.id === "reserve-exact-review-lease");
   assert.doesNotMatch(reserve.if, /oversized/);
   assert.match(reserve.if, /live-item\.outputs\.proceed == 'true'/);
+  const commandStatus = steps.find((step: any) => step.id === "mark-re-review-command-in-progress");
+  assert.doesNotMatch(commandStatus.if, /oversized/);
   const fence = steps.find((step: any) => step.id === "review-status-fence");
   assert.doesNotMatch(fence.if, /oversized/);
   const oversizedBranch = review.run.slice(
