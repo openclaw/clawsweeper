@@ -436,7 +436,8 @@ function dataModelSurfacesFromPatch(
       if (
         dataModelTextLooksLikePersistedShapeField(changedFieldText, surface) ||
         dataModelTextHasJsonConversion(changedText) ||
-        (surface === "serialized state" && dataModelTextHasFileRead(changedText))
+        (surface === "serialized state" &&
+          (dataModelTextHasFileRead(changedText) || /\bstatePath\b/i.test(changedText)))
       )
         add(surface);
     }
@@ -491,12 +492,7 @@ function dataModelTextHasSerializedStateBoundary(text: string): boolean {
   return (
     /\b(?:writeFile(?:Sync)?|localStorage|sessionStorage|indexedDB|IDBObjectStore|workspaceState|globalState|persisted?)\b/i.test(
       text,
-    ) ||
-    // A state path can be in-memory read routing; require its actual file-read boundary.
-    /\breadFile(?:Sync)?\s*(?:\?\.\s*)?\(\s*(?:await\s+|\(\s*)*(?:[$A-Z_a-z][$\w]*\s*(?:\?\.|\.)\s*)*statePath\b/i.test(
-      text,
-    ) ||
-    /\bserialized\s+(?:data\s+)?(?:format|schema|layout|identity|namespace)\b/i.test(text)
+    ) || /\bserialized\s+(?:data\s+)?(?:format|schema|layout|identity|namespace)\b/i.test(text)
   );
 }
 
@@ -517,8 +513,9 @@ function dataModelStorageContext(patch: string, hasPersistenceOwner = false): st
   if (
     dataModelTextHasSerializedStateBoundary(text) ||
     (hasPersistenceOwner && dataModelTextHasJsonConversion(text)) ||
-    // Reading source or media is not a stored format; require decoding or its owner.
-    (dataModelTextHasFileRead(text) && (hasPersistenceOwner || /\bJSON\.parse\b/i.test(text)))
+    // File reads need decoding, a persistence owner, or a state-path hint in this hunk.
+    (dataModelTextHasFileRead(text) &&
+      (hasPersistenceOwner || /\bJSON\.parse\b|\bstatePath\b/i.test(text)))
   ) {
     surfaces.push("serialized state");
   }

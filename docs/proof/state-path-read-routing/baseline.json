@@ -1,0 +1,289 @@
+{
+  "phase": "baseline",
+  "failures": [],
+  "node": "v24.21.0",
+  "platform": "darwin",
+  "arch": "arm64",
+  "sourceSha256": "1e2e9a4a08c0ca296094261de1f1ee12f1f5bd54187544dc82173d615cf8dda9",
+  "fixtureSha256": "c0001151dbe18cd3032af957acafd531d6785210001b2315ba8fa81481d15d1d",
+  "replaySha256": "8f786d13cffe46ef6c42687d7619c4fd70212fe8c83865f42e59b711671d56ec",
+  "compiledDetectorSha256": "edf1366690278e8c0995ea26e679d42f1fd4ad10e5cfd1b989234a96a935ed9c",
+  "records": [
+    {
+      "name": "reporting-full",
+      "observed": {
+        "storedModel": true,
+        "compatibilityBlocker": true,
+        "ready": false,
+        "pass": false
+      },
+      "reportSha256": "24631e6b796864c9bb543a42fb1b3a62849c9ad3f2631db8c85773ba28991a1c",
+      "commentSha256": "b9a776063a9dabe314a546a6cb6f447f302f00b4a60ad32a305ce2f4e808f596"
+    },
+    {
+      "name": "reporting-normalized",
+      "observed": {
+        "storedModel": true,
+        "compatibilityBlocker": true,
+        "ready": false,
+        "pass": false
+      },
+      "reportSha256": "20481a12237d8da4c5bdfbe8fca47c694dc5795d391687ee88c5d26ef9294c7c",
+      "commentSha256": "0542ed132ab0d3b77a8978ef35b2c3e416a50f239290d7c981c07a4fcf8f90bd"
+    },
+    {
+      "name": "separate-hunks",
+      "observed": {
+        "storedModel": true,
+        "compatibilityBlocker": true,
+        "ready": false,
+        "pass": false
+      },
+      "reportSha256": "2ac7cfaa8cc9ee34b94ac576fe876578f41fdc93e00a4964b6b98126253d09fb",
+      "commentSha256": "25d1a29b020f79c2d65b94b9354c954a5fbeb1295c9933cb3fa0fcf12b65e5e2"
+    },
+    {
+      "name": "separate-hunks-truncated",
+      "observed": {
+        "storedModel": true,
+        "compatibilityBlocker": true,
+        "ready": false,
+        "pass": false
+      },
+      "reportSha256": "d297a8b2e6ceb9dfddc73f5597edb63b0084254411a5d2bbacbc2a41ddaff629",
+      "commentSha256": "89f4bc065e47bea39794582397ae2a5b29b582c7ab7c61e5b8efd12bc1752877"
+    },
+    {
+      "name": "file-state-codec",
+      "observed": {
+        "storedModel": true,
+        "compatibilityBlocker": true,
+        "ready": false,
+        "pass": false
+      },
+      "reportSha256": "1740450d890ed9cd1e4373b1c0c662ec3ae3604b39e02ea7bb99dd1dda545ef6",
+      "commentSha256": "ce8dd32592d0aff1590749c89e02a90e777281e4b651e7665c27e5d9a2fc48bd"
+    },
+    {
+      "name": "member-state-codec-0",
+      "observed": {
+        "storedModel": true,
+        "compatibilityBlocker": true,
+        "ready": false,
+        "pass": false
+      },
+      "reportSha256": "78ca579acc279b32c6960ddb20c8298709ec7ec067f7108db40cc5a5146500e1",
+      "commentSha256": "f093b252170ce5aad38e71ec0c1b8053ea899a23ff184f1859bcb15fc7a20d2a"
+    },
+    {
+      "name": "member-state-codec-1",
+      "observed": {
+        "storedModel": true,
+        "compatibilityBlocker": true,
+        "ready": false,
+        "pass": false
+      },
+      "reportSha256": "b380c8763416fff4f56d8cb36465850513fec94a800ab8b7833fec97da590a8b",
+      "commentSha256": "acb29f2dd50a55985bc06cae64d2a4319364a3fe828e1d38d3723cf20fd5d899"
+    },
+    {
+      "name": "member-state-codec-2",
+      "observed": {
+        "storedModel": true,
+        "compatibilityBlocker": true,
+        "ready": false,
+        "pass": false
+      },
+      "reportSha256": "5ddb7d957f4dddfa7657c23aba9b43c0294affc97cef1056356ff36afd1e33fa",
+      "commentSha256": "8417ac8a5cfe524ccf73af02031ec2acc8470536825932a1acddac379b3d91d2"
+    },
+    {
+      "name": "member-state-codec-3",
+      "observed": {
+        "storedModel": true,
+        "compatibilityBlocker": true,
+        "ready": false,
+        "pass": false
+      },
+      "reportSha256": "fbf83121bb0a8b3989e0fb108b5fb8687aeca4c8c5218d0f5c9748b6a8f66043",
+      "commentSha256": "140001b602b63c16d595c249408ef5da8d413aed755e6fa7d4f26b7677af661e"
+    },
+    {
+      "name": "bracket-state-codec-0",
+      "observed": {
+        "storedModel": true,
+        "compatibilityBlocker": true,
+        "ready": false,
+        "pass": false
+      },
+      "reportSha256": "edef3feaba451f594749ee4a105f29322f8ef8970e6f834237b488ade128da11",
+      "commentSha256": "fb4223fd5fa2c52260c8049328000a31b6f3c9d3a599fcbaaf4a323d8b4ad50f"
+    },
+    {
+      "name": "bracket-state-codec-1",
+      "observed": {
+        "storedModel": true,
+        "compatibilityBlocker": true,
+        "ready": false,
+        "pass": false
+      },
+      "reportSha256": "ebd93ccc3242ab22d35c8b6ea77f19cc53df8f58dd47006e8d7e2924c3cb00f7",
+      "commentSha256": "9f0cc4e6fd5608ff487ea9d2ba6fe52aedfe7e68b7131647b2db70a2f9c6c6f6"
+    },
+    {
+      "name": "bracket-state-codec-2",
+      "observed": {
+        "storedModel": true,
+        "compatibilityBlocker": true,
+        "ready": false,
+        "pass": false
+      },
+      "reportSha256": "40f954cfc965c8fe9542fd32e2550702739fd7dd599a6c2c9ea00ad2c6c4fe08",
+      "commentSha256": "149dd5f0cca1ea896359d3fe9b99feff6866fb85b00f780fbdc3c31c3e7304e5"
+    },
+    {
+      "name": "bracket-state-codec-3",
+      "observed": {
+        "storedModel": true,
+        "compatibilityBlocker": true,
+        "ready": false,
+        "pass": false
+      },
+      "reportSha256": "59c9fd375370a47619bafec7d53ad21959d7af63e1f6c6bcf3b99ffd76087887",
+      "commentSha256": "38317b0bbdf2871d1518ca210aa7a540950744bd5d2313f836e48509f9c47d15"
+    },
+    {
+      "name": "bracket-state-codec-4",
+      "observed": {
+        "storedModel": true,
+        "compatibilityBlocker": true,
+        "ready": false,
+        "pass": false
+      },
+      "reportSha256": "eb3ecd05bc4f88ebd1cc1fb32f2cb6b4c5b32fadebe604824638b66e18dfe3a9",
+      "commentSha256": "ddade74badc647ef1896029db5d826146bbdc4f01a7b66b989bd35da5e0fe860"
+    },
+    {
+      "name": "bracket-state-codec-5",
+      "observed": {
+        "storedModel": true,
+        "compatibilityBlocker": true,
+        "ready": false,
+        "pass": false
+      },
+      "reportSha256": "0dd2bb425f0cf6d557fb107f45ea80e02619e04588710a5d6c34d4adf9be9caf",
+      "commentSha256": "b4f3c77de1535e68866d7731a78ed60730df779068c18647224349c677da7ae8"
+    },
+    {
+      "name": "bracket-state-codec-6",
+      "observed": {
+        "storedModel": true,
+        "compatibilityBlocker": true,
+        "ready": false,
+        "pass": false
+      },
+      "reportSha256": "63fb01ad97284084df684909ce12abdc20d75a7205f7a9e48a8e4215cad563c7",
+      "commentSha256": "60eb58718e266205f1f805eae3310e0a7375c80c0047fd6bf52c86f05bcd2370"
+    },
+    {
+      "name": "colocated-read-context-0",
+      "observed": {
+        "storedModel": true,
+        "compatibilityBlocker": true,
+        "ready": false,
+        "pass": false
+      },
+      "reportSha256": "e15b2109a40d74104ef9cfb9ca842d27aa39ce65d0a4f42a42c56b4ef7f16833",
+      "commentSha256": "fd2d243f7793d091301ae728766b41224af53d39e44ed2f2f53c7d1234606011"
+    },
+    {
+      "name": "colocated-read-context-1",
+      "observed": {
+        "storedModel": true,
+        "compatibilityBlocker": true,
+        "ready": false,
+        "pass": false
+      },
+      "reportSha256": "46dd727485ab87f31df262d63af79d03d195daa1d1f2ce782facb1fe46b8684f",
+      "commentSha256": "c2ad18a7d730ac543a2e7c95babb7ad46c9308f43688bf1f804b4ca2f904ec40"
+    },
+    {
+      "name": "colocated-read-context-2",
+      "observed": {
+        "storedModel": true,
+        "compatibilityBlocker": true,
+        "ready": false,
+        "pass": false
+      },
+      "reportSha256": "60d7c8106d2bd65ac89a216dd538730e0cdd8b1e2be913f10c297d02a188ad00",
+      "commentSha256": "98815fbf2ce9f2995cf62fa5c83620fed8cf36573259a040e8adc07639d6d601"
+    },
+    {
+      "name": "computed-read-method",
+      "observed": {
+        "storedModel": true,
+        "compatibilityBlocker": true,
+        "ready": false,
+        "pass": false
+      },
+      "reportSha256": "3d6a51ad8d67c40f5c9eb04e2f1730dd6c5b3cc7d1dcac868ea3614663f5ecb8",
+      "commentSha256": "ad4dc139c1d11868853b6f81bb324746ece848e4619b2a1501f55b3ec37d3d53"
+    },
+    {
+      "name": "multiline-read-input",
+      "observed": {
+        "storedModel": true,
+        "compatibilityBlocker": true,
+        "ready": false,
+        "pass": false
+      },
+      "reportSha256": "f1aabeeb2be13b185a7531e93ccfbbfbb333484e0ccf238ac2fe6791ce14312e",
+      "commentSha256": "da0d0c06599752294d4b56dcf2cc470b15a257a005a8f61aa2ac6113c87fd08b"
+    },
+    {
+      "name": "write-json",
+      "observed": {
+        "storedModel": true,
+        "compatibilityBlocker": true,
+        "ready": false,
+        "pass": false
+      },
+      "reportSha256": "0011a0b6d2402804873791c8d401b8c02d1b8bb8274f789f30ba3498ac25fa23",
+      "commentSha256": "77f5743373d4a4c7d4234baafdd761a105142d9d4f37b539cdd97081b4061856"
+    },
+    {
+      "name": "browser-storage",
+      "observed": {
+        "storedModel": true,
+        "compatibilityBlocker": true,
+        "ready": false,
+        "pass": false
+      },
+      "reportSha256": "26078e876d4646412d31168fff8517bdae56813c4b01645c70f53e1a6898c5a6",
+      "commentSha256": "34eeff27b12c20619a9c3921272ca3533b258e5913fc20696923e3686357333b"
+    },
+    {
+      "name": "strong-owner-incomplete",
+      "observed": {
+        "storedModel": true,
+        "compatibilityBlocker": true,
+        "ready": false,
+        "pass": false
+      },
+      "reportSha256": "91f14065d4a7390a83c53240809a49210553eea8458494562700ed41a1aeb906",
+      "commentSha256": "f8bd9f4d39239d3f6c2355be448a43aa8fa726beaf533281c1da7c84cdd5d24d"
+    },
+    {
+      "name": "sqlite-schema",
+      "observed": {
+        "storedModel": true,
+        "compatibilityBlocker": true,
+        "ready": false,
+        "pass": false
+      },
+      "reportSha256": "d88b7bcca8ac5f8bcbe95a4b90c052a54f44c0c51ec4887681f15699fd64f9ab",
+      "commentSha256": "528a739d5c5ad19257593ed229bc9f3b94f69313ec63d7168261c8e09e3f139d"
+    }
+  ],
+  "limits": "Real compiled classifier -> report writer -> saved/reloaded report -> comment/readiness/automation owners. Review decision and metadata are synthetic; actual public patch is input data. No reviewer inference, live publication, database upgrade or whole Reporting performance proof."
+}

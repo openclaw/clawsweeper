@@ -409,10 +409,25 @@ test("file readers retain migration gates with same-hunk decoding or persistence
         "await options.statePath",
         "(this.statePath)",
         "(await options.statePath)",
+        'options["statePath"]',
+        "this['statePath']",
+        'options?.["statePath"]',
+        'paths[current]["statePath"]',
+        'path.resolve(root, options["statePath"])',
+        'await resolvePath(options["statePath"])',
+        'path.resolve(root.replace(/\\)/g, ""), statePath)',
       ].map((input) => ({
         filename: "src/runtime/reader.ts",
         patch: `@@\n+const value = decodeBinary(fs.${api}(${input}));`,
       })),
+      {
+        filename: "src/runtime/reader.ts",
+        patch: `@@\n+const value = decodeBinary(fs["${api}"](options["statePath"]));`,
+      },
+      {
+        filename: "src/runtime/reader.ts",
+        patch: `@@\n const value = decodeBinary(fs.${api}(\n-  oldPath,\n+  statePath,\n ));`,
+      },
     ]) {
       const report = renderPersistenceReport([file], "a".repeat(40));
       assert.match(
@@ -564,17 +579,23 @@ test("runtime state names and typed parameters alone do not establish stored dat
   }
 });
 
-test("an unrelated state path cannot turn a source read into stored-format evidence", () => {
-  const patch =
-    "@@\n+const statePath = options.databasePath;\n+const source = readFileSync(sourcePath, 'utf8');\n+return { statePath, source };";
-  for (const evidence of [patch, `${patch}\n\n[truncated 90 chars]`]) {
-    const pullFiles = [{ filename: "src/runtime/source-reader.ts", patch: evidence }];
-    const report = renderPersistenceReport(pullFiles, "a".repeat(40));
-    assert.doesNotMatch(
-      renderReviewCommentFromReport(report, "none"),
-      /Stored data model|Add data-model compatibility proof/,
-    );
-    assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:pass/);
+test("state paths need file-read evidence in the same hunk", () => {
+  for (const sameHunk of [false, true]) {
+    const patch = [
+      "@@\n+const statePath = options.databasePath;",
+      ...(sameHunk ? [] : ["@@"]),
+      "+const source = readFileSync(sourcePath, 'utf8');",
+    ].join("\n");
+    for (const evidence of [patch, `${patch}\n\n[truncated 90 chars]`]) {
+      const pullFiles = [{ filename: "src/runtime/source-reader.ts", patch: evidence }];
+      const report = renderPersistenceReport(pullFiles, "a".repeat(40));
+      const comment = renderReviewCommentFromReport(report, "none");
+      assert.equal(comment.includes("Add data-model compatibility proof"), sameHunk);
+      assert.equal(
+        reviewAutomationMarkersFromReport(report).includes("clawsweeper-verdict:pass"),
+        !sameHunk,
+      );
+    }
   }
 });
 
