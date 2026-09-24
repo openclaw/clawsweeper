@@ -339,16 +339,6 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
       | { status: "stale" }
       | { status: "held"; retryAt: string } => {
       if (!suppliedReviewLease) return { status: "stale" };
-      if (trustSuppliedReviewLease) {
-        return {
-          status: "claimed",
-          lease: {
-            owner: suppliedReviewLease.owner,
-            commentId: suppliedReviewLease.commentId,
-            headSha: currentRevision,
-          },
-        };
-      }
       const freshLeases = freshDedicatedReviewStartLeases({
         comments: issueReviewCommentState(itemNumber).leaseComments,
         itemNumber,
@@ -361,6 +351,24 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           commentId(lease.comment) === suppliedReviewLease.commentId &&
           lease.owner === suppliedReviewLease.owner,
       );
+      if (trustSuppliedReviewLease) {
+        const foreign = freshLeases.find(
+          (lease) =>
+            commentId(lease.comment) !== suppliedReviewLease.commentId ||
+            lease.owner !== suppliedReviewLease.owner,
+        );
+        if (foreign) return { status: "held", retryAt: foreign.expiresAt };
+        if (!supplied) return { status: "stale" };
+        return {
+          status: "claimed",
+          lease: {
+            owner: suppliedReviewLease.owner,
+            commentId: suppliedReviewLease.commentId,
+            headSha: currentRevision,
+            comment: supplied.comment,
+          },
+        };
+      }
       if (!supplied || !winner) return { status: "stale" };
       if (
         commentId(winner.comment) !== suppliedReviewLease.commentId ||

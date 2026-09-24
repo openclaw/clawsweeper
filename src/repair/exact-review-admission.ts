@@ -4,6 +4,7 @@ import { classifyScheduledReviewNoop } from "../scheduled-review-noop.js";
 import { ghRetryKind } from "../github-retry.js";
 import { ghErrorText, ghTextWithRetry } from "./github-cli.js";
 import { deferAutomaticEndorReview } from "./endor-automerge-intake.js";
+import { issueSourceRevisionSha256 } from "./issue-source-guard.js";
 
 type Output = (values: Record<string, string>) => void;
 
@@ -104,6 +105,12 @@ export function exactReviewAdmission(output: Output): void {
   const open = issue.state === "open";
   const locked = issue.locked === true;
   const pullRequest = Boolean(issue.pull_request);
+  if (open && !locked && !pullRequest) {
+    const pages: unknown[] = JSON.parse(
+      read(`issues/${number}/comments?per_page=100`, "--paginate", "--slurp"),
+    );
+    output({ source_revision: issueSourceRevisionSha256(issue, pages.flat()) });
+  }
   output({ item_kind: pullRequest ? "pull_request" : "issue" });
   if (open && !locked && deferAutomaticEndorReview(repo, issue, decision)) {
     // Reuse the early policy no-op path: no write token, checkout or review lease.

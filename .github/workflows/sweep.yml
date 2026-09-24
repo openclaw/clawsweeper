@@ -826,6 +826,7 @@ jobs:
           EXACT_REVIEW_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
           EXACT_REVIEW_CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
           EXACT_REVIEW_SOURCE_HEAD_SHA: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceHeadSha || '' }}
+          EXACT_REVIEW_SOURCE_REVISION: ${{ steps.live-item.outputs.source_revision || '' }}
         run: |
           set -euo pipefail
           source scripts/control-plane-curl.sh
@@ -886,6 +887,7 @@ jobs:
           EXACT_REVIEW_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
           EXACT_REVIEW_CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
           EXACT_REVIEW_SOURCE_HEAD_SHA: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceHeadSha || '' }}
+          EXACT_REVIEW_SOURCE_REVISION: ${{ steps.live-item.outputs.source_revision || '' }}
         run: |
           pnpm run repair:update-command-status -- \
             --repo "$TARGET_REPO" \
@@ -2042,7 +2044,7 @@ jobs:
             --repo "$TARGET_REPO" --item-number "$ITEM_NUMBER" --comment-id "$COMMENT_ID"
 
       - name: Release unsuccessful workflow-owned review lease
-        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.mark-re-review-command-in-progress.outputs.terminal_state != 'true' && steps.reserve-exact-review-lease.outputs.status != 'held' && steps.prepare-direct-exact-review-publication.outputs.failure_kind != 'github_rate_limit' && steps.prepare-direct-exact-review-publication.outputs.failure_kind != 'github_transient' && steps.direct-exact-review-publication.outputs.accepted != 'true' && steps.queue-exact-review-publication.outcome != 'success' }}
+        if: ${{ always() && steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.mark-re-review-command-in-progress.outputs.terminal_state != 'true' && steps.reserve-exact-review-lease.outputs.status != 'held' && steps.reserve-exact-review-lease.outputs.queue_only != 'true' && steps.prepare-direct-exact-review-publication.outputs.failure_kind != 'github_rate_limit' && steps.prepare-direct-exact-review-publication.outputs.failure_kind != 'github_transient' && steps.direct-exact-review-publication.outputs.accepted != 'true' && steps.queue-exact-review-publication.outcome != 'success' }}
         env:
           GH_TOKEN: ${{ steps.target-write-token.outputs.token }}
           TARGET_REPO: ${{ steps.target.outputs.target_repo }}
@@ -2154,7 +2156,8 @@ jobs:
             --state "$state" \
             --detail "$detail" \
             --run-url "$RUN_URL" \
-            --refuse-terminal-state
+            --refuse-terminal-state \
+            --require-queue-authority-fence
 
       - name: Fence terminal automatic review failure
         id: terminal-review-status-fence

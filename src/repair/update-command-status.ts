@@ -59,7 +59,8 @@ type CommandStatusUpdateOutcome =
   | "locked_conversation"
   | "missing_status_comment"
   | "terminal_state"
-  | "queue_superseded";
+  | "queue_superseded"
+  | "coordination_held";
 
 type TerminalStatusReceipt = {
   commandCommentId: number;
@@ -180,7 +181,41 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
       return { outcome: "terminal_state", statusCommentId };
     }
   }
-  const body = mergeCommandProgressSection(comment.body, options);
+  const queueLease = (() => {
+    if (!options.requireQueueAuthorityFence || options.state !== "Review in progress") {
+      return undefined;
+    }
+    const startedAtMs = Date.now();
+    return {
+      itemNumber: Number(options.itemNumber),
+      headSha: String(
+        process.env.EXACT_REVIEW_SOURCE_HEAD_SHA || process.env.EXACT_REVIEW_SOURCE_REVISION || "",
+      )
+        .trim()
+        .toLowerCase(),
+      owner: `github-run-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`,
+      startedAt: new Date(startedAtMs).toISOString(),
+      expiresAt: new Date(startedAtMs + 2 * 60 * 60_000).toISOString(),
+    };
+  })();
+  const activeLeaseOwner = commandReviewLeaseOwnerFromBody(comment.body);
+  if (queueLease && activeLeaseOwner && activeLeaseOwner !== queueLease.owner) {
+    recordCommandProgress(lifecycle, {
+      state: "Waiting",
+      status: "skipped",
+      mutation: false,
+    });
+    return { outcome: "coordination_held" };
+  }
+  const body = mergeCommandProgressSection(comment.body, {
+    ...options,
+    ...(queueLease ? { queueLease } : {}),
+    ...(options.requireQueueAuthorityFence
+      ? {
+          queueLeaseOwner: `github-run-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`,
+        }
+      : {}),
+  });
   if (body === comment.body) {
     recordCommandProgress(lifecycle, {
       state: options.state,
@@ -497,16 +532,32 @@ export function mergeCommandProgressSection(
   body: string,
   options: Pick<Options, "state" | "detail" | "runUrl"> & {
     verifyTerminalStatusReceipt?: boolean;
+    queueLeaseOwner?: string;
+    queueLease?: {
+      itemNumber: number;
+      headSha: string;
+      owner: string;
+      startedAt: string;
+      expiresAt: string;
+    };
   },
 ) {
-  const sourceBody = options.verifyTerminalStatusReceipt
-    ? body
-        .replace(
+  const activeOwner = commandReviewLeaseOwnerFromBody(body);
+  if (options.queueLease) {
+    if (activeOwner && activeOwner !== options.queueLease.owner) return body;
+  }
+  const mayRemoveLease =
+    options.verifyTerminalStatusReceipt ||
+    !activeOwner ||
+    (Boolean(options.queueLeaseOwner) && options.queueLeaseOwner === activeOwner);
+  const sourceBody = (
+    mayRemoveLease
+      ? body.replace(
           /\n*<!--\s*clawsweeper-review-status:started\b[^>]*-->\s*<!--\s*clawsweeper-command-review-lease\s+item=[1-9]\d*\s*-->\s*$/i,
           "",
         )
-        .trimEnd()
-    : body;
+      : body
+  ).trimEnd();
   const section = renderCommandProgressSection(options);
   const start = sourceBody.indexOf(PROGRESS_START);
   const end = sourceBody.indexOf(PROGRESS_END);
@@ -516,7 +567,26 @@ export function mergeCommandProgressSection(
   } else {
     merged = `${sourceBody.trimEnd()}\n\n${section}`;
   }
-  return merged;
+  if (!options.queueLease) return merged;
+  const lease = options.queueLease;
+  if (
+    !Number.isInteger(lease.itemNumber) ||
+    lease.itemNumber < 1 ||
+    !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(lease.headSha) ||
+    !/^[A-Za-z0-9._-]{1,200}$/.test(lease.owner)
+  ) {
+    throw new Error("invalid queue-owned command review lease");
+  }
+  return `${merged.trimEnd()}\n\n<!-- clawsweeper-review-status:started item=${lease.itemNumber} sha=${lease.headSha} started_at=${lease.startedAt} lease_expires_at=${lease.expiresAt} owner=${lease.owner} v=1 -->\n<!-- clawsweeper-command-review-lease item=${lease.itemNumber} -->`;
+}
+
+export function commandReviewLeaseOwnerFromBody(body: string): string | null {
+  const leaseSuffix = new RegExp(
+    "<!--\\s*clawsweeper-review-status:started\\b([^>]*)-->\\s*" +
+      "<!--\\s*clawsweeper-command-review-lease\\s+item=[1-9]\\d*\\s*-->\\s*$",
+    "i",
+  );
+  return leaseSuffix.exec(body)?.[1]?.match(/\bowner=([^\s>]+)/i)?.[1] ?? null;
 }
 
 export function verifiedTerminalStatusReceipt(

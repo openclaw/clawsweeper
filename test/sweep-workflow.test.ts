@@ -1884,6 +1884,7 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
     /release-review-complete-status-fence\.outputs\.superseded != 'true'/,
   );
   assert.match(markUnsuccessful.run ?? "", /--refuse-terminal-state/);
+  assert.match(markUnsuccessful.run ?? "", /--require-queue-authority-fence/);
   assert.match(markUnsuccessful.run ?? "", /internal\/exact-review\/heartbeat/);
   assert.ok(
     (markUnsuccessful.run ?? "").indexOf("internal/exact-review/heartbeat") <
