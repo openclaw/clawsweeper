@@ -957,6 +957,7 @@ jobs:
             --state "Review in progress" \
             --detail "The exact-review queue leased this run; Codex is reviewing the item." \
             --run-url "$RUN_URL" \
+            --refuse-terminal-state \
             --wait-ms 120000
 
       - uses: ./.github/actions/setup-codex

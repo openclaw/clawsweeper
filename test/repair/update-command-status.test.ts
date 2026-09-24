@@ -66,6 +66,11 @@ test("parseOptions requires a status mutation only when explicitly requested", (
   assert.equal(options.requireMutation, true);
 });
 
+test("parseOptions can refuse terminal command rewrites", () => {
+  assert.equal(parseOptions(["--refuse-terminal-state"]).refuseTerminalState, true);
+  assert.equal(parseOptions([]).refuseTerminalState, false);
+});
+
 test("terminal receipt verification is opt-in", () => {
   const options = parseOptions([
     "--repo",

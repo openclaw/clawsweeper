@@ -45,6 +45,7 @@ type Options = {
   runUrl: string;
   waitMs: number;
   requireMutation: boolean;
+  refuseTerminalState: boolean;
   lockedConversationTerminalSkip: boolean;
   verifyTerminalStatusReceipt: boolean;
   requireTerminalFinalizationFence: boolean;
@@ -144,6 +145,21 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
       terminalStatusReceipt,
       terminalStatusCompletedAt: verifiedTerminalStatusCompletedAt(comment),
     };
+  }
+  if (options.refuseTerminalState) {
+    const currentProgress =
+      /<!--\s*clawsweeper-command-progress:start\s*-->([\s\S]*?)<!--\s*clawsweeper-command-progress:end\s*-->/i.exec(
+        comment.body,
+      )?.[1] ?? "";
+    const currentState = /^- State:\s*(.+)$/im.exec(currentProgress)?.[1]?.trim();
+    if (currentState && !new Set(["Queued", "Waiting", "Review in progress"]).has(currentState)) {
+      recordCommandProgress(lifecycle, {
+        state: currentState,
+        status: "unchanged",
+        mutation: false,
+      });
+      return { outcome: "unchanged" };
+    }
   }
   const body = mergeCommandProgressSection(comment.body, options);
   if (body === comment.body) {
@@ -627,6 +643,9 @@ export function parseOptions(argv: string[]): Options {
     waitMs: Number.parseInt(args["wait-ms"] ?? process.env.COMMAND_STATUS_WAIT_MS ?? "0", 10) || 0,
     requireMutation:
       (args["require-mutation"] ?? process.env.COMMAND_STATUS_REQUIRE_MUTATION ?? "") === "true",
+    refuseTerminalState:
+      (args["refuse-terminal-state"] ?? process.env.COMMAND_STATUS_REFUSE_TERMINAL_STATE ?? "") ===
+      "true",
     lockedConversationTerminalSkip:
       (args["locked-conversation-terminal-skip"] ??
         process.env.COMMAND_STATUS_LOCKED_CONVERSATION_TERMINAL_SKIP ??
