@@ -348,7 +348,8 @@ side, and other visible `Console` uses leave the binding conservative. Explicit
 storage changes, other changed fields, and known persistence-owner paths still
 retain their warnings.
 An in-memory `statePath` field or read-routing argument does not itself define a
-stored format. It needs file-read evidence in the same semantic diff hunk.
+stored format. It needs file-I/O evidence in the same semantic diff hunk:
+file reads, read/write streams, append/truncate operations, or open/read/write descriptor calls.
 This preserves dot or bracket members, awaits, nested path builders, and other
 read spellings without parsing JavaScript argument syntax. The association is
 conservative: an unrelated state path and source read colocated in that hunk

@@ -439,6 +439,65 @@ test("file readers retain migration gates with same-hunk decoding or persistence
   }
 });
 
+test("state-path stream and descriptor access retains compatibility holds", () => {
+  for (const expression of [
+    'fs.createReadStream(options["statePath"])',
+    "createWriteStream(options.statePath)",
+    'await fs.promises.open(statePath, "r")',
+    'fs["openSync"](options["statePath"], "r")',
+    "fs.readSync(stateFds.get(statePath), buffer, 0, buffer.length, 0)",
+    "fs.readv(stateFds.get(statePath), buffers, 0, done)",
+    "fs.writeSync(stateFds.get(statePath), payload)",
+    "fs.writevSync(stateFds.get(statePath), buffers)",
+    "fs.appendFileSync(statePath, payload)",
+    "fs.truncateSync(statePath, 0)",
+  ]) {
+    const report = renderPersistenceReport(
+      [{ filename: "src/runtime/records.ts", patch: `@@\n+${expression};` }],
+      "a".repeat(40),
+    );
+    assert.match(
+      renderReviewCommentFromReport(report, "none"),
+      /Add data-model compatibility proof/,
+    );
+    assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:needs-human/);
+  }
+  const pullFiles = [
+    {
+      filename: "src/runtime/source.ts",
+      patch:
+        '@@\n+const handle = await open(sourcePath, "r");\n+const result = JSON.parse(stdout);',
+    },
+  ];
+  assert.match(
+    reviewAutomationMarkersFromReport(renderPersistenceReport(pullFiles, "a".repeat(40))),
+    /clawsweeper-verdict:pass/,
+  );
+});
+
+test("unchanged state-path context guards changed I/O operations", () => {
+  for (const expression of [
+    "fs.createReadStream(file)",
+    "fs.createWriteStream(file)",
+    'fs.openSync(file, "r")',
+    "fs.readSync(fd, buffer, 0, buffer.length, 0)",
+    "fs.writeSync(fd, payload)",
+    "fs.appendFileSync(file, payload)",
+    "fs.truncateSync(file, 0)",
+  ]) {
+    const patch = `@@\n const statePath = options.databasePath;\n const file = statePath;\n const fd = stateFds.get(statePath);\n+${expression};`;
+    const report = renderPersistenceReport(
+      [{ filename: "src/runtime/records.ts", patch }],
+      "a".repeat(40),
+    );
+    assert.match(
+      renderReviewCommentFromReport(report, "none"),
+      /Add data-model compatibility proof/,
+    );
+    assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:needs-human/);
+  }
+});
+
 test("JSON conversion cannot borrow an unchanged storage boundary from another hunk", () => {
   for (const boundary of [
     'writeFile("snapshot.json", raw);',

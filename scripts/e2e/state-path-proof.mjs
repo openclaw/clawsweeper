@@ -118,6 +118,32 @@ const cases = [
     ],
   },
   {
+    name: "unchanged-state-path-io",
+    files: [
+      {
+        filename: "src/runtime/records.ts",
+        patch:
+          "@@\n const statePath = options.databasePath;\n const fd = stateFds.get(statePath);\n+fs.readSync(fd, buffer, 0, buffer.length, 0);",
+      },
+    ],
+    baselineReady: true,
+  },
+  ...[
+    'fs.createReadStream(options["statePath"])',
+    "createWriteStream(options.statePath)",
+    'await fs.promises.open(statePath, "r")',
+    'fs["openSync"](options["statePath"], "r")',
+    "fs.readSync(stateFds.get(statePath), buffer, 0, buffer.length, 0)",
+    "fs.readv(stateFds.get(statePath), buffers, 0, done)",
+    "fs.writeSync(stateFds.get(statePath), payload)",
+    "fs.writevSync(stateFds.get(statePath), buffers)",
+    "fs.appendFileSync(statePath, payload)",
+    "fs.truncateSync(statePath, 0)",
+  ].map((expression, index) => ({
+    name: "stream-descriptor-" + index,
+    files: [{ filename: "src/runtime/records.ts", patch: "@@\n+" + expression + ";" }],
+  })),
+  {
     name: "browser-storage",
     files: [
       {
@@ -216,7 +242,8 @@ for (const scenario of cases) {
     ready: comment.includes("clawsweeper-review-state:ready"),
     pass: markers.includes("clawsweeper-verdict:pass"),
   };
-  const accepted = Boolean(scenario.negative && phase === "candidate");
+  const accepted =
+    phase === "baseline" ? Boolean(scenario.baselineReady) : Boolean(scenario.negative);
   try {
     assert.deepEqual(
       observed,

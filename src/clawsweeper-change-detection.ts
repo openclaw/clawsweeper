@@ -437,7 +437,7 @@ function dataModelSurfacesFromPatch(
         dataModelTextLooksLikePersistedShapeField(changedFieldText, surface) ||
         dataModelTextHasJsonConversion(changedText) ||
         (surface === "serialized state" &&
-          (dataModelTextHasFileRead(changedText) || /\bstatePath\b/i.test(changedText)))
+          (dataModelTextHasFileIo(changedText) || /\bstatePath\b/i.test(changedText)))
       )
         add(surface);
     }
@@ -486,6 +486,16 @@ function dataModelTextHasFileRead(text: string): boolean {
   return /\breadFile(?:Sync)?\b/i.test(text);
 }
 
+function dataModelTextHasFileIo(text: string): boolean {
+  return (
+    dataModelTextHasFileRead(text) ||
+    /\b(?:create(?:Read|Write)Stream|(?:appendFile|truncate|ftruncate)(?:Sync)?)\b/i.test(text) ||
+    /\b(?:open(?:Sync)?|readv?(?:Sync)?|writev?(?:Sync)?)(?:["'`]\s*\])?\s*(?:\?\.\s*)?\(/i.test(
+      text,
+    )
+  );
+}
+
 function dataModelTextHasSerializedStateBoundary(text: string): boolean {
   // JSON conversion and a variable named "serialized" also occur in transient
   // diagnostics and IPC; neither supplies a storage boundary on its own.
@@ -509,13 +519,14 @@ function dataModelStorageContext(patch: string, hasPersistenceOwner = false): st
     .map((line) => line.slice(1).trim())
     .filter((line) => dataModelLineLooksSemantic(line, { docsOnly: false }))
     .join("\n");
+  const fileRead = dataModelTextHasFileRead(text);
+  const statePathIo = /\bstatePath\b/i.test(text) && dataModelTextHasFileIo(text);
   const surfaces: string[] = [];
   if (
     dataModelTextHasSerializedStateBoundary(text) ||
     (hasPersistenceOwner && dataModelTextHasJsonConversion(text)) ||
-    // File reads need decoding, a persistence owner, or a state-path hint in this hunk.
-    (dataModelTextHasFileRead(text) &&
-      (hasPersistenceOwner || /\bJSON\.parse\b|\bstatePath\b/i.test(text)))
+    (fileRead && (hasPersistenceOwner || /\bJSON\.parse\b/i.test(text))) ||
+    statePathIo
   ) {
     surfaces.push("serialized state");
   }
