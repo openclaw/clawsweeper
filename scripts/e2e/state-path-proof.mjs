@@ -189,6 +189,15 @@ const cases = [
       },
     ],
   },
+  ...["json", "bin"].map((format) => ({
+    name: "strong-owner-state-relocation-" + format,
+    files: [
+      {
+        filename: "src/persistence/reader.ts",
+        patch: `@@\n-const statePath = path.join(root, "v1.${format}");\n+const statePath = path.join(root, "v2.${format}");`,
+      },
+    ],
+  })),
   { name: "strong-owner-incomplete", files: [{ filename: "src/persistence/records.ts" }] },
   {
     name: "sqlite-schema",

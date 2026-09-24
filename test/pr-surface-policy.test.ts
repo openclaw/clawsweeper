@@ -522,6 +522,30 @@ test("qualified filesystem and handle operations retain compatibility holds", ()
   }
 });
 
+test("persistence-owner state-file relocations retain compatibility holds", () => {
+  for (const format of ["json", "bin"]) {
+    const report = renderPersistenceReport(
+      [
+        {
+          filename: "src/persistence/reader.ts",
+          patch: `@@\n-const statePath = path.join(root, "v1.${format}");\n+const statePath = path.join(root, "v2.${format}");`,
+        },
+      ],
+      "a".repeat(40),
+    );
+    assert.match(
+      renderReviewCommentFromReport(report, "none"),
+      /Add data-model compatibility proof/,
+      format,
+    );
+    assert.match(
+      reviewAutomationMarkersFromReport(report),
+      /clawsweeper-verdict:needs-human/,
+      format,
+    );
+  }
+});
+
 test("generic non-file calls cannot establish storage beside unchanged state paths", () => {
   for (const patch of [
     ...["window.open(url)", "reader.read()", "writer.write(value)"].map(

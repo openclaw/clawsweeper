@@ -558,13 +558,14 @@ function dataModelStorageContext(patch: string, hasPersistenceOwner = false): st
     .filter((line) => dataModelLineLooksSemantic(line, { docsOnly: false }))
     .join("\n");
   const fileRead = dataModelTextHasFileRead(text);
-  const statePathIo = /\bstatePath\b/i.test(text) && dataModelTextHasFileIo(text);
+  const statePathStorage =
+    /\bstatePath\b/i.test(text) && (hasPersistenceOwner || dataModelTextHasFileIo(text));
   const surfaces: string[] = [];
   if (
     dataModelTextHasSerializedStateBoundary(text) ||
     (hasPersistenceOwner && dataModelTextHasJsonConversion(text)) ||
     (fileRead && (hasPersistenceOwner || /\bJSON\.parse\b/i.test(text))) ||
-    statePathIo
+    statePathStorage
   ) {
     surfaces.push("serialized state");
   }
