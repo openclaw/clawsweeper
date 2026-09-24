@@ -307,18 +307,6 @@ export function createReviewCommentLeases(
         `command status comment ${options.reuseCommentId} cannot carry the review lease for #${options.item.number}`,
       );
     }
-    const commandProgress =
-      /<!--\s*clawsweeper-command-progress:start\s*-->([\s\S]*?)<!--\s*clawsweeper-command-progress:end\s*-->/i.exec(
-        reusableBody,
-      )?.[1] ?? "";
-    const commandState = /^- State:\s*(.+)$/im.exec(commandProgress)?.[1]?.trim();
-    if (
-      reusableComment &&
-      commandState &&
-      !new Set(["Queued", "Waiting", "Review in progress"]).has(commandState)
-    ) {
-      throw new ReviewLeaseSupersededError();
-    }
     const initialLease = freshDedicatedReviewStartLeases({
       comments: reservationState.leaseComments,
       itemNumber: options.item.number,
