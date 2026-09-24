@@ -792,6 +792,9 @@ CloudflareGlobalApiKey detector 58 can pair Git's generated 40-character blob
 IDs with nearby email context. An unverified `PLAIN`/`HTML` finding in a patch or raw diff
 requires a separate provenance scan only when every literal occurrence is an exact
 object-ID field in canonical same-path regular-file patch/raw-diff headers.
+Modified executable files also qualify when both endpoint modes remain `100755`;
+their raw records, patch headers, and blob references must agree on that mode.
+Executable additions/deletions, mode changes, and symlinks remain unsupported.
 The two endpoint revisions, paths, modes, and full staged blobs must agree;
 the host independently rehashes each present blob. Added and deleted files require
 matching zero endpoints, mode/status fields, patch headers, and absence of source

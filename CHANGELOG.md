@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Admit canonical Git-metadata false positives for modified executable files without weakening source-content or supplemental-scan checks.
+
 - Stop scheduled sweeps from repeatedly preparing an unchanged PR with an incompatible pinned Codex version, while preserving source-change recovery and explicit maintainer re-review.
 
 - Avoid migration-proof blockers for newly captured in-memory `statePath` routing while preserving existing path edits, file-read, persisted-format, and incomplete-storage checks.

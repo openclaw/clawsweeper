@@ -8,6 +8,7 @@ export function resolveScannedGitBlob(
   revision: string,
   role: "base" | "head",
   inputs: ReadonlyMap<string, StagedScanInput>,
+  mode: "100644" | "100755" = "100644",
 ): { file: string; bytes: Buffer } | undefined {
   const matches = [...inputs].filter(([, entry]) => entry.kind === "blob" && entry.id === id);
   if (matches.length !== 1) return undefined;
@@ -17,7 +18,7 @@ export function resolveScannedGitBlob(
     !entry.bytes ||
     entry.references.some(
       (reference) =>
-        reference.mode !== "100644" ||
+        reference.mode !== mode ||
         !(
           (reference.role === "base" && reference.revision === scope.from) ||
           (reference.role === "head" && reference.revision === scope.to)
@@ -83,19 +84,25 @@ export function resolveGitObjectMetadata(
         paths.add(source);
         if (!header.includes(oid)) continue;
         const match =
-          /^:(100644|000000) (100644|000000) ([0-9a-f]{40}) ([0-9a-f]{40}) ([MAD])$/.exec(header);
+          /^:(100644|100755|000000) (100644|100755|000000) ([0-9a-f]{40}) ([0-9a-f]{40}) ([MAD])$/.exec(
+            header,
+          );
         const added = match?.[5] === "A";
         const removed = match?.[5] === "D";
+        const executable = match?.[1] === "100755" && match[2] === "100755" && match[5] === "M";
+        const mode = executable ? "100755" : "100644";
         if (
           !match ||
+          ((match[1] === "100755" || match[2] === "100755") && !executable) ||
           (match[3] !== oid && match[4] !== oid) ||
           (match[1] === "000000") !== added ||
           (match[2] === "000000") !== removed ||
           /^0+$/.test(match[3]!) !== added ||
           /^0+$/.test(match[4]!) !== removed ||
           (!added &&
-            !resolveScannedGitBlob(input, match[3]!, source, input.from, "base", inputs)) ||
-          (!removed && !resolveScannedGitBlob(input, match[4]!, source, input.to, "head", inputs))
+            !resolveScannedGitBlob(input, match[3]!, source, input.from, "base", inputs, mode)) ||
+          (!removed &&
+            !resolveScannedGitBlob(input, match[4]!, source, input.to, "head", inputs, mode))
         )
           return undefined;
         if (
@@ -111,7 +118,7 @@ export function resolveGitObjectMetadata(
           )
         )
           return undefined;
-        const record = [input.from, input.to, source, match[3], match[4], match[5]].join("\0");
+        const record = [input.from, input.to, source, ...match.slice(1)].join("\0");
         if (records.has(record)) return undefined;
         records.add(record);
         if (input === patch) witnesses.push({ source, patchLine: 1 });
@@ -122,7 +129,7 @@ export function resolveGitObjectMetadata(
       const lines = decode(input.bytes).split("\n");
       for (const [i, line] of lines.entries()) {
         if (!line.includes(oid)) continue;
-        const match = /^index ([0-9a-f]{40})\.\.([0-9a-f]{40})( 100644)?$/.exec(line);
+        const match = /^index ([0-9a-f]{40})\.\.([0-9a-f]{40})(?: (100644|100755))?$/.exec(line);
         const added = lines[i - 1] === "new file mode 100644";
         const removed = lines[i - 1] === "deleted file mode 100644";
         const source = added ? lines[i + 2]?.slice(6) : lines[i + 1]?.slice(6);
@@ -130,6 +137,8 @@ export function resolveGitObjectMetadata(
           input.from,
           input.to,
           source,
+          added ? "000000" : (match?.[3] ?? "100644"),
+          removed ? "000000" : (match?.[3] ?? "100644"),
           match?.[1],
           match?.[2],
           added ? "A" : removed ? "D" : "M",

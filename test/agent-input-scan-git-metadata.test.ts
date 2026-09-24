@@ -17,7 +17,7 @@ const reviewedUri = "https://fixture-user:fixture-password@example.invalid";
 const reviewedUriLines = [`      "${reviewedUri}/",`, `      { "${reviewedUri}/": "route" },`];
 const reviewedUriSource = "ui/src/pages/custodian/custodian-session-store.test.ts";
 
-function fixture(withUri = false) {
+function fixture(withUri = false, mode: "100644" | "100755" | "120000" = "100644") {
   const from = "a".repeat(40);
   const to = "b".repeat(40);
   const source = withUri ? reviewedUriSource : "scripts/cloudflare/Dockerfile";
@@ -33,7 +33,7 @@ function fixture(withUri = false) {
   const file = "/private/scanner/patch";
   const patch = [
     `diff --git a/${source} b/${source}`,
-    `index ${oldId}..${newId} 100644`,
+    `index ${oldId}..${newId} ${mode}`,
     `--- a/${source}`,
     `+++ b/${source}`,
     withUri ? "@@ -1,3 +1,3 @@" : "@@ -1 +1 @@",
@@ -49,7 +49,7 @@ function fixture(withUri = false) {
       {
         kind: "raw_diff",
         id: "raw",
-        bytes: Buffer.from(`:100644 100644 ${oldId} ${newId} M\0${source}\0`),
+        bytes: Buffer.from(`:${mode} ${mode} ${oldId} ${newId} M\0${source}\0`),
         from,
         to,
       },
@@ -65,7 +65,7 @@ function fixture(withUri = false) {
       ] as const
     ).map(([id, bytes, revision, role]): [string, StagedScanInput] => [
       `/private/scanner/${id}`,
-      { kind: "blob", id, bytes, references: [{ source, mode: "100644", revision, role }] },
+      { kind: "blob", id, bytes, references: [{ source, mode, revision, role }] },
     ]),
   ]);
   const email = "scan@example.invalid";
@@ -98,7 +98,7 @@ function fixture(withUri = false) {
     },
     SourceMetadata: { Data: { Filesystem: { file, line: 8 } } },
   };
-  return { finding, uriFinding, inputs, file, oldId, newId, source, from, to };
+  return { finding, uriFinding, inputs, file, oldId, newId, source, from, to, mode };
 }
 
 function classify(
@@ -125,8 +125,8 @@ function classify(
   );
 }
 
-function rawMetadataFixture(change: "M" | "A" | "D") {
-  const f = fixture();
+function rawMetadataFixture(change: "M" | "A" | "D", mode: "100644" | "100755" = "100644") {
+  const f = fixture(false, mode);
   const rawFile = "/private/scanner/raw";
   const zero = "0".repeat(40);
   if (change !== "M") {
@@ -140,7 +140,7 @@ function rawMetadataFixture(change: "M" | "A" | "D") {
       from: f.from,
       to: f.to,
       bytes: Buffer.from(
-        `:${added ? "000000 100644" : "100644 000000"} ${oldId} ${newId} ${change}\0${f.source}\0`,
+        `:${added ? `000000 ${mode}` : `${mode} 000000`} ${oldId} ${newId} ${change}\0${f.source}\0`,
       ),
     });
     f.inputs.set(f.file, {
@@ -151,7 +151,7 @@ function rawMetadataFixture(change: "M" | "A" | "D") {
       bytes: Buffer.from(
         [
           `diff --git a/${f.source} b/${f.source}`,
-          `${added ? "new" : "deleted"} file mode 100644`,
+          `${added ? "new" : "deleted"} file mode ${mode}`,
           `index ${oldId}..${newId}`,
           added ? "--- /dev/null" : `--- a/${f.source}`,
           added ? `+++ b/${f.source}` : "+++ /dev/null",
@@ -267,20 +267,51 @@ test("Git object metadata raw diffs reject ambiguous records and unproven absent
 });
 
 test("Git object metadata findings require full canonical patch, raw diff, and blob witnesses", () => {
-  const f = fixture();
-  for (const decoder of ["PLAIN", "HTML"]) {
-    const result = classify([{ ...f.finding, DecoderName: decoder }], f.inputs);
-    assert.equal(result.kind, "git_metadata_proof_required", decoder);
-    if (result.kind === "git_metadata_proof_required") {
-      assert.equal(result.notices.length, 1);
-      assert.equal(result.notices[0]?.source, f.source);
-      assert.equal(
-        JSON.stringify(result).includes(f.oldId),
-        false,
-        "matched bytes are never emitted",
-      );
+  for (const mode of ["100644", "100755"] as const) {
+    const f = fixture(false, mode);
+    for (const decoder of ["PLAIN", "HTML"]) {
+      for (const material of ["patch", "raw_diff"]) {
+        const finding = {
+          ...f.finding,
+          DecoderName: decoder,
+          SourceMetadata: {
+            Data: {
+              Filesystem: {
+                file: material === "patch" ? f.file : "/private/scanner/raw",
+                line: material === "patch" ? 2 : 1,
+              },
+            },
+          },
+        };
+        const result = classify([finding], f.inputs);
+        assert.equal(
+          result.kind,
+          "git_metadata_proof_required",
+          `${mode}: ${material}: ${decoder}`,
+        );
+        if (result.kind === "git_metadata_proof_required") {
+          assert.equal(result.notices.length, 1);
+          assert.equal(result.notices[0]?.source, f.source);
+          assert.equal(
+            JSON.stringify(result).includes(f.oldId),
+            false,
+            "matched bytes are never emitted",
+          );
+        }
+      }
     }
   }
+});
+
+test("executable metadata support does not qualify symlinks, executable creation/deletion, or URI content", () => {
+  const symlink = fixture(false, "120000");
+  assert.equal(classify([symlink.finding], symlink.inputs).kind, "refused");
+  for (const change of ["A", "D"] as const) {
+    const f = rawMetadataFixture(change, "100755");
+    assert.equal(classify([f.finding], f.inputs).kind, "refused", change);
+  }
+  const executableUri = fixture(true, "100755");
+  assert.equal(classify([executableUri.uriFinding], executableUri.inputs).kind, "refused");
 });
 
 test("Git object metadata never clears content occurrences or incomplete provenance", () => {
@@ -340,6 +371,31 @@ test("Git object metadata never clears content occurrences or incomplete provena
       },
     ],
     [
+      "raw mode mismatch",
+      (f) => {
+        const raw = f.inputs.get("/private/scanner/raw")!;
+        const other = f.mode === "100644" ? "100755" : "100644";
+        raw.bytes = Buffer.from(raw.bytes!.toString().replace(`:${f.mode}`, `:${other}`));
+      },
+    ],
+    [
+      "patch mode mismatch",
+      (f) => {
+        const patch = f.inputs.get(f.file)!;
+        const other = f.mode === "100644" ? "100755" : "100644";
+        patch.bytes = Buffer.from(patch.bytes!.toString().replace(` ${f.mode}\n`, ` ${other}\n`));
+      },
+    ],
+    [
+      "blob mode mismatch",
+      (f) => {
+        const blob = f.inputs.get(`/private/scanner/${f.oldId}`)!;
+        assert.equal(blob.kind, "blob");
+        if (blob.kind !== "blob") throw new Error("expected blob");
+        blob.references[0]!.mode = f.mode === "100644" ? "100755" : "100644";
+      },
+    ],
+    [
       "missing blob",
       (f) => {
         f.inputs.delete(`/private/scanner/${f.newId}`);
@@ -359,7 +415,7 @@ test("Git object metadata never clears content occurrences or incomplete provena
         f.inputs.set(key, {
           ...f.inputs.get(key)!,
           kind: "blob",
-          references: [{ source: f.source, mode: "100644", revision: f.from, role: "index" }],
+          references: [{ source: f.source, mode: f.mode, revision: f.from, role: "index" }],
         });
       },
     ],
@@ -396,17 +452,23 @@ test("Git object metadata never clears content occurrences or incomplete provena
     ],
   ];
   for (const [name, mutate] of cases) {
-    for (const material of ["patch", "raw_diff"]) {
-      const f = fixture();
-      mutate(f);
-      const finding =
-        material === "patch"
-          ? f.finding
-          : {
-              ...f.finding,
-              SourceMetadata: { Data: { Filesystem: { file: "/private/scanner/raw", line: 1 } } },
-            };
-      assert.equal(classify([finding], f.inputs).kind, "refused", `${material}: ${name}`);
+    for (const mode of ["100644", "100755"] as const) {
+      for (const material of ["patch", "raw_diff"]) {
+        const f = fixture(false, mode);
+        mutate(f);
+        const finding =
+          material === "patch"
+            ? f.finding
+            : {
+                ...f.finding,
+                SourceMetadata: { Data: { Filesystem: { file: "/private/scanner/raw", line: 1 } } },
+              };
+        assert.equal(
+          classify([finding], f.inputs).kind,
+          "refused",
+          `${mode}: ${material}: ${name}`,
+        );
+      }
     }
   }
 });
@@ -461,11 +523,14 @@ for (const material of ["patch", "raw_diff"] as const) {
       git("config", "commit.gpgsign", "false");
       writeFileSync(join(cwd, "cloudflare.txt"), "before\n");
       git("add", ".");
+      const mode = material === "raw_diff" ? "100755" : "100644";
+      if (mode === "100755") git("update-index", "--chmod=+x", "cloudflare.txt");
       git("commit", "-qm", "fixture base");
       const baseSha = git("rev-parse", "HEAD");
       const key = git("hash-object", "cloudflare.txt");
       writeFileSync(join(cwd, "cloudflare.txt"), "after\n");
       git("add", ".");
+      if (mode === "100755") git("update-index", "--chmod=+x", "cloudflare.txt");
       git("commit", "-qm", "fixture head");
       const headSha = git("rev-parse", "HEAD");
       const calls = join(root, "calls");
@@ -478,12 +543,12 @@ const outcome = ${JSON.stringify(outcome)};
 const material = ${JSON.stringify(material)};
 const primary = inputs.some(input => input.name === 'prompt');
 fs.appendFileSync(${JSON.stringify(calls)}, primary ? 'primary\\n' : 'supplemental\\n');
-const metadata = inputs.find(input => input.bytes.toString().startsWith(material === 'patch' ? 'diff --git ' : ':100644'));
+const metadata = inputs.find(input => input.bytes.toString().startsWith(material === 'patch' ? 'diff --git ' : ':${mode}'));
 assert.ok(metadata);
 if (primary) {
   assert.ok(metadata.bytes.includes(Buffer.from(key)));
   assert.ok(inputs.some(input => input.bytes.toString().startsWith('diff --git ')));
-  assert.ok(inputs.some(input => input.bytes.toString().startsWith(':100644')));
+  assert.ok(inputs.some(input => input.bytes.toString().startsWith(':${mode}')));
   assert.ok(inputs.some(input => input.bytes.toString() === 'before\\n'));
   assert.ok(inputs.some(input => input.bytes.toString() === 'after\\n'));
   fs.writeFileSync(${JSON.stringify(original)}, metadata.bytes);
