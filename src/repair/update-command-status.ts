@@ -46,6 +46,7 @@ type Options = {
   waitMs: number;
   requireMutation: boolean;
   refuseTerminalState: boolean;
+  requireQueueAuthorityFence: boolean;
   lockedConversationTerminalSkip: boolean;
   verifyTerminalStatusReceipt: boolean;
   requireTerminalFinalizationFence: boolean;
@@ -57,7 +58,8 @@ type CommandStatusUpdateOutcome =
   | "skipped"
   | "locked_conversation"
   | "missing_status_comment"
-  | "terminal_state";
+  | "terminal_state"
+  | "queue_superseded";
 
 type TerminalStatusReceipt = {
   commandCommentId: number;
@@ -134,6 +136,14 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
     if (options.requireMutation)
       throw new Error("command status mutation required but no comment was found");
     return { outcome: "skipped" };
+  }
+  if (options.requireQueueAuthorityFence && !(await exactReviewQueueAuthorityFence(process.env))) {
+    recordCommandProgress(lifecycle, {
+      state: "superseded",
+      status: "skipped",
+      mutation: false,
+    });
+    return { outcome: "queue_superseded" };
   }
   const statusCommentId = Number(comment.id);
   const terminalStatusReceipt = verifiedTerminalStatusReceipt(comment, options);
@@ -269,6 +279,9 @@ export async function runCommandStatusUpdate(options: Options) {
   }
   if (!commandError && outcome === "terminal_state" && process.env.GITHUB_OUTPUT) {
     appendFileSync(process.env.GITHUB_OUTPUT, "terminal_state=true\n");
+  }
+  if (!commandError && outcome === "queue_superseded" && process.env.GITHUB_OUTPUT) {
+    appendFileSync(process.env.GITHUB_OUTPUT, "queue_superseded=true\n");
   }
   if (!commandError && statusCommentId && process.env.GITHUB_OUTPUT) {
     appendFileSync(process.env.GITHUB_OUTPUT, `status_comment_id=${statusCommentId}\n`);
@@ -664,6 +677,10 @@ export function parseOptions(argv: string[]): Options {
     refuseTerminalState:
       (args["refuse-terminal-state"] ?? process.env.COMMAND_STATUS_REFUSE_TERMINAL_STATE ?? "") ===
       "true",
+    requireQueueAuthorityFence:
+      (args["require-queue-authority-fence"] ??
+        process.env.COMMAND_STATUS_REQUIRE_QUEUE_AUTHORITY_FENCE ??
+        "") === "true",
     lockedConversationTerminalSkip:
       (args["locked-conversation-terminal-skip"] ??
         process.env.COMMAND_STATUS_LOCKED_CONVERSATION_TERMINAL_SKIP ??
@@ -677,6 +694,66 @@ export function parseOptions(argv: string[]): Options {
         process.env.COMMAND_STATUS_VERIFY_TERMINAL_RECEIPT ??
         "") === "true",
   };
+}
+
+export async function exactReviewQueueAuthorityFence(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<boolean> {
+  const origin = new URL(env.QUEUE_URL || "");
+  if (
+    origin.username ||
+    origin.password ||
+    (origin.protocol !== "https:" &&
+      !(
+        origin.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(origin.hostname)
+      ))
+  ) {
+    throw new Error("invalid exact-review queue fence origin");
+  }
+  const leaseRevision = Number(env.EXACT_REVIEW_LEASE_REVISION);
+  const claimGeneration = Number(env.EXACT_REVIEW_CLAIM_GENERATION);
+  const runAttempt = Number(env.GITHUB_RUN_ATTEMPT);
+  const runId = env.GITHUB_RUN_ID || "";
+  const sourceHeadSha = String(env.EXACT_REVIEW_SOURCE_HEAD_SHA || "")
+    .trim()
+    .toLowerCase();
+  if (
+    !env.EXACT_REVIEW_ITEM_KEY ||
+    !env.EXACT_REVIEW_LEASE_ID ||
+    !/^[1-9][0-9]*$/.test(runId) ||
+    ![leaseRevision, claimGeneration, runAttempt].every(
+      (value) => Number.isSafeInteger(value) && value > 0,
+    ) ||
+    (sourceHeadSha && !/^[0-9a-f]{40}$/.test(sourceHeadSha))
+  ) {
+    throw new Error("missing exact-review queue fence tuple");
+  }
+  const response = await fetch(new URL("/internal/exact-review/heartbeat", origin), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    signal: AbortSignal.timeout(15_000),
+    body: JSON.stringify({
+      item_key: env.EXACT_REVIEW_ITEM_KEY,
+      lease_id: env.EXACT_REVIEW_LEASE_ID,
+      lease_revision: leaseRevision,
+      claim_generation: claimGeneration,
+      run_id: runId,
+      run_attempt: runAttempt,
+      ...(sourceHeadSha ? { source_head_sha: sourceHeadSha } : {}),
+      phase: "status",
+    }),
+  });
+  const result = (await response.json()) as Record<string, JsonValue>;
+  if (
+    response.status === 409 &&
+    ["lease_superseded", "lease_not_active"].includes(String(result.error))
+  ) {
+    return false;
+  }
+  if (!response.ok || result.ok !== true) {
+    throw new Error(`exact-review queue fence failed (HTTP ${response.status})`);
+  }
+  return true;
 }
 
 function validateRepo(repo: string) {

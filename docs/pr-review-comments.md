@@ -86,10 +86,13 @@ Trailing marker recovery stops at visible prose, including prose ending in
 `-->`. An already-closed HTML comment cannot extend across that prose into the
 final marker block; valid contiguous trailing markers remain recoverable.
 
-Review workers coordinate through a separate temporary `clawsweeper-review-lease`
-comment; final publication updates the durable review and removes the owned
-lease. Exact-review workers check queue ownership before creating or cleaning up
-comments and again after acquisition. A definitive ownership rejection completes
+Scheduled and other non-command review workers coordinate through a separate
+temporary `clawsweeper-review-lease` comment; final publication updates the durable
+review and removes the owned lease. Command-triggered exact reviews rewrite their
+existing command acknowledgement and use the durable queue claim directly, without
+posting a second visible lease comment. If that acknowledgement cannot be resolved,
+they fall back to the temporary lease path. Exact-review workers check queue ownership
+before GitHub comment work and again before generation and finalization. A definitive ownership rejection completes
 as superseded without retrying. A transport or service failure retries the check;
 the same authorized run reuses its own active lease instead of posting another
 status comment. Exhausted service failures remain failures for normal queue

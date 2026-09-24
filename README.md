@@ -91,10 +91,12 @@ and videos are probed and converted to contact sheets. PR patches and supplement
 body excerpts never supply host download URLs.
 
 ClawSweeper syncs one marker-backed public review comment per item and edits it
-in place instead of posting repeated completed reviews. Review workers use a
-separate temporary status comment for lease coordination; exact-review workers
-verify queue ownership before posting and reuse their own lease on transient
-retries. The temporary comment is removed after publication. Pull request comments include
+in place instead of posting repeated completed reviews. Scheduled review workers
+use a separate temporary status comment for lease coordination. Command-triggered
+exact reviews instead rewrite their existing acknowledgement and use the durable
+queue claim as their coordination lease, so they do not add a second visible status
+comment. Exact-review workers verify queue ownership before generation and during
+finalization. Temporary lease comments are removed after publication. Pull request comments include
 hidden verdict/action markers so trusted repair and automerge flows can continue
 without scraping visible prose. See
 [`docs/pr-review-comments.md`](docs/pr-review-comments.md).

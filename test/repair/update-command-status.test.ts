@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  exactReviewQueueAuthorityFence,
   mergeCommandProgressSection,
   parseOptions,
   selectCommandStatusComment,
@@ -69,6 +70,47 @@ test("parseOptions requires a status mutation only when explicitly requested", (
 test("parseOptions can refuse terminal command rewrites", () => {
   assert.equal(parseOptions(["--refuse-terminal-state"]).refuseTerminalState, true);
   assert.equal(parseOptions([]).refuseTerminalState, false);
+  assert.equal(parseOptions(["--require-queue-authority-fence"]).requireQueueAuthorityFence, true);
+});
+
+test("exact review queue fence allows the owner and rejects supersession", async () => {
+  const originalFetch = globalThis.fetch;
+  let responseStatus = 200;
+  let requestBody: Record<string, unknown> = {};
+  globalThis.fetch = (async (_input, init) => {
+    requestBody = JSON.parse(String(init?.body ?? "{}"));
+    return new Response(
+      JSON.stringify(responseStatus === 200 ? { ok: true } : { error: "lease_superseded" }),
+      { status: responseStatus, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  const env = {
+    QUEUE_URL: "https://clawsweeper.example",
+    EXACT_REVIEW_ITEM_KEY: "openclaw/clawsweeper#1675",
+    EXACT_REVIEW_LEASE_ID: "lease-1",
+    EXACT_REVIEW_LEASE_REVISION: "8",
+    EXACT_REVIEW_CLAIM_GENERATION: "2",
+    EXACT_REVIEW_SOURCE_HEAD_SHA: "a".repeat(40),
+    GITHUB_RUN_ID: "4242",
+    GITHUB_RUN_ATTEMPT: "3",
+  };
+  try {
+    assert.equal(await exactReviewQueueAuthorityFence(env), true);
+    assert.deepEqual(requestBody, {
+      item_key: "openclaw/clawsweeper#1675",
+      lease_id: "lease-1",
+      lease_revision: 8,
+      claim_generation: 2,
+      run_id: "4242",
+      run_attempt: 3,
+      source_head_sha: "a".repeat(40),
+      phase: "status",
+    });
+    responseStatus = 409;
+    assert.equal(await exactReviewQueueAuthorityFence(env), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("terminal receipt verification is opt-in", () => {
