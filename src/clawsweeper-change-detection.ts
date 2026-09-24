@@ -1,4 +1,5 @@
 import { isOpenClawTestRolePath } from "./openclaw-file-role.js";
+import { escapeRegExp } from "./clawsweeper-text.js";
 import type {
   ConfigSurfaceChange,
   DataModelChange,
@@ -519,11 +520,11 @@ function dataModelTextHasFileIo(text: string, hasStorageContext = false): boolea
         qualifiers.push(localName);
         continue;
       }
-      const callee = localName.replace(/[$]/g, "\\$");
+      const callee = escapeRegExp(localName);
       if (new RegExp(`(?<![\\w$.])${callee}\\s*\\(`).test(text)) return true;
     }
   }
-  const receiver = qualifiers.map((name) => name.replace(/[$]/g, "\\$")).join("|");
+  const receiver = qualifiers.map(escapeRegExp).join("|");
   if (
     new RegExp(
       String.raw`(?<![\w$.])(?:${receiver})(?:\s*\.\s*promises)?\s*(?:(?:\?\.|\.)\s*(?:open|read|write)|(?:\?\.)?\s*\[\s*["'\x60](?:open|read|write)["'\x60]\s*\])\s*(?:\?\.\s*)?\(`,
