@@ -56,6 +56,35 @@ test("Codex JSONL model access errors are trusted terminal failures", () => {
   assert.equal(isRetryableCodexErrorMessage(message), false);
 });
 
+test("Codex app-server failed turns are trusted like JSONL turn failures", () => {
+  const message = "The model secret-model-for-test does not exist or you do not have access to it.";
+  const turnCompleted = (turn: Record<string, unknown>) =>
+    JSON.stringify({ method: "turn/completed", params: { threadId: "t", turn } });
+  const agentText = JSON.stringify({
+    method: "item/completed",
+    params: {
+      item: { type: "agentMessage", text: JSON.stringify({ type: "error", message: "x" }) },
+    },
+  });
+
+  assert.equal(
+    codexJsonlFailureDetail(
+      [agentText, turnCompleted({ id: "turn", status: "failed", error: { message } })].join("\n"),
+    ),
+    message,
+  );
+  assert.equal(
+    codexJsonlFailureDetail(turnCompleted({ id: "turn", status: "interrupted", error: null })),
+    "",
+  );
+  assert.equal(
+    codexJsonlFailureDetail(
+      turnCompleted({ id: "turn", status: "completed", error: { message: "ignored" } }),
+    ),
+    "",
+  );
+});
+
 test("Codex human failures accept only a terminal error before a native usage trailer", () => {
   const terminal =
     "stream disconnected before completion: The model fixture-model does not exist or you do not have access to it.";

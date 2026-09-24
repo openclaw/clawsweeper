@@ -47,6 +47,11 @@ export function codexJsonlFailureDetail(value: string | null | undefined): strin
     if (event?.type === "turn.failed" && typeof event.error?.message === "string") {
       messages.push(event.error.message);
     }
+    // App-server JSON-RPC carries the same turn failure on turn/completed.
+    const turn = event?.method === "turn/completed" ? event.params?.turn : undefined;
+    if (turn?.status !== "completed" && typeof turn?.error?.message === "string") {
+      messages.push(turn.error.message);
+    }
   }
   return messages.at(-1) ?? "";
 }

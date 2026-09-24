@@ -7,6 +7,7 @@ import { runCodexProcess } from "../dist/codex-process.js";
 import { CODEX_THREAD_STATE_MAX_BYTES } from "../dist/codex-output-capture.js";
 
 const uuid = "019f0560-0000-7000-8000-000000000001";
+const turnFailure = "Rate limit reached for tokens per min (TPM). Please try again in 20s.";
 const scenarios = [
   "completed",
   "failed",
@@ -65,8 +66,13 @@ rl.on("line", (line) => {
         threadId, turnId: "turn", item: { type: "agentMessage", id: "message", text: '{"decision":"keep_open"}' }
       } });
       if (scenario === "incomplete") return process.exit(1);
+      const status = ["failed", "interrupted"].includes(scenario) ? scenario : "completed";
       send({ method: "turn/completed", params: {
-        threadId, turn: { id: "turn", status: ["failed", "interrupted"].includes(scenario) ? scenario : "completed" }
+        threadId, turn: {
+          id: "turn",
+          status,
+          error: scenario === "failed" ? { message: ${JSON.stringify(turnFailure)}, codexErrorInfo: null } : null,
+        }
       } });
       if (scenario === "completed-shutdown") setTimeout(() => process.exit(1), 5);
     }, 5);
@@ -113,6 +119,14 @@ rl.on("line", (line) => {
       if (["failed", "interrupted", "incomplete", "oversized-thread"].includes(scenario)) {
         assert.notEqual(result.status, 0);
         assert.equal(existsSync(outputPath), false);
+        // The turn outcome, not the missing managed result file, explains the failure.
+        assert.doesNotMatch(result.error?.message ?? "", /ENOENT/);
+        if (scenario === "failed") {
+          assert.equal(result.error?.message, `Codex turn failed: ${turnFailure}`);
+        }
+        if (scenario === "interrupted") {
+          assert.equal(result.error?.message, "Codex turn interrupted.");
+        }
       } else {
         assert.equal(readFileSync(outputPath, "utf8"), '{"decision":"keep_open"}');
       }

@@ -441,7 +441,13 @@ async function handleRpcMessage(message: RpcMessage): Promise<void> {
     failed ? "codex_failed" : "validating",
     failed ? `Codex turn ${turnStatus || "failed"}` : "Codex turn complete; validating result",
   );
-  await finish(failed ? 1 : 0, null);
+  await finish(failed ? 1 : 0, null, failed ? turnFailureError(turn) : undefined);
+}
+
+function turnFailureError(turn: Record<string, unknown> | null): Error {
+  const message = stringAt(turn, ["error", "message"]).trim();
+  const status = turnStatus || "failed";
+  return new Error(message ? `Codex turn ${status}: ${message}` : `Codex turn ${status}.`);
 }
 
 function request(

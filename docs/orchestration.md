@@ -50,7 +50,11 @@ they intentionally want a narrower lane.
 
 Each review starts one Codex process. Codex owns request and stream recovery;
 ClawSweeper preserves the final error classification and lets the durable queue
-own any fresh review attempt. The repair lane's review/fix iteration budget is
+own any fresh review attempt. The app-server worker reports a failed turn with
+the turn's own error (`Codex turn failed: <message>`) and an interrupted turn as
+`Codex turn interrupted.`; failure diagnostics read an app-server turn error from
+its `turn/completed` notification ahead of captured stderr, as they read native
+`turn.failed` events. The repair lane's review/fix iteration budget is
 separate from transport recovery.
 
 On POSIX, the shared Codex spawn helper kills remaining group members when the
