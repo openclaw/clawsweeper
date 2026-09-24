@@ -2237,6 +2237,60 @@ async function savedDirectRequeueFixture(
   return { storage, queue, leased, post, readState, projection, counters, complete, terminalRun };
 }
 
+test("active pull request supersession preserves the command without its publication receipt", async () => {
+  const marker =
+    "<!-- clawsweeper-command-status:705:automerge:0123456789abcdef0123456789abcdef01234567 -->";
+  const f = await savedDirectRequeueFixture("accepted", true, {
+    itemKind: "pull_request",
+    sourceEvent: "issues",
+    sourceAction: "branch_repaired",
+    supersedesInProgress: true,
+    sourceHeadSha: "e".repeat(40),
+    sourceHeadVerified: true,
+    sourceAuthoritySeq: 2,
+    commandStatusMarker: marker,
+    statusCommentId: 7051,
+  });
+  assert.ok((await f.readState()).items[f.leased.key]?.decision.publication);
+
+  const superseding = await f.queue.fetch(
+    buildExactReviewQueueRequest(
+      "authoritative-synchronize-after-direct-publication",
+      705,
+      "synchronize",
+      "pull_request",
+      "openclaw/openclaw",
+      {
+        sourceHeadSha: "b".repeat(40),
+        sourceHeadVerified: true,
+        sourceAuthoritySeq: 3,
+      },
+    ),
+  );
+  assert.equal(superseding.status, 202);
+  assert.equal((await superseding.json()).queued, true);
+
+  const successor = (await f.readState()).items[f.leased.key]!;
+  assert.equal(successor.state, "pending");
+  assert.equal(successor.revision, 5);
+  assert.equal(successor.leaseId, undefined);
+  assert.equal(successor.leaseDecision, undefined);
+  assert.equal(successor.decision.sourceAction, "synchronize");
+  assert.equal(successor.decision.sourceHeadSha, "b".repeat(40));
+  assert.equal(successor.decision.sourceAuthoritySeq, 3);
+  assert.equal(successor.decision.commandStatusMarker, marker);
+  assert.equal(successor.decision.statusCommentId, 7051);
+  assert.equal(successor.decision.publication, undefined);
+  assert.equal(f.projection()?.terminalDisposition?.kind, "requeue");
+
+  const staleCompletion = await f.post("complete", f.complete);
+  assert.equal(staleCompletion.status, 409);
+  assert.deepEqual(await staleCompletion.json(), {
+    error: "lease_superseded",
+    superseded_by_revision: 5,
+  });
+});
+
 test("all exact-review recovery paths preserve proof authority and the complete producer context", async (t) => {
   for (const sourceAction of [
     "command_proof_result",

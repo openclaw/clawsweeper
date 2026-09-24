@@ -31,6 +31,9 @@ import {
   unclaimedExactReviewQueueItem,
   type ExactReviewQueueItem,
 } from "./dashboard-worker-harness.ts";
+import { reviewCommandProofBinding } from "../dist/clawsweeper-review-command-workflow.js";
+import { skipAutomaticEndorReview } from "../dist/repair/endor-automerge-intake.js";
+import { COMMAND_PROOF_SOURCE_ACTION } from "../src/command-proof-contract.ts";
 
 function credentialRecoveryJitterMs(key: string) {
   let hash = 2166136261;
@@ -2917,6 +2920,233 @@ test("explicit pull request commands bind to pending source authority", async ()
     assert.equal(current.decision.commandStatusMarker, commandStatusMarker);
   } finally {
     Date.now = originalNow;
+  }
+});
+
+test("Endor repair reviews retain their owner when ordinary PR events supersede them", async () => {
+  const repo = "openclaw/endor-clawsweeper-e2e";
+  const head = "b".repeat(40);
+  const nextHead = "c".repeat(40);
+  const issue = {
+    pull_request: {},
+    user: { login: "endor-labs-pro[bot]", id: 179191674, type: "Bot" },
+    labels: [{ name: "clawsweeper:automerge" }],
+  };
+  const marker = `<!-- clawsweeper-command-status:42:automerge:${"a".repeat(40)} -->`;
+  for (const phase of ["pending", "dispatching", "leased"] as const) {
+    const storage = new MemoryDurableStorage();
+    const queue = new ExactReviewQueue({ storage }, {});
+    const key = `${repo}#42`;
+    const synchronize = (sequence: number, sourceHeadSha: string) =>
+      buildExactReviewQueueRequest(
+        `${phase}-push-${sequence}`,
+        42,
+        "synchronize",
+        "pull_request",
+        repo,
+        {
+          sourceHeadSha,
+          sourceHeadVerified: true,
+          sourceAuthoritySeq: sequence,
+        },
+      );
+    await queue.fetch(synchronize(2, head));
+    const repaired = await queue.fetch(
+      buildExactReviewQueueRequest(
+        `${phase}-repair-followup`,
+        42,
+        "branch_repaired",
+        "pull_request",
+        repo,
+        {
+          sourceEvent: "issues",
+          supersedesInProgress: true,
+          commandStatusMarker: marker,
+          statusCommentId: 9001,
+        },
+      ),
+    );
+    assert.equal(repaired.status, 202);
+    assert.equal((await repaired.json()).queued, true);
+    let state = await storage.get<{ items: Record<string, ExactReviewQueueItem> }>(
+      "exact-review-queue",
+    );
+    assert.ok(state);
+    let current = state.items[key];
+    assert.equal(current.decision.sourceAction, "branch_repaired");
+    assert.equal(current.decision.sourceHeadSha, head);
+    assert.equal(current.decision.sourceAuthoritySeq, 2);
+    assert.equal(current.decision.sourceHeadVerified, true);
+    assert.equal(current.decision.commandStatusMarker, marker);
+    assert.equal(current.decision.statusCommentId, 9001);
+    assert.equal(skipAutomaticEndorReview(repo, issue, current.decision), false);
+
+    const priorRevision = current.revision;
+    if (phase !== "pending") {
+      const active =
+        phase === "leased"
+          ? leasedExactReviewQueueItem(42, "4242")
+          : unclaimedExactReviewQueueItem(42);
+      current.state = phase;
+      current.leasePhase = "review";
+      current.leaseDecision = structuredClone(current.decision);
+      current.leaseId = active.leaseId;
+      current.leaseRevision = priorRevision;
+      current.leaseExpiresAt = active.leaseExpiresAt;
+      current.claimedRunId = active.claimedRunId;
+      current.claimedRunAttempt = active.claimedRunAttempt;
+      current.claimGeneration = active.claimGeneration;
+      current.claimProtocolVersion = active.claimProtocolVersion;
+      await storage.put("exact-review-queue", state);
+    }
+
+    const successorHead = phase === "pending" ? head : nextHead;
+    const superseding = await queue.fetch(synchronize(3, successorHead));
+    assert.equal(superseding.status, 202);
+    assert.equal((await superseding.json()).queued, true);
+    state = await storage.get<{ items: Record<string, ExactReviewQueueItem> }>(
+      "exact-review-queue",
+    );
+    assert.ok(state);
+    current = state.items[key];
+    assert.equal(current.state, "pending");
+    assert.equal(current.leaseId, undefined);
+    assert.equal(current.leaseDecision, undefined);
+    assert.equal(current.decision.sourceAction, "synchronize");
+    assert.equal(current.decision.sourceHeadSha, successorHead);
+    assert.equal(current.decision.sourceAuthoritySeq, 3);
+    assert.equal(current.decision.commandStatusMarker, marker);
+    assert.equal(current.decision.statusCommentId, 9001);
+    assert.equal(skipAutomaticEndorReview(repo, issue, current.decision), false);
+    const priorLifecycle = new ExactReviewLifecycleProjectionStore(storage).read(
+      key,
+      key,
+      priorRevision,
+    );
+    assert.ok(priorLifecycle);
+    assert.equal(priorLifecycle.terminalDisposition?.kind, "requeue");
+  }
+});
+
+test("active proof reviews retain command identity without retargeting proof context", async () => {
+  const repo = "openclaw/openclaw";
+  const itemNumber = 762;
+  const proofHead = "b".repeat(40);
+  const marker = `<!-- clawsweeper-command-status:${itemNumber}:request_proof:${"a".repeat(64)} -->`;
+  const proofPrompt =
+    "<!-- command-proof-assessment-v1 head=" +
+    proofHead +
+    " body=" +
+    "c".repeat(64) +
+    " base=" +
+    "d".repeat(64) +
+    " base_sha=" +
+    "e".repeat(40) +
+    " request=" +
+    "a".repeat(64) +
+    " scenario=web-ui-chat-proof -->\nVerified evidence context.";
+
+  for (const [name, successorHead] of [
+    ["same-head", proofHead],
+    ["new-head", "f".repeat(40)],
+  ] as const) {
+    const storage = new MemoryDurableStorage();
+    const queue = new ExactReviewQueue({ storage }, {});
+    const key = `${repo}#${itemNumber}`;
+    const leased = leasedExactReviewQueueItem(itemNumber, "7620");
+    const proofDecision: ExactReviewQueueItem["decision"] = {
+      ...leased.decision,
+      itemKind: "pull_request",
+      sourceEvent: "pull_request",
+      sourceAction: COMMAND_PROOF_SOURCE_ACTION,
+      sourceHeadSha: proofHead,
+      sourceCommentId: 7620,
+      sourceCommentUpdatedAt: "2026-09-23T01:00:00Z",
+      commandBodyDigest: "9".repeat(64),
+      commandOrigin: "comment_router",
+      sourceCommentVerified: true,
+      sourceDeliveryId: `command-proof-${name}`,
+      additionalPrompt: proofPrompt,
+      commandStatusMarker: marker,
+    };
+    const active = {
+      ...leased,
+      decision: proofDecision,
+      leaseDecision: structuredClone(proofDecision),
+      state: "leased" as const,
+      leasePhase: "review" as const,
+    } satisfies ExactReviewQueueItem;
+    const priorRevision = active.revision;
+    await storage.put("exact-review-queue", {
+      deliveries: {},
+      items: { [key]: active },
+    });
+
+    const successor = await queue.fetch(
+      buildExactReviewQueueRequest(
+        `active-proof-successor-${name}`,
+        itemNumber,
+        "synchronize",
+        "pull_request",
+        repo,
+        {
+          sourceHeadSha: successorHead,
+          sourceHeadVerified: true,
+          sourceAuthoritySeq: 1,
+        },
+      ),
+    );
+    assert.equal(successor.status, 202);
+    assert.equal((await successor.json()).queued, true);
+
+    const state = await storage.get<{ items: Record<string, ExactReviewQueueItem> }>(
+      "exact-review-queue",
+    );
+    assert.ok(state);
+    const pending = state.items[key];
+    assert.equal(pending.state, "pending");
+    assert.equal(pending.leaseId, undefined);
+    assert.equal(pending.leaseDecision, undefined);
+    assert.equal(pending.decision.sourceAction, "synchronize");
+    assert.equal(pending.decision.sourceHeadSha, successorHead);
+    assert.equal(pending.decision.sourceAuthoritySeq, 1);
+    assert.equal(pending.decision.commandStatusMarker, marker);
+    assert.equal(pending.decision.sourceCommentId, 7620);
+    assert.equal(pending.decision.sourceDeliveryId, `command-proof-${name}`);
+    assert.equal(pending.decision.additionalPrompt, undefined);
+    assert.equal(
+      reviewCommandProofBinding(
+        pending.decision.sourceAction,
+        pending.decision.additionalPrompt ?? "",
+      ),
+      null,
+    );
+    const staleCompletion = await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/complete", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: active.leaseId,
+          item_key: key,
+          lease_revision: priorRevision,
+          claim_generation: active.claimGeneration,
+          run_id: active.claimedRunId,
+          run_attempt: active.claimedRunAttempt,
+          outcome: "success",
+        }),
+      }),
+    );
+    assert.equal(staleCompletion.status, 409);
+    assert.deepEqual(await staleCompletion.json(), {
+      error: "lease_superseded",
+      superseded_by_revision: pending.revision,
+    });
+    const priorLifecycle = new ExactReviewLifecycleProjectionStore(storage).read(
+      key,
+      key,
+      priorRevision,
+    );
+    assert.ok(priorLifecycle);
+    assert.equal(priorLifecycle.terminalDisposition?.kind, "requeue");
   }
 });
 

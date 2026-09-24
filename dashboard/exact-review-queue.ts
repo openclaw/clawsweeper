@@ -2275,6 +2275,11 @@ export class ExactReviewQueue {
               decision.supersedesInProgress &&
               current.leasePhase !== "status" &&
               (current.state === "dispatching" || current.state === "leased");
+            const preservesActiveCommand =
+              supersedesActiveReview &&
+              current.decision.itemKind === "pull_request" &&
+              decision.itemKind === "pull_request" &&
+              exactReviewDecisionHasCommandContext(current.decision);
             if (supersedesActiveReview) {
               const priorRevision = current.revision;
               supersededRunId = current.claimedRunId || null;
@@ -2304,15 +2309,18 @@ export class ExactReviewQueue {
             // carrying publication/directLifecycle into the successor would make
             // the successor look like it owns the old fenced finalization.
             const followUpMergeBase =
-              (queuesCommandFollowUp || pendingTerminalFinalizer) &&
+              (queuesCommandFollowUp || pendingTerminalFinalizer || preservesActiveCommand) &&
               exactReviewQueueIsPublication(current)
                 ? (current.decision.publication?.producerDecision ?? current.decision)
                 : current.decision;
-            const nextDecision = supersedesActiveReview
-              ? decision
-              : mergeable || queuesCommandFollowUp
-                ? mergePendingExactReviewDecision(followUpMergeBase, decision)
-                : decision;
+            // Revoke the active lease, but carry a still-current pull request command
+            // onto its authoritative pull request successor just as pending coalescing does.
+            const nextDecision =
+              supersedesActiveReview && !preservesActiveCommand
+                ? decision
+                : mergeable || queuesCommandFollowUp
+                  ? mergePendingExactReviewDecision(followUpMergeBase, decision)
+                  : decision;
             const preserveReviewRetryBudget =
               mergeable &&
               !exactReviewQueueIsPublication(current) &&
