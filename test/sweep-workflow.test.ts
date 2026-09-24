@@ -1255,6 +1255,11 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.equal(reserveLease.env?.GH_TOKEN, "${{ steps.target-write-token.outputs.token }}");
   assert.match(reserveLease.run ?? "", /pnpm run --silent reserve-review-lease/);
   assert.match(reserveLease.run ?? "", /review-timeout-ms/);
+  assert.equal(
+    reserveLease.env?.STATUS_COMMENT_ID,
+    "${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).statusCommentId || '' }}",
+  );
+  assert.match(reserveLease.run ?? "", /--status-comment-id/);
   assert.match(reserveLease.run ?? "", /for attempt in 1 2 3 4 5/);
   assert.match(reserveLease.run ?? "", /RANDOM % 4/);
   assert.match(reserveLease.run ?? "", /status.*superseded/);

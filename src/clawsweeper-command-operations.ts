@@ -126,6 +126,7 @@ interface CreateCommandOperationsDependencies {
     purpose?: "review" | "apply";
     queueAuthority?: ExactReviewQueueAuthority | null;
     allowSupersededLeaseCleanup?: boolean;
+    reuseCommentId?: number;
   }) => ReviewStartStatusCommentResult;
   reconcileFolders: (options: {
     itemsDir: string;
@@ -315,11 +316,17 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
     repoFromArgs(args);
     const itemNumber = numberArg(args.item_number, 0);
     const reviewTimeoutMs = numberArg(args.review_timeout_ms, 0);
+    const statusCommentId = numberArg(args.status_comment_id, 0);
     if (!Number.isInteger(itemNumber) || itemNumber <= 0) {
       throw new UserFacingCommandError("--item-number must be a positive integer.");
     }
     if (!Number.isInteger(reviewTimeoutMs) || reviewTimeoutMs <= 0) {
       throw new UserFacingCommandError("--review-timeout-ms must be a positive integer.");
+    }
+    if (!Number.isInteger(statusCommentId) || statusCommentId < 0) {
+      throw new UserFacingCommandError(
+        "--status-comment-id must be a positive integer when supplied.",
+      );
     }
     const { item, state } = fetchItem(itemNumber);
     if (state !== "open") {
@@ -373,6 +380,7 @@ export function createCommandOperations(dependencies: CreateCommandOperationsDep
         shardIndex: 0,
         shardCount: 1,
         queueAuthority: reservationAuthority,
+        ...(statusCommentId > 0 ? { reuseCommentId: statusCommentId } : {}),
         allowSupersededLeaseCleanup:
           item.kind !== "pull_request" || Boolean(queueAuthority?.sourceHeadSha),
       });

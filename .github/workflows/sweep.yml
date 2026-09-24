@@ -987,6 +987,7 @@ jobs:
           EXACT_REVIEW_LEASE_REVISION: ${{ steps.claim-exact-review-queue.outputs.lease_revision }}
           EXACT_REVIEW_CLAIM_GENERATION: ${{ steps.claim-exact-review-queue.outputs.claim_generation }}
           EXACT_REVIEW_SOURCE_HEAD_SHA: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).sourceHeadSha || '' }}
+          STATUS_COMMENT_ID: ${{ fromJSON(steps.claim-exact-review-queue.outputs.decision).statusCommentId || '' }}
           EXACT_REVIEW_QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
         run: |
           set -euo pipefail
@@ -1002,6 +1003,14 @@ jobs:
           codex_timeout_seconds=$(((CODEX_TIMEOUT_MS + 999) / 1000))
           media_preprocessing_reserve_seconds=480
           review_timeout_ms=$(((codex_timeout_seconds + media_preprocessing_reserve_seconds + 180) * 1000))
+          status_comment_args=()
+          if [ -n "$STATUS_COMMENT_ID" ]; then
+            if ! [[ "$STATUS_COMMENT_ID" =~ ^[1-9][0-9]*$ ]]; then
+              echo "Invalid command status comment id: $STATUS_COMMENT_ID" >&2
+              exit 1
+            fi
+            status_comment_args=(--status-comment-id "$STATUS_COMMENT_ID")
+          fi
           reservation=""
           reservation_error="$(mktemp)"
           trap 'rm -f "$reservation_error"' EXIT
@@ -1010,7 +1019,8 @@ jobs:
             if reservation="$(pnpm run --silent reserve-review-lease -- \
               --target-repo "$TARGET_REPO" \
               --item-number "$ITEM_NUMBER" \
-              --review-timeout-ms "$review_timeout_ms" 2>"$reservation_error")"; then
+              --review-timeout-ms "$review_timeout_ms" \
+              "${status_comment_args[@]}" 2>"$reservation_error")"; then
               break
             else
               reserve_exit=$?
