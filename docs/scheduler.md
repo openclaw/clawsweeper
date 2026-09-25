@@ -61,6 +61,13 @@ terminal for the unchanged revision.
 Scheduled and manual explicit queue admissions use the same exact-event review
 step. Aggregate shard recovery uses its per-item terminal ledger instead of
 producing a queue-level `failure_reason` from the shard's process exit.
+When a completed review has handed off to pending or active publication, a late
+failed-shard recovery remains queued until publication settles or parks. Its
+request is preserved because it may refer to a newer source. Explicit re-reviews, source
+changes, and publication source-drift or artifact-retention recovery retain their
+normal admission paths.
+Bay continues to show the publication as the item's current work until that
+handoff releases the deferred recovery.
 
 ClawSweeper has three issue/PR scheduler paths:
 
