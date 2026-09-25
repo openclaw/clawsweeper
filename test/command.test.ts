@@ -128,6 +128,13 @@ test("review CLI suppresses stack traces for missing local target checkout", () 
   const root = mkdtempSync(join(tmpdir(), "cmd-"));
   const missing = join(root, "missing-target");
   const artifactDir = join(root, "artifacts");
+  const ghPath = join(root, "gh.cjs");
+  writeFileSync(
+    ghPath,
+    `const args = process.argv.slice(2);
+if (args[0] !== "api" || args[1] !== "repos/openclaw/openclaw/pulls/357") process.exit(1);
+process.stdout.write(JSON.stringify({ base: { ref: "main" } }));`,
+  );
   try {
     const result = spawnSync(
       process.execPath,
@@ -144,7 +151,7 @@ test("review CLI suppresses stack traces for missing local target checkout", () 
         "--artifact-dir",
         artifactDir,
       ],
-      { encoding: "utf8" },
+      { encoding: "utf8", env: { ...process.env, ...mockGhBinEnv(ghPath, root) } },
     );
 
     assert.equal(result.status, 1);
