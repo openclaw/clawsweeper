@@ -7,6 +7,7 @@ import {
   openCodexOutputCapture,
 } from "./codex-output-capture.js";
 import { resolveSpawnCommand, windowsSystemExecutable } from "./command.js";
+import { signalProcessGroup } from "./process-group.js";
 
 interface WorkerOptions {
   args: string[];
@@ -61,7 +62,7 @@ child.once("close", (status, signal) => {
     clearTimeout(forceKillTimer);
     // The direct child is gone, but detached descendants in its process group may
     // still be running; finish the escalation before this worker exits.
-    signalProcessGroup(child, "SIGKILL");
+    signalProcessGroup(child.pid, "SIGKILL");
   }
   clearTimeout(timeout);
   closeCodexOutputCapture(stdout);
@@ -107,19 +108,10 @@ function terminateProcessTree(
     }
     return undefined;
   }
-  signalProcessGroup(childProcess, signal);
-  const timer = setTimeout(() => signalProcessGroup(childProcess, "SIGKILL"), 1_000);
+  signalProcessGroup(childProcess.pid, signal);
+  const timer = setTimeout(() => signalProcessGroup(childProcess.pid, "SIGKILL"), 1_000);
   timer.unref();
   return timer;
-}
-
-function signalProcessGroup(childProcess: ChildProcess, signal: NodeJS.Signals): void {
-  if (!childProcess.pid) return;
-  try {
-    process.kill(-childProcess.pid, signal);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-  }
 }
 
 function serializedError(error: Error): { message: string; code?: string } {

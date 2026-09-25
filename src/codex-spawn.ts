@@ -6,6 +6,7 @@ import {
 } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { signalProcessGroup } from "./process-group.js";
 import {
   resolveSpawnCommand,
   windowsEnvironmentValue,
@@ -77,9 +78,9 @@ export function terminateCodexProcessTree(
   }
 
   if (signal !== "SIGKILL") gracefulTerminations.add(child);
-  signalPosixProcessGroup(child, signal);
+  signalProcessGroup(child.pid, signal);
   if (signal === "SIGKILL") return undefined;
-  const timer = setTimeout(() => signalPosixProcessGroup(child, "SIGKILL"), forceAfterMs);
+  const timer = setTimeout(() => signalProcessGroup(child.pid, "SIGKILL"), forceAfterMs);
   timer.unref();
   return timer;
 }
@@ -115,19 +116,10 @@ export function spawnCodex(
   if (process.platform !== "win32") {
     // Natural exits must not wait for descendant-held pipes; requested stops retain their grace.
     child.once("exit", () => {
-      if (!gracefulTerminations.has(child)) signalPosixProcessGroup(child, "SIGKILL");
+      if (!gracefulTerminations.has(child)) signalProcessGroup(child.pid, "SIGKILL");
     });
   }
   return child;
-}
-
-function signalPosixProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
-  if (!child.pid) return;
-  try {
-    process.kill(-child.pid, signal);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-  }
 }
 
 function windowsCodexAppBinary(env: NodeJS.ProcessEnv): string | null {

@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { resolveSpawnCommand, windowsSystemExecutable } from "../command.js";
+import { signalProcessGroup } from "../process-group.js";
 import { createTrustedSandboxRoot } from "./contained-command-sandbox.js";
 import { LINUX_SUBREAPER_SCRIPT } from "./process-tree-containment.js";
 
@@ -348,14 +349,14 @@ async function reapProcessGroup(pid: number | undefined, deadlineAt?: number) {
     terminateWindowsProcessTree(pid, deadlineAt);
     return 0;
   }
-  const found = signalProcessGroup(pid, "SIGTERM");
+  const found = signalProcessGroup(pid, "SIGTERM", deadlineAt);
   if (!found) return 0;
   for (let attempt = 0; attempt < 8; attempt += 1) {
     if (deadlineAt !== undefined && Date.now() >= deadlineAt) break;
     await sleep(deadlineAt === undefined ? 25 : Math.min(25, Math.max(1, deadlineAt - Date.now())));
-    if (!signalProcessGroup(pid, "SIGKILL")) return 1;
+    if (!signalProcessGroup(pid, "SIGKILL", deadlineAt)) return 1;
   }
-  if (signalProcessGroup(pid, "SIGKILL")) {
+  if (signalProcessGroup(pid, "SIGKILL", deadlineAt)) {
     throw new Error("could not reap validation process group");
   }
   return 1;
@@ -364,14 +365,14 @@ async function reapProcessGroup(pid: number | undefined, deadlineAt?: number) {
 function terminateProcessTree(pid: number | undefined, deadlineAt?: number) {
   if (!pid) return;
   if (process.platform === "linux") {
-    signalProcessGroup(pid, "SIGTERM");
+    signalProcessGroup(pid, "SIGTERM", deadlineAt);
     return;
   }
   if (process.platform === "win32") {
     terminateWindowsProcessTree(pid, deadlineAt);
     return;
   }
-  signalProcessGroup(pid, "SIGTERM");
+  signalProcessGroup(pid, "SIGTERM", deadlineAt);
 }
 
 export function forceTerminateProcessTree(pid: number, deadlineAt?: number) {
@@ -379,7 +380,7 @@ export function forceTerminateProcessTree(pid: number, deadlineAt?: number) {
     terminateWindowsProcessTree(pid, deadlineAt);
     return;
   }
-  signalProcessGroup(pid, "SIGKILL");
+  signalProcessGroup(pid, "SIGKILL", deadlineAt);
 }
 
 function terminateWindowsProcessTree(pid: number, deadlineAt?: number) {
@@ -398,16 +399,6 @@ function terminateWindowsProcessTree(pid: number, deadlineAt?: number) {
   );
   if (deadlineAt !== undefined && (result.error || result.status !== 0))
     throw new Error("process-tree settlement could not be verified", { cause: result.error });
-}
-
-export function signalProcessGroup(pid: number, signal: NodeJS.Signals | 0) {
-  try {
-    process.kill(-pid, signal);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
-    throw error;
-  }
 }
 
 function sleep(milliseconds: number) {

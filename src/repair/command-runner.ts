@@ -3,9 +3,9 @@ import fs from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveSpawnCommand } from "../command.js";
+import { signalProcessGroup } from "../process-group.js";
 import {
   forceTerminateProcessTree,
-  signalProcessGroup,
   type ContainmentCapabilitySummary,
 } from "./contained-command-worker.js";
 import { ValidationRecoveryRequiredError } from "./validation-recovery.js";
@@ -106,7 +106,7 @@ export function runGitAcquisitionResult(
     if (pid) {
       try {
         forceTerminateProcessTree(pid, deadlineAt);
-        while (process.platform !== "win32" && signalProcessGroup(pid, 0)) {
+        while (process.platform !== "win32" && signalProcessGroup(pid, 0, deadlineAt)) {
           if (Date.now() >= deadlineAt) break;
           Atomics.wait(
             new Int32Array(new SharedArrayBuffer(4)),
