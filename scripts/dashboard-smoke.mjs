@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createHmac } from "node:crypto";
 import { realpathSync } from "node:fs";
 
 const cliUrl = process.argv.find((arg, index) => index > 1 && arg !== "--");
@@ -15,6 +16,10 @@ const deploymentReadyIntervalMs = positiveInteger(
 );
 
 async function main() {
+  const webhookSecret = process.env.CLAWSWEEPER_WEBHOOK_SECRET || "";
+  if (expectedDeploySha && !webhookSecret) {
+    throw new Error("deployment smoke requires CLAWSWEEPER_WEBHOOK_SECRET");
+  }
   const health = expectedDeploySha
     ? await waitForDashboardDeployment({
         baseUrl,
@@ -24,6 +29,9 @@ async function main() {
       })
     : await fetchJson(`${baseUrl}/api/health`);
   if (health.ok !== true) throw new Error("health endpoint did not return ok");
+  const reviewAdmission = expectedDeploySha
+    ? await verifyReviewAdmission(webhookSecret)
+    : { state: "skipped", reason: "no_expected_deployment" };
 
   const statusStartedAt = Date.now();
   const statusResponse = await fetch(`${baseUrl}/api/status`);
@@ -128,6 +136,7 @@ async function main() {
         ok: true,
         url: baseUrl,
         deployment_sha: health.deployment_sha || null,
+        review_admission: reviewAdmission,
         active_workflow_runs: status.fleet.active_workflow_runs,
         active_codex_jobs: status.fleet.active_codex_jobs,
         worker_details: status.workers.length,
@@ -149,6 +158,48 @@ async function main() {
       2,
     ),
   );
+}
+
+async function verifyReviewAdmission(secret) {
+  // Verify the producer contract before a Worker-first rollout can enable new producers.
+  // Redirects must never forward the signed request to another endpoint.
+  const body = "{}";
+  let response;
+  try {
+    response = await fetch(`${baseUrl}/internal/exact-review/admission-capabilities`, {
+      method: "POST",
+      redirect: "error",
+      signal: AbortSignal.timeout(20_000),
+      headers: {
+        "content-type": "application/json",
+        "x-clawsweeper-exact-review-signature": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
+      },
+      body,
+    });
+  } catch (error) {
+    throw new Error("review admission capability request failed", { cause: error });
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {});
+    throw new Error(`review admission capabilities returned HTTP ${response.status}`);
+  }
+  const capability = await response.json().catch(() => null);
+  const feed = capability?.scheduled_feed;
+  const manual = capability?.manual_publication;
+  if (
+    !Number.isSafeInteger(feed?.target_rate_per_hour) ||
+    feed.target_rate_per_hour <= 0 ||
+    feed.enqueue_replay !== "scheduled_disposition_v1" ||
+    manual?.policy !== "record_comment_only" ||
+    typeof manual.enabled !== "boolean"
+  ) {
+    throw new Error("review admission capability contract is invalid");
+  }
+  return {
+    state: "verified",
+    target_rate_per_hour: feed.target_rate_per_hour,
+    manual_publication_enabled: manual.enabled,
+  };
 }
 
 function validateStatus(status) {

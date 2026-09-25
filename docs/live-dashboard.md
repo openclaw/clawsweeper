@@ -80,8 +80,13 @@ deploy path. The deploy workflow injects the `CLAWSWEEPER_STATUS_INGEST_TOKEN`
 GitHub secret into a temporary Wrangler config as the Worker `INGEST_TOKEN`.
 The smoke test waits for the expected deployment revision and a successful
 exact-review queue response within the same default 180-second readiness budget. It then
-verifies the queue schema, unsigned-request rejection, Bay policy, and assets.
-A persistently unavailable queue still fails readiness.
+verifies the signed review-admission capability contract, queue schema,
+unsigned-request rejection, Bay policy, and assets. An exact-revision smoke run
+requires the existing `CLAWSWEEPER_WEBHOOK_SECRET`; it sends a signed empty JSON
+object without following redirects and validates scheduled pacing, replay, and
+manual publication policy. A valid disabled manual-publication policy passes.
+Local smoke runs without `CLAWSWEEPER_EXPECTED_DEPLOY_SHA` explicitly report this
+signed check as skipped. A persistently unavailable queue still fails readiness.
 
 A status contract failure keeps its original error and nonzero smoke exit, with
 one bounded diagnostic summary: projection completeness, freshness, cache state,

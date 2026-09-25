@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHmac } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -68,12 +69,40 @@ function completeStatus() {
   };
 }
 
-async function runStatusSmoke(status: unknown, cacheState = "miss") {
+async function runStatusSmoke(
+  status: unknown,
+  cacheState = "miss",
+  admission: {
+    deploy?: boolean;
+    secret?: string;
+    status?: number;
+    body?: string;
+    capability?: unknown;
+    redirect?: boolean;
+  } = {},
+) {
   const requests: string[] = [];
-  const server = createServer((request, response) => {
+  const signedRequests: Array<{ body: boolean; signature: boolean }> = [];
+  const secret = admission.secret ?? "synthetic-deployment-secret";
+  const server = createServer(async (request, response) => {
     requests.push(`${request.method} ${request.url}`);
     if (request.url === "/api/health") {
-      response.end(JSON.stringify({ ok: true }));
+      response.end(JSON.stringify({ ok: true, deployment_sha: "expected-sha" }));
+    } else if (request.url === "/internal/exact-review/admission-capabilities") {
+      let body = "";
+      for await (const chunk of request) body += String(chunk);
+      signedRequests.push({
+        body: body === "{}",
+        signature:
+          request.headers["x-clawsweeper-exact-review-signature"] ===
+          `sha256=${createHmac("sha256", secret).update("{}").digest("hex")}`,
+      });
+      if (admission.redirect) {
+        response.writeHead(302, { location: "/must-not-follow" });
+      } else {
+        response.writeHead(admission.status ?? 200);
+      }
+      response.end(admission.body ?? JSON.stringify(admission.capability));
     } else if (request.url === "/api/status") {
       response.setHeader("x-clawsweeper-cache", cacheState);
       response.end(JSON.stringify(status));
@@ -113,7 +142,11 @@ async function runStatusSmoke(status: unknown, cacheState = "miss") {
         `http://127.0.0.1:${address.port}`,
       ],
       {
-        env: { ...process.env, CLAWSWEEPER_EXPECTED_DEPLOY_SHA: "" },
+        env: {
+          ...process.env,
+          CLAWSWEEPER_EXPECTED_DEPLOY_SHA: admission.deploy ? "expected-sha" : "",
+          CLAWSWEEPER_WEBHOOK_SECRET: secret,
+        },
         timeout: 30_000,
       },
     ).then(
@@ -124,7 +157,7 @@ async function runStatusSmoke(status: unknown, cacheState = "miss") {
         stderr: error.stderr ?? "",
       }),
     );
-    return { ...result, requests };
+    return { ...result, requests, signedRequests };
   } finally {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
@@ -320,6 +353,10 @@ test("dashboard smoke preserves the complete valid CLI route and authorization c
   assert.equal(output.ok, true);
   assert.equal(output.exact_review_reconcile_status, 401);
   assert.equal(output.bay.public, true);
+  assert.deepEqual(output.review_admission, {
+    state: "skipped",
+    reason: "no_expected_deployment",
+  });
   assert.deepEqual(result.requests, [
     "GET /api/health",
     "GET /api/status",
@@ -333,6 +370,92 @@ test("dashboard smoke preserves the complete valid CLI route and authorization c
     "GET /bay-assets/crustaceans-atlas.webp",
     "GET /bay-assets/master-sweeper.webp",
   ]);
+});
+
+function admissionCapability(enabled = false) {
+  return {
+    scheduled_feed: { target_rate_per_hour: 60, enqueue_replay: "scheduled_disposition_v1" },
+    manual_publication: { policy: "record_comment_only", enabled },
+    ignored: "private-response-marker",
+  };
+}
+
+test("deployment smoke verifies signed admission without enabling disabled manual intake", async () => {
+  for (const enabled of [false, true]) {
+    const result = await runStatusSmoke(completeStatus(), "miss", {
+      deploy: true,
+      capability: admissionCapability(enabled),
+    });
+    assert.equal(result.code, 0);
+    assert.deepEqual(result.signedRequests, [{ body: true, signature: true }]);
+    assert.equal(result.stderr, "");
+    const output = JSON.parse(result.stdout);
+    assert.deepEqual(output.review_admission, {
+      state: "verified",
+      target_rate_per_hour: 60,
+      manual_publication_enabled: enabled,
+    });
+    assert.equal(output.exact_review_reconcile_status, 401);
+    assert.equal(output.bay.public, true);
+    assert.doesNotMatch(result.stdout, /private-response-marker|synthetic-deployment-secret/);
+  }
+});
+
+test("deployment smoke rejects missing signing authority before any request", async () => {
+  const result = await runStatusSmoke(completeStatus(), "miss", { deploy: true, secret: "" });
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /deployment smoke requires CLAWSWEEPER_WEBHOOK_SECRET/);
+  assert.equal(result.stdout, "");
+  assert.deepEqual(result.requests, []);
+});
+
+test("deployment smoke keeps capability failures closed and redacted", async (t) => {
+  const marker = "private-response-marker";
+  const cases = [
+    { name: "auth", status: 401, body: marker, error: /returned HTTP 401/ },
+    { name: "old Worker", status: 404, body: marker, error: /returned HTTP 404/ },
+    { name: "server", status: 500, body: marker, error: /returned HTTP 500/ },
+    { name: "malformed JSON", body: `{"${marker}`, error: /contract is invalid/ },
+    { name: "redirect", redirect: true, body: marker, error: /request failed/ },
+  ];
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const result = await runStatusSmoke(completeStatus(), "miss", {
+        deploy: true,
+        ...scenario,
+      });
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, scenario.error);
+      assert.equal(result.stdout, "");
+      assert.doesNotMatch(result.stderr, /private-response-marker|synthetic-deployment-secret/);
+      assert.deepEqual(result.signedRequests, [{ body: true, signature: true }]);
+      assert.deepEqual(result.requests, [
+        "GET /api/health",
+        "GET /api/exact-review-queue",
+        "POST /internal/exact-review/admission-capabilities",
+      ]);
+    });
+  }
+});
+
+test("deployment smoke rejects invalid scheduled and manual capability contracts", async () => {
+  const valid = admissionCapability();
+  for (const capability of [
+    null,
+    { ...valid, scheduled_feed: { ...valid.scheduled_feed, target_rate_per_hour: 0 } },
+    { ...valid, scheduled_feed: { ...valid.scheduled_feed, target_rate_per_hour: 1.5 } },
+    { ...valid, scheduled_feed: { ...valid.scheduled_feed, target_rate_per_hour: "60" } },
+    { ...valid, scheduled_feed: { ...valid.scheduled_feed, target_rate_per_hour: 2 ** 53 } },
+    { ...valid, scheduled_feed: { ...valid.scheduled_feed, enqueue_replay: "unknown" } },
+    { ...valid, manual_publication: { policy: "unknown", enabled: false } },
+    { ...valid, manual_publication: { policy: "record_comment_only", enabled: "false" } },
+  ]) {
+    const result = await runStatusSmoke(completeStatus(), "miss", { deploy: true, capability });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /review admission capability contract is invalid/);
+    assert.equal(result.stdout, "");
+    assert.doesNotMatch(result.stderr, /private-response-marker|synthetic-deployment-secret/);
+  }
 });
 
 test("dashboard smoke detects only the exact GitHub API hostname", () => {
