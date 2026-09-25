@@ -2,6 +2,7 @@ import { projectExactReviewHandoff, summarizeExactReviewPressure } from "./exact
 import { currentReviewFailure } from "./exact-review-observed-failure.ts";
 import type { PublicReviewFailure } from "../src/review-failure-explanation.ts";
 import {
+  FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION,
   exactReviewQueueIsBatchablePublication,
   exactReviewQueueIsPublication,
   exactReviewQueueUsesLegacyBatchPath,
@@ -504,11 +505,29 @@ function buildExactReviewQueueCensus(
     finiteExactReviewNumber(executionLeaseMs, 130 * 60_000),
   );
 
+  const publishingReviewKeys = new Set(
+    items.flatMap((item) => {
+      const key = item.decision?.publication?.itemKey;
+      return exactReviewQueueIsPublication(item) &&
+        ["pending", "dispatching", "leased"].includes(item.state) &&
+        typeof key === "string"
+        ? [key.toLowerCase()]
+        : [];
+    }),
+  );
+
   for (const item of items) {
     const decision = exactReviewQueueDecision(item);
     const targetRepo = exactReviewQueueTargetRepository(item);
     const stateValid = exactReviewQueueStateIsValid(item.state);
     const isPublication = exactReviewQueueIsPublication(item);
+    // Unknown-source recovery must survive the handoff without superseding
+    // the publication that currently owns progress for this item.
+    const deferredShardRecovery =
+      item.state === "pending" &&
+      decision?.sourceAction === FAILED_REVIEW_SHARD_RECOVERY_SOURCE_ACTION &&
+      typeof item.key === "string" &&
+      publishingReviewKeys.has(item.key.toLowerCase());
     const lane = isPublication ? publication : review;
     observeExactReviewQueueLane(lane, item, state, now);
     observeExactReviewQueueLane(all, item, state, now);
@@ -542,6 +561,7 @@ function buildExactReviewQueueCensus(
       decision &&
       targetRepo !== null &&
       !excludedItemKeys.has(item.key) &&
+      !deferredShardRecovery &&
       stateValid
     ) {
       const pendingItems = isPublication ? census.pendingPublications : census.pendingReviews;
@@ -626,7 +646,10 @@ function buildExactReviewQueueCensus(
       }
     }
 
-    if (collectBay && !observeExactReviewBayCandidate(census.bayCandidates, item)) {
+    if (
+      collectBay &&
+      !observeExactReviewBayCandidate(census.bayCandidates, item, deferredShardRecovery)
+    ) {
       census.bayComplete = false;
     }
   }
@@ -641,6 +664,7 @@ function buildExactReviewQueueCensus(
 function observeExactReviewBayCandidate(
   projected: Map<string, ExactReviewBayCensusCandidate[]>,
   item: ExactReviewQueueItem,
+  deferredShardRecovery: boolean,
 ) {
   const decision = exactReviewQueueDecision(item);
   const repository = decision?.targetRepo;
@@ -663,6 +687,8 @@ function observeExactReviewBayCandidate(
   // Its newer timestamp must not replace the retained exhausted producer card.
   // Live workflow activity remains independently visible in the live overlay.
   if (item.terminalFinalization?.parkedCommand) return true;
+  // Show the publication while its settlement still gates the retained recovery.
+  if (deferredShardRecovery) return true;
   const canonicalRepository = repository.toLowerCase();
   const itemKey = `${canonicalRepository}#${itemNumber}`;
   const updatedAt = item.updatedAt;

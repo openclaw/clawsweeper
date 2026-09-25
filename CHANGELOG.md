@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Defer failed-shard review recovery while an earlier publication is pending, preserving the recovery request and allowing explicit re-reviews and source changes.
+
 - Clarify that automatic implementation builds a fix for an issue. Thanks @jihoon-ernesto and @awhite0030.
 
 - Recognize test-helper directories in stored-data classification so synthetic fixture writes do not request migration proof, while preserving production and rename checks. Thanks @serg0x and @awhite0030.
