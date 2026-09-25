@@ -632,6 +632,13 @@ function isDataModelDocumentationPath(path: string): boolean {
   return isDocsPath(path) || isMarkdownConfigSurfacePath(path);
 }
 
+function isNonPersistentMemoryContractPath(path: string): boolean {
+  if (!/(?:^|\/)memory-[^/]+(?:\/|$)/i.test(path)) return false;
+  const basename = path.split("/").at(-1) ?? "";
+  const stem = basename.replace(/\.[^.]+$/, "");
+  return /(?:^|[-_.])(?:tool|prompt)[-_.](?:contract|description|instructions?)$/i.test(stem);
+}
+
 function dataModelPathOwner(path: string): { surface: string; strong: boolean } | undefined {
   const sqliteRole = sqlitePathOwnerRole(path);
   if (sqliteRole === "codec") return { surface: "serialized state", strong: true };
@@ -645,7 +652,12 @@ function dataModelPathOwner(path: string): { surface: string; strong: boolean } 
   if (/(^|\/)persistence(?:\/|[-_.])|(?:serialized|persisted?)[-_.]?(?:state|json)/i.test(path)) {
     return { surface: "serialized state", strong: true };
   }
-  if (/vector|embedding|(?:^|\/)memory(?:\/|[-_.])/i.test(path)) {
+  // Prompt and tool contracts can live inside memory packages without owning
+  // persistence. Other incomplete memory-package changes stay conservative.
+  if (
+    /vector|embedding|(?:^|\/)memory(?:\/|[-_.])/i.test(path) &&
+    !isNonPersistentMemoryContractPath(path)
+  ) {
     return { surface: "vector/embedding metadata", strong: true };
   }
   if (
