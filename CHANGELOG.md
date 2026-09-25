@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Isolate documentation-test build output so concurrent publication proofs can copy the compiled runtime without losing files.
+
 - Keep targeted apply and comments-only sync from starting broad review backstops; preserve backstops for automatic close-mode apply.
 
 - Retain oversized PR proposals as explicit policy no-ops when close or comment-only gates prevent publication, without retrying the same review or claiming a GitHub comment was delivered.

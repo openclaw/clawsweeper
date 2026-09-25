@@ -1,16 +1,36 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import test from "node:test";
+import { cpSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import test, { after, before } from "node:test";
 
-test("docs site preserves the landing, documentation hub, and theme controls", () => {
-  execFileSync(process.execPath, ["scripts/build-docs-site.mjs"], {
-    cwd: process.cwd(),
+const sourceRoot = resolve(import.meta.dirname, "..");
+let fixtureRoot: string;
+
+before(() => {
+  fixtureRoot = mkdtempSync(join(tmpdir(), "clawsweeper-docs-site-"));
+  for (const input of ["docs", "config"]) {
+    cpSync(join(sourceRoot, input), join(fixtureRoot, input), { recursive: true });
+  }
+  // Other proof files copy dist concurrently; this build owns only its temporary output.
+  execFileSync(process.execPath, [join(sourceRoot, "scripts/build-docs-site.mjs")], {
+    cwd: fixtureRoot,
     stdio: "pipe",
   });
+});
 
-  const html = readFileSync("dist/docs-site/index.html", "utf8");
-  const documentationHtml = readFileSync("dist/docs-site/documentation.html", "utf8");
+after(() => {
+  if (fixtureRoot) rmSync(fixtureRoot, { recursive: true, force: true });
+});
+
+function readSite(file: string): string {
+  return readFileSync(join(fixtureRoot, "dist/docs-site", file), "utf8");
+}
+
+test("docs site preserves the landing, documentation hub, and theme controls", () => {
+  const html = readSite("index.html");
+  const documentationHtml = readSite("documentation.html");
   const themeInit = html.indexOf('const key = "clawsweeper-theme"');
   const styles = html.indexOf("<style>");
 
@@ -41,19 +61,11 @@ test("docs site preserves the landing, documentation hub, and theme controls", (
 });
 
 test("docs site keeps non-current evidence out of canonical discovery", () => {
-  execFileSync(process.execPath, ["scripts/build-docs-site.mjs"], {
-    cwd: process.cwd(),
-    stdio: "pipe",
-  });
-
-  const llms = readFileSync("dist/docs-site/llms.txt", "utf8");
-  const sitemap = readFileSync("dist/docs-site/sitemap.xml", "utf8");
-  const proposal = readFileSync("dist/docs-site/queue-service-split-runbook.html", "utf8");
-  const historical = readFileSync("dist/docs-site/repair/containment-validation-todo.html", "utf8");
-  const proof = readFileSync(
-    "dist/docs-site/proof/operational-health-zombie-runs/index.html",
-    "utf8",
-  );
+  const llms = readSite("llms.txt");
+  const sitemap = readSite("sitemap.xml");
+  const proposal = readSite("queue-service-split-runbook.html");
+  const historical = readSite("repair/containment-validation-todo.html");
+  const proof = readSite("proof/operational-health-zombie-runs/index.html");
 
   for (const output of [llms, sitemap]) {
     assert.doesNotMatch(output, /queue-service-split-runbook/);
