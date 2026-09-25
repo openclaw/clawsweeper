@@ -1167,7 +1167,7 @@ test("strong persistence evidence remains unknown when production normalization 
   }
 });
 
-test("broad memory subsystem paths need patch evidence for vector persistence", () => {
+test("memory prompt contracts need patch evidence for vector persistence", () => {
   const filename = "extensions/memory-core/src/memory-tool-contract.ts";
   assert.deepEqual(dataModelChangeFromPullFilesForTest({ pullFiles: [{ filename }] }), {
     change: false,
@@ -1200,6 +1200,11 @@ test("memory persistence owners remain blocked when patch content is unavailable
     "extensions/memory-core/src/dreaming-state.ts",
     "extensions/memory-core/src/standing-intents.ts",
     "extensions/memory-core/src/dreaming-dreams-file.ts",
+    "extensions/memory-core/src/memory-entry-origins.ts",
+    "extensions/memory-core/src/short-term-promotion-types.ts",
+    "extensions/memory-core/src/dreaming-consolidation-artifacts.ts",
+    "extensions/memory-core/src/memory-tool-contract-state.ts",
+    "extensions/memory-core/src/memory-prompt-description-history.ts",
     "extensions/memory-wiki/src/source-sync-state.ts",
     "extensions/memory-core/src/memory-session-tombstones.ts",
     "extensions/memory-wiki/src/compiled-cache.ts",

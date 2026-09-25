@@ -632,32 +632,11 @@ function isDataModelDocumentationPath(path: string): boolean {
   return isDocsPath(path) || isMarkdownConfigSurfacePath(path);
 }
 
-function memorySubsystemPathOwner(path: string): { surface: string; strong: boolean } | undefined {
-  if (!/(?:^|\/)memory-[^/]+(?:\/|$)/i.test(path)) return undefined;
+function isNonPersistentMemoryContractPath(path: string): boolean {
+  if (!/(?:^|\/)memory-[^/]+(?:\/|$)/i.test(path)) return false;
   const basename = path.split("/").at(-1) ?? "";
   const stem = basename.replace(/\.[^.]+$/, "");
-  if (/(?:^|[-_.])(?:vector|embedding|vec)(?:[-_.]|$)/i.test(stem)) {
-    return { surface: "vector/embedding metadata", strong: true };
-  }
-  if (/(?:^|[-_.])(?:state|store|storage)(?:[-_.]|$)/i.test(stem)) {
-    return { surface: "serialized state", strong: true };
-  }
-  if (/(?:^|[-_.])cache(?:[-_.]|$)/i.test(stem)) {
-    return { surface: "persistent cache schema", strong: true };
-  }
-  if (/(?:^|[-_.])tombstones?(?:[-_.]|$)/i.test(stem)) {
-    return { surface: "database schema", strong: true };
-  }
-  if (/(?:^|[-_.])(?:schema|sqlite|database|db)(?:[-_.]|$)/i.test(stem)) {
-    return { surface: "database schema", strong: true };
-  }
-  if (stem === "standing-intents") {
-    return { surface: "database schema", strong: true };
-  }
-  if (stem === "dreaming-dreams-file") {
-    return { surface: "serialized state", strong: true };
-  }
-  return undefined;
+  return /(?:^|[-_.])(?:tool|prompt)[-_.](?:contract|description|instructions?)$/i.test(stem);
 }
 
 function dataModelPathOwner(path: string): { surface: string; strong: boolean } | undefined {
@@ -673,13 +652,14 @@ function dataModelPathOwner(path: string): { surface: string; strong: boolean } 
   if (/(^|\/)persistence(?:\/|[-_.])|(?:serialized|persisted?)[-_.]?(?:state|json)/i.test(path)) {
     return { surface: "serialized state", strong: true };
   }
-  // Exact memory directories and known persistence owners can own stored
-  // vectors; broad packages such as `memory-core` are not owners by themselves.
-  if (/vector|embedding|(?:^|\/)memory(?:\/)|(?:^|\/)memory-lancedb(?:\/|[-_.])/i.test(path)) {
+  // Prompt and tool contracts can live inside memory packages without owning
+  // persistence. Other incomplete memory-package changes stay conservative.
+  if (
+    /vector|embedding|(?:^|\/)memory(?:\/|[-_.])/i.test(path) &&
+    !isNonPersistentMemoryContractPath(path)
+  ) {
     return { surface: "vector/embedding metadata", strong: true };
   }
-  const memoryOwner = memorySubsystemPathOwner(path);
-  if (memoryOwner) return memoryOwner;
   if (
     /(^|\/)(?:migrations?|backfill|doctor|repair|upgrade)(?:\/|[-_.])|(?:migration|backfill|doctor|repair|upgrade)\.(?:ts|js)$/i.test(
       path,
