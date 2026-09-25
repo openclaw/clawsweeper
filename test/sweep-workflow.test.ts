@@ -6704,6 +6704,17 @@ test("review backstops preserve resolved apply scope and recent lane activity", 
   );
   assert.ok(step?.run);
   const run = step.run.replaceAll("${{ github.repository }}", "openclaw/clawsweeper");
+  const applyRun = workflow.jobs["apply-existing"].steps.find(
+    (candidate: { id?: string }) => candidate.id === "apply-existing-run",
+  ).run as string;
+  const inventoryStart = applyRun.indexOf(
+    'if [ "$sync_comments_only" != "true" ] && [ -z "$item_numbers" ]; then',
+    applyRun.indexOf("summarize_apply_candidate_quality"),
+  );
+  const idleEnd = applyRun.indexOf("\npnpm run status", inventoryStart);
+  assert.ok(inventoryStart >= 0 && idleEnd > inventoryStart);
+  const idleOwner = applyRun.slice(inventoryStart, idleEnd);
+  const helpers = readText("scripts/apply-workflow-helpers.sh");
   const root = mkdtempSync(`${tmpPrefix}scoped-review-backstop-`);
   const calls = join(root, "calls");
   const recent = (displayTitle: string, databaseId: number) => ({
@@ -6735,6 +6746,13 @@ test("review backstops preserve resolved apply scope and recent lane activity", 
     },
     { name: "missing scope", scope: undefined, recent: [], expected: [] },
     { name: "automatic close backstop", scope: "true", recent: [], expected: ["true", "false"] },
+    {
+      name: "automatic close with empty inventory",
+      idle: true,
+      scope: undefined,
+      recent: [],
+      expected: ["true", "false"],
+    },
     { name: "recent hot lane", scope: "true", recent: [hot], expected: ["false"] },
     { name: "recent normal lane", scope: "true", recent: [normal], expected: ["true"] },
     { name: "both lanes recent", scope: "true", recent: [hot, normal], expected: [] },
@@ -6752,6 +6770,8 @@ test("review backstops preserve resolved apply scope and recent lane activity", 
 pnpm() {
   printf 'pnpm %s\\n' "$*" >> "$BACKSTOP_CALLS"
   case "$*" in
+    'run --silent workflow -- proposed-item-inventory '*) printf 'item_numbers=\\napply_ready_count=0\\ncandidate_counts_json={}\\n' ;;
+    'run status '*) return 0 ;;
     'run --silent workflow -- limit review_shards.hot_intake_default') printf '5\\n' ;;
     'run --silent workflow -- limit review_shards.normal_default') printf '7\\n' ;;
     *) return 97 ;;
@@ -6765,6 +6785,35 @@ gh() {
     *) return 98 ;;
   esac
 }
+${
+  scenario.idle
+    ? `(
+${helpers}
+write_apply_health() { :; }
+publish_status() { :; }
+auto_selected_apply_batch=false
+sync_comments_only=false
+item_numbers=
+limit=40
+checkpoint_size=40
+close_processed_limit=600
+min_age_days=0
+min_age_minutes=
+apply_kind=all
+apply_close_reasons=implemented
+stale_min_age_days=60
+close_delay_ms=2000
+progress_every=10
+comment_sync_min_age_days=7
+apply_cursor_path=cursor.json
+candidate_quality_detail=
+mkdir -p .artifacts/apply-reports
+${idleOwner}
+)
+. "$GITHUB_ENV"
+: > "$BACKSTOP_CALLS"`
+    : ""
+}
 ${run}`,
         ],
         {
@@ -6773,6 +6822,10 @@ ${run}`,
           env: {
             PATH: process.env.PATH,
             BACKSTOP_CALLS: calls,
+            GITHUB_ENV: join(root, "github-env"),
+            TARGET_REPO: "openclaw/openclaw",
+            GITHUB_REPOSITORY: "openclaw/clawsweeper",
+            GITHUB_RUN_ID: "123",
             BACKSTOP_RECENT_RUNS: scenario.recent.map((entry) => JSON.stringify(entry)).join("\n"),
             ...(scenario.scope === undefined ? {} : { APPLY_AUTO_SELECTED_BATCH: scenario.scope }),
             APPLY_SYNC_COMMENTS_ONLY: scenario.commentsOnly ?? "false",
@@ -6781,7 +6834,7 @@ ${run}`,
         },
       );
       const observed = readFileSync(calls, "utf8").trim().split("\n").filter(Boolean);
-      if (scenario.scope !== "true") {
+      if (scenario.scope !== "true" && !scenario.idle) {
         assert.deepEqual(observed, [], `${scenario.name} must not read limits or call GitHub`);
         continue;
       }

@@ -811,6 +811,7 @@ publish_automatic_apply_idle() {
     echo "APPLY_PROGRESS_EVERY=$progress_every"
     echo "APPLY_CHECKPOINT_SIZE=$checkpoint_size"
     echo "APPLY_ITEM_NUMBERS="
+    echo "APPLY_AUTO_SELECTED_BATCH=$auto_selected_apply_batch"
     echo "APPLY_SYNC_COMMENTS_ONLY=false"
     echo "APPLY_COMMENT_SYNC_MIN_AGE_DAYS=$comment_sync_min_age_days"
     echo "APPLY_NOOP=true"

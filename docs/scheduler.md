@@ -921,9 +921,9 @@ least one item. A saturated scan that closes nothing stops without chaining so
 the same records cannot create an unbounded runner loop.
 
 Only automatic close-mode apply runs may queue missing hot or normal review
-backstops. Targeted apply and comments-only sync retain their requested scope,
-including when quota pressure ends the apply process successfully without
-publishing a comment.
+backstops, including when no close candidates are available. Targeted apply and
+comments-only sync retain their requested scope, including when quota pressure
+ends the apply process successfully without publishing a comment.
 
 Untargeted cursor-based close apply starts with a 600-record scan window. If
 the previous cursor window was a full close-mode scan, closed nothing, skipped
