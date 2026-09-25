@@ -340,6 +340,24 @@ export class ExactReviewBatchQueueClient implements ExactReviewBatchQueue {
     );
   }
 
+  async admissionCapabilities() {
+    // Admission is a queue contract. A partial public telemetry projection must
+    // not prevent healthy work from reaching the queue's policy gates.
+    return this.postUrl("/internal/exact-review/admission-capabilities", {});
+  }
+
+  async requireScheduledReviewAdmission() {
+    const response = await this.admissionCapabilities();
+    const feed = objectValue(response.scheduled_feed);
+    if (
+      !Number.isSafeInteger(feed.target_rate_per_hour) ||
+      Number(feed.target_rate_per_hour) <= 0 ||
+      feed.enqueue_replay !== "scheduled_disposition_v1"
+    ) {
+      throw new Error("exact-review queue does not support replay-safe scheduled feed admission");
+    }
+  }
+
   async enqueueScheduledReview(payload: string) {
     return this.postUrl(POST_EFFECT_ROUTES.enqueue, payload, Date.now() + RETRY_DEADLINE_MS, true);
   }

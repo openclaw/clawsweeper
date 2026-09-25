@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Keep scheduled and manual review intake independent of aggregate telemetry failures while preserving signed admission, pacing, replay, and publication-policy checks.
+
 - Admit canonical Git-metadata false positives for modified executable files without weakening source-content or supplemental-scan checks.
 
 - Reuse the command acknowledgement as the active review status so exact re-reviews no longer post a second temporary comment.

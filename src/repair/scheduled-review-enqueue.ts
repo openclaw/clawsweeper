@@ -58,22 +58,7 @@ export async function enqueueScheduledReviewPlan(
     webhookSecret: options.secret,
     fetch: fetchImpl,
   });
-  const capabilityResponse = await fetchImpl(`${queueUrl}/api/exact-review-queue`, {
-    signal: AbortSignal.timeout(20_000),
-  });
-  const capability = (await capabilityResponse.json().catch(() => null)) as Record<
-    string,
-    unknown
-  > | null;
-  const scheduledFeed = capability?.scheduled_feed as Record<string, unknown> | undefined;
-  if (
-    !capabilityResponse.ok ||
-    !scheduledFeed ||
-    !Number.isFinite(Number(scheduledFeed.target_rate_per_hour)) ||
-    scheduledFeed.enqueue_replay !== "scheduled_disposition_v1"
-  ) {
-    throw new Error("exact-review queue does not advertise scheduled feed admission");
-  }
+  await queueClient.requireScheduledReviewAdmission();
   const ages = (options.plan.selection ?? [])
     .map((selection) => Number(selection.ageMs))
     .filter((age) => Number.isFinite(age) && age >= 0)

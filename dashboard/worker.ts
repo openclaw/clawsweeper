@@ -1173,6 +1173,11 @@ export default {
     }
     if (url.pathname === "/internal/exact-review/command-intake" && request.method === "POST")
       return authenticatedHostedTargetQueueRequest(request, env, "/command-intake");
+    if (
+      url.pathname === "/internal/exact-review/admission-capabilities" &&
+      request.method === "POST"
+    )
+      return authenticatedExactReviewQueueRequest(request, env, "/admission-capabilities");
     if (url.pathname === "/internal/exact-review/enqueue" && request.method === "POST")
       return authenticatedHostedTargetQueueRequest(request, env, "/enqueue");
     if (url.pathname === "/internal/exact-review/branch-authority" && request.method === "POST")

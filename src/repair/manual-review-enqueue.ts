@@ -30,24 +30,20 @@ export async function enqueueManualReviews(options: {
     throw new Error("invalid explicit manual review selection");
   }
   const request = options.fetch ?? fetch;
-  const response = await request(`${options.queueUrl.replace(/\/$/, "")}/api/exact-review-queue`, {
-    signal: AbortSignal.timeout(20_000),
-  });
-  const capability = (await response.json()) as {
-    manual_publication?: { policy?: unknown; enabled?: unknown };
-  };
-  if (
-    !response.ok ||
-    capability.manual_publication?.policy !== RECORD_COMMENT_ONLY ||
-    capability.manual_publication.enabled !== true
-  ) {
-    throw new Error("queue does not advertise enabled manual record/comment-only publication");
-  }
   const client = new ExactReviewBatchQueueClient({
     baseUrl: options.queueUrl,
     webhookSecret: options.secret,
     fetch: request,
   });
+  const capability = (await client.admissionCapabilities()) as {
+    manual_publication?: { policy?: unknown; enabled?: unknown };
+  };
+  if (
+    capability.manual_publication?.policy !== RECORD_COMMENT_ONLY ||
+    capability.manual_publication.enabled !== true
+  ) {
+    throw new Error("queue does not advertise enabled manual record/comment-only publication");
+  }
   const items: Array<{ number: number; accepted: boolean; error?: string }> = [];
   for (const number of new Set(options.itemNumbers)) {
     try {

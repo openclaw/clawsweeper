@@ -3,6 +3,7 @@ export const EXACT_REVIEW_QUEUE_TRACE_HEADER = "x-clawsweeper-exact-review-trace
 const TRACE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 const EXACT_REVIEW_QUEUE_ENDPOINTS = new Map<string, string>([
+  ["/admission-capabilities", "admission_capabilities"],
   ["/artifact-cache/receipt/lookup", "artifact_cache_receipt_lookup"],
   ["/artifact-cache/receipt/store", "artifact_cache_receipt_store"],
   ["/bay-lifecycle-metrics", "bay_lifecycle_metrics"],

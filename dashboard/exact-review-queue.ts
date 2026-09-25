@@ -29,6 +29,7 @@ import {
   decisionPublicationPolicy,
   MANUAL_REVIEW_SOURCE_ACTION,
   manualPublicationOwnerFrom,
+  RECORD_COMMENT_ONLY,
   reportPublicationPolicy,
 } from "../src/manual-publication-policy.ts";
 import { parseAuditWaveState, type AuditWaveState } from "../src/audit-wave-state.ts";
@@ -1100,6 +1101,9 @@ export class ExactReviewQueue {
     }
     await this.ensureReady();
     this.cleanupLegacyCompatibilitySync();
+    if (request.method === "POST" && url.pathname === "/admission-capabilities") {
+      return json(this.reviewAdmissionCapabilities());
+    }
     if (
       request.method === "POST" &&
       (url.pathname === "/review-proof/producer-record" || url.pathname === "/review-proof/redeem")
@@ -4999,10 +5003,7 @@ export class ExactReviewQueue {
         },
       },
       delivery_receipts: this.deliveryReceiptCountSync(),
-      manual_publication: {
-        policy: "record_comment_only",
-        enabled: String(this.env.EXACT_REVIEW_MANUAL_PUBLICATION_ENABLED ?? "") === "1",
-      },
+      manual_publication: this.reviewAdmissionCapabilities().manual_publication,
       scheduled_feed: { ...stats.scheduled_feed, ...this.scheduledReviewFeedStatusSync(now) },
       reservation_claim_observability: reservationClaimObservability,
       state_writer: { ...stateWriter, coordinator: stateWriterCoordinator },
@@ -12027,13 +12028,25 @@ export class ExactReviewQueue {
     };
   }
 
+  private reviewAdmissionCapabilities() {
+    return {
+      scheduled_feed: {
+        target_rate_per_hour: exactReviewScheduledRatePerHour(this.env, "global"),
+        enqueue_replay: "scheduled_disposition_v1",
+      },
+      manual_publication: {
+        policy: RECORD_COMMENT_ONLY,
+        enabled: String(this.env.EXACT_REVIEW_MANUAL_PUBLICATION_ENABLED ?? "") === "1",
+      },
+    };
+  }
+
   private scheduledReviewFeedStatusSync(now: number) {
     const global = this.scheduledReviewBucketSync("global", now);
     const hot = this.scheduledReviewBucketSync("hot_intake", now);
     const normal = this.scheduledReviewBucketSync("normal_backfill", now);
     return {
-      target_rate_per_hour: global.ratePerHour,
-      enqueue_replay: "scheduled_disposition_v1",
+      ...this.reviewAdmissionCapabilities().scheduled_feed,
       burst: global.burst,
       token_balance: Math.floor(global.tokens),
       ...(global.throttleObservedAt

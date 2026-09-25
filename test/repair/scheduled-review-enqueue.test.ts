@@ -18,7 +18,7 @@ test("manual admission reports partial failure, attempts the tail, and retries s
     secret: "synthetic",
     itemKind: async () => "issue" as const,
     fetch: async (_url: unknown, init?: RequestInit) => {
-      if (!init?.method)
+      if (String(_url).endsWith("/internal/exact-review/admission-capabilities"))
         return Response.json({
           manual_publication: { enabled: true, policy: "record_comment_only" },
         });
@@ -56,27 +56,33 @@ test("manual admission reports partial failure, attempts the tail, and retries s
   }
 });
 
-test("manual admission refuses unavailable policy capability before resolving items", async () => {
-  let reads = 0;
-  await assert.rejects(
-    enqueueManualReviews({
-      targetRepo: "openclaw/gogcli",
-      targetBranch: "main",
-      codexTimeoutMs: 1_200_000,
-      itemNumbers: [1],
-      requestId: "1234",
-      queueUrl: "https://queue.example",
-      secret: "synthetic",
-      itemKind: async () => {
-        reads++;
-        return "issue";
-      },
-      fetch: async () => Response.json({}),
-    }),
-    /does not advertise/,
-  );
-  assert.equal(reads, 0);
-});
+for (const capability of [
+  {},
+  { manual_publication: { enabled: false, policy: "record_comment_only" } },
+  { manual_publication: { enabled: true, policy: "unknown" } },
+]) {
+  test("manual admission refuses unavailable or disabled policy before resolving items", async () => {
+    let reads = 0;
+    await assert.rejects(
+      enqueueManualReviews({
+        targetRepo: "openclaw/gogcli",
+        targetBranch: "main",
+        codexTimeoutMs: 1_200_000,
+        itemNumbers: [1],
+        requestId: "1234",
+        queueUrl: "https://queue.example",
+        secret: "synthetic",
+        itemKind: async () => {
+          reads++;
+          return "issue";
+        },
+        fetch: async () => Response.json(capability),
+      }),
+      /does not advertise/,
+    );
+    assert.equal(reads, 0);
+  });
+}
 import { selectDueCandidates } from "../../dist/scheduler-policy.js";
 import {
   buildExactReviewQueueRequest,
@@ -119,6 +125,126 @@ function signedScheduledWorkerRequest(body: string) {
   });
 }
 
+test("scheduled and manual admission use the authenticated queue contract when public telemetry is incomplete", async () => {
+  let statsReads = 0;
+  class IncompleteTelemetryQueue extends ExactReviewQueue {
+    async fetch(request: Request) {
+      if (new URL(request.url).pathname === "/stats") {
+        statsReads++;
+        return Response.json({ scheduled_feed: scheduledFeedCapability(60).scheduled_feed });
+      }
+      return super.fetch(request);
+    }
+  }
+  const queue = new IncompleteTelemetryQueue(
+    { storage: new MemoryDurableStorage() },
+    { EXACT_REVIEW_TARGET_RATE_PER_HOUR: "60", EXACT_REVIEW_MANUAL_PUBLICATION_ENABLED: "1" },
+  );
+  const env = {
+    CLAWSWEEPER_WEBHOOK_SECRET: scheduledReplaySecret,
+    EXACT_REVIEW_QUEUE: new MemoryDurableNamespace(queue),
+  };
+  const publicStats = await worker.fetch(
+    new Request("https://queue.example/api/exact-review-queue"),
+    env,
+  );
+  assert.equal(publicStats.status, 503);
+  const unauthorized = await worker.fetch(
+    new Request("https://queue.example/internal/exact-review/admission-capabilities", {
+      method: "POST",
+      body: "{}",
+    }),
+    env,
+  );
+  assert.equal(unauthorized.status, 401);
+  const summary = await enqueueScheduledReviewPlan({
+    plan: { candidates: [scheduledCandidate(42)] },
+    lane: "normal_backfill",
+    targetRepo: "openclaw/gogcli",
+    targetBranch: "main",
+    queueUrl: "https://queue.example",
+    secret: scheduledReplaySecret,
+    deliveryPrefix: "scheduled:telemetry-independent",
+    fetchImpl: (input, init) => worker.fetch(new Request(input, init), env),
+  });
+  assert.equal(summary.queued, 1);
+  const manual = await enqueueManualReviews({
+    targetRepo: "openclaw/gogcli",
+    targetBranch: "main",
+    codexTimeoutMs: 1_200_000,
+    itemNumbers: [43],
+    requestId: "manual:telemetry-independent",
+    queueUrl: "https://queue.example",
+    secret: scheduledReplaySecret,
+    itemKind: async () => "issue",
+    fetch: (input, init) => worker.fetch(new Request(input, init), env),
+  });
+  assert.equal(manual.accepted, 1);
+  assert.equal(statsReads, 1, "admission never reads aggregate telemetry");
+});
+
+for (const [name, response, expected] of [
+  [
+    "unavailable",
+    () => Response.json({ error: "exact_review_queue_unavailable" }, { status: 503 }),
+    /HTTP 503.*exact_review_queue_unavailable/,
+  ],
+  ["old deployment", () => new Response("not found", { status: 404 }), /HTTP 404/],
+  ["malformed", () => new Response("not JSON"), /invalid JSON/],
+  ["missing contract", () => Response.json({}), /Invalid batch queue response object/],
+  [
+    "network failure",
+    () => {
+      throw new TypeError("synthetic connection failure");
+    },
+    /network_error/,
+  ],
+] as const) {
+  test(`scheduled admission distinguishes ${name} from an unsupported contract`, async () => {
+    let requests = 0;
+    await assert.rejects(
+      enqueueScheduledReviewPlan({
+        plan: { candidates: [scheduledCandidate(42)] },
+        lane: "normal_backfill",
+        targetRepo: "openclaw/gogcli",
+        targetBranch: "main",
+        queueUrl: "https://queue.example",
+        secret: scheduledReplaySecret,
+        deliveryPrefix: "scheduled:unavailable",
+        fetchImpl: async (input, init) => {
+          requests++;
+          assert.equal(
+            String(input),
+            "https://queue.example/internal/exact-review/admission-capabilities",
+          );
+          assert.equal(init?.method, "POST");
+          return response();
+        },
+      }),
+      expected,
+    );
+    assert.equal(requests, 1, "a failed contract read must not enqueue");
+    if (name !== "missing contract") {
+      await assert.rejects(
+        enqueueManualReviews({
+          targetRepo: "openclaw/gogcli",
+          targetBranch: "main",
+          codexTimeoutMs: 1_200_000,
+          itemNumbers: [43],
+          requestId: "manual:unavailable",
+          queueUrl: "https://queue.example",
+          secret: scheduledReplaySecret,
+          itemKind: async () => {
+            throw new Error("must not resolve item before admission");
+          },
+          fetch: async () => response(),
+        }),
+        expected,
+      );
+    }
+  });
+}
+
 test("coverage-untracked plans reach queue admission before canonical refreshes", async () => {
   const repo = "openclaw/openclaw";
   const candidate = (number: number, coverageTracked: boolean, reviewedAt: string) => ({
@@ -158,7 +284,7 @@ test("coverage-untracked plans reach queue admission before canonical refreshes"
     secret: "secret",
     deliveryPrefix: "scheduled:coverage:1",
     fetchImpl: async (_input, init) => {
-      if (!init?.method) {
+      if (String(_input).endsWith("/internal/exact-review/admission-capabilities")) {
         return Response.json(scheduledFeedCapability(600));
       }
       const body = JSON.parse(String(init.body)) as { decision: { itemNumber: number } };
@@ -199,7 +325,7 @@ test("scheduled review enqueue reports the full selection-to-queue funnel and st
     secret,
     deliveryPrefix: "scheduled:100:1",
     fetchImpl: async (_input, init) => {
-      if (!init?.method) {
+      if (String(_input).endsWith("/internal/exact-review/admission-capabilities")) {
         return Response.json(scheduledFeedCapability(200));
       }
       const body = String(init?.body || "");
@@ -261,7 +387,7 @@ for (const failure of ["HTTP 500", "TimeoutError"] as const) {
       secret,
       deliveryPrefix: "scheduled:retry:1",
       fetchImpl: async (_input, init) => {
-        if (!init?.method) {
+        if (String(_input).endsWith("/internal/exact-review/admission-capabilities")) {
           return Response.json(scheduledFeedCapability(300));
         }
         const headers = init.headers as Record<string, string>;
@@ -378,14 +504,14 @@ for (const scenario of [
     const responseBodies: string[] = [];
     const fetchImpl: typeof fetch = async (input, init) => {
       const request = new Request(input, init);
-      if (request.method === "POST") {
+      if (new URL(request.url).pathname === "/internal/exact-review/enqueue") {
         requests.push({
           body: await request.clone().text(),
           signature: request.headers.get("x-clawsweeper-exact-review-signature") || "",
         });
       }
       const response = await worker.fetch(request, env);
-      if (request.method !== "POST") return response;
+      if (new URL(request.url).pathname !== "/internal/exact-review/enqueue") return response;
       responseBodies.push(await response.clone().text());
       if (responseBodies.length === 1) {
         throw new DOMException("synthetic response loss", "TimeoutError");
@@ -437,7 +563,7 @@ test("scheduled review enqueue fails closed when a retry loses the original disp
       secret: "scheduled-review-retry-secret",
       deliveryPrefix: "scheduled:retry:1",
       fetchImpl: async (_input, init) => {
-        if (!init?.method) {
+        if (String(_input).endsWith("/internal/exact-review/admission-capabilities")) {
           return Response.json(scheduledFeedCapability(300));
         }
         const headers = init.headers as Record<string, string>;
@@ -479,7 +605,7 @@ test("scheduled review enqueue accepts a scoped item dedupe after retry", async 
     secret,
     deliveryPrefix: "scheduled:retry:1",
     fetchImpl: async (_input, init) => {
-      if (!init?.method) {
+      if (String(_input).endsWith("/internal/exact-review/admission-capabilities")) {
         return Response.json(scheduledFeedCapability(300));
       }
       const headers = init.headers as Record<string, string>;
@@ -660,7 +786,7 @@ test("delivery receipt upgrade leaves legacy rows ambiguous without a schema bum
       deliveryPrefix: "scheduled:legacy-upgrade",
       fetchImpl: async (request, init) => {
         const url = typeof request === "string" ? request : request.url;
-        if (url.endsWith("/api/exact-review-queue")) {
+        if (url.endsWith("/internal/exact-review/admission-capabilities")) {
           return Response.json(scheduledFeedCapability(300));
         }
         postAttempt += 1;
@@ -753,7 +879,7 @@ test("scheduled review enqueue does not retry HTTP 4xx and preserves request ide
       secret,
       deliveryPrefix: "scheduled:retry:1",
       fetchImpl: async (_input, init) => {
-        if (!init?.method) {
+        if (String(_input).endsWith("/internal/exact-review/admission-capabilities")) {
           return Response.json(scheduledFeedCapability(300));
         }
         const headers = init.headers as Record<string, string>;
@@ -797,8 +923,10 @@ test("scheduled review enqueue rejects numeric target branches before queue admi
 });
 
 for (const capability of [
-  { lanes: {} },
   { scheduled_feed: { target_rate_per_hour: 300 } },
+  scheduledFeedCapability(0),
+  scheduledFeedCapability(-1),
+  scheduledFeedCapability(0.5),
   {
     scheduled_feed: {
       target_rate_per_hour: 300,
@@ -818,7 +946,7 @@ for (const capability of [
         deliveryPrefix: "scheduled:100:1",
         fetchImpl: async () => Response.json(capability),
       }),
-      /does not advertise scheduled feed admission/,
+      /does not support replay-safe scheduled feed admission/,
     );
   });
 }
