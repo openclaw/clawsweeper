@@ -602,3 +602,38 @@ test("a verified blocked publication proves guarded open without claiming a comp
     null,
   );
 });
+
+test("oversized policy no-op requires one exact retained proposal and a typed refusal", () => {
+  for (const reason of ["comments_only", "close_gate_disabled", "close_reason_disabled"]) {
+    const action = eventApplyAction({
+      number: 42,
+      action: "kept_open",
+      oversizedClosePolicyDeferred: reason,
+    });
+    const proof = exactEventApplyProof([action], 42, "proposed_close");
+    assert.equal(proof.disposition, "terminal_policy_noop");
+    assert.equal(proof.guardedOpenAction, null);
+    assert.equal(proof.syncedCount, 0);
+    assert.equal(proof.terminalCount, 0);
+    for (const actions of [
+      [action, action],
+      [{ ...action, number: 43 }],
+      [{ ...action, action: "skipped_runtime_budget" }],
+    ])
+      assert.equal(exactEventApplyProof(actions, 42, "proposed_close").disposition, "unproven");
+    assert.equal(exactEventApplyProof([action], 42, "kept_open").disposition, "unproven");
+    assert.equal(
+      exactEventApplyProof([{ ...action, commentMutationOccurred: true }], 42, "proposed_close")
+        .disposition,
+      "unproven",
+    );
+  }
+  for (const reason of [undefined, "dry_run", "unknown", true, ["comments_only"]]) {
+    const action = eventApplyAction({
+      number: 42,
+      action: "kept_open",
+      oversizedClosePolicyDeferred: reason,
+    });
+    assert.equal(exactEventApplyProof([action], 42, "proposed_close").disposition, "unproven");
+  }
+});

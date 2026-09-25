@@ -974,6 +974,7 @@ export interface ApplyResult {
   activeReviewLeaseVerified?: boolean;
   activeReviewLeaseExpiresAt?: string;
   terminalPolicyNoopVerified?: boolean;
+  oversizedClosePolicyDeferred?: "comments_only" | "close_gate_disabled" | "close_reason_disabled";
   sourceDriftVerified?: boolean;
   newerReviewTupleVerified?: boolean;
 }

@@ -881,7 +881,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         actionTaken: ActionTaken,
         reason: string,
         liveGuardVerified = false,
-        publicationProof: Pick<ApplyResult, "commentMutationOccurred" | "guardedOpenStateVerified"> = {},
+        publicationProof: Pick<ApplyResult, "commentMutationOccurred" | "guardedOpenStateVerified" | "oversizedClosePolicyDeferred"> = {},
       ): boolean => {
         markApplyChecked();
         results.push({
@@ -903,7 +903,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         actionTaken: ActionTaken,
         reason: string,
         liveGuardVerified = false,
-        publicationProof: Pick<ApplyResult, "commentMutationOccurred" | "guardedOpenStateVerified"> = {},
+        publicationProof: Pick<ApplyResult, "commentMutationOccurred" | "guardedOpenStateVerified" | "oversizedClosePolicyDeferred"> = {},
       ): boolean => {
         markdown = replaceFrontMatterValue(markdown, "action_taken", actionTaken);
         return recordApplySkipped(actionTaken, reason, liveGuardVerified, publicationProof);
@@ -948,7 +948,20 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
       }
       if (closeReason === "oversized_pull_request" &&
           (dryRun || syncCommentsOnly || !oversizedPrCloseEnabled() || !closeReasonEnabled(closeReason, applyCloseReasons))) {
-        if (recordApplySkipped("kept_open", dryRun ? "dry-run: oversized PR close proposal retained" : "oversized PR close gate is disabled")) break;
+        const policyReason = syncCommentsOnly
+          ? "comments_only"
+          : !oversizedPrCloseEnabled()
+            ? "close_gate_disabled"
+            : "close_reason_disabled";
+        // Retain the proposal for a later authorized apply. This proves only a
+        // policy refusal, never live open state or a delivered GitHub comment.
+        const policyProof = !dryRun && emitEventApplyProof && oversizedMetadataDecision &&
+          decision === "close" && action === "proposed_close"
+          ? { oversizedClosePolicyDeferred: policyReason } as const
+          : {};
+        if (recordApplySkipped("kept_open", dryRun
+          ? "dry-run: oversized PR close proposal retained"
+          : `oversized PR close proposal retained: ${policyReason}`, false, policyProof)) break;
         continue;
       }
       if (!verifiedLocalCheckout && !oversizedMetadataDecision && !shouldProbeClosedState) {

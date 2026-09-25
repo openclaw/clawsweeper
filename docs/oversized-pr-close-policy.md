@@ -56,7 +56,13 @@ close-reason filter includes this reason when
 `CLAWSWEEPER_AUTO_CLOSE_REASONS=all`. Dry-run, comment-only publication, or a
 closed policy/reason gate leaves the proposal in `records/<slug>/items/<n>.md`
 with `decision: close` and its additions, deletions, changedFiles, threshold,
-and head evidence. The report also records a metadata source fingerprint and
+and head evidence. Exact publication records this intentional policy refusal as
+`policy_noop` after the retained proposal reaches the canonical store. It does
+not claim a GitHub comment or close occurred, dispatch a follow-up router, or
+charge another retry for the same immutable review. Dry-run and unverified
+`kept_open` results do not supply this proof. A later authorized apply can still
+use the retained proposal after the normal live checks.
+The report also records a metadata source fingerprint and
 comment counts. No scanner or model provenance is asserted.
 
 Apply requires complete recorded metadata and repeats the live PR size,
@@ -108,3 +114,12 @@ records for first/existing durable review reservation and closing, protected-lab
 and human-comment changes. This uses synthetic data and transport; it does not
 close a live GitHub PR. The workflow test also executes a HTTP-409 finalization
 branch and verifies that supersession prevents publication.
+
+`node scripts/e2e/oversized-policy-publication.mjs` exercises closed policy and
+reason gates plus comment-only publication through the built publisher and
+local Workerd/SQLite. Both direct and batch paths retain the canonical proposal,
+record `policy_noop`, and remove the completed immutable attempt without a
+GitHub effect or router receipt. Bay uses its existing `policy_noop` terminal
+attention state; it does not display a delivered GitHub effect. The fixture
+supplies initial runner ownership and denies outbound GitHub calls; it does
+not exercise production dispatch, credentials, or queue contents.
