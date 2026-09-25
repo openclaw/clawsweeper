@@ -93,8 +93,21 @@ telemetry is unknown, never evidence of zero errors.
 
 Source metadata retains its 30-second budget. Commit/history and missing-blob
 fetches each have a separate 120-second transport budget, at most two attempts
-of 60 seconds, and local object verification between attempts. History completeness
-is still required; shallow repositories are unshallowed. Only transport failures
-retry; authentication/ref failures fail normally. Timed-out fetches are killed.
+of 60 seconds, including local object verification between attempts. Full-tree
+materialization uses the same acquisition owner; attribute blobs retain the
+caller's absolute metadata deadline. Installed blobs are reused only after their
+type and size match the admitted tree metadata. History completeness is still
+required; shallow repositories are unshallowed. Target-branch refresh requires a
+successful remote fetch, even when a local tracking ref exists. Only transport
+failures retry; authentication/ref failures fail normally. Fetch attempts reserve
+graceful Git termination, forced escalation, and owned-process settlement inside
+their deadline. Git performs its own lock cleanup; ClawSweeper never deletes Git
+locks. Fetch-owned automatic maintenance is disabled. Missing supervisor receipts
+or uncertain settlement stop the current acquisition without object reuse or an
+exact-SHA fallback, and retain unsafe private workspace state for recovery.
+Windows aborts require successful bounded `taskkill` while the parent still owns
+its tree; an uncertain result cannot authorize a retry. Offline verification
+processes use bounded hard termination. Commit-existence probes also deny all
+transport protocols, including Git versions without the `GIT_NO_LAZY_FETCH` guard.
 Scanner download uses 15-second connection and 60-second request deadlines with
 at most two curl retries, including failures before an HTTP response; digest, version and benign scan gates remain.

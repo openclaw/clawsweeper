@@ -1,3 +1,4 @@
+import { mockReviewGitTransport } from "./review-git-transport-fixture.ts";
 import assert from "node:assert/strict";
 import childProcess, { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -197,6 +198,59 @@ function objectExistsOffline(cwd: string, sha: string): boolean {
     }).status === 0
   );
 }
+
+test("commit admission stays offline when Git ignores the lazy-fetch environment flag", () => {
+  const { root, target, headSha } = partialCloneFixture({ prefetchHead: false });
+  const previousEnv = process.env;
+  try {
+    const wrapper = join(root, "git-without-no-lazy-fetch.mjs");
+    const calls = join(root, "git-calls.jsonl");
+    writeFileSync(
+      wrapper,
+      `import { spawnSync } from "node:child_process";
+import { appendFileSync } from "node:fs";
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + "\\n");
+delete process.env.GIT_NO_LAZY_FETCH;
+const result = spawnSync("git", args, { env: process.env, stdio: "inherit" });
+process.exit(result.status ?? 1);`,
+    );
+    git(target, "config", "protocol.file.allow", "always");
+    process.env = {
+      ...previousEnv,
+      GIT_ALLOW_PROTOCOL: "file",
+      GIT_BIN: process.execPath,
+      GIT_BIN_ARGS: JSON.stringify([wrapper]),
+    };
+    const options = {
+      targetDir: target,
+      sha: headSha,
+      sourceRef: "refs/pull/982/head",
+      destinationRef: "refs/clawsweeper/review-cache/head-982",
+    };
+    assert.equal(ensureReviewTreeCommit(options), true);
+    const explicitFetches = () =>
+      readFileSync(calls, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string[])
+        .filter((args) => args[0] === "fetch");
+    assert.equal(
+      explicitFetches().length,
+      1,
+      "a missing commit must reach the owned fetch, not an implicit probe fetch",
+    );
+    assert.equal(ensureReviewTreeCommit(options), true);
+    assert.equal(
+      explicitFetches().length,
+      1,
+      "installed commits remain reusable without transport",
+    );
+  } finally {
+    process.env = previousEnv;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 function populateFixtureHeadBlobs(source: string, target: string, headSha: string): void {
   const entries = git(
@@ -434,6 +488,122 @@ for (const withRelease of [false, true]) {
       assert.equal(git(reviewTree, "show", `${fixture.baseSha}:history.txt`), "base 9");
     } finally {
       removePullRequestReviewTree({ targetDir: fixture.target, worktreeDir: reviewTree });
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const retryable of [true, false]) {
+  test(`target branch acquisition never accepts a stale ref after failed fetch: retryable=${retryable}`, (t) => {
+    const fixture = partialCloneFixture();
+    const nativeSpawn = childProcess.spawnSync;
+    let fetches = 0;
+    try {
+      git(fixture.source, "checkout", "-q", "main");
+      writeFileSync(join(fixture.source, "fresh.txt"), "fresh branch\n");
+      git(fixture.source, "add", ".");
+      git(fixture.source, "commit", "-qm", "advance main");
+      git(fixture.source, "push", "-q", "origin", "main");
+      const current = git(fixture.source, "rev-parse", "HEAD");
+      mockReviewGitTransport(t, (command, args, options) => {
+        if (command === "git" && args.includes("fetch")) {
+          fetches++;
+          assert.equal(options.killSignal, "SIGKILL");
+          assert.ok(options.timeout > 0 && options.timeout <= 60_000);
+          if (fetches === 1)
+            return { status: 128, stdout: "", stderr: `fatal: HTTP ${retryable ? 503 : 403}` };
+        }
+        return nativeSpawn(command, args, options);
+      });
+      syncBuiltinESMExports();
+      const acquire = () => reviewRuntime().gitInfo(fixture.target, { classifyFetchFailure: true });
+      if (retryable) {
+        assert.equal(acquire().mainSha, current);
+        assert.equal(fetches, 2);
+        assert.equal(acquire().mainSha, current);
+        assert.equal(fetches, 3, "even warm branch refs require fresh remote proof");
+      } else {
+        assert.throws(acquire, { diagnosticReason: "review_commit_fetch_failed" });
+        assert.equal(fetches, 1);
+        assert.equal(git(fixture.target, "rev-parse", "refs/remotes/origin/main"), fixture.baseSha);
+      }
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("fresh branch retry rechecks shallow state after an interrupted unshallow", (t) => {
+  const fixture = partialCloneFixture();
+  const nativeSpawn = childProcess.spawnSync;
+  let fetches = 0;
+  try {
+    git(fixture.target, "fetch", "--depth=1", "origin", "main");
+    assert.equal(git(fixture.target, "rev-parse", "--is-shallow-repository"), "true");
+    mockReviewGitTransport(t, (command, args, options) => {
+      const result = nativeSpawn(command, args, options);
+      if (command === "git" && args.includes("fetch")) {
+        fetches++;
+        assert.equal(args.includes("--unshallow"), fetches === 1);
+        assert.equal(result.status, 0, result.stderr);
+        if (fetches === 1)
+          return {
+            ...result,
+            status: null,
+            signal: "SIGKILL",
+            error: Object.assign(new Error("late timeout"), { code: "ETIMEDOUT" }),
+          };
+      }
+      return result;
+    });
+    syncBuiltinESMExports();
+    assert.equal(reviewRuntime().gitInfo(fixture.target).mainSha, fixture.baseSha);
+    assert.equal(fetches, 2, "freshness still requires a successful transport result");
+    assert.equal(git(fixture.target, "rev-parse", "--is-shallow-repository"), "false");
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+for (const receipt of ["", "not-json\n", '{"pid":null}\n', '{"pid":1}\n']) {
+  test(`uncertain supervisor completion cannot reuse objects or try an exact-head fallback: ${JSON.stringify(receipt)}`, (t) => {
+    const fixture = partialCloneFixture({ prefetchHead: false });
+    const nativeSpawn = childProcess.spawnSync;
+    let fetches = 0;
+    try {
+      t.mock.method(childProcess, "spawnSync", (command, args, options) => {
+        if (command === process.execPath && args[0]?.endsWith("/git-acquisition-worker.js")) {
+          const input = JSON.parse(options.input);
+          const installed = nativeSpawn("git", input.args, {
+            cwd: input.cwd,
+            env: options.env,
+            encoding: "utf8",
+          });
+          assert.equal(installed.status, 0, installed.stderr);
+          fetches++;
+          return { status: 1, stdout: receipt, stderr: "interrupted supervisor", signal: null };
+        }
+        return nativeSpawn(command, args, options);
+      });
+      syncBuiltinESMExports();
+      assert.throws(
+        () =>
+          ensurePullRequestReviewHead({
+            targetDir: fixture.target,
+            itemNumber: 982,
+            headSha: fixture.headSha,
+          }),
+        { errorCode: "EPROCESSSETTLEMENT" },
+      );
+      assert.equal(fetches, 1);
+      assert.equal(objectExistsOffline(fixture.target, `${fixture.headSha}^{commit}`), true);
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
       rmSync(fixture.root, { recursive: true, force: true });
     }
   });
@@ -755,6 +925,201 @@ test("restricted review materializes the exact pull request head before model ex
   }
 });
 
+for (const attributes of [false, true]) {
+  test(`full tree acquisition retries only missing admitted blobs: attributes=${attributes}`, (t) => {
+    const fixture = partialCloneFixture({ attributes });
+    const nativeSpawn = childProcess.spawnSync;
+    const inputs: string[][] = [];
+    const reviewTree = join(fixture.root, "review-tree");
+    try {
+      mockReviewGitTransport(t, (command, args, options) => {
+        if (command === "git" && args.includes("fetch") && args.includes("--stdin")) {
+          const ids = String(options.input).trim().split("\n");
+          inputs.push(ids);
+          assert.equal(options.killSignal, "SIGKILL");
+          assert.ok(
+            options.timeout > 0 &&
+              options.timeout <= (attributes && inputs.length <= 2 ? 30_000 : 60_000),
+          );
+          if (inputs.length === 1) {
+            if (attributes) return { status: 128, stdout: "", stderr: "fatal: HTTP 503" };
+            const result = nativeSpawn(command, args, { ...options, input: `${ids[0]}\n` });
+            assert.equal(result.status, 0, result.stderr);
+            return { ...result, status: 128, stderr: "fatal: HTTP 503" };
+          }
+        }
+        return nativeSpawn(command, args, options);
+      });
+      syncBuiltinESMExports();
+      const options = {
+        targetDir: fixture.target,
+        worktreeDir: reviewTree,
+        itemNumber: 982,
+        headSha: fixture.headSha,
+        resolveBlobSizes: resolveFixtureBlobSizes(fixture.source),
+      };
+      assert.equal(materializePullRequestReviewTree(options), true);
+      assert.deepEqual(inputs[1], attributes ? inputs[0] : inputs[0]!.slice(1));
+      assert.equal(inputs.length, attributes ? 3 : 2);
+      assert.equal(git(reviewTree, "rev-parse", "HEAD"), fixture.headSha);
+      assert.equal(git(reviewTree, "status", "--porcelain"), "");
+      assert.equal(readFileSync(join(reviewTree, "added.txt"), "utf8"), "new implementation\n");
+      removePullRequestReviewTree({ targetDir: fixture.target, worktreeDir: reviewTree });
+      assert.equal(materializePullRequestReviewTree(options), true);
+      assert.equal(inputs.length, attributes ? 3 : 2, "warm admitted objects require no fetch");
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const failure of ["forbidden", "incomplete", "type", "size"] as const) {
+  test(`full tree acquisition rejects ${failure} without retry or checkout`, (t) => {
+    const fixture = partialCloneFixture();
+    const nativeSpawn = childProcess.spawnSync;
+    let fetches = 0;
+    try {
+      mockReviewGitTransport(t, (command, args, options) => {
+        if (command === "git" && args.includes("fetch") && args.includes("--stdin")) {
+          fetches++;
+          if (failure === "forbidden")
+            return { status: 128, stdout: "", stderr: "fatal: HTTP 403" };
+          if (failure === "incomplete") return { status: 0, stdout: "", stderr: "" };
+        }
+        const result = nativeSpawn(command, args, options);
+        if (fetches && args[0] === "cat-file" && String(args[1]).startsWith("--batch-check")) {
+          if (failure === "type") result.stdout = String(result.stdout).replace(" blob ", " tree ");
+          if (failure === "size")
+            result.stdout = String(result.stdout).replace(
+              / blob (\d+)/,
+              (_, bytes) => ` blob ${Number(bytes) + 1}`,
+            );
+        }
+        return result;
+      });
+      syncBuiltinESMExports();
+      const worktreeDir = join(fixture.root, "review-tree");
+      assert.throws(
+        () =>
+          materializePullRequestReviewTree({
+            targetDir: fixture.target,
+            worktreeDir,
+            itemNumber: 982,
+            headSha: fixture.headSha,
+            resolveBlobSizes: resolveFixtureBlobSizes(fixture.source),
+          }),
+        failure === "forbidden"
+          ? { diagnosticReason: "review_blobs_unavailable" }
+          : /fetched blob (?:metadata is incomplete|size did not match admitted metadata)/,
+      );
+      assert.equal(fetches, 1);
+      assert.equal(existsSync(worktreeDir), false);
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("full tree verification settles a process that ignores SIGTERM before refusing checkout", (t) => {
+  const fixture = partialCloneFixture();
+  const nativeSpawn = childProcess.spawnSync;
+  const marker = join(fixture.root, "verification-child");
+  let fetched = false;
+  try {
+    mockReviewGitTransport(t, (command, args, options) => {
+      if (command === "git" && args.includes("fetch") && args.includes("--stdin")) fetched = true;
+      if (fetched && command === "git" && args.includes("--missing=print")) {
+        assert.equal(options.killSignal, "SIGKILL");
+        return nativeSpawn(
+          process.execPath,
+          [
+            "-e",
+            'process.on("SIGTERM", () => {}); require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000);',
+            marker,
+          ],
+          { ...options, timeout: 1000, env: { ...options.env, NODE_V8_COVERAGE: undefined } },
+        );
+      }
+      return nativeSpawn(command, args, options);
+    });
+    syncBuiltinESMExports();
+    const worktreeDir = join(fixture.root, "review-tree");
+    assert.throws(
+      () =>
+        materializePullRequestReviewTree({
+          targetDir: fixture.target,
+          worktreeDir,
+          itemNumber: 982,
+          headSha: fixture.headSha,
+          resolveBlobSizes: resolveFixtureBlobSizes(fixture.source),
+        }),
+      {
+        diagnosticReason: "review_git_inspection_failed",
+        errorCode: "ETIMEDOUT",
+        signal: "SIGKILL",
+      },
+    );
+    assert.throws(() => process.kill(Number(readFileSync(marker, "utf8")), 0), { code: "ESRCH" });
+    assert.equal(existsSync(worktreeDir), false);
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("attribute acquisition consumes the original metadata deadline across retries", (t) => {
+  const fixture = partialCloneFixture({ attributes: true });
+  const nativeSpawn = childProcess.spawnSync;
+  const realNow = Date.now.bind(Date);
+  let offset = 0;
+  let fetches = 0;
+  try {
+    t.mock.method(Date, "now", () => realNow() + offset);
+    mockReviewGitTransport(t, (command, args, options) => {
+      if (command === "git" && args.includes("fetch") && args.includes("--stdin")) {
+        fetches++;
+        assert.ok(options.timeout <= 1000);
+        offset += 1001;
+        return {
+          status: null,
+          signal: "SIGKILL",
+          stdout: "",
+          stderr: "",
+          error: Object.assign(new Error("deadline"), { code: "ETIMEDOUT" }),
+        };
+      }
+      return nativeSpawn(command, args, options);
+    });
+    syncBuiltinESMExports();
+    const worktreeDir = join(fixture.root, "review-tree");
+    assert.throws(
+      () =>
+        materializePullRequestReviewTree({
+          targetDir: fixture.target,
+          worktreeDir,
+          itemNumber: 982,
+          headSha: fixture.headSha,
+          resolveBlobSizes: (ids, timeout) => {
+            offset += timeout - 1000;
+            return resolveFixtureBlobSizes(fixture.source)(ids);
+          },
+        }),
+      { diagnosticReason: "review_blobs_unavailable", errorCode: "ETIMEDOUT" },
+    );
+    assert.equal(fetches, 1);
+    assert.equal(existsSync(worktreeDir), false);
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("manual live proof admits pinned promisor trees with the requested repository and restores its profile", async (t) => {
   for (const scenario of ["admitted", "missing", "truncated", "overflow", "unavailable"] as const) {
     await t.test(scenario, async (t) => {
@@ -801,7 +1166,7 @@ test("manual live proof admits pinned promisor trees with the requested reposito
       let childLaunches = 0;
       t.mock.method(console, "log", () => {});
       const nativeSpawn = childProcess.spawnSync;
-      t.mock.method(childProcess, "spawnSync", (...args: Parameters<typeof nativeSpawn>) => {
+      mockReviewGitTransport(t, (...args: Parameters<typeof nativeSpawn>) => {
         const argv = args[1] ?? [];
         if (argv[0] === "api") {
           metadataCalls++;
@@ -1522,7 +1887,14 @@ test("expired blob fetch remains a retryable source preparation failure", (t) =>
   let fetchTimeout = 0;
   try {
     t.mock.method(Date, "now", () => realNow() + clockOffset);
-    t.mock.method(childProcess, "spawnSync", (command, args, options) => {
+    mockReviewGitTransport(t, (command, args, options) => {
+      if (command === "git" && args.includes("--missing=print")) {
+        assert.equal(
+          options.killSignal,
+          "SIGKILL",
+          "availability probes must settle within their deadline",
+        );
+      }
       if (command === "git" && args.includes("fetch") && args.includes("--stdin")) {
         fetchCount++;
         fetchTimeout = options.timeout;
@@ -1637,7 +2009,7 @@ for (const [message, retry] of [
     const nativeSpawn = childProcess.spawnSync;
     let fetches = 0;
     try {
-      t.mock.method(childProcess, "spawnSync", (command, args, options) => {
+      mockReviewGitTransport(t, (command, args, options) => {
         if (
           command === "git" &&
           args.includes("fetch") &&
@@ -1672,7 +2044,7 @@ test("blob retry reuses installed objects after a transient partial fetch", (t) 
   const nativeSpawn = childProcess.spawnSync;
   const inputs: string[][] = [];
   try {
-    t.mock.method(childProcess, "spawnSync", (command, args, options) => {
+    mockReviewGitTransport(t, (command, args, options) => {
       if (command === "git" && args.includes("fetch") && args.includes("--stdin")) {
         const ids = String(options.input).trim().split("\n");
         inputs.push(ids);

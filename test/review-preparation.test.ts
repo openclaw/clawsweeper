@@ -1,3 +1,6 @@
+import { mockReviewGitTransport } from "./review-git-transport-fixture.ts";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -26,6 +29,7 @@ import { runText } from "../dist/command.js";
 import { ReviewGitError } from "../dist/clawsweeper-review-blobs.js";
 import { createReviewRuntime } from "../dist/clawsweeper-review-runtime.js";
 import { createReviewCommandWorkflow } from "../dist/clawsweeper-review-command-workflow.js";
+import { ValidationRecoveryRequiredError } from "../dist/repair/validation-recovery.js";
 
 test("body-file keeps its authoritative precedence over compact hosted context", () => {
   const dir = mkdtempSync(join(tmpdir(), "clawsweeper-body-override-"));
@@ -85,7 +89,7 @@ test("planned review compatibility and non-exact selection preserve existing beh
   assert.equal(isExplicitReviewDispatch(parseArgs([]), false), false);
 });
 
-test("initial fetch timeout retains native evidence before any review work", () => {
+test("initial fetch timeout retains native evidence before any review work", (t) => {
   let nativeError: Error;
   try {
     runText(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { timeoutMs: 25 });
@@ -95,16 +99,23 @@ test("initial fetch timeout retains native evidence before any review work", () 
     nativeError = error;
   }
   let fetches = 0;
+  const nativeSpawn = childProcess.spawnSync;
+  mockReviewGitTransport(t, (command, args, options) => {
+    if (command !== "git") return nativeSpawn(command, args, options);
+    if (args.includes("--is-shallow-repository")) return { status: 0, stdout: "false", stderr: "" };
+    assert.equal(args[0], "fetch");
+    assert.ok(options.timeout > 0 && options.timeout <= 60_000);
+    assert.equal(options.killSignal, "SIGKILL");
+    fetches += 1;
+    return { status: null, signal: "SIGKILL", stdout: "", stderr: "", error: nativeError };
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
   const runtime = createReviewRuntime({
-    run: (command: string, args: string[], options?: { timeoutMs?: number }) => {
-      assert.equal(command, "git");
-      if (args.includes("--abbrev-ref")) return "main";
-      if (args.includes("--is-shallow-repository")) return "false";
-      assert.equal(args[0], "fetch");
-      assert.equal(options?.timeoutMs, 30_000);
-      fetches += 1;
-      throw nativeError;
-    },
+    run: () => "main",
   } as Parameters<typeof createReviewRuntime>[0]);
   let failure: ReviewGitError;
   try {
@@ -114,14 +125,16 @@ test("initial fetch timeout retains native evidence before any review work", () 
     assert.ok(error instanceof ReviewGitError);
     failure = error;
   }
-  assert.equal(fetches, 1);
-  assert.equal(failure.cause, nativeError);
+  assert.equal(fetches, 2);
+  assert.equal((failure.cause as Error).message, nativeError.message);
+  assert.equal((failure.cause as NodeJS.ErrnoException).code, "ETIMEDOUT");
   assert.equal(failure.errorCode, "ETIMEDOUT");
   assert.equal(failure.status, null);
   assert.match(failure.signal ?? "", /^SIG[A-Z0-9]+$/);
   assert.throws(
     () => runtime.gitInfo("fixture"),
-    (error) => error === nativeError,
+    (error: NodeJS.ErrnoException) =>
+      error.code === "ETIMEDOUT" && error.message === nativeError.message,
   );
 
   const oldEnv = process.env;
@@ -300,42 +313,56 @@ test("default local-range preparation owns private transient output and retains 
   }
 });
 
-test("summary preparation uses separate checkout scratch and removes owned output on failure", () => {
-  const root = mkdtempSync(join(tmpdir(), "clawsweeper-summary-preparation-"));
-  const output = join(root, "summary");
-  let checkoutScratch = "";
-  try {
-    assert.throws(
-      () =>
-        prepareReviewCommand(parseArgs(["--local-only", "--output-retention", "summary"]), {
-          DEFAULT_PLAN_BATCH_SIZE: 3,
-          repoFromArgs: () => repositoryProfileFor("openclaw/openclaw"),
-          targetRepo: () => "openclaw/openclaw",
-          localExactReviewItem: () => false,
-          defaultReviewArtifactDir: () => output,
-          defaultItemsDir: () => join(root, "items"),
-          resolveReviewCheckout: ({ artifactDir }: { artifactDir: string }) => {
-            checkoutScratch = artifactDir;
-            assert.notEqual(artifactDir, output);
-            assert.match(artifactDir, /clawsweeper-review-workspace-/);
-            mkdirSync(join(artifactDir, "review-trees"));
-            symlinkSync(root, join(artifactDir, "review-trees", "codex"));
-            throw new Error("synthetic checkout failure");
-          },
-          ensureDir: () => {},
-          suppliedReviewStartLeaseFromArgs: () => null,
-          reviewCodexForcedLoginMethod: () => "chatgpt",
-          reviewPolicyHash: () => "fixture-policy",
-        } as unknown as Parameters<typeof prepareReviewCommand>[1]),
-      /synthetic checkout failure/,
-    );
-    assert.equal(existsSync(output), false);
-    assert.equal(existsSync(checkoutScratch), false);
-    assert.equal(existsSync(root), true);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
+for (const uncertain of [false, true])
+  test(`summary preparation preserves only unsettled checkout scratch: uncertain=${uncertain}`, () => {
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-summary-preparation-"));
+    const output = join(root, "summary");
+    let checkoutScratch = "";
+    try {
+      assert.throws(
+        () =>
+          prepareReviewCommand(parseArgs(["--local-only", "--output-retention", "summary"]), {
+            DEFAULT_PLAN_BATCH_SIZE: 3,
+            repoFromArgs: () => repositoryProfileFor("openclaw/openclaw"),
+            targetRepo: () => "openclaw/openclaw",
+            localExactReviewItem: () => false,
+            defaultReviewArtifactDir: () => output,
+            defaultItemsDir: () => join(root, "items"),
+            resolveReviewCheckout: ({ artifactDir }: { artifactDir: string }) => {
+              checkoutScratch = artifactDir;
+              assert.notEqual(artifactDir, output);
+              assert.match(artifactDir, /clawsweeper-review-workspace-/);
+              mkdirSync(join(artifactDir, "review-trees"));
+              symlinkSync(root, join(artifactDir, "review-trees", "codex"));
+              throw new Error(
+                "synthetic checkout failure",
+                uncertain
+                  ? {
+                      cause: Object.assign(
+                        new ValidationRecoveryRequiredError("unsettled Git", undefined, [
+                          artifactDir,
+                        ]),
+                        { code: "EPROCESSSETTLEMENT" },
+                      ),
+                    }
+                  : undefined,
+              );
+            },
+            ensureDir: () => {},
+            suppliedReviewStartLeaseFromArgs: () => null,
+            reviewCodexForcedLoginMethod: () => "chatgpt",
+            reviewPolicyHash: () => "fixture-policy",
+          } as unknown as Parameters<typeof prepareReviewCommand>[1]),
+        /synthetic checkout failure/,
+      );
+      assert.equal(existsSync(output), false);
+      assert.equal(existsSync(checkoutScratch), uncertain);
+      assert.equal(existsSync(root), true);
+    } finally {
+      if (checkoutScratch) rmSync(checkoutScratch, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
 test("invalid PR admission cleans private preparation scratch and preserves existing debug output", () => {
   const root = mkdtempSync(join(tmpdir(), "clawsweeper-admission-preparation-"));
@@ -413,75 +440,87 @@ test("invalid PR admission cleans private preparation scratch and preserves exis
   }
 });
 
-test("post-preparation read-only failure restores partial modes and removes transient output", () => {
-  const root = mkdtempSync(join(tmpdir(), "clawsweeper-readonly-preparation-"));
-  const scratch = join(root, "tmp");
-  const failure = new Error("synthetic partial read-only failure");
-  const snapshot = { path: join(root, "partially-readonly"), mode: 0o100644 };
-  const previousTmpdir = process.env.TMPDIR;
-  let restored: Array<{ path: string; mode: number }> = [];
-  try {
-    mkdirSync(scratch);
-    process.env.TMPDIR = scratch;
-    writeFileSync(snapshot.path, "fixture\n");
-    const dependencies = {
-      DEFAULT_PLAN_BATCH_SIZE: 3,
-      buildLocalRangeReview: () => ({
-        baseSha: "b".repeat(40),
-        headSha: "c".repeat(40),
-      }),
-      defaultItemsDir: () => join(root, "items"),
-      defaultLocalRangeArtifactDir: () => join(root, "retained"),
-      defaultLocalRangeHistoryPath: () => join(root, "history"),
-      defaultReviewArtifactDir: () => join(root, "default-artifacts"),
-      ensureDir: (path: string) => {
-        mkdirSync(path, { recursive: true });
-      },
-      gitInfo: () => assert.fail("local range must not load remote Git metadata"),
-      localExactReviewItem: () => false,
-      makeTreeReadOnly: (_path: string, snapshots: Array<{ path: string; mode: number }>) => {
-        snapshots.push(snapshot);
-        throw failure;
-      },
-      repoFromArgs: () => repositoryProfileFor("openclaw/clawsweeper"),
-      resolveReviewCheckout: () => ({ openclawDir: root }),
-      restoreTreeModes: (snapshots: Array<{ path: string; mode: number }>) => {
-        restored = [...snapshots];
-      },
-      reviewCodexForcedLoginMethod: () => "chatgpt",
-      reviewPolicyHash: () => "fixture-policy",
-      suppliedReviewStartLeaseFromArgs: () => null,
-      targetRepo: () => "openclaw/clawsweeper",
-    };
-    const workflow = createReviewCommandWorkflow(
-      new Proxy(dependencies, {
-        get(target, key) {
-          if (key in target) return target[key as keyof typeof target];
-          return () => {
-            throw new Error(`Unexpected review work: ${String(key)}`);
-          };
+for (const uncertain of [false, true])
+  test(`post-preparation cleanup follows nested recovery cause: uncertain=${uncertain}`, () => {
+    const root = mkdtempSync(join(tmpdir(), "clawsweeper-readonly-preparation-"));
+    const scratch = join(root, "tmp");
+    const recovery = Object.assign(
+      new ValidationRecoveryRequiredError("unsettled Git", undefined, [root]),
+      { code: "EPROCESSSETTLEMENT" },
+    );
+    const failure = new Error(
+      "synthetic partial read-only failure",
+      uncertain ? { cause: new Error("wrapper", { cause: recovery }) } : undefined,
+    );
+    const snapshot = { path: join(root, "partially-readonly"), mode: 0o100644 };
+    const previousTmpdir = process.env.TMPDIR;
+    let restored: Array<{ path: string; mode: number }> = [];
+    try {
+      mkdirSync(scratch);
+      process.env.TMPDIR = scratch;
+      writeFileSync(snapshot.path, "fixture\n");
+      const dependencies = {
+        DEFAULT_PLAN_BATCH_SIZE: 3,
+        buildLocalRangeReview: () => ({
+          baseSha: "b".repeat(40),
+          headSha: "c".repeat(40),
+        }),
+        defaultItemsDir: () => join(root, "items"),
+        defaultLocalRangeArtifactDir: () => join(root, "retained"),
+        defaultLocalRangeHistoryPath: () => join(root, "history"),
+        defaultReviewArtifactDir: () => join(root, "default-artifacts"),
+        ensureDir: (path: string) => {
+          mkdirSync(path, { recursive: true });
         },
-      }) as unknown as Parameters<typeof createReviewCommandWorkflow>[0],
-    );
-    assert.throws(
-      () =>
-        workflow.reviewCommand(
-          parseArgs([
-            "--local-range",
-            "--target-repo",
-            "openclaw/clawsweeper",
-            "--target-dir",
-            root,
-            "--readonly-openclaw",
-          ]),
-        ),
-      (error) => error === failure,
-    );
-    assert.deepEqual(restored, [snapshot]);
-    assert.deepEqual(readdirSync(scratch), []);
-  } finally {
-    if (previousTmpdir === undefined) delete process.env.TMPDIR;
-    else process.env.TMPDIR = previousTmpdir;
-    rmSync(root, { recursive: true, force: true });
-  }
-});
+        gitInfo: () => assert.fail("local range must not load remote Git metadata"),
+        localExactReviewItem: () => false,
+        makeTreeReadOnly: (_path: string, snapshots: Array<{ path: string; mode: number }>) => {
+          snapshots.push(snapshot);
+          throw failure;
+        },
+        repoFromArgs: () => repositoryProfileFor("openclaw/clawsweeper"),
+        resolveReviewCheckout: () => ({ openclawDir: root }),
+        restoreTreeModes: (snapshots: Array<{ path: string; mode: number }>) => {
+          restored = [...snapshots];
+        },
+        reviewCodexForcedLoginMethod: () => "chatgpt",
+        reviewPolicyHash: () => "fixture-policy",
+        suppliedReviewStartLeaseFromArgs: () => null,
+        targetRepo: () => "openclaw/clawsweeper",
+      };
+      const workflow = createReviewCommandWorkflow(
+        new Proxy(dependencies, {
+          get(target, key) {
+            if (key in target) return target[key as keyof typeof target];
+            return () => {
+              throw new Error(`Unexpected review work: ${String(key)}`);
+            };
+          },
+        }) as unknown as Parameters<typeof createReviewCommandWorkflow>[0],
+      );
+      assert.throws(
+        () =>
+          workflow.reviewCommand(
+            parseArgs([
+              "--local-range",
+              "--target-repo",
+              "openclaw/clawsweeper",
+              "--target-dir",
+              root,
+              "--readonly-openclaw",
+            ]),
+          ),
+        (error) => error === failure,
+      );
+      assert.deepEqual(restored, [snapshot]);
+      if (uncertain) {
+        const retained = readdirSync(scratch).map((name) => join(scratch, name));
+        assert.equal(retained.length, 2);
+        for (const path of retained) assert.ok(recovery.recoveryPaths.has(path));
+      } else assert.deepEqual(readdirSync(scratch), []);
+    } finally {
+      if (previousTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = previousTmpdir;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });

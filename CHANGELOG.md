@@ -9,6 +9,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 - Retain oversized PR proposals as explicit policy no-ops when close or comment-only gates prevent publication, without retrying the same review or claiming a GitHub comment was delivered.
 
+- Recover longer review source fetches through bounded Git acquisition, preserving fresh branch checks and verified-object reuse. Settle interrupted Git processes before retry and retain uncertain workspaces for recovery.
+
 - Reduce retained-lifecycle Bay refresh CPU by skipping repeated sample sorting for older cards while preserving full-history validation, counts, and ordering.
 
 - Preserve app-server turn failures so capacity errors remain retryable and unavailable models remain terminal instead of surfacing a missing result file. Thanks @Yigtwxx.

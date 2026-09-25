@@ -59,6 +59,7 @@ import type { CreateReviewCommandWorkflowDependencies } from "./clawsweeper-revi
 import { prepareReviewCommand } from "./clawsweeper-review-preparation.js";
 import { parsePrHydrationSnapshot } from "./pr-hydration-snapshot.js";
 import { ReviewSourcePreparationError } from "./review-source-preparation.js";
+import { validationRecoveryRequired } from "./repair/validation-recovery.js";
 import { commandProofBinding, assertCommandProofSubject } from "./command-proof-assessment.js";
 import { COMMAND_PROOF_SOURCE_ACTION } from "./command-proof-contract.js";
 import {
@@ -583,6 +584,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         };
         activeReviewItem = item;
         let reviewItemFailed = false;
+        let itemRecoveryRequired = false;
         const previousReviewMutationRunner = dependencies.activeReviewMutationRunner;
         try {
         startReviewActionLedgerItem(reviewLedger, item);
@@ -1647,6 +1649,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
         pruneItemOutput(reportPath);
         } catch (error) {
           reviewItemFailed = true;
+          itemRecoveryRequired = validationRecoveryRequired(error) !== null;
           if (error instanceof AgentInputScanError || error instanceof ReviewSourcePreparationError) {
             recordFailureDiagnostics(error);
           }
@@ -1679,6 +1682,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
               restoreTreeModes(itemReadonlyModeSnapshots);
               if (
                 pullRequestReviewTreeDir &&
+                !itemRecoveryRequired &&
                 !removePullRequestReviewTree({
                   targetDir: openclawDir,
                   worktreeDir: pullRequestReviewTreeDir,
@@ -1824,7 +1828,7 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
           );
       } finally {
         try {
-          cleanupReviewOutput();
+          cleanupReviewOutput(commandError);
         } catch (error) {
           if (commandError === undefined && finalizationError === undefined) {
             finalizationError = error;
