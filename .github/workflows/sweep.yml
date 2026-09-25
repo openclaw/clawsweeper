@@ -7476,6 +7476,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          if [ "${APPLY_AUTO_SELECTED_BATCH:-false}" != "true" ]; then
+            echo "Apply scope is not automatic close mode; skipping review backstops."
+            exit 0
+          fi
           hot_intake_shards="$(pnpm run --silent workflow -- limit review_shards.hot_intake_default)"
           normal_shards="$(pnpm run --silent workflow -- limit review_shards.normal_default)"
           runs_json="$({
