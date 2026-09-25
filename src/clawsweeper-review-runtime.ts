@@ -58,7 +58,7 @@ import {
   isRetryableCodexTransportError,
   isTerminalCodexErrorMessage,
 } from "./codex-transient.js";
-import { UserFacingCommandError } from "./command.js";
+import { explainSpawnFailure, UserFacingCommandError } from "./command.js";
 import { emptyMaintainerDecision } from "./decision-packets.js";
 import {
   openClawCodexSourcePreparationFailureRetryable,
@@ -121,7 +121,7 @@ export function createReviewRuntime({
         error instanceof ReviewGitError &&
         error.cause instanceof Error
       ) {
-        throw error.cause;
+        throw explainSpawnFailure(error.cause, "git", openclawDir);
       }
       throw error;
     }

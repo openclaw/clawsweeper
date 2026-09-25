@@ -73,7 +73,7 @@ export function runText(
   return text;
 }
 
-function explainSpawnFailure(error: unknown, command: string, cwd?: string): unknown {
+export function explainSpawnFailure(error: unknown, command: string, cwd?: string): unknown {
   if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
     if (cwd && !existsSync(cwd)) {
       return new UserFacingCommandError(
