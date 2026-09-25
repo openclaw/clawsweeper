@@ -187,15 +187,7 @@ export function createReportOrchestrationFoundation(
     bestSolutionLine: string;
     evidence: Evidence[];
   }): string[] {
-    if (options.reason !== "duplicate_or_superseded") return [];
-    return [
-      options.bestSolutionLine,
-      ...options.evidence
-        .filter((entry) =>
-          /\b(?:canonical|duplicate|superseded|implementation)\b/i.test(entry.label),
-        )
-        .map((entry) => sentence(entry.detail)),
-    ];
+    return duplicateCanonicalTexts(options);
   }
 
   function duplicateCanonicalLinks(options: {
