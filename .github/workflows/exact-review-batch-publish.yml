@@ -276,6 +276,8 @@ jobs:
               continue
             elif [ "$outcome_kind" = "superseded" ]; then
               lifecycle_terminal="superseded"
+            elif jq -e '.disposition.policyNoopExpected == true' "$outcome_path" >/dev/null; then
+              lifecycle_terminal="policy_noop"
             elif [ "$publication_policy" = "record_comment_only" ] || [ "$source_action" = "failed_review_shard_recovery" ]; then
               lifecycle_router_outcome="not_required"
             elif jq -e '.disposition.routableSyncExpected == true' "$outcome_path" >/dev/null; then

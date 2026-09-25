@@ -9,6 +9,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 - Defer failed-shard review recovery while an earlier publication is pending, preserving the recovery request and allowing explicit re-reviews and source changes.
 
+- Retain oversized PR proposals as explicit policy no-ops when close or comment-only gates prevent publication, without retrying the same review or claiming a GitHub comment was delivered.
+
 - Reduce retained-lifecycle Bay refresh CPU by skipping repeated sample sorting for older cards while preserving full-history validation, counts, and ordering.
 
 - Preserve app-server turn failures so capacity errors remain retryable and unavailable models remain terminal instead of surfacing a missing result file. Thanks @Yigtwxx.

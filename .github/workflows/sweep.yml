@@ -1875,6 +1875,8 @@ jobs:
               lifecycle_terminal="target_closed"
             elif jq -e '.disposition.guardedOpenAction != null and .disposition.guardedOpenAction != ""' "$DIRECT_OUTCOME" >/dev/null; then
               lifecycle_terminal="guarded_open"
+            elif jq -e '.disposition.policyNoopExpected == true' "$DIRECT_OUTCOME" >/dev/null; then
+              lifecycle_terminal="policy_noop"
             elif [ "$source_action" = "failed_review_shard_recovery" ] || [ "$source_action" = "manual_explicit_review" ]; then
               lifecycle_router_outcome="not_required"
             elif jq -e '.disposition.routableSyncExpected == true' "$DIRECT_OUTCOME" >/dev/null; then

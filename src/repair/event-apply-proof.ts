@@ -1,3 +1,4 @@
+import type { ApplyResult } from "../clawsweeper-types.js";
 import type { LooseRecord } from "./json-types.js";
 
 export type EventApplyAction = {
@@ -12,6 +13,7 @@ export type EventApplyAction = {
   activeReviewLeaseVerified: boolean;
   activeReviewLeaseExpiresAt: string;
   terminalPolicyNoopVerified: boolean;
+  oversizedClosePolicyDeferred?: ApplyResult["oversizedClosePolicyDeferred"];
   sourceDriftVerified: boolean;
   newerReviewTupleVerified: boolean;
 };
@@ -132,11 +134,20 @@ export function exactEventApplyProof(
   const soleExactAction = soleExactResult?.action ?? "";
   const syncedCount = exactActions.filter((entry) => entry.durableReviewSynced).length;
   const terminalCount = exactActions.filter((entry) => entry.terminalStateVerified).length;
+  const oversizedPolicyNoop =
+    soleExactAction === "kept_open" &&
+    snapshotActionTaken === "proposed_close" &&
+    soleExactResult?.oversizedClosePolicyDeferred !== undefined &&
+    !soleExactResult.durableReviewSynced &&
+    !soleExactResult.commentMutationOccurred &&
+    !soleExactResult.terminalStateVerified &&
+    !soleExactResult.terminalMissingVerified;
   const terminalPolicyNoop =
-    exactActions.length > 0 &&
-    exactActions.every(
-      (entry) => entry.action === "skipped_same_author_pair" && entry.terminalPolicyNoopVerified,
-    );
+    oversizedPolicyNoop ||
+    (exactActions.length > 0 &&
+      exactActions.every(
+        (entry) => entry.action === "skipped_same_author_pair" && entry.terminalPolicyNoopVerified,
+      ));
   const sourceDriftActions = exactActions.filter(
     (entry) => entry.action === "skipped_changed_since_review",
   );
@@ -242,6 +253,15 @@ export function eventApplyAction(value: LooseRecord): EventApplyAction {
     activeReviewLeaseExpiresAt:
       typeof value.activeReviewLeaseExpiresAt === "string" ? value.activeReviewLeaseExpiresAt : "",
     terminalPolicyNoopVerified: value.terminalPolicyNoopVerified === true,
+    ...(typeof value.oversizedClosePolicyDeferred === "string" &&
+    ["comments_only", "close_gate_disabled", "close_reason_disabled"].includes(
+      value.oversizedClosePolicyDeferred,
+    )
+      ? {
+          oversizedClosePolicyDeferred:
+            value.oversizedClosePolicyDeferred as ApplyResult["oversizedClosePolicyDeferred"],
+        }
+      : {}),
     sourceDriftVerified: value.sourceDriftVerified === true,
     newerReviewTupleVerified: value.newerReviewTupleVerified === true,
   };

@@ -226,6 +226,7 @@ function directPublicationLifecyclePlanFromOutcome(
   if (typeof guardedOpenAction === "string" && guardedOpenAction.length > 0) {
     return { kind: "guarded_open" };
   }
+  if (expectedBoolean("policyNoopExpected")) return { kind: "policy_noop" };
   if (
     (process.env.EXACT_REVIEW_DECISION &&
       decisionPublicationPolicy(JSON.parse(process.env.EXACT_REVIEW_DECISION))) ||

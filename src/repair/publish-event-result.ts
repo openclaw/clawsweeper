@@ -314,6 +314,7 @@ async function publishEventResult(options: EventOptions): Promise<void> {
       `Requeueing ${options.targetRepo}#${options.itemNumber}: legacy exact artifact lacks its durable review lease tuple`,
     );
   }
+  const policyNoopExpected = applyDisposition === "terminal_policy_noop";
   const deferredCloseCoverageExpected = applyDisposition === "close_coverage_deferred";
   if (applyDisposition === "superseded") {
     console.log(
@@ -363,7 +364,8 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     (syncedCount + closedCount + missingCount === 0 &&
       guardedOpenAction === null &&
       !requeueLatestExpected &&
-      !deferredCloseCoverageExpected)
+      !deferredCloseCoverageExpected &&
+      !policyNoopExpected)
   ) {
     const observed =
       exactActions
@@ -374,6 +376,10 @@ async function publishEventResult(options: EventOptions): Promise<void> {
       `Event review for ${options.targetRepo}#${options.itemNumber} was not applied; actions: ${observed}`,
     );
   }
+  if (policyNoopExpected)
+    console.log(
+      `Retaining ${options.targetRepo}#${options.itemNumber} proposal: intentional policy no-op; no GitHub delivery claimed`,
+    );
   const summary = () =>
     writeSummary({
       targetRepo: options.targetRepo,
@@ -398,6 +404,7 @@ async function publishEventResult(options: EventOptions): Promise<void> {
       requeueLatestExpected,
       routableSyncExpected,
       deferredCloseCoverageExpected,
+      policyNoopExpected,
       terminalClosedExpected: closedCount > 0,
       terminalMissingExpected: missingCount > 0,
     });
@@ -413,6 +420,7 @@ async function publishEventResult(options: EventOptions): Promise<void> {
     requeueLatestExpected,
     routableSyncExpected,
     deferredCloseCoverageExpected,
+    policyNoopExpected,
     terminalClosedExpected: closedCount > 0,
     terminalMissingExpected: missingCount > 0,
   });
@@ -427,6 +435,7 @@ function prepareBatchMutation({
   requeueLatestExpected,
   routableSyncExpected,
   deferredCloseCoverageExpected,
+  policyNoopExpected,
   terminalClosedExpected,
   terminalMissingExpected,
 }: {
@@ -437,6 +446,7 @@ function prepareBatchMutation({
   requeueLatestExpected: boolean;
   routableSyncExpected: boolean;
   deferredCloseCoverageExpected: boolean;
+  policyNoopExpected: boolean;
   terminalClosedExpected: boolean;
   terminalMissingExpected: boolean;
 }) {
@@ -474,6 +484,7 @@ function prepareBatchMutation({
       requeueLatestExpected,
       routableSyncExpected,
       deferredCloseCoverageExpected,
+      policyNoopExpected,
       terminalClosedExpected,
       terminalMissingExpected,
     },
@@ -581,6 +592,7 @@ async function publishSnapshot({
   requeueLatestExpected,
   routableSyncExpected,
   deferredCloseCoverageExpected,
+  policyNoopExpected,
   terminalClosedExpected,
   terminalMissingExpected,
 }: {
@@ -591,6 +603,7 @@ async function publishSnapshot({
   requeueLatestExpected: boolean;
   routableSyncExpected: boolean;
   deferredCloseCoverageExpected: boolean;
+  policyNoopExpected: boolean;
   terminalClosedExpected: boolean;
   terminalMissingExpected: boolean;
 }): Promise<PublishedEventSnapshot> {
@@ -610,7 +623,7 @@ async function publishSnapshot({
     });
     const completionSupersededReason =
       supersededReason ||
-      (deferredCloseCoverageExpected && !candidateMatchesCurrentTuple
+      ((deferredCloseCoverageExpected || policyNoopExpected) && !candidateMatchesCurrentTuple
         ? ("remote_newer_tuple" as const)
         : undefined);
     const deferredCloseCoverage = !completionSupersededReason && deferredCloseCoverageExpected;
@@ -626,7 +639,7 @@ async function publishSnapshot({
         (deferredCloseCoverage
           ? ("close_coverage_deferred" as const)
           : ("publication_applied" as const)),
-      policyNoop: disposition.guardedOpenAction === "skipped_same_author_pair",
+      policyNoop: candidateMatchesCurrentTuple && policyNoopExpected,
       requeueLatest:
         requeueLatestExpected && candidateMatchesCurrentTuple && candidateTupleState === "open",
       remoteTupleVerified: candidateMatchesCurrentTuple,
@@ -636,7 +649,9 @@ async function publishSnapshot({
           candidateTupleState,
           guardedOpenAction,
           requeueLatestExpected,
-        }) && !deferredCloseCoverage,
+        }) &&
+        !deferredCloseCoverage &&
+        !policyNoopExpected,
     };
     if (completionSupersededReason) {
       summary();

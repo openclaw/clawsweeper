@@ -2329,8 +2329,11 @@ test("exact event review publishes directly with a queue-bounded canonical fallb
   assert.match(publisherSource, /review_lease_active/);
   assert.match(publisherSource, /applyDisposition === "close_coverage_deferred"/);
   assert.match(publisherSource, /EXACT_REVIEW_CLOSE_COVERAGE_DEFERRED/);
-  assert.match(publisherSource, /deferredCloseCoverageExpected && !candidateMatchesCurrentTuple/);
-  assert.match(publisherSource, /\}\) && !deferredCloseCoverage/);
+  assert.match(
+    publisherSource,
+    /\(deferredCloseCoverageExpected \|\| policyNoopExpected\) && !candidateMatchesCurrentTuple/,
+  );
+  assert.match(publisherSource, /\}\) &&\s*!deferredCloseCoverage &&\s*!policyNoopExpected/);
   assert.match(publisherSource, /writePublicationCompletionOutputs\(\s*"superseded"/);
   assert.match(publisherSource, /completionKind: completionSupersededReason/);
   const completeStart = publisherSource.indexOf("const complete =");

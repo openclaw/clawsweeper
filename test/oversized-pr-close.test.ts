@@ -107,6 +107,9 @@ test("oversized PR predicate boundaries, missing metadata, exemptions and thresh
 
 for (const scenario of [
   "disabled",
+  "comments-only",
+  "reason-disabled",
+  "missing-metadata",
   "dry-run",
   "close",
   "exact-close",
@@ -154,7 +157,7 @@ for (const scenario of [
       const commandLog = join(workspace.root, "commands.log");
       const previousGate = process.env.CLAWSWEEPER_OVERSIZED_PR_CLOSE_ENABLED;
       process.env.CLAWSWEEPER_OVERSIZED_PR_CLOSE_ENABLED =
-        scenario === "disabled" ? "false" : "true";
+        scenario === "disabled" || scenario === "missing-metadata" ? "false" : "true";
       try {
         withMockGh(
           workspace.root,
@@ -188,6 +191,9 @@ for (const scenario of [
         assert.match(markdown, /review_model: none/);
         assert.match(markdown, /local_checkout_access: unverified/);
         assert.match(markdown, /oversized_pull_request: /);
+        if (scenario === "missing-metadata") {
+          writeFileSync(report, markdown.replace(/^oversized_pull_request: .*\n/m, ""));
+        }
         const mock = promotionGhMock({
           number: pull.number,
           title: pull.title,
@@ -247,6 +253,11 @@ for (const scenario of [
               ...workspace,
               dryRun: scenario === "dry-run",
               extraArgs: [
+                "--event-apply-proof",
+                ...(scenario === "comments-only" ? ["--sync-comments-only"] : []),
+                ...(scenario === "reason-disabled"
+                  ? ["--apply-close-reasons", "duplicate_or_superseded"]
+                  : []),
                 "--skip-dashboard",
                 "--item-number",
                 String(pull.number),
@@ -275,6 +286,26 @@ for (const scenario of [
             ),
             JSON.stringify(result),
           );
+        }
+        if (
+          ["disabled", "comments-only", "reason-disabled", "dry-run", "missing-metadata"].includes(
+            scenario,
+          )
+        ) {
+          assert.equal(result.length, 1);
+          assert.equal(
+            result[0].oversizedClosePolicyDeferred,
+            scenario === "disabled"
+              ? "close_gate_disabled"
+              : scenario === "comments-only"
+                ? "comments_only"
+                : scenario === "reason-disabled"
+                  ? "close_reason_disabled"
+                  : undefined,
+          );
+          assert.match(readFileSync(report, "utf8"), /action_taken: proposed_close/);
+          assert.equal(result[0].durableReviewSynced, undefined);
+          assert.equal(result[0].commentMutationOccurred, undefined);
         }
         const mutations = existsSync(calls) ? readFileSync(calls, "utf8") : "";
         if (
