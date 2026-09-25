@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { join } from "node:path";
+import { requiredEnv as env } from "../required-env.js";
 import {
   githubEgressTelemetrySubmissions,
   submitGitHubEgressTelemetry,
@@ -29,9 +30,3 @@ for (const submission of submissions) {
   if (result.deduped) deduped += 1;
 }
 console.log(JSON.stringify({ ok: true, submissions: submissions.length, accepted, deduped }));
-
-function env(name: string): string {
-  const value = process.env[name]?.trim();
-  if (!value) throw new Error(`${name} is required`);
-  return value;
-}
