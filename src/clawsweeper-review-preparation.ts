@@ -19,6 +19,7 @@ import {
   writeExactReviewFailureDiagnostics,
 } from "./clawsweeper-review-failure-diagnostics.js";
 import { ReviewSourcePreparationError } from "./review-source-preparation.js";
+import { validationRecoveryRequired } from "./repair/validation-recovery.js";
 import {
   createTransientReviewOutput,
   createReviewOutputBudget,
@@ -77,6 +78,16 @@ export function prepareReviewCommand(
     "clawsweeper-review-workspace-",
     transientOutput ?? undefined,
   );
+  const cleanupReviewOutput = (error?: unknown) => {
+    const recovery = validationRecoveryRequired(error);
+    if (recovery) {
+      // A supervisor without a completion receipt may still own this checkout.
+      recovery.retain([reviewWorkspace.path, ...(transientOutput ? [transientOutput.path] : [])]);
+      return;
+    }
+    reviewWorkspace.cleanup();
+    transientOutput?.cleanup();
+  };
   let retainedReviewOutput: ReturnType<typeof prepareRetainedReviewOutput> | null = null;
   try {
     const verbose = boolArg(args.verbose);
@@ -346,10 +357,7 @@ export function prepareReviewCommand(
       outputSelection,
       outputBudget,
       retainedReviewOutput,
-      cleanupReviewOutput: () => {
-        reviewWorkspace.cleanup();
-        transientOutput?.cleanup();
-      },
+      cleanupReviewOutput,
     };
   } catch (error) {
     try {
@@ -361,8 +369,7 @@ export function prepareReviewCommand(
         }`,
       );
     }
-    reviewWorkspace.cleanup();
-    transientOutput?.cleanup();
+    cleanupReviewOutput(error);
     throw error;
   }
 }

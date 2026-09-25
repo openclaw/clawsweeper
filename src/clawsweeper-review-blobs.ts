@@ -15,6 +15,8 @@ import { dirname, isAbsolute, join } from "node:path";
 import { readReviewGit, reviewMergeBase } from "./pr-review-evidence.js";
 import { AgentInputScanError, MAX_SCAN_BYTES } from "./agent-input-scan.js";
 import { ReviewSourcePreparationError } from "./review-source-preparation.js";
+import { resolveSpawnCommand } from "./command.js";
+import { runGitAcquisitionResult } from "./repair/command-runner.js";
 
 const MAX_BLOB_SIZE_OBJECTS = 160;
 const MAX_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;
@@ -87,6 +89,9 @@ export class ReviewGitError extends ReviewSourcePreparationError {
     this.signal = result.signal ?? null;
     this.errorCode = (result.error as NodeJS.ErrnoException | undefined)?.code ?? null;
     this.stderr = result.stderr ?? "";
+    if (this.errorCode === "EPROCESSSETTLEMENT")
+      this.message =
+        "Review source preparation stopped: Git process completion is unverified. Stop and verify target processes before retrying this workspace.";
   }
 }
 
@@ -99,6 +104,8 @@ function checkedReviewGit(
 }
 
 function retryableReviewFetch(result: SpawnSyncReturns<string>): boolean {
+  if ((result.error as NodeJS.ErrnoException | undefined)?.code === "EPROCESSSETTLEMENT")
+    return false;
   const stderr = result.stderr ?? "";
   const httpStatus = /(?:HTTP\s+|returned error:\s*)(\d{3})\b/i.exec(stderr);
   if (httpStatus) return [500, 502, 503, 504].includes(Number(httpStatus[1]));
@@ -122,21 +129,20 @@ function fetchReviewObjects({
   reason,
   remainingInput,
   complete,
+  deadlineAt = Date.now() + REVIEW_FETCH_DEADLINE_MS,
+  requireFreshFetch = false,
 }: {
   targetDir: string;
-  args: string[];
+  args: string[] | ((remainingMs: () => number) => string[]);
   reason: ReviewGitFailureReason;
   remainingInput?: () => string;
-  complete: () => boolean;
-}): void {
-  const deadlineAt = Date.now() + REVIEW_FETCH_DEADLINE_MS;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    // A failed transport may still have installed a valid pack. Reuse only
-    // locally verified objects, and never make Git lazily fetch during this check.
-    if (complete()) return;
-    const input = remainingInput?.();
-    const remainingMs = deadlineAt - Date.now();
-    if (remainingMs <= 0) {
+  complete: (remainingMs: () => number) => boolean;
+  deadlineAt?: number | undefined;
+  requireFreshFetch?: boolean;
+}): boolean {
+  const remainingMs = () => {
+    const remaining = deadlineAt - Date.now();
+    if (remaining <= 0) {
       throw new ReviewGitError(
         reason,
         Object.assign(new Error("fetch deadline"), {
@@ -144,44 +150,129 @@ function fetchReviewObjects({
         }),
       );
     }
-    const fetched = spawnSync("git", args, {
-      cwd: targetDir,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" },
-      encoding: "utf8",
-      input,
-      maxBuffer: MAX_GIT_OUTPUT_BYTES,
-      timeout: Math.min(REVIEW_FETCH_ATTEMPT_MS, remainingMs),
-      killSignal: "SIGKILL",
-    });
-    if (complete()) return;
+    return remaining;
+  };
+  const isComplete = () => {
+    remainingMs();
+    const ready = complete(remainingMs);
+    remainingMs();
+    return ready;
+  };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    // A failed transport may still have installed a valid pack. Reuse only
+    // locally verified objects, and never make Git lazily fetch during this check.
+    // Branch freshness requires a successful remote fetch, even when the old
+    // tracking ref and all its objects already exist locally.
+    if (!requireFreshFetch && isComplete()) return true;
+    const fetchArgs = typeof args === "function" ? args(remainingMs) : args;
+    const fetchIndex = fetchArgs.indexOf("fetch");
+    const input = remainingInput?.();
+    const fetched = runGitAcquisitionResult(
+      [
+        ...fetchArgs.slice(0, fetchIndex + 1),
+        "--no-auto-maintenance",
+        ...fetchArgs.slice(fetchIndex + 1),
+      ],
+      {
+        cwd: targetDir,
+        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" },
+        input,
+        maxBuffer: MAX_GIT_OUTPUT_BYTES,
+        timeoutMs: Math.min(REVIEW_FETCH_ATTEMPT_MS, remainingMs()),
+      },
+    );
+    if ((fetched.error as NodeJS.ErrnoException | undefined)?.code === "EPROCESSSETTLEMENT")
+      throw new ReviewGitError(reason, fetched);
+    // Preserve the native timeout/kill evidence if the transport consumed the
+    // deadline; no verification process may start after that deadline.
+    if (Date.now() >= deadlineAt && (fetched.error || fetched.status !== 0)) {
+      throw new ReviewGitError(reason, fetched);
+    }
+    if ((!requireFreshFetch || (!fetched.error && fetched.status === 0)) && isComplete())
+      return true;
     if (fetched.error || fetched.status !== 0) {
       if (attempt === 0 && Date.now() < deadlineAt && retryableReviewFetch(fetched)) continue;
       throw new ReviewGitError(reason, fetched);
     }
     // A successful command that did not supply the pinned objects is not a
     // transient transport failure; callers must reject the incomplete source.
-    return;
+    return false;
   }
+  return false;
 }
 
-function gitCommitExists(targetDir: string, sha: string): boolean {
+function gitCommitExists(
+  targetDir: string,
+  sha: string,
+  timeout = REVIEW_TREE_METADATA_DEADLINE_MS,
+): boolean {
+  const invocation = resolveSpawnCommand("git", ["cat-file", "-e", `${sha}^{commit}`], {
+    cwd: targetDir,
+  });
   return (
-    spawnSync("git", ["cat-file", "-e", `${sha}^{commit}`], {
+    spawnSync(invocation.command, invocation.args, {
       cwd: targetDir,
-      env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
+      // Some Git versions ignore GIT_NO_LAZY_FETCH. An empty protocol allowlist also
+      // prevents its implicit promisor fetch from escaping the acquisition owner.
+      env: {
+        ...process.env,
+        GIT_NO_LAZY_FETCH: "1",
+        GIT_ALLOW_PROTOCOL: "",
+        GIT_OPTIONAL_LOCKS: "0",
+      },
       stdio: "ignore",
+      timeout,
+      killSignal: "SIGKILL",
+      ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
     }).status === 0
   );
 }
 
-function gitRepositoryIsShallow(targetDir: string): boolean {
-  const result = spawnSync("git", ["rev-parse", "--is-shallow-repository"], {
+function gitRepositoryIsShallow(
+  targetDir: string,
+  timeout = REVIEW_TREE_METADATA_DEADLINE_MS,
+): boolean {
+  const invocation = resolveSpawnCommand("git", ["rev-parse", "--is-shallow-repository"], {
+    cwd: targetDir,
+  });
+  const result = spawnSync(invocation.command, invocation.args, {
     cwd: targetDir,
     encoding: "utf8",
     env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
     maxBuffer: MAX_GIT_OUTPUT_BYTES,
+    timeout,
+    killSignal: "SIGKILL",
+    ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
   });
   return checkedReviewGit(result, "review_git_inspection_failed").trim() === "true";
+}
+
+export function refreshReviewTargetBranch(targetDir: string, targetBranch: string): void {
+  const destinationRef = `refs/remotes/origin/${targetBranch}`;
+  const complete = fetchReviewObjects({
+    targetDir,
+    reason: "review_commit_fetch_failed",
+    requireFreshFetch: true,
+    complete: (remainingMs) =>
+      gitCommitExists(targetDir, destinationRef, remainingMs()) &&
+      !gitRepositoryIsShallow(targetDir, remainingMs()),
+    args: (remainingMs) => [
+      "fetch",
+      "--filter=blob:none",
+      "--no-tags",
+      "--no-write-fetch-head",
+      "--recurse-submodules=no",
+      // A timed-out attempt can already have committed its shallow-file update.
+      ...(gitRepositoryIsShallow(targetDir, remainingMs()) ? ["--unshallow"] : []),
+      "origin",
+      `refs/heads/${targetBranch}:${destinationRef}`,
+    ],
+  });
+  if (!complete)
+    throw new ReviewGitError("review_commit_fetch_failed", {
+      status: 1,
+      stderr: "target branch fetch returned incomplete history",
+    } as SpawnSyncReturns<string>);
 }
 
 export function ensureReviewTreeCommit({
@@ -198,23 +289,24 @@ export function ensureReviewTreeCommit({
   if (!GIT_OBJECT_ID.test(sha)) return false;
   const shallow = gitRepositoryIsShallow(targetDir);
   if (gitCommitExists(targetDir, sha) && !shallow) return true;
-  fetchReviewObjects({
+  return fetchReviewObjects({
     targetDir,
     reason: "review_commit_fetch_failed",
-    complete: () => gitCommitExists(targetDir, sha) && !gitRepositoryIsShallow(targetDir),
-    args: [
+    complete: (remainingMs) =>
+      gitCommitExists(targetDir, sha, remainingMs()) &&
+      !gitRepositoryIsShallow(targetDir, remainingMs()),
+    args: (remainingMs) => [
       "fetch",
       "--force",
       "--filter=blob:none",
       "--no-tags",
       "--no-write-fetch-head",
       "--recurse-submodules=no",
-      ...(shallow ? ["--unshallow"] : []),
+      ...(gitRepositoryIsShallow(targetDir, remainingMs()) ? ["--unshallow"] : []),
       "origin",
       `${sourceRef}:${destinationRef}`,
     ],
   });
-  return gitCommitExists(targetDir, sha) && !gitRepositoryIsShallow(targetDir);
 }
 
 export function ensurePullRequestReviewHead({
@@ -244,7 +336,8 @@ export function ensurePullRequestReviewHead({
         return true;
       }
     } catch (error) {
-      if (!(error instanceof ReviewGitError)) throw error;
+      if (!(error instanceof ReviewGitError) || error.errorCode === "EPROCESSSETTLEMENT")
+        throw error;
       error.reviewedHeadSha = headSha;
       failure = error;
     }
@@ -278,7 +371,8 @@ export function hydratePullRequestReviewHistory(options: {
       });
     } catch (error) {
       // Test-merge evidence is optional; required base/head acquisition owns admission.
-      if (!(error instanceof ReviewGitError)) throw error;
+      if (!(error instanceof ReviewGitError) || error.errorCode === "EPROCESSSETTLEMENT")
+        throw error;
     }
   }
   const mergeBase = reviewMergeBase(targetDir, baseSha, headSha);
@@ -598,14 +692,79 @@ function fetchMissingReviewTreeBlobs(
   targetDir: string,
   headSha: string,
   missingBlobs: ReadonlyArray<{ objectId: string; bytes: number }>,
-  deadlineAt = Date.now() + REVIEW_TREE_METADATA_DEADLINE_MS,
+  deadlineAt?: number,
 ): void {
   if (missingBlobs.length === 0) return;
-  const timeoutMs = deadlineAt - Date.now();
-  if (timeoutMs <= 0) throw new AgentInputScanError("deadline");
-  const fetched = spawnSync(
-    "git",
-    [
+  const pending = new Map(missingBlobs.map(({ objectId, bytes }) => [objectId, bytes]));
+  const complete = fetchReviewObjects({
+    targetDir,
+    deadlineAt,
+    reason: "review_blobs_unavailable",
+    remainingInput: () => `${[...pending.keys()].join("\n")}\n`,
+    complete: (remainingMs) => {
+      // Enumerate the exact tree before cat-file: older Git can lazily fetch
+      // missing objects despite GIT_NO_LAZY_FETCH. Inspect only installed blobs.
+      const availability = checkedReviewGit(
+        spawnSync("git", ["rev-list", "--objects", "--missing=print", `${headSha}^{tree}`], {
+          cwd: targetDir,
+          env: {
+            ...process.env,
+            GIT_NO_LAZY_FETCH: "1",
+            GIT_OPTIONAL_LOCKS: "0",
+            GIT_NO_REPLACE_OBJECTS: "1",
+          },
+          encoding: "utf8",
+          maxBuffer: MAX_REVIEW_TREE_LIST_BYTES,
+          timeout: remainingMs(),
+          killSignal: "SIGKILL",
+        }),
+        "review_git_inspection_failed",
+      );
+      const available = new Set<string>();
+      const observed = new Set<string>();
+      for (const line of availability.split("\n")) {
+        const match = /^(\??)([0-9a-f]{40}(?:[0-9a-f]{24})?)(?: |$)/i.exec(line);
+        if (!match || !pending.has(match[2]!)) continue;
+        observed.add(match[2]!);
+        if (!match[1]) available.add(match[2]!);
+      }
+      if (observed.size !== pending.size) {
+        throw reviewTreeBudgetError(headSha, "fetched blob metadata is incomplete");
+      }
+      if (available.size === 0) return false;
+      const inspected = spawnSync(
+        "git",
+        ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+        {
+          cwd: targetDir,
+          env: {
+            ...process.env,
+            GIT_NO_LAZY_FETCH: "1",
+            GIT_OPTIONAL_LOCKS: "0",
+            GIT_NO_REPLACE_OBJECTS: "1",
+          },
+          encoding: "utf8",
+          input: `${[...available].join("\n")}\n`,
+          maxBuffer: MAX_REVIEW_TREE_LIST_BYTES,
+          timeout: remainingMs(),
+          killSignal: "SIGKILL",
+        },
+      );
+      const output = checkedReviewGit(inspected, "review_git_inspection_failed").trim();
+      const lines = output ? output.split("\n") : [];
+      if (lines.length !== available.size) {
+        throw reviewTreeBudgetError(headSha, "fetched blob metadata is incomplete");
+      }
+      for (const line of lines) {
+        const match = /^([0-9a-f]{40}(?:[0-9a-f]{24})?) blob (\d+)$/.exec(line);
+        if (!match || !available.delete(match[1]!) || pending.get(match[1]!) !== Number(match[2])) {
+          throw reviewTreeBudgetError(headSha, "fetched blob size did not match admitted metadata");
+        }
+        pending.delete(match[1]!);
+      }
+      return pending.size === 0;
+    },
+    args: [
       "-c",
       "fetch.negotiationAlgorithm=noop",
       "fetch",
@@ -616,40 +775,8 @@ function fetchMissingReviewTreeBlobs(
       "--filter=blob:none",
       "--stdin",
     ],
-    {
-      cwd: targetDir,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-      encoding: "utf8",
-      input: `${missingBlobs.map(({ objectId }) => objectId).join("\n")}\n`,
-      timeout: timeoutMs,
-      maxBuffer: MAX_GIT_OUTPUT_BYTES,
-    },
-  );
-  checkedReviewGit(fetched, "review_blobs_unavailable");
-
-  const inspected = spawnSync(
-    "git",
-    ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
-    {
-      cwd: targetDir,
-      env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_OPTIONAL_LOCKS: "0" },
-      encoding: "utf8",
-      input: `${missingBlobs.map(({ objectId }) => objectId).join("\n")}\n`,
-      maxBuffer: MAX_REVIEW_TREE_LIST_BYTES,
-    },
-  );
-  const output = checkedReviewGit(inspected, "review_git_inspection_failed").trim();
-  const expected = new Map(missingBlobs.map(({ objectId, bytes }) => [objectId, bytes]));
-  const lines = output ? output.split("\n") : [];
-  if (lines.length !== missingBlobs.length) {
-    throw reviewTreeBudgetError(headSha, "fetched blob metadata is incomplete");
-  }
-  for (const line of lines) {
-    const match = /^([0-9a-f]{40}(?:[0-9a-f]{24})?) blob (\d+)$/.exec(line);
-    if (!match || expected.get(match[1]!) !== Number(match[2])) {
-      throw reviewTreeBudgetError(headSha, "fetched blob size did not match admitted metadata");
-    }
-  }
+  });
+  if (!complete) throw reviewTreeBudgetError(headSha, "fetched blob metadata is incomplete");
 }
 
 function assertReviewTreeHasBoundedTransforms(
@@ -1048,6 +1175,7 @@ export function hydratePullRequestReviewBlobs({
         },
         maxBuffer: MAX_GIT_OUTPUT_BYTES,
         timeout: timeoutMs,
+        killSignal: "SIGKILL",
       },
     );
     if (objectAvailability.error || objectAvailability.status !== 0) {
@@ -1118,8 +1246,10 @@ export function hydratePullRequestReviewBlobs({
   remainingMs();
   if (missing.size > 0) {
     const pending = new Set(missing);
-    const complete = () => {
-      const stillMissing = readMissingObjects(REVIEW_TREE_METADATA_DEADLINE_MS);
+    const complete = (remainingMs: () => number) => {
+      const stillMissing = readMissingObjects(
+        Math.min(REVIEW_TREE_METADATA_DEADLINE_MS, remainingMs()),
+      );
       for (const oid of pending) {
         if (!stillMissing.has(oid)) pending.delete(oid);
       }

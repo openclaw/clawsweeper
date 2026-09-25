@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { windowsSystemExecutable } from "../command.js";
+import { resolveSpawnCommand, windowsSystemExecutable } from "../command.js";
 import { createTrustedSandboxRoot } from "./contained-command-sandbox.js";
 import { LINUX_SUBREAPER_SCRIPT } from "./process-tree-containment.js";
 
@@ -56,11 +56,40 @@ async function main(): Promise<void> {
   process.stdout.write(JSON.stringify(result));
 }
 
-async function runContained(input: WorkerInput): Promise<WorkerResult> {
-  if (process.platform !== "linux" && process.env.NODE_TEST_CONTEXT === undefined) {
+// This entrypoint runs only trusted Git transport, not validation commands. The
+// validation entrypoint never reads a containment selector from input or env.
+export async function runTrustedGitAcquisitionWorker(): Promise<void> {
+  const input = JSON.parse(await readStdin()) as {
+    args: string[];
+    cwd: string;
+    input?: string;
+    maxBuffer: number;
+    deadlineAt: number;
+    graceMs: number;
+  };
+  const invocation = resolveSpawnCommand("git", input.args, { cwd: input.cwd });
+  const result = await runContained(
+    {
+      ...input,
+      ...invocation,
+      isolateNetwork: false,
+      writableRoots: [],
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments === true,
+    },
+    { deadlineAt: input.deadlineAt, graceMs: input.graceMs },
+  );
+  process.stdout.write(JSON.stringify(result));
+}
+
+async function runContained(
+  input: WorkerInput,
+  acquisition?: { deadlineAt: number; graceMs: number },
+): Promise<WorkerResult> {
+  if (!acquisition && process.platform !== "linux" && process.env.NODE_TEST_CONTEXT === undefined) {
     throw new Error("validation process containment requires Linux");
   }
   const useLinuxNamespace =
+    !acquisition &&
     process.platform === "linux" &&
     (process.env.NODE_TEST_CONTEXT === undefined ||
       process.env.CLAWSWEEPER_TEST_FORCE_LINUX_CONTAINMENT === "1");
@@ -96,6 +125,9 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
           command: "/bin/sh",
           args: ["-c", 'exec "$@"', "clawsweeper-validation", input.command, ...input.args],
         };
+  if (acquisition && Date.now() + 2 * acquisition.graceMs >= acquisition.deadlineAt) {
+    throw new Error("Git acquisition deadline expired before process admission");
+  }
   const child = spawn(invocation.command, invocation.args, {
     cwd: input.cwd,
     env: process.env,
@@ -104,26 +136,37 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
     windowsHide: true,
     ...(input.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
   });
+  // Git output is captured below and cannot write this supervisor-only header.
+  // The synchronous caller needs ownership evidence if this worker is killed.
+  if (acquisition) fs.writeSync(1, `${JSON.stringify({ pid: child.pid ?? null })}\n`);
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
   const protocol: Buffer[] = [];
   let stdoutBytes = 0;
   let stderrBytes = 0;
   let protocolBytes = 0;
+  let inputFailure: { code: string | undefined; message: string } | undefined;
+  // Git can reject the request before consuming a full --stdin object list.
+  // Settle its process and preserve that exit instead of crashing on EPIPE.
+  child.stdin.on("error", (error: NodeJS.ErrnoException) => {
+    inputFailure = { code: error.code, message: error.message };
+  });
   const spawnFailure: {
     value: { code: string | undefined; message: string } | null;
   } = { value: null };
   let timedOut = false;
   let overflow = false;
+  let windowsTreeSettled = false;
   let forcedTermination: NodeJS.Timeout | undefined;
   const requestTermination = () => {
-    terminateProcessTree(child.pid);
+    terminateProcessTree(child.pid, acquisition?.deadlineAt);
+    if (acquisition && process.platform === "win32") windowsTreeSettled = true;
     if (process.platform !== "win32" && child.pid && !forcedTermination) {
       // Linux init owns escalation and reaping, including detached descendants.
       // Give it time to publish completion before the outer fail-closed kill.
       forcedTermination = setTimeout(
-        () => forceTerminateProcessTree(child.pid!),
-        useLinuxNamespace ? 3_000 : 250,
+        () => forceTerminateProcessTree(child.pid!, acquisition?.deadlineAt),
+        acquisition?.graceMs ?? (useLinuxNamespace ? 3_000 : 250),
       );
       forcedTermination.unref();
     }
@@ -167,12 +210,17 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
   if (input.input !== undefined) child.stdin.end(input.input);
   else child.stdin.end();
   const timeout =
-    input.timeoutMs === undefined
+    input.timeoutMs === undefined && !acquisition
       ? undefined
-      : setTimeout(() => {
-          timedOut = true;
-          requestTermination();
-        }, input.timeoutMs);
+      : setTimeout(
+          () => {
+            timedOut = true;
+            requestTermination();
+          },
+          acquisition
+            ? Math.max(1, acquisition.deadlineAt - Date.now() - 2 * acquisition.graceMs)
+            : input.timeoutMs,
+        );
   timeout?.unref();
   const exit = await new Promise<{ signal: NodeJS.Signals | null; status: number | null }>(
     (resolve) => {
@@ -196,9 +244,15 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
       await reapProcessGroup(child.pid);
       throw error;
     }
+  } else if (acquisition && process.platform === "win32") {
+    // taskkill must succeed while the parent still identifies its tree. A
+    // second call after close cannot prove anything about orphaned descendants.
+    if ((timedOut || overflow || exit.signal !== null) && !windowsTreeSettled)
+      throw new Error("Git acquisition process-tree settlement could not be verified");
+    contained = { backgroundProcesses: 0, ...exit };
   } else {
     contained = {
-      backgroundProcesses: await reapProcessGroup(child.pid),
+      backgroundProcesses: await reapProcessGroup(child.pid, acquisition?.deadlineAt),
       signal: exit.signal,
       status: exit.status,
     };
@@ -206,10 +260,15 @@ async function runContained(input: WorkerInput): Promise<WorkerResult> {
   const error = spawnFailure.value
     ? { code: spawnFailure.value.code, message: spawnFailure.value.message }
     : timedOut
-      ? { code: "ETIMEDOUT", message: "validation command timed out" }
+      ? {
+          code: "ETIMEDOUT",
+          message: acquisition ? "Git acquisition timed out" : "validation command timed out",
+        }
       : overflow
         ? { code: "ENOBUFS", message: "validation command output exceeded the buffer limit" }
-        : undefined;
+        : contained.status === 0
+          ? inputFailure
+          : undefined;
   return {
     backgroundProcesses: contained.backgroundProcesses,
     ...(contained.capabilitySummary ? { capabilitySummary: contained.capabilitySummary } : {}),
@@ -283,16 +342,17 @@ function safeDiagnosticToken(value: unknown, fallback: string): string {
   return typeof value === "string" && /^[a-z_]+$/.test(value) ? value : fallback;
 }
 
-async function reapProcessGroup(pid: number | undefined) {
+async function reapProcessGroup(pid: number | undefined, deadlineAt?: number) {
   if (!pid) return 0;
   if (process.platform === "win32") {
-    terminateWindowsProcessTree(pid);
+    terminateWindowsProcessTree(pid, deadlineAt);
     return 0;
   }
   const found = signalProcessGroup(pid, "SIGTERM");
   if (!found) return 0;
   for (let attempt = 0; attempt < 8; attempt += 1) {
-    await sleep(25);
+    if (deadlineAt !== undefined && Date.now() >= deadlineAt) break;
+    await sleep(deadlineAt === undefined ? 25 : Math.min(25, Math.max(1, deadlineAt - Date.now())));
     if (!signalProcessGroup(pid, "SIGKILL")) return 1;
   }
   if (signalProcessGroup(pid, "SIGKILL")) {
@@ -301,36 +361,46 @@ async function reapProcessGroup(pid: number | undefined) {
   return 1;
 }
 
-function terminateProcessTree(pid: number | undefined) {
+function terminateProcessTree(pid: number | undefined, deadlineAt?: number) {
   if (!pid) return;
   if (process.platform === "linux") {
     signalProcessGroup(pid, "SIGTERM");
     return;
   }
   if (process.platform === "win32") {
-    terminateWindowsProcessTree(pid);
+    terminateWindowsProcessTree(pid, deadlineAt);
     return;
   }
   signalProcessGroup(pid, "SIGTERM");
 }
 
-function forceTerminateProcessTree(pid: number) {
-  if (process.platform === "linux") {
-    signalProcessGroup(pid, "SIGKILL");
+export function forceTerminateProcessTree(pid: number, deadlineAt?: number) {
+  if (process.platform === "win32") {
+    terminateWindowsProcessTree(pid, deadlineAt);
     return;
   }
   signalProcessGroup(pid, "SIGKILL");
 }
 
-function terminateWindowsProcessTree(pid: number) {
-  spawnSync(
+function terminateWindowsProcessTree(pid: number, deadlineAt?: number) {
+  if (deadlineAt !== undefined && Date.now() >= deadlineAt)
+    throw new Error("process-tree settlement deadline expired");
+  const result = spawnSync(
     windowsSystemExecutable("taskkill.exe", process.env),
     ["/pid", String(pid), "/t", "/f"],
-    { stdio: "ignore", windowsHide: true },
+    {
+      stdio: "ignore",
+      windowsHide: true,
+      ...(deadlineAt === undefined
+        ? {}
+        : { timeout: Math.max(1, deadlineAt - Date.now()), killSignal: "SIGKILL" as const }),
+    },
   );
+  if (deadlineAt !== undefined && (result.error || result.status !== 0))
+    throw new Error("process-tree settlement could not be verified", { cause: result.error });
 }
 
-function signalProcessGroup(pid: number, signal: NodeJS.Signals) {
+export function signalProcessGroup(pid: number, signal: NodeJS.Signals | 0) {
   try {
     process.kill(-pid, signal);
     return true;
