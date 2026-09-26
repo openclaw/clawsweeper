@@ -1,0 +1,255 @@
+{
+  "host_base": "9fb3a5d5887891c08e0310cafc54b09ab3023c2a",
+  "consumer_base": "a7410abdf67dda4aa06db6b92bf57e007e67459e",
+  "consumer_head": "6151f4f4d0fd9d4d63590b6ceb95d309e5752266",
+  "merge_base": "a7410abdf67dda4aa06db6b92bf57e007e67459e",
+  "provider": "local native macOS",
+  "node_version": "v26.9.0",
+  "node_sha256": "91ed66b8cd139609427a3e9d93518dd3b0d5407c737fc9a265bfd991ec623d8a",
+  "scanner_version": "trufflehog 3.97.4",
+  "scanner_sha256": "8c7af13e84f217bffd10aec09780fb7bbe59892187c99006291cef9c6f001beb",
+  "scanner_provenance": "Existing external trusted-PATH executable, version checked by the normal owner. Binary hash recorded; managed bootstrap/archive checksum path was not used.",
+  "verification": "normal owner flags, enabled",
+  "model_execution": false,
+  "prompt_schema": "Same controlled 71-byte prompt; no supplied schema. Hosted review rescans its own full input.",
+  "patch_reconstruction": {
+    "bytes": 1370680,
+    "sha256": "83e58d542c65a26a6f045fa8a578bf18e5b0e820ea5447d2bf7462874ecb3f9d",
+    "origin": "separate frozen Git reconstruction; not a retained native staging manifest"
+  },
+  "recorded_host_inputs": {
+    "baseline": {
+      "src/agent-input-scan.ts": "dfde3f9b0ae1d23af8afa06ed3a10d569f2f60ad944167cefdd1ded4192fed1e",
+      "src/agent-input-scan-fixtures.ts": "e8782ce76ef5fb2091ca8947131b8e9af2bb934c9349945497691f51250c819b",
+      "src/review-tool-bootstrap.ts": "ceea508c0154837dcdda802e683ae5570b9398f6b47b50e9ff35edd573a36bd5",
+      "pnpm-lock.yaml": "aa0d45af8b9171ec260f8e55bc4530d1f18c96363c61f3012ffa1d3174fb9b35",
+      "package.json": "246e35ca3a1271f44cfa3002c70e42d7bfca52c57eb753476d85c40540368042",
+      "dist/agent-input-scan.js": "414301ed2a7b3f9b869501da12e95006e15badcff7588584ab5659a56f32c618",
+      "dist/agent-input-scan-fixtures.js": "e564c1e3f7b07a6247a3a410883f967d2bdd66dc7bda2043f0e3825872fca372",
+      "dist/review-tool-bootstrap.js": "fff2a8edaa7b1630086c1c593354a134e18fade314840af2675b9020574f5923",
+      "docs/proof/agent-input-scan-context/run-proof.mjs": "c6a52497fd63fd47f4494cb8b2d472ef81c463069a5dee97c804b066bf6b7e8f"
+    },
+    "candidate": {
+      "src/agent-input-scan.ts": "dfde3f9b0ae1d23af8afa06ed3a10d569f2f60ad944167cefdd1ded4192fed1e",
+      "src/agent-input-scan-fixtures.ts": "eee064940f4678b21505a68de3e7b326cd182060c777b039f4cf2698bd0d8b3d",
+      "src/review-tool-bootstrap.ts": "ceea508c0154837dcdda802e683ae5570b9398f6b47b50e9ff35edd573a36bd5",
+      "pnpm-lock.yaml": "aa0d45af8b9171ec260f8e55bc4530d1f18c96363c61f3012ffa1d3174fb9b35",
+      "package.json": "246e35ca3a1271f44cfa3002c70e42d7bfca52c57eb753476d85c40540368042",
+      "dist/agent-input-scan.js": "414301ed2a7b3f9b869501da12e95006e15badcff7588584ab5659a56f32c618",
+      "dist/agent-input-scan-fixtures.js": "78f5910b331912985e84f2140832a9e0374eedd6c2d8083bcd9d9f191a939ab1",
+      "dist/review-tool-bootstrap.js": "fff2a8edaa7b1630086c1c593354a134e18fade314840af2675b9020574f5923",
+      "docs/proof/agent-input-scan-context/run-proof.mjs": "c6a52497fd63fd47f4494cb8b2d472ef81c463069a5dee97c804b066bf6b7e8f"
+    }
+  },
+  "runs": [
+    {
+      "variant": "baseline",
+      "exit_code": 1,
+      "elapsed_seconds": 2.35665908298688,
+      "native_wait_completed": true,
+      "both_eof": true,
+      "outer_timeout": false,
+      "forced_cleanup": false,
+      "known_target_group_present": false,
+      "staging_tmp_entries_after": [],
+      "stdout_sha256": "51a80ffc2deecbf3f801b48bc32658233c4308291af31ebceab77cd817cfcf85",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "report": {
+        "targetHead": "6151f4f4d0fd9d4d63590b6ceb95d309e5752266",
+        "base": "a7410abdf67dda4aa06db6b92bf57e007e67459e",
+        "source": "complete committed range, canonical pinned native scanner",
+        "prompt": {
+          "kind": "controlled",
+          "bytes": 71,
+          "sha256": "ec04b7c204ee8e5aafb5fc4f81351c69e8fa7375aba79b95e50ecc86c127f66f"
+        },
+        "schema": null,
+        "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
+        "verification": "canonical enabled",
+        "result": "refused",
+        "elapsedMs": 2235,
+        "notices": [],
+        "failure": {
+          "reason": "findings",
+          "diagnostic": {
+            "kind": "unclassified_finding",
+            "reason": "literal_mismatch",
+            "findingCount": 11,
+            "findingIndex": 0,
+            "detectorType": 17,
+            "decoder": "PLAIN",
+            "verified": false,
+            "scannerLine": 23455,
+            "material": {
+              "kind": "patch",
+              "id": "1",
+              "from": "a7410abdf67dda4aa06db6b92bf57e007e67459e",
+              "to": "6151f4f4d0fd9d4d63590b6ceb95d309e5752266"
+            }
+          }
+        }
+      }
+    },
+    {
+      "variant": "candidate",
+      "exit_code": 0,
+      "elapsed_seconds": 2.3737640409963205,
+      "native_wait_completed": true,
+      "both_eof": true,
+      "outer_timeout": false,
+      "forced_cleanup": false,
+      "known_target_group_present": false,
+      "staging_tmp_entries_after": [],
+      "stdout_sha256": "b1c137d121ce8aca6ef868b4fe6b10abcb99e7ecf322db6e9c012dd40c83d187",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "report": {
+        "targetHead": "6151f4f4d0fd9d4d63590b6ceb95d309e5752266",
+        "base": "a7410abdf67dda4aa06db6b92bf57e007e67459e",
+        "source": "complete committed range, canonical pinned native scanner",
+        "prompt": {
+          "kind": "controlled",
+          "bytes": 71,
+          "sha256": "ec04b7c204ee8e5aafb5fc4f81351c69e8fa7375aba79b95e50ecc86c127f66f"
+        },
+        "schema": null,
+        "limits": "No model execution; hosted review must rescan its own prompt, schema, and source inputs.",
+        "verification": "canonical enabled",
+        "result": "admitted",
+        "elapsedMs": 2255,
+        "notices": [
+          {
+            "event": "agent_input_scan_classified",
+            "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+            "fixtureSha256": "7b8ee01b06a7e5b375164f2c45249bb258c75726a60b27e20a0ba6e42d5d0b27",
+            "source": ".agents/skills/autoreview/tests/test_autoreview_hardening.py",
+            "detector": "URI",
+            "findings": [
+              {
+                "blob": "c1de717504d47d854f5abd189bf61be98242d0f6",
+                "scannerLine": 5752,
+                "literalLine": 5752,
+                "decoder": "PLAIN",
+                "role": "head",
+                "occurrences": 1
+              }
+            ]
+          },
+          {
+            "event": "agent_input_scan_classified",
+            "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+            "fixtureSha256": "80842079cf4e73add753d25a74646356617b39c399e77d38b34bb21818e303d2",
+            "source": ".agents/skills/autoreview/tests/test_autoreview_hardening.py",
+            "detector": "URI",
+            "findings": [
+              {
+                "blob": "c1de717504d47d854f5abd189bf61be98242d0f6",
+                "scannerLine": 8154,
+                "literalLine": 8154,
+                "decoder": "PLAIN",
+                "role": "head",
+                "occurrences": 1
+              }
+            ]
+          },
+          {
+            "event": "agent_input_scan_classified",
+            "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+            "fixtureSha256": "eebab8ec3df3ff0426c28021cce68ab7d2391e32d3040b128210e9df7ad3e092",
+            "source": ".agents/skills/autoreview/tests/test_autoreview_hardening.py",
+            "detector": "URI",
+            "findings": [
+              {
+                "blob": "8ed5acee1791b128c7d7a69132afd83fa0533ed4",
+                "scannerLine": 2898,
+                "literalLine": 2898,
+                "decoder": "PLAIN",
+                "role": "base",
+                "occurrences": 1
+              }
+            ]
+          },
+          {
+            "event": "agent_input_scan_classified",
+            "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+            "fixtureSha256": "fe36092bead3bd47192a05374917c4614ce7642137dc83b9685ab6b5a37d8736",
+            "source": ".agents/skills/autoreview/tests/test_autoreview_hardening.py",
+            "detector": "URI",
+            "findings": [
+              {
+                "blob": "c1de717504d47d854f5abd189bf61be98242d0f6",
+                "scannerLine": 8142,
+                "literalLine": 8142,
+                "decoder": "PLAIN",
+                "role": "head",
+                "occurrences": 1
+              }
+            ]
+          },
+          {
+            "event": "agent_input_scan_classified",
+            "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+            "fixtureSha256": "80842079cf4e73add753d25a74646356617b39c399e77d38b34bb21818e303d2",
+            "source": ".agents/skills/autoreview/tests/test_autoreview_hardening.py",
+            "detector": "URI",
+            "findings": [
+              {
+                "blob": "1",
+                "scannerLine": 25957,
+                "literalLine": 25957,
+                "decoder": "PLAIN",
+                "role": "head",
+                "occurrences": 1,
+                "patch": {
+                  "from": "a7410abdf67dda4aa06db6b92bf57e007e67459e",
+                  "to": "6151f4f4d0fd9d4d63590b6ceb95d309e5752266",
+                  "sourceBlob": "c1de717504d47d854f5abd189bf61be98242d0f6",
+                  "sourceLine": 8154
+                }
+              }
+            ]
+          },
+          {
+            "event": "agent_input_scan_classified",
+            "notice": "Reviewed synthetic fixture findings classified as non-sensitive.",
+            "fixtureSha256": "eebab8ec3df3ff0426c28021cce68ab7d2391e32d3040b128210e9df7ad3e092",
+            "source": ".agents/skills/autoreview/tests/test_autoreview_hardening.py",
+            "detector": "URI",
+            "findings": [
+              {
+                "blob": "1",
+                "scannerLine": 23269,
+                "literalLine": 23269,
+                "decoder": "PLAIN",
+                "role": "base",
+                "occurrences": 1,
+                "patch": {
+                  "from": "a7410abdf67dda4aa06db6b92bf57e007e67459e",
+                  "to": "6151f4f4d0fd9d4d63590b6ceb95d309e5752266",
+                  "sourceBlob": "8ed5acee1791b128c7d7a69132afd83fa0533ed4",
+                  "sourceLine": 2898
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "operator_completion": {
+    "completed": true,
+    "source_runtime_target_tool_hashes_unchanged": true,
+    "target_head": "6151f4f4d0fd9d4d63590b6ceb95d309e5752266",
+    "target_status": "",
+    "results_pending_root_assessment": true,
+    "no_model_call": true,
+    "no_rerun": true
+  },
+  "qualification_limits": [
+    "Offline 17, original hosted 10, native baseline 11 and native candidate 6 are different observations, not a byte-identical replay.",
+    "Candidate notices cover four distinct source tuples. The new base SERVICE_URL tuple is observed directly and through the patch; the two new old-base proxy witness variants are covered by focused classifier tests, not observed native emission in this run.",
+    "Full native staged manifest and Raw/RawV2 identities were not retained. The patch hash is a separate frozen Git reconstruction.",
+    "Unchanged recorded source/runtime/target/tool hashes are operator assertions; per-file post-run hash arrays were not retained.",
+    "Hosted admission and current model review remain separate required gates."
+  ],
+  "root_assessment": "Narrow baseline refusal and candidate admission supported. The new SERVICE_URL tuple is observed natively; the two new old-base proxy tuples retain separate classifier-test coverage. No hosted clearance is inferred."
+}

@@ -190,7 +190,11 @@ function fixturePatch(
       "--",
     ),
   });
-  const classify = (decoder: "PLAIN" | "HTML", overrides: Record<string, unknown> = {}) => {
+  const classify = (
+    decoder: "PLAIN" | "HTML",
+    overrides: Record<string, unknown> = {},
+    options: { duplicate?: boolean; complete?: boolean } = {},
+  ) => {
     const findings = fixtures.flatMap((fixture) =>
       fixture.entries
         .filter((entry) => entry.decoders.includes(decoder))
@@ -225,20 +229,23 @@ function fixturePatch(
           }));
         }),
     );
+    if (options.duplicate) findings.push(findings[0]!);
     return classifyReviewedFixtureScan(
       183,
       Buffer.from(findings.map((finding) => JSON.stringify(finding)).join("\n") + "\n"),
       Buffer.from(
-        JSON.stringify({
-          level: "info-0",
-          logger: "trufflehog",
-          msg: "finished scanning",
-          trufflehog_version: "3.97.4",
-          chunks: 1,
-          bytes: content.length,
-          verified_secrets: findings.filter((finding) => finding.Verified === true).length,
-          unverified_secrets: findings.filter((finding) => finding.Verified !== true).length,
-        }) + "\n",
+        options.complete === false
+          ? ""
+          : JSON.stringify({
+              level: "info-0",
+              logger: "trufflehog",
+              msg: "finished scanning",
+              trufflehog_version: "3.97.4",
+              chunks: 1,
+              bytes: content.length,
+              verified_secrets: findings.filter((finding) => finding.Verified === true).length,
+              unverified_secrets: findings.filter((finding) => finding.Verified !== true).length,
+            }) + "\n",
       ),
       inputs,
     );
@@ -613,6 +620,112 @@ for (const source of [
               : {},
       );
       assert.equal(result.kind, "refused", JSON.stringify(result));
+    });
+  }
+}
+
+function acpxOldBaseProxyFixture(prefix: boolean): ReturnType<typeof autoreviewFixtures>[number] {
+  const full = autoreviewFixtures()[0]!.raw;
+  const raw = prefix ? full.slice(0, full.lastIndexOf(":")) : full;
+  return {
+    raw,
+    rawV2: raw,
+    line: ['            "' + full + '",', '                    "' + full + '"'].join("\n"),
+    decoders: ["PLAIN"],
+  };
+}
+
+function acpxOldBaseServiceFixture(): ReturnType<typeof autoreviewFixtures>[number] {
+  const raw = ["https", "review-user:review-password@example.invalid"].join("://");
+  const rawV2 = raw + "/api";
+  return {
+    raw,
+    rawV2,
+    line: '                    "' + rawV2 + '"',
+    decoders: ["PLAIN"],
+  };
+}
+
+const acpxOldBaseSource = ".agents/skills/autoreview/tests/test_autoreview_hardening.py";
+for (const [name, makeFixture] of [
+  ["full proxy", () => acpxOldBaseProxyFixture(false)],
+  ["proxy prefix", () => acpxOldBaseProxyFixture(true)],
+  ["service URL", acpxOldBaseServiceFixture],
+] as const) {
+  exactUriFixtureTests(`acpx old-base ${name}`, acpxOldBaseSource, makeFixture);
+  for (const variant of [
+    "non-vendored-path",
+    "html",
+    "raw-only",
+    "raw-v2-only",
+    "mixed-reference",
+    "duplicate-finding",
+    "incomplete-scan",
+  ] as const) {
+    test(`acpx old-base ${name} refuses ${variant}`, (t) => {
+      const entry = makeFixture();
+      const source =
+        variant === "non-vendored-path" ? acpxOldBaseSource.slice(8) : acpxOldBaseSource;
+      const patch = fixturePatch(t, source, [entry], "remove");
+      if (variant === "mixed-reference") {
+        for (const [file, input] of patch.inputs) {
+          if (input.kind !== "blob") continue;
+          patch.inputs.set(file, {
+            ...input,
+            references: [
+              ...input.references,
+              { ...input.references[0]!, source: source + ".other" },
+            ],
+          });
+        }
+      }
+      const result = patch.classify(
+        "PLAIN",
+        variant === "html"
+          ? { DecoderName: "HTML" }
+          : variant === "raw-only"
+            ? { Raw: entry.raw + "x" }
+            : variant === "raw-v2-only"
+              ? { RawV2: entry.rawV2 + "x" }
+              : {},
+        { duplicate: variant === "duplicate-finding", complete: variant !== "incomplete-scan" },
+      );
+      assert.equal(result.kind, "refused", JSON.stringify(result));
+      if (result.kind !== "refused") return;
+      if (variant === "mixed-reference")
+        assert.equal(result.diagnostic.reason, "source_not_reviewed");
+      if (variant === "duplicate-finding")
+        assert.equal(result.diagnostic.reason, "duplicate_finding");
+      if (variant === "incomplete-scan") assert.equal(result.diagnostic.reason, "incomplete_scan");
+    });
+  }
+}
+
+for (const prefix of [false, true]) {
+  const name = prefix ? "proxy prefix" : "full proxy";
+  for (const variant of [
+    "missing-first",
+    "missing-second",
+    "reordered",
+    "duplicate-occurrence",
+    "first-suffix",
+    "second-suffix",
+  ] as const) {
+    // The full proxy's first line alone remains a separately approved historical witness.
+    if (!prefix && variant === "missing-second") continue;
+    test(`acpx old-base ${name} refuses ${variant}`, (t) => {
+      const entry = acpxOldBaseProxyFixture(prefix);
+      const lines = entry.line.split("\n");
+      if (variant === "missing-first") entry.line = lines[1]!;
+      if (variant === "missing-second") entry.line = lines[0]!;
+      if (variant === "reordered") entry.line = lines.reverse().join("\n");
+      if (variant === "duplicate-occurrence") entry.line += "\n" + lines[0]!;
+      if (variant === "first-suffix") entry.line = [lines[0] + " ", lines[1]].join("\n");
+      if (variant === "second-suffix") entry.line = [lines[0], lines[1] + " "].join("\n");
+      const patch = fixturePatch(t, acpxOldBaseSource, [entry], "remove");
+      const result = patch.classify("PLAIN");
+      assert.equal(result.kind, "refused", JSON.stringify(result));
+      if (result.kind === "refused") assert.equal(result.diagnostic.reason, "literal_mismatch");
     });
   }
 }
