@@ -23,6 +23,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 - Recover longer review source fetches through bounded Git acquisition, preserving fresh branch checks and verified-object reuse. Settle interrupted Git processes before retry and retain uncertain workspaces for recovery.
 
+- Stop memory prompt and tool contracts from triggering stored-data compatibility holds on incomplete patches while preserving conservative checks for other memory persistence owners. Thanks @LLagoon3.
+
 - Reduce retained-lifecycle Bay refresh CPU by skipping repeated sample sorting for older cards while preserving full-history validation, counts, and ordering.
 
 - Preserve app-server turn failures so capacity errors remain retryable and unavailable models remain terminal instead of surfacing a missing result file. Thanks @Yigtwxx.

@@ -1167,6 +1167,94 @@ test("strong persistence evidence remains unknown when production normalization 
   }
 });
 
+test("memory prompt contracts need patch evidence for vector persistence", () => {
+  const filename = "extensions/memory-core/src/memory-tool-contract.ts";
+  assert.deepEqual(dataModelChangeFromPullFilesForTest({ pullFiles: [{ filename }] }), {
+    change: false,
+    surfaces: [],
+  });
+  assert.deepEqual(dataModelChangeFromPullFilesForTest({ pullFiles: [{ filename, patch: "" }] }), {
+    change: false,
+    surfaces: [],
+  });
+
+  const normalizedPullFiles = hydratePrimaryBody("", "pull_request", {
+    pullFiles: [
+      {
+        filename,
+        patch: `@@\n${" // retained context\n".repeat(110)}+  return memoryToolContract;`,
+      },
+    ],
+  }).context.pullFiles;
+  assert.match(normalizedPullFiles[0]?.patch ?? "", /\[truncated \d+ chars\]$/);
+  assert.deepEqual(dataModelChangeFromPullFilesForTest({ pullFiles: normalizedPullFiles }), {
+    change: false,
+    surfaces: [],
+  });
+});
+
+test("explicit vector and embedding owners override memory contract basename exemptions", () => {
+  for (const filename of [
+    "src/vector/memory-tool-contract.ts",
+    "src/embedding/memory-prompt-contract.ts",
+  ]) {
+    for (const patch of [undefined, "", "@@\n+  refresh();\n\n[truncated 99 chars]"]) {
+      const pullFiles = [patch === undefined ? { filename } : { filename, patch }];
+      assert.deepEqual(
+        dataModelChangeFromPullFilesForTest({ pullFiles }),
+        {
+          change: true,
+          surfaces: [`unknown-data-model-change: ${filename}`],
+        },
+        `${filename}: ${patch === undefined ? "missing" : patch === "" ? "empty" : "truncated"} patch`,
+      );
+    }
+  }
+});
+
+test("memory persistence owners remain blocked when patch content is unavailable", () => {
+  for (const filename of [
+    "src/memory/vector-store.ts",
+    "extensions/memory-lancedb/lancedb-store.ts",
+    "extensions/memory-core/src/dreaming-state.ts",
+    "extensions/memory-core/src/standing-intents.ts",
+    "extensions/memory-core/src/dreaming-dreams-file.ts",
+    "extensions/memory-core/src/memory-entry-origins.ts",
+    "extensions/memory-core/src/short-term-promotion-types.ts",
+    "extensions/memory-core/src/dreaming-consolidation-artifacts.ts",
+    "extensions/memory-core/src/memory-tool-contract-state.ts",
+    "extensions/memory-core/src/memory-prompt-description-history.ts",
+    "extensions/memory-wiki/src/source-sync-state.ts",
+    "extensions/memory-core/src/memory-session-tombstones.ts",
+    "extensions/memory-wiki/src/compiled-cache.ts",
+  ]) {
+    for (const patch of [undefined, "", "@@\n+  refresh();\n\n[truncated 99 chars]"]) {
+      const file = patch === undefined ? { filename } : { filename, patch };
+      const detection = dataModelChangeFromPullFilesForTest({ pullFiles: [file] });
+      assert.deepEqual(detection, {
+        change: true,
+        surfaces: [`unknown-data-model-change: ${filename}`],
+      });
+      const report = persistenceReport(detection, "a".repeat(40));
+      assert.match(
+        renderReviewCommentFromReport(report, "none"),
+        /Add data-model compatibility proof/,
+      );
+      assert.match(reviewAutomationMarkersFromReport(report), /clawsweeper-verdict:needs-human/);
+    }
+  }
+});
+
+test("semantic vector metadata remains detectable under a non-owner memory subsystem path", () => {
+  const filename = "extensions/memory-core/src/memory-tool-contract.ts";
+  assert.deepEqual(
+    dataModelChangeFromPullFilesForTest({
+      pullFiles: [{ filename, patch: "@@\n+  embeddingDimension: row.embedding_dimension," }],
+    }),
+    { change: true, surfaces: [`vector/embedding metadata: ${filename}`] },
+  );
+});
+
 test("config surface reports force human review instead of automerge pass", () => {
   const report = `${reportFrontMatter({
     type: "pull_request",
