@@ -157,3 +157,25 @@ remains refused. No model call, hosted retry or clearance, deployment, historica
 hosted raw-identity match, or exhaustive descendant containment is claimed.
 OpenClaw Bay is unaffected: no queue, status, API, dashboard, publication, or
 observer contract changes.
+
+## Qualification after upstream integration
+
+The [current candidate record](autoreview-base64-current-native.json) qualifies
+owner commit `9990cf2920f797eb0037cd928dc0938fb71719fe`, rebased onto
+`5f73370171673b318108ffb1a5d59761c9624846`. The updated fixture module includes
+the intervening independent qualifications and their explicit repeated-witness
+validation. Its policy SHA-256 is
+`594bab3d5fdadd6304d11a3b9f860528f841433b8d8dd7c1fa1a78188927b48f`;
+compiled module SHA-256 is
+`412c6e3ae46d3bede4a1b6d6805a4d0b75596f70cfa1b2bb8af43b8e21e1df37`.
+
+One native scan emitted the full-value BASE64 finding at canonical head line
+5602 and six PLAIN findings; all seven were admitted. The complete 13-material
+and 75-file fingerprints match the preceding full record. Normal verification,
+native exit 183, both EOFs, unchanged forwarded streams, source/runtime hashes,
+and complete lease cleanup were verified. The driver exited zero.
+
+This is a single-candidate observation, without a new paired baseline or a
+decoder-driven retry. The same controlled prompt, instrumentation, vendor-path,
+and hosted-admission limits above still apply. It does not replace the historical
+comparison or establish a model-review verdict.

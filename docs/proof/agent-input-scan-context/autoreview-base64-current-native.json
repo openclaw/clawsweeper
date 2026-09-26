@@ -1,0 +1,525 @@
+{
+  "source": {
+    "repository": "openclaw/agent-skills",
+    "base": "3030d66592c1288452cba8ff80206a4cb512f9ba",
+    "head": "267a6a0e21fe2667bb973c7eb697722e0f278ffb"
+  },
+  "owner": {
+    "repository": "openclaw/clawsweeper",
+    "base": "5f73370171673b318108ffb1a5d59761c9624846",
+    "head": "9990cf2920f797eb0037cd928dc0938fb71719fe",
+    "tree": "c6d50d4592a6f520b178919deddde67d948125a6",
+    "candidatePolicySha256": "594bab3d5fdadd6304d11a3b9f860528f841433b8d8dd7c1fa1a78188927b48f",
+    "candidateRuntimeSha256": "412c6e3ae46d3bede4a1b6d6805a4d0b75596f70cfa1b2bb8af43b8e21e1df37",
+    "sourceHashes": {
+      "package.json": "246e35ca3a1271f44cfa3002c70e42d7bfca52c57eb753476d85c40540368042",
+      "pnpm-lock.yaml": "aa0d45af8b9171ec260f8e55bc4530d1f18c96363c61f3012ffa1d3174fb9b35",
+      "src/agent-input-scan-fixtures.ts": "594bab3d5fdadd6304d11a3b9f860528f841433b8d8dd7c1fa1a78188927b48f",
+      "src/agent-input-scan-git-metadata.ts": "aa2d2858c97deb2eda8d0a726ee5bbde0b9862a46918d1d93c07456cf93d6d63",
+      "src/agent-input-scan-patch.ts": "9dcc66448e27f5169caff345e83b052c627b85461ad2346bb98b324e46a6fe48",
+      "src/agent-input-scan.ts": "dfde3f9b0ae1d23af8afa06ed3a10d569f2f60ad944167cefdd1ded4192fed1e",
+      "src/content-hash.ts": "0ebaf5c09d89395b019035875c67e679fc7699ca4289fd27a8fd640bc13782f4",
+      "src/pr-review-evidence.ts": "9ff18325cd5ae9a9f031817ce92815d80ff57f46d07c498bc6c116dbc4af3040",
+      "src/review-tool-bootstrap.ts": "ceea508c0154837dcdda802e683ae5570b9398f6b47b50e9ff35edd573a36bd5",
+      "tsconfig.json": "3b36704bcdecf79fbe34d2be24435d640c20c8cd0de805145a932d8b282f1ca2"
+    },
+    "runtimeHashes": {
+      "dist/agent-input-scan-fixtures.js": "412c6e3ae46d3bede4a1b6d6805a4d0b75596f70cfa1b2bb8af43b8e21e1df37",
+      "dist/agent-input-scan-git-metadata.js": "9420ca94f8eab2a10c7fdc7e7f41ee1375a5054d5f8ec0faee08310974e3fe20",
+      "dist/agent-input-scan-patch.js": "528824d5bb8c9d94f9749e6b867d1602c4fc5af3890135977a41a63ec19a7bd3",
+      "dist/agent-input-scan.js": "414301ed2a7b3f9b869501da12e95006e15badcff7588584ab5659a56f32c618",
+      "dist/content-hash.js": "a2a8abdda4f00440597cd0988892159e7f70e79a6881adbb0e0034d17089658f",
+      "dist/pr-review-evidence.js": "28fc0e9d874c27bcdfed25ac0055ae7138b6dd44249d4839a0129c46e5214cd8",
+      "dist/review-tool-bootstrap.js": "fff2a8edaa7b1630086c1c593354a134e18fade314840af2675b9020574f5923",
+      "docs/proof/agent-input-scan-context/run-proof.mjs": "c6a52497fd63fd47f4494cb8b2d472ef81c463069a5dee97c804b066bf6b7e8f",
+      "package.json": "246e35ca3a1271f44cfa3002c70e42d7bfca52c57eb753476d85c40540368042"
+    },
+    "build": {
+      "command": ["pnpm", "run", "build:node"],
+      "exit": 0,
+      "head": "9990cf2920f797eb0037cd928dc0938fb71719fe",
+      "compilerLauncherSha256": "cbdfbf11c26ed00dfc073155e316a42d6d6d8a387be61006b82fa9aa93ac572e"
+    }
+  },
+  "execution": {
+    "provider": "aws",
+    "leaseIdentifierSha256": "e3ac7ac94cbc5c2e299e13ccd537f4c056385dc1f2f9823ce302bc9a2b2ad833",
+    "platform": {
+      "system": "Linux",
+      "machine": "x86_64",
+      "release": "7.0.0-1009-aws",
+      "python": "3.14.4"
+    },
+    "node": {
+      "version": "v24.21.0",
+      "sha256": "7fde7b8afa198da66257f42ee2001d874c7355631e6d1579a5fb5ef1f246df4c",
+      "archiveSha256": "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6"
+    },
+    "scanner": {
+      "version": "trufflehog 3.97.4",
+      "sha256": "95c2a42bce979fce6dd73cc629b37ae4d72731b0dc16e047fba41a77bc765620",
+      "archiveSha256": "dc24007c2f233bd61c05beabeb44aa27ea9b43288166279209abe0458c5ce76b"
+    },
+    "scannerPublishedChecksumVerified": true,
+    "driver": [
+      "node",
+      "docs/proof/agent-input-scan-context/run-proof.mjs",
+      "<source-checkout>",
+      "3030d66592c1288452cba8ff80206a4cb512f9ba",
+      "267a6a0e21fe2667bb973c7eb697722e0f278ffb",
+      "<safe-report>"
+    ],
+    "nativeFlags": [
+      "filesystem",
+      "<staged-inputs>",
+      "--results=verified,unknown",
+      "--fail",
+      "--fail-on-scan-errors",
+      "--no-update",
+      "--json",
+      "--no-color"
+    ],
+    "scannerTimeoutMs": 180000,
+    "captureWrapperSha256": "f77bf90dcc435a5f9011020cf5682c380af66c8cdb0dc5bf822b1755913272a3",
+    "captureWrapperUnchangedFromPriorProof": true,
+    "bootstrapSha256": "e8d082a0e561ff7bf17685cbfd7045c471ef1a31f593a42fd83e879813128899",
+    "scannerEnvironmentNames": ["HOME", "LC_CTYPE", "TEMP", "TMP", "TMPDIR"],
+    "iamCredentialEndpointStatus": 404,
+    "scanInvocations": 1,
+    "modelCalls": 0
+  },
+  "immutableInputs": {
+    "priorFullRecord": {
+      "repositoryPath": "docs/proof/agent-input-scan-context/autoreview-base64-native.json",
+      "ownerRevision": "9990cf2920f797eb0037cd928dc0938fb71719fe",
+      "sha256": "ee20b0e4c7d08fafff13a11c1de794b55d084846b4bcd989c663aa09c6143145",
+      "candidateRunIndex": 1
+    },
+    "stagedMaterials": {
+      "count": 13,
+      "fingerprintAlgorithm": "SHA-256 of compact JSON with recursively sorted keys; temporary path omitted, all other manifest fields retained",
+      "fingerprintSha256": "0ac2a2e92f001e81674a4194587e93943e0300eee1650f17aa1af9318b85ed1e",
+      "priorRecordPointer": "/runs/1/scan/manifest",
+      "equalToPriorCompleteManifest": true,
+      "setMatchesIndependentGitReconstruction": true,
+      "bytesMatchIndependentGitReconstruction": true,
+      "bytesUnchangedAfter": true,
+      "modesUnchangedAfter": true
+    },
+    "targetFiles": {
+      "count": 75,
+      "fingerprintAlgorithm": "SHA-256 of compact JSON with recursively sorted path keys and SHA-256 values",
+      "fingerprintSha256": "14515ed2db87dd60edb9d891a1d1c075f323be1d02be2ffd8fb79cbcf868e22c",
+      "priorRecordPointer": "/runs/1/targetBefore",
+      "equalToPriorCompleteManifest": true,
+      "unchangedAfter": true
+    }
+  },
+  "admission": {
+    "result": "admitted",
+    "driverExit": 0,
+    "elapsedMs": 4511,
+    "verification": "canonical enabled",
+    "prompt": {
+      "bytes": 71,
+      "kind": "controlled",
+      "sha256": "ec04b7c204ee8e5aafb5fc4f81351c69e8fa7375aba79b95e50ecc86c127f66f"
+    },
+    "schema": null,
+    "findings": [
+      {
+        "findingIndex": 0,
+        "detector": "URI",
+        "detectorType": 17,
+        "actualDecoderName": "BASE64",
+        "verified": false,
+        "verificationErrorPresent": true,
+        "rawSha256": "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83",
+        "rawBytes": 61,
+        "rawV2Sha256": "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83",
+        "rawV2Bytes": 61,
+        "inputId": "e043a5e53abf3479da96ac101800e6879423d7cd",
+        "scannerLine": 5602,
+        "verificationErrorShape": {
+          "type": "str",
+          "bytes": 59,
+          "sha256": "2299ffcddd660447747b1fb7a0eebb9f796ced0638ca95fbdbb815d33e45e351"
+        },
+        "literalWitness": {
+          "source": "skills/autoreview/tests/test_autoreview_hardening.py",
+          "mode": "100644",
+          "revision": "267a6a0e21fe2667bb973c7eb697722e0f278ffb",
+          "role": "head",
+          "offsetBytes": 295682,
+          "lengthBytes": 61,
+          "lines": [
+            {
+              "crRetained": true,
+              "fullLfLineSha256": "1a0920c31a227ead081fd2e6582572dfee060995e266a5520f66021acaa918c9",
+              "lfTerminatorExcluded": true,
+              "line": 5602,
+              "lineBytes": 76
+            }
+          ]
+        },
+        "classificationNotice": {
+          "source": "skills/autoreview/tests/test_autoreview_hardening.py",
+          "blob": "e043a5e53abf3479da96ac101800e6879423d7cd",
+          "decoder": "BASE64",
+          "literalLine": 5602,
+          "occurrences": 1,
+          "role": "head",
+          "scannerLine": 5602
+        }
+      },
+      {
+        "findingIndex": 1,
+        "detector": "URI",
+        "detectorType": 17,
+        "actualDecoderName": "PLAIN",
+        "verified": false,
+        "verificationErrorPresent": true,
+        "rawSha256": "fe36092bead3bd47192a05374917c4614ce7642137dc83b9685ab6b5a37d8736",
+        "rawBytes": 23,
+        "rawV2Sha256": "fe36092bead3bd47192a05374917c4614ce7642137dc83b9685ab6b5a37d8736",
+        "rawV2Bytes": 23,
+        "inputId": "c1de717504d47d854f5abd189bf61be98242d0f6",
+        "scannerLine": 8142,
+        "verificationErrorShape": {
+          "type": "str",
+          "bytes": 48,
+          "sha256": "0eba0acbce8dba617dd8db7986b7606eeb15dbd71ba701254c9f3a1122e0079d"
+        },
+        "literalWitness": {
+          "source": "skills/autoreview/tests/test_autoreview_hardening.py",
+          "mode": "100644",
+          "revision": "3030d66592c1288452cba8ff80206a4cb512f9ba",
+          "role": "base",
+          "offsetBytes": 401649,
+          "lengthBytes": 23,
+          "lines": [
+            {
+              "crRetained": true,
+              "fullLfLineSha256": "fd0e2849810c912b53dafd71eb60b4a9e2a3bb25bbd7d2dbd67136b207393d9b",
+              "lfTerminatorExcluded": true,
+              "line": 8142,
+              "lineBytes": 90
+            }
+          ]
+        },
+        "classificationNotice": {
+          "source": "skills/autoreview/tests/test_autoreview_hardening.py",
+          "blob": "c1de717504d47d854f5abd189bf61be98242d0f6",
+          "decoder": "PLAIN",
+          "literalLine": 8142,
+          "occurrences": 1,
+          "role": "base",
+          "scannerLine": 8142
+        }
+      },
+      {
+        "findingIndex": 2,
+        "detector": "URI",
+        "detectorType": 17,
+        "actualDecoderName": "PLAIN",
+        "verified": false,
+        "verificationErrorPresent": true,
+        "rawSha256": "b12f4f7ee1e8ec1c544b81f14b0252734d816bd79ced79d342dbca650c4f6c31",
+        "rawBytes": 23,
+        "rawV2Sha256": "b12f4f7ee1e8ec1c544b81f14b0252734d816bd79ced79d342dbca650c4f6c31",
+        "rawV2Bytes": 23,
+        "inputId": "c1de717504d47d854f5abd189bf61be98242d0f6",
+        "scannerLine": 8142,
+        "verificationErrorShape": {
+          "type": "str",
+          "bytes": 48,
+          "sha256": "0eba0acbce8dba617dd8db7986b7606eeb15dbd71ba701254c9f3a1122e0079d"
+        },
+        "literalWitness": {
+          "source": "skills/autoreview/tests/test_autoreview_hardening.py",
+          "mode": "100644",
+          "revision": "3030d66592c1288452cba8ff80206a4cb512f9ba",
+          "role": "base",
+          "offsetBytes": 401676,
+          "lengthBytes": 23,
+          "lines": [
+            {
+              "crRetained": true,
+              "fullLfLineSha256": "fd0e2849810c912b53dafd71eb60b4a9e2a3bb25bbd7d2dbd67136b207393d9b",
+              "lfTerminatorExcluded": true,
+              "line": 8142,
+              "lineBytes": 90
+            }
+          ]
+        },
+        "classificationNotice": {
+          "source": "skills/autoreview/tests/test_autoreview_hardening.py",
+          "blob": "c1de717504d47d854f5abd189bf61be98242d0f6",
+          "decoder": "PLAIN",
+          "literalLine": 8142,
+          "occurrences": 1,
+          "role": "base",
+          "scannerLine": 8142
+        }
+      },
+      {
+        "findingIndex": 3,
+        "detector": "URI",
+        "detectorType": 17,
+        "actualDecoderName": "PLAIN",
+        "verified": false,
+        "verificationErrorPresent": true,
+        "rawSha256": "b12f4f7ee1e8ec1c544b81f14b0252734d816bd79ced79d342dbca650c4f6c31",
+        "rawBytes": 23,
+        "rawV2Sha256": "b12f4f7ee1e8ec1c544b81f14b0252734d816bd79ced79d342dbca650c4f6c31",
+        "rawV2Bytes": 23,
+        "inputId": "e043a5e53abf3479da96ac101800e6879423d7cd",
+        "scannerLine": 7698,
+        "verificationErrorShape": {
+          "type": "str",
+          "bytes": 48,
+          "sha256": "0eba0acbce8dba617dd8db7986b7606eeb15dbd71ba701254c9f3a1122e0079d"
+        },
+        "literalWitness": {
+          "source": "skills/autoreview/tests/test_autoreview_hardening.py",
+          "mode": "100644",
+          "revision": "267a6a0e21fe2667bb973c7eb697722e0f278ffb",
+          "role": "head",
+          "offsetBytes": 384821,
+          "lengthBytes": 23,
+          "lines": [
+            {
+              "crRetained": true,
+              "fullLfLineSha256": "fd0e2849810c912b53dafd71eb60b4a9e2a3bb25bbd7d2dbd67136b207393d9b",
+              "lfTerminatorExcluded": true,
+              "line": 7698,
+              "lineBytes": 90
+            }
+          ]
+        },
+        "classificationNotice": {
+          "source": "skills/autoreview/tests/test_autoreview_hardening.py",
+          "blob": "e043a5e53abf3479da96ac101800e6879423d7cd",
+          "decoder": "PLAIN",
+          "literalLine": 7698,
+          "occurrences": 1,
+          "role": "head",
+          "scannerLine": 7698
+        }
+      },
+      {
+        "findingIndex": 4,
+        "detector": "URI",
+        "detectorType": 17,
+        "actualDecoderName": "PLAIN",
+        "verified": false,
+        "verificationErrorPresent": true,
+        "rawSha256": "80842079cf4e73add753d25a74646356617b39c399e77d38b34bb21818e303d2",
+        "rawBytes": 48,
+        "rawV2Sha256": "80842079cf4e73add753d25a74646356617b39c399e77d38b34bb21818e303d2",
+        "rawV2Bytes": 48,
+        "inputId": "e043a5e53abf3479da96ac101800e6879423d7cd",
+        "scannerLine": 7710,
+        "verificationErrorShape": {
+          "type": "str",
+          "bytes": 41,
+          "sha256": "8610414add3babf87a9aa77f5238a6d08cd90d580438e556a492cbfcc3ee21c9"
+        },
+        "literalWitness": {
+          "source": "skills/autoreview/tests/test_autoreview_hardening.py",
+          "mode": "100644",
+          "revision": "267a6a0e21fe2667bb973c7eb697722e0f278ffb",
+          "role": "head",
+          "offsetBytes": 385404,
+          "lengthBytes": 48,
+          "lines": [
+            {
+              "crRetained": true,
+              "fullLfLineSha256": "3099aae4bfd434977aa185a0b73674b3238305b0c94b9f36255cf1ad9d9a66ac",
+              "lfTerminatorExcluded": true,
+              "line": 7710,
+              "lineBytes": 70
+            }
+          ]
+        },
+        "classificationNotice": {
+          "source": "skills/autoreview/tests/test_autoreview_hardening.py",
+          "blob": "e043a5e53abf3479da96ac101800e6879423d7cd",
+          "decoder": "PLAIN",
+          "literalLine": 7710,
+          "occurrences": 1,
+          "role": "head",
+          "scannerLine": 7710
+        }
+      },
+      {
+        "findingIndex": 5,
+        "detector": "URI",
+        "detectorType": 17,
+        "actualDecoderName": "PLAIN",
+        "verified": false,
+        "verificationErrorPresent": true,
+        "rawSha256": "fe36092bead3bd47192a05374917c4614ce7642137dc83b9685ab6b5a37d8736",
+        "rawBytes": 23,
+        "rawV2Sha256": "fe36092bead3bd47192a05374917c4614ce7642137dc83b9685ab6b5a37d8736",
+        "rawV2Bytes": 23,
+        "inputId": "e043a5e53abf3479da96ac101800e6879423d7cd",
+        "scannerLine": 7698,
+        "verificationErrorShape": {
+          "type": "str",
+          "bytes": 48,
+          "sha256": "0eba0acbce8dba617dd8db7986b7606eeb15dbd71ba701254c9f3a1122e0079d"
+        },
+        "literalWitness": {
+          "source": "skills/autoreview/tests/test_autoreview_hardening.py",
+          "mode": "100644",
+          "revision": "267a6a0e21fe2667bb973c7eb697722e0f278ffb",
+          "role": "head",
+          "offsetBytes": 384794,
+          "lengthBytes": 23,
+          "lines": [
+            {
+              "crRetained": true,
+              "fullLfLineSha256": "fd0e2849810c912b53dafd71eb60b4a9e2a3bb25bbd7d2dbd67136b207393d9b",
+              "lfTerminatorExcluded": true,
+              "line": 7698,
+              "lineBytes": 90
+            }
+          ]
+        },
+        "classificationNotice": {
+          "source": "skills/autoreview/tests/test_autoreview_hardening.py",
+          "blob": "e043a5e53abf3479da96ac101800e6879423d7cd",
+          "decoder": "PLAIN",
+          "literalLine": 7698,
+          "occurrences": 1,
+          "role": "head",
+          "scannerLine": 7698
+        }
+      },
+      {
+        "findingIndex": 6,
+        "detector": "URI",
+        "detectorType": 17,
+        "actualDecoderName": "PLAIN",
+        "verified": false,
+        "verificationErrorPresent": true,
+        "rawSha256": "80842079cf4e73add753d25a74646356617b39c399e77d38b34bb21818e303d2",
+        "rawBytes": 48,
+        "rawV2Sha256": "80842079cf4e73add753d25a74646356617b39c399e77d38b34bb21818e303d2",
+        "rawV2Bytes": 48,
+        "inputId": "c1de717504d47d854f5abd189bf61be98242d0f6",
+        "scannerLine": 8154,
+        "verificationErrorShape": {
+          "type": "str",
+          "bytes": 41,
+          "sha256": "8610414add3babf87a9aa77f5238a6d08cd90d580438e556a492cbfcc3ee21c9"
+        },
+        "literalWitness": {
+          "source": "skills/autoreview/tests/test_autoreview_hardening.py",
+          "mode": "100644",
+          "revision": "3030d66592c1288452cba8ff80206a4cb512f9ba",
+          "role": "base",
+          "offsetBytes": 402259,
+          "lengthBytes": 48,
+          "lines": [
+            {
+              "crRetained": true,
+              "fullLfLineSha256": "3099aae4bfd434977aa185a0b73674b3238305b0c94b9f36255cf1ad9d9a66ac",
+              "lfTerminatorExcluded": true,
+              "line": 8154,
+              "lineBytes": 70
+            }
+          ]
+        },
+        "classificationNotice": {
+          "source": "skills/autoreview/tests/test_autoreview_hardening.py",
+          "blob": "c1de717504d47d854f5abd189bf61be98242d0f6",
+          "decoder": "PLAIN",
+          "literalLine": 8154,
+          "occurrences": 1,
+          "role": "base",
+          "scannerLine": 8154
+        }
+      }
+    ]
+  },
+  "qualification": {
+    "candidateAdmittedAllEmittedFindings": true,
+    "candidateCanonicalRowActuallyExercised": true,
+    "candidateDesiredBase64Emitted": true,
+    "candidateOnly": true,
+    "fullBeforeAfterCaseExercised": false,
+    "noFindingAbsenceTreatedAsClearance": true,
+    "noRetry": true,
+    "vendorRowsNativelyExercised": false
+  },
+  "completion": {
+    "nativeExit": 183,
+    "nativeWaitCompleted": true,
+    "bothStreamsEof": true,
+    "normalCompletionRecord": {
+      "bytes": 2304195,
+      "chunks": 182,
+      "level": "info-0",
+      "logger": "trufflehog",
+      "msg": "finished scanning",
+      "scan_duration": "338.425778ms",
+      "trufflehog_version": "3.97.4",
+      "unverified_secrets": 7,
+      "verified_secrets": 0
+    },
+    "nativeCollectionComplete": true,
+    "streams": {
+      "stdout": {
+        "bytes": 5931,
+        "sha256": "9de337e44735bd95994aba05d4d39944e85ca6c86dc7c9d6126870d9c2fc21da",
+        "forwardedBytes": 5931,
+        "forwardedSha256": "9de337e44735bd95994aba05d4d39944e85ca6c86dc7c9d6126870d9c2fc21da"
+      },
+      "stderr": {
+        "bytes": 483,
+        "sha256": "1b091e62ccf21613449d1cd37214093a70bde411c2c0740e9c5ecb2cbee9ae22",
+        "forwardedBytes": 483,
+        "forwardedSha256": "1b091e62ccf21613449d1cd37214093a70bde411c2c0740e9c5ecb2cbee9ae22"
+      }
+    },
+    "scannerUnchanged": true,
+    "nodeUnchanged": true,
+    "wrapperUnchanged": true,
+    "runtimeUnchanged": true,
+    "targetUnchanged": true,
+    "localOwnerTrackedFiles": 1811,
+    "localOwnerSourceUnchanged": true,
+    "localOwnerRuntimeUnchanged": true,
+    "rawStreamsPersisted": false,
+    "rawValuesPersisted": false
+  },
+  "cleanup": {
+    "state": "released",
+    "cleanupStatus": "complete",
+    "cleanupCompletedAt": "2026-09-26T20:37:37.091Z",
+    "provisioningResourceMayExist": false,
+    "hasHost": false,
+    "ready": false,
+    "rawInputDirectoriesRemoved": {
+      "bin": true,
+      "downloads": true,
+      "home": true,
+      "hosts": true,
+      "target": true,
+      "tmp": true,
+      "tools": true
+    }
+  },
+  "limits": [
+    "Exactly one current-candidate native scan; no new paired baseline and no decoder-driven retry.",
+    "Current runtime admitted one observed BASE64 finding and six observed PLAIN findings. The exact canonical BASE64 witness was exercised.",
+    "Historical paired evidence remains separate; this is not a fresh paired refusal-to-admission reproduction.",
+    "Controlled 71-byte prompt, no supplied schema, no model calls; hosted admission must rescan its own complete inputs.",
+    "Vendor-path rows were not natively exercised.",
+    "Scanner verification remains enabled and can emit different finding subsets. Absence would not establish row exercise.",
+    "Transparent wrapper forwards native bytes and exit unchanged; Python startup may add LC_CTYPE.",
+    "Raw scanner streams and extra matched-value copies remained memory-only; raw temporary input directories and the task lease were removed."
+  ]
+}
