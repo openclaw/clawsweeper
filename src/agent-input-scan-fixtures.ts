@@ -240,6 +240,11 @@ const CRABBOX_POSTGRES_DOC_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  // Proxy CLI text/JSON redaction repeats the same complete synthetic line twice.
+  [17, "URI", "HTML", "0ef0207595a31168bf8da47767ebd6cd1df772894fad34d7c415c3a54bc9682a", "0ef0207595a31168bf8da47767ebd6cd1df772894fad34d7c415c3a54bc9682a", ["b34b027056c44f232c1ab8ef2d1e4c9b41ea4787a6f56ec2facbdfa5e4bff00c", "590899f2b5c558e7265ac4a53210cb4fd6f6baebdbedddc771d3dc2aed293648"], "src/cli/proxy-cli.runtime.test.ts", "100644"],
+  [17, "URI", "PLAIN", "0ef0207595a31168bf8da47767ebd6cd1df772894fad34d7c415c3a54bc9682a", "0ef0207595a31168bf8da47767ebd6cd1df772894fad34d7c415c3a54bc9682a", ["b34b027056c44f232c1ab8ef2d1e4c9b41ea4787a6f56ec2facbdfa5e4bff00c", "590899f2b5c558e7265ac4a53210cb4fd6f6baebdbedddc771d3dc2aed293648"], "src/cli/proxy-cli.runtime.test.ts", "100644"],
+  [17, "URI", "HTML", "d73af422596b1963c65ae6c2639fd088da3b9196ad1676465d4da43812708fba", "d73af422596b1963c65ae6c2639fd088da3b9196ad1676465d4da43812708fba", ["ba07145053e337022d012e835604c02e3b7e71403225b7d614bee8c1cdd4c746", "ba07145053e337022d012e835604c02e3b7e71403225b7d614bee8c1cdd4c746"], "src/cli/proxy-cli.runtime.test.ts", "100644"],
+  [17, "URI", "PLAIN", "d73af422596b1963c65ae6c2639fd088da3b9196ad1676465d4da43812708fba", "d73af422596b1963c65ae6c2639fd088da3b9196ad1676465d4da43812708fba", ["ba07145053e337022d012e835604c02e3b7e71403225b7d614bee8c1cdd4c746", "ba07145053e337022d012e835604c02e3b7e71403225b7d614bee8c1cdd4c746"], "src/cli/proxy-cli.runtime.test.ts", "100644"],
   // Session Share negative userinfo-link fixtures in OpenClaw PR #156736; observed decoders only.
   [17, "URI", "PLAIN", "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738", "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738", "4eaa188aa62167bab9ffb1ef558222f557cfbb82b7bf480aec3fcb29482604d4", "extensions/session-share/src/session-catalog.test.ts", "100644"],
   [17, "URI", "HTML", "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738", "d64fb4dbdd415057a5e18c16c1e7883ea0d4c0daf3bdfcde04df6412565f4738", "4eaa188aa62167bab9ffb1ef558222f557cfbb82b7bf480aec3fcb29482604d4", "extensions/session-share/src/session-catalog.test.ts", "100644"],
@@ -383,7 +388,6 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
       detectorNames[detectorType] !== detectorName ||
       !Array.isArray(lines) ||
       !lines.length ||
-      new Set(lines).size !== lines.length ||
       ![raw, rawV2, ...lines].every((digest) => sha256Pattern.test(digest)) ||
       !(
         (source === "src/logging/redact.test.ts" &&
@@ -401,6 +405,7 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           source === "extensions/session-share/src/session-catalog.test.ts" ||
           source === "ui/src/components/app-sidebar-catalog-menu.test.ts" ||
           source === "src/secrets/model-egress.test.ts" ||
+          source === "src/cli/proxy-cli.runtime.test.ts" ||
           source === "extensions/browser/src/browser/routes/basic.existing-session.test.ts" ||
           source === "extensions/typesafe/src/local.transport.test.ts" ||
           source === "extensions/browser/src/browser/config.test.ts" ||
