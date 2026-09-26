@@ -34,6 +34,10 @@ canonical verification, complete committed source range, and a controlled prompt
 Only safe classifier notices and a bounded result are retained. It does not run
 a model or replace the hosted review's own prompt/schema/source admission.
 
+The separate [Autoreview BASE64 qualification](autoreview-base64.md) records
+the bounded blob-only policy, its historical native refusal, and the executed
+candidate qualification with its distinct baseline observation.
+
 ## Model-egress fixtures
 
 OpenClaw [PR 156207](https://github.com/openclaw/openclaw/pull/156207) adds two

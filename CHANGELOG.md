@@ -9,6 +9,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 - Qualify the exact repeated proxy CLI redaction fixture while preserving native verification, full-line witnesses, and occurrence counts.
 
+- Qualify the exact Autoreview proxy fixture under BASE64 labeling only when its approved literal source witnesses match.
+
 - Qualify exact historical acpx Autoreview URI test fixtures by native digests, ordered line witnesses, and committed source path while preserving verification and rejection of unreviewed findings.
 
 - Preserve worker results and Git cleanup on macOS when a process group contains only owned zombies, while retaining live-process permission errors and settlement deadlines.

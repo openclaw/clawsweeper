@@ -193,14 +193,15 @@ function fixturePatch(
   const classify = (
     decoder: "PLAIN" | "HTML",
     overrides: Record<string, unknown> = {},
-    options: { duplicate?: boolean; complete?: boolean } = {},
+    options: { duplicate?: boolean; complete?: boolean; blobOnly?: boolean } = {},
   ) => {
     const findings = fixtures.flatMap((fixture) =>
       fixture.entries
         .filter((entry) => entry.decoders.includes(decoder))
         .flatMap(({ raw, rawV2 = raw }) => {
           const url = new URL(rawV2);
-          return [patchFile, `/scanner/${blobIds.get(fixture.source)!}`].map((file) => ({
+          const blobFile = `/scanner/${blobIds.get(fixture.source)!}`;
+          return (options.blobOnly ? [blobFile] : [patchFile, blobFile]).map((file) => ({
             SourceType: 15,
             DetectorType: 17,
             DetectorName: "URI",
@@ -791,6 +792,185 @@ for (const prefix of [false, true]) {
       if (result.kind === "refused") assert.equal(result.diagnostic.reason, "literal_mismatch");
     });
   }
+}
+
+const autoreviewBase64Cases = [
+  ["canonical single witness", acpxOldBaseSource.slice(8), () => autoreviewFixtures()[0]!],
+  ["vendored single witness", acpxOldBaseSource, () => autoreviewFixtures()[0]!],
+  ["vendored historical witnesses", acpxOldBaseSource, () => acpxOldBaseProxyFixture(false)],
+] as const;
+
+for (const [name, source, makeFixture] of autoreviewBase64Cases) {
+  for (const change of ["add", "remove"] as const) {
+    test(`autoreview BASE64 ${name} admits the exact ${change} blob`, (t) => {
+      const patch = fixturePatch(t, source, [makeFixture()], change);
+      const result = patch.classify("PLAIN", { DecoderName: "BASE64" }, { blobOnly: true });
+      assert.equal(result.kind, "classified", JSON.stringify(result));
+      if (result.kind !== "classified") return;
+      assert.equal(result.notices.length, 1);
+      assert.equal(result.notices[0]!.source, source);
+      const findings = result.notices[0]!.findings;
+      assert.equal(findings.length, 1);
+      assert.equal(findings[0]!.decoder, "BASE64");
+      assert.equal(findings[0]!.role, patch.role);
+      assert.equal(findings[0]!.literalLine, 2);
+      assert.equal(findings[0]!.patch, undefined);
+    });
+  }
+
+  test(`autoreview BASE64 ${name} preserves exact finding and source guards`, (t) => {
+    const entry = makeFixture();
+    const patch = fixturePatch(t, source, [entry]);
+    const [file, input] = [...patch.inputs].find(
+      ([, input]) => input.kind === "blob" && input.bytes!.includes(entry.raw),
+    )!;
+    assert.ok(input.kind === "blob");
+    const classify = (overrides: Record<string, unknown> = {}) =>
+      patch.classify("PLAIN", { DecoderName: "BASE64", ...overrides }, { blobOnly: true });
+    const refuses = (result: ReturnType<typeof classify>, scenario: string) => {
+      assert.equal(result.kind, "refused", scenario);
+      assert.equal("notices" in result, false, scenario);
+      // BASE64 remains outside the public diagnostic decoder vocabulary.
+      if (result.kind === "refused" && result.diagnostic.kind === "unclassified_finding")
+        assert.equal(result.diagnostic.decoder, "OTHER", scenario);
+    };
+    for (const [scenario, overrides] of [
+      ["raw", { Raw: entry.raw + "x" }],
+      ["rawV2", { RawV2: entry.raw + "x" }],
+      ["both raw values", { Raw: entry.raw + "x", RawV2: entry.raw + "x" }],
+      ["verified", { Verified: true }],
+      ["unknown decoder", { DecoderName: "UNKNOWN" }],
+      ["wrong detector type", { DetectorType: 895 }],
+      ["wrong detector name", { DetectorName: "MongoDB" }],
+      ["wrong source type", { SourceType: 16 }],
+      ["no verification error", { VerificationError: "" }],
+      ["wrong secret parts", { SecretParts: { host: "other" } }],
+      ["extra data", { ExtraData: {} }],
+      ["structured data", { StructuredData: {} }],
+    ] as const)
+      refuses(classify(overrides), scenario);
+    for (const [scenario, reference] of [
+      ["path", { ...input.references[0]!, source: source + ".other" }],
+      ["mode", { ...input.references[0]!, mode: "100755" }],
+      ...(["index", "tree", "worktree"] as const).map(
+        (role) => [role, { ...input.references[0]!, role }] as const,
+      ),
+    ] as const) {
+      for (const references of [[reference], [...input.references, reference]]) {
+        patch.inputs.set(file, { ...input, references });
+        refuses(classify(), scenario);
+      }
+    }
+    patch.inputs.set(file, { ...input, references: [] });
+    refuses(classify(), "missing references");
+    for (const [scenario, bytes] of [
+      ["changed line", Buffer.from(entry.line + " \n")],
+      ["extra occurrence", Buffer.from(entry.line + "\n" + entry.line + "\n")],
+      ["missing literal", Buffer.from("# no literal\n")],
+      ["encoded only", Buffer.from(Buffer.from(entry.line).toString("base64") + "\n")],
+    ] as const) {
+      patch.inputs.set(file, { ...input, bytes });
+      refuses(classify({ SourceMetadata: { Data: { Filesystem: { file, line: 1 } } } }), scenario);
+    }
+    patch.inputs.set(file, input);
+    for (const kind of ["prompt", "schema", "additional", "patch", "raw_diff"] as const) {
+      const materialFile = "/scanner/unreviewed-material";
+      patch.inputs.set(materialFile, {
+        kind,
+        id: "unreviewed-material",
+        bytes: input.bytes!,
+        from: "a".repeat(40),
+        to: "b".repeat(40),
+      });
+      refuses(
+        classify({ SourceMetadata: { Data: { Filesystem: { file: materialFile, line: 2 } } } }),
+        kind,
+      );
+      patch.inputs.delete(materialFile);
+    }
+    for (const options of [{ duplicate: true }, { complete: false }]) {
+      const result = patch.classify(
+        "PLAIN",
+        { DecoderName: "BASE64" },
+        { blobOnly: true, ...options },
+      );
+      refuses(result, JSON.stringify(options));
+      if (result.kind === "refused")
+        assert.equal(
+          result.diagnostic.reason,
+          options.duplicate ? "duplicate_finding" : "incomplete_scan",
+        );
+    }
+  });
+
+  for (const change of ["add", "remove", "context"] as const) {
+    test(`autoreview BASE64 ${name} retains ${change} patch refusal`, (t) => {
+      const patch = fixturePatch(t, source, [makeFixture()], change);
+      const result = patch.classify("PLAIN", { DecoderName: "BASE64" });
+      assert.equal(result.kind, "refused");
+      if (result.kind === "refused")
+        assert.equal(result.diagnostic.reason, "material_not_reviewed");
+    });
+  }
+
+  test(`autoreview BASE64 ${name} refuses the unlisted native prefix`, (t) => {
+    const entry = makeFixture();
+    entry.raw = entry.raw.slice(0, entry.raw.lastIndexOf(":"));
+    entry.rawV2 = entry.raw;
+    const patch = fixturePatch(t, source, [entry]);
+    const result = patch.classify("PLAIN", { DecoderName: "BASE64" }, { blobOnly: true });
+    assert.equal(result.kind, "refused");
+    if (result.kind === "refused") assert.equal(result.diagnostic.reason, "finding_not_reviewed");
+  });
+}
+
+test("autoreview BASE64 single witness admits every approved shared reference and shifted scanner line", (t) => {
+  const entry = autoreviewFixtures()[0]!;
+  const patch = fixturePatch(t, acpxOldBaseSource, [entry]);
+  const [file, input] = [...patch.inputs].find(
+    ([, input]) => input.kind === "blob" && input.bytes!.includes(entry.raw),
+  )!;
+  assert.ok(input.kind === "blob");
+  patch.inputs.set(file, {
+    ...input,
+    references: [acpxOldBaseSource, acpxOldBaseSource.slice(8)].flatMap((source) =>
+      (["base", "head"] as const).map((role) => ({ ...input.references[0]!, source, role })),
+    ),
+  });
+  const result = patch.classify(
+    "PLAIN",
+    { DecoderName: "BASE64", SourceMetadata: { Data: { Filesystem: { file, line: 1 } } } },
+    { blobOnly: true },
+  );
+  assert.equal(result.kind, "classified", JSON.stringify(result));
+  if (result.kind !== "classified") return;
+  assert.equal(result.notices.length, 2);
+  for (const notice of result.notices) {
+    assert.deepEqual(
+      notice.findings.map(({ role }) => role),
+      ["base", "head"],
+    );
+    assert.ok(
+      notice.findings.every(
+        ({ scannerLine, literalLine }) => scannerLine === 1 && literalLine === 2,
+      ),
+    );
+  }
+});
+
+for (const variant of ["missing-first", "missing-second", "reordered", "canonical-path"] as const) {
+  test(`autoreview BASE64 historical witnesses preserve ${variant} behavior`, (t) => {
+    const entry = acpxOldBaseProxyFixture(false);
+    const lines = entry.line.split("\n");
+    if (variant === "missing-first") entry.line = lines[1]!;
+    if (variant === "missing-second") entry.line = lines[0]!;
+    if (variant === "reordered") entry.line = lines.reverse().join("\n");
+    const source = variant === "canonical-path" ? acpxOldBaseSource.slice(8) : acpxOldBaseSource;
+    const patch = fixturePatch(t, source, [entry], "remove");
+    const result = patch.classify("PLAIN", { DecoderName: "BASE64" }, { blobOnly: true });
+    // The first line alone selects the separately approved one-line row.
+    assert.equal(result.kind, variant === "missing-second" ? "classified" : "refused");
+  });
 }
 
 function sessionShareLinkFixture(menu: boolean): ReturnType<typeof autoreviewFixtures>[number] {
