@@ -565,6 +565,69 @@ function exactUriFixtureTests(
   }
 }
 
+function proxyCliRedactionFixture(
+  redacted: boolean,
+): ReturnType<typeof autoreviewFixtures>[number] {
+  const raw = [
+    "http://",
+    redacted ? "redacted:redacted" : "user:secret",
+    "@",
+    "proxy.example:3128",
+  ].join("");
+  const input = '        proxyUrl: "' + raw + '?token=secret#fragment",';
+  const lines = redacted
+    ? ['        "  URL:    ' + raw + '/\\n",', '            proxyUrl: "' + raw + '/",']
+    : [input, input];
+  return { raw, rawV2: raw, line: lines.join("\n"), decoders: ["PLAIN", "HTML"] };
+}
+
+const proxyCliSource = "src/cli/proxy-cli.runtime.test.ts";
+for (const redacted of [false, true]) {
+  const name = `proxy CLI redaction ${redacted ? "output" : "input"}`;
+  const makeFixture = () => proxyCliRedactionFixture(redacted);
+  exactUriFixtureTests(name, proxyCliSource, makeFixture);
+  const variants = [
+    "missing",
+    "extra",
+    "raw",
+    "raw-v2",
+    "mixed",
+    "duplicate",
+    "incomplete",
+    ...(redacted ? ["reordered", "suffix"] : ["query", "fragment"]),
+  ];
+  for (const variant of variants) {
+    test(`${name} refuses ${variant}`, (t) => {
+      const entry = makeFixture();
+      const lines = entry.line.split("\n");
+      if (variant === "missing") entry.line = lines[0]!;
+      if (variant === "extra") entry.line += "\n" + lines[0]!;
+      if (variant === "reordered") entry.line = lines.reverse().join("\n");
+      if (variant === "suffix") entry.line = entry.line.replace("/\\n", "/changed\\n");
+      if (variant === "query") entry.line = entry.line.replace("token=secret", "token=changed");
+      if (variant === "fragment") entry.line = entry.line.replace("#fragment", "#changed");
+      const entries = [entry];
+      if (variant === "mixed") {
+        const raw = entry.raw.replace("://", "://unreviewed");
+        entries.push({ raw, rawV2: raw, line: '"' + raw + '"', decoders: ["PLAIN", "HTML"] });
+      }
+      const patch = fixturePatch(t, proxyCliSource, entries);
+      for (const decoder of entry.decoders) {
+        const result = patch.classify(
+          decoder,
+          variant === "raw"
+            ? { Raw: entry.raw + "x" }
+            : variant === "raw-v2"
+              ? { RawV2: entry.rawV2 + "x" }
+              : {},
+          { duplicate: variant === "duplicate", complete: variant !== "incomplete" },
+        );
+        assert.equal(result.kind, "refused", JSON.stringify(result));
+      }
+    });
+  }
+}
+
 function malformedProxyFixture(): ReturnType<typeof autoreviewFixtures>[number] {
   const raw = ["http://", "review-user", ":", "review-password", "@", "proxy.example.invalid"].join(
     "",
