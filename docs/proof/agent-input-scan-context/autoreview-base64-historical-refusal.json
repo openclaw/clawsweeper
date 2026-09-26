@@ -1,0 +1,62 @@
+{
+  "ownerBaseTreeEquivalent": "726760a4e31bd88b10982908e042f59f01c7a18b",
+  "candidatePolicyAbsent": true,
+  "sourceBase": "3030d66592c1288452cba8ff80206a4cb512f9ba",
+  "sourceHead": "267a6a0e21fe2667bb973c7eb697722e0f278ffb",
+  "scannerVersion": "trufflehog 3.97.4",
+  "scannerBinarySha256": "95c2a42bce979fce6dd73cc629b37ae4d72731b0dc16e047fba41a77bc765620",
+  "wrapperSha256": "3b5d81a1851b0efbec7def1192de85340d954d6c9658502ceb164311a0237146",
+  "actualFindingCount": 7,
+  "admissionResult": "refused",
+  "diagnostic": {
+    "decoder": "OTHER",
+    "detectorType": 17,
+    "findingCount": 7,
+    "findingIndex": 0,
+    "kind": "unclassified_finding",
+    "material": {
+      "id": "e043a5e53abf3479da96ac101800e6879423d7cd",
+      "kind": "blob",
+      "referenceCount": 1,
+      "references": [
+        {
+          "mode": "100644",
+          "pathSha256": "c34ce1285a7f5cdff53f1fca71ada6ff1c382d824b241832a1e7338207197e24",
+          "revision": "267a6a0e21fe2667bb973c7eb697722e0f278ffb",
+          "role": "head"
+        }
+      ]
+    },
+    "reason": "finding_not_reviewed",
+    "scannerLine": 5602,
+    "verified": false
+  },
+  "firstActualIdentity": {
+    "detector": "URI",
+    "detectorType": 17,
+    "actualDecoderName": "BASE64",
+    "verified": false,
+    "rawSha256": "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83",
+    "rawV2Sha256": "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83",
+    "inputId": "e043a5e53abf3479da96ac101800e6879423d7cd",
+    "scannerLine": 5602
+  },
+  "sourceBlobSha256": "ce823a9fa56f3c0d099c0d2d66d90bbe6ba2908dd70ce0e1e1c62b149a42885d",
+  "fullLfLineSha256": "1a0920c31a227ead081fd2e6582572dfee060995e266a5520f66021acaa918c9",
+  "normalNativeCompletion": {
+    "bytes": 2304195,
+    "chunks": 182,
+    "logger": "trufflehog",
+    "msg": "finished scanning",
+    "scan_duration": "349.646507ms",
+    "trufflehog_version": "3.97.4",
+    "unverified_secrets": 7,
+    "verified_secrets": 0
+  },
+  "nativeExit": 183,
+  "rawInputsRemoved": true,
+  "immutableHistoricalObservation": true,
+  "notTheNewBaselineResult": true,
+  "limit": "This is the earlier native instrumented refusal, kept independently. It does not identify undisclosed historical hosted raw findings.",
+  "sameMaterialIdentitiesAsCandidate": true
+}

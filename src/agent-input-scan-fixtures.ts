@@ -17,7 +17,7 @@ export type ScanSourceRole = "base" | "head" | "index" | "tree" | "worktree";
 export type ReviewedAttribution = readonly [
   detectorType: 17 | 895 | 968,
   detectorName: "URI" | "MongoDB" | "Postgres",
-  decoder: "PLAIN" | "HTML" | "ESCAPED_UNICODE",
+  decoder: "PLAIN" | "HTML" | "ESCAPED_UNICODE" | "BASE64",
   rawSha256: string,
   rawV2Sha256: string,
   lineSha256: string | readonly string[],
@@ -288,6 +288,10 @@ const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
   // The malformed-port native prefix also occurs in the valid proxy; bind both complete lines.
   [17, "URI", "PLAIN", "7b8ee01b06a7e5b375164f2c45249bb258c75726a60b27e20a0ba6e42d5d0b27", "7b8ee01b06a7e5b375164f2c45249bb258c75726a60b27e20a0ba6e42d5d0b27", ["1a0920c31a227ead081fd2e6582572dfee060995e266a5520f66021acaa918c9", "c445f98d7d20b87bca6fead0e081385981add30abd58123db8d8d71c799d14a9"], "skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
   [17, "URI", "PLAIN", "7b8ee01b06a7e5b375164f2c45249bb258c75726a60b27e20a0ba6e42d5d0b27", "7b8ee01b06a7e5b375164f2c45249bb258c75726a60b27e20a0ba6e42d5d0b27", ["1a0920c31a227ead081fd2e6582572dfee060995e266a5520f66021acaa918c9", "c445f98d7d20b87bca6fead0e081385981add30abd58123db8d8d71c799d14a9"], ".agents/skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
+  // BASE64 can label this literal URI; vendored witnesses are statically qualified.
+  [17, "URI", "BASE64", "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83", "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83", "1a0920c31a227ead081fd2e6582572dfee060995e266a5520f66021acaa918c9", "skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
+  [17, "URI", "BASE64", "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83", "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83", "1a0920c31a227ead081fd2e6582572dfee060995e266a5520f66021acaa918c9", ".agents/skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
+  [17, "URI", "BASE64", "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83", "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83", ["1a0920c31a227ead081fd2e6582572dfee060995e266a5520f66021acaa918c9", "eb4b4694b1c0d3a50371cc30fad8c967ca2bd82920ffb5f1077f29a18a394219"], ".agents/skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
   // Old-base witnesses at the vendored path: https://github.com/openclaw/acpx/pull/806.
   [17, "URI", "PLAIN", "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83", "662a886a0fd7447dad0acda3aeccc9eb539fc90438b453de7e2f523ca7ee6c83", ["1a0920c31a227ead081fd2e6582572dfee060995e266a5520f66021acaa918c9", "eb4b4694b1c0d3a50371cc30fad8c967ca2bd82920ffb5f1077f29a18a394219"], ".agents/skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
   [17, "URI", "PLAIN", "7b8ee01b06a7e5b375164f2c45249bb258c75726a60b27e20a0ba6e42d5d0b27", "7b8ee01b06a7e5b375164f2c45249bb258c75726a60b27e20a0ba6e42d5d0b27", ["1a0920c31a227ead081fd2e6582572dfee060995e266a5520f66021acaa918c9", "eb4b4694b1c0d3a50371cc30fad8c967ca2bd82920ffb5f1077f29a18a394219"], ".agents/skills/autoreview/tests/test_autoreview_hardening.py", "100644"],
@@ -405,6 +409,11 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           detectorType === 17 &&
           detectorName === "URI" &&
           (decoder === "PLAIN" || decoder === "HTML")) ||
+        ((source === "skills/autoreview/tests/test_autoreview_hardening.py" ||
+          source === ".agents/skills/autoreview/tests/test_autoreview_hardening.py") &&
+          detectorType === 17 &&
+          detectorName === "URI" &&
+          decoder === "BASE64") ||
         ((source === "extensions/browser/src/browser/profiles-service.test.ts" ||
           source === "extensions/crabbox/src/crabbox-model-run.test.ts" ||
           source === "extensions/session-share/src/session-catalog.test.ts" ||
