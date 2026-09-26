@@ -3230,6 +3230,18 @@ function changedPatchFixture(
   return { inputs, finding, file, rawFile, from, to, source };
 }
 
+test("reviewed logging escaped URI blobs do not authorize patch findings", (t) => {
+  const entry = exactCase("URI", "ESCAPED_UNICODE");
+  const blob = exactFixture([entry]);
+  assert.equal(classifyExact(blob.findings, blob.inputs, blob.policy).kind, "classified");
+  const patch = changedPatchFixture(t, entry, "add");
+  const result = classifyExact([patch.finding], patch.inputs, blob.policy);
+  assert.equal(result.kind, "refused");
+  if (result.kind === "refused") {
+    assert.equal(result.diagnostic.reason, "material_not_reviewed");
+  }
+});
+
 for (const change of ["add", "remove", "new", "delete"] as const) {
   test(`marketplace refresh still refuses ${change} beside an exact entries patch`, (t) => {
     const refresh = changedPatchFixture(t, marketplaceTelemetryCase(false), change, true, {

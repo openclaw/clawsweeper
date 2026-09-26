@@ -11,6 +11,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 - Avoid data-model compatibility blockers for static error messages recommending an upgrade outside storage code, while retaining checks for executable upgrades and persistence evidence.
 
+- Qualify the exact Git-source redaction fixture while preserving native verification, literal patch witnesses, and refusal of changed or unrelated input.
+
 - Qualify the exact repeated proxy CLI redaction fixture while preserving native verification, full-line witnesses, and occurrence counts.
 
 - Qualify the exact Autoreview proxy fixture under BASE64 labeling only when its approved literal source witnesses match.

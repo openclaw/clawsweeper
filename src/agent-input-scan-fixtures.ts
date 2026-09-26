@@ -240,6 +240,10 @@ const CRABBOX_POSTGRES_DOC_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  // Git-ref redaction: native PLAIN/ESCAPED_UNICODE; HTML qualifies the same verified literal.
+  [17, "URI", "PLAIN", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "38f7c5f5260b58730c16187c5777da1ed97c72a836f6213c4ea3b376fa96fa57", "c1f9ec504b9d934cd49e19e1dba0496f7d3fe5ce822b608097d606e76f5b8373", "src/infra/git-source.test.ts", "100644"],
+  [17, "URI", "HTML", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "38f7c5f5260b58730c16187c5777da1ed97c72a836f6213c4ea3b376fa96fa57", "c1f9ec504b9d934cd49e19e1dba0496f7d3fe5ce822b608097d606e76f5b8373", "src/infra/git-source.test.ts", "100644"],
+  [17, "URI", "ESCAPED_UNICODE", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "38f7c5f5260b58730c16187c5777da1ed97c72a836f6213c4ea3b376fa96fa57", "c1f9ec504b9d934cd49e19e1dba0496f7d3fe5ce822b608097d606e76f5b8373", "src/infra/git-source.test.ts", "100644"],
   // Proxy CLI text/JSON redaction repeats the same complete synthetic line twice.
   [17, "URI", "HTML", "0ef0207595a31168bf8da47767ebd6cd1df772894fad34d7c415c3a54bc9682a", "0ef0207595a31168bf8da47767ebd6cd1df772894fad34d7c415c3a54bc9682a", ["b34b027056c44f232c1ab8ef2d1e4c9b41ea4787a6f56ec2facbdfa5e4bff00c", "590899f2b5c558e7265ac4a53210cb4fd6f6baebdbedddc771d3dc2aed293648"], "src/cli/proxy-cli.runtime.test.ts", "100644"],
   [17, "URI", "PLAIN", "0ef0207595a31168bf8da47767ebd6cd1df772894fad34d7c415c3a54bc9682a", "0ef0207595a31168bf8da47767ebd6cd1df772894fad34d7c415c3a54bc9682a", ["b34b027056c44f232c1ab8ef2d1e4c9b41ea4787a6f56ec2facbdfa5e4bff00c", "590899f2b5c558e7265ac4a53210cb4fd6f6baebdbedddc771d3dc2aed293648"], "src/cli/proxy-cli.runtime.test.ts", "100644"],
@@ -401,6 +405,10 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
       !(
         (source === "src/logging/redact.test.ts" &&
           (decoder === "PLAIN" || decoder === "ESCAPED_UNICODE")) ||
+        (source === "src/infra/git-source.test.ts" &&
+          detectorType === 17 &&
+          detectorName === "URI" &&
+          (decoder === "PLAIN" || decoder === "HTML" || decoder === "ESCAPED_UNICODE")) ||
         (source === "src/cli/plugins-cli.marketplace-entries.test.ts" &&
           detectorType === 17 &&
           detectorName === "URI" &&
@@ -883,12 +891,25 @@ function classifyReviewedFindings(
         continue;
       }
       if (staged.kind === "raw_diff") return refuse("material_not_reviewed");
+      const exactGitSourceEscapedAttribution =
+        finding.DecoderName === "ESCAPED_UNICODE" &&
+        exactCandidates.some(
+          ([detectorType, detectorName, decoder, , , , source, mode]) =>
+            detectorType === 17 &&
+            detectorName === finding.DetectorName &&
+            decoder === finding.DecoderName &&
+            source === "src/infra/git-source.test.ts" &&
+            mode === "100644",
+        );
       if (
         finding.DetectorType !== 17 ||
         !rawV2 ||
-        (finding.DecoderName !== "PLAIN" && finding.DecoderName !== "HTML")
+        (finding.DecoderName !== "PLAIN" &&
+          finding.DecoderName !== "HTML" &&
+          (finding.DecoderName !== "ESCAPED_UNICODE" || !exactGitSourceEscapedAttribution))
       )
         return refuse("material_not_reviewed");
+      // Decoder labels do not reconstruct source: this fixture still needs literal witnesses.
       const witnessKey = `${file}:${rawV2Digest}`;
       const witnesses =
         patchWitnesses.get(witnessKey) ?? resolvePatchWitnesses(staged, rawV2, inputs);

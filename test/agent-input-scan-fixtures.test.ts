@@ -63,7 +63,7 @@ function autoreviewFixtures(): {
   raw: string;
   rawV2?: string;
   line: string;
-  decoders: readonly ("PLAIN" | "HTML")[];
+  decoders: readonly ("PLAIN" | "HTML" | "ESCAPED_UNICODE")[];
 }[] {
   // Assemble synthetic values so this regression does not introduce new scan literals.
   const uri = (user: string, password: string, host: string) =>
@@ -191,9 +191,14 @@ function fixturePatch(
     ),
   });
   const classify = (
-    decoder: "PLAIN" | "HTML",
+    decoder: "PLAIN" | "HTML" | "ESCAPED_UNICODE",
     overrides: Record<string, unknown> = {},
-    options: { duplicate?: boolean; complete?: boolean; blobOnly?: boolean } = {},
+    options: {
+      duplicate?: boolean;
+      complete?: boolean;
+      blobOnly?: boolean;
+      scannerLine?: number;
+    } = {},
   ) => {
     const findings = fixtures.flatMap((fixture) =>
       fixture.entries
@@ -215,6 +220,7 @@ function fixturePatch(
                 Filesystem: {
                   file,
                   line:
+                    options.scannerLine ??
                     inputs
                       .get(file)!
                       .bytes!.toString()
@@ -565,6 +571,42 @@ function exactUriFixtureTests(
     });
   }
 }
+
+function gitSourceRedactionFixture(): ReturnType<typeof autoreviewFixtures>[number] {
+  const raw = ["https://", "fixture-user", ":", "fixture-password", "@", "example.invalid"].join(
+    "",
+  );
+  return {
+    raw,
+    rawV2: raw + "/missing",
+    // The whole-line witness retains the suffix beyond the native URI match.
+    line: '      const unsafeRef = "' + raw + '/missing\\u001b[31m";',
+    decoders: ["PLAIN", "HTML", "ESCAPED_UNICODE"],
+  };
+}
+
+exactUriFixtureTests(
+  "Git-source redaction",
+  "src/infra/git-source.test.ts",
+  gitSourceRedactionFixture,
+);
+
+test("Git-source fixture requires literal bytes despite shifted decoder coordinates", (t) => {
+  for (const encodedOnly of [false, true]) {
+    const entry = gitSourceRedactionFixture();
+    if (encodedOnly) {
+      entry.line = entry.line.replace(entry.rawV2!, Buffer.from(entry.rawV2!).toString("base64"));
+    }
+    const patch = fixturePatch(t, "src/infra/git-source.test.ts", [entry]);
+    for (const decoder of entry.decoders) {
+      const result = patch.classify(decoder, {}, { scannerLine: 1 });
+      assert.equal(result.kind, encodedOnly ? "refused" : "classified");
+      if (result.kind === "refused") {
+        assert.equal(result.diagnostic.reason, "material_not_reviewed");
+      }
+    }
+  }
+});
 
 function proxyCliRedactionFixture(
   redacted: boolean,
