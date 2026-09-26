@@ -1,0 +1,180 @@
+{
+  "claim": "Exact native-worker endpoint rejection fixtures qualify; scanner and complete-source gates unchanged",
+  "baselinePolicyCommit": "f9d81c419e55740d5a48a546b6cd27e49b35250d",
+  "candidatePolicySha256": "adefe326fe3fcde4f5a8c6e70a9585bffb421f6dc094aa169d212ba07d42088d",
+  "source": {
+    "base": "be46e6966c2b52c6cde06abf965c44f9a175a47f",
+    "head": "93dbee664f93ca80668f85ab346c8e7a4e07db7e",
+    "promptSha256": "488caeeb98010590f3b1ad057c796e1b53473fa69cb0a22822ee5f909b6cee70",
+    "schema": null,
+    "stagedInputs": 135,
+    "stagedManifestSha256": "e419aac3d81c40b972afca7afb70c6f3f5afd6547385f0cf8f220a4e65aa6be6",
+    "identicalStagedInputManifests": true
+  },
+  "environment": {
+    "platform": "linux",
+    "node": "v26.8.2",
+    "network": "bubblewrap --unshare-net; no live credential verification possible",
+    "secrets": "cleared environment; production scanner private HOME"
+  },
+  "scanner": {
+    "version": "3.97.4",
+    "binarySha256": "95c2a42bce979fce6dd73cc629b37ae4d72731b0dc16e047fba41a77bc765620",
+    "bootstrap": "checksum-pinned managed linux-x64 archive; trusted external PATH selection during isolated scan",
+    "archiveSha256": "dc24007c2f233bd61c05beabeb44aa27ea9b43288166279209abe0458c5ce76b"
+  },
+  "results": [
+    {
+      "policy": "baseline",
+      "result": "refused",
+      "failureReason": "material_not_reviewed",
+      "scannerExit": 183,
+      "findings": 4,
+      "completion": [
+        {
+          "version": "3.97.4",
+          "chunks": 324,
+          "bytes": 3080216,
+          "verified": 0,
+          "unverified": 4
+        }
+      ],
+      "classifiedNotices": 0
+    },
+    {
+      "policy": "PLAIN-only interim",
+      "result": "refused",
+      "failureReason": "finding_not_reviewed",
+      "scannerExit": 183,
+      "findings": 4,
+      "completion": [
+        {
+          "version": "3.97.4",
+          "chunks": 324,
+          "bytes": 3080216,
+          "verified": 0,
+          "unverified": 4
+        }
+      ],
+      "classifiedNotices": 0
+    },
+    {
+      "policy": "transport HTML interim",
+      "result": "refused",
+      "failureReason": "finding_not_reviewed",
+      "scannerExit": 183,
+      "findings": 4,
+      "completion": [
+        {
+          "version": "3.97.4",
+          "chunks": 324,
+          "bytes": 3080216,
+          "verified": 0,
+          "unverified": 4
+        }
+      ],
+      "classifiedNotices": 0
+    },
+    {
+      "policy": "candidate",
+      "result": "admitted",
+      "scannerExit": 183,
+      "findings": 4,
+      "completion": [
+        {
+          "version": "3.97.4",
+          "chunks": 324,
+          "bytes": 3080216,
+          "verified": 0,
+          "unverified": 4
+        }
+      ],
+      "classifiedNotices": 4
+    }
+  ],
+  "fixtures": [
+    {
+      "fixtureSha256": "245d7408cf9309f13d71c800c1bea998316a44557319d3d9e25c27af5d1286b6",
+      "rawSha256": "f6729932bd0216a9ced489911667e48ede49c4c0c9886343567e8abee5e4a2b6",
+      "lineSha256": "a6f4875b345810baafb9140823570f1a2792cab59e1328393d86e2675d2f88f6",
+      "detector": 17,
+      "decoders": [
+        "HTML",
+        "PLAIN"
+      ],
+      "witnesses": [
+        "1:5028",
+        "b4b313e03e7bcff43b7ba7426add5a76af436129:341"
+      ]
+    },
+    {
+      "fixtureSha256": "3ba4b9eb95fbafcb38a3dd4bc9886809ca70168cc4a8e552ed23d894cbb07df3",
+      "rawSha256": "3ba4b9eb95fbafcb38a3dd4bc9886809ca70168cc4a8e552ed23d894cbb07df3",
+      "lineSha256": "b832b4b17c9898d6604bb73c764f82f2eec8bb3e86e06791d70c1f55b4d8435e",
+      "detector": 17,
+      "decoders": [
+        "HTML",
+        "PLAIN"
+      ],
+      "witnesses": [
+        "1:5582",
+        "8ea970c7b3467718eb7b64ecee9ebe7bcf0256c4:409"
+      ]
+    }
+  ],
+  "limits": [
+    "Native source admission, not a hosted review or model verdict.",
+    "Controlled prompt; no hosted prompt/schema reconstruction.",
+    "Original failure retained only first of two finding identities; this complete-source run separately observed four records covering two literals and both patch/blob witnesses.",
+    "PLAIN/HTML deduplication varies between native scans; all observed variants remain exact-byte bound.",
+    "No live credential verification: network namespace denied egress; canonical scanner arguments unchanged.",
+    "Proof executed on Linux host with bubblewrap isolation; no container image or cloud lease for this source scan."
+  ],
+  "nativeNegativeControls": [
+    {
+      "scenario": "changed-bytes",
+      "result": "refused",
+      "reason": "material_not_reviewed",
+      "findings": 2,
+      "scannerExit": 183,
+      "complete": true,
+      "verified": 0
+    },
+    {
+      "scenario": "wrong-path",
+      "result": "refused",
+      "reason": "source_not_reviewed",
+      "findings": 2,
+      "scannerExit": 183,
+      "complete": true,
+      "verified": 0
+    },
+    {
+      "scenario": "wrong-line",
+      "result": "refused",
+      "reason": "literal_mismatch",
+      "findings": 2,
+      "scannerExit": 183,
+      "complete": true,
+      "verified": 0
+    },
+    {
+      "scenario": "mixed-unknown",
+      "result": "refused",
+      "reason": "material_not_reviewed",
+      "findings": 4,
+      "scannerExit": 183,
+      "complete": true,
+      "verified": 0
+    },
+    {
+      "scenario": "mixed-real-shaped",
+      "result": "refused",
+      "reason": "material_not_reviewed",
+      "findings": 4,
+      "scannerExit": 183,
+      "complete": true,
+      "verified": 0
+    }
+  ]
+}

@@ -725,6 +725,13 @@ identities, full source line, regular-file mode, and committed base/head referen
 Native 3.97.4 scans observed `PLAIN` and `HTML`; only those variants qualify.
 See [the native proof](docs/proof/agent-input-scan-context/README.md#typesafe-local-transport-fixture).
 
+The native-worker endpoint and startup-config rejection fixtures in
+[transport tests](https://github.com/openclaw/openclaw/blob/93dbee664f93ca80668f85ab346c8e7a4e07db7e/src/worker/native-runtime-transport.test.ts) and
+[startup tests](https://github.com/openclaw/openclaw/blob/93dbee664f93ca80668f85ab346c8e7a4e07db7e/src/worker/native-runtime.test.ts)
+qualify only through their exact URI-17 PLAIN/HTML attribution, both value
+digests, complete source lines, regular-file mode and committed source references.
+No whole test file is exempt. See [the native source-admission proof](docs/proof/native-worker-fixtures/README.md).
+
 One source path may contain multiple independently reviewed fixtures; each
 digest/path/mode tuple must match exactly, so source membership alone never
 qualifies a finding.

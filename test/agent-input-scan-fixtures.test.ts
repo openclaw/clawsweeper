@@ -1138,3 +1138,146 @@ for (const [index, entry] of crabboxConfigFixtures.entries()) {
     }
   });
 }
+
+function nativeRuntimeEndpointFixture(config: boolean) {
+  // Reconstruct the intentionally rejected synthetic input without adding a scan literal.
+  const raw = [
+    "https://",
+    "user",
+    ":",
+    "password",
+    "@",
+    config ? "example.com" : "example.test",
+  ].join("");
+  const rawV2 = raw + (config ? "" : "/v1");
+  return {
+    raw,
+    rawV2,
+    line: (config ? '      "' : '    "') + rawV2 + '",',
+    decoders: ["PLAIN", "HTML"] as const,
+  };
+}
+
+for (const config of [false, true]) {
+  const nativeRuntimeSource = config
+    ? "src/worker/native-runtime.test.ts"
+    : "src/worker/native-runtime-transport.test.ts";
+
+  for (const change of ["add", "remove", "context"] as const) {
+    test(
+      nativeRuntimeSource +
+        ": rejection fixture admits exact Git-generated " +
+        change +
+        " witnesses",
+      (t) => {
+        const fixture = fixturePatch(
+          t,
+          nativeRuntimeSource,
+          [nativeRuntimeEndpointFixture(config)],
+          change,
+        );
+        for (const decoder of ["PLAIN", "HTML"] as const) {
+          const result = fixture.classify(decoder);
+          assert.equal(result.kind, "classified", JSON.stringify(result));
+          if (result.kind !== "classified") continue;
+          assert.ok(result.notices.every((notice) => notice.source === nativeRuntimeSource));
+          assert.ok(
+            result.notices.some((notice) => notice.findings.some((finding) => finding.patch)),
+          );
+          assert.ok(
+            result.notices.some((notice) => notice.findings.some((finding) => !finding.patch)),
+          );
+        }
+      },
+    );
+  }
+
+  for (const scenario of [
+    "changed bytes",
+    "changed line",
+    "wrong path",
+    "duplicate literal",
+    "mixed unknown",
+    "mixed real-shaped",
+    "wrong decoder",
+    "verified",
+    "missing verification error",
+    "wrong detector",
+    "wrong raw",
+    "wrong source type",
+    "wrong secret parts",
+    "incomplete scan",
+    "duplicate finding",
+    "wrong mode",
+    "unknown reference",
+  ] as const) {
+    test(nativeRuntimeSource + ": rejection fixture refuses " + scenario, (t) => {
+      const original = nativeRuntimeEndpointFixture(config);
+      const altered = { ...original };
+      if (scenario === "changed bytes") {
+        altered.raw = original.raw.replace("password", "passw0rd");
+        altered.rawV2 = altered.raw + (config ? "" : "/v1");
+        altered.line = original.line.replace(original.rawV2, altered.rawV2);
+      }
+      if (scenario === "changed line") altered.line += " // changed";
+      if (scenario === "duplicate literal") altered.line += "\n" + original.line;
+      const companion = { ...original };
+      if (scenario === "mixed unknown" || scenario === "mixed real-shaped") {
+        companion.raw = original.raw.replace(
+          "password",
+          scenario === "mixed unknown" ? "unknown" : "n9T7z3kR5bQ8x2V6s4W1c0D7",
+        );
+        companion.rawV2 = companion.raw + (config ? "" : "/v1");
+        companion.line = original.line.replace(original.rawV2, companion.rawV2);
+      }
+      const rows = scenario.startsWith("mixed ") ? [altered, companion] : [altered];
+      const fixture = fixturePatch(
+        t,
+        scenario === "wrong path" ? "src/worker/other.test.ts" : nativeRuntimeSource,
+        rows,
+      );
+      if (scenario === "wrong mode" || scenario === "unknown reference") {
+        for (const input of fixture.inputs.values()) {
+          if (input.kind !== "blob") continue;
+          if (scenario === "wrong mode")
+            input.references = input.references.map((reference) => ({
+              ...reference,
+              mode: "100755",
+            }));
+          else
+            input.references = [
+              ...input.references,
+              { ...input.references[0]!, source: "unreviewed.test.ts" },
+            ];
+        }
+      }
+      const overrides: Record<string, unknown> =
+        scenario === "wrong decoder"
+          ? { DecoderName: "BASE64" }
+          : scenario === "verified"
+            ? { Verified: true }
+            : scenario === "missing verification error"
+              ? { VerificationError: "" }
+              : scenario === "wrong detector"
+                ? { DetectorType: 895, DetectorName: "MongoDB" }
+                : scenario === "wrong raw"
+                  ? { Raw: original.raw + "/changed" }
+                  : scenario === "wrong source type"
+                    ? { SourceType: 16 }
+                    : scenario === "wrong secret parts"
+                      ? {
+                          SecretParts: {
+                            host: "other.test",
+                            username: "user",
+                            password: "password",
+                          },
+                        }
+                      : {};
+      const result = fixture.classify("PLAIN", overrides, {
+        complete: scenario !== "incomplete scan",
+        duplicate: scenario === "duplicate finding",
+      });
+      assert.equal(result.kind, "refused", scenario);
+    });
+  }
+}

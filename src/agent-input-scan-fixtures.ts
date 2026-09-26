@@ -372,6 +372,11 @@ const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
   [17, "URI", "PLAIN", "07968c00c423fd77a0ee19bd8a05e59e9365a48342e66818eee4b34b1c3ee087", "bbc496f1b46b968ed3dc0e1e794c3ab7e65f59720270b2a3c2cccc74d7374953", "ca4ab725d43ebe7996e64ed6ff9297fc356ce07de90dddb77b7b4b020ad5f22b", "internal/providers/all/command_routing_test.go", "100644"],
   [17, "URI", "PLAIN", "843c5932c66afbc53056c0249de449e9b24bc4ce8a289d88ff1e0505c95a43b2", "e3904bc450ae63f438013ea8c33377e09f2cecc8135fcb8c23eb61f27bc44f07", "7c8e7f2230a2fb9f35048c860ec30ff66bf975e56aad6732e11fac322c6243da", "internal/providers/all/command_routing_test.go", "100644"],
   [17, "URI", "PLAIN", "59357e59c291991c90b270b631c211824c280da20067aab43514642be03e9638", "5cb65d249cba9bb31b78f257134608da51cbe7adef0236dc641a9ce33e7f6fb3", "29d6a35a441309fc081af0bf3f1c053f82318f4af113458a928ac3de66c51e96", "internal/providers/all/claim_scope_test.go", "100644"],
+  // Native-worker rejection fixtures: exact observed native identities and full lines.
+  [17, "URI", "PLAIN", "f6729932bd0216a9ced489911667e48ede49c4c0c9886343567e8abee5e4a2b6", "245d7408cf9309f13d71c800c1bea998316a44557319d3d9e25c27af5d1286b6", "a6f4875b345810baafb9140823570f1a2792cab59e1328393d86e2675d2f88f6", "src/worker/native-runtime-transport.test.ts", "100644"],
+  [17, "URI", "HTML", "f6729932bd0216a9ced489911667e48ede49c4c0c9886343567e8abee5e4a2b6", "245d7408cf9309f13d71c800c1bea998316a44557319d3d9e25c27af5d1286b6", "a6f4875b345810baafb9140823570f1a2792cab59e1328393d86e2675d2f88f6", "src/worker/native-runtime-transport.test.ts", "100644"],
+  [17, "URI", "PLAIN", "3ba4b9eb95fbafcb38a3dd4bc9886809ca70168cc4a8e552ed23d894cbb07df3", "3ba4b9eb95fbafcb38a3dd4bc9886809ca70168cc4a8e552ed23d894cbb07df3", "b832b4b17c9898d6604bb73c764f82f2eec8bb3e86e06791d70c1f55b4d8435e", "src/worker/native-runtime.test.ts", "100644"],
+  [17, "URI", "HTML", "3ba4b9eb95fbafcb38a3dd4bc9886809ca70168cc4a8e552ed23d894cbb07df3", "3ba4b9eb95fbafcb38a3dd4bc9886809ca70168cc4a8e552ed23d894cbb07df3", "b832b4b17c9898d6604bb73c764f82f2eec8bb3e86e06791d70c1f55b4d8435e", "src/worker/native-runtime.test.ts", "100644"],
   ...CRABBOX_POSTGRES_DOC_ATTRIBUTIONS,
 ];
 
@@ -419,6 +424,11 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           source === "test/helpers/openclaw-test-instance.test.ts" ||
           source === "skills/autoreview/tests/test_autoreview_hardening.py" ||
           source === ".agents/skills/autoreview/tests/test_autoreview_hardening.py") &&
+          detectorType === 17 &&
+          detectorName === "URI" &&
+          (decoder === "PLAIN" || decoder === "HTML")) ||
+        ((source === "src/worker/native-runtime-transport.test.ts" ||
+          source === "src/worker/native-runtime.test.ts") &&
           detectorType === 17 &&
           detectorName === "URI" &&
           (decoder === "PLAIN" || decoder === "HTML")) ||
