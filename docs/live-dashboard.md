@@ -936,6 +936,12 @@ the sampled header separates live references from queue/attention records.
 This remains an observer-only surface with the existing public repository
 allowlist and sampling/freshness limits.
 
+Terminal scanner holds retain a `scanner_refused` queue reason count, but do
+not contribute an active or waiting Bay review card. The failed review remains
+in the existing terminal lifecycle projection. A fresh explicit retry or an
+intentional scanner-policy epoch change is required; ordinary source changes
+do not revive it. Bay exposes no release control.
+
 The queue's globally bounded parked-terminal check also observes exhausted
 command producers. An eligible still-open exhausted review may receive a
 separate, acknowledgement-only stopped-status explanation. Its producer stays

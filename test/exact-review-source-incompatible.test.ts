@@ -403,7 +403,7 @@ test("retained stops use existing closed-target cleanup and survive telemetry fa
   assert.equal((await h.state()).items[key], undefined);
 });
 
-test("only identified pinned PR incompatibility creates a retained stop", async () => {
+test("pinned PR incompatibility and scanner refusals retain independent stops", async () => {
   for (const overrides of [
     { itemKind: "issue", sourceEvent: "issues" },
     { sourceHeadSha: undefined },
@@ -416,6 +416,6 @@ test("only identified pinned PR incompatibility creates a retained stop", async 
   for (const reason of ["scanner_unavailable", "scanner_failed", "deadline", "findings"]) {
     const h = await fixture();
     await h.complete(reason);
-    assert.equal((await h.state()).items[key], undefined);
+    assert.equal((await h.state()).items[key].parkedReason, "scanner_refused");
   }
 });

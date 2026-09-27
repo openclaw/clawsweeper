@@ -27,7 +27,7 @@ test("all scanner refusals accept and render terminal review status", () => {
     ]);
     assert.equal(options.failureReason, reason);
     const rendered = renderReviewProgressSection(options);
-    assert.match(rendered, /will not retry this unchanged revision/);
+    assert.match(rendered, /Automatic review is on hold, including after source changes/);
     if (reason !== "findings") assert.match(rendered, /Maintainers should inspect/);
   }
 });
@@ -39,7 +39,7 @@ test("terminal review status renders bounded reason-specific guidance", () => {
     runUrl,
   });
   assert.match(findings, /no review verdict was produced/i);
-  assert.match(findings, /will not retry this unchanged revision/i);
+  assert.match(findings, /Automatic review is on hold, including after source changes/i);
   assert.match(findings, /remove and rotate/i);
   assert.match(findings, /intentional test fixture/i);
   assert.doesNotMatch(findings, /secret-[A-Za-z0-9]+|filename|scanner output:/i);

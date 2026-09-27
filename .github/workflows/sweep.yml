@@ -4739,7 +4739,7 @@ jobs:
           hot_intake="${{ ((github.event_name == 'repository_dispatch' && github.event.client_payload.hot_intake == 'true') || (github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) && 'true' || 'false' }}"
           manual_explicit="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.apply_existing != 'true' && (github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '') && 'true' || 'false' }}"
           queue_feed="${{ ((github.event_name == 'repository_dispatch' && github.event.action == 'clawsweeper_target_sweep') || github.event_name == 'schedule') && 'true' || 'false' }}"
-          if [ "$manual_explicit" = "true" ]; then queue_feed=true; fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.apply_existing }}" != "true" ] && [ "${{ github.event.inputs.audit_dashboard }}" != "true" ]; then queue_feed=true; fi
           target_repo="${{ steps.target.outputs.target_repo }}"
           if [ "$hot_intake" = "true" ] && [ -n "$exact_item" ]; then
             batch_size="1"
@@ -4902,6 +4902,9 @@ jobs:
           CLAWSWEEPER_WEBHOOK_SECRET: ${{ secrets.CLAWSWEEPER_WEBHOOK_SECRET }}
           GH_TOKEN: ${{ steps.target-read-token.outputs.token || github.token }}
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
+          REQUESTED_TARGET_BRANCH: ${{ github.event_name == 'workflow_dispatch' && steps.target.outputs.target_branch || '' }}
+          CODEX_TIMEOUT_MS: ${{ github.event_name == 'workflow_dispatch' && steps.mode.outputs.codex_timeout_ms || '' }}
+          ADDITIONAL_PROMPT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.additional_prompt || '' }}
         run: |
           set -euo pipefail
           lane="normal_backfill"
@@ -4909,7 +4912,10 @@ jobs:
             lane="hot_intake"
           fi
           target_repo="${{ steps.target.outputs.target_repo }}"
-          target_branch="$(gh api "repos/$target_repo" --jq '.default_branch // empty')"
+          target_branch="$REQUESTED_TARGET_BRANCH"
+          if [ -z "$target_branch" ]; then
+            target_branch="$(gh api "repos/$target_repo" --jq '.default_branch // empty')"
+          fi
           if [ -z "$target_branch" ] ||
             ! printf '%s' "$target_branch" | grep -Eq '^[A-Za-z0-9_.\/-]+$' ||
             printf '%s' "$target_branch" | grep -Eq '^[0-9]+$' ||
@@ -4917,13 +4923,16 @@ jobs:
             echo "Invalid default branch for scheduled target $target_repo: $target_branch" >&2
             exit 1
           fi
-          echo "::notice::Scheduled review payloads will use default branch '$target_branch' for $target_repo."
+          echo "::notice::Queued review payloads will use branch '$target_branch' for $target_repo."
+          timeout_args=()
+          if [ -n "$CODEX_TIMEOUT_MS" ]; then timeout_args=(--codex-timeout-ms "$CODEX_TIMEOUT_MS"); fi
           result="$(pnpm run --silent repair:scheduled-review-enqueue -- \
             --plan plan.json \
             --lane "$lane" \
             --target-repo "$target_repo" \
             --target-branch "$target_branch" \
             --queue-url "$QUEUE_URL" \
+            "${timeout_args[@]}" \
             --delivery-prefix "scheduled:${{ github.run_id }}:${{ github.run_attempt }}")"
           jq -e '.offered >= .attempted and .attempted >= (.queued + .deduped + .shed + .rejected)' <<<"$result" >/dev/null
           {

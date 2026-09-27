@@ -12951,7 +12951,7 @@ for (const retryKind of ["coordination", "throttle"] as const) {
   });
 }
 
-test("exact-review queue terminates deterministic refusals only for the unchanged revision", async () => {
+test("exact-review queue holds scanner refusals across automatic revisions", async () => {
   const storage = new MemoryDurableStorage();
   const terminal = leasedExactReviewQueueItem(709, "7090");
   const transient = leasedExactReviewQueueItem(710, "7100");
@@ -12996,7 +12996,7 @@ test("exact-review queue terminates deterministic refusals only for the unchange
 
   const newerResponse = await complete(711, "7110", "incomplete_source");
   assert.equal(newerResponse.status, 200);
-  assert.deepEqual(await newerResponse.json(), { ok: true, requeued: true });
+  assert.deepEqual(await newerResponse.json(), { ok: true, requeued: false });
 
   const findingsResponse = await complete(712, "7120", "findings");
   assert.equal(findingsResponse.status, 200);
@@ -13005,13 +13005,13 @@ test("exact-review queue terminates deterministic refusals only for the unchange
   const state = (await storage.get("exact-review-queue")) as {
     items: Record<string, Record<string, unknown>>;
   };
-  assert.equal(state.items["openclaw/openclaw#709"], undefined);
+  assert.equal(state.items["openclaw/openclaw#709"].parkedReason, "scanner_refused");
   assert.equal(state.items["openclaw/openclaw#710"].state, "pending");
   assert.equal(state.items["openclaw/openclaw#710"].reviewFailureAttempts, 1);
-  assert.equal(state.items["openclaw/openclaw#711"].state, "pending");
+  assert.equal(state.items["openclaw/openclaw#711"].state, "parked");
   assert.equal(state.items["openclaw/openclaw#711"].revision, 2);
-  assert.equal(state.items["openclaw/openclaw#711"].reviewFailureAttempts, 0);
-  assert.equal(state.items["openclaw/openclaw#712"], undefined);
+  assert.equal(state.items["openclaw/openclaw#711"].parkedReason, "scanner_refused");
+  assert.equal(state.items["openclaw/openclaw#712"].parkedReason, "scanner_refused");
   const failureStats = await (
     await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
   ).json();
@@ -13125,7 +13125,7 @@ test("exact-review queue terminates every scanner refusal and retries missing te
       items: Record<string, { state: string; reviewFailureAttempts: number }>;
     };
     if (reason) {
-      assert.equal(state.items[item.key], undefined, reason);
+      assert.equal(state.items[item.key].state, "parked", reason);
     } else {
       assert.equal(state.items[item.key].state, "pending");
       assert.equal(state.items[item.key].reviewFailureAttempts, 1);
@@ -13174,7 +13174,7 @@ test("terminal PR refusals retain a verified explanation receipt without retryin
   const state = (await storage.get("exact-review-queue")) as {
     items: Record<string, unknown>;
   };
-  assert.equal(state.items[item.key], undefined);
+  assert.equal(state.items[item.key].parkedReason, "scanner_refused");
 
   const stats = await (
     await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))

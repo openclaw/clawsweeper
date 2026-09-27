@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Hold automatic reviews after a terminal scanner refusal until a fresh explicit re-review or intentional scanner-policy update, preventing repeated attempts and notifications across sweep, event, and recovery producers. Thanks @yetval.
+
 - Keep Endor test-repository reviews owned by the automerge loop and preserve current PR command identity through repair follow-ups and source-event supersession. Thanks @jesse-merhi.
 
 - Defer failed-shard review recovery while an earlier publication is pending, preserving the recovery request and allowing explicit re-reviews and source changes.

@@ -687,6 +687,9 @@ function observeExactReviewBayCandidate(
   // Its newer timestamp must not replace the retained exhausted producer card.
   // Live workflow activity remains independently visible in the live overlay.
   if (item.terminalFinalization?.parkedCommand) return true;
+  // The retained refusal is a terminal failure, not a waiting review. Bay's
+  // lifecycle projection owns its failed card; the queue only retains the hold.
+  if (item.state === "parked" && item.parkedReason === "scanner_refused") return true;
   // Show the publication while its settlement still gates the retained recovery.
   if (deferredShardRecovery) return true;
   const canonicalRepository = repository.toLowerCase();

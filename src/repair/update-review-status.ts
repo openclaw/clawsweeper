@@ -103,7 +103,9 @@ export function renderReviewProgressSection(
     "",
     `**Reason:** ${copy.reason}`,
     "",
-    "ClawSweeper will not retry this unchanged revision.",
+    options.failureReason === "source_incompatible"
+      ? "ClawSweeper will not retry this unchanged revision."
+      : "Automatic review is on hold, including after source changes. Request a fresh re-review after resolving the failure; maintainers can also release the hold through an intentional scanner-policy update.",
     "",
     `**Next step:** ${copy.next}`,
     ...(options.runUrl ? ["", `[View the workflow run](${options.runUrl}).`] : []),

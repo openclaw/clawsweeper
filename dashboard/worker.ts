@@ -5515,6 +5515,7 @@ const PUBLIC_QUEUE_PARKED_REASONS = [
   "dispatch_rejected",
   "review_retry_exhausted",
   "source_incompatible",
+  "scanner_refused",
   "direct_publication",
   "unknown",
 ] as const;

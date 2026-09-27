@@ -40,6 +40,8 @@ type EnqueueOptions = {
   queueUrl: string;
   secret: string;
   deliveryPrefix: string;
+  codexTimeoutMs?: number;
+  additionalPrompt?: string;
   fetchImpl?: typeof fetch;
 };
 
@@ -50,6 +52,12 @@ export async function enqueueScheduledReviewPlan(
   const targetBranch = options.targetBranch.trim();
   if (!isPlausibleTargetBranch(targetBranch)) {
     throw new Error("scheduled review target branch is invalid");
+  }
+  if (
+    options.codexTimeoutMs !== undefined &&
+    (!Number.isSafeInteger(options.codexTimeoutMs) || options.codexTimeoutMs < 1)
+  ) {
+    throw new Error("scheduled review timeout is invalid");
   }
   for (const candidate of options.plan.candidates) validateCandidate(candidate, options.targetRepo);
   const queueUrl = options.queueUrl.replace(/\/$/, "");
@@ -99,6 +107,10 @@ export async function enqueueScheduledReviewPlan(
           options.lane === "hot_intake" ? "scheduled_hot_intake" : "scheduled_normal_backfill",
         supersedesInProgress: false,
         sourceUpdatedAt: candidate.updatedAt,
+        ...(options.codexTimeoutMs === undefined ? {} : { codexTimeoutMs: options.codexTimeoutMs }),
+        ...(options.additionalPrompt === undefined
+          ? {}
+          : { additionalPrompt: options.additionalPrompt }),
       },
     });
     summary.attempted += 1;
@@ -174,6 +186,8 @@ async function main(): Promise<void> {
     queueUrl: requiredString(args["queue-url"], "--queue-url"),
     secret: requiredString(process.env.CLAWSWEEPER_WEBHOOK_SECRET, "CLAWSWEEPER_WEBHOOK_SECRET"),
     deliveryPrefix: requiredString(args["delivery-prefix"], "--delivery-prefix"),
+    ...(args["codex-timeout-ms"] ? { codexTimeoutMs: Number(args["codex-timeout-ms"]) } : {}),
+    ...(process.env.ADDITIONAL_PROMPT ? { additionalPrompt: process.env.ADDITIONAL_PROMPT } : {}),
   });
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }

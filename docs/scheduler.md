@@ -38,10 +38,8 @@ retry without the terminal reason or its dependent status receipt, preserving
 `review_failure` diagnostic detail and emitting a workflow warning. An older
 Worker can then complete the lease under its existing retry policy; compatible
 Workers receive the terminal reason on the first request. Other errors retain
-the existing failure and retry handling. A terminal
-reason removes the unchanged queue revision while allowing an already queued
-newer revision to proceed; it does not turn the failed workflow green. An
-automatic PR review with a recorded head SHA and `source_incompatible` instead
+the existing failure and retry handling. Terminal completion does not turn the
+failed workflow green. An automatic PR review with a recorded head SHA and `source_incompatible`
 retains a parked queue item: the exact source pin cannot improve on that head,
 so scheduled intake must not repeat its preparation. Scheduled PR intake binds
 the live head, base, draft state, and body identity before dispatch takes its
@@ -49,14 +47,33 @@ lease snapshot. This state has no timed retry. Existing parked-item
 reconciliation recovers changed head, base, or body
 identity and removes closed targets; an explicit maintainer re-review can retry
 unchanged source. The failure remains visible in lifecycle and Bay status.
-Issue reviews follow moving main, and scanner failures can recover after
-external changes, so neither uses this pinned-PR stop. Native
+Terminal input-scanner refusals instead retain the existing queue item as
+`scanner_refused`, for both issues and PRs. Automatic events, source changes,
+close/reopen, and failed-shard recovery cannot release this hold. It has no
+timed retry, expiry, closed-target cleanup, or operator source-drift recovery.
+A fresh verified re-review command or a newly dispatched explicit item request
+replaces the failed request's authority. Replaying an old command or workflow
+run does not. An intentional `EXACT_REVIEW_RETRY_POLICY_EPOCH` change permits
+the next automatic admission without inheriting failed command context;
+ordinary deployments, model changes, and prompt changes do not.
+
+Untargeted workflow-dispatch sweeps, including automatic continuations, feed
+the same queue as scheduled intake. Their branch, prompt, and timeout options
+remain supported, but a broad sweep is not an explicit retry of every hold.
+The hold applies to newly observed terminal refusals; previously deleted rows
+are not reconstructed. Deploy Worker enforcement before relying on updated
+producer routing. Already-running direct shards from older workflow revisions
+remain a rollout limitation. Bay uses the terminal failure lifecycle rather
+than displaying the retained hold as active review work; queue reason counts
+remain visible and the public surface remains observer-only.
+
+Native
 blob-fetch transport failures, including the hydration deadline killing a Git
 fetch, remain `source_preparation` / `review_blobs_unavailable` with
 `retryable: true`. They enter the existing bounded retry schedule without a
 terminal scanner reason. Every retry must still prepare complete input and
 pass the canonical input scan; scanner refusals and staging limits remain
-terminal for the unchanged revision.
+terminal until the explicit release described above.
 
 Scheduled and manual explicit queue admissions use the same exact-event review
 step. Aggregate shard recovery uses its per-item terminal ledger instead of
