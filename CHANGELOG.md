@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Avoid data-model compatibility blockers for upgrade guidance in non-storage code, while retaining checks for persistence-owned code and stored-data upgrades.
+
 - Qualify the exact repeated proxy CLI redaction fixture while preserving native verification, full-line witnesses, and occurrence counts.
 
 - Qualify the exact Autoreview proxy fixture under BASE64 labeling only when its approved literal source witnesses match.
