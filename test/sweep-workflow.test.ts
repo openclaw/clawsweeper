@@ -5688,8 +5688,12 @@ test("comment commands keep the router-to-sweep dispatch contract", () => {
   assert.match(routerSource, /media_proof_timeout_ms: reviewBudget\.mediaProofTimeoutMs/);
   assert.match(routerSource, /dispatch_key:\s*dispatchKey/);
   assert.match(routerSource, /source_delivery_id:\s*String\(command\.source_delivery_id\)/);
-  assert.match(routerSource, /`item_numbers=\$\{dispatchKey\}`/);
-  assert.match(routerSource, /event:\s*"workflow_dispatch"/);
+  const reviewDispatch = routerSource.slice(
+    routerSource.indexOf("function dispatchClawSweeperReview"),
+    routerSource.indexOf("function enqueueClawSweeperReReview"),
+  );
+  assert.match(reviewDispatch, /event:\s*"repository_dispatch"/);
+  assert.doesNotMatch(reviewDispatch, /event:\s*"workflow_dispatch"/);
   assert.match(sweepWorkflow, /types:\s*\[clawsweeper_item,\s*clawsweeper_target_sweep\]/);
   assert.match(sweepWorkflow, /Review event item \{0\}#\{1\} \[\{2\}\]/);
   assert.match(sweepWorkflow, /startsWith\(github\.event\.inputs\.item_numbers, 'router-'\)/);
