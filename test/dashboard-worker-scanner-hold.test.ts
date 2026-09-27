@@ -216,6 +216,21 @@ for (const requestId of [
   });
 }
 
+test("failed numeric API request IDs cannot replay above the worker run ID", async () => {
+  const f = await refused({
+    command: {
+      sourceAction: "manual_explicit_review",
+      sourceDeliveryId: "manual:5000:1455",
+    },
+  });
+  const manual = {
+    sourceAction: "manual_explicit_review",
+    publicationPolicy: "record_comment_only",
+  };
+  assert.equal((await enqueue(f.queue, "manual:5000:1455", manual)).reason, "scanner_refused");
+  assert.equal((await enqueue(f.queue, "manual:5001:1455", manual)).queued, true);
+});
+
 test("intentional policy epoch releases on automatic admission without failed command context", async () => {
   const f = await refused();
   f.queue = new ExactReviewQueue(

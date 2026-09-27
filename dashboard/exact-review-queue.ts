@@ -15673,6 +15673,7 @@ function freshScannerRefusalRetry(
     Boolean(
       manualRun &&
       manualRun[2] === String(decision.itemNumber) &&
+      deliveryId !== refusedDecision.sourceDeliveryId &&
       (/^\d+$/.test(manualRun[1])
         ? /^\d+$/.test(refusal.runId) && BigInt(manualRun[1]) > BigInt(refusal.runId)
         : refusedDecision.sourceAction !== MANUAL_REVIEW_SOURCE_ACTION ||

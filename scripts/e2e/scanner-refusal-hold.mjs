@@ -206,6 +206,8 @@ TARGET_REPOS = "openclaw/gogcli,openclaw/clawsweeper"
 EXACT_REVIEW_RETRY_POLICY_EPOCH = "${epoch}"
 EXACT_REVIEW_MANUAL_PUBLICATION_ENABLED = "1"
 EXACT_REVIEW_TARGET_RATE_PER_HOUR = "60"
+# Independent hold scenarios must not exhaust the unrelated scheduled-admission burst.
+EXACT_REVIEW_TARGET_BURST = "60"
 EXACT_REVIEW_DISPATCH_DEBOUNCE_MS = "300000"
 EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS = "300000"
 `,
@@ -479,6 +481,13 @@ try {
     results.push(
       "new explicit manual request releases; old workflow rerun does not; delivery replay is idempotent",
     );
+    await seed(145509, { ...manual, sourceDeliveryId: "manual:5000:145509" });
+    await complete(145509);
+    assert.equal((await enqueue(145509, "manual:5000:145509", manual)).reason, "scanner_refused");
+    assert.equal((await enqueue(145509, "manual:5001:145509", manual)).queued, true);
+    results.push(
+      "a failed numeric API request ID remains fenced even when greater than the worker run ID",
+    );
     const opaqueId = "manual:incident.1455:retry-1:145507";
     await seed(145507, { ...manual, sourceDeliveryId: opaqueId });
     await complete(145507);
@@ -591,7 +600,7 @@ try {
           },
           {
             repo: "openclaw/gogcli",
-            number: 145507,
+            number: 145510,
             kind: "issue",
             updatedAt: new Date().toISOString(),
           },
@@ -634,9 +643,9 @@ try {
     const [code] = await once(cli, "exit");
     assert.equal(code, 0, stderr);
     assert.equal(JSON.parse(stdout).deduped, 1);
-    assert.equal(JSON.parse(stdout).queued, 1);
+    assert.equal(JSON.parse(stdout).queued, 1, stdout);
     assert.equal((await item(145506)).parkedReason, "scanner_refused");
-    const admitted = await item(145507);
+    const admitted = await item(145510);
     assert.equal(admitted.decision.targetBranch, "release/fixture");
     assert.equal(admitted.decision.codexTimeoutMs, 1200000);
     assert.equal(admitted.decision.additionalPrompt, "synthetic continuation instructions");
