@@ -15703,10 +15703,7 @@ function finishExactReviewQueueItem(
       freshScannerRefusalRetry(
         item.decision,
         item.admissionDeliveryId,
-        {
-          ...refusal,
-          observedAt: item.claimedAt || now,
-        },
+        refusal,
         item.leaseDecision ?? item.decision,
       );
     if (!freshSuccessor) {

@@ -74,6 +74,14 @@ const trace = [],
   results = [],
   authorityProof = [],
   dispatches = [];
+// Other admitted items and terminal acknowledgements can progress during an alarm.
+const reviewDispatchCount = (number) =>
+  dispatches.filter(
+    ({ client_payload: payload }) =>
+      payload?.target_repo === "openclaw/gogcli" &&
+      Number(payload.item_number) === number &&
+      payload.source_action !== "exact_review_command_acknowledgement",
+  ).length;
 let child,
   epoch = "1",
   targetState = "open";
@@ -408,7 +416,7 @@ try {
       Date.parse(tiedHold.decision.sourceCommentUpdatedAt),
       Math.floor(tiedHold.scannerRefusal.observedAt / 1000) * 1000,
     );
-    const dispatchesBeforeDelayedCommand = dispatches.length;
+    const dispatchesBeforeDelayedCommand = reviewDispatchCount(145508);
     const delayedCommand = { ...tiedHold.decision, sourceCommentId: 8999 };
     assert.equal(
       (await enqueue(145508, "delayed-lower-id", delayedCommand)).reason,
@@ -425,7 +433,7 @@ try {
     );
     await call("/__proof/alarm", {});
     assert.deepEqual(await item(145508), tiedHold);
-    assert.equal(dispatches.length, dispatchesBeforeDelayedCommand);
+    assert.equal(reviewDispatchCount(145508), dispatchesBeforeDelayedCommand);
     const tiedNewer = await enqueue(145508, "newer-same-second-command", {
       ...delayedCommand,
       sourceCommentId: 9001,
@@ -433,7 +441,8 @@ try {
     assert.equal(tiedNewer.reason, "scanner_refused");
     await call("/__proof/alarm", {});
     assert.deepEqual(await item(145508), tiedHold);
-    assert.equal(dispatches.length, dispatchesBeforeDelayedCommand);
+    assert.equal(reviewDispatchCount(145508), dispatchesBeforeDelayedCommand);
+    const delayedDispatchDelta = reviewDispatchCount(145508) - dispatchesBeforeDelayedCommand;
     const laterCommandAt = Math.floor(tiedHold.scannerRefusal.observedAt / 1000) * 1000 + 1000;
     if (Date.now() < laterCommandAt) await sleep(laterCommandAt - Date.now());
     const laterCommand = await enqueue(145508, "later-second-command", {
@@ -444,16 +453,68 @@ try {
     assert.equal(laterCommand.queued, true);
     authorityProof.push({
       origin: "command",
+      itemNumber: 145508,
       refusedAt: tiedHold.scannerRefusal.observedAt,
-      tiedTimestamp: delayedCommand.sourceCommentUpdatedAt,
-      tiedResponse: tiedNewer,
+      commandTimestamp: delayedCommand.sourceCommentUpdatedAt,
+      rejectedResponse: tiedNewer,
       stateAfterAlarm: "parked",
-      dispatchesAdded: dispatches.length - dispatchesBeforeDelayedCommand,
+      dispatchesAdded: delayedDispatchDelta,
       laterTimestamp: new Date(laterCommandAt).toISOString(),
       laterQueued: laterCommand.queued,
     });
     results.push(
       "all tied command versions stay held through the real alarm with zero dispatch; only a later timestamp releases",
+    );
+
+    const queuedCommand = decision(145511, {
+      sourceAction: "re_review",
+      sourceCommentId: 10001,
+      sourceCommentUpdatedAt: new Date(Date.now() - 1000).toISOString(),
+      sourceCommentVerified: true,
+      commandOrigin: "hosted_webhook",
+      commandBodyDigest: "a".repeat(64),
+      commandStatusMarker: "<!-- clawsweeper-command-status:145511:re_review:queued -->",
+    });
+    await seed(145511, {}, queuedCommand);
+    const inflightBefore = await item(145511);
+    assert.ok(Date.parse(queuedCommand.sourceCommentUpdatedAt) > inflightBefore.claimedAt);
+    const inflightCompletion = await complete(145511);
+    assert.equal(inflightCompletion.requeued, false);
+    const inflightHold = await item(145511);
+    assert.equal(inflightHold.parkedReason, "scanner_refused");
+    const inflightRejected = await enqueue(145511, "pre-refusal-command-delayed", queuedCommand);
+    assert.equal(inflightRejected.reason, "scanner_refused");
+    const dispatchesBeforeInflightAlarm = reviewDispatchCount(145511);
+    await call("/__proof/alarm", {});
+    const inflightAfterAlarm = await item(145511);
+    assert.deepEqual(inflightAfterAlarm, inflightHold);
+    const inflightDispatchDelta = reviewDispatchCount(145511) - dispatchesBeforeInflightAlarm;
+    assert.equal(inflightDispatchDelta, 0);
+    const laterInflightAt = Math.floor(inflightHold.scannerRefusal.observedAt / 1000) * 1000 + 1000;
+    if (Date.now() < laterInflightAt) await sleep(laterInflightAt - Date.now());
+    const inflightFresh = await enqueue(145511, "post-refusal-command", {
+      ...queuedCommand,
+      sourceCommentId: 10002,
+      sourceCommentUpdatedAt: new Date(laterInflightAt).toISOString(),
+      commandStatusMarker: "<!-- clawsweeper-command-status:145511:re_review:after -->",
+    });
+    assert.equal(inflightFresh.queued, true);
+    authorityProof.push({
+      origin: "in-flight successor",
+      itemNumber: 145511,
+      claimedAt: inflightBefore.claimedAt,
+      refusedAt: inflightHold.scannerRefusal.observedAt,
+      commandTimestamp: queuedCommand.sourceCommentUpdatedAt,
+      completionRequeued: inflightCompletion.requeued,
+      rejectedResponse: inflightRejected,
+      stateAfterAlarm: inflightAfterAlarm.state,
+      parkedReasonAfterAlarm: inflightAfterAlarm.parkedReason,
+      dispatchesAdded: inflightDispatchDelta,
+      laterTimestamp: new Date(laterInflightAt).toISOString(),
+      laterQueued: inflightFresh.queued,
+    });
+    results.push(
+      "a re-review queued after lease claim but before refusal remains held through completion and alarm; a post-refusal command releases",
     );
 
     const stale = {
@@ -467,7 +528,7 @@ try {
     };
     assert.equal((await enqueue(145500, "stale-command", stale)).reason, "scanner_refused");
     const tiedAutomaticAt = Math.floor(held.scannerRefusal.observedAt / 1000) * 1000;
-    const dispatchesBeforeAutomaticTie = dispatches.length;
+    const dispatchesBeforeAutomaticTie = reviewDispatchCount(145500);
     const automaticTie = await enqueue(145500, "automatic-origin-tied-command", {
       ...stale,
       sourceCommentUpdatedAt: new Date(tiedAutomaticAt).toISOString(),
@@ -476,7 +537,8 @@ try {
     await call("/__proof/alarm", {});
     const automaticAfterAlarm = await item(145500);
     assert.deepEqual(automaticAfterAlarm, held);
-    assert.equal(dispatches.length, dispatchesBeforeAutomaticTie);
+    const automaticDispatchDelta = reviewDispatchCount(145500) - dispatchesBeforeAutomaticTie;
+    assert.equal(automaticDispatchDelta, 0);
     const laterAutomaticAt = tiedAutomaticAt + 1000;
     if (Date.now() < laterAutomaticAt) await sleep(laterAutomaticAt - Date.now());
     const freshAutomatic = await enqueue(145500, "fresh-command", {
@@ -486,12 +548,13 @@ try {
     assert.equal(freshAutomatic.queued, true);
     authorityProof.push({
       origin: "automatic",
+      itemNumber: 145500,
       refusedAt: held.scannerRefusal.observedAt,
-      tiedTimestamp: new Date(tiedAutomaticAt).toISOString(),
-      tiedResponse: automaticTie,
+      commandTimestamp: new Date(tiedAutomaticAt).toISOString(),
+      rejectedResponse: automaticTie,
       stateAfterAlarm: automaticAfterAlarm.state,
       parkedReasonAfterAlarm: automaticAfterAlarm.parkedReason,
-      dispatchesAdded: dispatches.length - dispatchesBeforeAutomaticTie,
+      dispatchesAdded: automaticDispatchDelta,
       laterTimestamp: new Date(laterAutomaticAt).toISOString(),
       laterQueued: freshAutomatic.queued,
     });
@@ -714,6 +777,7 @@ try {
     ),
     results,
     authority_proof: authorityProof,
+    total_fixture_dispatches: dispatches.length,
     limits:
       "Seeded leases and synthetic loopback GitHub; no live scanner, hosted full workflow or contributor mutation.",
   };

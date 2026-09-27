@@ -257,7 +257,7 @@ test("intentional policy epoch releases on automatic admission without failed co
   assert.equal(next.decision.additionalPrompt, undefined);
 });
 
-test("a fresh verified command queued during the failing scan may proceed", async () => {
+test("a command queued before scanner refusal cannot use the lease start as its cutoff", async () => {
   const f = await refused({
     successor: {
       sourceCommentId: 3000,
@@ -269,8 +269,9 @@ test("a fresh verified command queued during the failing scan may proceed", asyn
       additionalPrompt: "new request",
     },
   });
-  assert.equal(f.completion.requeued, true);
-  assert.equal((await stored(f)).state, "pending");
+  assert.equal(f.completion.requeued, false);
+  assert.equal((await stored(f)).state, "parked");
+  assert.equal((await stored(f)).parkedReason, "scanner_refused");
 });
 
 test("scanner holds require later command timestamps for automatic and command origins", async () => {
