@@ -273,7 +273,7 @@ test("a fresh verified command queued during the failing scan may proceed", asyn
   assert.equal((await stored(f)).state, "pending");
 });
 
-test("same-second fresh verified commands release but the failed command cannot replay", async () => {
+test("scanner holds require later command timestamps for automatic and command origins", async () => {
   const originalNow = Date.now;
   const now = 1_790_000_000_678;
   Date.now = () => now;
@@ -287,51 +287,39 @@ test("same-second fresh verified commands release but the failed command cannot 
       commandStatusMarker: "<!-- clawsweeper-command-status:1455:re_review:same-second -->",
       sourceCommentVerified: true,
     };
-    const f = await refused({ command });
-    assert.equal(
-      (
-        await enqueue(f.queue, "same-command-time-format", {
+    for (const origin of ["automatic", "command"]) {
+      const f = await refused({
+        command: origin === "command" ? command : { sourceAction: "synchronize" },
+      });
+      const tiedRequests = [
+        command,
+        {
           ...command,
           sourceCommentUpdatedAt: command.sourceCommentUpdatedAt.replace(".000Z", "Z"),
-        })
-      ).reason,
-      "scanner_refused",
-    );
-    assert.equal(
-      (await enqueue(f.queue, "same-command-replayed", command)).reason,
-      "scanner_refused",
-    );
-    for (const delayed of [
-      { ...command, sourceCommentId: 3999 },
-      {
-        ...command,
-        sourceCommentId: 3999,
-        sourceCommentUpdatedAt: command.sourceCommentUpdatedAt.replace(".000Z", "Z"),
-      },
-      { ...command, commandBodyDigest: "f".repeat(64) },
-    ]) {
+        },
+        { ...command, sourceCommentId: 3999 },
+        { ...command, sourceCommentId: 4001 },
+        { ...command, commandBodyDigest: "f".repeat(64) },
+      ];
+      for (const [index, tied] of tiedRequests.entries()) {
+        assert.equal(
+          (await enqueue(f.queue, `${origin}:tied:${index}`, tied)).reason,
+          "scanner_refused",
+        );
+        assert.equal((await stored(f)).state, "parked");
+      }
       assert.equal(
-        (await enqueue(f.queue, `delayed-${JSON.stringify(delayed)}`, delayed)).reason,
-        "scanner_refused",
+        (
+          await enqueue(f.queue, `${origin}:later`, {
+            ...command,
+            sourceCommentId: 3999,
+            sourceCommentUpdatedAt: new Date(now + 1000).toISOString(),
+          })
+        ).queued,
+        true,
       );
-      assert.equal((await stored(f)).state, "parked");
+      assert.equal((await stored(f)).revision, 2);
     }
-    assert.equal(
-      (await enqueue(f.queue, "same-second-fresh", { ...command, sourceCommentId: 4001 })).queued,
-      true,
-    );
-    const edited = await refused({ command });
-    assert.equal(
-      (
-        await enqueue(edited.queue, "later-edit-of-older-comment", {
-          ...command,
-          sourceCommentId: 3999,
-          sourceCommentUpdatedAt: new Date(now + 1000).toISOString(),
-        })
-      ).queued,
-      true,
-    );
-    assert.equal((await stored(f)).revision, 2);
   } finally {
     Date.now = originalNow;
   }

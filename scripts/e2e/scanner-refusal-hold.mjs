@@ -72,6 +72,7 @@ await new Promise((resolve) => tlsProxy.listen(8799, "127.0.0.1", resolve));
 const nonce = String(Date.now());
 const trace = [],
   results = [],
+  authorityProof = [],
   dispatches = [];
 let child,
   epoch = "1",
@@ -425,17 +426,34 @@ try {
     await call("/__proof/alarm", {});
     assert.deepEqual(await item(145508), tiedHold);
     assert.equal(dispatches.length, dispatchesBeforeDelayedCommand);
-    assert.equal(
-      (
-        await enqueue(145508, "newer-same-second-command", {
-          ...delayedCommand,
-          sourceCommentId: 9001,
-        })
-      ).queued,
-      true,
-    );
+    const tiedNewer = await enqueue(145508, "newer-same-second-command", {
+      ...delayedCommand,
+      sourceCommentId: 9001,
+    });
+    assert.equal(tiedNewer.reason, "scanner_refused");
+    await call("/__proof/alarm", {});
+    assert.deepEqual(await item(145508), tiedHold);
+    assert.equal(dispatches.length, dispatchesBeforeDelayedCommand);
+    const laterCommandAt = Math.floor(tiedHold.scannerRefusal.observedAt / 1000) * 1000 + 1000;
+    if (Date.now() < laterCommandAt) await sleep(laterCommandAt - Date.now());
+    const laterCommand = await enqueue(145508, "later-second-command", {
+      ...delayedCommand,
+      sourceCommentId: 9001,
+      sourceCommentUpdatedAt: new Date(laterCommandAt).toISOString(),
+    });
+    assert.equal(laterCommand.queued, true);
+    authorityProof.push({
+      origin: "command",
+      refusedAt: tiedHold.scannerRefusal.observedAt,
+      tiedTimestamp: delayedCommand.sourceCommentUpdatedAt,
+      tiedResponse: tiedNewer,
+      stateAfterAlarm: "parked",
+      dispatchesAdded: dispatches.length - dispatchesBeforeDelayedCommand,
+      laterTimestamp: new Date(laterCommandAt).toISOString(),
+      laterQueued: laterCommand.queued,
+    });
     results.push(
-      "delayed lower-ID and unordered same-comment versions remain held; real alarm makes no dispatch; a newer same-second command releases",
+      "all tied command versions stay held through the real alarm with zero dispatch; only a later timestamp releases",
     );
 
     const stale = {
@@ -448,16 +466,37 @@ try {
       commandStatusMarker: "<!-- clawsweeper-command-status:145500:re_review:new -->",
     };
     assert.equal((await enqueue(145500, "stale-command", stale)).reason, "scanner_refused");
-    assert.equal(
-      (
-        await enqueue(145500, "fresh-command", {
-          ...stale,
-          sourceCommentUpdatedAt: new Date(
-            Math.floor(held.scannerRefusal.observedAt / 1000) * 1000,
-          ).toISOString(),
-        })
-      ).queued,
-      true,
+    const tiedAutomaticAt = Math.floor(held.scannerRefusal.observedAt / 1000) * 1000;
+    const dispatchesBeforeAutomaticTie = dispatches.length;
+    const automaticTie = await enqueue(145500, "automatic-origin-tied-command", {
+      ...stale,
+      sourceCommentUpdatedAt: new Date(tiedAutomaticAt).toISOString(),
+    });
+    assert.equal(automaticTie.reason, "scanner_refused");
+    await call("/__proof/alarm", {});
+    const automaticAfterAlarm = await item(145500);
+    assert.deepEqual(automaticAfterAlarm, held);
+    assert.equal(dispatches.length, dispatchesBeforeAutomaticTie);
+    const laterAutomaticAt = tiedAutomaticAt + 1000;
+    if (Date.now() < laterAutomaticAt) await sleep(laterAutomaticAt - Date.now());
+    const freshAutomatic = await enqueue(145500, "fresh-command", {
+      ...stale,
+      sourceCommentUpdatedAt: new Date(laterAutomaticAt).toISOString(),
+    });
+    assert.equal(freshAutomatic.queued, true);
+    authorityProof.push({
+      origin: "automatic",
+      refusedAt: held.scannerRefusal.observedAt,
+      tiedTimestamp: new Date(tiedAutomaticAt).toISOString(),
+      tiedResponse: automaticTie,
+      stateAfterAlarm: automaticAfterAlarm.state,
+      parkedReasonAfterAlarm: automaticAfterAlarm.parkedReason,
+      dispatchesAdded: dispatches.length - dispatchesBeforeAutomaticTie,
+      laterTimestamp: new Date(laterAutomaticAt).toISOString(),
+      laterQueued: freshAutomatic.queued,
+    });
+    results.push(
+      "automatic-origin refusal rejects the tied-second verified command before dispatch; a later-second command is admitted",
     );
     assert.equal((await item(145500)).decision.additionalPrompt, undefined);
     assert.ok((await item(145500)).revision > held.revision);
@@ -674,6 +713,7 @@ try {
       ]),
     ),
     results,
+    authority_proof: authorityProof,
     limits:
       "Seeded leases and synthetic loopback GitHub; no live scanner, hosted full workflow or contributor mutation.",
   };

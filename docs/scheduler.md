@@ -52,8 +52,10 @@ Terminal input-scanner refusals instead retain the existing queue item as
 close/reopen, and failed-shard recovery cannot release this hold. It has no
 timed retry, expiry, closed-target cleanup, or operator source-drift recovery.
 A fresh verified re-review command or a newly dispatched explicit item request
-replaces the failed request's authority. Tied comment timestamps require a higher
-comment ID; edits of the same comment need a later timestamp to prove order.
+replaces the failed request's authority. Verified command timestamps must be strictly
+later than the refusal and failed command timestamps. GitHub timestamps have
+second precision, so all same-second requests stay held regardless of origin or
+comment ID; a new command or edit in a later second can retry.
 Replaying an old command or workflow
 run does not. The manual API also accepts named request IDs; use a new unique ID
 for each explicit retry. The failed ID remains fenced on the held decision even
