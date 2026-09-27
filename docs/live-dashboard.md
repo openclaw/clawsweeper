@@ -533,6 +533,14 @@ remain unchanged are memoized; polls waiting on invalidated work recompute.
 This only bounds observation freshness: the public projection's fields and
 meaning, admission, publication fences, and Bay behavior are unchanged.
 
+The composed status response retains the dedicated closed queue projection
+through every cache and store read. Its parked-reason counts, including
+`source_incompatible` and the aggregate `unknown` bucket, must survive together
+with the parked total. Dropping a reason during a second generic sanitation pass
+makes a valid queue appear malformed on the next read and hides Bay's live cards
+and timing. The dedicated projector remains the privacy boundary; no private
+queue fields or mutation controls are exposed.
+
 The object's lifecycle Bay response has a 30-second TTL-only memo
 (`EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS`; set `0` to disable). Production explicitly
 sets `EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "30000"`. Ordinary lifecycle, queue,

@@ -881,11 +881,6 @@ test("structural cache probes before hydration but acquires a lease before carry
   assert.match(source, /coordination-held\.json/);
   assert.match(source, /coordinationHeldRetryAt = startComment\.retryAt/);
   assert.match(source, /review-cache-metrics\.json/);
-  const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
-  assert.match(
-    workflow,
-    /review-artifacts\/shard-\$\{\{ matrix\.shard \}\}\/review-cache-metrics\.json/,
-  );
 });
 
 test("review comment patching only targets ClawSweeper-owned comments", () => {

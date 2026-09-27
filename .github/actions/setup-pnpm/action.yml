@@ -37,7 +37,10 @@ runs:
       id: pnpm-store
       shell: bash
       working-directory: ${{ inputs.working-directory }}
-      run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+      run: |
+        set -euo pipefail
+        store_path="$(pnpm store path --silent)"
+        printf 'path=%s\n' "$store_path" >> "$GITHUB_OUTPUT"
 
     - name: Resolve pnpm cache key
       id: pnpm-cache-key

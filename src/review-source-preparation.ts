@@ -1,3 +1,11 @@
+export interface ReviewCommitAcquisitionDiagnostic {
+  phase: "base" | "head" | "test_merge";
+  requestedSha: string;
+  source: "ref" | "pin";
+  commit: "unchecked" | "missing" | "present";
+  history: "unchecked" | "shallow" | "complete";
+}
+
 export type ReviewSourcePreparationFailureReason =
   | "configuration_missing"
   | "setup_script_failed"
@@ -14,6 +22,7 @@ export type ReviewSourcePreparationFailureReason =
 export class ReviewSourcePreparationError extends UserFacingCommandError {
   readonly diagnosticStage = "source_preparation";
   reviewedHeadSha?: string;
+  commitAcquisition?: ReviewCommitAcquisitionDiagnostic;
 
   constructor(
     readonly diagnosticReason: ReviewSourcePreparationFailureReason,

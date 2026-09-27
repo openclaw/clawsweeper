@@ -197,10 +197,6 @@ test("all exact-review publication paths inherit the shared automatic-close poli
   assert.doesNotMatch(sweepGlobalEnv, /CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED:/);
   assert.doesNotMatch(batchJobEnv, /CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED:/);
   assert.match(sweepWorkflow, /CLAWSWEEPER_AUTHOR_PR_BUDGET_CLOSE_ENABLED:/);
-  assert.match(
-    sweepWorkflow,
-    /apply_after_review_close_reasons \|\| env\.CLAWSWEEPER_AUTO_CLOSE_REASONS/,
-  );
   assert.equal(
     [
       ...sweepWorkflow.matchAll(
@@ -209,7 +205,6 @@ test("all exact-review publication paths inherit the shared automatic-close poli
     ].length,
     3,
   );
-  assert.match(sweepWorkflow, /apply_stale_min_age_days=60/);
   assert.doesNotMatch(
     sweepWorkflow,
     /CLOSE_REASONS: implemented_on_main,duplicate_or_superseded,low_signal_unmergeable_pr/,

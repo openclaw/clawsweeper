@@ -36,9 +36,9 @@ not split reports into issue/PR subtrees.
   closing only unchanged, high-confidence proposals.
 - Repository-specific rules live in `src/repository-profiles.ts`; ClawHub apply
   may close only PRs that are certainly implemented on `main`.
-- Worker concurrency is shard-level: each shard processes its selected items
-  sequentially. Maximum parallel Codex sessions equals `shard_count`, not
-  `batch_size * shard_count`.
+- Hosted review concurrency and batching belong to the shared exact-review
+  queue. Broad sweeps only admit candidates; they do not start per-run shards
+  or grant immediate-apply authority.
 - `openclaw/clawsweeper-state` is the live status surface and operational state
   store; the Worker/R2 pair is authoritative for records, ledger, and assets.
   Check current Actions and the canonical owner before trusting local generated

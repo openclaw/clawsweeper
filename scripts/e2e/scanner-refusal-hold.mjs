@@ -427,6 +427,16 @@ try {
     results.push(
       "new explicit manual request releases; old workflow rerun does not; delivery replay is idempotent",
     );
+    const opaqueId = "manual:incident.1455:retry-1:145507";
+    await seed(145507, { ...manual, sourceDeliveryId: opaqueId });
+    await complete(145507);
+    assert.equal((await enqueue(145507, opaqueId, manual)).reason, "scanner_refused");
+    const nextOpaqueId = "manual:incident.1455:retry-2:145507";
+    assert.equal((await enqueue(145507, nextOpaqueId, manual)).queued, true);
+    assert.equal((await item(145507)).decision.sourceDeliveryId, nextOpaqueId);
+    results.push(
+      "opaque manual request IDs release a hold, while replay of the failed identity remains blocked without a delivery receipt",
+    );
     await seed(
       145502,
       {},
@@ -469,22 +479,41 @@ try {
       fs.readFileSync(path.join(root, ".github/workflows/sweep.yml"), "utf8"),
     );
     const mode = workflow.jobs.plan.steps.find((s) => s.id === "mode").run;
-    const gate = mode
-      .split("\n")
-      .find((line) => line.includes("workflow_dispatch") && line.includes("then queue_feed=true"));
-    assert.ok(gate);
-    const expanded = gate
-      .replaceAll("${{ github.event_name }}", "workflow_dispatch")
-      .replaceAll("${{ github.event.inputs.apply_existing }}", "false")
-      .replaceAll("${{ github.event.inputs.audit_dashboard }}", "false");
-    assert.equal(
-      execFileSync(
-        "bash",
-        ["-eu", "-c", `queue_feed=false\n${expanded}\nprintf '%s' "$queue_feed"`],
-        { encoding: "utf8" },
-      ),
-      "true",
-    );
+    for (const id of [
+      "review",
+      "publish",
+      "recover-review-failures",
+      "requeue-source-revision-drift",
+      "publish-review-action-ledger",
+    ])
+      assert.equal(Object.hasOwn(workflow.jobs, id), false);
+    for (const input of ["batch_size", "shard_count", "apply_after_review"])
+      assert.equal(Object.hasOwn(workflow.on.workflow_dispatch.inputs, input), false);
+    assert.ok(workflow.jobs["apply-existing"]);
+    for (const manual of ["false", "true"]) {
+      const output = path.join(dir, `mode-${manual}.out`);
+      const stub = `pnpm() { case "$*" in *queue-pressure*) echo '{"availableCandidateCapacity":7}' ;; *"limit review_shards.hard_cap"*) echo 128 ;; *) return 2 ;; esac; }`;
+      execFileSync("bash", ["-euo", "pipefail", "-c", stub + "\n" + mode], {
+        env: {
+          ...process.env,
+          QUEUE_URL: origin,
+          GITHUB_OUTPUT: output,
+          HOT_INTAKE: "false",
+          MANUAL_EXPLICIT: manual,
+          CODEX_TIMEOUT_MS: "1200000",
+          ALLOCATED_CANDIDATES: "",
+        },
+      });
+      const values = Object.fromEntries(
+        fs
+          .readFileSync(output, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => line.split("=")),
+      );
+      assert.equal(values.manual_explicit, manual);
+      assert.equal(values.batch_size, manual === "true" ? "1" : "7");
+    }
     await seed(145506);
     await complete(145506);
     const plan = path.join(dir, "plan.json");
@@ -550,7 +579,7 @@ try {
     assert.equal(admitted.decision.codexTimeoutMs, 1200000);
     assert.equal(admitted.decision.additionalPrompt, "synthetic continuation instructions");
     results.push(
-      "actual untargeted workflow gate selects queue; production continuation enqueue CLI respects hold",
+      "actual workflow planning uses shared capacity; retired controls/jobs absent; production enqueue CLI respects hold",
     );
   }
   const summary = {
@@ -560,6 +589,19 @@ try {
       .update(fs.readFileSync(path.join(root, "dashboard/exact-review-queue.ts")))
       .digest("hex"),
     runtime: "real workerd / SQLite / signed production HTTP / compiled enqueue CLI",
+    source_sha256: Object.fromEntries(
+      [
+        ".github/workflows/sweep.yml",
+        "dashboard/exact-review-decision.ts",
+        "src/repair/exact-review-admission.ts",
+        "src/clawsweeper-failed-review-retry.ts",
+      ].map((file) => [
+        file,
+        createHash("sha256")
+          .update(fs.readFileSync(path.join(root, file)))
+          .digest("hex"),
+      ]),
+    ),
     results,
     limits:
       "Seeded leases and synthetic loopback GitHub; no live scanner, hosted full workflow or contributor mutation.",

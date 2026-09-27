@@ -405,84 +405,45 @@ export function createFailedReviewRetryWorkflow({
       attempts: options.attempts,
       maxAttempts: options.maxAttempts,
     });
-    if (options.revision.kind === "item_source_revision") {
-      const workflowDefaultBranch = ghWithRetry([
-        "api",
-        `repos/${options.workflowRepo}`,
-        "--jq",
-        ".default_branch // empty",
-      ]).trim();
-      if (!workflowDefaultBranch) {
-        throw new UserFacingCommandError(
-          `Could not resolve the default branch for ${options.workflowRepo}.`,
-        );
-      }
-      if (options.workflowRef !== workflowDefaultBranch) {
-        throw new UserFacingCommandError(
-          `Issue retry repository dispatch requires the workflow repository default branch (${workflowDefaultBranch}); got --workflow-ref ${options.workflowRef}.`,
-        );
-      }
-      const dispatchUrl = `https://github.com/${options.workflowRepo}/actions/workflows/sweep.yml`;
-      const dispatch = ghRawOnceWithCheckpoint(
-        [
-          "api",
-          "--method",
-          "POST",
-          `repos/${options.workflowRepo}/dispatches`,
-          "-f",
-          "event_type=clawsweeper_target_sweep",
-          "-f",
-          `client_payload[target_repo]=${options.targetRepo}`,
-          "-f",
-          "client_payload[target_branch]=main",
-          "-f",
-          "client_payload[batch_size]=1",
-          "-f",
-          "client_payload[shard_count]=1",
-          "-f",
-          "client_payload[hot_intake]=false",
-          "-f",
-          `client_payload[codex_timeout_ms]=${options.codexTimeoutMs}`,
-          "-f",
-          `client_payload[item_number]=${options.number}`,
-          "-f",
-          `client_payload[additional_prompt]=${prompt}`,
-          "-f",
-          `client_payload[expected_source_revision]=${options.revision.value}`,
-          "-f",
-          "client_payload[source_revision_requeue_count]=0",
-        ],
-        () => options.onBeforeDispatch?.(dispatchUrl),
+    const workflowDefaultBranch = ghWithRetry([
+      "api",
+      `repos/${options.workflowRepo}`,
+      "--jq",
+      ".default_branch // empty",
+    ]).trim();
+    if (!workflowDefaultBranch || options.workflowRef !== workflowDefaultBranch) {
+      throw new UserFacingCommandError(
+        `Automatic retry repository dispatch requires the workflow repository default branch (${workflowDefaultBranch}); got --workflow-ref ${options.workflowRef}.`,
       );
-      if (dispatch.outcome !== "accepted") throw new Error("GitHub dispatch was not accepted");
-      return dispatchUrl;
     }
+    const issue = options.revision.kind === "item_source_revision";
     const dispatchUrl = `https://github.com/${options.workflowRepo}/actions/workflows/sweep.yml`;
     const dispatch = ghRawOnceWithCheckpoint(
       [
-        "workflow",
-        "run",
-        "sweep.yml",
-        "--repo",
-        options.workflowRepo,
-        "--ref",
-        options.workflowRef,
+        "api",
+        "--method",
+        "POST",
+        `repos/${options.workflowRepo}/dispatches`,
         "-f",
-        "apply_existing=false",
+        "event_type=clawsweeper_item",
         "-f",
-        "hot_intake=false",
+        `client_payload[target_repo]=${options.targetRepo}`,
         "-f",
-        `target_repo=${options.targetRepo}`,
+        `client_payload[item_number]=${options.number}`,
         "-f",
-        "batch_size=1",
+        `client_payload[item_kind]=${issue ? "issue" : "pull_request"}`,
         "-f",
-        "shard_count=1",
+        `client_payload[source_event]=${issue ? "issues" : "pull_request"}`,
         "-f",
-        `codex_timeout_ms=${options.codexTimeoutMs}`,
+        "client_payload[source_action]=failed_review_shard_recovery",
         "-f",
-        `item_number=${options.number}`,
+        `client_payload[codex_timeout_ms]=${options.codexTimeoutMs}`,
         "-f",
-        `additional_prompt=${prompt}`,
+        `client_payload[additional_prompt]=${prompt}`,
+        "-f",
+        issue
+          ? `client_payload[expected_source_revision]=${options.revision.value}`
+          : `client_payload[source_head_sha]=${options.revision.value}`,
       ],
       () => options.onBeforeDispatch?.(dispatchUrl),
     );

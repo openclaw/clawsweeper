@@ -31,7 +31,7 @@ test("state hydration retains canonical defaults with an explicit operational-on
     }
   }
 
-  assert.equal(setups.length, 21, "setup-state site count is an audited invariant");
+  assert.equal(setups.length, 20, "setup-state site count is an audited invariant");
   assert.deepEqual(
     setups.filter(({ step }) => step.with?.["hydrate-records"] === "false").map(({ site }) => site),
     [".github/workflows/repair-publish-results.yml:publish"],
@@ -93,7 +93,6 @@ test("per-target state hydration is slug-scoped while fleet lanes retain discove
       ".github/workflows/sweep.yml:event-review-apply",
       ".github/workflows/sweep.yml:event-review-publish",
       ".github/workflows/sweep.yml:plan",
-      ".github/workflows/sweep.yml:publish",
       ".github/workflows/sweep.yml:retry-failed-reviews",
       ".github/workflows/sweep.yml:apply-proof",
       ".github/workflows/sweep.yml:apply-existing",
@@ -185,7 +184,7 @@ test("all remaining git publishers join setup-state and receive a step-scoped co
       }
     }
   }
-  assert.equal(publishers, 21, "git publisher count is an audited invariant");
+  assert.equal(publishers, 18, "git publisher count is an audited invariant");
 });
 
 test("post-side-effect git bookkeeping is non-fatal while durability fences stay strict", () => {
@@ -246,7 +245,7 @@ test("every immutable action-event publisher targets R2 without a state-repo tok
       }
     }
   }
-  assert.equal(publishers.length, 8);
+  assert.equal(publishers.length, 5);
 });
 
 test("retired migration and Git recovery surfaces stay deleted", () => {

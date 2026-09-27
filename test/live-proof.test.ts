@@ -4399,41 +4399,13 @@ test("automatic live proof is retired while historical artifact publication rema
   const directSetup = exactReviewSteps.find((step) => step.id === "direct-setup-state");
   assert.doesNotMatch(directSetup?.if ?? "", /live-proof|live_proof|execute-exact/);
 
-  const shardSteps = sweepWorkflow.jobs.review?.steps ?? [];
-  for (const name of [
-    "Inspect review-shard live proofs",
-    "Resolve review-shard live-proof Go version",
-    "Set up review-shard live-proof Go toolchain",
-    "Enable review-shard live-proof automatic Go fallback",
-    "Install review-shard terminal tools",
-    "Install review-shard recording tools",
-    "Execute review-shard live proofs",
-  ]) {
-    assert.equal(
-      shardSteps.some((step) => step.name === name),
-      false,
-    );
-  }
-  const shardUpload = shardSteps.find(
-    (step) => step.with?.name === "review-shard-${{ matrix.shard }}",
-  );
-  assert.match(shardUpload?.if ?? "", /review-shard\.outcome/);
-  assert.doesNotMatch(JSON.stringify(shardUpload), /live-proof/);
-
   const exactPublishSteps = sweepWorkflow.jobs["event-review-publish"]?.steps ?? [];
   assertOrdered(exactPublishSteps, [
     "Validate exact review artifact bundle",
     "Fold exact live proof into the review artifact",
     "Publish event result and apply safe close",
   ]);
-  const publishSteps = sweepWorkflow.jobs.publish?.steps ?? [];
-  assertOrdered(publishSteps, [
-    "Fold live proofs into review artifacts",
-    "Apply review artifacts",
-    "Commit review records",
-  ]);
   assert.match(JSON.stringify(exactPublishSteps), /CLAWSWEEPER_LIVE_PROOF_AWS/);
-  assert.match(JSON.stringify(publishSteps), /CLAWSWEEPER_LIVE_PROOF_AWS/);
   assert.doesNotMatch(
     sweep,
     /dispatch-live-proofs|clawsweeper_live_proof|live-proof-attach-publish/,

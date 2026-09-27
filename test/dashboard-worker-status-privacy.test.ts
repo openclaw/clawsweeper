@@ -1431,7 +1431,7 @@ test("cold and durable-cache status preserve the dedicated publication contract"
   }
 });
 
-test("public queue projection retains only closed operational aggregates", () => {
+test("public queue projection retains only closed operational aggregates", async (t) => {
   const sentinel = "generated-private-marker";
   const source = {
     generated_at: "2026-08-15T12:00:00.000Z",
@@ -1587,6 +1587,38 @@ test("public queue projection retains only closed operational aggregates", () =>
   });
   assert.equal(pinnedSource.lanes.review.parked_reasons.source_incompatible, 1);
   assert.equal(pinnedSource.collection.state, "complete");
+  const originalCaches = globalThis.caches;
+  let cachedStatus: Response | undefined;
+  Object.defineProperty(globalThis, "caches", {
+    configurable: true,
+    value: { default: { match: async () => cachedStatus?.clone() } },
+  });
+  t.after(() => {
+    Object.defineProperty(globalThis, "caches", { configurable: true, value: originalCaches });
+  });
+  t.mock.method(globalThis, "fetch", async () => {
+    throw new Error("cached status fixture must not fetch upstream data");
+  });
+  for (const queue of [projected, pinnedSource]) {
+    const withPolicy = {
+      ...queue,
+      manual_publication: { policy: "record_comment_only", enabled: false },
+    };
+    let status = publicStatusProjection({ exact_review_queue: withPolicy });
+    for (let pass = 0; pass < 3; pass += 1) {
+      assert.deepEqual(
+        status.exact_review_queue,
+        withPolicy,
+        "status/cache reprojection must preserve the dedicated closed queue contract",
+      );
+      assert.equal(JSON.stringify(status).includes(sentinel), false);
+      cachedStatus = Response.json(status);
+      const response = await worker.fetch(new Request("https://example.invalid/api/status"), {});
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("x-clawsweeper-cache"), "fresh");
+      status = await response.json();
+    }
+  }
   assert.equal(projected.handoff_health.status, "healthy");
   assert.equal(projected.pressure.status, "congested");
   assert.deepEqual(projected.review_failure_health, {

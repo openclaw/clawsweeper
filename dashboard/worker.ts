@@ -3448,9 +3448,9 @@ export function publicStatusProjection(
   }
   document.bay = documentBay;
   if (hasExactReviewQueueObject) {
-    const documentQueue = objectValue(document.exact_review_queue);
-    documentQueue.bay_projection = publicBayProjection;
-    document.exact_review_queue = documentQueue;
+    // The dedicated queue projector owns its closed fields. A second generic
+    // allowlist can drop reason counts and make a cached valid queue malformed.
+    document.exact_review_queue = projectionSource.exact_review_queue;
   }
   if (Object.hasOwn(source, "recent_durable_publication_events")) {
     document.recent_durable_publication_events = publicRecentDurablePublicationEventsProjection(

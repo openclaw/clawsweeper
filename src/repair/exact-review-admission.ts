@@ -107,12 +107,20 @@ export function exactReviewAdmission(output: Output): void {
   const pullRequest = Boolean(issue.pull_request);
   const hasCommandContext = Boolean(decision.commandStatusMarker || decision.statusCommentId);
   let issueComments: unknown[] | undefined;
-  if (open && !locked && !pullRequest && hasCommandContext) {
+  if (open && !locked && !pullRequest && (hasCommandContext || decision.expectedSourceRevision)) {
     const pages: unknown[] = JSON.parse(
       read(`issues/${number}/comments?per_page=100`, "--paginate", "--slurp"),
     );
     issueComments = pages.flat();
-    output({ source_revision: issueSourceRevisionSha256(issue, issueComments) });
+    const sourceRevision = issueSourceRevisionSha256(issue, issueComments);
+    output({ source_revision: sourceRevision });
+    if (decision.expectedSourceRevision && decision.expectedSourceRevision !== sourceRevision) {
+      output({ ...terminal, scheduled_semantic_noop: "true", item_kind: "issue" });
+      console.error(
+        `::notice::Skipping stale issue retry for ${repo}#${number}; normal queue intake can review the new source.`,
+      );
+      return;
+    }
   }
   output({ item_kind: pullRequest ? "pull_request" : "issue" });
   if (open && !locked && skipAutomaticEndorReview(repo, issue, decision)) {

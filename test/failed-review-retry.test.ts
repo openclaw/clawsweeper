@@ -764,9 +764,10 @@ process.exit(1);
     assert.equal(report[0]?.revision, sourceRevision);
     const dispatch = JSON.parse(readFileSync(dispatchPath, "utf8")) as string[];
     assert.ok(dispatch.includes("repos/openclaw/clawsweeper/dispatches"));
-    assert.ok(dispatch.includes("event_type=clawsweeper_target_sweep"));
+    assert.ok(dispatch.includes("event_type=clawsweeper_item"));
     assert.ok(dispatch.includes(`client_payload[expected_source_revision]=${sourceRevision}`));
-    assert.ok(dispatch.includes("client_payload[source_revision_requeue_count]=0"));
+    assert.ok(dispatch.includes("client_payload[source_action]=failed_review_shard_recovery"));
+    assert.ok(dispatch.includes("client_payload[item_kind]=issue"));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -1061,21 +1062,14 @@ test("expected issue source revision aborts drift and writes a requeue marker", 
   }
 });
 
-test("sweep workflow forwards source revision and bounds drift requeue", () => {
+test("automatic retries retain their issue pin in exact queue execution", () => {
   const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
-
-  assert.match(workflow, /EXPECTED_SOURCE_REVISION:.*client_payload\.expected_source_revision/);
+  assert.match(workflow, /expectedSourceRevision: payload.expected_source_revision/);
+  assert.match(workflow, /EXPECTED_SOURCE_REVISION:.*expectedSourceRevision/);
   assert.match(workflow, /--expected-source-revision "\$EXPECTED_SOURCE_REVISION"/);
-  assert.match(
-    workflow,
-    /requeue-source-revision-drift:\r?\n\s+name: Requeue source-revision drift/,
-  );
-  assert.match(workflow, /name: review-source-revision-mismatch-\$\{\{ matrix\.shard \}\}/);
-  assert.match(workflow, /requeue-source-revision-drift:[\s\S]*?contents: write/);
-  assert.match(workflow, /review:[\s\S]*?permissions:\r?\n\s+contents: read/);
-  assert.match(workflow, /\[ "\$REQUEUE_COUNT" -ge 1 \]/);
-  assert.match(workflow, /expected_source_revision: \$expected_source_revision/);
-  assert.match(workflow, /source_revision_requeue_count: "1"/);
+  assert.match(workflow, /artifacts\/event\/source-revision-mismatch.json/);
+  assert.match(workflow, /source_revision_changed=true/);
+  assert.doesNotMatch(workflow, /requeue-source-revision-drift:/);
 });
 
 test("failed retry metadata survives a repeated failure at the same revision", () => {

@@ -67,13 +67,6 @@ const expectations: { file: string; label: string; pattern: RegExp }[] = [
     pattern: new RegExp(`at most ${limits.audit.max_parallel_targets} target audits in flight`),
   },
   {
-    file: ".github/workflows/sweep.yml",
-    label: "manual workflow_dispatch shard_count default",
-    pattern: new RegExp(
-      `shard_count:[\\s\\S]{0,180}default: "${limits.review_shards.normal_default}"`,
-    ),
-  },
-  {
     file: "dashboard/wrangler.toml",
     label: "dashboard Codex worker budget",
     pattern: new RegExp(`WORKER_BUDGET = "${config.workers.max}"`),
@@ -132,13 +125,6 @@ const expectations: { file: string; label: string; pattern: RegExp }[] = [
     file: "docs/scheduler.md",
     label: "normal active shard floor",
     pattern: new RegExp(`fewer than ${limits.review_shards.normal_active_floor} items are due`),
-  },
-  {
-    file: "docs/scheduler.md",
-    label: "hot intake shard default",
-    pattern: new RegExp(
-      `broad hot intake: configured ceiling of ${limits.review_shards.hot_intake_default} shards`,
-    ),
   },
   {
     file: "docs/limits.md",

@@ -41,11 +41,10 @@ See [`obsolescence-close-policies.md`](obsolescence-close-policies.md) for the
 120/90-day issue and 90/30-day PR age/inactivity contracts.
 
 GitHub repository variables still override selected live limits. When a variable
-is unset, workflows read the checked-in budget after checkout. The one exception
-is the `workflow_dispatch.inputs.shard_count.default` value in
-`.github/workflows/sweep.yml`: GitHub renders that UI before checkout, so it
-must remain a YAML literal. `pnpm run check:limits` verifies that literal and the
-docs stay in sync with the derived budget.
+is unset, workflows read the checked-in budget after checkout. Broad manual
+review uses the same queue limits as scheduled feeds; manual shard/batch
+controls are retired. `pnpm run check:limits` verifies the remaining derived
+Worker, workflow, and documentation values.
 
 The mental model:
 
@@ -168,17 +167,12 @@ unset, empty, or invalid values use the defaults.
 | `CLAWSWEEPER_QUEUE_PRESSURE_SOFT_AGE_MS`  | 1800000 |
 | `CLAWSWEEPER_QUEUE_PRESSURE_HARD_AGE_MS`  | 7200000 |
 
-Only manual normal review and manual hot intake use this pressure
-multiplier. Scheduled review uses the queue's 600-item soft limit and 60/hour
-admission target. Repair, assist, issue implementation, cluster repair, and
-exact-item review keep their existing priority budgets.
-
-Background planner jobs serialize per target repository. A sweep that is still
-planning, queued, or expanding its matrix reserves its quiet lane size. Once
-its shard jobs exist and all finish, its publish phase counts as zero workers,
-allowing the next planner to refill the available capacity. Broad manual review
-`shard_count` inputs are also capped by the current lane allowance; exact-item
-runs still use the exact-item lane.
+Broad manual and scheduled review both use queue-advertised candidate capacity
+and the shared admission target. Planners serialize by target, offer candidates,
+and finish without reserving matrix workers. The legacy worker-limit pressure
+multiplier remains a helper for other callers; it no longer controls a hosted
+manual review matrix. Repair, assist, issue implementation, cluster repair, and
+exact-item admission retain their existing priority budgets.
 
 Priority lanes do not subtract the interactive reserve. They cap themselves at
 their derived lane ceiling and at the remaining global budget after other active
@@ -509,5 +503,5 @@ These limits are owned by `dashboard/exact-review-queue.ts`, implemented in
 - Each enabled automatic issue intake lane scans durable open reports and
   dispatches at most `issue_implementation.dispatches_per_sweep_default`
   candidates per target sweep.
-- Manual `sweep.yml` dispatch `shard_count` overrides
-  `review_shards.normal_default`, then clamps to `review_shards.hard_cap`.
+- Broad `sweep.yml` dispatches use queue-advertised candidate capacity, bounded
+  by `review_shards.hard_cap`; there is no per-run shard override.

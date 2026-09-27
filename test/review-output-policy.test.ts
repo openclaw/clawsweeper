@@ -95,14 +95,9 @@ test("hosted review requires explicit debug retention and destination", () => {
 
 test("canonical hosted review launchers declare required debug retention", () => {
   const workflow = readFileSync(".github/workflows/sweep.yml", "utf8");
-  for (const artifactDir of [
-    "--artifact-dir artifacts/event",
-    "--artifact-dir ../review-artifacts/shard-${{ matrix.shard }}",
-  ]) {
-    const start = workflow.indexOf(artifactDir);
-    assert.notEqual(start, -1);
-    assert.match(workflow.slice(start, start + 220), /--output-retention debug/);
-  }
+  const start = workflow.indexOf("--artifact-dir artifacts/event");
+  assert.notEqual(start, -1);
+  assert.match(workflow.slice(start, start + 220), /--output-retention debug/);
 });
 
 test("transient review output is private and removed by its owner cleanup", () => {

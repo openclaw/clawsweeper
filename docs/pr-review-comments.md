@@ -432,7 +432,9 @@ introduced hunk elsewhere causes the failure; risks, labels, scores, and fixups
 must use that same ownership boundary.
 
 PR source acquisition fetches complete blobless ancestry and the pinned open-PR
-test merge before restricted review, with a 30-second deadline per fetch. Branch
+test merge before restricted review. Each pinned commit shares one 120-second
+budget across ref/exact-object acquisition and verification, with 60-second
+fetch attempts. Moved base and head refs never replace the REST pins. Branch
 and release refreshes preserve that ancestry; existing shallow checkouts are
 unshallowed rather than deepened to a fixed commit count. The evidence reader
 itself cannot fetch objects or run external diff drivers. It bounds each Git read

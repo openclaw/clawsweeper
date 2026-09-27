@@ -20,6 +20,7 @@ import { delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import YAML from "yaml";
+import { issueSourceRevisionSha256 } from "../../dist/repair/issue-source-guard.js";
 import { scheduledReviewSemanticSourceRevision } from "../../src/scheduled-review-noop.ts";
 
 const scriptPath = fileURLToPath(import.meta.url);
@@ -259,6 +260,25 @@ function scenarios() {
         expected: {},
       }),
     );
+  }
+  const pinnedIssue = cases.find((entry) => entry.name === "issue:hot-unchanged");
+  for (const matches of [true, false]) {
+    cases.push({
+      ...pinnedIssue,
+      name: `retry:issue-source-${matches ? "current" : "changed"}`,
+      decision: {
+        sourceAction: "failed_review_shard_recovery",
+        targetBranch: "main",
+        expectedSourceRevision: matches
+          ? issueSourceRevisionSha256(pinnedIssue.issue, pinnedIssue.comments)
+          : "f".repeat(64),
+      },
+      expected: {
+        proceed: String(matches),
+        scheduled_semantic_noop: String(!matches),
+        item_kind: "issue",
+      },
+    });
   }
   const issue = cases.find((entry) => entry.name === "pull_request:hot-unchanged");
   const core = (name, extra = {}) => ({
@@ -732,7 +752,11 @@ export function runReadScopeProof({
         after.outputs.item_kind === "issue" &&
         scenario.issue.state === "open" &&
         !scenario.issue.locked &&
-        Boolean(scenario.decision.commandStatusMarker || scenario.decision.statusCommentId);
+        Boolean(
+          scenario.decision.commandStatusMarker ||
+          scenario.decision.statusCommentId ||
+          scenario.decision.expectedSourceRevision,
+        );
       if (issueSourceRead) assert.match(after.outputs.source_revision, /^[a-f0-9]{64}$/);
       if (!isHot) {
         assert.equal(

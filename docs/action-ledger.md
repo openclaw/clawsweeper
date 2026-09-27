@@ -390,13 +390,11 @@ privacy-checked.
 
 ## Projections
 
-Aggregate review uploads run in the bounded `publish-review-action-ledger` job
-after the primary publisher, outside its target concurrency lock. Review and
-publisher artifacts retain their distinct producer identities; imports publish
-the complete canonical event and binding manifests. Optional upload failure is
-reported separately and does not delay primary artifact application, record
-publication, selected comments, or recovery. The primary artifact and comment
-receipt publication phases remain in the publisher.
+Exact review and publication workflows retain their distinct producer identities
+and publish immutable event/binding manifests through their existing paths.
+The old aggregate `publish-review-action-ledger` matrix job is retired; its
+historical events remain readable. The separate apply/retry ledger paths remain
+active and do not confer review retry authority by themselves.
 
 Consumers fold immutable events into purpose-specific views:
 

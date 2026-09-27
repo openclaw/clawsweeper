@@ -7,9 +7,14 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
-- Hold automatic reviews after a terminal scanner refusal until a fresh explicit re-review or intentional scanner-policy update, preventing repeated attempts and notifications across sweep, event, and recovery producers. Thanks @yetval.
+- Hold automatic reviews after a terminal scanner refusal until a fresh explicit re-review or intentional scanner-policy update, preventing repeated attempts and notifications across sweep, event, and recovery producers. Retire per-run sweep batch/shard and immediate-apply controls in favor of the shared queue and separate apply lane. Thanks @yetval.
+- Recover pinned review bases after branch rewrites or deletion within the existing acquisition deadline. Record the failed pin and completeness state, and stop optional evidence work when Git process settlement is unverified.
+
+- Stop pnpm setup at a failed store lookup, preserving its exit status instead of reporting a missing cache path.
 
 - Keep Endor test-repository reviews owned by the automerge loop and preserve current PR command identity through repair follow-ups and source-event supersession. Thanks @jesse-merhi.
+
+- Enforce strict TypeScript checks for the extracted Bay activity, review-status, and observed-failure modules, bringing the dashboard strict ratchet to 52 of 54 modules.
 
 - Defer failed-shard review recovery while an earlier publication is pending, preserving the recovery request and allowing explicit re-reviews and source changes.
 
@@ -44,6 +49,8 @@ checkpoint, and status-only commits are intentionally omitted.
 - Reduce retained-lifecycle Bay refresh CPU by skipping repeated sample sorting for older cards while preserving full-history validation, counts, and ordering.
 
 - Preserve app-server turn failures so capacity errors remain retryable and unavailable models remain terminal instead of surfacing a missing result file. Thanks @Yigtwxx.
+
+- Restore OpenClaw Bay live status when reviews are parked for incompatible sources or unknown reasons; preserve the validated queue contract across cached reads, and polish the shoreline header, filters, and lane labels.
 
 - Keep scheduled and manual review intake independent of aggregate telemetry failures while preserving signed admission, pacing, replay, and publication-policy checks. Require signed capability proof in exact-revision deployment smoke checks before rolling out the new producers.
 

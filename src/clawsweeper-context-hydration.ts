@@ -1,6 +1,7 @@
 import { AgentInputScanError } from "./agent-input-scan.js";
 import { GitHubOperationDeadlineError } from "./clawsweeper-github-runtime.js";
 import { ReviewSourcePreparationError } from "./review-source-preparation.js";
+import { validationRecoveryRequired } from "./repair/validation-recovery.js";
 import {
   BULK_FILED_LABEL,
   BULK_FILER_SEARCH_TIMEOUT_MS,
@@ -957,6 +958,7 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
           sha: baseSha,
           sourceRef: `refs/heads/${baseRef}`,
           destinationRef: `refs/clawsweeper/review-cache/base-${options.itemNumber}`,
+          phase: "base",
         }) ||
         !ensurePullRequestReviewHead({
           targetDir: options.targetDir,
@@ -1026,6 +1028,8 @@ export function createContextHydration(dependencies: CreateContextHydrationDepen
         try {
           hydrateBlobs(baseSha);
         } catch (error) {
+          // Optional evidence cannot make an unsettled Git workspace reusable.
+          if (validationRecoveryRequired(error)) throw error;
           if (
             !(error instanceof AgentInputScanError) &&
             !(error instanceof ReviewSourcePreparationError)

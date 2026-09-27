@@ -352,3 +352,58 @@ test("native review fetch timeouts retain structured process diagnostics", () =>
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("pinned acquisition diagnostics preserve phase and completeness without refs or source substitution", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "clawsweeper-diagnostics-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const native = spawnSync(process.execPath, ["-e", "process.exit(0)"], { encoding: "utf8" });
+  const error = new ReviewGitError("review_commits_unavailable", native);
+  error.commitAcquisition = {
+    phase: "base",
+    requestedSha: "b".repeat(40),
+    source: "pin",
+    commit: "missing",
+    history: "complete",
+  };
+  const output = write(join(root, "valid"), error);
+  const manifest = JSON.parse(readFileSync(join(output, "manifest.json"), "utf8"));
+  assert.deepEqual(manifest.failure.acquisition, {
+    phase: "base",
+    requested_sha: "b".repeat(40),
+    source: "pin",
+    commit: "missing",
+    history: "complete",
+  });
+  assert.equal(
+    manifest.source.sha,
+    "a".repeat(40),
+    "the source identity remains the reviewed head",
+  );
+  assert.equal(manifest.process.status, 0, "process success is not source completeness");
+  Object.assign(error.commitAcquisition, {
+    phase: "/private/checkout",
+    requestedSha: "private-value",
+    source: "refs/heads/private",
+    commit: "https://private.invalid",
+    history: "raw detail",
+    extra: "never serialize",
+  });
+  const redacted = write(join(root, "invalid"), error);
+  const invalid = JSON.parse(readFileSync(join(redacted, "manifest.json"), "utf8"));
+  assert.deepEqual(invalid.failure.acquisition, {
+    phase: null,
+    requested_sha: null,
+    source: null,
+    commit: null,
+    history: null,
+  });
+  const scan = Object.assign(new AgentInputScanError("findings"), {
+    cause: error,
+    commitAcquisition: error.commitAcquisition,
+  });
+  const refused = write(join(root, "scan"), scan);
+  assert.equal(
+    JSON.parse(readFileSync(join(refused, "manifest.json"), "utf8")).failure.acquisition,
+    undefined,
+  );
+});

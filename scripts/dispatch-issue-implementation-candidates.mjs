@@ -8,6 +8,11 @@ if (!targetRepo || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(targetRepo)) {
   fail("--target-repo must be a valid owner/repository");
 }
 
+const candidateKind = options.get("candidate-kind") || "strict_bug";
+if (!["strict_bug", "vision_fit", "viable"].includes(candidateKind)) {
+  fail("--candidate-kind must be strict_bug, vision_fit, or viable");
+}
+
 const selectedItem = options.get("item-number");
 if (selectedItem && !/^[1-9]\d*$/.test(selectedItem)) {
   fail("--item-number must be a positive integer");
@@ -42,7 +47,7 @@ const candidateArgs = [
   "--enabled",
   "true",
   "--candidate-kind",
-  "strict_bug",
+  candidateKind,
   "--target-repo",
   targetRepo,
   "--report-repo",
@@ -71,7 +76,7 @@ for (const candidate of candidates) {
     fail(`candidate ${itemNumber} has an invalid report reference`);
   }
   process.stdout.write(
-    `Dispatching high-confidence bug implementation for https://github.com/${targetRepo}/issues/${itemNumber}\n`,
+    `Dispatching ${candidateKind} implementation for https://github.com/${targetRepo}/issues/${itemNumber}\n`,
   );
   const args = ["workflow", "run", "repair-issue-implementation-intake.yml"];
   if (process.env.GITHUB_REPOSITORY) args.push("--repo", process.env.GITHUB_REPOSITORY);
@@ -85,7 +90,7 @@ for (const candidate of candidates) {
     "-f",
     `item_number=${itemNumber}`,
     "-f",
-    "candidate_kind=strict_bug",
+    `candidate_kind=${candidateKind}`,
     "-f",
     `report_path=${candidate.report_path}`,
     "-f",
@@ -101,6 +106,7 @@ function parseArgs(argv) {
   const values = new Map();
   const names = new Set([
     "target-repo",
+    "candidate-kind",
     "item-number",
     "artifact-dir",
     "report-dir",

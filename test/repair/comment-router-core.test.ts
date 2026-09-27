@@ -2571,10 +2571,9 @@ test("comment router durably claims dispatch commands and recovers exact workflo
   assert.match(claimFunction, /dispatchClaimLookupKeys\(command\)/);
   assert.match(source, /\/runs\?per_page=100&page=\$\{page\}/);
   assert.match(source, /status:\s*"recovered"/);
-  assert.match(source, /`item_numbers=\$\{dispatchKey\}`/);
   assert.doesNotMatch(reviewDispatch, /item_count=/);
-  assert.match(source, /event:\s*"workflow_dispatch"/);
-  assert.match(source, /workflow_dispatch=\$\{fallback\.stderr \|\| fallback\.stdout\}/);
+  assert.doesNotMatch(reviewDispatch, /event:\s*"workflow_dispatch"/);
+  assert.match(reviewDispatch, /Review manual item/);
   assert.match(sweepWorkflow, /Review event item \{0\}#\{1\} \[\{2\}\]/);
   assert.match(sweepWorkflow, /startsWith\(github\.event\.inputs\.item_numbers, 'router-'\)/);
   assert.match(assistWorkflow, /Assist \{0\}#\{1\} \[\{2\}\]/);

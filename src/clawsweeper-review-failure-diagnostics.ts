@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { AgentInputScanError } from "./agent-input-scan.js";
 import { agentInputScanFailureReason } from "./exact-review-failure-reason.js";
 import { codexJsonlFailureDetail } from "./codex-transient.js";
+import { ReviewSourcePreparationError } from "./review-source-preparation.js";
 
 const FILE_LIMITS = { "error.txt": 4096, "stdout.error.txt": 4096, "stderr.tail.txt": 12_288 };
 export const EXACT_REVIEW_FAILURE_DIAGNOSTICS_MAX_BYTES = 24 * 1024;
@@ -58,6 +59,10 @@ export function writeExactReviewFailureDiagnostics(options: {
         )
       : null;
   const values = exactValues(options.prompt, options.model, options.env ?? process.env);
+  const acquisition =
+    options.error instanceof ReviewSourcePreparationError
+      ? options.error.commitAcquisition
+      : undefined;
   const inputs = {
     "error.txt": options.error instanceof Error ? options.error.message : String(options.error),
     "stdout.error.txt": scanFailure ? "" : codexJsonlFailureDetail(stringValue(error.stdout)),
@@ -82,6 +87,20 @@ export function writeExactReviewFailureDiagnostics(options: {
         stage: diagnosticStage ?? "unknown",
         reason_code: diagnosticReason ?? "unknown",
         ...(scanFailure?.scanDiagnostic ? { scan: scanFailure.scanDiagnostic } : {}),
+        ...(acquisition
+          ? {
+              acquisition: {
+                phase: safeCode(acquisition.phase, /^(?:base|head|test_merge)$/),
+                requested_sha: safeCode(
+                  acquisition.requestedSha,
+                  /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i,
+                ),
+                source: safeCode(acquisition.source, /^(?:ref|pin)$/),
+                commit: safeCode(acquisition.commit, /^(?:unchecked|missing|present)$/),
+                history: safeCode(acquisition.history, /^(?:unchecked|shallow|complete)$/),
+              },
+            }
+          : {}),
       },
       process: {
         status: Number.isInteger(error.status) && Number(error.status) >= 0 ? error.status : null,

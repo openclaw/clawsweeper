@@ -301,14 +301,6 @@ test("scheduled, manual, target-sweep, and comment workflows admit targets befor
   }
   assert.match(
     sweep,
-    /apply_after_review_min_age_minutes:\s+description: "Minute-level item age floor for immediate post-review apply"\s+required: false\s+default: "0"/,
-  );
-  assert.match(
-    sweep,
-    /min_age_minutes="\$\{\{ github\.event\.inputs\.apply_after_review_min_age_minutes \|\| '0' \}\}"/,
-  );
-  assert.match(
-    sweep,
     /apply_min_age_minutes:\s+description: "Optional minute-level minimum item age before apply-existing can close it"\s+required: false\s+default: ""/,
   );
   const router = readFileSync(".github/workflows/repair-comment-router.yml", "utf8");

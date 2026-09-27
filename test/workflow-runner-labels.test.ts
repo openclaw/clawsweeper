@@ -15,10 +15,6 @@ const expectedRunnerByJob = new Map([
     "${{ vars.CLAWSWEEPER_REVIEW_RUNNER || 'ubuntu-latest' }}",
   ],
   [
-    ".github/workflows/sweep.yml:review",
-    "${{ vars.CLAWSWEEPER_REVIEW_RUNNER || 'ubuntu-latest' }}",
-  ],
-  [
     ".github/workflows/automerge-e2e.yml:automerge-e2e",
     "${{ vars.CLAWSWEEPER_E2E_RUNNER || 'blacksmith-16vcpu-ubuntu-2404' }}",
   ],

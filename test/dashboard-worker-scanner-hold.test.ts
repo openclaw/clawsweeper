@@ -191,6 +191,31 @@ test("scanner hold rejects workflow reruns and releases for a new explicit item 
   assert.equal((await stored(f)).decision.commandStatusMarker, undefined);
 });
 
+for (const requestId of [
+  "incident-1455",
+  "a.b_c:retry-2",
+  "d5f1a5a0-a741-4ee8-b2d1-9ff783ec8290",
+]) {
+  test(`scanner hold admits a distinct opaque manual request: ${requestId}`, async () => {
+    const priorId = `manual:${requestId}:1455`;
+    const f = await refused({
+      command: { sourceAction: "manual_explicit_review", sourceDeliveryId: priorId },
+    });
+    const manual = {
+      sourceAction: "manual_explicit_review",
+      publicationPolicy: "record_comment_only",
+    };
+    assert.equal((await enqueue(f.queue, priorId, manual)).reason, "scanner_refused");
+    assert.equal(
+      (await enqueue(f.queue, `manual:${requestId}-new:999`, manual)).reason,
+      "scanner_refused",
+    );
+    const nextId = `manual:${requestId}-new:1455`;
+    assert.equal((await enqueue(f.queue, nextId, manual)).queued, true);
+    assert.equal((await stored(f)).decision.sourceDeliveryId, nextId);
+  });
+}
+
 test("intentional policy epoch releases on automatic admission without failed command context", async () => {
   const f = await refused();
   f.queue = new ExactReviewQueue(
@@ -269,4 +294,25 @@ test("same-second fresh verified commands release but the failed command cannot 
   } finally {
     Date.now = originalNow;
   }
+});
+
+test("issue retry pins validate at intake and do not constrain a fresh request", async () => {
+  const { exactReviewDecisionFrom, mergePendingExactReviewDecision } =
+    await import("../dashboard/exact-review-decision.ts");
+  const automatic = decision({
+    itemKind: "issue",
+    sourceEvent: "issues",
+    sourceAction: "failed_review_shard_recovery",
+    expectedSourceRevision: "a".repeat(64),
+  });
+  const parsed = exactReviewDecisionFrom(automatic);
+  assert.ok(parsed);
+  assert.equal(parsed.expectedSourceRevision, "a".repeat(64));
+  assert.equal(exactReviewDecisionFrom({ ...automatic, expectedSourceRevision: "bad" }), null);
+  assert.equal(exactReviewDecisionFrom({ ...automatic, itemKind: "pull_request" }), null);
+  const fresh = exactReviewDecisionFrom(
+    decision({ itemKind: "issue", sourceEvent: "issues", sourceAction: "edited" }),
+  );
+  assert.ok(fresh);
+  assert.equal(mergePendingExactReviewDecision(parsed, fresh).expectedSourceRevision, undefined);
 });

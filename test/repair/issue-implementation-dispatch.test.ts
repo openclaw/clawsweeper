@@ -101,6 +101,7 @@ test("automatic issue dispatcher filters exact issues and preserves bounded back
 test("automatic issue dispatcher rejects unsafe repositories and unbounded limits", () => {
   for (const args of [
     ["--target-repo", "openclaw/openclaw;bad"],
+    ["--target-repo", "openclaw/openclaw", "--candidate-kind", "unknown"],
     ["--target-repo", "openclaw/openclaw", "--max-dispatch", "101"],
     ["--target-repo", "openclaw/openclaw", "--item-number", "../3"],
   ]) {
@@ -108,4 +109,18 @@ test("automatic issue dispatcher rejects unsafe repositories and unbounded limit
     assert.equal(result.status, 1);
     assert.match(result.stderr, /\[issue-implementation-dispatch\]/);
   }
+});
+
+test("planner implementation backfill uses compiled discovery for both retained candidate classes", () => {
+  const receipt = JSON.parse(
+    execFileSync(process.execPath, ["scripts/e2e/implementation-backfill.mjs"], {
+      encoding: "utf8",
+      timeout: 30_000,
+    }),
+  );
+  assert.equal(receipt.ok, true);
+  assert.deepEqual(
+    receipt.results.map((entry) => entry.kind),
+    ["vision_fit", "viable"],
+  );
 });

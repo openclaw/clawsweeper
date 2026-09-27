@@ -430,13 +430,14 @@ scheduling, capacity, and monitoring behavior is documented in
 
 Review is proposal-only. It never closes items.
 
-- A planner scans open issues and PRs, then assigns exact item numbers to shards.
-- Manual runs can pass `item_number` or comma-separated `item_numbers` to review
-  exact Audit Health findings without scanning for a normal batch. Batch
-  dispatchers can use `shard_count` to bound parallel shards and `batch_size`
-  to set the number of items assigned to each worker.
-- Each shard checks out the selected target repository at `main`.
-- Codex reviews use GPT-6 Sol. OWNER, MEMBER, and COLLABORATOR-authored issues
+- A planner selects due items and offers them to the shared exact-review queue.
+- Manual runs can select `item_number` or comma-separated `item_numbers`, target
+  branch, prompt, timeout, and hot-intake mode. Broad runs use the same queue
+  capacity and pacing as scheduled feeds; per-run `batch_size`, `shard_count`,
+  and `apply_after_review` inputs are retired. Use the separate `apply_existing`
+  lane to apply eligible proposals.
+- Each admitted item gets its own review workflow for the selected target.
+- Codex reviews use the configured model profiles. OWNER, MEMBER, and COLLABORATOR-authored issues
   and pull requests use high reasoning with fast service; other items use medium
   reasoning with standard service. Sweep planning, assist answers, and
   close-coverage proofs use the configured ordinary-item defaults. Reviews have
@@ -486,7 +487,7 @@ retries, and inconsistent records. Its cycle estimate covers work actionable in
 the current scheduler window rather than presenting every probe as immediately
 closable.
 
-Exact event runs skip the bulk planner and shard matrix. The read-only reviewer
+All review execution uses the exact-item queue; broad runs only feed its planner. The read-only reviewer
 handles only the selected item, uploads a hash-bound GitHub Actions artifact,
 enqueues a separate durable publication lease, and then releases its review
 lease without checking out or pushing the state repository. The queue retries
@@ -512,10 +513,7 @@ waiting for the retention deadline.
 Deterministic terminal and remain-open outcomes flow through the same publisher.
 Ordinary synced verdicts publish their exact durable comment, then queue an
 executing target-wide comment-router scan. Exact publishers use the bounded
-Durable Object lane while batch publishers remain per-target serialized. Direct
-exact-event viable-issue
-implementation dispatch stays disabled; the bounded broad publish/backfill lane
-owns that separately revalidated intake. Publication still does not claim an
+Durable Object lane while batch publishers remain per-target serialized. Exact publishers and the separate issue-implementation backfill workflow retain their guarded intake. Publication still does not claim an
 atomic state-publish-and-route boundary.
 `stale_insufficient_info` issue reports and `mostly_implemented_on_main` PR
 reports are never applied to young items; apply requires those reports to be at

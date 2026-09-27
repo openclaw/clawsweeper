@@ -1754,6 +1754,7 @@ export class ExactReviewQueue {
       }
       if (!decision) return json({ error: "invalid_exact_review_item" }, 400);
       const manualAdmission = decision.sourceAction === MANUAL_REVIEW_SOURCE_ACTION;
+      if (manualAdmission) decision.sourceDeliveryId = deliveryId;
       if (
         manualAdmission &&
         String(this.env.EXACT_REVIEW_MANUAL_PUBLICATION_ENABLED ?? "") !== "1"
@@ -15659,16 +15660,21 @@ function freshScannerRefusalRetry(
     );
   }
   // Manual workflow reruns retain their run id; only a newly dispatched,
-  // explicitly selected item may release a refusal from an older run.
-  const manualRun = deliveryId?.match(/^manual:(\d+):(\d+)$/);
+  // explicitly selected item may release a refusal from an older run. Opaque
+  // API request IDs instead identify a new explicit request; retain the failed
+  // delivery on its decision so replay stays blocked after receipt expiry.
+  const manualRun = deliveryId?.match(/^manual:([A-Za-z0-9_.:-]{1,150}):([1-9]\d*)$/);
   return (
     decision.sourceAction === MANUAL_REVIEW_SOURCE_ACTION &&
     decisionPublicationPolicy(decision) === RECORD_COMMENT_ONLY &&
     Boolean(
       manualRun &&
       manualRun[2] === String(decision.itemNumber) &&
-      /^\d+$/.test(refusal.runId) &&
-      BigInt(manualRun[1]) > BigInt(refusal.runId),
+      (/^\d+$/.test(manualRun[1])
+        ? /^\d+$/.test(refusal.runId) && BigInt(manualRun[1]) > BigInt(refusal.runId)
+        : refusedDecision.sourceAction !== MANUAL_REVIEW_SOURCE_ACTION ||
+          (Boolean(refusedDecision.sourceDeliveryId) &&
+            deliveryId !== refusedDecision.sourceDeliveryId)),
     )
   );
 }

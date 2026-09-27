@@ -38,8 +38,8 @@ associations from that list, and use `GET /commits/:sha/pulls` for head-only or 
 
 ## State and architecture boundary
 
-The plan job hydrates canonical `records/<repo-slug>/items/<number>.md` records from the Cloudflare
-Worker, and `prepare-review-runtime.mjs` copies the selected prior records into each review runtime.
+At the time of this proof, the plan job hydrated canonical `records/<repo-slug>/items/<number>.md` records from the Cloudflare
+Worker, and the former `prepare-review-runtime.mjs` copied selected prior records into each review runtime. Hosted reviews now hydrate canonical records directly in the queue-owned exact review job; the packaging helper is retired.
 The review report already persists the association as `fixed_pr_*`, so reuse belongs at the review
 resolver boundary. The `clawsweeper-state` Git branch no longer owns records and receives no new
 cache file; its remaining `jobs/**`, `results/**`, and notification state are untouched.

@@ -963,9 +963,6 @@ test("retry and review publication lanes finalize unexpected failures", () => {
 
 test("sweep publishes complete immutable shards for every review and apply producer", () => {
   const workflow = readText(".github/workflows/sweep.yml");
-  const reviewStep = workflow.indexOf("- name: Review shard");
-  const reviewFinalizer = workflow.indexOf("- name: Finalize review action ledger");
-  const reviewUpload = workflow.indexOf("name: action-ledger-review-${{ matrix.shard }}");
   const applyProofStep = workflow.indexOf("- name: Generate bound close coverage proofs");
   const applyProofFinalizer = workflow.indexOf("- name: Finalize apply proof action ledger");
   const applyStep = workflow.indexOf("- name: Apply unchanged proposed decisions with checkpoints");
@@ -975,13 +972,6 @@ test("sweep publishes complete immutable shards for every review and apply produ
   const retryFinalizer = workflow.indexOf("- name: Finalize failed-review retry action ledger");
   const retryPublish = workflow.indexOf("- name: Publish failed-review retry action ledger");
 
-  assert.ok(reviewStep >= 0);
-  assert.ok(reviewFinalizer > reviewStep);
-  assert.ok(reviewUpload > reviewFinalizer);
-  assert.match(
-    workflow.slice(reviewFinalizer, reviewUpload),
-    /if: always\(\)[\s\S]*node dist\/clawsweeper\.js finalize-action-events/,
-  );
   assert.ok(applyProofStep >= 0);
   assert.ok(applyProofFinalizer > applyProofStep);
   assert.match(
@@ -1013,10 +1003,6 @@ test("sweep publishes complete immutable shards for every review and apply produ
   );
 
   for (const name of [
-    "Import immutable action events",
-    "Publish immutable action ledger",
-    "Publish review artifact action ledger",
-    "Publish selected review comment action ledger",
     "Publish failed-review retry action ledger",
     "Finalize exact event action ledger",
     "Finalize apply proof action ledger",
@@ -1030,17 +1016,11 @@ test("sweep publishes complete immutable shards for every review and apply produ
     workflow,
     /publish-apply-proof-action-ledger:\s*\n\s*name: Publish immutable apply proof action ledger/,
   );
-  assert.match(workflow, /pattern: action-ledger-review-\*/);
   assert.match(workflow, /include-hidden-files: true/);
   assert.match(workflow, /--state-root \./);
   assert.doesNotMatch(workflow, /durable_event_path|CLAWSWEEPER_STATE_APPEND_ENABLED/);
-  assert.equal((workflow.match(/publish-action-event-paths/g) ?? []).length, 6);
-  for (const name of [
-    "Publish immutable action ledger",
-    "Publish review artifact action ledger",
-    "Publish selected review comment action ledger",
-    "Publish failed-review retry action ledger",
-  ]) {
+  assert.equal((workflow.match(/publish-action-event-paths/g) ?? []).length, 3);
+  for (const name of ["Publish failed-review retry action ledger"]) {
     assertStateBlobPublisherWiring(namedWorkflowStep(workflow, name));
   }
   for (const name of ["Publish apply proof action events", "Publish apply action events"]) {
