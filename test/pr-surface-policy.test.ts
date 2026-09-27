@@ -1532,6 +1532,62 @@ for (const { name, file, surfaces, pullFilesTruncated, sqliteSchemaChange } of [
     surfaces: [],
   })),
   {
+    name: "upgrade invocation in a generic runtime caller",
+    file: {
+      filename: "src/runtime/startup.ts",
+      patch: "@@\n+await upgrade(existingRows);",
+    },
+    surfaces: ["migration/backfill/repair: src/runtime/startup.ts"],
+  },
+  {
+    name: "upgrade invocation in a dynamic error message",
+    file: {
+      filename: "src/runtime/startup.ts",
+      patch: "@@\n+throw new Error(`Upgrade result: ${upgrade(existingRows)}`);",
+    },
+    surfaces: ["migration/backfill/repair: src/runtime/startup.ts"],
+  },
+  {
+    name: "upgrade invocation after a static error message",
+    file: {
+      filename: "src/runtime/startup.ts",
+      patch: '@@\n+throw new Error("Upgrade the host.", { cause: upgrade(existingRows) });',
+    },
+    surfaces: ["migration/backfill/repair: src/runtime/startup.ts"],
+  },
+  {
+    name: "upgrade call mentioned only in a static error message",
+    file: {
+      filename: "src/runtime/startup.ts",
+      patch: '@@\n+throw new Error("Call upgrade() to update the host.");',
+    },
+    surfaces: [],
+  },
+  {
+    name: "upgrade guidance in a static template error message",
+    file: {
+      filename: "src/runtime/startup.ts",
+      patch: "@@\n+throw new Error(`Upgrade the host.`);",
+    },
+    surfaces: [],
+  },
+  {
+    name: "upgrade guidance with an unchanged multiline Error constructor",
+    file: {
+      filename: "src/runtime/startup.ts",
+      patch: '@@\n throw new Error(\n-  "Host unsupported.",\n+  "Upgrade the host.",\n );',
+    },
+    surfaces: [],
+  },
+  {
+    name: "upgrade guidance in callable Error",
+    file: {
+      filename: "src/runtime/startup.ts",
+      patch: '@@\n+throw Error("Upgrade the host.");',
+    },
+    surfaces: [],
+  },
+  {
     name: "upgrade invocation with same-hunk persistence evidence",
     file: {
       filename: "src/runtime/startup.ts",

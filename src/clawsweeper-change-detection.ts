@@ -453,6 +453,7 @@ function dataModelSurfacesFromPatch(
   }
   if (
     /\b(?:migration|migrate|backfill|repair|reindex|rehydrat\w*)\b/i.test(text) ||
+    dataModelPatchHasUpgradeEvidence(options.patch ?? "", text) ||
     ((options.docsOnly || pathOwner?.strong) && /\b(?:doctor|upgrade)\b/i.test(text))
   ) {
     add("migration/backfill/repair");
@@ -478,6 +479,39 @@ function dataModelSurfacesFromPatch(
     add("vector/embedding metadata");
   }
   return [...surfaces];
+}
+
+function dataModelPatchHasUpgradeEvidence(patch: string, changedText: string): boolean {
+  if (!/\bupgrade\b/i.test(changedText)) return false;
+  const maskStaticErrorMessages = (source: string) =>
+    source.replace(
+      /(?<![\w$.])Error\s*\(\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\$]|\$(?!\{))*`)/g,
+      (match: string, literal: string) =>
+        match.slice(0, -literal.length) + literal.replace(/[^\r\n]/g, " "),
+    );
+  if (!patch) return /\bupgrade\b/i.test(maskStaticErrorMessages(changedText));
+
+  // Context can own an unchanged Error call. Keep the two diff sides separate,
+  // and preserve line positions so only changed executable tokens count.
+  return patch.split(/^@@.*$/m).some((hunk) =>
+    ["+", "-"].some((side) => {
+      const sourceLines = hunk
+        .split("\n")
+        .filter(
+          (line) =>
+            (line.startsWith(" ") || line.startsWith(side)) && !/^(?:\+\+\+|---)/.test(line),
+        );
+      const source = sourceLines.map((line) => line.slice(1)).join("\n");
+      return maskStaticErrorMessages(source)
+        .split("\n")
+        .some(
+          (line, index) =>
+            sourceLines[index]?.startsWith(side) &&
+            dataModelLineLooksSemantic(line, { docsOnly: false }) &&
+            /\bupgrade\b/i.test(line),
+        );
+    }),
+  );
 }
 
 function dataModelTextHasJsonConversion(text: string): boolean {
