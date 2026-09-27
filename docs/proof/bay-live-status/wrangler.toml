@@ -1,0 +1,25 @@
+# LOCAL FIXTURE ONLY. Never deploy.
+name = "bay-live-status-local-proof"
+main = "fixture-worker.mjs"
+compatibility_date = "2026-05-11"
+
+[assets]
+directory = "../../../dashboard/public"
+binding = "ASSETS"
+
+[[durable_objects.bindings]]
+name = "STATUS_STORE"
+class_name = "StatusStore"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["StatusStore"]
+
+[vars]
+PUBLIC_BAY_REPOS = "openclaw/clawsweeper"
+TARGET_REPOS = "openclaw/clawsweeper"
+CLAWSWEEPER_REPO = "openclaw/clawsweeper"
+GITHUB_API_URL = "http://127.0.0.1:9"
+CACHE_TTL_SECONDS = "60"
+STALE_CACHE_TTL_SECONDS = "60"
+INCLUDE_CI_STATUS = "0"

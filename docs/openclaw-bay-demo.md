@@ -294,6 +294,14 @@ other viewers determine when either page causes a GitHub refresh. In
 particular, Bay's 20-second timer can align with cache expiry, so Bay does not
 claim a lower upstream GitHub refresh rate than Overview.
 
+The queue's dedicated public projection owns its closed reason counters and
+publication policy through every status cache read. This keeps a valid parked
+review from making the entire shoreline unavailable. The controlled
+[cache-reprojection proof](proof/bay-live-status/README.md) reproduces the old
+failure and verifies populated status after repeated stored reads. The header
+separates current activity from review timing, and opaque lane labels keep the
+counts readable against the illustrated beach.
+
 The displayed end-to-end timing is an observed sample of the latest completed
 jobs found in the previous hour, not a complete one-hour census. Queue age and
 live-run age are not presented as time spent in the current visual lane;

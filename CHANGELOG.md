@@ -41,6 +41,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 - Preserve app-server turn failures so capacity errors remain retryable and unavailable models remain terminal instead of surfacing a missing result file. Thanks @Yigtwxx.
 
+- Restore OpenClaw Bay live status when reviews are parked for incompatible sources or unknown reasons; preserve the validated queue contract across cached reads, and polish the shoreline header, filters, and lane labels.
+
 - Keep scheduled and manual review intake independent of aggregate telemetry failures while preserving signed admission, pacing, replay, and publication-policy checks. Require signed capability proof in exact-revision deployment smoke checks before rolling out the new producers.
 
 - Admit canonical Git-metadata false positives for modified executable files without weakening source-content or supplemental-scan checks.
