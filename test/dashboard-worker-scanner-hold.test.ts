@@ -286,8 +286,34 @@ test("same-second fresh verified commands release but the failed command cannot 
       (await enqueue(f.queue, "same-command-replayed", command)).reason,
       "scanner_refused",
     );
+    for (const delayed of [
+      { ...command, sourceCommentId: 3999 },
+      {
+        ...command,
+        sourceCommentId: 3999,
+        sourceCommentUpdatedAt: command.sourceCommentUpdatedAt.replace(".000Z", "Z"),
+      },
+      { ...command, commandBodyDigest: "f".repeat(64) },
+    ]) {
+      assert.equal(
+        (await enqueue(f.queue, `delayed-${JSON.stringify(delayed)}`, delayed)).reason,
+        "scanner_refused",
+      );
+      assert.equal((await stored(f)).state, "parked");
+    }
     assert.equal(
       (await enqueue(f.queue, "same-second-fresh", { ...command, sourceCommentId: 4001 })).queued,
+      true,
+    );
+    const edited = await refused({ command });
+    assert.equal(
+      (
+        await enqueue(edited.queue, "later-edit-of-older-comment", {
+          ...command,
+          sourceCommentId: 3999,
+          sourceCommentUpdatedAt: new Date(now + 1000).toISOString(),
+        })
+      ).queued,
       true,
     );
     assert.equal((await stored(f)).revision, 2);

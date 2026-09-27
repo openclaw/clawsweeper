@@ -15641,6 +15641,13 @@ function freshScannerRefusalRetry(
 ) {
   if (!refusal) return false;
   if (decision.sourceAction === "re_review") {
+    const requestedAt = Date.parse(decision.sourceCommentUpdatedAt || "");
+    const failedCommandAt = Date.parse(refusedDecision.sourceCommentUpdatedAt || "");
+    const newerCommand =
+      !Number.isFinite(failedCommandAt) ||
+      requestedAt > failedCommandAt ||
+      (requestedAt === failedCommandAt &&
+        Number(decision.sourceCommentId) > Number(refusedDecision.sourceCommentId));
     return (
       decision.sourceCommentVerified === true &&
       Boolean(
@@ -15649,14 +15656,10 @@ function freshScannerRefusalRetry(
         decision.commandBodyDigest &&
         decision.commandOrigin,
       ) &&
-      (decision.sourceCommentId !== refusedDecision.sourceCommentId ||
-        Date.parse(decision.sourceCommentUpdatedAt || "") !==
-          Date.parse(refusedDecision.sourceCommentUpdatedAt || "") ||
-        decision.commandBodyDigest !== refusedDecision.commandBodyDigest) &&
-      // GitHub timestamps have second precision. A distinct verified command
-      // in the refusal second is fresh; the failed command itself stays fenced.
-      Date.parse(decision.sourceCommentUpdatedAt || "") >=
-        Math.floor(refusal.observedAt / 1000) * 1000
+      // On tied GitHub timestamps, only a newer comment proves freshness.
+      // Same-comment edits need a later timestamp to order their versions.
+      newerCommand &&
+      requestedAt >= Math.floor(refusal.observedAt / 1000) * 1000
     );
   }
   // Manual workflow reruns retain their run id; only a newly dispatched,

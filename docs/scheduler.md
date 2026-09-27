@@ -52,7 +52,9 @@ Terminal input-scanner refusals instead retain the existing queue item as
 close/reopen, and failed-shard recovery cannot release this hold. It has no
 timed retry, expiry, closed-target cleanup, or operator source-drift recovery.
 A fresh verified re-review command or a newly dispatched explicit item request
-replaces the failed request's authority. Replaying an old command or workflow
+replaces the failed request's authority. Tied comment timestamps require a higher
+comment ID; edits of the same comment need a later timestamp to prove order.
+Replaying an old command or workflow
 run does not. The manual API also accepts named request IDs; use a new unique ID
 for each explicit retry. The failed ID remains fenced on the held decision even
 after delivery receipts expire. An intentional `EXACT_REVIEW_RETRY_POLICY_EPOCH` change permits

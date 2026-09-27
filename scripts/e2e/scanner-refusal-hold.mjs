@@ -384,6 +384,58 @@ try {
       assert.equal(r.skipped, 1);
     }
     results.push("operator closed/source recovery cannot discard the hold");
+    let tiedHold;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const timestamp = new Date(Math.floor(Date.now() / 1000) * 1000).toISOString();
+      await seed(145508, {
+        sourceAction: "re_review",
+        sourceCommentId: 9000,
+        sourceCommentUpdatedAt: timestamp,
+        sourceCommentVerified: true,
+        commandOrigin: "hosted_webhook",
+        commandBodyDigest: "e".repeat(64),
+        commandStatusMarker: "<!-- clawsweeper-command-status:145508:re_review:refused -->",
+      });
+      await complete(145508);
+      tiedHold = await item(145508);
+      if (Date.parse(timestamp) === Math.floor(tiedHold.scannerRefusal.observedAt / 1000) * 1000)
+        break;
+    }
+    assert.equal(
+      Date.parse(tiedHold.decision.sourceCommentUpdatedAt),
+      Math.floor(tiedHold.scannerRefusal.observedAt / 1000) * 1000,
+    );
+    const dispatchesBeforeDelayedCommand = dispatches.length;
+    const delayedCommand = { ...tiedHold.decision, sourceCommentId: 8999 };
+    assert.equal(
+      (await enqueue(145508, "delayed-lower-id", delayedCommand)).reason,
+      "scanner_refused",
+    );
+    assert.equal(
+      (
+        await enqueue(145508, "unordered-same-comment-edit", {
+          ...tiedHold.decision,
+          commandBodyDigest: "f".repeat(64),
+        })
+      ).reason,
+      "scanner_refused",
+    );
+    await call("/__proof/alarm", {});
+    assert.deepEqual(await item(145508), tiedHold);
+    assert.equal(dispatches.length, dispatchesBeforeDelayedCommand);
+    assert.equal(
+      (
+        await enqueue(145508, "newer-same-second-command", {
+          ...delayedCommand,
+          sourceCommentId: 9001,
+        })
+      ).queued,
+      true,
+    );
+    results.push(
+      "delayed lower-ID and unordered same-comment versions remain held; real alarm makes no dispatch; a newer same-second command releases",
+    );
+
     const stale = {
       sourceAction: "re_review",
       sourceCommentId: 8000,
