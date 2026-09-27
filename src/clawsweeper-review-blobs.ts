@@ -14,7 +14,10 @@ import { devNull } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { readReviewGit, reviewMergeBase } from "./pr-review-evidence.js";
 import { AgentInputScanError, MAX_SCAN_BYTES } from "./agent-input-scan.js";
-import { ReviewSourcePreparationError } from "./review-source-preparation.js";
+import {
+  ReviewSourcePreparationError,
+  type ReviewCommitAcquisitionDiagnostic,
+} from "./review-source-preparation.js";
 import { resolveSpawnCommand } from "./command.js";
 import { runGitAcquisitionResult } from "./repair/command-runner.js";
 
@@ -67,6 +70,7 @@ export interface ReviewTreeMaterializationOptions {
 
 type ReviewGitFailureReason =
   | "review_commit_fetch_failed"
+  | "review_commits_unavailable"
   | "review_checkout_failed"
   | "review_git_inspection_failed"
   | "review_blobs_unavailable";
@@ -129,6 +133,7 @@ function fetchReviewObjects({
   reason,
   remainingInput,
   complete,
+  incompleteReason,
   deadlineAt = Date.now() + REVIEW_FETCH_DEADLINE_MS,
   requireFreshFetch = false,
 }: {
@@ -137,6 +142,7 @@ function fetchReviewObjects({
   reason: ReviewGitFailureReason;
   remainingInput?: () => string;
   complete: (remainingMs: () => number) => boolean;
+  incompleteReason?: ReviewGitFailureReason;
   deadlineAt?: number | undefined;
   requireFreshFetch?: boolean;
 }): boolean {
@@ -196,6 +202,7 @@ function fetchReviewObjects({
     }
     // A successful command that did not supply the pinned objects is not a
     // transient transport failure; callers must reject the incomplete source.
+    if (incompleteReason) throw new ReviewGitError(incompleteReason, fetched);
     return false;
   }
   return false;
@@ -280,33 +287,63 @@ export function ensureReviewTreeCommit({
   sha,
   sourceRef,
   destinationRef,
+  phase,
+  deadlineAt = Date.now() + REVIEW_FETCH_DEADLINE_MS,
 }: {
   targetDir: string;
   sha: string;
   sourceRef: string;
   destinationRef: string;
+  phase: ReviewCommitAcquisitionDiagnostic["phase"];
+  deadlineAt?: number;
 }): boolean {
   if (!GIT_OBJECT_ID.test(sha)) return false;
-  const shallow = gitRepositoryIsShallow(targetDir);
-  if (gitCommitExists(targetDir, sha) && !shallow) return true;
-  return fetchReviewObjects({
-    targetDir,
-    reason: "review_commit_fetch_failed",
-    complete: (remainingMs) =>
-      gitCommitExists(targetDir, sha, remainingMs()) &&
-      !gitRepositoryIsShallow(targetDir, remainingMs()),
-    args: (remainingMs) => [
-      "fetch",
-      "--force",
-      "--filter=blob:none",
-      "--no-tags",
-      "--no-write-fetch-head",
-      "--recurse-submodules=no",
-      ...(gitRepositoryIsShallow(targetDir, remainingMs()) ? ["--unshallow"] : []),
-      "origin",
-      `${sourceRef}:${destinationRef}`,
-    ],
-  });
+  let failure: ReviewGitError | undefined;
+  // REST pins survive moved/deleted refs for both sides of a PR. All ref/pin
+  // attempts and offline verification share one budget; no newer commit substitutes.
+  for (const ref of new Set([sourceRef, sha])) {
+    const diagnostic: ReviewCommitAcquisitionDiagnostic = {
+      phase,
+      requestedSha: sha,
+      source: ref === sha ? "pin" : "ref",
+      commit: "unchecked",
+      history: "unchecked",
+    };
+    try {
+      return fetchReviewObjects({
+        targetDir,
+        deadlineAt,
+        reason: "review_commit_fetch_failed",
+        complete: (remainingMs) => {
+          diagnostic.commit = gitCommitExists(targetDir, sha, remainingMs())
+            ? "present"
+            : "missing";
+          diagnostic.history = gitRepositoryIsShallow(targetDir, remainingMs())
+            ? "shallow"
+            : "complete";
+          return diagnostic.commit === "present" && diagnostic.history === "complete";
+        },
+        incompleteReason: "review_commits_unavailable",
+        args: (remainingMs) => [
+          "fetch",
+          "--force",
+          "--filter=blob:none",
+          "--no-tags",
+          "--no-write-fetch-head",
+          "--recurse-submodules=no",
+          ...(gitRepositoryIsShallow(targetDir, remainingMs()) ? ["--unshallow"] : []),
+          "origin",
+          `${ref}:${destinationRef}`,
+        ],
+      });
+    } catch (error) {
+      if (!(error instanceof ReviewGitError)) throw error;
+      error.commitAcquisition = diagnostic;
+      if (error.errorCode === "EPROCESSSETTLEMENT" || Date.now() >= deadlineAt) throw error;
+      failure = error;
+    }
+  }
+  throw failure!;
 }
 
 export function ensurePullRequestReviewHead({
@@ -319,31 +356,18 @@ export function ensurePullRequestReviewHead({
   headSha: string;
 }): boolean {
   if (!Number.isSafeInteger(itemNumber) || itemNumber <= 0) return false;
-  const destinationRef = `refs/clawsweeper/review-cache/head-${itemNumber}`;
-  let failure: ReviewGitError | undefined;
-  // A ref may move or disappear after REST hydration. Only the pinned object
-  // decides success, and failure of the ref fetch must still permit the exact fetch.
-  for (const sourceRef of [`refs/pull/${itemNumber}/head`, headSha]) {
-    try {
-      if (
-        ensureReviewTreeCommit({
-          targetDir,
-          sha: headSha,
-          sourceRef,
-          destinationRef,
-        })
-      ) {
-        return true;
-      }
-    } catch (error) {
-      if (!(error instanceof ReviewGitError) || error.errorCode === "EPROCESSSETTLEMENT")
-        throw error;
-      error.reviewedHeadSha = headSha;
-      failure = error;
-    }
+  try {
+    return ensureReviewTreeCommit({
+      targetDir,
+      sha: headSha,
+      sourceRef: `refs/pull/${itemNumber}/head`,
+      destinationRef: `refs/clawsweeper/review-cache/head-${itemNumber}`,
+      phase: "head",
+    });
+  } catch (error) {
+    if (error instanceof ReviewGitError) error.reviewedHeadSha = headSha;
+    throw error;
   }
-  if (failure) throw failure;
-  return false;
 }
 
 export function hydratePullRequestReviewHistory(options: {
@@ -368,6 +392,7 @@ export function hydratePullRequestReviewHistory(options: {
         sha: testMergeSha,
         sourceRef: `refs/pull/${itemNumber}/merge`,
         destinationRef: `refs/clawsweeper/review-cache/merge-${itemNumber}`,
+        phase: "test_merge",
       });
     } catch (error) {
       // Test-merge evidence is optional; required base/head acquisition owns admission.

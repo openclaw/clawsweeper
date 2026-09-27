@@ -75,11 +75,14 @@ When full context collection requests a review checkout, source preparation runs
 independently of cache-digest eligibility and the API's 80-file context window.
 Commit acquisition fetches complete blobless ancestry, including when the branch
 has advanced past the pinned REST base, and unshallows existing shallow checkouts.
-Branch, release-tag, and test-merge fetches never introduce new depth boundaries
-and have a 30-second deadline per fetch. A missing required pinned commit still
-blocks preparation; no newer revision substitutes for it. A moved PR ref can fall
-back to the pinned head object, and unavailable test-merge evidence does not
-prevent review of the required base/head pair.
+Branch and pinned-commit acquisition never introduce new depth boundaries.
+Each pinned commit shares a 120-second deadline across offline verification,
+ref and exact-object acquisition, and process settlement; individual fetches
+are capped at 60 seconds. A moved or deleted base, head, or test-merge ref can
+fall back to its exact pinned object when the remote still serves it. A missing
+required pin or incomplete ancestry still blocks preparation; no newer revision
+substitutes for it. Unavailable test-merge evidence remains optional. Release-tag
+refresh retains its separate 30-second fetch deadline.
 
 It prepares the exact raw Git delta for the pinned merge-base/head, including
 deleted and historical blobs. Current main never replaces the pinned REST base.
@@ -94,14 +97,21 @@ The distinct pinned base/head comparison remains optional inspection support.
 Its blob preparation is bounded and warns if unavailable; it cannot make an
 unrelated main-only change block admission of the introduced PR delta. Endpoint
 file-list evidence uses Git trees and does not require those blobs. The evidence
-reader still marks failed reads incomplete.
+reader still marks failed reads incomplete. Unverified Git process settlement
+always stops preparation, including optional evidence, and retains the unsafe
+workspace for recovery.
 
 Exact reviews retain private, bounded diagnostics for preparation failures and
 scan refusals, including failures before prompt construction or during cache
 admission. The manifest records the failure stage, reason, retryability, and
 the observed PR head. Native Git failures also retain process exit status, signal,
-error code, and bounded redacted stderr. Public errors omit raw process output;
-scanner output and verification details are never retained. Scan refusals
+error code, and bounded redacted stderr. Public errors omit raw process output.
+Pinned-commit failures additionally record the base/head/test-merge phase,
+requested SHA, ref-versus-pin attempt, and last observed commit/history
+completeness. A successful fetch that leaves the source incomplete retains its
+zero process status alongside the preparation failure. Raw refs and paths are
+excluded; the manifest's source SHA remains the reviewed PR head.
+Scanner output and verification details are never retained. Scan refusals
 remain terminal and retain their workflow exit code. Source-blob fetches that
 fail after the hydration deadline retain their native Git process diagnostics
 as retryable `source_preparation` / `review_blobs_unavailable` failures. The failed

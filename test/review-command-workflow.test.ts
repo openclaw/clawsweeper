@@ -1174,6 +1174,17 @@ else {
         assert.deepEqual(manifest.failure, {
           stage: "source_preparation",
           reason_code: reason,
+          ...(fetchFailure
+            ? {
+                acquisition: {
+                  phase: "base",
+                  requested_sha: "e".repeat(40),
+                  source: "pin",
+                  commit: "missing",
+                  history: "complete",
+                },
+              }
+            : {}),
         });
         assert.equal(
           manifest.source.sha,

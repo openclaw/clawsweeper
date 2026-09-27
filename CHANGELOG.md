@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Recover pinned review bases after branch rewrites or deletion within the existing acquisition deadline. Record the failed pin and completeness state, and stop optional evidence work when Git process settlement is unverified.
+
 - Stop pnpm setup at a failed store lookup, preserving its exit status instead of reporting a missing cache path.
 
 - Keep Endor test-repository reviews owned by the automerge loop and preserve current PR command identity through repair follow-ups and source-event supersession. Thanks @jesse-merhi.

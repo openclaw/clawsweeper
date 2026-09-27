@@ -41,6 +41,7 @@ import { main, reviewPolicyHashForTest } from "../dist/clawsweeper-runtime.js";
 import { runText } from "../dist/command.js";
 import { readReviewGit, reviewMergeBase } from "../dist/pr-review-evidence.js";
 import { ReviewSourcePreparationError } from "../dist/review-source-preparation.js";
+import { validationRecoveryRequired } from "../dist/repair/validation-recovery.js";
 import { withMockGh } from "./helpers.ts";
 
 function git(cwd: string, ...args: string[]): string {
@@ -189,6 +190,230 @@ function resolveFixtureBlobSizes(source: string) {
   };
 }
 
+function movedBaseFixture(deleted = false) {
+  const fixture = partialCloneFixture({ prefetchHead: false });
+  git(fixture.source, "checkout", "-q", "main");
+  writeFileSync(join(fixture.source, "base.txt"), "REST-pinned base\n");
+  git(fixture.source, "add", ".");
+  git(fixture.source, "commit", "-qm", "base pin");
+  const pinnedBase = git(fixture.source, "rev-parse", "HEAD");
+  git(fixture.source, "push", "-q", "origin", "main", "HEAD:refs/heads/retained-base");
+  git(fixture.source, "reset", "--hard", fixture.baseSha);
+  writeFileSync(join(fixture.source, "replacement.txt"), "rewritten branch\n");
+  git(fixture.source, "add", ".");
+  git(fixture.source, "commit", "-qm", "rewrite base branch");
+  git(fixture.source, "push", "-q", "--force", "origin", "main");
+  if (deleted) git(join(fixture.root, "origin.git"), "update-ref", "-d", "refs/heads/main");
+  return { ...fixture, pinnedBase };
+}
+
+for (const deleted of [false, true]) {
+  test(`pinned base survives a ${deleted ? "deleted" : "force-pushed"} branch and reuses complete objects`, (t) => {
+    const fixture = movedBaseFixture(deleted);
+    t.after(() => rmSync(fixture.root, { recursive: true, force: true }));
+    const options = {
+      targetDir: fixture.target,
+      sha: fixture.pinnedBase,
+      sourceRef: "refs/heads/main",
+      destinationRef: "refs/clawsweeper/review-cache/base-982",
+      phase: "base" as const,
+    };
+    assert.equal(objectExistsOffline(fixture.target, fixture.pinnedBase), false);
+    assert.equal(ensureReviewTreeCommit(options), true);
+    assert.equal(git(fixture.target, "rev-parse", options.destinationRef), fixture.pinnedBase);
+    assert.equal(git(fixture.target, "rev-parse", "--is-shallow-repository"), "false");
+    assert.equal(
+      reachable(fixture.target, fixture.pinnedBase),
+      reachable(fixture.source, fixture.pinnedBase),
+    );
+    git(fixture.target, "remote", "set-url", "origin", join(fixture.root, "unavailable.git"));
+    assert.equal(ensureReviewTreeCommit(options), true, "warm reuse must not fetch");
+    assert.equal(git(fixture.target, "rev-parse", "HEAD"), fixture.baseSha);
+    assert.equal(git(fixture.target, "status", "--porcelain"), "");
+  });
+}
+
+test("unavailable base pin preserves native failure and structured acquisition identity", (t) => {
+  const fixture = partialCloneFixture({ prefetchHead: false });
+  t.after(() => rmSync(fixture.root, { recursive: true, force: true }));
+  const missing = "f".repeat(40);
+  assert.throws(
+    () =>
+      ensureReviewTreeCommit({
+        targetDir: fixture.target,
+        sha: missing,
+        sourceRef: "refs/heads/main",
+        destinationRef: "refs/clawsweeper/review-cache/base-982",
+        phase: "base",
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof ReviewGitError);
+      assert.equal(error.diagnosticReason, "review_commit_fetch_failed");
+      assert.ok(error.status! > 0);
+      assert.match(error.stderr, /not our ref|couldn't find remote ref/);
+      assert.deepEqual(error.commitAcquisition, {
+        phase: "base",
+        requestedSha: missing,
+        source: "pin",
+        commit: "missing",
+        history: "complete",
+      });
+      return true;
+    },
+  );
+});
+
+test("a successful pin fetch cannot admit a non-commit object", (t) => {
+  const fixture = partialCloneFixture({ prefetchHead: false });
+  t.after(() => rmSync(fixture.root, { recursive: true, force: true }));
+  assert.throws(
+    () =>
+      ensureReviewTreeCommit({
+        targetDir: fixture.target,
+        sha: fixture.addedBlobSha,
+        sourceRef: "refs/pull/982/head",
+        destinationRef: "refs/clawsweeper/review-cache/base-982",
+        phase: "base",
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof ReviewGitError);
+      assert.equal(error.diagnosticReason, "review_commits_unavailable");
+      assert.equal(error.status, 0);
+      assert.equal(error.commitAcquisition?.commit, "missing");
+      return true;
+    },
+  );
+});
+
+test("successful fetches that leave shallow ancestry cannot admit a present pin", (t) => {
+  const fixture = partialCloneFixture();
+  t.after(() => rmSync(fixture.root, { recursive: true, force: true }));
+  const nativeSpawn = childProcess.spawnSync;
+  mockReviewGitTransport(t, (command, args, options) =>
+    command === "git" && args.includes("fetch")
+      ? { status: 0, signal: null, stdout: "", stderr: "" }
+      : nativeSpawn(command, args, options),
+  );
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  assert.throws(
+    () =>
+      ensureReviewTreeCommit({
+        targetDir: fixture.target,
+        sha: fixture.headSha,
+        sourceRef: "refs/pull/982/head",
+        destinationRef: "refs/clawsweeper/review-cache/base-982",
+        phase: "base",
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof ReviewGitError);
+      assert.equal(error.diagnosticReason, "review_commits_unavailable");
+      assert.equal(error.status, 0);
+      assert.equal(error.commitAcquisition?.commit, "present");
+      assert.equal(error.commitAcquisition?.history, "shallow");
+      return true;
+    },
+  );
+});
+
+test("successful incomplete base fetch retains its actual zero exit and missing-pin diagnostic", (t) => {
+  const fixture = partialCloneFixture({ prefetchHead: false });
+  t.after(() => rmSync(fixture.root, { recursive: true, force: true }));
+  const nativeSpawn = childProcess.spawnSync;
+  const fetches: string[] = [];
+  mockReviewGitTransport(t, (command, args, options) => {
+    if (command === "git" && args.includes("fetch")) {
+      fetches.push(args.at(-1));
+      return { status: 0, signal: null, stdout: "", stderr: "" };
+    }
+    return nativeSpawn(command, args, options);
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  assert.throws(
+    () =>
+      ensureReviewTreeCommit({
+        targetDir: fixture.target,
+        sha: fixture.headSha,
+        sourceRef: "refs/heads/main",
+        destinationRef: "refs/clawsweeper/review-cache/base-982",
+        phase: "base",
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof ReviewGitError);
+      assert.equal(error.diagnosticReason, "review_commits_unavailable");
+      assert.equal(error.status, 0);
+      assert.deepEqual(error.commitAcquisition, {
+        phase: "base",
+        requestedSha: fixture.headSha,
+        source: "pin",
+        commit: "missing",
+        history: "complete",
+      });
+      return true;
+    },
+  );
+  assert.equal(fetches.length, 2);
+});
+
+test("ref and pinned-object acquisition share the original absolute deadline", (t) => {
+  const fixture = movedBaseFixture();
+  t.after(() => rmSync(fixture.root, { recursive: true, force: true }));
+  const nativeSpawn = childProcess.spawnSync;
+  let now = Date.now();
+  const deadlineAt = now + 10_000;
+  const timeouts: number[] = [];
+  let probes = 0;
+  t.mock.method(Date, "now", () => now);
+  mockReviewGitTransport(t, (command, args, options) => {
+    probes++;
+    if (command === "git" && args.includes("fetch")) {
+      timeouts.push(options.timeout);
+      const result = nativeSpawn(command, args, options);
+      if (timeouts.length === 1) now += 7_500;
+      return result;
+    }
+    return nativeSpawn(command, args, options);
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  assert.equal(
+    ensureReviewTreeCommit({
+      targetDir: fixture.target,
+      sha: fixture.pinnedBase,
+      sourceRef: "refs/heads/main",
+      destinationRef: "refs/clawsweeper/review-cache/base-982",
+      phase: "base",
+      deadlineAt,
+    }),
+    true,
+  );
+  assert.deepEqual(timeouts, [10_000, 2_500]);
+  const completedProbes = probes;
+  assert.throws(
+    () =>
+      ensureReviewTreeCommit({
+        targetDir: fixture.target,
+        sha: fixture.pinnedBase,
+        sourceRef: "refs/heads/main",
+        destinationRef: "refs/clawsweeper/review-cache/base-982",
+        phase: "base",
+        deadlineAt: now,
+      }),
+    { errorCode: "ETIMEDOUT" },
+  );
+  assert.equal(probes, completedProbes, "even warm probes must obey the caller deadline");
+});
+
 function objectExistsOffline(cwd: string, sha: string): boolean {
   return (
     spawnSync("git", ["cat-file", "-e", sha], {
@@ -227,6 +452,7 @@ process.exit(result.status ?? 1);`,
       sha: headSha,
       sourceRef: "refs/pull/982/head",
       destinationRef: "refs/clawsweeper/review-cache/head-982",
+      phase: "head" as const,
     };
     assert.equal(ensureReviewTreeCommit(options), true);
     const explicitFetches = () =>
@@ -375,6 +601,7 @@ function reachable(target: string, sha: string): number {
 function prepareFixtureCommits(fixture: { target: string; baseSha: string; headSha: string }) {
   assert.ok(
     ensureReviewTreeCommit({
+      phase: "base",
       targetDir: fixture.target,
       sha: fixture.baseSha,
       sourceRef: "refs/heads/main",
@@ -569,45 +796,139 @@ test("fresh branch retry rechecks shallow state after an interrupted unshallow",
   }
 });
 
-for (const receipt of ["", "not-json\n", '{"pid":null}\n', '{"pid":1}\n']) {
-  test(`uncertain supervisor completion cannot reuse objects or try an exact-head fallback: ${JSON.stringify(receipt)}`, (t) => {
-    const fixture = partialCloneFixture({ prefetchHead: false });
-    const nativeSpawn = childProcess.spawnSync;
-    let fetches = 0;
-    try {
-      t.mock.method(childProcess, "spawnSync", (command, args, options) => {
-        if (command === process.execPath && args[0]?.endsWith("/git-acquisition-worker.js")) {
-          const input = JSON.parse(options.input);
-          const installed = nativeSpawn("git", input.args, {
-            cwd: input.cwd,
-            env: options.env,
-            encoding: "utf8",
-          });
-          assert.equal(installed.status, 0, installed.stderr);
-          fetches++;
-          return { status: 1, stdout: receipt, stderr: "interrupted supervisor", signal: null };
-        }
-        return nativeSpawn(command, args, options);
-      });
-      syncBuiltinESMExports();
-      assert.throws(
-        () =>
-          ensurePullRequestReviewHead({
-            targetDir: fixture.target,
-            itemNumber: 982,
-            headSha: fixture.headSha,
-          }),
-        { errorCode: "EPROCESSSETTLEMENT" },
-      );
-      assert.equal(fetches, 1);
-      assert.equal(objectExistsOffline(fixture.target, `${fixture.headSha}^{commit}`), true);
-    } finally {
-      t.mock.restoreAll();
-      syncBuiltinESMExports();
-      rmSync(fixture.root, { recursive: true, force: true });
-    }
-  });
+for (const phase of ["base", "head"] as const) {
+  for (const receipt of ["", "not-json\n", '{"pid":null}\n', '{"pid":1}\n']) {
+    test(`uncertain supervisor completion cannot reuse objects or try an exact-${phase} fallback: ${JSON.stringify(receipt)}`, (t) => {
+      const fixture = partialCloneFixture({ prefetchHead: false });
+      const nativeSpawn = childProcess.spawnSync;
+      let fetches = 0;
+      try {
+        t.mock.method(childProcess, "spawnSync", (command, args, options) => {
+          if (command === process.execPath && args[0]?.endsWith("/git-acquisition-worker.js")) {
+            const input = JSON.parse(options.input);
+            const installed = nativeSpawn("git", input.args, {
+              cwd: input.cwd,
+              env: options.env,
+              encoding: "utf8",
+            });
+            assert.equal(installed.status, 0, installed.stderr);
+            fetches++;
+            return { status: 1, stdout: receipt, stderr: "interrupted supervisor", signal: null };
+          }
+          return nativeSpawn(command, args, options);
+        });
+        syncBuiltinESMExports();
+        assert.throws(
+          () =>
+            phase === "head"
+              ? ensurePullRequestReviewHead({
+                  targetDir: fixture.target,
+                  itemNumber: 982,
+                  headSha: fixture.headSha,
+                })
+              : ensureReviewTreeCommit({
+                  targetDir: fixture.target,
+                  sha: fixture.headSha,
+                  sourceRef: "refs/pull/982/head",
+                  destinationRef: "refs/clawsweeper/review-cache/base-982",
+                  phase,
+                }),
+          { errorCode: "EPROCESSSETTLEMENT" },
+        );
+        assert.equal(fetches, 1);
+        assert.equal(objectExistsOffline(fixture.target, `${fixture.headSha}^{commit}`), true);
+      } finally {
+        t.mock.restoreAll();
+        syncBuiltinESMExports();
+        rmSync(fixture.root, { recursive: true, force: true });
+      }
+    });
+  }
 }
+
+test("optional pinned-base blobs cannot suppress unsettled acquisition", (t) => {
+  const fixture = partialCloneFixture({ historicalBase: true, prefetchHead: false });
+  t.after(() => rmSync(fixture.root, { recursive: true, force: true }));
+  // Introduce the optional blob after cloning, so the initial checkout cannot
+  // prefetch it and bypass the acquisition failure exercised below.
+  writeFileSync(join(fixture.source, "optional-only.txt"), "optional endpoint\n");
+  git(fixture.source, "add", ".");
+  git(fixture.source, "commit", "-qm", "new optional endpoint");
+  git(fixture.source, "push", "-q", "origin", "main");
+  const baseSha = git(fixture.source, "rev-parse", "main");
+  const baseOnlyBlob = git(fixture.source, "rev-parse", "main:optional-only.txt");
+  const nativeSpawn = childProcess.spawnSync;
+  let interrupted = 0;
+  t.mock.method(childProcess, "spawnSync", (command, args, options) => {
+    if (command === process.execPath && args[0]?.endsWith("/git-acquisition-worker.js")) {
+      const request = JSON.parse(options.input);
+      if (request.input?.includes(baseOnlyBlob)) {
+        interrupted++;
+        return {
+          status: 1,
+          signal: null,
+          stdout: '{"pid":null}\n',
+          stderr: "fixture supervisor failure",
+        };
+      }
+    }
+    return nativeSpawn(command, args, options);
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  const context = createContextHydration(
+    new Proxy(
+      {
+        asRecord,
+        stringOrUndefined: (value: unknown) => (typeof value === "string" ? value : undefined),
+        isSafeGitBranchName: (branch: string) => branch === "main",
+        targetRepo: () => "fixture/repository",
+        ghJson: (args: string[]) => {
+          const revision = args[1]!.match(/\/git\/trees\/([0-9a-f]+)\?recursive=1$/)![1]!;
+          return {
+            truncated: false,
+            tree: git(fixture.source, "ls-tree", "-r", "-l", revision)
+              .split("\n")
+              .map((line) => {
+                const match = line.match(/^\d+ (\w+) ([0-9a-f]+)\s+(-|\d+)\t/)!;
+                return {
+                  type: match[1],
+                  sha: match[2],
+                  ...(match[1] === "blob" ? { size: Number(match[3]) } : {}),
+                };
+              }),
+          };
+        },
+      },
+      {
+        get: (target, key) =>
+          Reflect.get(target, key) ??
+          (() => {
+            throw new Error("unexpected dependency");
+          }),
+      },
+    ) as Parameters<typeof createContextHydration>[0],
+  );
+  assert.throws(
+    () =>
+      context.hydratePullRequestReviewSource({
+        itemNumber: 982,
+        targetDir: fixture.target,
+        pullRequest: { base: { ref: "main", sha: baseSha }, head: { sha: fixture.headSha } },
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof ReviewGitError);
+      assert.equal(error.errorCode, "EPROCESSSETTLEMENT");
+      assert.equal(error.reviewedHeadSha, fixture.headSha);
+      assert.ok(validationRecoveryRequired(error));
+      return true;
+    },
+  );
+  assert.equal(interrupted, 1);
+});
 
 test("review acquisition preserves a pinned base after main advances", () => {
   const fixture = partialCloneFixture({ prefetchHead: false });
@@ -624,6 +945,7 @@ test("review acquisition preserves a pinned base after main advances", () => {
     assert.equal(git(fixture.target, "rev-parse", "--is-shallow-repository"), "false");
     assert.equal(
       ensureReviewTreeCommit({
+        phase: "base",
         targetDir: fixture.target,
         sha: pinnedBase,
         sourceRef: "refs/heads/main",

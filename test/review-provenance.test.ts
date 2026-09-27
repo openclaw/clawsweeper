@@ -443,6 +443,7 @@ test("production source preparation recovers a shallow PR tip and fetches the pi
     assert.equal(promptEvidence({ ...f, root: clone }).evidence.mergeBase.status, "unavailable");
     assert.ok(
       ensureReviewTreeCommit({
+        phase: "base",
         targetDir: clone,
         sha: f.M,
         sourceRef: "refs/heads/main",
