@@ -24,7 +24,7 @@ test("issue implementation status creates a stable public progress comment", () 
   const body = renderIssueImplementationStatusComment("", options);
 
   assert.match(body, new RegExp(issueImplementationStatusMarker(42)));
-  assert.match(body, /automatically building this issue/);
+  assert.match(body, /automatically building a fix for this issue/);
   assert.match(body, /State: Planning/);
   assert.match(body, /clawsweeper:manual-only/);
   assert.match(body, /clawsweeper:human-review/);

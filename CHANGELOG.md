@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Clarify that automatic implementation builds a fix for an issue. Thanks @jihoon-ernesto and @awhite0030.
+
 - Recognize test-helper directories in stored-data classification so synthetic fixture writes do not request migration proof, while preserving production and rename checks. Thanks @serg0x and @awhite0030.
 
 - Avoid data-model compatibility blockers for static error messages recommending an upgrade outside storage code, while retaining checks for executable upgrades and persistence evidence.

@@ -180,7 +180,7 @@ export function renderIssueImplementationStatusComment(
     return [
       marker,
       "🦞🔧",
-      "ClawSweeper is automatically building this issue.",
+      "ClawSweeper is automatically building a fix for this issue.",
       "",
       "The issue review finished and no active implementation pull request was found.",
       "",
