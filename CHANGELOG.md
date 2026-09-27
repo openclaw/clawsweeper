@@ -11,6 +11,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 - Keep Endor test-repository reviews owned by the automerge loop and preserve current PR command identity through repair follow-ups and source-event supersession. Thanks @jesse-merhi.
 
+- Enforce strict TypeScript checks for the extracted Bay activity, review-status, and observed-failure modules, bringing the dashboard strict ratchet to 52 of 54 modules.
+
 - Defer failed-shard review recovery while an earlier publication is pending, preserving the recovery request and allowing explicit re-reviews and source changes.
 
 - Clarify that automatic implementation builds a fix for an issue. Thanks @jihoon-ernesto and @awhite0030.
