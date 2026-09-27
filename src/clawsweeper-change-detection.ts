@@ -216,7 +216,7 @@ function isProductionSourcePath(path: string): boolean {
     return false;
   }
   const basename = segments.at(-1) ?? "";
-  if (isOpenClawTestRolePath(basename)) return false;
+  if (isOpenClawTestRolePath(path.toLowerCase())) return false;
   return ![".spec.", ".test.", ".test-support."].some((marker) => {
     const markerIndex = basename.indexOf(marker);
     return markerIndex >= 0 && markerIndex + marker.length < basename.length;

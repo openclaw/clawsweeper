@@ -2329,6 +2329,27 @@ test("SQLite retains directly changed table declarations in a separate hunk", ()
   }
 });
 
+test("test-role directories do not turn synthetic writes into stored-data changes", () => {
+  const patch = "@@\n+  writeFileSync(statePath, JSON.stringify(store));";
+  for (const role of namedTestRoles) {
+    const filename = `src/agents/${role}/prepared-model-catalog-credential-only-fixture.ts`;
+    const detection = dataModelChangeFromPullFilesForTest({ pullFiles: [{ filename, patch }] });
+    assert.deepEqual(detection, { change: false, surfaces: [] }, filename);
+    assert.doesNotMatch(
+      renderReviewCommentFromReport(persistenceReport(detection, "a".repeat(40)), "none"),
+      /Add data-model compatibility proof/,
+    );
+    const production = "src/agents/auth-profile-store.ts";
+    for (const file of [
+      { filename: production, patch },
+      { filename, previous_filename: production, status: "renamed", patch },
+      { filename: production, previous_filename: filename, status: "renamed", patch },
+    ]) {
+      assert.equal(dataModelChangeFromPullFilesForTest({ pullFiles: [file] }).change, true);
+    }
+  }
+});
+
 test("production path classification preserves test segment and basename boundaries", () => {
   const cases = [
     ["test/schema.sql", false],
@@ -2342,7 +2363,9 @@ test("production path classification preserves test segment and basename boundar
     ["src/cache/store.test-support.", true],
     ["src/store.test-support.ts/schema.sql", true],
     ["src/spec/schema.sql", true],
-    ["src/test-fixtures/schema.sql", true],
+    ["src/test-fixtures/schema.sql", false],
+    ["src/TEST-HELPERS/schema.sql", false],
+    ["src/test-fixtures-production/schema.sql", true],
     ["src/cache/store.spec.", true],
     ["src/cache/store.spec.unit.spec.", false],
     ["scripts/translation/records_test.go", false],

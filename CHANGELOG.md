@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Recognize test-helper directories in stored-data classification so synthetic fixture writes do not request migration proof, while preserving production and rename checks. Thanks @serg0x and @awhite0030.
+
 - Avoid data-model compatibility blockers for static error messages recommending an upgrade outside storage code, while retaining checks for executable upgrades and persistence evidence.
 
 - Qualify the exact repeated proxy CLI redaction fixture while preserving native verification, full-line witnesses, and occurrence counts.
