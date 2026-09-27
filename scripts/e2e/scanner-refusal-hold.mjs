@@ -478,7 +478,17 @@ try {
     const workflow = YAML.parse(
       fs.readFileSync(path.join(root, ".github/workflows/sweep.yml"), "utf8"),
     );
-    const mode = workflow.jobs.plan.steps.find((s) => s.id === "mode").run;
+    const modeStep = workflow.jobs.plan.steps.find((s) => s.id === "mode");
+    const enqueueStep = workflow.jobs.plan.steps.find((s) => s.id === "enqueue-scheduled");
+    assert.match(
+      modeStep.env.CODEX_TIMEOUT_MS,
+      /client_payload\.review_options\.codex_timeout_ms \|\| github\.event\.client_payload\.codex_timeout_ms/,
+    );
+    assert.match(
+      enqueueStep.env.ADDITIONAL_PROMPT,
+      /client_payload\.review_options\.additional_prompt \|\| github\.event\.client_payload\.additional_prompt/,
+    );
+    const mode = modeStep.run;
     for (const id of [
       "review",
       "publish",

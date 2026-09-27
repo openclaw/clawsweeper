@@ -155,3 +155,17 @@ test("canonical implementation backfill preserves vision-fit and non-core policy
   assert.match(step.env.MAX_DISPATCH, /AUTO_IMPLEMENT_VISION_FIT_MAX_DISPATCH_PER_SWEEP/);
   assert.match(step.run, /--report-dir "records\/\$target_slug\/items"/);
 });
+
+test("queue planning retains nested dispatch options before legacy flat fallbacks", () => {
+  const modeStep = workflow.jobs.plan.steps.find((step) => step.id === "mode");
+  const enqueue = workflow.jobs.plan.steps.find((step) => step.id === "enqueue-scheduled");
+  assert.match(
+    modeStep.env.CODEX_TIMEOUT_MS,
+    /client_payload\.review_options\.codex_timeout_ms \|\| github\.event\.client_payload\.codex_timeout_ms/,
+  );
+  assert.match(
+    enqueue.env.ADDITIONAL_PROMPT,
+    /client_payload\.review_options\.additional_prompt \|\| github\.event\.client_payload\.additional_prompt/,
+  );
+  assert.equal(enqueue.env.CODEX_TIMEOUT_MS, "${{ steps.mode.outputs.codex_timeout_ms }}");
+});

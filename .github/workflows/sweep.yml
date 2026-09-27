@@ -4553,7 +4553,7 @@ jobs:
 
       - id: mode
         env:
-          CODEX_TIMEOUT_MS: ${{ github.event.client_payload.codex_timeout_ms || github.event.inputs.codex_timeout_ms || vars.CLAWSWEEPER_CODEX_TIMEOUT_MS || '1200000' }}
+          CODEX_TIMEOUT_MS: ${{ github.event.client_payload.review_options.codex_timeout_ms || github.event.client_payload.codex_timeout_ms || github.event.inputs.codex_timeout_ms || vars.CLAWSWEEPER_CODEX_TIMEOUT_MS || '1200000' }}
           ALLOCATED_CANDIDATES: ${{ github.event.client_payload.batch_size || '' }}
           MANUAL_EXPLICIT: ${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.item_number != '' || github.event.inputs.item_numbers != '') && 'true' || 'false' }}
           HOT_INTAKE: ${{ ((github.event_name == 'repository_dispatch' && github.event.client_payload.hot_intake == 'true') || (github.event_name == 'workflow_dispatch' && github.event.inputs.hot_intake == 'true') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 * * * *' || github.event.schedule == '2/5 * * * *'))) && 'true' || 'false' }}
@@ -4665,7 +4665,7 @@ jobs:
           QUEUE_URL: ${{ vars.CLAWSWEEPER_EXACT_REVIEW_QUEUE_URL || 'https://clawsweeper.openclaw.ai' }}
           REQUESTED_TARGET_BRANCH: ${{ steps.target.outputs.target_branch }}
           CODEX_TIMEOUT_MS: ${{ steps.mode.outputs.codex_timeout_ms }}
-          ADDITIONAL_PROMPT: ${{ github.event.inputs.additional_prompt || github.event.client_payload.additional_prompt || '' }}
+          ADDITIONAL_PROMPT: ${{ github.event.inputs.additional_prompt || github.event.client_payload.review_options.additional_prompt || github.event.client_payload.additional_prompt || '' }}
         run: |
           set -euo pipefail
           lane="normal_backfill"
