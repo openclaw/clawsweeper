@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { createServer } from "node:http";
-import { createServer as createHttpsServer } from "node:https";
+import { createServer as createHttpsServer, request as httpsRequest } from "node:https";
 import { createHash, createHmac, generateKeyPairSync } from "node:crypto";
 import { spawn, execFileSync } from "node:child_process";
 import { once } from "node:events";
@@ -41,10 +41,22 @@ const tlsProxy = createHttpsServer(
   { key: fs.readFileSync(certificateKey), cert: fs.readFileSync(certificate) },
   async (req, res) => {
     try {
+      const target =
+        req.url === "/internal/exact-review/enqueue"
+          ? "http://127.0.0.1:8798/internal/exact-review/enqueue"
+          : req.url === "/internal/exact-review/admission-capabilities"
+            ? "http://127.0.0.1:8798/internal/exact-review/admission-capabilities"
+            : null;
+      if (req.method !== "POST" || !target) {
+        res.writeHead(400);
+        res.end();
+        return;
+      }
       let body = "";
       for await (const chunk of req) body += chunk;
-      const reply = await fetch(origin + req.url, {
-        method: req.method,
+      const reply = await fetch(target, {
+        method: "POST",
+        redirect: "error",
         headers: req.headers,
         ...(body ? { body } : {}),
       });
@@ -279,6 +291,39 @@ const enqueue = (n, id, extra = {}) =>
   call("/internal/exact-review/enqueue", { delivery_id: id, decision: decision(n, extra) }, 202);
 try {
   await start();
+  for (const target of [
+    "@example.invalid/path",
+    "https://example.invalid/",
+    "//example.invalid/",
+    "/__proof/state",
+    "/internal/exact-review/enqueue?redirect=1",
+  ]) {
+    await new Promise((resolve, reject) => {
+      const request = httpsRequest(
+        {
+          hostname: "127.0.0.1",
+          port: 8799,
+          path: target,
+          method: "POST",
+          ca: fs.readFileSync(certificate),
+        },
+        (response) => {
+          response.resume();
+          try {
+            assert.equal(response.statusCode, 400, target);
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
+        },
+      );
+      request.on("error", reject);
+      request.end();
+    });
+  }
+  results.push(
+    "HTTPS relay rejects malformed and non-allowlisted request targets; destinations are fixed and redirects disabled",
+  );
   await seed(145500);
   assert.equal((await complete(145500)).requeued, false);
   const cross = await enqueue(145500, "schedule-first", {
