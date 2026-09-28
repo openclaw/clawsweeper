@@ -196,6 +196,12 @@ function scenarios() {
           targetBranch: "main",
           commandStatusMarker: "<!-- clawsweeper-command-status:test -->",
         },
+        // The command status lease needs the observed PR head; issues expose none.
+        expected: {
+          proceed: "true",
+          scheduled_semantic_noop: "false",
+          live_head_sha: kind === "pull_request" ? sha : undefined,
+        },
       }),
     );
     cases.push(
