@@ -205,6 +205,24 @@ Producer `selection.json`, `codex/`, `review-trees/`, and sibling reports stay
 outside the selected bundle. The importer still rejects
 unexpected files, symlinks, and directories in its publication input.
 
+Exact-item review jobs materialize the target with
+`scripts/review-target-checkout.sh`. Its cache is a blobless bare repository
+holding the target branch's full commit and tree history, the tags on that
+history, and every blob of the branch tip. The Actions cache key is
+`<target-slug>-review-target-git-v1-<os>-<branch>-<ISO week>` with no fallback
+keys: the first run of each week builds it from GitHub and saves it right after
+checkout, before any review input touches the workspace; every later run
+restores it, fetches only the branch delta and missing tip blobs, and clones the
+checkout locally with hardlinked objects. The checkout keeps the contract of a
+direct `git clone --filter=blob:none --single-branch`: the branch at the current
+remote head, full non-shallow history, branch tags, and a promisor `origin` for
+lazy blob fetches. A failed or partial restore is discarded, a failed cache
+fetch rebuilds the cache, and a failed local clone falls back to a clean clone
+without saving. At most two weekly entries per target branch stay live (the
+previous one until GitHub evicts it after seven idle days). The pinned Codex
+source cache is keyed by the Codex version pinned in the target checkout and is
+saved once per version.
+
 The receiver workflow is `.github/workflows/sweep.yml`.
 
 Important source files:

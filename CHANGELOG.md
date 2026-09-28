@@ -7,6 +7,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Speed up exact-review target checkouts by restoring one weekly blobless cache that already holds the branch-tip blobs and cloning it locally, and stop saving a new ~1 GB target-repository cache and Codex source cache on every review run.
 - Hold automatic reviews after a terminal scanner refusal until a fresh explicit re-review or intentional scanner-policy update, preventing repeated attempts and notifications across sweep, event, and recovery producers. Retire per-run sweep batch/shard and immediate-apply controls in favor of the shared queue and separate apply lane. Thanks @yetval.
 - Recover pinned review bases after branch rewrites or deletion within the existing acquisition deadline. Record the failed pin and completeness state, and stop optional evidence work when Git process settlement is unverified.
 

@@ -958,47 +958,49 @@ jobs:
           }
           react "eyes"
 
-      - uses: actions/cache@v6
+      # One cache entry per target branch and ISO week: the first run of the week
+      # saves it, every later run restores it and fetches only the delta.
+      - name: Resolve target repository cache key
+        id: target-git-cache-key
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.mark-re-review-command-in-progress.outputs.terminal_state != 'true' && steps.mark-re-review-command-in-progress.outputs.queue_superseded != 'true' && (steps.command-status-fence.outcome == 'skipped' || steps.command-status-fence.outputs.authorized == 'true') }}
+        env:
+          TARGET_SLUG: ${{ steps.target.outputs.target_slug }}
+          TARGET_BRANCH: ${{ steps.live-item.outputs.target_branch }}
+        run: echo "key=${TARGET_SLUG}-review-target-git-v1-${RUNNER_OS}-${TARGET_BRANCH}-$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache/restore@v6
+        id: target-git-cache
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.mark-re-review-command-in-progress.outputs.terminal_state != 'true' && steps.mark-re-review-command-in-progress.outputs.queue_superseded != 'true' && (steps.command-status-fence.outcome == 'skipped' || steps.command-status-fence.outputs.authorized == 'true') }}
         with:
           path: ${{ steps.target.outputs.target_checkout_dir }}-cache.git
-          key: ${{ steps.target.outputs.target_repo_name }}-event-git-${{ runner.os }}-${{ github.run_id }}
-          restore-keys: |
-            ${{ steps.target.outputs.target_repo_name }}-event-git-${{ runner.os }}-
-            ${{ steps.target.outputs.target_repo_name }}-git-${{ runner.os }}-
+          key: ${{ steps.target-git-cache-key.outputs.key }}
 
       - name: Check out target repository
+        id: target-checkout
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.mark-re-review-command-in-progress.outputs.terminal_state != 'true' && steps.mark-re-review-command-in-progress.outputs.queue_superseded != 'true' && (steps.command-status-fence.outcome == 'skipped' || steps.command-status-fence.outputs.authorized == 'true') }}
+        env:
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          TARGET_BRANCH: ${{ steps.live-item.outputs.target_branch }}
+          CHECKOUT_DIR: ${{ steps.target.outputs.target_checkout_dir }}
+          CACHE_MATCHED_KEY: ${{ steps.target-git-cache.outputs.cache-matched-key }}
         run: |
           set -euo pipefail
-          url="https://github.com/${{ steps.target.outputs.target_repo }}.git"
-          cache_dir="${{ steps.target.outputs.target_checkout_dir }}-cache.git"
-          checkout_dir="${{ steps.target.outputs.target_checkout_dir }}"
-          target_branch="${{ steps.live-item.outputs.target_branch }}"
-          if [ -d "$cache_dir" ]; then
-            git -C "$cache_dir" remote set-url origin "$url"
-            git -C "$cache_dir" config remote.origin.promisor true
-            git -C "$cache_dir" config remote.origin.partialclonefilter blob:none
-            if [ -f "$cache_dir/shallow" ]; then
-              cache_fetch=(git -C "$cache_dir" fetch --prune --unshallow --filter=blob:none origin "$target_branch")
-            else
-              cache_fetch=(git -C "$cache_dir" fetch --prune --filter=blob:none origin "$target_branch")
-            fi
-            if ! "${cache_fetch[@]}"; then
-              echo "::warning::Cached target repository fetch failed; rebuilding cache."
-              rm -rf "$cache_dir"
-              git clone --bare --filter=blob:none --single-branch --branch "$target_branch" "$url" "$cache_dir"
-            fi
-          else
-            git clone --bare --filter=blob:none --single-branch --branch "$target_branch" "$url" "$cache_dir"
+          cache_dir="${CHECKOUT_DIR}-cache.git"
+          # A failed restore can leave a partial directory behind; never trust it.
+          if [ -z "$CACHE_MATCHED_KEY" ]; then
+            rm -rf -- "$cache_dir"
           fi
-          if ! git clone --reference-if-able "$cache_dir" --dissociate --filter=blob:none --branch "$target_branch" --single-branch "$url" "$checkout_dir"; then
-            echo "::warning::Cached target checkout failed; retrying without cache reference."
-            rm -rf "$checkout_dir" "$cache_dir"
-            git clone --bare --filter=blob:none --single-branch --branch "$target_branch" "$url" "$cache_dir"
-            git clone --filter=blob:none --branch "$target_branch" --single-branch "$url" "$checkout_dir"
-          fi
-          git -C "$checkout_dir" rev-parse --short HEAD
+          bash scripts/review-target-checkout.sh "https://github.com/${TARGET_REPO}.git" "$cache_dir" "$CHECKOUT_DIR" "$TARGET_BRANCH"
+
+      # Saved before any review input touches the workspace, and only when this
+      # week's entry is missing and the cache holds every branch-tip blob.
+      - name: Save target repository cache
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target-checkout.outputs.cache_ready == 'true' && steps.target-git-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ steps.target.outputs.target_checkout_dir }}-cache.git
+          key: ${{ steps.target-git-cache-key.outputs.key }}
 
       - uses: ./.github/actions/setup-openclaw-codex-source
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.mark-re-review-command-in-progress.outputs.terminal_state != 'true' && steps.mark-re-review-command-in-progress.outputs.queue_superseded != 'true' && (steps.command-status-fence.outcome == 'skipped' || steps.command-status-fence.outputs.authorized == 'true') }}

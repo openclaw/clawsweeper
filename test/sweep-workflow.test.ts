@@ -632,11 +632,11 @@ test("Codex source setup normalizes OpenClaw casing and stays out of the OpenCla
     runs: { steps: Array<{ id?: string; if?: string; uses?: string; run?: string }> };
   };
   const normalize = action.runs.steps.find((step) => step.id === "target");
-  const cache = action.runs.steps.find((step) => step.uses === "actions/cache@v6");
+  const cache = action.runs.steps.find((step) => step.uses === "actions/cache/restore@v6");
   assert.ok(normalize);
   assert.match(cache?.if ?? "", /steps\.target\.outputs\.repository == 'openclaw\/openclaw'/u);
   assert.match(cache?.if ?? "", /env\.CLAWSWEEPER_RUNNER != 'openclaw'/u);
-  const setup = action.runs.steps.at(-1);
+  const setup = action.runs.steps.find((step) => step.id === "materialize");
   assert.match(setup?.if ?? "", /env\.CLAWSWEEPER_RUNNER != 'openclaw'/u);
   assert.match(
     setup?.run ?? "",
@@ -5818,21 +5818,77 @@ test("sweep workflow coalesces durable issue and PR comment sync batches", () =>
   );
 });
 
-test("sweep target checkouts retry without cached references", () => {
-  const workflow = readText(".github/workflows/sweep.yml");
-  const checkoutBlocks =
-    workflow.match(/- name: Check out target repository[\s\S]*?rev-parse --short HEAD/g) ?? [];
+test("exact-review target checkout restores one weekly cache and saves it before review", () => {
+  type Step = {
+    id?: string;
+    name?: string;
+    if?: string;
+    uses?: string;
+    run?: string;
+    env?: Record<string, string>;
+    with?: Record<string, string>;
+    "continue-on-error"?: boolean;
+  };
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+    jobs: Record<string, { steps: Step[] }>;
+  };
+  const steps = workflow.jobs["event-review-apply"]!.steps;
+  const position = (predicate: (step: Step) => boolean, label: string) => {
+    const index = steps.findIndex(predicate);
+    assert.notEqual(index, -1, label);
+    return index;
+  };
+  const keyIndex = position((step) => step.id === "target-git-cache-key", "cache key");
+  const restoreIndex = position((step) => step.id === "target-git-cache", "cache restore");
+  const checkoutIndex = position((step) => step.name === "Check out target repository", "checkout");
+  const saveIndex = position((step) => step.name === "Save target repository cache", "cache save");
+  const codexSourceIndex = position(
+    (step) => step.uses === "./.github/actions/setup-openclaw-codex-source",
+    "Codex source",
+  );
+  const reviewIndex = position((step) => step.name === "Review exact event item", "review");
+  assert.ok(keyIndex < restoreIndex && restoreIndex < checkoutIndex && checkoutIndex < saveIndex);
+  assert.ok(saveIndex < codexSourceIndex && saveIndex < reviewIndex, "save precedes review input");
 
-  assert.equal(checkoutBlocks.length, 1);
-  for (const block of checkoutBlocks) {
-    assert.match(block, /Cached target repository fetch failed; rebuilding cache/);
-    assert.match(block, /Cached target checkout failed; retrying without cache reference/);
-    assert.match(block, /rm -rf "\$checkout_dir" "\$cache_dir"/);
-    assert.match(
-      block,
-      /git clone --filter=blob:none --branch "\$target_branch" --single-branch "\$url" "\$checkout_dir"/,
-    );
+  const [key, restore, checkout, save] = [keyIndex, restoreIndex, checkoutIndex, saveIndex].map(
+    (index) => steps[index]!,
+  );
+  for (const gated of [key, restore]) assert.equal(gated.if, checkout.if);
+  assert.match(
+    key.run ?? "",
+    /review-target-git-v1-\$\{RUNNER_OS\}-\$\{TARGET_BRANCH\}-\$\(date -u \+%G-W%V\)/,
+  );
+  assert.equal(restore.uses, "actions/cache/restore@v6");
+  assert.equal(restore.with?.key, "${{ steps.target-git-cache-key.outputs.key }}");
+  assert.equal(restore.with?.["restore-keys"], undefined);
+  assert.equal(save.uses, "actions/cache/save@v6");
+  assert.equal(save.with?.key, restore.with?.key);
+  assert.equal(save.with?.path, restore.with?.path);
+  assert.equal(save["continue-on-error"], true);
+  assert.equal(
+    save.if,
+    "${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target-checkout.outputs.cache_ready == 'true' && steps.target-git-cache.outputs.cache-hit != 'true' }}",
+  );
+  assert.equal(checkout.id, "target-checkout");
+  assert.match(
+    checkout.run ?? "",
+    /if \[ -z "\$CACHE_MATCHED_KEY" \]; then\s+rm -rf -- "\$cache_dir"/,
+  );
+  assert.match(checkout.run ?? "", /bash scripts\/review-target-checkout\.sh /);
+  for (const step of steps) {
+    for (const value of Object.values(step.with ?? {})) {
+      assert.doesNotMatch(String(value), /-git-.*github\.run_id/, "no per-run git cache keys");
+    }
   }
+
+  const script = readText("scripts/review-target-checkout.sh");
+  assert.match(script, /Cached target repository fetch failed; rebuilding cache/);
+  assert.match(script, /Cached target checkout failed; retrying without cache reference/);
+  assert.match(script, /rm -rf "\$checkout_dir" "\$cache_dir"/);
+  assert.match(
+    script,
+    /git clone --filter=blob:none --branch "\$branch" --single-branch "\$url" "\$checkout_dir"/,
+  );
 });
 
 test("batch publication updates the durable comment once across replay", () => {
