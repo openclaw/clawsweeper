@@ -958,15 +958,26 @@ jobs:
           }
           react "eyes"
 
-      # One cache entry per target branch and ISO week: the first run of the week
-      # saves it, every later run restores it and fetches only the delta.
+      # openclaw/openclaw moves ~460 commits and ~7.8k tip blobs a day, and blobs
+      # fetched by id are the slow part, so the cache is refreshed hourly: the
+      # first run of each UTC hour saves a new entry built on the newest one from
+      # the same UTC day (each day starts from a clean clone), and the prune step
+      # below keeps only the two newest entries.
       - name: Resolve target repository cache key
         id: target-git-cache-key
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.mark-re-review-command-in-progress.outputs.terminal_state != 'true' && steps.mark-re-review-command-in-progress.outputs.queue_superseded != 'true' && (steps.command-status-fence.outcome == 'skipped' || steps.command-status-fence.outputs.authorized == 'true') }}
         env:
           TARGET_SLUG: ${{ steps.target.outputs.target_slug }}
           TARGET_BRANCH: ${{ steps.live-item.outputs.target_branch }}
-        run: echo "key=${TARGET_SLUG}-review-target-git-v1-${RUNNER_OS}-${TARGET_BRANCH}-$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          prefix="${TARGET_SLUG}-review-target-git-v1-${RUNNER_OS}-${TARGET_BRANCH}-"
+          stamp="$(date -u +%Y%m%d-%H)"
+          {
+            echo "prefix=${prefix}"
+            echo "day_prefix=${prefix}${stamp%-*}-"
+            echo "key=${prefix}${stamp}"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: actions/cache/restore@v6
         id: target-git-cache
@@ -974,6 +985,7 @@ jobs:
         with:
           path: ${{ steps.target.outputs.target_checkout_dir }}-cache.git
           key: ${{ steps.target-git-cache-key.outputs.key }}
+          restore-keys: ${{ steps.target-git-cache-key.outputs.day_prefix }}
 
       - name: Check out target repository
         id: target-checkout
@@ -993,14 +1005,36 @@ jobs:
           bash scripts/review-target-checkout.sh "https://github.com/${TARGET_REPO}.git" "$cache_dir" "$CHECKOUT_DIR" "$TARGET_BRANCH"
 
       # Saved before any review input touches the workspace, and only when this
-      # week's entry is missing and the cache holds every branch-tip blob.
+      # hour's entry is missing and the cache holds every branch-tip blob.
       - name: Save target repository cache
+        id: target-git-cache-save
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target-checkout.outputs.cache_ready == 'true' && steps.target-git-cache.outputs.cache-hit != 'true' }}
         continue-on-error: true
         uses: actions/cache/save@v6
         with:
           path: ${{ steps.target.outputs.target_checkout_dir }}-cache.git
           key: ${{ steps.target-git-cache-key.outputs.key }}
+
+      # Keep the entry just saved and its predecessor (which in-flight runs may
+      # still be restoring); older hourly entries are never restored again.
+      - name: Prune superseded target repository caches
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target-git-cache-save.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_PREFIX: ${{ steps.target-git-cache-key.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          # The key filter is a prefix match, so drop other branches that share it.
+          gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/caches" \
+            -f key="$CACHE_PREFIX" -f sort=created_at -f direction=desc -F per_page=100 |
+            jq -r --arg prefix "$CACHE_PREFIX" '
+              [.actions_caches[]
+                | select((.key | startswith($prefix)) and (.key | ltrimstr($prefix) | test("^[0-9]{8}-[0-9]{2}$")))
+              ][2:][].id' |
+            while read -r cache_id; do
+              gh api --method DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${cache_id}" > /dev/null
+            done
 
       - uses: ./.github/actions/setup-openclaw-codex-source
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.mark-re-review-command-in-progress.outputs.terminal_state != 'true' && steps.mark-re-review-command-in-progress.outputs.queue_superseded != 'true' && (steps.command-status-fence.outcome == 'skipped' || steps.command-status-fence.outputs.authorized == 'true') }}
