@@ -859,6 +859,7 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
     }
     const work = join(root, repeatRunId ? `${number}-${runId}` : String(number));
     mkdirSync(join(work, "artifacts/event"), { recursive: true });
+    symlinkSync(join(source, "scripts"), join(work, "scripts"));
     const env = {
       GITHUB_RUN_ID: runId,
       EXACT_REVIEW_ITEM_KEY: tuple.item_key,
@@ -1327,6 +1328,10 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
     if (!["POST", "PATCH", "DELETE", "PUT"].includes(entry.method) || "status" in entry)
       return false;
     if (entry.readOnlyGraphql || allowedPrQueueWrites.has(entry.path)) return false;
+    if (entry.path === "/queue/internal/exact-review/admission-capabilities") {
+      assert.deepEqual(entry.body, {});
+      return false;
+    }
     if (entry.path === "/queue/internal/exact-review/lifecycle/router-receipt") {
       assert.deepEqual(entry.body, {
         canonical_target_key: currentPr.tuple.item_key,
