@@ -68,7 +68,8 @@ not split reports into issue/PR subtrees.
 - Leave canonical OpenClaw Mantis locale PRs open; their generated-PR publisher
   owns freshness and auto-merge. See `docs/target-repositories.md` for identity scope.
 - Snapshot or `updated_at` drift blocks apply unless the only change is the
-  existing ClawSweeper review comment.
+  existing ClawSweeper review comment, or its review acknowledgement progress
+  edit while the review's complete activity receipt still matches.
 - Open-but-locked issues can exist when stale automation locked a closed issue
   and the author later reopened it. These must be skipped, not allowed to crash
   the apply run.

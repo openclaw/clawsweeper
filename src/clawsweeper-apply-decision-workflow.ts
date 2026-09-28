@@ -1653,6 +1653,7 @@ export function createApplyDecisionWorkflow(dependencies: CreateApplyDecisionWor
         sameSecondCloseActivityIsAmbiguous,
       } = createApplySourceFreshness(dependencies, {
         action,
+        comments: earlyLeaseState.comments,
         completeReviewActivityReceiptMatches,
         currentItemContext,
         currentState: () => ({ isCloseProposal, markdown, storedUpdatedAt }),
