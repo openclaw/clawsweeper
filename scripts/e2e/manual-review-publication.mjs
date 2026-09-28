@@ -122,7 +122,7 @@ const redact = (value) =>
     )
     .replace(/\bgpt-[a-zA-Z0-9_.-]+\b/g, "Codex");
 const items = new Map(
-  [71, 72, 73, 74, 75, 76, 99].map((number) => [
+  [71, 72, 73, 74, 75, 76, 77, 99].map((number) => [
     number,
     {
       number,
@@ -143,7 +143,7 @@ const items = new Map(
 );
 const comments = new Map([...items.keys()].map((number) => [number, []]));
 const pulls = new Map(
-  [73, 76].map((number) => {
+  [73, 76, 77].map((number) => {
     items.get(number).pull_request = {
       url: `https://api.github.com/repos/${repo}/pulls/${number}`,
     };
@@ -312,7 +312,7 @@ const server = createServer(async (req, res) => {
     if (target && Number(target[1]) === 99) throw new Error("unselected sibling was accessed");
     if (path === `/repos/${producerRepo}/dispatches` && req.method === "POST") {
       assert.equal(body.event_type, "clawsweeper_item");
-      assert.ok([71, 72, 73, 74, 75, 76].includes(body.client_payload.item_number));
+      assert.ok([71, 72, 73, 74, 75, 76, 77].includes(body.client_payload.item_number));
       if (initialDispatchOutage) {
         initialDispatchFailures++;
         return send({ message: "synthetic dispatch outage" }, 503);
@@ -753,6 +753,24 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
   initialDispatchOutage = false;
   for (let i = 0; i < 120 && dispatches.length < 2; i++) await wait(1000);
   assert.equal(dispatches.length, 2, workerLog);
+  const { proveHeadlessCommandLease } = await import("./headless-command-lease.mjs");
+  observations.push(
+    await proveHeadlessCommandLease({
+      source,
+      root,
+      output,
+      repo,
+      producerRepo,
+      sweep,
+      command,
+      post,
+      dispatches,
+      comments,
+      pulls,
+      trace,
+      wait,
+    }),
+  );
   const records = [];
   const extraRecords = [];
   async function admit(number, requestId = `extra-${number}`) {
@@ -841,6 +859,7 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
     }
     const work = join(root, repeatRunId ? `${number}-${runId}` : String(number));
     mkdirSync(join(work, "artifacts/event"), { recursive: true });
+    symlinkSync(join(source, "scripts"), join(work, "scripts"));
     const env = {
       GITHUB_RUN_ID: runId,
       EXACT_REVIEW_ITEM_KEY: tuple.item_key,
@@ -1309,6 +1328,10 @@ exec '${process.execPath}' '${transport}' curl "\${args[@]}"
     if (!["POST", "PATCH", "DELETE", "PUT"].includes(entry.method) || "status" in entry)
       return false;
     if (entry.readOnlyGraphql || allowedPrQueueWrites.has(entry.path)) return false;
+    if (entry.path === "/queue/internal/exact-review/admission-capabilities") {
+      assert.deepEqual(entry.body, {});
+      return false;
+    }
     if (entry.path === "/queue/internal/exact-review/lifecycle/router-receipt") {
       assert.deepEqual(entry.body, {
         canonical_target_key: currentPr.tuple.item_key,

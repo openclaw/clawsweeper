@@ -8,6 +8,7 @@ checkpoint, and status-only commits are intentionally omitted.
 ## 0.3.1 - Unreleased
 
 - Let scheduled normal backfill use the review budget: the shared queue now charges every organic review execution (new items, superseding revisions, and source-drift requeues) against a 220/hour, 24-burst budget with organic debt carried, caps hot intake at 30/hour so the remainder goes to oldest-first backfill, and offers `openclaw/openclaw` normal backfill every 20 minutes.
+- Fix `@clawsweeper automerge` and `autofix` command reviews failing with `invalid queue-owned command review lease` before review: when the claimed decision has no source head, the command acknowledgement lease now uses the live PR head from admission or the head in the command status marker, and fails with a clear message only when neither exists.
 - Hold automatic reviews after a terminal scanner refusal until a fresh explicit re-review or intentional scanner-policy update, preventing repeated attempts and notifications across sweep, event, and recovery producers. Retire per-run sweep batch/shard and immediate-apply controls in favor of the shared queue and separate apply lane. Thanks @yetval.
 - Recover pinned review bases after branch rewrites or deletion within the existing acquisition deadline. Record the failed pin and completeness state, and stop optional evidence work when Git process settlement is unverified.
 
