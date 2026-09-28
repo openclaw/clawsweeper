@@ -236,6 +236,27 @@ generation retains its post-generation finalization check rather than an active
 stop loop. Finalization and publication fences remain unchanged. The [startup proof](proof/exact-review-start/README.md)
 records the isolated workflow/process boundary and its limits.
 Explicit command work and publication work bypass the delay.
+
+Items under active churn wait longer. When an item has already completed
+`EXACT_REVIEW_ACTIVE_ITEM_REVIEW_THRESHOLD` (2 by default) successful review
+generations within the trailing `EXACT_REVIEW_ACTIVE_ITEM_WINDOW_MS` (one hour
+by default), its next organic source revision (a review-triggering issue or pull
+request webhook action such as `synchronize` or `edited`) waits
+`EXACT_REVIEW_ACTIVE_ITEM_DEBOUNCE_MS` (ten minutes by default) from the latest
+pending revision. Further revisions still coalesce into that one pending entry,
+capped at `EXACT_REVIEW_ACTIVE_ITEM_DEBOUNCE_MAX_MS` (15 minutes by default) from
+the first pending enqueue, so a continuously pushed pull request is still
+reviewed. The active delay only ever lengthens the ordinary debounce. A
+superseding event still revokes an in-flight lease immediately; only the next
+dispatch waits. Explicit commands, publication, scheduled intake, repair
+follow-ups, and recovery work keep their existing timing, as do first reviews,
+items below the threshold, and the immediate pull request `opened` /
+`ready_for_review` event that creates a queue entry. The queue keeps the completion history in an
+additive `exact_review_queue_review_completions` table keyed by item and
+workflow run, pruned to the window; a store without history behaves as before.
+The next-wake calculation reads the delayed `nextAttemptAt`, so a held item does
+not cause extra polling.
+
 When pending depth reaches
 `EXACT_REVIEW_PENDING_SOFT_LIMIT` (600 by default), new recovery and scheduled
 feed work is shed; this threshold counts review work only, so publication
@@ -458,6 +479,15 @@ These limits are owned by `dashboard/exact-review-queue.ts`, implemented in
   for fresh non-command exact-review events.
 - `EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS` overrides the 180,000 ms maximum
   coalescing window measured from the item's first enqueue.
+- `EXACT_REVIEW_ACTIVE_ITEM_REVIEW_THRESHOLD` overrides the two completed review
+  generations (clamped to 1-100) that mark an item as under active churn.
+- `EXACT_REVIEW_ACTIVE_ITEM_WINDOW_MS` overrides the 3,600,000 ms trailing window
+  for counting those completions (at most 24 hours); `0` disables the
+  active-item debounce.
+- `EXACT_REVIEW_ACTIVE_ITEM_DEBOUNCE_MS` overrides the 600,000 ms delay from the
+  latest organic revision of an active item (at most one hour).
+- `EXACT_REVIEW_ACTIVE_ITEM_DEBOUNCE_MAX_MS` overrides the 900,000 ms cap for that
+  delay, measured from the first pending enqueue (at most one hour).
 - `EXACT_REVIEW_PENDING_SOFT_LIMIT` overrides the pending-depth threshold for
   shedding new recovery and scheduled exact-review work; production sets it to 600.
 - `EXACT_REVIEW_TARGET_RATE_PER_HOUR` sets the fleet-wide review

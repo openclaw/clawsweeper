@@ -7,6 +7,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Coalesce organic pushes and edits for 10 minutes (capped at 15) on items that already completed two exact reviews in the last hour, so churning PRs get one review of their latest revision instead of one per push; commands, publication, scheduled, and recovery work keep their timing.
 - Hold automatic reviews after a terminal scanner refusal until a fresh explicit re-review or intentional scanner-policy update, preventing repeated attempts and notifications across sweep, event, and recovery producers. Retire per-run sweep batch/shard and immediate-apply controls in favor of the shared queue and separate apply lane. Thanks @yetval.
 - Recover pinned review bases after branch rewrites or deletion within the existing acquisition deadline. Record the failed pin and completeness state, and stop optional evidence work when Git process settlement is unverified.
 
