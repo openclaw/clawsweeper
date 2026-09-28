@@ -1,6 +1,8 @@
 // Simulated-hour proof for the shared exact-review execution budget.
-// Usage: node scripts/proof-scheduled-budget.mjs BASE_REF TOOL_PREFIX FRESH_OUTPUT_DIR
+// Usage: node scripts/proof-scheduled-budget.mjs BASE_REF TOOL_PREFIX OUTPUT_DIR
 // TOOL_PREFIX must contain miniflare and esbuild (for example wrangler@4.107.0).
+// OUTPUT_DIR must be a subdirectory of the checkout's .artifacts/ directory; an
+// existing non-empty directory is replaced only if this harness created it.
 // Drives the real ExactReviewQueue Durable Object (workerd + SQLite) with a fake
 // clock: organic new items, superseding revisions and requeue_latest
 // completions, scheduled hot/normal offers at each revision's cron cadence,
@@ -8,20 +10,43 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, generateKeyPairSync } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { createRequire } from "node:module";
 import path from "node:path";
 
 const [baseRef, toolPrefix, output] = process.argv.slice(2);
-assert.ok(baseRef && toolPrefix && output, "expected BASE_REF TOOL_PREFIX FRESH_OUTPUT_DIR");
+assert.ok(baseRef && toolPrefix && output, "expected BASE_REF TOOL_PREFIX OUTPUT_DIR");
+const OUTPUT_MARKER = ".proof-scheduled-budget-output";
+const root = process.cwd();
+// The output directory is recursively replaced, so validate it before any
+// tooling loads: it must sit strictly inside .artifacts/, and an existing
+// non-empty directory must carry this harness's marker.
+const out = proofOutputDirectory(root, output);
 const require = createRequire(path.resolve(toolPrefix, "package.json"));
 const { Miniflare } = require("miniflare");
 const { build } = require("esbuild");
-const root = process.cwd();
-const out = path.resolve(output);
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
+writeFileSync(path.join(out, OUTPUT_MARKER), "created by scripts/proof-scheduled-budget.mjs\n");
+
+function proofOutputDirectory(rootDirectory, requested) {
+  const artifacts = path.resolve(rootDirectory, ".artifacts");
+  const resolved = path.resolve(rootDirectory, requested);
+  const relative = path.relative(artifacts, resolved);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`output directory must be inside ${artifacts}${path.sep}: ${resolved}`);
+  }
+  if (existsSync(resolved)) {
+    const entries = readdirSync(resolved);
+    if (entries.length > 0 && !entries.includes(OUTPUT_MARKER)) {
+      throw new Error(
+        `refusing to replace non-empty ${resolved}: it was not created by this harness`,
+      );
+    }
+  }
+  return resolved;
+}
 const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();
 
 const T0 = Date.parse("2030-01-01T00:00:00Z");
@@ -59,6 +84,13 @@ const ALL_SCENARIOS = [
   // The same new-key load once lane A removes ~65/hour of source-drift requeues.
   mix("production_like_after_lane_a", 3, 45, 35, 35),
   mix("throttle_organic_130", 2, 130, 0, 0, { throttleAtMinute: 75 }),
+  // Organic above the budget for one hour: organic stays admitted, scheduled
+  // admission stops while the global balance sits at the -burst floor, and
+  // resumes once organic falls back below the rate.
+  mix("organic_spike_300_for_one_hour", 3, 130, 0, 0, {
+    newPerHourByHour: [130, 300, 130],
+    target: { new: [130, 300, 130], supersede: 0, requeue: 0 },
+  }),
 ];
 // Optional comma-separated scenario filter for quick local iteration.
 const SCENARIOS = process.env.PROOF_SCENARIOS
@@ -149,10 +181,26 @@ function poisson(events, kind, perHour, horizon, seed) {
   }
 }
 
+// Piecewise Poisson arrivals with one rate per simulated hour.
+function hourlyPoisson(events, kind, ratesByHour, seed) {
+  const random = mulberry32(seed);
+  ratesByHour.forEach((perHour, hour) => {
+    const end = T0 + (hour + 1) * HOUR;
+    for (let at = T0 + hour * HOUR; ;) {
+      at += Math.max(1, Math.round((-Math.log(1 - random()) * HOUR) / perHour));
+      if (at >= end) break;
+      events.push({ at, kind });
+    }
+  });
+}
+
 function plannedEvents(cadence, scenario) {
   const horizon = T0 + scenario.hours * HOUR;
   const events = [];
-  poisson(events, "organic", scenario.newPerHour, horizon, 0xc1a55e + scenario.newPerHour);
+  if (scenario.newPerHourByHour) {
+    assert.equal(scenario.newPerHourByHour.length, scenario.hours);
+    hourlyPoisson(events, "organic", scenario.newPerHourByHour, 0xc1a55e + scenario.newPerHour);
+  } else poisson(events, "organic", scenario.newPerHour, horizon, 0xc1a55e + scenario.newPerHour);
   poisson(events, "supersede", scenario.supersedePerHour, horizon, 0x5e7e + scenario.newPerHour);
   const offers = [
     [cadence.hotDirect, "hot_intake", "direct", DIRECT_PLANNER_LATENCY, DIRECT_OFFER_CANDIDATES],
@@ -384,6 +432,7 @@ async function runScenario(mf, scenario, cadence, vars) {
     shed: { scheduled_rate: 0, backpressure: 0 },
     dispatched: { organic: 0, scheduled: 0 },
     completed: 0,
+    min_token_balance: null,
   }));
   const executions = [];
   const admittedAt = new Map();
@@ -530,7 +579,9 @@ async function runScenario(mf, scenario, cadence, vars) {
     } else if (event.kind === "sample") {
       const { body: stats } = await call("stats", event.at);
       maxScheduledActive = Math.max(maxScheduledActive, Number(stats.scheduled_feed?.active ?? 0));
-      minTokenBalance = Math.min(minTokenBalance, Number(stats.scheduled_feed?.token_balance ?? 0));
+      const balance = Number(stats.scheduled_feed?.token_balance ?? 0);
+      minTokenBalance = Math.min(minTokenBalance, balance);
+      bucket.min_token_balance = Math.min(bucket.min_token_balance ?? Infinity, balance);
       maxReviewActive = Math.max(
         maxReviewActive,
         Number(stats.lanes?.review?.leased ?? 0) + Number(stats.lanes?.review?.dispatching ?? 0),
@@ -660,6 +711,7 @@ async function runScenario(mf, scenario, cadence, vars) {
         }
       : {}),
   };
+  assert.ok(minTokenBalance >= -burst, "global balance never drops below the -burst floor");
   for (const hour of hours) {
     assert.equal(hour.organic.new, hour.organic_attempted.new, "organic new items always admitted");
     assert.equal(hour.organic.supersede, hour.organic_attempted.supersede);
@@ -686,7 +738,7 @@ function summary(receiptValue) {
       rows[`${variant}/${name}`] = {
         hours: scenario.hours.map(
           (hour) =>
-            `organic ${hour.organic_total} (new ${hour.organic.new}, supersede ${hour.organic.supersede}, requeue ${hour.organic.requeue}) + hot ${hour.scheduled.hot_intake} + normal ${hour.scheduled.normal_backfill} = ${hour.total_executions}; shed ${hour.shed.scheduled_rate}`,
+            `organic ${hour.organic_total} (new ${hour.organic.new}, supersede ${hour.organic.supersede}, requeue ${hour.organic.requeue}) + hot ${hour.scheduled.hot_intake} + normal ${hour.scheduled.normal_backfill} = ${hour.total_executions}; shed ${hour.shed.scheduled_rate}; min balance ${hour.min_token_balance}`,
         ),
         max_rolling_hour_executions: scenario.max_rolling_hour_executions,
         ceiling: scenario.budget_ceiling_rate_plus_burst,
