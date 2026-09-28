@@ -295,6 +295,7 @@ const receipt = {
   },
   variants: {},
 };
+const runtimeFactories = {};
 
 try {
   for (const variant of ["baseline", "candidate"]) {
@@ -325,6 +326,14 @@ export class ProofQueue extends ExactReviewQueue {
     const op = new URL(request.url).pathname.split('/').slice(2).join('/');
     let response;
     if (op === '__tick') { await super.alarm(); response = Response.json({ ok: true }); }
+    else if (op === '__persisted-budget') {
+      response = Response.json({
+        buckets: Object.fromEntries(['global', 'hot_intake', 'normal_backfill'].map(lane =>
+          [lane, this.storage.kv.get('exact-review-scheduled-feed:v1:' + lane)])),
+        items: Array.from(this.storage.sql.exec('SELECT * FROM exact_review_queue_items ORDER BY item_key')),
+        deliveries: Array.from(this.storage.sql.exec('SELECT * FROM exact_review_queue_deliveries ORDER BY delivery_id')),
+      });
+    }
     else response = await super.fetch(new Request('https://queue/' + op, { method: request.method, body: request.method === 'POST' ? await request.text() : undefined }));
     // Report the queue's own next wake so the harness delivers alarms when the
     // queue asks for them, as workerd would in production.
@@ -345,21 +354,25 @@ export default { fetch(request, env) { return env.QUEUE.get(env.QUEUE.idFromName
       target: "es2022",
       external: ["node:*", "cloudflare:*"],
     });
-    const startMiniflare = () =>
+    const startMiniflare = (persist, overrides = {}) =>
       new Miniflare({
+        name: "scheduled-budget-proof",
         modules: true,
         script: bundle.outputFiles[0].text,
         compatibilityDate: "2026-07-08",
         compatibilityFlags: ["nodejs_compat"],
         durableObjects: { QUEUE: { className: "ProofQueue", useSQLite: true } },
+        ...(persist ? { durableObjectsPersist: persist } : {}),
         bindings: {
           ...vars,
+          ...overrides,
           GITHUB_API_URL: `http://${address}`,
           CLAWSWEEPER_APP_CLIENT_ID: "Iv23fixture",
           CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
         },
         outboundService: { external: { address, http: {} } },
       });
+    runtimeFactories[variant] = startMiniflare;
     const result = {
       source_sha256: Object.fromEntries(
         FILES.map((file) => [file, createHash("sha256").update(read(file)).digest("hex")]),
@@ -397,6 +410,7 @@ export default { fetch(request, env) { return env.QUEUE.get(env.QUEUE.idFromName
     }
     receipt.variants[variant] = result;
   }
+  receipt.upgrade_rollback = await provePersistedBudgetCompatibility(runtimeFactories);
   assert.deepEqual(unexpected, [], "unexpected external fixture route");
   receipt.limits =
     "Synthetic GitHub fixture, RSA credential, organic arrival process and mix, planner latency and review durations. Real queue admission, token buckets, supersession, requeue, dispatch, claim, completion, throttle feedback, alarms and SQLite storage. No live inference, production state or GitHub mutations. clawhub/other-target supply and GitHub Actions scheduling jitter are not modeled. Candidate supply is unlimited, the pessimistic case for the budget and for normal-backfill share.";
@@ -405,6 +419,138 @@ export default { fetch(request, env) { return env.QUEUE.get(env.QUEUE.idFromName
 } finally {
   server.closeAllConnections();
   await new Promise((resolve) => server.close(resolve));
+}
+
+async function provePersistedBudgetCompatibility(factories) {
+  const results = [];
+  for (const profile of [
+    {
+      name: "retain_60_6",
+      burst: 6,
+      overrides: {
+        EXACT_REVIEW_TARGET_RATE_PER_HOUR: "60",
+        EXACT_REVIEW_TARGET_BURST: "6",
+        EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR: "",
+      },
+    },
+    { name: "proposed_220_24", burst: 24, overrides: {} },
+  ]) {
+    for (const seed of [
+      { name: "positive", count: 2, tokens: 4 },
+      { name: "exhausted", count: 6, tokens: 0 },
+      { name: "legacy_negative", count: 7, tokens: -1 },
+      { name: "persisted_lanes", count: 2, tokens: 4, scheduled: true },
+    ]) {
+      const persist = path.join(out, "persisted-budget", `${profile.name}-${seed.name}`);
+      let mf;
+      let now = T0;
+      const call = async (op, body) => {
+        const response = await mf.dispatchFetch(`http://proof/persisted-budget/${op}`, {
+          method: body ? "POST" : "GET",
+          headers: { "x-proof-now": String(now), "content-type": "application/json" },
+          ...(body ? { body: JSON.stringify(body) } : {}),
+        });
+        const value = await response.json();
+        assert.ok(response.ok, `${op}: ${JSON.stringify(value)}`);
+        return value;
+      };
+      const open = async (variant) => {
+        mf = factories[variant](persist, variant === "candidate" ? profile.overrides : {});
+        await mf.ready;
+        return (await call("stats")).scheduled_feed;
+      };
+      const close = async () => {
+        await mf.dispose();
+        mf = undefined;
+      };
+      const offer = (number, action = "opened") =>
+        call("enqueue", {
+          delivery_id: `persisted-${number}`,
+          decision: {
+            targetRepo: "openclaw/openclaw",
+            targetBranch: "main",
+            itemNumber: number,
+            itemKind: "issue",
+            sourceEvent: "issues",
+            sourceAction: action,
+            sourceUpdatedAt: new Date(T0 - HOUR).toISOString(),
+            supersedesInProgress: false,
+          },
+        });
+      const rowsDigest = (value) =>
+        createHash("sha256")
+          .update(
+            JSON.stringify({
+              items: value.items,
+              deliveries: value.deliveries,
+            }),
+          )
+          .digest("hex");
+      try {
+        await open("baseline");
+        for (let index = 0; index < seed.count; index++) {
+          const action = seed.scheduled
+            ? index === 0
+              ? "scheduled_hot_intake"
+              : "scheduled_normal_backfill"
+            : "opened";
+          assert.equal((await offer(700_000 + index, action)).queued, true);
+        }
+        const baseline = (await call("stats")).scheduled_feed;
+        const stored = await call("__persisted-budget");
+        assert.equal(stored.buckets.global.tokens, seed.tokens);
+        assert.equal(baseline.token_balance, Math.max(0, seed.tokens));
+        assert.equal(stored.items.length, seed.count);
+        if (seed.scheduled) {
+          assert.equal(stored.buckets.hot_intake.tokens, 1);
+          assert.equal(stored.buckets.normal_backfill.tokens, 3);
+        }
+        await close();
+
+        const upgraded = await open("candidate");
+        const reopened = await call("__persisted-budget");
+        assert.deepEqual(reopened, stored, "upgrade preserves bucket, item and delivery records");
+        assert.equal(upgraded.token_balance, seed.tokens, "upgrade does not mint a fresh burst");
+        const extraAdmissions = seed.tokens + profile.burst;
+        for (let index = 0; index < extraAdmissions; index++) {
+          assert.equal((await offer(710_000 + index)).queued, true);
+        }
+        assert.equal((await call("stats")).scheduled_feed.token_balance, -profile.burst);
+        const indebted = await call("__persisted-budget");
+        assert.equal(indebted.buckets.global.tokens, -profile.burst);
+        assert.equal(indebted.items.length, seed.count + extraAdmissions);
+        await close();
+
+        const rolledBack = await open("baseline");
+        const restored = await call("__persisted-budget");
+        assert.deepEqual(restored, indebted, "rollback reads the same persisted records");
+        assert.equal(rolledBack.token_balance, 0, "old code restores its debt-forgiving read");
+        assert.equal((await offer(720_000, "scheduled_normal_backfill")).shed, true);
+        assert.equal((await call("__persisted-budget")).buckets.global.tokens, 0);
+        now += MINUTE;
+        assert.equal((await offer(720_001, "scheduled_normal_backfill")).queued, true);
+        results.push({
+          profile: profile.name,
+          seed: seed.name,
+          stored_initial_tokens: seed.tokens,
+          baseline_balance: baseline.token_balance,
+          upgraded_balance: upgraded.token_balance,
+          persisted_debt: -profile.burst,
+          rollback_balance: rolledBack.token_balance,
+          upgrade_rows_sha256: rowsDigest(stored),
+          rollback_rows_sha256: rowsDigest(indebted),
+          item_records_preserved: true,
+          delivery_records_preserved: true,
+          lane_buckets_preserved: Boolean(seed.scheduled),
+          immediate_rollback_offer_shed: true,
+          fresh_offer_after_one_minute_admitted: true,
+        });
+      } finally {
+        if (mf) await mf.dispose();
+      }
+    }
+  }
+  return results;
 }
 
 async function proveReconciliationDebit(mf, variant) {
@@ -830,5 +976,10 @@ function summary(receiptValue) {
       };
     }
   }
-  return { base: receiptValue.base, head: receiptValue.head, rows };
+  return {
+    base: receiptValue.base,
+    head: receiptValue.head,
+    rows,
+    upgrade_rollback: receiptValue.upgrade_rollback,
+  };
 }

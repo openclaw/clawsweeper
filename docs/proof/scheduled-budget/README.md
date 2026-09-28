@@ -63,6 +63,35 @@ node scripts/proof-scheduled-budget.mjs 1b2c262b6bfca5c7c18a9104478e173b2ea0a53c
 Choose an unused output directory. Existing directories, files and symlinks
 are refused without removing their contents.
 
+## Persisted upgrade and rollback
+
+The harness also closes and reopens the same SQLite Durable Object across
+baseline → candidate → baseline, preserving its Worker, class, binding and
+object identity. It covers both retaining 60/hour with burst 6 and the proposed
+220/hour with burst 24. Each configuration starts with a partially spent
+balance, an exhausted balance, the legacy persisted `-1` balance, and a separate
+fixture with both hot and normal lane buckets populated by actual admissions.
+
+At a frozen clock, upgrade must retain every bucket, queue item and delivery
+record exactly and must not grant a fresh burst. Additional organic admissions
+then reach the candidate's debt floor. Rollback must reopen those same records;
+the old code displays a negative balance as zero and forgives the persisted
+debt on the next admission attempt. An immediate scheduled offer is shed, and
+a different item offered one minute later is admitted under the restored 60/hour
+rate. Rollback therefore restores the old accounting semantics; it does not
+preserve the candidate's debt repayment delay.
+
+The receipt records each case in `upgrade_rollback`, including queue/delivery
+row hashes. This is real workerd/SQLite persistence with synthetic input and a
+controlled clock, not a Cloudflare deployment or approval to raise live rates.
+
+All eight cases passed on AWS Crabbox lease `cbx_36bc5d811d57`, image
+`ami-0461d919be7deb53c`, Node 24.18.1. The
+[compact receipt](upgrade-and-rollback.json) records the source fingerprints
+and [provider run](https://crabbox.openclaw.ai/portal/runs/run_e83abfd93218638403762c9fb6d856af).
+The runtime inputs match `4c1feb68dfd108d752c4a842a8c29ff563b80551`; the harness
+was a proof-only overlay whose SHA-256 is recorded separately.
+
 ## Overload and reconciliation verification
 
 [Compact receipt](overload-and-reconciliation.json) records the corrected
