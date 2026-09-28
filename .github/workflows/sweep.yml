@@ -1033,7 +1033,9 @@ jobs:
                 | select((.key | startswith($prefix)) and (.key | ltrimstr($prefix) | test("^[0-9]{8}-[0-9]{2}$")))
               ][2:][].id' |
             while read -r cache_id; do
-              gh api --method DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${cache_id}" > /dev/null
+              # Concurrent first-of-the-hour runs prune the same entries.
+              gh api --method DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${cache_id}" > /dev/null ||
+                echo "::notice::Target cache entry ${cache_id} was not deleted; another run may have pruned it."
             done
 
       - uses: ./.github/actions/setup-openclaw-codex-source
