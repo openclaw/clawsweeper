@@ -659,7 +659,9 @@ Current defaults:
   24-item burst. Every organic execution consumes the budget first: a new
   queue item, a superseding revision that revokes an active owner, and a
   completion requeue for new review input. Organic debt carries down to minus
-  the burst, so scheduled work only fills what organic work leaves. Within that
+  the burst, so scheduled work only fills what organic work leaves. Organic
+  work itself is never limited: while it runs at or above 220/hour, scheduled
+  admission drops to nearly zero and total load follows organic demand. Within that
   remainder, hot intake is capped at 30 items/hour by
   `EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR` and normal backfill may use the rest
   (190 items/hour of lane rate), so the more frequent hot offers cannot take

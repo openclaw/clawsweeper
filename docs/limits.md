@@ -251,7 +251,13 @@ dispatching or leased owner, and a completion requeue for new review input
 Coalesced updates to an item that is still pending, semantic and delivery
 dedupes, publication work, and retries or deferrals of the same revision do not.
 Organic debt carries on the global bucket down to minus the burst, so scheduled
-work is admitted only after organic executions are repaid. Scheduled work fills
+work is admitted only after organic executions are repaid. The budget bounds
+scheduled work, not organic work: scheduled admission spends only a positive
+balance, while organic work is always admitted and debt beyond minus the burst
+is dropped at the floor. Total executions over time therefore stay within the
+larger of the rate and the organic arrival rate, plus one burst, and scheduled
+work receives almost nothing while organic work runs at or above the rate.
+Scheduled work fills
 the remainder through two lane buckets on top of that global bucket:
 `EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR` caps hot intake (production sets 30),
 and normal backfill receives the total minus hot, so frequent hot offers cannot

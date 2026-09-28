@@ -92,7 +92,8 @@ EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "30000"
 # new item, every superseding revision that revokes an active owner, and every
 # completion requeue for new review input. Organic debt carries (down to minus
 # the burst), so scheduled hot intake and normal backfill only fill what organic
-# work leaves. A 24-item burst (8 hot, 16 normal) bounds a cold-start cohort to
+# work leaves. Organic work is never limited: at or above this rate, scheduled
+# admission stops and total load follows organic demand. A 24-item burst (8 hot, 16 normal) bounds a cold-start cohort to
 # roughly 720 requests. GitHub throttle feedback from review completion still
 # pauses scheduled admission.
 EXACT_REVIEW_TARGET_RATE_PER_HOUR = "220"

@@ -77,6 +77,10 @@
           "text": "hot intake is capped at {{EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR}} items/hour"
         },
         {
+          "document": "docs/scheduler.md",
+          "text": "while it runs at or above {{EXACT_REVIEW_TARGET_RATE_PER_HOUR}}/hour, scheduled admission drops to nearly zero"
+        },
+        {
           "document": "docs/limits.md",
           "text": "caps hot intake (production sets {{EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR}})"
         },

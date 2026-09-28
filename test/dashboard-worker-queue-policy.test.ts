@@ -3931,6 +3931,53 @@ test("organic debt on the global budget is repaid before scheduled backfill resu
   assert.equal((await (await scheduled("debt-repaid", 831)).json()).queued, true);
 });
 
+test("sustained organic load above the rate keeps scheduled admission at zero until it subsides", async (t) => {
+  let clock = Date.parse("2026-09-28T12:00:00Z");
+  t.mock.method(Date, "now", () => clock);
+  const queue = new ExactReviewQueue(
+    { storage: new MemoryDurableStorage() },
+    { EXACT_REVIEW_TARGET_RATE_PER_HOUR: "60", EXACT_REVIEW_TARGET_BURST: "6" },
+  );
+  let item = 900;
+  let scheduledAdmitted = 0;
+  // Two organic executions per minute against a one-per-minute rate for an hour.
+  for (let minute = 0; minute < 60; minute += 1) {
+    if (minute > 0) clock += 60_000;
+    for (let index = 0; index < 2; index += 1) {
+      const organic = await queue.fetch(
+        buildExactReviewQueueRequest(`organic-above-rate-${item}`, item, "opened"),
+      );
+      assert.equal((await organic.json()).queued, true, "organic work is always admitted");
+      item += 1;
+    }
+    const scheduled = await queue.fetch(
+      buildExactReviewQueueRequest(
+        `scheduled-above-rate-${item}`,
+        item,
+        "scheduled_normal_backfill",
+      ),
+    );
+    if ((await scheduled.json()).queued === true) scheduledAdmitted += 1;
+    item += 1;
+  }
+  // Only the initial burst (four normal-lane tokens) may admit scheduled work.
+  assert.ok(scheduledAdmitted <= 4, `scheduled admitted ${scheduledAdmitted}`);
+  assert.equal((await scheduledFeedStats(queue)).token_balance, -6, "debt stops at -burst");
+  for (let minute = 0; minute < 6; minute += 1) {
+    clock += 60_000;
+    const scheduled = await queue.fetch(
+      buildExactReviewQueueRequest(`scheduled-repaying-${item}`, item, "scheduled_normal_backfill"),
+    );
+    assert.equal((await scheduled.json()).shed, true, "debt is repaid before scheduled resumes");
+    item += 1;
+  }
+  clock += 90_000;
+  const resumed = await queue.fetch(
+    buildExactReviewQueueRequest(`scheduled-resumed-${item}`, item, "scheduled_normal_backfill"),
+  );
+  assert.equal((await resumed.json()).queued, true);
+});
+
 test("organic executions debit the global budget; coalesced, replayed, and retried work does not", async (t) => {
   const clock = Date.parse("2026-09-28T12:00:00Z");
   t.mock.method(Date, "now", () => clock);
