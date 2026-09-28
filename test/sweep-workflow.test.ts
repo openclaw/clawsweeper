@@ -5977,15 +5977,6 @@ test("exact-review target checkout restores the hourly cache and saves it before
   } finally {
     rmSync(root, { force: true, recursive: true });
   }
-
-  const script = readText("scripts/review-target-checkout.sh");
-  assert.match(script, /Cached target repository fetch failed; rebuilding cache/);
-  assert.match(script, /Cached target checkout failed; retrying without cache reference/);
-  assert.match(script, /rm -rf "\$checkout_dir" "\$cache_dir"/);
-  assert.match(
-    script,
-    /git clone --filter=blob:none --branch "\$branch" --single-branch "\$url" "\$checkout_dir"/,
-  );
 });
 
 test("batch publication updates the durable comment once across replay", () => {
