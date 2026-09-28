@@ -108,7 +108,9 @@ sends that ETag straight to GitHub. A 304 serves the retained body and records
 replaces both the retained and the durable entry. The retained set is bounded
 (128 entries, 16 MiB) and never answers a read by itself, so freshness barriers
 keep their live GitHub authority while repeated guard reads avoid two Worker
-round trips each.
+round trips each. It also keeps bodies above the 128 KiB durable bound, so a
+large comment thread revalidates with a 304 instead of being downloaded again
+on every guard read.
 
 Issue-comment context hydration reads the complete thread once for its source
 revision and derives the bounded prompt window locally. That complete read also
