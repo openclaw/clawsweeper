@@ -656,7 +656,7 @@ original source. Repeated literals remain eligible unless an entry is bound to
 an approved complete-line digest; those entries require exactly one occurrence
 in the staged blob. Finding order and duplicate records do not change the exact
 value, path, and mode checks.
-Findings must use `PLAIN` or `HTML`, except the Mac dashboard, MCP Apps, marketplace telemetry, and Gateway config entries permit only
+Findings must use `PLAIN` or `HTML`, except the MCP Apps, marketplace telemetry, and Gateway config entries permit only
 their observed `PLAIN` decoder and the two guarded-CDP fixtures also permit `BASE64`.
 The pinned Base64 decoder preserves the rest of a chunk after
 decoding another token, so an unchanged literal can acquire that decoder label

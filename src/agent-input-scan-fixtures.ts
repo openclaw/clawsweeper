@@ -154,7 +154,7 @@ const REVIEWED_FIXTURES: readonly ReviewedFixture[] = [
     fixtureSha256: "97c60d02f5114db97718cfe1c3686c0a36fb5138840611c8793c7abbd9c64f71",
     rawSha256: "43690a8c13d4028ed731bc4dfeb37f83adaa4e5849d2e0fa13f746843adec333",
     lineSha256s: ["87f28bc6a5b0037cfd2ecc94349d5c9bfff572776c25d5e713ae7d83144f5f98"],
-    decoders: ["PLAIN"],
+    decoders: ["PLAIN", "HTML"],
     sources: ["apps/macos/Tests/OpenClawIPCTests/DashboardWindowSmokeTests.swift"],
   },
   {
