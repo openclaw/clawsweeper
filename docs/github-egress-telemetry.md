@@ -87,7 +87,8 @@ configuration revisions are combined before serialization.
 Do not equate a broker hit with a quota saving. `cache_hit` means only that an
 ETag was available for the next live request. The separate
 `cache_304_served` conditional-response row proves that GitHub returned 304 and
-the matching durable body was confirmed. A 304 costs zero REST quota points but
+the matching body was either confirmed by the broker or retained in this process
+from an earlier live validation. A 304 costs zero REST quota points but
 still contributes a normal `wire_attempt`; the broker reduces quota charges,
 not wire requests. `cache_200_stored`, `cache_miss`, and `cache_skip` remain
 separate outcomes so operators can distinguish population, absence, and
