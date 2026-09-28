@@ -31,6 +31,55 @@ export type GithubEtagConfirmResponse = {
   };
 };
 
+/** A body this process already validated for one cache key, with its ETag. */
+export type GithubEtagRetainedResponse = {
+  etag: string;
+  body: string;
+};
+
+export type GithubEtagRetainedResponses = {
+  get: (key: GithubEtagCacheKey) => GithubEtagRetainedResponse | undefined;
+  set: (key: GithubEtagCacheKey, response: GithubEtagRetainedResponse | null) => void;
+};
+
+/**
+ * Bounded same-process memory for durable ETag reads. It only chooses the
+ * If-None-Match value for the next live request: a retained body is served
+ * again only after GitHub answers that request with 304.
+ */
+export function createRetainedGithubEtagResponses(
+  options: { maxEntries?: number; maxBytes?: number } = {},
+): GithubEtagRetainedResponses {
+  const maxEntries = options.maxEntries ?? 128;
+  const maxBytes = options.maxBytes ?? 16 * 1_024 * 1_024;
+  const entries = new Map<string, GithubEtagRetainedResponse & { bytes: number }>();
+  let totalBytes = 0;
+  const remove = (cacheKey: string): void => {
+    const previous = entries.get(cacheKey);
+    if (!previous) return;
+    entries.delete(cacheKey);
+    totalBytes -= previous.bytes;
+  };
+  return {
+    get: (key) => {
+      const entry = entries.get(key.cacheKey);
+      return entry ? { etag: entry.etag, body: entry.body } : undefined;
+    },
+    set: (key, response) => {
+      remove(key.cacheKey);
+      if (!response?.etag || /[\r\n]/.test(response.etag)) return;
+      const bytes = Buffer.byteLength(response.body, "utf8");
+      if (bytes > maxBytes) return;
+      entries.set(key.cacheKey, { etag: response.etag, body: response.body, bytes });
+      totalBytes += bytes;
+      for (const cacheKey of entries.keys()) {
+        if (entries.size <= maxEntries && totalBytes <= maxBytes) break;
+        remove(cacheKey);
+      }
+    },
+  };
+}
+
 export type GithubEtagBrokerEvent =
   | { unit: "broker_lookup"; outcome: "cache_hit" | "cache_miss" | "cache_skip" }
   | {
@@ -55,7 +104,26 @@ export function durableGithubEtagReadSync(options: {
   ) => GithubEtagConfirmResponse;
   githubRequest: (ifNoneMatch?: string) => GithubConditionalResponse;
   record: (event: GithubEtagBrokerEvent) => void;
+  retained?: GithubEtagRetainedResponses | undefined;
 }): string {
+  const retained = options.retained?.get(options.key);
+  if (retained) {
+    // This process already validated this exact body for this ETag, so it
+    // revalidates directly instead of paying two more Worker round trips for a
+    // lookup and confirmation. GitHub still answers every read live, and only
+    // its 304 lets the retained body be served again.
+    const conditional = options.githubRequest(retained.etag);
+    if (conditional.status === 304) {
+      options.record({
+        unit: "conditional_response",
+        outcome: "cache_304_served",
+        status: 304,
+      });
+      return retained.body;
+    }
+    options.retained?.set(options.key, null);
+    return acceptLive200(options, conditional);
+  }
   let lookup: GithubEtagLookupResponse;
   try {
     lookup = options.lookup(options.key);
@@ -86,6 +154,7 @@ export function durableGithubEtagReadSync(options: {
         outcome: "cache_304_served",
         status: 304,
       });
+      options.retained?.set(options.key, { etag: expected.etag, body: confirmed.body });
       return confirmed.body;
     }
   } catch {
@@ -100,6 +169,7 @@ function acceptLive200(
   response: GithubConditionalResponse,
 ): string {
   const body = requireLive200(response);
+  options.retained?.set(options.key, response.etag ? { etag: response.etag, body } : null);
   const bodyBytes = Buffer.byteLength(body, "utf8");
   if (!response.etag && bodyBytes <= GITHUB_ETAG_CACHE_MAX_BODY_BYTES) {
     options.record({ unit: "broker_lookup", outcome: "cache_skip" });
