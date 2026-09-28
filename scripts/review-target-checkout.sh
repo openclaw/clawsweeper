@@ -49,6 +49,19 @@ build_cache() {
     reset_cache_config
 }
 
+refresh_cache() {
+  local previous_head
+  previous_head="$(cache_git rev-parse "refs/heads/$branch")" || return 1
+  # Auto-follow only fills absent tags. Drop cached names so moved/deleted tags
+  # are refreshed too, without --tags fetching unrelated branch histories.
+  cache_git for-each-ref --format='delete %(refname)' refs/tags/ |
+    cache_git update-ref --no-deref --stdin || return 1
+  cache_git fetch --quiet --filter=blob:none origin "+refs/heads/$branch:refs/heads/$branch" &&
+    # After a rewind, old cached objects can make auto-follow include tags no
+    # longer on this branch. A cold rebuild restores single-branch tag scope.
+    cache_git merge-base --is-ancestor "$previous_head" "refs/heads/$branch"
+}
+
 missing_tip_blobs() {
   cache_git rev-list --objects --missing=print "refs/heads/$branch^{tree}" |
     sed -n 's/^?\([0-9a-f]*\).*/\1/p'
@@ -83,8 +96,8 @@ started=$SECONDS
 mode=warm
 if [ -f "$cache_dir/HEAD" ] && [ -d "$cache_dir/objects" ] && reset_cache_config &&
   [ "$(cache_git rev-parse --is-bare-repository 2>/dev/null || true)" = "true" ]; then
-  if ! cache_git fetch --quiet --filter=blob:none origin "+refs/heads/$branch:refs/heads/$branch"; then
-    echo "::warning::Cached target repository fetch failed; rebuilding cache."
+  if ! refresh_cache; then
+    echo "::warning::Cached target repository cannot be refreshed incrementally; rebuilding cache."
     mode=rebuilt
     build_cache
   fi

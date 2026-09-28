@@ -221,8 +221,11 @@ changes roughly 7,800 tip blobs a day, which is why the cache is refreshed hourl
 rather than daily. The checkout keeps the contract of a direct
 `git clone --filter=blob:none --single-branch`: the branch at the current remote
 head, full non-shallow history, branch tags, and a promisor `origin` for lazy
-blob fetches. A failed or partial restore is discarded, a failed cache fetch
-rebuilds the cache, and a failed local clone falls back to a clean clone without
+blob fetches. Cached tag refs are rebuilt through Git's normal tag auto-follow
+on every warm fetch, so deleted or moved tags cannot survive in the checkout.
+A non-fast-forward branch update rebuilds the cache so its old history cannot
+retain tags outside the current branch. A failed or partial restore is discarded,
+a failed cache fetch rebuilds the cache, and a failed local clone falls back to a clean clone without
 saving. The pinned Codex source cache is keyed by the Codex version pinned in the
 target checkout and is saved once per version.
 

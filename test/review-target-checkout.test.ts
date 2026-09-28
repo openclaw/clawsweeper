@@ -175,6 +175,68 @@ test("restored cache hooks and local config never apply", (t) => {
   assert.equal(existsSync(join(fixture.cache, "hooks")), false);
 });
 
+test("warm checkout refreshes deleted and retargeted tags even when the branch does not move", (t) => {
+  const fixture = createFixture(t);
+  const first = git(fixture.remote, ["rev-parse", "HEAD~1"]);
+  git(fixture.remote, ["tag", "-a", "moving", "-m", "original target"]);
+  git(fixture.remote, ["checkout", "--quiet", "-b", "other", first]);
+  commit(fixture.remote, "other.txt", "other\n", "unrelated branch");
+  git(fixture.remote, ["tag", "-a", "other-only", "-m", "unrelated tag"]);
+  git(fixture.remote, ["checkout", "--quiet", "main"]);
+  assert.equal(runCheckout(fixture, "first").status, 0);
+
+  git(fixture.remote, ["tag", "-d", "v1.0.0"]);
+  git(fixture.remote, ["tag", "-f", "-a", "moving", first, "-m", "updated target"]);
+  git(fixture.remote, ["tag", "-a", "new-at-same-head", "-m", "new tag"]);
+  const direct = join(fixture.workspace, "direct");
+  git(fixture.workspace, [
+    "clone",
+    "--quiet",
+    "--filter=blob:none",
+    "--single-branch",
+    "--branch",
+    "main",
+    fixture.url,
+    direct,
+  ]);
+
+  const warm = runCheckout(fixture, "second");
+  assert.equal(warm.status, 0, warm.stderr);
+  assert.match(warm.stdout, /mode=warm /);
+  assertCheckoutAt(fixture, warm.checkout, git(fixture.remote, ["rev-parse", "HEAD"]));
+  const tagRefs = ["for-each-ref", "--format=%(refname) %(objectname)", "refs/tags/"];
+  assert.equal(git(warm.checkout, tagRefs), git(direct, tagRefs));
+  assert.equal(git(warm.checkout, ["tag", "--list"]), "moving\nnew-at-same-head");
+});
+
+test("a rewound branch rebuilds the cache without tags from its old history", (t) => {
+  const fixture = createFixture(t);
+  const first = git(fixture.remote, ["rev-parse", "HEAD~1"]);
+  assert.equal(runCheckout(fixture, "first").status, 0);
+  git(fixture.remote, ["branch", "retained-old-main"]);
+  git(fixture.remote, ["tag", "-a", "old-history", "-m", "old branch tip"]);
+  git(fixture.remote, ["update-ref", "refs/heads/main", first]);
+
+  const direct = join(fixture.workspace, "direct");
+  git(fixture.workspace, [
+    "clone",
+    "--quiet",
+    "--filter=blob:none",
+    "--single-branch",
+    "--branch",
+    "main",
+    fixture.url,
+    direct,
+  ]);
+  const warm = runCheckout(fixture, "second");
+  assert.equal(warm.status, 0, warm.stderr);
+  assert.match(warm.stdout, /mode=rebuilt /);
+  assertCheckoutAt(fixture, warm.checkout, first);
+  const tagRefs = ["for-each-ref", "--format=%(refname) %(objectname)", "refs/tags/"];
+  assert.equal(git(warm.checkout, tagRefs), git(direct, tagRefs));
+  assert.equal(git(warm.checkout, ["tag", "--list"]), "");
+});
+
 function gitShim(fixture: Fixture, failWhenArgument: string): NodeJS.ProcessEnv {
   const bin = join(fixture.root, "bin");
   mkdirSync(bin, { recursive: true });
@@ -195,7 +257,7 @@ test("failed cache update fetch rebuilds the cache", (t) => {
     env: gitShim(fixture, "+refs/heads/main:refs/heads/main"),
   });
   assert.equal(rebuilt.status, 0, rebuilt.stderr);
-  assert.match(rebuilt.stdout, /Cached target repository fetch failed; rebuilding cache/);
+  assert.match(rebuilt.stdout, /Cached target repository cannot be refreshed incrementally/);
   assert.match(rebuilt.stdout, /mode=rebuilt /);
   assert.equal(rebuilt.outputs, "cache_ready=true\n");
   assertCheckoutAt(fixture, rebuilt.checkout, head);
