@@ -14,18 +14,31 @@ scheduled admission.
   superseding revision that revokes a dispatching or leased owner, and a
   completion requeue for new review input. Pending coalesces, dedupes,
   publication work, and same-revision retries are not charged.
-- Organic work is always admitted. It may leave the global bucket up to one
-  burst in debt, and scheduled admission repays that debt before it resumes.
-- Scheduled admission requires a global balance of at least one. It therefore
-  never spends beyond rate + burst.
-- Over the long run, total executions stay at or below the rate.
+- Scheduled admission is bounded. It requires a global balance of at least
+  one, so scheduled work only spends positive balance and never takes more
+  than rate + burst.
+- Organic work is unbounded by design: it is always admitted. It can take the
+  global balance down to minus one burst; debt beyond that floor is dropped,
+  and scheduled admission repays the carried debt before it resumes.
+- Total executions over time therefore stay within max(rate, organic rate) +
+  burst, and scheduled admission receives almost nothing while organic work
+  runs at or above the rate.
 
-A single 60-minute window can therefore exceed rate + burst by the organic
-debt still outstanding at the window's end. The 180/hour organic scenario
-shows this. Its busiest window (minutes 10–70) held 173 organic and 72
-scheduled executions: 245 against a 244 ceiling. The global balance there
-reached −6, and later scheduled offers were shed until the debt was repaid.
-The excess is organic credit, not scheduled overspend.
+A single 60-minute window can exceed rate + burst by the organic debt still
+outstanding at the window's end. The 180/hour organic scenario shows this. Its
+busiest window (minutes 10–70) held 173 organic and 72 scheduled executions:
+245 against a 244 ceiling. The global balance there reached −6, and later
+scheduled offers were shed until the debt was repaid. The excess is organic
+credit, not scheduled overspend.
+
+The organic spike scenario (130, then 300, then 130 new keys per hour) shows the
+unbounded side. During the 300/hour hour, 320 organic executions were admitted
+and scheduled admission fell to 11 (2 hot, 9 normal).
+The global balance sat at the −24 floor, and the busiest window held 321
+organic and 11 scheduled executions. After the spike, the carried debt of up to
+24 executions was repaid at the net ~90/hour left by 130/hour organic, and
+scheduled admission resumed: 62 in the following hour, against 84 before the
+spike.
 
 ## Harness
 
@@ -53,23 +66,31 @@ minute 75.
 
 ```sh
 npm install --prefix /tmp/clawsweeper-proof-tools --no-save --no-audit --no-fund --ignore-scripts wrangler@4.107.0
-node scripts/proof-scheduled-budget.mjs 8d659e7cb903370596e26acea5b81399f291c174 /tmp/clawsweeper-proof-tools .artifacts/scheduled-budget
+node scripts/proof-scheduled-budget.mjs 1b2c262b6bfca5c7c18a9104478e173b2ea0a53c /tmp/clawsweeper-proof-tools .artifacts/scheduled-budget
 ```
+
+The output directory must be a subdirectory of the checkout's `.artifacts/`
+directory. The harness refuses to replace an existing non-empty directory it
+did not create.
 
 Recorded run:
 
 | Field | Value |
 | --- | --- |
-| Base | `8d659e7cb903370596e26acea5b81399f291c174` |
-| Head | `15fcdf6cf07f03c2e4165508ea8284398cde43f8` (clean tree) |
+| Base | `1b2c262b6bfca5c7c18a9104478e173b2ea0a53c` (main, including #1709) |
+| Head | `85d38e6940365498b6482d1d32d33f3744203d93` (clean tree) |
 | Runtime | Node v24.21.0, workerd 1.20260701.1, miniflare 4.20260701.0 |
 | Base cadence | normal `1 * * * *` direct + `41 * * * *` fanout; rate 60, burst 6 |
 | Head cadence | normal `9/20 * * * *` direct + `14/20 * * * *` fanout; rate 220, burst 24, hot 30 |
-| Harness sha256 | `fae5574d3022e4ef85f17adde0e2de6973c50c7f1ff4308a32735a830b1cf671` |
-| `result.json` sha256 | `098b8cfee9b0b519dd254b0638879165061a23d26ad87423e8cbdab3fd6f2e99` |
+| Harness sha256 | `0a0da1fe66baf579900ef9eba663051be7214805b32fbd3b6c1ab5924c7da606` |
+| `result.json` sha256 | `90885f730c400addaeb5c902c20e274cb70632b9fce4a1145b0a4c0a7e12bba6` |
 | Head `dashboard/exact-review-queue.ts` sha256 | `c0dc198d56fd407ac10ed4e42bb3b978b17b1c9d3c3dde8657d26381eea53d0a` |
-| Head `dashboard/wrangler.toml` sha256 | `3fd9c5bb010ba9ce72c4798049d4f135e4b4ed7de5be8b41b718192f053458f3` |
-| Head `.github/workflows/sweep.yml` sha256 | `94ed83e6d589836bce36325b65e8964772b01983960751fec5ed8c65d40cf66e` |
+| Head `dashboard/wrangler.toml` sha256 | `17373ec90e5057679d1bab96d570166d868592b1053904b3633516c1bf8f55d6` |
+| Head `.github/workflows/sweep.yml` sha256 | `33ca5969022cf5b268e7a405db2f535056a2de64c3baa5c81941a44c4e0ebd2e` |
+
+The six scenarios carried over from the previous recorded run (head
+`15fcdf6cf07f`) reproduce identical numbers; the base now includes #1709,
+which does not touch the queue, its configuration, or the cron routing.
 
 ## Observed results
 
@@ -94,6 +115,8 @@ source-drift requeues.
 | Production-like after lane A | head | 99 (36/34/29) + 35 + 77 = 211 | 84 (39/29/16) + 30 + 95 = 209 | 86 (34/24/28) + 30 + 96 = 212 | 227 / 244 | -1 | 31 / 32 |
 | Throttle at minute 75, organic 130/h | base | 142 + 4 + 0 = 146 | 131 + 3 + 0 = 134 | — | 148 / 66 | 0 | 2 / 32 |
 | Throttle at minute 75, organic 130/h | head | 142 + 35 + 49 = 226 | 131 + 28 + 59 = 218 | — | 238 / 244 | -3 | 30 / 32 |
+| Organic spike 130 → 300 → 130/h | base | 142 + 4 + 0 = 146 | 320 + 0 + 0 = 320 | 130 + 0 + 1 = 131 | 321 / 66 | 0 | 2 / 32 |
+| Organic spike 130 → 300 → 130/h | head | 142 + 35 + 49 = 226 | 320 + 2 + 9 = 331 | 130 + 28 + 34 = 192 | 332 / 244 | -24 | 30 / 32 |
 
 The base never charges supersedes or requeues and forgives organic debt on
 read. As a result its rolling totals run well above its own 66-execution
@@ -108,6 +131,9 @@ On the head:
   load and 77–96/hour after lane A.
 - Hot intake stays near its 30/hour cap. The first hour includes the 8-item
   hot burst.
+- During the 300/hour organic spike, per-hour minimum balances were −3, −24
+  and −22. The balance never went below the −24 floor in any scenario (the
+  harness asserts this).
 
 Throttle, on both variants:
 
