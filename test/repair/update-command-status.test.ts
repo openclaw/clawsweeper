@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import {
+  commandReviewLeaseHeadSha,
   exactReviewQueueAuthorityFence,
   mergeCommandProgressSection,
   parseOptions,
@@ -1136,6 +1140,201 @@ test("selectCommandStatusComment does not append progress to Mantis proof commen
 
   assert.equal(selected, null);
 });
+
+test("command review lease head prefers the decision, then the live head, then the marker", () => {
+  const decisionHead = "a".repeat(40);
+  const liveHead = "b".repeat(40);
+  const markerHead = "b0ac90ba938351ad694e975431fead2251cffa70";
+  const marker = `<!-- clawsweeper-command-status:159972:automerge:${markerHead} -->`;
+  const base = { repo: "openclaw/openclaw", itemNumber: 159972, marker };
+  assert.equal(
+    commandReviewLeaseHeadSha({ ...base, sourceHeadSha: decisionHead, liveHeadSha: liveHead }),
+    decisionHead,
+  );
+  const issueRevision = "c".repeat(64);
+  assert.equal(
+    commandReviewLeaseHeadSha({ ...base, sourceRevision: issueRevision }),
+    issueRevision,
+  );
+  assert.equal(commandReviewLeaseHeadSha({ ...base, liveHeadSha: liveHead }), liveHead);
+  // The failing 2026-09-28 automerge runs: empty decision head and source revision.
+  assert.equal(
+    commandReviewLeaseHeadSha({ ...base, sourceHeadSha: "", sourceRevision: "" }),
+    markerHead,
+  );
+  for (const unusable of [
+    `<!-- clawsweeper-command-status:159973:automerge:${markerHead} -->`,
+    "<!-- clawsweeper-command-status:159972:re_review:command-1-abc-" + "d".repeat(64) + " -->",
+    "<!-- clawsweeper-command-status:159972:automerge:na -->",
+    "",
+  ]) {
+    assert.throws(
+      () => commandReviewLeaseHeadSha({ ...base, marker: unusable }),
+      /queue-owned command review lease for openclaw\/openclaw#159972 has no valid head SHA/,
+    );
+  }
+  assert.throws(
+    () => commandReviewLeaseHeadSha({ ...base, sourceHeadSha: "not-a-sha" }),
+    /has no valid head SHA/,
+  );
+});
+
+test("queue-owned command progress leases the marker head when the decision has none", async () => {
+  const markerHead = "b0ac90ba938351ad694e975431fead2251cffa70";
+  const heartbeats: Array<Record<string, unknown>> = [];
+  const server = http.createServer((request, response) => {
+    let body = "";
+    request.on("data", (chunk) => (body += chunk));
+    request.on("end", () => {
+      heartbeats.push({ path: request.url, ...JSON.parse(body || "{}") });
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const queueUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    for (const scenario of ["marker-head", "no-head"] as const) {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-command-lease-head-"));
+      try {
+        const marker =
+          scenario === "marker-head"
+            ? `<!-- clawsweeper-command-status:159972:automerge:${markerHead} -->`
+            : "<!-- clawsweeper-command-status:159972:automerge:na -->";
+        const comment = {
+          id: 5861599003,
+          user: { login: "clawsweeper[bot]" },
+          body: [
+            marker,
+            "Automerge queued.",
+            "<!-- clawsweeper-command-progress:start -->",
+            "- State: Queued",
+            "- Detail: Waiting.",
+            "<!-- clawsweeper-command-progress:end -->",
+          ].join("\n"),
+        };
+        const result = await runQueueOwnedCommandStatus(tmp, marker, comment, {
+          QUEUE_URL: queueUrl,
+          EXACT_REVIEW_SOURCE_HEAD_SHA: "",
+          EXACT_REVIEW_SOURCE_REVISION: "",
+          EXACT_REVIEW_LIVE_HEAD_SHA: "",
+        });
+        if (scenario === "marker-head") {
+          assert.equal(result.status, 0, result.stderr);
+          assert.match(
+            result.patchedBody ?? "",
+            new RegExp(
+              `<!-- clawsweeper-review-status:started item=159972 sha=${markerHead} .* owner=github-run-36365358286-1 v=1 -->\\n<!-- clawsweeper-command-review-lease item=159972 -->$`,
+            ),
+          );
+        } else {
+          assert.notEqual(result.status, 0);
+          assert.match(
+            result.stderr,
+            /queue-owned command review lease for openclaw\/openclaw#159972 has no valid head SHA/,
+          );
+          assert.equal(result.patchedBody, null);
+        }
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    }
+    // The queue fence keeps sending only the decision head, never the fallback.
+    assert.ok(heartbeats.length >= 2);
+    for (const heartbeat of heartbeats) {
+      assert.equal(heartbeat.path, "/internal/exact-review/heartbeat");
+      assert.equal(Object.hasOwn(heartbeat, "source_head_sha"), false);
+    }
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+async function runQueueOwnedCommandStatus(
+  tmp: string,
+  marker: string,
+  comment: { id: number; body: string; user: { login: string } },
+  env: Record<string, string>,
+) {
+  const ghPath = path.join(tmp, "gh.js");
+  const patchPath = path.join(tmp, "patched-comment.json");
+  fs.writeFileSync(
+    ghPath,
+    [
+      "const fs = require('node:fs');",
+      "const args = process.argv.slice(2);",
+      "const comment = JSON.parse(process.env.GH_TEST_STATUS_COMMENT);",
+      "if (args.includes('PATCH')) {",
+      "  const payload = JSON.parse(fs.readFileSync(args[args.indexOf('--input') + 1], 'utf8'));",
+      "  fs.writeFileSync(process.env.GH_TEST_STATUS_PATCH_PATH, JSON.stringify(payload));",
+      "  process.stdout.write(JSON.stringify({ ...comment, body: payload.body }));",
+      "} else if (args.some((arg) => /\\/issues\\/comments\\/\\d+$/.test(arg))) {",
+      "  process.stdout.write(JSON.stringify({ ...comment, issue_url: 'https://api.github.com/repos/openclaw/openclaw/issues/159972' }));",
+      "} else {",
+      "  process.stdout.write(JSON.stringify([[comment]]));",
+      "}",
+    ].join("\n"),
+  );
+  const outputPath = path.join(tmp, "github-output");
+  fs.writeFileSync(outputPath, "");
+  try {
+    await promisify(execFile)(
+      process.execPath,
+      [
+        path.join(process.cwd(), "dist/repair/update-command-status.js"),
+        "--repo",
+        "openclaw/openclaw",
+        "--item-number",
+        "159972",
+        "--marker",
+        marker,
+        "--status-comment-id",
+        String(comment.id),
+        "--state",
+        "Review in progress",
+        "--detail",
+        "The exact-review queue leased this run; Codex is reviewing the item.",
+        "--run-url",
+        "https://github.com/openclaw/clawsweeper/actions/runs/36365358286",
+        "--refuse-terminal-state",
+        "--require-queue-authority-fence",
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GH_BIN: process.execPath,
+          GH_BIN_ARGS: JSON.stringify([ghPath]),
+          GH_TEST_STATUS_COMMENT: JSON.stringify(comment),
+          GH_TEST_STATUS_PATCH_PATH: patchPath,
+          GITHUB_OUTPUT: outputPath,
+          GITHUB_RUN_ID: "36365358286",
+          GITHUB_RUN_ATTEMPT: "1",
+          EXACT_REVIEW_ITEM_KEY: "openclaw/openclaw#159972",
+          EXACT_REVIEW_LEASE_ID: "da809554-2fd4-4cee-baac-1d600f37cf53",
+          EXACT_REVIEW_LEASE_REVISION: "3",
+          EXACT_REVIEW_CLAIM_GENERATION: "1",
+          CLAWSWEEPER_ACTION_LEDGER_DISABLED: "1",
+          ...env,
+        },
+      },
+    );
+    return { status: 0, stderr: "", patchedBody: readPatchedBody(patchPath) };
+  } catch (error) {
+    const failure = error as { code?: number; stderr?: string };
+    return {
+      status: typeof failure.code === "number" ? failure.code : 1,
+      stderr: String(failure.stderr ?? ""),
+      patchedBody: readPatchedBody(patchPath),
+    };
+  }
+}
+
+function readPatchedBody(patchPath: string) {
+  return fs.existsSync(patchPath)
+    ? (JSON.parse(fs.readFileSync(patchPath, "utf8")) as { body: string }).body
+    : null;
+}
 
 test("mergeCommandProgressSection replaces existing progress blocks in place", () => {
   const body = mergeCommandProgressSection(

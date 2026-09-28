@@ -199,11 +199,14 @@ async function updateCommandStatus(options: Options): Promise<CommandStatusUpdat
     const startedAtMs = Date.now();
     return {
       itemNumber: Number(options.itemNumber),
-      headSha: String(
-        process.env.EXACT_REVIEW_SOURCE_HEAD_SHA || process.env.EXACT_REVIEW_SOURCE_REVISION || "",
-      )
-        .trim()
-        .toLowerCase(),
+      headSha: commandReviewLeaseHeadSha({
+        repo: options.repo,
+        itemNumber: Number(options.itemNumber),
+        sourceHeadSha: process.env.EXACT_REVIEW_SOURCE_HEAD_SHA,
+        sourceRevision: process.env.EXACT_REVIEW_SOURCE_REVISION,
+        liveHeadSha: process.env.EXACT_REVIEW_LIVE_HEAD_SHA,
+        marker: options.marker,
+      }),
       owner: `github-run-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`,
       startedAt: new Date(startedAtMs).toISOString(),
       expiresAt: new Date(startedAtMs + COMMAND_REVIEW_LEASE_MS).toISOString(),
@@ -483,6 +486,40 @@ function commandAckComments(comments: LooseRecord[], marker: string, trustedBots
         commandAckMarkerFromBody(comment.body) === marker,
     )
     .sort(compareCommentsByCreatedAt);
+}
+
+// Router-dispatched autofix/automerge commands are enqueued without a source head
+// (the queue binds them to its current authority), so a claimed PR decision may
+// lack sourceHeadSha. The admission live head is what the review later claims the
+// lease against; the command status marker head only covers a failed live read.
+export function commandReviewLeaseHeadSha(input: {
+  repo: string;
+  itemNumber: number;
+  sourceHeadSha?: string | undefined;
+  sourceRevision?: string | undefined;
+  liveHeadSha?: string | undefined;
+  marker?: string | undefined;
+}): string {
+  const normalize = (value: string | undefined) =>
+    String(value ?? "")
+      .trim()
+      .toLowerCase();
+  const markerHead =
+    /^<!--\s*clawsweeper-command-status:(\d+):[^:\s>]+:([0-9a-f]{40})\s*-->$/i.exec(
+      String(input.marker ?? "").trim(),
+    );
+  const headSha =
+    normalize(input.sourceHeadSha) ||
+    normalize(input.sourceRevision) ||
+    normalize(input.liveHeadSha) ||
+    (markerHead && Number(markerHead[1]) === input.itemNumber ? normalize(markerHead[2]) : "");
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(headSha)) {
+    throw new Error(
+      `queue-owned command review lease for ${input.repo}#${input.itemNumber} has no valid head SHA ` +
+        "(checked the claimed decision, the admission live head, and the command status marker)",
+    );
+  }
+  return headSha;
 }
 
 export function mergeCommandProgressSection(
