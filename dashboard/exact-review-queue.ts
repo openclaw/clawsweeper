@@ -2334,6 +2334,8 @@ export class ExactReviewQueue {
               current.state = "pending";
               current.createdAt = now;
               current.parkedReason = undefined;
+              // Revoking an active owner starts another organic execution.
+              if (!decision.publication) this.consumeScheduledReviewCapacitySync(now);
             }
             const mergeable = current.state === "pending" || current.state === "parked";
             const priorParkedRecoveryAt = exactReviewParkedRecoveryAt(current);
@@ -3284,6 +3286,15 @@ export class ExactReviewQueue {
             ? Number(item.publicationFailureAttempts || 0)
             : Number(item.publicationFailureAttempts || 0) + 1
           : 0;
+      // A requeue for new review input is another organic execution; a retry
+      // or deferral of the same input is not charged again.
+      const requeueChargesOrganicExecution =
+        !publicationItem &&
+        !directLifecycleRequeue &&
+        !exactReviewScheduledLane(item.decision) &&
+        (requeueLatest ||
+          (item.revision > Number(item.leaseRevision || 0) &&
+            exactReviewInputIdentityChanged(item.leaseDecision ?? item.decision, item.decision)));
       const completionResult = directLifecycleRequeue
         ? item.revision > leaseRevision
           ? finishExactReviewPublicationQueueItem({
@@ -3418,6 +3429,9 @@ export class ExactReviewQueue {
           : null;
       if (!publicationItem && retryKind === "throttle") {
         this.deferScheduledReviewAdmissionForThrottleSync(now, requestedRetryAt ?? 0);
+      }
+      if (requeueChargesOrganicExecution && completionResult.requeued) {
+        this.consumeScheduledReviewCapacitySync(now);
       }
       // A successful workflow can still request requeue_latest after source
       // drift. That work did not leave its lane, so it must not improve the
@@ -12052,8 +12066,14 @@ export class ExactReviewQueue {
       return { tokens: burst, updatedAt: now, ratePerHour, burst };
     }
     const elapsedMs = Math.max(0, now - updatedAt);
+    // Organic debt on the global bucket (floored at -burst) must be repaid
+    // before scheduled work is admitted; lane buckets never go negative.
+    const floor = lane === "global" ? -burst : 0;
     return {
-      tokens: Math.min(burst, Math.max(0, storedTokens) + (elapsedMs * ratePerHour) / 3_600_000),
+      tokens: Math.min(
+        burst,
+        Math.max(floor, storedTokens) + (elapsedMs * ratePerHour) / 3_600_000,
+      ),
       updatedAt: now,
       ratePerHour,
       burst,
@@ -17151,7 +17171,13 @@ function exactReviewScheduledRatePerHour(env, lane: ExactReviewScheduledBucket) 
     ),
   );
   if (lane === "global") return total;
-  const hot = Math.max(1, Math.floor(total * 0.35));
+  // An explicit hot-intake rate keeps hot churn from taking the remainder that
+  // oldest-first normal backfill needs; unset keeps the 35% share.
+  const configuredHot = String(env.EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR ?? "").trim();
+  const hot =
+    configuredHot && Number.isFinite(Number(configuredHot))
+      ? Math.max(1, Math.min(total - 1, Math.floor(Number(configuredHot))))
+      : Math.max(1, Math.floor(total * 0.35));
   return lane === "hot_intake" ? hot : total - hot;
 }
 

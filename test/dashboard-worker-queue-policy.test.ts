@@ -274,8 +274,9 @@ test("production bounds review demand and preserves canonical publication batche
   assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_MIN_CONCURRENT = "8"/);
   assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_BASE_CONCURRENT = "32"/);
   assert.match(wrangler, /EXACT_REVIEW_PUBLICATION_MAX_CONCURRENT = "32"/);
-  assert.match(wrangler, /EXACT_REVIEW_TARGET_RATE_PER_HOUR = "60"/);
-  assert.match(wrangler, /EXACT_REVIEW_TARGET_BURST = "6"/);
+  assert.match(wrangler, /EXACT_REVIEW_TARGET_RATE_PER_HOUR = "220"/);
+  assert.match(wrangler, /EXACT_REVIEW_TARGET_BURST = "24"/);
+  assert.match(wrangler, /EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR = "30"/);
   assert.match(wrangler, /EXACT_REVIEW_PENDING_SOFT_LIMIT = "600"/);
   assert.match(wrangler, /EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "30000"/);
 });
@@ -3881,6 +3882,152 @@ test("organic reviews consume the global target before scheduled backfill", asyn
     shed: true,
     reason: "scheduled_rate",
   });
+});
+
+async function scheduledFeedStats(queue: ExactReviewQueue) {
+  return (
+    (await (
+      await queue.fetch(new Request("https://clawsweeper-exact-review-queue/stats"))
+    ).json()) as {
+      scheduled_feed: {
+        token_balance: number;
+        burst: number;
+        lanes: Record<
+          string,
+          { target_rate_per_hour: number; burst: number; token_balance: number }
+        >;
+      };
+    }
+  ).scheduled_feed;
+}
+
+test("organic debt on the global budget is repaid before scheduled backfill resumes", async (t) => {
+  let clock = Date.parse("2026-09-28T12:00:00Z");
+  t.mock.method(Date, "now", () => clock);
+  const queue = new ExactReviewQueue(
+    { storage: new MemoryDurableStorage() },
+    { EXACT_REVIEW_TARGET_RATE_PER_HOUR: "60", EXACT_REVIEW_TARGET_BURST: "2" },
+  );
+  for (let index = 0; index < 5; index += 1) {
+    const response = await queue.fetch(
+      buildExactReviewQueueRequest(`organic-debt-${index}`, 820 + index, "opened"),
+    );
+    assert.equal((await response.json()).queued, true, "organic work is always admitted");
+  }
+  const indebted = await scheduledFeedStats(queue);
+  // Five organic debits against a two-token burst stop at the -burst floor.
+  assert.equal(indebted.token_balance, -2);
+  assert.ok(Object.values(indebted.lanes).every((lane) => lane.token_balance >= 0));
+
+  const scheduled = (deliveryId: string, itemNumber: number) =>
+    queue.fetch(buildExactReviewQueueRequest(deliveryId, itemNumber, "scheduled_normal_backfill"));
+  clock += 2 * 60_000; // two tokens refill: the pre-fix clamp would admit here
+  assert.deepEqual(await (await scheduled("debt-still-owed", 830)).json(), {
+    ok: true,
+    shed: true,
+    reason: "scheduled_rate",
+  });
+  clock += 90_000;
+  assert.equal((await (await scheduled("debt-repaid", 831)).json()).queued, true);
+});
+
+test("organic executions debit the global budget; coalesced, replayed, and retried work does not", async (t) => {
+  const clock = Date.parse("2026-09-28T12:00:00Z");
+  t.mock.method(Date, "now", () => clock);
+  const storage = new MemoryDurableStorage();
+  const superseded = leasedExactReviewQueueItem(840, "9840");
+  const retried = leasedExactReviewQueueItem(841, "9841");
+  const drifted = leasedExactReviewQueueItem(842, "9842");
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: Object.fromEntries([superseded, retried, drifted].map((item) => [item.key, item])),
+  });
+  const queue = new ExactReviewQueue(
+    { storage },
+    { EXACT_REVIEW_TARGET_RATE_PER_HOUR: "60", EXACT_REVIEW_TARGET_BURST: "6" },
+  );
+  const balance = async () => (await scheduledFeedStats(queue)).token_balance;
+  const organic = (deliveryId: string, itemNumber: number, sourceAction = "opened") =>
+    queue.fetch(
+      buildExactReviewQueueRequest(
+        deliveryId,
+        itemNumber,
+        sourceAction,
+        "issue",
+        "openclaw/openclaw",
+        {
+          supersedesInProgress: sourceAction === "edited",
+        },
+      ),
+    );
+  const complete = (item: ReturnType<typeof leasedExactReviewQueueItem>, extra: object) =>
+    queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/complete", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: item.leaseId,
+          item_key: item.key,
+          lease_revision: 1,
+          claim_generation: 1,
+          run_id: item.claimedRunId,
+          run_attempt: 1,
+          ...extra,
+        }),
+      }),
+    );
+
+  assert.equal(await balance(), 6);
+  assert.equal((await (await organic("new-key", 843)).json()).queued, true);
+  assert.equal(await balance(), 5, "a new key is one execution");
+  await organic("pending-coalesce", 843, "edited");
+  await organic("new-key", 843);
+  assert.equal(await balance(), 5, "pending coalesce and delivery replay add no execution");
+
+  await organic("supersede-owner", 840, "edited");
+  const state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { state: string; revision: number; leaseId?: string }>;
+  };
+  assert.equal(state.items[superseded.key].state, "pending");
+  assert.equal(state.items[superseded.key].leaseId, undefined);
+  assert.equal(await balance(), 4, "revoking an active owner starts another execution");
+
+  assert.equal((await complete(retried, { outcome: "failure" })).status, 200);
+  assert.equal(await balance(), 4, "a same-revision retry is not charged again");
+  assert.equal((await complete(drifted, { outcome: "success", requeue_latest: true })).status, 200);
+  assert.equal(await balance(), 3, "a requeue for new review input is another execution");
+
+  const scheduledState = (await storage.get("exact-review-queue")) as {
+    items: Record<string, { state: string }>;
+  };
+  assert.equal(scheduledState.items[retried.key].state, "pending");
+  assert.equal(scheduledState.items[drifted.key].state, "pending");
+});
+
+test("an explicit hot-intake rate leaves the scheduled remainder to normal backfill", async () => {
+  const wrangler = fs.readFileSync("dashboard/wrangler.toml", "utf8");
+  const production = Object.fromEntries(
+    [
+      "EXACT_REVIEW_TARGET_RATE_PER_HOUR",
+      "EXACT_REVIEW_TARGET_BURST",
+      "EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR",
+    ].map((name) => [name, new RegExp(`^${name} = "([^"]+)"$`, "m").exec(wrangler)?.[1]]),
+  );
+  const lanes = async (env: Record<string, string | undefined>) =>
+    (await scheduledFeedStats(new ExactReviewQueue({ storage: new MemoryDurableStorage() }, env)))
+      .lanes;
+  assert.deepEqual(await lanes(production), {
+    hot_intake: { target_rate_per_hour: 30, burst: 8, token_balance: 8 },
+    normal_backfill: { target_rate_per_hour: 190, burst: 16, token_balance: 16 },
+  });
+  const { EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR: _hot, ...unset } = production;
+  for (const hot of [undefined, "", "not-a-rate"]) {
+    const derived = await lanes({ ...unset, EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR: hot });
+    assert.equal(derived.hot_intake.target_rate_per_hour, 77, "unset keeps the 35% share");
+    assert.equal(derived.normal_backfill.target_rate_per_hour, 143);
+  }
+  const clamped = await lanes({ ...production, EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR: "999" });
+  assert.equal(clamped.hot_intake.target_rate_per_hour, 219);
+  assert.equal(clamped.normal_backfill.target_rate_per_hour, 1);
 });
 
 test("scheduled review feed dedupes untouched queued items without superseding them", async () => {
