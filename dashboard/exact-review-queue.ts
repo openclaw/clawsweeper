@@ -2334,7 +2334,7 @@ export class ExactReviewQueue {
               current.state = "pending";
               current.createdAt = now;
               current.parkedReason = undefined;
-              // Revoking an active owner starts another organic execution.
+              // Replacing an active owner admits another organic input.
               if (!decision.publication) this.consumeScheduledReviewCapacitySync(now);
             }
             const mergeable = current.state === "pending" || current.state === "parked";
@@ -3286,15 +3286,9 @@ export class ExactReviewQueue {
             ? Number(item.publicationFailureAttempts || 0)
             : Number(item.publicationFailureAttempts || 0) + 1
           : 0;
-      // A requeue for new review input is another organic execution; a retry
-      // or deferral of the same input is not charged again.
+      // Capture the input identity before finishing clears the lease decision.
       const requeueChargesOrganicExecution =
-        !publicationItem &&
-        !directLifecycleRequeue &&
-        !exactReviewScheduledLane(item.decision) &&
-        (requeueLatest ||
-          (item.revision > Number(item.leaseRevision || 0) &&
-            exactReviewInputIdentityChanged(item.leaseDecision ?? item.decision, item.decision)));
+        !directLifecycleRequeue && exactReviewRequeueNeedsBudgetDebit(item, requeueLatest);
       const completionResult = directLifecycleRequeue
         ? item.revision > leaseRevision
           ? finishExactReviewPublicationQueueItem({
@@ -4645,6 +4639,8 @@ export class ExactReviewQueue {
             observedAt: now,
           });
         }
+        const requeueNeedsBudgetDebit =
+          !owedDirectLifecycleRequeue && exactReviewRequeueNeedsBudgetDebit(item);
         const { requeued: didRequeue, parked } = owedDirectLifecycleRequeue
           ? this.requeueDirectLifecyclePublicationSync(state, item, now)
           : finishExactReviewQueueItem(
@@ -4662,6 +4658,7 @@ export class ExactReviewQueue {
         reconciled += 1;
         if (parked) continue;
         if (didRequeue) {
+          if (requeueNeedsBudgetDebit) this.consumeScheduledReviewCapacitySync(now);
           requeued += 1;
           if (!exactReviewQueueIsPublication(item) && run.outcome !== "success") {
             retriedReviews += 1;
@@ -15639,6 +15636,16 @@ function exactReviewInputIdentityChanged(
     stableJson(exactReviewProofAllowedScenarios(priorDecision)) !==
       stableJson(exactReviewProofAllowedScenarios(nextDecision)) ||
     commandIdentity(priorDecision) !== commandIdentity(nextDecision)
+  );
+}
+
+function exactReviewRequeueNeedsBudgetDebit(item: ExactReviewQueueItem, requeueLatest = false) {
+  return (
+    !exactReviewQueueIsPublication(item) &&
+    !exactReviewScheduledLane(item.decision) &&
+    (requeueLatest ||
+      (item.revision > Number(item.leaseRevision || 0) &&
+        exactReviewInputIdentityChanged(item.leaseDecision ?? item.decision, item.decision)))
   );
 }
 

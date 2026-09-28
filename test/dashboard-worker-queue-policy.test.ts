@@ -4050,6 +4050,67 @@ test("organic executions debit the global budget; coalesced, replayed, and retri
   assert.equal(scheduledState.items[drifted.key].state, "pending");
 });
 
+test("completion and reconciliation charge a changed-input successor once", async (t) => {
+  t.mock.method(Date, "now", () => Date.parse("2026-09-28T12:00:00Z"));
+  for (const route of ["complete", "reconcile"] as const) {
+    for (const scenario of ["new-input", "same-input", "scheduled"] as const) {
+      const storage = new MemoryDurableStorage();
+      const item = leasedExactReviewQueueItem(849, "9849");
+      if (scenario !== "same-input") {
+        item.revision = 2;
+        item.decision.sourceAction =
+          scenario === "scheduled" ? "scheduled_normal_backfill" : "edited";
+      }
+      await storage.put("exact-review-queue", {
+        deliveries: {},
+        items: { [item.key]: item },
+      });
+      const queue = new ExactReviewQueue(
+        { storage },
+        {
+          EXACT_REVIEW_TARGET_RATE_PER_HOUR: "60",
+          EXACT_REVIEW_TARGET_BURST: "6",
+        },
+      );
+      const balance = async () => (await scheduledFeedStats(queue)).token_balance;
+      const run = {
+        run_id: "9849",
+        run_attempt: 1,
+        claimed_run_attempt: 1,
+        claim_generation: 1,
+        outcome: "success",
+      };
+      const finish = () =>
+        queue.fetch(
+          new Request(`https://clawsweeper-exact-review-queue/${route}`, {
+            method: "POST",
+            body: JSON.stringify(
+              route === "reconcile"
+                ? { runs: [run] }
+                : {
+                    ...run,
+                    lease_id: "lease-849",
+                    item_key: item.key,
+                    lease_revision: 1,
+                  },
+            ),
+          }),
+        );
+      assert.equal(await balance(), 6);
+      const response = await finish();
+      assert.equal(response.status, 200, `${route}/${scenario}`);
+      const result = await response.json();
+      if (scenario !== "same-input") assert.ok(result.requeued);
+      const expected = scenario === "new-input" ? 5 : 6;
+      assert.equal(await balance(), expected, `${route}/${scenario}`);
+      const replay = await finish();
+      if (route === "reconcile") assert.equal((await replay.json()).reconciled, 0);
+      else assert.equal(replay.status, 409);
+      assert.equal(await balance(), expected, `${route}/${scenario} replay`);
+    }
+  }
+});
+
 test("an explicit hot-intake rate leaves the scheduled remainder to normal backfill", async () => {
   const wrangler = fs.readFileSync("dashboard/wrangler.toml", "utf8");
   const production = Object.fromEntries(

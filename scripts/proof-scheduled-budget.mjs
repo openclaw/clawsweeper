@@ -1,8 +1,7 @@
-// Simulated-hour proof for the shared exact-review execution budget.
-// Usage: node scripts/proof-scheduled-budget.mjs BASE_REF TOOL_PREFIX OUTPUT_DIR
+// Simulated-hour proof for scheduled admission with bounded organic debt.
+// Usage: node scripts/proof-scheduled-budget.mjs BASE_REF TOOL_PREFIX FRESH_OUTPUT_DIR
 // TOOL_PREFIX must contain miniflare and esbuild (for example wrangler@4.107.0).
-// OUTPUT_DIR must be a subdirectory of the checkout's .artifacts/ directory; an
-// existing non-empty directory is replaced only if this harness created it.
+// FRESH_OUTPUT_DIR must not already exist; the harness never removes caller data.
 // Drives the real ExactReviewQueue Durable Object (workerd + SQLite) with a fake
 // clock: organic new items, superseding revisions and requeue_latest
 // completions, scheduled hot/normal offers at each revision's cron cadence,
@@ -10,43 +9,21 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, generateKeyPairSync } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { createRequire } from "node:module";
 import path from "node:path";
 
 const [baseRef, toolPrefix, output] = process.argv.slice(2);
-assert.ok(baseRef && toolPrefix && output, "expected BASE_REF TOOL_PREFIX OUTPUT_DIR");
-const OUTPUT_MARKER = ".proof-scheduled-budget-output";
+assert.ok(baseRef && toolPrefix && output, "expected BASE_REF TOOL_PREFIX FRESH_OUTPUT_DIR");
 const root = process.cwd();
-// The output directory is recursively replaced, so validate it before any
-// tooling loads: it must sit strictly inside .artifacts/, and an existing
-// non-empty directory must carry this harness's marker.
-const out = proofOutputDirectory(root, output);
+const out = path.resolve(output);
+mkdirSync(path.dirname(out), { recursive: true });
+// Exclusive creation refuses existing directories, files and symlinks.
+mkdirSync(out);
 const require = createRequire(path.resolve(toolPrefix, "package.json"));
 const { Miniflare } = require("miniflare");
 const { build } = require("esbuild");
-rmSync(out, { recursive: true, force: true });
-mkdirSync(out, { recursive: true });
-writeFileSync(path.join(out, OUTPUT_MARKER), "created by scripts/proof-scheduled-budget.mjs\n");
-
-function proofOutputDirectory(rootDirectory, requested) {
-  const artifacts = path.resolve(rootDirectory, ".artifacts");
-  const resolved = path.resolve(rootDirectory, requested);
-  const relative = path.relative(artifacts, resolved);
-  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new Error(`output directory must be inside ${artifacts}${path.sep}: ${resolved}`);
-  }
-  if (existsSync(resolved)) {
-    const entries = readdirSync(resolved);
-    if (entries.length > 0 && !entries.includes(OUTPUT_MARKER)) {
-      throw new Error(
-        `refusing to replace non-empty ${resolved}: it was not created by this harness`,
-      );
-    }
-  }
-  return resolved;
-}
 const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();
 
 const T0 = Date.parse("2030-01-01T00:00:00Z");
@@ -61,7 +38,7 @@ const HOT_FANOUT_OFFER_CANDIDATES = 20;
 const NORMAL_FANOUT_OFFER_CANDIDATES = 50;
 const CLAIM_LATENCY = MINUTE;
 const THROTTLE_COOLDOWN = 15 * MINUTE;
-// Organic executions/hour split into new keys, superseding revisions of an
+// Organic admissions/hour split into new keys, superseding revisions of an
 // active owner, and completion requeues (requeue_latest). The requeue share is
 // realized as a per-completion probability, so measured counts are reported.
 const mix = (name, hours, newPerHour, supersedePerHour, requeuePerHour, extra = {}) => ({
@@ -91,6 +68,8 @@ const ALL_SCENARIOS = [
     newPerHourByHour: [130, 300, 130],
     target: { new: [130, 300, 130], supersede: 0, requeue: 0 },
   }),
+  mix("organic_400_above_target", 3, 400, 0, 0),
+  mix("organic_spike_then_recovery", 3, 0, 0, 0, { spikeAtMinute: 20, spikeCount: 400 }),
 ];
 // Optional comma-separated scenario filter for quick local iteration.
 const SCENARIOS = process.env.PROOF_SCENARIOS
@@ -201,6 +180,9 @@ function plannedEvents(cadence, scenario) {
     assert.equal(scenario.newPerHourByHour.length, scenario.hours);
     hourlyPoisson(events, "organic", scenario.newPerHourByHour, 0xc1a55e + scenario.newPerHour);
   } else poisson(events, "organic", scenario.newPerHour, horizon, 0xc1a55e + scenario.newPerHour);
+  for (let index = 0; index < (scenario.spikeCount ?? 0); index++) {
+    events.push({ at: T0 + scenario.spikeAtMinute * MINUTE, kind: "organic" });
+  }
   poisson(events, "supersede", scenario.supersedePerHour, horizon, 0x5e7e + scenario.newPerHour);
   const offers = [
     [cadence.hotDirect, "hot_intake", "direct", DIRECT_PLANNER_LATENCY, DIRECT_OFFER_CANDIDATES],
@@ -282,7 +264,7 @@ const address = `127.0.0.1:${server.address().port}`;
 
 const receipt = {
   claim:
-    "Organic-first shared execution budget: per-hour organic/hot/normal executions, rolling 60-minute maximum, shed counts, organic admission, scheduled concurrency, and throttle pause for origin/main versus this branch.",
+    "Scheduled admission with bounded organic debt: per-hour admissions and new-input successors, actual dispatch counts, rolling admission totals, organic overload, and throttle pause for origin/main versus this branch.",
   base: git("rev-parse", baseRef),
   head: git("rev-parse", "HEAD"),
   working_tree_dirty: Boolean(git("status", "--porcelain", "--", ...FILES)),
@@ -308,7 +290,7 @@ const receipt = {
     review_minutes: "uniform 4-10 (mean 7) per execution",
     alarms:
       "delivered at the queue's own requested wake time (min 1 s apart); stats sampled each simulated minute",
-    execution:
+    admission:
       "organic new key admitted, supersede admitted, requeue_latest completion requeued, or scheduled item admitted",
   },
   variants: {},
@@ -406,6 +388,13 @@ export default { fetch(request, env) { return env.QUEUE.get(env.QUEUE.idFromName
         await mf.dispose();
       }
     }
+    const reconciliation = startMiniflare();
+    try {
+      await reconciliation.ready;
+      result.reconciliation = await proveReconciliationDebit(reconciliation, variant);
+    } finally {
+      await reconciliation.dispose();
+    }
     receipt.variants[variant] = result;
   }
   assert.deepEqual(unexpected, [], "unexpected external fixture route");
@@ -416,6 +405,73 @@ export default { fetch(request, env) { return env.QUEUE.get(env.QUEUE.idFromName
 } finally {
   server.closeAllConnections();
   await new Promise((resolve) => server.close(resolve));
+}
+
+async function proveReconciliationDebit(mf, variant) {
+  dispatches = [];
+  let now = T0;
+  const call = async (op, body) => {
+    const response = await mf.dispatchFetch(`http://proof/reconciliation/${op}`, {
+      method: body ? "POST" : "GET",
+      headers: { "x-proof-now": String(now), "content-type": "application/json" },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    const value = await response.json();
+    assert.ok(response.ok, `${op}: ${JSON.stringify(value)}`);
+    return value;
+  };
+  const decision = {
+    targetRepo: "openclaw/openclaw",
+    targetBranch: "main",
+    itemNumber: 991013,
+    itemKind: "issue",
+    sourceEvent: "issues",
+    sourceAction: "opened",
+    supersedesInProgress: false,
+  };
+  assert.equal((await call("enqueue", { delivery_id: "reconcile-open", decision })).queued, true);
+  now += 90_000;
+  await call("__tick");
+  assert.equal(dispatches.length, 1);
+  const dispatch = dispatches[0];
+  const claim = await call("claim", {
+    item_key: dispatch.queue_claim.item_key,
+    lease_id: dispatch.queue_lease_id,
+    lease_revision: dispatch.queue_claim.lease_revision,
+    run_id: "1999913",
+    run_attempt: 1,
+  });
+  assert.equal(claim.claimed, true);
+  assert.equal(
+    (
+      await call("enqueue", {
+        delivery_id: "reconcile-edit",
+        decision: { ...decision, sourceAction: "edited" },
+      })
+    ).queued,
+    true,
+  );
+  const before = (await call("stats")).scheduled_feed.token_balance;
+  const runs = [
+    {
+      run_id: "1999913",
+      run_attempt: 1,
+      claimed_run_attempt: 1,
+      claim_generation: claim.claim_generation,
+      outcome: "success",
+    },
+  ];
+  assert.equal((await call("reconcile", { runs })).requeued, 1);
+  const after = (await call("stats")).scheduled_feed.token_balance;
+  assert.equal(before - after, variant === "candidate" ? 1 : 0);
+  assert.equal((await call("reconcile", { runs })).reconciled, 0);
+  assert.equal((await call("stats")).scheduled_feed.token_balance, after);
+  return {
+    balance_before: before,
+    balance_after: after,
+    successor_debits: before - after,
+    replay_debits: 0,
+  };
 }
 
 async function runScenario(mf, scenario, cadence, vars) {
@@ -434,7 +490,7 @@ async function runScenario(mf, scenario, cadence, vars) {
     completed: 0,
     min_token_balance: null,
   }));
-  const executions = [];
+  const admissions = [];
   const admittedAt = new Map();
   const dispatchDelay = { organic: [], scheduled: [] };
   const active = new Map(); // organic item number -> current lease id
@@ -518,7 +574,7 @@ async function runScenario(mf, scenario, cadence, vars) {
       });
       assert.equal(body.queued, true, `organic new item was not admitted: ${JSON.stringify(body)}`);
       bucket.organic.new++;
-      executions.push({ at: event.at, kind: "organic" });
+      admissions.push({ at: event.at, kind: "organic" });
       admittedAt.set(itemNumber, event.at);
       if (inThrottle(event.at)) throttle.organic_admitted_while_paused++;
     } else if (event.kind === "supersede") {
@@ -537,7 +593,7 @@ async function runScenario(mf, scenario, cadence, vars) {
       revokedLeases.add(active.get(itemNumber));
       active.delete(itemNumber);
       bucket.organic.supersede++;
-      executions.push({ at: event.at, kind: "organic" });
+      admissions.push({ at: event.at, kind: "organic" });
       admittedAt.set(itemNumber, event.at);
       if (inThrottle(event.at)) throttle.organic_admitted_while_paused++;
     } else if (event.kind === "offer") {
@@ -560,7 +616,7 @@ async function runScenario(mf, scenario, cadence, vars) {
         });
         if (body.queued === true) {
           bucket.scheduled[event.lane]++;
-          executions.push({ at: event.at, kind: "scheduled" });
+          admissions.push({ at: event.at, kind: "scheduled" });
           admittedAt.set(itemNumber, event.at);
           if (inThrottle(event.at)) throttle.scheduled_admitted_while_paused++;
           if (throttle && event.at >= throttle.until && event.at < throttle.until + 30 * MINUTE)
@@ -635,9 +691,9 @@ async function runScenario(mf, scenario, cadence, vars) {
       bucket.completed++;
       if (organic && active.get(event.itemNumber) === event.leaseId)
         active.delete(event.itemNumber);
-      if (requeue) {
+      if (requeue && body.requeued === true) {
         bucket.organic.requeue++;
-        executions.push({ at: event.at, kind: "organic" });
+        admissions.push({ at: event.at, kind: "organic" });
         admittedAt.set(event.itemNumber, event.at);
       }
       if (throttleNow) {
@@ -656,34 +712,34 @@ async function runScenario(mf, scenario, cadence, vars) {
       }
     }
   }
-  executions.sort((left, right) => left.at - right.at);
-  let maxRollingHourExecutions = 0;
+  admissions.sort((left, right) => left.at - right.at);
+  let maxRollingHourAdmissions = 0;
   let maxWindow = null;
-  for (let start = 0, end = 0; end < executions.length; end++) {
-    while (executions[end].at - executions[start].at >= HOUR) start++;
-    if (end - start + 1 > maxRollingHourExecutions) {
-      maxRollingHourExecutions = end - start + 1;
-      const window = executions.slice(start, end + 1);
+  for (let start = 0, end = 0; end < admissions.length; end++) {
+    while (admissions[end].at - admissions[start].at >= HOUR) start++;
+    if (end - start + 1 > maxRollingHourAdmissions) {
+      maxRollingHourAdmissions = end - start + 1;
+      const window = admissions.slice(start, end + 1);
       maxWindow = {
-        start_minute: (executions[start].at - T0) / MINUTE,
-        end_minute: (executions[end].at - T0) / MINUTE,
-        organic: window.filter((execution) => execution.kind === "organic").length,
-        scheduled: window.filter((execution) => execution.kind === "scheduled").length,
+        start_minute: (admissions[start].at - T0) / MINUTE,
+        end_minute: (admissions[end].at - T0) / MINUTE,
+        organic: window.filter((admission) => admission.kind === "organic").length,
+        scheduled: window.filter((admission) => admission.kind === "scheduled").length,
       };
     }
   }
   const perHour = hours.map((hour) => {
     const organic = hour.organic.new + hour.organic.supersede + hour.organic.requeue;
     const scheduled = hour.scheduled.hot_intake + hour.scheduled.normal_backfill;
-    return { ...hour, organic_total: organic, total_executions: organic + scheduled };
+    return { ...hour, organic_total: organic, total_admissions: organic + scheduled };
   });
   const report = {
     target_organic_per_hour: scenario.target,
     requeue_probability: Number(scenario.requeueProbability.toFixed(4)),
     hours: perHour,
-    max_rolling_hour_executions: maxRollingHourExecutions,
+    max_rolling_hour_admissions: maxRollingHourAdmissions,
     max_rolling_hour_window: maxWindow,
-    budget_ceiling_rate_plus_burst: rate + burst,
+    scheduled_allowance_rate_plus_burst: rate + burst,
     min_global_token_balance: minTokenBalance,
     max_scheduled_active: maxScheduledActive,
     scheduled_cap: Number(vars.EXACT_REVIEW_SCHEDULED_MAX_CONCURRENT),
@@ -716,6 +772,22 @@ async function runScenario(mf, scenario, cadence, vars) {
     assert.equal(hour.organic.new, hour.organic_attempted.new, "organic new items always admitted");
     assert.equal(hour.organic.supersede, hour.organic_attempted.supersede);
   }
+  if (scenario.newPerHour > rate) {
+    assert.ok(
+      perHour.reduce((sum, hour) => sum + hour.total_admissions, 0) > rate * scenario.hours + burst,
+      "unconditional organic admission is not a total-work cap",
+    );
+  }
+  if (scenario.spikeCount) {
+    const spikeAt = T0 + scenario.spikeAtMinute * MINUTE;
+    const recovery = admissions.find((entry) => entry.kind === "scheduled" && entry.at > spikeAt);
+    assert.ok(maxRollingHourAdmissions > rate + burst, "organic spike exceeds the allowance");
+    assert.ok(recovery && recovery.at < spikeAt + HOUR, "bounded debt permits same-hour recovery");
+    report.spike_recovery = {
+      organic_admissions: scenario.spikeCount,
+      first_scheduled_admission_minute: (recovery.at - T0) / MINUTE,
+    };
+  }
   if (scenario.throttleAtMinute !== undefined) {
     assert.ok(throttle, "throttle completion was not observed");
     assert.equal(
@@ -738,10 +810,11 @@ function summary(receiptValue) {
       rows[`${variant}/${name}`] = {
         hours: scenario.hours.map(
           (hour) =>
-            `organic ${hour.organic_total} (new ${hour.organic.new}, supersede ${hour.organic.supersede}, requeue ${hour.organic.requeue}) + hot ${hour.scheduled.hot_intake} + normal ${hour.scheduled.normal_backfill} = ${hour.total_executions}; shed ${hour.shed.scheduled_rate}; min balance ${hour.min_token_balance}`,
+            `organic ${hour.organic_total} (new ${hour.organic.new}, supersede ${hour.organic.supersede}, requeue ${hour.organic.requeue}) + hot ${hour.scheduled.hot_intake} + normal ${hour.scheduled.normal_backfill} = ${hour.total_admissions} admissions; dispatched organic ${hour.dispatched.organic} + scheduled ${hour.dispatched.scheduled}; shed ${hour.shed.scheduled_rate}; min balance ${hour.min_token_balance}`,
         ),
-        max_rolling_hour_executions: scenario.max_rolling_hour_executions,
-        ceiling: scenario.budget_ceiling_rate_plus_burst,
+        max_rolling_hour_admissions: scenario.max_rolling_hour_admissions,
+        scheduled_allowance: scenario.scheduled_allowance_rate_plus_burst,
+        ...(scenario.spike_recovery ? { spike_recovery: scenario.spike_recovery } : {}),
         max_scheduled_active: scenario.max_scheduled_active,
         ...(scenario.throttle
           ? {

@@ -1,8 +1,7 @@
 # Scheduled review budget proof
 
-Claim: the exact-review queue charges every organic review execution against
-one organic-first budget, so scheduled hot intake and normal backfill fill only
-what organic work leaves. With production values of 220 executions/hour, a
+Claim: the exact-review queue debits organic admissions and new-input successors
+against the scheduled admission budget. With the proposed values of 220 admissions/hour, a
 24-item burst, hot intake capped at 30/hour, and `openclaw/openclaw` normal
 backfill offered every 20 minutes, oldest-first backfill gets its share.
 Organic admission stays at 100%, and GitHub throttle feedback still pauses
@@ -10,35 +9,27 @@ scheduled admission.
 
 ## Budget contract
 
-- Every organic execution debits the global bucket: a new queue item, a
+- Every organic admission debits the global bucket: a new queue item, a
   superseding revision that revokes a dispatching or leased owner, and a
-  completion requeue for new review input. Pending coalesces, dedupes,
+  completion or reconciliation requeue for new review input. Pending coalesces, dedupes,
   publication work, and same-revision retries are not charged.
-- Scheduled admission is bounded. It requires a global balance of at least
-  one, so scheduled work only spends positive balance and never takes more
-  than rate + burst.
-- Organic work is unbounded by design: it is always admitted. It can take the
-  global balance down to minus one burst; debt beyond that floor is dropped,
-  and scheduled admission repays the carried debt before it resumes.
-- Total executions over time therefore stay within max(rate, organic rate) +
-  burst, and scheduled admission receives almost nothing while organic work
-  runs at or above the rate.
+- Organic work is always admitted. It may leave the global bucket up to one
+  burst in debt, and scheduled admission repays that debt before it resumes.
+- Scheduled admission requires a global balance of at least one. Scheduled work
+  alone is bounded by the refill rate plus the initial burst.
+- This is **not a total-work or spend cap**. Organic admission is unconditional,
+  and debt stops at `-burst`; further organic debits at that floor are forgotten.
+  Sustained organic load can exceed the target indefinitely, and scheduled work
+  can resume once bounded debt refills even if an earlier spike remains in the hour.
 
-A single 60-minute window can exceed rate + burst by the organic debt still
-outstanding at the window's end. The 180/hour organic scenario shows this. Its
-busiest window (minutes 10–70) held 173 organic and 72 scheduled executions:
-245 against a 244 ceiling. The global balance there reached −6, and later
-scheduled offers were shed until the debt was repaid. The excess is organic
-credit, not scheduled overspend.
+The original 180/hour scenario already exceeds the 244 scheduled allowance:
+its busiest window held 173 organic and 72 scheduled admissions. That example
+does not bound larger organic spikes. The harness now also exercises sustained
+400/hour organic load and a concentrated 400-item spike followed by recovery.
 
-The organic spike scenario (130, then 300, then 130 new keys per hour) shows the
-unbounded side. During the 300/hour hour, 320 organic executions were admitted
-and scheduled admission fell to 11 (2 hot, 9 normal).
-The global balance sat at the −24 floor, and the busiest window held 321
-organic and 11 scheduled executions. After the spike, the carried debt of up to
-24 executions was repaid at the net ~90/hour left by 130/hour organic, and
-scheduled admission resumed: 62 in the following hour, against 84 before the
-spike.
+The reported unit is admissions and new-input successors, not executed model
+calls. Admitted work may be superseded before dispatch, and same-input retries
+are not charged again. Actual dispatch counts are reported separately.
 
 ## Harness
 
@@ -69,15 +60,62 @@ npm install --prefix /tmp/clawsweeper-proof-tools --no-save --no-audit --no-fund
 node scripts/proof-scheduled-budget.mjs 1b2c262b6bfca5c7c18a9104478e173b2ea0a53c /tmp/clawsweeper-proof-tools .artifacts/scheduled-budget
 ```
 
-The output directory must be a subdirectory of the checkout's `.artifacts/`
-directory. The harness refuses to replace an existing non-empty directory it
-did not create.
+Choose an unused output directory. Existing directories, files and symlinks
+are refused without removing their contents.
 
-Recorded run:
+## Overload and reconciliation verification
+
+[Compact receipt](overload-and-reconciliation.json) records the corrected
+source hashes, configuration, actual dispatch counts, and limits. This is
+controlled validation of the proposed 220/24 settings, not rollout approval.
+The receipt predates integration of the subsequent author and main updates;
+https://github.com/openclaw/clawsweeper/pull/1710 carries current-candidate
+validation separately. These source hashes describe the recorded run.
+
+The run used AWS Crabbox lease `cbx_908d6c2293ca`, image
+`ami-0461d919be7deb53c`, Node 24.18.1, workerd 1.20260701.1 and Miniflare
+4.20260701.0, against base `c1a83a00a73a800f45ff67ef5c7677ba4f17a8da`.
+Candidate source was an uncommitted overlay on `d013ad8f3c6d`; the receipt's
+source fingerprints identify the executed files.
+
+```sh
+PROOF_SCENARIOS=organic_400_above_target,organic_spike_then_recovery,throttle_organic_130 \
+  node scripts/proof-scheduled-budget.mjs c1a83a00a73a800f45ff67ef5c7677ba4f17a8da \
+  /tmp/clawsweeper-proof-tools .artifacts/budget-triage-proof-1
+```
+
+| Observation | Baseline | Candidate |
+| --- | --- | --- |
+| Sustained organic load: admissions in three hours | 411, 402, 365 | 417, 402, 365 |
+| Sustained load: largest rolling hour | 417 | 418 |
+| 400-item spike: largest rolling hour | 427 | 514 |
+| First scheduled admission after minute-20 spike | minute 23.5 | minute 28.5 |
+| New-input successor recovered by reconciliation | balance 6 → 6 | balance 24 → 23 |
+| Replayed reconciliation | zero debits | zero debits |
+| Scheduled admissions during throttle cooldown | zero | zero |
+
+Both variants admitted all 31 organic arrivals during the throttle cooldown.
+The candidate's scheduled concurrency stayed at or below 32. The spike and
+sustained-load observations demonstrate why 244 is not a combined admission
+ceiling. The reconciliation control exercises actual enqueue, alarm, claim,
+changed-input enqueue, reconciliation, and replay paths in workerd/SQLite.
+
+Five focused tests passed, including output preservation for existing
+directories, the working directory, parent directories, files and symlinks,
+and direct-completion/reconciliation debit parity. Both new regressions failed
+on the original branch. The full check passed with 7,029 tests passed, 19
+skipped and zero failures; its first attempts exposed a stale documentation
+assertion and an incorrectly placed runner flag, both corrected before the
+passing run. Provider run links are in the receipt.
+
+## Initial normal-load verification
+
+Recorded earlier run (before exclusive output creation and the reconciliation
+correction):
 
 | Field | Value |
 | --- | --- |
-| Base | `1b2c262b6bfca5c7c18a9104478e173b2ea0a53c` (main, including #1709) |
+| Base | `1b2c262b6bfca5c7c18a9104478e173b2ea0a53c` (main, including https://github.com/openclaw/clawsweeper/pull/1709) |
 | Head | `85d38e6940365498b6482d1d32d33f3744203d93` (clean tree) |
 | Runtime | Node v24.21.0, workerd 1.20260701.1, miniflare 4.20260701.0 |
 | Base cadence | normal `1 * * * *` direct + `41 * * * *` fanout; rate 60, burst 6 |
@@ -89,19 +127,20 @@ Recorded run:
 | Head `.github/workflows/sweep.yml` sha256 | `33ca5969022cf5b268e7a405db2f535056a2de64c3baa5c81941a44c4e0ebd2e` |
 
 The six scenarios carried over from the previous recorded run (head
-`15fcdf6cf07f`) reproduce identical numbers; the base now includes #1709,
+`15fcdf6cf07f`) reproduce identical numbers; the base now includes https://github.com/openclaw/clawsweeper/pull/1709,
 which does not touch the queue, its configuration, or the cron routing.
 
 ## Observed results
 
 Each hour cell reads `organic (new/supersede/requeue) + hot + normal = total
-executions`. The ceiling is rate + burst: 66 on the base, 244 on the head.
+admissions`. The scheduled allowance is rate + burst: 66 on the base, 244 on the head;
+it is not a ceiling for the combined total.
 "Production-like today" uses ~45 new keys and ~135 supersedes/requeues per
 hour. That mix reproduces live base telemetry: hot ~19.5/hour, normal
 ~4.2/hour, about 24 scheduled/hour. "After lane A" removes ~65/hour of
 source-drift requeues.
 
-| Scenario | Variant | Hour 1 | Hour 2 | Hour 3 | Rolling 60 min max / ceiling | Min balance | Max scheduled active |
+| Scenario | Variant | Hour 1 | Hour 2 | Hour 3 | Rolling 60 min admissions / scheduled allowance | Min balance | Max scheduled active |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Organic 130/h, new keys | base | 142 + 4 + 0 = 146 | 131 + 4 + 0 = 135 | 138 + 4 + 0 = 142 | 157 / 66 | 0 | 2 / 32 |
 | Organic 130/h, new keys | head | 142 + 35 + 49 = 226 | 131 + 28 + 66 = 225 | 138 + 32 + 46 = 216 | 238 / 244 | -3 | 30 / 32 |
@@ -119,8 +158,8 @@ source-drift requeues.
 | Organic spike 130 → 300 → 130/h | head | 142 + 35 + 49 = 226 | 320 + 2 + 9 = 331 | 130 + 28 + 34 = 192 | 332 / 244 | -24 | 30 / 32 |
 
 The base never charges supersedes or requeues and forgives organic debt on
-read. As a result its rolling totals run well above its own 66-execution
-ceiling while scheduled work is starved.
+read. Its rolling totals run above the 66-admission scheduled allowance while
+scheduled work is starved; unconditional organic admission permits this on either variant.
 
 On the head:
 

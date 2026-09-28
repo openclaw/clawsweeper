@@ -58,7 +58,7 @@
         },
         {
           "document": "docs/limits.md",
-          "text": "durable {{EXACT_REVIEW_TARGET_RATE_PER_HOUR}}-review/hour budget with a {{EXACT_REVIEW_TARGET_BURST}}-item burst"
+          "text": "durable {{EXACT_REVIEW_TARGET_RATE_PER_HOUR}}-review/hour scheduled budget with a {{EXACT_REVIEW_TARGET_BURST}}-item burst"
         },
         {
           "document": "docs/limits.md",
@@ -66,7 +66,7 @@
         },
         {
           "document": "docs/scheduler.md",
-          "text": "total review admission target: {{EXACT_REVIEW_TARGET_RATE_PER_HOUR}} items/hour across the fleet"
+          "text": "scheduled review admission target: {{EXACT_REVIEW_TARGET_RATE_PER_HOUR}} items/hour across the fleet"
         },
         {
           "document": "docs/scheduler.md",
@@ -77,16 +77,12 @@
           "text": "hot intake is capped at {{EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR}} items/hour"
         },
         {
-          "document": "docs/scheduler.md",
-          "text": "while it runs at or above {{EXACT_REVIEW_TARGET_RATE_PER_HOUR}}/hour, scheduled admission drops to nearly zero"
-        },
-        {
           "document": "docs/limits.md",
           "text": "caps hot intake (production sets {{EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR}})"
         },
         {
           "document": "README.md",
-          "text": "a {{EXACT_REVIEW_TARGET_RATE_PER_HOUR}}-review/hour execution target with a {{EXACT_REVIEW_TARGET_BURST}}-item burst; hot intake is capped at {{EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR}}/hour"
+          "text": "a {{EXACT_REVIEW_TARGET_RATE_PER_HOUR}}-review/hour admission target with a {{EXACT_REVIEW_TARGET_BURST}}-item burst; hot intake is capped at {{EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR}}/hour"
         }
       ]
     },
