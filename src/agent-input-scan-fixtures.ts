@@ -23,6 +23,7 @@ export type ReviewedAttribution = readonly [
   lineSha256: string | readonly string[],
   source: string,
   mode: "100644",
+  sourceSha256s?: readonly string[],
 ];
 
 // This is host policy, never an allowlist loaded from the reviewed checkout.
@@ -238,11 +239,17 @@ const CRABBOX_POSTGRES_DOC_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
   ],
 ];
 
+// HTML decoding can hide another occurrence; FTP admits only these inspected complete blobs.
+const CRON_FTP_SOURCE_SHA256S = [
+  "9e80ccc47c8373fc9b22c64d1297c8e21a74aba226fe84781256a3fcf4786ac4",
+  "82b5327be49d6e7f9b046c43e3d77a30af33baa8a532d4f9357870a30c4d46a9",
+] as const;
+
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
   // OpenClaw completion-webhook redaction fixture; only observed native blob findings qualify.
-  [899, "FTP", "PLAIN", "927664cc6f3d082fb8acb9e01b47942d21d8043ddf150a6d833b5660bc240e07", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "47389a842fa9b1a3cb74c54ab2455b02b9cb0bd41c4b832eaf83aa52fbccbdc8", "src/gateway/server-cron-notifications.test.ts", "100644"],
-  [899, "FTP", "HTML", "927664cc6f3d082fb8acb9e01b47942d21d8043ddf150a6d833b5660bc240e07", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "47389a842fa9b1a3cb74c54ab2455b02b9cb0bd41c4b832eaf83aa52fbccbdc8", "src/gateway/server-cron-notifications.test.ts", "100644"],
+  [899, "FTP", "PLAIN", "927664cc6f3d082fb8acb9e01b47942d21d8043ddf150a6d833b5660bc240e07", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "47389a842fa9b1a3cb74c54ab2455b02b9cb0bd41c4b832eaf83aa52fbccbdc8", "src/gateway/server-cron-notifications.test.ts", "100644", CRON_FTP_SOURCE_SHA256S],
+  [899, "FTP", "HTML", "927664cc6f3d082fb8acb9e01b47942d21d8043ddf150a6d833b5660bc240e07", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "47389a842fa9b1a3cb74c54ab2455b02b9cb0bd41c4b832eaf83aa52fbccbdc8", "src/gateway/server-cron-notifications.test.ts", "100644", CRON_FTP_SOURCE_SHA256S],
   // Git-ref redaction: native PLAIN/ESCAPED_UNICODE; HTML qualifies the same verified literal.
   [17, "URI", "PLAIN", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "38f7c5f5260b58730c16187c5777da1ed97c72a836f6213c4ea3b376fa96fa57", "c1f9ec504b9d934cd49e19e1dba0496f7d3fe5ce822b608097d606e76f5b8373", "src/infra/git-source.test.ts", "100644"],
   [17, "URI", "HTML", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "38f7c5f5260b58730c16187c5777da1ed97c72a836f6213c4ea3b376fa96fa57", "c1f9ec504b9d934cd49e19e1dba0496f7d3fe5ce822b608097d606e76f5b8373", "src/infra/git-source.test.ts", "100644"],
@@ -397,10 +404,11 @@ const detectorNames = { 17: "URI", 895: "MongoDB", 899: "FTP", 968: "Postgres" }
 function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): void {
   const seen = new Set<string>();
   for (const row of rows) {
-    const [detectorType, detectorName, decoder, raw, rawV2, line, source, mode] = row;
+    const [detectorType, detectorName, decoder, raw, rawV2, line, source, mode, sourceSha256s] =
+      row;
     const lines = typeof line === "string" ? [line] : line;
     if (
-      row.length !== 8 ||
+      row.length !== (detectorType === 899 ? 9 : 8) ||
       detectorNames[detectorType] !== detectorName ||
       !Array.isArray(lines) ||
       !lines.length ||
@@ -408,8 +416,12 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
       !(
         (source === "src/gateway/server-cron-notifications.test.ts" &&
           detectorType === 899 &&
+          Array.isArray(sourceSha256s) &&
+          sourceSha256s.length > 0 &&
+          sourceSha256s.every((digest) => sha256Pattern.test(digest)) &&
           (decoder === "PLAIN" || decoder === "HTML")) ||
         (source === "src/logging/redact.test.ts" &&
+          detectorType !== 899 &&
           (decoder === "PLAIN" || decoder === "ESCAPED_UNICODE")) ||
         (source === "src/infra/git-source.test.ts" &&
           detectorType === 17 &&
@@ -1004,7 +1016,7 @@ function classifyReviewedFindings(
         finding.StructuredData !== null
       )
         return refuse("finding_not_reviewed");
-      const matchingMetadata = exactCandidates.filter(
+      let matchingMetadata = exactCandidates.filter(
         ([detectorType, detectorName, decoder]) =>
           detectorType === finding.DetectorType &&
           detectorName === finding.DetectorName &&
@@ -1014,6 +1026,11 @@ function classifyReviewedFindings(
       const [detectorType, detectorName, decoder] = matchingMetadata[0]!;
       if (typeof file !== "string" || scannerLine === null) return refuse("metadata_mismatch");
       if (staged?.kind !== "blob" || !staged.bytes) return refuse("material_not_reviewed");
+      if (detectorType === 899) {
+        const sourceSha256 = createHash("sha256").update(staged.bytes).digest("hex");
+        matchingMetadata = matchingMetadata.filter((row) => row[8]?.includes(sourceSha256));
+        if (matchingMetadata.length === 0) return refuse("source_not_reviewed");
+      }
       const parts = object(finding.SecretParts);
       if (detectorType === 17) {
         let uri: ReturnType<typeof nativeUriParts>;

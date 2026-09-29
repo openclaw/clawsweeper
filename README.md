@@ -623,9 +623,12 @@ or its [vendored OpenClaw copy](https://github.com/openclaw/openclaw/blob/136eab
 as non-sensitive after a complete scan. OpenClaw's existing
 [completion-webhook warning-redaction fixture](https://github.com/openclaw/openclaw/blob/226302c6ef7b496ced68f69f917669cd8a18f7ed/src/gateway/server-cron-notifications.test.ts#L735)
 qualifies only for FTP detector 899
-with the observed `PLAIN` and `HTML` decoders. Both native value digests, every
-literal occurrence's complete source line and original path, regular-file mode, committed base/head roles, and
-the native FTP metadata shape must match. FTP patch findings and other decoders
+with the observed `PLAIN` and `HTML` decoders. Both native value digests, the
+complete source file's SHA256, every literal occurrence's complete source line,
+original path, regular-file mode, committed base/head roles, and native FTP
+metadata shape must match. Any source-file edit requires requalification, including
+unrelated changes: HTML decoding can hide another occurrence from plain-text
+search. FTP patch findings and other decoders
 remain blocking. See the [native before/after proof](docs/proof/cron-ftp-fixture/README.md).
 The same exact-fixture policy covers
 the reviewed OpenClaw Browser CDP authentication and credential-redaction fixtures in

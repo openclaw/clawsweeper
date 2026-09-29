@@ -7,7 +7,7 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
-- Admit the existing OpenClaw completion-webhook FTP redaction fixture only when its exact native finding and committed source match the reviewed qualification, keeping scanning and verification enabled.
+- Admit the existing OpenClaw completion-webhook FTP redaction fixture only when its exact native finding and complete committed source bytes match the reviewed qualification, keeping scanning and verification enabled.
 
 - Speed up exact-event publication apply: repeated metadata and comment reads revalidate their already-read body directly with GitHub instead of repeating Worker ETag lookups and confirmations, and each held-lease mutation boundary runs the pull-request review-activity check once; every guard still reads GitHub live.
 
