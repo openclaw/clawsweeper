@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Admit the existing OpenClaw completion-webhook FTP redaction fixture only when its exact native finding and committed source match the reviewed qualification, keeping scanning and verification enabled.
+
 - Speed up exact-event publication apply: repeated metadata and comment reads revalidate their already-read body directly with GitHub instead of repeating Worker ETag lookups and confirmations, and each held-lease mutation boundary runs the pull-request review-activity check once; every guard still reads GitHub live.
 
 - Fix `@clawsweeper automerge` and `autofix` command reviews failing with `invalid queue-owned command review lease` before review: when the claimed decision has no source head, the command acknowledgement lease now uses the live PR head from admission or the head in the command status marker, and fails with a clear message only when neither exists.

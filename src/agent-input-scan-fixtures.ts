@@ -15,8 +15,8 @@ interface ReviewedFixture {
 export type ScanSourceRole = "base" | "head" | "index" | "tree" | "worktree";
 
 export type ReviewedAttribution = readonly [
-  detectorType: 17 | 895 | 968,
-  detectorName: "URI" | "MongoDB" | "Postgres",
+  detectorType: 17 | 895 | 899 | 968,
+  detectorName: "URI" | "MongoDB" | "FTP" | "Postgres",
   decoder: "PLAIN" | "HTML" | "ESCAPED_UNICODE" | "BASE64",
   rawSha256: string,
   rawV2Sha256: string,
@@ -240,6 +240,9 @@ const CRABBOX_POSTGRES_DOC_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
 
 // oxfmt-ignore
 const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
+  // OpenClaw completion-webhook redaction fixture; only observed native blob findings qualify.
+  [899, "FTP", "PLAIN", "927664cc6f3d082fb8acb9e01b47942d21d8043ddf150a6d833b5660bc240e07", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "47389a842fa9b1a3cb74c54ab2455b02b9cb0bd41c4b832eaf83aa52fbccbdc8", "src/gateway/server-cron-notifications.test.ts", "100644"],
+  [899, "FTP", "HTML", "927664cc6f3d082fb8acb9e01b47942d21d8043ddf150a6d833b5660bc240e07", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "47389a842fa9b1a3cb74c54ab2455b02b9cb0bd41c4b832eaf83aa52fbccbdc8", "src/gateway/server-cron-notifications.test.ts", "100644"],
   // Git-ref redaction: native PLAIN/ESCAPED_UNICODE; HTML qualifies the same verified literal.
   [17, "URI", "PLAIN", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "38f7c5f5260b58730c16187c5777da1ed97c72a836f6213c4ea3b376fa96fa57", "c1f9ec504b9d934cd49e19e1dba0496f7d3fe5ce822b608097d606e76f5b8373", "src/infra/git-source.test.ts", "100644"],
   [17, "URI", "HTML", "1e2c0641bc640f9f57706e40d1c3852f130e85266ba6c13d05e6ca66525d59bd", "38f7c5f5260b58730c16187c5777da1ed97c72a836f6213c4ea3b376fa96fa57", "c1f9ec504b9d934cd49e19e1dba0496f7d3fe5ce822b608097d606e76f5b8373", "src/infra/git-source.test.ts", "100644"],
@@ -389,7 +392,7 @@ const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
 ];
 
 const sha256Pattern = /^[0-9a-f]{64}$/;
-const detectorNames = { 17: "URI", 895: "MongoDB", 968: "Postgres" } as const;
+const detectorNames = { 17: "URI", 895: "MongoDB", 899: "FTP", 968: "Postgres" } as const;
 
 function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): void {
   const seen = new Set<string>();
@@ -403,6 +406,9 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
       !lines.length ||
       ![raw, rawV2, ...lines].every((digest) => sha256Pattern.test(digest)) ||
       !(
+        (source === "src/gateway/server-cron-notifications.test.ts" &&
+          detectorType === 899 &&
+          (decoder === "PLAIN" || decoder === "HTML")) ||
         (source === "src/logging/redact.test.ts" &&
           (decoder === "PLAIN" || decoder === "ESCAPED_UNICODE")) ||
         (source === "src/infra/git-source.test.ts" &&
@@ -1025,13 +1031,20 @@ function classifyReviewedFindings(
           parts.password !== uri.password
         )
           return refuse("metadata_mismatch");
-      } else if (detectorType === 895) {
+      } else if (detectorType === 895 || detectorType === 899) {
         if (
           rawV2 !== "" ||
           !parts ||
           Object.keys(parts).join("\0") !== "key" ||
           parts.key !== raw ||
-          !exactStringRecord(finding.ExtraData, ["database", "host", "rotation_guide", "username"])
+          (detectorType === 899
+            ? finding.ExtraData !== null
+            : !exactStringRecord(finding.ExtraData, [
+                "database",
+                "host",
+                "rotation_guide",
+                "username",
+              ]))
         )
           return refuse("metadata_mismatch");
       } else if (
@@ -1057,19 +1070,20 @@ function classifyReviewedFindings(
         typeof line === "string" ? [line] : line,
       );
       const maxOccurrences = Math.max(...expectedDigests.map((lines) => lines.length));
+      const sourceLiteral = detectorType === 17 ? rawV2 : detectorType === 899 ? raw : undefined;
       while (lineStart <= text.length) {
         const newline = text.indexOf("\n", lineStart);
         const lineEnd = newline === -1 ? text.length : newline;
         const line = text.slice(lineStart, lineEnd);
-        if (detectorType === 17 && line.includes(rawV2)) {
-          let occurrence = line.indexOf(rawV2);
+        if (sourceLiteral !== undefined && line.includes(sourceLiteral)) {
+          let occurrence = line.indexOf(sourceLiteral);
           while (occurrence !== -1) {
             if (witnessDigests.length >= maxOccurrences) return refuse("literal_mismatch");
             witnessDigests.push(createHash("sha256").update(line).digest("hex"));
-            occurrence = line.indexOf(rawV2, occurrence + rawV2.length);
+            occurrence = line.indexOf(sourceLiteral, occurrence + sourceLiteral.length);
           }
           witnessLineNumber ??= lineNumber;
-        } else if (detectorType !== 17 && lineNumber === scannerLine) {
+        } else if (sourceLiteral === undefined && lineNumber === scannerLine) {
           witnessDigests.push(createHash("sha256").update(line).digest("hex"));
           witnessLineNumber = lineNumber;
         }
