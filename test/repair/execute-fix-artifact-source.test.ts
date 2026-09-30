@@ -350,6 +350,24 @@ test("replacement recovery materializes the fetched commit before branch attachm
   assert.match(recovery, /expectedHeadSha: recoveredHeadSha/);
 });
 
+test("replacement final-base sync hydrates from the materialized pre-edit head", () => {
+  const source = readText(path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"));
+  const replacementStart = source.indexOf("function executeReplacementBranch(");
+  const replacementEnd = source.indexOf("function mergedReplacementSourcePr(", replacementStart);
+  const replacement = source.slice(replacementStart, replacementEnd);
+  const recoveryStart = source.indexOf("function checkoutRecoverableReplacementBranch(");
+  const recoveryEnd = source.indexOf(
+    "function materializeFetchedReplacementCommit(",
+    recoveryStart,
+  );
+  const recovery = source.slice(recoveryStart, recoveryEnd);
+
+  assert.match(replacement, /sourceHead: branchState\.source_head/);
+  assert.match(recovery, /source_head: recoveredHeadSha/);
+  assert.match(recovery, /source_head: currentHead\(targetDir\)/);
+  assert.match(recovery, /source_head: fetchedBaseSha/);
+});
+
 test("final publication rebase uses the verified isolated Git path", () => {
   const source = readText(path.join(process.cwd(), "src/repair/execute-fix-artifact.ts"));
   const reconcileStart = source.indexOf("function reconcileLatestBaseBeforePush(");

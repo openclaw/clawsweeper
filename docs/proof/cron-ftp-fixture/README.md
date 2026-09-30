@@ -102,6 +102,35 @@ literal, metadata, path, mode, and occurrence controls. No detector, matcher,
 verification flag, queue, status, or Bay contract changes are involved. This source
 qualification does not complete a hosted review or release its hold.
 
+## Webhook outcome integration requalification
+
+The same PR receives the canonical webhook-outcome coverage and moves its existing
+payload/presentation case to the presentation test owner. The synthetic FTP line
+is unchanged, with the same complete-line witness above, now at line 854. Its new
+complete source SHA256 is
+`64919155ae619bb0159a37d7ea97b6aba473671c50120cf78be7c27f8a15dae4`.
+Only that hash is added; the existing base hash remains qualified.
+
+Using ClawSweeper `74dc4c6a2fc204e456fb92677ca9271af104e9cc`, the maintained native
+runner [refused the complete committed range](161703-webhook-native-before.json)
+`b9a2236578c39079b067a642f0956638567fe7ba..028a1c3970f0353be974db89844da73215d967ca`
+with `source_not_reviewed` for head blob
+`6995635c757edddf9f538b3734fce12b71a1e806`. The single-hash addition
+[admits that same range](161703-webhook-native-after.json) with verification enabled:
+HTML for the base at line 769 and PLAIN for the head at line 854, one occurrence each.
+No protected-main source hash is added speculatively.
+
+The same complete source pair at a foreign path
+[remains refused](161703-webhook-foreign-path.json). An otherwise byte-identical
+qualified head with one extra newline
+[also remains refused](161703-webhook-changed-source.json). Both controls use the
+existing runner and clean synthetic Git sources. All 30 existing FTP classifier
+cases pass, including the native metadata and whole-source negative controls.
+Proof ran on macOS arm64, Node 24.21.0, and pinned TruffleHog 3.97.4. The detector,
+raw-value digests, line/path/mode/ref/occurrence checks, native verification, and
+scanner flags are unchanged. Bay and hosted queue/publication contracts are
+unaffected. This proof does not complete a hosted review or release a hold.
+
 ## Limits
 
 This is source-admission proof with a controlled prompt. It does not run a model,

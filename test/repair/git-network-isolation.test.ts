@@ -5,7 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { runIsolatedGitNetwork } from "../../dist/repair/git-network-isolation.js";
+import {
+  hydrateTargetRebaseRange,
+  runIsolatedGitNetwork,
+} from "../../dist/repair/git-network-isolation.js";
+import { rebaseTargetOntoVerifiedBase } from "../../dist/repair/target-validation.js";
 
 test("authenticated Git ignores target-local callbacks, signing, and URL rewrites", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-network-isolation-"));
@@ -124,6 +128,70 @@ test("isolated authenticated fetch preserves partial-clone and shallow negotiati
     },
   );
   assert.match(missing, new RegExp(`^\\?${omittedBlob}$`, "m"));
+});
+
+test("final rebase hydration supplies the bounded unfiltered range before isolated replay", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawsweeper-rebase-hydration-"));
+  const source = path.join(root, "source");
+  const target = path.join(root, "target");
+  const remote = path.join(root, "remote.git");
+  fs.mkdirSync(source);
+  git(source, "init", "-b", "main");
+  git(source, "config", "user.email", "clawsweeper@example.invalid");
+  git(source, "config", "user.name", "ClawSweeper Test");
+  fs.writeFileSync(path.join(source, "shared.txt"), "initial\n");
+  fs.writeFileSync(path.join(source, "source.txt"), "initial\n");
+  git(source, "add", ".");
+  git(source, "commit", "-m", "initial");
+  git(source, "checkout", "-b", "feature");
+  fs.writeFileSync(path.join(source, "source.txt"), "feature one\n");
+  git(source, "commit", "-am", "feature one");
+  fs.writeFileSync(path.join(source, "source.txt"), "feature two\n");
+  git(source, "commit", "-am", "feature two");
+  const sourceHead = git(source, "rev-parse", "HEAD");
+  const missingParentBlob = git(source, "rev-parse", "HEAD^:source.txt");
+  git(source, "checkout", "main");
+  fs.writeFileSync(path.join(source, "shared.txt"), "base\n");
+  git(source, "commit", "-am", "base");
+  const baseSha = git(source, "rev-parse", "HEAD");
+  git(root, "clone", "--bare", source, remote);
+  git(remote, "config", "uploadpack.allowFilter", "true");
+  git(remote, "config", "uploadpack.allowAnySHA1InWant", "true");
+  git(root, "clone", "--filter=blob:none", "--no-checkout", `file://${remote}`, target);
+  git(target, "checkout", "feature");
+  git(target, "config", "user.email", "clawsweeper@example.invalid");
+  git(target, "config", "user.name", "ClawSweeper Test");
+  assert.match(
+    execFileSync("git", ["rev-list", "--objects", "--missing=print", sourceHead], {
+      cwd: target,
+      encoding: "utf8",
+      env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
+    }),
+    new RegExp(`^\\?${missingParentBlob}$`, "m"),
+  );
+
+  const hydrated = hydrateTargetRebaseRange({
+    baseSha,
+    cwd: target,
+    env: process.env,
+    remoteUrl: `file://${remote}`,
+    sourceHead,
+    timeoutMs: 30_000,
+    token: "test-token",
+  });
+
+  assert.equal(hydrated.source_depth, 3);
+  assert.doesNotMatch(
+    execFileSync("git", ["rev-list", "--objects", "--missing=print", baseSha, sourceHead], {
+      cwd: target,
+      encoding: "utf8",
+      env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
+    }),
+    /^\?/m,
+  );
+  const rebased = rebaseTargetOntoVerifiedBase({ cwd: target, baseRef: baseSha });
+  assert.equal(rebased.status, "rebased");
+  git(target, "merge-base", "--is-ancestor", baseSha, "HEAD");
 });
 
 test("isolated authenticated push preserves the target shallow boundary", () => {
