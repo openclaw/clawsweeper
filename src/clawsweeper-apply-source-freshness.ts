@@ -22,6 +22,8 @@ type ApplySourceFreshnessDependencies = Pick<
 
 interface ApplySourceFreshnessOptions {
   action: string | undefined;
+  /** Live issue comments read after the apply fetched `item`. */
+  comments: readonly Record<string, unknown>[];
   completeReviewActivityReceiptMatches: (context: ItemContext) => boolean;
   currentItemContext: () => ItemContext;
   currentState: () => {
@@ -159,6 +161,7 @@ export function createApplySourceFreshness(
   } = dependencies;
   const {
     action,
+    comments,
     completeReviewActivityReceiptMatches,
     currentItemContext,
     currentState,
@@ -265,12 +268,29 @@ export function createApplySourceFreshness(
     retryCloseCoverageCommandStatusOnlyUpdate(item, currentItemContext());
   const completeAutomationReceiptMatchesReview = (): boolean =>
     completeReviewActivityReceiptMatches(currentItemContext());
+  // Exact review marks ClawSweeper's acknowledgement comment complete after the review snapshot
+  // and before publication, which moves updated_at without changing reviewed source. Accept that
+  // edit only as the latest item update and only with a matching complete activity receipt.
+  const reviewAcknowledgementMarker = new RegExp(
+    `<!--\\s*clawsweeper-pr-ack:[^>]+\\s+item=${number}\\s*-->`,
+  );
+  const ownedReviewAcknowledgementOnlyUpdate = (): boolean =>
+    updatedSinceReview &&
+    reviewHasCompleteActivityIdentity &&
+    comments.some(
+      (comment) =>
+        commentUpdatedAt(comment) === item.updatedAt &&
+        CLAWSWEEPER_BOT_AUTHORS.has((login(asRecord(comment).user) ?? "").trim().toLowerCase()) &&
+        reviewAcknowledgementMarker.test(commentBody(comment) ?? ""),
+    ) &&
+    completeAutomationReceiptMatchesReview();
   const { isCloseProposal } = currentState();
   const automationOnlyUpdate = Boolean(
     (reviewCommentOnlyUpdate ||
       labelSyncOnlyUpdate ||
       ownedIssueReviewLeaseOnlyUpdate ||
-      commandStatusOnlyUpdate) &&
+      commandStatusOnlyUpdate ||
+      ownedReviewAcknowledgementOnlyUpdate()) &&
     (!isCloseProposal ||
       !reviewHasCompleteActivityIdentity ||
       completeAutomationReceiptMatchesReview()),

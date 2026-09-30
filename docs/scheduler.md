@@ -582,6 +582,17 @@ manual and broad dispatch behavior, the independent proof cursor, and close
 policy are unchanged. OpenClaw Bay needs no change: this producer reuses existing
 queue/lifecycle fields and adds no published schema, status field, or control.
 
+Exact PR review marks ClawSweeper's own acknowledgement comment
+(`clawsweeper-pr-ack`) complete after the review snapshot and before direct
+publication, and GitHub moves the PR's `updated_at` for that edit. Apply
+freshness treats that edit as automation-only only when it is the item's latest
+update and the review's complete source, timeline, PR head, and review-activity
+receipt still matches the live item. Any other change in the window, including
+a human comment, title/body or non-managed label edit, PR review, or new head,
+still records `skipped_changed_since_review` and requeues a fresh
+`source_drift_requeue` review. Without this allowance, a close proposal's own
+status edit made every review drift and requeue indefinitely.
+
 ## Automerge Fast Path
 
 Automerge is an exact-item event path. A maintainer command dispatches one

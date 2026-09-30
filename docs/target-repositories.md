@@ -54,6 +54,13 @@ OpenClaw fallback's close rules, empty validation commands, and absent changed
 gate; selecting target-native setup does not broaden apply policy or inherit
 the core OpenClaw policy.
 
+`openclaw/openclaw-enterprise` uses an explicit review-only profile. Its prompt
+preserves the repository's platform-design, IAM, audit, persistence, deployment,
+and integration-proof boundaries, while its baseline repair validation follows
+the target repository's workspace, lint, formatting, OpenAPI, and typecheck
+gates. Issue and pull-request close rules remain empty; enabling the target
+dispatcher does not grant automatic close authority.
+
 Repair validation defaults to 480,000 ms per command. Set `validation_timeout_ms`
 in an exact repository entry (or `core_target_overrides`) to override it:
 `openclaw/openclaw` uses 1,500,000 ms (25 minutes) for its cold changed gate.
