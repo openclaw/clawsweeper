@@ -620,7 +620,17 @@ The host classifies the reviewed synthetic malformed-configuration URI in
 `test/action-ledger-runtime.test.ts` and the explicitly approved autoreview
 negative-test URI in the [canonical autoreview test](https://github.com/openclaw/agent-skills/blob/a8466c1d860588a083610fe41fd277c1d88b14e0/skills/autoreview/tests/test_autoreview_hardening.py)
 or its [vendored OpenClaw copy](https://github.com/openclaw/openclaw/blob/136eab023035dd5943818f791d3c3db7d92e4491/.agents/skills/autoreview/tests/test_autoreview_hardening.py)
-as non-sensitive after a complete scan. The same exact-fixture policy covers
+as non-sensitive after a complete scan. OpenClaw's existing
+[completion-webhook warning-redaction fixture](https://github.com/openclaw/openclaw/blob/226302c6ef7b496ced68f69f917669cd8a18f7ed/src/gateway/server-cron-notifications.test.ts#L735)
+qualifies only for FTP detector 899
+with the observed `PLAIN` and `HTML` decoders. Both native value digests, the
+complete source file's SHA256, every literal occurrence's complete source line,
+original path, regular-file mode, committed base/head roles, and native FTP
+metadata shape must match. Any source-file edit requires requalification, including
+unrelated changes: HTML decoding can hide another occurrence from plain-text
+search. FTP patch findings and other decoders
+remain blocking. See the [native before/after proof](docs/proof/cron-ftp-fixture/README.md).
+The same exact-fixture policy covers
 the reviewed OpenClaw Browser CDP authentication and credential-redaction fixtures in
 [`chrome.test.ts`](https://github.com/openclaw/openclaw/blob/8e03b0c62e76dc25c77045a84ab3098a111a7be3/extensions/browser/src/browser/chrome.test.ts),
 the [remote-CDP coverage](https://github.com/openclaw/openclaw/blob/58da2f5897feb6840937d8e50cf7ee6f26aa57d7/extensions/browser/src/browser/chrome.test.ts),
@@ -656,7 +666,7 @@ original source. Repeated literals remain eligible unless an entry is bound to
 an approved complete-line digest; those entries require exactly one occurrence
 in the staged blob. Finding order and duplicate records do not change the exact
 value, path, and mode checks.
-Findings must use `PLAIN` or `HTML`, except the Mac dashboard, MCP Apps, marketplace telemetry, and Gateway config entries permit only
+Findings must use `PLAIN` or `HTML`, except the MCP Apps, marketplace telemetry, and Gateway config entries permit only
 their observed `PLAIN` decoder and the two guarded-CDP fixtures also permit `BASE64`.
 The pinned Base64 decoder preserves the rest of a chunk after
 decoding another token, so an unchanged literal can acquire that decoder label
