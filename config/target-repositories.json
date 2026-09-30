@@ -50,6 +50,25 @@
       }
     },
     {
+      "target_repo": "openclaw/openclaw-enterprise",
+      "display_name": "OpenClaw Enterprise",
+      "checkout_dir": "openclaw-enterprise",
+      "prompt_note": "Use the OpenClaw Enterprise source tree and current main branch. Follow its AGENTS.md and authoritative platform design, verify implementation status before treating target-design capabilities as implemented, and preserve workspace, architecture, IAM, audit, persistence, and deployment boundaries. Require target-native integration evidence for platform behavior. Review only: keep issues and pull requests open for maintainer triage.",
+      "apply_close_rules": {
+        "issue": [],
+        "pull_request": []
+      },
+      "package_manager": "pnpm",
+      "validation_commands": [
+        "pnpm check:workspace",
+        "pnpm lint",
+        "pnpm format:check",
+        "pnpm openapi:check",
+        "pnpm typecheck"
+      ],
+      "changed_gate": null
+    },
+    {
       "target_repo": "openclaw/openclaw-facetime",
       "display_name": "OpenClaw FaceTime",
       "checkout_dir": "openclaw-facetime",
