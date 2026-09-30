@@ -727,6 +727,14 @@ exact table for its observed URI detector 17 `PLAIN` and `HTML` findings. Both
 raw-value digests, the complete source line, original path, regular-file mode,
 and committed base/head references must match. See [the native proof](docs/proof/agent-input-scan-context/README.md#browser-cdp-discovery-fixture).
 
+The CDP authentication and explicit-port fixtures in OpenClaw's
+[SDK browser tests](https://github.com/openclaw/openclaw/blob/38d949a549dbb8f9376d5d08a96422615c8e7ab0/src/plugin-sdk/browser-subpaths.test.ts) qualify only for their observed URI
+detector 17 `PLAIN` findings. Both native value digests, each complete source
+line (including the path suffix beyond the native match), the original path,
+regular-file mode, and every committed base/head reference must match. Other
+decoders and changed source lines remain blocking; the WebSocket fixture has
+no qualification because the pinned scanner did not emit a finding for it.
+
 The TypeSafe local-transport URL-rejection fixture in
 `extensions/typesafe/src/local.transport.test.ts` binds its exact URI detector 17
 identities, full source line, regular-file mode, and committed base/head references.
