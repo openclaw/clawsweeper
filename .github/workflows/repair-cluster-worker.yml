@@ -276,9 +276,14 @@ jobs:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
         run: bash scripts/capture-repair-execution-gates.sh
 
+      - name: Enforce repository repair policy
+        id: repair_policy
+        if: ${{ steps.check_job.outputs.job_exists == '1' }}
+        run: pnpm run repair:policy-gate -- "$CLUSTER_JOB_PATH"
+
       - name: Resolve Codex session cache
         id: codex_session
-        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
+        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && steps.repair_policy.outputs.allowed == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
         env:
           JOB_PATH: ${{ inputs.job }}
           CODEX_AUTH_MODE: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE || 'proxy' }}
@@ -291,7 +296,7 @@ jobs:
           echo "CLAWSWEEPER_CODEX_THREAD_STATE=$codex_home/clawsweeper-thread-state.json" >> "$GITHUB_ENV"
 
       - uses: ./.github/actions/setup-codex
-        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' }}
+        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && steps.repair_policy.outputs.allowed == '1' }}
         env:
           OPENAI_API_KEY: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.OPENAI_API_KEY || '' }}
           CLAWSWEEPER_INTERNAL_MODEL: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.CLAWSWEEPER_MODEL || '' }}
@@ -301,11 +306,11 @@ jobs:
           codex-home: ${{ steps.codex_session.outputs.codex_home }}
 
       - uses: ./.github/actions/setup-openclaw
-        if: ${{ steps.check_job.outputs.job_exists == '1' }}
+        if: ${{ steps.check_job.outputs.job_exists == '1' && steps.repair_policy.outputs.allowed == '1' }}
 
       - name: Restore Codex session
         id: restore_codex_session
-        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
+        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && steps.repair_policy.outputs.allowed == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
         uses: actions/cache/restore@v6
         with:
           path: |
@@ -317,7 +322,7 @@ jobs:
 
       - name: Register steerable Action session
         id: crabfleet_session
-        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' && !inputs.dry_run }}
+        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && steps.repair_policy.outputs.allowed == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' && !inputs.dry_run }}
         env:
           CLAWSWEEPER_CRABFLEET_SERVICE_TOKEN: ${{ secrets.CLAWSWEEPER_CRABFLEET_SERVICE_TOKEN }}
           CLAWSWEEPER_CRABFLEET_OWNER: ${{ vars.CLAWSWEEPER_CRABFLEET_OWNER }}
@@ -349,13 +354,13 @@ jobs:
         run: pnpm run repair:conflict-self-heal -- --verify-job-head "$CLUSTER_JOB_PATH"
 
       - name: Publish automatic implementation planning status
-        if: ${{ steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' }}
+        if: ${{ steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && steps.repair_policy.outputs.allowed == '1' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.status_token.outputs.token }}
           CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
         run: |
-          pnpm run repair:issue-implementation-status -- \
+          pnpm run repair:policy-run -- "$CLUSTER_JOB_PATH" -- pnpm run repair:issue-implementation-status -- \
             --job "$CLUSTER_JOB_PATH" \
             --state "Planning" \
             --detail "Codex is reading the issue and repository, choosing an implementation, and planning validation." \
@@ -363,7 +368,7 @@ jobs:
 
       - name: Run worker
         id: run_worker
-        if: ${{ steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' }}
+        if: ${{ steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && steps.repair_policy.outputs.allowed == '1' }}
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
@@ -428,7 +433,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Save Codex session
-        if: ${{ always() && env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
+        if: ${{ always() && env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && steps.repair_policy.outputs.allowed == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
         uses: actions/cache/save@v6
         with:
           path: |
@@ -574,9 +579,14 @@ jobs:
           GH_TOKEN: ${{ steps.target_write_token.outputs.token }}
         run: bash scripts/capture-repair-execution-gates.sh
 
+      - name: Enforce repository repair policy
+        id: repair_policy
+        if: ${{ steps.check_job.outputs.job_exists == '1' }}
+        run: pnpm run repair:policy-gate -- "$CLUSTER_JOB_PATH"
+
       - name: Resolve Codex session cache
         id: codex_session
-        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
+        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && steps.repair_policy.outputs.allowed == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
         env:
           JOB_PATH: ${{ inputs.job }}
           CODEX_AUTH_MODE: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE || 'proxy' }}
@@ -589,7 +599,7 @@ jobs:
           echo "CLAWSWEEPER_CODEX_THREAD_STATE=$codex_home/clawsweeper-thread-state.json" >> "$GITHUB_ENV"
 
       - uses: ./.github/actions/setup-codex
-        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' }}
+        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && steps.repair_policy.outputs.allowed == '1' }}
         env:
           OPENAI_API_KEY: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && secrets.OPENAI_API_KEY || '' }}
           CLAWSWEEPER_INTERNAL_MODEL: ${{ vars.CLAWSWEEPER_CODEX_AUTH_MODE != 'clawrouter' && (contains(inputs.job, '/inbox/issue-') && (vars.CLAWSWEEPER_FIX_PR_MODEL || 'gpt-6-sol') || secrets.CLAWSWEEPER_MODEL) || '' }}
@@ -600,10 +610,10 @@ jobs:
           codex-home: ${{ steps.codex_session.outputs.codex_home }}
 
       - uses: ./.github/actions/setup-openclaw
-        if: ${{ steps.check_job.outputs.job_exists == '1' }}
+        if: ${{ steps.check_job.outputs.job_exists == '1' && steps.repair_policy.outputs.allowed == '1' }}
 
       - name: Restore Codex session
-        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
+        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && steps.repair_policy.outputs.allowed == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
         uses: actions/cache/restore@v6
         with:
           path: |
@@ -615,7 +625,7 @@ jobs:
 
       - name: Resume steerable Action session
         id: crabfleet_session
-        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
+        if: ${{ env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && steps.repair_policy.outputs.allowed == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
         env:
           CLAWSWEEPER_CRABFLEET_SERVICE_TOKEN: ${{ secrets.CLAWSWEEPER_CRABFLEET_SERVICE_TOKEN }}
           CLAWSWEEPER_CRABFLEET_OWNER: ${{ vars.CLAWSWEEPER_CRABFLEET_OWNER }}
@@ -659,7 +669,7 @@ jobs:
           GH_TOKEN: ${{ steps.target_write_token.outputs.token }}
           CLAWSWEEPER_STATUS_INGEST_TOKEN: ${{ secrets.CLAWSWEEPER_STATUS_INGEST_TOKEN }}
         run: |
-          pnpm run repair:issue-implementation-status -- \
+          pnpm run repair:policy-run -- "$CLUSTER_JOB_PATH" -- pnpm run repair:issue-implementation-status -- \
             --job "$CLUSTER_JOB_PATH" \
             --state "Building" \
             --detail "Codex is editing, validating, and reviewing the implementation before a branch or pull request is published." \
@@ -682,7 +692,7 @@ jobs:
           # Keep free-form repository skill access; do not replace it with a fixed proof runner.
           OPENCLAW_QA_CONVEX_SITE_URL: ${{ steps.target.outputs.target_slug == 'openclaw-openclaw' && secrets.OPENCLAW_QA_CONVEX_SITE_URL || '' }}
           OPENCLAW_QA_CONVEX_SECRET_CI: ${{ steps.target.outputs.target_slug == 'openclaw-openclaw' && secrets.OPENCLAW_QA_CONVEX_SECRET_CI || '' }}
-        run: pnpm run repair:execute-fix -- "$CLUSTER_JOB_PATH" --latest --defer-publication
+        run: pnpm run repair:policy-run -- "$CLUSTER_JOB_PATH" -- pnpm run repair:execute-fix -- "$CLUSTER_JOB_PATH" --latest --defer-publication
 
       - name: Renew target write token for post-flight
         id: target_post_flight_token
@@ -704,7 +714,7 @@ jobs:
           GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
           CLAWSWEEPER_AUTOMERGE_SESSION_ID: ${{ inputs.automerge_session_id }}
-        run: pnpm run repair:execute-fix -- "$CLUSTER_JOB_PATH" --latest --publish-report-only
+        run: pnpm run repair:policy-run -- "$CLUSTER_JOB_PATH" -- pnpm run repair:execute-fix -- "$CLUSTER_JOB_PATH" --latest --publish-report-only
 
       - name: Record deterministic validation phase
         if: ${{ success() && steps.crabfleet_session.outcome == 'success' }}
@@ -715,7 +725,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
-        run: pnpm run repair:apply-result -- "$CLUSTER_JOB_PATH" --latest
+        run: pnpm run repair:policy-run -- "$CLUSTER_JOB_PATH" -- pnpm run repair:apply-result -- "$CLUSTER_JOB_PATH" --latest
 
       - name: Post-flight finalize fix PRs
         id: post_flight
@@ -723,14 +733,14 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
-        run: pnpm run repair:post-flight -- "$CLUSTER_JOB_PATH" --latest
+        run: pnpm run repair:policy-run -- "$CLUSTER_JOB_PATH" -- pnpm run repair:post-flight -- "$CLUSTER_JOB_PATH" --latest
 
       - name: Apply post-flight closeouts
         if: ${{ steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' }}
         env:
           GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
-        run: pnpm run repair:apply-result -- "$CLUSTER_JOB_PATH" --latest
+        run: pnpm run repair:policy-run -- "$CLUSTER_JOB_PATH" -- pnpm run repair:apply-result -- "$CLUSTER_JOB_PATH" --latest
 
       - name: Tag ClawSweeper targets
         if: ${{ always() && steps.check_job.outputs.job_exists == '1' && steps.self_heal_head.outputs.matched != 'false' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' }}
@@ -738,10 +748,10 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
           CLAWSWEEPER_ALLOWED_OWNER: ${{ steps.target.outputs.target_owner }}
-        run: pnpm run repair:tag-clawsweeper -- .clawsweeper-repair/runs --apply --live --open-branches false --report .clawsweeper-repair/runs/clawsweeper-label-report.json
+        run: pnpm run repair:policy-run -- "$CLUSTER_JOB_PATH" -- pnpm run repair:tag-clawsweeper -- .clawsweeper-repair/runs --apply --live --open-branches false --report .clawsweeper-repair/runs/clawsweeper-label-report.json
 
       - name: Publish automatic implementation completion status
-        if: ${{ always() && steps.check_job.outputs.job_exists == '1' }}
+        if: ${{ always() && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_ALLOW_EXECUTE == '1' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.target_post_flight_token.outputs.token }}
@@ -828,7 +838,7 @@ jobs:
               fi
             fi
           fi
-          pnpm run repair:issue-implementation-status -- \
+          pnpm run repair:policy-run -- "$CLUSTER_JOB_PATH" -- pnpm run repair:issue-implementation-status -- \
             --job "$CLUSTER_JOB_PATH" \
             --state "$state" \
             --detail "$detail" \
@@ -857,7 +867,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "Requeueing $REQUEUE_COUNT source-head race repair result(s) against the latest head."
-          pnpm run repair:requeue -- "$CLUSTER_JOB_PATH" \
+          pnpm run repair:policy-run -- "$CLUSTER_JOB_PATH" -- pnpm run repair:requeue -- "$CLUSTER_JOB_PATH" \
             --mode "$CLUSTER_WORKER_MODE" \
             --execute \
             --open-execute-window \
@@ -952,7 +962,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Save Codex session
-        if: ${{ always() && env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
+        if: ${{ always() && env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.check_job.outputs.job_exists == '1' && steps.repair_policy.outputs.allowed == '1' && env.CLAWSWEEPER_STEERABLE_CODEX == '1' }}
         uses: actions/cache/save@v6
         with:
           path: |

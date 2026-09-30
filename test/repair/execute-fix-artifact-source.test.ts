@@ -550,3 +550,54 @@ test("repair workflow renews target credentials before deferred outcome publicat
   );
   assert.match(workflow.slice(publishIndex, postFlightIndex), /--latest --publish-report-only/);
 });
+
+test("repair workflow rechecks repository policy before planning and replayed execution effects", () => {
+  const workflow = readText(
+    path.join(process.cwd(), ".github/workflows/repair-cluster-worker.yml"),
+  );
+  const clusterIndex = workflow.indexOf("name: Plan and review cluster");
+  const executeIndex = workflow.indexOf("name: Execute and apply cluster actions");
+  assert.ok(clusterIndex >= 0 && executeIndex > clusterIndex);
+
+  const cluster = workflow.slice(clusterIndex, executeIndex);
+  const planningGate = cluster.indexOf("name: Enforce repository repair policy");
+  const planningSession = cluster.indexOf("name: Register steerable Action session");
+  const planningStatus = cluster.indexOf("name: Publish automatic implementation planning status");
+  const planningWorker = cluster.indexOf("name: Run worker");
+  assert.ok(
+    planningGate >= 0 &&
+      planningGate < planningSession &&
+      planningSession < planningStatus &&
+      planningStatus < planningWorker,
+  );
+  assert.match(
+    cluster.slice(planningSession, planningStatus),
+    /steps\.repair_policy\.outputs\.allowed == '1'/,
+  );
+  assert.match(
+    cluster.slice(planningStatus, planningWorker),
+    /steps\.repair_policy\.outputs\.allowed == '1'/,
+  );
+  assert.match(cluster.slice(planningWorker), /steps\.repair_policy\.outputs\.allowed == '1'/);
+
+  const execute = workflow.slice(executeIndex);
+  const executionGate = execute.indexOf("name: Enforce repository repair policy");
+  const executionSession = execute.indexOf("name: Resume steerable Action session");
+  const buildStatus = execute.indexOf("name: Publish automatic implementation build status");
+  const fixExecution = execute.indexOf("name: Execute credited fix artifact");
+  const completionStatus = execute.indexOf(
+    "name: Publish automatic implementation completion status",
+  );
+  assert.ok(
+    executionGate >= 0 &&
+      executionGate < executionSession &&
+      executionSession < buildStatus &&
+      buildStatus < fixExecution &&
+      fixExecution < completionStatus,
+  );
+  assert.match(
+    execute.slice(executionSession, buildStatus),
+    /steps\.repair_policy\.outputs\.allowed == '1'/,
+  );
+  assert.match(execute.slice(completionStatus), /env\.CLAWSWEEPER_ALLOW_EXECUTE == '1'/);
+});

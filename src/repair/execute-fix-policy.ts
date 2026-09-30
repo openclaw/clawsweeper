@@ -1,4 +1,14 @@
 import type { JsonValue } from "./json-types.js";
+import { repositoryProfileFor } from "../repository-profiles.js";
+
+export function repositoryRepairExecutionBlockReason(repo: JsonValue) {
+  const targetRepo = String(repo ?? "").trim();
+  if (!targetRepo) return "repair execution requires a target repository";
+  const profile = repositoryProfileFor(targetRepo);
+  return profile.allowRepairCommands === false
+    ? `repair execution is disabled for ${profile.targetRepo} by repository profile`
+    : null;
+}
 
 export function shouldCloseSupersededSourcePrs(value: JsonValue) {
   return parseBooleanEnv(value, true);

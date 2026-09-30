@@ -62,7 +62,9 @@ gates. Issue and pull-request close rules remain empty; enabling the target
 dispatcher does not grant automatic close authority. The profile keeps review
 and read-only comment commands available but rejects issue implementation,
 autofix, automerge, CI/review repair, rebase, and trusted repair/merge automation
-before the router can create a repair job or mutate the target repository.
+before the router can create a repair job. The repair worker independently
+rechecks the same profile before planning or execution effects, so a job queued
+before the policy changed and a replayed execute job cannot mutate the target.
 
 Repair validation defaults to 480,000 ms per command. Set `validation_timeout_ms`
 in an exact repository entry (or `core_target_overrides`) to override it:
