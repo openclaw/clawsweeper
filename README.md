@@ -303,8 +303,9 @@ Common commands:
   review dispatch, automatic merge, human-review pause, stale-review rejection,
   all late automerge-blocking labels, and replay without duplicate merge calls.
 - `implement issue` on an open issue creates or reuses one issue implementation
-  job and dispatches the issue-to-PR lane. OpenClaw organization members may
-  request this explicitly even without repository write permission.
+  job and dispatches the issue-to-PR lane. The requester must have current
+  repository `admin`, `maintain`, or `write` permission; organization membership
+  alone does not authorize the write action.
 - With automatic issue implementation enabled, newly reviewed issues and
   existing eligible open issue reports enter the enabled bounded lanes. Codex
   inspects the issue and repository, chooses the
@@ -563,9 +564,10 @@ appropriate repair job.
   that head changed. It also refuses to push when the PR closed during the
   wait. Override the window with `CLAWSWEEPER_BRANCH_PUSH_SETTLE_SECONDS`
   (bounded to 0-120 seconds) when a manual backfill is already settled.
-- An OpenClaw organization member can comment `@clawsweeper implement issue`;
-  ClawSweeper refuses when an open PR already mentions the issue, a generated
-  branch PR is already open, the issue is paused, or security blockers remain.
+- A repository maintainer with current `admin`, `maintain`, or `write`
+  permission can comment `@clawsweeper implement issue`; ClawSweeper refuses
+  when an open PR already mentions the issue, a generated branch PR is already
+  open, the issue is paused, or security blockers remain.
 - `CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES=1` enables newly reviewed issues and
   bounded backfill from existing eligible open issue reports. General viable
   implementation remains limited to public sibling repositories;
