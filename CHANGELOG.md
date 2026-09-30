@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Coalesce organic pushes and edits for 10 minutes (capped at 15) on items that already completed two exact reviews in the last hour, so churning PRs get one review of their latest revision instead of one per push; commands, publication, scheduled, and recovery work keep their timing.
+
 - Admit the existing OpenClaw completion-webhook FTP redaction fixture only when its exact native finding and complete committed source bytes match the reviewed qualification, keeping scanning and verification enabled.
 
 - Speed up exact-event publication apply: repeated metadata and comment reads revalidate their already-read body directly with GitHub instead of repeating Worker ETag lookups and confirmations, and each held-lease mutation boundary runs the pull-request review-activity check once; every guard still reads GitHub live.

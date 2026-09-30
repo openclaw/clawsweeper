@@ -2005,6 +2005,336 @@ test("exact-review queue bypasses debounce only for fresh pull request openings"
   }
 });
 
+type ActiveItemQueueItem = {
+  state: string;
+  revision: number;
+  nextAttemptAt: number;
+  backoffReason?: string;
+  leaseId?: string;
+  decision: { sourceHeadSha?: string };
+};
+
+function activeItemQueueHarness(env: Record<string, string> = {}) {
+  const originalFetch = globalThis.fetch;
+  const storage = new MemoryDurableStorage();
+  const dispatched: Array<{ client_payload: Record<string, unknown> }> = [];
+  const live = { headSha: "a".repeat(40) };
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/repos/openclaw/clawsweeper/actions/workflows/sweep.yml") {
+      return jsonResponse({ state: "active" });
+    }
+    if (/^\/repos\/openclaw\/(?:clawsweeper|openclaw)\/installation$/.test(url.pathname)) {
+      return jsonResponse({ id: 999 });
+    }
+    if (url.pathname === "/app/installations/999/access_tokens") {
+      return jsonResponse({ token: "dispatch-token" });
+    }
+    if (/^\/repos\/openclaw\/openclaw\/issues\/\d+$/.test(url.pathname)) {
+      return jsonResponse({ state: "open" });
+    }
+    if (/^\/repos\/openclaw\/openclaw\/pulls\/\d+$/.test(url.pathname)) {
+      return jsonResponse({ state: "open", head: { sha: live.headSha } });
+    }
+    if (url.pathname === "/repos/openclaw/clawsweeper/dispatches") {
+      dispatched.push(JSON.parse(String(init?.body)));
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  const queue = new ExactReviewQueue(
+    { storage },
+    {
+      CLAWSWEEPER_APP_CLIENT_ID: "Iv23test",
+      CLAWSWEEPER_APP_PRIVATE_KEY: privateKey,
+      EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "90000",
+      EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS: "180000",
+      ...env,
+    },
+  );
+  const readItem = async (itemKey: string) =>
+    (
+      (await storage.get("exact-review-queue")) as {
+        items: Record<string, ActiveItemQueueItem>;
+      }
+    ).items[itemKey];
+  // Dispatch the one due item through the real alarm path and claim its lease.
+  const dispatchAndClaim = async (runId: string) => {
+    const before = dispatched.length;
+    await queue.alarm();
+    assert.equal(dispatched.length, before + 1);
+    const payload = dispatched.at(-1)!.client_payload as {
+      queue_lease_id: string;
+      queue_claim: { item_key: string; lease_revision: number };
+    };
+    const claim = await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/claim", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: payload.queue_lease_id,
+          item_key: payload.queue_claim.item_key,
+          lease_revision: payload.queue_claim.lease_revision,
+          run_id: runId,
+          run_attempt: 1,
+        }),
+      }),
+    );
+    assert.equal(claim.status, 200);
+    const { claim_generation } = (await claim.json()) as { claim_generation: number };
+    return { ...payload.queue_claim, leaseId: payload.queue_lease_id, claim_generation, runId };
+  };
+  const complete = async (claimed: Awaited<ReturnType<typeof dispatchAndClaim>>) => {
+    const completed = await queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/complete", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: claimed.leaseId,
+          item_key: claimed.item_key,
+          lease_revision: claimed.lease_revision,
+          claim_generation: claimed.claim_generation,
+          run_id: claimed.runId,
+          run_attempt: 1,
+          outcome: "success",
+        }),
+      }),
+    );
+    assert.equal(completed.status, 200);
+  };
+  return {
+    queue,
+    storage,
+    dispatched,
+    live,
+    readItem,
+    dispatchAndClaim,
+    complete,
+    restore: () => {
+      globalThis.fetch = originalFetch;
+    },
+  };
+}
+
+test("exact-review queue holds organic churn longer once an item was reviewed twice this hour", async () => {
+  const originalNow = Date.now;
+  let now = 10_000_000;
+  Date.now = () => now;
+  const harness = activeItemQueueHarness();
+  const key = "openclaw/openclaw#880";
+  // Each edit carries a new source timestamp, so it is a genuine new revision.
+  const edited = (deliveryId: string, itemNumber = 880) =>
+    buildExactReviewQueueRequest(deliveryId, itemNumber, "edited", "issue", "openclaw/openclaw", {
+      sourceUpdatedAt: new Date(now).toISOString(),
+    });
+  try {
+    // The first two generations keep the ordinary 90 s debounce.
+    for (const cycle of [1, 2]) {
+      await harness.queue.fetch(edited(`churn-review-${cycle}`));
+      assert.equal((await harness.readItem(key)).nextAttemptAt, now + 90_000);
+      now += 90_000;
+      const claimed = await harness.dispatchAndClaim(`88000${cycle}`);
+      now += 7 * 60_000;
+      await harness.complete(claimed);
+      assert.equal(await harness.readItem(key), undefined);
+      now += 60_000;
+    }
+
+    // Three pushes over eight minutes coalesce into one pending revision that
+    // waits ten minutes from the latest push, capped at fifteen minutes.
+    const firstPush = now;
+    await harness.queue.fetch(edited("churn-push-1"));
+    let item = await harness.readItem(key);
+    assert.equal(item.nextAttemptAt, firstPush + 10 * 60_000);
+    assert.equal(item.backoffReason, "dispatch_debounce");
+    now = firstPush + 4 * 60_000;
+    await harness.queue.fetch(edited("churn-push-2"));
+    assert.equal((await harness.readItem(key)).nextAttemptAt, firstPush + 14 * 60_000);
+    now = firstPush + 8 * 60_000;
+    await harness.queue.fetch(edited("churn-push-3"));
+    item = await harness.readItem(key);
+    assert.equal(item.nextAttemptAt, firstPush + 15 * 60_000);
+    const latestRevision = item.revision;
+
+    // The wake follows the longer delay instead of polling for it.
+    now = firstPush + 9 * 60_000;
+    const dispatchedBefore = harness.dispatched.length;
+    await harness.queue.alarm();
+    assert.equal(harness.dispatched.length, dispatchedBefore);
+    assert.equal(await harness.storage.getAlarm(), firstPush + 15 * 60_000);
+
+    // A first-time item keeps the ordinary delay and dispatches meanwhile.
+    await harness.queue.fetch(edited("quiet-item", 881));
+    assert.equal((await harness.readItem("openclaw/openclaw#881")).nextAttemptAt, now + 90_000);
+    now += 90_000;
+    assert.equal((await harness.dispatchAndClaim("881001")).item_key, "openclaw/openclaw#881");
+
+    now = firstPush + 15 * 60_000;
+    const claimed = await harness.dispatchAndClaim("880003");
+    assert.equal(claimed.item_key, key);
+    assert.equal(claimed.lease_revision, latestRevision);
+  } finally {
+    harness.restore();
+    Date.now = originalNow;
+  }
+});
+
+test("active-item debounce leaves commands, recovery, and stale history on ordinary timing", async () => {
+  const originalNow = Date.now;
+  let now = 20_000_000;
+  Date.now = () => now;
+  const harness = activeItemQueueHarness({ EXACT_REVIEW_ACTIVE_ITEM_WINDOW_MS: "1800000" });
+  const key = "openclaw/openclaw#890";
+  const request = (deliveryId: string, sourceAction: string, overrides = {}) =>
+    buildExactReviewQueueRequest(
+      deliveryId,
+      890,
+      sourceAction,
+      "issue",
+      "openclaw/openclaw",
+      overrides,
+    );
+  try {
+    for (const cycle of [1, 2]) {
+      await harness.queue.fetch(request(`history-${cycle}`, "edited"));
+      now += 90_000;
+      await harness.complete(await harness.dispatchAndClaim(`89000${cycle}`));
+    }
+
+    // Recovery work keeps the ordinary delay; the next organic edit on the same
+    // pending entry takes the active-item delay; an explicit command bypasses it.
+    await harness.queue.fetch(request("placeholder-recovery", "review_placeholder_recovery"));
+    assert.equal((await harness.readItem(key)).nextAttemptAt, now + 90_000);
+    now += 1_000;
+    await harness.queue.fetch(
+      request("organic-edit", "edited", { sourceUpdatedAt: new Date(now).toISOString() }),
+    );
+    assert.equal((await harness.readItem(key)).nextAttemptAt, now + 10 * 60_000);
+    await harness.queue.fetch(
+      request("explicit-command", "legacy_dispatch", {
+        commandStatusMarker:
+          "<!-- clawsweeper-command-status:890:re_review:0123456789abcdef0123456789abcdef01234567 -->",
+      }),
+    );
+    assert.equal((await harness.readItem(key)).nextAttemptAt, now);
+    // A later organic event cannot re-delay the pending command.
+    now += 1_000;
+    await harness.queue.fetch(request("after-command", "edited"));
+    assert.equal((await harness.readItem(key)).nextAttemptAt, now);
+    await harness.complete(await harness.dispatchAndClaim("890003"));
+
+    // Completions older than the configured window no longer count.
+    now += 31 * 60_000;
+    await harness.queue.fetch(request("stale-history", "edited"));
+    assert.equal((await harness.readItem(key)).nextAttemptAt, now + 90_000);
+  } finally {
+    harness.restore();
+    Date.now = originalNow;
+  }
+});
+
+test("active-item debounce revokes an in-flight review at once and delays only its successor", async () => {
+  const originalNow = Date.now;
+  let now = 30_000_000;
+  Date.now = () => now;
+  const harness = activeItemQueueHarness();
+  const key = "openclaw/openclaw#895";
+  const push = (sequence: number) => {
+    harness.live.headSha = String(sequence).repeat(40);
+    return buildExactReviewQueueRequest(
+      `push-${sequence}`,
+      895,
+      "synchronize",
+      "pull_request",
+      "openclaw/openclaw",
+      {
+        sourceHeadSha: harness.live.headSha,
+        sourceHeadVerified: true,
+        sourceAuthoritySeq: sequence,
+        sourceUpdatedAt: new Date(now).toISOString(),
+      },
+    );
+  };
+  try {
+    for (const sequence of [1, 2]) {
+      assert.equal((await harness.queue.fetch(push(sequence))).status, 202);
+      now += 90_000;
+      await harness.complete(await harness.dispatchAndClaim(`89500${sequence}`));
+      now += 60_000;
+    }
+    assert.equal((await harness.queue.fetch(push(3))).status, 202);
+    assert.equal((await harness.readItem(key)).nextAttemptAt, now + 10 * 60_000);
+    now += 10 * 60_000;
+    const inFlight = await harness.dispatchAndClaim("895003");
+    assert.equal((await harness.readItem(key)).state, "leased");
+
+    now += 2 * 60_000;
+    assert.equal((await harness.queue.fetch(push(4))).status, 202);
+    const successor = await harness.readItem(key);
+    assert.equal(successor.state, "pending");
+    assert.equal(successor.leaseId, undefined);
+    assert.equal(successor.decision.sourceHeadSha, "4".repeat(40));
+    assert.equal(successor.nextAttemptAt, now + 10 * 60_000);
+    const stale = await harness.queue.fetch(
+      new Request("https://clawsweeper-exact-review-queue/heartbeat", {
+        method: "POST",
+        body: JSON.stringify({
+          lease_id: inFlight.leaseId,
+          item_key: inFlight.item_key,
+          lease_revision: inFlight.lease_revision,
+          claim_generation: inFlight.claim_generation,
+          run_id: inFlight.runId,
+          run_attempt: 1,
+          source_head_sha: "3".repeat(40),
+        }),
+      }),
+    );
+    assert.equal(stale.status, 409);
+  } finally {
+    harness.restore();
+    Date.now = originalNow;
+  }
+});
+
+test("active-item history is an additive table for an existing queue store", async () => {
+  const originalNow = Date.now;
+  let now = 40_000_000;
+  Date.now = () => now;
+  const env = {
+    EXACT_REVIEW_DISPATCH_DEBOUNCE_MS: "90000",
+    EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS: "180000",
+  };
+  const edited = (deliveryId: string) =>
+    buildExactReviewQueueRequest(deliveryId, 897, "edited", "issue", "openclaw/openclaw", {
+      sourceUpdatedAt: new Date(now).toISOString(),
+    });
+  try {
+    const storage = new MemoryDurableStorage();
+    await new ExactReviewQueue({ storage }, env).fetch(edited("before-upgrade"));
+    // Emulate a store persisted before the completion history existed.
+    storage.sql.exec("DROP TABLE exact_review_queue_review_completions");
+
+    now += 30_000;
+    const upgraded = new ExactReviewQueue({ storage }, env);
+    assert.equal((await upgraded.fetch(edited("after-upgrade"))).status, 202);
+    const state = (await storage.get("exact-review-queue")) as {
+      items: Record<string, { revision: number; nextAttemptAt: number }>;
+    };
+    // The retained item has no history, so it keeps the ordinary extension.
+    assert.equal(state.items["openclaw/openclaw#897"].revision, 2);
+    assert.equal(state.items["openclaw/openclaw#897"].nextAttemptAt, now + 90_000);
+    const [history] = Array.from(
+      storage.sql.exec("SELECT COUNT(*) AS completed FROM exact_review_queue_review_completions"),
+    ) as Array<{ completed: number }>;
+    assert.equal(history?.completed, 0);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
 test("replacing a queued command cannot inherit another command's delivery identity", async () => {
   const storage = new MemoryDurableStorage();
   const queue = new ExactReviewQueue({ storage }, {});

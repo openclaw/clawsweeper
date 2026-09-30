@@ -717,6 +717,25 @@ const EXACT_REVIEW_PUBLICATION_ACTIONS_RESERVE = 16;
 const DEFAULT_EXACT_REVIEW_WORKFLOW_PAUSED_RETRY_MS = 60_000;
 const DEFAULT_EXACT_REVIEW_DISPATCH_DEBOUNCE_MS = 90_000;
 const DEFAULT_EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS = 3 * 60_000;
+// Items that already completed several reviews recently are under active
+// churn: their next organic revision coalesces longer before dispatch.
+const DEFAULT_EXACT_REVIEW_ACTIVE_ITEM_REVIEW_THRESHOLD = 2;
+const DEFAULT_EXACT_REVIEW_ACTIVE_ITEM_WINDOW_MS = 60 * 60_000;
+const DEFAULT_EXACT_REVIEW_ACTIVE_ITEM_DEBOUNCE_MS = 10 * 60_000;
+const DEFAULT_EXACT_REVIEW_ACTIVE_ITEM_DEBOUNCE_MAX_MS = 15 * 60_000;
+// Only review-triggering GitHub item actions admitted by webhook ingress count
+// as organic churn. Commands, publication, scheduled, repair, and recovery
+// work keep their existing dispatch timing.
+const EXACT_REVIEW_ACTIVE_ITEM_ORGANIC_SOURCE_ACTIONS = new Set([
+  "opened",
+  "reopened",
+  "edited",
+  "synchronize",
+  "ready_for_review",
+  "converted_to_draft",
+  "unlocked",
+  "unlabeled",
+]);
 const DEFAULT_EXACT_REVIEW_PENDING_SOFT_LIMIT = 300;
 const DEFAULT_EXACT_REVIEW_TARGET_RATE_PER_HOUR = 60;
 const DEFAULT_EXACT_REVIEW_TARGET_BURST = 6;
@@ -796,6 +815,7 @@ export const EXACT_REVIEW_AUTHENTICATED_BODY_FINGERPRINT_HEADER =
   "x-clawsweeper-exact-review-body-sha256";
 const EXACT_REVIEW_QUEUE_INGRESS_TABLE = "exact_review_queue_ingress";
 const EXACT_REVIEW_QUEUE_EDIT_SEMANTIC_TABLE = "exact_review_queue_edit_semantic";
+const EXACT_REVIEW_QUEUE_REVIEW_COMPLETION_TABLE = "exact_review_queue_review_completions";
 const EXACT_REVIEW_QUEUE_METRICS_TABLE = "exact_review_queue_metrics";
 const EXACT_REVIEW_QUEUE_METRIC_BUCKET_TABLE = "exact_review_queue_metric_buckets";
 const EXACT_REVIEW_PUBLICATION_CAUSE_BUCKET_TABLE = "exact_review_publication_cause_buckets_v1";
@@ -2383,7 +2403,8 @@ export class ExactReviewQueue {
             }
             // Immediacy must come from the merged decision: a pending explicit command
             // keeps its command marker through the merge, and a later plain webhook
-            // event must not re-debounce it.
+            // event must not re-debounce it. A revoked active review is pending
+            // here with a fresh createdAt, so only its next dispatch waits longer.
             if (!preserveReviewRetryBudget) {
               Object.assign(
                 current,
@@ -2394,6 +2415,8 @@ export class ExactReviewQueue {
                       now,
                       current.createdAt,
                       this.env,
+                      false,
+                      this.isActiveReviewItemSync(key, current.decision, now),
                     )
                   : exactReviewQueueEnqueueAttempt(state, now),
               );
@@ -2500,7 +2523,15 @@ export class ExactReviewQueue {
               : this.nextExactReviewItemRevisionSync(key, (scannerHold?.revision ?? 0) + 1),
             createdAt: now,
             updatedAt: now,
-            ...exactReviewQueueDebouncedAttempt(state, decision, now, now, this.env, true),
+            ...exactReviewQueueDebouncedAttempt(
+              state,
+              decision,
+              now,
+              now,
+              this.env,
+              true,
+              this.isActiveReviewItemSync(key, decision, now),
+            ),
             attempts: 0,
             reviewRetryPolicyEpoch: exactReviewRetryPolicyEpoch(this.env),
             ...(exactReviewSourceAuthorityWatermark(decision)
@@ -3461,6 +3492,11 @@ export class ExactReviewQueue {
           : undefined,
         completionResult.deadLetter,
       );
+      // Every successful review generation counts, including one whose newer
+      // source revision is requeued: it still consumed a full review.
+      if (!publicationItem && outcome === "success") {
+        this.recordReviewCompletionSafely(item, runId, runAttempt, now);
+      }
       try {
         const projectionAfterCompletion = this.recordLifecycleCompletion({
           item: lifecycleItem,
@@ -4207,6 +4243,12 @@ export class ExactReviewQueue {
             reviewCompleted: 1,
             publicationEnqueued: 1,
           });
+          this.recordReviewCompletionSafely(
+            { key: owned.key, decision: producerDecision },
+            producerRunId,
+            producerRunAttempt,
+            now,
+          );
         }
         await this.scheduleNext(this.readStateSync(), Date.now());
         return json(
@@ -4593,6 +4635,10 @@ export class ExactReviewQueue {
       let completedReviews = 0;
       let retriedReviews = 0;
       let completedPublications = 0;
+      const reviewCompletions: Array<{
+        item: Pick<ExactReviewQueueItem, "key" | "decision">;
+        run: (typeof runs)[number];
+      }> = [];
       for (const run of runs) {
         const matches = Object.values(state.items).filter(
           (item) =>
@@ -4631,6 +4677,9 @@ export class ExactReviewQueue {
             observedAt: now,
           });
         }
+        if (run.outcome === "success" && !exactReviewQueueIsPublication(item)) {
+          reviewCompletions.push({ item: { key: item.key, decision: item.decision }, run });
+        }
         const { requeued: didRequeue, parked } = owedDirectLifecycleRequeue
           ? this.requeueDirectLifecyclePublicationSync(state, item, now)
           : finishExactReviewQueueItem(
@@ -4666,6 +4715,14 @@ export class ExactReviewQueue {
           reviewRetried: retriedReviews,
           publicationCompleted: completedPublications,
         });
+        for (const completion of reviewCompletions) {
+          this.recordReviewCompletionSafely(
+            completion.item,
+            completion.run.runId,
+            completion.run.runAttempt,
+            now,
+          );
+        }
         await this.scheduleNext(state, now);
       }
       return json({ ok: true, reconciled, requeued, completed });
@@ -11189,6 +11246,22 @@ export class ExactReviewQueue {
       `CREATE INDEX IF NOT EXISTS exact_review_queue_edit_semantic_observed_at
          ON ${EXACT_REVIEW_QUEUE_EDIT_SEMANTIC_TABLE} (observed_at, item_key)`,
     );
+    // Advisory, additive history of successful review generations. It lives
+    // outside queue item JSON because completed items are deleted; a missing
+    // or empty history keeps the ordinary debounce.
+    this.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_QUEUE_REVIEW_COMPLETION_TABLE} (
+         item_key TEXT NOT NULL,
+         run_id TEXT NOT NULL,
+         run_attempt INTEGER NOT NULL CHECK (run_attempt >= 0),
+         completed_at INTEGER NOT NULL,
+         PRIMARY KEY (item_key, run_id, run_attempt)
+       ) STRICT`,
+    );
+    this.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS exact_review_queue_review_completions_completed_at
+         ON ${EXACT_REVIEW_QUEUE_REVIEW_COMPLETION_TABLE} (completed_at, item_key)`,
+    );
     this.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS ${EXACT_REVIEW_PUBLICATION_HEAD_TABLE} (
          target_key TEXT PRIMARY KEY,
@@ -13287,6 +13360,81 @@ export class ExactReviewQueue {
                 FROM ${EXACT_REVIEW_QUEUE_EDIT_SEMANTIC_TABLE}
                WHERE observed_at <= ?
                ORDER BY observed_at, item_key
+               LIMIT ${EXACT_REVIEW_QUEUE_DELIVERY_PRUNE_BATCH}
+            )
+           RETURNING item_key`,
+          cutoff,
+        ),
+      );
+      if (deleted.length < EXACT_REVIEW_QUEUE_DELIVERY_PRUNE_BATCH) break;
+    }
+  }
+
+  /**
+   * An item under active churn already completed the configured number of
+   * review generations within the trailing window. Only organic source
+   * revisions consult the history; everything else keeps today's timing.
+   */
+  private isActiveReviewItemSync(itemKey: string, decision: ExactReviewDecision, now: number) {
+    const windowMs = exactReviewActiveItemWindowMs(this.env);
+    if (windowMs <= 0 || !exactReviewActiveItemDebounceEligible(decision)) return false;
+    const threshold = exactReviewActiveItemReviewThreshold(this.env);
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT COUNT(*) AS completed
+           FROM (
+             SELECT 1 FROM ${EXACT_REVIEW_QUEUE_REVIEW_COMPLETION_TABLE}
+              WHERE item_key = ? AND completed_at > ?
+              LIMIT ?
+           )`,
+        itemKey.toLowerCase(),
+        now - windowMs,
+        threshold,
+      ),
+    )[0] as { completed?: number } | undefined;
+    return Number(row?.completed || 0) >= threshold;
+  }
+
+  /**
+   * Best-effort: the history only lengthens a later organic debounce, so a
+   * failed write must never block or roll back the review completion itself.
+   */
+  private recordReviewCompletionSafely(
+    item: Pick<ExactReviewQueueItem, "key" | "decision">,
+    runId: string,
+    runAttempt: number | null | undefined,
+    now: number,
+  ) {
+    if (exactReviewQueueIsPublication(item) || !/^\d+$/.test(runId)) return;
+    try {
+      this.storage.sql.exec(
+        `INSERT OR IGNORE INTO ${EXACT_REVIEW_QUEUE_REVIEW_COMPLETION_TABLE}
+           (item_key, run_id, run_attempt, completed_at)
+         VALUES (?, ?, ?, ?)`,
+        item.key.toLowerCase(),
+        runId,
+        Number.isSafeInteger(runAttempt) && Number(runAttempt) > 0 ? Number(runAttempt) : 0,
+        now,
+      );
+      this.pruneReviewCompletionsSync(now);
+    } catch (error) {
+      console.warn("exact-review completion history write failed", {
+        error: error instanceof Error ? error.name : "unknown",
+      });
+    }
+  }
+
+  private pruneReviewCompletionsSync(now: number) {
+    const cutoff = now - exactReviewActiveItemWindowMs(this.env);
+    for (let batch = 0; batch < EXACT_REVIEW_QUEUE_DELIVERY_PRUNE_MAX_BATCHES; batch += 1) {
+      const deleted = Array.from(
+        this.storage.sql.exec(
+          `DELETE FROM ${EXACT_REVIEW_QUEUE_REVIEW_COMPLETION_TABLE}
+            WHERE rowid IN (
+              SELECT rowid
+                FROM ${EXACT_REVIEW_QUEUE_REVIEW_COMPLETION_TABLE}
+               WHERE completed_at <= ?
+               ORDER BY completed_at, item_key
                LIMIT ${EXACT_REVIEW_QUEUE_DELIVERY_PRUNE_BATCH}
             )
            RETURNING item_key`,
@@ -16137,15 +16285,27 @@ function exactReviewQueueDebouncedAttempt(
   firstEnqueuedAt: number,
   env,
   isFirstEvent = false,
+  activeItem = false,
 ) {
   const baseAttemptAt = exactReviewQueueEnqueueAttemptAt(state, now);
   if (isImmediateExactReviewDecision(decision, isFirstEvent)) {
     return exactReviewQueueEnqueueAttempt(state, now);
   }
-  const debounceAt = Math.min(
+  const ordinaryDebounceAt = Math.min(
     now + exactReviewDispatchDebounceMs(env),
     firstEnqueuedAt + exactReviewDispatchDebounceMaxMs(env),
   );
+  // The active-item window only lengthens coalescing; it never dispatches
+  // earlier than the ordinary debounce would.
+  const debounceAt = activeItem
+    ? Math.max(
+        ordinaryDebounceAt,
+        Math.min(
+          now + exactReviewActiveItemDebounceMs(env),
+          firstEnqueuedAt + exactReviewActiveItemDebounceMaxMs(env),
+        ),
+      )
+    : ordinaryDebounceAt;
   const nextAttemptAt = Math.max(baseAttemptAt, debounceAt);
   return {
     nextAttemptAt,
@@ -17069,6 +17229,68 @@ function exactReviewDispatchDebounceMaxMs(env) {
         DEFAULT_EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS,
       ),
     ),
+  );
+}
+
+function exactReviewActiveItemReviewThreshold(env) {
+  return Math.max(
+    1,
+    Math.min(
+      100,
+      Math.floor(
+        numberFrom(
+          env.EXACT_REVIEW_ACTIVE_ITEM_REVIEW_THRESHOLD,
+          DEFAULT_EXACT_REVIEW_ACTIVE_ITEM_REVIEW_THRESHOLD,
+        ),
+      ),
+    ),
+  );
+}
+
+function exactReviewActiveItemWindowMs(env) {
+  return Math.max(
+    0,
+    Math.min(
+      24 * 60 * 60_000,
+      numberFrom(
+        env.EXACT_REVIEW_ACTIVE_ITEM_WINDOW_MS,
+        DEFAULT_EXACT_REVIEW_ACTIVE_ITEM_WINDOW_MS,
+      ),
+    ),
+  );
+}
+
+function exactReviewActiveItemDebounceMs(env) {
+  return Math.max(
+    0,
+    Math.min(
+      60 * 60_000,
+      numberFrom(
+        env.EXACT_REVIEW_ACTIVE_ITEM_DEBOUNCE_MS,
+        DEFAULT_EXACT_REVIEW_ACTIVE_ITEM_DEBOUNCE_MS,
+      ),
+    ),
+  );
+}
+
+function exactReviewActiveItemDebounceMaxMs(env) {
+  return Math.max(
+    0,
+    Math.min(
+      60 * 60_000,
+      numberFrom(
+        env.EXACT_REVIEW_ACTIVE_ITEM_DEBOUNCE_MAX_MS,
+        DEFAULT_EXACT_REVIEW_ACTIVE_ITEM_DEBOUNCE_MAX_MS,
+      ),
+    ),
+  );
+}
+
+function exactReviewActiveItemDebounceEligible(decision: ExactReviewDecision) {
+  return (
+    !decision.publication &&
+    !exactReviewDecisionHasCommandContext(decision) &&
+    EXACT_REVIEW_ACTIVE_ITEM_ORGANIC_SOURCE_ACTIONS.has(decision.sourceAction)
   );
 }
 
