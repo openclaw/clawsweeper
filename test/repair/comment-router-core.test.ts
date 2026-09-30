@@ -4723,7 +4723,7 @@ test("maintainer command authorization requires maintainer repository permission
   );
 });
 
-test("organization members can explicitly request issue implementation", () => {
+test("issue implementation requires current write permission", () => {
   const allowedAssociations = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
   assert.equal(
     isIssueImplementationCommandAllowed({
@@ -4731,12 +4731,20 @@ test("organization members can explicitly request issue implementation", () => {
       repositoryPermission: "read",
       allowedAssociations,
     }),
+    false,
+  );
+  assert.equal(
+    isIssueImplementationCommandAllowed({
+      authorAssociation: "MEMBER",
+      repositoryPermission: "maintain",
+      allowedAssociations,
+    }),
     true,
   );
   assert.equal(
     isIssueImplementationCommandAllowed({
-      authorAssociation: "COLLABORATOR",
-      repositoryPermission: "read",
+      authorAssociation: "MEMBER",
+      repositoryPermission: null,
       allowedAssociations,
     }),
     false,
@@ -4745,6 +4753,14 @@ test("organization members can explicitly request issue implementation", () => {
     isIssueImplementationCommandAllowed({
       authorAssociation: "CONTRIBUTOR",
       repositoryPermission: "write",
+      allowedAssociations,
+    }),
+    true,
+  );
+  assert.equal(
+    isIssueImplementationCommandAllowed({
+      authorAssociation: "OWNER",
+      repositoryPermission: null,
       allowedAssociations,
     }),
     true,

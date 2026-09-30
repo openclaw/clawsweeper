@@ -1002,16 +1002,7 @@ export function isMaintainerCommandAllowed({
 }
 
 export function isIssueImplementationCommandAllowed(options: LooseRecord) {
-  if (isMaintainerCommandAllowed(options)) return true;
-  const association = String(options.authorAssociation ?? "")
-    .trim()
-    .toUpperCase();
-  const associationSet = new Set(
-    [...(options.allowedAssociations ?? [])]
-      .map((value: string) => String(value).trim().toUpperCase())
-      .filter(Boolean),
-  );
-  return (association === "OWNER" || association === "MEMBER") && associationSet.has(association);
+  return isMaintainerCommandAllowed(options);
 }
 
 export function isAuthorReadOnlyCommandAllowed({ command, target }: LooseRecord) {

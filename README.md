@@ -331,8 +331,10 @@ Common commands:
   immediately before every branch push and before PR creation.
 
 Only maintainers are accepted for write actions. The router checks repository
-collaborator permission (`admin`, `maintain`, or `write`) and falls back to
-trusted `author_association` values when permission lookup is unavailable.
+collaborator permission (`admin`, `maintain`, or `write`) and falls back to the
+`OWNER` author association only when permission lookup is unavailable. Issue
+implementation uses the same fail-closed rule; organization membership alone
+does not authorize a write action.
 Users with repository write access and issue/PR authors may ask
 `@clawsweeper re-review` or `@clawsweeper re-run` for a fresh read-only review.
 Other contributor commands are ignored without a reply. Scheduled comment routing is dry unless
