@@ -12,6 +12,99 @@ export type IsolatedGitNetworkOptions = {
   token: string;
 };
 
+export type HydrateTargetRebaseRangeOptions = Omit<IsolatedGitNetworkOptions, "args"> & {
+  baseSha: string;
+  remoteUrl: string;
+  sourceHead: string;
+};
+
+const MAX_REBASE_HYDRATION_COMMITS = 10_000;
+
+export function hydrateTargetRebaseRange({
+  baseSha,
+  cwd,
+  env,
+  remoteUrl,
+  sourceHead,
+  timeoutMs,
+  token,
+}: HydrateTargetRebaseRangeOptions) {
+  const source = targetGitObjectStore(cwd, env, timeoutMs, null);
+  assertObjectId(baseSha, source.objectFormat, "target rebase base");
+  assertObjectId(sourceHead, source.objectFormat, "target rebase source head");
+  const inspectEnv = isolatedNetworkEnv(env);
+  Object.assign(inspectEnv, {
+    GIT_CONFIG_GLOBAL: os.devNull,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_SYSTEM: os.devNull,
+    GIT_NO_LAZY_FETCH: "1",
+    GIT_NO_REPLACE_OBJECTS: "1",
+    GIT_TERMINAL_PROMPT: "0",
+  });
+  const mergeBase = run("git", ["-c", "protocol.allow=never", "merge-base", baseSha, sourceHead], {
+    cwd,
+    env: inspectEnv,
+    timeoutMs,
+  }).trim();
+  assertObjectId(mergeBase, source.objectFormat, "target rebase merge base");
+  const commitCount = Number.parseInt(
+    run(
+      "git",
+      ["-c", "protocol.allow=never", "rev-list", "--count", `${mergeBase}..${sourceHead}`],
+      {
+        cwd,
+        env: inspectEnv,
+        timeoutMs,
+      },
+    ).trim(),
+    10,
+  );
+  if (
+    !Number.isSafeInteger(commitCount) ||
+    commitCount < 0 ||
+    commitCount > MAX_REBASE_HYDRATION_COMMITS
+  ) {
+    throw new Error(`unsupported target rebase hydration commit count: ${commitCount}`);
+  }
+  const sourceDepth = commitCount + 1;
+  runIsolatedGitNetwork({
+    args: [
+      "fetch",
+      "--no-tags",
+      "--refetch",
+      "--no-filter",
+      `--depth=${sourceDepth}`,
+      remoteUrl,
+      `+${sourceHead}:refs/remotes/clawsweeper-hydration/source`,
+    ],
+    cwd,
+    env,
+    timeoutMs,
+    token,
+  });
+  runIsolatedGitNetwork({
+    args: [
+      "fetch",
+      "--no-tags",
+      "--refetch",
+      "--no-filter",
+      "--depth=1",
+      remoteUrl,
+      `+${baseSha}:refs/remotes/clawsweeper-hydration/base`,
+    ],
+    cwd,
+    env,
+    timeoutMs,
+    token,
+  });
+  return {
+    base_sha: baseSha,
+    merge_base: mergeBase,
+    source_depth: sourceDepth,
+    source_head: sourceHead,
+  };
+}
+
 export function runIsolatedGitNetwork({
   args,
   cwd,
