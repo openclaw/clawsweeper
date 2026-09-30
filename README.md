@@ -691,7 +691,10 @@ every occurrence exactly; missing, extra, reordered, or changed lines refuse
 admission. Derived host, username, and password fields must match native metadata;
 the host preserves explicit default ports and original spelling, as TruffleHog
 does. MongoDB and Postgres findings bind the scanner-reported line
-and their exact native metadata shape. Any emitted subset and order may qualify;
+and their exact native metadata shape. URI findings are attributed to the plain
+literal wherever it occurs in the blob or patch; a decoded finding is not yet
+bound to its own source location ([#1724](https://github.com/openclaw/clawsweeper/issues/1724)).
+Any emitted subset and order may qualify;
 duplicate exact findings, unknown variants, lossy decoder buckets, or an
 unqualified deduplicated blob reference refuse admission.
 

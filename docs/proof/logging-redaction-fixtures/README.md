@@ -51,23 +51,45 @@ The [native result](native-results.json) records five runs of the original
 policy (ClawSweeper `main` at the pull request base) and twelve of the
 candidate over the same complete range on macOS, with `policySourceSHA256`
 binding the candidate runs to the committed `src/agent-input-scan-fixtures.ts`.
-The original policy refused every run: three times `finding_not_reviewed` for
-an `HTML` URI, MongoDB, or Postgres finding (once through the base blob that
-matches current OpenClaw `main`), and twice `literal_mismatch` for the
-rewritten Postgres line. The candidate admitted eleven runs and classified 86
-emitted findings.
-Across those runs every post-rewrite identity appeared under more than one
-decoder label, and the MongoDB, `secret:secret` Postgres, and empty-username
-URI identities appeared as `HTML`. Emitted subsets varied between four and
-five identities per run.
+The original policy refused every run: `literal_mismatch` for the rewritten
+Postgres line under `PLAIN`, through the base blob that matches current OpenClaw
+`main` and through the head blob, and `finding_not_reviewed` for an `HTML`
+MongoDB finding. The candidate admitted every run and classified 106 emitted
+findings; every identity appeared under `PLAIN`, `ESCAPED_UNICODE`, and `HTML`
+in the base role. Emitted subsets varied between four and five identities per
+run. An earlier replay of the same range recorded one `duplicate_finding`
+refusal: the native scanner emitted the same head-blob URI record twice for a
+line inside the 3 KB peek overlap after a 10 KB chunk boundary, and the existing
+duplicate-record guard refused it. That scanner property is unrelated to the
+added rows and unchanged here.
 
-One candidate run was refused with `duplicate_finding`: the native scanner
-emitted the same head-blob URI record twice (eleven findings instead of ten).
-That line sits inside the 3 KB peek overlap after a 10 KB chunk boundary, so
-both chunks carry it and TruffleHog's cross-chunk deduplication occasionally
-races. The existing duplicate-record guard refused it, unrelated to the added
-rows; 24 direct scans of the same blobs emitted no duplicate. Relaxing that
-guard is a separate policy decision and is not part of this change.
+## Known limit: decoded findings borrow the plain witness
+
+The exact path locates the approved plain `RawV2` literal anywhere in the
+staged blob, or as a patch witness, and never establishes where an `HTML` or
+`ESCAPED_UNICODE` finding originated. An entity-encoded copy of an approved
+synthetic value elsewhere in the same file decodes to the same identity and is
+attributed to the plain line. This is the existing behavior of every exact row
+that permits `HTML`; this change extends `HTML` to one more source. What such
+a borrowed attribution admits is only the same digest-bound synthetic value,
+so no new secret passes.
+
+The artifact records the limit natively with local-only OpenClaw commits that
+add an entity-encoded copy (each colon as a numeric entity) of the approved
+browser URI: with the copy at line 4 of both base and head blobs, and with the
+copy inserted two lines above the plain fixture so the hunk context carries the
+plain line as a witness. The candidate admitted 3/3 runs of each scenario, and
+the recorded scanner lines show the copy's own finding (line 4, patch line 135)
+classified against the plain witness.
+
+Binding the finding to the scanner-reported line is not a fix: the pinned
+scanner counts lines in decoded chunk data, so five consecutive blank lines
+shift an `HTML` finding by four lines, three `\u000a` escapes shift an
+`ESCAPED_UNICODE` finding by three, and block-level HTML tags in a string shift
+`HTML` by three, each refusing a legitimate fixture. The sound fix is a masked
+native re-scan, as already used for Cloudflare metadata, tracked in
+[openclaw/clawsweeper#1724](https://github.com/openclaw/clawsweeper/issues/1724)
+for every exact `HTML`/`ESCAPED_UNICODE` URI row.
 
 This is source-admission proof, not a hosted review. Hosted runs scan their own
 complete inputs. Reviews already held after a terminal scanner refusal still
