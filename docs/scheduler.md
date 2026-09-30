@@ -205,6 +205,30 @@ Producer `selection.json`, `codex/`, `review-trees/`, and sibling reports stay
 outside the selected bundle. The importer still rejects
 unexpected files, symlinks, and directories in its publication input.
 
+Exact-item review jobs materialize the target with
+`scripts/review-target-checkout.sh`. Its cache is a blobless bare repository
+holding the target branch's full commit and tree history, the tags on that
+history, and every blob of the branch tip. Actions cache keys are
+`<target-slug>-review-target-git-v1-<os>-<branch>-<YYYYMMDD>-<HH>` (UTC). A run
+restores the newest entry from the same UTC day, fetches only the branch delta
+and the missing tip blobs, and clones the checkout locally with hardlinked
+objects. The first run of each hour saves the refreshed cache right after
+checkout, before any review input touches the workspace, and then deletes all
+but the two newest entries for that target branch; the first run of each day
+builds from GitHub again, which bounds pack and blob growth. Tip blobs fetched by
+id are the slow part (about 250 blobs/s from GitHub), and `openclaw/openclaw`
+changes roughly 7,800 tip blobs a day, which is why the cache is refreshed hourly
+rather than daily. The checkout keeps the contract of a direct
+`git clone --filter=blob:none --single-branch`: the branch at the current remote
+head, full non-shallow history, branch tags, and a promisor `origin` for lazy
+blob fetches. Cached tag refs are rebuilt through Git's normal tag auto-follow
+on every warm fetch, so deleted or moved tags cannot survive in the checkout.
+A non-fast-forward branch update rebuilds the cache so its old history cannot
+retain tags outside the current branch. A failed or partial restore is discarded,
+a failed cache fetch rebuilds the cache, and a failed local clone falls back to a clean clone without
+saving. The pinned Codex source cache is keyed by the Codex version pinned in the
+target checkout and is saved once per version.
+
 The receiver workflow is `.github/workflows/sweep.yml`.
 
 Important source files:

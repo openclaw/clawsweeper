@@ -650,11 +650,11 @@ test("Codex source setup normalizes OpenClaw casing and stays out of the OpenCla
     runs: { steps: Array<{ id?: string; if?: string; uses?: string; run?: string }> };
   };
   const normalize = action.runs.steps.find((step) => step.id === "target");
-  const cache = action.runs.steps.find((step) => step.uses === "actions/cache@v6");
+  const cache = action.runs.steps.find((step) => step.uses === "actions/cache/restore@v6");
   assert.ok(normalize);
   assert.match(cache?.if ?? "", /steps\.target\.outputs\.repository == 'openclaw\/openclaw'/u);
   assert.match(cache?.if ?? "", /env\.CLAWSWEEPER_RUNNER != 'openclaw'/u);
-  const setup = action.runs.steps.at(-1);
+  const setup = action.runs.steps.find((step) => step.id === "materialize");
   assert.match(setup?.if ?? "", /env\.CLAWSWEEPER_RUNNER != 'openclaw'/u);
   assert.match(
     setup?.run ?? "",
@@ -5836,20 +5836,146 @@ test("sweep workflow coalesces durable issue and PR comment sync batches", () =>
   );
 });
 
-test("sweep target checkouts retry without cached references", () => {
-  const workflow = readText(".github/workflows/sweep.yml");
-  const checkoutBlocks =
-    workflow.match(/- name: Check out target repository[\s\S]*?rev-parse --short HEAD/g) ?? [];
+test("exact-review target checkout restores the hourly cache and saves it before review", () => {
+  type Step = {
+    id?: string;
+    name?: string;
+    if?: string;
+    uses?: string;
+    run?: string;
+    env?: Record<string, string>;
+    with?: Record<string, string>;
+    "continue-on-error"?: boolean;
+  };
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml")) as {
+    jobs: Record<string, { steps: Step[] }>;
+  };
+  const steps = workflow.jobs["event-review-apply"]!.steps;
+  const position = (predicate: (step: Step) => boolean, label: string) => {
+    const index = steps.findIndex(predicate);
+    assert.notEqual(index, -1, label);
+    return index;
+  };
+  const keyIndex = position((step) => step.id === "target-git-cache-key", "cache key");
+  const restoreIndex = position((step) => step.id === "target-git-cache", "cache restore");
+  const checkoutIndex = position((step) => step.name === "Check out target repository", "checkout");
+  const saveIndex = position((step) => step.id === "target-git-cache-save", "cache save");
+  const pruneIndex = position(
+    (step) => step.name === "Prune superseded target repository caches",
+    "cache prune",
+  );
+  const codexSourceIndex = position(
+    (step) => step.uses === "./.github/actions/setup-openclaw-codex-source",
+    "Codex source",
+  );
+  const reviewIndex = position((step) => step.name === "Review exact event item", "review");
+  assert.ok(keyIndex < restoreIndex && restoreIndex < checkoutIndex && checkoutIndex < saveIndex);
+  assert.ok(saveIndex < pruneIndex && pruneIndex < codexSourceIndex && pruneIndex < reviewIndex);
 
-  assert.equal(checkoutBlocks.length, 1);
-  for (const block of checkoutBlocks) {
-    assert.match(block, /Cached target repository fetch failed; rebuilding cache/);
-    assert.match(block, /Cached target checkout failed; retrying without cache reference/);
-    assert.match(block, /rm -rf "\$checkout_dir" "\$cache_dir"/);
-    assert.match(
-      block,
-      /git clone --filter=blob:none --branch "\$target_branch" --single-branch "\$url" "\$checkout_dir"/,
+  const [key, restore, checkout, save, prune] = [
+    keyIndex,
+    restoreIndex,
+    checkoutIndex,
+    saveIndex,
+    pruneIndex,
+  ].map((index) => steps[index]!);
+  for (const gated of [key, restore]) assert.equal(gated.if, checkout.if);
+  assert.equal(restore.uses, "actions/cache/restore@v6");
+  assert.equal(restore.with?.key, "${{ steps.target-git-cache-key.outputs.key }}");
+  assert.equal(
+    restore.with?.["restore-keys"],
+    "${{ steps.target-git-cache-key.outputs.day_prefix }}",
+  );
+  assert.equal(save.uses, "actions/cache/save@v6");
+  assert.equal(save.with?.key, restore.with?.key);
+  assert.equal(save.with?.path, restore.with?.path);
+  assert.equal(save["continue-on-error"], true);
+  assert.equal(
+    save.if,
+    "${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target-checkout.outputs.cache_ready == 'true' && steps.target-git-cache.outputs.cache-hit != 'true' }}",
+  );
+  assert.equal(
+    prune.if,
+    "${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target-git-cache-save.outcome == 'success' }}",
+  );
+  assert.equal(prune["continue-on-error"], true);
+  assert.equal(checkout.id, "target-checkout");
+  assert.match(
+    checkout.run ?? "",
+    /if \[ -z "\$CACHE_MATCHED_KEY" \]; then\s+rm -rf -- "\$cache_dir"/,
+  );
+  assert.match(checkout.run ?? "", /bash scripts\/review-target-checkout\.sh /);
+  for (const step of steps) {
+    for (const value of Object.values(step.with ?? {})) {
+      assert.doesNotMatch(String(value), /-git-.*github\.run_id/, "no per-run git cache keys");
+    }
+  }
+
+  const root = mkdtempSync(tmpPrefix);
+  try {
+    // Hourly key inside a day-scoped restore prefix inside a branch-scoped prune prefix.
+    const keyOutput = join(root, "key-output");
+    writeFileSync(keyOutput, "");
+    const resolved = spawnSync("bash", ["-c", key.run!], {
+      env: {
+        ...process.env,
+        GITHUB_OUTPUT: keyOutput,
+        RUNNER_OS: "Linux",
+        TARGET_SLUG: "openclaw-openclaw",
+        TARGET_BRANCH: "main",
+      },
+      encoding: "utf8",
+    });
+    assert.equal(resolved.status, 0, resolved.stderr);
+    const outputs = Object.fromEntries(
+      readFileSync(keyOutput, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => line.split(/=(.*)/s).slice(0, 2)),
     );
+    assert.equal(outputs.prefix, "openclaw-openclaw-review-target-git-v1-Linux-main-");
+    assert.match(outputs.key!, /^openclaw-openclaw-review-target-git-v1-Linux-main-\d{8}-\d{2}$/);
+    assert.equal(outputs.day_prefix, outputs.key!.replace(/\d{2}$/, ""));
+
+    // Prune keeps the two newest entries of this branch and never touches a
+    // longer branch name that shares the prefix.
+    const bin = join(root, "bin");
+    const deletions = join(root, "deletions");
+    mkdirSync(bin);
+    writeFileSync(
+      join(root, "caches.json"),
+      JSON.stringify({
+        actions_caches: [
+          { id: 6, key: `${outputs.prefix}20260928-05` },
+          { id: 5, key: `${outputs.prefix}foo-20260928-05` },
+          { id: 4, key: `${outputs.prefix}20260928-04` },
+          { id: 3, key: `${outputs.prefix}20260928-03` },
+          { id: 2, key: `${outputs.prefix}foo-20260928-01` },
+          { id: 1, key: `${outputs.prefix}20260927-23` },
+        ],
+      }),
+    );
+    writeFileSync(
+      join(bin, "gh"),
+      `#!/usr/bin/env bash\nif [[ " $* " == *" --method DELETE "* ]]; then echo "$*" >> '${deletions}'; exit 0; fi\ncat '${join(root, "caches.json")}'\n`,
+    );
+    chmodSync(join(bin, "gh"), 0o755);
+    const pruned = spawnSync("bash", ["-c", prune.run!], {
+      env: {
+        ...process.env,
+        PATH: `${bin}${delimiter}${process.env.PATH}`,
+        GITHUB_REPOSITORY: "openclaw/clawsweeper",
+        CACHE_PREFIX: outputs.prefix,
+      },
+      encoding: "utf8",
+    });
+    assert.equal(pruned.status, 0, pruned.stderr);
+    assert.deepEqual(readFileSync(deletions, "utf8").trim().split("\n"), [
+      "api --method DELETE repos/openclaw/clawsweeper/actions/caches/3",
+      "api --method DELETE repos/openclaw/clawsweeper/actions/caches/1",
+    ]);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
   }
 });
 

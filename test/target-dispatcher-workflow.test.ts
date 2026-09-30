@@ -58,6 +58,14 @@ function workflowJobs(source: string) {
   ).jobs;
 }
 
+function workflowConcurrency(source: string) {
+  return (
+    parse(source) as {
+      concurrency?: { group?: string; "cancel-in-progress"?: string };
+    }
+  ).concurrency;
+}
+
 function namedStep(steps: WorkflowStep[], name: string): WorkflowStep {
   const step = steps.find((candidate) => candidate.name === name);
   assert.ok(step, `missing workflow step: ${name}`);
@@ -70,6 +78,19 @@ function normalizeWhitespace(value: string | undefined): string {
 
 test("documented target dispatcher template matches the live workflow", () => {
   assert.equal(documentedWorkflow, liveWorkflow);
+});
+
+test("copied dispatchers isolate comment and ignored bot-label concurrency", () => {
+  const expectedGroup =
+    "clawsweeper-dispatch-${{ github.repository }}-${{ github.event_name }}-${{ github.event.comment.id || github.event.issue.number || github.event.pull_request.number || github.run_id }}-${{ endsWith(github.actor, '[bot]') && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.actor || 'dispatchable' }}";
+  for (const source of [liveWorkflow, documentedWorkflow]) {
+    const concurrency = workflowConcurrency(source);
+    assert.equal(concurrency?.group, expectedGroup);
+    assert.equal(
+      concurrency?.["cancel-in-progress"],
+      "${{ github.event.action == 'edited' || github.event.action == 'synchronize' || github.event.action == 'ready_for_review' }}",
+    );
+  }
 });
 
 test("copied dispatchers admit the target before any token or acknowledgement", () => {

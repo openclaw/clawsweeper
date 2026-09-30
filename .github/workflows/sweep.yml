@@ -959,47 +959,85 @@ jobs:
           }
           react "eyes"
 
-      - uses: actions/cache@v6
+      # openclaw/openclaw moves ~460 commits and ~7.8k tip blobs a day, and blobs
+      # fetched by id are the slow part, so the cache is refreshed hourly: the
+      # first run of each UTC hour saves a new entry built on the newest one from
+      # the same UTC day (each day starts from a clean clone), and the prune step
+      # below keeps only the two newest entries.
+      - name: Resolve target repository cache key
+        id: target-git-cache-key
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.mark-re-review-command-in-progress.outputs.terminal_state != 'true' && steps.mark-re-review-command-in-progress.outputs.queue_superseded != 'true' && (steps.command-status-fence.outcome == 'skipped' || steps.command-status-fence.outputs.authorized == 'true') }}
+        env:
+          TARGET_SLUG: ${{ steps.target.outputs.target_slug }}
+          TARGET_BRANCH: ${{ steps.live-item.outputs.target_branch }}
+        run: |
+          set -euo pipefail
+          prefix="${TARGET_SLUG}-review-target-git-v1-${RUNNER_OS}-${TARGET_BRANCH}-"
+          stamp="$(date -u +%Y%m%d-%H)"
+          {
+            echo "prefix=${prefix}"
+            echo "day_prefix=${prefix}${stamp%-*}-"
+            echo "key=${prefix}${stamp}"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache/restore@v6
+        id: target-git-cache
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.mark-re-review-command-in-progress.outputs.terminal_state != 'true' && steps.mark-re-review-command-in-progress.outputs.queue_superseded != 'true' && (steps.command-status-fence.outcome == 'skipped' || steps.command-status-fence.outputs.authorized == 'true') }}
         with:
           path: ${{ steps.target.outputs.target_checkout_dir }}-cache.git
-          key: ${{ steps.target.outputs.target_repo_name }}-event-git-${{ runner.os }}-${{ github.run_id }}
-          restore-keys: |
-            ${{ steps.target.outputs.target_repo_name }}-event-git-${{ runner.os }}-
-            ${{ steps.target.outputs.target_repo_name }}-git-${{ runner.os }}-
+          key: ${{ steps.target-git-cache-key.outputs.key }}
+          restore-keys: ${{ steps.target-git-cache-key.outputs.day_prefix }}
 
       - name: Check out target repository
+        id: target-checkout
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.mark-re-review-command-in-progress.outputs.terminal_state != 'true' && steps.mark-re-review-command-in-progress.outputs.queue_superseded != 'true' && (steps.command-status-fence.outcome == 'skipped' || steps.command-status-fence.outputs.authorized == 'true') }}
+        env:
+          TARGET_REPO: ${{ steps.target.outputs.target_repo }}
+          TARGET_BRANCH: ${{ steps.live-item.outputs.target_branch }}
+          CHECKOUT_DIR: ${{ steps.target.outputs.target_checkout_dir }}
+          CACHE_MATCHED_KEY: ${{ steps.target-git-cache.outputs.cache-matched-key }}
         run: |
           set -euo pipefail
-          url="https://github.com/${{ steps.target.outputs.target_repo }}.git"
-          cache_dir="${{ steps.target.outputs.target_checkout_dir }}-cache.git"
-          checkout_dir="${{ steps.target.outputs.target_checkout_dir }}"
-          target_branch="${{ steps.live-item.outputs.target_branch }}"
-          if [ -d "$cache_dir" ]; then
-            git -C "$cache_dir" remote set-url origin "$url"
-            git -C "$cache_dir" config remote.origin.promisor true
-            git -C "$cache_dir" config remote.origin.partialclonefilter blob:none
-            if [ -f "$cache_dir/shallow" ]; then
-              cache_fetch=(git -C "$cache_dir" fetch --prune --unshallow --filter=blob:none origin "$target_branch")
-            else
-              cache_fetch=(git -C "$cache_dir" fetch --prune --filter=blob:none origin "$target_branch")
-            fi
-            if ! "${cache_fetch[@]}"; then
-              echo "::warning::Cached target repository fetch failed; rebuilding cache."
-              rm -rf "$cache_dir"
-              git clone --bare --filter=blob:none --single-branch --branch "$target_branch" "$url" "$cache_dir"
-            fi
-          else
-            git clone --bare --filter=blob:none --single-branch --branch "$target_branch" "$url" "$cache_dir"
+          cache_dir="${CHECKOUT_DIR}-cache.git"
+          # A failed restore can leave a partial directory behind; never trust it.
+          if [ -z "$CACHE_MATCHED_KEY" ]; then
+            rm -rf -- "$cache_dir"
           fi
-          if ! git clone --reference-if-able "$cache_dir" --dissociate --filter=blob:none --branch "$target_branch" --single-branch "$url" "$checkout_dir"; then
-            echo "::warning::Cached target checkout failed; retrying without cache reference."
-            rm -rf "$checkout_dir" "$cache_dir"
-            git clone --bare --filter=blob:none --single-branch --branch "$target_branch" "$url" "$cache_dir"
-            git clone --filter=blob:none --branch "$target_branch" --single-branch "$url" "$checkout_dir"
-          fi
-          git -C "$checkout_dir" rev-parse --short HEAD
+          bash scripts/review-target-checkout.sh "https://github.com/${TARGET_REPO}.git" "$cache_dir" "$CHECKOUT_DIR" "$TARGET_BRANCH"
+
+      # Saved before any review input touches the workspace, and only when this
+      # hour's entry is missing and the cache holds every branch-tip blob.
+      - name: Save target repository cache
+        id: target-git-cache-save
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target-checkout.outputs.cache_ready == 'true' && steps.target-git-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ steps.target.outputs.target_checkout_dir }}-cache.git
+          key: ${{ steps.target-git-cache-key.outputs.key }}
+
+      # Keep the entry just saved and its predecessor (which in-flight runs may
+      # still be restoring); older hourly entries are never restored again.
+      - name: Prune superseded target repository caches
+        if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.target-git-cache-save.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_PREFIX: ${{ steps.target-git-cache-key.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          # The key filter is a prefix match, so drop other branches that share it.
+          gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/caches" \
+            -f key="$CACHE_PREFIX" -f sort=created_at -f direction=desc -F per_page=100 |
+            jq -r --arg prefix "$CACHE_PREFIX" '
+              [.actions_caches[]
+                | select((.key | startswith($prefix)) and (.key | ltrimstr($prefix) | test("^[0-9]{8}-[0-9]{2}$")))
+              ][2:][].id' |
+            while read -r cache_id; do
+              # Concurrent first-of-the-hour runs prune the same entries.
+              gh api --method DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${cache_id}" > /dev/null ||
+                echo "::notice::Target cache entry ${cache_id} was not deleted; another run may have pruned it."
+            done
 
       - uses: ./.github/actions/setup-openclaw-codex-source
         if: ${{ steps.claim-exact-review-queue.outputs.claimed == 'true' && steps.live-item.outputs.proceed == 'true' && steps.live-item.outputs.oversized != 'true' && steps.mark-re-review-command-in-progress.outputs.terminal_state != 'true' && steps.mark-re-review-command-in-progress.outputs.queue_superseded != 'true' && (steps.command-status-fence.outcome == 'skipped' || steps.command-status-fence.outputs.authorized == 'true') }}
