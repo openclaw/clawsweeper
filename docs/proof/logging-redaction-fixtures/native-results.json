@@ -1,0 +1,128 @@
+{
+  "date": "2026-09-30",
+  "platform": "darwin",
+  "node": "v26.10.0",
+  "scanner": "3.97.4",
+  "baseSha": "9b5b439dcb6e11b929c982d9b40e8ddcb4c9b2e5",
+  "headSha": "08d64d3b5ec802237eff61e10e0f1a3aeb8761b0",
+  "baseline": {
+    "runs": 5,
+    "results": [
+      "refused"
+    ],
+    "diagnostics": [
+      {
+        "reason": "finding_not_reviewed",
+        "detectorType": 17,
+        "decoder": "HTML",
+        "findingCount": 7,
+        "blob": "1a6fb18eae08a6fc51ec07f4d128b58253f2a911",
+        "role": "base"
+      },
+      {
+        "reason": "literal_mismatch",
+        "detectorType": 968,
+        "decoder": "PLAIN",
+        "findingCount": 8,
+        "blob": "a2d4c9ad352d19011233c4c87e709ba954451848",
+        "role": "head"
+      },
+      {
+        "reason": "finding_not_reviewed",
+        "detectorType": 895,
+        "decoder": "HTML",
+        "findingCount": 10,
+        "blob": "a2d4c9ad352d19011233c4c87e709ba954451848",
+        "role": "head"
+      },
+      {
+        "reason": "literal_mismatch",
+        "detectorType": 968,
+        "decoder": "PLAIN",
+        "findingCount": 8,
+        "blob": "1a6fb18eae08a6fc51ec07f4d128b58253f2a911",
+        "role": "base"
+      },
+      {
+        "reason": "literal_mismatch",
+        "detectorType": 968,
+        "decoder": "PLAIN",
+        "findingCount": 7,
+        "blob": "1a6fb18eae08a6fc51ec07f4d128b58253f2a911",
+        "role": "base"
+      }
+    ]
+  },
+  "candidate": {
+    "runs": 12,
+    "results": [
+      "admitted"
+    ],
+    "classifiedFindings": 104,
+    "sources": [
+      "src/logging/redact.test.ts"
+    ],
+    "decodersByIdentityAndRole": {
+      "MongoDB 087c10edd5d2": {
+        "base": [
+          "ESCAPED_UNICODE",
+          "PLAIN"
+        ],
+        "head": [
+          "ESCAPED_UNICODE",
+          "HTML",
+          "PLAIN"
+        ]
+      },
+      "Postgres 050c1ddf61dd": {
+        "base": [
+          "ESCAPED_UNICODE",
+          "HTML",
+          "PLAIN"
+        ],
+        "head": [
+          "ESCAPED_UNICODE",
+          "HTML",
+          "PLAIN"
+        ]
+      },
+      "Postgres 39a0315176e4": {
+        "base": [
+          "ESCAPED_UNICODE",
+          "HTML",
+          "PLAIN"
+        ],
+        "head": [
+          "ESCAPED_UNICODE",
+          "HTML",
+          "PLAIN"
+        ]
+      },
+      "URI 198d323e34c2": {
+        "base": [
+          "ESCAPED_UNICODE",
+          "HTML",
+          "PLAIN"
+        ],
+        "head": [
+          "ESCAPED_UNICODE",
+          "HTML",
+          "PLAIN"
+        ]
+      },
+      "URI 839b16fa1dd8": {
+        "base": [
+          "ESCAPED_UNICODE",
+          "PLAIN"
+        ],
+        "head": [
+          "ESCAPED_UNICODE",
+          "HTML",
+          "PLAIN"
+        ]
+      }
+    }
+  },
+  "policySourceSHA256": "de5157f140d9a2f982638671f4800b77e83072950807aed5c9b2b729151a239c",
+  "limits": "Complete committed source range with controlled prompt and normal native verification; emitted finding subsets and decoder labels vary per run. Not a hosted review and no model invocation."
+}

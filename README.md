@@ -678,7 +678,10 @@ and the reviewed Crabbox PostgreSQL operations example use a separate flat
 attribution table without changing the legacy URI policy above. Each row binds
 the exact detector ID and name, observed native decoder, `Raw`, `RawV2`, and
 complete source-line SHA-256 digests, path, and mode. The logging rows permit
-only their observed `PLAIN` or `ESCAPED_UNICODE` variants; the Crabbox
+only their observed `PLAIN`, `ESCAPED_UNICODE`, or `HTML` variants. `HTML` is
+qualified only for the [rewritten fixtures](https://github.com/openclaw/openclaw/blob/58b18602329e5f6113056aa34c6daba0ecddd7f8/src/logging/redact.test.ts)
+from OpenClaw #160879; the pre-rewrite rows remain for merge bases that predate
+it ([proof](docs/proof/logging-redaction-fixtures/README.md)). The Crabbox
 documentation row permits only its observed `PLAIN` or `HTML` variants. These
 exact attribution rows are role-neutral; every logical staged reference must
 independently match the row and have a committed `base` or `head` role. URI

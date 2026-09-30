@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Requalify OpenClaw's rewritten `src/logging/redact.test.ts` connection-string fixtures for the exact-review input scan, so pull requests touching that file are no longer refused before review; each exact post-rewrite identity may carry the `PLAIN`, `ESCAPED_UNICODE`, or `HTML` label the pinned scanner assigns nondeterministically.
+
 - Speed up exact-review target checkouts by restoring an hourly blobless cache that already holds the branch-tip blobs and cloning it locally, keeping at most two target cache entries per branch instead of saving a new ~1 GB entry on every review run; warm checkouts refresh moved/deleted tags and rebuild after branch rewinds, and the pinned Codex source cache is now saved once per Codex version.
 
 - Admit the existing OpenClaw completion-webhook FTP redaction fixture only when its exact native finding and complete committed source bytes match the reviewed qualification, keeping scanning and verification enabled.

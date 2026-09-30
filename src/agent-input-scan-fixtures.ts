@@ -370,6 +370,14 @@ const REVIEWED_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
   [968, "Postgres", "PLAIN", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "4734d8b7c6e9bf96ae464bfc45b1482e00caaedea951cb96b9e88a92ba37a00f", "252d197820142c40bc8701a8b1400f28a3224f305f37fd65cd2e6bfbe48d9fb1", "src/logging/redact.test.ts", "100644"],
   [968, "Postgres", "PLAIN", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "8be6f6c2f1e50f070e97e4b46fce7e7ad499a6bc0c145e8bdd4fc0a6ee4b5565", "6a9d1339c87f11af0ba4e7ef89a77ea8eb8e7f7ac48fdec0abb19d9138821d18", "src/logging/redact.test.ts", "100644"],
   [968, "Postgres", "PLAIN", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "f2e76a2fe75ea0d64265b2a61462f1d8026a2286e3030077b4f3972fc0df3b70", "2020783f7b14c74d2d6960efca4ca82727980494ddef883f15ae9980141662ec", "src/logging/redact.test.ts", "100644"],
+  // Logging fixtures rewritten by OpenClaw #160879: native 3.97.4 labels each identity PLAIN, ESCAPED_UNICODE, or HTML.
+  [17, "URI", "HTML", "de7dcbd8612764d80691e85407d899f6e3686afd9ab40964943c3874ffe9571c", "198d323e34c2a045b86adbc72b8cd54bb8f9582175c5c25e6c68b4e374d8873f", "8ff8c788b296b7eb81abaf7f2f48bb4be717f6e8bef76200e7c842dbeea8a15c", "src/logging/redact.test.ts", "100644"],
+  [17, "URI", "HTML", "a460200b4a488bc178d0dac30bc5fe027ff86d9c7c94554f5c9d915580bc4239", "839b16fa1dd892daf47ab10d50f7c1957a16ace282fe9e6df67fefc40f7f06ff", "232cce5bf0c7b495e2f008fdc45cbd2bd9afc5394906576e4466411f6841d260", "src/logging/redact.test.ts", "100644"],
+  [895, "MongoDB", "HTML", "087c10edd5d21290a4a8695083ff8c42554fc1d1a1becea9053b11c4790b859c", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "0aeba0d1b540784464c2a230b589a48d3f062d0dbbb2d9669450ff4ee2176218", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "HTML", "39a0315176e45802aaa3c5c40c2a717e2fde14e99567c38b5640fe16138710fa", "39a0315176e45802aaa3c5c40c2a717e2fde14e99567c38b5640fe16138710fa", "4b03f485ba97fd1aea07f64e978e9a961179dbbb766828f20fc8a2401812a858", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "ESCAPED_UNICODE", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "cc1376c8d49155ce16404253e7957c99072041985583907e88c87d5d3195a97a", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "HTML", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "cc1376c8d49155ce16404253e7957c99072041985583907e88c87d5d3195a97a", "src/logging/redact.test.ts", "100644"],
+  [968, "Postgres", "PLAIN", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "050c1ddf61dd8b806e1a75cbe572669f8fa546e4ba36d03454377ba7a2c05d66", "cc1376c8d49155ce16404253e7957c99072041985583907e88c87d5d3195a97a", "src/logging/redact.test.ts", "100644"],
   // Maintainer-qualified Git-remote rejection fixtures; only observed native PLAIN tuples.
   [17, "URI", "PLAIN", "609f5f8c987b35e0d48b35e8463574db63b84c087e79d4189ef6fea5979f7609", "8074e19d513f3bdb60156065af46081e407232026590b37476c5b7745db3d776", ["f0144dec37814ca30e23745ffff253f710c20e51e4ac2fbdf3ae4b82afb17e10", "b59f02752a9188dc4d89ebf86442a3af3c2c49a64a217614fb29e9d0d1b88f88"], "internal/cli/repo_test.go", "100644"],
   [17, "URI", "PLAIN", "4b113e9ace3e5b41991d62d947eb1bb8251c904aded634c011eac87f7011c518", "4b113e9ace3e5b41991d62d947eb1bb8251c904aded634c011eac87f7011c518", ["f0144dec37814ca30e23745ffff253f710c20e51e4ac2fbdf3ae4b82afb17e10", "b59f02752a9188dc4d89ebf86442a3af3c2c49a64a217614fb29e9d0d1b88f88"], "internal/cli/repo_test.go", "100644"],
@@ -422,7 +430,7 @@ function validateReviewedAttributions(rows: readonly ReviewedAttribution[]): voi
           (decoder === "PLAIN" || decoder === "HTML")) ||
         (source === "src/logging/redact.test.ts" &&
           detectorType !== 899 &&
-          (decoder === "PLAIN" || decoder === "ESCAPED_UNICODE")) ||
+          (decoder === "PLAIN" || decoder === "ESCAPED_UNICODE" || decoder === "HTML")) ||
         (source === "src/infra/git-source.test.ts" &&
           detectorType === 17 &&
           detectorName === "URI" &&
