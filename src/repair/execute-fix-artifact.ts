@@ -18,7 +18,7 @@ import {
   replacementSourceLinkComment,
 } from "./external-messages.js";
 import { runCommand as run } from "./command-runner.js";
-import { runIsolatedGitNetwork } from "./git-network-isolation.js";
+import { hydrateTargetRebaseRange, runIsolatedGitNetwork } from "./git-network-isolation.js";
 import {
   remainingRepairBudgetMs,
   repairTimeoutBudgetFromEnv,
@@ -1752,6 +1752,7 @@ function executeReplacementBranch({
     fallbackReason,
     baseBranch,
     contributorCredits,
+    sourceHead: branchState.source_head,
     allowExistingChanges: branchState.resumed && branchHasBaseDiff({ targetDir, baseBranch }),
     reconcileWithBase: branchState.resumed,
     rebaseResult,
@@ -2648,6 +2649,22 @@ function reconcileLatestBaseBeforePush({
   if (isAncestor({ targetDir, ancestor: baseSha, descendant: "HEAD" })) {
     return { status: "already-current", base_sha: baseSha };
   }
+
+  const timeoutMs = currentNetworkCommandTimeoutMs();
+  assertTargetPublicationGitConfiguration(targetDir, timeoutMs);
+  const env = ghEnv();
+  const token =
+    String(env.GH_TOKEN ?? env.GITHUB_TOKEN ?? "").trim() ||
+    run("gh", ["auth", "token"], { cwd: targetDir, env, timeoutMs }).trim();
+  hydrateTargetRebaseRange({
+    baseSha,
+    cwd: targetDir,
+    env,
+    remoteUrl: `https://github.com/${result.repo}.git`,
+    sourceHead,
+    timeoutMs,
+    token,
+  });
 
   const rebaseResult = rebaseTargetOntoVerifiedBase({
     cwd: targetDir,
@@ -3593,10 +3610,15 @@ function checkoutRecoverableReplacementBranch({
         return {
           resumed: false,
           remote_lease_sha: remoteLeaseSha,
+          source_head: currentHead(targetDir),
         };
       }
     }
-    return { resumed: true, remote_lease_sha: remoteLeaseSha };
+    return {
+      resumed: true,
+      remote_lease_sha: remoteLeaseSha,
+      source_head: recoveredHeadSha,
+    };
   }
   if (sourcePr) {
     const pull = fetchPullRequest(result.repo, sourcePr.number);
@@ -3611,6 +3633,7 @@ function checkoutRecoverableReplacementBranch({
     return {
       resumed: false,
       remote_lease_sha: remoteLeaseSha,
+      source_head: currentHead(targetDir),
     };
   }
   // Fetch can advance the base ref without moving the fresh clone's HEAD.
@@ -3628,7 +3651,11 @@ function checkoutRecoverableReplacementBranch({
     expectedHeadSha: fetchedBaseSha,
     timeoutMs: targetValidationTimeoutMs,
   });
-  return { resumed: false, remote_lease_sha: remoteLeaseSha };
+  return {
+    resumed: false,
+    remote_lease_sha: remoteLeaseSha,
+    source_head: fetchedBaseSha,
+  };
 }
 
 function materializeFetchedReplacementCommit({
