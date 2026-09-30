@@ -2150,7 +2150,7 @@ for (const scenarioName of [
     "wrong version",
     "missing completion",
   ].flatMap((scenario) => [
-    `mac dashboard ${scenario}`,
+    `mac dashboard ${scenario === "unreviewed HTML" ? "reviewed HTML" : scenario}`,
     `mcp apps ${scenario}`,
     `marketplace feed ${scenario}`,
     `gateway config ${scenario === "unreviewed HTML" ? "reviewed HTML" : scenario}`,
@@ -2290,7 +2290,8 @@ for (const scenarioName of [
       uri = url.href.slice(0, -1);
     }
     if (macDashboardFixture) {
-      // Native 3.97.1 witness from OpenClaw 9ba01d6c7b1c, line 273.
+      // Original PLAIN witness: OpenClaw 9ba01d6c7b1c, line 273;
+      // native 3.97.4 also reports HTML at unchanged f8c1840d, line 292.
       const url = new URL("http://localhost:18890/embed/channel/T01/C01");
       url.username = "user";
       url.password = "pass";

@@ -230,7 +230,7 @@ test("obsolete-fix PR apply blocks more than five changed files", () => {
 for (const [name, options, message] of [
   ["missing head SHA", { headSha: "" }, /head changed|live PR head SHA/],
   ["missing head committer date", { headCommittedAt: "" }, /dated current-head committer/],
-  ["live age", { itemCreatedAt: "2026-07-01T00:00:00Z" }, /older than 90 days/],
+  ["live age", { itemCreatedAt: new Date().toISOString() }, /older than 90 days/],
   ["recent check activity", { checkActivityAt: new Date().toISOString() }, /30 days without/],
   ["assignee", { assignees: [{ login: "maintainer" }] }, /assigned PR/],
   ["requested reviewer", { requestedReviewers: [{ login: "reviewer" }] }, /requested reviewers/],
