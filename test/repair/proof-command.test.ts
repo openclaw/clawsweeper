@@ -59,6 +59,39 @@ test("compiled router denies stale issue implementation authority before final e
   );
 });
 
+test("compiled Enterprise router keeps re-review and rejects repair before final effects", async () => {
+  const { stdout } = await promisify(execFile)(
+    process.execPath,
+    ["scripts/e2e/proof-command-loopback.mjs", "--enterprise-read-only"],
+    { timeout: 60000 },
+  );
+  const receipt = JSON.parse(stdout);
+  assert.equal(receipt.ok, true);
+  assert.deepEqual(receipt.receipts, [
+    {
+      scenario: "pr-repair",
+      routerStatus: "ignored",
+      jobsCreated: 0,
+      targetWrites: 0,
+      reviewIntakes: 0,
+    },
+    {
+      scenario: "issue-implementation",
+      routerStatus: "ignored",
+      jobsCreated: 0,
+      targetWrites: 0,
+      reviewIntakes: 0,
+    },
+    {
+      scenario: "read-only-re-review",
+      routerStatus: "executed",
+      jobsCreated: 0,
+      targetWrites: 0,
+      reviewIntakes: 1,
+    },
+  ]);
+});
+
 const head = "a".repeat(40);
 
 test("re-review recovery leaves queue-owned terminal acknowledgements intact", async () => {

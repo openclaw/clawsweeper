@@ -59,7 +59,10 @@ preserves the repository's platform-design, IAM, audit, persistence, deployment,
 and integration-proof boundaries, while its baseline repair validation follows
 the target repository's workspace, lint, formatting, OpenAPI, and typecheck
 gates. Issue and pull-request close rules remain empty; enabling the target
-dispatcher does not grant automatic close authority.
+dispatcher does not grant automatic close authority. The profile keeps review
+and read-only comment commands available but rejects issue implementation,
+autofix, automerge, CI/review repair, rebase, and trusted repair/merge automation
+before the router can create a repair job or mutate the target repository.
 
 Repair validation defaults to 480,000 ms per command. Set `validation_timeout_ms`
 in an exact repository entry (or `core_target_overrides`) to override it:

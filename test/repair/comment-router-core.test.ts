@@ -65,6 +65,7 @@ import {
   reviewOnlyRepairLoopTerminalChecks,
   repairLoopPauseLabels,
   repairLoopStopPauseReason,
+  repositoryRepairCommandBlockReason,
   reviewSummaryFromCommentBody,
   reviewedHeadShaBlockReason,
   renderAutomergeJob,
@@ -4336,6 +4337,27 @@ test("repair intent set documents executable repair commands", () => {
     "implement_issue",
     "rebase",
   ]);
+});
+
+test("Enterprise permits read-only commands and blocks every repair command family", () => {
+  for (const intent of [...REPAIR_INTENTS, ...MERGE_INTENTS, "autofix", "automerge"]) {
+    assert.match(
+      repositoryRepairCommandBlockReason("openclaw/openclaw-enterprise", intent) ?? "",
+      /repair commands are disabled/,
+    );
+  }
+  for (const intent of [
+    "status",
+    "help",
+    "explain",
+    "re_review",
+    "request_proof",
+    "freeform_assist",
+    "visualize",
+  ]) {
+    assert.equal(repositoryRepairCommandBlockReason("openclaw/openclaw-enterprise", intent), null);
+  }
+  assert.equal(repositoryRepairCommandBlockReason("openclaw/openclaw", "autofix"), null);
 });
 
 test("merge intent set documents ClawSweeper pass automerge", () => {

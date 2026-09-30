@@ -24,8 +24,13 @@ fs.writeFileSync(proxy, "#!/usr/bin/env node\n(" + loopbackGh.toString() + ")();
 const ackOwnership = process.argv.includes("--ack-ownership");
 const expectRouterWrite = process.argv.includes("--expect-router-write");
 const authorityFinalEffect = process.argv.includes("--authority-final-effect");
-const inline = process.argv.includes("--inline") || ackOwnership;
-const repository = inline ? "openclaw/openclaw" : "openclaw/proof-admission-fixture";
+const enterpriseReadOnly = process.argv.includes("--enterprise-read-only");
+const inline = process.argv.includes("--inline") || ackOwnership || enterpriseReadOnly;
+const repository = enterpriseReadOnly
+  ? "openclaw/openclaw-enterprise"
+  : inline
+    ? "openclaw/openclaw"
+    : "openclaw/proof-admission-fixture";
 const intakes = [];
 const head = "a".repeat(40);
 let currentHead = head;
@@ -133,7 +138,63 @@ try {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   apiUrl = "http://127.0.0.1:" + address.port;
-  if (authorityFinalEffect) {
+  if (enterpriseReadOnly) {
+    const receipts = [];
+    for (const scenario of [
+      { name: "pr-repair", body: "@clawsweeper address review", pullRequest: true },
+      { name: "issue-implementation", body: "@clawsweeper implement", pullRequest: false },
+    ]) {
+      selected = { ...comment(700 + receipts.length, 200 + receipts.length), body: scenario.body };
+      isPullRequest = scenario.pullRequest;
+      const jobsBefore = issueImplementationJobs();
+      const writesBefore = requests.filter((entry) => entry.method !== "GET").length;
+      const intakesBefore = intakes.length;
+      const routed = (await runRouter(apiUrl)).commands[0];
+      assert.equal(routed.status, "ignored");
+      assert.match(routed.reason, /repair commands are disabled/);
+      assert.deepEqual(issueImplementationJobs(), jobsBefore);
+      assert.equal(requests.filter((entry) => entry.method !== "GET").length, writesBefore);
+      assert.equal(intakes.length, intakesBefore);
+      receipts.push({
+        scenario: scenario.name,
+        routerStatus: routed.status,
+        jobsCreated: 0,
+        targetWrites: 0,
+        reviewIntakes: 0,
+      });
+    }
+    selected = { ...comment(702, 202), body: "@clawsweeper re-review" };
+    isPullRequest = true;
+    const jobsBefore = issueImplementationJobs();
+    const writesBefore = requests.filter(isCommentWrite).length;
+    const intakesBefore = intakes.length;
+    const routed = (await runRouter(apiUrl)).commands[0];
+    assert.equal(routed.status, "executed");
+    assert.deepEqual(issueImplementationJobs(), jobsBefore);
+    assert.equal(requests.filter(isCommentWrite).length, writesBefore);
+    assert.equal(intakes.length, intakesBefore + 1);
+    receipts.push({
+      scenario: "read-only-re-review",
+      routerStatus: routed.status,
+      jobsCreated: 0,
+      targetWrites: 0,
+      reviewIntakes: 1,
+    });
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          runtime: "compiled comment-router CLI",
+          transport: "loopback HTTP through GH_BIN adapter",
+          receipts,
+          limits:
+            "Synthetic loopback GitHub and exact-review intake; no live Enterprise App installation, hosted dispatch, or published review exercised.",
+        },
+        null,
+        2,
+      ),
+    );
+  } else if (authorityFinalEffect) {
     isPullRequest = false;
     const scenarios = [
       { name: "current-writer", association: "MEMBER", permission: "write", allowed: true },
