@@ -1,0 +1,43 @@
+{
+  "scanner": "3.97.4",
+  "verification": "enabled",
+  "exit": 183,
+  "blob": "a09667f08dd20d7a420244fd312b3c3527ff6ff1",
+  "source": "src/gateway/server-cron-notifications.test.ts",
+  "findings": [
+    {
+      "detectorType": 899,
+      "detectorName": "FTP",
+      "decoder": "HTML",
+      "verified": false,
+      "sourceType": 15,
+      "line": 753,
+      "lineSha256": "47389a842fa9b1a3cb74c54ab2455b02b9cb0bd41c4b832eaf83aa52fbccbdc8",
+      "raw": {
+        "type": "string",
+        "bytes": 33,
+        "sha256": "927664cc6f3d082fb8acb9e01b47942d21d8043ddf150a6d833b5660bc240e07"
+      },
+      "rawV2": {
+        "type": "string",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "redacted": {
+        "type": "string",
+        "bytes": 35,
+        "sha256": "82c0658df429d20f5ce350b00bf23eae5f1beff71de4cda6b7922bda9fd23b13"
+      },
+      "secretParts": {
+        "key": {
+          "type": "string",
+          "bytes": 33,
+          "sha256": "927664cc6f3d082fb8acb9e01b47942d21d8043ddf150a6d833b5660bc240e07"
+        }
+      },
+      "extraData": null,
+      "structuredData": null,
+      "verificationErrorPresent": true
+    }
+  ]
+}
