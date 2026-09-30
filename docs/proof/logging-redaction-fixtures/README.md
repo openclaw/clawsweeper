@@ -47,17 +47,17 @@ node docs/proof/marketplace-telemetry-fixtures/run-proof.mjs \
   /path/to/proof.json
 ```
 
-The [native result](native-results.json) records five runs of the original
-policy (ClawSweeper `main` at the pull request base) and twelve of the
+The [native result](native-results.json) records three runs of the original
+policy (ClawSweeper `main` at the pull request base) and eight of the
 candidate over the same complete range on macOS, with `policySourceSHA256`
 binding the candidate runs to the committed `src/agent-input-scan-fixtures.ts`.
-The original policy refused every run: `literal_mismatch` for the rewritten
-Postgres line under `PLAIN`, through the base blob that matches current OpenClaw
-`main` and through the head blob, and `finding_not_reviewed` for an `HTML`
-MongoDB finding. The candidate admitted every run and classified 106 emitted
-findings; every identity appeared under `PLAIN`, `ESCAPED_UNICODE`, and `HTML`
-in the base role. Emitted subsets varied between four and five identities per
-run. An earlier replay of the same range recorded one `duplicate_finding`
+The original policy refused every run, through the base blob that matches
+current OpenClaw `main`: `literal_mismatch` for the rewritten Postgres line
+under `PLAIN`, and `finding_not_reviewed` for an `HTML` MongoDB finding. The
+candidate admitted every run and classified 66 emitted findings; every
+identity appeared as `HTML` in the base role, and four of the five under all
+three labels. Emitted subsets varied between four and five identities per run.
+An earlier replay of the same range recorded one `duplicate_finding`
 refusal: the native scanner emitted the same head-blob URI record twice for a
 line inside the 3 KB peek overlap after a 10 KB chunk boundary, and the existing
 duplicate-record guard refused it. That scanner property is unrelated to the
@@ -78,7 +78,7 @@ The artifact records the limit natively with local-only OpenClaw commits that
 add an entity-encoded copy (each colon as a numeric entity) of the approved
 browser URI: with the copy at line 4 of both base and head blobs, and with the
 copy inserted two lines above the plain fixture so the hunk context carries the
-plain line as a witness. The candidate admitted 3/3 runs of each scenario, and
+plain line as a witness. The candidate admitted 2/2 runs of each scenario, and
 the recorded scanner lines show the copy's own finding (line 4, patch line 135)
 classified against the plain witness.
 
