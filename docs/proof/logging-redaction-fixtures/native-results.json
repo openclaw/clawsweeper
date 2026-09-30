@@ -12,53 +12,65 @@
     ],
     "diagnostics": [
       {
-        "reason": "finding_not_reviewed",
-        "detectorType": 17,
-        "decoder": "HTML",
+        "reason": "literal_mismatch",
+        "detectorType": 968,
+        "decoder": "PLAIN",
         "findingCount": 7,
-        "blob": "1a6fb18eae08a6fc51ec07f4d128b58253f2a911",
-        "role": "base"
+        "blob": "a2d4c9ad352d19011233c4c87e709ba954451848",
+        "role": "head"
       },
       {
         "reason": "literal_mismatch",
         "detectorType": 968,
         "decoder": "PLAIN",
-        "findingCount": 8,
-        "blob": "a2d4c9ad352d19011233c4c87e709ba954451848",
-        "role": "head"
-      },
-      {
-        "reason": "finding_not_reviewed",
-        "detectorType": 895,
-        "decoder": "HTML",
         "findingCount": 10,
         "blob": "a2d4c9ad352d19011233c4c87e709ba954451848",
         "role": "head"
       },
       {
-        "reason": "literal_mismatch",
+        "reason": "finding_not_reviewed",
         "detectorType": 968,
-        "decoder": "PLAIN",
+        "decoder": "HTML",
         "findingCount": 8,
         "blob": "1a6fb18eae08a6fc51ec07f4d128b58253f2a911",
         "role": "base"
       },
       {
-        "reason": "literal_mismatch",
-        "detectorType": 968,
-        "decoder": "PLAIN",
-        "findingCount": 7,
-        "blob": "1a6fb18eae08a6fc51ec07f4d128b58253f2a911",
-        "role": "base"
+        "reason": "finding_not_reviewed",
+        "detectorType": 895,
+        "decoder": "HTML",
+        "findingCount": 9,
+        "blob": "a2d4c9ad352d19011233c4c87e709ba954451848",
+        "role": "head"
+      },
+      {
+        "reason": "finding_not_reviewed",
+        "detectorType": 17,
+        "decoder": "HTML",
+        "findingCount": 8,
+        "blob": "a2d4c9ad352d19011233c4c87e709ba954451848",
+        "role": "head"
       }
     ]
   },
   "candidate": {
     "runs": 12,
     "results": [
-      "admitted"
+      "admitted",
+      "refused"
     ],
-    "classifiedFindings": 104,
+    "classifiedFindings": 86,
+    "diagnostics": [
+      {
+        "reason": "duplicate_finding",
+        "detectorType": 17,
+        "decoder": "ESCAPED_UNICODE",
+        "findingCount": 11,
+        "scannerLine": 751,
+        "blob": "a2d4c9ad352d19011233c4c87e709ba954451848",
+        "role": "head"
+      }
+    ],
     "sources": [
       "src/logging/redact.test.ts"
     ],
@@ -66,6 +78,7 @@
       "MongoDB 087c10edd5d2": {
         "base": [
           "ESCAPED_UNICODE",
+          "HTML",
           "PLAIN"
         ],
         "head": [
@@ -76,53 +89,42 @@
       },
       "Postgres 050c1ddf61dd": {
         "base": [
-          "ESCAPED_UNICODE",
-          "HTML",
           "PLAIN"
         ],
         "head": [
           "ESCAPED_UNICODE",
-          "HTML",
           "PLAIN"
         ]
       },
       "Postgres 39a0315176e4": {
         "base": [
-          "ESCAPED_UNICODE",
           "HTML",
           "PLAIN"
         ],
         "head": [
           "ESCAPED_UNICODE",
-          "HTML",
           "PLAIN"
         ]
       },
       "URI 198d323e34c2": {
         "base": [
-          "ESCAPED_UNICODE",
-          "HTML",
           "PLAIN"
         ],
         "head": [
           "ESCAPED_UNICODE",
-          "HTML",
           "PLAIN"
         ]
       },
       "URI 839b16fa1dd8": {
         "base": [
-          "ESCAPED_UNICODE",
-          "PLAIN"
+          "HTML"
         ],
         "head": [
-          "ESCAPED_UNICODE",
-          "HTML",
           "PLAIN"
         ]
       }
     }
   },
-  "policySourceSHA256": "de5157f140d9a2f982638671f4800b77e83072950807aed5c9b2b729151a239c",
+  "policySourceSHA256": "9446fc5c11dab21806564a15561c58478cea0d57c7a5619b5068978c6e5247d1",
   "limits": "Complete committed source range with controlled prompt and normal native verification; emitted finding subsets and decoder labels vary per run. Not a hosted review and no model invocation."
 }

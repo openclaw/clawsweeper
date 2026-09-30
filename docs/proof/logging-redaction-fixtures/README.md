@@ -48,14 +48,26 @@ node docs/proof/marketplace-telemetry-fixtures/run-proof.mjs \
 ```
 
 The [native result](native-results.json) records five runs of the original
-policy and twelve of the candidate over the same complete range on macOS. The
-original policy refused every run: twice `finding_not_reviewed` for an `HTML`
-URI or MongoDB finding, and three times `literal_mismatch` for the rewritten
-Postgres line, including through the base blob that matches current OpenClaw
-`main`. The candidate admitted every run and classified 104 emitted findings.
-Across those runs each post-rewrite identity appeared with at least two decoder
-labels per role, and every identity appeared as `HTML` in at least one role.
-Emitted subsets varied between four and five identities per run.
+policy (ClawSweeper `main` at the pull request base) and twelve of the
+candidate over the same complete range on macOS, with `policySourceSHA256`
+binding the candidate runs to the committed `src/agent-input-scan-fixtures.ts`.
+The original policy refused every run: three times `finding_not_reviewed` for
+an `HTML` URI, MongoDB, or Postgres finding (once through the base blob that
+matches current OpenClaw `main`), and twice `literal_mismatch` for the
+rewritten Postgres line. The candidate admitted eleven runs and classified 86
+emitted findings.
+Across those runs every post-rewrite identity appeared under more than one
+decoder label, and the MongoDB, `secret:secret` Postgres, and empty-username
+URI identities appeared as `HTML`. Emitted subsets varied between four and
+five identities per run.
+
+One candidate run was refused with `duplicate_finding`: the native scanner
+emitted the same head-blob URI record twice (eleven findings instead of ten).
+That line sits inside the 3 KB peek overlap after a 10 KB chunk boundary, so
+both chunks carry it and TruffleHog's cross-chunk deduplication occasionally
+races. The existing duplicate-record guard refused it, unrelated to the added
+rows; 24 direct scans of the same blobs emitted no duplicate. Relaxing that
+guard is a separate policy decision and is not part of this change.
 
 This is source-admission proof, not a hosted review. Hosted runs scan their own
 complete inputs. Reviews already held after a terminal scanner refusal still
