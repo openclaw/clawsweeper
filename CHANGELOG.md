@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Report retained stale-revision publication rows as parked (`stale_revision`) instead of ready, so the publication lane no longer advertises a weeks-old ready head that no batch can claim; health keeps age-based severity with `stale_revision_over_1h`/`_over_6h`, and fail-closed command retention and cleanup are unchanged.
+
 - Speed up exact-review target checkouts by restoring an hourly blobless cache that already holds the branch-tip blobs and cloning it locally, keeping at most two target cache entries per branch instead of saving a new ~1 GB entry on every review run; warm checkouts refresh moved/deleted tags and rebuild after branch rewinds, and the pinned Codex source cache is now saved once per Codex version.
 
 - Admit the existing OpenClaw completion-webhook FTP redaction fixture only when its exact native finding and complete committed source bytes match the reviewed qualification, keeping scanning and verification enabled.

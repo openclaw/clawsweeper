@@ -4888,6 +4888,10 @@ export class ExactReviewQueue {
     const batchOwnedItemKeys = new Set<string>(batchByItemKey.keys());
     const freshPublicationItemKeys = this.freshPublicationItemKeysSync(state, now);
     const legacyExcludedItemKeys = new Set(batchOwnedItemKeys);
+    // Claim and departure exclude these superseded rows; alarm cleanup retains
+    // command rows without verified successor authority. Stats report the hold.
+    const staleRevisionItemKeys = new Set<string>();
+    let oldestStaleRevisionAt: number | null = null;
     if (exactReviewPublicationBatchingEnabled(this.env)) {
       for (const item of Object.values(state.items) as ExactReviewQueueItem[]) {
         if (
@@ -4897,6 +4901,18 @@ export class ExactReviewQueue {
         ) {
           legacyExcludedItemKeys.add(item.key);
         }
+      }
+      for (const key of this.supersededPublicationItemKeysSync(state)) {
+        const item = state.items[key];
+        if (
+          item?.state !== "pending" ||
+          !exactReviewQueueIsBatchablePublication(item) ||
+          batchOwnedItemKeys.has(key)
+        ) {
+          continue;
+        }
+        staleRevisionItemKeys.add(key);
+        oldestStaleRevisionAt = Math.min(oldestStaleRevisionAt ?? item.createdAt, item.createdAt);
       }
     }
     const publicationControl = this.refreshPublicationControlSync(state, now);
@@ -4921,9 +4937,16 @@ export class ExactReviewQueue {
       legacyExcludedItemKeys,
       publicationBatches.nextLeaseExpiresAt,
       exactReviewScheduledCapacity(this.env),
+      staleRevisionItemKeys,
     );
     const publicationHealth = summarizeExactReviewPublicationHealth(
-      stats.lanes.publication,
+      {
+        ...stats.lanes.publication,
+        oldest_stale_revision_age_seconds:
+          oldestStaleRevisionAt === null
+            ? null
+            : Math.max(0, Math.floor((now - oldestStaleRevisionAt) / 1_000)),
+      },
       publicationFlow,
     );
     const reservationClaimObservability = exactReviewReservationClaimObservability({

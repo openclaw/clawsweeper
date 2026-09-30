@@ -593,7 +593,10 @@ For capacity displays, `/api/exact-review-queue` also exposes compatible
 pending, ready, backoff, dispatching, leased, capacity, active, available-slot,
 oldest-pending, and next-attempt values. `backoff_reasons` and `parked_reasons`
 count the causes represented by those lane totals, and the dashboard renders
-the same breakdown beside the lane counts. The existing top-level aggregate
+the same breakdown beside the lane counts. The publication lane reports a
+retained stale-revision row as `parked` with reason `stale_revision`, not as
+pending or ready, so it no longer pins `oldest_ready_at` or `next_attempt_at`
+(see the stale-revision retention paragraph below). The existing top-level aggregate
 fields remain available for older consumers. Both lanes additionally report
 `enqueued_total` and `completed_total`; the review lane's existing
 `shed_since_reset` supplies overload demand. The public response omits item
@@ -764,6 +767,14 @@ can block authority but cannot establish it. Malformed or mismatched evidence
 fails closed. Historical rows whose successor disappeared before evidence was
 retained are not automatically repaired. This private queue state changes no
 Bay response or action contract.
+While batching is enabled, stats classify a pending batchable row that claim and
+departure exclude as superseded, and that no active batch owns, as `parked` with
+the stats-only reason `stale_revision`. The durable row stays pending; retention,
+pruning, supersession, the 80-day artifact refresh, and claim fences are unchanged.
+The row leaves the queue only through a newer revision's fenced cleanup, the
+closed-target retirement runbook below, or that refresh. Publication health keeps the age-based
+severity these rows had as pending work: degraded `stale_revision_over_1h` and
+critical `stale_revision_over_6h`. Real dead letters keep `dead_letter_capacity`.
 Authenticated reconciliation samples report `successor_fence_state` only for
 `stale_revision` rows whose acknowledgement is unavailable because the terminal
 disposition is missing. `verified` is diagnostic evidence, never mutation

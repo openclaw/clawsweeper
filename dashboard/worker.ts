@@ -5517,6 +5517,7 @@ const PUBLIC_QUEUE_PARKED_REASONS = [
   "source_incompatible",
   "scanner_refused",
   "direct_publication",
+  "stale_revision",
   "unknown",
 ] as const;
 const PUBLIC_QUEUE_RECOVERY_REASONS = [
