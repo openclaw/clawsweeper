@@ -101,6 +101,32 @@ test("repositoryProfileFor supports fs-safe event reviews", () => {
   ]);
 });
 
+test("OpenClaw Enterprise uses an explicit review-only profile and target-native gates", () => {
+  const profile = repositoryProfileFor("OpenClaw/OpenClaw-Enterprise");
+
+  assert.equal(profile.targetRepo, "openclaw/openclaw-enterprise");
+  assert.equal(profile.slug, "openclaw-openclaw-enterprise");
+  assert.equal(profile.displayName, "OpenClaw Enterprise");
+  assert.equal(profile.checkoutDir, "openclaw-enterprise");
+  assert.equal(profile.packageManager, "pnpm");
+  assert.match(profile.promptNote, /authoritative platform design/);
+  assert.match(profile.promptNote, /Require target-native integration evidence/);
+  assert.match(profile.promptNote, /Review only/);
+  assert.deepEqual(profile.applyCloseRules, { issue: [], pull_request: [] });
+  assert.deepEqual(profile.liveTest, TERMINAL_LIVE_TEST);
+  assert.deepEqual(resolveTargetRepoToolchain(profile.targetRepo), {
+    packageManager: "pnpm",
+    baseValidationCommands: [
+      "pnpm check:workspace",
+      "pnpm lint",
+      "pnpm format:check",
+      "pnpm openapi:check",
+      "pnpm typecheck",
+    ],
+    changedGate: null,
+  });
+});
+
 test("generic OpenClaw fallback supports conservative event-only onboarding", () => {
   const profile = repositoryProfileFor("OpenClaw/example-tool");
 
