@@ -169,6 +169,7 @@ import {
   supersededReplacementSources,
 } from "./execute-fix-github.js";
 import { canonicalItemAuthorAssociations, codexItemProfile } from "../codex-item-profile.js";
+import { rewriteFinalBaseReconcilePrompt } from "./final-base-reconcile-prompt.js";
 
 const FIX_ACTIONS = new Set(["fix_needed", "build_fix_artifact", "open_fix_pr"]);
 const NON_EXECUTABLE_REPAIR_STRATEGIES = new Set(["already_fixed_on_main", "needs_human"]);
@@ -2739,11 +2740,6 @@ function runCodexBaseReconcile({
   throw new Error(`Codex did not finish final rebase after ${maxEditAttempts} attempt(s)`);
 }
 
-const NORMAL_REBASE_COMPLETION_RULE =
-  "- when git conflicts exist, resolve every conflict marker and leave the checkout in a normal non-rebasing state;";
-const FINAL_REBASE_HANDOFF_RULE =
-  "- for this final base reconciliation, resolve every conflict marker and stage the resolved files, but do not run git rebase --continue, git rebase --skip, or git rebase --abort; leave the rebase pending so ClawSweeper can continue it through isolated Git plumbing;";
-
 function buildFinalBaseReconcilePrompt({
   fixArtifact,
   branch,
@@ -2772,10 +2768,7 @@ function buildFinalBaseReconcilePrompt({
     validationCommands: validationPreflight.resolved_commands ?? [],
     isAutomergeRepair: isAutomergeRepairJob(),
   });
-  if (!prompt.includes(NORMAL_REBASE_COMPLETION_RULE)) {
-    throw new Error("final base reconcile prompt no longer exposes the expected rebase contract");
-  }
-  return prompt.replace(NORMAL_REBASE_COMPLETION_RULE, FINAL_REBASE_HANDOFF_RULE);
+  return rewriteFinalBaseReconcilePrompt(prompt);
 }
 
 function readTextIfExists(filePath: string) {

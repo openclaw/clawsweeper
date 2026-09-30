@@ -366,15 +366,7 @@ test("final publication rebase uses the verified isolated Git path", () => {
   assert.match(codexReconcile, /completeTargetRebaseWithIsolation\(\{/);
   assert.match(codexReconcile, /expectedBaseRef: baseSha/);
   assert.match(codexReconcile, /requireInProgress: true/);
-  assert.match(
-    codexReconcile,
-    /do not run git rebase --continue, git rebase --skip, or git rebase --abort/,
-  );
-  assert.match(codexReconcile, /leave the rebase pending/);
-  assert.match(
-    codexReconcile,
-    /prompt\.replace\(NORMAL_REBASE_COMPLETION_RULE, FINAL_REBASE_HANDOFF_RULE\)/,
-  );
+  assert.match(codexReconcile, /rewriteFinalBaseReconcilePrompt\(prompt\)/);
   assert.doesNotMatch(
     codexReconcile,
     /Resolve this final rebase so the branch is mergeable on current main, then leave the checkout in a normal non-rebasing state/,

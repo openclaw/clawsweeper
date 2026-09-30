@@ -243,6 +243,7 @@ const CRABBOX_POSTGRES_DOC_ATTRIBUTIONS: readonly ReviewedAttribution[] = [
 const CRON_FTP_SOURCE_SHA256S = [
   "9e80ccc47c8373fc9b22c64d1297c8e21a74aba226fe84781256a3fcf4786ac4",
   "82b5327be49d6e7f9b046c43e3d77a30af33baa8a532d4f9357870a30c4d46a9",
+  "9e9ec747fe268991cde3f65280c0b4480e9d7748b9e9ce4d539a28f6f8fc23a1",
 ] as const;
 
 // oxfmt-ignore

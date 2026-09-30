@@ -10,6 +10,8 @@ checkpoint, and status-only commits are intentionally omitted.
 - Report retained stale-revision publication rows as parked (`stale_revision`) instead of ready, so the publication lane no longer advertises a weeks-old ready head that no batch can claim; health keeps age-based severity with `stale_revision_over_1h`/`_over_6h`, and fail-closed command retention and cleanup are unchanged.
 
 
+- Requalify the unchanged OpenClaw Cron notification redaction fixture after its routing test coverage expands, preserving complete-source and native-finding checks.
+
 - Stop endless `source_drift_requeue` reviews of PR close proposals: apply no longer treats ClawSweeper's own review-acknowledgement progress edit as source drift when it is the latest item update and the reviewed source, timeline, head, and review-activity receipt still match. Human comments, title/body edits, non-managed label changes, PR reviews, and new heads still block apply and requeue.
 - Speed up exact-review target checkouts by restoring an hourly blobless cache that already holds the branch-tip blobs and cloning it locally, keeping at most two target cache entries per branch instead of saving a new ~1 GB entry on every review run; warm checkouts refresh moved/deleted tags and rebuild after branch rewinds, and the pinned Codex source cache is now saved once per Codex version.
 

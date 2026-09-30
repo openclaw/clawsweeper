@@ -78,6 +78,30 @@ The original policy failed
 the positive regression; the additional-occurrence case failed before the
 qualification reused the existing whole-blob literal witness check.
 
+## Scheduler-routing coverage requalification
+
+[OpenClaw PR #161703](https://github.com/openclaw/openclaw/pull/161703) adds routing
+coverage without changing the synthetic fixture. The exact line witness remains
+`47389a842fa9b1a3cb74c54ab2455b02b9cb0bd41c4b832eaf83aa52fbccbdc8`, moving from line
+769 to 844. The reviewed head file has SHA256
+`9e9ec747fe268991cde3f65280c0b4480e9d7748b9e9ce4d539a28f6f8fc23a1`.
+
+On ClawSweeper `ce985956ca4f3dd962f87ef2e841fee83a7816cc`, the existing native proof
+runner [refused the complete committed range](161703-before.json)
+`b9a2236578c39079b067a642f0956638567fe7ba..c07112b4c58763176de2021f1c310641b2a8ab81`.
+Adding only the new complete-source hash [admits that same range](161703-after.json),
+with canonical verification enabled. Both base and head produce the existing HTML
+FTP attribution. The exact same qualified source pair at a different path
+[remains refused](161703-foreign-path.json), as does an otherwise identical head
+with an [unqualified source-byte change](161703-changed-source.json). These controls
+use complete, clean synthetic Git sources and the production policy.
+
+Proof ran on macOS arm64, Node 24.21.0 and pinned TruffleHog 3.97.4. All 30 existing
+FTP classifier cases also passed, covering both native decoder shapes and changed
+literal, metadata, path, mode, and occurrence controls. No detector, matcher,
+verification flag, queue, status, or Bay contract changes are involved. This source
+qualification does not complete a hosted review or release its hold.
+
 ## Limits
 
 This is source-admission proof with a controlled prompt. It does not run a model,
