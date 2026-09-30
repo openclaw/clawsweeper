@@ -232,7 +232,12 @@ function fixturePatch(
                 },
               },
             },
-            SecretParts: { host: url.host, username: url.username, password: url.password },
+            SecretParts: {
+              // Native URI metadata retains explicit default ports.
+              host: rawV2.split("/")[2]!.split("@").at(-1),
+              username: url.username,
+              password: url.password,
+            },
             ExtraData: null,
             StructuredData: null,
             ...overrides,
@@ -723,6 +728,50 @@ function exactUriFixtureTests(
     });
   }
 }
+
+test("SDK browser CDP fixtures bind native identities and complete source lines", (t) => {
+  const entries = [9222, 80].map((port) => {
+    const raw = ["http://", "user", ":", "pass", "@", `127.0.0.1:${port}`].join("");
+    return {
+      raw,
+      rawV2: port === 80 ? raw + "/path" : raw,
+      line:
+        port === 80
+          ? '    "' + raw + '/path@name",'
+          : '    const parsed = parseBrowserHttpUrl("' + raw + '/", "browser.cdpUrl");',
+      decoders: ["PLAIN"] as const,
+    };
+  });
+  const patch = fixturePatch(t, "src/plugin-sdk/browser-subpaths.test.ts", entries);
+  const originalInputs = new Map(patch.inputs);
+  assert.equal(patch.classify("PLAIN").kind, "classified");
+  for (const variant of ["line", "path"] as const) {
+    for (const [file, input] of originalInputs) {
+      if (input.kind !== "blob") continue;
+      patch.inputs.set(file, {
+        ...input,
+        ...(variant === "line"
+          ? { bytes: Buffer.from(input.bytes!.toString().replace("path@name", "path@namo")) }
+          : {
+              references: input.references.map((reference) => ({
+                ...reference,
+                source: "src/plugin-sdk/other-browser-subpaths.test.ts",
+              })),
+            }),
+      });
+    }
+    const result = patch.classify("PLAIN", {}, { blobOnly: true });
+    assert.equal(result.kind, "refused");
+    if (result.kind === "refused")
+      assert.equal(
+        result.diagnostic.reason,
+        variant === "line" ? "literal_mismatch" : "source_not_reviewed",
+      );
+  }
+  for (const [file, input] of originalInputs) patch.inputs.set(file, input);
+  assert.equal(patch.classify("PLAIN", { DecoderName: "HTML" }).kind, "refused");
+  assert.equal(patch.classify("PLAIN", { Verified: true }).kind, "refused");
+});
 
 function gitSourceRedactionFixture(): ReturnType<typeof autoreviewFixtures>[number] {
   const raw = ["https://", "fixture-user", ":", "fixture-password", "@", "example.invalid"].join(
@@ -1512,6 +1561,267 @@ for (const [index, entry] of crabboxConfigFixtures.entries()) {
     }
   });
 }
+
+test("logging redaction fixtures bind native decoders to exact source bytes across revisions", () => {
+  // Reassemble qualified synthetic literals so this policy test adds no contiguous URI credentials.
+  const browser = ["https", "browser-user:browser-password-1234567890@api.example.test"].join(
+    "://",
+  );
+  const emptyUser = ["https", ":empty-username-password-1234567890@api.example.test"].join("://");
+  const postgres = ["postgres", "secret:secret@db.example.test:5432"].join("://");
+  const mongo = ["mongodb+srv", "mongo:mongodb-password-1234567890@cluster.example.test/app"].join(
+    "://",
+  );
+  const redacted = ["postgres", "secret:***@db.example.test:5432"].join("://");
+  const postgresExtra = {
+    database: "openclaw",
+    host: "db.example.test:5432",
+    sslmode: "<unset>",
+    username: "secret",
+  };
+  const fixtures = [
+    {
+      DetectorType: 17,
+      DetectorName: "URI",
+      Raw: browser,
+      RawV2: browser + "/v1",
+      line: '      "' + browser + '/v1",',
+      SecretParts: {
+        host: "api.example.test",
+        username: "browser-user",
+        password: "browser-password-1234567890",
+      },
+      ExtraData: null,
+      digests: ["de7dcbd8", "198d323e", "8ff8c788"],
+    },
+    {
+      DetectorType: 17,
+      DetectorName: "URI",
+      Raw: emptyUser,
+      RawV2: emptyUser + "/v1",
+      line: '      "' + emptyUser + '/v1",',
+      SecretParts: {
+        host: "api.example.test",
+        username: "",
+        password: "empty-username-password-1234567890",
+      },
+      ExtraData: null,
+      digests: ["a460200b", "839b16fa", "232cce5b"],
+    },
+    {
+      DetectorType: 968,
+      DetectorName: "Postgres",
+      Raw: postgres,
+      RawV2: postgres,
+      line: ['      "postgres', 'secret:secret@db.example.test/openclaw",'].join("://"),
+      SecretParts: { connection_string: postgres },
+      ExtraData: postgresExtra,
+      digests: ["39a03151", "39a03151", "4b03f485"],
+    },
+    {
+      DetectorType: 895,
+      DetectorName: "MongoDB",
+      Raw: mongo,
+      RawV2: "",
+      line: '      "' + mongo + '",',
+      SecretParts: { key: mongo },
+      ExtraData: {
+        database: "app",
+        host: "cluster.example.test",
+        rotation_guide: ["https", "howtorotate.com/docs/tutorials/mongo/"].join("://"),
+        username: "mongo",
+      },
+      digests: ["087c10ed", "e3b0c442", "0aeba0d1"],
+    },
+    {
+      DetectorType: 968,
+      DetectorName: "Postgres",
+      Raw: redacted,
+      RawV2: redacted,
+      line: ['        "postgres', 'secret:***@db.example.test/openclaw",'].join("://"),
+      SecretParts: { connection_string: redacted },
+      ExtraData: postgresExtra,
+      digests: ["050c1ddf", "050c1ddf", "cc1376c8"],
+    },
+  ];
+  const digest = (value: string) => createHash("sha256").update(value).digest("hex");
+  for (const [index, fixture] of fixtures.entries()) {
+    assert.deepEqual(
+      [fixture.Raw, fixture.RawV2, fixture.line].map((value) => digest(value).slice(0, 8)),
+      fixture.digests,
+      `native identity ${index + 1} digests`,
+    );
+  }
+  const oldLine = [
+    '    expect(output).toContain("postgres',
+    'secret:***@db.example.test/openclaw");',
+  ].join("://");
+  assert.equal(digest(oldLine).slice(0, 8), "6dc3c292", "pre-rewrite line digest");
+
+  const file = "/scanner/logging-redaction-fixture";
+  const source = "src/logging/redact.test.ts";
+  const reference = { source, mode: "100644", revision: "a".repeat(40), role: "base" as const };
+  const lines = fixtures.map((fixture) => fixture.line);
+  const findings = fixtures.map(({ line: _line, digests: _digests, ...fixture }, index) => ({
+    ...fixture,
+    SourceType: 15,
+    DecoderName: "PLAIN",
+    Verified: false,
+    VerificationError: "synthetic verification error",
+    StructuredData: null,
+    SourceMetadata: { Data: { Filesystem: { file, line: index + 1 } } },
+  }));
+  const scan = (
+    options: {
+      lines?: string[];
+      findings?: typeof findings;
+      references?: Extract<StagedScanInput, { kind: "blob" | "worktree" }>["references"];
+      complete?: boolean;
+    } = {},
+  ) => {
+    const observed = options.findings ?? findings;
+    const bytes = Buffer.from((options.lines ?? lines).join("\n") + "\n");
+    return {
+      stdout: Buffer.from(observed.map((finding) => JSON.stringify(finding)).join("\n") + "\n"),
+      stderr: Buffer.from(
+        options.complete === false
+          ? ""
+          : JSON.stringify({
+              level: "info-0",
+              logger: "trufflehog",
+              msg: "finished scanning",
+              trufflehog_version: "3.97.4",
+              chunks: 1,
+              bytes: bytes.length,
+              verified_secrets: observed.filter((finding) => finding.Verified).length,
+              unverified_secrets: observed.filter((finding) => !finding.Verified).length,
+            }) + "\n",
+      ),
+      inputs: new Map<string, StagedScanInput>([
+        [
+          file,
+          {
+            kind: "blob",
+            id: "a".repeat(40),
+            bytes,
+            references: options.references ?? [
+              reference,
+              { ...reference, revision: "b".repeat(40), role: "head" },
+            ],
+          },
+        ],
+      ]),
+    };
+  };
+  const classify = (options: Parameters<typeof scan>[0] = {}) => {
+    const { stdout, stderr, inputs } = scan(options);
+    return classifyReviewedFixtureScan(183, stdout, stderr, inputs);
+  };
+  const classified = (observed: typeof findings, label: string, stagedLines = lines) => {
+    const result = classify({ findings: observed, lines: stagedLines });
+    assert.equal(result.kind, "classified", `${label}: ${JSON.stringify(result)}`);
+    if (result.kind !== "classified") return;
+    assert.equal(result.notices.length, observed.length, label);
+    assert.deepEqual(
+      result.notices.map((notice) => notice.detector).sort(),
+      observed.map((finding) => finding.DetectorName).sort(),
+      label,
+    );
+    for (const notice of result.notices) {
+      assert.equal(notice.source, source, label);
+      assert.deepEqual(
+        notice.findings.map((finding) => finding.role).sort(),
+        ["base", "head"],
+        label,
+      );
+    }
+  };
+  const decoders = ["PLAIN", "ESCAPED_UNICODE", "HTML"];
+  for (const decoder of decoders) {
+    classified(
+      findings.map((finding) => ({ ...finding, DecoderName: decoder })),
+      decoder,
+    );
+  }
+  for (let k = 0; k < decoders.length; k++) {
+    const mixed = findings.map((finding, i) => ({
+      ...finding,
+      DecoderName: decoders[(i + k) % 3]!,
+    }));
+    classified(mixed, `mixed decoders ${k}`);
+    classified([...mixed].reverse(), `reversed findings ${k}`);
+    classified([mixed[4]!, mixed[0]!], `reversed subset ${k}`);
+    for (const finding of mixed) classified([finding], `single finding ${k}`);
+  }
+  const refused = (label: string, result: ReturnType<typeof classify>, reason: string) => {
+    assert.equal(result.kind, "refused", label);
+    if (result.kind === "refused") assert.equal(result.diagnostic.reason, reason, label);
+  };
+  refused(
+    "changed line bytes",
+    classify({ lines: lines.map((line, i) => line + (i === 0 ? " " : "")) }),
+    "literal_mismatch",
+  );
+  for (const [label, overrides] of [
+    ["decoder BASE64", { DecoderName: "BASE64" }],
+    ["verified finding", { Verified: true }],
+  ] as const) {
+    refused(
+      label,
+      classify({ findings: findings.map((finding) => ({ ...finding, ...overrides })) }),
+      "finding_not_reviewed",
+    );
+  }
+  for (const [label, overrides] of [
+    ["source path", { source: "src/logging/other.test.ts" }],
+    ["executable mode", { mode: "100755" }],
+    ["worktree role", { role: "worktree" }],
+  ] as const) {
+    refused(
+      label,
+      classify({ references: [{ ...reference, ...overrides }] }),
+      "source_not_reviewed",
+    );
+  }
+  refused(
+    "duplicate native record",
+    classify({ findings: [...findings, findings[0]!] }),
+    "duplicate_finding",
+  );
+  refused("extra URI occurrence", classify({ lines: [...lines, lines[0]!] }), "literal_mismatch");
+  refused("incomplete scan", classify({ complete: false }), "incomplete_scan");
+
+  const oldLines = lines.map((line, i) => (i === 4 ? oldLine : line));
+  for (const decoder of decoders) {
+    const observed = [{ ...findings[4]!, DecoderName: decoder }];
+    if (decoder === "HTML") {
+      refused(
+        "pre-rewrite HTML",
+        classify({ lines: oldLines, findings: observed }),
+        "literal_mismatch",
+      );
+    } else {
+      classified(observed, `pre-rewrite ${decoder}`, oldLines);
+    }
+  }
+  const { stdout, stderr, inputs } = scan();
+  assert.throws(
+    () =>
+      classifyReviewedFixtureScan(183, stdout, stderr, inputs, [
+        [
+          17,
+          "URI",
+          "BASE64",
+          digest(browser),
+          digest(browser + "/v1"),
+          digest(lines[0]!),
+          source,
+          "100644",
+        ],
+      ]),
+    /invalid reviewed attribution policy/,
+  );
+});
 
 function nativeRuntimeEndpointFixture(config: boolean) {
   // Reconstruct the intentionally rejected synthetic input without adding a scan literal.

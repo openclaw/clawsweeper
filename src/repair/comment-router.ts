@@ -74,6 +74,7 @@ import {
   parseRoutedCommentCommand,
   pausedModeStatusBlocksReplay,
   parseTrustedAutomation,
+  repositoryRepairCommandBlockReason,
   repairableCheckBlockers,
   reviewOnlyRepairLoopCompletionLabels,
   reviewOnlyRepairLoopMergeStateBlockReason,
@@ -892,6 +893,10 @@ function classifyCommand(command: LooseRecord): JsonValue {
       status: "waiting",
       reason: "GitHub throttled required routing context; the next cycle will retry",
     };
+  }
+  const repairPolicyBlock = repositoryRepairCommandBlockReason(command.repo, command.intent);
+  if (repairPolicyBlock) {
+    return { ...command, status: "ignored", reason: repairPolicyBlock };
   }
   let authorization: LooseRecord | null = null;
   if (command.trusted_bot) {

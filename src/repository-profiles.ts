@@ -47,6 +47,7 @@ export interface RepositoryProfile {
   docsUrl?: string;
   communityUrl?: string;
   promptNote: string;
+  allowRepairCommands?: boolean;
   applyCloseRules: Partial<Record<RepositoryItemKind, readonly RepositoryCloseReason[]>>;
   liveTest?: RepositoryLiveTestConfig;
 }
@@ -65,6 +66,7 @@ interface ConfiguredRepositoryProfile {
   docsUrl?: string;
   communityUrl?: string;
   promptNote: string;
+  allowRepairCommands: boolean;
   applyCloseRules: Partial<Record<RepositoryItemKind, readonly RepositoryCloseReason[]>>;
   liveTest?: RepositoryLiveTestConfig;
 }
@@ -117,6 +119,7 @@ const CORE_OPENCLAW_PROFILE: RepositoryProfile = {
     "Use the OpenClaw source tree, docs, changelog, and current main branch. Close proposals may use the normal OpenClaw stale/duplicate/not-in-repo/implemented-on-main policy when evidence is strong. For OpenClaw PR reviews, ClawSweeper renders deterministic PR surface stats separately; do not repeat changed-file counts, additions/deletions, or area totals in Review metrics unless adding a new interpretation not present in the deterministic surface block. Use Review metrics for new review-relevant facts, especially user-facing configuration additions, new flags/options/env vars, new protocol/API params, default changes, migrations, persisted settings, or compatibility paths.\n\n" +
     "Keep repository-managed locale PRs open: the canonical same-repository `automation/native-app-locale-refresh` and `automation/control-ui-locale-refresh` branches targeting main, authored by `openclaw-mantis[bot]` (`app/openclaw-mantis` in GraphQL), belong to their generated-PR publisher. That publisher owns freshness and auto-merge; continue normal review and CI requirements.\n\n" +
     "For `openclaw/openclaw` PR release-note review, `CHANGELOG.md` is release-owned. Normal PRs, repair workers, and automerge/autofix lanes should not edit it. Do not make missing `CHANGELOG.md` a review finding, merge blocker, work item, or next-step blocker. If release-note context is needed, ask for PR-body or commit message context: user-visible behavior, affected surface, issue/PR refs, and credited human author/reporter when known. Never request `Thanks @steipete`, `Thanks @openclaw`, `Thanks @clawsweeper`, or other forbidden bot/maintainer changelog attributions.",
+  allowRepairCommands: true,
   applyCloseRules: {
     issue: OPENCLAW_CLOSE_REASONS.filter(
       (reason) => reason !== "author_pr_budget_exceeded" && reason !== "obsolete_fix_pr",
@@ -222,6 +225,7 @@ function configuredRepositoryProfile(profile: ConfiguredRepositoryProfile): Repo
     checkoutDir: profile.checkoutDir,
     packageManager: profile.packageManager,
     promptNote: profile.promptNote,
+    allowRepairCommands: profile.allowRepairCommands,
     applyCloseRules: profile.applyCloseRules,
   };
   if (profile.docsUrl) result.docsUrl = profile.docsUrl;
@@ -253,6 +257,7 @@ function fallbackRepositoryProfile(normalizedTargetRepo: string): RepositoryProf
     promptNote: fallback.promptNote
       .replaceAll("{target_repo}", normalizedTargetRepo)
       .replaceAll("{repo_name}", repoName),
+    allowRepairCommands: true,
     applyCloseRules: fallback.applyCloseRules,
   };
   if (fallback.liveTest) result.liveTest = fallback.liveTest;
@@ -344,6 +349,10 @@ function validateConfiguredRepositoryProfile(
     checkoutDir: pathSegmentValue(profile.checkout_dir, `${label}.checkout_dir`),
     packageManager: packageManagerValue(profile.package_manager, `${label}.package_manager`),
     promptNote: stringValue(profile.prompt_note, `${label}.prompt_note`),
+    allowRepairCommands:
+      profile.allow_repair_commands === undefined
+        ? true
+        : booleanValue(profile.allow_repair_commands, `${label}.allow_repair_commands`),
     applyCloseRules: closeRulesValue(profile.apply_close_rules, `${label}.apply_close_rules`),
   };
   if (profile.docs_url !== undefined) {

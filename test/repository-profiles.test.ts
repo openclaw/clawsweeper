@@ -112,6 +112,7 @@ test("OpenClaw Enterprise uses an explicit review-only profile and target-native
   assert.match(profile.promptNote, /authoritative platform design/);
   assert.match(profile.promptNote, /Require target-native integration evidence/);
   assert.match(profile.promptNote, /Review only/);
+  assert.equal(profile.allowRepairCommands, false);
   assert.deepEqual(profile.applyCloseRules, { issue: [], pull_request: [] });
   assert.deepEqual(profile.liveTest, TERMINAL_LIVE_TEST);
   assert.deepEqual(resolveTargetRepoToolchain(profile.targetRepo), {
