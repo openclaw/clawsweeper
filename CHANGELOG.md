@@ -7,6 +7,8 @@ checkpoint, and status-only commits are intentionally omitted.
 
 ## 0.3.1 - Unreleased
 
+- Requalify the unchanged OpenClaw Cron notification redaction fixture for expanded routing/webhook coverage and its canonical review base, preserving complete-source and native-finding checks.
+
 - Report retained stale-revision publication rows as parked (`stale_revision`) instead of ready, so the publication lane no longer advertises a weeks-old ready head that no batch can claim; health keeps age-based severity with `stale_revision_over_1h`/`_over_6h`, and fail-closed command retention and cleanup are unchanged.
 
 

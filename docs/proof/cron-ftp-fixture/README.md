@@ -131,6 +131,35 @@ raw-value digests, line/path/mode/ref/occurrence checks, native verification, an
 scanner flags are unchanged. Bay and hosted queue/publication contracts are
 unaffected. This proof does not complete a hosted review or release a hold.
 
+## Receiving merge-base qualification
+
+The verified receiving merge changes the actual review base to
+`e1b701b44da537b740c10ae01f7652ee1712e913` and the head to
+`3b9da2643fd25f22cf6c4af0f25f1cb27e0a7a8c`. The head still contains qualified blob
+`6995635c757edddf9f538b3734fce12b71a1e806`. The actual base now contains blob
+`c9ad3bf550d7f4cdf9c8b9062312fc70767865d3`, with the unchanged fixture witness once
+at line 807 and complete-source SHA256
+`e181c69bd874b3e50d70631a6f1a94eed2308d765f05046ec66a84089a62c7cb`.
+
+The maintained native runner on ClawSweeper
+`d7fd40ed0f8e8283c0c91c3b7c94f3c485bb608a`
+[refused this exact committed range](161703-receiving-native-before.json) with
+`source_not_reviewed`, explicitly identifying that base blob and revision.
+Adding only its complete-source hash
+[admits the same tuple](161703-receiving-native-after.json), with one PLAIN finding
+for each role: base at line 807 and head at line 854. Verification stays enabled.
+The earlier `b9a2236..028a1c3` result remains evidence only for its original tuple.
+
+The identical newly qualified pair at a foreign path
+[still refuses](161703-receiving-foreign-path.json). Appending one newline to the
+newly qualified base source, while retaining the qualified head,
+[also refuses in the base role](161703-receiving-changed-source.json). Both controls
+use clean synthetic Git sources and the same production scan entry point.
+All 30 existing FTP classifier cases pass. Proof uses macOS arm64, Node 24.21.0,
+and pinned TruffleHog 3.97.4. Detector, decoder, literal, line, path, mode, ref,
+occurrence, native verification, and complete-source checks remain unchanged.
+No Bay, queue, or publication contract changes are involved.
+
 ## Limits
 
 This is source-admission proof with a controlled prompt. It does not run a model,
