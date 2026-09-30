@@ -232,7 +232,12 @@ function fixturePatch(
                 },
               },
             },
-            SecretParts: { host: url.host, username: url.username, password: url.password },
+            SecretParts: {
+              // Native URI metadata retains explicit default ports.
+              host: rawV2.split("/")[2]!.split("@").at(-1),
+              username: url.username,
+              password: url.password,
+            },
             ExtraData: null,
             StructuredData: null,
             ...overrides,
@@ -723,6 +728,50 @@ function exactUriFixtureTests(
     });
   }
 }
+
+test("SDK browser CDP fixtures bind native identities and complete source lines", (t) => {
+  const entries = [9222, 80].map((port) => {
+    const raw = ["http://", "user", ":", "pass", "@", `127.0.0.1:${port}`].join("");
+    return {
+      raw,
+      rawV2: port === 80 ? raw + "/path" : raw,
+      line:
+        port === 80
+          ? '    "' + raw + '/path@name",'
+          : '    const parsed = parseBrowserHttpUrl("' + raw + '/", "browser.cdpUrl");',
+      decoders: ["PLAIN"] as const,
+    };
+  });
+  const patch = fixturePatch(t, "src/plugin-sdk/browser-subpaths.test.ts", entries);
+  const originalInputs = new Map(patch.inputs);
+  assert.equal(patch.classify("PLAIN").kind, "classified");
+  for (const variant of ["line", "path"] as const) {
+    for (const [file, input] of originalInputs) {
+      if (input.kind !== "blob") continue;
+      patch.inputs.set(file, {
+        ...input,
+        ...(variant === "line"
+          ? { bytes: Buffer.from(input.bytes!.toString().replace("path@name", "path@namo")) }
+          : {
+              references: input.references.map((reference) => ({
+                ...reference,
+                source: "src/plugin-sdk/other-browser-subpaths.test.ts",
+              })),
+            }),
+      });
+    }
+    const result = patch.classify("PLAIN", {}, { blobOnly: true });
+    assert.equal(result.kind, "refused");
+    if (result.kind === "refused")
+      assert.equal(
+        result.diagnostic.reason,
+        variant === "line" ? "literal_mismatch" : "source_not_reviewed",
+      );
+  }
+  for (const [file, input] of originalInputs) patch.inputs.set(file, input);
+  assert.equal(patch.classify("PLAIN", { DecoderName: "HTML" }).kind, "refused");
+  assert.equal(patch.classify("PLAIN", { Verified: true }).kind, "refused");
+});
 
 function gitSourceRedactionFixture(): ReturnType<typeof autoreviewFixtures>[number] {
   const raw = ["https://", "fixture-user", ":", "fixture-password", "@", "example.invalid"].join(

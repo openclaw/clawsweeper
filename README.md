@@ -303,8 +303,9 @@ Common commands:
   review dispatch, automatic merge, human-review pause, stale-review rejection,
   all late automerge-blocking labels, and replay without duplicate merge calls.
 - `implement issue` on an open issue creates or reuses one issue implementation
-  job and dispatches the issue-to-PR lane. OpenClaw organization members may
-  request this explicitly even without repository write permission.
+  job and dispatches the issue-to-PR lane. The requester must have current
+  repository `admin`, `maintain`, or `write` permission; organization membership
+  alone does not authorize the write action.
 - With automatic issue implementation enabled, newly reviewed issues and
   existing eligible open issue reports enter the enabled bounded lanes. Codex
   inspects the issue and repository, chooses the
@@ -331,8 +332,10 @@ Common commands:
   immediately before every branch push and before PR creation.
 
 Only maintainers are accepted for write actions. The router checks repository
-collaborator permission (`admin`, `maintain`, or `write`) and falls back to
-trusted `author_association` values when permission lookup is unavailable.
+collaborator permission (`admin`, `maintain`, or `write`) and falls back to the
+`OWNER` author association only when permission lookup is unavailable. Issue
+implementation uses the same fail-closed rule; organization membership alone
+does not authorize a write action.
 Users with repository write access and issue/PR authors may ask
 `@clawsweeper re-review` or `@clawsweeper re-run` for a fresh read-only review.
 Other contributor commands are ignored without a reply. Scheduled comment routing is dry unless
@@ -561,9 +564,10 @@ appropriate repair job.
   that head changed. It also refuses to push when the PR closed during the
   wait. Override the window with `CLAWSWEEPER_BRANCH_PUSH_SETTLE_SECONDS`
   (bounded to 0-120 seconds) when a manual backfill is already settled.
-- An OpenClaw organization member can comment `@clawsweeper implement issue`;
-  ClawSweeper refuses when an open PR already mentions the issue, a generated
-  branch PR is already open, the issue is paused, or security blockers remain.
+- A repository maintainer with current `admin`, `maintain`, or `write`
+  permission can comment `@clawsweeper implement issue`; ClawSweeper refuses
+  when an open PR already mentions the issue, a generated branch PR is already
+  open, the issue is paused, or security blockers remain.
 - `CLAWSWEEPER_AUTO_IMPLEMENT_ISSUES=1` enables newly reviewed issues and
   bounded backfill from existing eligible open issue reports. General viable
   implementation remains limited to public sibling repositories;
@@ -732,6 +736,14 @@ The browser CDP discovery fixture in
 exact table for its observed URI detector 17 `PLAIN` and `HTML` findings. Both
 raw-value digests, the complete source line, original path, regular-file mode,
 and committed base/head references must match. See [the native proof](docs/proof/agent-input-scan-context/README.md#browser-cdp-discovery-fixture).
+
+The CDP authentication and explicit-port fixtures in OpenClaw's
+[SDK browser tests](https://github.com/openclaw/openclaw/blob/38d949a549dbb8f9376d5d08a96422615c8e7ab0/src/plugin-sdk/browser-subpaths.test.ts) qualify only for their observed URI
+detector 17 `PLAIN` findings. Both native value digests, each complete source
+line (including the path suffix beyond the native match), the original path,
+regular-file mode, and every committed base/head reference must match. Other
+decoders and changed source lines remain blocking; the WebSocket fixture has
+no qualification because the pinned scanner did not emit a finding for it.
 
 The TypeSafe local-transport URL-rejection fixture in
 `extensions/typesafe/src/local.transport.test.ts` binds its exact URI detector 17

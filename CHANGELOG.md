@@ -8,6 +8,8 @@ checkpoint, and status-only commits are intentionally omitted.
 ## 0.3.1 - Unreleased
 
 - Requalify OpenClaw's rewritten `src/logging/redact.test.ts` connection-string fixtures for the exact-review input scan, so pull requests touching that file are no longer refused before review; each exact post-rewrite identity may carry the `PLAIN`, `ESCAPED_UNICODE`, or `HTML` label the pinned scanner assigns nondeterministically.
+- Qualify the exact OpenClaw SDK browser CDP fixtures by their observed native URI identities, complete source lines, and committed path while preserving scanning and changed-input refusal.
+
 - Requalify the unchanged OpenClaw Cron notification redaction fixture for expanded routing/webhook coverage and its canonical review base, preserving complete-source and native-finding checks.
 
 - Stop endless `source_drift_requeue` reviews of PR close proposals: apply no longer treats ClawSweeper's own review-acknowledgement progress edit as source drift when it is the latest item update and the reviewed source, timeline, head, and review-activity receipt still match. Human comments, title/body edits, non-managed label changes, PR reviews, and new heads still block apply and requeue.

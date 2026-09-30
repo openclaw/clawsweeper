@@ -109,9 +109,10 @@ bypass repair policy or mutation gates.
 
 ## Intake Paths
 
-### Maintainer and Organization-Member Commands
+### Maintainer Commands
 
-An eligible OpenClaw organization member can comment on an open issue:
+A maintainer with current repository `admin`, `maintain`, or `write` permission
+can comment on an open issue:
 
 ```text
 @clawsweeper implement issue
@@ -124,9 +125,10 @@ An eligible OpenClaw organization member can comment on an open issue:
 The comment router:
 
 1. Verifies that the target is an open issue.
-2. Verifies the command author. Repository maintainers are accepted through
-   collaborator permission; OpenClaw organization owners and members may
-   explicitly request issue implementation.
+2. Verifies the command author through live collaborator permission.
+   Organization membership alone does not authorize issue implementation; the
+   existing `OWNER` association fallback applies only when permission lookup is
+   unavailable.
 3. Checks pause labels and existing PR signals.
 4. Creates or reuses one durable issue implementation job.
 5. Dispatches the normal repair worker in autonomous mode.

@@ -35,6 +35,30 @@ test("compiled proof command preserves inconclusive status and replay protection
   });
 });
 
+test("compiled router denies stale issue implementation authority before final effects", async () => {
+  const { stdout } = await promisify(execFile)(
+    process.execPath,
+    ["scripts/e2e/proof-command-loopback.mjs", "--authority-final-effect"],
+    { timeout: 60000 },
+  );
+  const receipt = JSON.parse(stdout);
+  assert.equal(receipt.ok, true);
+  assert.deepEqual(
+    receipt.receipts.map((entry: Record<string, unknown>) => ({
+      scenario: entry.scenario,
+      status: entry.routerStatus,
+      jobs: entry.implementationJobsCreated,
+      writes: entry.outboundWrites,
+    })),
+    [
+      { scenario: "current-writer", status: "waiting", jobs: 1, writes: 1 },
+      { scenario: "read-only-member", status: "ignored", jobs: 0, writes: 0 },
+      { scenario: "revoked-member", status: "ignored", jobs: 0, writes: 0 },
+      { scenario: "nonmember", status: "ignored", jobs: 0, writes: 0 },
+    ],
+  );
+});
+
 const head = "a".repeat(40);
 
 test("re-review recovery leaves queue-owned terminal acknowledgements intact", async () => {
