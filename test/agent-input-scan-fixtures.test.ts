@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { devNull, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -7,6 +8,7 @@ import test from "node:test";
 import {
   classifyReviewedFixtureScan,
   serializeReviewContext,
+  type ReviewedAttribution,
   type StagedScanInput,
 } from "../dist/agent-input-scan-fixtures.js";
 
@@ -198,6 +200,7 @@ function fixturePatch(
       complete?: boolean;
       blobOnly?: boolean;
       scannerLine?: number;
+      reviewedAttributions?: readonly ReviewedAttribution[];
     } = {},
   ) => {
     const findings = fixtures.flatMap((fixture) =>
@@ -255,6 +258,7 @@ function fixturePatch(
             }) + "\n",
       ),
       inputs,
+      options.reviewedAttributions,
     );
   };
   return { classify, role, inputs };
@@ -391,6 +395,154 @@ function readinessPrivacyFixture(): ReturnType<typeof autoreviewFixtures>[number
 }
 
 const readinessPrivacySource = "test/helpers/openclaw-test-instance.test.ts";
+
+test("cron FTP fixture binds the exact committed source and native finding", async (t) => {
+  const source = "src/gateway/server-cron-notifications.test.ts";
+  const raw = ["ftp://", "user", ":", "secret", "@", "example.invalid"].join("");
+  const entry = {
+    raw,
+    line: `          to: "${raw}/hook?token=secret",`,
+    decoders: ["PLAIN", "HTML"] as const,
+  };
+  const fixture = fixturePatch(t, source, [entry], "context");
+  const originalInputs = new Map(fixture.inputs);
+  const hash = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+  const sourceSha256s = [...originalInputs.values()]
+    .filter((input) => input.kind === "blob")
+    .map((input) => hash(input.bytes!));
+  const reviewedAttributions: ReviewedAttribution[] = entry.decoders.map((decoder) => [
+    899,
+    "FTP",
+    decoder,
+    hash(raw),
+    hash(""),
+    hash(entry.line),
+    source,
+    "100644",
+    sourceSha256s,
+  ]);
+  const native = {
+    DetectorType: 899,
+    DetectorName: "FTP",
+    RawV2: "",
+    SecretParts: { key: raw },
+  };
+  for (const decoder of entry.decoders) {
+    await t.test("accepts the exact " + decoder + " finding", () => {
+      const result = fixture.classify(decoder, native, { blobOnly: true, reviewedAttributions });
+      assert.equal(result.kind, "classified", JSON.stringify(result));
+      if (result.kind === "classified") {
+        assert.equal(result.notices.length, 1);
+        assert.equal(result.notices[0]?.source, source);
+        assert.equal(result.notices[0]?.detector, "FTP");
+      }
+    });
+  }
+  await t.test("production policy refuses a line-only replica of the reviewed source", () => {
+    const result = fixture.classify("HTML", native, { blobOnly: true });
+    assert.equal(result.kind, "refused");
+    if (result.kind === "refused") assert.equal(result.diagnostic.reason, "source_not_reviewed");
+  });
+  for (const sourcePins of [undefined, [], ["not a SHA256"]]) {
+    await t.test(
+      "rejects missing or malformed FTP source pins " + JSON.stringify(sourcePins),
+      () => {
+        const [detector, name, decoder, raw, rawV2, line, source, mode] = reviewedAttributions[0]!;
+        assert.throws(() =>
+          fixture.classify("PLAIN", native, {
+            blobOnly: true,
+            reviewedAttributions: [
+              [detector, name, decoder, raw, rawV2, line, source, mode, sourcePins],
+            ],
+          }),
+        );
+      },
+    );
+  }
+  const mutations: [string, Record<string, unknown>][] = [
+    ["host", { Raw: raw.replace("example.invalid", "other.invalid") }],
+    ["credential", { Raw: raw.replace("secret", "changed") }],
+    ["rawV2", { RawV2: raw }],
+    ["Unicode decoder", { DecoderName: "ESCAPED_UNICODE" }],
+    ["base64 decoder", { DecoderName: "BASE64" }],
+    ["detector", { DetectorType: 17, DetectorName: "URI" }],
+    ["verified", { Verified: true }],
+    ["verification error", { VerificationError: "" }],
+    ["source type", { SourceType: 16 }],
+    ["secret parts", { SecretParts: { key: raw + "/changed" } }],
+    ["extra data", { ExtraData: { host: "other.invalid" } }],
+    ["path", {}],
+    ["mode", {}],
+    ["role", {}],
+    ["source kind", {}],
+    ["complete line", {}],
+    ["query", {}],
+    ["additional source occurrence", {}],
+    ["HTML-encoded source occurrence", {}],
+    ["unrelated source byte", {}],
+    ["duplicate finding", {}],
+    ["incomplete scan", {}],
+    ["patch material", {}],
+  ];
+  for (const [scenario, overrides] of mutations) {
+    await t.test("rejects changed " + scenario, () => {
+      fixture.inputs.clear();
+      for (const [file, input] of originalInputs) {
+        if (input.kind !== "blob" || !input.bytes) {
+          fixture.inputs.set(file, input);
+          continue;
+        }
+        fixture.inputs.set(
+          file,
+          scenario === "source kind"
+            ? { kind: "prompt", id: input.id, bytes: input.bytes }
+            : {
+                ...input,
+                bytes: Buffer.from(
+                  input.bytes
+                    .toString()
+                    .replace(entry.line, entry.line + (scenario === "complete line" ? " " : ""))
+                    .replace(
+                      "token=secret",
+                      scenario === "query" ? "token=changed" : "token=secret",
+                    ) +
+                    (scenario === "additional source occurrence"
+                      ? "\n" + entry.line.replace("/hook", "/other") + "\n"
+                      : scenario === "HTML-encoded source occurrence"
+                        ? '\n<a href="' + raw.replace("ftp:", "ftp&#58;") + '/other">link</a>\n'
+                        : scenario === "unrelated source byte"
+                          ? "\n"
+                          : ""),
+                ),
+                references: input.references.map((reference) => ({
+                  ...reference,
+                  source: scenario === "path" ? "src/gateway/other.test.ts" : reference.source,
+                  mode: scenario === "mode" ? "100755" : reference.mode,
+                  role: scenario === "role" ? ("worktree" as const) : reference.role,
+                })),
+              },
+        );
+      }
+      const result = fixture.classify(
+        "HTML",
+        { ...native, ...overrides },
+        {
+          blobOnly: scenario !== "patch material",
+          duplicate: scenario === "duplicate finding",
+          complete: scenario !== "incomplete scan",
+          reviewedAttributions,
+        },
+      );
+      assert.equal(result.kind, "refused", scenario);
+      if (
+        result.kind === "refused" &&
+        (scenario === "HTML-encoded source occurrence" || scenario === "unrelated source byte")
+      )
+        assert.equal(result.diagnostic.reason, "source_not_reviewed");
+    });
+  }
+});
+
 for (const change of ["add", "remove", "context"] as const) {
   test("readiness privacy fixture admits exact Git-generated " + change + " attribution", (t) => {
     const patch = fixturePatch(t, readinessPrivacySource, [readinessPrivacyFixture()], change);

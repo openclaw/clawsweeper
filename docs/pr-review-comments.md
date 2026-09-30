@@ -90,7 +90,11 @@ Scheduled and other non-command review workers coordinate through a separate
 temporary `clawsweeper-review-lease` comment; final publication updates the durable
 review and removes the owned lease. Command-triggered exact reviews rewrite their
 existing command acknowledgement and use the durable queue claim directly, without
-posting a second visible lease comment. If that acknowledgement cannot be resolved,
+posting a second visible lease comment. The acknowledgement lease records the
+claimed decision's source head; router-dispatched autofix/automerge commands carry
+none, so the lease uses the live PR head read during admission, or the head in the
+command status marker when that read failed. A lease with no valid head fails before
+any comment edit. If that acknowledgement cannot be resolved,
 they fall back to the temporary lease path. Exact-review workers check queue ownership
 before GitHub comment work and again before generation and finalization. A definitive ownership rejection completes
 as superseded without retrying. A transport or service failure retries the check;

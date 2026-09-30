@@ -190,9 +190,12 @@ export function createApplyLeaseGuards({
     }
   };
 
-  const ownedApplyMutationLeaseBlockReason = (lease: AcquiredReviewStartLease): string | null => {
+  const ownedApplyMutationLeaseBlockReason = (
+    lease: AcquiredReviewStartLease,
+    reviewActivityChecked = false,
+  ): string | null => {
     try {
-      const reviewActivityBlock = currentReviewActivityBlock();
+      const reviewActivityBlock = reviewActivityChecked ? null : currentReviewActivityBlock();
       if (reviewActivityBlock) return reviewActivityBlock;
       const revisionBefore = fetchLiveReviewHeadSha();
       const refreshed = issueReviewCommentState(
@@ -283,7 +286,9 @@ export function createApplyLeaseGuards({
     if (dryRun || !requiresApplyMutationLease) return null;
     const active = getActiveApplyMutationLease();
     if (!active || active.itemNumber !== number) return "apply mutation lease is not held";
-    return ownedApplyMutationLeaseBlockReason(active.lease);
+    // The live two-read activity barrier above already ran for this boundary;
+    // repeating it back to back would only add two GraphQL round trips.
+    return ownedApplyMutationLeaseBlockReason(active.lease, true);
   };
 
   return {

@@ -19,6 +19,7 @@ import {
   type GithubEtagCredentialPool,
 } from "./github-etag-cache-contract.js";
 import {
+  createRetainedGithubEtagResponses,
   durableGithubEtagReadSync,
   type GithubConditionalResponse,
 } from "./github-etag-read-broker.js";
@@ -109,6 +110,7 @@ function reserveGitHubRequest<Key>(
 export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencies) {
   const { ROOT, run, targetRepo } = dependencies;
   const inspectedRateLimitScopes = new Set<GitHubCredentialScope>();
+  const retainedEtagResponses = createRetainedGithubEtagResponses();
 
   const GITHUB_RUNTIME_REPORT_FLUSH_RESERVE_MS = 1_000;
 
@@ -683,6 +685,7 @@ export function createGitHubRuntime(dependencies: CreateGitHubRuntimeDependencie
       githubRequest: (ifNoneMatch) =>
         ghIncludedRequest(args, timeoutMs, preparedEnv, scope, ifNoneMatch, deadlineAt, onDispatch),
       record,
+      retained: retainedEtagResponses,
     });
   }
 

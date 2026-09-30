@@ -17,6 +17,7 @@ import {
   type GithubEtagCacheKey,
 } from "../dist/github-etag-cache-contract.js";
 import {
+  createRetainedGithubEtagResponses,
   durableGithubEtagReadSync,
   type GithubEtagBrokerEvent,
 } from "../dist/github-etag-read-broker.js";
@@ -179,6 +180,104 @@ test("durable broker revalidates every read and keeps wire calls while avoiding 
   assert.equal(events.filter((event) => event.outcome === "cache_304_served").length, 2);
   assert.equal(events.filter((event) => event.outcome === "cache_miss").length, 2);
   assert.equal(events.filter((event) => event.outcome === "cache_hit").length, 3);
+});
+
+test("same-process reads revalidate retained ETags live without broker round trips", () => {
+  const entries = new Map<string, { etag: string; body: string; bodyDigest: string }>();
+  const events: GithubEtagBrokerEvent[] = [];
+  const broker: string[] = [];
+  const conditionals: Array<string | undefined> = [];
+  let resource = { etag: 'W/"pull-v1"', body: JSON.stringify({ head: { sha: "a".repeat(40) } }) };
+  let transientFailure = false;
+  const key = requiredKey("target_app", "/repos/openclaw/openclaw/pulls/42");
+  const read = (retained: ReturnType<typeof createRetainedGithubEtagResponses>) =>
+    durableGithubEtagReadSync({
+      key,
+      retained,
+      lookup: () => {
+        broker.push("lookup");
+        const entry = entries.get(key.cacheKey);
+        return entry
+          ? { hit: true, entry: { etag: entry.etag, bodyDigest: entry.bodyDigest } }
+          : { hit: false };
+      },
+      store200: (_key, response) => {
+        broker.push("store");
+        entries.set(key.cacheKey, { ...response, bodyDigest: sha256(response.body) });
+        return { stored: true };
+      },
+      confirm304: (_key, expected) => {
+        broker.push("confirm");
+        const entry = entries.get(key.cacheKey);
+        return entry && entry.etag === expected.etag && entry.bodyDigest === expected.bodyDigest
+          ? {
+              confirmed: true,
+              body: entry.body,
+              entry: { etag: entry.etag, bodyDigest: entry.bodyDigest },
+            }
+          : { confirmed: false };
+      },
+      githubRequest: (ifNoneMatch) => {
+        conditionals.push(ifNoneMatch);
+        if (transientFailure) {
+          transientFailure = false;
+          return { status: 502, body: "" };
+        }
+        return ifNoneMatch === resource.etag
+          ? { status: 304, body: "", etag: resource.etag }
+          : { status: 200, body: resource.body, etag: resource.etag };
+      },
+      record: (event) => events.push(event),
+    });
+
+  const currentProcess = createRetainedGithubEtagResponses();
+  const first = read(currentProcess);
+  assert.equal(read(currentProcess), first);
+  assert.equal(read(currentProcess), first);
+  assert.deepEqual(broker, ["lookup", "store"], "repeated reads skip lookup and confirmation");
+  assert.deepEqual(conditionals, [undefined, 'W/"pull-v1"', 'W/"pull-v1"']);
+
+  resource = { etag: 'W/"pull-v2"', body: JSON.stringify({ head: { sha: "b".repeat(40) } }) };
+  assert.equal(read(currentProcess), resource.body, "a changed resource is GitHub's live 200 body");
+  assert.deepEqual(broker, ["lookup", "store", "store"], "the durable entry follows the change");
+
+  transientFailure = true;
+  assert.throws(() => read(currentProcess), /HTTP 502/);
+  assert.equal(
+    read(currentProcess),
+    resource.body,
+    "a failed revalidation falls back to the broker",
+  );
+  assert.deepEqual(broker.slice(3), ["lookup", "confirm"]);
+
+  const nextProcess = createRetainedGithubEtagResponses();
+  assert.equal(read(nextProcess), resource.body, "cross-run reads still use the durable broker");
+  assert.deepEqual(broker.slice(5), ["lookup", "confirm"]);
+  assert.equal(conditionals.length, 7, "every read still makes one live GitHub request");
+  assert.equal(events.filter((event) => event.outcome === "cache_304_served").length, 4);
+  assert.equal(events.filter((event) => event.unit === "broker_lookup").length, 3);
+});
+
+test("retained ETag bodies stay bounded and ignore unusable ETags", () => {
+  const retained = createRetainedGithubEtagResponses({ maxEntries: 2, maxBytes: 10 });
+  const key = (number: number) =>
+    requiredKey("target_app", `/repos/openclaw/openclaw/pulls/${number}`);
+  retained.set(key(1), { etag: '"1"', body: "1111" });
+  retained.set(key(2), { etag: '"2"', body: "2222" });
+  retained.set(key(3), { etag: '"3"', body: "3333" });
+  assert.equal(retained.get(key(1)), undefined, "the oldest entry leaves at the entry bound");
+  assert.deepEqual(retained.get(key(2)), { etag: '"2"', body: "2222" });
+  retained.set(key(4), { etag: '"4"', body: "44444444" });
+  assert.equal(retained.get(key(2)), undefined, "older entries leave at the byte bound");
+  assert.equal(retained.get(key(3)), undefined);
+  assert.deepEqual(retained.get(key(4)), { etag: '"4"', body: "44444444" });
+  retained.set(key(5), { etag: '"5"', body: "x".repeat(11) });
+  assert.equal(retained.get(key(5)), undefined, "a body above the byte bound is never retained");
+  retained.set(key(4), { etag: '"4"\r\nx-injected: 1', body: "4" });
+  assert.equal(retained.get(key(4)), undefined, "a header-unsafe ETag clears the entry");
+  retained.set(key(6), { etag: '"6"', body: "6" });
+  retained.set(key(6), null);
+  assert.equal(retained.get(key(6)), undefined);
 });
 
 test("durable store confirms 304 bodies by ETag and digest and enforces bounds", async () => {

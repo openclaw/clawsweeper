@@ -302,6 +302,24 @@ test("queued publication expires only its posted review lease after successful h
   }
 });
 
+test("command status leases receive the admission live head without changing the queue fence", () => {
+  const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
+  const steps = workflow.jobs["event-review-apply"].steps;
+  const liveHead = "${{ steps.live-item.outputs.live_head_sha || '' }}";
+  for (const id of ["mark-re-review-command-in-progress", "reserve-exact-review-lease"]) {
+    const leaseStep = steps.find((entry: any) => entry.id === id);
+    assert.equal(leaseStep.env?.EXACT_REVIEW_LIVE_HEAD_SHA, liveHead, id);
+    assert.match(leaseStep.run, /--require-queue-authority-fence/, id);
+  }
+  const commandFence = steps.find((entry: any) => entry.id === "command-status-fence");
+  assert.equal(commandFence.env?.EXACT_REVIEW_LIVE_HEAD_SHA, undefined);
+  assert.doesNotMatch(commandFence.run, /LIVE_HEAD/);
+  assert.equal(
+    steps.filter((entry: any) => entry.env?.EXACT_REVIEW_LIVE_HEAD_SHA !== undefined).length,
+    2,
+  );
+});
+
 test("queue-only command review proves allowed and superseded authority before GitHub mutation", () => {
   const workflow = YAML.parse(readText(".github/workflows/sweep.yml"));
   const steps = workflow.jobs["event-review-apply"].steps;

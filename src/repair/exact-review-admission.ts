@@ -149,7 +149,14 @@ export function exactReviewAdmission(output: Output): void {
       mkdirSync(".artifacts", { recursive: true });
       writeFileSync(artifact, JSON.stringify({ repo, pull, observedAt }));
       const oversized = !oversizedPullRequestAdmission(pull).admitted;
-      output({ pr_admission_file: artifact, oversized: String(oversized) });
+      output({
+        pr_admission_file: artifact,
+        oversized: String(oversized),
+        // Only the command status lease consumes this; queue fences keep the decision head.
+        ...(/^[0-9a-f]{40}$/i.test(liveHeadSha)
+          ? { live_head_sha: liveHeadSha.toLowerCase() }
+          : {}),
+      });
       if (oversized) {
         output({ ...terminal, proceed: "true", scheduled_semantic_noop: "false" });
         return;
