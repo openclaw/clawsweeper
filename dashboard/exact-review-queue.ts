@@ -934,6 +934,10 @@ export class ExactReviewQueue {
   private artifactReceiptStore;
   private githubWebhookReadModelStore;
   private readonly random: () => number;
+  private readonly itemRevisionAllocator: ExactReviewRevisionAllocator = (
+    itemKey,
+    minimumRevision,
+  ) => this.nextExactReviewItemRevisionSync(itemKey, minimumRevision);
   private readonly baselines = new WeakMap<ExactReviewQueueState, ExactReviewQueueBaseline>();
   private statsCache: {
     key: string;
@@ -3302,6 +3306,7 @@ export class ExactReviewQueue {
                 exactReviewDeadLetterId(item),
               ),
               env: this.env,
+              allocateRevision: this.itemRevisionAllocator,
             })
           : this.requeueDirectLifecyclePublicationSync(state, item, now)
         : publicationCompletionOwnedByLease && publicationCompletion
@@ -3317,6 +3322,7 @@ export class ExactReviewQueue {
                 exactReviewDeadLetterId(item),
               ),
               env: this.env,
+              allocateRevision: this.itemRevisionAllocator,
             })
           : {
               ...finishExactReviewQueueItem(
@@ -5264,7 +5270,12 @@ export class ExactReviewQueue {
       this.env,
     );
     const recoveredParkedSnapshot = recoverParkedExactReviewItems(snapshot, startedAt, this.env);
-    const expiredSnapshot = expireExactReviewPublicationItems(snapshot, startedAt, this.env);
+    const expiredSnapshot = expireExactReviewPublicationItems(
+      snapshot,
+      startedAt,
+      this.env,
+      this.itemRevisionAllocator,
+    );
     let snapshotChanged = reclaimedSnapshot || recoveredParkedSnapshot > 0 || expiredSnapshot;
     if (
       snapshot.dispatcher?.publicationBatchTerminalProbe &&
@@ -5467,7 +5478,12 @@ export class ExactReviewQueue {
           exactReviewHeartbeatGraceMs(this.env),
           this.env,
         );
-        expireExactReviewPublicationItems(current, Date.now(), this.env);
+        expireExactReviewPublicationItems(
+          current,
+          Date.now(),
+          this.env,
+          this.itemRevisionAllocator,
+        );
         await this.writeState(current);
       }
     }
@@ -5529,7 +5545,12 @@ export class ExactReviewQueue {
       exactReviewHeartbeatGraceMs(this.env),
       this.env,
     );
-    const expired = expireExactReviewPublicationItems(state, now, this.env);
+    const expired = expireExactReviewPublicationItems(
+      state,
+      now,
+      this.env,
+      this.itemRevisionAllocator,
+    );
     // The preflight fetch releases the input gate, so publication demand may
     // have crossed a scale boundary while the workflow state was checked.
     const publicationControl = this.refreshPublicationControlSync(state, now);
@@ -8686,6 +8707,7 @@ export class ExactReviewQueue {
             ownedRevision: completion.revision,
             deadLetterCapacityAvailable: true,
             env: this.env,
+            allocateRevision: this.itemRevisionAllocator,
           });
           if (!result.requeued && !result.parked) superseded += 1;
         }
@@ -8944,6 +8966,7 @@ export class ExactReviewQueue {
                 exactReviewDeadLetterId(item, completion.revision),
               ),
               env: this.env,
+              allocateRevision: this.itemRevisionAllocator,
             });
             const terminalDisposition = exactReviewLifecycleCompletionDisposition({
               projection: projectionBeforeTerminalCommit,
@@ -9041,6 +9064,7 @@ export class ExactReviewQueue {
             requestedRetryAt: requested.requestedRetryAt,
             deadLetterCapacityAvailable: true,
             env: this.env,
+            allocateRevision: this.itemRevisionAllocator,
           });
           const publicationTransitionInput = {
             completion: publicationCompletion,
@@ -11000,16 +11024,28 @@ export class ExactReviewQueue {
   }
 
   private nextExactReviewItemRevisionSync(itemKey: string, minimumRevision = 1): number {
-    return Math.max(minimumRevision, this.publicationHeadRevisionSync(itemKey.toLowerCase()) + 1);
+    // A publication fence numbers its own revisions, independent of its producer.
+    if (itemKey.includes("@publish:")) {
+      return Math.max(minimumRevision, this.publicationHeadRevisionSync(itemKey.toLowerCase()) + 1);
+    }
+    return this.nextExactReviewCommandRevisionSync(itemKey, minimumRevision);
   }
 
+  // The durable allocator for every review revision of an item. Queue rows are
+  // deleted on completion, but their (fence, revision) tuples outlive them in
+  // lifecycle projections and in direct receipts, which reject different bytes
+  // and supersede older revisions. A later admission must start above all of them.
   private nextExactReviewCommandRevisionSync(itemKey: string, minimumRevision: number): number {
-    const canonicalKey = itemKey.split("@publish:")[0]!.toLowerCase();
+    const targetKey = itemKey.split("@publish:")[0]!;
+    const canonicalKey = targetKey.toLowerCase();
     return this.commandIntakeStore.allocateItemRevision(
       canonicalKey,
       minimumRevision,
       this.lifecycleProjectionStore.maxRevision(canonicalKey),
+      // Projections keep GitHub casing, so mixed-case repositories also need the exact key.
+      targetKey === canonicalKey ? 0 : this.lifecycleProjectionStore.maxRevision(targetKey),
       this.publicationHeadRevisionSync(canonicalKey),
+      this.directPublicationStore.maxRevision(itemKey),
     );
   }
 
@@ -15222,6 +15258,8 @@ function completionTerminalDisposition(
     : (requested ?? committed ?? null);
 }
 
+type ExactReviewRevisionAllocator = (itemKey: string, minimumRevision: number) => number;
+
 function finishExactReviewPublicationQueueItem({
   state,
   item,
@@ -15232,6 +15270,7 @@ function finishExactReviewPublicationQueueItem({
   requeueLatest = false,
   deadLetterCapacityAvailable,
   env,
+  allocateRevision,
 }: {
   state: ExactReviewQueueState;
   item: ExactReviewQueueItem;
@@ -15242,6 +15281,7 @@ function finishExactReviewPublicationQueueItem({
   requeueLatest?: boolean;
   deadLetterCapacityAvailable: boolean;
   env: unknown;
+  allocateRevision: ExactReviewRevisionAllocator;
 }): {
   requeued: boolean;
   retried: boolean;
@@ -15327,7 +15367,7 @@ function finishExactReviewPublicationQueueItem({
     (completion.reasonCode === "artifact_unavailable" &&
       attempt >= EXACT_REVIEW_PUBLICATION_ARTIFACT_RETRY_LIMIT);
   if (artifactRefresh && !decisionPublicationPolicy(item.decision)) {
-    refreshExactReviewPublicationItem(state, item, now, env);
+    refreshExactReviewPublicationItem(state, item, now, env, allocateRevision);
     return { requeued: false, retried: false, refreshed: true, parked: false };
   }
 
@@ -16081,7 +16121,12 @@ export function exactReviewJitteredDelayMs(delayMs: number, random: () => number
   return Math.max(minimum, Math.min(maximum, Math.round(delay * (0.75 + 0.75 * unit))));
 }
 
-function expireExactReviewPublicationItems(state: ExactReviewQueueState, now: number, env) {
+function expireExactReviewPublicationItems(
+  state: ExactReviewQueueState,
+  now: number,
+  env,
+  allocateRevision: ExactReviewRevisionAllocator,
+) {
   let changed = false;
   for (const item of Object.values(state.items)) {
     // Restricted artifacts retain publication ownership until the existing
@@ -16096,7 +16141,7 @@ function expireExactReviewPublicationItems(state: ExactReviewQueueState, now: nu
     ) {
       continue;
     }
-    refreshExactReviewPublicationItem(state, item, now, env);
+    refreshExactReviewPublicationItem(state, item, now, env, allocateRevision);
     changed = true;
   }
   return changed;
@@ -16107,6 +16152,7 @@ function refreshExactReviewPublicationItem(
   item: ExactReviewQueueItem,
   now: number,
   env,
+  allocateRevision: ExactReviewRevisionAllocator,
 ) {
   if (decisionPublicationPolicy(item.decision))
     throw new Error("manual publication cannot request model recovery");
@@ -16133,7 +16179,7 @@ function refreshExactReviewPublicationItem(
     } else {
       return;
     }
-    current.revision += 1;
+    current.revision = allocateRevision(recoveryKey, current.revision + 1);
     current.updatedAt = now;
     Object.assign(
       current,
@@ -16149,12 +16195,13 @@ function refreshExactReviewPublicationItem(
     return;
   }
   // Refresh is the terminal recovery for an unusable artifact. It must not be
-  // shed after deleting the only durable publication reference.
+  // shed after deleting the only durable publication reference. Its producer
+  // revision must clear the refreshed publication's head and retained receipts.
   state.items[recoveryKey] = {
     key: recoveryKey,
     decision,
     state: "pending",
-    revision: 1,
+    revision: allocateRevision(recoveryKey, 1),
     createdAt: now,
     updatedAt: now,
     ...exactReviewQueueDebouncedAttempt(state, decision, now, now, env),

@@ -1044,6 +1044,20 @@ export class ExactReviewDirectPublicationStore {
     return this.readSync(itemKey, revision);
   }
 
+  /** Highest retained receipt revision for a fence, in any state; 0 when none. */
+  maxRevision(itemKey: string): number {
+    // item_key always mirrors fence_key, and the primary key indexes it.
+    const row = Array.from(
+      this.storage.sql.exec(
+        `SELECT MAX(revision) AS max_revision FROM ${EXACT_REVIEW_DIRECT_PUBLICATION_TABLE}
+          WHERE item_key = ?`,
+        itemKey,
+      ),
+    )[0] as { max_revision?: unknown } | undefined;
+    const revision = Number(row?.max_revision || 0);
+    return Number.isSafeInteger(revision) && revision > 0 ? revision : 0;
+  }
+
   pruneTerminalSync(now: number) {
     return Array.from(
       this.storage.sql.exec(
