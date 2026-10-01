@@ -130,13 +130,6 @@ ITEMS[143911] = {
   acknowledgementCommentId: 5616537937,
   durableCommentId: 5616705068,
   durableUpdatedAt: "2026-09-30T04:55:10Z",
-  // The live durable comment carries a later generation; at review time it held revision 45's.
-  durableAtReview: {
-    leaseOwner: "github-run-36670536119-1",
-    leaseCommentId: 5904269388,
-    reviewedAt: "2026-09-30T04:54:30.000Z",
-    itemUpdatedAt: "2026-09-30T04:49:30Z",
-  },
   labels: [
     "docs",
     "agents",
@@ -247,6 +240,11 @@ async function capture() {
     for (const kind of ["issues", "pulls"])
       for (const related of spec.related[kind])
         seed.related[kind][related] = get(`${base}/${kind}/${related}`);
+    // Later reviews edit the durable comment in place. Read-only GraphQL edit history restores
+    // the body it held at the review snapshot, so a newer generation cannot leak into replay.
+    const durable = seed.comments.find((comment) => comment.id === spec.durableCommentId);
+    const atReview = durable && durableCommentAtSnapshot(durable.node_id, spec.leaseAt);
+    if (atReview) seed.durableCommentAtReview = atReview;
     for (const file of seed.files) delete file.patch;
     const target = path.join(values.out, `seed-${number}.json`);
     fs.writeFileSync(target, JSON.stringify(seed, null, 1) + "\n");
@@ -254,6 +252,38 @@ async function capture() {
       JSON.stringify({ captured: number, target, sha256: sha256(fs.readFileSync(target)) }),
     );
   }
+}
+
+// Newest durable-comment edit at or before the snapshot (GitHub returns each edit's full body).
+function durableCommentAtSnapshot(nodeId, snapshotAt) {
+  let best = null;
+  let after = null;
+  do {
+    const page = JSON.parse(
+      execFileSync(
+        values.gh,
+        [
+          "api",
+          "graphql",
+          "-f",
+          `query=query($id: ID!, $after: String) { node(id: $id) { ... on IssueComment { userContentEdits(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { editedAt diff } } } } }`,
+          "-f",
+          `id=${nodeId}`,
+          ...(after ? ["-f", `after=${after}`] : []),
+        ],
+        { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+      ),
+    ).data.node.userContentEdits;
+    for (const edit of page.nodes)
+      if (
+        typeof edit.diff === "string" &&
+        Date.parse(edit.editedAt) <= Date.parse(snapshotAt) &&
+        (!best || Date.parse(edit.editedAt) > Date.parse(best.updated_at))
+      )
+        best = { body: edit.diff, updated_at: edit.editedAt };
+    after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
+  } while (after);
+  return best;
 }
 
 async function run() {
@@ -389,8 +419,8 @@ async function runScenario({
     if (comment.id === spec.durableCommentId)
       return {
         ...comment,
-        body: seed.durableCommentAtReview?.body ?? priorGenerationBody(comment.body, spec),
-        updated_at: spec.durableUpdatedAt,
+        body: seed.durableCommentAtReview?.body ?? comment.body,
+        updated_at: seed.durableCommentAtReview?.updated_at ?? spec.durableUpdatedAt,
       };
     if (comment.id === spec.acknowledgementCommentId)
       return { ...comment, updated_at: spec.leaseAt };
@@ -747,20 +777,6 @@ async function runScenario({
     await new Promise((resolve) => server.once("close", resolve));
     fs.rmSync(socketDir, { recursive: true, force: true });
   }
-}
-
-// Rewind the durable comment's generation markers to the review generation that preceded the
-// snapshot, so a later live generation does not make the replayed review look stale.
-function priorGenerationBody(body, spec) {
-  const prior = spec.durableAtReview;
-  if (!prior) return body;
-  return body.replace(/<!--\s+clawsweeper-[^>]*-->/g, (marker) =>
-    marker
-      .replace(/\blease_owner=\S+/, `lease_owner=${prior.leaseOwner}`)
-      .replace(/\blease_comment_id=\d+/, `lease_comment_id=${prior.leaseCommentId}`)
-      .replace(/\breviewed_at=\S+/, `reviewed_at=${prior.reviewedAt}`)
-      .replace(/\bupdated_at=\S+/, `updated_at=${prior.itemUpdatedAt}`),
-  );
 }
 
 // Recompute the review's recorded activity identity from the served snapshot with the
