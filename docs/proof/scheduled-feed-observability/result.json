@@ -1,0 +1,139 @@
+{
+  "claim": "With the same queue accounting on both builds, the candidate's public /api/exact-review-queue additionally reports the scheduled admission budget (signed global and per-lane token balances, burst, lane rates) and review shed counts by reason, so a scheduled backfill shed caused by organic debt is visible publicly; the baseline route omits them.",
+  "base": "7f87179433d0da5a0084141a8e8d7b909988e8a4",
+  "head": "3601dbdd3d3a1380525d32a1be8abfcc86547377",
+  "working_tree_dirty": false,
+  "node": "v24.21.0",
+  "workerd": "1.20260701.1",
+  "miniflare": "4.20260701.0",
+  "runtime": "workerd / real dashboard Worker + ExactReviewQueue SQLite Durable Object / loopback GitHub fixture / fake clock",
+  "scenario": "40 organic issue reviews admitted and claimed within one minute, then one scheduled_normal_backfill offer for a new item, then GET /api/exact-review-queue",
+  "variants": {
+    "baseline": {
+      "source_sha256": {
+        "dashboard/exact-review-queue.ts": "b934ca7f38e74776c4ba9a477d74f8970a40b1f0d14bafd794031cbee09e5909",
+        "dashboard/exact-review-read-model.ts": "0f00ee4d882781a6d76dcc6db55567b247d620e1fa7c93b4fa6062c9f4a1259a",
+        "dashboard/worker.ts": "fbbe53d773b9cab34bd19d267a0ad53252d0ee3a1a1d0670789c416989481ef2",
+        "dashboard/wrangler.toml": "cae3b3e976dac1bb06fbeea568a2de4c8b3a1df228ab172b5cdab207ea95b829"
+      },
+      "config": {
+        "EXACT_REVIEW_TARGET_RATE_PER_HOUR": "220",
+        "EXACT_REVIEW_TARGET_BURST": "24",
+        "EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR": "30"
+      },
+      "organic_dispatched": 40,
+      "organic_claimed": 40,
+      "scheduled_offer": {
+        "status": 202,
+        "shed": true,
+        "reason": "scheduled_rate"
+      },
+      "public_at_rest": {
+        "scheduled_feed": {
+          "target_rate_per_hour": 220,
+          "enqueue_replay": "scheduled_disposition_v1",
+          "max_concurrent": 32,
+          "active": 0
+        },
+        "review_shed_since_reset": 0,
+        "review_shed_reasons_since_reset": null
+      },
+      "public_after_debt": {
+        "scheduled_feed": {
+          "target_rate_per_hour": 220,
+          "enqueue_replay": "scheduled_disposition_v1",
+          "max_concurrent": 32,
+          "active": 0
+        },
+        "review_shed_since_reset": 1,
+        "review_shed_reasons_since_reset": null
+      }
+    },
+    "candidate": {
+      "source_sha256": {
+        "dashboard/exact-review-queue.ts": "b934ca7f38e74776c4ba9a477d74f8970a40b1f0d14bafd794031cbee09e5909",
+        "dashboard/exact-review-read-model.ts": "0f00ee4d882781a6d76dcc6db55567b247d620e1fa7c93b4fa6062c9f4a1259a",
+        "dashboard/worker.ts": "1732e988f8d445aeb030504293eea042b8778dbaeeb131117ab249cb56157dcc",
+        "dashboard/wrangler.toml": "cae3b3e976dac1bb06fbeea568a2de4c8b3a1df228ab172b5cdab207ea95b829"
+      },
+      "config": {
+        "EXACT_REVIEW_TARGET_RATE_PER_HOUR": "220",
+        "EXACT_REVIEW_TARGET_BURST": "24",
+        "EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR": "30"
+      },
+      "organic_dispatched": 40,
+      "organic_claimed": 40,
+      "scheduled_offer": {
+        "status": 202,
+        "shed": true,
+        "reason": "scheduled_rate"
+      },
+      "public_at_rest": {
+        "scheduled_feed": {
+          "target_rate_per_hour": 220,
+          "enqueue_replay": "scheduled_disposition_v1",
+          "max_concurrent": 32,
+          "active": 0,
+          "burst": 24,
+          "token_balance": 24,
+          "lanes": {
+            "hot_intake": {
+              "target_rate_per_hour": 30,
+              "burst": 8,
+              "token_balance": 8
+            },
+            "normal_backfill": {
+              "target_rate_per_hour": 190,
+              "burst": 16,
+              "token_balance": 16
+            }
+          }
+        },
+        "review_shed_since_reset": 0,
+        "review_shed_reasons_since_reset": {
+          "backpressure": 0,
+          "scheduled_rate": 0,
+          "unattributed": 0
+        }
+      },
+      "public_after_debt": {
+        "scheduled_feed": {
+          "target_rate_per_hour": 220,
+          "enqueue_replay": "scheduled_disposition_v1",
+          "max_concurrent": 32,
+          "active": 0,
+          "burst": 24,
+          "token_balance": -8,
+          "lanes": {
+            "hot_intake": {
+              "target_rate_per_hour": 30,
+              "burst": 8,
+              "token_balance": 8
+            },
+            "normal_backfill": {
+              "target_rate_per_hour": 190,
+              "burst": 16,
+              "token_balance": 16
+            }
+          }
+        },
+        "review_shed_since_reset": 1,
+        "review_shed_reasons_since_reset": {
+          "backpressure": 0,
+          "scheduled_rate": 1,
+          "unattributed": 0
+        }
+      }
+    }
+  },
+  "limits": "Synthetic GitHub fixture and RSA credential; issue items only; reviews are modeled as claims (the budget charges at claim); no live inference, production state, or GitHub mutation. Throttle timestamps are covered by unit tests, not this run.",
+  "assertions": {
+    "same_accounting": true,
+    "scheduled_offer_shed_by_rate": true,
+    "baseline_omits_budget": true,
+    "candidate_at_rest_full_burst": true,
+    "candidate_reports_organic_debt": true,
+    "candidate_reports_lanes": true,
+    "candidate_attributes_shed": true
+  }
+}
