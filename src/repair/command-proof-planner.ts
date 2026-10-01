@@ -56,7 +56,7 @@ export const planCommandProof: ProofPlanner = async (context) => {
       scanSource: { kind: "prompt" },
       prompt: proofPlannerPrompt(context),
       model: "internal",
-      reasoningEffort: "high",
+      reasoningEffort: "medium",
       cwd: work,
       env,
       timeoutMs: 120_000,

@@ -67,12 +67,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: clawsweeper-dispatch-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number || github.run_id }}
+  group: clawsweeper-dispatch-${{ github.repository }}-${{ github.event_name }}-${{ github.event.comment.id || github.event.issue.number || github.event.pull_request.number || github.run_id }}-${{ endsWith(github.actor, '[bot]') && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.actor || 'dispatchable' }}
   cancel-in-progress: ${{ github.event.action == 'edited' || github.event.action == 'synchronize' || github.event.action == 'ready_for_review' }}
 
 jobs:
   hosted-target-admission:
-    uses: openclaw/clawsweeper/.github/workflows/hosted-target-admission.yml@main
+    uses: openclaw/clawsweeper/.github/workflows/hosted-target-admission.yml@174a2c9c903323eb9387d030748ed2b41824a7be # reviewed upstream main
     with:
       target_repo: ${{ github.repository }}
     secrets:
@@ -140,6 +140,7 @@ jobs:
             steps.comment_filter.outputs.is_command == 'true' &&
             env.HAS_CLAWSWEEPER_APP_PRIVATE_KEY == 'true'
           }}
+        continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ env.CLAWSWEEPER_APP_CLIENT_ID }}
@@ -475,7 +476,10 @@ marked ready immediately after creation, and both runs can list comments before
 either acknowledgement is visible. The acknowledgement step therefore matches
 any existing trusted-bot `clawsweeper-pr-ack` marker for the item, then waits and rechecks
 right before posting; when a superseding event arrives during that wait, the
-shared concurrency group cancels the sleeping run before it posts.
+item-event concurrency group cancels the sleeping run before it posts. Comment
+events use the comment id in a separate event-type group, so editing an unrelated
+comment cannot cancel an item review. Ignored bot label events also use their own
+actor-specific suffix, preventing them from replacing a pending human label run.
 
 Comments are a lightweight trigger only when the body contains a ClawSweeper
 command, and generated proof-nudge comments are explicitly ignored before

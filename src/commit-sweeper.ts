@@ -44,7 +44,7 @@ interface CommitMetadata {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_CODEX_MODEL = PUBLIC_CODEX_MODEL;
-const DEFAULT_REASONING_EFFORT = "high";
+const DEFAULT_REASONING_EFFORT = "medium";
 const DEFAULT_SERVICE_TIER = "";
 
 function run(command: string, commandArgs: string[], options: { cwd?: string } = {}): string {

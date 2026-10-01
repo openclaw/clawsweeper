@@ -17,16 +17,30 @@ runs:
         TARGET_REPOSITORY: ${{ inputs.target-repo }}
       run: echo "repository=$(printf '%s' "$TARGET_REPOSITORY" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
-    - name: Restore Codex source object cache
+    # One cache entry per pinned Codex version. Without a valid base pin there is
+    # no key; install.sh still owns that decision.
+    - name: Resolve Codex source cache key
+      id: cache-key
       if: ${{ steps.target.outputs.repository == 'openclaw/openclaw' && env.CLAWSWEEPER_RUNNER != 'openclaw' }}
-      uses: actions/cache@v6
+      shell: bash
+      env:
+        PIN_FILE: ${{ inputs.target-dir }}/extensions/codex/package.json
+      run: |
+        if [[ -f "$PIN_FILE" && ! -L "$PIN_FILE" ]] &&
+          version="$(node "$GITHUB_ACTION_PATH/validate-pin.mjs" "$PIN_FILE" 2>/dev/null)"; then
+          echo "key=${RUNNER_OS}-openclaw-codex-source-v2-${version}" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Restore Codex source object cache
+      id: cache
+      if: ${{ steps.target.outputs.repository == 'openclaw/openclaw' && env.CLAWSWEEPER_RUNNER != 'openclaw' && steps.cache-key.outputs.key != '' }}
+      uses: actions/cache/restore@v6
       with:
         path: ${{ inputs.target-dir }}-codex-cache.git
-        key: ${{ runner.os }}-openclaw-codex-source-${{ github.run_id }}-${{ github.run_attempt }}
-        restore-keys: |
-          ${{ runner.os }}-openclaw-codex-source-
+        key: ${{ steps.cache-key.outputs.key }}
 
     - name: Materialize pinned Codex source
+      id: materialize
       if: ${{ steps.target.outputs.repository == 'openclaw/openclaw' && env.CLAWSWEEPER_RUNNER != 'openclaw' }}
       shell: bash
       run: |
@@ -41,4 +55,15 @@ runs:
           echo "::notice::The base checkout has no eligible Codex pin; deferring the decision to the materialized review tree."
           exit 0
         fi
+        if [ "$setup_status" -eq 0 ]; then
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+        fi
         exit "$setup_status"
+
+    - name: Save Codex source object cache
+      if: ${{ steps.cache-key.outputs.key != '' && steps.cache.outputs.cache-hit != 'true' && steps.materialize.outputs.ready == 'true' }}
+      continue-on-error: true
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ inputs.target-dir }}-codex-cache.git
+        key: ${{ steps.cache-key.outputs.key }}

@@ -106,9 +106,9 @@ before it pushes. If current-main verification shows that the request is already
 fixed, unsafe, or cannot be validated, the correct outcome is a blocked
 result—not a PR.
 
-Issue fix and PR-creation steps use `gpt-6-sol`. Maintainer-authored canonical
-items use high reasoning with fast service; other items use medium reasoning
-with standard service. Per-run reasoning and service-tier overrides are retired.
+Issue fix and PR-creation steps use `gpt-6.1-sol` with medium reasoning.
+Maintainer-authored canonical items use fast service; other items use standard
+service. Per-run reasoning and service-tier overrides are retired.
 
 ## Maintainer commands versus automatic selection
 

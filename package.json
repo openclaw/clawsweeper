@@ -29,6 +29,8 @@
     "repair:validate": "node dist/repair/validate-all.js",
     "repair:containment-smoke": "node dist/repair/containment-preflight.js",
     "repair:validate-job": "node dist/repair/validate-job.js",
+    "repair:policy-gate": "node dist/repair/repair-policy-gate.js",
+    "repair:policy-run": "node dist/repair/repair-policy-run.js",
     "repair:render": "node dist/repair/render-prompt.js",
     "repair:create-job": "node dist/repair/create-job.js",
     "repair:plan-cluster": "node dist/repair/plan-cluster.js",

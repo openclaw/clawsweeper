@@ -205,6 +205,30 @@ Producer `selection.json`, `codex/`, `review-trees/`, and sibling reports stay
 outside the selected bundle. The importer still rejects
 unexpected files, symlinks, and directories in its publication input.
 
+Exact-item review jobs materialize the target with
+`scripts/review-target-checkout.sh`. Its cache is a blobless bare repository
+holding the target branch's full commit and tree history, the tags on that
+history, and every blob of the branch tip. Actions cache keys are
+`<target-slug>-review-target-git-v1-<os>-<branch>-<YYYYMMDD>-<HH>` (UTC). A run
+restores the newest entry from the same UTC day, fetches only the branch delta
+and the missing tip blobs, and clones the checkout locally with hardlinked
+objects. The first run of each hour saves the refreshed cache right after
+checkout, before any review input touches the workspace, and then deletes all
+but the two newest entries for that target branch; the first run of each day
+builds from GitHub again, which bounds pack and blob growth. Tip blobs fetched by
+id are the slow part (about 250 blobs/s from GitHub), and `openclaw/openclaw`
+changes roughly 7,800 tip blobs a day, which is why the cache is refreshed hourly
+rather than daily. The checkout keeps the contract of a direct
+`git clone --filter=blob:none --single-branch`: the branch at the current remote
+head, full non-shallow history, branch tags, and a promisor `origin` for lazy
+blob fetches. Cached tag refs are rebuilt through Git's normal tag auto-follow
+on every warm fetch, so deleted or moved tags cannot survive in the checkout.
+A non-fast-forward branch update rebuilds the cache so its old history cannot
+retain tags outside the current branch. A failed or partial restore is discarded,
+a failed cache fetch rebuilds the cache, and a failed local clone falls back to a clean clone without
+saving. The pinned Codex source cache is keyed by the Codex version pinned in the
+target checkout and is saved once per version.
+
 The receiver workflow is `.github/workflows/sweep.yml`.
 
 Important source files:
@@ -558,6 +582,17 @@ or missing targets still stop at the queue/executor live-state checks. General
 manual and broad dispatch behavior, the independent proof cursor, and close
 policy are unchanged. OpenClaw Bay needs no change: this producer reuses existing
 queue/lifecycle fields and adds no published schema, status field, or control.
+
+Exact PR review marks ClawSweeper's own acknowledgement comment
+(`clawsweeper-pr-ack`) complete after the review snapshot and before direct
+publication, and GitHub moves the PR's `updated_at` for that edit. Apply
+freshness treats that edit as automation-only only when it is the item's latest
+update and the review's complete source, timeline, PR head, and review-activity
+receipt still matches the live item. Any other change in the window, including
+a human comment, title/body or non-managed label edit, PR review, or new head,
+still records `skipped_changed_since_review` and requeues a fresh
+`source_drift_requeue` review. Without this allowance, a close proposal's own
+status edit made every review drift and requeue indefinitely.
 
 ## Automerge Fast Path
 

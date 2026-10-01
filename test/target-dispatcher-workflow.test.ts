@@ -22,6 +22,7 @@ const dispatcherTemplates = new MarkdownIt()
 
 assert.equal(dispatcherTemplates.length, 1, "expected one canonical target dispatcher template");
 const documentedWorkflow = dispatcherTemplates[0]!.content;
+const hostedAdmissionRevision = "174a2c9c903323eb9387d030748ed2b41824a7be";
 
 type WorkflowStep = {
   id?: string;
@@ -58,6 +59,14 @@ function workflowJobs(source: string) {
   ).jobs;
 }
 
+function workflowConcurrency(source: string) {
+  return (
+    parse(source) as {
+      concurrency?: { group?: string; "cancel-in-progress"?: string };
+    }
+  ).concurrency;
+}
+
 function namedStep(steps: WorkflowStep[], name: string): WorkflowStep {
   const step = steps.find((candidate) => candidate.name === name);
   assert.ok(step, `missing workflow step: ${name}`);
@@ -72,12 +81,25 @@ test("documented target dispatcher template matches the live workflow", () => {
   assert.equal(documentedWorkflow, liveWorkflow);
 });
 
+test("copied dispatchers isolate comment and ignored bot-label concurrency", () => {
+  const expectedGroup =
+    "clawsweeper-dispatch-${{ github.repository }}-${{ github.event_name }}-${{ github.event.comment.id || github.event.issue.number || github.event.pull_request.number || github.run_id }}-${{ endsWith(github.actor, '[bot]') && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.actor || 'dispatchable' }}";
+  for (const source of [liveWorkflow, documentedWorkflow]) {
+    const concurrency = workflowConcurrency(source);
+    assert.equal(concurrency?.group, expectedGroup);
+    assert.equal(
+      concurrency?.["cancel-in-progress"],
+      "${{ github.event.action == 'edited' || github.event.action == 'synchronize' || github.event.action == 'ready_for_review' }}",
+    );
+  }
+});
+
 test("copied dispatchers admit the target before any token or acknowledgement", () => {
   for (const source of [liveWorkflow, documentedWorkflow]) {
     const jobs = workflowJobs(source);
     assert.equal(
       jobs?.["hosted-target-admission"]?.uses,
-      "openclaw/clawsweeper/.github/workflows/hosted-target-admission.yml@main",
+      `openclaw/clawsweeper/.github/workflows/hosted-target-admission.yml@${hostedAdmissionRevision}`,
     );
     assert.deepEqual(jobs?.["hosted-target-admission"]?.with, {
       target_repo: "${{ github.repository }}",
@@ -99,6 +121,24 @@ test("copied dispatchers admit the target before any token or acknowledgement", 
     assert.match(
       jobs?.dispatch?.if ?? "",
       /needs\.hosted-target-admission\.outputs\.outcome == 'public'/,
+    );
+  }
+});
+
+test("copied dispatchers keep command delivery independent of target acknowledgement tokens", () => {
+  for (const source of [liveWorkflow, documentedWorkflow]) {
+    const steps = dispatchSteps(source);
+    const token = namedStep(steps, "Create target comment token");
+    const command = namedStep(steps, "Acknowledge and dispatch ClawSweeper comment");
+
+    assert.equal(token["continue-on-error"], true);
+    assert.doesNotMatch(normalizeWhitespace(command.if), /target_token|TARGET_TOKEN/);
+    assert.equal(command.env?.TARGET_TOKEN, "${{ steps.target_token.outputs.token }}");
+    assert.equal(command.env?.DISPATCH_TOKEN, "${{ steps.token.outputs.token }}");
+    assert.match(command.run ?? "", /if \[ -n "\$TARGET_TOKEN" \]; then/);
+    assert.match(
+      command.run ?? "",
+      /GH_TOKEN="\$DISPATCH_TOKEN" gh api repos\/openclaw\/clawsweeper\/dispatches/,
     );
   }
 });

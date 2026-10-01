@@ -2,10 +2,23 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  repositoryRepairExecutionBlockReason,
   shouldCloseSupersededSourcePrs,
   shouldSeedReplacementBranchFromSource,
   sourceBranchWriteBlockReason,
 } from "../../dist/repair/execute-fix-policy.js";
+
+test("Enterprise repair execution is denied independently of router admission", () => {
+  assert.equal(
+    repositoryRepairExecutionBlockReason("openclaw/openclaw-enterprise"),
+    "repair execution is disabled for openclaw/openclaw-enterprise by repository profile",
+  );
+  assert.equal(repositoryRepairExecutionBlockReason("openclaw/openclaw"), null);
+  assert.equal(
+    repositoryRepairExecutionBlockReason(""),
+    "repair execution requires a target repository",
+  );
+});
 
 test("superseded source PR closeout defaults on for replacement PRs", () => {
   assert.equal(shouldCloseSupersededSourcePrs(undefined), true);

@@ -10,7 +10,7 @@ export function codexItemProfile(authorAssociations: unknown): CodexItemProfile 
     ? authorAssociations
     : [authorAssociations];
   return associations.some(isMaintainerAuthorAssociation)
-    ? { reasoningEffort: "high", serviceTier: "fast" }
+    ? { reasoningEffort: "medium", serviceTier: "fast" }
     : { reasoningEffort: "medium", serviceTier: "" };
 }
 

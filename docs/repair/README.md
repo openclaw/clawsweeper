@@ -427,9 +427,9 @@ The workflow needs:
   only the public `internal` alias
 - Codex CLI and its responses API proxy install from their latest npm tags on
   every worker run
-- repair planning and execution use `gpt-6-sol`; maintainer-authored canonical
-  items use high reasoning with fast service, while other items use medium
-  reasoning with standard service
+- repair planning and execution use `gpt-6.1-sol` with medium reasoning;
+  maintainer-authored canonical items use fast service, while other items use
+  standard service
 - optional `CLAWSWEEPER_MAX_LIVE_WORKERS` variable for dispatch/requeue/self-heal worker fan-out; dispatch defaults are derived from `job_intent`, cluster-lane classification, `workers.max`, and `lanes.repair.cluster_max_live_runs`
 - optional `CLAWSWEEPER_MAX_ACTIVE_PRS_PER_AREA` variable for replacement PR backpressure; default is `50` open ClawSweeper PRs per touched area, `0` disables the area cap, and common changelog/release-note files are ignored for this check
 - ClawSweeper commit-finding repair PRs are labeled `clawsweeper:commit-finding`

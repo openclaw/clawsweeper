@@ -242,7 +242,7 @@ async function scanWithModel(comments: SpamScanComment[], scanModel: string) {
   }
   const payload = {
     model: internalCodexModel(scanModel),
-    reasoning: { effort: "high" },
+    reasoning: { effort: "medium" },
     input: [
       {
         role: "system",
