@@ -1,7 +1,7 @@
 {
   "claim": "A target dispatcher issue/PR event is enqueued into the real exact-review queue without any repository_dispatch (so no `Review event item` relay run); a replay of the same run dedupes; any direct failure falls back to the unchanged repository_dispatch, whose relay still enqueues the event.",
-  "base": "65f9c3a3057621385b6c4f52640a2ce190c18c57",
-  "head": "393e5cad76ecd743baffccd09d0c8bc77b05e2bd",
+  "base": "1c3eea1da162cf6cc9d2b607ac2ca3212755fa66",
+  "head": "c4ed347928f43bd1d93f9173829f41903548edbd",
   "working_tree_dirty": false,
   "node": "v24.21.0",
   "miniflare": "4.20260701.0",
@@ -11,13 +11,13 @@
   "runtime": "workerd/SQLite (Miniflare) running the variant's dashboard/worker.ts and ExactReviewQueue; dispatcher and relay step scripts from the variant's workflows under bash; native gh over http_unix_socket",
   "variants": {
     "baseline": {
-      "ref": "65f9c3a3057621385b6c4f52640a2ce190c18c57",
+      "ref": "1c3eea1da162cf6cc9d2b607ac2ca3212755fa66",
       "dispatch_job_id_token_write": false,
       "source_sha256": {
         ".github/workflows/clawsweeper-dispatch.yml": "890f0fb5c838fd0d7e4c0b04f85281bf90bdf54e93bc6b6a91cadd15b9e3d83f",
         ".github/workflows/sweep.yml": "4d3eadf7366f26a4631b70c0b97b151c553119af39ac2e8619d49332adb5573d",
-        "dashboard/worker.ts": "cd2e0132d5999fc3d1e7bd84d16e995204586195090634a1f61a45783eaf371b",
-        "dashboard/exact-review-queue.ts": "98187591c7f7467e252342aadfae640a5669fe2425f97cb5624c2149e89b0dcf"
+        "dashboard/worker.ts": "935140fa3c06cc27cd3b5a898304101d9168048ac608612bb5786d0fc9d90eba",
+        "dashboard/exact-review-queue.ts": "5922984094a0702ed1c81cbe49ce98576b3bbdb5d0a2e7954af6a6dfe565291d"
       },
       "scenarios": {
         "pr_opened": {
@@ -333,7 +333,7 @@
             }
           ],
           "deliveries": [
-            "53b89924-a5c8-4c11-a20a-66e61bd62dca",
+            "878fc182-95b5-4b36-809c-53a35ef2210e",
             "legacy:9001:1",
             "legacy:9002:1",
             "legacy:9003:1",
@@ -377,13 +377,13 @@
       }
     },
     "candidate": {
-      "ref": "393e5cad76ecd743baffccd09d0c8bc77b05e2bd",
+      "ref": "c4ed347928f43bd1d93f9173829f41903548edbd",
       "dispatch_job_id_token_write": true,
       "source_sha256": {
         ".github/workflows/clawsweeper-dispatch.yml": "ae46574ef2811f892c3efb2c15963acab5adb4950d2454a2bc5878d36f5b457c",
         ".github/workflows/sweep.yml": "4d3eadf7366f26a4631b70c0b97b151c553119af39ac2e8619d49332adb5573d",
-        "dashboard/worker.ts": "7f8ad5c52460bd11ec226d2068022bd24322e578a3b37a487642daf1bafb6569",
-        "dashboard/exact-review-queue.ts": "98187591c7f7467e252342aadfae640a5669fe2425f97cb5624c2149e89b0dcf",
+        "dashboard/worker.ts": "420b18728fb1a371cd02bd6f0c4dd21ae26834e47343bd07cd52dbc8f22ca1d0",
+        "dashboard/exact-review-queue.ts": "5922984094a0702ed1c81cbe49ce98576b3bbdb5d0a2e7954af6a6dfe565291d",
         "dashboard/target-dispatch-ingress.ts": "8e778addf74fc5dd83d985a8f974847bd3ac03e3799dc78cdc027622e282ad34",
         "dashboard/github-actions-oidc.ts": "0c3e01ed3c75ebea789219c539af98d002daca932240c4abae5d39b6ea169c50"
       },
@@ -715,7 +715,7 @@
             }
           ],
           "deliveries": [
-            "c17b7079-a767-43f4-8171-6bf212c58dd1",
+            "afb353c5-4bc6-4523-8f3b-08f14c26addb",
             "legacy:9008:1",
             "legacy:9009:1",
             "legacy:9010:1",
