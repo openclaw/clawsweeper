@@ -8,7 +8,10 @@
   [target dispatcher](../../target-dispatcher.md#direct-queue-intake)
 - Baseline: `cac974b3e1da900cac3e7480b91d02a36ca60163` (`origin/main`)
 - Candidate (clean, committed, with that main merged):
-  `8c66d243208da8e99946e09535af8b9bbd4061ec`
+  `6b887421a45700da207b5a1a74786ce0635bdeb9` (rerun after pinning the proof's
+  recording proxy to the local Worker origin; the first candidate run was
+  `8c66d243208da8e99946e09535af8b9bbd4061ec`, receipt SHA-256
+  `a9c7225a2b7802937e7576eea780a5b2692948ff646040dc8c752c230ce0e83d`)
 - Update when: the dispatcher step, the relay job, the OIDC claim binding, or
   the queue's ingress dedupe changes
 
@@ -71,9 +74,9 @@ App webhook only produced a `cross_route` dedupe, which is the redundancy the
 direct route removes.
 
 - Receipt: [`result.json`](result.json), SHA-256
-  `a9c7225a2b7802937e7576eea780a5b2692948ff646040dc8c752c230ce0e83d`
+  `ab26c419efd94529c6fc12f0fc9b98913a4e961275809d324b50d29ca969406a`
 - Harness at the candidate head: SHA-256
-  `2e9510280dff6be08dfcbaecdbd6339a256d7d2df5267858d0ac145e4d3d335b`
+  `7be9d83d4780feea104ec78be20eb74e530ac308c95168d3b2576a459495abd5`
 - Per-file source SHA-256s for both variants are inside the receipt;
   `sweep.yml` and `exact-review-queue.ts` are identical in both.
 - The same harness passed with identical outcomes at two earlier
