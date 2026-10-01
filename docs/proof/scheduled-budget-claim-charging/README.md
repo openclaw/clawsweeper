@@ -1,9 +1,10 @@
 # Claim-time review budget charging proof
 
-Status: proof for charging the exact-review budget when a workflow run claims a
-review lease. The owning code is `chargeClaimedReviewExecutionSync` and the
-`/claim` route in `dashboard/exact-review-queue.ts`; the contract is described
-in [Automation limits](../../limits.md) and [Scheduler](../../scheduler.md).
+Status: historical proof for https://github.com/openclaw/clawsweeper/pull/1736,
+which charged the exact-review budget when a workflow run claimed a review
+lease. The queue now charges when a claimed run starts Codex generation; see the
+[generation-start charging proof](../scheduled-budget-generation-start/README.md)
+for the current contract. The harness below has since been extended in place.
 The earlier admission-time accounting proof is
 [historical](../scheduled-budget/README.md).
 
