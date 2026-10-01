@@ -50,7 +50,7 @@ away.
 
 ## Before and after
 
-| Scenario                                  | origin/main `cac974b3e1`         | branch `10f1986374`                                                                                         |
+| Scenario                                  | origin/main `cac974b3e1`         | branch `2f91363b9d`                                                                                         |
 | ----------------------------------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | Source-drift requeues 1-3                 | `queued`, review dispatched      | `queued`, review dispatched                                                                                 |
 | Source-drift requeue 4                    | `queued`, review dispatched      | `deduped:source_drift_loop:requeue_limit_reached`, item parked                                              |
@@ -82,20 +82,72 @@ assertion holds and the baseline requeues on every cycle.
 ## Recorded run
 
 - base: `cac974b3e1da900cac3e7480b91d02a36ca60163` (origin/main)
-- head: `10f1986374f1064ba3f4b4e5adad0ec60f273cba`, `working_tree_dirty: false`
+- head: `2f91363b9d6081ea7ae4e4ea31450e3a3ec5feb7`, `working_tree_dirty: false`
 - runtime: Node v24.21.0, workerd 1.20260701.1, Miniflare 4.20260701.0
 - `result.json` SHA-256:
-  `681503d1d561897fa690f3755a3be3eaf88c3d1e0775afe7644a7efef8a4a4a9`
+  `0ade9bf73112f316d7c8fc35613a1f90cf26dc70a932a57af244958c341599a1`
   (copied byte-for-byte from the run output)
 - `run-proof.mjs` SHA-256:
   `ac47946836472d95bd39e90d9b1fca007964bcd386d6076bc9effa2a3f71835e`
 - candidate source SHA-256: `dashboard/exact-review-queue.ts`
-  `575fdf82f9d698061450f9c5782cbba571119fd0dde8e271180ede9db6ae6238`,
+  `88c4679c05778f93f74598b971c41720dc75b1a924bb6ccfe8cf2d70447b6c01`,
   `dashboard/worker.ts`
   `7712ee6bc17d6a9e3bf9ccd9bd131e6e684761a63aa8f29e6407b067c664430d`
   (all hashed files are listed in the receipt)
 
-The receipt contains no local paths, credentials, or tokens.
+The receipt contains no local paths, credentials, or tokens. The idle-counter
+expiry fix (`3727687379`) is covered by the unit test "an expired exhausted
+counter never denies admission and is not resurrected", which fails on the
+previous head `626dd230c8`.
+
+## Persisted upgrade and rollback proof
+
+[`upgrade-and-rollback.mjs`](upgrade-and-rollback.mjs) persists one
+SQLite-backed `ExactReviewQueue` Durable Object on disk and reopens it with the
+real dashboard Worker three times: origin/main, then the branch, then
+origin/main again. Raw rows are read directly from SQLite before each variant's
+first queue request.
+
+| Phase                            | What happens                                                                                                        | Result                                                                                                                   |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| origin/main creates state        | #300001 pending (organic), #300002 leased, #300003 parked `scanner_refused`, #300004 pending `source_drift_requeue` | lane: 2 pending, 1 leased, 1 parked; no new tables                                                                       |
+| Branch reopens                   | raw item and delivery rows before and after the first queue read                                                    | byte-identical to the origin/main snapshot                                                                               |
+| Branch finishes origin/main work | completes the #300002 lease, dispatches #300001 and #300004                                                         | all completed                                                                                                            |
+| Branch loop parking              | #300005, #300006, #300010 each get 3 admitted drift generations                                                     | 4th requeue `requeue_limit_reached` for all three; 12 reviews spent                                                      |
+| Branch operator path             | `/parked-reviews/list` and `recover-fresh`                                                                          | lists all three `source_drift_loop` rows; recovers #300005 to pending                                                    |
+| Branch leaves work               | #300005 and #300007 leased, #300008 pending, #300006 and #300010 parked                                             | both new tables created                                                                                                  |
+| origin/main reopens              | raw items, deliveries, loop counters, and generation rows                                                           | byte-identical to the branch snapshot; new tables ignored                                                                |
+| origin/main reads                | `/stats` and public `GET /api/exact-review-queue`                                                                   | 200, collection `complete`; `source_drift_loop: 2` in stats, folded into public `unknown: 2`; no `review_runaway_health` |
+| origin/main finishes branch work | completes the #300007 and #300005 leases                                                                            | both completed                                                                                                           |
+| Parked loop, automatic requeue   | `source_drift_requeue` for #300006                                                                                  | ignored as low-priority recovery; row stays parked                                                                       |
+| Parked loop, organic event       | `edited` for #300006                                                                                                | queued; pending; dispatched and completed                                                                                |
+| Parked loop, command             | `re_review` for #300010                                                                                             | queued; pending; dispatched                                                                                              |
+| End state                        | remaining rows                                                                                                      | only #300003 (`scanner_refused`) and the dispatched #300010; nothing lost                                                |
+
+All 14 assertions pass. Reproduce with:
+
+```sh
+node docs/proof/source-drift-loop-breaker/upgrade-and-rollback.mjs origin/main /tmp/clawsweeper-proof-tools .artifacts/source-drift-loop-upgrade
+```
+
+- base `cac974b3e1da900cac3e7480b91d02a36ca60163`, head
+  `2f91363b9d6081ea7ae4e4ea31450e3a3ec5feb7`, `working_tree_dirty: false`
+- [`upgrade-and-rollback.json`](upgrade-and-rollback.json) SHA-256:
+  `a47f5a5f0760c087b348be13a564a192f7d60fd4b945ceee92bdc2a684350d63`
+  (copied byte-for-byte from the run output)
+- `upgrade-and-rollback.mjs` SHA-256:
+  `82e3fc04e23caf32d71c2e2ddbf914b6e601af7357a3665509990f94d01e9a7e`
+- row digests: origin/main items
+  `bb1be102b61e72d144bf60e46804920a550c46e5ac4755f697f0456fe8395d6b`, branch
+  items `acfe23c230ed62813e88ddfc4a9851f5cd12fd200a4f9f37009ae28b383e642e`
+  (all digests and source hashes are in the receipt)
+
+Limits: one Durable Object persisted by Miniflare on local disk, not a
+production Cloudflare deployment; synthetic GitHub fixture; issue items only;
+review execution replaced by claim plus completion; alarms only by explicit
+fake-clock ticks. On origin/main a parked loop row is not operator-listable
+(its parked-reason allowlist predates `source_drift_loop`), but organic events
+and commands release it as above.
 
 ## OpenClaw Bay
 

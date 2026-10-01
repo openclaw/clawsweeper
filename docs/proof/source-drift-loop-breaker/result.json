@@ -1,7 +1,7 @@
 {
   "claim": "origin/main admits a source-drift requeue after every successful review generation forever; the branch parks the item as source_drift_loop after three consecutive automatic generations, an organic event or explicit command admits it normally, a newer scheduled offer releases one review whose next drift requeue re-parks immediately, and /api/exact-review-queue reports review_runaway_health degraded for an item past 24 claimed reviews per day.",
   "base": "cac974b3e1da900cac3e7480b91d02a36ca60163",
-  "head": "10f1986374f1064ba3f4b4e5adad0ec60f273cba",
+  "head": "2f91363b9d6081ea7ae4e4ea31450e3a3ec5feb7",
   "working_tree_dirty": false,
   "node": "v24.21.0",
   "workerd": "1.20260701.1",
@@ -159,7 +159,7 @@
     },
     "candidate": {
       "source_sha256": {
-        "dashboard/exact-review-queue.ts": "575fdf82f9d698061450f9c5782cbba571119fd0dde8e271180ede9db6ae6238",
+        "dashboard/exact-review-queue.ts": "88c4679c05778f93f74598b971c41720dc75b1a924bb6ccfe8cf2d70447b6c01",
         "dashboard/exact-review-read-model.ts": "0f00ee4d882781a6d76dcc6db55567b247d620e1fa7c93b4fa6062c9f4a1259a",
         "dashboard/worker.ts": "7712ee6bc17d6a9e3bf9ccd9bd131e6e684761a63aa8f29e6407b067c664430d",
         "dashboard/dashboard-health.ts": "7aa184aba04fda07f51ed3dbf06e2068344e25aa9389ce86ba4b069383370b3f",
