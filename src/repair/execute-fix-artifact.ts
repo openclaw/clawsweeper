@@ -168,7 +168,7 @@ import {
   sourceContributorCredits,
   supersededReplacementSources,
 } from "./execute-fix-github.js";
-import { canonicalItemAuthorAssociations, codexItemProfile } from "../codex-item-profile.js";
+import { canonicalItemCodexProfile } from "../codex-item-profile.js";
 import { rewriteFinalBaseReconcilePrompt } from "./final-base-reconcile-prompt.js";
 
 const FIX_ACTIONS = new Set(["fix_needed", "build_fix_artifact", "open_fix_pr"]);
@@ -282,9 +282,7 @@ const clusterPlanPath = path.join(path.dirname(resultPath), "cluster-plan.json")
 const clusterPlan = fs.existsSync(clusterPlanPath)
   ? JSON.parse(fs.readFileSync(clusterPlanPath, "utf8"))
   : null;
-const codexProfile = codexItemProfile(
-  canonicalItemAuthorAssociations(job.frontmatter, clusterPlan),
-);
+const codexProfile = canonicalItemCodexProfile(job.frontmatter, clusterPlan);
 const codexReasoningEffort = codexProfile.reasoningEffort;
 const codexServiceTier = codexProfile.serviceTier;
 if (result.repo !== job.frontmatter.repo) {

@@ -102,6 +102,8 @@ everything else requires human comparison with current main.
 - [Contributing](../CONTRIBUTING.md) — active; setup, scope, PR evidence, and
   author-owned review loop
 - [Agent instructions](../AGENTS.md) — active and binding for coding agents
+- [Changelog fragments](../changelog.d/README.md) — active; one-bullet
+  ClawSweeper release-note fragments and the release-time stitch
 - [PR review comments](pr-review-comments.md) — active; review-thread handling
 - [Related issue discovery](related-issue-discovery.md) — active; duplicate and
   adjacent-report context
@@ -190,7 +192,8 @@ selected configuration-derived claims in
 CI path. Add a manifest claim when volatile production configuration is quoted
 as a concrete value in prose. Stage newly added files before running the check
 so its repository inventory matches the proposed commit rather than unrelated
-untracked workspace contents.
+untracked workspace contents. `pnpm run check:changelog` runs in the same static
+check and validates pending `changelog.d/` fragments.
 
 The check deliberately does not crawl external URLs, infer policy, assign
 ownership, or treat historical proof commands and paths as current contracts.

@@ -1,0 +1,255 @@
+{
+  "label": "before",
+  "source": "<checkout>",
+  "head": "0f5162431a344474998f10042f3ea0f8a5705e2a",
+  "working_tree_dirty": false,
+  "node": "v24.21.0",
+  "workerd": "1.20260701.1",
+  "miniflare": "4.20260701.0",
+  "runtime": "workerd / SQLite Durable Object (Miniflare), synthetic 2030 clock, outbound network blocked",
+  "source_sha256": {
+    "dashboard/exact-review-queue.ts": "98187591c7f7467e252342aadfae640a5669fe2425f97cb5624c2149e89b0dcf",
+    "dashboard/exact-review-read-model.ts": "9300856b2673daaee81a6ccec7a5d85da4c8d1a60d504a8179ad1a36437fe674",
+    "dashboard/exact-review-health.ts": "9eeff149239d0175f2b3755257366c6da5ea8cb1234ea09e1fed52478eb44c13",
+    "dashboard/worker.ts": "cd2e0132d5999fc3d1e7bd84d16e995204586195090634a1f61a45783eaf371b"
+  },
+  "observations": [
+    {
+      "phase": "held_90m",
+      "row_retained": true,
+      "row_state": "pending",
+      "claim": {
+        "claimed": false,
+        "items": 0,
+        "includes_row": false,
+        "preflight_required": false,
+        "reason": null
+      },
+      "private_lane": {
+        "pending": 1,
+        "ready": 1,
+        "backoff": 0,
+        "parked": 0,
+        "parked_reasons": {},
+        "oldest_ready_at": "2030-01-01T00:00:00.000Z",
+        "next_attempt_at": "2030-01-01T00:00:00.000Z",
+        "health": {
+          "status": "degraded",
+          "reason": "oldest_pending_over_1h"
+        }
+      },
+      "public_lane": {
+        "collection": "complete",
+        "pending": 1,
+        "ready": 1,
+        "parked": 0,
+        "parked_reasons_nonzero": {},
+        "oldest_ready_at": "2030-01-01T00:00:00.000Z"
+      },
+      "row_pins_oldest_ready": true,
+      "queue_items": [
+        {
+          "key": "openclaw/openclaw#N@publish:1087691:1",
+          "state": "pending",
+          "parked_reason": null
+        }
+      ]
+    },
+    {
+      "phase": "held_24h",
+      "row_retained": true,
+      "row_state": "pending",
+      "claim": {
+        "claimed": false,
+        "items": 0,
+        "includes_row": false,
+        "preflight_required": false,
+        "reason": null
+      },
+      "private_lane": {
+        "pending": 1,
+        "ready": 1,
+        "backoff": 0,
+        "parked": 0,
+        "parked_reasons": {},
+        "oldest_ready_at": "2030-01-01T00:00:00.000Z",
+        "next_attempt_at": "2030-01-01T00:00:00.000Z",
+        "health": {
+          "status": "critical",
+          "reason": "oldest_pending_over_6h"
+        }
+      },
+      "public_lane": {
+        "collection": "complete",
+        "pending": 1,
+        "ready": 1,
+        "parked": 0,
+        "parked_reasons_nonzero": {},
+        "oldest_ready_at": "2030-01-01T00:00:00.000Z"
+      },
+      "row_pins_oldest_ready": true,
+      "queue_items": [
+        {
+          "key": "openclaw/openclaw#N@publish:1087691:1",
+          "state": "pending",
+          "parked_reason": null
+        }
+      ]
+    },
+    {
+      "phase": "held_40d",
+      "row_retained": true,
+      "row_state": "pending",
+      "claim": {
+        "claimed": false,
+        "items": 0,
+        "includes_row": false,
+        "preflight_required": false,
+        "reason": null
+      },
+      "private_lane": {
+        "pending": 1,
+        "ready": 1,
+        "backoff": 0,
+        "parked": 0,
+        "parked_reasons": {},
+        "oldest_ready_at": "2030-01-01T00:00:00.000Z",
+        "next_attempt_at": "2030-01-01T00:00:00.000Z",
+        "health": {
+          "status": "critical",
+          "reason": "oldest_pending_over_6h"
+        }
+      },
+      "public_lane": {
+        "collection": "complete",
+        "pending": 1,
+        "ready": 1,
+        "parked": 0,
+        "parked_reasons_nonzero": {},
+        "oldest_ready_at": "2030-01-01T00:00:00.000Z"
+      },
+      "row_pins_oldest_ready": true,
+      "queue_items": [
+        {
+          "key": "openclaw/openclaw#N@publish:1087691:1",
+          "state": "pending",
+          "parked_reason": null
+        }
+      ]
+    },
+    {
+      "phase": "held_plus_dead_letter",
+      "row_retained": true,
+      "row_state": "pending",
+      "claim": {
+        "claimed": false,
+        "items": 0,
+        "includes_row": false,
+        "preflight_required": false,
+        "reason": null
+      },
+      "private_lane": {
+        "pending": 1,
+        "ready": 1,
+        "backoff": 0,
+        "parked": 1,
+        "parked_reasons": {
+          "dead_letter_capacity": 1
+        },
+        "oldest_ready_at": "2030-01-01T00:00:00.000Z",
+        "next_attempt_at": "2030-01-01T00:00:00.000Z",
+        "health": {
+          "status": "critical",
+          "reason": "dead_letter_capacity"
+        }
+      },
+      "public_lane": {
+        "collection": "complete",
+        "pending": 1,
+        "ready": 1,
+        "parked": 1,
+        "parked_reasons_nonzero": {
+          "dead_letter_capacity": 1
+        },
+        "oldest_ready_at": "2030-01-01T00:00:00.000Z"
+      },
+      "row_pins_oldest_ready": true,
+      "queue_items": [
+        {
+          "key": "openclaw/openclaw#N@publish:1087691:1",
+          "state": "pending",
+          "parked_reason": null
+        },
+        {
+          "key": "openclaw/openclaw#N@publish:1087701:1",
+          "state": "parked",
+          "parked_reason": "dead_letter_capacity"
+        }
+      ]
+    },
+    {
+      "phase": "after_newer_revision",
+      "row_retained": false,
+      "row_state": null,
+      "claim": {
+        "claimed": false,
+        "items": 0,
+        "includes_row": false,
+        "preflight_required": false,
+        "reason": null
+      },
+      "private_lane": {
+        "pending": 2,
+        "ready": 2,
+        "backoff": 0,
+        "parked": 1,
+        "parked_reasons": {
+          "dead_letter_capacity": 1
+        },
+        "oldest_ready_at": "2030-02-10T00:00:00.000Z",
+        "next_attempt_at": "2030-02-10T00:00:00.000Z",
+        "health": {
+          "status": "critical",
+          "reason": "dead_letter_capacity"
+        }
+      },
+      "public_lane": {
+        "collection": "complete",
+        "pending": 2,
+        "ready": 2,
+        "parked": 1,
+        "parked_reasons_nonzero": {
+          "dead_letter_capacity": 1
+        },
+        "oldest_ready_at": "2030-02-10T00:00:00.000Z"
+      },
+      "row_pins_oldest_ready": false,
+      "queue_items": [
+        {
+          "key": "openclaw/openclaw#N@publish:1087701:1",
+          "state": "parked",
+          "parked_reason": "dead_letter_capacity"
+        },
+        {
+          "key": "openclaw/openclaw#N@publish:1087694:1",
+          "state": "pending",
+          "parked_reason": null
+        },
+        {
+          "key": "terminal-finalization:openclaw/openclaw#N@publish:1087691:1:2",
+          "state": "pending",
+          "parked_reason": null
+        }
+      ]
+    }
+  ],
+  "control_claim": {
+    "claimed": true,
+    "member_keys": [
+      "openclaw/openclaw#N@publish:1087711:1"
+    ],
+    "includes_held_row": false
+  },
+  "outbound_requests": 0,
+  "limits": "Synthetic inputs and 2030 clock; the pre-#1475 witness loss is simulated by deleting the retained witness, and the dead letter is injected as a parked dead_letter_capacity row. Hosted-target probes are injected as public; outbound HTTP is blocked. No production state, GitHub, or inference."
+}

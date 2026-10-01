@@ -268,8 +268,8 @@ Common commands:
   current state: `👀` for acknowledgement, `🧹` for review, `🔧` for repair, and
   `✅` for completed/paused work.
 - Freeform `@clawsweeper ...` mentions and explicit `ask ...` questions dispatch
-  the maintainer-only assist lane. Assist runs the internal model with medium reasoning,
-  a 120-second per-item timeout, and its own five-job cap. It posts a separate
+  the maintainer-only assist lane. Assist runs the internal model with medium reasoning and priority (fast)
+  service, a 120-second per-item timeout, and its own five-job cap. It posts a separate
   non-durable answer comment and never edits the durable ClawSweeper review
   comment, closes, merges, labels, pushes, repairs, or emits review/apply
   markers. The model job has read-only GitHub access and emits a bounded artifact;
@@ -442,9 +442,13 @@ Review is proposal-only. It never closes items.
 - Each admitted item gets its own review workflow for the selected target.
 - Codex reviews use `gpt-6.1-sol` with medium reasoning in the direct API auth
   modes (`login` and `proxy`); `clawrouter` mode instead runs its private
-  inference alias. OWNER, MEMBER, and COLLABORATOR-authored issues and pull
-  requests use fast service; other items use standard service. Sweep planning, assist answers, and
-  close-coverage proofs use the configured ordinary-item defaults. Reviews have
+  inference alias. Issues and pull requests authored by an OWNER, MEMBER, or
+  COLLABORATOR, or by anyone whose live repository permission is `write`,
+  `maintain`, or `admin`, use priority (fast) service; other items use standard
+  service. Write access alone does not make an item maintainer-authored for
+  close policy. Assist answers always use priority service because only
+  write-access maintainers can request them. Sweep planning and close-coverage
+  proofs use the configured ordinary-item defaults. Reviews have
   a 10-minute per-item timeout.
 - Each item becomes a flat report under
   `records/<repo-slug>/items/<number>.md` with the decision, evidence,
