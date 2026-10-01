@@ -201,9 +201,11 @@ export default {
     }
   }
   assert.deepEqual(unexpected, [], "unexpected external fixture route");
-  receipt.assertions = verify(receipt.variants);
   receipt.limits =
     "Synthetic GitHub fixture and RSA credential; issue items only; reviews are modeled as claims (the budget charges at claim); no live inference, production state, or GitHub mutation. Throttle timestamps are covered by unit tests, not this run.";
+  // Write the observations before asserting so a failing run still leaves evidence.
+  writeFileSync(path.join(out, "result.json"), JSON.stringify(receipt, null, 2) + "\n");
+  receipt.assertions = verify(receipt.variants);
   writeFileSync(path.join(out, "result.json"), JSON.stringify(receipt, null, 2) + "\n");
   console.log(JSON.stringify(receipt.assertions, null, 2));
 } finally {
@@ -250,17 +252,26 @@ async function scenario(mf) {
     assert.equal(status, 202, JSON.stringify(body));
   }
   now += 2 * MINUTE;
-  await call("/q/__tick", {});
+  // The queue paces dispatch over time, so alternate short clock steps, alarm ticks
+  // and claims. Each 15-second step refills under one token while several organic
+  // claims are charged, so the global balance falls into organic debt.
   let claimed = 0;
-  for (const payload of dispatches) {
-    const claim = await call("/q/claim", {
-      item_key: payload.queue_claim.item_key,
-      lease_id: payload.queue_lease_id,
-      lease_revision: payload.queue_claim.lease_revision,
-      run_id: String(runId++),
-      run_attempt: 1,
-    });
-    if (claim.status === 200) claimed += 1;
+  let seen = 0;
+  for (let round = 0; round < 60 && seen < ORGANIC_REVIEWS; round += 1) {
+    if (round > 0) now += 15_000;
+    await call("/q/__tick", {});
+    const fresh = dispatches.slice(seen);
+    seen = dispatches.length;
+    for (const payload of fresh) {
+      const claim = await call("/q/claim", {
+        item_key: payload.queue_claim.item_key,
+        lease_id: payload.queue_lease_id,
+        lease_revision: payload.queue_claim.lease_revision,
+        run_id: String(runId++),
+        run_attempt: 1,
+      });
+      if (claim.status === 200) claimed += 1;
+    }
   }
   const offer = await call("/q/enqueue", {
     delivery_id: "scheduled-normal-offer",
