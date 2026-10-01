@@ -1,0 +1,1 @@
+- Record new ClawSweeper changelog entries as one-bullet `changelog.d/` fragments that `pnpm run changelog:stitch` folds into `CHANGELOG.md` at release time, so concurrent pull requests no longer conflict on the top of the Unreleased section or need a fresh review after each conflict resolution; `pnpm run check:changelog` rejects malformed, duplicate, or stale fragments.
