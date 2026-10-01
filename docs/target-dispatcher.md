@@ -535,7 +535,8 @@ fallback and for dispatchers that have not adopted this template.
 
 A copied dispatcher only stops spending relay runs after it adopts this
 template: the dispatch job needs `id-token: write`, and the review step needs
-the direct-intake block. `openclaw/openclaw` maintains its own dispatcher
+the direct-intake block. Deploy the Worker route first; a dispatcher updated
+before that deploy simply falls back. `openclaw/openclaw` maintains its own dispatcher
 variant, which must gain the same two changes there; until then its events
 keep using the relay.
 
