@@ -83,13 +83,24 @@ EXACT_REVIEW_RETRY_POLICY_EPOCH = "1"
 EXACT_REVIEW_PENDING_SOFT_LIMIT = "600"
 # Bay is observer-only; 30 seconds of staleness is acceptable.
 EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "30000"
-# A full review consumes about 30 GitHub requests. Keep scheduled review demand
-# at or below 1,800 requests/hour so the 15,000-request installation bucket has
-# explicit capacity for exact ingress, comment routing, apply proof, publication,
-# and support lanes. A six-item burst bounds cold-start demand to roughly 180
-# requests. Interactive exact-event reviews keep their independent lane.
-EXACT_REVIEW_TARGET_RATE_PER_HOUR = "60"
-EXACT_REVIEW_TARGET_BURST = "6"
+# Scheduled admission refill rate after bounded organic debits, not a total
+# execution or spend cap. At ~30 GitHub requests/review, a combined load near
+# 220 admissions/hour would use ~6,600 requests/hour: under
+# half of the 15,000-request installation bucket, leaving explicit capacity for
+# exact ingress, comment routing, apply proof, publication, planner scans, and
+# support lanes, and below the ~300 reviews/hour that previously hit org rate
+# limits. Organic work is always admitted and debits this budget first: every
+# new item, every superseding revision that revokes an active owner, and every
+# completion or reconciliation requeue for new review input. Debt stops at minus
+# the burst; further organic debits at the floor are forgotten, so organic load
+# may exceed these estimates. A 24-item scheduled burst (8 hot, 16 normal)
+# represents roughly 720 requests. GitHub throttle feedback from review completion still
+# pauses scheduled admission.
+EXACT_REVIEW_TARGET_RATE_PER_HOUR = "220"
+EXACT_REVIEW_TARGET_BURST = "24"
+# Hot intake is capped so its 5-minute churn cannot take the remainder that
+# oldest-first normal backfill needs; normal backfill gets total minus hot.
+EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR = "30"
 EXACT_REVIEW_PUBLICATION_BATCHING_ENABLED = "1"
 EXACT_REVIEW_DIRECT_PUBLICATION_ENABLED = "1"
 EXACT_REVIEW_STATE_REPO = "openclaw/clawsweeper-state"

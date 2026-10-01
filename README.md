@@ -1127,7 +1127,7 @@ default, subject to the selected repository profile; pass `target_repo`,
 `apply_kind=issue`, or `apply_kind=pull_request` to narrow a manual run.
 
 Scheduled runs cover the configured product profiles. `openclaw/openclaw` runs
-normal backfill hourly; scheduled hot intake and normal backfill share a
+normal backfill every 20 minutes; scheduled hot intake and normal backfill share a
 32-worker cap in the durable review queue. `openclaw/clawhub` runs on offset review/apply/audit crons so its reports
 live under `records/openclaw-clawhub/` without colliding with default repo
 records. `openclaw/clawsweeper` has a scheduled read-only audit row and is
@@ -1149,7 +1149,9 @@ control-plane workflows and do not consume these 128 slots.
 Lane limits are derived from that number: manual normal review defaults to 89
 requested shards and hot intake to 44; the interactive and expansion reserves
 leave 104 background slots when quiet. Scheduled work has a separate
-32-slot admission cap and a 60-review/hour target with a six-item burst. The
+32-slot admission cap and fills what organic reviews leave of a 220-review/hour
+admission target with a 24-item burst; hot intake is capped at 30/hour. Organic
+work remains unconditional, so this is not a total-execution or spend cap. The
 existing repair/issue implementation lanes use 40% of `workers.max`, currently
 51 live workers. Imported gitcrawl cluster repair allows 2 live workers by default.
 Exact-item review, repair, and issue implementation are priority work; normal

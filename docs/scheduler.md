@@ -415,7 +415,7 @@ cleanup is idempotent and cannot duplicate accounting.
 `openclaw/openclaw`:
 
 - hot intake: `*/5 * * * *`
-- normal backfill: `1 * * * *`
+- normal backfill: `9/20 * * * *` (minutes 9, 29, and 49)
 - apply: `3,18,33,48 * * * *`
 - audit: `7 */6 * * *`
 
@@ -478,7 +478,8 @@ manual workflow inputs. Scheduled fanout uses:
   intentionally moved this selector from every 15 minutes to every 5 minutes;
   this containment adjusts that current cadence without attributing the
   self-feedback defect to PR #959.
-- normal review: `41 * * * *`, 12 target repositories per cursor step
+- normal review: `14/20 * * * *` (minutes 14, 34, and 54), 12 target
+  repositories per cursor step
 - audit: `37 */6 * * *`, 12 target repositories per cursor step
 
 Audit fanout keeps at most 3 target audits in flight using
@@ -689,15 +690,22 @@ Current defaults:
   candidates per selected target and apportions that pool by backlog. Each
   selected item enters the durable exact-review queue, and every admitted item
   receives its own parallel workflow
-- total review admission target: 60 items/hour across the fleet; organic work
-  consumes the budget first and scheduled backfill fills the remainder, split
-  35% hot intake and 65% normal backfill, with a 6-item burst and at most 32
-  scheduled reviews dispatching or leased across both lanes
+- scheduled review admission target: 220 items/hour across the fleet, with a
+  24-item burst. Every organic admission consumes the budget first: a new
+  queue item, a superseding revision that revokes an active owner, and a
+  completion or reconciliation requeue for new review input. Organic debt carries down to minus
+  the burst; further debits at that floor are forgotten. Organic work remains
+  unconditional, so this target does not cap total executions. Within the scheduled
+  remainder, hot intake is capped at 30 items/hour by
+  `EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR` and normal backfill may use the rest
+  (190 items/hour of lane rate), so the more frequent hot offers cannot take
+  the remainder oldest-first backfill needs. At most 32 scheduled reviews are
+  dispatching or leased across both lanes
 - review admission and pressure are computed independently from publication;
   top-level queue health describes reviews while `lanes.publication` retains
   publication backlog, retry, DLQ, and health telemetry
 - fleet fanout: 20 hot targets every 20 minutes as temporary self-feedback
-  containment, and 12 normal targets hourly;
+  containment, and 12 normal targets every 20 minutes;
   each target cycle can offer up to 50 due items to the shared admission budget
 - broad manual runs use the same queue capacity as scheduled feeds; normal
   planning scans at most 250 GitHub pages and hot intake at most 10
@@ -716,8 +724,8 @@ items. The public queue projection exposes the configured rate and replay
 contract under `scheduled_feed` in `GET /api/exact-review-queue`; private bucket
 balances are omitted. Queue telemetry distinguishes backpressure from
 scheduled-rate shedding so an operator can distinguish a full review queue
-from intentional 60/hour pacing. The
-six-item burst bounds a cold-start cohort to roughly 180 GitHub requests at the
+from intentional 220/hour pacing. The
+24-item burst bounds a cold-start cohort to roughly 720 GitHub requests at the
 observed planning average of 30 requests per completed review.
 Before its first enqueue, the producer reads the queue-owned contract through
 signed `POST /internal/exact-review/admission-capabilities`. Dashboard telemetry cannot
@@ -736,25 +744,31 @@ Legacy lifecycle payloads without replay identities remain single-attempt as wel
 Normal fanout ordinarily divides one live queue-advertised candidate-capacity
 budget across the selected repositories; it does not grant 50 candidates to
 each target. If that capacity probe is unavailable, the bounded fallback for a
-hourly cycle is `50 items/target * 12 targets = 600 items/cycle`. Its fallback
-therefore offers at most 600 candidates/hour before due filtering, planner
-capacity clamping, dedupe, and Worker admission. The direct hourly normal
-schedule also uses live advertised capacity; its fallback offers 50 items/hour before
-the same bounds. These paths therefore have enough candidates to keep the
+20-minute cycle is `50 items/target * 12 targets = 600 items/cycle`. Its fallback
+therefore offers at most 1,800 candidates/hour before due filtering, planner
+capacity clamping, dedupe, and Worker admission. The direct 20-minute normal
+schedule also uses live advertised capacity; its fallback offers 150 items/hour
+before the same bounds. These paths therefore have enough candidates to keep the
 shared token bucket fed despite dedupe or uneven fleet distribution. The queue
-admits at most 60 scheduled reviews/hour, which needs
-about `60 * 4.1 / 60 = 4.1` concurrent review workers at a 4.1-minute mean
-service time and budgets roughly 1,800 GitHub requests/hour. The separate
+refills scheduled admission credit at 220/hour after bounded organic debits. A
+combined load near 220 admissions/hour would need
+about `220 * 4.1 / 60 ≈ 15` concurrent review workers at a 4.1-minute mean
+service time and budgets roughly 6,600 GitHub requests/hour. With organic
+work near 130 admissions/hour, scheduled work receives roughly 90/hour: hot
+intake up to its 30/hour cap and normal backfill the rest. The separate
 32-slot scheduled cap also bounds old queued work and slower reviews while
-organic/manual requests retain admission priority. Rate and burst reduce request
+organic/manual requests retain admission priority. Organic overload can exceed
+these estimates indefinitely. Rate and burst reduce scheduled request
 and inference demand; the pending soft limit remains a separate queue
 backpressure bound and should change only when queue-memory or latency evidence
 requires it, not automatically with the request budget.
 
 On saturated queues, normal planning reads the complete bounded open-item scan
 before selecting candidates. For the current largest repository this is about
-60 REST pages per hourly normal tick, or roughly 60 installation-token
-requests per hour; that bounded cost is necessary for oldest-review fairness.
+60 REST pages per normal tick. `openclaw/openclaw` receives up to six normal
+ticks per hour (three direct, plus three fleet fanout ticks while it holds the
+largest untracked backlog), or roughly 360 installation-token requests per
+hour; that bounded cost is necessary for oldest-review fairness.
 
 Optional planning-started and in-progress dashboard publishes in the plan job
 are capped at 20 seconds. They are useful telemetry, but they must not delay
@@ -1073,6 +1087,8 @@ can be newer than local files.
 To change review spend, set
 `EXACT_REVIEW_TARGET_RATE_PER_HOUR`; the Worker applies the fleet-wide rate
 while scheduled planners size their candidate batch to free review capacity.
+To rebalance scheduled work, set `EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR`;
+normal backfill receives the remaining lane rate.
 Target fanout divides that capacity by untracked backlog after reserving its
 round-robin fairness slice. To change manual normal Codex sessions, update the
 worker limits and workflow defaults together.
