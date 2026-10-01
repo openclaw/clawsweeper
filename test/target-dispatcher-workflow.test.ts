@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 import MarkdownIt from "markdown-it";
 import { parse } from "yaml";
+import {
+  TARGET_DISPATCH_ENDPOINT,
+  TARGET_DISPATCH_WORKFLOW_PATH,
+} from "../dashboard/target-dispatch-ingress.ts";
 
 const liveWorkflow = readFileSync(".github/workflows/clawsweeper-dispatch.yml", "utf8").replace(
   /\r\n/g,
@@ -278,6 +286,173 @@ test("target dispatcher carries immutable issue and pull-request source identity
       ].length,
       10,
     );
+  }
+});
+
+test("dispatcher queues directly with its OIDC identity and falls back to repository_dispatch", async () => {
+  // The Worker only trusts tokens minted by the documented dispatcher file.
+  assert.equal(TARGET_DISPATCH_WORKFLOW_PATH, ".github/workflows/clawsweeper-dispatch.yml");
+  assert.match(documentation, /`\.github\/workflows\/clawsweeper-dispatch\.yml`, or merge/);
+  for (const source of [liveWorkflow, documentedWorkflow]) {
+    assert.deepEqual(workflowJobs(source)?.dispatch?.permissions, {
+      contents: "read",
+      "id-token": "write",
+    });
+    const step = namedStep(dispatchSteps(source), "Dispatch exact ClawSweeper review");
+    assert.equal(step.env?.TARGET_DISPATCH_URL, TARGET_DISPATCH_ENDPOINT);
+  }
+  const run = namedStep(dispatchSteps(liveWorkflow), "Dispatch exact ClawSweeper review").run!;
+  const root = mkdtempSync(path.join(tmpdir(), "target-dispatch-"));
+  const eventPath = path.join(root, "event.json");
+  writeFileSync(
+    eventPath,
+    JSON.stringify({
+      action: "opened",
+      pull_request: {
+        number: 42,
+        title: "Fix parser",
+        body: "Body",
+        locked: false,
+        draft: false,
+        labels: [{ name: "bug" }],
+        updated_at: "2026-10-01T03:10:50Z",
+        head: { sha: "a".repeat(40) },
+        base: { sha: "b".repeat(40) },
+      },
+    }),
+  );
+  writeFileSync(
+    path.join(root, "gh"),
+    '#!/bin/sh\nprintf "%s\\n" "$*" >> "$GH_STUB_LOG"\ncat >> "$GH_STUB_LOG"\nprintf "\\n" >> "$GH_STUB_LOG"\n',
+  );
+  chmodSync(path.join(root, "gh"), 0o755);
+  let tokenStatus = 200;
+  let directStatus = 202;
+  let requests: Array<{ path: string; query: string; authorization: string; body: string }> = [];
+  const server = createServer((request, response) => {
+    let body = "";
+    request.on("data", (chunk) => (body += chunk));
+    request.on("end", () => {
+      const url = new URL(request.url ?? "/", "http://fixture");
+      requests.push({
+        path: url.pathname,
+        query: url.search,
+        authorization: String(request.headers.authorization ?? ""),
+        body,
+      });
+      const status = url.pathname === "/token" ? tokenStatus : directStatus;
+      response.writeHead(status, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify(
+          url.pathname === "/token"
+            ? { value: "synthetic-oidc-token" }
+            : { ok: status < 300, queued: status < 300, item_key: "openclaw/example#42" },
+        ),
+      );
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const directUrl = `${origin}/github/target-dispatch`;
+  let executions = 0;
+  const execute = (options: { oidc: boolean; directUrl?: string }) => {
+    const log = path.join(root, `gh-${(executions += 1)}.log`);
+    writeFileSync(log, "");
+    return new Promise<{ status: number | null; stdout: string; gh: string }>((resolve, reject) => {
+      const child = spawn("bash", ["-e", "-c", run], {
+        env: {
+          PATH: `${root}:${process.env.PATH}`,
+          GH_STUB_LOG: log,
+          GH_TOKEN: "app-installation-token",
+          GITHUB_EVENT_PATH: eventPath,
+          TARGET_REPO: "openclaw/example",
+          TARGET_BRANCH: "main",
+          ITEM_NUMBER: "42",
+          ITEM_KIND: "pull_request",
+          SOURCE_EVENT: "pull_request_target",
+          SOURCE_ACTION: "opened",
+          SUPERSEDES_IN_PROGRESS: "false",
+          REVIEW_ACKNOWLEDGEMENT_COMMENT_ID: "",
+          TARGET_DISPATCH_URL: options.directUrl ?? directUrl,
+          ...(options.oidc
+            ? {
+                ACTIONS_ID_TOKEN_REQUEST_URL: `${origin}/token?api-version=2.0`,
+                ACTIONS_ID_TOKEN_REQUEST_TOKEN: "request-token",
+              }
+            : {}),
+        },
+      });
+      let stdout = "";
+      child.stdout.on("data", (chunk) => (stdout += chunk));
+      child.stderr.resume();
+      child.on("error", reject);
+      child.on("close", (status) => resolve({ status, stdout, gh: readFileSync(log, "utf8") }));
+    });
+  };
+  try {
+    const direct = await execute({ oidc: true });
+    assert.equal(direct.status, 0);
+    assert.equal(direct.gh, "", "a direct admission must not create a repository_dispatch");
+    assert.match(direct.stdout, /Queued exact ClawSweeper review directly: \{"ok":true/);
+    assert.deepEqual(
+      requests.map((request) => request.path),
+      ["/token", "/github/target-dispatch"],
+    );
+    const tokenQuery = new URLSearchParams(requests[0]!.query);
+    assert.equal(requests[0]!.authorization, "bearer request-token");
+    assert.equal(tokenQuery.get("api-version"), "2.0");
+    // One URL is both the OIDC audience and the POST target.
+    assert.equal(tokenQuery.get("audience"), directUrl);
+    assert.equal(requests[1]!.authorization, "Bearer synthetic-oidc-token");
+    const clientPayload = JSON.parse(requests[1]!.body);
+    assert.deepEqual(Object.keys(clientPayload).sort(), [
+      "ingress_fingerprint",
+      "ingress_route",
+      "item_kind",
+      "item_number",
+      "queue_claim",
+      "source_action",
+      "source_event",
+      "supersedes_in_progress",
+      "target_branch",
+      "target_repo",
+    ]);
+
+    const fallbacks = [
+      { name: "worker rejection", oidc: true, token: 200, direct: 401, posts: 2 },
+      { name: "worker outage", oidc: true, token: 200, direct: 503, posts: 2 },
+      { name: "token endpoint failure", oidc: true, token: 500, direct: 202, posts: 1 },
+      { name: "no id-token permission", oidc: false, token: 200, direct: 202, posts: 0 },
+      {
+        name: "unreachable worker",
+        oidc: true,
+        token: 200,
+        direct: 202,
+        posts: 1,
+        directUrl: "http://127.0.0.1:9/github/target-dispatch",
+      },
+    ];
+    for (const scenario of fallbacks) {
+      requests = [];
+      tokenStatus = scenario.token;
+      directStatus = scenario.direct;
+      const result = await execute({
+        oidc: scenario.oidc,
+        ...(scenario.directUrl ? { directUrl: scenario.directUrl } : {}),
+      });
+      assert.equal(result.status, 0, scenario.name);
+      assert.equal(requests.length, scenario.posts, scenario.name);
+      const [args, input] = result.gh.split("\n");
+      assert.equal(args, "api repos/openclaw/clawsweeper/dispatches --method POST --input -");
+      // The fallback is byte-for-byte the payload the relay received before.
+      assert.deepEqual(JSON.parse(input!), {
+        event_type: "clawsweeper_item",
+        client_payload: clientPayload,
+      });
+    }
+  } finally {
+    server.close();
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

@@ -729,8 +729,9 @@ arrivals wait for the next departure; changed or removed members are skipped.
 An empty subset retires that reservation and requests another preflight.
 
 The Worker preserves structured retryable Durable Object 5xx responses, including
-`503 {error: "target_visibility_unverified", retryable: true}`, through both
-`/github/webhook` item enqueue and the `/internal/exact-review/*` proxies. The
+`503 {error: "target_visibility_unverified", retryable: true}`, through
+`/github/webhook` item enqueue, `/github/target-dispatch` direct intake, and the
+`/internal/exact-review/*` proxies. The
 status, JSON body, and optional `Retry-After` header reach the caller unchanged;
 unexpected exceptions still produce 500 and the structured server-response
 telemetry remains intact. Visibility admission precedes delivery persistence,

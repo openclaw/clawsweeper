@@ -40,6 +40,7 @@ export const DASHBOARD_STRICT_BASELINE_FILES = Object.freeze([
   "dashboard/exact-review-queue-shared.ts",
   "dashboard/exact-review-read-model.ts",
   "dashboard/exact-review-source-revision.ts",
+  "dashboard/github-actions-oidc.ts",
   "dashboard/github-api.ts",
   "dashboard/github-egress-telemetry.ts",
   "dashboard/github-etag-cache.ts",
@@ -63,6 +64,7 @@ export const DASHBOARD_STRICT_BASELINE_FILES = Object.freeze([
   "dashboard/review-run-telemetry.ts",
   "dashboard/state-blobs.ts",
   "dashboard/state-writer-coordinator.ts",
+  "dashboard/target-dispatch-ingress.ts",
   "dashboard/webhook-ingress.type-test.ts",
 ]);
 

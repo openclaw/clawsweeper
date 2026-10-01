@@ -21,6 +21,11 @@ import {
   authenticateReviewProofProducerToken,
   reviewProofProducerMatches,
 } from "./review-proof-producer-auth.ts";
+import {
+  authenticateTargetDispatchToken,
+  TARGET_DISPATCH_MAX_BODY_BYTES,
+  targetDispatchQueueIntake,
+} from "./target-dispatch-ingress.ts";
 import { legacyCommandCommentId } from "../src/repair/command-ack-convergence.ts";
 import { directReReviewIntake } from "../src/repair/direct-re-review-admission.ts";
 import { isExactReviewCloseGuardLabel } from "../src/repair/exact-review-guard-labels.ts";
@@ -1153,6 +1158,8 @@ export default {
       return json({ ok: true, service: "clawsweeper-github-webhook" });
     if (url.pathname === "/github/webhook" && request.method === "POST")
       return githubWebhook(request, env, ctx);
+    if (url.pathname === "/github/target-dispatch" && request.method === "POST")
+      return githubTargetDispatch(request, env);
     if (url.pathname === "/internal/exact-review/proof" && request.method === "POST")
       return reviewProofRequest(request, env);
     if (url.pathname === "/internal/exact-review/proof/producer" && request.method === "POST")
@@ -6657,7 +6664,10 @@ function bayLifecycleTimingHistory(value) {
   return { bucket_minutes: 5, points: result };
 }
 
-async function boundedCommandProofBody(request: Request): Promise<string | null> {
+async function boundedCommandProofBody(
+  request: Request,
+  maxBytes = 128 * 1024,
+): Promise<string | null> {
   if (!request.body) return "";
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -6667,7 +6677,7 @@ async function boundedCommandProofBody(request: Request): Promise<string | null>
       const result = await reader.read();
       if (result.done) break;
       size += result.value.byteLength;
-      if (size > 128 * 1024) return null;
+      if (size > maxBytes) return null;
       chunks.push(result.value);
     }
     const bytes = new Uint8Array(size);
@@ -6755,6 +6765,23 @@ async function authenticatedHostedTargetQueueRequest(request, env, path: string)
   if (!(await verifyGithubWebhookSignature({ secret, signature, bodyText: body }))) {
     return json({ error: "invalid_signature" }, 401);
   }
+  return hostedTargetQueueRequest(env, path, body);
+}
+
+// Target dispatchers enqueue here with their workflow's OIDC identity instead of
+// spending one ClawSweeper Actions relay run per `repository_dispatch`. Any
+// non-2xx answer makes the dispatcher fall back to that unchanged relay.
+async function githubTargetDispatch(request: Request, env) {
+  const text = await boundedCommandProofBody(request, TARGET_DISPATCH_MAX_BODY_BYTES);
+  if (text === null) return json({ error: "target_dispatch_too_large_or_invalid" }, 413);
+  const identity = await authenticateTargetDispatchToken(bearerToken(request));
+  if (!identity) return json({ error: "target_dispatch_not_authorized" }, 401);
+  const intake = targetDispatchQueueIntake(parseJsonObject(text), identity);
+  if ("error" in intake) return json({ error: intake.error }, intake.status);
+  return hostedTargetQueueRequest(env, "/enqueue", JSON.stringify(intake.body));
+}
+
+async function hostedTargetQueueRequest(env, path: string, body: string) {
   const targetRepo = String(
     objectValue(objectValue(parseJsonObject(body)).decision).targetRepo || "",
   );
