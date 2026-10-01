@@ -49,8 +49,10 @@ function oidcToken(overrides: Record<string, unknown> = {}) {
   return encoded + "." + sign("RSA-SHA256", Buffer.from(encoded), privateKey).toString("base64url");
 }
 
-const jwksFetch = (async (url: string) => {
+const jwksFetch = (async (url: string, init?: RequestInit) => {
   assert.equal(url, JWKS_URL);
+  // Cloudflare Workers throw on `redirect: "error"`, which failed every token.
+  assert.equal(init?.redirect, "manual");
   return Response.json(jwks);
 }) as typeof fetch;
 
@@ -140,6 +142,15 @@ test("target dispatch OIDC binds repository, event, branch, workflow, and run", 
   const forged = oidcToken().slice(0, -6) + "abcdef";
   assert.equal(
     await authenticateTargetDispatchToken(forged, { now: nowMs, fetch: jwksFetch }),
+    null,
+  );
+  const redirected = (async () =>
+    new Response(null, {
+      status: 302,
+      headers: { location: "https://example.invalid/jwks" },
+    })) as typeof fetch;
+  assert.equal(
+    await authenticateTargetDispatchToken(oidcToken(), { now: nowMs, fetch: redirected }),
     null,
   );
 });

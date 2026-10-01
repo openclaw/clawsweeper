@@ -85,8 +85,9 @@ export async function verifiedGithubActionsOidcClaims(
       !accept(claims)
     )
       return null;
+    // Workers reject `redirect: "error"`; a manual 3xx is not ok, so it fails closed.
     const response = await (options.fetch ?? fetch)(JWKS, {
-      redirect: "error",
+      redirect: "manual",
       signal: AbortSignal.timeout(10_000),
       headers: { Accept: "application/json" },
     });

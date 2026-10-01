@@ -43,8 +43,10 @@ test("producer OIDC verifies GitHub signature and exact workflow/run identity", 
       encoded + "." + sign("RSA-SHA256", Buffer.from(encoded), privateKey).toString("base64url")
     );
   };
-  const fetcher = (async (url: string) => {
+  const fetcher = (async (url: string, init?: RequestInit) => {
     assert.equal(url, "https://token.actions.githubusercontent.com/.well-known/jwks");
+    // Workers throw on `redirect: "error"`, so that mode rejected every producer.
+    assert.equal(init?.redirect, "manual");
     return Response.json({
       keys: [{ ...publicKey.export({ format: "jwk" }), kid: "test", alg: "RS256" }],
     });
