@@ -243,10 +243,21 @@ backlog cannot consume review admission capacity. Existing items, webhook
 events, commands, and publications remain admitted. The queue reports shed
 counts under `lanes.review.shed_reasons_since_reset` and the rolling flow by
 `backpressure` versus `scheduled_rate`; pre-migration totals remain
-`unattributed`. All newly queued review work debits a durable 60-review/hour
-budget with a 6-item burst. Organic work is always admitted and consumes the
-budget first; scheduled work fills the remainder and is split 35% hot intake and
-65% normal backfill so hot churn cannot starve oldest-first coverage. Re-offering an item
+`unattributed`. New review admissions debit a durable 220-review/hour
+scheduled budget with a 24-item burst. Organic work is always admitted and consumes the
+budget first: a new queue item, a superseding revision that revokes a
+dispatching or leased owner, and a completion or reconciliation requeue for new review input
+(`requeue_latest` or a changed desired revision) each debit one admission.
+Coalesced updates to an item that is still pending, semantic and delivery
+dedupes, publication work, and retries or deferrals of the same revision do not.
+Organic debt carries on the global bucket down to minus the burst, so scheduled
+work is admitted only after that bounded debt is repaid. Further organic debits
+at the floor are forgotten, so this is not a total-work or spend cap. Scheduled work fills
+the remainder through two lane buckets on top of that global bucket:
+`EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR` caps hot intake (production sets 30),
+and normal backfill receives the total minus hot, so frequent hot offers cannot
+take the remainder that oldest-first backfill needs. The burst splits 35% hot
+and 65% normal (8 and 16 in production). Re-offering an item
 that is already pending, dispatching, or leased is a semantic dedupe: it does not
 advance the queue revision, revoke a lease, or count as new work.
 
@@ -379,7 +390,7 @@ Examples with the current config:
   slots available after reserving 16 for interactive work and 8 for matrix
   expansion. When the queue capacity probe is unavailable, a single-target
   scheduled plan falls back to offering up to 50 candidates to the durable
-  60-review/hour admission target with a 6-item burst instead of starting
+  220-review/hour admission target with a 24-item burst instead of starting
   matrix shards.
 - Four active repair workers and 96 active background workers: normal review gets
   four because `128 - 16 interactive reserve - 8 expansion reserve - 4 priority - 96 background = 4`.
@@ -460,11 +471,17 @@ These limits are owned by `dashboard/exact-review-queue.ts`, implemented in
   coalescing window measured from the item's first enqueue.
 - `EXACT_REVIEW_PENDING_SOFT_LIMIT` overrides the pending-depth threshold for
   shedding new recovery and scheduled exact-review work; production sets it to 600.
-- `EXACT_REVIEW_TARGET_RATE_PER_HOUR` sets the fleet-wide review
-  admission target; the default is 60, organic reviews consume it first, and
-  the scheduled remainder is split 35/65 between hot intake and normal backfill.
-- `EXACT_REVIEW_TARGET_BURST` bounds the scheduled admission burst; the
-  default is six and uses the same lane split.
+- `EXACT_REVIEW_TARGET_RATE_PER_HOUR` sets the fleet-wide scheduled admission
+  refill target; the source fallback is 60 and production sets 220. Organic admissions
+  consume it first and may carry debt down to minus the burst; scheduled work
+  fills only the remainder. Unconditional organic work may exceed the target.
+- `EXACT_REVIEW_TARGET_BURST` bounds the admission burst and the organic debt
+  floor; the source fallback is six and production sets 24, split 35/65 between
+  the hot-intake and normal-backfill lane buckets.
+- `EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR` caps the hot-intake lane rate
+  (clamped to at least one and below the total); normal backfill receives the
+  total minus hot. When unset or invalid, hot intake keeps 35% of the total.
+  Production sets 30.
 - `EXACT_REVIEW_SCHEDULED_MAX_CONCURRENT` caps active scheduled review owners;
   the source fallback is eight and production sets 32, clamped to the global review capacity.
 - Scheduled planners subtract active and pending review work from the 80-slot

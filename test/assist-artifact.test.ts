@@ -118,10 +118,7 @@ fs.writeFileSync(process.argv[process.argv.indexOf('--output-last-message') + 1]
       run();
       assert.match(readFileSync(providerInput, "utf8"), /Explain this change\./);
       const args = JSON.parse(readFileSync(providerArgs, "utf8"));
-      assert.equal(
-        args.some((arg: string) => arg.startsWith("service_tier=")),
-        false,
-      );
+      assert.ok(args.includes('service_tier="fast"'));
       assert.ok(args.includes('model_reasoning_effort="medium"'));
       assert.equal(
         JSON.parse(readFileSync(artifactPath, "utf8")).output.answer,

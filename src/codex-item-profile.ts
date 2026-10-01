@@ -1,23 +1,37 @@
-import { isMaintainerAuthorAssociation } from "./clawsweeper-item-policy.js";
+import {
+  isMaintainerAuthorAssociation,
+  isWriteAccessRepositoryPermission,
+} from "./clawsweeper-item-policy.js";
 
 export interface CodexItemProfile {
   reasoningEffort: string;
   serviceTier: string;
 }
 
-export function codexItemProfile(authorAssociations: unknown): CodexItemProfile {
-  const associations = Array.isArray(authorAssociations)
-    ? authorAssociations
-    : [authorAssociations];
-  return associations.some(isMaintainerAuthorAssociation)
+// Maintainers and anyone with write access get priority ("fast") service. The
+// permission check also covers authors whose association a token redacts.
+export function codexItemProfile(
+  authorAssociations: unknown,
+  repositoryPermissions: unknown = [],
+): CodexItemProfile {
+  return asList(authorAssociations).some(isMaintainerAuthorAssociation) ||
+    asList(repositoryPermissions).some(isWriteAccessRepositoryPermission)
     ? { reasoningEffort: "medium", serviceTier: "fast" }
     : { reasoningEffort: "medium", serviceTier: "" };
 }
 
-export function canonicalItemAuthorAssociations(
+export function canonicalItemCodexProfile(
   frontmatter: unknown,
   clusterPlan: unknown,
-): string[] {
+): CodexItemProfile {
+  const items = canonicalPlanItems(frontmatter, clusterPlan);
+  return codexItemProfile(
+    items.map((item) => item.author_association),
+    items.map((item) => item.author_repository_permission),
+  );
+}
+
+function canonicalPlanItems(frontmatter: unknown, clusterPlan: unknown): Record<string, unknown>[] {
   const job = asRecord(frontmatter);
   const plan = asRecord(clusterPlan);
   const items = Array.isArray(plan.items) ? plan.items.map(asRecord) : [];
@@ -27,11 +41,11 @@ export function canonicalItemAuthorAssociations(
   ).filter((ref): ref is string => typeof ref === "string");
   return refs.flatMap((ref) => {
     const normalizedRef = normalizeItemRef(ref);
-    const association = items.find(
+    const item = items.find(
       (candidate) =>
         typeof candidate.ref === "string" && normalizeItemRef(candidate.ref) === normalizedRef,
-    )?.author_association;
-    return typeof association === "string" ? [association] : [];
+    );
+    return item ? [item] : [];
   });
 }
 
@@ -40,6 +54,10 @@ function normalizeItemRef(value: string): string {
   if (!match) return value;
   const digits = (match[1] ?? "").replace(/^0+(?=\d)/, "");
   return `#${digits}`;
+}
+
+function asList(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [value];
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

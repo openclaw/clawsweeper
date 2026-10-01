@@ -6200,7 +6200,7 @@ test("audit target fanout waits in bounded waves without changing cadence or sel
   assert.match(source, /result.status === "completed"/);
 });
 
-test("hot fleet fanout stays at twenty minutes while normal backfill is hourly", () => {
+test("hot fleet fanout stays at twenty minutes and normal backfill offers every twenty minutes", () => {
   const workflowText = readText(".github/workflows/sweep.yml");
   const workflow = YAML.parse(workflowText) as {
     on: { schedule: Array<{ cron: string }> };
@@ -6215,20 +6215,32 @@ test("hot fleet fanout stays at twenty minutes while normal backfill is hourly",
   assert.ok(!schedules.includes("4/5 * * * *"));
   assert.ok(schedules.includes("*/5 * * * *"));
   assert.ok(schedules.includes("2/5 * * * *"));
-  assert.ok(schedules.includes("41 * * * *"));
-  assert.ok(schedules.includes("1 * * * *"));
-  assert.ok(!schedules.includes("1/5 * * * *"));
-  assert.ok(!schedules.includes("41/10 * * * *"));
+  // Fleet normal fanout and the direct openclaw/openclaw normal planner each
+  // offer every 20 minutes on distinct cron strings.
+  assert.ok(schedules.includes("14/20 * * * *"));
+  assert.ok(schedules.includes("9/20 * * * *"));
+  for (const retired of ["41 * * * *", "1 * * * *", "1/5 * * * *", "41/10 * * * *"]) {
+    assert.ok(!schedules.includes(retired), retired);
+    assert.ok(!workflowText.includes(`'${retired}'`), retired);
+  }
+  assert.equal(new Set(schedules).size, schedules.length);
   assert.ok(schedules.includes("37 */6 * * *"));
   assert.match(fanoutBlock, /github\.event\.schedule == '4\/20 \* \* \* \*'/);
   assert.match(
     fanoutBlock,
-    /FANOUT_MODE: \$\{\{ github\.event\.schedule == '41 \* \* \* \*' && 'normal-review' \|\| \(github\.event\.schedule == '37 \*\/6 \* \* \*' && 'audit' \|\| 'hot-intake'\) \}\}/,
+    /FANOUT_MODE: \$\{\{ github\.event\.schedule == '14\/20 \* \* \* \*' && 'normal-review' \|\| \(github\.event\.schedule == '37 \*\/6 \* \* \*' && 'audit' \|\| 'hot-intake'\) \}\}/,
   );
   assert.match(
     fanoutBlock,
-    /FANOUT_LIMIT: \$\{\{ github\.event\.schedule == '41 \* \* \* \*' && '12' \|\| \(github\.event\.schedule == '37 \*\/6 \* \* \*' && '12' \|\| '20'\) \}\}/,
+    /FANOUT_LIMIT: \$\{\{ github\.event\.schedule == '14\/20 \* \* \* \*' && '12' \|\| \(github\.event\.schedule == '37 \*\/6 \* \* \*' && '12' \|\| '20'\) \}\}/,
   );
+  // Every fanout routing expression names the new normal cadence.
+  for (const expression of [
+    workflowText.slice(0, workflowText.indexOf("\non:")),
+    workflowText.slice(workflowText.indexOf("\nconcurrency:"), workflowText.indexOf("\njobs:")),
+  ]) {
+    assert.match(expression, /github\.event\.schedule == '14\/20 \* \* \* \*'/);
+  }
 });
 
 test("review git info follows checked-out target branch", () => {
@@ -6887,7 +6899,7 @@ test("sweep issue and PR event reviews and target fanout avoid storm amplificati
   assert.match(legacyIntakeBlock, /additionalPrompt: payload\.additional_prompt/);
   assert.match(
     fanoutBlock,
-    /FANOUT_LIMIT: \$\{\{ github\.event\.schedule == '41 \* \* \* \*' && '12' \|\| \(github\.event\.schedule == '37 \*\/6 \* \* \*' && '12' \|\| '20'\) \}\}/,
+    /FANOUT_LIMIT: \$\{\{ github\.event\.schedule == '14\/20 \* \* \* \*' && '12' \|\| \(github\.event\.schedule == '37 \*\/6 \* \* \*' && '12' \|\| '20'\) \}\}/,
   );
   assert.match(fanoutBlock, /Summarize trailing weekly review coverage/);
   assert.match(fanoutBlock, /--cursor-store-url "\$REVIEW_COVERAGE_URL"/);

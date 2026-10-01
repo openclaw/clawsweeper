@@ -14,6 +14,8 @@ const MARKDOWN_ROOTS = [
   "CONTRIBUTING.md",
   "AGENTS.md",
   "VISION.md",
+  // Fragments themselves are validated by `pnpm run check:changelog`.
+  "changelog.d/README.md",
   "docs",
   "instructions",
   "prompts",

@@ -628,12 +628,18 @@ export function createReviewCommandWorkflow(dependencies: CreateReviewCommandWor
             continue;
           }
         }
+        let authorRepositoryPermission: string | null = null;
         const restoredMaintainerAssociation =
           !localOnly &&
-          restoreVerifiedMaintainerAuthorAssociation(item, (author) =>
-            bulkFilerRepositoryPermission(author, bulkFilerRepositoryPermissionCache),
-          );
-        const itemCodexProfile = codexItemProfile(item.authorAssociation);
+          restoreVerifiedMaintainerAuthorAssociation(item, (author) => {
+            authorRepositoryPermission = bulkFilerRepositoryPermission(
+              author,
+              bulkFilerRepositoryPermissionCache,
+            );
+            return authorRepositoryPermission;
+          });
+        // Plain write access selects priority service without granting maintainer policy.
+        const itemCodexProfile = codexItemProfile(item.authorAssociation, authorRepositoryPermission);
         const bulkFilerDetection =
           !localOnly && item.kind === "issue"
             ? detectBulkFiler({

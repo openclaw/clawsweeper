@@ -20,6 +20,9 @@ directed here rather than given a duplicated policy copy.
 - Workflow: `.github/workflows/sweep.yml`.
 - Vision and product boundaries: `VISION.md`.
 - Explainer: `README.md`; state/dashboard repo: `../clawsweeper-state`.
+- Changelog: one-bullet fragments in `changelog.d/`, stitched into
+  `CHANGELOG.md` at release time; see
+  [`changelog.d/README.md`](changelog.d/README.md).
 - Open/reviewed records in the canonical Worker store:
   `records/<repo-slug>/items/<number>.md`.
 - Archived records in the canonical Worker store:
@@ -50,6 +53,11 @@ not split reports into issue/PR subtrees.
 - In `openclaw/openclaw`, `CHANGELOG.md` is release-owned. Do not ask contributor
   PR authors, repair workers, or automerge/autofix lanes to edit it during normal
   PR work. Preserve release-note context in PR bodies and commit messages instead.
+- In `openclaw/clawsweeper` itself, record a user-visible change as one new
+  `changelog.d/<pr-or-slug>.md` fragment holding a single bullet line. Do not
+  edit `CHANGELOG.md` or other PRs' fragments in normal PR work; the release
+  maintainer folds fragments in with `pnpm run changelog:stitch`, and
+  `pnpm run check:changelog` validates them.
 - When referencing GitHub issues or PRs in user-facing output, always include
   the full GitHub URL, not only `#12345`.
 
