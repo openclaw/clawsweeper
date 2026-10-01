@@ -284,7 +284,7 @@ export function createApplySourceFreshness(
   const isClawSweeperLogin = (value: string | undefined): boolean =>
     CLAWSWEEPER_BOT_AUTHORS.has((value ?? "").trim().toLowerCase());
   const ownedItemMarker = new RegExp(
-    `<!--\\s*clawsweeper-[a-z-]+(?::[a-z-]+)?\\s[^>]*?\\bitem=${number}(?![0-9])`,
+    `<!--\\s*clawsweeper-[\\w:-]+\\s[^>]*?\\bitem=${number}(?![0-9])`,
   );
   const ownedCommentWriteTimes = comments.flatMap((comment) => {
     const at = timestampMs(commentUpdatedAt(comment));

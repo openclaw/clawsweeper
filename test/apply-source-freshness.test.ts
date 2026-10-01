@@ -340,6 +340,21 @@ test("any ClawSweeper-recorded write for the item can account for the latest upd
     ],
   });
   assert.equal(ownedLease.automationOnlyUpdate, true);
+  for (const [body, owned] of [
+    [`<!-- clawsweeper-issue-implementation-progress:in_progress item=${number} -->`, true],
+    [`<!-- clawsweeper-review-status:started item=${number}0 -->`, false],
+    [`<!-- not-clawsweeper item=${number} -->`, false],
+  ] as const)
+    assert.equal(
+      sourceFreshness({
+        itemUpdatedAt: leaseAt,
+        comments: [
+          { id: 5861600998, user: { login: "clawsweeper[bot]" }, updated_at: leaseAt, body },
+        ],
+      }).automationOnlyUpdate,
+      owned,
+      body,
+    );
   const labelAt = "2026-09-28T01:18:31Z";
   const label = (actor: string) =>
     sourceFreshness({
