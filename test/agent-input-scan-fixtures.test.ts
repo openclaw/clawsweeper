@@ -729,6 +729,44 @@ function exactUriFixtureTests(
   }
 }
 
+function catalogIconUriFixture(): ReturnType<typeof autoreviewFixtures>[number] {
+  const raw = ["https://", "user", ":", "password", "@", "cdn.example.com"].join("");
+  const rawV2 = raw + "/icon";
+  return {
+    raw,
+    rawV2,
+    line: '      "' + rawV2 + '.svg",',
+    decoders: ["PLAIN", "HTML"],
+  };
+}
+
+const catalogIconFixtureSource = "src/plugins/catalog-icon-registry.test.ts";
+
+exactUriFixtureTests("Catalog icon URL rejection", catalogIconFixtureSource, catalogIconUriFixture);
+
+test("Catalog icon URL rejection refuses a shared blob under an unqualified path", (t) => {
+  const entry = catalogIconUriFixture();
+  const patch = fixturePatch(t, catalogIconFixtureSource, [entry], "add", [
+    { source: "src/plugins/other-catalog-icon.test.ts", entries: [entry] },
+  ]);
+  for (const decoder of entry.decoders) {
+    const result = patch.classify(decoder);
+    assert.equal(result.kind, "refused", JSON.stringify(result));
+    if (result.kind === "refused") assert.equal(result.diagnostic.reason, "source_not_reviewed");
+  }
+});
+
+test("Catalog icon URL rejection binds the suffix beyond the native URI match", (t) => {
+  const entry = catalogIconUriFixture();
+  entry.line = entry.line.replace(".svg", ".png");
+  const patch = fixturePatch(t, catalogIconFixtureSource, [entry]);
+  for (const decoder of entry.decoders) {
+    const result = patch.classify(decoder);
+    assert.equal(result.kind, "refused", JSON.stringify(result));
+    if (result.kind === "refused") assert.equal(result.diagnostic.reason, "literal_mismatch");
+  }
+});
+
 test("SDK browser CDP fixtures bind native identities and complete source lines", (t) => {
   const entries = [9222, 80].map((port) => {
     const raw = ["http://", "user", ":", "pass", "@", `127.0.0.1:${port}`].join("");

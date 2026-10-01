@@ -1,0 +1,1 @@
+- Qualify the exact synthetic catalog-icon URL rejection fixture so OpenClaw reviews pass input scanning without relaxing credential or source checks.
