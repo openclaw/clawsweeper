@@ -5531,6 +5531,7 @@ const PUBLIC_QUEUE_PARKED_REASONS = [
   "source_drift_loop",
   "unknown",
 ] as const;
+const PUBLIC_QUEUE_SHED_REASONS = ["backpressure", "scheduled_rate", "unattributed"] as const;
 const PUBLIC_RUNAWAY_SAMPLE_LIMIT = 5;
 const PUBLIC_RUNAWAY_SOURCE_SAMPLE_LIMIT = 20;
 const PUBLIC_RUNAWAY_ITEM_KEY_PATTERN = /^([a-z0-9_.-]+\/[a-z0-9_.-]+)#([1-9]\d{0,9})$/;
@@ -5550,6 +5551,32 @@ function publicQueueCount(value, maximum = PUBLIC_QUEUE_COUNT_LIMIT) {
 function publicQueueTimestamp(value) {
   if (value === null || value === undefined) return null;
   return publicTimestamp(value);
+}
+
+// Scheduled admission balances carry organic debt down to -burst, so they may be negative.
+function publicSignedQueueCount(value, maximum = PUBLIC_SCHEDULED_FEED_RATE_LIMIT) {
+  return Number.isSafeInteger(value) && Math.abs(Number(value)) <= maximum ? Number(value) : null;
+}
+
+function publicScheduledFeedLane(value) {
+  const source = objectValue(value);
+  const targetRate = publicQueueCount(
+    source.target_rate_per_hour,
+    PUBLIC_SCHEDULED_FEED_RATE_LIMIT,
+  );
+  const burst = publicQueueCount(source.burst, PUBLIC_SCHEDULED_FEED_RATE_LIMIT);
+  const tokenBalance = publicSignedQueueCount(source.token_balance);
+  if (targetRate === null || burst === null || tokenBalance === null) return null;
+  return { target_rate_per_hour: targetRate, burst, token_balance: tokenBalance };
+}
+
+function publicScheduledFeedLanes(value) {
+  const source = objectValue(value);
+  const hotIntake = publicScheduledFeedLane(source.hot_intake);
+  const normalBackfill = publicScheduledFeedLane(source.normal_backfill);
+  return hotIntake && normalBackfill
+    ? { hot_intake: hotIntake, normal_backfill: normalBackfill }
+    : null;
 }
 
 function publicQueueCounts(value, keys: readonly string[], maximum = PUBLIC_QUEUE_COUNT_LIMIT) {
@@ -5644,6 +5671,14 @@ function publicExactReviewQueueLane(value) {
   );
   result.backoff_reasons = backoffReasons.counts;
   result.parked_reasons = parkedReasons.counts;
+  // Only the review lane attributes sheds; the publication lane never sheds.
+  if (Object.prototype.hasOwnProperty.call(source, "shed_reasons_since_reset")) {
+    result.shed_reasons_since_reset = publicQueueCounts(
+      source.shed_reasons_since_reset,
+      PUBLIC_QUEUE_SHED_REASONS,
+      PUBLIC_QUEUE_TOTAL_LIMIT,
+    );
+  }
   return { value: result, reasonsComplete: backoffReasons.complete && parkedReasons.complete };
 }
 
@@ -5885,6 +5920,11 @@ export function publicExactReviewQueueProjection(
     scheduledFeed.enqueue_replay === "scheduled_disposition_v1" ? "scheduled_disposition_v1" : null;
   const scheduledMaxConcurrent = publicQueueCount(scheduledFeed.max_concurrent);
   const scheduledActive = publicQueueCount(scheduledFeed.active);
+  const scheduledBurst = publicQueueCount(scheduledFeed.burst, PUBLIC_SCHEDULED_FEED_RATE_LIMIT);
+  const scheduledTokenBalance = publicSignedQueueCount(scheduledFeed.token_balance);
+  const scheduledThrottleObservedAt = publicQueueTimestamp(scheduledFeed.throttle_observed_at);
+  const scheduledThrottleRecoveryAt = publicQueueTimestamp(scheduledFeed.throttle_recovery_at);
+  const scheduledLanes = publicScheduledFeedLanes(scheduledFeed.lanes);
   const requiredCounts = [
     source.pending,
     source.ready_pending,
@@ -6002,6 +6042,15 @@ export function publicExactReviewQueueProjection(
             enqueue_replay: scheduledEnqueueReplay,
             ...(scheduledMaxConcurrent !== null ? { max_concurrent: scheduledMaxConcurrent } : {}),
             ...(scheduledActive !== null ? { active: scheduledActive } : {}),
+            ...(scheduledBurst !== null ? { burst: scheduledBurst } : {}),
+            ...(scheduledTokenBalance !== null ? { token_balance: scheduledTokenBalance } : {}),
+            ...(scheduledThrottleObservedAt && scheduledThrottleRecoveryAt
+              ? {
+                  throttle_observed_at: scheduledThrottleObservedAt,
+                  throttle_recovery_at: scheduledThrottleRecoveryAt,
+                }
+              : {}),
+            ...(scheduledLanes ? { lanes: scheduledLanes } : {}),
           }
         : null,
     lanes: {

@@ -207,7 +207,14 @@ the cap does not cancel owners or remove pending work. Organic/manual requests
 remain eligible when the scheduled cap is full. The same bound governs admission,
 admissible statistics and next-wake calculation, so held backlog does not cause
 one-second polling. Public `scheduled_feed.max_concurrent` and `active` expose
-only these counts; OpenClaw Bay remains observer-only and needs no new controls.
+these counts; OpenClaw Bay remains observer-only and needs no new controls.
+
+The public `scheduled_feed` also reports the admission budget itself:
+- `burst` and `token_balance` for the global bucket. The balance is negative while organic debt is outstanding, down to `-burst`.
+- `lanes.hot_intake` and `lanes.normal_backfill`, each with `target_rate_per_hour`, `burst` and `token_balance`.
+- `throttle_observed_at` and `throttle_recovery_at` after a review completion has reported a GitHub throttle. Scheduled admission is paused until the recovery time.
+
+`lanes.review.shed_reasons_since_reset` splits review sheds into `backpressure`, `scheduled_rate` and `unattributed`. Together these show whether scheduled backfill is held back by organic debt, by lane rates, by a throttle pause, or by queue backpressure. They are aggregate numbers with no item, repository or credential detail.
 
 Fresh webhook work waits for `EXACT_REVIEW_DISPATCH_DEBOUNCE_MS` (90 seconds by
 default) so rapid edits and pushes coalesce before dispatch. Repeated pending

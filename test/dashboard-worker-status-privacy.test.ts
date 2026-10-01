@@ -1646,6 +1646,8 @@ test("public queue projection retains only closed operational aggregates", async
     max_concurrent: 8,
     active: 3,
     enqueue_replay: "scheduled_disposition_v1",
+    burst: 50,
+    token_balance: 42,
   });
   assert.deepEqual(projected.bay_projection.activity, {
     complete: false,
@@ -1701,6 +1703,8 @@ test("public queue projection retains only closed operational aggregates", async
     max_concurrent: 8,
     active: 3,
     enqueue_replay: "scheduled_disposition_v1",
+    burst: 50,
+    token_balance: 42,
   });
   assert.deepEqual(statusProjected.exact_review_queue.handoff_health.phases, {
     pending: { count: 7, oldest_at: null, oldest_age_seconds: null },
@@ -1742,6 +1746,76 @@ test("public queue projection retains only closed operational aggregates", async
       null,
     );
   }
+
+  // Scheduled admission telemetry: organic debt makes balances negative, both lanes are
+  // required, throttle timestamps travel together, and review sheds are attributed.
+  const scheduledTelemetry = publicExactReviewQueueProjection({
+    ...source,
+    scheduled_feed: {
+      target_rate_per_hour: 220,
+      enqueue_replay: "scheduled_disposition_v1",
+      max_concurrent: 32,
+      active: 0,
+      burst: 24,
+      token_balance: -24,
+      throttle_source: sentinel,
+      throttle_observed_at: "2026-08-15T11:40:00.000Z",
+      throttle_recovery_at: "2026-08-15T11:55:00.000Z",
+      lanes: {
+        hot_intake: { target_rate_per_hour: 30, burst: 8, token_balance: 8, sentinel },
+        normal_backfill: { target_rate_per_hour: 190, burst: 16, token_balance: 0 },
+      },
+    },
+    lanes: {
+      ...source.lanes,
+      review: {
+        ...source.lanes.review,
+        shed_reasons_since_reset: {
+          backpressure: 3,
+          scheduled_rate: 9,
+          unattributed: 1,
+          sentinel: 7,
+        },
+      },
+    },
+  });
+  assert.deepEqual(scheduledTelemetry.scheduled_feed, {
+    target_rate_per_hour: 220,
+    enqueue_replay: "scheduled_disposition_v1",
+    max_concurrent: 32,
+    active: 0,
+    burst: 24,
+    token_balance: -24,
+    throttle_observed_at: "2026-08-15T11:40:00.000Z",
+    throttle_recovery_at: "2026-08-15T11:55:00.000Z",
+    lanes: {
+      hot_intake: { target_rate_per_hour: 30, burst: 8, token_balance: 8 },
+      normal_backfill: { target_rate_per_hour: 190, burst: 16, token_balance: 0 },
+    },
+  });
+  assert.deepEqual(scheduledTelemetry.lanes.review.shed_reasons_since_reset, {
+    backpressure: 3,
+    scheduled_rate: 9,
+    unattributed: 1,
+  });
+  assert.equal(scheduledTelemetry.lanes.publication.shed_reasons_since_reset, undefined);
+  assert.equal(JSON.stringify(scheduledTelemetry).includes(sentinel), false);
+  assert.deepEqual(publicExactReviewQueueProjection(scheduledTelemetry), scheduledTelemetry);
+  const malformedTelemetry = publicExactReviewQueueProjection({
+    ...source,
+    scheduled_feed: {
+      target_rate_per_hour: 220,
+      enqueue_replay: "scheduled_disposition_v1",
+      token_balance: 1.5,
+      burst: -1,
+      throttle_recovery_at: "2026-08-15T11:55:00.000Z",
+      lanes: { hot_intake: { target_rate_per_hour: 30, burst: 8, token_balance: 8 } },
+    },
+  });
+  assert.deepEqual(malformedTelemetry.scheduled_feed, {
+    target_rate_per_hour: 220,
+    enqueue_replay: "scheduled_disposition_v1",
+  });
 
   const mismatches = [
     (value) => {
