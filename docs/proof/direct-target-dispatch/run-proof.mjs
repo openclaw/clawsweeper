@@ -266,18 +266,27 @@ const egressAddress = `127.0.0.1:${egressServer.address().port}`;
 
 // ---- Recording reverse proxies in front of Miniflare.
 let workerOrigin = "";
+const PROXIED_WORKER_ROUTES = new Map(
+  [
+    "/github/target-dispatch",
+    "/internal/exact-review/enqueue",
+    "/internal/exact-review/branch-authority",
+    "/internal/exact-review/source-authority",
+  ].map((route) => [route, route]),
+);
 function recordingProxy(records) {
   return async (request, response) => {
     const body = await readBody(request);
-    // Forward only the path and query to the local Worker; an absolute request URL must not pick the upstream.
-    const incoming = new URL(request.url, "http://proxy.invalid");
-    const target = new URL(`${incoming.pathname}${incoming.search}`, workerOrigin);
-    if (target.origin !== new URL(workerOrigin).origin) {
-      response.writeHead(400, { "content-type": "application/json" });
-      response.end(JSON.stringify({ error: "proxy target must be the local Worker" }));
+    // Forward only the routes the dispatcher and relay scripts call, built from constants,
+    // so request data never selects the upstream URL.
+    const route = PROXIED_WORKER_ROUTES.get(new URL(request.url, "http://proxy.invalid").pathname);
+    if (!route) {
+      records.push({ path: "<unproxied>", status: 404, body: null });
+      response.writeHead(404, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "route is not proxied to the local Worker" }));
       return;
     }
-    const upstream = await fetch(target, {
+    const upstream = await fetch(new URL(route, workerOrigin), {
       method: request.method,
       headers: Object.fromEntries(
         Object.entries(request.headers).filter(
