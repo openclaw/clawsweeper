@@ -126,3 +126,29 @@ test("dashboard health raises a failed terminal explanation distinctly", () => {
     reasons: ["review_status_delivery_failed"],
   });
 });
+
+test("dashboard health raises review runaways and keeps legacy snapshots quiet", () => {
+  const legacy = healthySnapshot();
+  assert.equal(summarizeDashboardHealth(legacy).severity, "green");
+
+  const runaway = healthySnapshot();
+  (runaway.exact_review_queue as Record<string, any>).review_runaway_health = {
+    status: "degraded",
+    reason: "review_runaway",
+    runaway_items: 1,
+  };
+  assert.deepEqual(summarizeDashboardHealth(runaway), {
+    conclusion: "needs_attention",
+    severity: "amber",
+    reasons: ["review_runaway"],
+  });
+
+  const unknown = healthySnapshot();
+  (unknown.exact_review_queue as Record<string, any>).review_runaway_health = {
+    status: "unknown",
+    reason: "telemetry_unavailable",
+  };
+  assert.deepEqual(summarizeDashboardHealth(unknown).reasons, [
+    "review_runaway_telemetry_unavailable",
+  ]);
+});

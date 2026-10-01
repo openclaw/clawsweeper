@@ -582,6 +582,15 @@ manual and broad dispatch behavior, the independent proof cursor, and close
 policy are unchanged. OpenClaw Bay needs no change: this producer reuses existing
 queue/lifecycle fields and adds no published schema, status field, or control.
 
+Both source-drift producers, the publisher's remote-newer requeue and this apply
+refresh, are bounded by the queue's source-drift loop breaker: after
+`EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_LIMIT` consecutive automatic generations
+without organic input, a command, or a newer scheduled offer, the item parks as
+`source_drift_loop` instead of spending another review. The producer still
+receives a successful dedupe. Separately, `review_runaway_health` alerts when
+any item claims more than `EXACT_REVIEW_RUNAWAY_REVIEWS_PER_DAY` reviews in a
+trailing day. [Automation limits](limits.md) owns both rules.
+
 Exact PR review marks ClawSweeper's own acknowledgement comment
 (`clawsweeper-pr-ack`) complete after the review snapshot and before direct
 publication, and GitHub moves the PR's `updated_at` for that edit. Apply

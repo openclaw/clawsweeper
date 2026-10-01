@@ -1956,6 +1956,8 @@ const PUBLIC_STATUS_TEXT_VALUES = new Set([
   "review_failure_telemetry_unavailable",
   "review_status_delivery_failed",
   "review_retries_exhausted",
+  "review_runaway",
+  "review_runaway_telemetry_unavailable",
   "workflow_execution_stalled",
   "workflow_execution_degraded",
   "worker_failures_unresolved",
@@ -2161,6 +2163,7 @@ const PUBLIC_STATUS_COUNT_FIELDS = new Set([
   "dispatch_rejected",
   "review_retry_exhausted",
   "direct_publication",
+  "source_drift_loop",
   "claim_timeout",
   "execution_timeout",
   "workflow_cancelled",
@@ -5517,8 +5520,12 @@ const PUBLIC_QUEUE_PARKED_REASONS = [
   "source_incompatible",
   "scanner_refused",
   "direct_publication",
+  "source_drift_loop",
   "unknown",
 ] as const;
+const PUBLIC_RUNAWAY_SAMPLE_LIMIT = 5;
+const PUBLIC_RUNAWAY_SOURCE_SAMPLE_LIMIT = 20;
+const PUBLIC_RUNAWAY_ITEM_KEY_PATTERN = /^([a-z0-9_.-]+\/[a-z0-9_.-]+)#([1-9]\d{0,9})$/;
 const PUBLIC_QUEUE_RECOVERY_REASONS = [
   "claim_timeout",
   "execution_timeout",
@@ -5721,6 +5728,61 @@ function publicExactReviewFailureHealth(value) {
   };
 }
 
+// Optional and fail-closed to null: older snapshots without the field keep a
+// complete queue projection. Samples are re-validated on every projection and
+// keep only verified-public repository item keys.
+function publicExactReviewRunawayHealth(value, allowedRepositories: ReadonlySet<string>) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = objectValue(value);
+  const status = String(source.status || "");
+  const reason = source.reason ?? null;
+  const windowHours = publicQueueCount(source.window_hours, 24 * 7);
+  const threshold = publicQueueCount(source.threshold_reviews_per_day, 10_000);
+  const runawayItems = publicQueueCount(source.runaway_items);
+  const keys = source.sample_item_keys;
+  const expectedReason =
+    status === "degraded"
+      ? "review_runaway"
+      : status === "unknown"
+        ? "telemetry_unavailable"
+        : status === "healthy"
+          ? null
+          : undefined;
+  if (
+    expectedReason === undefined ||
+    reason !== expectedReason ||
+    windowHours === null ||
+    windowHours < 1 ||
+    threshold === null ||
+    threshold < 1 ||
+    runawayItems === null ||
+    (status === "degraded") !== runawayItems > 0 ||
+    !Array.isArray(keys) ||
+    keys.length > PUBLIC_RUNAWAY_SOURCE_SAMPLE_LIMIT
+  ) {
+    return null;
+  }
+  const sample: string[] = [];
+  for (const entry of keys) {
+    const match =
+      typeof entry === "string" ? PUBLIC_RUNAWAY_ITEM_KEY_PATTERN.exec(entry.trim()) : null;
+    if (!match) return null;
+    const itemNumber = Number(match[2]);
+    if (!allowedRepositories.has(match[1]) || itemNumber > PUBLIC_BAY_ITEM_NUMBER_LIMIT) continue;
+    const itemKey = `${match[1]}#${itemNumber}`;
+    if (!sample.includes(itemKey)) sample.push(itemKey);
+    if (sample.length >= PUBLIC_RUNAWAY_SAMPLE_LIMIT) break;
+  }
+  return {
+    status,
+    reason,
+    window_hours: windowHours,
+    threshold_reviews_per_day: threshold,
+    runaway_items: runawayItems,
+    sample_item_keys: sample,
+  };
+}
+
 function publicExactReviewHandoff(value) {
   const source = objectValue(value);
   const status = String(source.status || "");
@@ -5914,6 +5976,10 @@ export function publicExactReviewQueueProjection(
     handoff_health: projectedHandoff,
     pressure: projectedPressure,
     review_failure_health: projectedReviewFailureHealth.value,
+    review_runaway_health: publicExactReviewRunawayHealth(
+      source.review_runaway_health,
+      allowedRepositories,
+    ),
     manual_publication:
       objectValue(source.manual_publication).policy === "record_comment_only"
         ? {

@@ -250,6 +250,36 @@ budget first; scheduled work fills the remainder and is split 35% hot intake and
 that is already pending, dispatching, or leased is a semantic dedupe: it does not
 advance the queue revision, revoke a lease, or count as new work.
 
+A source-drift loop breaker bounds automatic re-review. The queue counts
+consecutive `source_drift_requeue` review generations per item in an additive
+`exact_review_queue_source_drift_loops` table, because each completed generation
+deletes the queue item. Once an item has used
+`EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_LIMIT` (production: 3) such generations, the
+next source-drift requeue is not admitted: the item is parked with reason
+`source_drift_loop`, and later automatic requeues are deduped against it with
+`dedupe_scope: source_drift_loop`. The publisher still receives a successful
+dedupe, so the parked item is the only new state. An organic webhook item action
+(`opened`, `reopened`, `edited`, `synchronize`, `ready_for_review`,
+`converted_to_draft`, `unlocked`, `unlabeled`), an explicit command, a manual
+review, an operator `recover-fresh`, or a scheduled offer whose `sourceUpdatedAt`
+is later than the park both resets the counter and admits the item normally.
+Older scheduled offers dedupe with reason `source_drift_loop`. A source-drift
+requeue that still carries command context continues that command's status
+lifecycle, so it is neither counted nor parked. The parked item spends no review
+capacity, appears under `parked_reasons.source_drift_loop`, is operator-listable
+through the parked-review routes, and still receives the five-minute terminal
+check that removes closed or advanced targets. Set the limit to `0` to disable
+the breaker; idle counters expire after seven days.
+
+The same queue keeps a trailing 24-hour history of claimed review runs per item
+(`exact_review_queue_review_generations`, keyed by item, run ID, and attempt;
+publication and finalizer-only claims are excluded). An item with more than
+`EXACT_REVIEW_RUNAWAY_REVIEWS_PER_DAY` (production: 24) claimed reviews in that
+window is a runaway. `review_runaway_health` reports `degraded` with reason
+`review_runaway`, the runaway count, and up to five verified-public sample keys;
+the dashboard health summary raises it amber. This alert observes; it never
+changes admission.
+
 Exact-review result publication has a separate adaptive Actions lane. Source
 fallback minimum, base, and maximum are 4, 24, and 48; production overrides
 them to 8, 32, and 32, independently of the larger review ceiling.
@@ -460,6 +490,13 @@ These limits are owned by `dashboard/exact-review-queue.ts`, implemented in
   coalescing window measured from the item's first enqueue.
 - `EXACT_REVIEW_PENDING_SOFT_LIMIT` overrides the pending-depth threshold for
   shedding new recovery and scheduled exact-review work; production sets it to 600.
+- `EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_LIMIT` sets how many consecutive automatic
+  source-drift review generations an item may use before it parks as
+  `source_drift_loop`; the default and production value is 3, `0` disables the
+  breaker, and the maximum is 100.
+- `EXACT_REVIEW_RUNAWAY_REVIEWS_PER_DAY` sets the claimed-review count per item in
+  a trailing 24 hours above which queue health reports `review_runaway`; the
+  default and production value is 24.
 - `EXACT_REVIEW_TARGET_RATE_PER_HOUR` sets the fleet-wide review
   admission target; the default is 60, organic reviews consume it first, and
   the scheduled remainder is split 35/65 between hot intake and normal backfill.

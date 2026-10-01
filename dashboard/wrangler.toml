@@ -81,6 +81,13 @@ EXACT_REVIEW_DISPATCH_DEBOUNCE_MAX_MS = "180000"
 # parked review inputs a fresh bounded retry budget.
 EXACT_REVIEW_RETRY_POLICY_EPOCH = "1"
 EXACT_REVIEW_PENDING_SOFT_LIMIT = "600"
+# Park an item after this many consecutive automatic source-drift review
+# generations without organic input, a command, or a newer scheduled offer.
+# "0" disables the breaker.
+EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_LIMIT = "3"
+# Queue health degrades with review_runaway when an item claims more than this
+# many full reviews in a trailing 24 hours.
+EXACT_REVIEW_RUNAWAY_REVIEWS_PER_DAY = "24"
 # Bay is observer-only; 30 seconds of staleness is acceptable.
 EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "30000"
 # A full review consumes about 30 GitHub requests. Keep scheduled review demand

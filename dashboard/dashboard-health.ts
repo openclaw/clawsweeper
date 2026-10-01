@@ -57,6 +57,11 @@ export function summarizeDashboardHealth(snapshot: Record<string, unknown>): Das
     if (nonNegativeNumber(reviewParkedReasons.review_retry_exhausted) > 0) {
       raise("red", "review_retries_exhausted");
     }
+
+    // Optional: snapshots from before the runaway alert carry no field.
+    const runawayStatus = String(objectValue(queue.review_runaway_health).status || "");
+    if (runawayStatus === "degraded") raise("amber", "review_runaway");
+    else if (runawayStatus === "unknown") raise("amber", "review_runaway_telemetry_unavailable");
   }
 
   const operationalStatus = String(objectValue(snapshot.operational_health).status || "");

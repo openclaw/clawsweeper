@@ -487,6 +487,31 @@ resets that recovery budget; after three unsuccessful recovery cycles the item
 stays parked for operator inspection. Publication dead-letter-capacity parks
 retain their separate operator-controlled recovery path.
 
+Review items parked as `source_drift_loop` have no automatic recovery ladder.
+They used `EXACT_REVIEW_SOURCE_DRIFT_REQUEUE_LIMIT` consecutive automatic
+source-drift review generations without organic input; see
+[Automation limits](limits.md) for the counter and its reset rules. The next
+organic webhook event, explicit command, manual review, or scheduled offer with a
+newer `sourceUpdatedAt` admits the item normally. Operators can list, resolve,
+or `recover-fresh` these rows through the signed parked-review routes, and the
+periodic terminal check still removes closed or head-advanced targets. The lane
+breakdown counts them under `parked_reasons.source_drift_loop`.
+
+`review_runaway_health` is the companion alert for any self-feeding loop the
+breaker does not stop, such as a command continuation. The queue records each
+newly claimed review run per item (publication and finalizer-only claims
+excluded) and reports `degraded` with reason `review_runaway` when any item
+claimed more than `EXACT_REVIEW_RUNAWAY_REVIEWS_PER_DAY` (production: 24)
+reviews in the trailing 24 hours; otherwise it is `healthy`. A failed history
+read reports `unknown` with reason `telemetry_unavailable`. The object carries
+`window_hours`, `threshold_reviews_per_day`, the `runaway_items` count across all
+repositories, and `sample_item_keys`: at most five `owner/repo#number` keys,
+highest review count first, limited to repositories in `PUBLIC_BAY_REPOS`.
+Private-repository runaways count but are never named. The dashboard health
+summary raises `review_runaway` (or `review_runaway_telemetry_unavailable`) to
+amber. Snapshots without the object, and malformed objects, project as `null`
+and do not change health, so the field is optional for older cached statuses.
+
 Every failed exact-review completion first records one durable, deduplicated
 attempt keyed by its claim tuple. The record contains only closed stage/reason,
 retryability, source and failure fingerprints, immutable source identifiers,
@@ -499,7 +524,8 @@ corresponding target and run identities for investigation.
 
 `/api/exact-review-queue` is an explicit, closed aggregate projection. It
 contains `generated_at`, `ready_pending`, `admissible_pending`, `pressure`,
-`handoff_health`, `review_failure_health`, and bounded counts and oldest timestamps or ages for the
+`handoff_health`, `review_failure_health`, the optional `review_runaway_health`,
+and bounded counts and oldest timestamps or ages for the
 pending, dispatching, and leased phases. `ready_pending` excludes retry-delayed
 items. `admissible_pending` further excludes ready items blocked by their
 target's exact-review cap. `pressure` is a deterministic observation from that

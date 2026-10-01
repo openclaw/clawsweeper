@@ -100,6 +100,7 @@ export function exactReviewParkedOperatorEligible(item: ExactReviewQueueItem) {
     item.state === "parked" &&
     !exactReviewQueueIsPublication(item) &&
     (item.parkedReason === "source_incompatible" ||
+      item.parkedReason === "source_drift_loop" ||
       ((item.parkedReason === "dispatch_rejected" ||
         item.parkedReason === "review_retry_exhausted") &&
         exactReviewParkedRecoveryAttempts(item.parkedRecoveryAttempts) >=

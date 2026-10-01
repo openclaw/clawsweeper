@@ -110,6 +110,14 @@ fingerprint, path, detector, or scanner-output detail. The signed operator-only
 `/internal/exact-review/review-failures/list` route retains those bounded
 identities for incident investigation without storing raw failure text.
 
+The optional `review_runaway_health` object is a closed trailing-24-hour alert:
+`status` (`healthy`, `degraded`, or `unknown`), `reason`, `window_hours`,
+`threshold_reviews_per_day`, `runaway_items`, and `sample_item_keys`. Samples are
+at most five canonical `owner/repo#number` keys for repositories in
+`PUBLIC_BAY_REPOS`; private-repository runaways are counted but not named, and
+run, revision, and per-item review counts are not projected. A missing or
+malformed object projects as `null`.
+
 The GitHub-egress response exposes only revision-independent closed dimensions
 and sanitized retention watermarks. `query_complete` describes retained
 evidence, not the existence of traffic in every clock bucket.

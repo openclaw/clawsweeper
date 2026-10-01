@@ -837,6 +837,7 @@ function createExactReviewAdmissionHarness(
     hostedPublicTargetProbe?: (
       targetRepo: string,
     ) => Promise<HostedPublicTargetProbe | HostedTargetAdmission>;
+    env?: Record<string, string>;
   } = {},
 ) {
   const originalFetch = globalThis.fetch;
@@ -952,6 +953,7 @@ function createExactReviewAdmissionHarness(
               : {}),
           }
         : {}),
+      ...options.env,
     },
   );
   return {

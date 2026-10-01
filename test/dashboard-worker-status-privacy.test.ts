@@ -2014,3 +2014,62 @@ test("public queue HTTP route applies the closed projector before serialization"
   ]);
   assert.equal(serialized.includes("private-owner"), false);
 });
+
+test("status reprojection keeps the closed runaway alert and only public sample keys", () => {
+  const queue = publicExactReviewQueueProjection(
+    {
+      review_runaway_health: {
+        status: "degraded",
+        reason: "review_runaway",
+        window_hours: 24,
+        threshold_reviews_per_day: 24,
+        runaway_items: 2,
+        sample_item_keys: ["private-owner/secret#9", "openclaw/openclaw#97616"],
+        private_counts: { "private-owner/secret#9": 120 },
+      },
+    },
+    new Set(["openclaw/openclaw"]),
+  );
+  assert.deepEqual(queue.review_runaway_health, {
+    status: "degraded",
+    reason: "review_runaway",
+    window_hours: 24,
+    threshold_reviews_per_day: 24,
+    runaway_items: 2,
+    sample_item_keys: ["openclaw/openclaw#97616"],
+  });
+  const allowed = new Set(["openclaw/openclaw"]);
+  let status = strictPublicStatusProjection(
+    {
+      schema_version: 1,
+      generated_at: STATUS_NOW,
+      source: { target_repository_count: 0 },
+      fleet: {},
+      workers: [],
+      automatic_work: [],
+      pipeline: [],
+      bay: {},
+      recent: {},
+      diagnostics: { errors: [], error_count: 0 },
+      exact_review_queue: queue,
+      dashboard_health: {
+        conclusion: "needs_attention",
+        severity: "amber",
+        reasons: ["review_runaway"],
+      },
+    },
+    allowed,
+  );
+  for (let pass = 0; pass < 2; pass += 1) {
+    assert.deepEqual(status.exact_review_queue.review_runaway_health, queue.review_runaway_health);
+    assert.deepEqual(status.dashboard_health.reasons, ["review_runaway"]);
+    assert.equal(JSON.stringify(status).includes("private-owner"), false);
+    status = strictPublicStatusProjection(status, allowed);
+  }
+  // Without a verified-public allowlist the sample is empty; counts remain.
+  assert.deepEqual(
+    publicStatusProjection({ exact_review_queue: queue }).exact_review_queue.review_runaway_health
+      .sample_item_keys,
+    [],
+  );
+});
