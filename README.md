@@ -440,9 +440,10 @@ Review is proposal-only. It never closes items.
   and `apply_after_review` inputs are retired. Use the separate `apply_existing`
   lane to apply eligible proposals.
 - Each admitted item gets its own review workflow for the selected target.
-- Codex reviews use `gpt-6.1-sol` with medium reasoning. OWNER, MEMBER, and
-  COLLABORATOR-authored issues and pull requests use fast service; other items use
-  standard service. Sweep planning, assist answers, and
+- Codex reviews use `gpt-6.1-sol` with medium reasoning in the direct API auth
+  modes (`login` and `proxy`); `clawrouter` mode instead runs its private
+  inference alias. OWNER, MEMBER, and COLLABORATOR-authored issues and pull
+  requests use fast service; other items use standard service. Sweep planning, assist answers, and
   close-coverage proofs use the configured ordinary-item defaults. Reviews have
   a 10-minute per-item timeout.
 - Each item becomes a flat report under
