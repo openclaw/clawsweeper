@@ -585,14 +585,31 @@ queue/lifecycle fields and adds no published schema, status field, or control.
 
 Exact PR review marks ClawSweeper's own acknowledgement comment
 (`clawsweeper-pr-ack`) complete after the review snapshot and before direct
-publication, and GitHub moves the PR's `updated_at` for that edit. Apply
-freshness treats that edit as automation-only only when it is the item's latest
-update and the review's complete source, timeline, PR head, and review-activity
-receipt still matches the live item. Any other change in the window, including
-a human comment, title/body or non-managed label edit, PR review, or new head,
-still records `skipped_changed_since_review` and requeues a fresh
-`source_drift_requeue` review. Without this allowance, a close proposal's own
-status edit made every review drift and requeue indefinitely.
+publication, and GitHub moves the PR's `updated_at` for that edit. The producer's
+apply then syncs the durable review comment, may edit managed labels, and
+releases (deletes) its review lease comment. When direct publication is
+deferred, the batch publisher re-applies the same review against those writes.
+Apply freshness treats such an update as automation-only only when a receipt
+ClawSweeper recorded for the item accounts for the latest `updated_at` and the
+review's complete source, timeline, PR head, and review-activity receipt still
+matches the live item:
+
+- a live ClawSweeper-authored comment carrying a marker for the item, or a
+  ClawSweeper-actor timeline event (a managed label edit), has exactly the
+  item's latest `updated_at`; or
+- the review generation's own lease comment (`review_lease_comment_id`) is gone,
+  the live durable review comment carries this generation's
+  `clawsweeper-review-version` marker (item, `reviewed_at`, source revision,
+  lease owner, and lease comment id) and was synced after the review snapshot,
+  the latest update follows the generation's last recorded ClawSweeper write by
+  at most five minutes (the shortest apply-lease hold), and no non-automation
+  comment, review comment, or timeline event is visible after the snapshot.
+
+Any other change in the window, including a human comment, title/body or label
+edit, PR review, or new head, still records `skipped_changed_since_review` and
+requeues a fresh `source_drift_requeue` review. Without these receipts, a close
+proposal kept open by its producer made every deferred re-apply drift and
+requeue indefinitely.
 
 ## Automerge Fast Path
 
