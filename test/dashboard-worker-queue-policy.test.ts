@@ -3863,8 +3863,42 @@ test("exact-review lane status counts backoff and parked reasons", async () => {
   assert.deepEqual(status.lanes.review.parked_reasons, { dispatch_rejected: 1 });
 });
 
-test("organic reviews consume the global target before scheduled backfill", async () => {
+// Dispatching review leases stand in for workflow runs that are about to claim.
+function dispatchingReviews(numbers: number[], leaseExpiresAt: number) {
+  return Object.fromEntries(
+    numbers.map((itemNumber) => {
+      const item = { ...unclaimedExactReviewQueueItem(itemNumber), leaseExpiresAt };
+      return [item.key, item];
+    }),
+  );
+}
+
+function claimReviewLease(
+  queue: ExactReviewQueue,
+  item: { key: string; leaseId?: string; leaseRevision?: number },
+  runId: string,
+  runAttempt = 1,
+) {
+  return queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/claim", {
+      method: "POST",
+      body: JSON.stringify({
+        lease_id: item.leaseId,
+        item_key: item.key,
+        lease_revision: item.leaseRevision,
+        run_id: runId,
+        run_attempt: runAttempt,
+      }),
+    }),
+  );
+}
+
+test("claimed organic reviews consume the global target before scheduled backfill", async () => {
   const storage = new MemoryDurableStorage();
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: dispatchingReviews([795, 796], Date.now() + 60 * 60_000),
+  });
   const queue = new ExactReviewQueue(
     { storage },
     {
@@ -3872,8 +3906,17 @@ test("organic reviews consume the global target before scheduled backfill", asyn
       EXACT_REVIEW_TARGET_BURST: "2",
     },
   );
-  await queue.fetch(buildExactReviewQueueRequest("organic-1", 795, "opened"));
-  await queue.fetch(buildExactReviewQueueRequest("organic-2", 796, "opened"));
+  // Admission alone is free: a third organic item that never runs costs nothing.
+  assert.equal(
+    (await (await queue.fetch(buildExactReviewQueueRequest("organic-3", 798, "opened"))).json())
+      .queued,
+    true,
+  );
+  for (const itemNumber of [795, 796]) {
+    const lease = { key: `openclaw/openclaw#${itemNumber}`, leaseId: `lease-${itemNumber}` };
+    const claim = await claimReviewLease(queue, { ...lease, leaseRevision: 1 }, `${itemNumber}0`);
+    assert.equal(claim.status, 200);
+  }
   const scheduled = await queue.fetch(
     buildExactReviewQueueRequest("scheduled-after-organic", 797, "scheduled_normal_backfill"),
   );
@@ -3904,18 +3947,26 @@ async function scheduledFeedStats(queue: ExactReviewQueue) {
 test("organic debt on the global budget is repaid before scheduled backfill resumes", async (t) => {
   let clock = Date.parse("2026-09-28T12:00:00Z");
   t.mock.method(Date, "now", () => clock);
+  const numbers = [820, 821, 822, 823, 824];
+  const storage = new MemoryDurableStorage();
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: dispatchingReviews(numbers, clock + 60 * 60_000),
+  });
   const queue = new ExactReviewQueue(
-    { storage: new MemoryDurableStorage() },
+    { storage },
     { EXACT_REVIEW_TARGET_RATE_PER_HOUR: "60", EXACT_REVIEW_TARGET_BURST: "2" },
   );
-  for (let index = 0; index < 5; index += 1) {
-    const response = await queue.fetch(
-      buildExactReviewQueueRequest(`organic-debt-${index}`, 820 + index, "opened"),
+  for (const itemNumber of numbers) {
+    const claim = await claimReviewLease(
+      queue,
+      { key: `openclaw/openclaw#${itemNumber}`, leaseId: `lease-${itemNumber}`, leaseRevision: 1 },
+      `${itemNumber}0`,
     );
-    assert.equal((await response.json()).queued, true, "organic work is always admitted");
+    assert.equal(claim.status, 200);
   }
   const indebted = await scheduledFeedStats(queue);
-  // Five organic debits against a two-token burst stop at the -burst floor.
+  // Five claimed organic executions against a two-token burst stop at the -burst floor.
   assert.equal(indebted.token_balance, -2);
   assert.ok(Object.values(indebted.lanes).every((lane) => lane.token_balance >= 0));
 
@@ -3934,22 +3985,40 @@ test("organic debt on the global budget is repaid before scheduled backfill resu
 test("sustained organic load above the rate keeps scheduled admission at zero until it subsides", async (t) => {
   let clock = Date.parse("2026-09-28T12:00:00Z");
   t.mock.method(Date, "now", () => clock);
+  const executions = Array.from({ length: 120 }, (_, index) => 1_900 + index);
+  const storage = new MemoryDurableStorage();
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: dispatchingReviews(executions, clock + 3 * 60 * 60_000),
+  });
   const queue = new ExactReviewQueue(
-    { storage: new MemoryDurableStorage() },
+    { storage },
     { EXACT_REVIEW_TARGET_RATE_PER_HOUR: "60", EXACT_REVIEW_TARGET_BURST: "6" },
   );
   let item = 900;
   let scheduledAdmitted = 0;
-  // Two organic executions per minute against a one-per-minute rate for an hour.
+  // Two claimed organic executions per minute against a one-per-minute rate for an hour.
   for (let minute = 0; minute < 60; minute += 1) {
     if (minute > 0) clock += 60_000;
     for (let index = 0; index < 2; index += 1) {
-      const organic = await queue.fetch(
-        buildExactReviewQueueRequest(`organic-above-rate-${item}`, item, "opened"),
+      const itemNumber = executions[minute * 2 + index];
+      const claim = await claimReviewLease(
+        queue,
+        {
+          key: `openclaw/openclaw#${itemNumber}`,
+          leaseId: `lease-${itemNumber}`,
+          leaseRevision: 1,
+        },
+        `${itemNumber}0`,
       );
-      assert.equal((await organic.json()).queued, true, "organic work is always admitted");
-      item += 1;
+      assert.equal(claim.status, 200, "organic work is always admitted and claimed");
     }
+    // Organic admission that has not run yet is free and always admitted.
+    const organic = await queue.fetch(
+      buildExactReviewQueueRequest(`organic-above-rate-${item}`, item, "opened"),
+    );
+    assert.equal((await organic.json()).queued, true, "organic work is always admitted");
+    item += 1;
     const scheduled = await queue.fetch(
       buildExactReviewQueueRequest(
         `scheduled-above-rate-${item}`,
@@ -3978,16 +4047,30 @@ test("sustained organic load above the rate keeps scheduled admission at zero un
   assert.equal((await resumed.json()).queued, true);
 });
 
-test("organic executions debit the global budget; coalesced, replayed, and retried work does not", async (t) => {
+test("only claimed review executions debit the global budget", async (t) => {
   const clock = Date.parse("2026-09-28T12:00:00Z");
   t.mock.method(Date, "now", () => clock);
   const storage = new MemoryDurableStorage();
-  const superseded = leasedExactReviewQueueItem(840, "9840");
+  const supersededBeforeClaim = { ...unclaimedExactReviewQueueItem(840), dispatchedAt: clock };
   const retried = leasedExactReviewQueueItem(841, "9841");
   const drifted = leasedExactReviewQueueItem(842, "9842");
+  const executed = { ...unclaimedExactReviewQueueItem(844), dispatchedAt: clock };
+  const publication = {
+    ...leasedExactReviewPublicationItem(845, "9845"),
+    state: "dispatching" as const,
+    claimedRunId: undefined,
+    claimedRunAttempt: undefined,
+    claimGeneration: undefined,
+    claimProtocolVersion: undefined,
+  };
   await storage.put("exact-review-queue", {
     deliveries: {},
-    items: Object.fromEntries([superseded, retried, drifted].map((item) => [item.key, item])),
+    items: Object.fromEntries(
+      [supersededBeforeClaim, retried, drifted, executed, publication].map((item) => [
+        item.key,
+        item,
+      ]),
+    ),
   });
   const queue = new ExactReviewQueue(
     { storage },
@@ -4025,33 +4108,59 @@ test("organic executions debit the global budget; coalesced, replayed, and retri
 
   assert.equal(await balance(), 6);
   assert.equal((await (await organic("new-key", 843)).json()).queued, true);
-  assert.equal(await balance(), 5, "a new key is one execution");
   await organic("pending-coalesce", 843, "edited");
   await organic("new-key", 843);
-  assert.equal(await balance(), 5, "pending coalesce and delivery replay add no execution");
+  assert.equal(await balance(), 6, "admission, coalesce and replay start no execution");
 
-  await organic("supersede-owner", 840, "edited");
+  await organic("supersede-before-claim", 840, "edited");
   const state = (await storage.get("exact-review-queue")) as {
-    items: Record<string, { state: string; revision: number; leaseId?: string }>;
+    items: Record<string, ExactReviewQueueItem>;
   };
-  assert.equal(state.items[superseded.key].state, "pending");
-  assert.equal(state.items[superseded.key].leaseId, undefined);
-  assert.equal(await balance(), 4, "revoking an active owner starts another execution");
+  assert.equal(state.items[supersededBeforeClaim.key].state, "pending");
+  assert.equal(state.items[supersededBeforeClaim.key].leaseId, undefined);
+  assert.equal((await claimReviewLease(queue, supersededBeforeClaim, "98400")).status, 409);
+  assert.equal(await balance(), 6, "a revoked lease never runs, so it is never charged");
+
+  assert.equal((await claimReviewLease(queue, executed, "98440")).status, 200);
+  assert.equal(await balance(), 5, "a claimed review lease is one execution");
+  assert.equal((await claimReviewLease(queue, executed, "98440")).status, 200);
+  assert.equal(await balance(), 5, "a same-attempt claim retry is the same execution");
+  assert.equal((await claimReviewLease(queue, executed, "98440", 2)).status, 200);
+  assert.equal(await balance(), 4, "a rerun attempt is another execution");
+  assert.equal((await claimReviewLease(queue, publication, "98450")).status, 200);
+  assert.equal(await balance(), 4, "a publication claim runs no review");
 
   assert.equal((await complete(retried, { outcome: "failure" })).status, 200);
-  assert.equal(await balance(), 4, "a same-revision retry is not charged again");
   assert.equal((await complete(drifted, { outcome: "success", requeue_latest: true })).status, 200);
-  assert.equal(await balance(), 3, "a requeue for new review input is another execution");
+  assert.equal(await balance(), 4, "requeues are charged when they run, not when queued");
 
-  const scheduledState = (await storage.get("exact-review-queue")) as {
-    items: Record<string, { state: string }>;
+  const requeued = (await storage.get("exact-review-queue")) as {
+    items: Record<string, ExactReviewQueueItem>;
   };
-  assert.equal(scheduledState.items[retried.key].state, "pending");
-  assert.equal(scheduledState.items[drifted.key].state, "pending");
+  for (const item of [retried, drifted]) {
+    const current = requeued.items[item.key]!;
+    assert.equal(current.state, "pending");
+    requeued.items[item.key] = {
+      ...current,
+      state: "dispatching",
+      leaseId: `${item.leaseId}-next`,
+      leaseRevision: current.revision,
+      leaseDecision: { ...current.decision },
+      leaseExpiresAt: clock + 60 * 60_000,
+      dispatchedAt: clock,
+    };
+  }
+  await storage.put("exact-review-queue", requeued);
+  for (const item of [retried, drifted]) {
+    const next = requeued.items[item.key]!;
+    assert.equal((await claimReviewLease(queue, next, `${item.claimedRunId}1`)).status, 200);
+  }
+  assert.equal(await balance(), 2, "each requeued execution is charged once when claimed");
 });
 
-test("completion and reconciliation charge a changed-input successor once", async (t) => {
-  t.mock.method(Date, "now", () => Date.parse("2026-09-28T12:00:00Z"));
+test("completion and reconciliation successors are charged once, when claimed", async (t) => {
+  const clock = Date.parse("2026-09-28T12:00:00Z");
+  t.mock.method(Date, "now", () => clock);
   for (const route of ["complete", "reconcile"] as const) {
     for (const scenario of ["new-input", "same-input", "scheduled"] as const) {
       const storage = new MemoryDurableStorage();
@@ -4101,14 +4210,84 @@ test("completion and reconciliation charge a changed-input successor once", asyn
       assert.equal(response.status, 200, `${route}/${scenario}`);
       const result = await response.json();
       if (scenario !== "same-input") assert.ok(result.requeued);
-      const expected = scenario === "new-input" ? 5 : 6;
-      assert.equal(await balance(), expected, `${route}/${scenario}`);
+      assert.equal(await balance(), 6, `${route}/${scenario}: a requeue is not an execution`);
       const replay = await finish();
       if (route === "reconcile") assert.equal((await replay.json()).reconciled, 0);
       else assert.equal(replay.status, 409);
-      assert.equal(await balance(), expected, `${route}/${scenario} replay`);
+      assert.equal(await balance(), 6, `${route}/${scenario} replay`);
+      if (scenario === "same-input") continue;
+
+      const state = (await storage.get("exact-review-queue")) as {
+        items: Record<string, ExactReviewQueueItem>;
+      };
+      const successor = {
+        ...state.items[item.key]!,
+        state: "dispatching" as const,
+        leaseId: "lease-849-successor",
+        leaseRevision: 2,
+        leaseDecision: { ...state.items[item.key]!.decision },
+        leaseExpiresAt: clock + 60 * 60_000,
+        dispatchedAt: clock,
+      };
+      state.items[item.key] = successor;
+      await storage.put("exact-review-queue", state);
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        assert.equal((await claimReviewLease(queue, successor, "98491")).status, 200);
+        // The successor is another execution, whether its input is organic or scheduled.
+        assert.equal(await balance(), 5, `${route}/${scenario} successor claim ${attempt}`);
+      }
     }
   }
+});
+
+test("a scheduled admission prepays exactly its first claimed execution", async (t) => {
+  const clock = Date.parse("2026-09-28T12:00:00Z");
+  t.mock.method(Date, "now", () => clock);
+  const storage = new MemoryDurableStorage();
+  const queue = new ExactReviewQueue(
+    { storage },
+    { EXACT_REVIEW_TARGET_RATE_PER_HOUR: "60", EXACT_REVIEW_TARGET_BURST: "6" },
+  );
+  const balance = async () => (await scheduledFeedStats(queue)).token_balance;
+  const key = "openclaw/openclaw#850";
+  const enqueue = (deliveryId: string, sourceAction: string) =>
+    queue.fetch(
+      buildExactReviewQueueRequest(deliveryId, 850, sourceAction, "issue", "openclaw/openclaw"),
+    );
+  assert.equal(
+    (await (await enqueue("scheduled-850", "scheduled_normal_backfill")).json()).queued,
+    true,
+  );
+  assert.equal(await balance(), 5, "scheduled admission debits once");
+  // An organic event coalesced into the pending scheduled item does not add an execution.
+  assert.equal((await (await enqueue("organic-edit-850", "edited")).json()).queued, true);
+  let state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, ExactReviewQueueItem>;
+  };
+  assert.equal(state.items[key]!.decision.sourceAction, "edited");
+  assert.equal(state.items[key]!.reviewBudgetPrepaid, true);
+
+  const lease = {
+    ...state.items[key]!,
+    state: "dispatching" as const,
+    leaseId: "lease-850",
+    leaseRevision: state.items[key]!.revision,
+    leaseDecision: { ...state.items[key]!.decision },
+    leaseExpiresAt: clock + 60 * 60_000,
+    dispatchedAt: clock,
+  };
+  state.items[key] = lease;
+  await storage.put("exact-review-queue", state);
+  assert.equal((await claimReviewLease(queue, lease, "98500")).status, 200);
+  assert.equal(await balance(), 5, "the prepaid first execution is not charged again");
+  state = (await storage.get("exact-review-queue")) as {
+    items: Record<string, ExactReviewQueueItem>;
+  };
+  assert.equal(state.items[key]!.reviewBudgetPrepaid, undefined, "the prepayment is consumed");
+  assert.equal((await claimReviewLease(queue, lease, "98500")).status, 200);
+  assert.equal(await balance(), 5);
+  assert.equal((await claimReviewLease(queue, lease, "98500", 2)).status, 200);
+  assert.equal(await balance(), 4, "a later execution of the same item is charged");
 });
 
 test("an explicit hot-intake rate leaves the scheduled remainder to normal backfill", async () => {

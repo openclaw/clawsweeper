@@ -84,14 +84,17 @@ EXACT_REVIEW_PENDING_SOFT_LIMIT = "600"
 # Bay is observer-only; 30 seconds of staleness is acceptable.
 EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS = "30000"
 # Scheduled admission refill rate after bounded organic debits, not a total
-# execution or spend cap. At ~30 GitHub requests/review, a combined load near
-# 220 admissions/hour would use ~6,600 requests/hour: under
+# execution or spend cap. The budget meters executed reviews: at ~30 GitHub
+# requests/review, a combined load near 220 executed reviews/hour would use
+# ~6,600 requests/hour: under
 # half of the 15,000-request installation bucket, leaving explicit capacity for
 # exact ingress, comment routing, apply proof, publication, planner scans, and
 # support lanes, and below the ~300 reviews/hour that previously hit org rate
-# limits. Organic work is always admitted and debits this budget first: every
-# new item, every superseding revision that revokes an active owner, and every
-# completion or reconciliation requeue for new review input. Debt stops at minus
+# limits. Organic work is always admitted for free and debits this budget first
+# when a workflow run claims its review lease (each new claim generation), so
+# organic items closed, superseded, coalesced, or deduped before they run cost
+# nothing. Scheduled work debits when admitted and prepays its first claim.
+# Debt stops at minus
 # the burst; further organic debits at the floor are forgotten, so organic load
 # may exceed these estimates. A 24-item scheduled burst (8 hot, 16 normal)
 # represents roughly 720 requests. GitHub throttle feedback from review completion still

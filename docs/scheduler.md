@@ -691,9 +691,13 @@ Current defaults:
   selected item enters the durable exact-review queue, and every admitted item
   receives its own parallel workflow
 - scheduled review admission target: 220 items/hour across the fleet, with a
-  24-item burst. Every organic admission consumes the budget first: a new
-  queue item, a superseding revision that revokes an active owner, and a
-  completion or reconciliation requeue for new review input. Organic debt carries down to minus
+  24-item burst. The budget meters executed reviews: every organic review
+  that starts (a workflow run claiming a new review lease generation)
+  consumes the budget first. Organic admission is free, so work superseded or
+  coalesced before claim, deduped, or completed at the dispatch-time live check
+  without a run costs nothing. A scheduled admission pays when admitted and
+  prepays its own first claim; later claims of the same item (reruns, retries,
+  requeues) are charged when they start. Organic debt carries down to minus
   the burst; further debits at that floor are forgotten. Organic work remains
   unconditional, so this target does not cap total executions. Within the scheduled
   remainder, hot intake is capped at 30 items/hour by
@@ -750,12 +754,14 @@ capacity clamping, dedupe, and Worker admission. The direct 20-minute normal
 schedule also uses live advertised capacity; its fallback offers 150 items/hour
 before the same bounds. These paths therefore have enough candidates to keep the
 shared token bucket fed despite dedupe or uneven fleet distribution. The queue
-refills scheduled admission credit at 220/hour after bounded organic debits. A
-combined load near 220 admissions/hour would need
+refills scheduled admission credit at 220/hour after bounded debits for
+claimed organic reviews. A combined load near 220 executed reviews/hour would need
 about `220 * 4.1 / 60 ≈ 15` concurrent review workers at a 4.1-minute mean
 service time and budgets roughly 6,600 GitHub requests/hour. With organic
-work near 130 admissions/hour, scheduled work receives roughly 90/hour: hot
-intake up to its 30/hour cap and normal backfill the rest. The separate
+work near 110 executed reviews/hour, scheduled work receives roughly 110/hour:
+hot intake up to its 30/hour cap and normal backfill the rest, however many
+more organic items were admitted and then closed or superseded before they ran.
+The separate
 32-slot scheduled cap also bounds old queued work and slower reviews while
 organic/manual requests retain admission priority. Organic overload can exceed
 these estimates indefinitely. Rate and burst reduce scheduled request

@@ -243,13 +243,19 @@ backlog cannot consume review admission capacity. Existing items, webhook
 events, commands, and publications remain admitted. The queue reports shed
 counts under `lanes.review.shed_reasons_since_reset` and the rolling flow by
 `backpressure` versus `scheduled_rate`; pre-migration totals remain
-`unattributed`. New review admissions debit a durable 220-review/hour
-scheduled budget with a 24-item burst. Organic work is always admitted and consumes the
-budget first: a new queue item, a superseding revision that revokes a
-dispatching or leased owner, and a completion or reconciliation requeue for new review input
-(`requeue_latest` or a changed desired revision) each debit one admission.
-Coalesced updates to an item that is still pending, semantic and delivery
-dedupes, publication work, and retries or deferrals of the same revision do not.
+`unattributed`. Executed reviews debit a durable 220-review/hour
+scheduled budget with a 24-item burst. The budget meters review executions, not
+admissions: every new claim of a review lease by a workflow run (`/claim`
+starting a new claim generation) debits one token, so organic work consumes the
+budget first, once per run that actually starts. Organic admission itself is
+free and always admitted. Work that never claims a lease is never charged: items
+superseded or coalesced before claim, dedupes, items completed at the
+dispatch-time live check without a run, publication work, and acknowledgement-only
+finalizers. A same-attempt claim retry is the same execution; a rerun attempt,
+retry, or requeue that claims again is another execution. A scheduled admission
+debits its token when admitted, because admission is where scheduled work is
+gated, and marks the item prepaid so its first claim is not charged again; later
+claims of that item are charged like organic ones.
 Organic debt carries on the global bucket down to minus the burst, so scheduled
 work is admitted only after that bounded debt is repaid. Further organic debits
 at the floor are forgotten, so this is not a total-work or spend cap. Scheduled work fills
@@ -472,9 +478,10 @@ These limits are owned by `dashboard/exact-review-queue.ts`, implemented in
 - `EXACT_REVIEW_PENDING_SOFT_LIMIT` overrides the pending-depth threshold for
   shedding new recovery and scheduled exact-review work; production sets it to 600.
 - `EXACT_REVIEW_TARGET_RATE_PER_HOUR` sets the fleet-wide scheduled admission
-  refill target; the source fallback is 60 and production sets 220. Organic admissions
-  consume it first and may carry debt down to minus the burst; scheduled work
-  fills only the remainder. Unconditional organic work may exceed the target.
+  refill target; the source fallback is 60 and production sets 220. Claimed
+  organic review executions consume it first and may carry debt down to minus
+  the burst; scheduled work fills only the remainder. Unconditional organic work
+  may exceed the target.
 - `EXACT_REVIEW_TARGET_BURST` bounds the admission burst and the organic debt
   floor; the source fallback is six and production sets 24, split 35/65 between
   the hot-intake and normal-backfill lane buckets.
