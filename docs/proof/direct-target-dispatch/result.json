@@ -1,7 +1,7 @@
 {
   "claim": "A target dispatcher issue/PR event is enqueued into the real exact-review queue without any repository_dispatch (so no `Review event item` relay run); a replay of the same run dedupes; any direct failure falls back to the unchanged repository_dispatch, whose relay still enqueues the event.",
   "base": "cac974b3e1da900cac3e7480b91d02a36ca60163",
-  "head": "6b887421a45700da207b5a1a74786ce0635bdeb9",
+  "head": "8451be295b242754cf95fcf10feec476be7092e4",
   "working_tree_dirty": false,
   "node": "v24.21.0",
   "miniflare": "4.20260701.0",
@@ -333,7 +333,7 @@
             }
           ],
           "deliveries": [
-            "3644f67c-70a8-4c9d-8a4d-f7afd59c3621",
+            "7f630ec1-da43-4175-a0cd-479b39d87a9d",
             "legacy:9001:1",
             "legacy:9002:1",
             "legacy:9003:1",
@@ -377,7 +377,7 @@
       }
     },
     "candidate": {
-      "ref": "6b887421a45700da207b5a1a74786ce0635bdeb9",
+      "ref": "8451be295b242754cf95fcf10feec476be7092e4",
       "dispatch_job_id_token_write": true,
       "source_sha256": {
         ".github/workflows/clawsweeper-dispatch.yml": "ae46574ef2811f892c3efb2c15963acab5adb4950d2454a2bc5878d36f5b457c",
@@ -715,7 +715,7 @@
             }
           ],
           "deliveries": [
-            "42f198ac-30ae-4ddc-8b74-8596e2d635bf",
+            "033b5e3e-f8f9-4e3f-b74e-8122045abf64",
             "legacy:9008:1",
             "legacy:9009:1",
             "legacy:9010:1",
