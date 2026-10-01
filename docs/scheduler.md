@@ -719,12 +719,13 @@ Current defaults:
   receives its own parallel workflow
 - scheduled review admission target: 220 items/hour across the fleet, with a
   24-item burst. The budget meters executed reviews: every organic review
-  that starts (a workflow run claiming a new review lease generation)
-  consumes the budget first. Organic admission is free, so work superseded or
-  coalesced before claim, deduped, or completed at the dispatch-time live check
-  without a run costs nothing. A scheduled admission pays when admitted and
-  prepays its own first claim; later claims of the same item (reruns, retries,
-  requeues) are charged when they start. Organic debt carries down to minus
+  that starts generation (the claimed run's startup ownership check, sent with
+  `generation_start: true`) consumes the budget first. Organic admission is
+  free, so work superseded or coalesced before claim, deduped, completed at the
+  dispatch-time live check without a run, or claimed by a run that exits before
+  generation costs nothing. A scheduled admission pays when admitted and
+  prepays its own first started generation; later starts of the same item
+  (reruns, retries, requeues) are charged when they start. Organic debt carries down to minus
   the burst; further debits at that floor are forgotten. Organic work remains
   unconditional, so this target does not cap total executions. Within the scheduled
   remainder, hot intake is capped at 30 items/hour by
@@ -782,7 +783,7 @@ schedule also uses live advertised capacity; its fallback offers 150 items/hour
 before the same bounds. These paths therefore have enough candidates to keep the
 shared token bucket fed despite dedupe or uneven fleet distribution. The queue
 refills scheduled admission credit at 220/hour after bounded debits for
-claimed organic reviews. A combined load near 220 executed reviews/hour would need
+started organic reviews. A combined load near 220 executed reviews/hour would need
 about `220 * 4.1 / 60 ≈ 15` concurrent review workers at a 4.1-minute mean
 service time and budgets roughly 6,600 GitHub requests/hour. With organic
 work near 110 executed reviews/hour, scheduled work receives roughly 110/hour:

@@ -1454,13 +1454,16 @@ jobs:
           prepare_heartbeat
           verify_startup_authority() {
             # Run after branch-specific setup, immediately before generation.
+            # generation_start charges the review budget once for this claim
+            # generation; claims that never reach generation are not charged.
+            startup_payload="$(jq -c '. + {generation_start: true}' <<<"$heartbeat_payload")"
             startup_response="$(mktemp)"
             startup_status="$(control_plane_curl --silent --connect-timeout 5 --max-time 20 \
               --output "$startup_response" \
               --write-out '%{http_code}' \
               --request POST \
               --header "content-type: application/json" \
-              --data-binary "$heartbeat_payload" \
+              --data-binary "$startup_payload" \
               "${QUEUE_URL%/}/internal/exact-review/heartbeat")" || startup_status=""
             if [ "$startup_status" = "409" ] && jq -e '.error == "lease_superseded" or .error == "lease_not_active"' "$startup_response" >/dev/null; then
               rm -f "$startup_response"

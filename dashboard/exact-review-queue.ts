@@ -404,10 +404,15 @@ export type ExactReviewQueueItem = {
   reviewRecoveryAt?: number;
   /**
    * A scheduled admission already debited the global review budget for this
-   * item's next claimed review execution. That claim consumes the marker
-   * instead of debiting again; every later claim is charged.
+   * item's next started review generation. That start consumes the marker
+   * instead of debiting again; every later start is charged.
    */
   reviewBudgetPrepaid?: true;
+  /**
+   * Claim generation whose review start has not been charged yet. Set at
+   * claim, consumed by the first generation-start heartbeat for that lease.
+   */
+  reviewBudgetChargeGeneration?: number;
   /**
    * A terminal outcome already committed for this revision. This retains only
    * the status acknowledgement retry driver; it never re-enters publication.
@@ -2600,7 +2605,7 @@ export class ExactReviewQueue {
               ),
             };
           }
-          // Organic admission is free: its review is charged when claimed. A
+          // Organic admission is free: its review is charged when generation starts. A
           // scheduled admission already debited the global bucket above.
           state.items[key] = {
             key,
@@ -2941,10 +2946,9 @@ export class ExactReviewQueue {
       item.leaseHeartbeatAt = undefined;
       item.claimedAt = now;
       item.updatedAt = now;
-      // Only a new claim generation starts an execution. Same-attempt claim
-      // retries return above, and this debit is written in the same
-      // synchronous turn as the lease, so each generation is charged once.
-      this.chargeClaimedReviewExecutionSync(item, now);
+      // Claims that exit before generation (closed, superseded, deduped) cost
+      // nothing; the generation-start heartbeat charges this generation once.
+      item.reviewBudgetChargeGeneration = item.claimGeneration;
       await this.writeState(state);
       this.recordLifecycleClaim(item, now);
       // Every newly claimed review run spends one full review; finalizer-only
@@ -2978,6 +2982,7 @@ export class ExactReviewQueue {
         ? Number(body.review_acknowledgement_comment_id)
         : null;
       const phase = body.phase === undefined ? "review" : String(body.phase);
+      const generationStart = body.generation_start !== undefined;
       const sourceHeadSha = hasSourceHeadSha
         ? String(body.source_head_sha || "")
             .trim()
@@ -3004,6 +3009,9 @@ export class ExactReviewQueue {
       }
       if (phase !== "review" && phase !== "status" && phase !== "finalizing") {
         return json({ error: "invalid_lease_phase" }, 400);
+      }
+      if (generationStart && (body.generation_start !== true || phase !== "review")) {
+        return json({ error: "invalid_generation_start" }, 400);
       }
 
       const now = Date.now();
@@ -3095,6 +3103,16 @@ export class ExactReviewQueue {
         await this.writeState(state);
         await this.scheduleNext(state, now);
         return json({ error: "lease_superseded", superseded_by_revision: item.revision }, 409);
+      }
+      if (
+        generationStart &&
+        item.reviewBudgetChargeGeneration !== undefined &&
+        item.reviewBudgetChargeGeneration === exactReviewClaimGeneration(item.claimGeneration)
+      ) {
+        // Written with the heartbeat in one synchronous turn, so retried
+        // generation-start heartbeats for this lease never charge twice.
+        delete item.reviewBudgetChargeGeneration;
+        this.chargeStartedReviewGenerationSync(item, now);
       }
       item.leaseHeartbeatAt = now;
       item.leasePhase = phase;
@@ -12233,9 +12251,9 @@ export class ExactReviewQueue {
     return admitted;
   }
 
-  // The review budget meters executions, not admissions: superseded,
-  // coalesced, deduped and terminal-before-claim work never debits it.
-  private chargeClaimedReviewExecutionSync(item: ExactReviewQueueItem, now: number) {
+  // The review budget meters started generations, not admissions or claims:
+  // superseded, coalesced, deduped, and claimed-then-skipped work never debits it.
+  private chargeStartedReviewGenerationSync(item: ExactReviewQueueItem, now: number) {
     // Publications and acknowledgement-only finalizers run no review.
     if (
       exactReviewQueueIsPublication({ decision: item.leaseDecision ?? item.decision }) ||
@@ -16105,6 +16123,7 @@ function clearExactReviewLease(item: ExactReviewQueueItem) {
   item.claimedRunAttempt = undefined;
   item.claimGeneration = undefined;
   item.claimProtocolVersion = undefined;
+  item.reviewBudgetChargeGeneration = undefined;
   item.dispatchedAt = undefined;
   item.claimedAt = undefined;
 }

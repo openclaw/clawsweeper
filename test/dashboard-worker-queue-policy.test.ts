@@ -3893,7 +3893,43 @@ function claimReviewLease(
   );
 }
 
-test("claimed organic reviews consume the global target before scheduled backfill", async () => {
+function startReviewGeneration(
+  queue: ExactReviewQueue,
+  item: { key: string; leaseId?: string; leaseRevision?: number },
+  runId: string,
+  runAttempt = 1,
+  extra: Record<string, unknown> = {},
+) {
+  return queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/heartbeat", {
+      method: "POST",
+      body: JSON.stringify({
+        item_key: item.key,
+        lease_id: item.leaseId,
+        lease_revision: item.leaseRevision,
+        run_id: runId,
+        run_attempt: runAttempt,
+        generation_start: true,
+        ...extra,
+      }),
+    }),
+  );
+}
+
+async function claimAndStartReview(
+  queue: ExactReviewQueue,
+  item: { key: string; leaseId?: string; leaseRevision?: number },
+  runId: string,
+  runAttempt = 1,
+) {
+  const claim = await claimReviewLease(queue, item, runId, runAttempt);
+  assert.equal(claim.status, 200);
+  const start = await startReviewGeneration(queue, item, runId, runAttempt);
+  assert.equal(start.status, 200);
+  return start;
+}
+
+test("started organic reviews consume the global target before scheduled backfill", async () => {
   const storage = new MemoryDurableStorage();
   await storage.put("exact-review-queue", {
     deliveries: {},
@@ -3914,8 +3950,7 @@ test("claimed organic reviews consume the global target before scheduled backfil
   );
   for (const itemNumber of [795, 796]) {
     const lease = { key: `openclaw/openclaw#${itemNumber}`, leaseId: `lease-${itemNumber}` };
-    const claim = await claimReviewLease(queue, { ...lease, leaseRevision: 1 }, `${itemNumber}0`);
-    assert.equal(claim.status, 200);
+    await claimAndStartReview(queue, { ...lease, leaseRevision: 1 }, `${itemNumber}0`);
   }
   const scheduled = await queue.fetch(
     buildExactReviewQueueRequest("scheduled-after-organic", 797, "scheduled_normal_backfill"),
@@ -3958,15 +3993,14 @@ test("organic debt on the global budget is repaid before scheduled backfill resu
     { EXACT_REVIEW_TARGET_RATE_PER_HOUR: "60", EXACT_REVIEW_TARGET_BURST: "2" },
   );
   for (const itemNumber of numbers) {
-    const claim = await claimReviewLease(
+    await claimAndStartReview(
       queue,
       { key: `openclaw/openclaw#${itemNumber}`, leaseId: `lease-${itemNumber}`, leaseRevision: 1 },
       `${itemNumber}0`,
     );
-    assert.equal(claim.status, 200);
   }
   const indebted = await scheduledFeedStats(queue);
-  // Five claimed organic executions against a two-token burst stop at the -burst floor.
+  // Five started organic executions against a two-token burst stop at the -burst floor.
   assert.equal(indebted.token_balance, -2);
   assert.ok(Object.values(indebted.lanes).every((lane) => lane.token_balance >= 0));
 
@@ -3997,12 +4031,12 @@ test("sustained organic load above the rate keeps scheduled admission at zero un
   );
   let item = 900;
   let scheduledAdmitted = 0;
-  // Two claimed organic executions per minute against a one-per-minute rate for an hour.
+  // Two started organic executions per minute against a one-per-minute rate for an hour.
   for (let minute = 0; minute < 60; minute += 1) {
     if (minute > 0) clock += 60_000;
     for (let index = 0; index < 2; index += 1) {
       const itemNumber = executions[minute * 2 + index];
-      const claim = await claimReviewLease(
+      await claimAndStartReview(
         queue,
         {
           key: `openclaw/openclaw#${itemNumber}`,
@@ -4011,7 +4045,6 @@ test("sustained organic load above the rate keeps scheduled admission at zero un
         },
         `${itemNumber}0`,
       );
-      assert.equal(claim.status, 200, "organic work is always admitted and claimed");
     }
     // Organic admission that has not run yet is free and always admitted.
     const organic = await queue.fetch(
@@ -4047,7 +4080,7 @@ test("sustained organic load above the rate keeps scheduled admission at zero un
   assert.equal((await resumed.json()).queued, true);
 });
 
-test("only claimed review executions debit the global budget", async (t) => {
+test("only started review generations debit the global budget", async (t) => {
   const clock = Date.parse("2026-09-28T12:00:00Z");
   t.mock.method(Date, "now", () => clock);
   const storage = new MemoryDurableStorage();
@@ -4122,11 +4155,16 @@ test("only claimed review executions debit the global budget", async (t) => {
   assert.equal(await balance(), 6, "a revoked lease never runs, so it is never charged");
 
   assert.equal((await claimReviewLease(queue, executed, "98440")).status, 200);
-  assert.equal(await balance(), 5, "a claimed review lease is one execution");
+  assert.equal(await balance(), 6, "a claim that has not started generation is free");
+  assert.equal((await startReviewGeneration(queue, executed, "98440")).status, 200);
+  assert.equal(await balance(), 5, "a started review generation is one execution");
   assert.equal((await claimReviewLease(queue, executed, "98440")).status, 200);
-  assert.equal(await balance(), 5, "a same-attempt claim retry is the same execution");
+  assert.equal((await startReviewGeneration(queue, executed, "98440")).status, 200);
+  assert.equal(await balance(), 5, "claim and generation-start retries are the same execution");
   assert.equal((await claimReviewLease(queue, executed, "98440", 2)).status, 200);
-  assert.equal(await balance(), 4, "a rerun attempt is another execution");
+  assert.equal(await balance(), 5, "a rerun attempt that exits before generation is free");
+  assert.equal((await startReviewGeneration(queue, executed, "98440", 2)).status, 200);
+  assert.equal(await balance(), 4, "a rerun attempt that starts generation is another execution");
   assert.equal((await claimReviewLease(queue, publication, "98450")).status, 200);
   assert.equal(await balance(), 4, "a publication claim runs no review");
 
@@ -4153,12 +4191,12 @@ test("only claimed review executions debit the global budget", async (t) => {
   await storage.put("exact-review-queue", requeued);
   for (const item of [retried, drifted]) {
     const next = requeued.items[item.key]!;
-    assert.equal((await claimReviewLease(queue, next, `${item.claimedRunId}1`)).status, 200);
+    await claimAndStartReview(queue, next, `${item.claimedRunId}1`);
   }
-  assert.equal(await balance(), 2, "each requeued execution is charged once when claimed");
+  assert.equal(await balance(), 2, "each requeued execution is charged once when started");
 });
 
-test("completion and reconciliation successors are charged once, when claimed", async (t) => {
+test("completion and reconciliation successors are charged once, when started", async (t) => {
   const clock = Date.parse("2026-09-28T12:00:00Z");
   t.mock.method(Date, "now", () => clock);
   for (const route of ["complete", "reconcile"] as const) {
@@ -4233,14 +4271,18 @@ test("completion and reconciliation successors are charged once, when claimed", 
       await storage.put("exact-review-queue", state);
       for (let attempt = 0; attempt < 2; attempt += 1) {
         assert.equal((await claimReviewLease(queue, successor, "98491")).status, 200);
+        assert.equal(await balance(), 6, `${route}/${scenario} successor claim ${attempt}`);
+      }
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        assert.equal((await startReviewGeneration(queue, successor, "98491")).status, 200);
         // The successor is another execution, whether its input is organic or scheduled.
-        assert.equal(await balance(), 5, `${route}/${scenario} successor claim ${attempt}`);
+        assert.equal(await balance(), 5, `${route}/${scenario} successor start ${attempt}`);
       }
     }
   }
 });
 
-test("a scheduled admission prepays exactly its first claimed execution", async (t) => {
+test("a scheduled admission prepays exactly its first started generation", async (t) => {
   const clock = Date.parse("2026-09-28T12:00:00Z");
   t.mock.method(Date, "now", () => clock);
   const storage = new MemoryDurableStorage();
@@ -4278,16 +4320,74 @@ test("a scheduled admission prepays exactly its first claimed execution", async 
   };
   state.items[key] = lease;
   await storage.put("exact-review-queue", state);
+  const prepaid = async () =>
+    ((await storage.get("exact-review-queue")) as { items: Record<string, ExactReviewQueueItem> })
+      .items[key]!.reviewBudgetPrepaid;
   assert.equal((await claimReviewLease(queue, lease, "98500")).status, 200);
-  assert.equal(await balance(), 5, "the prepaid first execution is not charged again");
-  state = (await storage.get("exact-review-queue")) as {
-    items: Record<string, ExactReviewQueueItem>;
-  };
-  assert.equal(state.items[key]!.reviewBudgetPrepaid, undefined, "the prepayment is consumed");
-  assert.equal((await claimReviewLease(queue, lease, "98500")).status, 200);
-  assert.equal(await balance(), 5);
+  assert.equal(await prepaid(), true, "a claim that exits before generation keeps the prepayment");
   assert.equal((await claimReviewLease(queue, lease, "98500", 2)).status, 200);
+  assert.equal(await prepaid(), true);
+  assert.equal((await startReviewGeneration(queue, lease, "98500", 2)).status, 200);
+  assert.equal(await balance(), 5, "the prepaid first execution is not charged again");
+  assert.equal(await prepaid(), undefined, "the prepayment is consumed");
+  assert.equal((await startReviewGeneration(queue, lease, "98500", 2)).status, 200);
+  assert.equal(await balance(), 5);
+  assert.equal((await claimReviewLease(queue, lease, "98500", 3)).status, 200);
+  assert.equal((await startReviewGeneration(queue, lease, "98500", 3)).status, 200);
   assert.equal(await balance(), 4, "a later execution of the same item is charged");
+});
+
+test("generation start charges only the live lease's current claim generation", async (t) => {
+  const clock = Date.parse("2026-09-28T12:00:00Z");
+  t.mock.method(Date, "now", () => clock);
+  const executed = { ...unclaimedExactReviewQueueItem(851), dispatchedAt: clock };
+  // Claimed before generation-start charging was deployed: already charged at claim.
+  const preRollout = leasedExactReviewQueueItem(852, "9852");
+  const storage = new MemoryDurableStorage();
+  await storage.put("exact-review-queue", {
+    deliveries: {},
+    items: { [executed.key]: executed, [preRollout.key]: preRollout },
+  });
+  const queue = new ExactReviewQueue(
+    { storage },
+    { EXACT_REVIEW_TARGET_RATE_PER_HOUR: "60", EXACT_REVIEW_TARGET_BURST: "6" },
+  );
+  const balance = async () => (await scheduledFeedStats(queue)).token_balance;
+  assert.equal((await claimReviewLease(queue, executed, "98510")).status, 200);
+
+  const invalid = await startReviewGeneration(queue, executed, "98510", 1, {
+    generation_start: "yes",
+  });
+  assert.equal(invalid.status, 400);
+  assert.deepEqual(await invalid.json(), { error: "invalid_generation_start" });
+  const statusPhase = await startReviewGeneration(queue, executed, "98510", 1, {
+    phase: "status",
+  });
+  assert.equal(statusPhase.status, 400);
+  const staleGeneration = await startReviewGeneration(queue, executed, "98510", 1, {
+    claim_generation: 2,
+  });
+  assert.equal(staleGeneration.status, 409);
+  assert.equal((await startReviewGeneration(queue, executed, "98519")).status, 409);
+  const plainHeartbeat = await queue.fetch(
+    new Request("https://clawsweeper-exact-review-queue/heartbeat", {
+      method: "POST",
+      body: JSON.stringify({
+        item_key: executed.key,
+        lease_id: executed.leaseId,
+        lease_revision: executed.leaseRevision,
+        run_id: "98510",
+        run_attempt: 1,
+      }),
+    }),
+  );
+  assert.equal(plainHeartbeat.status, 200);
+  assert.equal(await balance(), 6, "rejected starts and ordinary heartbeats are free");
+
+  assert.equal((await startReviewGeneration(queue, executed, "98510")).status, 200);
+  assert.equal(await balance(), 5);
+  assert.equal((await startReviewGeneration(queue, preRollout, "9852")).status, 200);
+  assert.equal(await balance(), 5, "a lease charged at claim before rollout is not charged again");
 });
 
 test("an explicit hot-intake rate leaves the scheduled remainder to normal backfill", async () => {
