@@ -1,5 +1,11 @@
 # Scheduled review budget proof
 
+Status: historical proof for https://github.com/openclaw/clawsweeper/pull/1710,
+which charged organic work when it was admitted. The queue now charges the
+budget when a workflow run claims a review lease; see the
+[claim-time charging proof](../scheduled-budget-claim-charging/README.md) for
+the current contract. The harness below has since been extended in place.
+
 Claim: the exact-review queue debits organic admissions and new-input successors
 against the scheduled admission budget. With the proposed values of 220 admissions/hour, a
 24-item burst, hot intake capped at 30/hour, and `openclaw/openclaw` normal
