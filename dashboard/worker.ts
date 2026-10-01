@@ -5520,6 +5520,7 @@ const PUBLIC_QUEUE_PARKED_REASONS = [
   "source_incompatible",
   "scanner_refused",
   "direct_publication",
+  "stale_revision",
   "source_drift_loop",
   "unknown",
 ] as const;

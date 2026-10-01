@@ -255,6 +255,7 @@ const scheduledScenarios = [
   "changed-pr-clean",
   "changed-pr-proof-invalid-cursor",
   "changed-pr-proof-maintainer-change",
+  "changed-pr-write-access",
   "changed-pr-partial-json-findings",
   "changed-pr-partial-json-incomplete-source",
   "changed-pr-partial-json-generic",
@@ -282,6 +283,7 @@ function testScheduledCacheScenario(
     const refuseScan = scenario.endsWith("refusal");
     const invalidProofPrior = scenario.startsWith("changed-pr-proof-");
     const proofMaintainerChange = scenario === "changed-pr-proof-maintainer-change";
+    const writeAccessAuthor = scenario === "changed-pr-write-access";
     const sourceIncompatible = scenario.endsWith("source-incompatible");
     const codexFailure = scenario.endsWith("codex-failure") || sourceIncompatible;
     const exactFailure = scenario.includes("exact");
@@ -570,7 +572,8 @@ else {
         `${value.repo}#${value.number}`,
       asRecord,
       bulkFilerPolicyInvalidatesCachedReview: () => false,
-      bulkFilerRepositoryPermission: () => (proofMaintainerChange ? "maintain" : null),
+      bulkFilerRepositoryPermission: () =>
+        proofMaintainerChange ? "maintain" : writeAccessAuthor ? "write" : null,
       buildLocalRangeReview: () => {
         throw new Error("local range must not run");
       },
@@ -814,6 +817,12 @@ else {
         if (scenario === "changed-pr-proof-maintainer-change") {
           assert.equal(reasoningEffort, "medium");
           assert.equal(serviceTier, "fast");
+        }
+        if (writeAccessAuthor) {
+          assert.equal(reasoningEffort, "medium");
+          assert.equal(serviceTier, "fast");
+          // Write access alone selects priority service; it is not maintainer authorship.
+          assert.equal(reviewItem.authorAssociation, "CONTRIBUTOR");
         }
         generationCalls += 1;
         if (isPullRequest) {

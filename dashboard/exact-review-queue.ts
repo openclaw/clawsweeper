@@ -2386,6 +2386,8 @@ export class ExactReviewQueue {
               current.state = "pending";
               current.createdAt = now;
               current.parkedReason = undefined;
+              // Replacing an active owner admits another organic input.
+              if (!decision.publication) this.consumeScheduledReviewCapacitySync(now);
             }
             const mergeable = current.state === "pending" || current.state === "parked";
             const priorParkedRecoveryAt = exactReviewParkedRecoveryAt(current);
@@ -3418,6 +3420,9 @@ export class ExactReviewQueue {
             ? Number(item.publicationFailureAttempts || 0)
             : Number(item.publicationFailureAttempts || 0) + 1
           : 0;
+      // Capture the input identity before finishing clears the lease decision.
+      const requeueChargesOrganicExecution =
+        !directLifecycleRequeue && exactReviewRequeueNeedsBudgetDebit(item, requeueLatest);
       const completionResult = directLifecycleRequeue
         ? item.revision > leaseRevision
           ? finishExactReviewPublicationQueueItem({
@@ -3552,6 +3557,9 @@ export class ExactReviewQueue {
           : null;
       if (!publicationItem && retryKind === "throttle") {
         this.deferScheduledReviewAdmissionForThrottleSync(now, requestedRetryAt ?? 0);
+      }
+      if (requeueChargesOrganicExecution && completionResult.requeued) {
+        this.consumeScheduledReviewCapacitySync(now);
       }
       // A successful workflow can still request requeue_latest after source
       // drift. That work did not leave its lane, so it must not improve the
@@ -4765,6 +4773,8 @@ export class ExactReviewQueue {
             observedAt: now,
           });
         }
+        const requeueNeedsBudgetDebit =
+          !owedDirectLifecycleRequeue && exactReviewRequeueNeedsBudgetDebit(item);
         const { requeued: didRequeue, parked } = owedDirectLifecycleRequeue
           ? this.requeueDirectLifecyclePublicationSync(state, item, now)
           : finishExactReviewQueueItem(
@@ -4782,6 +4792,7 @@ export class ExactReviewQueue {
         reconciled += 1;
         if (parked) continue;
         if (didRequeue) {
+          if (requeueNeedsBudgetDebit) this.consumeScheduledReviewCapacitySync(now);
           requeued += 1;
           if (!exactReviewQueueIsPublication(item) && run.outcome !== "success") {
             retriedReviews += 1;
@@ -5024,6 +5035,10 @@ export class ExactReviewQueue {
     const batchOwnedItemKeys = new Set<string>(batchByItemKey.keys());
     const freshPublicationItemKeys = this.freshPublicationItemKeysSync(state, now);
     const legacyExcludedItemKeys = new Set(batchOwnedItemKeys);
+    // Claim and departure exclude these superseded rows; alarm cleanup retains
+    // command rows without verified successor authority. Stats report the hold.
+    const staleRevisionItemKeys = new Set<string>();
+    let oldestStaleRevisionAt: number | null = null;
     if (exactReviewPublicationBatchingEnabled(this.env)) {
       for (const item of Object.values(state.items) as ExactReviewQueueItem[]) {
         if (
@@ -5033,6 +5048,18 @@ export class ExactReviewQueue {
         ) {
           legacyExcludedItemKeys.add(item.key);
         }
+      }
+      for (const key of this.supersededPublicationItemKeysSync(state)) {
+        const item = state.items[key];
+        if (
+          item?.state !== "pending" ||
+          !exactReviewQueueIsBatchablePublication(item) ||
+          batchOwnedItemKeys.has(key)
+        ) {
+          continue;
+        }
+        staleRevisionItemKeys.add(key);
+        oldestStaleRevisionAt = Math.min(oldestStaleRevisionAt ?? item.createdAt, item.createdAt);
       }
     }
     const publicationControl = this.refreshPublicationControlSync(state, now);
@@ -5057,9 +5084,16 @@ export class ExactReviewQueue {
       legacyExcludedItemKeys,
       publicationBatches.nextLeaseExpiresAt,
       exactReviewScheduledCapacity(this.env),
+      staleRevisionItemKeys,
     );
     const publicationHealth = summarizeExactReviewPublicationHealth(
-      stats.lanes.publication,
+      {
+        ...stats.lanes.publication,
+        oldest_stale_revision_age_seconds:
+          oldestStaleRevisionAt === null
+            ? null
+            : Math.max(0, Math.floor((now - oldestStaleRevisionAt) / 1_000)),
+      },
       publicationFlow,
     );
     const reservationClaimObservability = exactReviewReservationClaimObservability({
@@ -12211,8 +12245,14 @@ export class ExactReviewQueue {
       return { tokens: burst, updatedAt: now, ratePerHour, burst };
     }
     const elapsedMs = Math.max(0, now - updatedAt);
+    // Organic debt on the global bucket (floored at -burst) must be repaid
+    // before scheduled work is admitted; lane buckets never go negative.
+    const floor = lane === "global" ? -burst : 0;
     return {
-      tokens: Math.min(burst, Math.max(0, storedTokens) + (elapsedMs * ratePerHour) / 3_600_000),
+      tokens: Math.min(
+        burst,
+        Math.max(floor, storedTokens) + (elapsedMs * ratePerHour) / 3_600_000,
+      ),
       updatedAt: now,
       ratePerHour,
       burst,
@@ -15781,6 +15821,16 @@ function exactReviewInputIdentityChanged(
   );
 }
 
+function exactReviewRequeueNeedsBudgetDebit(item: ExactReviewQueueItem, requeueLatest = false) {
+  return (
+    !exactReviewQueueIsPublication(item) &&
+    !exactReviewScheduledLane(item.decision) &&
+    (requeueLatest ||
+      (item.revision > Number(item.leaseRevision || 0) &&
+        exactReviewInputIdentityChanged(item.leaseDecision ?? item.decision, item.decision)))
+  );
+}
+
 function exactReviewRetryIdentityChanged(
   item: ExactReviewQueueItem,
   priorDecision: ExactReviewDecision,
@@ -17311,7 +17361,13 @@ function exactReviewScheduledRatePerHour(env, lane: ExactReviewScheduledBucket) 
     ),
   );
   if (lane === "global") return total;
-  const hot = Math.max(1, Math.floor(total * 0.35));
+  // An explicit hot-intake rate keeps hot churn from taking the remainder that
+  // oldest-first normal backfill needs; unset keeps the 35% share.
+  const configuredHot = String(env.EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR ?? "").trim();
+  const hot =
+    configuredHot && Number.isFinite(Number(configuredHot))
+      ? Math.max(1, Math.min(total - 1, Math.floor(Number(configuredHot))))
+      : Math.max(1, Math.floor(total * 0.35));
   return lane === "hot_intake" ? hot : total - hot;
 }
 

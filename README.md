@@ -268,8 +268,8 @@ Common commands:
   current state: `👀` for acknowledgement, `🧹` for review, `🔧` for repair, and
   `✅` for completed/paused work.
 - Freeform `@clawsweeper ...` mentions and explicit `ask ...` questions dispatch
-  the maintainer-only assist lane. Assist runs the internal model with medium reasoning,
-  a 120-second per-item timeout, and its own five-job cap. It posts a separate
+  the maintainer-only assist lane. Assist runs the internal model with medium reasoning and priority (fast)
+  service, a 120-second per-item timeout, and its own five-job cap. It posts a separate
   non-durable answer comment and never edits the durable ClawSweeper review
   comment, closes, merges, labels, pushes, repairs, or emits review/apply
   markers. The model job has read-only GitHub access and emits a bounded artifact;
@@ -442,9 +442,13 @@ Review is proposal-only. It never closes items.
 - Each admitted item gets its own review workflow for the selected target.
 - Codex reviews use `gpt-6.1-sol` with medium reasoning in the direct API auth
   modes (`login` and `proxy`); `clawrouter` mode instead runs its private
-  inference alias. OWNER, MEMBER, and COLLABORATOR-authored issues and pull
-  requests use fast service; other items use standard service. Sweep planning, assist answers, and
-  close-coverage proofs use the configured ordinary-item defaults. Reviews have
+  inference alias. Issues and pull requests authored by an OWNER, MEMBER, or
+  COLLABORATOR, or by anyone whose live repository permission is `write`,
+  `maintain`, or `admin`, use priority (fast) service; other items use standard
+  service. Write access alone does not make an item maintainer-authored for
+  close policy. Assist answers always use priority service because only
+  write-access maintainers can request them. Sweep planning and close-coverage
+  proofs use the configured ordinary-item defaults. Reviews have
   a 10-minute per-item timeout.
 - Each item becomes a flat report under
   `records/<repo-slug>/items/<number>.md` with the decision, evidence,
@@ -1123,7 +1127,7 @@ default, subject to the selected repository profile; pass `target_repo`,
 `apply_kind=issue`, or `apply_kind=pull_request` to narrow a manual run.
 
 Scheduled runs cover the configured product profiles. `openclaw/openclaw` runs
-normal backfill hourly; scheduled hot intake and normal backfill share a
+normal backfill every 20 minutes; scheduled hot intake and normal backfill share a
 32-worker cap in the durable review queue. `openclaw/clawhub` runs on offset review/apply/audit crons so its reports
 live under `records/openclaw-clawhub/` without colliding with default repo
 records. `openclaw/clawsweeper` has a scheduled read-only audit row and is
@@ -1145,7 +1149,9 @@ control-plane workflows and do not consume these 128 slots.
 Lane limits are derived from that number: manual normal review defaults to 89
 requested shards and hot intake to 44; the interactive and expansion reserves
 leave 104 background slots when quiet. Scheduled work has a separate
-32-slot admission cap and a 60-review/hour target with a six-item burst. The
+32-slot admission cap and fills what organic reviews leave of a 220-review/hour
+admission target with a 24-item burst; hot intake is capped at 30/hour. Organic
+work remains unconditional, so this is not a total-execution or spend cap. The
 existing repair/issue implementation lanes use 40% of `workers.max`, currently
 51 live workers. Imported gitcrawl cluster repair allows 2 live workers by default.
 Exact-item review, repair, and issue implementation are priority work; normal

@@ -259,7 +259,8 @@ export function createAssistWorkflow({
       ...(options.mode === undefined ? {} : { mode: options.mode }),
       ...(options.lens === undefined ? {} : { lens: options.lens }),
     });
-    const codexConfig = [codexLoginConfig(), 'approval_policy="never"'];
+    // Assist is maintainer-only, so every request comes from someone with write access.
+    const codexConfig = [codexLoginConfig(), 'approval_policy="never"', 'service_tier="fast"'];
     const emptyGitHubConfigDir = join(options.workDir, ".gh-empty");
     ensureDir(emptyGitHubConfigDir);
     const result = runAgentProcess({
@@ -500,7 +501,7 @@ export function createAssistWorkflow({
     }
     if (args.codex_reasoning_effort !== undefined || args.codex_service_tier !== undefined) {
       throw new Error(
-        "--codex-reasoning-effort and --codex-service-tier are retired for assist; assist uses the fixed medium profile.",
+        "--codex-reasoning-effort and --codex-service-tier are retired for assist; assist uses the fixed medium reasoning, priority service profile.",
       );
     }
     const request: AssistRequestBinding = {

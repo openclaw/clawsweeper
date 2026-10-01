@@ -1,19 +1,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { canonicalItemAuthorAssociations, codexItemProfile } from "../dist/codex-item-profile.js";
+import { canonicalItemCodexProfile, codexItemProfile } from "../dist/codex-item-profile.js";
 
-test("maintainer-authored items use medium reasoning and fast service", () => {
+const FAST = { reasoningEffort: "medium", serviceTier: "fast" };
+const STANDARD = { reasoningEffort: "medium", serviceTier: "" };
+
+test("maintainer-authored items use medium reasoning and priority service", () => {
   for (const association of ["OWNER", "member", "COLLABORATOR"]) {
-    assert.deepEqual(codexItemProfile(association), {
-      reasoningEffort: "medium",
-      serviceTier: "fast",
-    });
+    assert.deepEqual(codexItemProfile(association), FAST);
+  }
+});
+
+test("authors with write access use priority service whatever their association", () => {
+  for (const permission of ["write", "maintain", "ADMIN", " write "]) {
+    assert.deepEqual(codexItemProfile("CONTRIBUTOR", permission), FAST);
+    assert.deepEqual(codexItemProfile(["NONE"], [null, permission]), FAST);
   }
 });
 
 test("other items preserve the ordinary Sol profile", () => {
   for (const association of ["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE", "", undefined]) {
-    assert.deepEqual(codexItemProfile(association), { reasoningEffort: "medium", serviceTier: "" });
+    assert.deepEqual(codexItemProfile(association), STANDARD);
+    for (const permission of ["read", "triage", "none", "", null, undefined]) {
+      assert.deepEqual(codexItemProfile(association, permission), STANDARD);
+    }
   }
 });
 
@@ -25,44 +35,51 @@ test("repair routing follows the canonical item rather than linked context", () 
     ],
   };
   assert.deepEqual(
-    canonicalItemAuthorAssociations({ canonical: ["#11"], candidates: ["#10"] }, plan),
-    ["MEMBER"],
+    canonicalItemCodexProfile({ canonical: ["#11"], candidates: ["#10"] }, plan),
+    FAST,
   );
-  assert.deepEqual(canonicalItemAuthorAssociations({ candidates: ["#10"] }, plan), ["CONTRIBUTOR"]);
-  assert.deepEqual(canonicalItemAuthorAssociations({ canonical: ["#12"] }, plan), []);
+  assert.deepEqual(canonicalItemCodexProfile({ candidates: ["#10"] }, plan), STANDARD);
+  assert.deepEqual(canonicalItemCodexProfile({ canonical: ["#12"] }, plan), STANDARD);
   assert.deepEqual(
-    canonicalItemAuthorAssociations({ canonical: ["#12"], candidates: ["#11"] }, plan),
-    [],
+    canonicalItemCodexProfile({ canonical: ["#12"], candidates: ["#11"] }, plan),
+    STANDARD,
   );
 });
 
 test("repair routing promotes a cluster when any canonical item is maintainer-authored", () => {
-  const associations = canonicalItemAuthorAssociations(
-    { canonical: ["#10", "#11"] },
-    {
-      items: [
-        { ref: "#10", author_association: "CONTRIBUTOR" },
-        { ref: "#11", author_association: "OWNER" },
-      ],
-    },
+  const plan = {
+    items: [
+      { ref: "#10", author_association: "CONTRIBUTOR" },
+      { ref: "#11", author_association: "OWNER" },
+    ],
+  };
+  assert.deepEqual(canonicalItemCodexProfile({ canonical: ["#10", "#11"] }, plan), FAST);
+});
+
+test("repair routing uses the canonical author's recorded write access", () => {
+  const plan = {
+    items: [
+      { ref: "#10", author_association: "CONTRIBUTOR", author_repository_permission: "read" },
+      { ref: "#11", author_association: "CONTRIBUTOR", author_repository_permission: "write" },
+    ],
+  };
+  assert.deepEqual(canonicalItemCodexProfile({ canonical: ["#11"] }, plan), FAST);
+  assert.deepEqual(canonicalItemCodexProfile({ canonical: ["#10"] }, plan), STANDARD);
+  // Linked context never lends its author's access to the canonical item.
+  assert.deepEqual(
+    canonicalItemCodexProfile({ canonical: ["#10"], candidates: ["#11"] }, plan),
+    STANDARD,
   );
-  assert.deepEqual(associations, ["CONTRIBUTOR", "OWNER"]);
-  assert.deepEqual(codexItemProfile(associations), {
-    reasoningEffort: "medium",
-    serviceTier: "fast",
-  });
 });
 
 test("repair routing normalizes accepted numeric canonical refs", () => {
   for (const ref of ["11", "0011", "#0011"]) {
-    const associations = canonicalItemAuthorAssociations(
-      { canonical: [ref] },
-      { items: [{ ref: "#11", author_association: "MEMBER" }] },
+    assert.deepEqual(
+      canonicalItemCodexProfile(
+        { canonical: [ref] },
+        { items: [{ ref: "#11", author_association: "MEMBER" }] },
+      ),
+      FAST,
     );
-    assert.deepEqual(associations, ["MEMBER"]);
-    assert.deepEqual(codexItemProfile(associations), {
-      reasoningEffort: "medium",
-      serviceTier: "fast",
-    });
   }
 });

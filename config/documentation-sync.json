@@ -13,8 +13,9 @@
         "EXACT_REVIEW_PUBLICATION_BATCH_MAX_CONCURRENT": "8",
         "EXACT_REVIEW_PUBLICATION_FRESH_LANE_ENABLED": "1",
         "EXACT_REVIEW_PUBLICATION_FRESH_LANE_MAX_ITEMS": "2",
-        "EXACT_REVIEW_TARGET_RATE_PER_HOUR": "60",
-        "EXACT_REVIEW_TARGET_BURST": "6",
+        "EXACT_REVIEW_TARGET_RATE_PER_HOUR": "220",
+        "EXACT_REVIEW_TARGET_BURST": "24",
+        "EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR": "30",
         "EXACT_REVIEW_SCHEDULED_MAX_CONCURRENT": "32",
         "EXACT_REVIEW_LIFECYCLE_BAY_CACHE_MS": "30000"
       },
@@ -57,7 +58,7 @@
         },
         {
           "document": "docs/limits.md",
-          "text": "durable {{EXACT_REVIEW_TARGET_RATE_PER_HOUR}}-review/hour budget with a {{EXACT_REVIEW_TARGET_BURST}}-item burst"
+          "text": "durable {{EXACT_REVIEW_TARGET_RATE_PER_HOUR}}-review/hour scheduled budget with a {{EXACT_REVIEW_TARGET_BURST}}-item burst"
         },
         {
           "document": "docs/limits.md",
@@ -65,11 +66,23 @@
         },
         {
           "document": "docs/scheduler.md",
-          "text": "total review admission target: {{EXACT_REVIEW_TARGET_RATE_PER_HOUR}} items/hour across the fleet"
+          "text": "scheduled review admission target: {{EXACT_REVIEW_TARGET_RATE_PER_HOUR}} items/hour across the fleet"
         },
         {
           "document": "docs/scheduler.md",
           "text": "with a {{EXACT_REVIEW_TARGET_BURST}}-item burst"
+        },
+        {
+          "document": "docs/scheduler.md",
+          "text": "hot intake is capped at {{EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR}} items/hour"
+        },
+        {
+          "document": "docs/limits.md",
+          "text": "caps hot intake (production sets {{EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR}})"
+        },
+        {
+          "document": "README.md",
+          "text": "a {{EXACT_REVIEW_TARGET_RATE_PER_HOUR}}-review/hour admission target with a {{EXACT_REVIEW_TARGET_BURST}}-item burst; hot intake is capped at {{EXACT_REVIEW_HOT_INTAKE_RATE_PER_HOUR}}/hour"
         }
       ]
     },

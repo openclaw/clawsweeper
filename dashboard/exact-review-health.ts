@@ -83,6 +83,9 @@ export type ExactReviewPublicationLaneSummary = {
   active: number;
   parked: number;
   oldest_pending_age_seconds: number | null;
+  parked_reasons?: Record<string, number>;
+  // Age of the oldest retained stale-revision row counted in `parked`.
+  oldest_stale_revision_age_seconds?: number | null;
 };
 
 const PHASES: ExactReviewPhase[] = ["pending", "dispatching", "leased"];
@@ -318,25 +321,41 @@ export function summarizeExactReviewPublicationHealth(
   const active = nonNegativeInteger(lane.active);
   const parked = nonNegativeInteger(lane.parked);
   const oldestAge = nonNegativeInteger(lane.oldest_pending_age_seconds);
+  // Retained stale revisions are parked for observation only. They keep the
+  // age-based severity they had while counted as pending, not dead-letter severity.
+  const staleRevisions = Math.min(parked, nonNegativeInteger(lane.parked_reasons?.stale_revision));
+  const deadLetters = parked - staleRevisions;
+  const staleAge = staleRevisions ? nonNegativeInteger(lane.oldest_stale_revision_age_seconds) : 0;
 
   // Dead letters and retired state-writer history are reported independently.
   // Neither is current publication demand, so an empty lane must stay idle.
   if (pending === 0 && active === 0 && parked === 0) {
     return { status: "idle", reason: null };
   }
-  if (parked > 0 || oldestAge >= 6 * 60 * 60) {
+  if (deadLetters > 0 || oldestAge >= 6 * 60 * 60 || staleAge >= 6 * 60 * 60) {
     return {
       status: "critical",
-      reason: parked > 0 ? "dead_letter_capacity" : "oldest_pending_over_6h",
+      reason:
+        deadLetters > 0
+          ? "dead_letter_capacity"
+          : oldestAge >= 6 * 60 * 60
+            ? "oldest_pending_over_6h"
+            : "stale_revision_over_6h",
     };
   }
   if (
     oldestAge >= 60 * 60 ||
+    staleAge >= 60 * 60 ||
     (pending >= 100 && flow.last_15_minutes.net_drain_rate_per_hour <= 0)
   ) {
     return {
       status: "degraded",
-      reason: oldestAge >= 60 * 60 ? "oldest_pending_over_1h" : "not_draining",
+      reason:
+        oldestAge >= 60 * 60
+          ? "oldest_pending_over_1h"
+          : staleAge >= 60 * 60
+            ? "stale_revision_over_1h"
+            : "not_draining",
     };
   }
   return { status: "healthy", reason: null };
